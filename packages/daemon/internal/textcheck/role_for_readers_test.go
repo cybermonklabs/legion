@@ -98,7 +98,15 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestAWaitByDesignIsNeverToldAsAStall", "TestTheAdmissionReadsTheRunningDeploymentRole"}},
 	{file: "internal/api/handoff.go", fn: "server.answerCompletion"}: {calls: 1, tests: []string{
 		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit"}},
-	{file: "internal/api/operator.go", fn: "server.worksPhase"}: {calls: 1, tests: []string{
+	// Whether the role of a retried or fresh-session claim works a step at its issue's phase
+	// (record.Issue.RunningAt). Its one caller, restartWorkedPhase, reads it only past
+	// isPhaseWorker, which the architect never passes, so an architect at admitted is relaunched
+	// through its machine and no phase start reaches it; a phase worker's retry at admitted reads
+	// the architect's step there, which is no step of its role, and goes to its machine too.
+	// cybermonklabs/legion#4065 (the controller acts on its project's agents itself) moved the
+	// retry out of operator.go into claimstart.go, and this site moved with it at the merge of main
+	// dfe2c546f21f.
+	{file: "internal/api/claimstart.go", fn: "server.worksPhase"}: {calls: 1, tests: []string{
 		"TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine", "TestTheOperatorRetriesADeploymentRolesClaim"}},
 	{file: "internal/daemon/design_news_holders.go", fn: "phaseHolder"}: {calls: 1, tests: []string{"TestOnlyAPhaseWorkerHoldsAMembersPhase"}},
 	// Whether the task the per-issue read judges stands in implementing, for a plan of several tasks:

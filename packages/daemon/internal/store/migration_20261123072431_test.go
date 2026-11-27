@@ -16,8 +16,9 @@ const taskCopyRemoveVersion = 20261123072431
 // task_copy_remove, the removal of the working copy of a task that a later version of the plan
 // removed (record.TaskCopyRemove), which the check refused before; a kind that is none is still
 // refused. The way back the header gives deletes each queued task_copy_remove row, writes the check
-// again without the kind, and deletes its version row, so the roll-forward runs the migration
-// again.
+// again without the kind, keeping the queued row of every other kind, main's two basis seeds and its
+// merge_holds_changed among them (taskCopiesKinds), and deletes its version row, so the roll-forward
+// runs the migration again.
 func TestMigrationTaskCopyRemoveQueuesTheRemovalOfARemovedTasksWorkingCopy(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)

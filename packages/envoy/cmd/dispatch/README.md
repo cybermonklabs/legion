@@ -5954,24 +5954,29 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; with `DISPATCH_LEGION_STATUS_SCOPE` on, only a Legion daemon's own broker token; with it off, the actor must be a Legion daemon's session)
 
   Publish the session that holds each role of the issue: `{holders: [{role, session}], actor}`, each pair naming both its role and its session.
-  The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`, or a role the Legion deployment defines in its settings: a name of `^[a-z][a-z0-9-]{0,31}$` other than `controller` (`legionagents.IsRole`).
+  The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`, or a role the Legion deployment defines in its settings: a name of `^[a-z][a-z0-9-]{0,31}$` other than `controller` (`legionclaim.IsRole`).
   The session is a session id (`text.IsSessionID`) of at most 256 bytes: it holds no whitespace, no control character, no backtick and none of `/?#<>"'[]|`.
   The body is the whole set of the issue, and `[]` is an issue where no session holds a role.
   The write replaces the stored set, so a session that the body does not name holds no role of the issue.
   A pair that did not change keeps its `recorded_at`.
-  The session `legion-daemon:<project>`, the key up to its first `-`, is the session that the daemon of the issue's project writes as.
-  With `DISPATCH_LEGION_STATUS_SCOPE` on, only a credential that holds `legion-status` can publish, and it must prove this session.
-  The daemon of another project can publish too: its broker token holds `legion-status`, names its project `P` and proves its session `legion-daemon:<P>`.
-  Every other credential is `403 ROLE_HOLDER_FORBIDDEN`, including a shared token whose `actor` names the daemon and a broker token whose session is no daemon's.
-  With the setting off, any actor other than the daemon's session is `403 ROLE_HOLDER_FORBIDDEN`, but for the daemon of another project.
-  That daemon writes the set too when its broker token names its project `P` and proves its session `legion-daemon:<P>`.
-  A daemon that runs a claim on another project's issue publishes that issue's set this way.
-  A bearer with no proven session can name the session of the issue's project's daemon in its body, but the project's `proven_sessions` setting can refuse it.
-  With `proven_sessions` on (`/api/v1/projects/{key}/proven-sessions`, above), an actor whose credential does not prove its session, the session of the issue's project's daemon or of another project's daemon, is `403 ROLE_HOLDER_NOT_PROVEN`, after the `400` and `404` refusals.
-  Each stored pair carries a mark that says whether a daemon's own token wrote it, the issue's project's daemon's or another project's daemon's (`issue_role_holders.daemon_proven`, Database migrations above).
-  Each publication sets the mark on every pair it stores or keeps, regardless of either setting.
-  Only a marked pair identifies an architect who can write a Legion issue's status under the status guard.
-  The answer does not carry the mark.
+
+  - **Who may publish.**
+    The session `legion-daemon:<project>`, the key up to its first `-`, is the session that the daemon of the issue's project writes as.
+    With `DISPATCH_LEGION_STATUS_SCOPE` on, only a credential that holds `legion-status` can publish, and it must prove this session.
+    The daemon of another project can publish too: its broker token holds `legion-status`, names its project `P` and proves its session `legion-daemon:<P>`.
+    Every other credential is `403 ROLE_HOLDER_FORBIDDEN`, including a shared token whose `actor` names the daemon and a broker token whose session is no daemon's.
+    With the setting off, any actor other than the daemon's session is `403 ROLE_HOLDER_FORBIDDEN`, but for the daemon of another project.
+    That daemon writes the set too when its broker token names its project `P` and proves its session `legion-daemon:<P>`.
+    A daemon that runs a claim on another project's issue publishes that issue's set this way.
+    A bearer with no proven session can name the session of the issue's project's daemon in its body, but the project's `proven_sessions` setting can refuse it.
+    With `proven_sessions` on (`/api/v1/projects/{key}/proven-sessions`, above), an actor whose credential does not prove its session, the session of the issue's project's daemon or of another project's daemon, is `403 ROLE_HOLDER_NOT_PROVEN`, after the `400` and `404` refusals.
+
+  - **The mark of a daemon's own token.**
+    Each stored pair carries a mark that says whether a daemon's own token wrote it, the issue's project's daemon's or another project's daemon's (`issue_role_holders.daemon_proven`, Database migrations above).
+    Each publication sets the mark on every pair it stores or keeps, regardless of either setting.
+    Only a marked pair identifies an architect who can write a Legion issue's status under the status guard.
+    The answer does not carry the mark.
+
   A body without `holders`, a role that is no name of that grammar or is `controller`, a session that is not a session id or is longer than 256 bytes, a role or a session named twice and an empty session are each `400 INVALID_ROLE_HOLDER`, and nothing is stored.
   An issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
   The write takes a closed issue, appends no issue event and notifies nobody.

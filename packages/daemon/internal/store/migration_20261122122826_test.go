@@ -16,14 +16,20 @@ import (
 // migrate through everything before it whatever lands beside it.
 const pullRequestsByTaskVersion = 20261122122826
 
-// taskCopiesKinds is every outbox kind 20261121165047 names, the check this migration writes again.
+// taskCopiesKinds is every outbox kind 20261121165047 names, thirty-four, the check this migration
+// writes again: main's two basis seeds and its merge_holds_changed among them, which this stack's
+// lists name as main's own (the last migration to write a list owns every value of it). A test that
+// queues a row of each before a way back holds that way back to keep them: main's 20261122154643 and
+// 20261126110259 stay recorded through it, and a way back whose check left one out would stop at
+// that row (SQLSTATE 23514).
 var taskCopiesKinds = []string{
 	"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
 	"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
 	"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
 	"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
 	"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record", "plan_record",
-	"conflict_confirm", "merge_forward", "task_branch",
+	"conflict_confirm", "merge_forward", "design_changes", "task_branch", "pending_basis_seed",
+	"reparent_seed", "merge_holds_changed",
 }
 
 // 20261122122826 keys pull_requests by the issue and the branch, and the table stores no task. The
@@ -36,8 +42,9 @@ var taskCopiesKinds = []string{
 // branch keeps one row. The outbox check is written again with every kind 20261121165047 named and
 // task_pull_requests_close, which it refused before; a kind that is none is still refused. The way
 // back the header gives keeps the row of each issue's merge and deletes the others, keys the table
-// by the issue again, drops the kind, and deletes its version row, so the roll-forward runs the
-// migration again.
+// by the issue again, drops the kind, keeps the queued row of each kind 20261121165047 names, main's
+// two basis seeds and its merge_holds_changed among them (taskCopiesKinds), and deletes its version
+// row, so the roll-forward runs the migration again.
 func TestMigrationPullRequestsByTaskKeysEachRowByItsBranch(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)

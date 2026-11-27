@@ -24,13 +24,14 @@
 -- putSettledHeads).
 --
 -- The outbox check is one list, so this migration names every kind, as 20261121165047 did: its
--- thirty-one kinds and task_pull_requests_close. Its version stands above 20261121165047 on purpose:
--- Migrate applies every unrecorded migration in version order, so on a database main migrated
--- this file runs late, after main's, and its list is the last word there. The last migration to
--- write the list owns every value of it, main's included, so this one names main's two basis
--- seeds (pending_basis_seed and reparent_seed, main's 20261122154643, which sorts above this
--- file) beside its own kinds. Without them an upgrade of a database main migrated stops on a
--- queued seed row (SQLSTATE 23514) and the daemon does not boot.
+-- thirty-four kinds and task_pull_requests_close. Its version stands above 20261121165047 on
+-- purpose: Migrate applies every unrecorded migration in version order, so on a database main
+-- migrated this file runs late, after main's, and its list is the last word there. The last
+-- migration to write the list owns every value of it, main's included, so this one names main's
+-- two basis seeds (pending_basis_seed and reparent_seed, main's 20261122154643) and main's
+-- merge_holds_changed (main's 20261126110259), two migrations that sort above this file, beside
+-- its own kinds. Without them an upgrade of a database main migrated stops on a queued row of one
+-- of those three kinds (SQLSTATE 23514) and the daemon does not boot.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction that ends
 -- this header, its last paragraph (migrations.WayBack), run with the daemon stopped, before the
@@ -39,17 +40,18 @@
 -- row with `on conflict (issue)`, which needs the key of one row for each issue, and decodes no
 -- task_pull_requests_close row. So the block deletes each such row first, since the check written
 -- again without the kind refuses a row that holds it, and writes that check keeping main's two basis
--- seeds (pending_basis_seed and reparent_seed), which this file's own list does not name, since
--- main's 20261122154643 stays recorded after the way back and a queued row of either stays with
--- it; then keeps, of each issue, the row on the branch of the task that merges (the one task of
--- its plan at its generation that no task needs, on the branch its row holds or on legion/<KEY>
--- where it holds none) or on legion/<KEY> where the issue has no plan rows there, and deletes the
--- others, which takes the settled heads of each with it; keys pull_requests by the issue again,
--- and pull_request_settled_heads by (issue, kind, head) without its branch, with the foreign key
--- 20261120144241 wrote; and deletes its version row, which is owed to the roll-forward, so that it
--- runs this file again. What the way back costs is the row of each task's pull request but the one
--- that merges, and what it remembered of its settled heads: the record holds it no longer, so a
--- later event of that pull request names no row.
+-- seeds (pending_basis_seed and reparent_seed) and main's merge_holds_changed, as this file's own
+-- list does, since main's 20261122154643 and 20261126110259 stay recorded after the way back and a
+-- queued row of any of the three kinds stays with them, which a check without its kind would
+-- refuse, and the way back with it (SQLSTATE 23514); then keeps, of each issue, the row on the
+-- branch of the task that merges (the one task of its plan at its generation that no task needs,
+-- on the branch its row holds or on legion/<KEY> where it holds none) or on legion/<KEY> where the
+-- issue has no plan rows there, and deletes the others, which takes the settled heads of each with
+-- it; keys pull_requests by the issue again, and pull_request_settled_heads by (issue, kind, head)
+-- without its branch, with the foreign key 20261120144241 wrote; and deletes its version row, which
+-- is owed to the roll-forward, so that it runs this file again. What the way back costs is the row
+-- of each task's pull request but the one that merges, and what it remembered of its settled heads:
+-- the record holds it no longer, so a later event of that pull request names no row.
 --
 -- begin;
 -- delete from outbox where kind = 'task_pull_requests_close';
@@ -61,7 +63,7 @@
 --   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
 --   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
 --   'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
---   'task_branch'));
+--   'merge_holds_changed', 'task_branch'));
 -- delete from pull_requests pr where pr.branch <> coalesce((select coalesce(nullif(t.branch, ''), 'legion/' || t.issue) from plan_tasks t join issues i on i.key = t.issue and i.generation = t.generation where t.issue = pr.issue and not exists (select 1 from plan_tasks u where u.issue = t.issue and u.generation = t.generation and t.task = any(u.needs)) order by t.task limit 1), 'legion/' || pr.issue);
 -- alter table pull_request_settled_heads drop constraint pull_request_settled_heads_issue_fkey,
 --   drop constraint pull_request_settled_heads_pkey;

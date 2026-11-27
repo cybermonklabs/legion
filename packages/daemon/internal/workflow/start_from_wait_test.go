@@ -18,21 +18,25 @@ import (
 // admission pass that finds an open Dispatch child leaves the parent in implementing
 // (StopForChildren, acceptedEntry): R9 holds only the starts each from a phase before retro. Of a
 // (merges), at its merge with #7 open, and b, at its first step, each `implementer:k` and so one
-// agent k, with the Dispatch child LEGION-209 open: the merger moves a back to implementing, and
-// a's step waits for k with nothing of it started, keeping merging as the phase its move left. b
-// passes: a's step starts for k on an entry raised from merging and marked a move back, and the
-// pass leaves LEGION-208 in implementing.
+// agent k, and z, a tester's, which needs b, with the Dispatch child LEGION-209 open. z is there so
+// that b does not merge and is done at its step: a task of the top level that no task needs merges
+// (plan.Merging), and its retro, the implementer's of agent k, would follow its step ahead of a's
+// wait (retroFollowsItsStep). The merger moves a back to implementing, and a's step waits for k
+// with nothing of it started, keeping merging as the phase its move left. b passes: a's step starts
+// for k on an entry raised from merging and marked a move back, and the pass leaves LEGION-208 in
+// implementing.
 //
 // The fault it catches is a start after a wait that names no phase its move left (its control:
 // startAfterWait passing "" as from, the revision before, under which the implementer's entry
-// names none and the pass moves LEGION-208 to awaiting_children).
+// names none and the check of the implementer's phases row fails).
 func TestAMoveBackOutOfMergingWhoseStartWaitedForItsAgentIsLeftByThePass(t *testing.T) {
 	pool := migratedPool(t)
 	engine, _ := tickingEngine()
 	root := stepRoot(t, pool, phase.Implementing)
 	seedTasks(t, pool, root.Key, root.Generation,
 		planTask{id: "a", steps: []string{"implementer:k"}, agents: []claim.Agent{"k"}, state: record.TaskRunning, place: atMerge},
-		planTask{id: "b", steps: []string{"implementer:k"}, agents: []claim.Agent{"k"}, state: record.TaskRunning, place: atStep(1)})
+		planTask{id: "b", steps: []string{"implementer:k"}, agents: []claim.Agent{"k"}, state: record.TaskRunning, place: atStep(1)},
+		planTask{id: "z", steps: []string{"tester"}, agents: []claim.Agent{"tester"}, needs: []string{"b"}, state: record.TaskWaiting})
 	markMerges(t, pool, root.Key, "a")
 	seedTaskBranch(t, pool, root.Key, "a", "legion/"+root.Key+".a")
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 7,

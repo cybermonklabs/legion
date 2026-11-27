@@ -650,3 +650,29 @@ func stacksMigrationsUpTo(newest int) []int {
 	}
 	return below
 }
+
+// migrateMainsThrough applies every embedded migration numbered up to and including version but
+// this stack's (stacksMigrations): the database main's daemon left while version was its newest.
+// A test of one of main's kind lists reads its negative control there and not on this stack's own
+// order, where a list of this stack numbered below main's version names main's kind already: the
+// last migration to write a list owns every value of it, main's included, because on a database
+// main migrated this stack's lists run late, after main's, and are the last word there.
+func migrateMainsThrough(t *testing.T, store *Store, version int) {
+	t.Helper()
+	ctx := context.Background()
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	for _, migration := range all {
+		if migration.Version > version {
+			return
+		}
+		if slices.Contains(stacksMigrations, migration.Version) {
+			continue
+		}
+		if _, err := store.apply(ctx, migration); err != nil {
+			t.Fatalf("apply %s as main's run did: %v", migration.Name, err)
+		}
+	}
+}

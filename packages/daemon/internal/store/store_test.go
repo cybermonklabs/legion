@@ -1133,9 +1133,11 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
 // column. So does a migration that changes a table a version of the list creates, as
 // 20261117213545 adds a column to 20261117034837's plan_steps; 20261123200630 and the givers of a
-// plan version's 20261124033010 each add one to its issue_plans; and 20261123221142 and the
-// sub-owners' 20261124023617 each change its plan_tasks: left out, it is applied as main's, before
-// that table exists; and one that replaces an index a version of the list creates, as
+// plan version's 20261124033010 each add one to its issue_plans; and 20261123221142, the
+// sub-owners' 20261124023617 and 20261126234607 (plan_tasks.start_from) each change its plan_tasks:
+// left out, it is applied as main's, before that table exists, as 20261126234607 was until it was
+// named here, when the case of a database main migrated failed on `relation "plan_tasks" does not
+// exist`; and one that replaces an index a version of the list creates, as
 // 20261122074350 replaces 20261105183200's pod_resumes_one_open_per_role. dispatch://INFRA-3320's
 // gate basis (20261114064234) and awaiting_children (20261114232555) are in it as versions that
 // branch added. The project pause's 20261115194357 is in it as well, though it rewrites no kind
@@ -1161,7 +1163,7 @@ var thisRelease = map[int]bool{
 	20261117224125: true, 20261119003157: true, 20261119203047: true, 20261121165047: true,
 	20261122074350: true, 20261122122826: true, 20261122154643: true, 20261123072431: true,
 	20261123200630: true, 20261123212127: true, 20261123221142: true, 20261124023617: true,
-	20261124033010: true, 20261126110259: true, 20261126144204: true,
+	20261124033010: true, 20261126110259: true, 20261126144204: true, 20261126234607: true,
 }
 
 const idleRelease = 20261101222956
