@@ -160,7 +160,7 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 // decision of its own: the worker-died of a role that does not work the issue's phase names the
 // failure too, since that role's architect decides whether to start it again on the same
 // evidence; the tree architect's own carries no failure record and names the sentence in its
-// reason instead, as R5 has it, and the one that ends a closed issue's production-check look
+// reason instead, as R5 has it, and the one that ends a merged issue's production-check look
 // carries no failure record either, since its reason already names the cause.
 func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 	t.Parallel()

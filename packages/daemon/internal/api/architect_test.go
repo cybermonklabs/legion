@@ -58,11 +58,23 @@ type factRecorder struct {
 	refusal *intake.Refusal
 }
 
+// Apply records fact and answers the refusal the recorder holds. A report or a withdrawal of a
+// defect it takes is answered as the workflow answers one it takes (intake.Result.Defect), since
+// the two routes answer what the workflow did with the defect.
 func (r *factRecorder) Apply(_ context.Context, _ pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.facts = append(r.facts, fact)
-	return intake.Result{Refusal: r.refusal}, nil
+	result := intake.Result{Refusal: r.refusal}
+	if r.refusal == nil {
+		switch fact.(type) {
+		case intake.DefectReport:
+			result.Defect = &intake.DefectAnswer{Defect: 1, State: intake.DefectRecorded, NextChange: 2}
+		case intake.DefectWithdrawal:
+			result.Defect = &intake.DefectAnswer{Defect: 1, State: intake.DefectWithdrawn}
+		}
+	}
+	return result, nil
 }
 
 func (r *factRecorder) recorded() []intake.Fact {

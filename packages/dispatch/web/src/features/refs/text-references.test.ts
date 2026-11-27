@@ -41,35 +41,37 @@ function citedInCode(body: string, facts: Parameters<typeof readTextReferences>[
 // prefix writes included, read against what the row says exists. The Go reader `text.Mentions`
 // walks the same rows, so neither where a reference ends nor what it names can change on one
 // side alone.
-test.each(
-  DISPATCH_TEXT_REFERENCES.map((row) => [row.body, row.origin ?? origin, row] as const)
-)("%s cites, read against %s, its row's references", (body, server, row) => {
-  expect(
-    cited(body, {
-      issues: row.issues,
-      items: row.items,
-      origin: server,
-      questions: row.questions,
-    })
-  ).toEqual([...row.refs]);
-});
+test.each(DISPATCH_TEXT_REFERENCES.map((row) => [row.body, row.origin ?? origin, row] as const))(
+  "%s cites, read against %s, its row's references",
+  (body, server, row) => {
+    expect(
+      cited(body, {
+        issues: row.issues,
+        items: row.items,
+        origin: server,
+        questions: row.questions,
+      })
+    ).toEqual([...row.refs]);
+  }
+);
 
 // The `inCode` column of the same table, row for row: which of a row's references a fenced
 // block, an indented block or a code span holds. The Go reader is held to the very same column
 // (`TestExtractMatchesTheSharedTextTable`), so where a code context begins and ends cannot
 // change on one side alone - and that is what decides, on both, who a write is delivered to.
-test.each(
-  DISPATCH_TEXT_REFERENCES.map((row) => [row.body, row.origin ?? origin, row] as const)
-)("%s reads, against %s, its row's references in code", (body, server, row) => {
-  expect(
-    citedInCode(body, {
-      issues: row.issues,
-      items: row.items,
-      origin: server,
-      questions: row.questions,
-    })
-  ).toEqual([...(row.inCode ?? [])]);
-});
+test.each(DISPATCH_TEXT_REFERENCES.map((row) => [row.body, row.origin ?? origin, row] as const))(
+  "%s reads, against %s, its row's references in code",
+  (body, server, row) => {
+    expect(
+      citedInCode(body, {
+        issues: row.issues,
+        items: row.items,
+        origin: server,
+        questions: row.questions,
+      })
+    ).toEqual([...(row.inCode ?? [])]);
+  }
+);
 
 // A body that writes the same reference inside code and outside it marks each occurrence on its
 // own, which is what keeps the party that body names a delivering one (`draftParties`).

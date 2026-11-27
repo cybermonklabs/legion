@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  Dispatch's Legion board (`GET /api/v1/projects/{key}/legion/board` and the `legion` live view)
+  has a thirteenth column, `verifying` ("Verifying"), between `merging` and `awaiting_children`.
+  An issue the daemon reports in `verifying` — merged, with its close waiting for the checks of
+  its Verification document — has its card there for the whole wait, where before it was in no
+  column and on no card. The Legion facts read the same table, so those hours are a part of their
+  own rather than `other`, and metric 2 holds them on the "no role" bar, as it holds
+  `awaiting_children`: no role works the phase, and its hours are inside the work time, so the
+  seven bars still add up to it.
+time: 2026-11-27T14:04:27Z
+custom:
+    Issue: pr5558

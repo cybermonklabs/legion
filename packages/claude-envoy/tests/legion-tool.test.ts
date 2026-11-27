@@ -13,8 +13,7 @@ import {
 import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest"
 import pkg, { name, version } from "../package.json" with { type: "json" }
-import * as legionTool from "../src/legion-tool"
-import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
+import { answerLegionTool, executeLegionTool, legionToolDefinition } from "../src/legion-tool"
 
 /** The contract this build speaks, as `legion-tool.ts` reads it (`daemonContract`): this
  * checkout's. */
@@ -25,6 +24,10 @@ async function daemonFixture(name: string): Promise<unknown> {
   const file = resolve(import.meta.dir, "../../contracts/fixtures/daemon-api", name)
   return JSON.parse(await readFile(file, "utf8"))
 }
+
+/** What the daemon answers a defect report it recorded: the defect's id, that it was recorded, and
+ * the generation of the next change that carries it. */
+const DEFECT_RECORDED = { defect: "41", state: "recorded", nextChange: 4 }
 
 /** A window of release records as the daemon serves it: two releases, the first woken five
  * minutes later and the second two hours later, each with a first turn observed. */
@@ -106,6 +109,7 @@ async function daemon(
     "/legion/v1/grants": await daemonFixture("grant.json"),
     "/legion/v1/handoff/complete": await daemonFixture("handoff-complete.json"),
     "/legion/v1/phase/backward": {},
+    "/legion/v1/defects/report": DEFECT_RECORDED,
     "/legion/v1/claims/release-records": RELEASE_RECORDS,
   }
   const requests: Request[] = []
@@ -177,7 +181,7 @@ const grantRequest = {
   },
 }
 
-test("answerLegionTool closes only a step and answers an update without closing a look", async () => {
+test("answerLegionTool tells the host an update answered and nothing of a completion or a look", async () => {
   const { client } = await daemon({ state: stateAtPhase("testing") })
   const calls: string[] = []
   const runtime = {
@@ -187,14 +191,11 @@ test("answerLegionTool closes only a step and answers an update without closing 
     branchHead: async () => "",
   }
   const hook = {
-    phaseClosed: () => {
-      calls.push("closed")
-    },
     updateAnswered: () => {
       calls.push("update")
     },
   }
-  await legionTool.answerLegionTool(
+  await answerLegionTool(
     runtime,
     {
       op: "handoff_complete",
@@ -204,15 +205,63 @@ test("answerLegionTool closes only a step and answers an update without closing 
     },
     hook,
   )
-  expect(calls).toEqual([])
-  await legionTool.answerLegionTool(
+  await answerLegionTool(
     runtime,
     { op: "handoff_complete", summary: "tested", verdict: "pass" },
     hook,
   )
-  expect(calls).toEqual(["closed"])
-  await legionTool.answerLegionTool(runtime, { op: "ready_for_update", round: "update-1" }, hook)
-  expect(calls).toEqual(["closed", "update"])
+  expect(calls).toEqual([])
+  await answerLegionTool(runtime, { op: "ready_for_update", round: "update-1" }, hook)
+  expect(calls).toEqual(["update"])
+})
+
+/** A report_defect call whose every field holds. */
+const DEFECT_REPORT = {
+  op: "report_defect",
+  issue: "LEGION-208",
+  defect: "The merged widget drops its last row: `bun test widget` fails on row 12.",
+  head: "3f2a9c41d0b7e6a85c1f4d2e9b0a7c6d5e4f3a2b",
+}
+
+// report_defect records a defect of the change, found once its task's last step passed, and moves no phase: the role goes on with
+// its step, so a report that succeeded closes no phase and answers no update, for the implementer
+// in retro and the merger in merging alike.
+test("report_defect does not close the phase", async () => {
+  const { client, requests } = await daemon()
+  const calls: string[] = []
+  const hook = {
+    phaseClosed: () => {
+      calls.push("closed")
+    },
+    updateAnswered: () => {
+      calls.push("update")
+    },
+  }
+  const posted = {
+    method: "POST",
+    path: "/legion/v1/defects/report",
+    body: {
+      grantId: "grant-for-one-command",
+      issue: "LEGION-208",
+      defect: DEFECT_REPORT.defect,
+      head: DEFECT_REPORT.head,
+    },
+  }
+  for (const role of ["implementer", "merger"] as const) {
+    const runtime = {
+      daemon: client,
+      claim: () => ({ ...implementer, role }),
+      handoffReport: async (): Promise<never> => {
+        throw new Error("a defect report reads no handoff")
+      },
+      branchHead: noBranchHead,
+    }
+    await expect(legionTool.answerLegionTool(runtime, DEFECT_REPORT, hook)).resolves.toEqual(
+      DEFECT_RECORDED,
+    )
+  }
+  expect(calls).toEqual([])
+  expect(requests).toEqual([grantRequest, posted, grantRequest, posted])
 })
 
 test("a named look of a running issue reaches the daemon through executeLegionTool", async () => {
@@ -241,7 +290,7 @@ test("a named look of a running issue reaches the daemon through executeLegionTo
   expect(requests.at(-1)?.body).toMatchObject({ checkOpenedAt: "2026-10-19T06:00:00.123456Z" })
 })
 
-test("declares the six phase-worker operations under one op, and names the Envoy publish tool as Claude Code shows it", () => {
+test("declares the seven phase-worker operations under one op, and names the Envoy publish tool as Claude Code shows it", () => {
   const definition = legionToolDefinition()
   expect(definition.name).toBe("legion")
   expect(definition.inputSchema).toMatchObject({
@@ -254,6 +303,7 @@ test("declares the six phase-worker operations under one op, and names the Envoy
           "request_backward_move",
           "ready_for_update",
           "read_build",
+          "report_defect",
         ],
       },
       issue: { type: "string" },
@@ -266,6 +316,9 @@ test("declares the six phase-worker operations under one op, and names the Envoy
       return_to: { type: "integer", minimum: 1 },
       reason: { type: "string" },
       round: { type: "string" },
+      defect: { type: "string" },
+      head: { type: "string" },
+      check: { type: "string" },
     },
     required: ["op"],
   })
@@ -277,7 +330,10 @@ test("declares the six phase-worker operations under one op, and names the Envoy
     legionToolDescription({
       envoyPublish: "mcp__legion__envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
-      after: PHASE_OP_SENTENCES.requestBackwardMove + PHASE_OP_SENTENCES.readBuild,
+      after:
+        PHASE_OP_SENTENCES.requestBackwardMove +
+        PHASE_OP_SENTENCES.reportDefect +
+        PHASE_OP_SENTENCES.readBuild,
     }),
   )
 })
@@ -556,7 +612,7 @@ test("refuses before the claim registered, an operation a phase worker has not, 
   await expect(
     executeLegionTool(runtime, { op: "set_status", issue: "LEGION-208" }),
   ).rejects.toThrow(
-    "op is one of read_record, read_release_records, handoff_complete, request_backward_move, ready_for_update, read_build",
+    "op is one of read_record, read_release_records, handoff_complete, request_backward_move, ready_for_update, read_build, report_defect",
   )
   await expect(
     executeLegionTool(runtime, { op: "read_record", issue: "LEGION-208", summary: "x" }),
@@ -564,6 +620,9 @@ test("refuses before the claim registered, an operation a phase worker has not, 
   await expect(executeLegionTool(runtime, { op: "handoff_complete" })).rejects.toThrow(
     "handoff_complete requires summary",
   )
+  await expect(
+    executeLegionTool(runtime, { ...DEFECT_REPORT, head: DEFECT_REPORT.head.slice(0, 12) }),
+  ).rejects.toThrow("report_defect's head is the 40-character lower-case commit")
   expect(requests).toEqual([])
 })
 

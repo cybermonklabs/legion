@@ -395,8 +395,8 @@ type Options struct {
 	// creation (manifest's volumes), so an owner directory this answers that the pod's volume
 	// does not name is a pod whose gh lacks it (movedGhDirs); the `<owner>/<repo>` directories
 	// are no address a pod is replaced for, and movedGhDirs compares the owner directories of
-	// this set alone. repo is the pod's own, read from its workspace fetch (fetchRepository), and
-	// the zero Repository for a pod that fetches none, the controller's; roles are the Apps that
+	// this set alone. repo is the pod's own, read from its workspace-init (fetchRepository), and
+	// the zero Repository for a pod that runs none, the controller's; roles are the Apps that
 	// pod's own roles run as (podAppRoles), both of them for an issue pod and the review App
 	// alone for the project controller's, so what a mint of an App the pod does not run found
 	// leaves its answer untouched. It is read on every

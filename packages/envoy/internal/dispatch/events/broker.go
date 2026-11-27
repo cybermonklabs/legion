@@ -199,6 +199,10 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 	// snapshot, which holds every write the transaction made before it, and so is the last_seq a
 	// payload that carries the owner row names (ownerLastSeqPayload): it reads nextOwnerSeq, the
 	// expression the event's own seq reads, so the payload records the sequence the event took.
+	// An issue's update also writes the event's created_at and seq as the row's last_event_at and
+	// last_event_at_seq (20261125143901), in the same statement, so the pair names last_seq's own
+	// event wherever this release wrote last_seq, and the priorities read takes its newest event
+	// from the row (api's priorityReadQuery). It takes no statement and no lock of its own.
 	storedPayload, storedLogins := `$6`, `null::jsonb`
 	args := []any{e.IssueKey, e.ArtifactID, e.ProjectKey, e.Type, actor, payload, e.Notify}
 	if logins != nil {
@@ -216,7 +220,8 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 			values ($1, $2, $3, `+nextOwnerSeq+`, $4, $5, `+storedPayload+`, $7)
 			returning id, seq, created_at, `+storedLogins+` as thread_logins
 		), issue as (
-			update issues set last_seq = appended.seq, updated_at = greatest(issues.updated_at, appended.created_at)
+			update issues set last_seq = appended.seq, last_event_at = appended.created_at, last_event_at_seq = appended.seq,
+				updated_at = greatest(issues.updated_at, appended.created_at)
 			from appended where issues.key = $1
 		), artifact as (
 			update artifacts set last_seq = appended.seq from appended where artifacts.id = $2
@@ -451,16 +456,18 @@ func Quiet(e model.Event) bool {
 		"settings.project_default_assignee.updated",
 		"architecture.synced", "architecture.sync_failed", "user_state.updated", "user_agent_state.updated",
 		"user_thread_state.updated", "decision.kept", "priority.updated",
-		"project.access_changed", "access_group.changed":
+		"project.access_changed", "access_group.changed", "issue.role_holders_changed":
 		// Settings, importer and per-viewer bookkeeping: retained on their log and carried by
 		// the event feed, but nobody is woken by them. A Keep records that a person read a
 		// decision and agreed with it, which asks its agent for nothing. A priority's write is
 		// the deployment's own configuration of what work advances, which open pages refetch on
 		// and nobody is asked anything by. A change of a project's access list, owner or
 		// visibility, or of a group, is who may see what: every reader resolves its viewer again
-		// on it, and nobody is asked anything by it. This build writes no
-		// settings.repo_project.updated; the case stays for the events and outbox rows an earlier
-		// build wrote (outbox/publisher.go).
+		// on it, and nobody is asked anything by it. A change of an issue's role holders is the
+		// Legion daemon's own record of which session it gave each role: a reader of the issue's
+		// log reads it to learn who held a role at a past time, and it asks nobody anything. This
+		// build writes no settings.repo_project.updated; the case stays for the events and outbox
+		// rows an earlier build wrote (outbox/publisher.go).
 		return true
 	case "ask.edited":
 		// A version move of an approval request that an earlier version already moved since it was

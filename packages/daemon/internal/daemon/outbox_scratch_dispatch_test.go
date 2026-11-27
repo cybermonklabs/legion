@@ -102,7 +102,7 @@ func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) 
 	packet := record.MessagePost{Body: strings.TrimSuffix(strings.Repeat(strings.Repeat("x", 6665)+"\n\n", 6), "\n\n")}
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue, packet, now))
 	var id int64
-	if err := pool.QueryRow(context.Background(), "select id from outbox").Scan(&id); err != nil {
+	if err := pool.QueryRow(context.Background(), "select id from outbox where "+notStateRows).Scan(&id); err != nil {
 		t.Fatalf("read the queued row: %v", err)
 	}
 
@@ -170,7 +170,7 @@ func TestOutboxFinishesAPostDispatchRefusesAndTellsTheArchitectAgainstScratchDis
 	}
 	var kind string
 	var payload []byte
-	if err := pool.QueryRow(context.Background(), "select kind, payload from outbox").Scan(&kind, &payload); err != nil {
+	if err := pool.QueryRow(context.Background(), "select kind, payload from outbox where "+notStateRows).Scan(&kind, &payload); err != nil {
 		t.Fatalf("read the row left behind: %v", err)
 	}
 	if kind != string(record.OutboxKindNotice) {
@@ -232,7 +232,7 @@ func TestOutboxSetsTheStatusOfAWriteWhoseReasonDispatchRefusesAgainstScratchDisp
 	}
 	var kind string
 	var payload []byte
-	if err := pool.QueryRow(context.Background(), "select kind, payload from outbox").Scan(&kind, &payload); err != nil {
+	if err := pool.QueryRow(context.Background(), "select kind, payload from outbox where "+notStateRows).Scan(&kind, &payload); err != nil {
 		t.Fatalf("read the row left behind: %v", err)
 	}
 	if kind != string(record.OutboxKindNotice) {

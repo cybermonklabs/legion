@@ -95,6 +95,10 @@ func init() {
 // directly rather than through the mux, which names no route to hold. AnswerRefusal has no
 // route of its own: every door refuses, and the table says so with an empty Routes. And
 // answerUnparsed is no row of the table at all, being the bodies no plugin parses.
+//
+// AnswerObservedState is no row of the table either, since no plugin parses it, and it has one
+// door, the state route it is a view of (observedStateDoor): a write of it from any other door is
+// a finding.
 func routeAnswerProblems() []string {
 	answersWritten.mu.Lock()
 	defer answersWritten.mu.Unlock()
@@ -105,6 +109,13 @@ func routeAnswerProblems() []string {
 	problems := []string{}
 	for pair := range answersWritten.pairs {
 		if pair.pattern == "" || pair.id == AnswerRefusal || pair.id == answerUnparsed {
+			continue
+		}
+		if pair.id == AnswerObservedState {
+			if pair.pattern != observedStateDoor {
+				problems = append(problems, fmt.Sprintf(
+					"%s wrote the answer %s, whose one door is %s", pair.pattern, pair.id, observedStateDoor))
+			}
 			continue
 		}
 		declared, named := routes[pair.id]
@@ -122,6 +133,10 @@ func routeAnswerProblems() []string {
 	slices.Sort(problems)
 	return problems
 }
+
+// observedStateDoor is the one route that writes the observed view (AnswerObservedState): the
+// state route, asked with `?view=observed`.
+const observedStateDoor = "GET /legion/v1/state"
 
 // askedPattern is the method and the target one pattern is asked with: a wildcard stands for a
 // value a route of that shape is asked with, and the catch-all pattern for a path no route of

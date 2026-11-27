@@ -134,6 +134,13 @@ type Spec struct {
 	// on with every other child closed, so hours 44 to 48 stand as nonzero `awaiting_children`
 	// hours on the root. Off by default so the golden files keep their recorded rows.
 	AwaitingChildren bool
+	// Verifying has each observed root wait in `verifying`, the phase a merged issue stands in
+	// while its close waits for the checks of its Verification document
+	// (cybermonklabs/legion#5558), from hour 52 of its history to its close at hour 56, in place
+	// of the `awaiting_merge` it would hold there. No role works that phase, so the hours are on
+	// the "no role" bar and under the board's own `verifying` column. Off by default so the
+	// golden files keep their recorded rows.
+	Verifying bool
 }
 
 // spacing is how long before the tree after it each tree opens.
@@ -376,8 +383,11 @@ func (s *seeding) tree(index int) {
 			phaseMark{48, legion.PhaseAccepting},
 		)
 	}
+	rootPhases = append(rootPhases, phaseMark{50, legion.PhaseAwaitingMerge})
+	if s.spec.Verifying {
+		rootPhases = append(rootPhases, phaseMark{52, legion.PhaseVerifying})
+	}
 	s.phases(root, at, append(rootPhases,
-		phaseMark{50, legion.PhaseAwaitingMerge},
 		phaseMark{56, legion.PhaseDone},
 	))
 	s.waiting(root, "gate", at(30), at(34))

@@ -4,8 +4,9 @@ package api
 // the caller's own plugin read? It holds the contract header a caller states, the reading of the
 // pod a caller that states none is in, the shape of every answer at every contract this daemon
 // serves, and the one writer each answer goes through. The table it reads is answers.go's, beside
-// it; server.go routes the requests and calls writeAnswer and writeAnswerFrom for every body it
-// answers, and reads lowestPluginContract for the number the state carries.
+// it. server.go routes the requests, and the handlers, in server.go and in the files beside it,
+// call writeAnswer and writeAnswerFrom for every body they answer. state_route.go reads
+// lowestPluginContract for the number the state carries.
 
 import (
 	"encoding/json"
@@ -278,6 +279,12 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
 		return shapeIssue(issue, restore, strip, nil), took
+	case AnswerObservedState:
+		observed, isObserved := body.(State)
+		if !isObserved {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		return observedFor(observed, restore, strip), took
 	case AnswerReleaseRecords:
 		records, isRecords := body.(ReleaseRecordsResponse)
 		if !isRecords {
@@ -508,6 +515,24 @@ func shapeIssue(issue Issue, restore, strip int, took *tookOff) Issue {
 		}
 	}
 	return issue
+}
+
+// observedFor is the observed view's row of shapeAnswer (AnswerObservedState): the observed view
+// of state, the part of a whole state the observed read answers (StateSource.ObservedState), as a
+// caller at restore and strip reads it, whose wire shape is the contract's
+// LegionObservedStateResponse (packages/contracts/src/legion-api.ts). The state is shaped by the
+// very bands and value strips stateFor applies to the whole state and then read as the observed
+// view (observedOf), so at every contract each member of the view is the whole state's member at
+// that contract, and a band a later contract adds to a member the view carries reaches the view
+// with no line here. The whole state's mark (ContractView) is no member of the view and is left
+// out with the rest of the whole state's keys.
+//
+// A caller at this daemon's own contract takes no band and no value strip, and stateFor copies no
+// issue map for it. That is every read Dispatch makes, since it states no contract and asks from
+// no pod. The shaping records nothing in the log, where recordShaping writes the whole state's
+// lines alone.
+func observedFor(state State, restore, strip int) ObservedState {
+	return observedOf(stateFor(state, restore, strip, nil))
 }
 
 // narrowedTheState is the message of the line the daemon writes for each band it serves the
@@ -760,7 +785,7 @@ const (
 	droppedLineKind         = "the waiting line's kind of every member of a kind this caller does not admit"
 	droppedCapabilitySource = "the source of every capability row of a source this caller does not admit"
 	droppedStepStatus       = "the gatedSteps of every issue a step of which reads a status this caller does not admit"
-	droppedPhase            = "every phase this caller does not admit: an issue's phase served as admitted, and its heldFrom and its claim views' pendingTask phase left off"
+	droppedPhase            = "every phase this caller does not admit: an issue's phase served as the older phase that stands in for it (merging for verifying, else admitted), and its heldFrom and its claim views' pendingTask phase left off"
 	droppedHoldReason       = "the holdReason of every issue held for a reason this caller does not admit"
 	droppedHeldWord         = "the word of every row of admission.held whose word this caller does not admit, served as the older word that stands in for it with its heldBy, else as unclassified with no heldBy"
 )
@@ -1101,8 +1126,8 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with its own change's number, and answers.go's SupportedContracts names the constant rather
-// than its number for that reason.
+// with dispatch://INFRA-4401's own number, and answers.go's SupportedContracts names the constant
+// rather than its number for that reason.
 const repositoriesLiveContract = 202
 
 // cachesSourceContract is the daemon contract dispatch://INFRA-4036 landed under (version.go's
@@ -1261,14 +1286,13 @@ func withoutUnadmittedStepStatuses(issue Issue, restore int) (Issue, bool) {
 // row, answers.go's phases and workflowPhases with the values entries add to them;
 // fieldArrivals.heldBack says which values and why). The architect's `pendingTask.phase` and each
 // worker's are one list at two rows, to which the same entries add the same values, so the
-// architect's row's arrivals answer for both. Today that is the
-// `awaiting_children` of gateBasisContract, and tomorrow any phase the table gives a later
-// arrival. The issue's own `phase` is a key every reader requires, so it is served as `admitted`,
-// the status that names no worker's phase, which is what dispatch://INFRA-3320 R13 gives a reader
-// that knows no awaiting_children. `heldFrom` and each claim view's `pendingTask.phase` are
+// architect's row's arrivals answer for both. Today those are the `awaiting_children` of
+// gateBasisContract and the `verifying` of defectCallsContract, and tomorrow any phase the table
+// gives a later arrival. The issue's own `phase` is a key every reader requires, so it is served
+// as the word phaseStandIn names for it. `heldFrom` and each claim view's `pendingTask.phase` are
 // `omitempty` and optional to every reader that has them, so a held-back word there is left off.
-// The daemon writes the word in neither today, since `heldFrom` is empty in the phase and no task
-// is queued for a phase no role works, and the strip holds them to the table all the same.
+// The daemon writes neither word in either, since no hold comes from either phase and no task is
+// queued for a phase no role works, and the strip holds them to the table all the same.
 //
 // The issue is a value of its own, and a claim view's task and the worker map are copied before
 // one is written (withEachClaimView), so the state the source answered is left as it was. It
@@ -1280,7 +1304,7 @@ func withoutUnadmittedPhases(issue Issue, restore int) (Issue, bool) {
 	taskPhases := arrivalsAt(issueKeyPath + "architect.pendingTask.phase")
 	moved := false
 	if issue.Phase != "" && issuePhases.heldBack(string(issue.Phase), restore) {
-		issue.Phase, moved = phase.Admitted, true
+		issue.Phase, moved = phaseStandIn(issue.Phase), true
 	}
 	if issue.HeldFrom != "" && heldFrom.heldBack(issue.HeldFrom, restore) {
 		issue.HeldFrom, moved = "", true
@@ -1294,6 +1318,19 @@ func withoutUnadmittedPhases(issue Issue, restore int) (Issue, bool) {
 		return view
 	})
 	return issue, moved || tasks
+}
+
+// phaseStandIn is the phase an issue standing in at is served as to a reader that does not admit
+// at. `verifying` is served as `merging`: a merged issue whose close waits stood in merging before
+// defectCallsContract gave the wait its own phase, and every reader before it knows that word.
+// Every other phase the table holds back is served as `admitted`, the status that names no
+// worker's phase, which is what dispatch://INFRA-3320 R13 gives a reader that knows no
+// awaiting_children.
+func phaseStandIn(at phase.Phase) phase.Phase {
+	if at == phase.Verifying {
+		return phase.Merging
+	}
+	return phase.Admitted
 }
 
 // heldReasonStandIn is the word a held row of reason is served as to a reader that does not admit
@@ -1382,6 +1419,21 @@ func withoutAssignmentPlans(issue Issue) (Issue, bool) {
 		issue.Assignments[i].Plan = ""
 	}
 	return issue, true
+}
+
+// withoutRepositoryCorrection is the issue with no `repoBefore`, `repoCorrectedAt`,
+// `repoChangePending` or `repoChangeReason`, the four fields repositoryCorrectionContract added to
+// the state; nothing else of that contract is a key of this route. `repo` is left as it is: it
+// names the repository the issue works, which every contract since 31 carries. Each pair is
+// written from one value of the record, a correction (record.Issue.RepoCorrection) or a change
+// still to be made (record.Issue.RepoChange), and only where there is one, so the band reports a
+// move only for an issue that carries one of the four.
+func withoutRepositoryCorrection(issue Issue) (Issue, bool) {
+	moved := issue.RepoBefore != "" || issue.RepoCorrectedAt != nil ||
+		issue.RepoChangePending != "" || issue.RepoChangeReason != ""
+	issue.RepoBefore, issue.RepoCorrectedAt = "", nil
+	issue.RepoChangePending, issue.RepoChangeReason = "", ""
+	return issue, moved
 }
 
 // withoutCauseTimes is the issue with no claim view carrying `lastDeathAt` or
@@ -2040,6 +2092,21 @@ func withoutPause(state State) (State, bool) {
 	return state, moved
 }
 
+// withoutStateSeq is state with no `daemon.stateSeq`, no `daemon.stateId` and no
+// `daemon.stateRun`, the three keys stateSeqContract's entry added to this route; nothing else of
+// that entry is a key of the state. The sequence is left off rather than zeroed, because the
+// strict reader before the entry's number refuses it when it is 0 as surely as when it names a
+// sequence, and a 0 would tell a reader of this contract that the project has no state event.
+// The daemon's own source sets the sequence on every body it answers, 0 included, so the band
+// reports a move for every such body; a state built without any of the three carries nothing to
+// strip. The daemon block is a value of the state's own, so the state the source answered is left
+// as it was.
+func withoutStateSeq(state State) (State, bool) {
+	moved := state.Daemon.StateSeq != nil || state.Daemon.StateID != "" || state.Daemon.StateRun != ""
+	state.Daemon.StateSeq, state.Daemon.StateID, state.Daemon.StateRun = nil, "", ""
+	return state, moved
+}
+
 // withoutDispatchCredential is state with no `dispatchCredential`, the one key
 // dispatchCredentialContract added to the state; nothing else of that contract is a key of an
 // answer a plugin parses, since the settings block's `dispatch_token_broker` is a key no reader
@@ -2233,6 +2300,14 @@ func stripTurnRecord(view ClaimView) ClaimView {
 // is the plugin's table alone, and it shapes to nothing, since no contract describes a shape for
 // a body no plugin reads (writeUnparsedAnswer).
 const answerUnparsed AnswerID = "unparsed"
+
+// AnswerObservedState names the observed view of the state route, the body of
+// `GET /legion/v1/state?view=observed` (ObservedState), which Dispatch reads. It is no row of
+// Answers, which is the plugin's table alone: no plugin parses the view, and pi-shared's census of
+// that table holds every row to a parse site of the plugin's client. It is shaped all the same,
+// unlike answerUnparsed (observedFor). The route writes it the State that the observed read
+// answers (StateSource.ObservedState), and observedFor shapes that State to the view.
+const AnswerObservedState AnswerID = "observed-state"
 
 // answerWritten is told the pattern of the route and the id of the answer of every body this
 // package writes (writeAnswerFrom). It is nil in a daemon and set by one test of this package,

@@ -136,6 +136,11 @@ func whyStates(state *api.State, own []record.Issue, running map[string]struct{}
 		switch {
 		case stoppedClaim:
 			why = &api.WhyView{State: api.WhyClaimStopped, Reason: claimStoppedReason(issue, stopped)}
+		case issue.Phase == phase.Verifying:
+			// A merged issue whose close waits: no role works the phase and it holds no slot, so
+			// it stands in none of the three lists. It waits for its close, and the sentence names
+			// the first thing the close waits for (closeWaitReason, over the view's closeWait).
+			why = &api.WhyView{State: api.WhyWaiting, Reason: closeWaitReason(view.CloseWait)}
 		case waiting:
 			// The member's own sentence, and one more clause where a link holds it as well as
 			// the line. The clause is added here and never inside the line's own `reason`: the

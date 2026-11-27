@@ -26,6 +26,7 @@ const mergeHoldsChangedVersion = 20261126110259
 // stand at the end. A kind that is none is still refused, and so is a kind of the merge the daemon
 // no longer submits.
 func TestTheOutboxTakesTheMergeHoldsKindWith20261126110259(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	all, err := migrations.All()

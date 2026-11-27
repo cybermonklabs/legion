@@ -21,6 +21,7 @@ import (
 // The negative control is the opening step's pause branch undone (openPodUpdateUnderLimits's
 // clock.held()): the request opens the round over the held pod and is answered 200.
 func TestPodUpdateTheControllerAsksForOverAPodAPauseHoldsIsRefusedAndPostsNothing(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
 	pause := openLegionPause(t, rig.pool, podUpdateStart.Add(-time.Hour))

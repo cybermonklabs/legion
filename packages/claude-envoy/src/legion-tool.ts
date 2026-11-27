@@ -8,7 +8,6 @@ import {
   legionToolDescription,
   PHASE_OP_SENTENCES,
   PHASE_OPS,
-  phaseInputAfter,
   phaseOpParameters,
   pluginBuildOf,
 } from "@legion/pi-shared/legion-phase-ops"
@@ -27,14 +26,18 @@ const BUILD = pluginBuildOf(pkg, import.meta.dir)
 export const LEGION_TOOL_NAME = "legion"
 
 /** The tool as `tools/list` declares it: one object schema, `op` choosing one of the phase ops
- * (`@legion/pi-shared/legion-phase-ops`), the operations a phase worker gets. */
+ * (`@legion/pi-shared/legion-phase-ops`), the operations a phase worker gets, `report_defect`
+ * among them. */
 export function legionToolDefinition() {
   return {
     name: LEGION_TOOL_NAME,
     description: legionToolDescription({
       envoyPublish: "mcp__legion__envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
-      after: PHASE_OP_SENTENCES.requestBackwardMove + PHASE_OP_SENTENCES.readBuild,
+      after:
+        PHASE_OP_SENTENCES.requestBackwardMove +
+        PHASE_OP_SENTENCES.reportDefect +
+        PHASE_OP_SENTENCES.readBuild,
     }),
     inputSchema: z.toJSONSchema(z.object({ op: z.enum(PHASE_OPS), ...phaseOpParameters(z) })),
   }
@@ -84,19 +87,18 @@ export async function executeLegionTool(
   )
 }
 
-/** Runs a successful call through the host's input hooks; a refusal changes no input gate. */
+/** Runs one call of the `legion` tool, as executeLegionTool does, and tells the host once a
+ * `ready_for_update` it ran answered the pod's update message: the worker then waits for its
+ * process to be replaced, so the `Stop` of the turn it answered in blocks nothing
+ * (`updateAnswered`, `./legion-phase-hook`). A completion and a look's report tell the host
+ * nothing: the reminder asks the daemon what the claim owes. A refusal throws before any hook. */
 export async function answerLegionTool(
   runtime: LegionToolRuntime,
   args: Record<string, unknown>,
-  hooks: {
-    readonly phaseClosed: () => void | Promise<void>
-    readonly updateAnswered: () => void | Promise<void>
-  },
+  hooks: { readonly updateAnswered: () => void | Promise<void> },
   signal?: AbortSignal,
 ): Promise<unknown> {
   const answer = await executeLegionTool(runtime, args, signal)
-  const effect = phaseInputAfter(String(args["op"]), args)
-  if (effect === "phase-closed") await hooks.phaseClosed()
-  else if (effect === "update-answered") await hooks.updateAnswered()
+  if (args["op"] === "ready_for_update") await hooks.updateAnswered()
   return answer
 }

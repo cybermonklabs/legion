@@ -94,9 +94,11 @@ func parseIntakeHoldToken(token string) intakeHoldToken {
 	return intakeHoldToken{subject: subject, start: sequence}
 }
 
-// intakeLeases is the pool an intake takes its durable's hold and consumer lease on and renews the
-// hold through: store.Pool.Leases, which StartIntakes hands each intake. A *pgxpool.Pool is both.
-type intakeLeases interface {
+// DurableLeases is the pool a held durable takes its hold and consumer lease on and renews the hold
+// through: the reservation ReserveDurableLeases makes of store.Pool.Leases, which StartIntakes hands
+// each intake and a held durable outside this package (NewHeldDurable) takes from its own. A
+// *pgxpool.Pool is both.
+type DurableLeases interface {
 	duty.Leases
 	duty.Holds
 }
@@ -197,7 +199,7 @@ func (t *bindThrottle) reportStandby(logger *slog.Logger, name, message string) 
 // StopDelivering reads from any goroutine.
 type heldDurable struct {
 	nats   *bus.Client
-	leases intakeLeases
+	leases DurableLeases
 	// holder names this intake in its hold's row: each intake draws one as it is built.
 	holder uuid.UUID
 	// throttle is this intake's own standby-log state (bindThrottle).
@@ -234,6 +236,11 @@ type heldDurable struct {
 	// the ack floor each check reads of it (bus.AckFloor). 0 is no start known, while this intake
 	// has bound nothing or created the durable with none.
 	resumeAt uint64
+	// bound, when not nil, is the owner's take-over callback: it runs on the run loop once each
+	// take-over has bound the durable, with the subject recorded and the subscription delivering,
+	// so work it queues on a key (HeldDurable.Queue) runs on that subscription's keyed runner. The
+	// two intakes of this package set none; a held durable outside it names one (NewHeldDurable).
+	bound func()
 	// boundHook, when not nil, runs once a take-over has bound the durable, before the take-over
 	// returns. It is nil outside tests: a test sets it to hold a take-over that has bound the
 	// durable until past Run's ctx's end.
@@ -250,7 +257,7 @@ type heldDurable struct {
 
 // newHeldDurable builds the delivery from config's durable on natsClient, taking its hold and
 // consumer lease on leases, routing each message by key and handing it to handle, timed by tuning.
-func newHeldDurable(tuning *intakeTuning, natsClient *bus.Client, leases intakeLeases, config func(*intakeTuning) natsgo.ConsumerConfig,
+func newHeldDurable(tuning *intakeTuning, natsClient *bus.Client, leases DurableLeases, config func(*intakeTuning) natsgo.ConsumerConfig,
 	key func(*natsgo.Msg) (string, *contracts.Envelope, bool), handle func(*intakeDelivery, intakeMessage),
 ) heldDurable {
 	return heldDurable{
@@ -510,13 +517,14 @@ const (
 // finishTakeOver makes the durable deliver to this intake at create's start, under the consumer
 // lease its caller (takeOver) holds: it deletes the durable when deleteFirst is set, subscribes
 // to create's deliver subject, creates the durable with create, and records the subject alone as
-// the hold's token. pastEnd is the start the rules moved back from past the stream's end to
-// create's, 0 when none was (startPlan); once the create has succeeded it is logged at ERROR, as
-// the session consumers log the start they clamp, since the stream was cut or created again and
-// what it held between the two is gone. Each step that fails is tried again (retryHeld) until it
-// succeeds, this intake no longer holds its hold, the grant refuses it, or takeOverFinishWithin has
-// passed. It runs on a context of its own rather than the run's, so a stop that comes while the
-// durable is deleted does not leave it so.
+// the hold's token; then it runs the owner's take-over callback (bound), if it names one. pastEnd
+// is the start the rules moved back from past the stream's end to create's, 0 when none was
+// (startPlan); once the create has succeeded it is logged at ERROR, as the session consumers log
+// the start they clamp, since the stream was cut or created again and what it held between the two
+// is gone. Each step that fails is tried again (retryHeld) until it succeeds, this intake no longer
+// holds its hold, the grant refuses it, or takeOverFinishWithin has passed. It runs on a context of
+// its own rather than the run's, so a stop that comes while the durable is deleted does not leave
+// it so.
 // Every step is safe to try again: a delete of a durable already gone succeeds, and a create of
 // a durable that a timed-out try did create, with this same config, returns that durable.
 //
@@ -576,6 +584,9 @@ func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst b
 	d.recorded, d.subject, d.resumeAt = bound, create.DeliverSubject, create.OptStartSeq
 	d.tuning.log.Info("dispatch delivery: NATS consumer bound", "name", d.name, "subject", create.FilterSubject,
 		"start_seq", create.OptStartSeq, "generation", bus.MetadataGeneration(create.Metadata, consumerGenerationKey))
+	if d.bound != nil {
+		d.bound()
+	}
 	if d.boundHook != nil {
 		d.boundHook()
 	}
@@ -983,7 +994,7 @@ func (d *heldDurable) handBacksReached(ctx context.Context, delivery *intakeDeli
 func (d *heldDurable) flushHandBacks() bool {
 	flushing, cancel := context.WithTimeout(context.Background(), intakeFlushWait)
 	defer cancel()
-	settled, _, _ := bus.Bounded(flushing, func() (bool, error) { return d.handBacksSettled(), nil })
+	settled, _, _ := bus.Bounded(flushing, nil, func() (bool, error) { return d.handBacksSettled(), nil })
 	return settled
 }
 

@@ -62,14 +62,14 @@ func (r *mainPathRig) wakeByRoleMessage(report string) string {
 
 // queueReleaseResume queues the resume a cancelled idle release writes for the architect's claim:
 // the row the daemon's own builder makes (outbox.releaseResume) from the root's record as the
-// cancel reads it (store.IssueRun), inserted with the statement store.CancelIssueRelease uses. No
-// release is marked and none is cancelled: the row is written alone, outside the cancel's
-// transaction. It returns that row as the outbox holds it.
+// cancel reads it (store.IssueRun), for a role whose wake the cancel did not drop, inserted with
+// the statement store.CancelIssueRelease uses. No release is marked and none is cancelled: the row
+// is written alone, outside the cancel's transaction. It returns that row as the outbox holds it.
 func (r *mainPathRig) queueReleaseResume() entryStartRow {
 	r.t.Helper()
 	root := r.issue()
 	row, err := r.runner.releaseResume(r.key, r.key)(claim.RoleArchitect,
-		store.IssueRun{Tree: root.Tree, Generation: root.Generation, TreeGeneration: root.TreeGeneration})
+		store.IssueRun{Tree: root.Tree, Generation: root.Generation, TreeGeneration: root.TreeGeneration}, store.DroppedWake{})
 	if err != nil {
 		r.t.Fatalf("build the release's resume: %v", err)
 	}
@@ -315,8 +315,9 @@ func TestTheSweepWaitsForAReleasesQueuedResumeAndRetiresNothingOfIt(t *testing.T
 
 	r.admitPass()
 	starts = roleStartRows(t, r.pool, r.key, claim.RoleArchitect)
-	if len(starts) != 1 || starts[0].request.Entry != 2 || starts[0].request.Task == "" {
-		t.Fatalf("the architect starts after the resume ran = %+v, want the one start of entry 2 the sweep writes", starts)
+	if len(starts) != 1 || starts[0].request.Entry != 2 || starts[0].request.Task != "" || starts[0].request.Awaiting == nil {
+		t.Fatalf("the architect starts after the resume ran = %+v, want the one start of entry 2 the sweep writes: the resume's own, "+
+			"the wait its row keeps and no text, which the send renders (workflow.Engine.SendArchitectStart)", starts)
 	}
 	r.runStarts()
 	if prompts := r.prompts()[sent:]; len(prompts) != 1 || !strings.Contains(prompts[0].Message, answered) {

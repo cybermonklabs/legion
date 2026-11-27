@@ -31,20 +31,42 @@ owner/name`), else its nearest ancestor's in its own project, else the project's
 repository, which is set in Dispatch. An issue may name any `owner/name`. The daemon records an
 issue on that repository as Dispatch resolved it when the daemon read the issue (its event, or a
 listing of the project), and its default branch as GitHub names it, when it first records the
-issue, and keeps both: a later change of the issue's repository in Dispatch is not applied, and
-the daemon says so on the issue.
-A change that sends no event of the issue, as a move of the project's default repository does,
-and that lands between that read and the record, is such a later change, said on the issue at
-its next event or the next boot's listing. A change of the issue's own repository sends an event,
-and once the daemon has applied that event, no listing read before it records the issue: when the
-daemon applies the edit's event before it records the issue, the edit is applied, and the issue is
-recorded where Dispatch resolves it at that event or later. The daemon prepares an event, GitHub's
-answers for its repository included, before it applies it, so a listing read before the edit can
-still record the issue while the edit's event is being prepared. Then the issue is recorded on the
-repository that listing showed, and the edit is a later change, said on the issue when its event
-applies.
-An issue whose repository resolves to none, or to one a role App is not installed on, is not
-admitted, and the daemon says why on the issue. A claim an operator starts on an issue the
+issue.
+A change of the issue's own repository sends an event, and once the daemon has applied that event, no listing read before it records the issue: when the daemon applies the edit's event before it records the issue, the edit is applied, and the issue is recorded where Dispatch resolves it at that event or later.
+The daemon prepares an event, GitHub's answers for its repository included, before it applies it, so a listing read before the edit can still record the issue while the edit's event is being prepared.
+Then the issue is recorded on the repository that listing showed, and the edit's own event, prepared while the issue had no record, carries no read of GitHub for the repository the edit names: when it applies, it moves the record nowhere and says nothing on the issue, and the daemon reads that issue again from Dispatch's listing and GitHub, as it does when GitHub does not answer a pass (below), with no other event of the issue and no restart, and applies the edit from what GitHub answers then.
+The record follows Dispatch: a later change of the issue's repository is applied in the next pass that reads it,
+which is a live Dispatch event of the issue, a hand-over, or the pass over every recorded issue
+that runs once the daemon's boot is over. Each such pass reads both role Apps' installations on
+the repository the change names and its name and default branch from GitHub at that moment, and
+applies the change only from what GitHub answers then. Under `runtime: kubernetes` the daemon then
+replaces the issue's pod, so its workspace, its GitHub token and its clone are of the new owner;
+under `runtime: tmux` there is no pod to replace, and each pane works the repository the issue
+left until its next launch, which provisions it a workspace of the new repository on the daemon's
+host. When GitHub does not answer such a pass's reads (a failure, its rate limit, or no answer in
+time), the pass applies nothing and says nothing on the issue, and the daemon reads that issue
+again from Dispatch's listing and GitHub until GitHub answers, with no event of the issue and no
+restart: the change is then applied, or waits as below.
+That read comes at once unless one already owed covers the issue (one owed for it, or the read of
+every recorded issue a boot asks for); otherwise, and after each read GitHub still does not answer,
+it comes at the latest at the next run of one backoff all owed reads share, 30 seconds doubling to
+10 minutes, which starts again at 30 seconds only once no read is owed.
+A pass that read the record before another pass moved it applies nothing either, since two reads
+of Dispatch at one sequence cannot be ordered (a hand-over, or an event that arrives late, after a
+pass over the listing), and the daemon owes that issue the same read of Dispatch's listing and
+GitHub, so the record ends on what Dispatch resolves then; a daemon that stops before that read
+leaves it to its next boot, which reads again every recorded issue Dispatch resolves to another
+repository than its record names. A change onto a repository a
+role App is not installed on, or one GitHub does not have, is not applied; the record keeps what
+it has, the daemon says so once on the issue, and the record carries the waiting change
+(`repoChangePending` and `repoChangeReason` of `legion state --json`) until the issue's next
+event or the daemon's next boot, the two passes that read the repository again: installing the
+missing App starts no pass by itself. The daemon reads no repository
+mapping from Dispatch, so nothing else reads such a repository again, and a change of the
+project's default repository in Dispatch, which sends no event of the issues that inherit it,
+moves such an issue at that issue's next event or at the next boot. An issue whose repository
+resolves to none, or to one a role App is not installed on, is not admitted, and the daemon says
+why on the issue. A claim an operator starts on an issue the
 workflow does not record works the repository Dispatch resolves for that issue, read at the
 claim's first launch and kept for as long as the issue holds its workspace. When that issue
 resolves to no repository, the launch is refused: `<KEY> names no repository: set the repository
@@ -451,15 +473,14 @@ Dispatch read them, delete the files, then install every App from
   raised from 20Gi with the shared scratch) comes from `storage_class`, which is required. That
   disk is the pod's own: Kubernetes creates its claim with the pod, names it `<pod>-issue`, and
   deletes it when the pod goes, so an issue's clone, workspace and caches live as long as its pod
-  and no longer. What outlives a pod is what was pushed to the issue's branch, each agent's
-  conversation, which the session database holds, and, when the daemon released an idle pod, the
-  workspace's unpushed work, which the release saves as a git bundle in the daemon's database and
-  the next pod restores. The daemon-launched controller's pod has a
-  volume of its own, which its Sandbox owns and which does outlive its pods. A microVM issue pod
-  under `runtime.kubernetes.sandbox.microvm.keep_volume: true` is the exception: its volume is a
-  claim that the issue's Sandbox owns, so it outlives the pod, and it goes when the issue leaves
-  the workflow or when the daemon resets it after a failed init container (`docs/kubernetes.md`
-  in the repository, "A kept volume on a microVM pod").
+  and no longer. What outlives a pod is what was pushed to the issue's branch and each agent's
+  conversation, which the session database holds. The daemon releases an idle pod only when a read
+  of its workspace finds no unpushed work, and saves and restores nothing. The daemon-launched
+  controller's pod has a volume of its own, which its Sandbox owns and which does outlive its pods.
+  A microVM issue pod under `runtime.kubernetes.sandbox.microvm.keep_volume: true` is the
+  exception: its volume is a claim that the issue's Sandbox owns, so it outlives the pod, and it
+  goes when the issue leaves the workflow or when the daemon resets it after a failed init
+  container (`docs/kubernetes.md` in the repository, "A kept volume on a microVM pod").
 - **Pod Security.** Pods run under the `restricted` profile: user 1000, no privilege escalation, all
   capabilities dropped, the `RuntimeDefault` seccomp profile, and no automounted API token.
 - **A ServiceAccount for the agents' pods**, named in `runtime.kubernetes.pod.service_account`
@@ -903,9 +924,10 @@ What each part is for:
 - **`controller`** (optional) is who runs the project's controller: `operator` (the default), you,
   with `legion controller start`, or `daemon`, a pod the daemon launches and keeps running
   ([Start the controller](#start-the-controller)).
-- Workflow limits, all optional: `linger_hours` (72), `production_check_hours` (336: how long a
-  closed issue's production check runs before its last look, 14 days by default,
-  decimals allowed), `pod_update_grace_minutes` (30: how many minutes after it opens a pod's
+- Workflow limits, all optional: `linger_hours` (72), `production_check_hours` (336: how long an
+  issue's production check runs, counted from its open, before its last look, 14 days by default,
+  decimals allowed. The merge puts the issue in `verifying`, and the issue closes when its checks
+  pass, as [the close](/legion/legion/concepts/#the-close) says), `pod_update_grace_minutes` (30: how many minutes after it opens a pod's
   update round ends and the pod is replaced, whatever the roles answered and unless the operator's or the controller's
   suspension holds the round, decimals allowed),
   `pod_update_max_open_rounds` (how many issues may hold an open pod-update round at once) and
@@ -914,12 +936,15 @@ What each part is for:
   may be quiet — no issue of it moving and no agent of it stepping — before the project's
   controller is told once about that tree, decimals allowed; a tree with a role at work is never
   told, nor is one every quiet issue of which waits by design — on a person, on a `blocked_by`
-  link, on its open children (before its first phase or in `awaiting_children`), on the checks of its goal in `verifying`, or for a slot it needs and does not hold — while the project's line
+  link, on its open children (before its first phase or in `awaiting_children`), or for a slot it
+  needs and does not hold — while the project's line
   can still move — some issue of the project holds a slot and waits by no such rule, some claim of it is
   at work, or an issue of the line that waits on no other issue can start — nor, whether or not
-  the line can move, one whose only quiet issues gave their slot back to wait on work outside
-  their tree: a `blocked_by` link to an unfinished issue of any project, or an open child the
-  daemon has released. A wait on a child an architect has not released is no such wait. Where
+  the line can move, one whose only quiet issues wait in `verifying` for the checks of their goal
+  or gave their slot back to wait on work outside their tree: a `blocked_by` link to an
+  unfinished issue of any project, or an open child the daemon has released. So a root that
+  waits in `verifying` is never told, whatever else the project runs. Its tree is still told
+  where an issue beneath it has stopped. A wait on a child an architect has not released is no such wait. Where
   the issue waited on is in this project and its own tree has stopped, that tree is told; a
   wait on a blocker no tree runs (parked, never admitted, in `icebox`) brings no stall notice,
   and the waiting issue stands in `admission.waiting`, its `waitingLine` kind `waiting_on_issue`,
@@ -1072,7 +1097,8 @@ What each part is for:
   Four more variables of the same family set the worker's phase reminder rather than its call
   watch: `LEGION_STALL_REMINDER_MS` (300000, how long after a settle that earned a reminder the
   reminder is delivered), `LEGION_STALL_WAITING_MS` (900000, what a WAITING reply buys),
-  `LEGION_STALL_RESUME_MS` (120000, after a resume on an open phase) and
+  `LEGION_STALL_RESUME_MS` (120000, after a resume, when the daemon answers that the claim owes
+  work) and
   `LEGION_STALL_ARCHITECT_AFTER` (3: how many delivered reminders in a row change nothing before
   the architect is told, and never fewer than 2). Each of the six millisecond values is a whole
   number of 0 or more; a value that is not is ignored, the default stands, and the worker's log
@@ -1464,7 +1490,7 @@ Closing the terminal leaves the project without one, and the daemon logs
    first step back, on their kept sessions, at its next first phase start, and each other role at
    the start of its phase. A claim whose session supervise's `forgetSession` has dropped comes back
    in a new session instead. The daemon suspends or ends claims only when an issue leaves the
-   workflow, when a claim moves to another tree, or for a production check after the issue is done.
+   workflow, when a claim moves to another tree, or for the checking role when a look of a production check ends.
    A phase start gives its task to that live claim. At boot the daemon
    resumes by rule a suspended worker that still owns its issue's phase and that the daemon itself suspended, but never an agent the
    operator or the project's controller suspended: a start for an agent either of them holds waits instead, until a resume lifts the hold. The operator's resume lifts either, and the controller's only its own. A notice for a root's
@@ -1654,8 +1680,8 @@ Closing the terminal leaves the project without one, and the daemon logs
   what is recorded, and the daemon resumes
   the architect itself on the pass that reads the answer, taking no further slot for it.
 
-  The `open production checks` line counts the closed issues whose production check is still
-  open and names the oldest: its pull request, merge commit, the role working it, which look it
+  The `open production checks` line counts the production checks still open and names the
+  oldest: its pull request, merge commit, the role working it, which look it
   is on, what woke that look (`merge`, `check wake` — the time the checking agent named for
   itself, or the retry of a look nobody reported — or `bound`) and when, and when its next look
   is due (`none` when no check is open).

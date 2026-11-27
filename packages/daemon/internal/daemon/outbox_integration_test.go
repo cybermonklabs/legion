@@ -79,7 +79,7 @@ func TestOutboxRetryBacksOffFailedEffect(t *testing.T) {
 	var attempts int
 	var nextAt time.Time
 	var lastError string
-	if err := pool.QueryRow(context.Background(), "select attempts, next_at, last_error from outbox").Scan(&attempts, &nextAt, &lastError); err != nil {
+	if err := pool.QueryRow(context.Background(), "select attempts, next_at, last_error from outbox where "+notStateRows).Scan(&attempts, &nextAt, &lastError); err != nil {
 		t.Fatalf("read retried row: %v", err)
 	}
 	delay := nextAt.Sub(now)
@@ -207,10 +207,16 @@ func enqueueOutbox(t *testing.T, pool *store.Pool, records record.Store, row rec
 	}
 }
 
+// notStateRows is the predicate that leaves the state lane's rows (record.LaneState) out of a read
+// of the whole outbox: a write of an issue, a slot, a claim or the admission block queues one when
+// the store's state events are on, and a test that counts or lists the outbox asserts the rows of
+// the other lanes.
+var notStateRows = "kind not in ('" + strings.Join(stateKindNames(), "', '") + "')"
+
 func outboxRows(t *testing.T, pool *store.Pool) int {
 	t.Helper()
 	var rows int
-	if err := pool.QueryRow(context.Background(), "select count(*) from outbox").Scan(&rows); err != nil {
+	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where "+notStateRows).Scan(&rows); err != nil {
 		t.Fatalf("count outbox rows: %v", err)
 	}
 	return rows

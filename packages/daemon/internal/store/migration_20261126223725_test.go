@@ -158,6 +158,7 @@ func execAll(t *testing.T, store *Store, statements ...string) {
 // The negative control is the migration without verifying in issues_phase_check: the write of
 // verifying after it is refused, and this test fails at it.
 func TestTheMigrationAddsVerifyingAndKeepsEveryRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, doneByChecksVersion-1)
@@ -230,6 +231,7 @@ func TestTheMigrationAddsVerifyingAndKeepsEveryRow(t *testing.T) {
 // phase, status and generation, and each check keeps every column it held. The migration queues
 // nothing and records no reason of a next change for either.
 func TestAReleaseLeavesEachClosedIssueClosed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, doneByChecksVersion-1)
@@ -309,8 +311,9 @@ func seedTheWait(t *testing.T, store *Store, project string) {
 // before reads. Block B leaves the store exactly as the release before migrated it, which is the
 // store that release boots on: each column, constraint, function, index and version recorded. The
 // release before applies every embedded migration but this one, and this one stands above them
-// all, so the check the release before leaves on the outbox is the merge holds' of 20261126110259,
-// which block B puts back whole. So a difference is what the block leaves of this migration, or
+// all, so the check the release before leaves on the outbox is the state events' of
+// 20261126163320, which block B puts back whole. So a difference is what the block leaves of this
+// migration, or
 // what it takes of the release before.
 // Before that, a delivery's copy in the release before's form is read through design_news_credits,
 // and so through design_news_current, and counts as a credit, and step_run_witness answers for an
@@ -321,6 +324,7 @@ func seedTheWait(t *testing.T, store *Store, project string) {
 // block B without its drop of pending_task_deliveries.start_at: the store then holds that column
 // besides the release before's.
 func TestTheWayBackOfDoneByChecks(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	if _, err := store.Migrate(t.Context()); err != nil {
 		t.Fatalf("migrate: %v", err)
@@ -387,6 +391,7 @@ func TestTheWayBackOfDoneByChecks(t *testing.T) {
 // The negative control is block B without its refusal: run first, it fails on issues_phase_check
 // instead, with no words for the operator, and this test fails at the words it wants.
 func TestTheWayBackRunsForEachProjectInAnyOrder(t *testing.T) {
+	t.Parallel()
 	blockA, blockB := doneByChecksWayBack(t)
 	seeded := func(t *testing.T) (*Store, *wayBackConn) {
 		store := emptyStore(t)
@@ -462,34 +467,40 @@ func TestTheWayBackRunsForEachProjectInAnyOrder(t *testing.T) {
 	})
 }
 
-// mainsNewestAtTheLastMerge is the newest migration main carried at this branch's last forward
-// merge (main 6d2aa6c3, 2026-11-27): the merge-holds kind list.
-const mainsNewestAtTheLastMerge = 20261126110259
+// doneByChecksStandsAbove is the newest migration main carries: `20261126163320_state_events`,
+// the state events' kind list, which cybermonklabs/legion#4432 landed on main and the merge of
+// main `dc18a1fe` brought here. It names that migration and the change that wrote it, not
+// whichever merge of main was this branch's last: a later merge that brings no migration leaves
+// this line true, and the line goes stale only when main lands a migration above this one, which
+// is the one event that asks the reader to act. The name is this file's own, since
+// migration_upgrade_from_main_test.go, which is main's, declares `mainsNewestMigration` in the
+// same package for main's newest at another merge.
+const doneByChecksStandsAbove = 20261126163320
 
-// This migration stands above every migration main carried at that merge. Migrate applies every
+// This migration stands above every migration main carries. Migrate applies every
 // unrecorded migration in version order, so on a database main migrated, a migration of main
 // above this one is already recorded when this one runs; this one would then write
 // outbox_kind_check, issues_phase_check and its four functions over main's, and a list that leaves
 // out the kind of a waiting row fails its ADD CONSTRAINT (SQLSTATE 23514). This test holds the
-// stamp against mainsNewestAtTheLastMerge, a constant, so a forward merge that brings a newer
-// migration of main does not turn it red. What does is
+// stamp against doneByChecksStandsAbove, a constant, so a merge of main that brings no migration
+// does not turn it red. What does is
 // TestADatabaseMainMigratedEndsAtTheSchemaOfAFreshDatabase, where that migration rewrites a list or
 // a function this one writes (its control, this branch at the old stamp below main's
 // 20261126110259, failed), and store_test.go's "a database main migrated with the merge holds",
-// which fails 23514 on a waiting row of a kind left out. At such a merge, renumber this file above
-// main's newest and move this constant with it.
+// which fails 23514 on a waiting row of a kind left out. At a merge that brings a newer migration
+// of main, renumber this file above main's newest and move this constant and its comment with it.
 func TestTheDoneByChecksMigrationStandsAboveEveryMigrationMainCarries(t *testing.T) {
 	t.Parallel()
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	if !slices.ContainsFunc(all, func(migration migrations.Migration) bool { return migration.Version == mainsNewestAtTheLastMerge }) {
-		t.Fatalf("no embedded migration is %d: mainsNewestAtTheLastMerge names the newest migration main carried at the merge", mainsNewestAtTheLastMerge)
+	if !slices.ContainsFunc(all, func(migration migrations.Migration) bool { return migration.Version == doneByChecksStandsAbove }) {
+		t.Fatalf("no embedded migration is %d: doneByChecksStandsAbove names the newest migration main carries", doneByChecksStandsAbove)
 	}
-	if doneByChecksVersion <= mainsNewestAtTheLastMerge {
+	if doneByChecksVersion <= doneByChecksStandsAbove {
 		t.Fatalf("the done-by-checks migration is %d, which stands below main's newest, %d: rename the file and this one above it, and move every reference with it",
-			doneByChecksVersion, mainsNewestAtTheLastMerge)
+			doneByChecksVersion, doneByChecksStandsAbove)
 	}
 }
 
@@ -500,6 +511,7 @@ func TestTheDoneByChecksMigrationStandsAboveEveryMigrationMainCarries(t *testing
 // migration of main that writes one of the same objects, the fresh database would end at main's
 // text and the upgraded one at this migration's, and the two lines are what this test prints.
 func TestADatabaseMainMigratedEndsAtTheSchemaOfAFreshDatabase(t *testing.T) {
+	t.Parallel()
 	fresh := emptyStore(t)
 	if _, err := fresh.Migrate(t.Context()); err != nil {
 		t.Fatalf("migrate a fresh database: %v", err)
@@ -524,6 +536,7 @@ func TestADatabaseMainMigratedEndsAtTheSchemaOfAFreshDatabase(t *testing.T) {
 // the migration as it ships applies over the same row and keeps it, and the cut copy applies over
 // the same database without the row.
 func TestAKindListWithoutTheKindOfAWaitingRowFailsItsMigration(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	all, err := migrations.All()
 	if err != nil {
@@ -533,9 +546,10 @@ func TestAKindListWithoutTheKindOfAWaitingRowFailsItsMigration(t *testing.T) {
 	if index < 0 {
 		t.Fatalf("no embedded migration is %d", doneByChecksVersion)
 	}
-	// The kind as the migration's list names it, with the comma before the next kind: block B of
-	// the header names it last in its list, with no comma, so the cut can reach the list alone.
-	const named = "'merge_holds_changed', "
+	// The kind as the migration's list names it: at the start of its own line, after the list's
+	// indent, with the comma before the next kind. Block B of the header names it inside one long
+	// comment line, after another kind, so the cut can reach the list alone.
+	const named = "\n  'merge_holds_changed', "
 	if count := strings.Count(all[index].SQL, named); count != 1 {
 		t.Fatalf("the migration holds %q %d times, want once, in its kind list", named, count)
 	}
@@ -556,7 +570,7 @@ func TestAKindListWithoutTheKindOfAWaitingRowFailsItsMigration(t *testing.T) {
 			}
 			set := slices.Clone(all)
 			if tc.cut {
-				set[index].SQL = strings.Replace(set[index].SQL, named, "", 1)
+				set[index].SQL = strings.Replace(set[index].SQL, named, "\n  ", 1)
 			}
 			_, err := store.migrate(ctx, set)
 			recorded := rowsAsText(t, store, fmt.Sprintf(`select count(*)::text from schema_version where version = %d`, doneByChecksVersion))

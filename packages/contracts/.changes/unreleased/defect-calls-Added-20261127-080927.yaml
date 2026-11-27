@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  `legion-api.ts`: the two defect routes of the defect-calls entry. `LegionDefectReportRequest` (`grantId`, `issue`, `defect`, `head`, and an optional `check`) and `LegionDefectWithdrawRequest` (`grantId`, `issue`, `defect`, `reason`) are strict, as every request is; `LegionDefectReportResponse` (`defect`, `state`, `nextChange`) and `LegionDefectWithdrawResponse` (`defect`, `state`) read every field as optional, since the `legion` tool hands each answer to its agent whole (`LEGION_ANSWER_READS`), and each `state` is a string and not an enum, so a word a later daemon adds is read rather than refused. The phase list gains `verifying` after `merging`, the phase an issue whose work merged stands in while its close waits, and each issue of the state may carry `closeWait`, what that close waits for: `since`, `beneath`, `openChildren`, `checks`, `production`, `defects`, `nextChanges`, `unapproved` and `unread`. No plugin code reads `closeWait`, so every member is optional and none of its words is an enumeration.
+time: 2026-11-27T08:09:27Z
+custom:
+    Issue: defect-calls

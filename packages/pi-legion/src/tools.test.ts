@@ -119,6 +119,8 @@ function recordingDaemon(options: {
     "phaseBackward",
     "phaseRetry",
     "signOff",
+    "reportDefect",
+    "withdrawDefect",
     "rootClose",
     "childRerun",
     "planRegister",
@@ -218,7 +220,6 @@ const toolFor = (active: LegionToolSession) =>
     pi,
     daemon: recordingDaemon({}).daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
@@ -261,6 +262,8 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "request_backward_move",
         "retry_or_escalate",
         "sign_off",
+        "report_defect",
+        "withdraw_defect",
         "close_root",
         "rerun_child",
         "read_record",
@@ -320,6 +323,9 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     // Zod renders a whole number with no stated bound above as the largest safe integer.
     return_to: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
     round: { type: "string" },
+    defect: { type: "string" },
+    head: { type: "string" },
+    check: { type: "string" },
     status: { type: "string", enum: ["todo", "backlog", "icebox"] },
     phase: { type: "string", enum: [...LEGION_PHASES] },
     settings: { type: "boolean" },
@@ -349,6 +355,7 @@ const DESCRIBED_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
     "close_root",
     "request_backward_move",
     "retry_or_escalate",
+    "withdraw_defect",
     "pause",
     "set_p0_bound",
     "clear_p0_bound",
@@ -434,7 +441,6 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -447,7 +453,6 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
@@ -628,7 +633,6 @@ test("retry_or_escalate takes a reason", async () => {
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -688,7 +692,6 @@ test("rerun_child refuses a reason before any grant, naming issue and the dispat
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
@@ -767,7 +770,6 @@ test("read_release_records reads the window with this session's claim, and repor
       pi,
       daemon: answering,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -869,7 +871,6 @@ test("a workflow refusal tells the agent both its code and message", async () =>
       signOff: async () => Promise.reject(refusal),
     })) as never,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
@@ -967,7 +968,6 @@ const gateTool = (
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
@@ -1343,7 +1343,6 @@ test("register_plan takes the document reference the Dispatch tools take and ans
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -1413,7 +1412,6 @@ test("register_plan passes on the daemon's refusal of a plan with its code and e
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
@@ -1443,7 +1441,6 @@ test("stop_task stops the task its block names, and is the architect's alone", a
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -1529,16 +1526,12 @@ const stateAt = (phase: LegionPhase) => ({
   },
 });
 
-test("a named look's report leaves the phase open and a step's completion closes it", async () => {
-  let completed = 0;
+test("a named look's report posts its check_opened_at, and a step's completion posts none", async () => {
   const { calls, daemon } = recordingDaemon({ state: stateAt("testing") });
   const tool = createLegionTool({
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => {
-      completed++;
-    },
     onUpdateAnswered: () => undefined,
     handoffReport: async () => ({ commit: TIP, handoffId: RECORD.id, handoffVersion: 2 }),
     branchHead: noBranchHead,
@@ -1558,7 +1551,6 @@ test("a named look's report leaves the phase open and a step's completion closes
     context()
   );
   expect(report).not.toHaveProperty("isError", true);
-  expect(completed).toBe(0);
   expect(calls.at(-1)).toEqual([
     "handoffComplete",
     {
@@ -1575,11 +1567,207 @@ test("a named look's report leaves the phase open and a step's completion closes
     undefined,
     context()
   );
-  expect(completed).toBe(1);
+  expect(calls.at(-1)?.[1]).not.toHaveProperty("checkOpenedAt");
 });
 
-test("handoff_complete finds the phase's handoff record and the pushed tip, posts them with a fresh grant, and closes the phase on success", async () => {
-  const completed: string[] = [];
+/** A report_defect call whose every field holds, at the head `TIP`. */
+const DEFECT_REPORT = {
+  op: "report_defect",
+  issue: "LEGION-208",
+  defect: "The merged widget drops its last row: `bun test widget` fails on row 12.",
+  head: TIP,
+} as const;
+
+/** The tool over `daemon` for `active`, refusing to tell the session of an update's answer. */
+const defectTool = (daemon: () => LegionDaemonClient, active: LegionToolSession) =>
+  createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onUpdateAnswered: () => {
+      throw new Error("no update answer expected");
+    },
+    handoffReport: noHandoffReport,
+    branchHead: noBranchHead,
+    dispatch: noDispatch,
+    session: () => active,
+  });
+
+// report_defect records a defect of the change, found once its task's last step passed, and moves
+// no phase: the role goes on with its step. The implementer in retro, the merger in merging and
+// the owning architect report through the one phase op, and no report tells the session anything.
+test("report_defect moves no phase", async () => {
+  const recorded = { defect: "41", state: "recorded", nextChange: 4 };
+  const { calls, daemon } = recordingDaemon({ answers: { reportDefect: recorded } });
+  for (const role of ["implementer", "merger", "architect"] as const) {
+    const result = await defectTool(daemon, claimSession(role)).execute(
+      "",
+      DEFECT_REPORT,
+      undefined,
+      undefined,
+      context()
+    );
+    expect(result, role).not.toHaveProperty("isError", true);
+    expect(result, role).toMatchObject({ details: recorded });
+  }
+  const sent = {
+    grantId: "grant-208",
+    issue: "LEGION-208",
+    defect: DEFECT_REPORT.defect,
+    head: TIP,
+  };
+  expect(calls.filter(([name]) => name === "reportDefect")).toEqual([
+    ["reportDefect", sent],
+    ["reportDefect", sent],
+    ["reportDefect", sent],
+  ]);
+});
+
+// withdraw_defect is the owning architect's: it takes back a defect report by the id the report
+// answered, with why, and answers the daemon's answer whole. It moves no phase either, and a
+// refusal is the tool's failure with the daemon's code and sentence.
+test("withdraw_defect posts the defect's id and its reason with a fresh grant, and answers the daemon's answer", async () => {
+  const withdrawn = { defect: "41", state: "withdrawn" };
+  const withdrawal = {
+    op: "withdraw_defect",
+    issue: "LEGION-209",
+    defect: "41",
+    reason: "The row the report names is the fixture's own, not the widget's.",
+  };
+  const { calls, daemon } = recordingDaemon({ answers: { withdrawDefect: withdrawn } });
+  await expect(
+    defectTool(daemon, claimSession("architect")).execute(
+      "",
+      withdrawal,
+      undefined,
+      undefined,
+      context()
+    )
+  ).resolves.toMatchObject({ details: withdrawn });
+  expect(calls).toEqual([
+    [
+      "grant",
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
+    ],
+    [
+      "withdrawDefect",
+      {
+        grantId: "grant-208",
+        issue: "LEGION-209",
+        defect: "41",
+        reason: withdrawal.reason,
+      },
+    ],
+  ]);
+
+  const sentence = "defect 41 of LEGION-209 is the merger's report, not yours";
+  const refusing = recordingDaemon({
+    answers: {
+      withdrawDefect: new LegionDaemonApiError(
+        "POST",
+        "/legion/v1/defects/withdraw",
+        403,
+        "DEFECT_WITHDRAW_NOT_OWNER",
+        sentence,
+        true,
+        0
+      ),
+    },
+  });
+  await expect(
+    defectTool(refusing.daemon, claimSession("architect")).execute(
+      "",
+      withdrawal,
+      undefined,
+      undefined,
+      context()
+    )
+  ).resolves.toEqual({
+    content: [
+      {
+        type: "text",
+        text: `POST /legion/v1/defects/withdraw failed with 403 DEFECT_WITHDRAW_NOT_OWNER: ${sentence}`,
+      },
+    ],
+    details: {},
+    isError: true,
+  });
+});
+
+// Each field the two operations require is refused by its name, and report_defect's head is the
+// full lower-case commit, before a grant is minted or a request sent. withdraw_defect is the
+// architect's alone: a phase worker's call is refused by the operation's name.
+test("report_defect and withdraw_defect refuse each field they require by name, and a head that is no full commit, before any grant", async () => {
+  const { calls, daemon } = recordingDaemon({});
+  const withdrawal = {
+    op: "withdraw_defect",
+    issue: "LEGION-209",
+    defect: "41",
+    reason: "The row the report names is the fixture's own, not the widget's.",
+  };
+  const { defect, head } = DEFECT_REPORT;
+  const { reason } = withdrawal;
+  const refusals: ReadonlyArray<readonly [LegionToolSession, Record<string, unknown>, string]> = [
+    [claimSession("merger"), { op: "report_defect", defect, head }, "report_defect requires issue"],
+    [
+      claimSession("merger"),
+      { op: "report_defect", issue: "LEGION-208", head },
+      "report_defect requires defect",
+    ],
+    [
+      claimSession("merger"),
+      { op: "report_defect", issue: "LEGION-208", defect },
+      "report_defect requires head",
+    ],
+    [
+      claimSession("implementer"),
+      { ...DEFECT_REPORT, head: TIP.slice(0, 12) },
+      "report_defect's head is the 40-character lower-case commit",
+    ],
+    [
+      claimSession("architect"),
+      { ...DEFECT_REPORT, head: TIP.toUpperCase() },
+      "report_defect's head is the 40-character lower-case commit",
+    ],
+    [
+      claimSession("architect"),
+      { op: "withdraw_defect", defect: "41", reason },
+      "withdraw_defect requires issue",
+    ],
+    [
+      claimSession("architect"),
+      { op: "withdraw_defect", issue: "LEGION-209", reason },
+      "withdraw_defect requires defect",
+    ],
+    [
+      claimSession("architect"),
+      { op: "withdraw_defect", issue: "LEGION-209", defect: "41" },
+      "withdraw_defect requires reason",
+    ],
+    [claimSession("architect"), { ...withdrawal, defect: "  " }, "withdraw_defect requires defect"],
+    [
+      claimSession("architect"),
+      { ...withdrawal, head: TIP },
+      'withdraw_defect does not accept field "head"',
+    ],
+    [
+      claimSession("merger"),
+      withdrawal,
+      "withdraw_defect is not available to a phase-worker session",
+    ],
+  ];
+  for (const [active, parameters, refusal] of refusals) {
+    await expect(
+      defectTool(daemon, active).execute("", parameters, undefined, undefined, context())
+    ).resolves.toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: expect.stringContaining(refusal) }],
+    });
+  }
+  expect(calls).toEqual([]);
+});
+
+test("handoff_complete finds the phase's handoff record and the pushed tip, and posts them with a fresh grant", async () => {
   const reads: string[] = [];
   const { calls, daemon } = recordingDaemon({ state: stateAt("implementing") });
   const run = (
@@ -1592,7 +1780,6 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
       onUpdateAnswered: () => undefined,
       handoffReport: (phase, role) =>
         findHandoffReport({ phase, role, env: paneEnv, jj, latestHandoff }),
@@ -1627,7 +1814,6 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     ],
   ]);
   expect(reads).toEqual(["LEGION-208 implement"]);
-  expect(completed).toEqual(["ses_208"]);
 
   // A role that does not work the issue's phase reports its own newest record of the phase it
   // left: the tester at implementing its test record and the head it names, with the verdict as
@@ -1664,7 +1850,6 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
       commit: STANDING,
     },
   ]);
-  expect(completed).toEqual(["ses_208", "ses_208", "ses_208", "ses_208"]);
   expect(reads).toEqual(["LEGION-208 implement", "LEGION-208 test"]);
 
   // Refused before any daemon call: a root architect, which runs no phase; a missing summary; a
@@ -1686,7 +1871,6 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     expect(result.content).toEqual([{ type: "text", text: expect.stringContaining(message) }]);
   }
   expect(calls).toHaveLength(before);
-  expect(completed).toHaveLength(4);
 
   // Without check_opened_at, pending is refused as a phase completion before any daemon call.
   const pendingOnPhase = await run(claimSession("tester"), {
@@ -1702,10 +1886,9 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     },
   ]);
   expect(calls).toHaveLength(before);
-  expect(completed).toHaveLength(4);
 
   // Each refusal of the report is the tool's error, naming the remedy: the state is read, and
-  // then nothing is minted or posted, and the phase stays open.
+  // then nothing is minted or posted.
   const reportRefusals = [
     [
       paneJj(),
@@ -1751,7 +1934,6 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     expect(result.content).toEqual([{ type: "text", text: message }]);
     expect(calls.at(-1)).toEqual(["record", { issue: "LEGION-208" }]);
   }
-  expect(completed).toHaveLength(4);
 });
 
 test("the planner, the tester and the reviewer post their phase's handoff record and the head it names", async () => {
@@ -1766,7 +1948,6 @@ test("the planner, the tester and the reviewer post their phase's handoff record
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: (issuePhase, claimRole) =>
         findHandoffReport({
@@ -1819,7 +2000,6 @@ test("the retro's handoff_complete posts its rating of the plan as planRating an
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: (phase, role) =>
       findHandoffReport({
@@ -1876,7 +2056,6 @@ test("a completion once the issue moved on posts the role's own newest record of
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: (issuePhase, claimRole) =>
         findHandoffReport({
@@ -1920,7 +2099,6 @@ test("a completion once the issue moved on posts the role's own newest record of
 // it left, and posts its implement record and the head it names, reading nothing of the workspace,
 // for the daemon to answer.
 test("an implementer whose issue is in testing posts its implement record, though @- is the tester's unpushed commit", async () => {
-  const completed: string[] = [];
   const reads: string[] = [];
   const asked: string[] = [];
   const workspace = paneJj(STANDING, false);
@@ -1929,7 +2107,6 @@ test("an implementer whose issue is in testing posts its implement record, thoug
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
     onUpdateAnswered: () => undefined,
     handoffReport: (phase, role) =>
       findHandoffReport({
@@ -1960,7 +2137,6 @@ test("an implementer whose issue is in testing posts its implement record, thoug
   ]);
   expect(reads).toEqual(["LEGION-208 implement"]);
   expect(asked).toEqual([]);
-  expect(completed).toEqual(["ses_208"]);
 });
 
 // A tester whose issue was held before it wrote its test record completes testing, the phase it
@@ -1983,7 +2159,6 @@ test("a tester with no record on a held issue posts @-, and the daemon's answer 
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: (phase, role) =>
       findHandoffReport({
@@ -2016,8 +2191,9 @@ test("a tester with no record on a held issue posts @-, and the daemon's answer 
   });
 });
 
-/** LEGION-208 closed by its merge, with its production check open on its second look: `role` is
- * the role the check records as the one that works it, and `last` false says a look follows. */
+/** LEGION-208, which an earlier release closed at its merge, with its production check open on its
+ * second look: `role` is the role the check records as the one that works it, and `last` false says
+ * a look follows. */
 const openCheck = {
   repo: "acme/widgets",
   pullRequest: 1239,
@@ -2038,8 +2214,7 @@ const openCheck = {
 /** The time a pending report names for its next look. */
 const NEXT_LOOK = "2026-09-29T09:00:00Z";
 
-test("a report on its closed issue's production check carries a verdict and no commit, and a pending its next look", async () => {
-  const completed: string[] = [];
+test("a report on its issue's production check carries a verdict and no commit, and a pending its next look", async () => {
   const { calls, daemon } = recordingDaemon({
     state: {
       issues: {
@@ -2052,7 +2227,6 @@ test("a report on its closed issue's production check carries a verdict and no c
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
       onUpdateAnswered: () => undefined,
       // A check report resolves no record and no commit: the report is never asked.
       handoffReport: noHandoffReport,
@@ -2061,7 +2235,8 @@ test("a report on its closed issue's production check carries a verdict and no c
       session: () => session,
     }).execute("", parameters, undefined, undefined, context());
 
-  // A named check report posts a grant and report only, and leaves phase input open.
+  // Each of the three verdicts is posted with a fresh grant, the summary and no commit. The
+  // pending names its next look, which travels as the daemon's own `wakeAt`.
   for (const verdict of ["pending", "pass", "fail"]) {
     const wake = verdict === "pending" ? { wake_at: NEXT_LOOK } : {};
     await expect(
@@ -2090,7 +2265,6 @@ test("a report on its closed issue's production check carries a verdict and no c
       ],
     ]);
   }
-  expect(completed).toEqual([]);
 
   // A missing verdict is refused before any daemon call.
   const noVerdict = await run(claimSession("implementer"), {
@@ -2106,7 +2280,6 @@ test("a report on its closed issue's production check carries a verdict and no c
     },
   ]);
   expect(calls).toHaveLength(6);
-  expect(completed).toHaveLength(0);
 
   // A tester's named report posts the wake its pending supplied.
   const { calls: testerCalls, daemon: testerDaemon } = recordingDaemon({
@@ -2124,7 +2297,6 @@ test("a report on its closed issue's production check carries a verdict and no c
     pi,
     daemon: testerDaemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
@@ -2163,7 +2335,6 @@ test("a report on its closed issue's production check carries a verdict and no c
     pi,
     daemon: closedDaemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
@@ -2193,14 +2364,13 @@ test("a report on its closed issue's production check carries a verdict and no c
   ]);
 });
 
-test("a refused completion surfaces the daemon's code and leaves the phase open", async () => {
+test("a refused completion surfaces the daemon's code", async () => {
   const refusal = Object.assign(
     new Error(
       `POST /legion/v1/handoff/complete failed with 409 HANDOFF_NOT_NEW: the implementer named handoff record ${RECORD.id} for its previous phase of LEGION-208; write this phase's handoff with \`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\` before completing`
     ),
     { code: "HANDOFF_NOT_NEW" }
   );
-  const completed: string[] = [];
   const { daemon } = recordingDaemon({
     state: stateAt("implementing"),
     answers: { handoffComplete: refusal },
@@ -2209,7 +2379,6 @@ test("a refused completion surfaces the daemon's code and leaves the phase open"
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
     onUpdateAnswered: () => undefined,
     handoffReport: (phase, role) =>
       findHandoffReport({
@@ -2230,7 +2399,6 @@ test("a refused completion surfaces the daemon's code and leaves the phase open"
     isError: true,
     content: [{ type: "text", text: expect.stringContaining("HANDOFF_NOT_NEW") }],
   });
-  expect(completed).toEqual([]);
 });
 
 /** A state the contracts schema accepts, with what a test varies laid over it: `read_state`
@@ -2366,9 +2534,6 @@ function controllerTool(daemon: () => LegionDaemonClient, minted: string[]): Reg
     controllerGrant: async (sessionId) => {
       minted.push(sessionId);
       return { grantId: "controller-grant-1", expiresAt: "2099-01-01T00:00:00Z" };
-    },
-    onPhaseCompleted: () => {
-      throw new Error("a controller completes no phase");
     },
     onUpdateAnswered: () => {
       throw new Error("a controller answers no update message");
@@ -2676,7 +2841,7 @@ test("an architect's operation set is the tree's operations and none of the agen
   const opSchema = z.toJSONSchema(toolFor(claimSession("architect")).parameters as z.ZodType)
     .properties?.op;
   const declared = typeof opSchema === "object" ? (opSchema.enum ?? []).map(String) : [];
-  expect(declared).toHaveLength(29);
+  expect(declared).toHaveLength(31);
   for (const architect of [claimSession("architect"), claimSession("architect", "LEGION-209")]) {
     const tool = toolFor(architect);
     const available: string[] = [];
@@ -2696,6 +2861,8 @@ test("an architect's operation set is the tree's operations and none of the agen
       "request_backward_move",
       "retry_or_escalate",
       "sign_off",
+      "report_defect",
+      "withdraw_defect",
       "close_root",
       "rerun_child",
       "read_record",
@@ -2717,7 +2884,6 @@ test("an architect's agent action is refused as unavailable before any grant", a
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -2765,7 +2931,6 @@ test("read_build answers the package and version this process loaded, both contr
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -2796,7 +2961,6 @@ test("read_build says the daemon stated no contract, and belongs to the controll
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -3071,7 +3235,6 @@ test("pause and resume are offered to no architect and no phase worker", async (
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -3306,7 +3469,6 @@ test("a phase worker and an architect have neither replay_give_up nor discard_gi
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
