@@ -12,8 +12,10 @@
  * - `DIVERGED`: its record through the call of its first difference, the first request in call
  *   order that the real daemon answered otherwise than the stand-in: its actions through that
  *   call, each answer the receipt names a difference of given as the real daemon gave it, its skill
- *   reads before its first action, whether dispatch-first was injected, and its effects, which the
- *   replay made through that call alone. Nothing later: no later action, no last words, no report.
+ *   reads before its first action, whether dispatch-first was injected, the workspace operations
+ *   that ended by its last action, and its effects, which the replay made through that call alone.
+ *   Nothing later: no later action, no last words, no report, and no end of a task agent after
+ *   its last action.
  *   The item names the seq of its last action (`observedThrough`) and nothing of why it stops. A
  *   line the reader fails there fails the run. (a) The real daemon refused the request (a status
  *   of 400 or more, a 5xx among them): the run fails where the case allows no corrected retry after
@@ -527,12 +529,19 @@ function divergedOf(
     const body = effects.answers[difference.seq]?.body ?? null;
     real.set(difference.outcomeSeq, { code: outcomeCode(difference.daemon), body });
   }
+  // Nothing later reaches the record: a task agent's end and a workspace operation that came after
+  // the last action it holds are later facts, which it leaves out.
+  const until = parseInstant(outcome.actions.findLast((each) => each.seq <= through)?.at ?? "");
+  const held = (at: string) => until !== undefined && (parseInstant(at) ?? until + 1n) <= until;
   const actions: Observed["outcome"]["actions"] = [];
   for (const action of outcome.actions) {
     if (action.seq > through) break;
     const answer = action.kind === "daemon" ? real.get(action.seq) : undefined;
     if (action.kind === "daemon" && answer !== undefined) actions.push({ ...action, answer });
-    else actions.push(action);
+    else if (action.kind === "agent" && action.endedAt !== undefined && !held(action.endedAt)) {
+      const { endedAt: _later, ...started } = action;
+      actions.push(started);
+    } else actions.push(action);
   }
   const request = outcome.actions.find((action) => action.seq === first.outcomeSeq);
   const op = request?.kind === "daemon" ? request.op : "";
@@ -548,6 +557,9 @@ function divergedOf(
         actions,
         skillReads: outcome.skillReads.filter((read) => read.beforeFirstAction),
         dispatchFirstInjected: outcome.dispatchFirstInjected,
+        ...(outcome.workspace === undefined
+          ? {}
+          : { workspace: outcome.workspace.filter((operation) => held(operation.at)) }),
       },
       effects: observedEffects,
     },
@@ -595,11 +607,14 @@ function scoredAction(action: Action): ItemAction {
 
 /**
  * The one projection of an outcome that the reader is given, whole or through its first
- * difference's call, of a run and of a control alike: its scored actions and what the run read,
- * without `otherWrites` and without each action's `actor` and `change`. Those audit records stay in
- * outcome.json, and a frozen trace holds none of them, so they cannot tell a run from a control.
- * Every other key keeps its place, so an outcome that holds none of them is given byte for byte as
- * it was before outcome.ts kept them.
+ * difference's call, of a run and of a control alike: its scored actions, the workspace's
+ * operations and what the run read, without `otherWrites` and without each action's `actor` and
+ * `change`. Those audit records stay in outcome.json, and a frozen trace holds none of them, so
+ * they cannot tell a run from a control. Every other key keeps its place, so an outcome that holds
+ * none of them is given byte for byte as it was before outcome.ts kept them. An Envoy message, a
+ * Dispatch read and a task agent's start are scored actions like any other: lane D carries each
+ * into the receipt as the run or the trace recorded it, and none of them is matched to a replayed
+ * call (`agree`, `replayOf`), since the replay makes none.
  */
 export function modelOutcome(
   outcome: Omit<OutcomeRecord, "id" | "lastText"> & { readonly lastText?: string }

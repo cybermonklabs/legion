@@ -1975,6 +1975,14 @@ describe.skipIf(withoutCaseTools)("lane R dry world builders", () => {
     const after = stage("dirty", a);
     expect(after.tree).not.toBe(before.tree);
     expect(after.files).toEqual(["CHANGES.md", "another.txt"]);
+    // Each record names its Job and the checkout it was taken from by the role's own name for it,
+    // so the two Jobs read as staged from separate places and no path of the run is in the record.
+    expect([before.job, before.source, after.job, after.source]).toEqual([
+      "original",
+      "$TMPDIR/stage-b",
+      "dirty",
+      "$TMPDIR/stage-a",
+    ]);
     expect(readFileSync(path.join(a, ".git", "index"))).toEqual(index);
     expect(
       readFileSync(path.join(dir, "staging.jsonl"), "utf8")

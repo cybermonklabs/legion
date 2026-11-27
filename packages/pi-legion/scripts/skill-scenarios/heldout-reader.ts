@@ -53,10 +53,13 @@
  * shuffled list. Each item is `{id, case, outcome, effects}`: the outcome record and the effect
  * record, each with its own `id` taken out, and `effects` null where the run has none (a lane R
  * run, and a control of a case lane D does not replay, have none). A run's outcome and a control's
- * are given through one projection (heldout-reader-receipt.ts modelOutcome): the scored actions and
- * what the run read, without the audit records outcome.ts keeps beside them (`otherWrites`, a
- * Dispatch write's `actor`, a GitHub call's `change`), which a frozen trace holds none of and which
- * stay in outcome.json. A DIVERGED run is given only
+ * are given through one projection (heldout-reader-receipt.ts modelOutcome): the scored actions,
+ * the workspace's operations (`workspace`) and what the run read, without the audit records
+ * outcome.ts keeps beside them (`otherWrites`, a Dispatch write's `actor`, a GitHub call's
+ * `change`), which a frozen trace holds none of and which stay in outcome.json. An item that holds
+ * an Envoy message, a Dispatch read or a task agent's start (`envoy`, `dispatch-read`, `agent`), a
+ * staged Job's `job` or `source`, or `workspace` adds CARRIED_INSTRUCTION to the instruction,
+ * which describes them; a batch with none is sent INSTRUCTION alone. A DIVERGED run is given only
  * through the call of its first difference (heldout-reader-receipt.ts): its outcome with no later
  * action, no last words and no report, its effects with no list of differences, and
  * `observedThrough` last, the seq of the last action it holds; a batch that holds one adds
@@ -117,6 +120,7 @@ import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import {
+  CARRIED_KINDS,
   type HeldoutFile,
   OutcomeRecord,
   parseHeldoutFile,
@@ -180,6 +184,18 @@ export const INSTRUCTION = [
 export const OBSERVED_INSTRUCTION = [
   "A run whose item holds `observedThrough` has a record that stops after its action of that `seq`. Nothing the run did after that action is given: no later action, no last words (`lastText`) and no report, and only the skills it read before its first action. Its `effects` are what its requests did through that action.",
   "Grade such a run on its record through that action alone. A line passes where that record shows what the line's text asks for. A line fails where an action in that record shows that the line cannot pass, such as a wrong, forbidden or out-of-order action. Where only an action after that point could show whether the line passes, set the line's `pass` to null: an action missing after the record stops is no failure. Set `pass` to null for no other run.",
+].join("\n");
+
+/** What a batch's instruction adds where an item's record holds what INSTRUCTION does not
+ * describe, so a batch with none of it is sent INSTRUCTION alone: an action of kind `envoy`,
+ * `dispatch-read` or `agent`, the `job` and `source` of a `staging` action, or `workspace`. */
+export const CARRIED_INSTRUCTION = [
+  "Beside the kinds the instruction names, an action's `kind` can be:",
+  "- `envoy`: an Envoy message the run sent with its Envoy tool and the tool accepted. `tool` is `publish` (to the topic `target`) or `send` (to the session `target`), and `fields` holds the call's other arguments (`message`, `expects_reply`).",
+  "- `dispatch-read`: a `dispatch` command the run ran that wrote nothing, so no change to the issue tracker. `command` is the subcommand, `target` what it read (its issue, reference or project, else the path of its first request), and `fields` its other flags, named without their dashes.",
+  "- `agent`: a task agent the run started with its `task` tool, one action for each agent. `agent` is its kind, `name` its name, `fields` what the run gave it, and `endedAt`, where there is one, the time of its last entry.",
+  "A `staging` action can also hold `job`, the name the run gave the Job, and `source`, the checkout the snapshot was taken from, so two Jobs staged from separate checkouts differ in `source`. `outcome.workspace`, where there is one, lists each jj operation of the run's workspace in the order it ended: its `description`, its time `at`, and `standingOn`, the commits the workspace stood on after it, in the order the run made them.",
+  "These records show what the run did and when; an action of any kind counts as evidence for a rubric line where the line's text asks for it.",
 ].join("\n");
 
 const Name = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "a name");
@@ -442,14 +458,32 @@ function batchMessage(batch: Batch): string {
   ].join("\n");
 }
 
+/** Whether an item's record holds what INSTRUCTION does not describe: an action of a carried kind,
+ * a staged Job's `job` or `source`, or the workspace's operations. */
+function holdsCarried(item: Item): boolean {
+  const { actions, workspace } = item.outcome;
+  return (
+    workspace !== undefined ||
+    actions.some(
+      (action) =>
+        (CARRIED_KINDS as readonly string[]).includes(action.kind) ||
+        (action.kind === "staging" && (action.job !== undefined || action.source !== undefined))
+    )
+  );
+}
+
 /** The body of the batch's one call, as sent: INSTRUCTION as its system prompt, with
- * OBSERVED_INSTRUCTION after it where an item's record stops short. */
+ * OBSERVED_INSTRUCTION after it where an item's record stops short and CARRIED_INSTRUCTION after
+ * that where an item holds a carried action, a staged Job's `job` or `source`, or `workspace`. */
 export function requestOf(batch: Batch): string {
-  const observed = batch.items.some((item) => item.observedThrough !== undefined);
+  const appendices = [
+    batch.items.some((item) => item.observedThrough !== undefined) ? OBSERVED_INSTRUCTION : "",
+    batch.items.some(holdsCarried) ? CARRIED_INSTRUCTION : "",
+  ].filter((appendix) => appendix !== "");
   return JSON.stringify({
     model: MODEL,
     max_tokens: MAX_TOKENS,
-    system: observed ? `${INSTRUCTION}\n\n${OBSERVED_INSTRUCTION}` : INSTRUCTION,
+    system: [INSTRUCTION, ...appendices].join("\n\n"),
     messages: [{ role: "user", content: batchMessage(batch) }],
   });
 }

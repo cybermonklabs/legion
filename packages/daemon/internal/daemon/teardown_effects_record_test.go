@@ -382,10 +382,14 @@ type teardownEffectsTrace struct {
 // teardownEffectsTraceAction is one scored action of a trace (heldout-case.ts OutcomeAction).
 type teardownEffectsTraceAction struct {
 	Kind, Op, Command, Method, Path, Target, Ref, Commit string
-	Seq                                                  int
-	At                                                   time.Time
-	Args, Fields                                         map[string]any
-	Answer                                               struct {
+	// Tool, Name, Agent and EndedAt are the fields of a carried kind alone
+	// (teardownEffectsCarriedKinds): an Envoy message's tool, a task agent's name, agent and end,
+	// as the case file holds each.
+	Tool, Name, Agent, EndedAt string
+	Seq                        int
+	At                         time.Time
+	Args, Fields               map[string]any
+	Answer                     struct {
 		Code *string
 		Body any
 	}
@@ -802,6 +806,19 @@ func teardownEffectsFieldsOf(a teardownEffectsTraceAction) map[string]any {
 	case "push":
 		set("ref", a.Ref)
 		set("commit", a.Commit)
+	case "envoy":
+		fields["fields"] = a.Fields
+		set("tool", a.Tool)
+		set("target", a.Target)
+	case "dispatch-read":
+		fields["fields"] = a.Fields
+		set("command", a.Command)
+		set("target", a.Target)
+	case "agent":
+		fields["fields"] = a.Fields
+		set("agent", a.Agent)
+		set("name", a.Name)
+		set("endedAt", a.EndedAt)
 	}
 	return fields
 }
@@ -1443,7 +1460,14 @@ const teardownEffectsExample = "../../../pi-legion/scripts/skill-scenarios/testd
 // by edit first (as JSON objects, before they are read), where edit is not nil.
 func teardownEffectsExampleCases(t *testing.T, edit func(cases []map[string]any) []map[string]any) []teardownEffectsCase {
 	t.Helper()
-	data, err := os.ReadFile(teardownEffectsExample)
+	return teardownEffectsCasesAt(t, teardownEffectsExample, edit)
+}
+
+// teardownEffectsCasesAt are the cases of the case file at name, read as teardownEffectsExampleCases
+// reads the example's.
+func teardownEffectsCasesAt(t *testing.T, name string, edit func(cases []map[string]any) []map[string]any) []teardownEffectsCase {
+	t.Helper()
+	data, err := os.ReadFile(name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2053,7 +2077,7 @@ func TestTeardownEffectsControlRecords(t *testing.T) {
 			switch {
 			case a.Kind == "daemon":
 				daemon = append(daemon, a.Seq)
-			case a.Kind == "staging", a.Kind == "github" && teardownEffectsTraceRead(a):
+			case teardownEffectsMakesNothing(a):
 			default:
 				changes = append(changes, a.Seq)
 			}
@@ -2125,5 +2149,182 @@ func TestTeardownEffectsBarePointers(t *testing.T) {
 	}
 	if got, want := teardownEffectsBarePointers("ACME-12", "Plan v2.md", `:::plan_task{#t2 needs="t1"}`), `:::plan_task{#t2 needs="dispatch://ACME-12/artifact/plan-v2-md#b-t1"}`; got != want {
 		t.Errorf("a needs of Plan v2.md reads %s, want %s", got, want)
+	}
+}
+
+// teardownEffectsCarriedFile is the example with actions of the carried kinds (an Envoy message, a
+// Dispatch read, a task agent's start) among the actions of its traces, in time order, each trace
+// numbered again from 1 (its .command says how it was made). P05's completion is action 9 there, and
+// action 5 in the example; P10's two reports are actions 4 and 6, and 2 and 3.
+const teardownEffectsCarriedFile = "testdata/teardown-effects/carried-kinds-cases.json"
+
+// The replay makes none of the carried kinds again, a staging action and a GitHub read as well, and
+// makes each push, GitHub change, Dispatch write and daemon call.
+func TestTeardownEffectsMakesNothing(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name string
+		a    teardownEffectsTraceAction
+		want bool
+	}{
+		{"an Envoy message", teardownEffectsTraceAction{Kind: "envoy", Tool: "publish", Target: "notifications.role.acme.x"}, true},
+		{"a Dispatch read", teardownEffectsTraceAction{Kind: "dispatch-read", Command: "handoff-read", Target: "ACME-12"}, true},
+		{"a task agent's start", teardownEffectsTraceAction{Kind: "agent", Agent: "task", Name: "ReviewDiff"}, true},
+		{"a staging action", teardownEffectsTraceAction{Kind: "staging"}, true},
+		{"a GitHub read", teardownEffectsTraceAction{Kind: "github", Command: "gh pr view"}, true},
+		{"a GitHub change", teardownEffectsTraceAction{Kind: "github", Command: "gh pr create", Fields: map[string]any{"head": "legion/ACME-12", "base": "main"}}, false},
+		{"a push", teardownEffectsTraceAction{Kind: "push", Ref: "legion/ACME-12"}, false},
+		{"a Dispatch write whose command a read is named", teardownEffectsTraceAction{Kind: "dispatch", Command: "handoff-read"}, false},
+		{"a daemon call", teardownEffectsTraceAction{Kind: "daemon", Op: "handoff_complete"}, false},
+	} {
+		if got := teardownEffectsMakesNothing(row.a); got != row.want {
+			t.Errorf("%s: the replay makes nothing of it = %t, want %t", row.name, got, row.want)
+		}
+	}
+}
+
+// The carried actions are no control: with them among the actions of every trace, --controls
+// promises the same controls as for the example, each check on its own action under that action's
+// own seq, and none on an action of a carried kind.
+func TestTeardownEffectsCarriedKindsAreNoControl(t *testing.T) {
+	t.Parallel()
+	promised, err := teardownEffectsPromised(teardownEffectsCasesAt(t, teardownEffectsCarriedFile, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, control := range promised {
+		got = append(got, control.String())
+	}
+	want := []string{
+		"P05 good trace: replayed",
+		"P05 good trace, action 9: pushed-with-open-pull-request-accepted",
+		"P05 good trace, action 9: the effect of complete",
+		"P05 bad trace: replayed",
+		"P05 good trace, action 9: local-only-implementer-refused",
+		"P05 good trace, action 9: pushed-without-pull-request-refused",
+		"P10 good trace: replayed",
+		"P10 good trace, action 4: pending-without-wake-refused",
+		"P10 good trace, action 6: valid-pending-names-wake",
+		"P10 good trace, action 6: the effect of report-pending",
+		"P10 bad trace: replayed",
+		"P10 bad trace, action 2: dispatch-comment-names-no-wake",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("promised\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	// The same checks as the example's, in the same order: only the seq of each moved.
+	example, err := teardownEffectsPromised(teardownEffectsExampleCases(t, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := func(controls []teardownEffectsControl) (names []string) {
+		for _, control := range controls {
+			names = append(names, control.Case+" "+control.Trace+" "+control.Check+" "+control.Action)
+		}
+		return names
+	}
+	if !slices.Equal(checks(promised), checks(example)) {
+		t.Fatalf("the carried file promises the checks\n%s\nand the example\n%s", strings.Join(checks(promised), "\n"), strings.Join(checks(example), "\n"))
+	}
+	// Every control that names an action names one the replay makes, never one of a carried kind.
+	for _, c := range teardownEffectsCasesAt(t, teardownEffectsCarriedFile, nil) {
+		carried := 0
+		for _, name := range teardownEffectsTraces(c) {
+			for _, a := range c.trace(name).Actions {
+				if !slices.Contains(teardownEffectsCarriedKinds, a.Kind) {
+					continue
+				}
+				carried++
+				for _, control := range promised {
+					if control.Case == c.ID && control.Trace == name && control.Seq == a.Seq {
+						t.Errorf("%s is a control on %s %s's action %d, a %s action", control, c.ID, name, a.Seq, a.Kind)
+					}
+				}
+			}
+		}
+		if carried == 0 {
+			t.Errorf("%s holds no action of a carried kind", c.ID)
+		}
+	}
+}
+
+// A route names each carried kind and its fields as heldout-case.ts's Route does, and takes an
+// action of its own kind alone.
+func TestTeardownEffectsTakesCarriedKinds(t *testing.T) {
+	t.Parallel()
+	cases := teardownEffectsCasesAt(t, teardownEffectsCarriedFile, nil)
+	byKind := map[string]teardownEffectsTraceAction{}
+	for _, c := range cases {
+		for _, a := range c.Traces.Good.Actions {
+			if _, seen := byKind[a.Kind]; !seen {
+				byKind[a.Kind] = a
+			}
+		}
+	}
+	// The window of an agent's end: from 15:00 to 16:00, or, for the second, from 15:30.
+	endedWithin := func(after time.Time) []struct {
+		Field         string
+		After, Before time.Time
+	} {
+		return []struct {
+			Field         string
+			After, Before time.Time
+		}{{Field: "endedAt", After: after, Before: time.Date(2030, 1, 7, 16, 0, 0, 0, time.UTC)}}
+	}
+	window := endedWithin(time.Date(2030, 1, 7, 15, 0, 0, 0, time.UTC))
+	late := endedWithin(time.Date(2030, 1, 7, 15, 30, 0, 0, time.UTC))
+	for _, row := range []struct {
+		name  string
+		route teardownEffectsRoute
+		on    string
+		want  bool
+	}{
+		{"an Envoy publish of its tool and an argument", teardownEffectsRoute{Kind: "envoy", Match: map[string]any{"tool": "publish", "fields": map[string]any{"expects_reply": false}}}, "envoy", true},
+		{"an Envoy send, for a publish", teardownEffectsRoute{Kind: "envoy", Match: map[string]any{"tool": "send"}}, "envoy", false},
+		{"a Dispatch read of its command and target", teardownEffectsRoute{Kind: "dispatch-read", Match: map[string]any{"command": "read", "target": "ACME-12"}}, "dispatch-read", true},
+		{"a Dispatch read of another command", teardownEffectsRoute{Kind: "dispatch-read", Match: map[string]any{"command": "steps"}}, "dispatch-read", false},
+		{"a task agent of its kind inside the window of its end", teardownEffectsRoute{Kind: "agent", Match: map[string]any{"agent": "task"}, Between: window}, "agent", true},
+		{"a task agent whose end is outside the window", teardownEffectsRoute{Kind: "agent", Match: map[string]any{"name": "ReviewDiff"}, Between: late}, "agent", false},
+		{"a Dispatch write route, for a Dispatch read", teardownEffectsRoute{Kind: "dispatch", Match: map[string]any{"command": "read"}}, "dispatch-read", false},
+	} {
+		a, ok := byKind[row.on]
+		if !ok {
+			t.Fatalf("the carried file holds no %s action", row.on)
+		}
+		if got := teardownEffectsTakes(row.route, a); got != row.want {
+			t.Errorf("%s: takes = %t, want %t (fields %v)", row.name, got, row.want, teardownEffectsFieldsOf(a))
+		}
+	}
+}
+
+// The case's world holds the typed parts a read answers from (heldout-case.ts: the daemon's claim,
+// issue, entry, architect, records, admission and gate; Dispatch's other issues and step runs;
+// GitHub's settings, branch rules and a pull request's merge state), and lane D reads a world with
+// them as it read the world without: it refuses none and seeds nothing from them yet.
+func TestTeardownEffectsReadsTheWorldParts(t *testing.T) {
+	t.Parallel()
+	plain := teardownEffectsExampleCases(t, nil)
+	parts := teardownEffectsExampleCases(t, func(cases []map[string]any) []map[string]any {
+		world := cases[0]["world"].(map[string]any)
+		daemon := world["daemon"].(map[string]any)
+		daemon["claim"] = map[string]any{"issue": "ACME-12", "tree": "ACME-10", "session": "ses-acme-12-implementer"}
+		daemon["issue"] = map[string]any{"tree": "ACME-10", "parent": "ACME-10", "generation": 2, "lingerUntil": nil}
+		daemon["entry"] = map[string]any{"phase": 1, "turn": 2, "owedTask": nil, "movedBack": true}
+		daemon["architect"] = map[string]any{"state": "suspended"}
+		daemon["records"] = []any{map[string]any{"key": "ACME-13", "tree": "ACME-10", "parent": "ACME-10", "phase": "planning", "status": "in_progress", "generation": 1, "architect": nil}}
+		daemon["admission"] = map[string]any{"cap": 3, "active": []any{"ACME-12"}, "waiting": []any{}, "blocked": []any{}}
+		daemon["gate"] = []any{map[string]any{"step": "design", "document": "design.md", "current": 2, "approved": 1, "artifactId": "art-design"}}
+		dispatch := world["dispatch"].(map[string]any)
+		dispatch["issue"].(map[string]any)["labels"] = []any{"legion"}
+		dispatch["issues"] = []any{map[string]any{"key": "ACME-13", "status": "todo", "parent": nil, "rank": 1, "labels": []any{}, "blockedBy": []any{}, "claimedBy": nil}}
+		dispatch["steps"] = []any{map[string]any{"task": "default", "step": 1, "kind": "step", "role": "planner", "result": "passed", "startedAt": "2030-01-07T14:00:00Z", "endedAt": "2030-01-07T14:30:00Z"}}
+		github := world["github"].(map[string]any)
+		github["settings"] = map[string]any{"default_branch": "main"}
+		github["branchRules"] = []any{map[string]any{"branch": "main", "rules": []any{}}}
+		return cases
+	})
+	if !reflect.DeepEqual(plain, parts) {
+		t.Fatalf("a world holding every part reads as %+v, and the world without them as %+v", parts[0].World, plain[0].World)
 	}
 }

@@ -108,6 +108,14 @@
 # file before it starts anything, and refuses to start while one names a gap, naming each gap. A
 # devcase batch checks only that its case is in the file.
 # D1 gets $TMPDIR/stage-a and stage-b at the default branch's head and a local stage-job recorder.
+# The outcome also records an Envoy message the role sent (`envoy`, from its transcript, where the
+# tool answered without error), a `dispatch` command it ran that wrote nothing (`dispatch-read`: a
+# Legion pane's <state>/bin holds dispatch-recorder.ts as `dispatch`, in front of the plugin's,
+# which keeps the requests each invocation sent), each task agent it started (`agent`), the jj
+# operations of its workspace (`workspace`), and a staged Job's name and source (`staging`). A case
+# run's pane reaches the batch's Envoy listener through envoy-standin.ts (the front run_case starts),
+# which answers a send to a session of the case's world as the listener answers a send to a live
+# session. A plain session records no `dispatch-read`: it has no launcher directory.
 # A case world names commits and no files (git-world.ts): each commit's tree holds CHANGES.md, a
 # line for it and each commit under it, and, at each commit off the default branch's first-parent
 # line and every commit above one, a generated Go module: go.mod at the root and, for each `check`
@@ -481,7 +489,7 @@ tmux() { command tmux -S "$tmux_socket" "$@"; }
 # pids lib/rig.sh's start_process sets (a run's own Dispatch server among them), and the services'
 # ports, URLs and directory.
 R='' session='' daemon_pid='' listener_pid='' dispatch_pid='' runs_pid='' batch_scenario=''
-proxy_pid='' model_pid='' omp_pid='' rpc_fd=''
+proxy_pid='' model_pid='' omp_pid='' front_pid='' rpc_fd=''
 S='' envoy_port='' dispatch_port='' pg_url='' nats_url=''
 
 label_dir() {
@@ -1036,7 +1044,7 @@ stop_panes() {
 stop_run() {
   local pid
   [ -z "$rpc_fd" ] || { exec {rpc_fd}>&- && rpc_fd=''; } 2>/dev/null || true
-  for pid in "$omp_pid" "$daemon_pid" "$proxy_pid" "$model_pid" "$dispatch_pid"; do
+  for pid in "$omp_pid" "$daemon_pid" "$proxy_pid" "$model_pid" "$front_pid" "$dispatch_pid"; do
     [ -z "$pid" ] || { stop_tree "$pid" && wait "$pid" 2>/dev/null || true; }
   done
   [ -z "$session" ] || stop_panes "$session"
@@ -2696,7 +2704,12 @@ cmd_case_world() {
 # Read the label's daemon module for the pane, never a restatement of its role prompt. The stand-in
 # and the pane are given the one repository and default branch case-world.ts wrote to launch.json
 # (caseRepository), so the pane's addressing names the branch the stand-in's record of the issue
-# answers, as a real daemon tells a launch its record's own.
+# answers, as a real daemon tells a launch its record's own. The pane's launcher directory,
+# <state>/bin, which the pane's PI_SHELL_PREFIX keeps first on the PATH of every command the role
+# runs, holds the `dispatch` that dispatch-recorder.ts is, in front of the Envoy plugin's: it runs
+# the real CLI and records each invocation's exit and requests to $R/calls.jsonl, which outcome.ts
+# reads the role's Dispatch reads from. A plain session has no launcher directory, so its
+# `dispatch` is the plugin's and records nothing.
 case_legion_pane() {
   local role=$1 issue tree claim port repo branch project
   local -a answers=()
@@ -2712,7 +2725,10 @@ case_legion_pane() {
     production-check) claim=tester ;;
   esac
   project=sc$(openssl rand -hex 6)
-  mkdir -p "$R/state/gh" "$R/state/secrets"
+  mkdir -p "$R/state/gh" "$R/state/secrets" "$R/state/bin"
+  printf '#!/bin/sh\nexec %q %q %q %q "$@"\n' "$(bun -e 'console.log(process.execPath)')" \
+    "$here/dispatch-recorder.ts" "$R" "$R/state/bin" >"$R/state/bin/dispatch"
+  chmod +x "$R/state/bin/dispatch"
   chmod 0700 "$R/state/secrets"
   (umask 077 && openssl rand -hex 16 >"$R/state/secrets/boot")
   if [ -n "${SKILL_SCENARIOS_DAEMON_ANSWERS:-}" ]; then
@@ -2734,7 +2750,7 @@ case_legion_pane() {
 }
 
 run_case() {
-  local scenario=$1 id=$2 name=$3 file role agent model gateway_pid=
+  local scenario=$1 id=$2 name=$3 file role agent model front_url gateway_pid=
   local -a tools=()
   file=$(case_input) || exit 1
   bun "$here/case-world.ts" prepare "$R" "$file" "$scenario" "$id" >>"$R/fixture.log" 2>&1 ||
@@ -2742,8 +2758,16 @@ run_case() {
   SKILL_SCENARIO_RUN="$R" own_dispatch case-world
   base_env
   standins
+  # The pane's Envoy is a front of the batch's listener (envoy-standin.ts): a send the listener
+  # refuses for a session it has never heard of, as a world's sessions are, is answered as a send
+  # to a live session is, so a role's send succeeds as it does in production. It records each send
+  # to $R/calls.jsonl.
+  start_process front bun "$here/envoy-standin.ts" "$(service_value ENVOY_URL)" "$R/calls.jsonl"
+  await_start front "$front_pid" 30 "the Envoy front to listen" grep -q '^listening on ' "$R/logs/front.log"
+  front_url=$(sed -n 's|^listening on ||p' "$R/logs/front.log")
   {
     cat "$services_env"
+    echo "ENVOY_URL=$front_url"
     echo "GIT_CONFIG_COUNT=0"
     echo "GIT_CONFIG_GLOBAL=/dev/null"
     echo "GIT_CONFIG_NOSYSTEM=1"

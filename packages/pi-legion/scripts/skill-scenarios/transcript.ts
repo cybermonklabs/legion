@@ -84,10 +84,22 @@ export function session(runDir: string): SessionEntry[] {
  * writes every subagent's transcript to `<session file less .jsonl>/<name>.jsonl` beside the
  * session's own, whatever started it: a `task` tool call, or `tool.task(…)` or the `agent(…)`
  * helper inside an eval cell. A subagent's own subagents, one directory deeper, are left out. */
-export function subagentSessions(runDir: string): { name: string; entries: SessionEntry[] }[] {
+export function subagentSessions(runDir: string): Transcript[] {
   const full = sessionFile(runDir);
-  if (full === undefined) return [];
-  const dir = full.replace(/\.jsonl$/, "");
+  return full === undefined ? [] : childSessions(full);
+}
+
+/** A transcript file, its name (the file's name less `.jsonl`) and its entries parsed whole. */
+export interface Transcript {
+  readonly name: string;
+  readonly file: string;
+  readonly entries: SessionEntry[];
+}
+
+/** The subagents the session whose transcript is `file` started, by name: each transcript of
+ * `<file less .jsonl>/`, sorted by name. */
+export function childSessions(file: string): Transcript[] {
+  const dir = file.replace(/\.jsonl$/, "");
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
@@ -95,6 +107,7 @@ export function subagentSessions(runDir: string): { name: string; entries: Sessi
     .sort()
     .map((name) => ({
       name: name.replace(/\.jsonl$/, ""),
+      file: path.join(dir, name),
       entries: parsedSession(path.join(dir, name)),
     }));
 }
@@ -132,12 +145,13 @@ export function resultText(message: SessionEntry["message"]): string {
 /** Each `skill://` read, in call order, as heldout-case.ts's SkillRead records it. Count the bytes
  * delivered, not the path banner or the text of a failure. Match by call id: tool results in a
  * parallel batch can finish in a different order than their calls. `beforeFirstAction` is whether
- * the read came before the run's first scored action, the first action of its outcome record,
- * whose time `firstAction` is in nanoseconds on the host clock that stamps the transcript's entries
- * (undefined where the run took no scored action): the read's place in the transcript, the time of
- * the entry that carries its call, is earlier than that action's. A tool call that makes no scored
- * action, such as a `bash` or a `grep`, is no first action, and where the run took none every read
- * came before it. */
+ * the read came before the run's first scored action of a T0 kind (heldout-case.ts
+ * T0_ACTION_KINDS), whose time `firstAction` is in nanoseconds on the host clock that stamps the
+ * transcript's entries (undefined where the run took no such action): the read's place in the
+ * transcript, the time of the entry that carries its call, is earlier than that action's. A tool
+ * call that makes no such action, such as a `bash`, a `grep`, an Envoy message, a Dispatch read or
+ * a task agent's start, is no first action, and where the run took none every read came before
+ * it. */
 export function skillReads(
   entries: readonly SessionEntry[],
   firstAction?: bigint
@@ -177,6 +191,139 @@ export function skillReads(
     });
   }
   return reads;
+}
+
+type Action = OutcomeRecord["actions"][number];
+/** An action of `kind`, as a transcript shows it: at the host clock's time of the entry that carries
+ * its call, and with no `seq`, which the outcome gives every action once they are in time order. */
+export type TranscriptAction<K extends Action["kind"]> = Omit<Extract<Action, { kind: K }>, "seq">;
+
+const Arguments = z.record(z.string(), z.json());
+type Arguments = z.infer<typeof Arguments>;
+
+/** A tool call as its tool takes it: the tool's name, and its arguments without Oh My Pi's intent
+ * (`i`), which every tool takes beside its own. A `write` to a tool's `xd://<name>` device, whose
+ * content is the arguments' JSON, is a call of that tool; a device write whose content is no JSON
+ * object, or a call whose arguments are none, is no call of it. A host can prefix a tool's name
+ * with `_`, which names the same tool. */
+function toolCall(call: {
+  name?: string;
+  arguments?: unknown;
+}): { name: string; args: Arguments } | undefined {
+  const name = call.name?.replace(/^_+/, "") ?? "";
+  const own = Arguments.safeParse(call.arguments).data;
+  if (own === undefined) return undefined;
+  const device = typeof own.path === "string" ? /^xd:\/\/(\w+)$/.exec(own.path.trim()) : null;
+  if (name === "write" && device?.[1] !== undefined) {
+    let content: unknown;
+    try {
+      content = JSON.parse(typeof own.content === "string" ? own.content : "");
+    } catch {
+      return undefined;
+    }
+    const args = Arguments.safeParse(content).data;
+    if (args === undefined) return undefined;
+    const { i: _intent, ...rest } = args;
+    return { name: device[1], args: rest };
+  }
+  const { i: _intent, ...rest } = own;
+  return { name, args: rest };
+}
+
+/** Each tool result, by the id of the call it answers. */
+function resultsById(entries: readonly SessionEntry[]) {
+  return new Map(
+    entries.flatMap((entry) =>
+      entry.message?.role === "toolResult" && entry.message.toolCallId !== undefined
+        ? [[entry.message.toolCallId, entry.message] as const]
+        : []
+    )
+  );
+}
+
+/** The host clock's time of the entry that carries a call of `what`; a transcript entry with none
+ * is the rig's fault, since the call's place among the run's actions is then unknown. */
+function calledAt(entry: SessionEntry, what: string): string {
+  if (entry.timestamp === undefined || parseInstant(entry.timestamp) === undefined)
+    throw new Error(
+      `${what} is in a transcript entry with no RFC 3339 timestamp, so its place among the run's actions is unknown`
+    );
+  return entry.timestamp;
+}
+
+/** The Envoy tools whose messages an outcome records, by the word it names each one. */
+const ENVOY_TOOLS: Readonly<Record<string, "publish" | "send">> = {
+  envoy_publish: "publish",
+  envoy_send: "send",
+};
+
+/** Each Envoy message the session sent, in call order: a call of envoy_publish or envoy_send, by
+ * the tool's name or as a `write` to its `xd://` device, that the tool answered without error. A
+ * call the tool refused, or one it never answered, sent nothing the run can show. `target` is the
+ * topic of a publish and the session of a send, and `fields` the call's other arguments, named as
+ * the tool names them. */
+export function envoySends(entries: readonly SessionEntry[]): TranscriptAction<"envoy">[] {
+  const results = resultsById(entries);
+  return sessionCalls(entries).flatMap(({ entry, call }): TranscriptAction<"envoy">[] => {
+    const made = toolCall(call);
+    const tool = made === undefined ? undefined : ENVOY_TOOLS[made.name];
+    if (made === undefined || tool === undefined) return [];
+    const result = call.id === undefined ? undefined : results.get(call.id);
+    if (result === undefined || result.isError === true) return [];
+    const key = tool === "publish" ? "topic" : "session_id";
+    const { [key]: target, ...fields } = made.args;
+    if (typeof target !== "string" || target.trim() === "") return [];
+    return [{ kind: "envoy", at: calledAt(entry, `the ${made.name} call`), tool, target, fields }];
+  });
+}
+
+/** Each task agent the session started, in call order: one for each item of a `task` call's
+ * `tasks` (the call itself where it names none, as an older host's call does), by the tool's name
+ * or as a `write` to its `xd://task` device. `agent` is the item's (`task` where it names none),
+ * `name` its name, and `fields` its other members. `endedAt` is the time of the last entry of the
+ * transcript of that name among `children`, the transcripts of the agents the session started
+ * (childSessions), absent where it wrote none. A call the tool refused started no agent: one it
+ * answered with an error, none of whose items wrote a transcript. An item with no name is no agent
+ * the run can name. */
+export function taskAgents(
+  entries: readonly SessionEntry[],
+  children: readonly Transcript[]
+): TranscriptAction<"agent">[] {
+  const results = resultsById(entries);
+  const ended = new Map(
+    children.flatMap(({ name, entries: own }) => {
+      const last = own.findLast((each) => parseInstant(each.timestamp ?? "") !== undefined);
+      return last?.timestamp === undefined ? [] : [[name, last.timestamp] as const];
+    })
+  );
+  return sessionCalls(entries).flatMap(({ entry, call }): TranscriptAction<"agent">[] => {
+    const made = toolCall(call);
+    if (made?.name !== "task") return [];
+    const listed = made.args.tasks;
+    const items = (Array.isArray(listed) ? listed : [made.args]).flatMap((item) => {
+      const fields = Arguments.safeParse(item).data;
+      return fields === undefined ? [] : [fields];
+    });
+    const refused =
+      call.id !== undefined &&
+      results.get(call.id)?.isError === true &&
+      !items.some((item) => typeof item.name === "string" && ended.has(item.name));
+    if (refused) return [];
+    return items.flatMap(({ agent, name, ...fields }): TranscriptAction<"agent">[] => {
+      if (typeof name !== "string" || name.trim() === "") return [];
+      const endedAt = ended.get(name);
+      return [
+        {
+          kind: "agent",
+          at: calledAt(entry, `the task call of ${name}`),
+          agent: typeof agent === "string" ? agent : "task",
+          name,
+          fields,
+          ...(endedAt === undefined ? {} : { endedAt }),
+        },
+      ];
+    });
+  });
 }
 
 /** Recognize the actual context message, not a tool result quoting the marker: a user message

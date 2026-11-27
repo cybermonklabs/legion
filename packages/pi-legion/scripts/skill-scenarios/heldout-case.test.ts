@@ -330,3 +330,419 @@ describe("parseOutcome", () => {
     expect(() => parseOutcome(JSON.stringify(labelled))).toThrow(/Unrecognized key: "arm"/);
   });
 });
+
+describe("the carried kinds, the workspace and staging's job and source", () => {
+  const good = (file: ReturnType<typeof heldoutJson>) => file.cases[0].traces.good;
+  const envoy = (seq: number) => ({
+    kind: "envoy",
+    seq,
+    at: "2030-01-07T15:05:00Z",
+    tool: "publish",
+    target: "notifications.role.acme.acme-12-tester",
+    fields: { message: "ACME-12 is pushed.", expects_reply: false },
+  });
+  const read = (seq: number) => ({
+    kind: "dispatch-read",
+    seq,
+    at: "2030-01-07T15:05:10Z",
+    command: "handoff-read",
+    target: "ACME-12",
+    fields: { phase: "implement" },
+  });
+  const agent = (seq: number) => ({
+    kind: "agent",
+    seq,
+    at: "2030-01-07T15:05:20Z",
+    agent: "task",
+    name: "ReviewDiff",
+    fields: { task: "Read the diff." },
+    endedAt: "2030-01-07T15:05:40Z",
+  });
+
+  test("an action of each kind parses on the example's trace, a record without them still does, and each keeps its seq among the others", () => {
+    const file = heldoutJson();
+    good(file).actions.push(envoy(6), read(7), agent(8));
+    const parsed = parseHeldoutFile(JSON.stringify(file));
+    expect(parsed.cases[0]?.traces.good.actions.map((action) => action.kind)).toEqual([
+      "push",
+      "github",
+      "dispatch",
+      "dispatch",
+      "daemon",
+      "envoy",
+      "dispatch-read",
+      "agent",
+    ]);
+    // The agent's end is optional, as a task agent that wrote no transcript has none.
+    delete good(file).actions[7].endedAt;
+    expect(() => parseHeldoutFile(JSON.stringify(file))).not.toThrow();
+    // seq rises across every kind.
+    good(file).actions[6].seq = 5;
+    expect(() => parseHeldoutFile(JSON.stringify(file))).toThrow(
+      "case P05: traces.good.actions[6].seq: seq 5 does not rise above seq 6"
+    );
+  });
+
+  const refused: [string, (action: Record<string, unknown>) => void, string][] = [
+    ["an envoy action of another tool", (a) => (a.tool = "broadcast"), "tool"],
+    ["an envoy action with no target", (a) => delete a.target, "target"],
+    ["an envoy action with a blank target", (a) => (a.target = " "), "target"],
+    ["a field the kind does not name", (a) => (a.topic = "x"), 'Unrecognized key: "topic"'],
+  ];
+  for (const [what, edit, message] of refused)
+    test(`${what} is refused at its part`, () => {
+      const file = heldoutJson();
+      good(file).actions.push(envoy(6));
+      edit(good(file).actions[5]);
+      expect(() => parseHeldoutFile(JSON.stringify(file))).toThrow(message);
+    });
+
+  test("a dispatch-read and an agent keep the fields the contract names, and refuse a missing name or command", () => {
+    const file = heldoutJson();
+    good(file).actions.push(read(6), agent(7));
+    delete good(file).actions[6].name;
+    expect(() => parseHeldoutFile(JSON.stringify(file))).toThrow("case P05: traces.good");
+    const noCommand = heldoutJson();
+    good(noCommand).actions.push(read(6));
+    delete good(noCommand).actions[5].command;
+    expect(() => parseHeldoutFile(JSON.stringify(noCommand))).toThrow("case P05: traces.good");
+  });
+
+  test("a route names each carried kind and its fields, and refuses a field the kind lacks; a route of a T0 kind takes no carried action", () => {
+    const file = heldoutJson();
+    const routes = file.cases[0].actions[0].routes;
+    routes.push(
+      { kind: "envoy", match: { tool: "publish", fields: { expects_reply: false } } },
+      { kind: "dispatch-read", match: { command: "handoff-read", target: "ACME-12" } },
+      {
+        kind: "agent",
+        match: { agent: "task" },
+        between: [
+          { field: "endedAt", after: "2030-01-07T15:00:00Z", before: "2030-01-07T16:00:00Z" },
+        ],
+      }
+    );
+    expect(() => parseHeldoutFile(JSON.stringify(file))).not.toThrow();
+    routes.push({ kind: "envoy", match: { command: "x" } });
+    expect(() => parseHeldoutFile(JSON.stringify(file))).toThrow(
+      "a envoy action has no field command; its fields are tool, target, fields"
+    );
+    const t0 = heldoutJson();
+    t0.cases[0].actions[0].routes.push({ kind: "dispatch", match: { tool: "publish" } });
+    expect(() => parseHeldoutFile(JSON.stringify(t0))).toThrow(
+      "a dispatch action has no field tool"
+    );
+  });
+
+  test("a staging action's job and source are optional, and each a text", () => {
+    const staging = (extra: Record<string, unknown>) => ({
+      kind: "staging",
+      seq: 6,
+      at: "2030-01-07T15:05:00Z",
+      tree: "a".repeat(40),
+      files: ["app.ts"],
+      ...extra,
+    });
+    for (const extra of [{}, { job: "build" }, { job: "build", source: "$TMPDIR/stage-a" }]) {
+      const file = heldoutJson();
+      good(file).actions.push(staging(extra));
+      expect(() => parseHeldoutFile(JSON.stringify(file))).not.toThrow();
+    }
+    const blank = heldoutJson();
+    good(blank).actions.push(staging({ source: " " }));
+    expect(() => parseHeldoutFile(JSON.stringify(blank))).toThrow("source");
+  });
+
+  test("the workspace is an optional list of operations in time order, each with its end, description and commits", () => {
+    const sha = (n: number) => String(n).repeat(40);
+    const file = heldoutJson();
+    good(file).workspace = [
+      { at: "2030-01-07T15:00:01Z", description: "add workspace 'default'", standingOn: [sha(1)] },
+      { at: "2030-01-07T15:02:00Z", description: "commit 3797d8d1", standingOn: [sha(2)] },
+    ];
+    expect(parseHeldoutFile(JSON.stringify(file)).cases[0]?.traces.good.workspace).toHaveLength(2);
+    good(file).workspace.reverse();
+    expect(() => parseHeldoutFile(JSON.stringify(file))).toThrow(
+      "case P05: traces.good.workspace[1].at: 2030-01-07T15:00:01Z is before"
+    );
+    good(file).workspace = [{ at: "2030-01-07T15:00:01Z", description: "x", standingOn: ["abc"] }];
+    expect(() => parseHeldoutFile(JSON.stringify(file))).toThrow("a commit: 40 lower-case");
+    good(file).workspace = [];
+    expect(() => parseHeldoutFile(JSON.stringify(file))).not.toThrow();
+  });
+
+  test("the carried-kinds file parses and keeps the example's worlds and rubrics", () => {
+    const file = parseHeldoutFile(
+      readFileSync(
+        path.join(
+          import.meta.dir,
+          "../../../daemon/internal/daemon/testdata/teardown-effects/carried-kinds-cases.json"
+        ),
+        "utf8"
+      )
+    );
+    const example = parseHeldoutFile(heldoutText);
+    expect(file.cases.map((each) => each.world)).toEqual(example.cases.map((each) => each.world));
+    expect(file.cases.map((each) => each.rubric)).toEqual(example.cases.map((each) => each.rubric));
+    const kinds = new Set<string>(
+      file.cases.flatMap((each) => each.traces.good.actions.map((a) => a.kind))
+    );
+    expect([...kinds].sort()).toEqual(
+      ["agent", "daemon", "dispatch", "dispatch-read", "envoy", "github", "push"].sort()
+    );
+    // The same daemon actions as the example's, moved in seq and not in time or answer.
+    const daemon = (cases: typeof file.cases) =>
+      cases.flatMap((each) =>
+        each.traces.good.actions.flatMap((a) =>
+          a.kind === "daemon" ? [[a.at, a.op, a.answer]] : []
+        )
+      );
+    expect(daemon(file.cases)).toEqual(daemon(example.cases));
+  });
+});
+
+// biome-ignore lint/suspicious/noExplicitAny: a world as parsed JSON, which each row edits at will.
+type WorldJson = Record<string, any>;
+
+describe("the typed world parts", () => {
+  const sha = "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c";
+  /** The example's P05 world with `edit` made to it. */
+  const parsedWorld = (edit: (world: WorldJson) => void) => {
+    const file = heldoutJson();
+    edit(file.cases[0].world);
+    return parseHeldoutFile(JSON.stringify(file)).cases[0]?.world;
+  };
+  const run = (extra: Record<string, unknown>) => ({
+    task: "default",
+    step: 1,
+    kind: "step",
+    role: "planner",
+    result: "passed",
+    startedAt: "2030-01-07T14:00:00Z",
+    endedAt: "2030-01-07T14:30:00Z",
+    ...extra,
+  });
+
+  test("a world with every part parses, and the example's world means what it meant", () => {
+    const world = parsedWorld((w) => {
+      w.daemon.claim = { issue: "ACME-12", tree: "ACME-10" };
+      w.daemon.issue = {
+        tree: "ACME-10",
+        parent: "ACME-10",
+        generation: 2,
+        lingerUntil: "2030-01-08T00:00:00Z",
+      };
+      w.daemon.entry = { phase: 1, turn: 2, owedTask: null, movedBack: true };
+      w.daemon.architect = { state: "suspended" };
+      w.daemon.records = [
+        {
+          key: "ACME-13",
+          tree: "ACME-10",
+          parent: "ACME-10",
+          phase: "planning",
+          status: "in_progress",
+          generation: 1,
+          architect: { state: "live" },
+        },
+      ];
+      w.daemon.admission = { cap: 3, active: ["ACME-12"], waiting: ["ACME-13"], blocked: [] };
+      w.daemon.gate = [
+        {
+          step: "design",
+          document: "design.md",
+          current: 2,
+          approved: 1,
+          artifactId: "art-design",
+        },
+        { step: "plan", document: "plan.md", current: 1, approved: null },
+      ];
+      w.dispatch.issue.labels = ["legion"];
+      w.dispatch.issues = [
+        {
+          key: "ACME-13",
+          status: "todo",
+          parent: null,
+          rank: 1,
+          labels: [],
+          blockedBy: ["ACME-14"],
+          claimedBy: null,
+        },
+        {
+          key: "ACME-14",
+          title: "Another issue",
+          status: "done",
+          parent: "ACME-10",
+          rank: null,
+          labels: ["legion"],
+          blockedBy: [],
+          claimedBy: "ses-acme-14",
+        },
+      ];
+      w.dispatch.steps = [
+        run({}),
+        run({ step: 0, kind: "retro", role: "implementer", planRating: 4, planReason: "Clear." }),
+        run({ step: 0, kind: "merge", role: null, result: null, endedAt: null }),
+      ];
+      w.github.settings = { default_branch: "main", allow_squash_merge: true };
+      w.github.branchRules = [{ branch: "main", rules: [{ type: "pull_request" }] }];
+      w.github.pullRequests.push({
+        number: 3,
+        state: "open",
+        draft: false,
+        head: { ref: "legion/ACME-13", sha },
+        base: "main",
+        title: "A pull request",
+        body: "",
+        mergeCommit: null,
+        reviews: [],
+        reviewThreads: [],
+        checks: [],
+        mergeStateStatus: "CLEAN",
+        autoMergeRequest: null,
+        nodeId: "PR_kwDOA",
+        diff: "diff --git a/x b/x\n",
+        mergeResult: { merged: true },
+      });
+    });
+    expect(world?.daemon?.entry).toEqual({ phase: 1, turn: 2, owedTask: null, movedBack: true });
+    expect(world?.dispatch.issues?.[0]?.title).toBeUndefined();
+    expect(world?.dispatch.steps?.map((each) => [each.kind, each.step])).toEqual([
+      ["step", 1],
+      ["retro", 0],
+      ["merge", 0],
+    ]);
+    const plain = parsedWorld(() => {});
+    for (const part of ["claim", "issue", "entry", "architect", "records", "admission", "gate"])
+      expect(plain?.daemon).not.toHaveProperty(part);
+    expect(plain?.dispatch).not.toHaveProperty("steps");
+    expect(plain?.github).not.toHaveProperty("settings");
+  });
+
+  const refusals: [string, (w: WorldJson) => void, string][] = [
+    [
+      "a step run at place 0",
+      (w) => (w.dispatch.steps = [run({ step: 0 })]),
+      "a step run's place is 1 or more, and a retro's or a merge's is 0",
+    ],
+    [
+      "a retro at place 1",
+      (w) => (w.dispatch.steps = [run({ kind: "retro", step: 1 })]),
+      "dispatch.steps[0].step",
+    ],
+    [
+      "a run with a result and no end",
+      (w) => (w.dispatch.steps = [run({ endedAt: null })]),
+      "a run that has ended has a result and an end",
+    ],
+    [
+      "a rating on a step run",
+      (w) => (w.dispatch.steps = [run({ planRating: 3 })]),
+      "only a retro that ended rates its plan",
+    ],
+    [
+      "a rating of 6",
+      (w) => (w.dispatch.steps = [run({ kind: "retro", step: 0, planRating: 6 })]),
+      "dispatch.steps[0].planRating",
+    ],
+    [
+      "the case's own issue among the other issues",
+      (w) =>
+        (w.dispatch.issues = [
+          {
+            key: "ACME-12",
+            status: "todo",
+            parent: null,
+            rank: null,
+            labels: [],
+            blockedBy: [],
+            claimedBy: null,
+          },
+        ]),
+      "the case's own issue is no other issue",
+    ],
+    [
+      "a rank of 0",
+      (w) =>
+        (w.dispatch.issues = [
+          {
+            key: "ACME-13",
+            status: "todo",
+            parent: null,
+            rank: 0,
+            labels: [],
+            blockedBy: [],
+            claimedBy: null,
+          },
+        ]),
+      "dispatch.issues[0].rank",
+    ],
+    [
+      "the case's own issue among the daemon's records",
+      (w) =>
+        (w.daemon.records = [
+          {
+            key: "ACME-12",
+            tree: "ACME-10",
+            parent: null,
+            phase: "planning",
+            status: "todo",
+            generation: 1,
+            architect: null,
+          },
+        ]),
+      "the case's own issue is daemon.issue",
+    ],
+    [
+      "an entry of phase 0",
+      (w) => (w.daemon.entry = { phase: 0, turn: 1, owedTask: null }),
+      "daemon.entry.phase",
+    ],
+    [
+      "two gate steps of one name",
+      (w) =>
+        (w.daemon.gate = [
+          { step: "design", document: "design.md", current: 1, approved: null },
+          { step: "design", document: "design.md", current: 2, approved: null },
+        ]),
+      "daemon.gate[1].step",
+    ],
+    ["a claim with no tree", (w) => (w.daemon.claim = { issue: "ACME-12" }), "daemon.claim.tree"],
+    [
+      "a negative admission cap",
+      (w) => (w.daemon.admission = { cap: -1, active: [], waiting: [], blocked: [] }),
+      "daemon.admission.cap",
+    ],
+    [
+      "a branch named twice among the branch rules",
+      (w) =>
+        (w.github.branchRules = [
+          { branch: "main", rules: [] },
+          { branch: "main", rules: [] },
+        ]),
+      "github.branchRules[1].branch",
+    ],
+    [
+      "a part the schema does not name",
+      (w) => (w.daemon.records2 = []),
+      'Unrecognized key: "records2"',
+    ],
+  ];
+  for (const [what, edit, message] of refusals)
+    test(`${what} is refused, naming the case and the part`, () => {
+      expect(() => parsedWorld(edit)).toThrow(message);
+    });
+
+  test("each part is one a refused call can be held to leave unchanged", () => {
+    const file = heldoutJson();
+    file.cases[0].allowedRefusals = [
+      {
+        code: "HANDOFF_NO_PULL_REQUEST",
+        action: file.cases[0].actions[4].name,
+        unchanged: ["daemon.records", "daemon.admission", "dispatch.steps", "github.settings"],
+      },
+    ];
+    expect(() => parseHeldoutFile(JSON.stringify(file))).not.toThrow();
+    file.cases[0].allowedRefusals[0].unchanged = ["daemon.nothing"];
+    expect(() => parseHeldoutFile(JSON.stringify(file))).toThrow("a part of the world");
+  });
+});

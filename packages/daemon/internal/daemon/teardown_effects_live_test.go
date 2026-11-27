@@ -1230,9 +1230,12 @@ func (r *teardownEffectsRun) runScript(plan teardownEffectsPlan, clock, launched
 // (teardownEffectsTraceAnswer); each push, GitHub change and Dispatch write a change made before the
 // next call, or after the last one, by the run replay's own writers at the action's case time
 // (applyTraceAction), a request-approval among them, which the replay makes as a refused write and
-// records with its refusal under the action's own seq and case time. A staging action, and a GitHub
-// call that changes no pull request (a read: teardownEffectsTraceRead), change nothing the replay
-// holds, and are not made. It also answers the seq of each call's action, in the order of the calls.
+// records its refusal under the action's own seq and case time. A staging action, a GitHub call
+// that changes no pull request (a read: teardownEffectsTraceRead) and an action of a carried kind
+// (an Envoy message, a Dispatch read, a task agent's start: teardownEffectsCarriedKinds) change
+// nothing the replay holds, and are not made; each action that is made keeps its own seq and case
+// time however many of them stand between. It also answers the seq of each call's action, in the
+// order of the calls.
 func (r *teardownEffectsRun) traceScript(caseID, name string, trace teardownEffectsTrace) (teardownEffectsScript, []int) {
 	var script teardownEffectsScript
 	var seqs []int
@@ -1240,7 +1243,7 @@ func (r *teardownEffectsRun) traceScript(caseID, name string, trace teardownEffe
 	for _, a := range trace.Actions {
 		source := fmt.Sprintf("%s %s trace, action %d", caseID, name, a.Seq)
 		switch {
-		case a.Kind == "staging", a.Kind == "github" && teardownEffectsTraceRead(a):
+		case teardownEffectsMakesNothing(a):
 		case a.Kind == "daemon":
 			call := teardownEffectsCall{ID: source, Op: a.Op, Args: teardownEffectsParams(a.Op, a.Args), IsError: a.Answer.Code != nil}
 			judge := func(replies []teardownEffectsHTTP, _ teardownEffectsAnswered, _ int) ([]teardownEffectsAnswerRef, []teardownEffectsDifference, error) {

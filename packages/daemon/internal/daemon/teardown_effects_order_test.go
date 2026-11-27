@@ -1163,6 +1163,21 @@ func teardownEffectsTraceRead(a teardownEffectsTraceAction) bool {
 	return err == nil && change == nil
 }
 
+// teardownEffectsCarriedKinds are the kinds of outcome action that lane D carries into its receipt
+// as the run or the trace recorded them, and never replays: an Envoy message, a Dispatch read and
+// a task agent's start (heldout-case.ts CARRIED_KINDS). The replay makes none of them again and
+// --controls counts none as a control it must execute, whatever the actions around them are, and
+// each action of another kind keeps its own seq and case time among them.
+var teardownEffectsCarriedKinds = []string{"envoy", "dispatch-read", "agent"}
+
+// teardownEffectsMakesNothing reports whether the replay makes a trace's action a again at all, as
+// traceScript reads it: a staging action, a GitHub call that changes no pull request
+// (teardownEffectsTraceRead) and an action of a carried kind change nothing the replay holds, and
+// are not made.
+func teardownEffectsMakesNothing(a teardownEffectsTraceAction) bool {
+	return a.Kind == "staging" || a.Kind == "github" && teardownEffectsTraceRead(a) || slices.Contains(teardownEffectsCarriedKinds, a.Kind)
+}
+
 // teardownEffectsAnswered is what the legion tool answered the role: its result's text and
 // whether the result is an error.
 type teardownEffectsAnswered struct {
@@ -1940,5 +1955,109 @@ func TestTeardownEffectsTraceChange(t *testing.T) {
 	}
 	if _, err := s.resolve(*merge, at); err == nil || !strings.Contains(err.Error(), `no pull requests found for branch "legion/ACME-12"`) {
 		t.Fatalf("resolved a merge of the issue branch's pull request where it has none, with error %v", err)
+	}
+}
+
+// A run that took actions of the carried kinds (an Envoy message, a Dispatch read, a task agent's
+// start) among the actions the replay makes again, logged `dispatch` commands in calls.jsonl, and
+// kept the workspace's operations in outcome.json, is placed as the run without them: each change
+// before the same call, each stand-in answer joined to the same action, and each action of another
+// kind at its own seq (the carried ones move it) and its own case time.
+func TestTeardownEffectsOrderCarriesTheCarriedKinds(t *testing.T) {
+	t.Parallel()
+	base, err := teardownEffectsOrderOf(t, teardownEffectsLocalOnlyHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := teardownEffectsEditedRun(t, nil, "")
+	path := filepath.Join(dir, "outcome.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outcome map[string]any
+	if err := json.Unmarshal(data, &outcome); err != nil {
+		t.Fatal(err)
+	}
+	// The run's five actions with a carried action before the first, one after the first, and one
+	// after the third: the old seqs 1..5 become 2, 4, 5, 7 and 8.
+	moved := map[int]int{}
+	var actions []any
+	add := func(action map[string]any) {
+		action["seq"] = len(actions) + 1
+		actions = append(actions, action)
+	}
+	carried := func(kind, at string, fields map[string]any) map[string]any {
+		return map[string]any{"kind": kind, "at": at, "fields": map[string]any{}, "target": "ACME-12", "command": "read", "tool": "publish", "agent": "task", "name": "ReviewDiff"}
+	}
+	add(carried("envoy", "2030-01-07T15:00:05Z", nil))
+	for i, each := range outcome["actions"].([]any) {
+		action := each.(map[string]any)
+		moved[int(action["seq"].(float64))] = len(actions) + 1
+		add(action)
+		switch i {
+		case 0:
+			add(carried("dispatch-read", "2030-01-07T15:00:14Z", nil))
+		case 2:
+			add(carried("agent", "2030-01-07T15:00:36Z", nil))
+		}
+	}
+	outcome["actions"] = actions
+	outcome["workspace"] = []any{map[string]any{"at": "2030-01-07T15:00:10Z", "description": "commit 3797d8d1", "standingOn": []any{"d9585820bbbfe46ceb0a69284276fa120eefd9c5"}}}
+	encoded, err := json.MarshalIndent(outcome, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// calls.jsonl holds the recorder's line of a `dispatch` command beside gh-standin's own.
+	log, err := os.OpenFile(filepath.Join(dir, "calls.jsonl"), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := log.WriteString(`
+{"at":"2026-11-27T00:07:00.100Z","done":"2026-11-27T00:07:00.300Z","as":"dispatch","argv":["read","--issue","ACME-12"],"exit":0,"requests":[{"method":"GET","path":"/api/v1/issues/ACME-12"}],"call":{"command":"read","flags":{"issue":"ACME-12"},"dryRun":false}}
+{"at":"2026-11-27T00:07:01.000Z","as":"envoy","route":"POST /v1/messages/send","target":"ses-other","status":200,"exit":0,"by":"stand-in"}
+`); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := teardownEffectsOrderOf(t, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Steps) != len(base.Steps) || len(plan.Seed) != len(base.Seed) || len(plan.After) != len(base.After) {
+		t.Fatalf("placed %d calls, %d seeded and %d after, want %d, %d and %d", len(plan.Steps), len(plan.Seed), len(plan.After), len(base.Steps), len(base.Seed), len(base.After))
+	}
+	for i, step := range plan.Steps {
+		want := teardownEffectsPlacedOf(base.Steps[i].Before)
+		for n := range want {
+			if want[n].OutcomeSeq > 0 {
+				want[n].OutcomeSeq = moved[want[n].OutcomeSeq]
+			}
+		}
+		if got := teardownEffectsPlacedOf(step.Before); !reflect.DeepEqual(got, want) {
+			t.Errorf("before call %d: %+v, want %+v", i+1, got, want)
+		}
+		for n, change := range step.Before {
+			if !change.At.Equal(base.Steps[i].Before[n].At) {
+				t.Errorf("before call %d, change %d: at %s, want %s", i+1, n+1, change.At, base.Steps[i].Before[n].At)
+			}
+		}
+		if len(step.Standin) != len(base.Steps[i].Standin) {
+			t.Fatalf("call %d is answered %d times, want %d", i+1, len(step.Standin), len(base.Steps[i].Standin))
+		}
+		for n, answer := range step.Standin {
+			if want := moved[base.Steps[i].Standin[n].OutcomeSeq]; answer.OutcomeSeq != want {
+				t.Errorf("call %d's answer %d joins action %d, want %d", i+1, n+1, answer.OutcomeSeq, want)
+			}
+		}
+	}
+	if got := plan.Steps[1].Standin[0].OutcomeSeq; got != 8 {
+		t.Fatalf("the completion is action %d, want 8", got)
 	}
 }
