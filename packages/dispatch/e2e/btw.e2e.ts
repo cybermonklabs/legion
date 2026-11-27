@@ -78,7 +78,6 @@ test("/btw without a surviving mention remains verbatim and never sends delivery
 });
 
 test("an unsupported selected mode warns but does not prevent Send", async ({ browser }) => {
-  expect(1, "PLANTED failure (do not merge): the references preview must catch this row").toBe(2);
   const offline: FakeSession = { ...planner, capabilities: [], session_id: "s2", title: "worker" };
   await setLiveSessions([offline]);
   await createProject({ key: "CORE", name: "Core" });
