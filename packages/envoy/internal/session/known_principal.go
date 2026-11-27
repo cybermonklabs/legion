@@ -87,15 +87,17 @@ func (s *KnownSessions) Read(ctx context.Context, sessionID string) (KnownSessio
 // the admission refuses as above.
 //
 // Any other write that failed is read against the record the bucket's leader holds after it
-// (leaderRecordOf), and is one of three errors, each wrapping the write's own failure. Where the
-// leader holds the session's record naming this registration's principal, recorded, it is
-// ErrRecordStands: the failure cost the record only its topics and last_seen. Where the leader
-// holds a record naming another principal, recorded, or did not answer, it is
-// ErrPrincipalUnrecorded: the handover gate would read a principal this session did not last
-// register as, or one nobody confirmed it did. Where the leader holds no record of the session,
-// or one naming no recorded principal, it is the plain error: the gate refuses or cannot judge
-// such a record, and nothing records the session as this principal. How the registration route
-// answers each is its own (cmd/listener's answerRegistration).
+// (leaderRecordOf). Where the leader holds the session's record naming this registration's
+// principal, recorded, it is ErrRecordStands wrapping the write's failure: the failure cost the
+// record only its topics and last_seen. Where the leader holds a record naming another principal,
+// recorded, it is ErrPrincipalUnrecorded wrapping the write's failure: the handover gate would read
+// a principal this session did not last register as. Where the leader read failed, it is
+// ErrPrincipalUnrecorded wrapping the read's failure, with the write's failure as text alone:
+// nobody confirmed which principal the record names, and the read's failure, not the write's, is
+// what a retry can change. Where the leader holds no record of the session, or one naming no
+// recorded principal, it is the write's failure as it came: the gate refuses or cannot judge such
+// a record, and nothing records the session as this principal. How the registration route answers
+// each is its own (cmd/listener's answerRegistration).
 //
 // A registration admitted while the store's bucket was not open (Admission.notOpen) writes
 // nothing and is ErrKnownSessionsUnavailable, as its admission was, whether or not the bucket
@@ -113,10 +115,13 @@ func (s *KnownSessions) RecordRegistrationWithin(ctx context.Context, admission 
 	if err == nil || errors.Is(err, ErrPrincipalUnrecorded) {
 		return err
 	}
-	switch s.leaderRecordOf(ctx, record.SessionID, record.Principal) {
-	case leaderNamesPrincipal:
+	held, readErr := s.leaderRecordOf(ctx, record.SessionID, record.Principal)
+	switch {
+	case readErr != nil:
+		return fmt.Errorf("%w: the leader read after the failed write: %w (the write: %v)", ErrPrincipalUnrecorded, readErr, err)
+	case held == leaderNamesPrincipal:
 		return fmt.Errorf("%w: %w", ErrRecordStands, err)
-	case leaderMayNameAnother:
+	case held == leaderNamesAnother:
 		return fmt.Errorf("%w: %w", ErrPrincipalUnrecorded, err)
 	}
 	return err
@@ -286,25 +291,24 @@ const (
 	leaderNamesNone leaderRecord = iota
 	// leaderNamesPrincipal: a record naming the registration's principal, recorded.
 	leaderNamesPrincipal
-	// leaderMayNameAnother: a record naming another principal, recorded, or a leader that did not
-	// answer within ctx, which confirms nothing.
-	leaderMayNameAnother
+	// leaderNamesAnother: a record naming another principal, recorded.
+	leaderNamesAnother
 )
 
 // leaderRecordOf reads sessionID's record as the bucket's leader holds it and says which principal
-// it names against principal (leaderRecord). This listener's copy can be behind the leader, so it
-// is not asked.
-func (s *KnownSessions) leaderRecordOf(ctx context.Context, sessionID, principal string) leaderRecord {
+// it names against principal (leaderRecord), or the read's failure: a leader that did not answer
+// within ctx confirms nothing. This listener's copy can be behind the leader, so it is not asked.
+func (s *KnownSessions) leaderRecordOf(ctx context.Context, sessionID, principal string) (leaderRecord, error) {
 	stored, found, err := s.Read(ctx, sessionID)
 	switch {
 	case err != nil:
-		return leaderMayNameAnother
+		return leaderNamesNone, err
 	case !found || !stored.PrincipalRecorded:
-		return leaderNamesNone
+		return leaderNamesNone, nil
 	case stored.Principal == principal:
-		return leaderNamesPrincipal
+		return leaderNamesPrincipal, nil
 	}
-	return leaderMayNameAnother
+	return leaderNamesAnother, nil
 }
 
 // leaderAt reports whether the bucket's leader holds sessionID's newest message at revision, the

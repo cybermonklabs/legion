@@ -3934,16 +3934,19 @@ const knownRecordWriteTimeout = 1 * time.Second
 //     1 naming it: the handover gate would read another principal as the one this session last
 //     registered as, so the client registers again until the record names the principal it
 //     registers as.
-//   - session.ErrRecordStands, a write that failed while the bucket's leader holds the session's
-//     record naming this registration's principal, recorded, is the first exception: the write's
-//     WARN beside the 200. The session is recorded as the principal it registers as, and the
-//     failure cost the record only its topics and last_seen; a retry of a write the bucket
-//     refused meets the same refusal.
-//   - Every other failure is answered as the store error it is (writeStoreError): a write, or a
-//     leader read after it, that nothing answered, an ErrPrincipalUnrecorded among them, is the
-//     bus-unavailable 503 with Retry-After: 1; a write the bucket refused while its leader holds
-//     no record of the session, or one naming no recorded principal, is the store's own refusal.
-//     The session would otherwise be told it is registered with no record of it.
+//   - session.ErrRecordStands over a write the bucket refused, while its leader holds the
+//     session's record naming this registration's principal, recorded, is the first exception:
+//     the write's WARN beside the 200. The session is recorded as the principal it registers as,
+//     the failure cost the record only its topics and last_seen, and a retry would meet the same
+//     refusal.
+//   - Every other failure is answered as the store error it is (writeStoreError). A write that
+//     nothing answered, and a leader read after a failed write that nothing answered, are the
+//     bus-unavailable 503 with Retry-After: 1, whatever the leader holds: ErrRecordStands and
+//     ErrPrincipalUnrecorded among them, the read's failure being the one an
+//     ErrPrincipalUnrecorded wraps then. A write the bucket refused while its leader holds no
+//     record of the session, or one naming no recorded principal, is the store's own refusal
+//     (413 for a record past the bucket's message size, 400 for any other), which the client does
+//     not retry: the session would otherwise be told it is registered with no record of it.
 //
 // envoy-client's transport makes a second attempt of any status at or past 500, and each plugin's
 // heartbeat then buys one extra call and asks again at every heartbeat after it (pi-envoy's
@@ -3975,17 +3978,17 @@ func answerRegistration(w http.ResponseWriter, r *http.Request, d *listenerDeps,
 	case errors.Is(err, session.ErrKnownSessionsUnavailable):
 		answer.Warnings = append(answer.Warnings, knownBucketNotOpenWarning)
 		warnKnownBucketNotOpen(logger, record.SessionID)
-	case errors.Is(err, session.ErrRecordStands):
+	case errors.Is(err, session.ErrRecordStands) && storeAnswer(err):
 		logger.Warn("listener known-session record not written; the record that stands names this registration's principal",
 			slog.String("session_id", record.SessionID), slog.String("error", err.Error()))
-	case errors.Is(err, session.ErrPrincipalUnrecorded) && (errors.Is(err, session.ErrRecordWrittenSince) || storeAnswered(ctx, err)):
+	case errors.Is(err, session.ErrPrincipalUnrecorded) && (errors.Is(err, session.ErrRecordWrittenSince) || storeAnswer(err)):
 		logger.Warn("listener known-session record not written; the record may name another principal",
 			slog.String("session_id", record.SessionID), slog.String("error", err.Error()))
 		w.Header().Set("Retry-After", "1")
 		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	default:
-		logger.Warn("listener known-session record not written; the registration is refused for its client to retry",
+		logger.Warn("listener known-session record not written; the registration is refused with the store's answer",
 			slog.String("session_id", record.SessionID), slog.String("error", err.Error()))
 		writeStoreError(ctx, w, err, http.StatusServiceUnavailable)
 		return

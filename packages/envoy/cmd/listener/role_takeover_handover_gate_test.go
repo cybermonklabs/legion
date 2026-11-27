@@ -834,11 +834,13 @@ func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing
 // bucket takes no write (its stream's largest message is one byte) before the session's first
 // registration, so its leader holds no record of the session after the refused write
 // (session.KnownSessions.RecordRegistrationWithin answers the plain error, neither
-// session.ErrRecordStands nor session.ErrPrincipalUnrecorded). The control is the row of
+// session.ErrRecordStands nor session.ErrPrincipalUnrecorded), and the route answers the store's
+// own refusal (writeStoreError): 413 for a record past the bucket's message size, with no
+// Retry-After, since a retry meets the same refusal. The control is the row of
 // TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503 where the session registers
 // again as the same service through such a bucket: its refused write leaves its own principal
 // recorded, and it is answered 200.
-func TestAFirstRegistrationWhoseRecordTheBucketRefusesIsNotAnswered200(t *testing.T) {
+func TestAFirstRegistrationWhoseRecordTheBucketRefusesIsAnsweredTheStoresRefusal(t *testing.T) {
 	const sessionID = "ses_gate_first_registration_refused"
 	rig := newGateRig(t)
 	js := rig.harness.client.JS()
@@ -851,8 +853,9 @@ func TestAFirstRegistrationWhoseRecordTheBucketRefusesIsNotAnswered200(t *testin
 		t.Fatalf("make the known-session stream take no write: %v", err)
 	}
 	recorder := rig.registerTitled(t, rig.serviceToken(sessionID, gateService), sessionID, "a first registration")
-	if recorder.Code == http.StatusOK {
-		t.Errorf("the first registration through a bucket that takes no write answered 200 %s; want a refusal", recorder.Body.String())
+	if recorder.Code != http.StatusRequestEntityTooLarge || recorder.Header().Get("Retry-After") != "" {
+		t.Errorf("the first registration through a bucket that takes no write answered %d (Retry-After %q) %s; want the store's own refusal, 413 with no Retry-After",
+			recorder.Code, recorder.Header().Get("Retry-After"), recorder.Body.String())
 	}
 	if _, found, err := rig.deps.known.Read(t.Context(), sessionID); err != nil || found {
 		t.Errorf("read %s's record from the bucket's leader: found %t, %v; want no record and no error", sessionID, found, err)
