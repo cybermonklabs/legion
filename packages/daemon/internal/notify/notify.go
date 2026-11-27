@@ -663,7 +663,8 @@ type Message struct {
 // Send posts m through the listener's direct-message route (POST /v1/messages/send, sendHandler in
 // packages/envoy/cmd/listener/api.go) as source `agent`. A 4xx answer, such as the listener's 404
 // for a target with no live session whose daemon does not answer for it, is ErrRefused: sending
-// it again is refused again.
+// it again is refused again. A 408 and a 429 are not: each is an outage (listenerwire.Outage), from
+// something in front of the listener, which a later send may outlast, as RoleHolder reads them.
 //
 // Unlike Publish it carries no `"handoff": false`, unless m is LiveOnly: this is how the answer
 // loop answers a stopped agent's Envoy message, in the agent's name, and the asker may be stopped
@@ -691,9 +692,10 @@ func (p *HTTPPublisher) Send(ctx context.Context, m Message) error {
 	if err != nil {
 		return fmt.Errorf("encode the message to %s: %w", m.Target, err)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages/send", bytes.NewReader(body))
+	route := p.baseURL + "/v1/messages/send"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, route, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("build the message to %s: %w", m.Target, err)
+		return fmt.Errorf("build the message to %s: %w", m.Target, redact.RequestError(listenerServer, route, err))
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if p.token != "" {
@@ -701,13 +703,13 @@ func (p *HTTPPublisher) Send(ctx context.Context, m Message) error {
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return fmt.Errorf("send the message to %s: %w", m.Target, err)
+		return fmt.Errorf("send the message to %s: %w", m.Target, redact.RequestError(listenerServer, route, err))
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		refusal, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
 		err := fmt.Errorf("send the message to %s: listener returned %s: %s", m.Target, response.Status, strings.TrimSpace(string(refusal)))
-		if response.StatusCode >= 400 && response.StatusCode < 500 && response.StatusCode != http.StatusTooManyRequests {
+		if response.StatusCode >= 400 && response.StatusCode < 500 && !listenerwire.Outage(response.StatusCode) {
 			return fmt.Errorf("%w: %w", err, ErrRefused)
 		}
 		return err
@@ -715,5 +717,5 @@ func (p *HTTPPublisher) Send(ctx context.Context, m Message) error {
 	return nil
 }
 
-// ErrRefused is a message the listener refused for good (Send's 4xx).
+// ErrRefused is a message the listener refused for good (Send's 4xx that is no outage).
 var ErrRefused = errors.New("the listener refused the message")

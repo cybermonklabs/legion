@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -348,6 +349,41 @@ func TestSendPostsADirectMessageInTheAgentsName(t *testing.T) {
 	refuse = true
 	if err := New(server.URL, "envoy-bearer").Send(context.Background(), message); err == nil || !strings.Contains(err.Error(), "no live session ses_asker") || !errors.Is(err, ErrRefused) {
 		t.Fatalf("refused send = %v, want the listener's refusal, ErrRefused", err)
+	}
+}
+
+// A send's answer that is a 4xx is ErrRefused, a refusal a second send meets again, unless it is an
+// outage (listenerwire.Outage): a 408 or a 429, which only something in front of the listener
+// sends, as a load balancer at envoy_url does, and which a later send may outlast, as RoleHolder
+// reads them. A 5xx is no refusal either. Each is an error naming the status.
+func TestSendRefusesForGoodOnlyA4xxThatIsNoOutage(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		status  int
+		refused bool
+	}{
+		{http.StatusBadRequest, true},
+		{http.StatusNotFound, true},
+		{http.StatusConflict, true},
+		{http.StatusRequestTimeout, false},
+		{http.StatusTooManyRequests, false},
+		{http.StatusInternalServerError, false},
+		{http.StatusServiceUnavailable, false},
+	} {
+		t.Run(http.StatusText(tc.status), func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+			}))
+			defer server.Close()
+			err := New(server.URL, "").Send(context.Background(), Message{Target: "ses_asker", SourceSession: "ses_tester", Text: "Plum.", IdempotencyKey: "k1"})
+			if err == nil || !strings.Contains(err.Error(), strconv.Itoa(tc.status)) {
+				t.Fatalf("a send answered %d = %v, want an error naming the status", tc.status, err)
+			}
+			if refused := errors.Is(err, ErrRefused); refused != tc.refused {
+				t.Errorf("a send answered %d is ErrRefused %t, want %t: %v", tc.status, refused, tc.refused, err)
+			}
+		})
 	}
 }
 

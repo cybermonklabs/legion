@@ -336,6 +336,37 @@ func TestEachFailedSearchIsAnErrorResultNamingItsCause(t *testing.T) {
 	}
 }
 
+// An answers.providers.anthropic.base_url whose made-up password holds an unencoded "@" leaves the
+// password's tail where the host goes, and the resolver's error names that host: a search that got
+// no answer is an error result, and a line, that hold no part of the tail, in its ASCII form or in
+// the `xn--` form a tail that is not ASCII is dialed by. A password holding a "/" ends the
+// authority there, so url.Parse reads its head as the port and no request is built: that result,
+// whose error quotes the URL whole, holds no part of the password either.
+func TestAFailedSearchHoldsNoPartOfTheBaseURLsPassword(t *testing.T) {
+	t.Parallel()
+	passwordAt := "legion:p" + "@"
+	for name, address := range map[string]string{
+		"an ASCII tail":            "http://" + passwordAt + "madeuptail0123.invalid",
+		"a tail that is not ASCII": "http://" + passwordAt + "madeuptail0123\u00f6rd.invalid",
+		"a head read as the port":  "http://legion:madeuptail0123/x" + "@anthropic.invalid",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t, bounds)
+			f.answer.host.Endpoint.BaseURL = address
+			result := f.answer.Run(context.Background(), call(1, 1, "plum"))
+			if !result.IsError || !strings.HasPrefix(result.Output, "the web search failed: ") {
+				t.Fatalf("the search answered %+v, want an error result", result)
+			}
+			for what, text := range map[string]string{"the result": result.Output, "the log": f.logs.String()} {
+				if lower := strings.ToLower(text); strings.Contains(lower, "madeuptail") || strings.Contains(lower, "xn--") {
+					t.Errorf("%s %q holds part of the password", what, text)
+				}
+			}
+		})
+	}
+}
+
 // A reply whose one search ran and whose second search, attempted past max_uses 1, answered
 // max_uses_exceeded, the Messages API's error for that attempt, yields the first search's text and
 // sources as a search with no error does: charged that one search, recorded with exit 0. That

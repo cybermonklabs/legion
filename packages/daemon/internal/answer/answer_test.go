@@ -851,6 +851,43 @@ func TestEveryAgentloopFaultIsNoAnswerUnderTheDaemonsOwnName(t *testing.T) {
 	}
 }
 
+// An answers.providers base_url whose made-up password holds an unencoded "@" leaves the
+// password's tail where the host goes, and the resolver's error names that host: the answer that
+// got no reply is a provider error whose detail, and the `answers: answered` line that carries it,
+// hold no part of the tail, in its ASCII form or in the `xn--` form a tail that is not ASCII is
+// dialed by. agentloop prints a failed call's Detail without its base URL's words
+// (packages/envoy/agentloop, shownFailure), and Answer logs that Detail as it stands.
+func TestAProviderErrorsDetailAndLineHoldNoPartOfTheBaseURLsPassword(t *testing.T) {
+	t.Parallel()
+	passwordAt := "legion:p" + "@"
+	for name, base := range map[string]string{
+		"an ASCII tail":            "http://" + passwordAt + "madeuptail0123.invalid",
+		"a tail that is not ASCII": "http://" + passwordAt + "madeuptail0123\u00f6rd.invalid",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var logged bytes.Buffer
+			req := anthropicRequest(t, newStandIn(t), &stubGH{}, 1)
+			endpoint := req.Providers[config.AnswerAnthropic]
+			endpoint.BaseURL = base
+			req.Providers = map[config.AnswerProvider]config.AnswerEndpoint{config.AnswerAnthropic: endpoint}
+			req.Log = slog.New(slog.NewJSONHandler(&logged, nil))
+			got, err := Answer(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Fault != ProviderError || got.Detail == "" {
+				t.Fatalf("reply %+v, want a provider error with its detail", got)
+			}
+			for what, text := range map[string]string{"the detail": got.Detail, "the log": logged.String()} {
+				if lower := strings.ToLower(text); strings.Contains(lower, "madeuptail") || strings.Contains(lower, "xn--") {
+					t.Errorf("%s %q holds part of the password", what, text)
+				}
+			}
+		})
+	}
+}
+
 // A reply the form's own rules refuse where the strict schema cannot, a not_answered reply naming
 // no need, is asked for once again: agentloop sends parseReply's sentence as the message after it,
 // within the answer's model_calls, and the reply to it is the agent's. Both calls are counted and

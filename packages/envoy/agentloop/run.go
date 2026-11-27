@@ -117,7 +117,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 			result.Fault, result.Detail = FaultTime, fmt.Sprintf("the run went past %s", req.Bounds.Time)
 		case stream.Err() != nil:
-			result.Fault, result.Detail = FaultProviderError, stream.Err().Error()
+			result.Fault, result.Detail = FaultProviderError, shownFailure(req.Model.Endpoint.BaseURL, stream.Err()).Error()
 		case len(result.Steps) == r.before:
 			result.Fault, result.Detail = FaultProviderError, "the model made no reply"
 		default:

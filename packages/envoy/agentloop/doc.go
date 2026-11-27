@@ -31,6 +31,10 @@
 // in FaultProviderError. The Detail of that fault carries more than the host: Go's own
 // *url.Error wraps the check's error and names the Location in full, query included, as the
 // endpoint sent it. A caller that logs a Detail logs whatever the endpoint it named put there.
+// What it never logs is the endpoint's own base URL where that is no clean http(s) URL, one with a
+// user name and a password among them: a failed call's Detail then names its URL as
+// redact.NotPrinted and its failure by class alone, since net/http's error names the host, which a
+// password holding an unencoded "@" leaves its tail in (shownFailure).
 //
 // # The retry
 //

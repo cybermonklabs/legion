@@ -218,3 +218,41 @@ func TestAWritesOutcomeIsItsAnswersStatus(t *testing.T) {
 		t.Errorf("a write whose context ended was logged as a failure (%d lines), want no line of its own", len(lines))
 	}
 }
+
+// An envoy_url whose made-up password holds an unencoded "@" leaves the password's tail where the
+// host goes, and the resolver's error names that host: the line a write no listener answered is
+// logged with holds no part of the tail, in its ASCII form or in the `xn--` form a tail that is not
+// ASCII is dialed by. A password holding a "/" ends the authority there, so url.Parse reads its
+// head as the port and no write is built: that line, whose error quotes the URL whole, holds no
+// part of the password either.
+func TestAWritesLoggedErrorHoldsNoPartOfThePassword(t *testing.T) {
+	t.Parallel()
+	passwordAt := "legion:p" + "@"
+	for name, tc := range map[string]struct {
+		address, line string
+		want          Outcome
+	}{
+		"an ASCII tail": {"http://" + passwordAt + "madeuptail0123.invalid",
+			"legion daemon could not write to the agent registry; trying again", Failed},
+		"a tail that is not ASCII": {"http://" + passwordAt + "madeuptail0123\u00f6rd.invalid",
+			"legion daemon could not write to the agent registry; trying again", Failed},
+		"a head read as the port": {"http://legion:madeuptail0123/x" + "@listener.invalid",
+			"legion daemon could not build an agent registry write", Refused},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			log := &logged{}
+			writer := New(tc.address, "envoy-bearer", nil, slog.New(slog.NewTextHandler(log, nil)))
+			if got := writer.Entry(context.Background(), listenerwire.LegionAgentEntry{SessionID: "ses-x"}); got != tc.want {
+				t.Fatalf("the write came to %v, want %v", got, tc.want)
+			}
+			lines := log.lines(tc.line)
+			if len(lines) != 1 {
+				t.Fatalf("the write was logged as %q, want one line %q", log.lines(), tc.line)
+			}
+			if lower := strings.ToLower(lines[0]); strings.Contains(lower, "madeuptail") || strings.Contains(lower, "xn--") {
+				t.Errorf("the line %q holds part of the password", lines[0])
+			}
+		})
+	}
+}

@@ -28,6 +28,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -153,6 +154,13 @@ const anthropicVersion = "2023-06-01"
 // daemon holds whole.
 const maxReplyBytes = 8 << 20
 
+// providerServer is how a search's error names the provider when its base URL does not parse
+// (redact.RequestError). answers.providers.anthropic.base_url can carry a user name and a
+// password, and a dial's or a resolver's error names the host, which is a password's tail when it
+// holds an unencoded "@": every search that got no answer, or whose reply could not be read, is
+// named through redact.RequestError.
+const providerServer = "answers.providers.anthropic"
+
 // searchRequest is a search's Messages request: the model, max_tokens, one user message, and
 // Anthropic's web search server tool allowed one search.
 type searchRequest struct {
@@ -200,9 +208,10 @@ func (a *Answer) search(ctx context.Context, query string) Result {
 	if err != nil {
 		return failed(err.Error())
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, a.host.Endpoint.BaseURL+"/v1/messages", bytes.NewReader(body))
+	route := a.host.Endpoint.BaseURL + "/v1/messages"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, route, bytes.NewReader(body))
 	if err != nil {
-		return failed(err.Error())
+		return failed(redact.RequestError(providerServer, route, err).Error())
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
@@ -216,15 +225,15 @@ func (a *Answer) search(ctx context.Context, query string) Result {
 		if ctx.Err() != nil {
 			return failed("the answer stopped while it ran")
 		}
-		return failed(redact("Anthropic could not be reached: "+err.Error(), key))
+		return failed(withoutKey("Anthropic could not be reached: "+redact.RequestError(providerServer, route, err).Error(), key))
 	}
 	defer func() { _ = response.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(response.Body, maxReplyBytes+1))
 	switch {
 	case err != nil:
-		return failed(redact("its reply could not be read: "+err.Error(), key))
+		return failed(withoutKey("its reply could not be read: "+redact.RequestError(providerServer, route, err).Error(), key))
 	case response.StatusCode != http.StatusOK:
-		return failed(redact(statusCause(response.StatusCode, raw), key))
+		return failed(withoutKey(statusCause(response.StatusCode, raw), key))
 	case len(raw) > maxReplyBytes:
 		return failed(fmt.Sprintf("its reply ran past %d bytes", maxReplyBytes))
 	}
@@ -241,9 +250,9 @@ func failed(cause string) Result {
 	return Result{Output: "the web search failed: " + cause, IsError: true}
 }
 
-// redact is text with key, where it holds it, put out of it: no result and no line carries the
+// withoutKey is text with key, where it holds it, put out of it: no result and no line carries the
 // key.
-func redact(text, key string) string {
+func withoutKey(text, key string) string {
 	if key == "" {
 		return text
 	}

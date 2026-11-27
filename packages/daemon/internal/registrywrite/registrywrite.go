@@ -1,8 +1,9 @@
 // Package registrywrite is the daemon's writer to the Envoy listener's Legion agent registry: the
 // three PUTs the agent registry mirror makes (internal/agenthistory's Mirror), each with its
-// listenerwire body, and what each came to (Outcome). It imports the standard library and
-// listenerwire alone, so the listener's client test (packages/envoy/listenerwire/clients_test.go)
-// reads it, and nothing else of the daemon, when it holds the writer to the listener's own types.
+// listenerwire body, and what each came to (Outcome). It imports the standard library,
+// listenerwire and redact alone, so the listener's client test
+// (packages/envoy/listenerwire/clients_test.go) reads it, and nothing else of the daemon, when it
+// holds the writer to the listener's own types.
 // When a write is tried again, and how often, is the mirror's.
 package registrywrite
 
@@ -18,6 +19,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/listenerwire"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 const (
@@ -25,6 +28,12 @@ const (
 	requestTimeout = 10 * time.Second
 	// refusalBodyLimit bounds how much of an answer's body a log line carries.
 	refusalBodyLimit = 4096
+	// listenerServer is how a write's error names the Envoy listener when its address does not
+	// parse (redact.RequestError). envoy_url can carry a user name and a password, and a dial's or
+	// a resolver's error names the host, which is a password's tail when it holds an unencoded "@":
+	// every write that got no answer is logged through redact.RequestError, as notify's requests
+	// are.
+	listenerServer = "the Envoy listener"
 )
 
 // Outcome is what one write came to.
@@ -91,9 +100,10 @@ func (w *Writer) put(ctx context.Context, route, path string, body any) Outcome 
 		w.log.Error("legion daemon could not encode an agent registry write", "route", route, "error", err)
 		return Refused
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, w.baseURL+path, bytes.NewReader(encoded))
+	target := w.baseURL + path
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, target, bytes.NewReader(encoded))
 	if err != nil {
-		w.log.Error("legion daemon could not build an agent registry write", "route", route, "error", err)
+		w.log.Error("legion daemon could not build an agent registry write", "route", route, "error", redact.RequestError(listenerServer, target, err))
 		return Refused
 	}
 	request.Header.Set("Content-Type", "application/json")
@@ -103,7 +113,7 @@ func (w *Writer) put(ctx context.Context, route, path string, body any) Outcome 
 	response, err := w.client.Do(request)
 	if err != nil {
 		if ctx.Err() == nil {
-			w.log.Warn("legion daemon could not write to the agent registry; trying again", "route", route, "error", err)
+			w.log.Warn("legion daemon could not write to the agent registry; trying again", "route", route, "error", redact.RequestError(listenerServer, target, err))
 		}
 		return Failed
 	}

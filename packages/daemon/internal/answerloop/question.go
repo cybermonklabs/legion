@@ -780,7 +780,8 @@ func (l *Loop) holdsAnswer(q store.AnswerQuestion, replies []dispatch.Comment, w
 }
 
 // refusedForGood is whether err is a refusal a retry would meet again: Dispatch's 4xx but a
-// timeout or rate limit, or the listener's refusal.
+// timeout or rate limit, or the listener's refusal (notify.ErrRefused: its 4xx but an outage, a
+// 408 or a 429 that something in front of it sent).
 func refusedForGood(err error) bool {
 	var refused *dispatch.Error
 	if errors.As(err, &refused) {

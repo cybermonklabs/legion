@@ -148,7 +148,7 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 	url := strings.TrimSuffix(req.Model.Endpoint.BaseURL, "/") + decidePath
 	post, err := http.NewRequestWithContext(callCtx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return DecideResult{}, fmt.Errorf("agentloop: the %s endpoint: %w", SystemOne, err)
+		return DecideResult{}, fmt.Errorf("agentloop: the %s endpoint: %w", SystemOne, shownFailure(req.Model.Endpoint.BaseURL, err))
 	}
 	post.Header.Set("Content-Type", "application/json")
 	// A decision carries no schema, so its transport never warns and is given no logger.
@@ -161,8 +161,10 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 		raw, err = io.ReadAll(io.LimitReader(resp.Body, answerLimit+1))
 		_ = resp.Body.Close()
 		if err != nil {
-			err = fmt.Errorf("reading the answer: %w", err)
+			err = fmt.Errorf("reading the answer: %w", shownFailure(req.Model.Endpoint.BaseURL, err))
 		}
+	} else {
+		err = shownFailure(req.Model.Endpoint.BaseURL, err)
 	}
 	var result DecideResult
 	switch {

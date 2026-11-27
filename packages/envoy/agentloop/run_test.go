@@ -1829,6 +1829,58 @@ func credentialed(rs []recorded) int {
 	return n
 }
 
+// A base URL whose made-up password holds an unencoded "@" leaves the password's tail where the
+// host goes, and the resolver's error names that host: the Detail of a run's or a decision's call
+// that got no answer holds no part of the tail, in its ASCII form or in the `xn--` form a tail
+// that is not ASCII is dialed by. A password holding a "/" ends the authority there, so url.Parse
+// reads its head as the port and no call is made: that Detail, or the decision's error, whose
+// text quotes the URL whole, holds no part of the password either.
+func TestAFailedCallsDetailHoldsNoPartOfTheBasesPassword(t *testing.T) {
+	t.Parallel()
+	passwordAt := "legion:p" + "@"
+	bases := map[string]string{
+		"an ASCII tail":            "http://" + passwordAt + "madeuptail0123.invalid",
+		"a tail that is not ASCII": "http://" + passwordAt + "madeuptail0123\u00f6rd.invalid",
+		"a head read as the port":  "http://legion:madeuptail0123/x" + "@endpoint.invalid",
+	}
+	run := func(kind Kind) func(*testing.T, string) (Fault, string, error) {
+		return func(t *testing.T, base string) (Fault, string, error) {
+			f := newFixture(t, newStandIn(t), kind, 1)
+			f.req.Model.Endpoint.BaseURL = base
+			result, err := Run(context.Background(), f.req)
+			return result.Fault, result.Detail, err
+		}
+	}
+	calls := map[string]func(*testing.T, string) (Fault, string, error){
+		"an anthropic-messages run": run(AnthropicMessages),
+		"an openai-responses run":   run(OpenAIResponses),
+		"a decision": func(t *testing.T, base string) (Fault, string, error) {
+			req := newDecideFixture(t, newStandIn(t))
+			req.Model.Endpoint.BaseURL = base
+			result, err := Decide(context.Background(), req)
+			return result.Fault, result.Detail, err
+		},
+	}
+	for name, base := range bases {
+		for call, made := range calls {
+			t.Run(name+"/"+call, func(t *testing.T) {
+				t.Parallel()
+				fault, detail, err := made(t, base)
+				if err == nil && fault != FaultProviderError {
+					t.Fatalf("the call ended with fault %q (%s), want %q or an error", fault, detail, FaultProviderError)
+				}
+				printed := detail
+				if err != nil {
+					printed += " " + err.Error()
+				}
+				if lower := strings.ToLower(printed); strings.Contains(lower, "madeuptail") || strings.Contains(lower, "xn--") {
+					t.Errorf("the call printed %q, which holds part of the password", printed)
+				}
+			})
+		}
+	}
+}
+
 // A request the loop cannot run at all is an error rather than a fault: nothing comes back in the
 // result and no model call is made.
 func TestARequestTheLoopCannotRunIsAnError(t *testing.T) {

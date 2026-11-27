@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/httpoutage"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
@@ -64,6 +65,21 @@ func (t *modelTransport) client() *http.Client {
 		return fmt.Errorf("the %s endpoint answered %s, a redirect to %s, which is never followed",
 			t.kind, req.Response.Status, req.URL.Host)
 	}}
+}
+
+// shownFailure is err, the failure of a model call to the endpoint at base, as a Result's Detail
+// prints it. net/http's error quotes the request URL with only a password masked, a dial's or a
+// resolver's error names the host, which is a password's tail where the password holds an
+// unencoded "@", and a URL that does not parse is quoted whole. So beside a base that is no clean
+// http(s) URL (redact.Clean: one with a user name or a password among them) err prints as
+// redact.Error prints it: the call's operation, its URL as redact.NotPrinted, and the failure's
+// class, with no word of the URL. A clean base holds no credential, so beside one err prints
+// whole, and a redirect still names the host it pointed at (client).
+func shownFailure(base string, err error) error {
+	if redact.Clean(base) {
+		return err
+	}
+	return redact.Error(err, base)
 }
 
 // defaultRetryWait is how long the retry waits when the response names no wait (retryable).

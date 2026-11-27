@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -910,5 +911,56 @@ func TestARefusedReplyIsPassedOnWithItsReasonWrittenFirst(t *testing.T) {
 		t.Fatalf("passed on = %+v; want the question passed on once as post_refused", r.rec.passed)
 	case r.rec.rowReasons[0] != string(ReasonPostRefused):
 		t.Fatalf("the row's pass_reason at the pass = %q; want post_refused written before the pass", r.rec.rowReasons[0])
+	}
+}
+
+// A reply to an Envoy asker that the listener's send route answers with an outage, a 408 or a 429
+// that only something in front of the listener sends (listenerwire.Outage), is no refusal a retry
+// would meet again: the question keeps its reply, appended, for a later pass to post, and nothing
+// is passed on. The route's 404 is such a refusal, and the question is dropped as post_refused.
+func TestAnEnvoyReplyAnsweredWithAnOutageIsKeptForARetry(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		status int
+		state  store.QuestionState
+		passed int
+	}{
+		{http.StatusRequestTimeout, store.QuestionAppended, 0},
+		{http.StatusTooManyRequests, store.QuestionAppended, 0},
+		{http.StatusNotFound, store.QuestionDropped, 1},
+	} {
+		t.Run(http.StatusText(tc.status), func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			r.conversation("ses_tester", testerToken, 0)
+			listener := newStandIn(t, func(w http.ResponseWriter, req request) {
+				if req.Path == "/v1/messages/send" {
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(`{"error":"the send is answered ` + http.StatusText(tc.status) + `"}`))
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{}`))
+			})
+			r.cfg.Envoy = notify.New(listener.URL, "envoy-token")
+			r.restart()
+			r.receive(envoyHandoff("notifications.agent.ses_tester", "ses_tester", "evt-9", "agent.ses_tester.k9", "Which?"))
+			r.drain()
+			q := r.only()
+			sends := 0
+			for _, post := range listener.posts() {
+				if post.Path == "/v1/messages/send" {
+					sends++
+				}
+			}
+			switch {
+			case sends == 0:
+				t.Fatalf("listener posts = %s; want the reply sent", describe(listener.posts()))
+			case q.State != tc.state || q.ReplyText == "":
+				t.Fatalf("question = %s with reply %q after a send answered %d; want %s with its reply", q.State, q.ReplyText, tc.status, tc.state)
+			case len(r.rec.passed) != tc.passed:
+				t.Fatalf("passed on = %+v after a send answered %d; want %d", r.rec.passed, tc.status, tc.passed)
+			}
+		})
 	}
 }
