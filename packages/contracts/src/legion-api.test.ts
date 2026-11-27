@@ -1183,8 +1183,10 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
 
 // The held words are the daemon's `record.HeldReasons`, in its order: dispatch://INFRA-3320 added
 // `awaiting_children`, a parent waiting on its open children, between `root_awaiting_person` and
-// `design_gate`, and contract 219 added `children_before_retro` and `task_stopped` after
-// `accepted_ancestor`.
+// `design_gate`, contract 219 added `children_before_retro` and `task_stopped` after
+// `accepted_ancestor`, and FixBesideReviewContract added `fix_running`, an issue whose task's end
+// waits for a fix of that task, and `ci_at_head`, one whose end waits for a check a CI job runs to
+// pass at its head, after `task_stopped`.
 test("the held words are the daemon's, with awaiting_children before design_gate", () => {
   expect(LEGION_HELD_REASONS).toEqual([
     "tree_closed",
@@ -1199,6 +1201,8 @@ test("the held words are the daemon's, with awaiting_children before design_gate
     "accepted_ancestor",
     "children_before_retro",
     "task_stopped",
+    "fix_running",
+    "ci_at_head",
     "at_work",
     "unclassified",
   ]);
