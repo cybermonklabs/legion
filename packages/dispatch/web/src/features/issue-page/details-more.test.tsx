@@ -910,6 +910,9 @@ test("the facts name the focused node's kind, state and author, and draw no firs
       [`${PROPERTY_LABELS.status}:`, NODE_STATE_WORDS.ask.open],
       [`${CONTROL_LABELS.written_by}:`, "bob"],
     ]);
+    // `textContent` separates each row's words, so word-boundary matches read the kind as a word
+    // (`Kind: Question Status: Open`, not `Kind:QuestionStatus:Open`).
+    expect(facts.textContent).toMatch(new RegExp(`\\b${NODE_TYPE_NAMES.ask}\\b`, "i"));
     expect(facts.textContent, "the facts drew the row's first line").not.toContain(question.text);
   } finally {
     view.unmount();
