@@ -151,9 +151,18 @@ export const MAC_PLATFORM = /Mac|iP(hone|[oa]d)/;
 export type Point = readonly [node: Node, offset: number];
 
 /** A press on the row's words: where it was on screen, its count of the editor's characters before
- *  it, the word pressed as drawn, and `next` where it began a drawn text after counted text, or
- *  fell after an atom that ends the words. */
-export type CaretAt = Readonly<{ x: number; y: number; offset: number; word?: Word; next?: true }>;
+ *  it - its text, and each hard break as one "\n" - the word pressed as drawn, read the same way,
+ *  `next` where it began a drawn text after counted text, and `pastAtom` where it fell past an
+ *  atom with no text between: the caret goes right after the atoms that follow the count's place,
+ *  before whatever comes next - a hard break, the block's end, or text. */
+export type CaretAt = Readonly<{
+  x: number;
+  y: number;
+  offset: number;
+  word?: Word;
+  next?: true;
+  pastAtom?: true;
+}>;
 type Word = readonly [before: string, word: string, after: string, into: number];
 
 /**
@@ -820,44 +829,88 @@ function firstPlace(block: HTMLElement): Point {
   return [block, 0];
 }
 
-/** `at.offset` characters into the editable text of `block` (into the next text, where one ends
- *  there, for a `next` press, or after the atom that ends `block` where none does), or its last
- *  editable place; where the text there is not the word pressed between its neighbours, as far
- *  into the nearest place that is, if one is. */
+/** `at.offset` characters into the editable text of `block`, where each hard break is one "\n"
+ *  in the place it stands (`isHardBreak`), for the count and for the word pressed: into the next
+ *  text, where one ends there, for a `next` press; right after a hard break, in its parent, where
+ *  the count lands right after its "\n"; or its last editable place. A `pastAtom` press goes on
+ *  past the atoms that follow that place (`afterAtoms`). Where the text there is not the word
+ *  pressed between its neighbours, it goes as far into the nearest place that is, if one is. */
 function placeAt(block: HTMLElement, at: CaretAt): Point {
-  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
-  const texts: Text[] = [];
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+  // The editor's text in `block`, in order: each text a caret can enter, and each hard break.
+  const held: (Text | Element)[] = [];
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    if (node instanceof Text && node.parentElement?.isContentEditable === true) texts.push(node);
+    if (node.parentElement?.isContentEditable !== true) continue;
+    if (node instanceof Text || isHardBreak(node)) held.push(node);
   }
   const [before, word, after, into] = at.word ?? ["", "", "", 0];
-  const text = texts.map((node) => node.data).join("");
+  const text = held.map((node) => (node instanceof Text ? node.data : "\n")).join("");
   const start = at.offset - into - before.length;
   const later = text.indexOf(before + word + after, start);
   const earlier = text.lastIndexOf(before + word + after, start);
   const found = later < 0 || (earlier >= 0 && start - earlier < later - start) ? earlier : later;
   let remaining = Math.max(0, found < 0 ? at.offset : found + before.length + into);
-  for (const node of texts) {
-    if (remaining < node.data.length + (at.next ? 0 : 1)) return [node, remaining];
-    remaining -= node.data.length;
+  let place: Point | undefined;
+  for (const node of held) {
+    const size = node instanceof Text ? node.data.length : 1;
+    if (remaining < size + (at.next ? 0 : 1)) {
+      if (node instanceof Text) place = [node, remaining];
+      else {
+        const beside = document.createRange();
+        if (remaining === 0) beside.setStartBefore(node);
+        else beside.setStartAfter(node);
+        place = [beside.startContainer, beside.startOffset];
+      }
+      break;
+    }
+    remaining -= size;
   }
-  return (at.next && afterEndingAtom(block)) ?? lastPlace(block);
+  place ??= lastPlace(block);
+  return at.pastAtom ? afterAtoms(block, place) : place;
 }
 
-/** The place after the atom that ends `block` - an element the caret cannot enter, with no text it
- *  can enter after it - in the atom's parent, where one does. */
-function afterEndingAtom(block: HTMLElement): Point | undefined {
+/** Whether `node`, a child of the editor's editable text, is a hard break: Milkdown draws one as a
+ *  `br` (`@milkdown/preset-commonmark`'s `hardbreakSchema`). The `br.ProseMirror-trailingBreak`
+ *  ProseMirror draws at the end of a paragraph, so its last line keeps its height, is none. */
+function isHardBreak(node: Node): node is Element {
+  return (
+    node instanceof Element &&
+    node.localName === "br" &&
+    !node.classList.contains("ProseMirror-trailingBreak")
+  );
+}
+
+/** The place right after the atoms - elements the caret cannot enter - that follow `place` in
+ *  `block`, before whatever comes next: an element that holds nothing, as a hard break and the
+ *  separator ProseMirror draws after an atom that ends a paragraph are, text, or the block's end;
+ *  `place` itself where no atom follows it. `place` is where `placeAt` counts to: a place in a
+ *  text, which only that text's end can have an atom after, a place beside a hard break, in its
+ *  parent, or the start of `block` where it holds no text (`lastPlace`). The walk goes on from
+ *  the node right after `place`: the child at its offset, or, past its last child, the node after
+ *  the one it is in. What an atom holds - its text, a picture - sits in `contenteditable="false"`
+ *  and is passed with it, and an element the caret can enter that holds more, as a mark's does,
+ *  is walked into. */
+function afterAtoms(block: HTMLElement, place: Point): Point {
+  const [from, offset] = place;
+  if (from instanceof Text && offset < from.data.length) return place;
   const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
-  let atom: HTMLElement | undefined;
-  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    if (node.parentElement?.isContentEditable !== true) continue;
-    if (node instanceof Text) atom = undefined;
-    else if (node instanceof HTMLElement && !node.isContentEditable) atom = node;
+  let node: Node | null = from.childNodes[offset] ?? null;
+  if (node !== null) walker.currentNode = node;
+  else {
+    walker.currentNode = from;
+    node = walker.nextSibling();
+    while (node === null && walker.parentNode() !== null) node = walker.nextSibling();
   }
-  if (atom === undefined) return undefined;
-  const after = document.createRange();
-  after.setStartAfter(atom);
-  return [after.startContainer, after.startOffset];
+  let after = place;
+  for (; node !== null; node = walker.nextNode()) {
+    if (node.parentElement?.isContentEditable !== true) continue;
+    if (node instanceof HTMLElement && !node.isContentEditable) {
+      const range = document.createRange();
+      range.setStartAfter(node);
+      after = [range.startContainer, range.startOffset];
+    } else if (node.firstChild === null) return after;
+  }
+  return after;
 }
 
 /** The last place of `block` a caret can stand at: the end of its last text a caret can enter,

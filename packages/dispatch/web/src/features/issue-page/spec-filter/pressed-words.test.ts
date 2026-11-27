@@ -134,25 +134,26 @@ test("a press after a picture counts the picture as nothing", () => {
   });
 });
 
-// A hard break holds no text in the view or the editor, so the words on each side of it read as
-// one there, as they do in the editor's text.
-test("a press after a hard break counts the break as nothing", () => {
+// A hard break holds no text in the view or the editor, and each reading counts it as one
+// character, "\n", so the count after it is never the count before it, and the words on each side
+// of it read as two words there, as they do in the editor's reading.
+test("a press after a hard break counts the break as one character", () => {
   expect(pressIn(BROKEN, "Line two, then the rest.", 6)).toEqual({
     x: 1,
     y: 2,
-    offset: "Line one.".length + 6,
-    word: ["one.Line ", "two,", " then", 1],
+    offset: "Line one.\n".length + 6,
+    word: ["Line ", "two,", " then", 1],
   });
 });
 
-// The count at the start of the text after a break or an atom is also the end of the text before
-// it, so the press says which of the two it was at.
+// The count at the start of the text after an atom is also the end of the text before it, so the
+// press says which of the two it was at; at the start of the text after a break it says so too.
 test("a press at the start of the text after a hard break or an atom says the caret goes into that text", () => {
   expect(pressIn(BROKEN, "Line two, then the rest.", 0)).toEqual({
     x: 1,
     y: 2,
-    offset: "Line one.".length,
-    word: ["Line ", "one.Line", " two,", 4],
+    offset: "Line one.\n".length,
+    word: ["one.\n", "Line", " two,", 0],
     next: true,
   });
   expect(pressIn(KEPT, AFTER, 0)).toEqual({ x: 1, y: 2, offset: "Kept by ".length, next: true });
@@ -160,13 +161,13 @@ test("a press at the start of the text after a hard break or an atom says the ca
 
 test("a press at the end of the text before a break, inside an atom or at the words' start goes into no next text", () => {
   const end = pressIn(BROKEN, "Line one.", "Line one.".length);
-  expect(end).toEqual({ x: 1, y: 2, offset: 9, word: ["Line ", "one.Line", " two,", 4] });
+  expect(end).toEqual({ x: 1, y: 2, offset: 9, word: ["Line ", "one.", "\nLine", 4] });
   expect(end.next).toBeUndefined();
   const atom = withLines([AROUND_PRESS], () => pressIn(KEPT, "<name>", 2));
   expect(atom).toEqual({ x: 1, y: 2, offset: "Kept by ".length });
   expect(atom.next).toBeUndefined();
   const start = pressIn(BROKEN, "Line one.", 0);
-  expect(start).toEqual({ x: 1, y: 2, offset: 0, word: ["", "Line", " one.Line", 0] });
+  expect(start).toEqual({ x: 1, y: 2, offset: 0, word: ["", "Line", " one.", 0] });
   expect(start.next).toBeUndefined();
 });
 
@@ -224,7 +225,7 @@ test("a press past an atom that ends the words says the caret goes after it", ()
   for (const [atom] of ATOMS) {
     expect(pressAt(`<p>${NOTE}${atom}</p>`, paragraphEnd), atom).toEqual({
       ...AT_NOTE_END,
-      next: true,
+      pastAtom: true,
     });
   }
   const cited = "dispatch://CORE-2";
@@ -263,7 +264,7 @@ test("a press inside an atom that ends the words goes before it", () => {
 // happy-dom lays nothing out, so each case gives the atom's lines, placed from the press at
 // (1, 2).
 test("a press the browser answers inside an atom, past the end of its last line, says the caret goes after it", () => {
-  const after: CaretAt = { ...AT_NOTE_END, next: true };
+  const after: CaretAt = { ...AT_NOTE_END, pastAtom: true };
   // A press the browser answers at the end of the text of the last atom `paragraph` draws, as
   // Chromium answers a point past inline HTML that ends a line.
   const pressPast = (paragraph: string) => pressInLastAtom(paragraph, "<name>".length);
@@ -335,9 +336,9 @@ test("a press the browser answers inside an atom, past the end of its last line,
 });
 
 /** The press at the end of `NOTE` at the point (`x`, `y`): it stays inside the atom after the
- *  note, at its start, or with `next`, goes after it. */
-function noteEnd(x: number, y: number, next?: true): CaretAt {
-  return next === undefined ? { ...AT_NOTE_END, x, y } : { ...AT_NOTE_END, next, x, y };
+ *  note, at its start, or with `pastAtom`, goes after it. */
+function noteEnd(x: number, y: number, pastAtom?: true): CaretAt {
+  return pastAtom === undefined ? { ...AT_NOTE_END, x, y } : { ...AT_NOTE_END, pastAtom, x, y };
 }
 
 /** A press at `at` that the browser answers in the last marked element `paragraph` draws, at
@@ -460,6 +461,6 @@ test("a press around each inline kind is read by the line it is on, in the boxes
   for (const [name, boxes, press, caret] of rows) {
     const at = withLines(boxes, press);
     expect(at, name).toEqual(caret);
-    expect(at.next, name).toBe(caret.next);
+    expect(at.pastAtom, name).toBe(caret.pastAtom);
   }
 });

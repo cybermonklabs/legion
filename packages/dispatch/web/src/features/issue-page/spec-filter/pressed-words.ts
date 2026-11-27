@@ -40,12 +40,12 @@ export function statementWordsAt(target: EventTarget): HTMLElement | null {
  *   fails (`DispatchPicture`); the editor holds it as an atom (`doc/picture-view.ts`), its
  *   picture or its fallback link with no text the caret can enter, marked with no text.
  *
- * Every other text counts as drawn: a hard break is a `br` in both, holding no text; a
- * `[^label]` the view draws as text - a call the document defines no note for, an escaped one -
- * is text the editor holds too; and what the editor draws as a widget - a reference's title, a
- * collaborator's cursor - stands outside its editable text and is not drawn by the view. A mark
- * with no text is an atom: a press inside it counts as at its start, and a press past it goes
- * after it.
+ * Every other text counts as drawn: a hard break is a `br` in both, holding no text, and each
+ * reading counts it as one character, "\n" (`node-caret.ts`'s `placeAt`); a `[^label]` the view
+ * draws as text - a call the document defines no note for, an escaped one - is text the editor
+ * holds too; and what the editor draws as a widget - a reference's title, a collaborator's
+ * cursor - stands outside its editable text and is not drawn by the view. A mark with no text is
+ * an atom: a press inside it counts as at its start, and a press past it goes after it.
  */
 const HELD_OTHERWISE = `[${ROW_WRITTEN}]`;
 
@@ -56,24 +56,32 @@ function isAtom(element: Element): boolean {
 }
 
 /**
- * Reads the press before the editor replaces the words, as the count of the editor's text
- * characters before it: text, not markup or lines, so a different wrap in the editor does not
- * change the caret's place. What the view draws in place of the editor's text counts as the
- * editor holds it (`HELD_OTHERWISE`), and a press inside one counts as at its start. With the
- * count it reads the word pressed, from the words read the same way, for the editor to find
- * where the count lands in another word (`pressedWord`).
+ * Reads the press before the editor replaces the words, as the count of the editor's characters
+ * before it: its text, and each hard break as one "\n", not markup or the lines a wrap makes, so a
+ * different wrap in the editor does not change the caret's place. What the view draws in place of
+ * the editor's text counts as the editor holds it (`HELD_OTHERWISE`), and a press inside one
+ * counts as at its start. With the count it reads the word pressed, from the words read the same
+ * way, for the editor to find where the count lands in another word (`pressedWord`).
  *
- * A hard break and an atom hold no text, so the count at the start of the text after one is also
- * the end of the text before it. A press at the start of a drawn text with text counted before it
- * says so (`CaretAt`'s `next`), and the editor puts the caret in that text, where the press was:
- * on the line after the break, or after the atom. A press past an atom that no text follows says
- * so too, and the editor puts the caret after that atom, where its block ends; a press inside the
- * atom still counts as at its start. The browser can answer a point past the end of the line a
- * marked element ends with a place inside it - Chromium answers the end of its text - so a place
- * inside one reads as right after it where the point stands past the end of its last line
- * (`pastAtomEnd`): after an atom, and after a reference's words as the editor holds them. An atom
- * drawn with no text - a picture once it has loaded - counts as one too, so the walk reads each
- * element drawn in place of the editor's text before its own texts.
+ * An atom holds no text, so the count at the start of the text after one is also the end of the
+ * text before it. A press at the start of a drawn text with text counted before it says so
+ * (`CaretAt`'s `next`), and the editor puts the caret in that text, where the press was: after
+ * the atom, or on the line after a hard break. A hard break's "\n" keeps the count after the
+ * break from the count before it, and a hard break at or after the press's place, met before that
+ * place is counted, ends the line the press was on: the count is the end of that line, before the
+ * break's "\n", with no `next`, and the editor puts the caret there, before the break. Where an
+ * atom is the last thing counted before a press there, or before a press past everything counted,
+ * the press says it fell past that atom (`CaretAt`'s `pastAtom`), and the editor puts the caret
+ * after the atom, on its line, rather than before it; a press inside the atom still counts as at
+ * its start. The browser can answer a point past the end of the line a marked element ends with a
+ * place inside it - Chromium answers the end of its text - so a place inside one reads as right
+ * after it where the point stands past the end of its last line (`pastAtomEnd`): after an atom,
+ * and after a reference's words as the editor holds them. An atom drawn with no text - a picture
+ * once it has loaded - counts as one too, so the walk reads each element drawn in place of the
+ * editor's text before its own texts. A text with no characters - the link pass leaves one where
+ * a reference starts or ends a text (`row-references.ts`'s `linkRowReferences`) - holds nothing
+ * to press or count, so the walk passes it: no drawn text begins there, and an atom before it is
+ * still the last thing counted.
  */
 export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt {
   const doc = words.ownerDocument;
@@ -89,15 +97,31 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
   // The words as the editor holds them, and the press's place in them once it is passed.
   let held = "";
   let offset: number | undefined;
-  // Whether that place is the start of a drawn text with text counted before it, or past an atom.
+  // Whether that place is the start of a drawn text with text counted before it.
   let next = false;
+  // Whether that place is past an atom, with no text counted after it.
+  let pastAtom = false;
   // The element drawn in place of the editor's text the last thing counted belongs to, whose
   // texts count nothing more.
   let counted: Element | null = null;
   for (let drawn = walker.nextNode(); drawn !== null; drawn = walker.nextNode()) {
     // An element counts only where it is drawn in place of the editor's text, which is where it
-    // is one of `HELD_OTHERWISE` itself, so every other element is passed unread.
-    if (drawn instanceof Element && !drawn.matches(HELD_OTHERWISE)) continue;
+    // is one of `HELD_OTHERWISE` itself, so every other element is passed unread, but for a hard
+    // break: one "\n", the last thing counted, and the end of the line the press was on where it
+    // stands at or after the press's place, met before that place is counted.
+    if (drawn instanceof Element && !drawn.matches(HELD_OTHERWISE)) {
+      if (drawn.localName === "br") {
+        if (offset === undefined && end.comparePoint(drawn, 0) >= 0) {
+          offset = held.length;
+          pastAtom = counted !== null && isAtom(counted);
+        }
+        counted = null;
+        held += "\n";
+      }
+      continue;
+    }
+    // A text with no characters holds nothing to press or count.
+    if (drawn instanceof Text && drawn.data === "") continue;
     const element = drawn instanceof Element ? drawn : drawn.parentElement;
     if (element?.closest("[data-node-trail]") != null) continue;
     const other = element?.closest(HELD_OTHERWISE) ?? null;
@@ -113,9 +137,16 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
   }
   // A press past everything counted, after an atom - an element drawn in place of no text of the
   // editor's, as a reference is not - goes after that atom.
-  if (offset === undefined && counted !== null && isAtom(counted)) next = true;
+  if (offset === undefined && counted !== null && isAtom(counted)) pastAtom = true;
   const at = offset ?? held.length;
-  return { x, y, offset: at, word: pressedWord(held, at), next: next || undefined };
+  return {
+    x,
+    y,
+    offset: at,
+    word: pressedWord(held, at),
+    next: next || undefined,
+    pastAtom: pastAtom || undefined,
+  };
 }
 
 /** Whether the point (`x`, `y`) stands past the end of `atom`'s last line: right of its greatest

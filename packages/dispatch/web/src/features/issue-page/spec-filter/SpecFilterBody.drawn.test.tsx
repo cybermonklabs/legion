@@ -2611,15 +2611,16 @@ function withHardBreak() {
   };
 }
 
-// A hard break is a line break in both, which holds no text, so a press after it counts nothing
-// for it.
+// A hard break is a line break in both, which holds no text, and each reading counts it as one
+// character, "\n", so a press after it counts that one character for it.
 test("a press after a hard break lands in the word pressed", async () => {
   await pressAfterKind({ ...withHardBreak(), into: 6 });
 });
 
-// The break holds no text, so the end of the line before it and the start of the line after it
-// have one count. A press at the start of the line after it - on the left half of its first
-// character - puts the caret there, after the break, and not at the end of the line before.
+// The break counts as one character, so the end of the line before it and the start of the line
+// after it have counts of their own. A press at the start of the line after it - on the left half
+// of its first character - puts the caret there, after the break, and not at the end of the line
+// before.
 test("a press at the start of the text after a hard break lands after the break", async () => {
   await pressAfterKind({ ...withHardBreak(), into: 0 });
 });
@@ -2747,11 +2748,11 @@ test("an uncounted inline kind still puts the caret in the pressed word", async 
 });
 
 // An atom that ends a statement's block holds no text, so the editor's text ends before it. A
-// press past the atom (`pressInWords`'s `next`) puts the caret after it, in its paragraph, where
-// the block ends, and a press inside it puts the caret before it, at the end of the text before
-// it. A plain editable stands in for the editor: each atom drawn `contenteditable="false"`, then
-// the separator and the break ProseMirror draws after an atom that ends a paragraph. The picture
-// has loaded, so it holds no text.
+// press past the atom (`pressInWords`'s `pastAtom`) puts the caret after it, in its paragraph,
+// where the block ends, and a press inside it puts the caret before it, at the end of the text
+// before it. A plain editable stands in for the editor: each atom drawn `contenteditable="false"`,
+// then the separator and the break ProseMirror draws after an atom that ends a paragraph. The
+// picture has loaded, so it holds no text.
 test("a press past an atom that ends a statement's block puts the caret after it, and one inside it before it", () => {
   const host = document.createElement("div");
   document.body.append(host);
@@ -2764,7 +2765,7 @@ test("a press past an atom that ends a statement's block puts the caret after it
     ]) {
       host.innerHTML = `<div contenteditable="true"><section data-block-id="r1"><p>Read the note${atom}<img class="ProseMirror-separator" alt=""><br class="ProseMirror-trailingBreak"></p></section></div>`;
       const paragraph = host.querySelector("p");
-      expect(caretInBlock(host, "r1", { ...at, next: true }), atom).toBe(true);
+      expect(caretInBlock(host, "r1", { ...at, pastAtom: true }), atom).toBe(true);
       expect(window.getSelection()?.anchorNode, atom).toBe(paragraph);
       expect(window.getSelection()?.anchorOffset, atom).toBe(2);
       expect(caretInBlock(host, "r1", at), atom).toBe(true);
@@ -3034,7 +3035,12 @@ test("Down from the caret after an atom that ends a statement's last line stays 
   const pressed = (key: string) =>
     editable?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key }));
   try {
-    const at: CaretAt = { x: 1, y: 2, offset: "One line, two lines, the note".length, next: true };
+    const at: CaretAt = {
+      x: 1,
+      y: 2,
+      offset: "One line, two lines, the note".length,
+      pastAtom: true,
+    };
     expect(caretInBlock(host, "r1", at)).toBe(true);
     expect(window.getSelection()?.anchorNode).toBe(paragraph);
     expect(window.getSelection()?.anchorOffset).toBe(2);
