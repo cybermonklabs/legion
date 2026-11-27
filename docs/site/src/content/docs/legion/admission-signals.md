@@ -323,8 +323,8 @@ projects:
 - `signal_token_model_pattern` selects the models whose tokens count against the limit; every model counts where it is unset.
   A request of another model is still kept, and its tokens count nowhere.
 
-The model pattern is a Go regular expression (RE2 syntax), matched against the model a host names.
-The loader refuses, naming the key and why, an empty pattern, which would count every model as leaving the key out does, and a pattern that Go does not compile.
+The model pattern is a Go regular expression (RE2 syntax), and a model counts where the pattern matches anywhere in the name a host gives it, so `^claude-` and `opus` both select `claude-opus-5-5`, and only an anchored pattern such as `^claude-opus-5-5$` matches the whole name.
+The loader refuses, naming the key and why, an empty pattern, which would count every model as leaving the key out does, and a pattern that Go does not compile, with Go's own reason.
 A refused file is refused whole, so none of its keys takes effect.
 
 ## Before you turn it on

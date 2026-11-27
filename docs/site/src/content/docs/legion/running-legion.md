@@ -641,8 +641,8 @@ What each part is for:
   Without it the headroom reads as not recorded, never as zero.
   Each minute keeps the limit that was in force when it began, so a daemon restarted with another limit reads no earlier minute again.
   The model pattern selects the models whose tokens count against the limit, and every model counts without it; a request of another model is still kept, and its tokens count nowhere.
-  The model pattern is a Go regular expression (RE2 syntax), matched against the model a host names.
-  The loader refuses, naming the key and why, an empty pattern, which would count every model as leaving the key out does, and a pattern that Go does not compile.
+  The model pattern is a Go regular expression (RE2 syntax), and a model counts where the pattern matches anywhere in the name a host gives it; anchor it with `^` and `$` to match the whole name.
+  The loader refuses, naming the key and why, an empty pattern, which would count every model as leaving the key out does, and a pattern that Go does not compile, with Go's own reason.
   A refused file is refused whole, so none of its keys takes effect.
   [Admission by signals](/legion/legion/admission-signals/) says what the headroom reads, how `legion state` shows it, and how a person turns the rule on and sets its limit.
 - **`repository_renames`** (optional) tells the daemon that two names are one repository, for a
