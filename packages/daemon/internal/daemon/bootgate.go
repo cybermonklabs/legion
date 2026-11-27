@@ -932,6 +932,9 @@ func (r ran) killed(launch string, budget time.Duration) string {
 func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran, error) {
 	attempt, cancel := g.budget(ctx)
 	defer cancel()
+	// CONTROL ONLY: a clock of the run's own cuts every attempt at 1 s, whatever its budget.
+	attempt, cut := context.WithTimeout(attempt, time.Second)
+	defer cut()
 	job := foregroundOf(g.stdin, g.echo)
 	cmd := exec.CommandContext(attempt, "sh", append([]string{"-c", job.script(script), "sh"}, args...)...)
 	cmd.Env = environPairs(g.env)
