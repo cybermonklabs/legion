@@ -663,7 +663,8 @@ func useGcloud(t *testing.T, accounts ...string) gcloudStub {
 		`printf '%s\n' -- >>` + environments,
 		`case "$1 $2" in`,
 		`"auth list") active=${CLOUDSDK_CORE_ACCOUNT:-` + first + `}; sep=; printf '['; for account in ` + strings.Join(words, " ") + `; do status=; [ "$account" = "$active" ] && status=ACTIVE; printf '%s{"account":"%s","status":"%s"}' "$sep" "$account" "$status"; sep=,; done; printf ']\n' ;;`,
-		`"config list") printf '{"auth":{"impersonate_service_account":"%s","access_token_file":"%s","credential_file_override":"%s"},"core":{"account":"%s"}}\n' "$CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT" "$CLOUDSDK_AUTH_ACCESS_TOKEN_FILE" "$CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE" "${CLOUDSDK_CORE_ACCOUNT:-` + first + `}" ;;`,
+		// CONTROL ONLY: the settings read stalls 6 s before it answers.
+		`"config list") /bin/sleep 6; printf '{"auth":{"impersonate_service_account":"%s","access_token_file":"%s","credential_file_override":"%s"},"core":{"account":"%s"}}\n' "$CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT" "$CLOUDSDK_AUTH_ACCESS_TOKEN_FILE" "$CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE" "${CLOUDSDK_CORE_ACCOUNT:-` + first + `}" ;;`,
 		`"auth print-access-token") for word; do case "$word" in --*) ;; *) account=$word ;; esac; done; printf '` + stubTokenPrefix + `%s\n' "$account" ;;`,
 		`*) printf 'stub gcloud: unexpected command: %s\n' "$*" >&2; exit 2 ;;`,
 		"esac",

@@ -63,7 +63,8 @@ func newInstallRig(t *testing.T) *installRig {
 	if err := os.WriteFile(r.pid, []byte("4100\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\nif [ \"$2\" = is-active ]; then read -r state < " + r.active + "; echo \"$state\"; exit 0; fi\n" +
+	// CONTROL ONLY: every stand-in run stalls 2 s before it does anything.
+	script := "#!/bin/sh\n/bin/sleep 2\nif [ \"$2\" = is-active ]; then read -r state < " + r.active + "; echo \"$state\"; exit 0; fi\n" +
 		"if [ \"$2\" = show ] && [ \"$3\" = --property=Job ]; then if [ -e " + r.calls + ".job ]; then read -r job < " + r.calls + ".job; echo \"$job\"; fi; exit 0; fi\n" +
 		"if [ \"$2\" = show ]; then read -r pid < " + r.pid + "; echo \"$pid\"; exit 0; fi\n" +
 		"echo \"$*\" >> " + r.calls + "\n" +
