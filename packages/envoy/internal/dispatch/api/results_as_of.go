@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -29,21 +30,17 @@ func refuseResultsCommitAtCut(w http.ResponseWriter, r *http.Request) bool {
 
 // checkBlocksAtTheCut is checkBlocksOf at the cut ctx carries: every check block of the newest
 // version at the cut of artifact, the Verification document, parsed as the present read parses
-// the live text (checkBlocksOfRendering), with its issue and its reference. The version in which
-// the words of a check last changed, and their digest, come from what the block index recorded of
-// that version (versionAtTheCut). The text of a check's tree is the text that the index
-// recorded, as the present read takes it from the live text. Where the index recorded nothing of
-// a check, the answer leaves out the version and the digest (reason E), and checksAtTheCut leaves
-// out whether the words of each of its results moved. One batch sends the statements, and
-// nothing is read from the live document.
+// the live text (checkBlocksOfRendering), with its issue and its reference, and the version in
+// which its words last changed and their digest as the present read gave them then
+// (checkDigestsAtTheCut). The text of a check's tree is the text that the index recorded, as the
+// present read takes it from the live text. Where the index recorded nothing of a check, the
+// answer leaves out the version and the digest (reason E), and checksAtTheCut leaves out whether
+// the words of each of its results moved. One batch sends the statements, and nothing is read
+// from the live document.
 func (s *server) checkBlocksAtTheCut(ctx context.Context, artifact model.Artifact, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	markdown, _, recorded, err := s.versionAtTheCut(ctx, artifact.ID, true)
 	if err != nil {
 		return nil, fmt.Errorf("read the checks of %s at the cut: %w", artifact.ID, err)
-	}
-	indexed := make(map[string]model.CheckBlock, len(recorded.texts))
-	for id, text := range recorded.texts {
-		indexed[id] = model.CheckBlock{BlockID: id, Version: recorded.versions[id], SHA256: refs.BlockTextSum(text)}
 	}
 	checks, err := checkBlocksOfRendering(artifact.ID, markdown, recorded.texts, trees)
 	if err != nil {
@@ -51,6 +48,10 @@ func (s *server) checkBlocksAtTheCut(ctx context.Context, artifact model.Artifac
 	}
 	if len(checks) == 0 {
 		return []model.CheckBlock{}, nil
+	}
+	indexed, err := checkDigestsAtTheCut(markdown, checks, recorded)
+	if err != nil {
+		return nil, err
 	}
 	addressChecks(checks, artifact, indexed)
 	at := elementsOf("/checks")
@@ -61,6 +62,51 @@ func (s *server) checkBlocksAtTheCut(ctx context.Context, artifact model.Artifac
 		}
 	}
 	return checks, nil
+}
+
+// checkDigestsAtTheCut is, by block id, what the block index held at the cut of each of checks
+// that it recorded (recorded, its record of markdown, the stored text of the newest version at
+// the cut): the version in which the check's words last changed, and their digest as
+// document_blocks.text_sha256 held it then, which the present read gave. The index of a version
+// sums each block's slice of the rendering it indexed, the first block of each id
+// (refs.PlanBlocks), and records that slice only where the version changed the block's text: a
+// version that writes in this build's spelling a block whose recorded text another renderer
+// version spelled keeps the block's changed version and records no text, and the sum moves to
+// the new spelling (refs.BlockIndexing.KeepRespelled). So where this build renders markdown as it
+// is stored (docs.VersionRenderingBlocks), as it renders every version its renderer wrote, the
+// digest is the sum of the check's slice of that rendering (refs.BlockTextSum). Where it renders
+// markdown otherwise, another renderer version wrote it in a spelling whose blocks this build
+// cannot cut, and the digest is the sum of the text recorded, which is that version's own text of
+// each check it changed. markdown is rendered only where the index holds a check.
+func checkDigestsAtTheCut(markdown string, checks []model.CheckBlock, recorded blockIndex) (map[string]model.CheckBlock, error) {
+	indexed := make(map[string]model.CheckBlock, len(checks))
+	for _, check := range checks {
+		if _, held := recorded.texts[check.BlockID]; held {
+			indexed[check.BlockID] = model.CheckBlock{BlockID: check.BlockID, Version: recorded.versions[check.BlockID]}
+		}
+	}
+	if len(indexed) == 0 {
+		return indexed, nil
+	}
+	rendered, blocks, err := docs.VersionRenderingBlocks(markdown)
+	if err != nil {
+		return nil, err
+	}
+	if rendered != markdown {
+		for id, check := range indexed {
+			check.SHA256 = refs.BlockTextSum(recorded.texts[id])
+			indexed[id] = check
+		}
+		return indexed, nil
+	}
+	for _, block := range blocks {
+		// Only the first block of an id is summed: no sum is empty, so a later one is passed over.
+		if check, held := indexed[block.ID]; held && check.SHA256 == "" {
+			check.SHA256 = refs.BlockTextSum(rendered[block.From:block.To])
+			indexed[block.ID] = check
+		}
+	}
+	return indexed, nil
 }
 
 // checksAtTheCut completes checks, the checks of a read of the results at the cut ctx carries,

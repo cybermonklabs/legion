@@ -249,13 +249,13 @@ func TestPastTimeResultsWriteNothingAndAskGitHubNothing(t *testing.T) {
 // TestARespelledChecksWordsAtACutReadAsTheyReadThen: a check whose text another renderer version
 // stored keeps its changed version when the next version writes it in this build's spelling, and
 // its digest moves (refs.BlockIndexing.KeepRespelled); the block index records no text for it at
-// that version, so at a cut after it the check's digest is that of the other renderer's spelling,
-// the text recorded at its changed version. A result recorded against the check before the
-// respelling and one recorded after it each read check_words_moved false, at the present and at
-// a cut after both: the words moved only where the digest and the version both differ from the
-// result's, as the present read answers it (comparisonReader.answer). A version that rewords the
-// check moves both, and each result reads check_words_moved true at a cut after the rewording,
-// and still false at the cut before it.
+// that version, and at a cut after it the check's digest is that of this build's spelling, its
+// slice of the version at the cut, as the present read gave it then (checkDigestsAtTheCut). A
+// result recorded against the check before the respelling and one recorded after it each read
+// check_words_moved false, at the present and at a cut after both: the words moved only where the
+// digest and the version both differ from the result's, as the present read answers it
+// (comparisonReader.answer). A version that rewords the check moves both, and each result reads
+// check_words_moved true at a cut after the rewording, and still false at the cut before it.
 func TestARespelledChecksWordsAtACutReadAsTheyReadThen(t *testing.T) {
 	handler, database, served := resultsGitHubServed(t, map[string]bool{"acme/widgets": true}, nil, "main",
 		func(string, string) (int, string) { return http.StatusOK, "diverged" }, nil)

@@ -32,11 +32,15 @@ const versionAtTheCutStatement = `
 // newest version at the cut, N, which the artifact_versions shadow gives: each block id with the
 // latest row of document_block_texts at or before N. Its version is the version in which the text
 // of the block last changed at N, which document_blocks.changed_version held then, and its text
-// the block's text in N, whose digest document_blocks.text_sha256 held then (refs.BlockTextSum). A
-// version writes a row where it changes the text of a block, and a row with no text where it
-// deletes the block (refs.PlanBlocks): such a block is not read. The statement reads the rows
-// only where document_indexed_versions holds N: no record holds the blocks of a version that no
-// block-aware build indexed (migration 0121).
+// the text recorded at that version. That is the block's text in N, whose digest
+// document_blocks.text_sha256 held then (refs.BlockTextSum), unless a version after it wrote the
+// block in this build's spelling of a tree that another renderer version recorded, which keeps
+// the changed version, records no text and moves the digest to the new spelling
+// (refs.BlockIndexing.KeepRespelled, checkDigestsAtTheCut). A version writes a row where it
+// changes the text of a block, and a row with no text where it deletes the block
+// (refs.PlanBlocks): such a block is not read. The statement reads the rows only where
+// document_indexed_versions holds N: no record holds the blocks of a version that no block-aware
+// build indexed (migration 0121).
 const blockIndexAtTheCutStatement = `
 		select t.block_id, t.version, t.text
 		from (select max(v.number) as number from artifact_versions v where v.artifact_id = $1) n
