@@ -1,6 +1,7 @@
 package natscallout
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -74,10 +75,15 @@ func newHubRecordUser(t *testing.T) (testnats.StaticUser, string) {
 }
 
 // hubRecordStep is how long one connect or flush of the record may take: what is left of the test
-// binary's deadline, less the time its failure takes to report, so that the deadline is its only
-// bound (an hour under -timeout 0).
+// binary's deadline less testwait.Margin, the time its failure and cleanups take to run, so that the
+// deadline is its only bound; an hour under -timeout 0, which sets no deadline. A deadline already
+// within the margin leaves a millisecond, so the step fails at once rather than never.
 func hubRecordStep(t *testing.T) time.Duration {
-	return testwait.Bounded(t, time.Hour, 30*time.Second)
+	deadline, bounded := t.Deadline()
+	if !bounded {
+		return time.Hour
+	}
+	return max(time.Until(deadline)-testwait.Margin, time.Millisecond)
 }
 
 // recordHub reads the record of the server at url as the static user whose seed is seed, from the
@@ -155,11 +161,15 @@ type hubVerdicts struct {
 // request and every refusal the server queued before it has arrived too.
 func (r *hubRecord) read(t *testing.T, server monitoredHub, answerer string, closeAnswerer func()) hubVerdicts {
 	t.Helper()
-	require.Positive(t, connectionsNamed(t, server, answerer),
+	// One context bounds every read of the server's connections below, so a monitor read that
+	// stalls, in the request or in its body, fails by name at testwait's margin before the test
+	// binary's deadline, as the poll around it does.
+	ctx := testwait.Context(t)
+	require.Positive(t, connectionsNamed(t, ctx, server, answerer),
 		"the server lists no connection named %q, so the wait for its close would see nothing", answerer)
 	closeAnswerer()
 	testwait.Until(t, "the server to close its connection named "+answerer, func() (int, bool) {
-		open := connectionsNamed(t, server, answerer)
+		open := connectionsNamed(t, ctx, server, answerer)
 		return open, open == 0
 	})
 	require.NoError(t, r.conn.FlushTimeout(hubRecordStep(t)), "the record's flush behind the answers")
@@ -214,10 +224,11 @@ func (r *hubRecord) read(t *testing.T, server monitoredHub, answerer string, clo
 // process, or a testnats.HubProcess in a process of its own.
 type monitoredHub interface{ MonitorURL() string }
 
-// connectionsNamed is how many open connections server lists under name (its /connz).
-func connectionsNamed(t *testing.T, server monitoredHub, name string) int {
+// connectionsNamed is how many open connections server lists under name (its /connz), read under
+// ctx: a request or a body that does not finish by ctx's deadline fails the test naming the read.
+func connectionsNamed(t *testing.T, ctx context.Context, server monitoredHub, name string) int {
 	t.Helper()
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.MonitorURL()+"/connz?limit=100000", nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.MonitorURL()+"/connz?limit=100000", nil)
 	require.NoError(t, err)
 	response, err := http.DefaultClient.Do(request)
 	require.NoError(t, err, "read the server's connections")
