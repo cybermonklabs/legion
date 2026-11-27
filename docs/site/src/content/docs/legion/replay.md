@@ -752,6 +752,7 @@ Each recorded event of an issue changes the replay's copy of Dispatch only in th
 Where the replay applies an event late, the event does not change a field that an event after it in the record set first.
 So an architect's edit of its own issue that enters after a person's later edit of the same field leaves the person's value, as the record does.
 After each fact, a worker stub runs the outbox rows that the daemon's lanes would take.
+A start that hands its role work gives the role's claim the work's entry and its task, confirmed at once, as the daemon's outbox queues that task: the start's text, or, for the resume of a root that a person answered, the wait that the answer ended, from which the daemon writes the task at its send.
 An operator's retry of a phase's worker with a fresh session, which `legion claims retry --fresh-session` makes of a suspended claim, shows in the record as a launch of the claim and, a fraction of a second after it, a held phase released by the operator's retry where no hold stands.
 The daemon writes the launch first and the release after it, so the replay reads the two by their order in the log and not by their moments.
 The retry's launch is the last launch of the phase's role for the issue before the release line, within the visit that the retry restarts.
