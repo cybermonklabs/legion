@@ -481,11 +481,16 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		return DispatchArtifact{Key: event.IssueKey, ArtifactID: artifact.ArtifactID, Kind: kind, Version: artifact.Version, Reason: artifact.Reason,
 			Actor: dispatch.Actor(event.Actor), Mark: event.mark()}, nil
 	case "artifact.version":
+		// digest_owed and content_sha256 are Dispatch's hash gate (R1 of dispatch://INFRA-6065):
+		// a version of a Dispatch that sends neither, or of a document it gives no digest, decodes
+		// with both unset.
 		var artifact struct {
 			ArtifactID string `json:"artifact_id"`
 			Version    struct {
 				Number int `json:"number"`
 			} `json:"version"`
+			DigestOwed    *bool  `json:"digest_owed"`
+			ContentSHA256 string `json:"content_sha256"`
 		}
 		if err := json.Unmarshal(event.Payload, &artifact); err != nil {
 			return nil, fmt.Errorf("decode Dispatch artifact version payload: %w", err)
@@ -497,7 +502,34 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			return nil, fmt.Errorf("Dispatch artifact.version payload has no positive integer version.number")
 		}
 		return DispatchArtifact{Key: event.IssueKey, ArtifactID: artifact.ArtifactID, Kind: DispatchArtifactVersion, Version: artifact.Version.Number,
-			Mark: event.mark(), Actor: dispatch.Actor(event.Actor)}, nil
+			Mark: event.mark(), Actor: dispatch.Actor(event.Actor), DigestOwed: artifact.DigestOwed, ContentSHA256: artifact.ContentSHA256}, nil
+	case "artifact.digest":
+		// Dispatch's verdict on a version, which its fill writes after the version (R1 and R3 of
+		// dispatch://INFRA-6065): whether the approval of the document stands for it. Its
+		// approved_version is read for nothing: the version approved stays the one of the approval
+		// the gate applied.
+		var digest struct {
+			ArtifactID      string `json:"artifact_id"`
+			Version         int    `json:"version"`
+			ContentSHA256   string `json:"content_sha256"`
+			ApprovalCurrent *bool  `json:"approval_current"`
+			ApprovedSHA256  string `json:"approved_sha256"`
+		}
+		if err := json.Unmarshal(event.Payload, &digest); err != nil {
+			return nil, fmt.Errorf("decode Dispatch artifact digest payload: %w", err)
+		}
+		if digest.ArtifactID == "" {
+			return nil, fmt.Errorf("Dispatch artifact.digest payload has no artifact_id")
+		}
+		if digest.Version <= 0 {
+			return nil, fmt.Errorf("Dispatch artifact.digest payload has no positive integer version")
+		}
+		if digest.ApprovalCurrent == nil {
+			return nil, fmt.Errorf("Dispatch artifact.digest payload has no approval_current")
+		}
+		return DispatchArtifact{Key: event.IssueKey, ArtifactID: digest.ArtifactID, Kind: DispatchArtifactDigest, Version: digest.Version,
+			Verdict: digest.ApprovalCurrent, Mark: event.mark(), Actor: dispatch.Actor(event.Actor), ContentSHA256: digest.ContentSHA256,
+			ApprovedSHA256: digest.ApprovedSHA256}, nil
 	case "ask.opened":
 		ask, err := decodeAskPayload(event, unread)
 		if err != nil {

@@ -793,6 +793,13 @@ func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.Ga
 // so the gate's quiet record is what leaves refuseHandover's relay the one parked-decision of the
 // approval.
 func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact) (intake.Result, error) {
+	// An artifact.digest is Dispatch's verdict on a version (intake.DispatchArtifactDigest), which
+	// no gate records yet: it changes nothing, where the rules below would read it as a review.
+	if fact.Kind == intake.DispatchArtifactDigest {
+		e.logOnCommit(ctx, "workflow: no gate records Dispatch's verdict on a version yet, so an artifact.digest changes nothing",
+			"issue", fact.Key, "artifact", fact.ArtifactID, "version", fact.Version)
+		return intake.Result{}, nil
+	}
 	if err := e.basisArtifact(ctx, tx, fact); err != nil {
 		return intake.Result{}, err
 	}

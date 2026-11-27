@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  `fixtures/hash-gate/` holds the wire shapes of Dispatch's hash gate, the contract between the
+  Legion daemon and Dispatch for them (dispatch://INFRA-6065, R1): the `approval` of
+  `GET /api/v1/artifacts/{id}` with `current_sha256` and `digest_owed` (an approval that stands
+  below the latest version, and one whose digest is owed), one captured from a Dispatch that sends
+  neither, `artifact.version` with `digest_owed` true and false and `content_sha256`, and
+  `artifact.digest` (`artifact_id`, `name`, `version`, `content_sha256`, `approval_current`, and
+  the optional `approved_version` and `approved_sha256`). Its README names each file, the spec
+  clause it serves and the actor of each event. The daemon's readers decode these files in their
+  tests, and dispatch://INFRA-1253's emission test compares Dispatch's output with them. No
+  TypeScript or OpenAPI shape changes here: dispatch://INFRA-1253 adds them.
+time: 2026-11-27T20:06:43Z
+custom:
+    Issue: INFRA-6065

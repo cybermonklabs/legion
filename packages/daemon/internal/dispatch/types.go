@@ -351,6 +351,13 @@ var SettlementActor = Actor{Kind: "system", ID: "document-settlement"}
 // recorded before it kept the sequence, and from a Dispatch that predates it. By is who gave the
 // review State shows (an approval or a changes request), zero when Dispatch names nobody.
 //
+// ContentSHA256 is the SHA-256 of the text of the version the latest review reviewed, which
+// Dispatch pinned when it recorded the review, empty when it sent none. CurrentSHA256 and
+// DigestOwed are Dispatch's hash-gate verdict on the latest version (R1 of dispatch://INFRA-6065):
+// the latest version's digest, nil while it is owed and from a Dispatch that sends none, and
+// whether Dispatch still owes that digest, nil from a Dispatch that sends no digest_owed, so an
+// absent field reads apart from false. Stands reads them.
+//
 // Primary, Role and Slug are what the document is on its issue, which is how a design-gate step
 // finds the document it binds to (api's gateRegister): Primary is the issue's primary document,
 // Role the part it plays beside it (ArtifactRoleVerification, ArtifactRoleDecisions, or "" for
@@ -369,6 +376,9 @@ type Approval struct {
 	Primary       bool
 	Role          string
 	Slug          string
+	ContentSHA256 string
+	CurrentSHA256 *string
+	DigestOwed    *bool
 }
 
 // ArtifactRoleVerification and ArtifactRoleDecisions are two of the parts Dispatch records a
@@ -384,12 +394,24 @@ const (
 )
 
 // ApprovedLatest is the version Dispatch shows approved when that approval is of its latest
-// version, and 0 otherwise.
+// version, and 0 otherwise. It is today's rule of Stands, for a Dispatch that sends no verdict.
 func (a Approval) ApprovedLatest() int {
 	if a.State == "approved" && a.Version != nil && *a.Version == a.LatestVersion {
 		return *a.Version
 	}
 	return 0
+}
+
+// Stands says whether Dispatch's approval of the document stands for its latest version, the one
+// question each reader that asks it asks here (R5 of dispatch://INFRA-6065). Where Dispatch sends
+// digest_owed, the approval stands when State is approved and Dispatch owes no digest, whatever
+// the version approved, which stays Version. Where it sends none, it stands only when it is an
+// approval of the latest version (ApprovedLatest).
+func (a Approval) Stands() bool {
+	if a.DigestOwed != nil {
+		return a.State == "approved" && !*a.DigestOwed
+	}
+	return a.ApprovedLatest() != 0
 }
 
 // ChangesRequestedLatest is the version of the changes request Dispatch shows on its latest version
@@ -406,11 +428,11 @@ func (a Approval) ChangesRequestedLatest() (int, string) {
 	return *a.Version, reason
 }
 
-// LatestReviewer is who gave the review Dispatch shows on its latest version, an approval
-// (ApprovedLatest) or a changes request (ChangesRequestedLatest), and zero when the latest version
-// has neither.
+// LatestReviewer is who gave the review Dispatch shows on its latest version, an approval that
+// stands for it (Stands) or a changes request (ChangesRequestedLatest), and zero when the latest
+// version has neither.
 func (a Approval) LatestReviewer() Actor {
-	if changes, _ := a.ChangesRequestedLatest(); a.ApprovedLatest() == 0 && changes == 0 {
+	if changes, _ := a.ChangesRequestedLatest(); !a.Stands() && changes == 0 {
 		return Actor{}
 	}
 	return a.By

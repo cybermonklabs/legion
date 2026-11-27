@@ -358,18 +358,21 @@ type MergeHoldsChanged struct {
 
 func (MergeHoldsChanged) namedIssue() (string, bool) { return "", false }
 
-// DispatchArtifactKind identifies the three Dispatch artifact observations that affect a gate.
+// DispatchArtifactKind identifies the four Dispatch artifact observations that affect a gate.
 type DispatchArtifactKind string
 
 const (
 	DispatchArtifactApproved         DispatchArtifactKind = "approved"
 	DispatchArtifactChangesRequested DispatchArtifactKind = "changes_requested"
 	DispatchArtifactVersion          DispatchArtifactKind = "version"
+	// DispatchArtifactDigest is Dispatch's verdict on a version (artifact.digest): whether the
+	// approval of the document stands for that version (DispatchArtifact.Verdict).
+	DispatchArtifactDigest DispatchArtifactKind = "digest"
 )
 
-// DispatchArtifact records one review or version event for a registered design document, from a
-// live event or from the daemon's own read of Dispatch's approval (the gate seed). Every source
-// applies alike: a key per review, not the source, keeps the architect from hearing one changes
+// DispatchArtifact records one review, version or digest event for a registered design document,
+// from a live event or from the daemon's own read of Dispatch's approval (the gate seed). Every
+// source applies alike: a key per review, not the source, keeps the architect from hearing one changes
 // request twice (the workflow's tellChanges). Mark places the event in the issue's Dispatch event log: the event's
 // sequence and Dispatch's time of it, from the event itself, or, for a review, from the read's
 // latest review (dispatch.Approval's Seq and At), whichever of them that read gave. A version the
@@ -409,6 +412,23 @@ type DispatchArtifact struct {
 	// (NeedsEventLog). It is 0 when no later event changed the status, and for every fact
 	// nothing read the log for.
 	StatusChangedSeq int64
+	// The hash-gate fields (R1 of dispatch://INFRA-6065): each nil or zero where the event or the
+	// read sent none, which is a Dispatch that gives no verdict and keeps today's rules.
+	// DigestOwed is an artifact.version's or a read's digest_owed, whether Dispatch still owes the
+	// digest of the version. Verdict is a digest's approval_current, or a read's verdict at its
+	// latest version: whether the approval stands for that version. VerdictMark is a read's mark of
+	// that verdict; a digest's verdict takes the event's Mark. Latest is a read's latest_version.
+	// ContentSHA256 is the version's digest an artifact.version or an artifact.digest names,
+	// CurrentSHA256 the latest version's a read names, and ApprovedSHA256 the approved version's an
+	// artifact.digest names. A digest's approved_version is read for nothing: the version approved
+	// stays the one of the approval the gate applied.
+	DigestOwed     *bool
+	Verdict        *bool
+	VerdictMark    record.EventMark
+	Latest         int
+	ContentSHA256  string
+	CurrentSHA256  string
+	ApprovedSHA256 string
 }
 
 func (f DispatchArtifact) namedIssue() (string, bool) { return f.Key, true }
@@ -1465,6 +1485,14 @@ type GateRegistered struct {
 	ReviewedBy              dispatch.Actor
 	Basis                   *record.GateBasis
 	ViewOf                  string
+	// DigestOwed, Verdict, VerdictMark, ContentSHA256 and CurrentSHA256 are what the read found of
+	// Dispatch's hash-gate verdict (R1 of dispatch://INFRA-6065), as DispatchArtifact's fields of the
+	// same names say: each nil or zero where the read found none.
+	DigestOwed    *bool
+	Verdict       *bool
+	VerdictMark   record.EventMark
+	ContentSHA256 string
+	CurrentSHA256 string
 	// By and Generation are the architect's register_gate (api's gateRegister): its claim and the
 	// root's generation its route read, which the workflow judges again under the fact lock
 	// (ArchitectRequest). A registration the workflow makes itself carries neither.

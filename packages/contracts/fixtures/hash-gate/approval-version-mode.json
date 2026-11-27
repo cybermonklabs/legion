@@ -1,0 +1,22 @@
+{
+  "issue_key": "INFRA-1098",
+  "slug": "spec",
+  "primary": true,
+  "role": null,
+  "approval": {
+    "state": "approved",
+    "latest_version": 180,
+    "version": 180,
+    "by": {
+      "kind": "user",
+      "id": "person@example.com",
+      "proven": true
+    },
+    "at": "2026-11-27T16:24:08.939994Z",
+    "seq": 1477,
+    "ask_id": "f94ccb9f-2561-404d-8062-7fbafb64b874",
+    "content_sha256": "f5294a90ce06985da0b45ea2e8b4ec99eb106f5df0d03c343878119e5464542c",
+    "content_sha256_source": "insert",
+    "kind": "person"
+  }
+}

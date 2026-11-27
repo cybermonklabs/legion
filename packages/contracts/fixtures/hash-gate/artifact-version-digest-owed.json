@@ -1,0 +1,33 @@
+{
+  "id": 9040,
+  "issue_key": "ACME-7",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 40,
+  "type": "artifact.version",
+  "actor": {
+    "kind": "session",
+    "id": "session-architect"
+  },
+  "notify": true,
+  "created_at": "2026-11-27T18:00:00.000000Z",
+  "payload": {
+    "artifact_id": "e470eab3-ee84-4cbb-a5f9-b8b117610f94",
+    "diff": "",
+    "name": "spec.md",
+    "version": {
+      "authors": [
+        {
+          "id": "session-architect",
+          "kind": "session"
+        }
+      ],
+      "created_at": "2026-11-27T18:00:00.000000Z",
+      "named": true,
+      "number": 8,
+      "summary": "Reword the rollout section"
+    },
+    "digest_owed": true,
+    "content_sha256": "3cd63d61a307828c936c8f57e230973fa538f32a7a23bf04e068b872673202f2"
+  }
+}
