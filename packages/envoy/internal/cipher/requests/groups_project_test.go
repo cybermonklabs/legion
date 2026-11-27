@@ -51,7 +51,7 @@ func TestAGroupsSecretOfAPrivateProject(t *testing.T) {
 	answerFrom(t, m, dispatchRows(publicTeam))
 	nameProjects(t, m, enrollmentID, privProject)
 
-	req, err := m.Create(ctx, enrollmentID, signRequest(t, m, key, "PRIV work", "PRIV_GROUP_KEY"), "", nil)
+	req, err := m.Create(ctx, enrollmentID, signRequest(t, m, key, "PRIV work", "PRIV_GROUP_KEY"), "")
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("the request for PRIV_GROUP_KEY = %+v, %v; want pending on the group", req, err)
 	}

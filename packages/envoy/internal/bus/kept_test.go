@@ -55,6 +55,7 @@ func keptEnvelope(role, eventID string) contracts.Envelope {
 // last_by_subj: nothing stored on the subject is nats.ErrMsgNotFound, and a subject written three
 // times answers the newest of the three, with its own sequence and subject.
 func TestLastStoredMessageAnswersTheNewestMessageOnTheSubject(t *testing.T) {
+	t.Parallel()
 	client := keptClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -93,6 +94,7 @@ func TestLastStoredMessageAnswersTheNewestMessageOnTheSubject(t *testing.T) {
 // listener that could not deliver that message writes its copy under one id (KeptMsgID), so the
 // second write is collapsed into the first and the stream still holds one message on the subject.
 func TestPublishStoredAsKeepsTheEnvelopesOwnTopicAndCollapsesRepeats(t *testing.T) {
+	t.Parallel()
 	client := keptClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -136,6 +138,7 @@ func TestPublishStoredAsKeepsTheEnvelopesOwnTopicAndCollapsesRepeats(t *testing.
 // error wraps ErrCursorMoved and leaves the cursor where it was; a write at the sequence the first
 // returned lands.
 func TestPublishCursorAtRefusesAWriteWhoseCursorMoved(t *testing.T) {
+	t.Parallel()
 	client := keptClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -180,6 +183,7 @@ func TestPublishCursorAtRefusesAWriteWhoseCursorMoved(t *testing.T) {
 // no copy on is not on the list either, which is what makes a deployment with no kept copy cost
 // one round trip a pass.
 func TestKeptRoleLanesAnswersEveryRoleWithACopyOnItsLane(t *testing.T) {
+	t.Parallel()
 	client := keptClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

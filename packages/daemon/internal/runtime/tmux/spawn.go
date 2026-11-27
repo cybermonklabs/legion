@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -155,33 +156,52 @@ func validateSpawnSpec(spec runtime.SpawnSpec, providerKeys []string, operatorEn
 }
 
 // workspaceDir is where spec's agent works, under the daemon's state directory: the issue's jj
-// workspace the daemon provisioned at `<state_dir>/workspaces/<owner>/<repo>/<issue>`
-// (workspace.Location), which must exist; for a configuration with no repository,
-// `<state_dir>/workspaces/<issue>`, made here; and for the controller, which works no checkout,
-// `<state_dir>/controller`, made here.
+// workspace the daemon provisioned (WorkspaceDir), which must exist; for a configuration with no
+// repository, `<state_dir>/workspaces/<issue>`, made here; and for the controller, which works no
+// checkout, `<state_dir>/controller`, made here.
 func (r *Runtime) workspaceDir(spec runtime.SpawnSpec) (string, error) {
-	if spec.Role == claim.RoleController || spec.Repository.IsZero() {
-		dir := filepath.Join(r.stateDir, "workspaces", spec.Issue)
-		if spec.Role == claim.RoleController {
-			dir = filepath.Join(r.stateDir, controllerWindow)
-		}
+	if spec.Role == claim.RoleController {
+		dir := filepath.Join(r.stateDir, controllerWindow)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return "", fmt.Errorf("the workspace: %w", err)
 		}
 		return dir, nil
 	}
-	working, err := workspace.Location(r.stateDir, spec.Repository, spec.Issue)
+	dir, err := WorkspaceDir(r.stateDir, spec.Repository, spec.Issue)
 	if err != nil {
 		return "", err
 	}
-	info, err := os.Stat(working.Dir)
+	if spec.Repository.IsZero() {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return "", fmt.Errorf("the workspace: %w", err)
+		}
+		return dir, nil
+	}
+	info, err := os.Stat(dir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return "", fmt.Errorf("workspace %s does not exist: the issue's workspace was never provisioned", working.Dir)
+		return "", fmt.Errorf("workspace %s does not exist: the issue's workspace was never provisioned", dir)
 	case err != nil:
 		return "", fmt.Errorf("the workspace: %w", err)
 	case !info.IsDir():
-		return "", fmt.Errorf("workspace %s is not a directory", working.Dir)
+		return "", fmt.Errorf("workspace %s is not a directory", dir)
+	}
+	return dir, nil
+}
+
+// WorkspaceDir is the directory a pane of issue's role starts in under the state directory
+// stateDir (workspaceDir, whose `cd` is the pane's first command): the issue's jj workspace of
+// repository at `<state_dir>/workspaces/<owner>/<repo>/<issue>` (workspace.Location), and
+// `<state_dir>/workspaces/<issue>` for a configuration with no repository. It reads and makes
+// nothing. The workflow engine names it in every task it composes (workflow.Config.WorkspaceDir,
+// which the daemon reads from here).
+func WorkspaceDir(stateDir string, repository ghrepo.Repository, issue string) (string, error) {
+	if repository.IsZero() {
+		return filepath.Join(stateDir, "workspaces", issue), nil
+	}
+	working, err := workspace.Location(stateDir, repository, issue)
+	if err != nil {
+		return "", err
 	}
 	return working.Dir, nil
 }

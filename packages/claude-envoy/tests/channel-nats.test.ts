@@ -1,7 +1,7 @@
 // dialChannelNats: the channel server's NATS connection, opened with the session's credential and,
 // where that is the broker token, kept renewed for the connection's life and stopped on request.
 import { afterEach, expect, jest, spyOn, test } from "bun:test"
-import { writeFile } from "node:fs/promises"
+import { mkdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential"
 import { NATS_DIAL_TOKEN_DROPPED } from "@legion/envoy-client/nats-connection"
@@ -20,6 +20,7 @@ import {
   nkeys,
 } from "nats"
 import { dialChannelNats } from "../src/channel-connection"
+import { channelConnectionName } from "../src/installed-build"
 
 /** Each row's home, removed after it, failed or not. */
 const makeDirectory = temporaryDirectories("channel-nats")
@@ -613,4 +614,59 @@ test("dialChannelNats dials again until it stops: a stop during a wait ends the 
   setTimeout(after.resolve, 400)
   await after.promise
   expect(dials).toBe(1)
+})
+
+// legacy-subjects-gate.sh reads each connection's build from the end of the name the hub's census of
+// connections lists: the build-commit stamp the worker image writes beside the bundle, else the
+// release Claude Code or Codex installed, else none.
+test("the connection name the server sees ends with the channel's build", async () => {
+  const commit = "0123456789abcdef0123456789abcdef01234567"
+  const image = join(makeDirectory(), "dist")
+  await mkdir(image, { recursive: true })
+  await writeFile(join(image, "build-commit"), `${commit}\n`)
+  const rows = [
+    {
+      name: channelConnectionName(
+        "claude-envoy-channel-ses_build",
+        join(image, "envoy-channel.js"),
+        "@sjawhar/claude-envoy",
+      ),
+      want: `claude-envoy-channel-ses_build legion@${commit}`,
+    },
+    {
+      name: channelConnectionName(
+        "codex-envoy-channel-ses_build",
+        "/home/me/.codex/plugins/cache/legion-plugins/codex-envoy/6.0.0/dist/envoy-channel.js",
+        "@sjawhar/codex-envoy",
+      ),
+      want: "codex-envoy-channel-ses_build @sjawhar/codex-envoy@6.0.0",
+    },
+    {
+      name: channelConnectionName(
+        "claude-envoy-channel-ses_build",
+        "/work/legion/packages/claude-envoy/dist/envoy-channel.js",
+        "@sjawhar/claude-envoy",
+      ),
+      want: "claude-envoy-channel-ses_build",
+    },
+  ]
+  for (const row of rows) {
+    const seen: string[] = []
+    await dialChannelNats(
+      {
+        natsUrls: ["nats://nats.test:4222"],
+        natsServersSetting: "ENVOY_NATS_URL",
+        natsCredential: { kind: "none" },
+      },
+      row.name,
+      () => {},
+      async (options: ConnectionOptions): Promise<NatsConnection> => {
+        seen.push(options.name ?? "")
+        throw NatsError.errorForCode(ErrorCode.ConnectionRefused)
+      },
+      undefined,
+      DIAL_ONCE,
+    ).catch(() => undefined)
+    expect(seen).toEqual([row.want])
+  }
 })

@@ -22,8 +22,8 @@ func TestTheHeldWordsThatTakeTheBlockedArmAreTheSixTheLadderReadsBeforeTheLinks(
 	if !slices.Equal(before, want) {
 		t.Errorf("the words HeldBefore reads before dispatch_blocker = %v, want %v", before, want)
 	}
-	for _, word := range []HeldReason{HeldDispatchBlocker, HeldChildrenFirst, HeldAcceptedAncestor, HeldAtWork,
-		HeldUnclassified, "", "not_a_word"} {
+	for _, word := range []HeldReason{HeldDispatchBlocker, HeldChildrenFirst, HeldAcceptedAncestor, HeldChildrenBeforeRetro,
+		HeldTaskStopped, HeldAtWork, HeldUnclassified, "", "not_a_word"} {
 		if HeldBefore(word, HeldDispatchBlocker) {
 			t.Errorf("HeldBefore(%q, dispatch_blocker) = true, want false", word)
 		}

@@ -147,9 +147,7 @@ func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	if _, err := locker.Exec(ctx, `select 1 from duty_holds where name = $1 for update`, holdName); err != nil {
 		t.Fatalf("lock the hold's row: %v", err)
 	}
-	if waiting := storetest.WaitForLockWaiters(t, locker, 1, 5*time.Second); waiting < 1 {
-		t.Fatal("no renewal queued behind the locked row")
-	}
+	storetest.WaitForLockWaiters(t, locker, 1)
 
 	waitLost(t, hold, 2*opts.TTL)
 	var (

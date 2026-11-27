@@ -67,7 +67,7 @@ for (const entry of environ.split("\0")) {
 }
 if (Object.keys(env).length === 0) usage(`${environFile} holds no environment`);
 
-const { envoy } = sessionSettings(sessionConfigFile("codex", env), env, {
+const { envoy } = await sessionSettings(sessionConfigFile("codex", env), env, {
   cwd,
   session: () => session,
 });

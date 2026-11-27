@@ -27,6 +27,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -199,6 +200,16 @@ const ForwardFenceAge = 55 * time.Minute
 // it, so the fence is one rule.
 func ResolutionTooOld(resolvedAt, now time.Time) bool {
 	return !resolvedAt.IsZero() && now.Sub(resolvedAt) >= ForwardFenceAge
+}
+
+// ValidClaimKey reports whether key is the key a claim can be keyed by (store.RoleClaimKeyOf):
+// a role token a claim can name (Valid), alone or, for a free-form role under a project, after
+// that project's key and a dot (contracts.RoleClaimKey, read back by contracts.ParseRoleClaimKey).
+// The listener's kept lane asks it of the claim key a give-up path holds, so a role message under
+// a key no claim can carry is kept for none.
+func ValidClaimKey(key string) bool {
+	project, role := contracts.ParseRoleClaimKey(key)
+	return Valid(role) && contracts.RoleClaimKey(project, role) == key
 }
 
 // ResolveHolder resolves role's holder within ctx. It reads the role's claim record from claims

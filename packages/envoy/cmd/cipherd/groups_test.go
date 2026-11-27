@@ -73,7 +73,7 @@ func TestEveryDecisionSiteAdmitsAMember(t *testing.T) {
 	reader := newGroupReader(cfg, iam.URL, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: podBearer}))
 
 	local := secrets.NewLocal(policytest.Secret("TEAM_TOKEN", record.GroupPrefix+wiredGroup, policy.TierAgent, "team-v1"))
-	current, err := loadFirstPolicy(t.Context(), policyLoader(cfg, policytest.Store(local), proxyrules.Rules{}, metrics.New(), reader), reader, metrics.New(), firstGroupReadsWait)
+	current, err := loadFirstPolicy(t.Context(), policyLoader(cfg, policytest.Store(local), policy.Profiles{}, metrics.New(), reader), reader, metrics.New(), firstGroupReadsWait)
 	if err != nil {
 		t.Fatalf("loadFirstPolicy: %v", err)
 	}

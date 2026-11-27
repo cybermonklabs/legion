@@ -1,7 +1,6 @@
 package prompts
 
 import (
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -43,16 +42,8 @@ func TestTheControllersPromptIsItsRolePartThenItsLaunchsPart(t *testing.T) {
 			if want := []string{shared, filepath.Join(stateDir, "prompts", "go", tc.part)}; !slices.Equal(paths, want) {
 				t.Fatalf("paths = %q, want %q", paths, want)
 			}
-			text := ""
-			for _, path := range paths {
-				body, err := os.ReadFile(path)
-				if err != nil {
-					t.Fatalf("read %s: %v", path, err)
-				}
-				text += string(body)
-			}
 			// A sentence is matched whatever the file's line wrapping.
-			text = strings.Join(strings.Fields(text), " ")
+			text := foldWhitespace(readJoined(t, paths...))
 			for _, want := range tc.says {
 				if !strings.Contains(text, want) {
 					t.Errorf("the prompt does not say %q", want)

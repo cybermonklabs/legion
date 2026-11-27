@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,15 +13,18 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -56,6 +61,19 @@ func createReferenceAPIComment(t *testing.T, handler http.Handler, issueKey, bod
 	return decodeBody[model.Comment](t, response)
 }
 
+// createReferenceAPIAsk asks question on the issue as alice with two options, and returns the
+// ask. Its parts are its question, b1, and its options, b2 and b3.
+func createReferenceAPIAsk(t *testing.T, handler http.Handler, issueKey, question string) model.Ask {
+	t.Helper()
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/asks", map[string]any{
+		"question": question, "options": []map[string]string{{"label": "Yes"}, {"label": "No"}},
+	}, "alice")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create reference ask: status=%d body=%s", response.Code, response.Body.String())
+	}
+	return decodeBody[model.Ask](t, response)
+}
+
 func issueReferencesRequest(t *testing.T, handler http.Handler, issueKey, etag string) *httptest.ResponseRecorder {
 	t.Helper()
 	return issueReferencesQueryRequest(t, handler, issueKey, "", etag)
@@ -79,7 +97,12 @@ func issueReferencesQueryRequest(t *testing.T, handler http.Handler, issueKey, q
 	return response
 }
 
+// An issue's references read answers in members each document the issue's own content links to,
+// at depth 1 and with the node it links from as its via, under an ETag that a conditional read
+// matches and a new version of the member changes. Diagram PNG, which only that member links to,
+// is two hops from the issue and no member, since the read reads one hop.
 func TestIssueReferencesClosureDepthViaAndETag(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
@@ -104,15 +127,12 @@ func TestIssueReferencesClosureDepthViaAndETag(t *testing.T) {
 		t.Fatalf("get issue references: status=%d body=%s", first.Code, first.Body.String())
 	}
 	firstValue := decodeBody[model.IssueReferences](t, first)
-	if firstValue.Truncated || len(firstValue.Members) != 2 {
-		t.Fatalf("issue references = %#v; want two untruncated members", firstValue)
+	if firstValue.Truncated || len(firstValue.Members) != 1 {
+		t.Fatalf("issue references = %#v; want one untruncated member, Design notes, and not Diagram PNG two hops away", firstValue)
 	}
-	firstMember, secondMember := firstValue.Members[0], firstValue.Members[1]
+	firstMember := firstValue.Members[0]
 	if firstMember.Artifact.ID != design.ID || firstMember.Depth != 1 || firstMember.Via != (model.ReferenceVia{Kind: "comment", ID: comment.ID}) {
-		t.Fatalf("first reference member = %#v; want Design notes through comment %q", firstMember, comment.ID)
-	}
-	if secondMember.Artifact.ID != diagram.ID || secondMember.Artifact.Project != "OPS" || secondMember.Depth != 2 || secondMember.Via != (model.ReferenceVia{Kind: "artifact", ID: design.ID}) {
-		t.Fatalf("second reference member = %#v; want cross-project Diagram PNG through Design notes", secondMember)
+		t.Fatalf("reference member = %#v; want Design notes at depth 1 through comment %q", firstMember, comment.ID)
 	}
 	firstETag := first.Header().Get("ETag")
 	if firstETag == "" {
@@ -136,8 +156,8 @@ func TestIssueReferencesClosureDepthViaAndETag(t *testing.T) {
 		t.Fatalf("read changed issue references: status=%d body=%s", second.Code, second.Body.String())
 	}
 	secondValue := decodeBody[model.IssueReferences](t, second)
-	if secondValue.Truncated || len(secondValue.Members) != 1 || secondValue.Members[0].Artifact.ID != design.ID {
-		t.Fatalf("references after removing link = %#v; want only Design notes", secondValue)
+	if secondValue.Truncated || len(secondValue.Members) != 1 || secondValue.Members[0].Artifact.ID != design.ID || secondValue.Members[0].Depth != 1 {
+		t.Fatalf("references after a new version of Design notes = %#v; want only Design notes, at depth 1", secondValue)
 	}
 	if second.Header().Get("ETag") == firstETag {
 		t.Fatal("reference ETag did not change after linked document version changed")
@@ -145,6 +165,7 @@ func TestIssueReferencesClosureDepthViaAndETag(t *testing.T) {
 }
 
 func TestIssueReferencesExcludeOwnArtifactsAndDanglingTargets(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
@@ -160,38 +181,50 @@ func TestIssueReferencesExcludeOwnArtifactsAndDanglingTargets(t *testing.T) {
 	}
 }
 
+// A chain of ten documents, each linking to the next, that the issue's comment enters at its first
+// answers that first document alone, at depth 1, and truncated false: the read reads one hop, so it
+// is never cut. The test keeps the name it had when the read walked eight hops and marked a ninth
+// truncated, the name plan.md's and verification.md's lists of checks give it.
 func TestIssueReferencesTruncateBeyondDepthEight(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
+	labels := map[string]string{}
+	var first model.Artifact
 	for index := 1; index <= 10; index++ {
 		name := "Document " + strconv.Itoa(index)
 		content := "# " + name + "\n"
 		if index < 10 {
 			content += "dispatch://CORE/artifact/document-" + strconv.Itoa(index+1) + "\n"
 		}
-		createProjectDocument(t, handler, "CORE", name, content)
+		document := createProjectDocument(t, handler, "CORE", name, content)
+		labels[document.ID] = "the chain's document " + strconv.Itoa(index)
+		if index == 1 {
+			first = document
+		}
 	}
-	createReferenceAPIComment(t, handler, issue.Key, "dispatch://CORE/artifact/document-1")
+	comment := createReferenceAPIComment(t, handler, issue.Key, "dispatch://CORE/artifact/document-1")
+	labels[comment.ID] = "the issue's comment"
 
 	response := issueReferencesRequest(t, handler, issue.Key, "")
 	if response.Code != http.StatusOK {
-		t.Fatalf("get truncated issue references: status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("get issue references: status=%d body=%s", response.Code, response.Body.String())
 	}
 	value := decodeBody[model.IssueReferences](t, response)
-	if !value.Truncated || len(value.Members) != 8 {
-		t.Fatalf("truncated issue references = %#v; want eight members with truncation", value)
+	if value.Truncated {
+		t.Error("the answer is truncated; a read of one hop is never cut")
 	}
-	for index, member := range value.Members {
-		if member.Depth != index+1 {
-			t.Fatalf("member %d depth = %d; want %d", index, member.Depth, index+1)
-		}
+	want := []model.ReferenceMember{{Artifact: model.Artifact{ID: first.ID}, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment.ID}}}
+	if got, want := referenceMemberLines(value.Members, labels), referenceMemberLines(want, labels); !slices.Equal(got, want) {
+		t.Errorf("members hold\n\t%s\nwant the chain's first document alone, at depth 1\n\t%s", shownLines(got), shownLines(want))
 	}
 }
 
 // ?versions=all is the full answer, byte for byte and under the same ETag, as no parameter is;
 // any value but all and latest is refused, and so is a versions given more than once.
 func TestIssueReferencesVersionsAllIsTheFullAnswerAndOtherValuesAreRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
@@ -225,6 +258,7 @@ func TestIssueReferencesVersionsAllIsTheFullAnswerAndOtherValuesAreRefused(t *te
 }
 
 func TestArtifactReferencesListOutgoingAndReferencedBy(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
@@ -247,6 +281,7 @@ func TestArtifactReferencesListOutgoingAndReferencedBy(t *testing.T) {
 }
 
 func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	// Authentication comes before the versions parameter: a value the route refuses still
 	// answers 401 to a caller with no identity.
@@ -259,12 +294,31 @@ func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
 	}
 }
 
-// A closure walk that runs past referencesClosureBound answers 503 REFERENCES_TIMEOUT at about
-// that bound and gives its connection back. refs is locked in another connection, so the walk,
-// which reads refs, waits however fast it would run, and the bound is what ends it. The control
-// is the first read, before the lock: the same request answers 200.
+// A closure read that runs past referencesClosureBound answers 503 REFERENCES_TIMEOUT naming that
+// bound, and gives its connection back. refs is locked in another connection until the test ends,
+// so the read, which reads refs, waits however fast it would run, and only the bound can end it: a
+// read with no bound never answers, and the wait for the answer fails. The answer names the
+// constant whatever ended the read, so the read is held to its bound from both sides:
+//   - From below, on the test's own clock around the request: the read starts inside the request,
+//     and the bound ends it only once the bound has passed since it started, less the millisecond
+//     setStatementBudget rounds down: the statement it cuts was given what was left of the bound,
+//     and the budget is spent (errClosureBudgetSpent) only with less than a millisecond left. A
+//     loaded machine only lengthens that clock, so it cannot fail a read that keeps its bound.
+//   - On the server's own statements on the read's connection (requireReadEndedAtItsBudget): its
+//     first budget statement gives no more than the bound; each later budget statement gives no
+//     more than what is left of the bound once the read has run from its first budget statement
+//     to the end of the statement before; from its last budget statement to the rollback
+//     boundedClosure sends once the read has ended, the read runs at least the budget that
+//     statement gave, less a millisecond; and it ends on Postgres's statement timeout, which the
+//     budget sets, not on the context. Each of these holds however late this process runs the
+//     product's goroutines, so the test's own setup and scheduling count for nothing.
+//
+// A read ended sooner or later than its bound fails. The control is the first read, before the
+// lock: the same request answers 200.
 func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	t.Parallel()
+	span := &requestSpan{}
+	handler, database, _ := newTestServer(t, testServerOptions{tracer: span})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
 	if response := issueReferencesRequest(t, handler, issue.Key, ""); response.Code != http.StatusOK {
@@ -272,25 +326,668 @@ func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
 	}
 	holdLock(t, database, "lock table refs in access exclusive mode")
 	acquired := database.Pool.Stat().AcquiredConns()
-	started := time.Now()
-	response := issueReferencesRequest(t, handler, issue.Key, "")
-	took := time.Since(started)
+	span.arm()
+	type answer struct {
+		response *httptest.ResponseRecorder
+		took     time.Duration
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		began := time.Now()
+		response := issueReferencesRequest(t, handler, issue.Key, "")
+		answered <- answer{response: response, took: time.Since(began)}
+	}()
+	got := testwait.Receive(t, "the answer of references past the bound while refs stays locked", answered)
+	response := got.response
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("references past the bound: status=%d body=%s, want 503", response.Code, response.Body.String())
 	}
 	if refusal := decodeBody[apiErrorBody](t, response); refusal.Code != "REFERENCES_TIMEOUT" || !strings.Contains(refusal.Error, referencesClosureBound.String()) {
 		t.Errorf("references past the bound answered %s, want REFERENCES_TIMEOUT naming the %s bound", response.Body.String(), referencesClosureBound)
 	}
-	if took < referencesClosureBound || took > referencesClosureBound+3*time.Second {
-		t.Errorf("references past the bound answered after %s, want about its %s bound", took, referencesClosureBound)
+	if lower := referencesClosureBound - time.Millisecond; got.took < lower {
+		t.Errorf("references past the bound answered %s after the request began, before %s, its %s bound less the millisecond its budget rounds down", got.took, lower, referencesClosureBound)
 	}
-	var conns int32
-	testwait.Holds(2*time.Second, 50*time.Millisecond, func() bool {
-		conns = database.Pool.Stat().AcquiredConns()
-		return conns <= acquired
+	requireReadEndedAtItsBudget(t, span, "references past the bound")
+	testwait.UntilPolling(t, 50*time.Millisecond, fmt.Sprintf("the walk to give its connection back: the pool's acquired connections down to the %d it held before the request", acquired), func() (int32, bool) {
+		conns := database.Pool.Stat().AcquiredConns()
+		return conns, conns <= acquired
 	})
-	if conns > acquired {
-		t.Errorf("the pool holds %d acquired connections after the answer, more than the %d it held before the request: the walk kept its connection", conns, acquired)
+}
+
+// requestSpan is a tracer on the server's pool (testServerOptions.tracer) that reads one bounded
+// closure read on the server's own statements, from the hooks pgx calls as each starts and ends:
+// from the read's first budget statement after arm (setStatementBudget, which closureBudget sends
+// before each statement of the read, starting it with refs.ClosureTag) to the start of the
+// rollback boundedClosure sends on that same connection once the read has ended. It keeps the
+// first budget the read gave and the last, each with when its statement started and when the
+// statement before it on that connection ended, and the error of the first statement to fail on
+// that connection, the one the bound cut. Statements of other connections, the server's
+// background work among them, count for nothing.
+type requestSpan struct {
+	mu    sync.Mutex
+	armed bool
+	// conn is the read's connection; first and last are its first and its latest budget
+	// statements; lastEnd is when the latest statement on conn ended; ended is when the rollback
+	// started, and err the first error a statement on conn answered.
+	conn        *pgx.Conn
+	first, last spanBudget
+	lastEnd     time.Time
+	ended       time.Time
+	err         error
+}
+
+// spanBudget is one budget statement of the read: the statement_timeout it gave, as set_config
+// takes it ("1998ms"), when it started, and when the statement before it on the read's connection
+// ended (zero for the read's first budget statement).
+type spanBudget struct {
+	gave    string
+	started time.Time
+	after   time.Time
+}
+
+// arm starts the span at the next budget statement the server's pool starts.
+func (s *requestSpan) arm() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.armed = true
+}
+
+func (s *requestSpan) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	budget := strings.HasPrefix(data.SQL, refs.ClosureTag) && strings.Contains(data.SQL, "set_config('statement_timeout'")
+	switch {
+	case budget && s.armed && (s.conn == nil || conn == s.conn) && s.ended.IsZero():
+		statement := spanBudget{started: time.Now(), after: s.lastEnd}
+		if len(data.Args) == 1 {
+			statement.gave, _ = data.Args[0].(string)
+		}
+		if s.conn == nil {
+			s.conn, s.first = conn, statement
+		}
+		s.last = statement
+	case s.conn != nil && conn == s.conn && s.ended.IsZero() && data.SQL == "rollback":
+		s.ended = time.Now()
+	}
+	return ctx
+}
+
+func (s *requestSpan) TraceQueryEnd(_ context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conn == nil || conn != s.conn || !s.ended.IsZero() {
+		return
+	}
+	s.lastEnd = time.Now()
+	if s.err == nil && data.Err != nil {
+		s.err = data.Err
+	}
+}
+
+// spanReading is what requestSpan read of the read: its first and last budget statements, when
+// its rollback started (zero when none did), and the first error a statement of it answered.
+type spanReading struct {
+	first, last spanBudget
+	ended       time.Time
+	err         error
+}
+
+func (s *requestSpan) read() spanReading {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return spanReading{first: s.first, last: s.last, ended: s.ended, err: s.err}
+}
+
+// requireReadEndedAtItsBudget requires the bounded closure read span timed, which what names, to
+// have kept its budget, on the server's own statements on the read's connection: its first budget
+// statement gave no more than referencesClosureBound; its last budget statement gave no more than
+// what was left of the bound once the read had run from its first budget statement to the end of
+// the statement before the last (the read started before the first, and closureBudget reads the
+// time left only after the statement before has ended, so on the one clock of this process the
+// product had spent at least that span, whenever it ran); from its last budget statement to its
+// rollback it ran at least the budget that statement gave, less a millisecond, since the statement
+// that budget was for starts after it; and it ended on Postgres's statement timeout (57014), which
+// the budget sets. Under pgx's default context handler a statement the context ends answers an
+// error of pgx's own, so a read the context ended fails here. No check reads how long the read
+// took: a process that runs the product late only widens the margins these checks leave.
+func requireReadEndedAtItsBudget(t *testing.T, span *requestSpan, what string) {
+	t.Helper()
+	read := span.read()
+	switch {
+	case read.first.gave == "":
+		t.Errorf("%s gave its read no statement_timeout budget on the server's pool (setStatementBudget): the read is not bounded in the database", what)
+		return
+	case read.ended.IsZero():
+		t.Errorf("%s never rolled back its read's transaction on the read's connection", what)
+		return
+	}
+	if ms, err := strconv.ParseInt(strings.TrimSuffix(read.first.gave, "ms"), 10, 64); err != nil || ms > referencesClosureBound.Milliseconds() {
+		t.Errorf("%s gave the read's first statement a statement_timeout of %q, want at most its %s bound", what, read.first.gave, referencesClosureBound)
+	}
+	ms, err := strconv.ParseInt(strings.TrimSuffix(read.last.gave, "ms"), 10, 64)
+	if kept := time.Duration(ms)*time.Millisecond - time.Millisecond; err != nil || read.ended.Sub(read.last.started) < kept {
+		t.Errorf("%s ended its read (%v) %s after its last budget statement, which gave %q: it did not keep that budget, less a millisecond", what, read.err, read.ended.Sub(read.last.started), read.last.gave)
+	}
+	if !read.last.after.IsZero() {
+		spent := read.last.after.Sub(read.first.started)
+		if left := referencesClosureBound - spent; time.Duration(ms)*time.Millisecond > left {
+			t.Errorf("%s gave its last budget statement %q after its read had run at least %s, more than the %s left of its %s bound: its statements do not share the one bound", what, read.last.gave, spent, left, referencesClosureBound)
+		}
+	}
+	var timeout *pgconn.PgError
+	if !errors.As(read.err, &timeout) || timeout.Code != "57014" || !strings.Contains(timeout.Message, "statement timeout") {
+		t.Errorf("%s ended its read with %v, want Postgres's statement timeout (57014) that its budget sets, not its context", what, read.err)
+	}
+}
+
+// The statements of an issue's references read share the one budget of referencesClosureBound
+// (c-bound-later). The issue's links hold an issue and an ask, whose node loaders,
+// loadIssueNodes and loadAskNodes, are the only statements of the read that read events, and
+// they run after the out and in statements. events is locked, and refs is locked for 1.5 s, from
+// other connections: the out statement waits out the lock on refs, and a loader then waits on
+// events. A read that gave each statement the whole bound would wait 1.5 s and then 2 s more, and
+// the context's 3 s would end it; with one budget the loader's statement ends at 2 s, on the
+// statement timeout the budget set, and the route answers 503 REFERENCES_TIMEOUT then
+// (requireReadEndedAtItsBudget reads which ended it, on the server's own statements). The 1.5 s
+// is a hold the test releases: load only delays the release, and a release after the budget is
+// spent makes the out statement the one the bound cuts, on the same statement timeout, which a
+// correct read still answers. The read gives its connection back: the pool then holds exactly the
+// connections it held with events locked, the lock's own among them. The control is the first
+// read, before the locks: the same request answers 200.
+func TestIssueReferencesRefuseWhenALaterStatementReachesTheBound(t *testing.T) {
+	t.Parallel()
+	// No document settles during the test, so no write of the server's own waits on events with a
+	// connection of the pool (blockIndexHandler's server, here with requestSpan on its pool).
+	span := &requestSpan{}
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour, tracer: span})
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	linked := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+		"project": "CORE", "title": "The issue the comment waits on", "force": true,
+	}))
+	ask := createReferenceAPIAsk(t, handler, linked.Key, "Is the issue the comment waits on done?")
+	createReferenceAPIComment(t, handler, issue.Key, "It waits on dispatch://"+linked.Key+" and dispatch://"+linked.Key+"/ask/"+ask.ID+" here.")
+	if response := issueReferencesRequest(t, handler, issue.Key, ""); response.Code != http.StatusOK {
+		t.Fatalf("references before the locks: status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
+
+	// holdLock's cleanup releases events at the end, whatever the test found.
+	holdLock(t, database, "lock table events in access exclusive mode")
+	acquired := database.Pool.Stat().AcquiredConns()
+	releaseRefs := holdLock(t, database, "lock table refs in access exclusive mode")
+	refsReleased := make(chan struct{})
+	go func() {
+		defer close(refsReleased)
+		time.Sleep(1500 * time.Millisecond)
+		releaseRefs()
+	}()
+	// Cleanups run last first, so this wait ends before holdLock's own release of refs runs.
+	t.Cleanup(func() { testwait.Receive(t, "the release of refs", refsReleased) })
+	span.arm()
+	started := time.Now()
+	response := issueReferencesRequest(t, handler, issue.Key, "")
+	took := time.Since(started)
+	testwait.Receive(t, "the release of refs, 1.5 s after the read began", refsReleased)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("references with events locked: status=%d after %s body=%s, want 503 after %s", response.Code, took, response.Body.String(), referencesClosureBound)
+	}
+	if refusal := decodeBody[apiErrorBody](t, response); refusal.Code != "REFERENCES_TIMEOUT" || !strings.Contains(refusal.Error, referencesClosureBound.String()) {
+		t.Errorf("references with events locked answered %s, want REFERENCES_TIMEOUT naming the %s bound", response.Body.String(), referencesClosureBound)
+	}
+	// From below on the test's own clock, which load only lengthens; the rest on the server's own
+	// statements.
+	if lower := referencesClosureBound - time.Millisecond; took < lower {
+		t.Errorf("references with events locked answered after %s, before %s, its %s bound less the millisecond its budget rounds down", took, lower, referencesClosureBound)
+	}
+	requireReadEndedAtItsBudget(t, span, "references with events locked")
+	testwait.UntilPolling(t, 50*time.Millisecond, fmt.Sprintf("the read to give its connection back: the pool's acquired connections back to the %d it held with events locked", acquired), func() (int32, bool) {
+		conns := database.Pool.Stat().AcquiredConns()
+		return conns, conns == acquired
+	})
+}
+
+// recordingTx is a transaction that records each statement sent through it before sending it.
+type recordingTx struct {
+	pgx.Tx
+	statements []string
+}
+
+func (r *recordingTx) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
+	r.statements = append(r.statements, sql)
+	return r.Tx.Exec(ctx, sql, arguments...)
+}
+
+func (r *recordingTx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	r.statements = append(r.statements, sql)
+	return r.Tx.Query(ctx, sql, args...)
+}
+
+func (r *recordingTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	r.statements = append(r.statements, sql)
+	return r.Tx.QueryRow(ctx, sql, args...)
+}
+
+// The budget function of the read's statements (setStatementBudget) refuses with the bound's
+// error and sends no statement when less than 1 ms is left, since a statement_timeout of 0 turns
+// the timeout off, and sets the timeout to 1ms at 1 ms left. The transaction starts with a
+// statement_timeout of its own, 1234ms, which the refusal must leave as it is.
+func TestReferencesBudgetRefusesUnderOneMillisecond(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	// The read of the setting runs under the 1ms it set, so a backend kept off the CPU that long
+	// cancels it (SQLSTATE 57014). Such an attempt shows nothing of the setting, and the case runs
+	// again in a transaction of its own.
+	for attempt := 1; !referencesBudgetCase(t, database); attempt++ {
+		if attempt == 5 {
+			t.Fatalf("the read of statement_timeout after a budget of 1 ms was cancelled %d times in a row", attempt)
+		}
+	}
+}
+
+// referencesBudgetCase runs both of the budget's cases in one transaction of database, and
+// answers false when the read of the setting the 1 ms case set was cancelled by that setting.
+func referencesBudgetCase(t *testing.T, database *store.Store) bool {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the budget's transaction: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "set local statement_timeout = '1234ms'"); err != nil {
+		t.Fatalf("set the transaction's own statement_timeout: %v", err)
+	}
+	setting := func() (string, error) {
+		var value string
+		err := tx.QueryRow(ctx, "select current_setting('statement_timeout')").Scan(&value)
+		return value, err
+	}
+
+	recorded := &recordingTx{Tx: tx}
+	if err := setStatementBudget(ctx, recorded, 900*time.Microsecond); !errors.Is(err, errClosureBudgetSpent) || !closureBoundHit(err) {
+		t.Errorf("with 0.9 ms left the budget answered %v, want the bound's error, %q, which closureBoundHit reads as the bound", err, errClosureBudgetSpent)
+	}
+	if len(recorded.statements) > 0 {
+		t.Errorf("with 0.9 ms left the budget sent %q, want no statement", recorded.statements)
+	}
+	if value, err := setting(); err != nil || value != "1234ms" {
+		t.Errorf("statement_timeout after the budget refused 0.9 ms reads %q (%v), want the 1234ms it had", value, err)
+	}
+
+	if err := setStatementBudget(ctx, tx, time.Millisecond); err != nil {
+		t.Fatalf("with 1 ms left the budget answered %v, want the timeout set", err)
+	}
+	value, err := setting()
+	if closureBoundHit(err) {
+		return false
+	}
+	if err != nil || value != "1ms" {
+		t.Errorf("statement_timeout after a budget of 1 ms reads %q (%v), want 1ms", value, err)
+	}
+	return true
+}
+
+// fixtureLabel is what labels calls the node or the via id, for a failure to name.
+func fixtureLabel(labels map[string]string, id string) string {
+	if label, found := labels[id]; found {
+		return label
+	}
+	return "no node of the fixture"
+}
+
+// referenceLinkLine is one row of links or linked_from as the tests compare it: its node, the
+// kinds of its links and its via, each id followed by its label. The row's name is held apart,
+// against the name the graph read gives the node.
+func referenceLinkLine(row model.ReferenceLink, labels map[string]string) string {
+	return fmt.Sprintf("%s %s (%s) [%s] via %s %s (%s)", row.Node.Kind, row.Node.ID, fixtureLabel(labels, row.Node.ID),
+		strings.Join(row.Kinds, ","), row.Via.Kind, row.Via.ID, fixtureLabel(labels, row.Via.ID))
+}
+
+// referenceLinkLines is each of rows as referenceLinkLine writes it, sorted.
+func referenceLinkLines(rows []model.ReferenceLink, labels map[string]string) []string {
+	lines := make([]string, len(rows))
+	for index, row := range rows {
+		lines[index] = referenceLinkLine(row, labels)
+	}
+	slices.Sort(lines)
+	return lines
+}
+
+// referenceMemberLines is each member as its artifact, its depth and its via, sorted.
+func referenceMemberLines(members []model.ReferenceMember, labels map[string]string) []string {
+	lines := make([]string, len(members))
+	for index, member := range members {
+		lines[index] = fmt.Sprintf("%s (%s) depth %d via %s %s (%s)", member.Artifact.ID, fixtureLabel(labels, member.Artifact.ID),
+			member.Depth, member.Via.Kind, member.Via.ID, fixtureLabel(labels, member.Via.ID))
+	}
+	slices.Sort(lines)
+	return lines
+}
+
+// shownLines is lines one to a line, or "(none)".
+func shownLines(lines []string) string {
+	if len(lines) == 0 {
+		return "(none)"
+	}
+	return strings.Join(lines, "\n\t")
+}
+
+// insertRemovedItemBlock writes block b9 of the item id of kind (comment, message or ask) as a
+// later revision leaves a block it removed: with no position, and the time it was removed. No
+// route writes a removed block of an item at a time the test chooses, and none removes a block of
+// a message, which never changes.
+func insertRemovedItemBlock(t *testing.T, database *store.Store, kind, id string) {
+	t.Helper()
+	statements := map[string]string{
+		"comment": `insert into comment_blocks (comment_id, block_id, node_id, position, type, text_sha256, excerpt, changed_revision, changed_at, removed_at)
+			values ($1::uuid, 'b9', $2, null, 'paragraph', 'sum', 'A removed block.', 1, now(), now())`,
+		"message": `insert into message_blocks (message_id, block_id, node_id, position, type, text_sha256, excerpt, made_at, changed_at, removed_at)
+			values ($1::uuid, 'b9', $2, null, 'paragraph', 'sum', 'A removed block.', now(), now(), now())`,
+		"ask": `insert into ask_blocks (ask_id, block_id, node_id, position, type, text_sha256, excerpt, changed_revision, changed_at, removed_at)
+			values ($1::uuid, 'b9', $2, null, 'option', 'sum', 'A removed option.', 1, now(), now())`,
+	}
+	if _, err := database.Pool.Exec(context.Background(), statements[kind], id, kind+"/"+id+"#b9"); err != nil {
+		t.Fatalf("write a removed block of %s %s: %v", kind, id, err)
+	}
+}
+
+// insertRemovedBlockLink writes a link from the removed block b9 of the item id of kind to the
+// node toKind toID, as the index wrote it while a revision held the block.
+func insertRemovedBlockLink(t *testing.T, database *store.Store, kind, id, toKind, toID string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), fmt.Sprintf(`
+		insert into %[1]s_block_refs (%[1]s_id, block_id, from_node, to_kind, to_id) values ($1::uuid, 'b9', $2, $3, $4)
+	`, kind), id, kind+"/"+id+"#b9", toKind, toID); err != nil {
+		t.Fatalf("write a link of the removed block of %s %s: %v", kind, id, err)
+	}
+}
+
+// An issue's references read answers, in links and linked_from, one row for each node at the
+// other end of a link of the issue's own content, one hop each way (c-api-answers).
+//
+// The issue X is a child of P and the parent of C, and its own content is its spec, which holds a
+// requirement, a checks document, a comment, an ask and a message. X's comment links to another
+// issue O and to O's ask, comment, message and spec; to a block of a second document, a part of a
+// second ask and a block of a second comment of O, which nothing else links to; and to X itself
+// and X's spec. X's checks point with serves at a requirement of P's spec, the third document, and
+// at a requirement r2 of P's design document, the fourth, whose type then changes to a callout, so
+// that pointer is hidden and its target still stands; and its text links to a comment of O. Q's
+// documents, a block of one, its comments, a message of it that holds two links, and its ask's
+// question link to X, X's spec, a block of it, X's comment, X's ask, a part of it and X's message,
+// and C's checks point with serves at X's requirement.
+//
+// Then the links that give no row, as a revision leaves them: a part of X's ask that a later
+// revision removed holds a link; Q links into a removed block of X's comment, a removed block of
+// X's message and that removed part of X's ask; and a removed block of a comment of Q holds a link
+// into X's message. The test writes those blocks and the links they hold itself
+// (insertRemovedItemBlock), since no route writes them.
+//
+// links holds each node X's content links to once, with the kinds of its links and the lowest of
+// X's nodes that links to it, a document by its uuid: a block or a part counts as its document or
+// item, and the third document counts with serves alone. linked_from holds each source once, with
+// the lowest of X's nodes it links to, a document by its ref_key and a part by its ask, and C's
+// checks with serves alone. Neither holds X, its own content, P or C, which only structural edges
+// join to X, the fourth document, or a node whose only link a removed block or part holds or
+// takes. Each row's name is the name the graph read gives its node, members are the documents of
+// links at depth 1, and truncated is false. The ETag moves when another document links to X's spec
+// later and when the comment X's checks link to is edited, and neither moves X's last_seq or the
+// kinds and via of any row.
+func TestIssueReferencesLinksListEachNodeOnce(t *testing.T) {
+	t.Parallel()
+	// No document settles during the test, so no version but the test's own moves the ETag.
+	handler, database := blockIndexHandler(t)
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	createReferenceAPIProject(t, handler, "OPS")
+	createIssue := func(project, title, parent, spec string) model.Issue {
+		t.Helper()
+		body := map[string]any{"project": project, "title": title, "spec": spec, "force": true}
+		if parent != "" {
+			body["parent"] = parent
+		}
+		return requireCreatedIssue(t, createIssueRequest(t, handler, body))
+	}
+	upload := func(issueKey, name, content string) model.Artifact {
+		t.Helper()
+		return uploadDocument(t, handler, "/api/v1/issues/"+issueKey, name, content).Artifact
+	}
+	message := func(issueKey, body string) model.Message {
+		t.Helper()
+		return createIssueMessage(t, handler, issueKey, map[string]any{"body": body}, "alice")
+	}
+
+	parent := createIssue("CORE", "The parent of the issue whose references are read", "", ":::requirement{#r1}\nThe parent's requirement.\n:::\n")
+	design := upload(parent.Key, "design.md", ":::requirement{#r2}\nThe parent's second requirement.\n:::\n")
+	issue := createIssue("CORE", "The issue whose references are read", parent.Key, ":::requirement{#r1}\nThe issue's own requirement.\n:::\n")
+	issueRef, specRef := "dispatch://"+issue.Key, "dispatch://"+issue.Key+"/spec"
+	var specRefKey string
+	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, issue.PrimaryArtifactID).Scan(&specRefKey); err != nil {
+		t.Fatalf("read the ref_key of the issue's spec: %v", err)
+	}
+	child := createIssue("CORE", "The child of the issue whose references are read", issue.Key, "The child's spec.\n")
+	childChecks := upload(child.Key, "checks.md", ":::check{#k1 serves=\""+specRef+"#b-r1\"}\nIt serves the issue's requirement.\n:::\n")
+
+	other := createIssue("OPS", "Another issue the comment links to", "", "Another issue's spec.\n")
+	otherRef := "dispatch://" + other.Key
+	otherAsk := createReferenceAPIAsk(t, handler, other.Key, "Does another issue's ask settle it?")
+	otherComment := createReferenceAPIComment(t, handler, other.Key, "Another issue's comment.")
+	otherMessage := message(other.Key, "Another issue's message.")
+	second := upload(other.Key, "second.md", ":::requirement{#q1}\nA block of the second document.\n:::\n")
+	secondAsk := createReferenceAPIAsk(t, handler, other.Key, "Is this the second ask?")
+	secondComment := createReferenceAPIComment(t, handler, other.Key, "The second comment.")
+	rested := createReferenceAPIComment(t, handler, other.Key, "The comment the issue's checks rest on.")
+	removedTarget := upload(other.Key, "removed-part-target.md", "Only a removed part of the issue's ask links here.\n")
+
+	checks := upload(issue.Key, "checks.md",
+		":::check{#k1 serves=\"dispatch://"+parent.Key+"/spec#b-r1\"}\nIt serves the parent's requirement.\n:::\n\n"+
+			":::check{#k2 serves=\"dispatch://"+parent.Key+"/artifact/"+design.Slug+"#b-r2\"}\nIt serves the parent's second requirement.\n:::\n\n"+
+			"It rests on "+otherRef+"/comment/"+rested.ID+" here.\n")
+	// A write refuses a pointer at a block of a type the attribute does not allow
+	// (pmdoc.CheckBlockPointers), so the target's type changes after the pointer is written.
+	editIssueDocument(t, handler, parent.Key, design.Slug, []map[string]any{{"op": "retype", "block": "r2", "type": "callout"}})
+	var pointers int
+	var targetType string
+	if err := database.Pool.QueryRow(ctx, `
+		select (select count(*) from block_refs where artifact_id = $1 and block_id = 'k2' and kind = 'serves' and to_kind = 'block' and to_id = $2),
+		       coalesce((select type from document_blocks where node_id = $2), '')
+	`, checks.ID, design.RefKey+"#r2").Scan(&pointers, &targetType); err != nil {
+		t.Fatalf("read the pointer at the fourth document: %v", err)
+	}
+	if pointers != 1 || targetType != "callout" {
+		t.Fatalf("checks.md's serves pointer at %s#r2 has %d block_refs rows, and its target's block is of type %q; want the row kept and the block a callout, so the pointer is hidden and not dangling",
+			design.RefKey, pointers, targetType)
+	}
+
+	ask := createReferenceAPIAsk(t, handler, issue.Key, "Which way does the issue go?")
+	issueMessage := message(issue.Key, "A message on the issue.")
+	comment := createReferenceAPIComment(t, handler, issue.Key, strings.Join([]string{
+		"It links", otherRef, otherRef + "/ask/" + otherAsk.ID, otherRef + "/comment/" + otherComment.ID,
+		otherRef + "/message/" + otherMessage.ID, otherRef + "/spec", otherRef + "/artifact/" + second.Slug + "#b-q1",
+		otherRef + "/ask/" + secondAsk.ID + "#b-b1", otherRef + "/comment/" + secondComment.ID + "#b-b1",
+		issueRef, specRef, "here.",
+	}, " "))
+	insertRemovedItemBlock(t, database, "ask", ask.ID)
+	insertRemovedBlockLink(t, database, "ask", ask.ID, "artifact", removedTarget.RefKey)
+	insertRemovedItemBlock(t, database, "comment", comment.ID)
+	insertRemovedItemBlock(t, database, "message", issueMessage.ID)
+
+	citing := createIssue("OPS", "The issue whose content links to the issue whose references are read", "", "The citing issue's spec.\n")
+	citesIssue := upload(citing.Key, "cites-the-issue.md", "It cites "+issueRef+" here.\n")
+	citesBlock := upload(citing.Key, "cites-a-block.md", "It cites "+specRef+"#b-r1 here.\n")
+	citesSpec := createReferenceAPIComment(t, handler, citing.Key, "It cites "+specRef+" here.")
+	citesTwo := message(citing.Key, "It cites "+issueRef+"/comment/"+comment.ID+" and "+issueRef+"/ask/"+ask.ID+" here.")
+	citesMessage := createReferenceAPIAsk(t, handler, citing.Key, "Does "+issueRef+"/message/"+issueMessage.ID+" settle it?")
+	citesPart := createReferenceAPIComment(t, handler, citing.Key, "It cites "+issueRef+"/ask/"+ask.ID+"#b-b2 here.")
+	intoRemovedComment := createReferenceAPIComment(t, handler, citing.Key, "It cites "+issueRef+"/comment/"+comment.ID+"#b-b9 here.")
+	intoRemovedMessage := message(citing.Key, "It cites "+issueRef+"/message/"+issueMessage.ID+"#b-b9 here.")
+	intoRemovedPart := upload(citing.Key, "cites-a-removed-part.md", "It cites "+issueRef+"/ask/"+ask.ID+"#b-b9 here.\n")
+	removedSource := createReferenceAPIComment(t, handler, citing.Key, "A comment whose removed block links to the issue's message.")
+	insertRemovedItemBlock(t, database, "comment", removedSource.ID)
+	insertRemovedBlockLink(t, database, "comment", removedSource.ID, "message", issueMessage.ID)
+
+	labels := map[string]string{
+		issue.Key: "the issue", parent.Key: "its parent", child.Key: "its child",
+		issue.PrimaryArtifactID: "the issue's spec", specRefKey: "the issue's spec", checks.ID: "the issue's checks",
+		ask.ID: "the issue's ask", comment.ID: "the issue's comment", issueMessage.ID: "the issue's message",
+		other.Key: "another issue", otherAsk.ID: "its ask", otherComment.ID: "its comment", otherMessage.ID: "its message",
+		other.PrimaryArtifactID: "its spec", second.ID: "the second document", secondAsk.ID: "the second ask",
+		secondComment.ID: "the second comment", parent.PrimaryArtifactID: "the third document, the parent's spec",
+		design.ID: "the fourth document, behind a hidden pointer", rested.ID: "the comment the checks rest on",
+		removedTarget.ID: "the target of a removed part's link", childChecks.ID: "the child's checks",
+		citesIssue.ID: "a document citing the issue", citesBlock.ID: "a document citing a block of the spec",
+		citesSpec.ID: "a comment citing the spec", citesTwo.ID: "a message citing the comment and the ask",
+		citesMessage.ID: "an ask citing the message", citesPart.ID: "a comment citing a part of the ask",
+		intoRemovedComment.ID: "a comment citing a removed block of the comment",
+		intoRemovedMessage.ID: "a message citing a removed block of the message",
+		intoRemovedPart.ID:    "a document citing a removed part of the ask",
+		removedSource.ID:      "a comment whose removed block cites the message",
+	}
+	linkRow := func(kind, id string, kinds []string, viaKind, viaID string) model.ReferenceLink {
+		return model.ReferenceLink{Node: model.GraphNode{Kind: kind, ID: id}, Kinds: kinds, Via: model.ReferenceVia{Kind: viaKind, ID: viaID}}
+	}
+	mentions, serves := []string{"mentions"}, []string{"serves"}
+	wantLinks := []model.ReferenceLink{
+		linkRow("issue", other.Key, mentions, "comment", comment.ID),
+		linkRow("ask", otherAsk.ID, mentions, "comment", comment.ID),
+		linkRow("comment", otherComment.ID, mentions, "comment", comment.ID),
+		linkRow("message", otherMessage.ID, mentions, "comment", comment.ID),
+		linkRow("artifact", other.PrimaryArtifactID, mentions, "comment", comment.ID),
+		linkRow("artifact", second.ID, mentions, "comment", comment.ID),
+		linkRow("ask", secondAsk.ID, mentions, "comment", comment.ID),
+		linkRow("comment", secondComment.ID, mentions, "comment", comment.ID),
+		linkRow("artifact", parent.PrimaryArtifactID, serves, "artifact", checks.ID),
+		linkRow("comment", rested.ID, mentions, "artifact", checks.ID),
+	}
+	wantLinkedFrom := []model.ReferenceLink{
+		linkRow("artifact", citesIssue.ID, mentions, "issue", issue.Key),
+		linkRow("artifact", citesBlock.ID, mentions, "artifact", specRefKey),
+		linkRow("comment", citesSpec.ID, mentions, "artifact", specRefKey),
+		linkRow("message", citesTwo.ID, mentions, "ask", ask.ID),
+		linkRow("ask", citesMessage.ID, mentions, "message", issueMessage.ID),
+		linkRow("comment", citesPart.ID, mentions, "ask", ask.ID),
+		linkRow("artifact", childChecks.ID, serves, "artifact", specRefKey),
+	}
+	wantMembers := []model.ReferenceMember{
+		{Artifact: model.Artifact{ID: other.PrimaryArtifactID}, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment.ID}},
+		{Artifact: model.Artifact{ID: second.ID}, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment.ID}},
+		{Artifact: model.Artifact{ID: parent.PrimaryArtifactID}, Depth: 1, Via: model.ReferenceVia{Kind: "artifact", ID: checks.ID}},
+	}
+	// listedNever is each node neither field may list, and why.
+	listedNever := map[[2]string]string{
+		{"issue", issue.Key}:                  "the issue itself",
+		{"artifact", issue.PrimaryArtifactID}: "the issue's own spec",
+		{"artifact", checks.ID}:               "the issue's own checks",
+		{"ask", ask.ID}:                       "the issue's own ask",
+		{"comment", comment.ID}:               "the issue's own comment",
+		{"message", issueMessage.ID}:          "the issue's own message",
+		{"issue", parent.Key}:                 "its parent, which only a structural edge joins to it",
+		{"issue", child.Key}:                  "its child, which only a structural edge joins to it",
+		{"artifact", design.ID}:               "the fourth document, which only a hidden pointer reaches",
+		{"artifact", removedTarget.ID}:        "a node only a removed part of the issue's ask links to",
+		{"comment", intoRemovedComment.ID}:    "a source whose only link is into a removed block of the issue's comment",
+		{"message", intoRemovedMessage.ID}:    "a source whose only link is into a removed block of the issue's message",
+		{"artifact", intoRemovedPart.ID}:      "a source whose only link is into a removed part of the issue's ask",
+		{"comment", removedSource.ID}:         "a comment whose only link into the issue's content a removed block holds",
+	}
+
+	read := func(what string) (*httptest.ResponseRecorder, model.IssueReferences) {
+		t.Helper()
+		response := issueReferencesRequest(t, handler, issue.Key, "")
+		if response.Code != http.StatusOK {
+			t.Fatalf("references %s: status=%d body=%s", what, response.Code, response.Body.String())
+		}
+		return response, decodeBody[model.IssueReferences](t, response)
+	}
+	first, answer := read("of the fixture")
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(first.Body.Bytes(), &fields); err != nil {
+		t.Fatalf("decode the answer's fields: %v", err)
+	}
+	for _, name := range []string{"members", "truncated", "links", "linked_from"} {
+		if value, found := fields[name]; !found {
+			t.Errorf("the answer has no %s: %s", name, first.Body.String())
+		} else if (name == "links" || name == "linked_from") && !bytes.HasPrefix(value, []byte("[")) {
+			t.Errorf("the answer's %s is %s, want a list", name, value)
+		}
+	}
+	for _, field := range []struct {
+		name       string
+		rows, want []model.ReferenceLink
+	}{{"links", answer.Links, wantLinks}, {"linked_from", answer.LinkedFrom, wantLinkedFrom}} {
+		listed := map[[2]string]bool{}
+		for _, row := range field.rows {
+			node := [2]string{row.Node.Kind, row.Node.ID}
+			if listed[node] {
+				t.Errorf("%s lists %s %s (%s) more than once", field.name, node[0], node[1], fixtureLabel(labels, node[1]))
+			}
+			listed[node] = true
+			if why, never := listedNever[node]; never {
+				t.Errorf("%s lists %s %s, %s", field.name, node[0], node[1], why)
+			}
+			if row.Node.Kind == "block" {
+				t.Errorf("%s lists the block %s in place of its document or item", field.name, row.Node.ID)
+			}
+		}
+		if got, want := referenceLinkLines(field.rows, labels), referenceLinkLines(field.want, labels); !slices.Equal(got, want) {
+			t.Errorf("%s holds\n\t%s\nwant one row for each node at the other end of a link\n\t%s", field.name, shownLines(got), shownLines(want))
+		}
+	}
+	if rows := slices.Concat(answer.Links, answer.LinkedFrom); len(rows) > 0 {
+		nodes := make([]string, len(rows))
+		for index, row := range rows {
+			nodes[index] = row.Node.Ref
+		}
+		targets, _ := referenceTargets(t, handler, nodes)
+		for index, row := range rows {
+			if row.Name == "" || row.Name != targets[index].Name {
+				t.Errorf("the row of %s %s (%s) is named %q, want the name the graph read gives it, %q",
+					row.Node.Kind, row.Node.ID, fixtureLabel(labels, row.Node.ID), row.Name, targets[index].Name)
+			}
+		}
+	}
+	if got, want := referenceMemberLines(answer.Members, labels), referenceMemberLines(wantMembers, labels); !slices.Equal(got, want) {
+		t.Errorf("members hold\n\t%s\nwant the documents of links, each at depth 1 with its via\n\t%s", shownLines(got), shownLines(want))
+	}
+	if answer.Truncated {
+		t.Error("the answer is truncated; a read of one hop is never cut")
+	}
+
+	// Another document links to the issue's spec later: linked_from gains it and the ETag moves,
+	// though the issue's own last_seq does not.
+	lastSeq := issueLastSeq(t, database, issue.Key)
+	later := upload(citing.Key, "links-later.md", "It links "+specRef+" later.\n")
+	labels[later.ID] = "a document that links to the spec later"
+	linkedLater, afterLink := read("after a later link into the issue's spec")
+	if linkedLater.Header().Get("ETag") == first.Header().Get("ETag") {
+		t.Errorf("the ETag stayed %s after another document linked to the issue's spec", first.Header().Get("ETag"))
+	}
+	if seq := issueLastSeq(t, database, issue.Key); seq != lastSeq {
+		t.Errorf("the later link from another issue's document moved the issue's last_seq from %d to %d", lastSeq, seq)
+	}
+	if lines, line := referenceLinkLines(afterLink.LinkedFrom, labels), referenceLinkLine(linkRow("artifact", later.ID, mentions, "artifact", specRefKey), labels); !slices.Contains(lines, line) {
+		t.Errorf("linked_from after the later link holds\n\t%s\nwant among them\n\t%s", shownLines(lines), line)
+	}
+
+	// The comment the issue's checks link to is edited: the ETag moves, and neither the issue's
+	// last_seq nor the kinds and via of any row do.
+	succeeded(t, "edit the comment the issue's checks rest on", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+rested.ID, map[string]any{
+		"body": "The comment the issue's checks rest on, edited.",
+	}, "alice"))
+	edited, afterEdit := read("after an edit of the comment the issue's checks link to")
+	if edited.Header().Get("ETag") == linkedLater.Header().Get("ETag") {
+		t.Errorf("the ETag stayed %s after the comment the issue's checks link to was edited", linkedLater.Header().Get("ETag"))
+	}
+	if seq := issueLastSeq(t, database, issue.Key); seq != lastSeq {
+		t.Errorf("the edit of another issue's comment moved the issue's last_seq from %d to %d", lastSeq, seq)
+	}
+	for _, field := range []struct {
+		name          string
+		before, after []model.ReferenceLink
+	}{{"links", afterLink.Links, afterEdit.Links}, {"linked_from", afterLink.LinkedFrom, afterEdit.LinkedFrom}} {
+		if before, after := referenceLinkLines(field.before, labels), referenceLinkLines(field.after, labels); !slices.Equal(before, after) {
+			t.Errorf("%s after the comment's edit holds\n\t%s\nwant the rows, kinds and vias it held before\n\t%s", field.name, shownLines(after), shownLines(before))
+		}
 	}
 }
 
@@ -314,6 +1011,7 @@ func graphEdges(t *testing.T, handler http.Handler, query url.Values) model.Grap
 // the message.created write. Read from the message, the same edge points out at the ask. Filters
 // narrow it and malformed input is 400.
 func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "LEGION")
 	createReferenceAPIProject(t, handler, "ACME")
@@ -409,8 +1107,8 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 	// The read waits for an observation taken after it to be proven safe, so it answers the
 	// message committed before it. A read that answered inside referencesSinceWait had that
 	// proof, so its answer is final and a wrong one fails the test at once; awaitSinceRead reads
-	// again only a read held past that wait, which an open transaction elsewhere on the shared
-	// test cluster can cause.
+	// again only a read held past that wait, which an event write of the server's database held
+	// open that long can cause, as a loaded machine can keep one.
 	since := awaitSinceRead(t, database, "since the event before the message, ?to= "+askRef+", wanting the message's backlink",
 		func() model.GraphReferences {
 			return graphEdges(t, handler, url.Values{"to": {askRef}, "since": {strconv.FormatInt(messageEventID-1, 10)}})
@@ -457,21 +1155,21 @@ func awaitSinceRead(
 }
 
 // awaitHorizonRead reads again until holds accepts the answer, for a route that answers only what
-// stands at or below the event log's safe horizon (sinceHorizon): any transaction holding a
-// transaction id on the Postgres instance holds that horizon back - in this package, storetest's
-// own "create database … template …" and "drop database … with (force)" transactions
-// (storetest.Open and storetest's dropDatabase), and on CI's one Postgres every other package's.
+// stands at or below the event log's safe horizon (sinceHorizon): an event write of the server's
+// database holds that horizon back for as long as it stays open - the test's own fixtures, the
+// server's own request writes - and a transaction in another database, or one that writes no
+// event, holds nothing (events.Horizon).
 // Such a read waits out referencesSinceWait and then answers at the horizon it was left with,
-// which may be short of what committed before it, so it is read again for as long as the horizon
-// says it is held back (horizontest.Watch), however long that is; database is the one the server
-// reads. A read that answered within referencesSinceWait was not held back: what it answered is
-// what it owed, so holds failing on it is a product failure and fails the test at once. what names
-// the read and show its answer in either failure.
+// which may be short of what committed before it, so it is read again until the answer is whole,
+// however long that is: the watch reads no warning, and only a hold of database past
+// horizontest.OwnHoldBound or the drain before the run's deadline ends it
+// (horizontest.NewWatchInProcess); database is the one the server reads. A read that answered
+// within referencesSinceWait was not held back: what it answered is what it owed, so holds failing
+// on it is a product failure and fails the test at once. what names the read and show its answer
+// in either failure.
 func awaitHorizonRead[T any](t *testing.T, database *store.Store, what string, read func() T, holds func(T) bool, show func(T) string) T {
 	t.Helper()
-	warnings, stop := horizontest.Listen(t)
-	defer stop()
-	watch := horizontest.NewWatch(t, warnings, database.Pool.Config().ConnConfig.Database, database.Pool)
+	watch := horizontest.NewWatchInProcess(t, database)
 	for {
 		started := time.Now()
 		answer := read()
@@ -495,6 +1193,7 @@ func awaitHorizonRead[T any](t *testing.T, database *store.Store, what string, r
 // proven so far would answer nothing here, the first after boot, and each later read would stop
 // at the previous read's observation, however old. awaitSinceRead settles which answer is final.
 func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	target := createReferenceAPIIssue(t, handler, "CORE")
@@ -524,6 +1223,7 @@ func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *t
 // Once a commits it answers both. Each edit indexes its comment's body as a comment write does
 // (planFoundReferences and the replacement it plans, then refs.Stamp with the edit's event).
 func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	broker := deps.Events
 	createReferenceAPIProject(t, handler, "CORE")
@@ -543,9 +1243,10 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 	targetRef := "dispatch://" + target.Key
 
 	ctx := t.Context()
-	mention := func(tx pgx.Tx, issueKey, commentID string) int64 {
+	mention := func(tx pgx.Tx, issueKey string, comment model.Comment) int64 {
 		t.Helper()
-		found := text.Refs(refs.NewReader(ctx, tx, "comment", commentID, "").Mentions("Now see " + targetRef))
+		commentID := comment.ID
+		found := text.Refs(refs.NewReader(ctx, tx, comment.Author, "comment", commentID, "").Mentions("Now see " + targetRef))
 		replacement, _, err := planFoundReferences(ctx, tx, "comment", commentID, found, nil)
 		if err != nil {
 			t.Fatalf("plan comment %s's references: %v", commentID, err)
@@ -573,13 +1274,13 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 		t.Fatalf("begin the lower event's transaction: %v", err)
 	}
 	t.Cleanup(func() { _ = open.Rollback(context.Background()) })
-	low := mention(open, firstIssue.Key, first.ID)
+	low := mention(open, firstIssue.Key, first)
 	committed, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the higher event's transaction: %v", err)
 	}
 	defer func() { _ = committed.Rollback(context.Background()) }()
-	high := mention(committed, secondIssue.Key, second.ID)
+	high := mention(committed, secondIssue.Key, second)
 	if err := committed.Commit(ctx); err != nil {
 		t.Fatalf("commit the higher event: %v", err)
 	}
@@ -621,6 +1322,7 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 // the same mention points out at the issue; read from the issue's spec the structural edge points
 // out at it.
 func TestReferencesIncludeStructuralEdgesAndDocumentBlockExcerpts(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
@@ -701,6 +1403,7 @@ func insertUnknownKindEdges(t *testing.T, database *store.Store, edges [][4]stri
 // the graph read skips it in both directions instead of answering 500, and the issue header's
 // count is the number of edges its panel lists, not one more.
 func TestReferencesAnswerAroundAnEdgeOfAKindThisBuildCannotAddress(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
@@ -755,6 +1458,7 @@ func TestReferencesAnswerAroundAnEdgeOfAKindThisBuildCannotAddress(t *testing.T)
 // sides: its referenced-by list is the comment that cites it, and its outgoing list is what its
 // text cites, the known issue and the missing document both unresolved as before.
 func TestArtifactReferencesSkipANodeKindThisBuildCannotAddress(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
@@ -787,6 +1491,7 @@ func TestArtifactReferencesSkipANodeKindThisBuildCannotAddress(t *testing.T) {
 // that owns it: the issue node writes no mention, and each target's backlink names the spec's
 // block holding it.
 func TestSeededSpecCitationsInMarkdownDelimitersAreDocumentMentions(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "LEGION")
 	createReferenceAPIProject(t, handler, "ACME")
@@ -833,6 +1538,7 @@ func TestSeededSpecCitationsInMarkdownDelimitersAreDocumentMentions(t *testing.T
 // seeded spec and the author's edit answered 500, and a rebuild stopped at the first stored body
 // that held one.
 func TestCitationsOfAnIDDecodingToNULDoNotFailTheWrite(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	target := createReferenceAPIIssue(t, handler, "CORE")
@@ -893,6 +1599,7 @@ func readRefRows(t *testing.T, database *store.Store) []refRow {
 // keeping the provenance of every edge it did not have to recreate, and a second rebuild is a
 // no-op.
 func TestRebuildRefsConvergesOnTheLiveIndex(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")

@@ -100,12 +100,18 @@ func TestAnthropicMarksTheCacheMovesTheNewestMarkAndForcesTheReplyOnTheLastCall(
 					t.Errorf("call %d does not carry the history's signature byte for byte", i+1)
 				}
 			}
-			history := blocks(messages(t, got[0])[1])
-			if history[0]["type"] != "thinking" || history[0]["signature"] != historySignature || history[0]["thinking"] != "The plan needs a migration." {
-				t.Errorf("the history's thinking went as %v", history[0])
+			// Each count is held before it is indexed, so a short message list fails this
+			// case by name rather than panicking the test binary and every row after it.
+			first, second := messages(t, got[0]), messages(t, got[1])
+			if len(first) < 2 || len(second) < 4 {
+				t.Fatalf("the calls carry %d and %d messages, want at least 2 and 4: the history's request and model turn, then the question and the first call's turn", len(first), len(second))
 			}
-			stepOne := blocks(messages(t, got[1])[3])
-			if stepOne[0]["type"] != "thinking" || stepOne[0]["signature"] != "sig-step-1+/==" || stepOne[0]["thinking"] != "Read the note." {
+			history := blocks(first[1])
+			if len(history) == 0 || history[0]["type"] != "thinking" || history[0]["signature"] != historySignature || history[0]["thinking"] != "The plan needs a migration." {
+				t.Errorf("the history's thinking went as %v", history)
+			}
+			stepOne := blocks(second[3])
+			if len(stepOne) == 0 || stepOne[0]["type"] != "thinking" || stepOne[0]["signature"] != "sig-step-1+/==" || stepOne[0]["thinking"] != "Read the note." {
 				t.Errorf("the second call carries the first call's turn as %v, want its thinking with its signature", stepOne)
 			}
 			want := []seen{{1, "toolu_1", `{"path":"note.txt"}`}, {2, "toolu_2", `{"path":"other.txt"}`}}

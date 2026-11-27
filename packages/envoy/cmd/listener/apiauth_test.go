@@ -21,6 +21,7 @@ const (
 )
 
 func TestAPIAuth(t *testing.T) {
+	t.Parallel()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -215,6 +216,7 @@ func TestAPIAuth(t *testing.T) {
 }
 
 func TestAPIAuthValidatesV1BodyContentType(t *testing.T) {
+	t.Parallel()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -342,6 +344,7 @@ func assertRejectionLines(t *testing.T, logged, message, wantReason, wantAccount
 }
 
 func TestValidateListenerAPIAuth(t *testing.T) {
+	t.Parallel()
 	issuer := oidctest.New(t)
 	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)
 	google := newGoogleStandIn(t, listenerGoogleAccount)
@@ -412,6 +415,7 @@ func TestValidateListenerAPIAuth(t *testing.T) {
 }
 
 func TestResolveListenerOIDCConfig(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		env          map[string]string
@@ -467,6 +471,7 @@ func TestResolveListenerOIDCConfig(t *testing.T) {
 }
 
 func TestDescribeListenerAPIAuth(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		token    string
@@ -561,6 +566,7 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 }
 
 func TestAPIAuthRefusesHostsAnUnauthenticatedListenerDoesNotServe(t *testing.T) {
+	t.Parallel()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})

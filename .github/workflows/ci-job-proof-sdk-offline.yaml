@@ -53,6 +53,7 @@ jobs:
     # below quotes them. The proxy faults each of them and every subdomain of one, and refuses
     # nothing else, so the verdict counts its refusals rather than matching this list again.
     env:
+      JOB_TIMEOUT_MINUTES: 15 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       FAULT_HOSTS: api.github.com,codeload.github.com,objects.githubusercontent.com
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -27,4 +27,4 @@ Root each cause once, as `skill://legion-controller/references/finding-asks.md#h
 
 ## The record
 
-Add at the top of the record a section `## Consolidation pass <block start>` with three counts and their keys: issues read, pairs folded, causes rooted; then every pair and group you skipped, with what settles it. Drop sections older than eight days, and upload the whole record: `dispatch artifact --issue <REPORT KEY> --name consolidation.md --path <the record file>`. Never post the pass as a message: that reaches a person's Inbox.
+Add at the top of the record a section `## Consolidation pass <block start>` with three counts and their keys: issues read, pairs folded, causes rooted; then every pair and group you skipped, with what settles it. Drop sections older than eight days, and upload the whole record: `dispatch artifact --issue <REPORT KEY> --name consolidation.md --path <the record file> --force`. Never post the pass as a message: that reaches a person's Inbox.

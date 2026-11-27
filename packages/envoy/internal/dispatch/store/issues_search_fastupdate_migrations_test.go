@@ -47,9 +47,9 @@ func writeIssuesForTheIndex(t *testing.T, ctx context.Context, store *Store, fro
 // index with fastupdate turned back on, so a test that answered 0 because the writes were too
 // small to fill a page would fail there too.
 func TestIssuesSearchFastupdateMigrationStopsTheIndexBatchingItsWrites(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, issuesSearchFastupdate)
+	store := openMigratedTestStore(t, issuesSearchFastupdate)
 
 	var options []string
 	if err := store.Pool.QueryRow(ctx,
@@ -80,9 +80,9 @@ func TestIssuesSearchFastupdateMigrationStopsTheIndexBatchingItsWrites(t *testin
 // the option stops new ones without moving those. This migrates a database that already batched
 // a list and reads the index clean afterwards.
 func TestIssuesSearchFastupdateMigrationEmptiesTheListItInherits(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, issuesSearchFastupdate-1)
+	store := openMigratedTestStore(t, issuesSearchFastupdate-1)
 
 	writeIssuesForTheIndex(t, ctx, store, 1, 200)
 	var pending bool
@@ -97,7 +97,7 @@ func TestIssuesSearchFastupdateMigrationEmptiesTheListItInherits(t *testing.T) {
 		t.Fatalf("the schema before the migration batched nothing, so this test decides nothing")
 	}
 
-	migrateThrough(t, store, issuesSearchFastupdate)
+	migrateAbove(t, store, issuesSearchFastupdate-1, issuesSearchFastupdate)
 	if pages := issuesSearchPending(t, ctx, store); pages != 0 {
 		t.Errorf("issues_search still held %d pages of pending entries after the migration, want none", pages)
 	}
@@ -110,9 +110,9 @@ func TestIssuesSearchFastupdateMigrationEmptiesTheListItInherits(t *testing.T) {
 // writes one catalog row and the flush moves the pending entries into the index, so neither
 // reads or rewrites a row of issues.
 func TestTheIssuesSearchFastupdateMigrationTouchesOnlyIssues(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, issuesSearchFastupdate)
+	store := openMigratedTestStore(t, issuesSearchFastupdate)
 	const file = "20261108015800_issues_search_fastupdate.up.sql"
 	sql, err := migrationFiles.ReadFile("migrations/" + file)
 	if err != nil {

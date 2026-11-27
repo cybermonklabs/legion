@@ -183,7 +183,10 @@ func TestExecFormWaitOutlivesFailedStatusPolls(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			broker, served := flakyBroker(t, row.polls)
-			stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil,
+			// The rows run side by side, each binary on one P: one left to size GOMAXPROCS to the
+			// host starts a thread for each P its collector's idle mark workers take, about 80 on
+			// a 288-CPU host.
+			stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, []string{"GOMAXPROCS=1"},
 				"FLAKY_ME", "--wait", row.wait, "--", "sh", "-c", `test "$FLAKY_ME" = `+flakyValue+` && echo ran-the-child`)
 			ran := strings.Contains(stdout, "ran-the-child")
 			if exit != row.exit || ran != (row.exit == 0) {

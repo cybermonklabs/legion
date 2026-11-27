@@ -181,7 +181,6 @@ func newProviderErrorLive(t *testing.T) *providerErrorLive {
 	if omp == "" {
 		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/provider-error-retry.sh requires it", liveOmpPathEnv)
 	}
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/provider-error-retry.sh")
 	r := &providerErrorLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
@@ -295,7 +294,7 @@ func (r *providerErrorLive) seed() {
 	for _, seeded := range r.issues() {
 		r.board.show(seeded.key, "in_progress")
 	}
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, seeded := range r.issues() {
 			if err := r.records.PutIssue(ctx, tx, record.Issue{
 				Key: seeded.key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: seeded.key,

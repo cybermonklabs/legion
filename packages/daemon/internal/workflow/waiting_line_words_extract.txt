@@ -29,19 +29,13 @@
 # came from.
 
 # docs/site/src/content/docs/legion/running-legion.md collapsed
-answered and the published line still names — each standing among the issues whose work came back, oldest first, until the pass that resumes it — and each by key with what
+answered and the published line still names — each standing within its priority, among the issues whose work came back, oldest first, until the pass that resumes it — and each by key with what
 
 # docs/site/src/content/docs/legion/troubleshooting.md collapsed
-once it is answered it stands in `admission.waiting` too, among the issues whose work came back, oldest first, until the pass that resumes it. That resume takes no further slot
+once it is answered it stands in `admission.waiting` too, within its priority, among the issues whose work came back, oldest first, until the pass that resumes it. That resume takes no further slot
 
 # packages/contracts/src/legion-api.ts collapsed
-when the answered root stands in admission's waiting line, among the issues whose work came back, oldest first, until the pass that resumes it. */
-
-# skills/legion-controller/references/admission.md collapsed
-`waitingOn.answeredAt` means the daemon has put it in `admission.waiting` as well, among the issues whose work came back, oldest first, where it stands until the pass that resumes it
+when the answered root stands in admission's waiting line, within its priority, among the issues whose work came back, oldest first, until the pass that resumes it. */
 
 # docs/site/src/content/docs/legion/concepts.md collapsed
-The answered root goes into the waiting line's first part, among the issues whose work came back, oldest first, and so behind every issue of that part whose work came back before it
-
-# skills/legion-controller/references/wakes.md collapsed
-The person's answer puts it in `admission.waiting` by itself, among the issues whose work came back, oldest first, and its promotion gives its architect the answer task
+The answered root goes into the waiting line within its priority, among the issues whose work came back, oldest first, and so behind every issue of a higher priority and every issue of its own priority whose work came back before it

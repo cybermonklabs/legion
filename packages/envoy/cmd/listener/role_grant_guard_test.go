@@ -306,6 +306,7 @@ func unreadRegistry(t *testing.T, client *bus.Client, clock *listenerClock) *sto
 //
 // The test logs every answer and the state each case asked in.
 func TestTheGrantGuardRefusesWhileThisListenersRenewalsFailOrItsCopyIsStale(t *testing.T) {
+	t.Parallel()
 	const holder = "ses_grant_guard"
 
 	t.Run("1 a renewal of the holder's claim failed on this listener", func(t *testing.T) {
@@ -471,6 +472,7 @@ func answerFields(t *testing.T, recorder *httptest.ResponseRecorder) []string {
 // grantGuardPrefix and names the arm. The route logs the guard's refusal once, with the role, the
 // session, both processes and the arm.
 func TestTheGrantGuardAnswersARelaunchedProcessAsItsOwnSessionsStandingClaim(t *testing.T) {
+	t.Parallel()
 	const (
 		holder = "ses_relaunched_pane"
 		role   = "guard-relaunched"
@@ -536,6 +538,7 @@ func TestTheGrantGuardAnswersARelaunchedProcessAsItsOwnSessionsStandingClaim(t *
 // record is still the stopped process's failure at the moment it was recorded; the scheduled read
 // is fired at each step, so the repair's bound is never the arm that refuses.
 func TestTheGrantGuardRefusesARelaunchedProcessOnlyUntilItsPredecessorsLastFailureAges(t *testing.T) {
+	t.Parallel()
 	const (
 		holder = "ses_relaunched_after_a_failure"
 		role   = "guard-predecessor-failed"

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
@@ -23,12 +24,15 @@ const judgeModel = "claude-opus-4-6"
 
 // judgeable gives the rig's broker airlock rules that let the judge decide up to 900 seconds of
 // TEST_SECRET, ada's own human-tier secret, and wires a judge, a hook that does nothing, so a
-// request for TEST_SECRET is held for the judge from the moment it is written.
+// request for TEST_SECRET is held for the judge from the moment it is written. The chain verifier
+// is built again from those rules, as cmd/cipherd builds it after them, so it holds the judge's
+// rules (requests.NewChainVerifier).
 func judgeable(r *rig) {
 	seconds := uint32(900)
 	r.machine.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{
 		{Name: "TEST_SECRET", Hosts: []string{"api.test.example"}, Judge: &seconds, Guidance: "grant for the billing job"},
 	}}
+	r.machine.Chain = requests.NewChainVerifier(r.st, r.url, time.Minute, r.machine.Airlock)
 	r.machine.Judge = func(requests.PendingRequest) {}
 }
 

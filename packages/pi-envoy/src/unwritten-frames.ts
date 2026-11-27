@@ -43,6 +43,8 @@ interface UnwrittenCard extends Unwritten {
   /** What it is handed as: a card the host withdrew unwritten is handed again as it was. */
   readonly content: string | readonly ContentBlock[];
   readonly deliverAs: CardDelivery;
+  /** The Dispatch message the card delivers to the session, if it delivers one. */
+  readonly dispatchMessageId: string | undefined;
   /**
    * The host moments counted when it was handed (`handBackWithdrawn`); undefined for an inert
    * card held, never handed, which the next settled moment hands.
@@ -103,11 +105,13 @@ export interface UnwrittenFramesHost {
    *  once it is not the one this process writes its transcript to, so the caller makes no
    *  session test of its own. */
   recordDelivered(sessionID: string, identity: DedupeIdentity): Promise<void>;
-  /** Hands the host a card (`pi.sendMessage`); a throw means it was not handed. */
+  /** Hands the host a card (`pi.sendMessage`); a throw means it was not handed. `dispatchMessageId`
+   *  is the Dispatch message the card delivers to the session, which its `details` name. */
   handCard(
     content: string | readonly ContentBlock[],
     deliverAs: CardDelivery,
-    identity: DedupeIdentity | undefined
+    identity: DedupeIdentity | undefined,
+    dispatchMessageId: string | undefined
   ): void;
   /** A card for a session the host does not have open was handed to nobody, and its claim went
    *  back with nothing recorded (`sendCard`). */
@@ -190,11 +194,12 @@ export class UnwrittenFrames {
 
   /**
    * Hands the host a card for `session`, for the frame `identity` under `claim`: one that shows
-   * it, or a failure notice naming it. `queued`: the card is shown only once the host writes it
-   * (`written`), and the claim, when there is one, waits until then. `shown`: a card of a frame
-   * the ledger keeps nothing of, which nothing waits on, so its claim settles at once. A send
-   * that throws leaves nothing waiting and releases the claim, so the listener sends the frame
-   * again.
+   * it, or a failure notice naming it. `dispatchMessageId` is the Dispatch message the card
+   * delivers to the session, when it delivers one (`UnwrittenFramesHost.handCard`). `queued`: the
+   * card is shown only once the host writes it (`written`), and the claim, when there is one,
+   * waits until then. `shown`: a card of a frame the ledger keeps nothing of, which nothing waits
+   * on, so its claim settles at once. A send that throws leaves nothing waiting and releases the
+   * claim, so the listener sends the frame again.
    *
    * `closed`: the host is not on `session` (`UnwrittenFramesHost.hostIsOn`), so nothing is handed
    * and nothing is marked shown - the host writes what it is handed in the conversation it has,
@@ -215,7 +220,8 @@ export class UnwrittenFrames {
     content: string | readonly ContentBlock[],
     deliverAs: CardDelivery,
     identity: DedupeIdentity | undefined,
-    claim: DeliveryClaim | undefined
+    claim: DeliveryClaim | undefined,
+    dispatchMessageId?: string
   ): "queued" | "shown" | "closed" {
     if (!this.#host.hostIsOn(session)) {
       this.#host.cardNotShown(session, identity);
@@ -234,6 +240,7 @@ export class UnwrittenFrames {
             keys,
             content,
             deliverAs,
+            dispatchMessageId,
             handedAt: hand ? this.#moments : undefined,
           };
     if (card !== undefined) this.#awaitWrite(card);
@@ -242,7 +249,7 @@ export class UnwrittenFrames {
       return "queued";
     }
     try {
-      this.#host.handCard(content, deliverAs, identity);
+      this.#host.handCard(content, deliverAs, identity, dispatchMessageId);
     } catch (error) {
       if (card !== undefined) this.#stopAwaitingWrite(card);
       claim?.release();
@@ -421,7 +428,7 @@ export class UnwrittenFrames {
       const again: UnwrittenCard = { ...card, handedAt: this.#moments };
       this.#awaitWrite(again);
       try {
-        this.#host.handCard(card.content, card.deliverAs, card.identity);
+        this.#host.handCard(card.content, card.deliverAs, card.identity, card.dispatchMessageId);
       } catch (error) {
         // Still waiting as it was: the next settled moment hands it.
         this.#stopAwaitingWrite(again);

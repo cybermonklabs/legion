@@ -30,6 +30,7 @@ import (
 // cancel with the deadline still ahead; publishConfirmed's check of the context before it publishes
 // sees both. The control is the same call with a live context, which must publish and be received.
 func TestAPublishWithAnEndedContextSendsNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		topic string
@@ -122,12 +123,14 @@ func TestAPublishWithAnEndedContextSendsNothing(t *testing.T) {
 
 // publishConfirmed refuses an ended context before it calls publish, a deadline already spent or a
 // cancel with the deadline still ahead, and answers it with the spent-window text wrapping the
-// context's error. It is the only check of the context on the core path (PublishCoreContext reads it
-// nowhere, and ensureConnWithContext returns on a healthy connection without consulting it), so it
-// is pinned on its own, both causes driven directly: publish must not be called at all. The text is
-// pinned because a deployed filter may match it.
-// The control is the same call with a deadline ahead, which publishes, flushes and confirms.
+// context's error, which is ErrWindowEndedBeforePublish as well. It is the only check of the
+// context on the core path (PublishCoreContext reads it nowhere, and ensureConnWithContext returns
+// on a healthy connection without consulting it), so it is pinned on its own, both causes driven
+// directly: publish must not be called at all. The text is pinned because a deployed filter may
+// match it. The control is the same call with a deadline ahead, which publishes, flushes and
+// confirms.
 func TestAPublishConfirmedWithASpentDeadlinePublishesNothing(t *testing.T) {
+	t.Parallel()
 	client, err := ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -155,12 +158,32 @@ func TestAPublishConfirmedWithASpentDeadlinePublishesNothing(t *testing.T) {
 	} {
 		err = client.publishConfirmed(ended.ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, publish)
 		want := `bus: window elapsed before the publish to "` + subject + `" was flushed: ` + ended.err.Error()
-		if err == nil || err.Error() != want || !errors.Is(err, ended.err) {
-			t.Fatalf("publishConfirmed with %s = %v, want %q wrapping %v", ended.name, err, want, ended.err)
+		if err == nil || err.Error() != want || !errors.Is(err, ended.err) || !errors.Is(err, ErrWindowEndedBeforePublish) {
+			t.Fatalf("publishConfirmed with %s = %v, want %q wrapping %v and ErrWindowEndedBeforePublish", ended.name, err, want, ended.err)
 		}
 		if published != 0 {
 			t.Fatalf("publishConfirmed with %s called publish %d times, want none", ended.name, published)
 		}
+	}
+
+	// A window that ends after the publish was made is not one that ended before it: the publish
+	// stand-in makes its publish only once the deadline has passed (it waits on the context's end, no
+	// span), so the publish happens and the flush that follows finds the window spent. The error is
+	// the spent window's, and not ErrWindowEndedBeforePublish, which would tell the listener the
+	// forward never left this process.
+	short, cancelShort := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelShort()
+	late := 0
+	lateErr := client.publishConfirmed(short, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, func(msg *nats.Msg) error {
+		<-short.Done()
+		late++
+		return conn.PublishMsg(msg)
+	})
+	if late != 1 {
+		t.Fatalf("publishConfirmed with a deadline that passes during the publish called publish %d times, want 1", late)
+	}
+	if lateErr == nil || errors.Is(lateErr, ErrWindowEndedBeforePublish) {
+		t.Fatalf("publishConfirmed whose window ended after its publish = %v, want the spent window's error, not ErrWindowEndedBeforePublish", lateErr)
 	}
 
 	live, cancelLive := context.WithTimeout(context.Background(), 5*time.Second)

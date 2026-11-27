@@ -195,8 +195,8 @@ func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 // the release's command as an unknown field (callRefused), and its PROOF_INVALID saying an
 // enrollment is not live (enrollmentNotLive). Beside an address that carries a credential the
 // client prints none of those words, and each still reads as it does beside a clean one; the
-// same codes with other words, another narrowing refusal and a skewed clock's proof failure, read
-// as neither, beside either address.
+// same codes with other words, another refusal of the release and a skewed clock's proof failure,
+// read as neither, beside either address.
 func TestTheRefusalsToldApartByTheirWordsHoldBesideACredentialedAddress(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		answers := map[string]struct {
@@ -204,7 +204,7 @@ func TestTheRefusalsToldApartByTheirWordsHoldBesideACredentialedAddress(t *testi
 			code, words string
 		}{
 			"/older-release": {http.StatusBadRequest, "INVALID_NARROWING", `body must be one valid JSON object: json: unknown field "command"`},
-			"/narrowing":     {http.StatusBadRequest, "INVALID_NARROWING", "github_app.owner names no installation"},
+			"/other-refusal": {http.StatusBadRequest, "INVALID_NARROWING", "the release cannot be read"},
 			"/ended":         {http.StatusUnauthorized, "PROOF_INVALID", "proof invalid: not live"},
 			"/skewed":        {http.StatusUnauthorized, "PROOF_INVALID", "iat outside the proof skew"},
 		}
@@ -229,7 +229,7 @@ func TestTheRefusalsToldApartByTheirWordsHoldBesideACredentialedAddress(t *testi
 				}
 				return err
 			}
-			for path, want := range map[string]bool{"/older-release": true, "/narrowing": false} {
+			for path, want := range map[string]bool{"/older-release": true, "/other-refusal": false} {
 				if err := refusal(path); callRefused(err) != want {
 					t.Errorf("%s answered %v, read as an older broker's refusal of the command %v; want %v", path, err, !want, want)
 				}

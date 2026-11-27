@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -49,6 +50,8 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 	return r.inBatches(ctx, "asks", len(r.plan.asks), batchItems, func(ctx context.Context, tx pgx.Tx, from, to int) error {
 		mentions := newMentionRows("ask")
 		followers := make([][]any, 0, to-from)
+		followerNodes := make([]graphstore.Node, 0, to-from)
+		followed := map[string]struct{}{}
 		opened := make([][]any, 0, to-from)
 		for index := from; index < to; index++ {
 			ask := r.plan.asks[index]
@@ -118,6 +121,11 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			mentions.add(ask.ID, text.Refs(text.ExtractAt(question, serverURL)), ask.CreatedAt)
 			if index < r.sizes.AskFollowers {
 				followers = append(followers, []any{ask.ID, ask.Follower, ask.CreatedAt})
+				if _, written := followed[ask.Follower]; !written {
+					followed[ask.Follower] = struct{}{}
+					followerNodes = append(followerNodes,
+						graphstore.SessionNode(ask.Follower, seedAuthor, ask.CreatedAt, graphstore.NoEvent))
+				}
 			}
 			opening := model.Ask{
 				ID:              ask.ID,
@@ -154,7 +162,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
 			}
-			reader := refs.NewReader(ctx, tx, "ask", stored.ID, serverURL)
+			reader := refs.NewReader(ctx, tx, stored.Author, "ask", stored.ID, serverURL)
 			parts, err := refs.PlanAskParts(partIndex, reader, stored, ask.CreatedAt)
 			if err != nil {
 				return err
@@ -179,6 +187,9 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 				"ask.opened", seedActor, payload, false, ask.CreatedAt, ask.CreatedAt,
 			})
 		}
+		if err := writeFollowerNodes(ctx, tx, followerNodes); err != nil {
+			return err
+		}
 		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"ask_followers"},
 			[]string{"ask_id", "session_id", "since"}, pgx.CopyFromRows(followers)); err != nil {
 			return fmt.Errorf("ask followers: %w", err)
@@ -188,6 +199,28 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		}
 		return mentions.write(ctx, tx)
 	})
+}
+
+// writeFollowerNodes writes the session nodes of the followers one ask batch copies. A session
+// that follows an ask is a node of the store from the write that adds it (asks.Follow), and the
+// batch's copy of the follower rows reaches no asks.Follow: so the batch writes each follower's
+// node beside that copy, at the sentinel, as every write of the seed's is. A follower an earlier
+// batch wrote is written again, so each node restates its session (graphstore.Node's Restates):
+// the seed owns no session's state or visibility, so a node written again keeps the ones the
+// store holds, and a node the store does not hold yet is made as graphstore.SessionNode states
+// it. Without it a seeded ask's followed_by edges would answer no node in any read, and the
+// census would report every follower. The nodes go in one graphstore.Write, which takes their
+// rows in ascending (kind, id) and appends their base attributes after them; the follower rows
+// carry no foreign key into the store, so where the copy falls beside this moves no lock of the
+// store's order.
+func writeFollowerNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node) error {
+	for index := range nodes {
+		nodes[index].Restates = true
+	}
+	if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
+		return fmt.Errorf("the ask followers' nodes: %w", err)
+	}
+	return nil
 }
 
 // askAnswer is the answer an answered ask holds, in the shape the answer route writes
@@ -214,6 +247,15 @@ func (r *seedRun) askAnswer(ask askPlan, options []model.AskOption) model.AskAns
 // (api/reply_blocks.go): a block of the comment it replies to, or the part of the ask it answers,
 // whose node id starts `ask/`. The view reads the two as edges to a comment_block and to an
 // ask_block, telling them apart by that prefix.
+//
+// Who wrote a comment is written as the server's comment write writes it (api/comment_create.go).
+// The row holds the author as the model encodes it, which is the value the comment's node holds
+// as made_by, and the batch states what graphstore.QueueAuthored states of each comment
+// (graphstore.AuthorFacts): the author's node, the comment's authored_by tuple to it and the
+// aliases the server proved of the author (commentStoreWrite). The store census holds each
+// comment row to its node and its authored_by, so a seeded comment answers it as a comment the
+// server wrote does. seedActor's display name is a key no model.Actor carries, so a row holding
+// seedActor would disagree with its own node.
 func (r *seedRun) writeComments(ctx context.Context) error {
 	var hasAnswers bool
 	if err := r.database.Pool.QueryRow(ctx, `select exists (
@@ -224,14 +266,36 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 	}
 	columns := "id, issue_key, artifact_id, author, body, anchor, reply_to, resolved, created_at, ask_id, replies_to_block, edited_at"
 	parameters := "$1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8, $9, $10, $11, $12"
-	argumentCount := 12
+	next := 13
 	if hasAnswers {
 		columns += ", answers"
-		parameters += ", $13"
-		argumentCount++
+		parameters += fmt.Sprintf(", $%d", next)
+		next++
 	}
+	// The address of the comment's own node, which the batch writes before its first row.
+	columns += ", node_kind, node_address"
+	parameters += fmt.Sprintf(", $%d, $%d", next, next+1)
 	insert := "insert into comments (" + columns + ") values (" + parameters + ")"
+	author, err := json.Marshal(seedAuthor)
+	if err != nil {
+		return fmt.Errorf("encode the comments' author: %w", err)
+	}
+	// AuthorFacts states nothing of an author that names nobody, so a comment of such an author
+	// would name an author on its row and hold no authored_by. The seed refuses that author once,
+	// before its first batch, and commentStoreWrite relies on it.
+	if _, _, ok := graphstore.AuthorOf(seedAuthor); !ok {
+		return fmt.Errorf("the seed's author %s names nobody the store can name", seedAuthor.ID)
+	}
 	return r.inBatches(ctx, "comments", len(r.plan.comments), batchItems, func(ctx context.Context, tx pgx.Tx, from, to int) error {
+		// The nodes the batch's rows project, their author's node, and what each of them
+		// states, written before any row names one: the composite foreign key on
+		// (node_kind, node_address) is checked inside the statement that writes the row, so a
+		// node written after it would be too late. The seed appends no event of its own, so
+		// all of it takes the sentinel.
+		nodes, tuples := r.commentStoreWrite(from, to)
+		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+			return fmt.Errorf("write the comment nodes of %d to %d: %w", from, to, err)
+		}
 		mentions := newMentionRows("comment")
 		for index := from; index < to; index++ {
 			comment := r.plan.comments[index]
@@ -279,9 +343,13 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 			if comment.Edited {
 				editedAt = comment.CreatedAt.Add(time.Hour)
 			}
-			arguments := [...]any{comment.ID, issueKey, artifactID, seedActor, body, anchor, replyTo, index%5 == 0,
-				comment.CreatedAt, askID, repliesTo, editedAt, answers}
-			if _, err := tx.Exec(ctx, insert, arguments[:argumentCount]...); err != nil {
+			arguments := []any{comment.ID, issueKey, artifactID, author, body, anchor, replyTo, index%5 == 0,
+				comment.CreatedAt, askID, repliesTo, editedAt}
+			if hasAnswers {
+				arguments = append(arguments, answers)
+			}
+			arguments = append(arguments, graphstore.KindComment, comment.ID)
+			if _, err := tx.Exec(ctx, insert, arguments...); err != nil {
 				return fmt.Errorf("comment %s: %w", comment.ID, err)
 			}
 			if comment.Edited {
@@ -312,6 +380,55 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 		}
 		return mentions.write(ctx, tx)
 	})
+}
+
+// commentStoreWrite is what the comments from..to are in the node and tuple store: each
+// comment's node - project-visible, live, made by the seed's author at the row's own time - and
+// the artifact the comment is anchored to and the artifact that owns it, each stated only where
+// the comment has one (graphstore.CommentFacts), and who wrote the comment. The node write states
+// the two base attributes every node carries (graphstore.Write). All of it is drawn from the plan
+// alone, so the batch can state it before it writes a row.
+//
+// Who wrote a comment is what graphstore.AuthorFacts states of it, which is what
+// graphstore.QueueAuthored writes for a comment of the server's: the comment's authored_by tuple
+// and the aliases the server proved of its author go among the comment's own tuples, and the
+// author's node goes among the batch's nodes once, as AuthorFacts makes it for the batch's first
+// comment. The batch's one graphstore.Write then takes every node row before it appends a tuple,
+// which is the store's lock order. Every batch writes the author's node again, so it restates the
+// author (graphstore.Node's Restates), as the backfill's comment write does: no comment owns its
+// author's state or visibility, so a later batch keeps the ones the store holds, and only the
+// first batch makes the author's node, at the time of the first comment the seed writes, as
+// QueueAuthored makes it at the first comment that names it. writeComments refused an author that
+// names nobody before its first batch, so every comment here names one.
+func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphstore.Tuple) {
+	nodes := make([]graphstore.Node, 0, to-from+1)
+	tuples := make([]graphstore.Tuple, 0, 3*(to-from))
+	var authors []graphstore.Node
+	for index := from; index < to; index++ {
+		comment := r.plan.comments[index]
+		// A seeded comment is anchored only to the document it belongs to, which is the
+		// document whose address its row's artifact_id names.
+		anchor, owner := "", ""
+		if comment.Document >= 0 {
+			owner = r.plan.documents[comment.Document].RefKey
+			if comment.Anchored {
+				anchor = owner
+			}
+		}
+		var node graphstore.Node
+		node, tuples = graphstore.CommentFacts(tuples, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent, anchor, owner)
+		nodes = append(nodes, node)
+		made, facts, _ := graphstore.AuthorFacts(graphstore.KindComment, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent)
+		if index == from {
+			authors = made
+		}
+		tuples = append(tuples, facts...)
+	}
+	for index := range authors {
+		authors[index].Restates = true
+	}
+	nodes = append(nodes, authors...)
+	return nodes, tuples
 }
 
 // writeMessages writes the issue threads and indexes each message's blocks. Every fiftieth
@@ -368,9 +485,9 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 }
 
 // writeSessionMention writes the one mention whose target is a session. `session` is a node kind
-// refs/graph.go's nodeLoaders resolves, but text/refs.go's grammar names no session, so no body
+// refs/graph.go's nodeRegistry resolves, but text/refs.go's grammar names no session, so no body
 // can write this row: a build that addressed sessions would write it, and the backlink count
-// reads `refs` for every kind the loaders name, so the data set holds one.
+// reads `refs` for every kind the registry resolves, so the data set holds one.
 func (r *seedRun) writeSessionMention(ctx context.Context, tx pgx.Tx, from, to int) error {
 	if from > 0 || to == 0 {
 		return nil

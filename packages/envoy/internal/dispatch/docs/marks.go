@@ -251,7 +251,8 @@ func (s *Service) BlockForQuote(ctx context.Context, artifactID, quote string) (
 }
 
 // SuggestionKind returns the kind recorded on a verified browser or server suggestion mark. A
-// reply's projection of its thread root reads it under WithCommentMarks on a closed issue too.
+// projection reads it under WithCommentMarks on a closed issue too: of its thread root, where
+// a reply projects, and of the comment's own mark, where its author's edit does.
 func (s *Service) SuggestionKind(ctx context.Context, artifactID, id string) (string, error) {
 	tree, err := s.docTree(commentMarkOperation(ctx), artifactID)
 	if err != nil {
@@ -266,16 +267,43 @@ func (s *Service) SuggestionKind(ctx context.Context, artifactID, id string) (st
 
 // AcceptSuggestion applies the replacement for a suggestion mark.
 func (s *Service) AcceptSuggestion(ctx context.Context, artifactID, id, replaceWith string, actor model.Actor) error {
-	return s.applySuggestion(context.WithValue(ctx, skippedAnchorRefreshKey{}, id), artifactID, id, replaceWith, actor, true)
+	_, err := s.applySuggestion(context.WithValue(ctx, skippedAnchorRefreshKey{}, id), artifactID, id, replaceWith, actor, true)
+	return err
 }
 
 // RejectSuggestion removes a suggestion mark and its inserted text when necessary.
 func (s *Service) RejectSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) error {
-	return s.applySuggestion(context.WithValue(ctx, skippedAnchorRefreshKey{}, id), artifactID, id, "", actor, false)
+	_, err := s.applySuggestion(context.WithValue(ctx, skippedAnchorRefreshKey{}, id), artifactID, id, "", actor, false)
+	return err
 }
 
-func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWith string, actor model.Actor, accept bool) error {
-	return s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
+// RejectDeletedCommentSuggestion rejects the pending suggestion of a comment its author is
+// deleting: the mark goes and an insert suggestion's text goes with it, as RejectSuggestion
+// does. Its caller's joined transaction holds the document owner's lock and has decided under that
+// lock that the comment is its author's to delete - the same standing a comment's own anchor
+// writes have - and the caller marks the context it passes here as theirs (WithCommentMarks). So
+// this reject runs as those writes run, owner-verified under the caller's mark
+// (commentMarkOperation), and a closed issue's document takes it: a closed issue still takes the
+// delete of its comment, and the suggestion's replacement text is the comment's text too, so it
+// leaves the document with the body. Owner-verified, the write meets no closed refusal
+// (allowInject); a comment's mark write, it forks the stored document cold (closedIssueCommentMark,
+// readFork says why). RejectSuggestion is refused on a closed issue as it always was, and so is
+// this reject under a context no caller marked.
+//
+// It answers the kind the suggestion's mark recorded: "insert", "replace" or "delete"
+// (suggestionKind). Only an insert's mark wraps text the suggestion itself put in the document,
+// which this reject takes out again (rejectedInsert); a replace's and a delete's wrap document
+// text, which an accept would replace and a reject leaves. So only an insert's anchor quote, the
+// text its mark wrapped, is a copy of the comment's own text.
+func (s *Service) RejectDeletedCommentSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) (string, error) {
+	return s.applySuggestion(context.WithValue(commentMarkOperation(ctx), skippedAnchorRefreshKey{}, id), artifactID, id, "", actor, false)
+}
+
+// applySuggestion accepts or rejects the suggestion mark id, and answers the kind that mark
+// recorded (suggestionKind).
+func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWith string, actor model.Actor, accept bool) (string, error) {
+	var kind string
+	err := s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		fragment := doc.GetXmlFragment(fragmentName)
 		// Read before the Yjs transaction opens: the state vector takes the document lock.
 		since := authoredClock(ctx, artifactID, doc)
@@ -292,7 +320,7 @@ func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWi
 		if !ok {
 			return fmt.Errorf("%w: suggestion mark %q has no attributes", ErrDocSchema, id)
 		}
-		kind, err := suggestionKind(attrs, id)
+		kind, err = suggestionKind(attrs, id)
 		if err != nil {
 			return err
 		}
@@ -412,6 +440,10 @@ func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWi
 		}
 		return write(next)
 	})
+	if err != nil {
+		return "", err
+	}
+	return kind, nil
 }
 
 // refuseBrokenAsks refuses the first ask a write left unreadable whose id the document could read

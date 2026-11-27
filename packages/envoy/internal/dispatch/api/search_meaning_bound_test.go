@@ -95,6 +95,7 @@ func holdMeaningStatements(t *testing.T, database *store.Store) (release func())
 //
 // The bound is local to the transaction, so the connection goes back to the pool without it.
 func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
+	t.Parallel()
 	_, database, deps := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	tx, err := directServer(deps).beginMeaningScan(ctx)
@@ -238,8 +239,9 @@ func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing
 	key := createSearchIssue(t, handler, "MBOUND", title, spec)
 	processAllPending(t, database, embedder)
 
-	// The check searched by meaning on this server before the bound was shortened.
-	healthy := srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
+	// The check searched by meaning on this database, under the case's bound (meaningVerdictServer),
+	// before the bound on its statement was shortened.
+	healthy := meaningVerdictServer(t, srv.deps).relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
 	if healthy.Search != "meaning_and_keywords" || healthy.SearchNote != "" {
 		t.Fatalf("suggestions = %+v before the bound was shortened, want found by meaning and keywords", healthy)
 	}

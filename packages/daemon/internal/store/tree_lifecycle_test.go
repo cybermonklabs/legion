@@ -132,7 +132,7 @@ func TestAReservationThatCommitsFirstRefusesAWaitingStart(t *testing.T) {
 	if _, err := store.OpenTreeLifecycle(ctx, "legion", rootIssue, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatal(err)
 	}
-	tx, err := store.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestCleanupStepsTakeTheSerializerBeforeTheirRows(t *testing.T) {
 func holdSerializerThenLock(t *testing.T, store *Store, lock string, step func() error) {
 	t.Helper()
 	ctx := context.Background()
-	fact, err := store.Pool().Begin(ctx)
+	fact, err := store.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

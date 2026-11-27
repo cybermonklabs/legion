@@ -9,6 +9,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
@@ -22,9 +23,15 @@ type Registry struct {
 	openedAt              time.Time
 	restoredRoleRevisions map[string]uint64
 	mu                    sync.RWMutex
-	// cache is the copy of the interest bucket: its interests, revision fence, marks and read epoch
-	// (kvwatch.Copy, newInterestCopy), which every write site reaches through.
-	cache kvwatch.Copy[Interest]
+	// cache is the copy of the interest bucket: its interests with the layout each is stored in,
+	// its revision fence, marks and read epoch (kvwatch.Copy, newInterestCopy), which every write
+	// site reaches through.
+	cache kvwatch.Copy[storedRow]
+	// chunks is the copy of the interest bucket's chunks (kvchunk.Prefix), fed and swept by the
+	// same reads as cache (interestCache): the cache joins a chunked record's row from it
+	// (decodeStoredLocked), and the reaper collects from it the chunks no row names
+	// (collectInterestChunks).
+	chunks *kvchunk.Chunks
 	// index indexes the cached interests' topic patterns by subject token (subjectIndex), which is
 	// what Match walks rather than every cached interest. The copy's own hooks keep it
 	// in step (indexInterestLocked, unindexInterestLocked), so a recreated bucket's read takes its
@@ -108,9 +115,10 @@ func WithRoleClaimWatch(options ...kvwatch.Option) OpenOption {
 
 // LegacySubjectCounter counts each name a caller gave in its old form, under a kind label: an
 // interest a registration names (LegacyTopicWarnings) or a stored row holds when it is read into a
-// session's consumer filter (CountStoredLegacyTopics), or a role a claim names (ClaimedRole). The
+// session's consumer filter (CountStoredLegacyTopics), a role a claim names (ClaimedRole), or a
+// role a publish to its lane, a message on the role lane or a holder lookup names (ReadRole). The
 // listener passes its envoy_listener_legacy_subjects_total counter, whose movement is what tells
-// an operator a reader of the old form is still about.
+// an operator a reader or a writer of the old form is still about.
 type LegacySubjectCounter interface {
 	Inc(labels ...[2]string)
 }
@@ -155,6 +163,7 @@ func Open(ctx context.Context, conn *nats.Conn, options ...OpenOption) (*Registr
 		legacySubjects:        opts.legacySubjects,
 	}
 	r.cache = newInterestCopy(r)
+	r.chunks = kvchunk.NewChunks(r.now)
 	r.roleHolders = newRoleHolderCopy(r)
 	r.watcher = kvwatch.New("interest registry", kv, interestCache{r}, kvwatch.WithLogger(opts.log))
 	r.roleWatcher = r.newRoleWatcher(roleKV, opts.roleWatch...)

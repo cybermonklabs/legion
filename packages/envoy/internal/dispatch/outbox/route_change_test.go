@@ -336,7 +336,7 @@ func recordAfterARouteMove(t *testing.T, record string) routeMoveRecord {
 	}
 	switch record {
 	case "lost":
-		if holds, err := recordBatch(ctx, deps, outcomes, uuid.New()); err != nil || holds {
+		if holds, err := recordBatch(ctx, deps, outcomes, uuid.New(), graphWrite{}); err != nil || holds {
 			t.Fatalf("record without the hold: holds %v, %v; want the hold another's", holds, err)
 		}
 	case "previous":
@@ -350,7 +350,7 @@ func recordAfterARouteMove(t *testing.T, record string) routeMoveRecord {
 			t.Fatalf("record issue.updated as the previous release does: %v", err)
 		}
 	case "held":
-		if holds, err := recordBatch(ctx, deps, outcomes, holder.instance); err != nil || !holds {
+		if holds, err := recordBatch(ctx, deps, outcomes, holder.instance, graphWrite{}); err != nil || !holds {
 			t.Fatalf("record with the hold: holds %v, %v; want the hold this process's", holds, err)
 		}
 	}

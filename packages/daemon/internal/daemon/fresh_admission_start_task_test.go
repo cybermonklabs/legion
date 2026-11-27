@@ -32,6 +32,7 @@ import (
 // architectStalls), and a root the daemon has just served is none of the three: a wake here
 // would send a person after a tree that is running.
 func TestAFreshAdmissionGivesItsArchitectItsStartTask(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	r.admitPass()

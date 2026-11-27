@@ -12,25 +12,31 @@ import (
 )
 
 // Publisher publishes a webhook's envelopes, each within the context its handler gives it, which
-// carries the request's own end and the route's budget for its caller (*bus.Client.PublishWithin,
-// which also keeps the bus's own five-second bound).
+// carries the request's own end and the route's budget for its caller
+// (*bus.Client.PublishEachWithin, which also keeps the bus's own five-second bound). It calls
+// published, when that is not nil, once for each topic it published the envelope on, with the
+// stream's acknowledgement there (bus.StoredAck): whether the stream already held the envelope
+// under its Nats-Msg-Id, and whether that answer is to the bus's resend after the connection
+// closed under its first send, which may have stored that very copy. It reports the envelope's
+// own topic, and any copy it publishes beside it (ghrename.Publisher's copy under a repository's
+// former name). The GitHub route logs one `github published` line for each.
 type Publisher interface {
-	PublishWithin(context.Context, contracts.Envelope) error
+	PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error
 }
 
 // deliveryFailed answers a delivery whose envelope the listener did not publish, and logs
-// `<action> refused` or `<action> failed` (failureOutcome). Slack and Ghost Wispr deliveries log
-// it on every attempt; a GitHub delivery logs it once (failedDeliveries).
+// `<action> refused`, `<action> in process` or `<action> failed` (failureOutcome). Slack and Ghost
+// Wispr deliveries log it on every attempt; a GitHub delivery logs it once (failedDeliveries).
 func deliveryFailed(w http.ResponseWriter, action string, err error) {
 	result, status, answer := failureOutcome(err)
 	log.Print(failureLine(action, result, err))
 	http.Error(w, answer, status)
 }
 
-// failureLine is the line a failed delivery logs, `<action> <result>: <error>`, which the
-// listener's `webhook-refused` and `publish-failure` alarms count. A GitHub delivery that fails
-// again logs this same line behind its own `redelivery <delivery>: ` prefix
-// (*failedDeliveries.deliveryFailed), which no alarm counts, so both lines are written here.
+// failureLine is the line a failed delivery logs, `<action> <result>: <error>`, whose `refused`
+// and `failed` results the listener's `webhook-refused` and `publish-failure` alarms count. A
+// GitHub delivery that fails again logs this same line behind its own `redelivery <delivery>: `
+// prefix (*failedDeliveries.deliveryFailed), which no alarm counts, so both lines are written here.
 func failureLine(action, result string, err error) string {
 	return fmt.Sprintf("%s %s: %v", action, result, err)
 }
@@ -43,9 +49,18 @@ func failureLine(action, result string, err error) string {
 // so it is a 503 `failed`. A stream at its byte limit (bus.ErrStreamFull) is such a failure: it
 // takes the redelivery once age has made room, and until then that is a 503 as well. The
 // listener's `webhook-refused` and `publish-failure` alarms count these lines.
+//
+// A publish a clustered stream refused because an earlier publish under the same message id, an
+// earlier delivery of the same event, is still in process (bus.ErrDuplicateInProcess) is no
+// failure: that publish stores the one copy. It is logged `in process`, which neither alarm
+// counts, and answered as a failure is, 503, since this request did not see the copy stored; a
+// redelivery, where its sender makes one, is answered 200 with that copy as a duplicate.
 func failureOutcome(err error) (result string, status int, answer string) {
-	if errors.Is(err, bus.ErrRefused) {
+	switch {
+	case errors.Is(err, bus.ErrRefused):
 		return "refused", http.StatusUnprocessableEntity, err.Error()
+	case errors.Is(err, bus.ErrDuplicateInProcess):
+		return "in process", http.StatusServiceUnavailable, "service unavailable"
 	}
 	return "failed", http.StatusServiceUnavailable, "service unavailable"
 }

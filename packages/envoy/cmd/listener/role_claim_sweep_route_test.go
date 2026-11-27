@@ -415,6 +415,7 @@ func TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFive
 // through the registry's own role bucket handle before the counting one is installed, so no
 // fixture write is counted as the request's.
 func TestADeregistrationOnARoleClaimViewThatCannotBeServedCostsOneScanAndNotAReadPerClaim(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID    = "ses_sweep_route_degraded"
 		topic        = "notifications.team.sweep-route-degraded"

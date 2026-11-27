@@ -319,8 +319,8 @@ cat >> "$root/.github/ci-tools.yaml" <<YAML
 YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
-check "names the row and the five words the helper serves" \
-  "$(contains "$out" "the elsewhere row's second_source is s3, and .github/scripts/ci-tools.sh serves github-release, ghcr-mirror, npm, pypi and pulumi-releases.")"
+check "names the row and the six words the helper serves" \
+  "$(contains "$out" "the elsewhere row's second_source is s3, and .github/scripts/ci-tools.sh serves github-release, ghcr-mirror, npm, pypi, pulumi-releases and helm-releases.")"
 
 echo "case: rule 1 — a primary that does not hold the row's version"
 root=$(fixture shape-primary-version)
@@ -504,6 +504,77 @@ check "names both values and both files" \
   "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the pulumi-docker row's version is 4.4.4 and packages/envoy/infra/internal/pulumitest/pulumitest.go pins const DockerPluginVersion = \"5.5.5\".")"
 check "and says which of the two to move" \
   "$(contains "$out" "move this row to the constant's version, or the constant to the row's.")"
+
+# helm_row <root> <version>: appends a helm row at that version, in the shape the manifest's helm
+# row takes: the tarball get.helm.sh serves as the primary, and a copy of it as the second source.
+helm_row() {
+  cat >> "$1/.github/ci-tools.yaml" <<YAML
+
+  - name: helm
+    version: $2
+    digest: $SOLO
+    digest_of: the release tarball, whole
+    primary_source: helm-releases
+    primary: https://get.helm.sh/helm-v$2-linux-amd64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://get.helm.sh/helm-v$2-linux-amd64.tar.gz
+    mirror_member: ""
+YAML
+}
+
+# render_nats <root> [line]: writes packages/envoy/loadtest/cluster/render-nats.sh holding that
+# line, by default the HELM= line a helm row at 3.3.3 agrees with. The green fixture writes no
+# such file and holds no helm row, which is the tree in which the gate does not read it.
+render_nats() {
+  mkdir -p "$1/packages/envoy/loadtest/cluster"
+  printf '#!/usr/bin/env bash\n%s\n' "${2:-HELM=helm.sh/helm/v3/cmd/helm@v3.3.3}" \
+    > "$1/packages/envoy/loadtest/cluster/render-nats.sh"
+}
+
+echo "case: rule 2 — the helm row at the version render-nats.sh's HELM= line pins"
+root=$(fixture pin-helm-agrees)
+helm_row "$root" 3.3.3
+render_nats "$root"
+run_gate "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and counts the helm row with the rest" \
+  "$(contains "$out" '^.github/ci-tools.yaml holds 7 row(s), each agreeing with the pin that installs it')"
+
+echo "case: rule 2 — the helm row and render-nats.sh's HELM= line disagree"
+# The render runs an installed helm only where it answers the version that line names, so a row
+# at another version installs a helm the render passes over for one it builds itself.
+root=$(fixture pin-helm-version)
+helm_row "$root" 3.3.3
+render_nats "$root" HELM=helm.sh/helm/v3/cmd/helm@v3.4.0
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names both values and both files" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the helm row's version is 3.3.3 and packages/envoy/loadtest/cluster/render-nats.sh pins HELM=helm.sh/helm/v3/cmd/helm@v3.4.0, whose version is 3.4.0.")"
+check "and says which of the two to move" \
+  "$(contains "$out" "move this row to the HELM= line's version, or that line to the row's.$")"
+
+echo "case: rule 2 — a helm row and no render-nats.sh"
+root=$(fixture pin-helm-no-render)
+helm_row "$root" 3.3.3
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file and the row that answers to it" \
+  "$(contains "$out" '^packages/envoy/loadtest/cluster/render-nats.sh:1: this file is missing or is not readable as text, and the helm row of .github/ci-tools.yaml carries the version its HELM= line pins$')"
+
+echo "case: rule 2 — a helm row and a render-nats.sh with no HELM= line"
+# A comment that names the pin is no pin: the line the gate reads is the assignment the script
+# runs.
+root=$(fixture pin-helm-no-line)
+helm_row "$root" 3.3.3
+render_nats "$root" '# HELM=helm.sh/helm/v3/cmd/helm@v3.3.3'
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file and the line it lacks" \
+  "$(contains "$out" '^packages/envoy/loadtest/cluster/render-nats.sh:1: this file declares no HELM=helm.sh/helm/v<major>/cmd/helm@v<version> line, and the helm row of .github/ci-tools.yaml carries what it pins$')"
 
 echo "case: rule 1 — a second_url that does not hold its row's version"
 # The rule that holds a URL to the row's version reads every URL the row writes, so a second
@@ -815,8 +886,8 @@ cat >> "$root/.github/ci-tools.yaml" <<YAML
 YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
-check "names the row and the three words a primary is written in" \
-  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the copied row's primary_source is ghcr-mirror, and .github/scripts/ci-tools.sh reads github-release, pypi and pulumi-releases as a primary.")"
+check "names the row and the four words a primary is written in" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the copied row's primary_source is ghcr-mirror, and .github/scripts/ci-tools.sh reads github-release, pypi, pulumi-releases and helm-releases as a primary.")"
 check "and says why those two words are second sources" \
   "$(contains "$out" 'are no origin of the bytes, so ghcr-mirror and npm are written on the second side alone.')"
 
@@ -843,7 +914,7 @@ YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names the row, the word and the side it was written on" \
-  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the elsewhere-primary row's primary_source is s3, and .github/scripts/ci-tools.sh reads github-release, pypi and pulumi-releases as a primary.")"
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the elsewhere-primary row's primary_source is s3, and .github/scripts/ci-tools.sh reads github-release, pypi, pulumi-releases and helm-releases as a primary.")"
 
 echo "case: rule 3 — an action that fetches a covered release asset no row names"
 root=$(fixture reach-unnamed-asset)
@@ -1537,6 +1608,79 @@ run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names the digest and the file it does not occur in" \
   "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: this entry's digest $SOLO does not occur in .github/workflows/solo.yaml, the file it names as the pin, so nothing checks the bytes this entry declines a second source for. One source never means no checksum.$")"
+
+# decline_by_arg <fixture> <pinned_as> <ARG line…>: a workflow that fetches SOLO_URL, an entry
+# declining it pinned by the worker Dockerfile with that pinned_as (`-` writes no pinned_as line),
+# and those lines appended to that Dockerfile.
+decline_by_arg() {
+  local root=$1 pinned_as=$2 pinned_as_line=""
+  shift 2
+  [ "$pinned_as" = - ] || pinned_as_line="    pinned_as: $pinned_as"
+  cat > "$root/.github/workflows/solo.yaml" <<YAML
+name: Solo
+on: [push]
+jobs:
+  solo:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        run: curl -fsSL -O $SOLO_URL
+YAML
+  printf '%s\n' "$@" >> "$root/packages/daemon/docker/worker.Dockerfile"
+  cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+no_second_source:
+  - url: $SOLO_URL
+    digest: $SOLO
+    pinned_in: packages/daemon/docker/worker.Dockerfile
+$pinned_as_line
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+YAML
+}
+
+echo "case: a no_second_source entry pinned as an ARG whose value is its digest"
+root=$(fixture decline-pinned-as)
+decline_by_arg "$root" "ARG SOLO_SHA256" "ARG SOLO_SHA256=$SOLO"
+run_gate "$root"
+check "passes" "$(is "$status" 0)"
+
+echo "case: a no_second_source entry pinned as an ARG that moved, its old digest left in a comment"
+# The digest still occurs in the file, which is all the occurrence rule reads; pinned_as is what
+# reads the ARG's own value.
+root=$(fixture decline-pinned-as-moved)
+decline_by_arg "$root" "ARG SOLO_SHA256" "# was $SOLO" "ARG SOLO_SHA256=$TOOL"
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the digest, the file and the ARG's value" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: this entry's digest is $SOLO and packages/daemon/docker/worker.Dockerfile pins ARG SOLO_SHA256=$TOOL. ")"
+
+echo "case: a no_second_source entry whose pinned_as is not an ARG"
+root=$(fixture decline-pinned-as-shape)
+decline_by_arg "$root" "SOLO_SHA256" "ARG SOLO_SHA256=$SOLO"
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the form pinned_as takes" \
+  "$(contains "$out" "this entry's pinned_as is SOLO_SHA256, and the one form it takes is \`ARG <NAME>\`")"
+
+echo "case: a no_second_source entry a Dockerfile ARG pins, its pinned_as line deleted"
+# Without pinned_as the occurrence rule alone reads the entry, and the ARG's value is what a
+# Dockerfile checks the bytes against, so the line is required wherever the pin is a Dockerfile.
+root=$(fixture decline-pinned-as-missing)
+decline_by_arg "$root" - "ARG SOLO_SHA256=$SOLO"
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the entry, the Dockerfile and the ARG line that holds the digest" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: this entry names packages/daemon/docker/worker.Dockerfile, a Dockerfile, as the file that pins these bytes, and carries no \`pinned_as: ARG <NAME>\`. .*packages/daemon/docker/worker.Dockerfile:[0-9]* holds it as ARG SOLO_SHA256: add \`pinned_as: ARG SOLO_SHA256\` to this entry.")"
+
+echo "case: a no_second_source entry whose pinned_as line is deleted and whose ARG moved, its old digest left in a comment"
+# The reviewer's plant: without the requirement above, the comment meets the occurrence rule and
+# the gate passes a digest no ARG holds.
+root=$(fixture decline-pinned-as-missing-moved)
+decline_by_arg "$root" - "# was $SOLO" "ARG SOLO_SHA256=$TOOL"
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the entry and says no ARG line holds the digest" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: this entry names packages/daemon/docker/worker.Dockerfile, a Dockerfile, as the file that pins these bytes, and carries no \`pinned_as: ARG <NAME>\`. .*No ARG line of packages/daemon/docker/worker.Dockerfile holds $SOLO")"
 
 echo "case: a no_second_source entry pinned in the manifest itself"
 # The trap the rule above exists for: the entry's own `digest:` line is in the manifest, so the

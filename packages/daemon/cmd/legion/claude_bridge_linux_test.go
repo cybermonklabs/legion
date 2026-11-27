@@ -21,7 +21,9 @@ import (
 // These tests hold the bridge to what it does when a reader of one of its pipes takes none of a
 // line larger than the pipe holds, or none at all for a while. Each waits, through /proc and the
 // pipe's byte count (TIOCINQ, which is FIONREAD), until that pipe is full, so the writer is blocked
-// when the test acts.
+// when the test acts. Each stand-in Claude Code sleeps a day, longer than any test binary's
+// deadline, so only the bridge or the test's cleanup (startClaudeBridge kills the bridge's group)
+// ends it: one that ended on its own would end the bridge as if the bridge had stopped it.
 
 // The bridge blocked writing Claude Code a prompt it never reads, with no shim reading its frames:
 // SIGHUP still ends Claude Code, and the bridge exits and removes its inbox, whether its input has
@@ -32,7 +34,7 @@ func TestClaudeBridgeEndsAClaudeCodeItIsBlockedWritingTo(t *testing.T) {
 		inputEnds bool
 	}{{"input ended", true}, {"input open", false}} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\nexec sleep 300\n", goneShim(t))
+			p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\nexec sleep 86400\n", goneShim(t))
 			p.blockOnAPrompt()
 			if tc.inputEnds {
 				_ = p.stdin.Close()
@@ -53,7 +55,7 @@ func TestClaudeBridgeEndsAClaudeCodeItIsBlockedWritingTo(t *testing.T) {
 // never reads and a daemon frame follows the prompt: the end of the bridge's input alone, with no
 // signal, ends Claude Code, and the bridge exits and removes its inbox.
 func TestClaudeBridgeEndsWithItsInputWhileBlockedWritingToClaudeCode(t *testing.T) {
-	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\nexec sleep 300\n", goneShim(t))
+	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\nexec sleep 86400\n", goneShim(t))
 	p.blockOnAPrompt()
 	p.send(shimwire.GetState{ID: "s1"})
 	_ = p.stdin.Close()
@@ -84,7 +86,7 @@ func TestClaudeBridgeEndsWithItsFramesUnread(t *testing.T) {
 	if err := os.WriteFile(toolCall, []byte(line), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	p := startClaudeBridge(t, "cat "+toolCall+"\ntouch \"$CLAUDE_STANDIN_READY\"\nexec sleep 300\n", stdout)
+	p := startClaudeBridge(t, "cat "+toolCall+"\ntouch \"$CLAUDE_STANDIN_READY\"\nexec sleep 86400\n", stdout)
 	p.awaitFull("the bridge's stdout full, the shim reading none of it", shim)
 	state, left := p.hangUp()
 	if code := state.ExitCode(); code != 128+int(syscall.SIGTERM) {

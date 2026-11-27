@@ -53,14 +53,15 @@ type CIRecorder interface {
 // several megabytes, and a refused delivery is lost for good, since a redelivery is the same body.
 const githubMaxBody = 25 << 20
 
-// githubBodyBudget bounds the webhook body bytes the handler holds at once, across all requests
-// (bodyBudget). The body is buffered whole before its signature can be checked, so without it
-// anyone who can reach the route could make the listener hold 25 MiB per connection. A request
-// charges its buffer as its body arrives and holds it until the handler returns; one whose next
-// piece does not fit waits, except the one request at a time allowed past the limit. A signed body
-// decodes to about two and a half times its size again. It is at least githubMaxBody, so any body
-// GitHub sends fits.
-const githubBodyBudget = 64 << 20
+// githubRoomWait is the most a GitHub delivery waits, in all, for room in the listener's body
+// budget (BodyBudget) before it is answered 503: half the 10 s GitHub waits for an answer, so a
+// delivery that gets room late still has the other half to be read and answered. A delivery that
+// would have got room between 5 s and GitHub's 10 s was served before the budget had a room wait
+// and is a 503 now. GitHub does not redeliver a failed delivery itself; the redelivery sweep
+// (packages/envoy/internal/dispatch/redeliver) asks again only for the App webhook's failed
+// deliveries, so a delivery from any other GitHub webhook is lost. It is a variable so a test can
+// shorten it.
+var githubRoomWait = 5 * time.Second
 
 // githubBodyDeadline bounds how long, from the handler's start, the route reads a delivery's body,
 // and githubHandleDeadline how long after that the handler has to verify, record, publish and
@@ -72,9 +73,10 @@ const githubBodyBudget = 64 << 20
 //
 // The bounds are absolute, so they also cap what a sender that stalls can hold: its one connection
 // for up to about 70 s (the server's 10 s for the header, then githubBodyDeadline), at most twice
-// the bytes it has sent (bodyBudget) for githubBodyDeadline, and, when it holds the budget's right
-// to go past the limit, the other deliveries waiting for room for that long. A delivery waiting for
-// room reads its body under the same deadline, so its wait ends there too and it answers 400.
+// the bytes it has sent (BodyBudget) for githubBodyDeadline, and, when it holds the budget's right
+// to go past the limit, the other deliveries waiting for room for up to their room wait. A
+// delivery waiting for room reads its body under the same deadline, so its wait ends at
+// githubRoomWait with a 503, or at this deadline with a 400 when that comes first.
 // They are variables so a test can shorten them.
 //
 // The records and publishes run under the request's own context, with the write deadline as its
@@ -86,14 +88,12 @@ var (
 	githubHandleDeadline = 15 * time.Second
 )
 
-// GitHubHandler returns the HTTP handler for GitHub webhook events.
-func GitHubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publisher, ci CIRecorder) http.HandlerFunc {
-	return githubHandler(secret, mentionTrigger, reviewerAppID, publisher, ci, newBodyBudget(githubBodyBudget))
-}
-
-// githubHandler is GitHubHandler reading bodies against the given budget. Each handler remembers
-// the failed deliveries it has logged (failedDeliveries).
-func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publisher, ci CIRecorder, bodies *bodyBudget) http.HandlerFunc {
+// GitHubHandler returns the HTTP handler for GitHub webhook events, which reads its bodies against
+// bodies, the listener's one body budget. reviewerAppID is the App whose verdict check runs the CI
+// record takes (contracts.ReviewerVerdictDecision), and verdictAppID the App whose own check suites
+// it leaves out (contracts.VerdictAppsOwnSuite), none when empty. Each handler remembers the failed
+// deliveries it has logged (failedDeliveries).
+func GitHubHandler(secret, mentionTrigger, reviewerAppID, verdictAppID string, publisher Publisher, ci CIRecorder, bodies *BodyBudget) http.HandlerFunc {
 	failures := newFailedDeliveries(githubFailuresKept, githubFailureAge)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -102,24 +102,17 @@ func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publi
 		}
 		start := time.Now()
 		extendDeadlines(w, start)
-		read := bodies.begin()
-		defer read.release()
 		counted := &countingReader{r: r.Body}
 		// The connection's read deadline ends a read that is waiting on the sender, and this one a
 		// wait for room in the budget, which reads nothing from the connection.
 		ctx, cancel := context.WithDeadline(r.Context(), start.Add(githubBodyDeadline))
 		defer cancel()
-		body, err := read.readAll(ctx, counted, r.ContentLength, githubMaxBody)
+		body, release, err := bodies.readBody(ctx, w, r, counted, githubMaxBody, githubRoomWait)
+		defer release()
 		if err != nil {
 			log.Printf("github body read failed delivery=%s event=%s content_length=%d read=%d elapsed=%s: %v",
 				r.Header.Get("X-GitHub-Delivery"), r.Header.Get("X-GitHub-Event"), r.ContentLength,
 				counted.n, time.Since(start).Round(time.Millisecond), err)
-			var maxBytesErr *http.MaxBytesError
-			if errors.As(err, &maxBytesErr) {
-				http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
-				return
-			}
-			http.Error(w, "invalid body", http.StatusBadRequest)
 			return
 		}
 		delivery := r.Header.Get("X-GitHub-Delivery")
@@ -138,10 +131,20 @@ func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publi
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
+		// The hook target is the resource whose webhook sent the delivery: for an App's webhook,
+		// integration and the App's id, so a line that names it says which App delivered.
+		targetType := r.Header.Get("X-GitHub-Hook-Installation-Target-Type")
+		targetID := r.Header.Get("X-GitHub-Hook-Installation-Target-ID")
+		// The body's signature covers neither these two headers nor X-GitHub-Delivery, so a signed
+		// body replayed with forged headers chooses them. Each line logs what it holds of them
+		// quoted (%q): the github sender line target_type, target_id and delivery, the github
+		// published line target_id, delivery and the key built from the delivery, and the github
+		// mention detected line delivery. A value holding a space or an `=` adds no field.
 		if githubEvent(event) {
-			log.Printf("github sender login=%s type=%s delivery=%s event=%s",
+			log.Printf("github sender login=%s type=%s target_type=%q target_id=%q delivery=%q event=%s",
 				githubSenderField(payload, "login"),
 				githubSenderField(payload, "type"),
+				targetType, targetID,
 				delivery, event)
 		}
 		// Records and publishes end with the request and at its write deadline (extendDeadlines).
@@ -151,7 +154,7 @@ func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publi
 		// settled checks envelope for each commit whose suites and check runs are done. A finished
 		// Actions job on the default branch, of a run with no pull request, records nothing and is
 		// published below.
-		if obs := contracts.GithubCIObservations(event, payload); len(obs) > 0 {
+		if obs := contracts.GithubCIObservations(event, payload, verdictAppID); len(obs) > 0 {
 			for _, o := range obs {
 				if o.CheckName == "" {
 					if err := ci.RecordSuite(answer, o); err != nil {
@@ -188,22 +191,46 @@ func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publi
 			EventID:  id.New(),
 			TraceID:  id.New(),
 		}, trigger)
+		action, _ := payload["action"].(string)
 		for _, item := range items {
 			if err := item.Validate(); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			if err := publisher.PublishWithin(answer, item); err != nil {
+			// One line for each topic the publisher put the envelope on, its copy under a renamed
+			// repository's former name included: which App's webhook delivered which event under
+			// which key, and whether the stream stored it or already held that key, read from the
+			// stream's acknowledgement with whether it answers a resend, so the copies two Apps
+			// deliver of one event can be told apart and counted. A topic published before a later
+			// one failed is logged too.
+			err := publisher.PublishEachWithin(answer, item, func(topic string, duplicate, resent bool) {
+				log.Printf("github published delivery=%q event=%s action=%s topic=%s key=%q target_id=%q result=%s resent=%t",
+					delivery, event, action, topic, item.DedupeKey, targetID, publishResult(duplicate, resent), resent)
+			})
+			if err != nil {
 				failures.deliveryFailed(w, delivery, "github publish", err)
 				return
 			}
 		}
 		if len(items) > 1 {
-			log.Printf("github mention detected delivery=%s trigger=%s", delivery, strings.TrimSpace(trigger))
+			log.Printf("github mention detected delivery=%q trigger=%s", delivery, strings.TrimSpace(trigger))
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}
+}
+
+// publishResult is how a `github published` line names the stream's answer to one publish:
+// duplicate when the stream already held the message from an earlier publish, and stored
+// otherwise. A duplicate that answers the bus's resend after the connection closed under its first
+// send (bus.StoredAck.Resent) may name the copy that first send stored, so it is this publish's
+// own copy and stored, as the listener's sender limit reads it (cmd/listener's
+// senderCharge.published).
+func publishResult(duplicate, resent bool) string {
+	if duplicate && !resent {
+		return "duplicate"
+	}
+	return "stored"
 }
 
 // extendDeadlines moves this request's connection deadlines from the server's to the route's own,

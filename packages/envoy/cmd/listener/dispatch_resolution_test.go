@@ -238,9 +238,9 @@ func queueingDispatchMux(
 	people := dispatchstore.NewPgPeopleStore(database.Pool, auth.SingleSigningKey("signing-key"), nil)
 	broker := events.NewBroker()
 	caller := identity.HeaderIdentity{Header: rigUserHeader, People: people}
-	// The document service is built here rather than left to NewDeps so this test can shut it
-	// down: an issue's spec schedules a settlement, and a service nobody ended would still be
-	// warming that document after the database pool had closed.
+	// The test shuts the document service NewDeps requires down: an issue's spec schedules a
+	// settlement, and a service nobody ended would still be warming that document after the
+	// database pool had closed.
 	documents := docs.New(docs.Deps{
 		Store:     database,
 		Events:    broker,
@@ -549,6 +549,7 @@ func (rig *dispatchRig) mention(t *testing.T, issueKey, sessionID, body string) 
 // about the one session by id, against a route that reads the session store, and the frame
 // arrives at the agent's own endpoint.
 func TestDispatchMentionResolvesASessionTheCacheHasNotRefilled(t *testing.T) {
+	t.Parallel()
 	rig := newDispatchRig(t)
 	planner := rig.registerSession(t, "ses_planner", "Planner")
 	key := rig.issueKey(t, "A mention while the cache refills")
@@ -569,6 +570,7 @@ func TestDispatchMentionResolvesASessionTheCacheHasNotRefilled(t *testing.T) {
 // Now each selected session is read by id against the session store, so both are recipients and
 // both frames arrive.
 func TestDispatchBroadcastResolvesSessionsTheCacheHasNotRefilled(t *testing.T) {
+	t.Parallel()
 	rig := newDispatchRig(t)
 	planner := rig.registerSession(t, "ses_planner", "Planner")
 	tester := rig.registerSession(t, "ses_tester", "Tester")
@@ -609,6 +611,7 @@ func TestDispatchBroadcastResolvesSessionsTheCacheHasNotRefilled(t *testing.T) {
 // under its idempotency key, where no retry of the human's could ever reach them — and the
 // mention's attempt would have recorded that same wording.
 func TestDispatchRefusesABroadcastWhenASessionReadDoesNotAnswer(t *testing.T) {
+	t.Parallel()
 	rig := newDispatchRig(t)
 	planner := rig.registerSession(t, "ses_planner", "Planner")
 	tester := rig.registerSession(t, "ses_tester", "Tester")
@@ -654,6 +657,7 @@ func TestDispatchRefusesABroadcastWhenASessionReadDoesNotAnswer(t *testing.T) {
 // taken over. Both sides are here: the cache that has not refilled keeps its holder's claim, and
 // the session that genuinely ended loses it.
 func TestDispatchRefusesAClaimTakeoverWhileTheCacheRefills(t *testing.T) {
+	t.Parallel()
 	rig := newDispatchRig(t)
 	holder := rig.registerSession(t, "ses_holder", "Implementer")
 	contender := rig.registerSession(t, "ses_contender", "Second agent")
@@ -730,6 +734,7 @@ func (rig *dispatchRig) claim(
 // failed "no live session", nothing was stored or woken, and the person had to send the message
 // again once the pod was back.
 func TestDispatchQueuesATargetedMessageForASessionNoStoreHolds(t *testing.T) {
+	t.Parallel()
 	rig := newDispatchRig(t)
 	const released = "ses_released"
 	subject := contracts.LegacyAgentSubject(released)

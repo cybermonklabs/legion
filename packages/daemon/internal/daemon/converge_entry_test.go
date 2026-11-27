@@ -70,6 +70,7 @@ func sweptStarts(t *testing.T, pool *store.Pool, issue string) []sweptStart {
 // holds: the start carries that entry, so the role is owed nothing (workflow.OwedEntry), the
 // gate reads that and the later sweeps write no row and apply no fact of their own.
 func TestTheEntrySweepTickConvergesARoleBehindItsEntry(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	log := quietLogger()
@@ -92,7 +93,7 @@ func TestTheEntrySweepTickConvergesARoleBehindItsEntry(t *testing.T) {
 	}
 	const entry = 2
 	task := "Continue the member. Issue: " + member.Key + ". Phase: testing."
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
@@ -172,6 +173,7 @@ func TestTheEntrySweepTickConvergesARoleBehindItsEntry(t *testing.T) {
 // it, rather than the constant behind it; and with an override, which is how every other test
 // and the live proof reach the sweep at all.
 func TestTheEntrySweepConvergesAtLeastEveryMinuteWithNoOverride(t *testing.T) {
+	t.Parallel()
 	if got := entrySweepPeriod(0); got <= 0 || got > time.Minute {
 		t.Fatalf("the entry sweep's period with no override = %s, want more than zero and at most %s: a role behind its entry would wait longer than a minute for its work",
 			got, time.Minute)
@@ -192,6 +194,7 @@ func TestTheEntrySweepConvergesAtLeastEveryMinuteWithNoOverride(t *testing.T) {
 // What is driven is the one call each tick of tickEntrySweep makes (applyEntrySweep), so the
 // count below is of sweeps, not of elapsed periods.
 func TestTheEntrySweepAppliesNoFactWhileNoRoleIsBehindItsEntry(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	log := quietLogger()
@@ -216,14 +219,14 @@ func TestTheEntrySweepAppliesNoFactWhileNoRoleIsBehindItsEntry(t *testing.T) {
 	task := "Continue the member. Issue: " + member.Key + ". Phase: testing."
 	phaseRow := func(at int64) {
 		t.Helper()
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			return records.PutPhase(ctx, tx, record.PhaseRow{Issue: member.Key, Role: claim.RoleTester, Claim: token,
 				Entry: at, EntryTask: task, EntryRaisedAt: time.Now().UTC()})
 		}); err != nil {
 			t.Fatalf("record the tester's phases row at entry %d: %v", at, err)
 		}
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
@@ -297,6 +300,7 @@ func TestTheEntrySweepAppliesNoFactWhileNoRoleIsBehindItsEntry(t *testing.T) {
 // pass after pass. The moment that role goes behind, the same sweep applies its fact and sends
 // its work.
 func TestTheEntrySweepAppliesNoFactForARolePastThePhaseItsIssueStandsIn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	log := quietLogger()
@@ -325,7 +329,7 @@ func TestTheEntrySweepAppliesNoFactForARolePastThePhaseItsIssueStandsIn(t *testi
 	task := "Continue the member. Issue: " + member.Key + ". Phase: testing."
 	testerRow := func(at int64) {
 		t.Helper()
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			return records.PutPhase(ctx, tx, record.PhaseRow{Issue: member.Key, Role: claim.RoleTester, Claim: tester,
 				Entry: at, EntryTask: task, EntryRaisedAt: time.Now().UTC()})
 		}); err != nil {
@@ -334,7 +338,7 @@ func TestTheEntrySweepAppliesNoFactForARolePastThePhaseItsIssueStandsIn(t *testi
 	}
 	held := func(token claim.Token, role claim.Role, state supervise.ClaimState, given int64) {
 		t.Helper()
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			_, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
 				serving_generation, launch_failures, prompt_failures, prompt_retires, uncertain_streak, given_entry)
 				values ($1, $2, $3, $4, $5, 1, 'ses', '/sessions/ses.jsonl', $6, 1, 0, 0, 0, 0, $7)`,
@@ -344,7 +348,7 @@ func TestTheEntrySweepAppliesNoFactForARolePastThePhaseItsIssueStandsIn(t *testi
 			t.Fatalf("record the %s's claim: %v", role, err)
 		}
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}

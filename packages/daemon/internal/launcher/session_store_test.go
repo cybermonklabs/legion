@@ -106,7 +106,7 @@ func (g *rig) startByID(generation uint64, dsnFile, session, told string) shimwi
 func resumesTold(t *testing.T, told string) []string {
 	t.Helper()
 	var said string
-	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+	if !testwait.Holds(beforeDeadline(t), testwait.Poll, func() bool {
 		body, err := os.ReadFile(told)
 		if err != nil {
 			return false
@@ -375,7 +375,7 @@ func sessionDatabaseAt(t *testing.T, dsn string) (ompsessions.Database, *session
 // holds the agent's spelling of the endpoint, which pgx does not read: a launcher that looked there
 // would reach no database at all.
 func TestAResumeUnderASessionDatabaseIsServedThroughTheProxy(t *testing.T) {
-	dsn := testdb.Database(t, "legion_launcher_proxy_test")
+	dsn := testdb.PlainDatabase(t, "legion_launcher_proxy_test")
 	database, dialer := sessionDatabaseAt(t, dsn)
 	shortenResumeLookup(t)
 	g := newSessionRig(t, Config{SessionDatabase: database, SessionDialer: dialer.build})
@@ -452,7 +452,7 @@ func (s *identityStub) present() error {
 // here mints on demand instead. The agent's own client is Bun's, and pgx through the same socket
 // stands in for it, which is also the client the launcher itself looks a resume up with.
 func TestAnAgentKeepsWritingPastItsCredentialsExpiry(t *testing.T) {
-	database, dialer := sessionDatabaseAt(t, testdb.Database(t, "legion_launcher_expiry_test"))
+	database, dialer := sessionDatabaseAt(t, testdb.PlainDatabase(t, "legion_launcher_expiry_test"))
 	identity := &identityStub{}
 	identity.mint()
 	dialer.check = identity.present
@@ -464,7 +464,7 @@ func TestAnAgentKeepsWritingPastItsCredentialsExpiry(t *testing.T) {
 	child := publishedAll(t, marker)
 	endpoint := ompsessions.Endpoint{SocketDir: g.generationDir(2), Database: database.Name, User: database.User}
 	ask := func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), beforeDeadline(t))
 		defer cancel()
 		conn, err := ompsessions.ConnectURL(ctx, endpoint.ClientURL())
 		if err != nil {

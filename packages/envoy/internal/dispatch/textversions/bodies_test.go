@@ -284,14 +284,17 @@ func TestAReversedPairOfCutEditsKeepsEachEditsText(t *testing.T) {
 	}
 }
 
-// TestEachKindsPresentBodyStatementReadsNoPayloadItNeedNotRead holds what Postgres does with the
-// statement that reads each kind of post's present body (presentBodyReads) under the plan the
-// fill's connection may keep once it caches the statement, a generic one, which orders a
-// statement's conditions by their cost alone. A kind whose text no later event changes reads no
-// event: the statement's generic plan reads no events relation. A kind whose text later events
-// change unpacks the payload of no later event of another type: with its post's owner holding
-// 3,000 later events of another type, each with a payload of about 3 KB, which Postgres stores
-// out of line, the statement reads fewer buffers than one for each 2 of those events.
+// TestEachKindsWholeBodyStatementsReadNoPayloadTheyNeedNotRead holds what Postgres does with the
+// statements that read each kind of post's whole body (postBodyReads), its present row and its
+// body history, under the plan the fill's connection may keep once it caches a statement, a
+// generic one, which orders a statement's conditions by their cost alone. Neither statement
+// unpacks the payload of an event of another type than those that change the post's text: with
+// the owner of a post, written and then edited as the routes write them, holding 3,000 later
+// events of another type, each with a payload of about 3 KB, which Postgres stores out of line,
+// each statement, read for the edit, reads fewer buffers than one for each 2 of those events. The
+// present row's statement answers the post's row, which no later event changes; the history's,
+// which counts the owner's events of the types that change it from the post's create, answers
+// none, since none does.
 //
 // That bound is stable, with a wide margin both ways. A buffer count does not depend on time or
 // on what the cache holds (the test sums buffers hit and read), only on how the rows lie on their
@@ -299,7 +302,7 @@ func TestAReversedPairOfCutEditsKeepsEachEditsText(t *testing.T) {
 // index: 77 buffers when this was written, 19 times under the bound. Unpacking each payload, as
 // the statement does with the payload's test outside the CASE, reads the out-of-line value's
 // index and pages for each event besides: 3 buffers an event, 9,077 in all, 6 times over it.
-func TestEachKindsPresentBodyStatementReadsNoPayloadItNeedNotRead(t *testing.T) {
+func TestEachKindsWholeBodyStatementsReadNoPayloadTheyNeedNotRead(t *testing.T) {
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
@@ -308,75 +311,94 @@ func TestEachKindsPresentBodyStatementReadsNoPayloadItNeedNotRead(t *testing.T) 
 		t.Fatalf("acquire a connection for the plans: %v", err)
 	}
 	defer connection.Release()
-	for _, kind := range slices.Sorted(maps.Keys(presentBodyReads)) {
-		read := presentBodyReads[kind]
+	posts := map[string]struct {
+		write     func(t *testing.T) writtenComment
+		otherType string
+	}{
+		kindComment: {func(t *testing.T) writtenComment {
+			return writeComment(t, database, broker, "Rotate the staging key first.", false)
+		}, "comment.resolved"},
+		kindMessage: {func(t *testing.T) writtenComment {
+			return writeIssueMessage(t, database, broker, "Rotate the staging key first.")
+		}, "message.accepted"},
+	}
+	for _, kind := range slices.Sorted(maps.Keys(postBodyReads)) {
+		read := postBodyReads[kind]
+		post, ok := posts[kind]
 		t.Run(kind, func(t *testing.T) {
 			ctx := t.Context()
-			if len(read.laterTypes) == 0 {
-				// The statement's one parameter is text, the type Postgres infers for it when the
-				// statement is prepared with none, as the fill's pgx connection prepares it, and
-				// any canonical uuid is its literal.
-				plan := explaintest.GenericPlan(t, ctx, connection, "present_row", read.sql,
-					[]string{"text"}, []string{"'7c9e6679-7425-40de-944b-e07fc1f90ae7'"})
-				var relations []string
-				for _, scan := range explaintest.Scans(t, plan) {
-					relations = append(relations, scan.Relation)
-				}
-				if len(relations) == 0 || slices.Contains(relations, "events") {
-					t.Fatalf("the generic plan of the %s statement reads relations %v; want its rows' table and no events", kind, relations)
-				}
-				return
+			if !ok {
+				t.Fatalf("the test writes no %s, whose whole body postBodyReads reads: write one", kind)
 			}
-			if kind != kindComment {
-				t.Fatalf("the test writes a comment alone, and the text of a %s now changes after its event too (%v): write one of those", kind, read.laterTypes)
+			const later = 3000
+			if slices.Contains(read.laterTypes, post.otherType) {
+				t.Fatalf("%s changes a %s's text, so its payload is read: pick another type", post.otherType, kind)
 			}
-			const later, otherType = 3000, "comment.resolved"
-			if slices.Contains(read.laterTypes, otherType) {
-				t.Fatalf("%s changes a %s's text, so its payload is read: pick another type", otherType, kind)
+			written := post.write(t)
+			edit := correctPost(t, database, broker, kind, written.id, "Rotate the staging key, then production.", false)
+			e := readLoggedEvents(t, database, edit)[0]
+			var before int64
+			if err := database.Pool.QueryRow(ctx, `select pg_relation_size(reltoastrelid) from pg_class where oid = 'public.events'::regclass`).Scan(&before); err != nil {
+				t.Fatalf("measure the events' out-of-line values: %v", err)
 			}
-			comment := writeComment(t, database, broker, "Rotate the staging key first.", false)
-			e := readLoggedEvents(t, database, comment.event)[0]
+			// The issue's last_seq moves past them too, so a later append of the issue, the next
+			// kind's post, takes the seq after them.
 			if _, err := database.Pool.Exec(ctx, `
-				insert into events (issue_key, seq, type, actor, payload, notify)
-				select $1, $2 + g, $3, '{"kind":"user","id":"alice"}',
-				       jsonb_build_object('id', $4::text, 'note',
-				         (select string_agg(md5(g::text || ':' || part::text), '') from generate_series(1, 96) part)),
-				       false
-				  from generate_series(1, $5::integer) g
-			`, e.IssueKey, e.Seq, otherType, comment.id, later); err != nil {
-				t.Fatalf("write the comment's later events: %v", err)
+				with later as (
+				       insert into events (issue_key, seq, type, actor, payload, notify)
+				       select $1, $2 + g, $3, '{"kind":"user","id":"alice"}',
+				              jsonb_build_object('id', $4::text, 'note',
+				                (select string_agg(md5(g::text || ':' || part::text), '') from generate_series(1, 96) part)),
+				              false
+				         from generate_series(1, $5::integer) g
+				       returning seq)
+				update issues set last_seq = (select max(seq) from later) where key = $1
+			`, e.IssueKey, e.Seq, post.otherType, written.id, later); err != nil {
+				t.Fatalf("write the %s's later events: %v", kind, err)
 			}
 			var outOfLine int64
 			if err := database.Pool.QueryRow(ctx,
 				`select pg_relation_size(reltoastrelid) from pg_class where oid = 'public.events'::regclass`).Scan(&outOfLine); err != nil {
 				t.Fatalf("measure the events' out-of-line values: %v", err)
 			}
-			if outOfLine < later*2048 {
-				t.Fatalf("the events' out-of-line values take %d bytes, under 2 KB for each of the %d later events, so their payloads are not stored out of line as the test needs",
-					outOfLine, later)
+			if outOfLine-before < later*2048 {
+				t.Fatalf("the events' out-of-line values grew by %d bytes, under 2 KB for each of the %d later events, so their payloads are not stored out of line as the test needs",
+					outOfLine-before, later)
 			}
 
-			// EXECUTE takes the statement's arguments as presentBody passes them (arguments), as
-			// literals Postgres quotes, and the statement is prepared with the parameter types
-			// Postgres infers for it when it is prepared with none, as the fill's pgx connection
-			// prepares it.
+			// EXECUTE takes the statements' arguments as presentBody and historyBody pass them
+			// (arguments, historyArguments), as literals Postgres quotes, and each statement is
+			// prepared with the parameter types Postgres infers for it when it is prepared with
+			// none, as the fill's pgx connection prepares it. No fill ran, so the history counts
+			// the post's changes from its create's seq, which the batch would give it.
+			created := readLoggedEvents(t, database, written.event)[0]
 			var literals []string
 			if err := database.Pool.QueryRow(ctx,
-				`select array[format('%L', $1::text), format('%L', $2::text), format('%L', $3::text), format('%s', $4::integer), format('%L', $5::text[])]`,
-				read.arguments(e, comment.id)...).Scan(&literals); err != nil {
-				t.Fatalf("write the statement's arguments: %v", err)
+				`select array[format('%L', $1::text), format('%L', $2::text), format('%L', $3::text), format('%s', $4::integer), format('%L', $5::text[]),
+				              format('%L', $6::text), format('%s', $7::integer)]`,
+				read.historyArguments(e, kind, written.id, created.Seq)...).Scan(&literals); err != nil {
+				t.Fatalf("write the statements' arguments: %v", err)
 			}
-			plan := explaintest.AnalyzedGenericPlan(t, ctx, connection, "present_body", read.sql,
-				[]string{"text", "text", "uuid", "integer", "text[]"}, literals)
-			root := explaintest.Nodes(t, plan)[0]
-			if root.Rows != 1 {
-				t.Fatalf("the %s statement answered %v rows; want the comment's row, which no later event changes", kind, root.Rows)
-			}
-			buffers := root.SharedHitBlocks + root.SharedReadBlocks
-			t.Logf("the %s statement read %.0f buffers past %d later events of another type", kind, buffers, later)
-			if buffers >= later/2 {
-				t.Fatalf("the %s statement read %.0f buffers past %d later events of another type; want fewer than %d, one for each 2 of them, as reading their types alone reads",
-					kind, buffers, later, later/2)
+			for _, statement := range []struct {
+				name, sql  string
+				parameters []string
+				rows       float64
+			}{
+				{"present_body", read.present, []string{"text", "text", "uuid", "integer", "text[]"}, 1},
+				{"history_body", read.history, []string{"text", "text", "uuid", "integer", "text[]", "text", "integer"}, 0},
+			} {
+				plan := explaintest.AnalyzedGenericPlan(t, ctx, connection, statement.name, statement.sql,
+					statement.parameters, literals[:len(statement.parameters)])
+				root := explaintest.Nodes(t, plan)[0]
+				if root.Rows != statement.rows {
+					t.Fatalf("the %s statement of a %s answered %v rows; want %v, since no later event changes it", statement.name, kind, root.Rows, statement.rows)
+				}
+				buffers := root.SharedHitBlocks + root.SharedReadBlocks
+				t.Logf("the %s statement of a %s read %.0f buffers past %d later events of another type", statement.name, kind, buffers, later)
+				if buffers >= later/2 {
+					t.Fatalf("the %s statement of a %s read %.0f buffers past %d later events of another type; want fewer than %d, one for each 2 of them, as reading their types alone reads",
+						statement.name, kind, buffers, later, later/2)
+				}
 			}
 		})
 	}
@@ -569,7 +591,7 @@ func decideBoundTo1Byte(t *testing.T, database *store.Store, logs *logtest.Buffe
 	t.Helper()
 	tx, _ := textversionstest.BeginTransaction(t, database)
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	_, decidedEvents, err := decideVersions(t.Context(), tx, slog.New(slog.NewJSONHandler(logs, nil)), batch, 1)
+	_, decidedEvents, err := decideVersions(t.Context(), tx, slog.New(slog.NewJSONHandler(logs, nil)), &currentRules, batch, 1)
 	return decidedEvents, err
 }
 
@@ -813,11 +835,11 @@ func decideAndWrite(t *testing.T, database *store.Store, logs *logtest.Buffer, b
 	ctx := t.Context()
 	var got decided
 	textversionstest.Commit(t, database, func(tx pgx.Tx) {
-		decidedVersions, _, err := decideVersions(ctx, tx, slog.New(slog.NewJSONHandler(logs, nil)), batch, batchBytes)
+		decidedVersions, _, err := decideVersions(ctx, tx, slog.New(slog.NewJSONHandler(logs, nil)), &currentRules, batch, batchBytes)
 		if err != nil {
 			t.Fatalf("decide the versions: %v", err)
 		}
-		if err := insertVersions(ctx, tx, decidedVersions.Versions); err != nil {
+		if err := insertVersions(ctx, tx, decidedVersions.Versions, false); err != nil {
 			t.Fatalf("write the versions: %v", err)
 		}
 		got = decidedVersions

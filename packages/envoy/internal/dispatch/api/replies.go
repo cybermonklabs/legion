@@ -198,10 +198,13 @@ const myRepliesPageRest = `
 	       end,
 	       i.key, i.title, ar.project_key, ar.slug, ar.name,
 	       coalesce(a.question, root.body, mroot.body, ''),
+	       coalesce(root.edited_at, mroot.edited_at),
+	       coalesce(root.deleted_at, mroot.deleted_at), coalesce(root.deleted_by, mroot.deleted_by),
 	       p.last_reply_id::text, answered.id is not null,
 	       coalesce(rc.author, rm.author,
 	         case when answered.id is not null then jsonb_build_object('kind', 'user', 'id', answered.answer->>'user') end),
 	       coalesce(rc.body, rm.body, answered.text, ''),
+	       coalesce(rc.deleted_at, rm.deleted_at), coalesce(rc.deleted_by, rm.deleted_by),
 	       coalesce(rc.created_at, rm.created_at, p.replied_at),
 	       i.priority, p.project_key, p.read_through, p.unread,
 	       coalesce(counted.unread_count, 0), coalesce(root.anchor, a.anchor), p.dismissed_at,
@@ -218,22 +221,22 @@ const myRepliesPageRest = `
 		offset 0
 	) a on true
 	left join lateral (
-		select root.body, root.anchor
+		select root.body, root.anchor, root.edited_at, root.deleted_at, root.deleted_by
 		from comments root where p.kind = 'comment' and root.id = p.thread_id
 		offset 0
 	) root on true
 	left join lateral (
-		select mroot.body
+		select mroot.body, mroot.edited_at, mroot.deleted_at, mroot.deleted_by
 		from messages mroot where p.kind = 'message' and mroot.id = p.thread_id
 		offset 0
 	) mroot on true
 	left join lateral (
-		select rc.author, rc.body, rc.created_at
+		select rc.author, rc.body, rc.created_at, rc.deleted_at, rc.deleted_by
 		from comments rc where p.kind <> 'message' and rc.id = p.last_reply_id
 		offset 0
 	) rc on true
 	left join lateral (
-		select rm.author, rm.body, rm.created_at
+		select rm.author, rm.body, rm.created_at, rm.deleted_at, rm.deleted_by
 		from messages rm where p.kind = 'message' and rm.id = p.last_reply_id
 		offset 0
 	) rm on true
@@ -534,10 +537,15 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	rows := []model.MyReplyRow{}
 	// How many rows a paged read asks each kind for: a row past offset+limit of its own order
 	// cannot be inside the merged page, so neither half reads one. An unpaged read asks for every
-	// row (null).
+	// row (null). The offset is the caller's, up to math.MaxInt (parseMyRepliesPage), so the sum
+	// stops at math.MaxInt rather than wrapping to a negative LIMIT: each half then reads every
+	// row, and the offset cut below answers an empty page, with the total counted as for any page.
 	var reach *int
 	if limit != nil {
-		through := offset + *limit
+		through := math.MaxInt
+		if offset <= math.MaxInt-*limit {
+			through = offset + *limit
+		}
 		reach = &through
 	}
 	// Every state but the Dismissed view counts its rows when the read is paged, since the page it
@@ -673,7 +681,8 @@ func (s *server) readMyReplyRows(
 		var row model.MyReplyRow
 		var issueKey, issueTitle, project, slug, name, replyID *string
 		var subject, body string
-		var author, anchor []byte
+		var author, anchor, subjectDeletedBy, replyDeletedBy []byte
+		var subjectEditedAt, subjectDeletedAt, replyDeletedAt *time.Time
 		var isAnswer bool
 		var readThrough time.Time
 		var projectKey string
@@ -683,11 +692,23 @@ func (s *server) readMyReplyRows(
 		if err := rows.Scan(
 			&row.ThreadID, &row.Kind, &row.Ref,
 			&issueKey, &issueTitle, &project, &slug, &name,
-			&subject, &replyID, &isAnswer, &author, &body, &row.Reply.CreatedAt,
+			&subject, &subjectEditedAt, &subjectDeletedAt, &subjectDeletedBy,
+			&replyID, &isAnswer, &author, &body, &replyDeletedAt, &replyDeletedBy, &row.Reply.CreatedAt,
 			&row.Priority, &projectKey, &readThrough, &row.Unread, &row.UnreadCount, &anchor,
 			&row.DismissedAt, &version,
 		); err != nil {
 			return nil, fmt.Errorf("scan my reply: %w", err)
+		}
+		// The thread's root post carries the time its author last edited it, and the root and the
+		// reply the row shows each carry the mark of a delete, so a row whose text a delete cleared
+		// says that the post is deleted and not an empty line.
+		row.EditedAt = subjectEditedAt
+		var err error
+		if row.DeletedAt, row.DeletedBy, err = model.DeletedPostMark(subjectDeletedAt, subjectDeletedBy); err != nil {
+			return nil, err
+		}
+		if row.Reply.DeletedAt, row.Reply.DeletedBy, err = model.DeletedPostMark(replyDeletedAt, replyDeletedBy); err != nil {
+			return nil, err
 		}
 		row.Reply.Kind = "reply"
 		if isAnswer {

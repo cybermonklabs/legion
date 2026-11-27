@@ -27,9 +27,10 @@ import (
 // more unread threads for Mark all read to work over - 1,000 rather than a token number because he
 // had 804 unread replies the morning this was written.
 //
-// Six operations, 20 runs each, p50 and p95 of the server's own time: the whole Inbox read
-// (state=inbox), the Inbox count's read (state=unread&limit=1), the first Dismissed page, a
-// Dismissed page 50,000 rows deep, a dismissal naming 120 threads, and one Mark all read.
+// Six operations: the whole Inbox read (state=inbox), the Inbox count's read
+// (state=unread&limit=1), the first Dismissed page, a Dismissed page 50,000 rows deep, a dismissal
+// naming 120 threads, and one Mark all read. Each is held to the work of every statement its
+// request sends, by Postgres's own count, and timed over 20 runs for the reader.
 //
 // # Three shapes, and which bound each number is held to
 //
@@ -46,21 +47,35 @@ import (
 //     200 against one page at 110,000.
 //   - loaded: the whole pile, 100,000 + 10,000.
 //
-// Five operations are held to the same two bounds: 250 ms on the p95, and twice their own
-// baseline's p50 - the no-dismissed shape for three of them, the one-page shape for the two
-// Dismissed reads. The sixth, the Inbox count, is held to 50 ms on its p95 with its ratio
-// recorded rather than bounded, for the reason written at dismissedScaleBounds.
+// Each operation's work at the pile is held against its baseline's - the no-dismissed shape for
+// four of them, the one-page shape for the two Dismissed reads. Its request is sent once on each
+// shape with every statement the server sends recorded as sent (dismissedScaleTrace): the reads
+// are run again under EXPLAIN (ANALYZE, BUFFERS) with the arguments they were sent, for the rows
+// every plan node produced or threw away and the shared buffers it accessed, under both plans a
+// connection runs a statement with; the rest - writes, row and advisory locks, the transaction's
+// own begin and commit - are counted in number and in the rows they changed or locked
+// (dismissedScaleWork). What each is held to, and the measurement that set it, is written at
+// dismissedScaleBounds.
 //
 // # What these numbers are, and what they are not
 //
-// They are one box: this pod's Postgres, which also carries every other suite running beside it,
-// with a seed of one shape and one person's rows. They are not production latency, and a reading
-// taken while the box is busy is a reading of a busy box - the ratio is the part that survives
-// that, since both shapes are measured in the same run, minutes apart, and a machine that slows
-// moves both. The time of record is the server's own: the clock runs around handler.ServeHTTP
-// alone, with the request body encoded before it starts, so no client, no socket and no JSON
-// encoding of the caller's is on it. The server's own access log prints an elapsed_ms for each of
-// these requests too, which is the same span less the recorder's write.
+// The counts are Postgres's own, taken under EXPLAIN (ANALYZE, BUFFERS) on one connection: the rows
+// each plan node handled and the pages it read, cached or not, and neither is a time. A busy box
+// makes the same plan do the same work more slowly, and each shape's plans are made from the
+// statistics its own vacuum analyze wrote, so the counts do not move with the box's load. When
+// the operations were held to times instead - 250 ms on the p95 and twice the baseline's p50 -
+// the box decided the ratio: at main 6ef60ff0ce, at a load of 187, the first Dismissed page read
+// 7.25 times its baseline's p50, and on a cluster pod of its own 5.73 times (2026-11-22). There,
+// the plan of that page's Agent half at the pile printed 27.4 ms of JIT compilation in a 31.9 ms
+// run, where at one page its estimate stays under jit_above_cost and nothing is compiled; the
+// compilation is CPU work outside every count, which a busy box stretches. It is the test
+// database's alone: CI's image runs with jit on, and production runs without it, since Cloud SQL
+// does not support PostgreSQL's LLVM JIT (benchtime.Open turns it off for the same reason).
+//
+// The times are still printed, so a reader can see what the operations took on the box that ran
+// them; no verdict reads them. The time of record is the server's own: the clock runs around
+// handler.ServeHTTP alone, with the request body encoded before it starts, so no client, no socket
+// and no JSON encoding of the caller's is on it.
 //
 // One more thing the seed is: every row of user_threads belongs to one login, because the
 // measurement is one person's pile. That is the pessimistic case for the planner's choice between
@@ -90,18 +105,11 @@ const (
 	dismissedScaleRuns        = 20
 	dismissedScaleDismissRows = 120
 	dismissedScaleCursorDepth = 50_000
-	// The bounds verification.md v17 holds each read to. Five carry 250 ms on the p95 and twice
-	// their own baseline's p50; the Inbox count carries 50 ms on its p95 alone
-	// (dismissedScaleBounds). The ratio is taken on the p50 because a p95 of 20 samples is
-	// nearly their maximum, and on this pod's shared Postgres a ratio of p95s failed a
-	// different read in each of four runs, once with a baseline p95 (216.4 ms) above its own
-	// loaded p95 (179.7 ms). What the pile costs the reads that stay inside it is locality: every
-	// read that touches user_threads reads a 110,000-entry index over a 101,540-row heap instead
-	// of 200 entries over 1,740 rows, which is the 1.3x to 1.7x measured at p50 rather than a
-	// loop over the pile.
-	dismissedScaleTimeBound      = 250 * time.Millisecond
-	dismissedScaleCountTimeBound = 50 * time.Millisecond
-	dismissedScaleRatioBound     = 2.0
+	// The bounds verification.md v17 holds each operation to, on the work its reads do rather
+	// than the time they take (dismissedScaleBounds): twice its baseline's rows and buffer
+	// accesses, with the two Dismissed reads' buffer accesses held to 2.5 times.
+	dismissedScaleWorkRatio      = 2.0
+	dismissedScaleDismissedPages = 2.5
 	// The session every seeded Agent thread is answered by, and the login every row belongs to.
 	dismissedScaleSession = "01a1058e-f14f-7684-87eb-3dc885955552"
 	dismissedScaleLogin   = "alice"
@@ -131,11 +139,13 @@ const (
 
 // dismissedScaleShape is one seeded database and the server over it, with the rows the
 // measurement needs to name: the cursor a page 50,000 deep resumes from, the 120 rows one
-// dismissal names, and the unread rows a Mark all read marks, which the next run puts back.
+// dismissal names, and the unread rows a Mark all read marks, which the next run puts back. trace
+// records what the server sends on a marked request (dismissedScaleTrace).
 type dismissedScaleShape struct {
 	name             string
 	handler          http.Handler
 	database         *store.Store
+	trace            *dismissedScaleTrace
 	issue            string
 	dismissedReplies int
 	dismissedAgents  int
@@ -145,14 +155,21 @@ type dismissedScaleShape struct {
 	unreadReplies    []string
 }
 
+// dismissedScaleRun is one operation's request on one shape, on ctx, answering the server's own
+// time for it (timeDismissedScaleRequest).
+type dismissedScaleRun func(context.Context, *testing.T, *dismissedScaleShape) time.Duration
+
 // TestDismissedScaleHoldsTheInboxsReads is a14 itself: it seeds the three shapes, asserts each
-// one's counts before it times anything, measures the six operations 20 runs each, explains every
-// read at the pile's own size, and holds each operation to the two bounds above.
+// one's counts before it measures anything, sends each of the six operations' requests once and
+// counts the work of every statement the request sent, explaining each at the pile's own size,
+// times the six operations 20 runs each, and holds each operation's work to its bound
+// (dismissedScaleBounds). The times are printed; no verdict reads them.
 //
 // It runs when LEGION_SCALE_TEST is 1, which is what a14's own command sets, and skips otherwise:
 // seeding 110,000 rows three times over and taking 120 timed readings costs minutes, which no
 // ordinary run of this package should pay.
 func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(dismissedScaleEnv) != "1" {
 		t.Skipf("set %s=1 to run the dismissed-scale measurement", dismissedScaleEnv)
 	}
@@ -160,12 +177,61 @@ func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
 	none := seedDismissedScale(t, "no dismissed", 0, 0)
 	onePage := seedDismissedScale(t, "one page dismissed", dismissedScalePageReplies, dismissedScalePageAgents)
 
-	// The readings, each the p50 and p95 of 20 runs. The two Dismissed reads are measured on the
-	// no-dismissed shape as well, where they answer nothing: that number is reported rather than
-	// compared, so a reader can see what the empty case costs and why it is nobody's baseline.
+	// What each operation's request sends, recorded on one untimed request of each: every
+	// statement the server ran for it, whatever sent it (dismissedScaleTrace). The two write
+	// routes put back what they changed, as their timed runs do, and each shape is then vacuumed
+	// and analysed once, so the counts below read each shape on the statistics and pages that one
+	// vacuum left, which nothing changes until the timed runs; a count taken after those would read
+	// whatever autovacuum chose to clear by then.
+	operations := []struct {
+		operation string
+		run       dismissedScaleRun
+		shapes    []*dismissedScaleShape
+	}{
+		{"state=inbox", runDismissedScaleInbox, []*dismissedScaleShape{loaded, none}},
+		{"unread count", runDismissedScaleUnreadCount, []*dismissedScaleShape{loaded, none}},
+		{"dismissed page 1", runDismissedScaleFirstPage, []*dismissedScaleShape{loaded, onePage}},
+		{"dismissed page 50,000 deep", runDismissedScaleDeepPage, []*dismissedScaleShape{loaded}},
+		{"120-thread dismiss", runDismissedScaleDismiss, []*dismissedScaleShape{loaded, none}},
+		{"mark all read", runDismissedScaleMarkAll, []*dismissedScaleShape{loaded, none}},
+	}
+	sent := map[string][]dismissedScaleSent{}
+	for _, measured := range operations {
+		for _, shape := range measured.shapes {
+			shape.trace.take()
+			measured.run(context.WithValue(context.Background(), dismissedScaleTraced{}, true), t, shape)
+			statements := shape.trace.take()
+			if len(statements) == 0 {
+				t.Fatalf("%s @ %s sent no statement the trace saw: nothing was measured", measured.operation, shape.name)
+			}
+			sent[measured.operation+" @ "+shape.name] = statements
+		}
+	}
+	for _, shape := range []*dismissedScaleShape{loaded, none, onePage} {
+		if _, err := shape.database.Pool.Exec(context.Background(), "vacuum analyze"); err != nil {
+			t.Fatalf("vacuum %s after the recorded requests: %v", shape.name, err)
+		}
+	}
+
+	// The work and the plans. The plans the test names are asserted on the loaded shape alone:
+	// with no dismissed row at all a scan of an empty table is the right plan and says nothing
+	// about scale, so the other two shapes' plans are printed and nothing is held to them.
+	work := map[string]dismissedScaleWork{}
+	for _, measured := range operations {
+		for _, shape := range measured.shapes {
+			key := measured.operation + " @ " + shape.name
+			work[key] = explainDismissedScale(t, shape, measured.operation, sent[key], shape == loaded)
+		}
+	}
+
+	// The readings, each the p50 and p95 of 20 runs, for the reader: what the operations took on
+	// this box while it ran, which is a reading of the box as much as of the reads, so nothing is
+	// held to them. The two Dismissed reads are timed on the no-dismissed shape as well, where they
+	// answer nothing, so a reader can see what the empty case costs and why it is nobody's
+	// baseline.
 	readings := map[string]dismissedScaleReading{}
 	taken := []string{}
-	record := func(operation string, shape *dismissedScaleShape, run func(*testing.T, *dismissedScaleShape) time.Duration) {
+	record := func(operation string, shape *dismissedScaleShape, run dismissedScaleRun) {
 		name := operation + " @ " + shape.name
 		readings[name] = measureDismissedScale(t, shape, operation, run)
 		taken = append(taken, name)
@@ -180,31 +246,26 @@ func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
 	record("dismissed page 1", onePage, runDismissedScaleFirstPage)
 	record("dismissed page 50,000 deep", loaded, runDismissedScaleDeepPage)
 
-	// The plans, at the pile's own size. They are asserted on the loaded shape alone: with no
-	// dismissed row at all a scan of an empty table is the right plan and says nothing about
-	// scale, so the other two shapes' plans are printed and nothing is held to them.
-	explainDismissedScaleReads(t, loaded, true)
-	explainDismissedScaleReads(t, none, false)
-	explainDismissedScaleReads(t, onePage, false)
-
-	// The table, in one block, which is what goes in the pull request's comment. Both statistics
-	// are printed for every operation: the p95 each time bound is taken on, and the p50 the ratio
-	// is taken on, which for the Inbox count is recorded rather than bounded.
-	t.Log("operation\tshape\tp50 ms\tp95 ms\tbaseline p50 ms\tbaseline p95 ms\tratio of p50s\tbound")
+	// The table, in one block, which is what goes in the pull request's comment: each operation's
+	// work at the pile against its baseline's under both plans, the statements it sent and the
+	// rows those that are not reads changed or locked, the bound it is held to, and the two times
+	// beside them.
+	t.Log("operation	plan	at the pile	at the baseline	rows x	buffer accesses x	statements	rows changed or locked	bound	p50 ms	p95 ms	baseline p50 ms")
 	for _, held := range dismissedScaleBounds() {
-		reading, ok := readings[held.operation+" @ loaded"]
+		pile, ok := work[held.operation+" @ loaded"]
 		if !ok {
-			t.Fatalf("no reading for %s", held.operation)
+			t.Fatalf("no count of %s", held.operation)
 		}
-		baseline := readings[held.baselineOperation+" @ "+held.baselineShape]
-		ratio := float64(reading.p50) / float64(baseline.p50)
-		bound := fmt.Sprintf("%s on p95 and %.2fx on p50 of %s", held.timeBound, held.ratio, held.baselineShape)
-		if held.ratio == 0 {
-			bound = fmt.Sprintf("%s on p95; the ratio is recorded, not bounded", held.timeBound)
+		baseline := work[held.baselineOperation+" @ "+held.baselineShape]
+		reading := readings[held.operation+" @ loaded"]
+		against := readings[held.baselineOperation+" @ "+held.baselineShape]
+		for _, plan := range held.plans(pile, baseline) {
+			t.Logf("%s\t%s\t%s\t%s at %s\t%.2f\t%.2f\t%d against %d\t%d against %d\t%s\t%.1f\t%.1f\t%.1f",
+				held.operation, plan.name, plan.pile, plan.baseline, held.baselineShape,
+				plan.pile.rows/plan.baseline.rows, plan.pile.buffers/plan.baseline.buffers,
+				pile.statements, baseline.statements, pile.effects, baseline.effects, held.bound(),
+				msOf(reading.p50), msOf(reading.p95), msOf(against.p50))
 		}
-		t.Logf("%s\tloaded\t%.1f\t%.1f\t%.1f\t%.1f\t%.2f\t%s",
-			held.operation, msOf(reading.p50), msOf(reading.p95), msOf(baseline.p50),
-			msOf(baseline.p95), ratio, bound)
 	}
 	for _, name := range taken {
 		reading := readings[name]
@@ -212,81 +273,167 @@ func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
 	}
 
 	// The bounds, one subtest per operation so a read that is a finding names itself and the rest
-	// still report their numbers. Each time bound is taken on the p95, which is the worst case a
-	// person waits through; each ratio on the p50, which is the shape of the read. Why they are
-	// taken on different statistics is measured rather than assumed: over seven runs of this test
-	// on this pod, state=inbox's ratio of p95s read 0.83, 1.12, 1.12, 1.19, 1.31 and 2.04, and
-	// Mark all read's 0.86, 0.90, 1.16, 1.20 and 1.63, with the failing read changing from run to
-	// run and one run's baseline p95 (216.4 ms) coming in above its own loaded p95 (179.7 ms).
-	// With 20 runs the p95 is the 19th of 20 - all but the maximum - and this Postgres carries
-	// every other suite of the pod beside it, so a neighbour landing inside one sample moves it.
-	// The p50s of the same runs moved little: state=inbox 1.30x-1.50x, Mark all read 1.27x-1.35x
-	// (verification.md v17).
+	// still report their numbers. Each holds the operation's work at the pile against its
+	// baseline's under both plans a connection runs its statements with, and the statements it
+	// sent and the rows those that are not reads changed or locked to the same multiple as its rows.
 	for _, held := range dismissedScaleBounds() {
 		t.Run(held.operation, func(t *testing.T) {
-			reading := readings[held.operation+" @ loaded"]
-			baseline := readings[held.baselineOperation+" @ "+held.baselineShape]
-			if reading.p95 > held.timeBound {
-				t.Errorf("%s: p95 %.1f ms over the %s bound (p50 %.1f ms, runs %v)",
-					held.operation, msOf(reading.p95), held.timeBound, msOf(reading.p50), reading.runs)
+			pile := work[held.operation+" @ loaded"]
+			baseline := work[held.baselineOperation+" @ "+held.baselineShape]
+			for _, plan := range held.plans(pile, baseline) {
+				if plan.baseline.rows == 0 || plan.baseline.buffers == 0 || plan.pile.buffers == 0 {
+					t.Fatalf("%s under %s counted %s at the pile and %s at %s: a count of nothing is a read this test could not see, so nothing was measured",
+						held.operation, plan.name, plan.pile, plan.baseline, held.baselineShape)
+				}
+				rows, buffers := plan.pile.rows/plan.baseline.rows, plan.pile.buffers/plan.baseline.buffers
+				if dismissedScaleOver(rows, held.rows) || dismissedScaleOver(buffers, held.buffers) {
+					t.Errorf("%s under %s: %s at the pile against %s at %s (%s), %.2fx the rows and %.2fx the buffer accesses, want %s",
+						held.operation, plan.name, plan.pile, plan.baseline, held.baselineShape, held.baselineOperation,
+						rows, buffers, held.bound())
+				}
 			}
-			ratio := float64(reading.p50) / float64(baseline.p50)
-			if held.ratio > 0 && ratio > held.ratio {
-				t.Errorf("%s: p50 %.1f ms is %.2fx its baseline (%s %s, p50 %.1f ms), over %.2fx",
-					held.operation, msOf(reading.p50), ratio, held.baselineShape,
-					held.baselineOperation, msOf(baseline.p50), held.ratio)
+			if statements := float64(pile.statements) / float64(baseline.statements); dismissedScaleOver(statements, held.rows) {
+				t.Errorf("%s sent %d statements at the pile against %d at %s (%s), %.2fx, want at most %.2fx",
+					held.operation, pile.statements, baseline.statements, held.baselineShape, held.baselineOperation, statements, held.rows)
+			}
+			if pile.effects > int64(held.rows*float64(max(baseline.effects, 1))) {
+				t.Errorf("%s's statements that are not reads changed or locked %d rows at the pile against %d at %s (%s), want at most %.2fx",
+					held.operation, pile.effects, baseline.effects, held.baselineShape, held.baselineOperation, held.rows)
 			}
 		})
 	}
 
-	// The negative control, last: it rewrites an index inside a transaction it rolls back.
-	dismissedScaleNegativeControl(t, loaded)
+	// The negative control, last: the shape this change replaced, counted at the pile against the
+	// first Dismissed page's bound, which it must be outside of.
+	control, ok := dismissedScaleBoundOf("dismissed page 1")
+	if !ok {
+		t.Fatalf("no bound is named %q, so the negative control has nothing to be held against", "dismissed page 1")
+	}
+	dismissedScaleNegativeControl(t, loaded, work[control.operation+" @ loaded"].custom,
+		work[control.baselineOperation+" @ "+control.baselineShape].custom, control)
 }
 
-// dismissedScaleHeld is one operation, the p95 it is held to, the baseline its p50 ratio is taken
-// against and the ratio it is held to. A zero ratio is one that is recorded rather than bounded.
+// dismissedScaleBoundOf is the bound of one operation, by its name.
+func dismissedScaleBoundOf(operation string) (dismissedScaleHeld, bool) {
+	for _, held := range dismissedScaleBounds() {
+		if held.operation == operation {
+			return held, true
+		}
+	}
+	return dismissedScaleHeld{}, false
+}
+
+// dismissedScaleHeld is one operation, the baseline its work is held against, and the most rows
+// and buffer accesses it may make at the pile, each as a multiple of the baseline's. A zero
+// multiple is one that is recorded rather than bounded.
 type dismissedScaleHeld struct {
 	operation         string
-	timeBound         time.Duration
 	baselineOperation string
 	baselineShape     string
-	ratio             float64
+	rows              float64
+	buffers           float64
 }
 
-// dismissedScaleBounds names the six operations, the p95 each is held to and the baseline each
-// ratio is taken against (verification.md v17). Five are held to 250 ms on the p95 and twice
-// their baseline's p50. The two Dismissed reads are taken against one full page at 200 dismissed
-// threads rather than against a shape with none, where they would answer no rows at all, and the
-// other three against the no-dismissed shape, which holds the same 1,600 undismissed rows they
-// read at the pile.
+// dismissedScalePlanWork is one operation's work at the pile and at its baseline under one plan.
+type dismissedScalePlanWork struct {
+	name           string
+	pile, baseline dismissedScaleCount
+}
+
+// plans pairs an operation's work at the pile with its baseline's under each of the two plans,
+// each against the same plan: the plan made for the arguments against that plan, the generic
+// against the generic.
+func (held dismissedScaleHeld) plans(pile, baseline dismissedScaleWork) []dismissedScalePlanWork {
+	return []dismissedScalePlanWork{
+		{"the plan made for its arguments", pile.custom, baseline.custom},
+		{"the generic plan", pile.generic, baseline.generic},
+	}
+}
+
+func (held dismissedScaleHeld) bound() string {
+	limit := func(ratio float64) string {
+		if ratio == 0 {
+			return "recorded"
+		}
+		return fmt.Sprintf("at most %.2fx", ratio)
+	}
+	return fmt.Sprintf("rows %s, buffer accesses %s", limit(held.rows), limit(held.buffers))
+}
+
+// dismissedScaleOver is whether a multiple of the baseline is over the bound it is held to; a zero
+// bound is recorded and holds nothing.
+func dismissedScaleOver(ratio, bound float64) bool {
+	return bound > 0 && ratio > bound
+}
+
+// dismissedScaleBounds names the six operations, the baseline each is held against and the bound
+// each is held to (verification.md v17, where the bound was twice the baseline's time). The two
+// Dismissed reads are taken against one full page at 200 dismissed threads rather than against a
+// shape with none, where they would answer no rows at all, and the other four against the
+// no-dismissed shape, which holds the same 1,600 undismissed rows they read at the pile. Each
+// bound's rows multiple also holds the statements the request sent and the rows its statements
+// that are not reads changed or locked (TestDismissedScaleHoldsTheInboxsReads).
 //
-// The Inbox count is the sixth, and its ratio is recorded rather than bounded, for what the plan
-// shows at the pile: 12.2 ms of its 13.1 ms Agent half is one index scan of the person's own
-// one-off root messages - 10,060 entries at the pile against 60 at the baseline, of which about
-// 5 ms is hashing their 10,000 dismissal marks once and 0.7 ms is the thread walk, which runs 60
-// times and not 10,060. The read is one pass over the person's own history with no loop per
-// dismissed thread, which is what a14 asks of it, and no read linear in a count that grows 167x
-// is within 2x of itself. Measured at 1.96x, 2.10x, 2.10x and 2.57x over four runs. What holds it
-// instead is a p95 of 50 ms: a read that grows with the pile fails that long before it reaches
-// the 250 ms every other read carries, since the shape this change replaced - which asked each
-// dismissed thread its own question - measured 681 ms here (verification.md v17).
+// What correct code counts over every statement its request sent, in two runs on PostgreSQL 18
+// (CI's image, 2026-11-23), as a multiple of its baseline's rows and buffer accesses under the plan
+// made for each statement's arguments, and under the generic plan. The rows repeated exactly; the
+// buffer accesses moved by under one percent with where each seed's random ids put the rows, the
+// dismissal's by more. Every operation sent as many statements at the pile as at its baseline (7,
+// 8, 7, 7, 12 and 17), and its writes and locks changed or locked as many rows (0 for the four
+// reads, 245 for the dismissal, 2,576 for Mark all read). Besides the reads the test names, every
+// read request sends the caller's identity upsert (`insert into people … on conflict do nothing`,
+// counted as a change), `select now()` and the read of the page's session names
+// (nameAgentSessions: 126 rows and 18 accesses at the pile, 60 and 20 at one page dismissed).
+//
+//   - state=inbox: 1.10x and 1.38x (1.09x and 1.34x), held to twice in both.
+//   - The Inbox count: 1.06x and 1.55x to 1.57x (1.05x and 1.90x), held to twice in both. Its
+//     time ratio was recorded and not bounded, at 1.96x to 2.57x, because its Agent half reads an
+//     index entry for each of the person's 10,060 one-off roots at the pile against 60 at the
+//     baseline: by count that pass is about 460 more buffer accesses over 935. Under the generic
+//     plan the Reply count reads user_threads_unread and each row it matches, 500 accesses at the
+//     pile against 52. The shape this change replaced, which asked each dismissed thread its own
+//     question, is the negative control (dismissedScaleNegativeControl). With its unread roots
+//     walking every dismissed root's thread as well (myAgentUnreadRoots without
+//     myAgentDismissedRoot, which answers the same rows), it counts 71.01x the buffer accesses at
+//     1.96x the rows, which is why buffer accesses are held as well as rows.
+//   - The first Dismissed page and the page 50,000 deep: 0.69x and 2.21x (0.68x and 1.98x to
+//     2.00x), held to twice in rows and dismissedScaleDismissedPages in buffer accesses, for the
+//     page's composition and not the pile. Each half reads up to a full page before the route
+//     merges the two (listMyReplies), so at the pile the page reads 200 Reply rows and 200 Agent
+//     roots to answer 200 (3,815 and 2,605 accesses), where at one page dismissed it reads the 180
+//     and the 20 there are (2,528 and 365): per row read, 19 and 13 accesses against 14 and 18.
+//     The nearest defect measured above the bound is the Agent half's lookup of each root by id
+//     left unfenced (myAgentRootIsOneOff), which walks messages_direct_roots to each root: 2.62x at
+//     the first page and 23.09x at the page 50,000 deep. A Reply count of the whole Dismissed view
+//     beside each page, the shape replies.go's listMyReplies says it does not take (110,000 rows,
+//     8 s of a 9.4 s read at a14's seed), is a statement no test names and is counted all the same.
+//     The shape this change replaced, the negative control, adds to the first page's 2.21x to make
+//     it 19.73x.
+//   - The dismissal of 120 threads: 0.33x the rows (0.33x to 1.00x under the generic plan), held
+//     to twice; its buffer accesses are recorded. At the baseline the planner reads the 120 rows
+//     of a 1,740-row table by one bitmap or by 120 probes, as the random ids fall, which was 14 to
+//     125 accesses over the runs on 2026-11-22 and 23, so no multiple of it means anything. At the
+//     pile it is 120 probes of user_threads_pkey, 407 to 450 accesses, 3.4 to 3.8 a row. A read of
+//     the pile shows in its rows, and the plan checks hold it to that index
+//     (dismissedScaleStatements).
+//   - Mark all read: 1.06x and 1.38x (1.04x and 1.45x), held to twice in both.
 func dismissedScaleBounds() []dismissedScaleHeld {
 	return []dismissedScaleHeld{
-		{"state=inbox", dismissedScaleTimeBound, "state=inbox", "no dismissed", dismissedScaleRatioBound},
-		{"unread count", dismissedScaleCountTimeBound, "unread count", "no dismissed", 0},
-		{"dismissed page 1", dismissedScaleTimeBound, "dismissed page 1", "one page dismissed", dismissedScaleRatioBound},
-		{"dismissed page 50,000 deep", dismissedScaleTimeBound, "dismissed page 1", "one page dismissed", dismissedScaleRatioBound},
-		{"120-thread dismiss", dismissedScaleTimeBound, "120-thread dismiss", "no dismissed", dismissedScaleRatioBound},
-		{"mark all read", dismissedScaleTimeBound, "mark all read", "no dismissed", dismissedScaleRatioBound},
+		{"state=inbox", "state=inbox", "no dismissed", dismissedScaleWorkRatio, dismissedScaleWorkRatio},
+		{"unread count", "unread count", "no dismissed", dismissedScaleWorkRatio, dismissedScaleWorkRatio},
+		{"dismissed page 1", "dismissed page 1", "one page dismissed", dismissedScaleWorkRatio, dismissedScaleDismissedPages},
+		{"dismissed page 50,000 deep", "dismissed page 1", "one page dismissed", dismissedScaleWorkRatio, dismissedScaleDismissedPages},
+		{"120-thread dismiss", "120-thread dismiss", "no dismissed", dismissedScaleWorkRatio, 0},
+		{"mark all read", "mark all read", "no dismissed", dismissedScaleWorkRatio, dismissedScaleWorkRatio},
 	}
 }
 
 // The five requests. Each returns the server's own time for one run: the body is encoded before
 // the clock starts, and the clock covers handler.ServeHTTP alone.
 
-func runDismissedScaleInbox(t *testing.T, shape *dismissedScaleShape) time.Duration {
+func runDismissedScaleInbox(ctx context.Context, t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
-	taken, response := timeDismissedScaleRequest(t, shape, http.MethodGet,
+	taken, response := timeDismissedScaleRequest(ctx, t, shape, http.MethodGet,
 		"/api/v1/me/replies?kind=reply,agent&state=inbox", nil)
 	page := decodeDismissedScaleReplies(t, response)
 	if len(page.Rows) != dismissedScaleInboxRows() {
@@ -295,9 +442,9 @@ func runDismissedScaleInbox(t *testing.T, shape *dismissedScaleShape) time.Durat
 	return taken
 }
 
-func runDismissedScaleUnreadCount(t *testing.T, shape *dismissedScaleShape) time.Duration {
+func runDismissedScaleUnreadCount(ctx context.Context, t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
-	taken, response := timeDismissedScaleRequest(t, shape, http.MethodGet,
+	taken, response := timeDismissedScaleRequest(ctx, t, shape, http.MethodGet,
 		"/api/v1/me/replies?kind=reply,agent&state=unread&limit=1", nil)
 	page := decodeDismissedScaleReplies(t, response)
 	if page.Total != dismissedScaleUnreadRows() {
@@ -306,9 +453,9 @@ func runDismissedScaleUnreadCount(t *testing.T, shape *dismissedScaleShape) time
 	return taken
 }
 
-func runDismissedScaleFirstPage(t *testing.T, shape *dismissedScaleShape) time.Duration {
+func runDismissedScaleFirstPage(ctx context.Context, t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
-	taken, response := timeDismissedScaleRequest(t, shape, http.MethodGet,
+	taken, response := timeDismissedScaleRequest(ctx, t, shape, http.MethodGet,
 		"/api/v1/me/replies?kind=reply,agent&state=dismissed", nil)
 	page := decodeDismissedScaleReplies(t, response)
 	want := min(shape.dismissedReplies+shape.dismissedAgents, myRepliesDismissedPage)
@@ -318,9 +465,9 @@ func runDismissedScaleFirstPage(t *testing.T, shape *dismissedScaleShape) time.D
 	return taken
 }
 
-func runDismissedScaleDeepPage(t *testing.T, shape *dismissedScaleShape) time.Duration {
+func runDismissedScaleDeepPage(ctx context.Context, t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
-	taken, response := timeDismissedScaleRequest(t, shape, http.MethodGet,
+	taken, response := timeDismissedScaleRequest(ctx, t, shape, http.MethodGet,
 		"/api/v1/me/replies?kind=reply,agent&state=dismissed&cursor="+shape.deepCursor, nil)
 	page := decodeDismissedScaleReplies(t, response)
 	if len(page.Rows) != myRepliesDismissedPage {
@@ -339,14 +486,14 @@ func runDismissedScaleDeepPage(t *testing.T, shape *dismissedScaleShape) time.Du
 // api/inbox_dismiss_test.go), as a page would have carried them: nobody writes in these threads
 // while the measurement runs, so each row still holds the version it was seeded with and every
 // run dismisses all 120.
-func runDismissedScaleDismiss(t *testing.T, shape *dismissedScaleShape) time.Duration {
+func runDismissedScaleDismiss(ctx context.Context, t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
 	rows := make([]string, 0, len(shape.dismissRows))
 	for _, thread := range shape.dismissRows {
 		rows = append(rows, inboxDismissReplyPrefix+thread)
 	}
 	body := dismissBody(t, shape.database, dismissedScaleLogin, rows)
-	taken, response := timeDismissedScaleRequest(t, shape, http.MethodPost, "/api/v1/me/inbox/dismiss", body)
+	taken, response := timeDismissedScaleRequest(ctx, t, shape, http.MethodPost, "/api/v1/me/inbox/dismiss", body)
 	if dismissed := decodeDismissedScaleCount(t, response, "dismissed"); dismissed != dismissedScaleDismissRows {
 		t.Fatalf("the dismissal answered %d threads, want the %d it named", dismissed, dismissedScaleDismissRows)
 	}
@@ -360,10 +507,10 @@ func runDismissedScaleDismiss(t *testing.T, shape *dismissedScaleShape) time.Dur
 // runDismissedScaleMarkAll times one Mark all read over the unread threads the seed holds, with
 // read_through taken from a list read's own as_of, as the page sends it, and puts every mark back
 // afterwards, off the clock.
-func runDismissedScaleMarkAll(t *testing.T, shape *dismissedScaleShape) time.Duration {
+func runDismissedScaleMarkAll(ctx context.Context, t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
 	asOf := dismissedScaleAsOf(t, shape)
-	taken, response := timeDismissedScaleRequest(t, shape, http.MethodPost, "/api/v1/me/inbox/read",
+	taken, response := timeDismissedScaleRequest(ctx, t, shape, http.MethodPost, "/api/v1/me/inbox/read",
 		map[string]any{"read_through": asOf, "kind": []string{"reply", "agent"}})
 	marked := decodeDismissedScaleCount(t, response, "marked")
 	if marked != dismissedScaleUnreadRows() {
@@ -388,7 +535,7 @@ func dismissedScaleUnreadRows() int {
 // timeDismissedScaleRequest runs one request and answers the server's own time for it. The body
 // is encoded first, so only handler.ServeHTTP is on the clock.
 func timeDismissedScaleRequest(
-	t *testing.T, shape *dismissedScaleShape, method, target string, body any,
+	ctx context.Context, t *testing.T, shape *dismissedScaleShape, method, target string, body any,
 ) (time.Duration, *httptest.ResponseRecorder) {
 	t.Helper()
 	var reader *strings.Reader
@@ -401,7 +548,7 @@ func timeDismissedScaleRequest(
 		}
 		reader = strings.NewReader(string(encoded))
 	}
-	request := httptest.NewRequest(method, target, reader)
+	request := httptest.NewRequestWithContext(ctx, method, target, reader)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Dispatch-User", dismissedScaleLogin)
 	response := httptest.NewRecorder()
@@ -497,13 +644,14 @@ type dismissedScaleReading struct {
 // cache.
 func measureDismissedScale(
 	t *testing.T, shape *dismissedScaleShape, operation string,
-	run func(*testing.T, *dismissedScaleShape) time.Duration,
+	run dismissedScaleRun,
 ) dismissedScaleReading {
 	t.Helper()
-	run(t, shape)
+	ctx := context.Background()
+	run(ctx, t, shape)
 	taken := make([]time.Duration, 0, dismissedScaleRuns)
 	for range dismissedScaleRuns {
-		taken = append(taken, run(t, shape))
+		taken = append(taken, run(ctx, t, shape))
 	}
 	sorted := slices.Clone(taken)
 	slices.Sort(sorted)

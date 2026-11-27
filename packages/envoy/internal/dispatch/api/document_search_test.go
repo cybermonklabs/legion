@@ -11,6 +11,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -62,6 +64,15 @@ func (s documentSearchStatement) oracleArgs() []any {
 		return s.oracleArguments
 	}
 	return s.arguments
+}
+
+// documentSearchSeen is the acting credential every statement of this build binds last
+// (refs.VisibilityArg): these reads act for a credential that proves no author, which is what a
+// read of a corpus holding no author-private node answers for anyone. Search's own two
+// statements take it from searchQueryArguments; the related-item check's four are bound by
+// hand here, as the check binds them.
+func documentSearchSeen() []any {
+	return []any{refs.VisibilityArg(model.Actor{})}
 }
 
 // documentSearchFixture is the corpus of R1's plan and equality tests: one project whose
@@ -207,17 +218,18 @@ func (f documentSearchFixture) statements() []documentSearchStatement {
 			holds:     documents,
 		},
 		{
-			name:      "the related-item check's keyword stage",
-			statement: relatedKeywordQuery,
-			oracle:    mainRelatedKeywordQuery,
-			arguments: relatedKeyword,
-			holds:     documents,
+			name:            "the related-item check's keyword stage",
+			statement:       relatedKeywordQuery,
+			oracle:          mainRelatedKeywordQuery,
+			arguments:       slices.Concat(relatedKeyword, documentSearchSeen()),
+			oracleArguments: relatedKeyword,
+			holds:           documents,
 		},
 		{
 			name:      "the related-item check's meaning stage",
 			statement: relatedMeaningScopedQuery,
 			oracle:    relatedMeaningQueryOverMainsDocumentArm,
-			arguments: relatedMeaning,
+			arguments: slices.Concat(relatedMeaning, documentSearchSeen()),
 			holds:     documents,
 		},
 		{
@@ -274,14 +286,14 @@ func (f documentSearchFixture) excludingStatements() []documentSearchStatement {
 		{
 			name:      "the related-item check's keyword stage, excluding its own issue",
 			statement: relatedKeywordExcludingQuery,
-			arguments: slices.Concat(keyword, owners),
+			arguments: slices.Concat(keyword, owners, documentSearchSeen()),
 		},
 		{
 			// The scoped shape, as the plain pair above is: these arguments bind the fixture's
 			// project (relatedMeaningStatementFor).
 			name:      "the related-item check's meaning stage, excluding its own issue",
 			statement: relatedMeaningScopedExcludingQuery,
-			arguments: slices.Concat(meaning, owners),
+			arguments: slices.Concat(meaning, owners, documentSearchSeen()),
 		},
 	}
 }
@@ -300,6 +312,7 @@ func (f documentSearchFixture) excludingStatements() []documentSearchStatement {
 // leaves out (excludingStatements), which is what every write runs. The filter wraps the arms
 // in a derived table, so it is the shape whose plan could stop reaching the index.
 func TestEveryDocumentArmSearchesTheDocumentSearchIndex(t *testing.T) {
+	t.Parallel()
 	fixture := newDocumentSearchFixture(t)
 	firstKeys := explaintest.NewIndexKeys(fixture.database.Pool)
 	for _, statement := range slices.Concat(fixture.statements(), fixture.excludingStatements()) {
@@ -318,6 +331,7 @@ func TestEveryDocumentArmSearchesTheDocumentSearchIndex(t *testing.T) {
 // arguments, searches no document_search index and does test a tsquery against artifact_versions.
 // Without it a plan assertion that happened to hold for any statement would pass unnoticed.
 func TestMainsDocumentArmSearchesNoDocumentSearchIndex(t *testing.T) {
+	t.Parallel()
 	fixture := newDocumentSearchFixture(t)
 	statement := fixture.statements()[0]
 	plan := planWithoutSeqScans(t, fixture.database, statement.oracle, statement.oracleArgs()...)
@@ -342,6 +356,7 @@ func TestMainsDocumentArmSearchesNoDocumentSearchIndex(t *testing.T) {
 // document keyword arm and in nothing else. Either way the one thing that can move a side is the
 // arm this change rewrote.
 func TestEveryDocumentArmAnswersWhatMainsStatementDoes(t *testing.T) {
+	t.Parallel()
 	fixture := newDocumentSearchFixture(t)
 	ctx := context.Background()
 	for _, statement := range fixture.statements() {

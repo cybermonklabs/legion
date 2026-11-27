@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -468,9 +469,11 @@ func valueStripCases() map[string]valueStripCase {
 				}
 				served := waitingLineFieldsServed(t, mixed)
 				for key, member := range waitingLineFieldsServed(t, whole) {
-					want := member
+					// The band of priorityContract follows the pod's highest contract too, and
+					// 133 is below it, so no member is served the priority that placed it.
+					want := maps.Clone(member)
+					delete(want, "priority")
 					if member["kind"] == waitingOnIssue {
-						want = maps.Clone(member)
 						delete(want, "kind")
 					}
 					if !reflect.DeepEqual(served[key], want) {
@@ -493,6 +496,105 @@ func valueStripCases() map[string]valueStripCase {
 			undeclaredIssue: Issue{Key: "LEGION-213", WaitingLine: &WaitingLineView{
 				Place: 1, Length: 1, Part: "returned", Kind: undeclaredValue, PartPlace: 1, PartLength: 1,
 			}},
+		},
+		// A pod recording pauseContract and cachesSourceContract is served the repository-cache-room
+		// row without its `source`: `caches` arrived at cachesSourceContract, and the pod's 178
+		// process parses `source` with an enum of `configuration` and `boot`. The pod's process at
+		// cachesSourceContract states its contract in its header and is in no pod's reckoning
+		// (podContracts), so this pod is read by its 178 process alone, the reader the strip is for,
+		// and a pod whose every claim records cachesSourceContract is served this daemon's own body.
+		// Every other field of that row stays, and so does every row of another source, whose word
+		// the 178 process admits. The field is older than the floor, so the case names no value
+		// that arrived with it.
+		droppedCapabilitySource: {
+			state: populatedState, low: pauseContract, high: cachesSourceContract,
+			carries: func(t *testing.T, body []byte) bool {
+				return slices.ContainsFunc(capabilityRowsServed(t, body), func(row map[string]any) bool {
+					return row["source"] == cachesSource
+				})
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				want := capabilityRowsServed(t, withoutCachesSources(t, whole))
+				if served := capabilityRowsServed(t, mixed); !reflect.DeepEqual(served, want) {
+					t.Errorf("the {%d, %d} pod is served the capability rows %v, want %v: the strip takes the word the pod's %d process refuses and nothing else",
+						pauseContract, cachesSourceContract, served, want, pauseContract)
+				}
+			},
+			// One capability row whose source is a word no row declares.
+			undeclaredState: State{Capabilities: []CapabilityState{{
+				Name: string(capabilities.RepositoryCacheRoom), Status: capabilities.StatusOpen,
+				Detail: "a cache ran out of room", Source: undeclaredValue,
+			}}},
+		},
+		// A pod recording the contract before shapedAnswersContract is served every issue held for
+		// `task-stopped` or `children` without its `holdReason`: the two arrived at
+		// OwnerPlanContract, and the pod's process reads the key with `z.literal("escalated")`.
+		// The hold's `heldFrom` stays, and so does every escalated hold. No pod's reckoning holds
+		// a claim at or above shapedAnswersContract, since a build from that contract on states
+		// its own (podContracts), so the pod's claim at OwnerPlanContract moves neither half and
+		// the pod alone at it is served this daemon's own body, as production serves it. The
+		// field is older than the floor, so the case names no value that arrived with it.
+		droppedHoldReason: {
+			state: heldIssues, low: shapedAnswersContract - 1, high: OwnerPlanContract,
+			carries: func(t *testing.T, body []byte) bool {
+				for _, hold := range holdsServed(t, body) {
+					if hold[0] == string(record.HoldTaskStopped) || hold[0] == string(record.HoldForChildren) {
+						return true
+					}
+				}
+				return false
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				served := holdsServed(t, mixed)
+				for key, hold := range holdsServed(t, whole) {
+					want := hold
+					if hold[0] == string(record.HoldTaskStopped) || hold[0] == string(record.HoldForChildren) {
+						want[0] = ""
+					}
+					if served[key] != want {
+						t.Errorf("the {%d, %d} pod is served %s held %q, want %q: the strip takes the reason the pod's %d process refuses and nothing else",
+							shapedAnswersContract-1, OwnerPlanContract, key, served[key], want, shapedAnswersContract-1)
+					}
+				}
+			},
+			// A held issue whose reason is a word no row declares.
+			undeclaredIssue: Issue{Key: "SHAPES-3", Phase: "held", HoldReason: undeclaredValue, HeldFrom: "testing"},
+		},
+		// A pod recording the contract before shapedAnswersContract is served each row of
+		// `admission.held` under `children_before_retro` or `task_stopped` as `unclassified` with
+		// no `heldBy`: the two arrived at OwnerPlanContract, after the field, and the pod's process
+		// reads `reason` with a `z.enum` of the eleven words before them. Every other row stays as
+		// it stands. The pod's claim at OwnerPlanContract moves neither half, as above. The
+		// eleven words arrived with the field at heldContract and ride its band, which follows the
+		// pod's highest contract; no pod whose highest reads the new words is a pod at all, so
+		// that half is read on a pod recording the floor and the contract before
+		// shapedAnswersContract (TestAnOlderCallerReadsTheNewHeldWordsAsUnclassified) rather than
+		// here.
+		droppedHeldWord: {
+			state: heldWordIssues, low: shapedAnswersContract - 1, high: OwnerPlanContract,
+			carries: func(t *testing.T, body []byte) bool {
+				for _, row := range heldRowsServed(t, body) {
+					if row["reason"] == string(record.HeldChildrenBeforeRetro) || row["reason"] == string(record.HeldTaskStopped) {
+						return true
+					}
+				}
+				return false
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				served := heldRowsServed(t, mixed)
+				for key, row := range heldRowsServed(t, whole) {
+					want := row
+					if row["reason"] == string(record.HeldChildrenBeforeRetro) || row["reason"] == string(record.HeldTaskStopped) {
+						want = map[string]any{"issue": key, "reason": string(record.HeldUnclassified)}
+					}
+					if !reflect.DeepEqual(served[key], want) {
+						t.Errorf("the {%d, %d} pod is served %s's held row as %v, want %v: the strip rewrites the word the pod's %d process refuses and nothing else",
+							shapedAnswersContract-1, OwnerPlanContract, key, served[key], want, shapedAnswersContract-1)
+					}
+				}
+			},
+			// A row of the held list whose word no row of the table declares.
+			undeclaredState: State{Admission: Admission{Held: []HeldIssue{{Issue: "SHAPES-4", Reason: record.HeldReason(undeclaredValue)}}}},
 		},
 	}
 }
@@ -682,6 +784,19 @@ func waitsServed(t *testing.T, body []byte) map[string]waitServed {
 	return waits
 }
 
+// capabilityRowsServed is every row of a served body's capability report, in its order, decoded
+// as a plugin's reader sees it.
+func capabilityRowsServed(t *testing.T, body []byte) []map[string]any {
+	t.Helper()
+	var state struct {
+		Capabilities []map[string]any `json:"capabilities"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode the state %s: %v", body, err)
+	}
+	return state.Capabilities
+}
+
 // mixedPodClaims is the pod at statePodAddr holding one claim at low, one at high and one that
 // records no contract at all, beside a claim of another pod.
 func mixedPodClaims(low, high int) []supervise.Claim {
@@ -701,9 +816,8 @@ var keysAddedAfterTheFloor = []string{
 	`"backwardMoves"`, `"claimsToRefresh"`,
 }
 
-// keysOfThisContract is the three keys this change's own contract adds, which
-// shapedAnswersContract serves down: the state's own `lowestPluginContract` and the two of each
-// claim view's round report.
+// keysOfThisContract is the three keys shapedAnswersContract added and serves down: the state's
+// own `lowestPluginContract` and the two of each claim view's round report.
 var keysOfThisContract = []string{`"lowestPluginContract"`, `"updateState"`, `"wake"`}
 
 // A claim that holds no process is in no pod's reckoning: suspending, failing or retiring a claim

@@ -52,19 +52,29 @@ func (r *Runtime) IssuePodRunsConfiguredImage(issue string) bool {
 // cost tens of kilobytes and hundreds of allocations, once per pod per tick. A release that takes
 // the pod down records the name it took.
 //
-// A Suspended Sandbox that owns the issue's kept volume and carries the release's record that its
-// Secrets are deleted (secretsReleasedAnnotation, with the Sandbox's own uid) answers absent too,
-// read in place (the mode, the record and the uid by NestedString and GetUID, the templates by
-// storedOwnsKeptVolume). A release keeps such a Sandbox for the issue's next pod (ReleaseIssue),
-// and it runs no pod and owns no Secret, so nothing of it is the release's to take. The release of
-// a pod no claim owns changes no claim, so it reads such an issue again at every pass: answered
-// present, it would be released again at every pass. Answered absent, it is held as
-// unowned_sandbox_gone, and no release row is written for it. A Suspended kept Sandbox that
-// carries no record may still own its Secrets: a launch that failed after it wrote them leaves it
-// so (suspendFailedLaunch). It answers present, so the release of a pod no claim owns releases it
-// once. That release deletes its Secrets, keeps it and writes the record, and the next pass holds
-// it. The release writes the record only after its deletes succeed, so the record is never on a
-// Sandbox that still owns a Secret.
+// A kept Sandbox an earlier release already released answers absent too (releasedKept): Suspended,
+// owning the issue's kept volume and carrying the release's record that its Secrets are deleted
+// (secretsReleasedAnnotation, with the Sandbox's own uid), read in place. A release keeps such a
+// Sandbox for the issue's next pod (ReleaseIssue), and it runs no pod and owns no Secret, so
+// nothing of it is the release's to take. The release of a pod no claim owns changes no claim, so
+// it reads such an issue again at every pass: answered present, it would be released again at
+// every pass. Answered absent, it is held as unowned_sandbox_gone, and no release row is written
+// for it. A Suspended kept Sandbox that carries no record may still own its Secrets: a launch that
+// failed after it wrote them leaves it so (suspendFailedLaunch). It answers present, so the
+// release of a pod no claim owns releases it once. That release deletes its Secrets, keeps it and
+// writes the record, and the next pass holds it. The release writes the record only after its
+// deletes succeed, so the record is never on a Sandbox that still owns a Secret.
+//
+// A Sandbox that is going, or that a release of this runtime's has just kept, answers absent as
+// well: a stored object that carries a deletionTimestamp, which the API server sets at a delete
+// and keeps until the Sandbox's finalizers have run (a foreground delete's among them), and an
+// object of which the runtime keeps one of its own writes the store does not show yet (taken) —
+// its delete, or its release's record on a kept Sandbox. The API answers a write before the watch
+// carries it to the store, and what the runtime keeps of the write answers for the store until it
+// does. What is kept names the object by uid: a Sandbox made again under the same name answers
+// present. The store and what is kept are read under one hold of mu (storedTaken), which notify
+// holds while it drops what the store has caught up with, so no read pairs a store that has moved
+// on with an entry about to go.
 //
 // It is the informer's store and never an API call: the idle pass asks this of every pod of the
 // project on every tick, and a read per pod against the API server would cost the apiserver a
@@ -78,16 +88,27 @@ func (r *Runtime) IssueSandbox(issue string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	u, err := r.storedObject(name)
+	u, took, kept, err := r.storedTaken(name)
 	if err != nil || u == nil {
 		return "", false
 	}
-	mode, _, _ := unstructured.NestedString(u.Object, "spec", "operatingMode")
-	released, _, _ := unstructured.NestedString(u.Object, "metadata", "annotations", secretsReleasedAnnotation)
-	if mode == modeSuspended && released != "" && released == string(u.GetUID()) && storedOwnsKeptVolume(u) {
+	// The deletion mark is read in place, as the object is: GetDeletionTimestamp parses it into a
+	// metav1.Time it returns by pointer, and this read runs once per pod per tick.
+	deleting, _, _ := unstructured.NestedFieldNoCopy(u.Object, "metadata", "deletionTimestamp")
+	if deleting != nil || kept && took.uid == u.GetUID() || releasedKept(u) {
 		return "", false
 	}
 	return name, true
+}
+
+// releasedKept is whether u is a kept Sandbox an earlier release already released: Suspended,
+// owning the issue's kept volume (storedOwnsKeptVolume) and carrying that release's record with its
+// own uid (recordsRelease). It runs no pod and owns no Secret, so nothing of it is a release's to
+// take: IssueSandbox answers it absent, and a release finds nothing of it to release (endIssuePod).
+// It reads u in place, with no decode.
+func releasedKept(u *unstructured.Unstructured) bool {
+	mode, _, _ := unstructured.NestedString(u.Object, "spec", "operatingMode")
+	return mode == modeSuspended && recordsRelease(u, u.GetUID()) && storedOwnsKeptVolume(u)
 }
 
 // IssueKeepsVolume satisfies runtime.IssueVolumeReader: whether the issue's next launch keeps the

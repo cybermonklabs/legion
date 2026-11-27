@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,15 +24,16 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // encodeAnswer is the authorization response the server reads for req, signed by issuer: the
-// verdict admit settles, signed, as answer runs them, for a test that holds a decision and no
-// running service.
+// verdict admit settles, placed in the global account, signed, as answer runs them, for a test
+// that holds a decision and no running service.
 func encodeAnswer(issuer nkeys.KeyPair, req Request, decision Decision, refusal error) (string, error) {
-	user, refused := admit(req, decision, asRefusal(refusal))
+	user, refused := admit(config.GlobalNATSAccount, req, decision, asRefusal(refusal))
 	return sign(issuer, req, user, refused)
 }
 
@@ -122,7 +125,6 @@ var exampleServices = []config.NATSService{
 	{Kind: config.NATSDaemon, Account: daemonAccount, AllProjects: true},
 	{Kind: config.NATSMeasure, Account: measureAccount, Google: true, AllProjects: true},
 	{Kind: config.NATSDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
-	{Kind: config.NATSEdgeListener, MachineID: "edge-a", Account: edgeAccount, Projects: []string{"PRIV"}},
 }
 
 // A session's live token and a proof over this connection's nonce are answered with a user of
@@ -166,6 +168,54 @@ func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	}
 }
 
+// An edge listener's entry, read as BROKER_NATS_SERVICES writes it, is answered with the edge's
+// grant for its machine id and the projects the entry lists (natsgrant.Edge), named for its
+// machine id and expiring with its token, and that grant passes the guard every answer passes. The
+// grant publishes the role subjects of those projects and no other project's: an entry of two
+// projects publishes both, an entry of one the one. It is not the listener's grant, which
+// publishes every notification topic.
+func TestTheAuthServiceAnswersTheEdgeItsGrant(t *testing.T) {
+	now := time.Now()
+	deps := Deps{ServiceToken: serviceTokens(map[string]platformToken{
+		"edge-token": {account: edgeAccount, issued: now, expiry: now.Add(time.Hour)},
+	})}
+	for _, test := range []struct {
+		entry    string
+		projects []string
+	}{
+		{entry: "edge-listener/edge-a/PRIV=" + edgeAccount, projects: []string{"PRIV"}},
+		{entry: "edge-listener/edge-a/PRIV,OTHER=" + edgeAccount, projects: []string{"OTHER", "PRIV"}},
+	} {
+		t.Run(test.entry, func(t *testing.T) {
+			services, err := config.ParseNATSServices(test.entry)
+			require.NoError(t, err)
+			decision, err := Decide(t.Context(), deps, services, serviceRequest("edge-token"))
+			require.NoError(t, err)
+			want, err := natsgrant.Edge("edge-a", test.projects)
+			require.NoError(t, err)
+			require.Equal(t, Decision{Name: "edge-listener/edge-a", Grant: want, Expires: now.Add(time.Hour)}, decision)
+			for _, project := range test.projects {
+				require.Contains(t, decision.Grant.Publish, "notifications.role."+project+".>")
+				require.Contains(t, decision.Grant.Publish, "notifications.envoy.exceptions.notifications.role."+project+".>")
+			}
+			require.NotContains(t, decision.Grant.Publish, "notifications.role.INFRA.>")
+			require.NotEqual(t, natsgrant.Listener("edge-a"), decision.Grant)
+			require.Nil(t, guard(decision.Grant))
+		})
+	}
+}
+
+// An edge listener's entry whose projects natsgrant.Edge refuses - one config.ParseNATSServices would not
+// have read, a wildcard among them - is answered with no grant, which the guard refuses as an open
+// direction, and never with a grant built of that list.
+func TestAnEdgeEntryWhoseProjectsEdgeRefusesGetsNoGrant(t *testing.T) {
+	grant := serviceGrant(config.NATSService{Kind: config.NATSEdgeListener, MachineID: "edge-a", Account: edgeAccount, Projects: []string{"*"}})
+	require.Equal(t, natsgrant.Permissions{}, grant)
+	refused := guard(grant)
+	require.NotNil(t, refused)
+	require.Equal(t, labelOpenDirection, refused.Label)
+}
+
 // Every refusal is one line naming why, carries nothing of the credential, and is counted under
 // its own fixed label, the decision counter's reason. A row whose ctx is set decides under that
 // context instead of the test's: a spent one is a decision past its budget.
@@ -191,13 +241,24 @@ func TestRefusals(t *testing.T) {
 	readOnly := newSession(t, "ses_reader", 15*time.Minute)
 	readOnly.answer.Person, readOnly.answer.Service = "", "example-reader"
 	readOnly.answer.ProjectScope, readOnly.answer.Scope = ciphertoken.ProjectScopeNone, ciphertoken.ScopeRead
+	// A token narrowed to reading is read-only too, whatever project scope it narrows, so each
+	// answer of the golden file the broker's own test holds its narrowed answers to is no
+	// session's credential to the auth service either: each is a session of its own, presenting
+	// its token with a sound proof.
+	kinds := slices.Sorted(maps.Keys(ciphertokentest.NarrowedAnswers(t, "", "", 0)))
+	narrowed := make([]*session, 0, len(kinds))
+	for _, kind := range kinds {
+		s := newSession(t, "ses_narrowed_"+strings.ReplaceAll(kind, "-", "_"), 15*time.Minute)
+		s.answer = ciphertokentest.NarrowedAnswers(t, s.answer.Thumbprint, s.id, s.answer.ExpiresAt)[kind]
+		narrowed = append(narrowed, s)
+	}
 	tokens := map[string]platformToken{
 		"unlisted-token":  {account: "system:serviceaccount:example-ns:stranger", issued: now, expiry: now.Add(time.Hour)},
 		"two-hours-token": {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
 		"held-token":      {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
-		"edge-token":      {account: edgeAccount, issued: now, expiry: now.Add(time.Hour)},
 	}
-	deps := Deps{Introspect: introspector(a, expired, dotted, foreign, unbounded, readOnly), ServiceToken: serviceTokens(tokens)}
+	introspected := append([]*session{a, expired, dotted, foreign, unbounded, readOnly}, narrowed...)
+	deps := Deps{Introspect: introspector(introspected...), ServiceToken: serviceTokens(tokens)}
 	unreachable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
 		return oauthwire.Introspection{}, errors.New("dial tcp: connection refused")
 	}}
@@ -214,14 +275,15 @@ func TestRefusals(t *testing.T) {
 	cancel()
 	badSig := a.request(t, "nonce")
 	badSig.Sig = "%%%"
-	for _, row := range []struct {
+	type refusalRow struct {
 		name   string
 		deps   Deps
 		ctx    context.Context
 		req    Request
 		label  string
 		reason string
-	}{
+	}
+	rows := []refusalRow{
 		{"no credential", deps, nil, Request{UserNkey: "UUSER", ServerID: "NSERVER"}, labelNoCredential, "no credential this hub admits"},
 		{"a user and no password", deps, nil, Request{UserNkey: "UUSER", User: natscred.ServiceUser}, labelNoCredential, "no credential this hub admits"},
 		{"a token and no proof", deps, nil, Request{UserNkey: "UUSER", Token: a.token}, labelNoCredential, "no credential this hub admits"},
@@ -239,10 +301,11 @@ func TestRefusals(t *testing.T) {
 		{"an unlisted service", deps, nil, serviceRequest("unlisted-token"), labelServiceNotListed, "service not listed: system:serviceaccount:example-ns:stranger"},
 		{"a two-hour platform token", deps, nil, serviceRequest("two-hours-token"), labelTokenTooLong, "token lives longer than an hour"},
 		{"a service held to projects this broker cannot read", deps, nil, serviceRequest("held-token"), labelHeldToProjects, "held to exchange projects, which this broker cannot read: service daemon/system:serviceaccount:example-ns:held-daemon"},
-		// An edge listener's entry parses, so that the broker's API reads its projects, and this
-		// build has no grant to answer its connection with.
-		{"an edge listener, whose grant this broker does not have", deps, nil, serviceRequest("edge-token"), labelHeldToProjects, "held to the projects its entry lists, for which this broker has no edge listener's grant: service edge-listener/edge-a"},
-	} {
+	}
+	for i, s := range narrowed {
+		rows = append(rows, refusalRow{"a token narrowed from a " + kinds[i], deps, nil, s.request(t, "nonce"), labelNotASession, "token is no session's credential"})
+	}
+	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := row.ctx
 			if ctx == nil {
@@ -317,7 +380,7 @@ func TestTheUserExpiresWithItsCredential(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, row.expiry, admitted.Expires, "the user expires at %s, its credential at %s",
 				time.Unix(admitted.Expires, 0), time.Unix(row.expiry, 0))
-			require.Equal(t, globalAccount, admitted.Audience)
+			require.Equal(t, config.GlobalNATSAccount, admitted.Audience)
 			require.Equal(t, decision.Name, admitted.Name)
 			require.Equal(t, userKey, admitted.Subject)
 		})
@@ -374,7 +437,7 @@ func TestAGrantNamingASystemSubjectIsRefused(t *testing.T) {
 			response, err := jwt.DecodeAuthorizationResponseClaims(encoded)
 			require.NoError(t, err)
 			require.Equal(t, row.refusal, response.Error)
-			_, refused := admit(Request{UserNkey: userKey}, Decision{Grant: grant}, nil)
+			_, refused := admit(config.GlobalNATSAccount, Request{UserNkey: userKey}, Decision{Grant: grant}, nil)
 			if row.refusal != "" {
 				require.Empty(t, response.Jwt, "a user was encoded for a grant naming a system subject")
 				require.NotNil(t, refused)

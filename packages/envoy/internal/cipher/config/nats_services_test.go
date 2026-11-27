@@ -89,8 +89,6 @@ func TestParseNATSServicesRefusals(t *testing.T) {
 		"a Google service agent":                     "measure/-/*=google:service-123@gcp-sa-pubsub.iam.gserviceaccount.com",
 		"an account given twice":                     "daemon/-/-=" + daemonAccount + " listener/host-a/*=" + daemonAccount,
 		"an edge listener with no machine id":        "edge-listener/-/PRIV=" + edgeAccount,
-		"an edge listener with every project":        "edge-listener/edge-a/*=" + edgeAccount,
-		"an edge listener held to exchange ones":     "edge-listener/edge-a/-=" + edgeAccount,
 		"an edge listener naming no project key":     "edge-listener/edge-a/priv=" + edgeAccount,
 		"an edge listener naming a project twice":    "edge-listener/edge-a/PRIV,PRIV=" + edgeAccount,
 		"an edge listener naming an empty project":   "edge-listener/edge-a/PRIV,=" + edgeAccount,
@@ -102,5 +100,15 @@ func TestParseNATSServicesRefusals(t *testing.T) {
 			require.Error(t, err)
 			require.Contains(t, err.Error(), "BROKER_NATS_SERVICES")
 		})
+	}
+}
+
+// An edge listener's entry that gives it every project (*) or its exchange's projects (-) is
+// refused by its own rule, naming the form an edge entry takes, before its scope is read as a
+// list of project keys: an edge listener serves only the projects its entry names.
+func TestAnEdgeEntryOfEveryOrTheExchangeProjectsIsRefusedNamingWhy(t *testing.T) {
+	for _, scope := range []string{allProjectsScope, exchangeScope} {
+		_, err := ParseNATSServices("edge-listener/edge-a/" + scope + "=" + edgeAccount)
+		require.ErrorContains(t, err, "an edge listener serves only the projects its entry names", "scope %q", scope)
 	}
 }

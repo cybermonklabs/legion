@@ -1,7 +1,7 @@
 import { type ReactNode, useLayoutEffect, useState } from "react";
 
 import { borderDefault } from "../../theme/classes";
-import { useReferencePath, useReferenceTarget } from "./reference-target";
+import { useReferenceLabel, useReferencePath, useReferenceTarget } from "./reference-target";
 import {
   buildDispatchReference,
   buildReferencePath,
@@ -37,8 +37,9 @@ export interface ReferenceLinking {
   readonly cited: ReadonlySet<string>;
 }
 
-/** Portal content for an inline reference anchor: the resolved title once
- * `useReferenceTarget` has it, the words the author wrote until then (and for a target that is
+/** Portal content for an inline reference anchor: the resolved label once `useReferenceTarget`
+ * has the target (`useReferenceLabel`: the title, ` · edited` after an edited post's, the deleted
+ * line for a deleted post), the words the author wrote until then (and for a target that is
  * missing or unreadable, which never resolves), and beside it the picture's thumbnail when the
  * reference names an image artifact. It shows no document text, so it reads none. A thumbnail
  * the browser cannot draw (a pinned version the server does not serve) is dropped, leaving the
@@ -56,7 +57,9 @@ export function RefLink({
    *  author wrote it, or a Markdown link's own text. */
   text: string;
 }): ReactNode {
-  const { picture, title } = useReferenceTarget(route, { text: false });
+  const target = useReferenceTarget(route, { text: false });
+  const { picture } = target;
+  const label = useReferenceLabel(route, target);
   const path = useReferencePath(route);
   useLayoutEffect(() => {
     if (anchor instanceof HTMLAnchorElement) {
@@ -82,15 +85,21 @@ export function RefLink({
       {/* An issue reads as its key then its title, as the project's issues table writes a key
           beside one (`project/IssuesTable.tsx`), so the link's accessible name is `CORE-12 Fix the
           thing`. Until the title resolves, and for an issue the reader cannot read, the words
-          the author wrote stand. */}
-      {title === undefined ? (
+          the author wrote stand. A deleted post's line is in the deleted line's italic
+          (`DeletedBody`), inside the anchor, so the link stays visible, hoverable and
+          clickable. */}
+      {label.text === undefined ? (
         text
+      ) : label.deleted ? (
+        <span className="italic" data-post-deleted="">
+          {label.text}
+        </span>
       ) : route.kind === "issue" ? (
         <>
-          <span className="font-semibold whitespace-nowrap">{route.key}</span> {title}
+          <span className="font-semibold whitespace-nowrap">{route.key}</span> {label.text}
         </>
       ) : (
-        title
+        label.text
       )}
     </>
   );

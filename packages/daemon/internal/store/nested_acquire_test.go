@@ -30,13 +30,12 @@ const refusalBound = 10 * time.Second
 const refusalLine = "second pooled connection requested while one is held"
 
 // A caller holding one connection of the pool is refused a second, by name and at once, whichever
-// of the pool's two holders holds it: a transaction, asked for a second one the way the daemon
-// opens its transactions (pgx.BeginFunc, which Store.Tx is), and an open cursor, asked for a
-// query while the caller's loop over its rows has not ended. Each refusal is logged with the
-// stack of the site that asked. The hold ends where the connection is given back — a transaction
-// that commits, a cursor that Next drained or Close closed — and the same caller's next call is
-// served. A caller that holds no connection of the pool is served: the guard refuses a second
-// connection, never a first.
+// of the pool's two holders holds it: a transaction, asked for a second one straight on the pool
+// (BeginTx), and an open cursor, asked for a query while the caller's loop over its rows has not
+// ended. Each refusal is logged with the stack of the site that asked. The hold ends where the
+// connection is given back — a transaction that commits, a cursor that Next drained or Close
+// closed — and the same caller's next call is served. A caller that holds no connection of the
+// pool is served: the guard refuses a second connection, never a first.
 //
 // One connection in the pool, so a connection the caller holds is the only one there is: a
 // request the guard did not refuse would have nothing to be served with and would wait, and so
@@ -56,7 +55,7 @@ func TestASecondPooledConnectionUnderAHeldOneIsRefused(t *testing.T) {
 
 	var inner error
 	var took time.Duration
-	outer := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	outer := Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		// A statement, so the transaction is open on the server and not only in the driver.
 		if _, err := tx.Exec(ctx, "select 1"); err != nil {
 			return err
@@ -64,7 +63,8 @@ func TestASecondPooledConnectionUnderAHeldOneIsRefused(t *testing.T) {
 		asking, cancel := context.WithTimeout(ctx, refusalBound)
 		defer cancel()
 		started := time.Now()
-		inner = pgx.BeginFunc(asking, pool, func(pgx.Tx) error { return nil })
+		// Straight on the pool: a TransactWith on this context would join the held transaction.
+		_, inner = pool.BeginTx(asking, pgx.TxOptions{})
 		took = time.Since(started)
 		return inner
 	})
@@ -78,7 +78,7 @@ func TestASecondPooledConnectionUnderAHeldOneIsRefused(t *testing.T) {
 
 	// The holding transaction rolled back with the refusal; one that commits gives its connection
 	// back as well, and the caller's next call is served.
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, "select 1")
 		return err
 	}); err != nil {

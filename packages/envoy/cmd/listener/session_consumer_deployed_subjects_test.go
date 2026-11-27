@@ -21,6 +21,7 @@ import (
 // is never delivered. A topic no stream captures is still left out of the registration with the
 // warning, and out of the filter.
 func TestSessionConsumerFiltersOnATopicOnlyTheDeployedStreamCaptures(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID  = "ses_deployed_subject"
 		newer      = "notifications.x.>"
@@ -79,6 +80,7 @@ func TestSessionConsumerFiltersOnATopicOnlyTheDeployedStreamCaptures(t *testing.
 // consumer filter is what delivers it during a roll. The row stands for a fan-out that does see
 // such a message, and holds that it judges it as the consumer filter does.
 func TestFanoutLeavesATopicOnlyTheDeployedStreamCapturesToTheSessionsConsumer(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_deployed_fanout"
 		topic     = "notifications.x.y"
@@ -117,6 +119,7 @@ func TestFanoutLeavesATopicOnlyTheDeployedStreamCapturesToTheSessionsConsumer(t 
 // raise it for the same stored message. Judged on the subjects this build compiles, the lane would
 // be published under each exception's own dedupe key, and every listener's report would be kept.
 func TestADeliveryExceptionOnALaneOnlyTheDeployedStreamCapturesIsStoredOnce(t *testing.T) {
+	t.Parallel()
 	const (
 		topic  = "notifications.x.y"
 		lane   = bus.ExceptionTopicPrefix + topic

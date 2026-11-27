@@ -26,6 +26,7 @@ import {
   brokerTokenClient,
   IDENTITY_VAR,
   machineIdentity,
+  type ReadTrade,
 } from "@legion/cipher-client/environment";
 import { chooseSignIn, type SignInRecord } from "@legion/cipher-client/signins";
 import type { BrokerToken, BrokerTokenClient } from "@legion/cipher-client/token-client";
@@ -109,13 +110,13 @@ interface Held {
 
 /**
  * The clients this process has made, by the session their callers act as ("" for a caller that
- * acts as none) and, under it, by the value of every variable the factory reads ({@link keyOf}).
- * That key is what the factory is handed, so the name a trade asks under is one per entry: a
- * caller acting as no session and one acting as the session `AGENT_SECRETS_SESSION` names are two
- * entries, since a person's trade asks under the sign-in's own name for the first and under that
- * session for the second. One token shared between them would name one of the two wrongly, and
- * the listener refuses every write of a session whose token names another (`sessionNotBound`,
- * `packages/envoy/cmd/listener/brokerauth.go`).
+ * acts as none) and, under it, by the value of every variable the factory reads and the read
+ * trade the caller asks for ({@link keyOf}). That key is what the factory is handed, so the name a
+ * trade asks under is one per entry: a caller acting as no session and one acting as the session
+ * `AGENT_SECRETS_SESSION` names are two entries, since a person's trade asks under the sign-in's
+ * own name for the first and under that session for the second. One token shared between them
+ * would name one of them wrongly, and the listener refuses every write of a session whose token
+ * names another (`sessionNotBound`, `packages/envoy/cmd/listener/brokerauth.go`).
  *
  * One process holds one client per broker, identity and caller's session, and keeps one token
  * live under it, which both Dispatch and the listener of that session present: two clients would
@@ -124,6 +125,12 @@ interface Held {
  * listener answers 403 to a session presenting another's, so two sessions of one process hold two
  * clients. An entry is one client and one token, made only for a caller this process actually
  * traded for, and dropped when the host leaves that session (`forgetBrokerSession`).
+ *
+ * The one exception is a Dispatch credential narrowed to reading (`DISPATCH_TOKEN_BROKER_READ`,
+ * `dispatch-config.ts`): its read trade and its cut are part of its key, so it is a client of its
+ * own beside the session's shared one. The listener and NATS refuse a read-only token, and a
+ * session's inbound messages must keep working, so they keep the shared client, which asks for no
+ * scope.
  *
  * The key is the caller's session rather than the name its trade asks under because a person's
  * name is their sign-in's, which only the store says, and the store is read when the client is
@@ -169,13 +176,13 @@ function signInName(record: Pick<SignInRecord, "person" | "thumbprint">): string
 }
 
 /** Where {@link CLIENTS} keeps a client: by the session its callers act as, then by the
- *  variables the factory reads. */
+ *  variables the factory reads and the read trade the caller asks for. */
 interface ClientKey {
   /** The session the caller acts as, trimmed as `headers` and `stale` resolve it; "" for a
    *  caller that acts as none. */
   readonly session: string;
-  /** The value of every one of {@link BROKER_VARIABLES} in the caller's environment, as one
-   *  string. */
+  /** The value of every one of {@link BROKER_VARIABLES} in the caller's environment, and the
+   *  read trade it asks for where it asks for one, as one string. */
   readonly variables: string;
 }
 
@@ -184,14 +191,15 @@ interface ClientKey {
  * value of every variable the factory reads ({@link BROKER_VARIABLES}) — the broker, this
  * machine's identity and what each kind of identity reads, `AGENT_SECRETS_SESSION`, where a
  * person's sign-in is kept, which person a session acts for and the sign-in client that renews
- * theirs (`chooseSignIn`, `signInFlow`). Two environments that differ in any of them are two
- * clients, so neither is answered the client the other described.
+ * theirs (`chooseSignIn`, `signInFlow`) — with the read trade `read` and its cut, where the
+ * caller asks for one. Two environments that differ in any of them are two clients, so neither is
+ * answered the client the other described, and a caller that asks for no read trade keys exactly
+ * as it did before there was one.
  */
-function keyOf(env: BrokerEnvironment, own: string): ClientKey {
-  return {
-    session: own.trim(),
-    variables: JSON.stringify(BROKER_VARIABLES.map((name) => env[name])),
-  };
+function keyOf(env: BrokerEnvironment, own: string, read?: ReadTrade | undefined): ClientKey {
+  const values: unknown[] = BROKER_VARIABLES.map((name) => env[name]);
+  if (read !== undefined) values.push({ read: true, asOf: read.asOf ?? "" });
+  return { session: own.trim(), variables: JSON.stringify(values) };
 }
 
 /** The entry of `CLIENTS` at `key`, made empty where there is none yet. */
@@ -209,26 +217,33 @@ function entryFor(key: ClientKey): Held {
   return entry;
 }
 
-/** The factory's client for `own`, and the sign-in it trades. */
-async function make(env: BrokerEnvironment, own: string): Promise<Made> {
-  const made = await brokerTokenClient(env, own);
+/** The factory's client for `own`, asking for the read trade `read` where it is given, and the
+ *  sign-in it trades. */
+async function make(
+  env: BrokerEnvironment,
+  own: string,
+  read: ReadTrade | undefined
+): Promise<Made> {
+  const made = await brokerTokenClient(env, own, read);
   const signIn = made?.signIn;
   return { client: made?.client, signIn: signIn === undefined ? "" : signInName(signIn) };
 }
 
 /**
- * The client `env` describes for a caller acting as the session `own`, made once per process for
- * each key ({@link keyOf}), with its entry. The factory is handed the session the entry is kept
- * under and the environment whose variables key it, and decides from those and the sign-in the
- * store holds the name the trade asks under: the caller's own session where it acts as one, else
- * the machine's under `AGENT_SECRETS_SESSION` and a person's under their sign-in's own name, never
- * under that variable. So every caller one entry answers is one the factory names alike.
+ * The client `env` describes for a caller acting as the session `own`, asking for the read trade
+ * `read` where it is given, made once per process for each key ({@link keyOf}), with its entry.
+ * The factory is handed the session the entry is kept under and the environment whose variables
+ * key it, and decides from those and the sign-in the store holds the name the trade asks under:
+ * the caller's own session where it acts as one, else the machine's under `AGENT_SECRETS_SESSION`
+ * and a person's under their sign-in's own name, never under that variable. So every caller one
+ * entry answers is one the factory names alike.
  */
 async function clientFor(
   env: BrokerEnvironment,
-  own: string
+  own: string,
+  read: ReadTrade | undefined
 ): Promise<{ readonly entry: Held; readonly made: Made }> {
-  const key = keyOf(env, own);
+  const key = keyOf(env, own, read);
   const entry = entryFor(key);
   if (entry.refused.size > 0) {
     const record = await chooseSignIn(env);
@@ -243,7 +258,7 @@ async function clientFor(
   }
   let making = entry.making;
   if (making === undefined) {
-    const started = make(env, key.session);
+    const started = make(env, key.session, read);
     making = started;
     entry.making = started;
     started.then(
@@ -294,30 +309,38 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): 
   });
 }
 
+/** What one {@link tradedToken} call asks for: the `signal` that ends its wait, whether it waits
+ *  for ready (`waitForReady`, false unless set), and the read trade `read`, where it asks for one. */
+interface TradeOptions {
+  readonly signal?: AbortSignal | undefined;
+  readonly waitForReady?: boolean | undefined;
+  readonly read?: ReadTrade | undefined;
+}
+
 /**
  * The token this process holds, or trades now, for a caller of `env` acting as the session
  * `own`, and the key the broker bound it to, out of the one client {@link clientFor} keeps for
- * that session. A caller whose `signal` ends stops waiting, for the client's making as for its
- * trade. A caller fails fast unless `waitForReady` says otherwise (`TokenCallOptions`): it is told
- * the client's last failure at once where its retry loop trades again on it, and a pod's missing
- * registration is waited out within `signal` either way (`BrokerTokenClient.token`,
- * `RegistrationPendingError`). A person's sign-in refused for good is remembered against that
- * sign-in (`Held.refused`), so later calls fail with the same words.
+ * that session and the read trade `read`, where the caller asks for one. A caller whose `signal`
+ * ends stops waiting, for the client's making as for its trade. A caller fails fast unless
+ * `waitForReady` says otherwise (`TokenCallOptions`): it is told the client's last failure at
+ * once where its retry loop trades again on it, and a pod's missing registration is waited out
+ * within `signal` either way (`BrokerTokenClient.token`, `RegistrationPendingError`). A person's
+ * sign-in refused for good is remembered against that sign-in (`Held.refused`), so later calls
+ * fail with the same words.
  */
 async function tradedToken(
   env: BrokerEnvironment,
   own: string,
-  signal?: AbortSignal,
-  waitForReady = false
+  { signal, waitForReady = false, read }: TradeOptions
 ): Promise<TradedToken> {
-  const { entry, made } = await untilAborted(clientFor(env, own), signal);
+  const { entry, made } = await untilAborted(clientFor(env, own, read), signal);
   const { client } = made;
   if (client === undefined) {
     throw new LoggableError(
       "AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY no longer name a broker and an identity to trade"
     );
   }
-  const { session, variables } = keyOf(env, own);
+  const { session, variables } = keyOf(env, own, read);
   try {
     return {
       token: await client.token(signal, { waitForReady }),
@@ -343,7 +366,8 @@ export function brokerTokenFor(
   env: BrokerEnvironment,
   session: BrokerSessionName | undefined
 ): (signal?: AbortSignal, waitForReady?: boolean) => Promise<TradedToken> {
-  return (signal, waitForReady) => tradedToken(env, sessionName(session), signal, waitForReady);
+  // The shared client, which asks for no scope: the NATS auth service refuses a read-only token.
+  return (signal, waitForReady) => tradedToken(env, sessionName(session), { signal, waitForReady });
 }
 
 /** Has the client at `key` drop `token`, or the token it holds where `token` is undefined. Looked
@@ -383,6 +407,12 @@ export function dropTradedToken(env: BrokerEnvironment, traded: TradedToken): vo
  * its own and one trade of its own (`CLIENTS`), so the session this process left answers out of
  * the token it already holds.
  *
+ * With `read`, the credential is narrowed to reading: its trade asks for the scope read and the
+ * cut `read` names (`brokerTokenClient`), out of a client of its own ({@link CLIENTS}), so the
+ * session's shared client, which the listener and NATS present, still asks for no scope. Only
+ * Dispatch's credential passes it (`dispatchSettings`). A person's read token is bound to a key
+ * its client made, never the box key, and every proof beside it is signed with that key.
+ *
  * The trade happens at the first request that needs it and at every renewal after, both inside
  * `headers`, so nothing of the caller's restarts when a token lapses. Dispatch and the listener
  * mint no DPoP nonce (`packages/envoy/internal/ciphertoken/brokertoken.go`, `withoutNonces`), so
@@ -401,7 +431,8 @@ export function dropTradedToken(env: BrokerEnvironment, traded: TradedToken): vo
  */
 export function brokerCredential(
   env: BrokerEnvironment,
-  session?: BrokerSessionName | undefined
+  session?: BrokerSessionName | undefined,
+  read?: ReadTrade | undefined
 ): RequestCredential {
   let presented = "";
   // What each presentation was made as, by the headers object it answered: the login
@@ -421,7 +452,7 @@ export function brokerCredential(
       acting?: string,
       signal?: AbortSignal
     ): Promise<Readonly<Record<string, string>>> {
-      const traded = await tradedToken(env, own(acting), signal);
+      const traded = await tradedToken(env, own(acting), { signal, read });
       const { token, key, identity } = traded;
       presented = token.accessToken;
       const headers = {
@@ -430,7 +461,7 @@ export function brokerCredential(
       };
       presentedAs.set(headers, {
         identity,
-        key: keyOf(env, traded.session),
+        key: keyOf(env, traded.session, read),
         token: token.accessToken,
       });
       return headers;
@@ -441,7 +472,7 @@ export function brokerCredential(
       // may have moved to another session since, and the client may hold a fresher token.
       // Otherwise the session `acting` resolves to now.
       const told = headers === undefined ? undefined : presentedAs.get(headers);
-      dropHeld(told?.key ?? keyOf(env, own(acting)), told?.token);
+      dropHeld(told?.key ?? keyOf(env, own(acting), read), told?.token);
     },
     secret: () => presented,
   };

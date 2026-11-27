@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// mentionKinds is every node kind refs/graph.go's nodeLoaders resolves that text can name, in the
+// mentionKinds is every node kind refs/graph.go's nodeRegistry resolves that text can name, in the
 // order the seed cycles them, so `refs` holds mentions to each. The one kind left out, `session`,
 // has no grammar in text/refs.go - no `dispatch://` reference names a session - so the one
 // mention to a session is written into `refs` directly (writeSessionMention).
@@ -142,8 +142,8 @@ func (p *seedPlan) documentMarkdown(index, version int, random *rand.Rand, bytes
 
 // documentMentions is the references the latest version of document index writes, one per
 // paragraph. A document of a chain names the next document of its chain and a block of it, which
-// is the artifact-to-artifact and artifact-to-block chain refs.Closure walks; every other
-// document that carries a mention names one node of one kind.
+// is the artifact-to-artifact and artifact-to-block chain main's closure statement walked
+// (chainLength); every other document that carries a mention names one node of one kind.
 func (p *seedPlan) documentMentions(index int) []string {
 	document := p.documents[index]
 	if document.Chain >= 0 {

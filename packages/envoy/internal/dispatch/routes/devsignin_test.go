@@ -29,7 +29,7 @@ func newDevSignInRouter(t *testing.T, serverURL string, sessions *memorySessionS
 func newDevSignInRouterWithPeople(t *testing.T, serverURL string, sessions *memorySessionStore) (http.Handler, *memoryPeopleStore) {
 	t.Helper()
 	people := newMemoryPeople()
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:  testSigningKey,
 		People:      people,
 		Sessions:    sessions,
@@ -38,12 +38,13 @@ func newDevSignInRouterWithPeople(t *testing.T, serverURL string, sessions *memo
 		ServerURL:   serverURL,
 		DevSignIn:   true,
 		Lifetime:    t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
 	standInEventLog(ctx, 0)
-	handler, _ := New(ctx)
+	handler, background := New(ctx)
+	t.Cleanup(background.Wait)
 	return handler, people
 }
 
@@ -99,8 +100,8 @@ func TestDevSignInIssuesTheSessionCookieAndRecordsThePerson(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, devSignInRequest(t, devSignInOrigin+"/auth/_dev/signin?login=alice@d.example&next=/issues/CORE-1"))
 
-	if response.Code != http.StatusFound || response.Header().Get("Location") != "/issues/CORE-1" {
-		t.Fatalf("sign-in: status %d Location %q body=%s, want 302 to /issues/CORE-1", response.Code, response.Header().Get("Location"), response.Body.String())
+	if response.Code != http.StatusFound || response.Header().Get("Location") != devSignInOrigin+"/issues/CORE-1" {
+		t.Fatalf("sign-in: status %d Location %q body=%s, want 302 to %s/issues/CORE-1", response.Code, response.Header().Get("Location"), response.Body.String(), devSignInOrigin)
 	}
 	cookie := sessionCookieOf(response)
 	if cookie == nil {
@@ -155,18 +156,67 @@ func TestDevSignInRequiresALogin(t *testing.T) {
 	}
 }
 
-func TestDevSignInSanitizesNext(t *testing.T) {
-	handler := newDevSignInRouter(t, devSignInOrigin, &memorySessionStore{generations: map[string]int64{}})
-	for _, tc := range []struct{ next, want string }{
-		{next: "https://evil.example/", want: "/"},
-		{next: "//evil.example", want: "/"},
-		{next: "/%2F%2Fevil.example", want: "/"},
-		{next: "/issues/CORE-1?tab=spec", want: "/issues/CORE-1?tab=spec"},
+// A return address off the dashboard origin is refused before any cookie is minted: another
+// host, another port or scheme of this host, a network-path reference, a path a browser reads as
+// another host, and an address that dresses another host up in userinfo. The route mints a cookie
+// and sends the browser on, so it never sends it anywhere but its own origin.
+func TestDevSignInRefusesAReturnAddressOffItsOrigin(t *testing.T) {
+	sessions := &memorySessionStore{generations: map[string]int64{}}
+	handler, people := newDevSignInRouterWithPeople(t, devSignInOrigin, sessions)
+	for _, next := range []string{
+		"https://evil.example/",
+		"//evil.example",
+		"///evil.example",
+		"/%2F%2Fevil.example",
+		`/\evil.example`,
+		"http://127.0.0.1:8778/issues/CORE-1",
+		"https://127.0.0.1:8777/issues/CORE-1",
+		// The dashboard origin dressed up as userinfo in front of another host; two literals, so
+		// the push's credential check does not read the test value as a password in a URL.
+		devSignInOrigin + "@evil.example/",
+		"//127.0.0.1:8777/issues/CORE-1",
+		"javascript:alert(1)",
+		"issues/CORE-1",
 	} {
 		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, devSignInRequest(t, devSignInOrigin+"/auth/_dev/signin?login=alice&next="+url.QueryEscape(tc.next)))
-		if response.Code != http.StatusFound || response.Header().Get("Location") != tc.want {
-			t.Errorf("next=%q: status %d Location %q, want 302 to %q", tc.next, response.Code, response.Header().Get("Location"), tc.want)
+		handler.ServeHTTP(response, devSignInRequest(t, devSignInOrigin+"/auth/_dev/signin?login=alice&next="+url.QueryEscape(next)))
+		if response.Code != http.StatusBadRequest || errorCodeOf(t, response) != "DEV_SIGNIN_INPUT" || response.Header().Get("Location") != "" {
+			t.Errorf("next=%q: status %d Location %q body=%s, want 400 DEV_SIGNIN_INPUT and no redirect", next, response.Code, response.Header().Get("Location"), response.Body.String())
+		}
+		if sessionCookieOf(response) != nil {
+			t.Errorf("next=%q: set a session cookie", next)
+		}
+	}
+	if _, found := people.get("alice"); found {
+		t.Error("a refused sign-in recorded the person")
+	}
+}
+
+// A return address on the dashboard origin is where the sign-in sends the browser: a path, with
+// its query and fragment, or an absolute URL naming the dashboard origin, in any case. No address
+// at all is the dashboard's root. The Location always names the configured origin itself, so no
+// page a request names can move the browser to another host.
+func TestDevSignInReturnsToAnAddressOnItsOrigin(t *testing.T) {
+	handler := newDevSignInRouter(t, devSignInOrigin, &memorySessionStore{generations: map[string]int64{}})
+	for _, tc := range []struct{ next, want string }{
+		{next: "", want: "/"},
+		{next: "/", want: "/"},
+		{next: "/issues/CORE-1?tab=spec", want: "/issues/CORE-1?tab=spec"},
+		{next: "/issues/CORE-1#comments", want: "/issues/CORE-1#comments"},
+		{next: "/search?q=a%26b", want: "/search?q=a%26b"},
+		{next: devSignInOrigin + "/issues/CORE-1?tab=spec", want: "/issues/CORE-1?tab=spec"},
+		{next: "HTTP://127.0.0.1:8777/issues/CORE-1", want: "/issues/CORE-1"},
+		{next: devSignInOrigin, want: "/"},
+	} {
+		want := devSignInOrigin + tc.want
+		target := devSignInOrigin + "/auth/_dev/signin?login=alice"
+		if tc.next != "" {
+			target += "&next=" + url.QueryEscape(tc.next)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, devSignInRequest(t, target))
+		if response.Code != http.StatusFound || response.Header().Get("Location") != want || sessionCookieOf(response) == nil {
+			t.Errorf("next=%q: status %d Location %q body=%s, want 302 to %q with a cookie", tc.next, response.Code, response.Header().Get("Location"), response.Body.String(), want)
 		}
 	}
 }
@@ -303,18 +353,19 @@ func TestDevSignInRouterRefusesAnotherHost(t *testing.T) {
 
 func TestDevSignInIsNotMountedByDefault(t *testing.T) {
 	sessions := &memorySessionStore{generations: map[string]int64{}}
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     newMemoryPeople(),
 		Sessions:   sessions,
 		Identity:   identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions},
 		ServerURL:  devSignInOrigin,
 		Lifetime:   t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
-	handler, _ := New(ctx)
+	handler, background := New(ctx)
+	t.Cleanup(background.Wait)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, devSignInRequest(t, devSignInOrigin+"/auth/_dev/signin?login=alice"))
 	if response.Code != http.StatusNotFound || errorCodeOf(t, response) != "NOT_FOUND" {
@@ -348,14 +399,14 @@ func TestBuildAppContextDevSignInNeedsSessions(t *testing.T) {
 
 func TestBuildAppContextDevSignInRefusesAPublicOrigin(t *testing.T) {
 	build := func(serverURL string) error {
-		_, err := BuildAppContext(AppContextOptions{
+		_, err := BuildAppContext(withDocuments(t, AppContextOptions{
 			SigningKey: testSigningKey,
 			People:     newMemoryPeople(),
 			Sessions:   &memorySessionStore{generations: map[string]int64{}},
 			Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User"},
 			ServerURL:  serverURL,
 			DevSignIn:  true,
-		})
+		}))
 		return err
 	}
 	for _, serverURL := range []string{

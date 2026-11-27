@@ -42,6 +42,7 @@ func unacknowledgedEnvelope(topic string) contracts.Envelope {
 // what an unacknowledged publish sent once the server answers again, and holds nothing of a
 // publish that waited for a reconnect.
 func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) {
+	t.Parallel()
 	server, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {

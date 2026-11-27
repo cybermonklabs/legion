@@ -226,13 +226,13 @@ func assertTheSlotDeliversOnce(t *testing.T, pool *pgxpool.Pool, role claim.Role
 // A3. Every return the daemon makes for a worker applies its transition at once and owes that
 // worker one start, which waits for the issue's admission slot and for nothing else.
 //
-// The cap counts the issues whose change is still to write, so a worker's start into a phase up
-// to the review is the one thing a transition may not do before its issue holds a slot.
-// Everything else is written in the fact's own transaction: the phase, the role's phase entry and
-// the work of it on its phases row, the Dispatch status and the notices. The start is one row
-// (StartOrOwe), which carries the worker's task and which the outbox holds unclaimable while the
-// slots table names no slot of the issue (store.go's outboxInOrder), so the worker comes back
-// with its work rather than ahead of it.
+// The cap counts the issues whose change is still to write, so a worker's start into a phase that
+// keeps a slot (record.PhaseKeepsSlot) is the one thing a transition may not do before its issue
+// holds a slot. Everything else is written in the fact's own transaction: the phase, the role's
+// phase entry and the work of it on its phases row, the Dispatch status and the notices. The
+// start is one row (StartOrOwe), which carries the worker's task and which the outbox holds
+// unclaimable while the slots table names no slot of the issue (store.go's outboxInOrder), so the
+// worker comes back with its work rather than ahead of it.
 //
 // The rows are the returns the spec names that start a worker on the change again, each of
 // which starts a worker on an issue that held a slot before: a red head, the merge queue's
@@ -241,8 +241,9 @@ func assertTheSlotDeliversOnce(t *testing.T, pool *pgxpool.Pool, role claim.Role
 // (TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward). The last, a re-admitted tree's
 // mid-phase children, is admission's own start and is proven where it lives (internal/admit's
 // TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot). A sign-off's start into the
-// retro waits for no slot, since the work is past its review there (record.KeepsSlot), and is
-// proven in internal/admit's TestAPhasePastReviewRunsWithNoSlot.
+// retro waits for no slot, since retro keeps none (record.KeepsSlot), and is proven in
+// internal/admit's TestAcceptingRetroAndMergingRunWithNoSlot; a sign-off into a later step whose phase
+// keeps a slot owes a start that waits for one, as these returns do.
 //
 // Two transitions before the slot start the worker once: the second takes out the pending row
 // and writes its own in its place (record.Store.EnqueueStart), carrying that row's creation time
@@ -279,9 +280,9 @@ func TestEveryReturnAppliesAtOnceAndOwesItsWorkerOneStart(t *testing.T) {
 	}{
 		{
 			// Two transitions before the slot, each into a phase that keeps a row, which is
-			// what the coalescing is for: a sign-off's start waits for no row at all now
-			// (record.KeepsSlot), so it coalesces with nothing and is proven where it runs
-			// (internal/admit's TestAPhasePastReviewRunsWithNoSlot).
+			// what the coalescing is for: a sign-off's start into retro waits for no row at all
+			// now (record.KeepsSlot), so it coalesces with nothing and is proven where it runs
+			// (internal/admit's TestAcceptingRetroAndMergingRunWithNoSlot).
 			name: "a backward move, and a second one before the slot comes",
 			seed: func(t *testing.T, pool *pgxpool.Pool) {
 				readyRoot(t, pool, phase.Merging, "retro")

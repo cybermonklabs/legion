@@ -45,7 +45,7 @@ func TestLauncherTermDialer(t *testing.T) {
 	if err := os.Rename(resultFile+".tmp", resultFile); err != nil {
 		os.Exit(4)
 	}
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // A generation's session database is the generation's until its child exits, however the stop
@@ -66,7 +66,7 @@ func TestASessionDatabaseServesItsChildThroughTheChildsShutdownGrace(t *testing.
 			scratch := t.TempDir()
 			ready, result := filepath.Join(scratch, "ready"), filepath.Join(scratch, "result")
 			start := shimwire.LauncherStart{
-				ID: "start-1", Generation: 1, Argv: []string{self, "-test.run=^TestLauncherTermDialer$"},
+				ID: "start-1", Generation: 1, Argv: append([]string{self}, reentry(t, "TestLauncherTermDialer")...),
 				Env: []string{launcherTermDialerEnv + "=1", "LEGION_LAUNCHER_READY=" + ready, "LEGION_LAUNCHER_RESULT=" + result,
 					"LEGION_LAUNCHER_SOCKET=" + filepath.Join(g.generationDir(1), ompsessions.SocketName)},
 			}
@@ -93,7 +93,7 @@ func TestASessionDatabaseServesItsChildThroughTheChildsShutdownGrace(t *testing.
 
 func waitForFile(t *testing.T, path string) {
 	t.Helper()
-	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+	if !testwait.Holds(beforeDeadline(t), testwait.Poll, func() bool {
 		_, err := os.Stat(path)
 		return err == nil
 	}) {

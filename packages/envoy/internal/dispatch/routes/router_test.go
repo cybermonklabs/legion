@@ -16,12 +16,15 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -42,6 +45,24 @@ func sharedAgentTokens(t *testing.T, setting string) *auth.SharedAgentTokens {
 		t.Fatalf("ParseSharedAgentTokens(%q): %v", setting, err)
 	}
 	return tokens
+}
+
+// withDocuments is options with a document service of the test's own, which BuildAppContext
+// requires: one over the options' store, event broker, identity and server URL, shut down once
+// the test ends. Options with no broker get one, which the router and the service then share.
+func withDocuments(t testing.TB, options AppContextOptions) AppContextOptions {
+	t.Helper()
+	if options.Events == nil {
+		options.Events = events.NewBroker()
+	}
+	documents := docs.New(docs.Deps{Store: options.Store, Events: options.Events, Identity: options.Identity, ServerURL: options.ServerURL})
+	t.Cleanup(func() {
+		if err := documents.Shutdown(context.Background()); err != nil {
+			t.Errorf("shut the document service down: %v", err)
+		}
+	})
+	options.Docs = documents
+	return options
 }
 
 type memorySessionStore struct {
@@ -240,8 +261,14 @@ func newDomainSignInRig(t *testing.T) *signInRig {
 
 func newSignInRigFor(t *testing.T, serverURL string, rule identity.SignInRule, hostedDomain string) *signInRig {
 	t.Helper()
+	// The callback the rig's sign-ins name: the configured origin's, else that of the Host every
+	// rig request carries, dispatch.test.
+	callback := "http://dispatch.test/auth/callback"
+	if serverURL != "" {
+		callback = strings.TrimSuffix(serverURL, "/") + "/auth/callback"
+	}
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), rigClientID, "dispatch-secret")
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), rigClientID, "dispatch-secret", callback)
 	flow := oidc.NewCodeFlow(issuer.URL(), rigClientID, "dispatch-secret", hostedDomain)
 	rig := &signInRig{issuer: issuer, people: newMemoryPeople(), sessions: &memorySessionStore{generations: map[string]int64{}}, now: time.Now()}
 	rig.people.sessions = rig.sessions
@@ -258,12 +285,14 @@ func newSignInRigFor(t *testing.T, serverURL string, rule identity.SignInRule, h
 		Lifetime:   t.Context(),
 	}
 	var err error
-	rig.ctx, err = BuildAppContext(rig.options)
+	rig.ctx, err = BuildAppContext(withDocuments(t, rig.options))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
 	standInEventLog(rig.ctx, 0)
-	rig.handler, _ = New(rig.ctx)
+	handler, background := New(rig.ctx)
+	t.Cleanup(background.Wait)
+	rig.handler = handler
 	return rig
 }
 
@@ -275,11 +304,12 @@ func (r *signInRig) process(t *testing.T, keys auth.SigningKeys) http.Handler {
 	options := r.options
 	options.SigningKey = keys
 	options.Identity = identity.CookieIdentity{SigningKey: keys, Sessions: r.sessions, Membership: r.membership}
-	ctx, err := BuildAppContext(options)
+	ctx, err := BuildAppContext(withDocuments(t, options))
 	if err != nil {
 		t.Fatalf("build another process's context: %v", err)
 	}
-	handler, _ := New(ctx)
+	handler, background := New(ctx)
+	t.Cleanup(background.Wait)
 	return handler
 }
 
@@ -457,11 +487,12 @@ func TestSignInAgainstAnUndiscoveredIssuerAnswers503(t *testing.T) {
 	rig.issuer.FailDiscovery(http.StatusServiceUnavailable)
 	options := rig.options
 	options.SignIn = oidc.NewCodeFlow(rig.issuer.URL(), rigClientID, "dispatch-secret", "")
-	ctx, err := BuildAppContext(options)
+	ctx, err := BuildAppContext(withDocuments(t, options))
 	if err != nil {
 		t.Fatalf("build the undiscovered process's context: %v", err)
 	}
-	undiscovered, _ := New(ctx)
+	undiscovered, background := New(ctx)
+	t.Cleanup(background.Wait)
 
 	response := httptest.NewRecorder()
 	undiscovered.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/start", nil))
@@ -474,6 +505,80 @@ func TestSignInAgainstAnUndiscoveredIssuerAnswers503(t *testing.T) {
 	callback := callbackOn(undiscovered, code, state, stateCookie)
 	if callback.Code != http.StatusServiceUnavailable || !strings.Contains(callback.Body.String(), `"code":"SIGNIN_UNAVAILABLE"`) || sessionCookie(callback) != nil {
 		t.Fatalf("a callback whose exchange meets an undiscovered issuer: %d %s, want 503 SIGNIN_UNAVAILABLE and no session", callback.Code, callback.Body.String())
+	}
+}
+
+// A callback whose code exchange the token endpoint cannot answer (a 5xx, a 408 or a 429, whatever
+// error its body names, or no answer at all) answers 503 SIGNIN_UNAVAILABLE and no session, as an
+// exchange that meets an undiscovered issuer does. Every other answer is the token endpoint
+// answering, and is 502 as before: a 4xx with or without an OAuth error, a 200 naming one, and a
+// 3xx.
+func TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		fail   func(issuer *oidctest.Issuer)
+		status int
+	}{
+		{"503 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusServiceUnavailable, "") }, http.StatusServiceUnavailable},
+		{"503 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusServiceUnavailable, "invalid_grant") }, http.StatusServiceUnavailable},
+		{"429 invalid_client", func(i *oidctest.Issuer) { i.FailToken(http.StatusTooManyRequests, "invalid_client") }, http.StatusServiceUnavailable},
+		{"408 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusRequestTimeout, "invalid_grant") }, http.StatusServiceUnavailable},
+		{"no answer", func(i *oidctest.Issuer) { i.DropToken() }, http.StatusServiceUnavailable},
+		{"200 cut off mid-body", func(i *oidctest.Issuer) { i.CutToken(http.StatusOK) }, http.StatusServiceUnavailable},
+		{"400 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusBadRequest, "invalid_grant") }, http.StatusBadGateway},
+		{"403 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusForbidden, "invalid_grant") }, http.StatusBadGateway},
+		{"400 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusBadRequest, "") }, http.StatusBadGateway},
+		{"401 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusUnauthorized, "") }, http.StatusBadGateway},
+		{"403 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusForbidden, "") }, http.StatusBadGateway},
+		{"404 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusNotFound, "") }, http.StatusBadGateway},
+		{"200 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusOK, "invalid_grant") }, http.StatusBadGateway},
+		{"302 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusFound, "") }, http.StatusBadGateway},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rig := newSignInRig(t, "")
+			c.fail(rig.issuer)
+			response := rig.signIn(t, personClaims(rigGroup))
+			unavailable := strings.Contains(response.Body.String(), `"code":"SIGNIN_UNAVAILABLE"`)
+			if response.Code != c.status || unavailable != (c.status == http.StatusServiceUnavailable) || sessionCookie(response) != nil {
+				t.Fatalf("a callback whose token endpoint answers %s: %d %s, want %d, SIGNIN_UNAVAILABLE %t, and no session",
+					c.name, response.Code, response.Body.String(), c.status, c.status == http.StatusServiceUnavailable)
+			}
+		})
+	}
+}
+
+// A callback's code is chosen by whoever holds the browser, so Dispatch sends the issuer's token
+// endpoint a code of at most 2048 bytes. One of 2048 is exchanged (the issuer refuses it, a code it
+// never issued, so the sign-in fails 502); one of 2049 is refused 400 before any token request,
+// with no session.
+func TestSignInCallbackBoundsItsCodeBeforeTheExchange(t *testing.T) {
+	for _, c := range []struct {
+		size      int
+		exchanged bool
+	}{
+		{2048, true},
+		{2049, false},
+	} {
+		t.Run(strconv.Itoa(c.size), func(t *testing.T) {
+			rig := newSignInRig(t, "")
+			rig.issuer.SignInAs(personClaims(rigGroup))
+			authURL, stateCookie := rig.start(t, "http://dispatch.test/auth/start?next=/issues/CORE-1")
+			_, state := rig.issuer.Authorize(t, authURL.String())
+			before := len(rig.issuer.TokenRequests())
+			response := callbackOn(rig.handler, strings.Repeat("c", c.size), state, stateCookie)
+			sent := len(rig.issuer.TokenRequests()) - before
+			want, wantSent := http.StatusBadRequest, 0
+			if c.exchanged {
+				want, wantSent = http.StatusBadGateway, 1
+			}
+			if response.Code != want || sent != wantSent || sessionCookie(response) != nil {
+				t.Fatalf("a callback with a %d-byte code = %d %s after %d token requests, want %d after %d, and no session",
+					c.size, response.Code, response.Body.String(), sent, want, wantSent)
+			}
+			if !c.exchanged && !strings.Contains(response.Body.String(), "2048") {
+				t.Fatalf("the refusal of a %d-byte code does not name the bound: %s", c.size, response.Body.String())
+			}
+		})
 	}
 }
 
@@ -800,17 +905,18 @@ func TestAuthStartWithoutSignInIsUnavailable(t *testing.T) {
 func newTestRouter(t *testing.T) (http.Handler, *AppContext) {
 	t.Helper()
 	people := newMemoryPeople()
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     people,
 		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 		Lifetime:   t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
 	standInEventLog(ctx, 0)
-	handler, _ := New(ctx)
+	handler, background := New(ctx)
+	t.Cleanup(background.Wait)
 	return handler, ctx
 }
 
@@ -1524,6 +1630,41 @@ func TestAMethodAKnownPathDoesNotServeIsJSONNoRoute(t *testing.T) {
 	}
 }
 
+// The repository mapping's writes are gone (dispatch://INFRA-4402): a PUT or a DELETE under
+// /api/v1/settings/repo-projects answers the JSON 404 of a route the process does not serve. The
+// read of the stored rows stays mounted, so an anonymous GET of it is refused 401, not 404.
+func TestTheRepositoryMappingWritesAreNoRoute(t *testing.T) {
+	handler, _ := newTestRouter(t)
+	const path = "/api/v1/settings/repo-projects/acme/widgets"
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(method, path, strings.NewReader(`{"project":"CORE"}`)))
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("%s %s status %d: %s", method, path, response.Code, response.Body.String())
+		}
+		if got := response.Header().Get("Content-Type"); got != "application/json" {
+			t.Fatalf("%s %s content type %q", method, path, got)
+		}
+		var body map[string]string
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatalf("%s %s body %q: %v", method, path, response.Body.String(), err)
+		}
+		want := map[string]string{
+			"code":  "NOT_FOUND",
+			"error": "no route for " + method + " " + path,
+			"hint":  "GET /api/v1 lists every route",
+		}
+		if !reflect.DeepEqual(body, want) {
+			t.Fatalf("%s %s body = %v, want %v", method, path, body, want)
+		}
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/settings/repo-projects", nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("an anonymous GET /api/v1/settings/repo-projects: status %d body %s, want 401 from the mounted read", response.Code, response.Body.String())
+	}
+}
+
 func TestStaticHandlerServesFaviconIcoAsSvg(t *testing.T) {
 	webDist := t.TempDir()
 	if err := os.WriteFile(filepath.Join(webDist, "index.html"), []byte("<!doctype html>"), 0o600); err != nil {
@@ -1653,7 +1794,7 @@ func cookieRouter(t *testing.T, serverURL string) (http.Handler, *http.Cookie, *
 		t.Fatalf("record sign-in: %v", err)
 	}
 	sessions := &memorySessionStore{generations: map[string]int64{"sami@d.example": 0}}
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:  testSigningKey,
 		People:      people,
 		Sessions:    sessions,
@@ -1661,7 +1802,7 @@ func cookieRouter(t *testing.T, serverURL string) (http.Handler, *http.Cookie, *
 		AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL:   serverURL,
 		Lifetime:    t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
@@ -1670,7 +1811,8 @@ func cookieRouter(t *testing.T, serverURL string) (http.Handler, *http.Cookie, *
 	if err != nil {
 		t.Fatalf("parse session cookie: %v", err)
 	}
-	handler, _ := New(ctx)
+	handler, background := New(ctx)
+	t.Cleanup(background.Wait)
 	return handler, cookie, people
 }
 
@@ -1745,7 +1887,7 @@ func TestIAPAuthenticatedUnsafeRequestsRequireSameOrigin(t *testing.T) {
 	signing := oidctest.NewES256Key(t, "iap-key")
 	keys.Publish(signing)
 	people := newMemoryPeople()
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     people,
 		Sessions:   &memorySessionStore{generations: map[string]int64{}},
@@ -1757,12 +1899,13 @@ func TestIAPAuthenticatedUnsafeRequestsRequireSameOrigin(t *testing.T) {
 		AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL:   "https://dispatch.example",
 		Lifetime:    t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
 	standInEventLog(ctx, 0)
-	handler, _ := New(ctx)
+	handler, background := New(ctx)
+	t.Cleanup(background.Wait)
 	now := time.Now()
 	assertion := keys.Mint(t, signing, map[string]any{
 		"iss": oidc.IAPIssuer, "aud": audience, "sub": "accounts.google.com:118000000000000000001",

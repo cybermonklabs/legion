@@ -26,6 +26,8 @@ jobs:
     # Raised from 15 to 25 when the tool copy joined the image copy: this job now fetches and
     # pushes up to four release archives of its own beside the images.
     timeout-minutes: 25
+    env:
+      JOB_TIMEOUT_MINUTES: 25 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

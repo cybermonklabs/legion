@@ -205,3 +205,45 @@ func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
 		})
 	})
 }
+
+// TestAPrivateClusteredHubsChartWaitsForItsNetworkPolicy: with privateProjects the nats chart
+// registers only after the hub pods' NetworkPolicy, whose rules admit the monitoring port, 8222,
+// from no namespace, so no server takes the server tag from the chart's ConfigMap, by reload or by
+// restart, before the policy that closes 8222 is applied (newClusteredHubKubernetes). Without
+// privateProjects the chart waits on no policy, as before: the same hub without it, that hub with
+// 8222 open to a namespace, and the default hub.
+//
+// Controls, each run on its own: delete the DependsOn; the private row fails with "the private
+// hub's chart registers before the NetworkPolicy that closes 8222". Make the DependsOn
+// unconditional; the three public rows fail with "the chart waits on the NetworkPolicy without
+// privateProjects".
+func TestAPrivateClusteredHubsChartWaitsForItsNetworkPolicy(t *testing.T) {
+	policy := clusteredChildURN(networkPolicyType, "envoy-nats")
+	// chartDependencies is the chart's registered dependencies, in a hub that registers the
+	// policy, so a row whose list lacks the policy is about a policy that is there.
+	chartDependencies := func(t *testing.T, args *gcp.ClusteredNatsHubArgs) []string {
+		t.Helper()
+		m := runClusteredHub(t, args)
+		m.Named(t, networkPolicyType, "envoy-nats")
+		return m.Named(t, chartType, "envoy-nats").RPC.GetDependencies()
+	}
+	require.Contains(t, chartDependencies(t, privateClusteredHub()), policy,
+		"the private hub's chart registers before the NetworkPolicy that closes 8222")
+
+	public := privateClusteredHub()
+	public.PrivateProjects = false
+	monitored := privateClusteredHub()
+	monitored.PrivateProjects, monitored.MonitorNamespaces = false, []string{"legion"}
+	for _, row := range []struct {
+		name string
+		args *gcp.ClusteredNatsHubArgs
+	}{
+		{"the same hub without privateProjects", public},
+		{"that hub with 8222 open to legion", monitored},
+		{"the default hub", clusteredArgs()},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			require.NotContains(t, chartDependencies(t, row.args), policy, "the chart waits on the NetworkPolicy without privateProjects")
+		})
+	}
+}

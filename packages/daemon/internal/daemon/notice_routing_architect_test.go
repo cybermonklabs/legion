@@ -18,6 +18,7 @@ import (
 // does. The runs are the outbox's own (holdsRole), so deliverNotice, its fence (earlierNoticeFor)
 // and the ready's release (releaseWaiting) all pick this architect.
 func TestAWakeAboutAnArchitectReachesTheArchitectAboveIt(t *testing.T) {
+	t.Parallel()
 	root, parent, child, grandchild, orphan, stray, unrecorded := "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5", "LEGION-6", "LEGION-77"
 	looped, loop := "LEGION-8", "LEGION-9"
 	tree := map[string]record.Issue{

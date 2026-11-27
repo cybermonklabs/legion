@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // seededArchitectTask is the work the architect's seeded entry names: the text the transition
@@ -213,10 +214,11 @@ func TestResumeAwaitedRootRaisesTheArchitectEntryForBothOfItsCallers(t *testing.
 		waiting := record.Awaiting{Ask: "ask-1", Since: record.EventMark{Seq: 5}, AnsweredAt: &answeredAt,
 			AnsweredBy: record.AnsweredByAsk}
 
-		seedRecord(t, pool, func(tx pgx.Tx) error {
-			ctx, _ := intake.WithCommitHooks(context.Background())
+		if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 			return engine.ResumeAwaitedRoot(ctx, tx, root, waiting)
-		})
+		}); err != nil {
+			t.Fatalf("resume the answered root: %v", err)
+		}
 
 		assertArchitectEntryRaised(t, pool, engine, seededEntry+1)
 	})

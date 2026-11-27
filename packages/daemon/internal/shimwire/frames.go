@@ -59,19 +59,13 @@ const (
 	TypeLauncherStartResult          = "launcher_start_result"
 	TypeLauncherStop                 = "launcher_stop"
 	TypeLauncherStopResult           = "launcher_stop_result"
-	// The workspace bundle's two directions: the daemon asking one role's shim for the unpushed
-	// work of the workspace every role of its issue shares, and the daemon handing that bundle to
-	// the launcher of the pod that replaces the released one, in slices under the frame limit.
-	// The launcher reports what became of it once it has run the restore (launcher_restored),
-	// which is the confirmation the daemon drops its saved copy on.
-	TypeBundleWorkspace       = "bundle-workspace"
-	TypeBundleWorkspaceResult = "bundle-workspace-result"
-	TypeLauncherBundle        = "launcher_bundle"
-	TypeLauncherBundleResult  = "launcher_bundle_result"
-	TypeLauncherRestored      = "launcher_restored"
+	// The report an earlier launcher sends, unasked, after it restored a released pod's saved work
+	// into the pod that replaced it. This daemon saves and restores no work: it decodes the frame
+	// only so that such a launcher's connection stays open, and drops it (LauncherRestored).
+	TypeLauncherRestored = "launcher_restored"
 	// The workspace read: the daemon asking one role's shim whether the workspace every role of
 	// its issue shares holds work that no branch or tag on origin holds, and the shim's answer.
-	// It is a jj query and not a bundle, so the answer is small and crosses on one line.
+	// It is a jj query that moves none of the work, so the answer is small and crosses on one line.
 	TypeWorkspaceWork       = "workspace-work"
 	TypeWorkspaceWorkResult = "workspace-work-result"
 	// The launcher's memory guard reports each process it ended, unasked, so the daemon can tell
@@ -180,8 +174,10 @@ type AgentSecretsTokenResult struct {
 }
 
 // LauncherHello authenticates a role launcher independently from its child shim. The daemon
-// minted Token belongs to exactly this pod UID, role and Secret epoch; LauncherID changes each
-// time Kubernetes restarts the launcher container.
+// minted Token for one role and Secret epoch, and accepts it only from the pod UID its Secret
+// binds: the pod a launch made, or a pod Agent Sandbox made again from the same Sandbox outside a
+// launch, which the daemon binds at its launchers' first hello. LauncherID changes each time
+// Kubernetes restarts the launcher container.
 //
 // LeakCheckTag is the launcher's own pin of the shared public leak check (its environment's
 // LEGION_LEAK_CHECK_TAG), empty when its environment names none: a hello that names a tag is a
@@ -227,20 +223,31 @@ type LauncherHelloAck struct {
 	VolumeTrim *LauncherVolumeTrim `json:"volumeTrim,omitempty"`
 	// KernelKills says the daemon reads a launcher_memory_kill whose cause is
 	// MemoryKillCauseKernel or MemoryKillCauseKernelProtected as the kernel's kill and tells its
-	// role so. The daemon sets it on every issue pod's acknowledgement, whether or not it sends
-	// MemoryGuard, and never on the controller's pod's. A microVM pod's launcher sends its kill
-	// reports only on a connection whose acknowledgement carries it, whatever MemoryGuard says, so
-	// a daemon built before it, which sends no member, never reads a kernel's kill with the guard's
-	// words. It is left out when false, so such an acknowledgement is the bytes an older daemon
-	// writes.
+	// role so, or the project's controller where the report is of the controller's pod. The
+	// daemon sets it on every launcher's acknowledgement, an issue pod's and the controller's pod's
+	// alike, whether or not it sends MemoryGuard, since the controller's pod runs in a microVM where
+	// the project's sandbox is one (INFRA-4567); a daemon of an earlier release sets it on the issue
+	// pods' alone. A microVM pod's launcher sends its kill reports only on a connection whose
+	// acknowledgement carries it, whatever MemoryGuard says, so a daemon built before it, which
+	// sends no member, never reads a kernel's kill with the guard's words; a gVisor pod's launcher
+	// ignores it and sends its guard's reports where MemoryGuard came. It is left out when false,
+	// so an acknowledgement without it is the bytes an older daemon writes.
 	KernelKills bool `json:"kernelKills,omitempty"`
 }
 
 // LauncherMemoryGuard is what a launcher's memory guard runs by: it reads the pod's anonymous
-// memory every IntervalMilliseconds, and at ActPercent of the container's limit it ends the
-// largest process it may end, where those processes hold at least FloorPercent of the limit
-// between them; after a kill it waits up to WaitSeconds for the reading to fall before it ends
-// another.
+// memory every IntervalMilliseconds, and at ActPercent of the container's limit it ends, of the
+// processes it may end, the process that grew the most over its last few reads, else the largest
+// one it has read at most once in its last two readings near the limit, else the one that grew the
+// most since the guard's first kill while the reading stays near the limit, else the largest, a
+// fork that still runs its parent's program counted by what it holds over its parent, where those
+// processes hold at least FloorPercent of the limit between them, and at or above the urgent
+// share, halfway from ActPercent to the limit, every other process that grew over its last few
+// reads at the same reading and, where a process it may end is not new to its stay near the
+// limit, every other one new to it that holds memory of its own; after the kills of a reading it
+// ends no other until every killed process has exited or WaitSeconds has passed, and it gives the
+// rise up once WaitSeconds has passed with the reading not fallen and nothing it may end grown
+// since the kills.
 //
 // It holds no `enabled` member: a deployment that turns the guard off sends no member at all,
 // which is the same absence a daemon that does not know the guard sends, so one rule in the
@@ -263,6 +270,22 @@ type LauncherMemoryGuard struct {
 // acknowledgement reaches it, and the daemon's configuration defaults, so a change to one moves
 // both. The act share's default is the one a measurement may move. Every minimum is above zero
 // because a guard cannot be armed with a zero interval or wait.
+//
+// MemoryGuardControllerWaitDefault is the controller pod's wait after a kill in place of
+// MemoryGuardWaitDefault, an issue pod's (INFRA-3531, R4): its guard's start
+// (memoryguard.ControllerDefaults) and the daemon's default for
+// `runtime.kubernetes.memory_guard.controller_pod`. It is below the 3.4 seconds this issue's tester
+// measured from a kill that freed nothing to the host's kill of a 4 GiB pod, so the controller's
+// guard decides on the next process before that kill comes.
+//
+// MemoryGuardConfigActMax is the highest act share the daemon's loader takes for either pod kind,
+// `runtime.kubernetes.memory_guard.issue_pods.act_percent` and `controller_pod.act_percent`
+// (INFRA-3531 R4 of spec version 43): the urgent share, the mark plus half the distance from the
+// mark to the limit, is then at most 95% of the limit and stays below the lowest kill point this
+// issue's tester measured at 4 GiB, 96.88% on 2026-11-18; at an act share of 95 the urgent share
+// would be 97.5%, at or above that kill point. Both kinds run the guard's one core, so both take
+// the same bound. The wire keeps MemoryGuardActMax, and Validate with it, so a launcher of this
+// release still takes the settings a daemon of an earlier release sends, which may name 91 to 95.
 const (
 	MemoryGuardActMin      = 50
 	MemoryGuardActMax      = 95
@@ -277,6 +300,9 @@ const (
 	MemoryGuardFloorDefault    = 10
 	MemoryGuardWaitDefault     = 5
 	MemoryGuardIntervalDefault = 100
+
+	MemoryGuardControllerWaitDefault = 1
+	MemoryGuardConfigActMax          = 90
 )
 
 // LauncherMemoryKill is one process of a role that was stopped because the pod was out of memory:
@@ -866,35 +892,6 @@ type AdoptWorkingCopyResult struct {
 	Error string `json:"error,omitempty"`
 }
 
-// BundleWorkspace asks the shim to bundle the unpushed work of the workspace it runs in, so the
-// daemon can keep it while the released pod, its disk and that workspace go. The daemon names the
-// issue, the largest bundle it will take and the budget, never a command or a path: the shim
-// builds the bundle with the jj and git of the workspace it already works in.
-type BundleWorkspace struct {
-	ID        string `json:"id"`
-	Issue     string `json:"issue"`
-	MaxBytes  int    `json:"maxBytes"`
-	TimeoutMs int    `json:"timeoutMs"`
-}
-
-// BundleWorkspaceResult answers BundleWorkspace with the bundle and the three facts a restore
-// needs beside it: the commit the working copy sat on, the heads the bundle carries, and each
-// local bookmark that pointed into the saved set. A bundle larger than the request's MaxBytes is
-// refused rather than sent, with SizeBytes naming what it would have been, so the caller can stop
-// the release and record why. The result crosses the shim's lane as an rpc_chunk sequence when it
-// is larger than one line.
-type BundleWorkspaceResult struct {
-	ID        string            `json:"id"`
-	OK        bool              `json:"ok"`
-	Error     string            `json:"error,omitempty"`
-	SizeBytes int               `json:"sizeBytes"`
-	Bundle    []byte            `json:"bundle,omitempty"`
-	Head      string            `json:"head,omitempty"`
-	Tips      []string          `json:"tips,omitempty"`
-	Bookmarks map[string]string `json:"bookmarks,omitempty"`
-	At        time.Time         `json:"at"`
-}
-
 // WorkspaceWork asks the shim whether the workspace it runs in holds work that no branch or tag
 // on origin holds: a read, which moves no bytes of the work and writes only jj's snapshot of the
 // working copy. The daemon names the issue whose workspace it asks about and the budget, never a
@@ -925,48 +922,16 @@ type WorkspaceWorkResult struct {
 	Count   int      `json:"count"`
 }
 
-// LauncherBundle is one slice of a saved workspace bundle on its way to the launcher of the pod
-// that replaces a released one. The launcher has no rpc_chunk lane of its own, so the slicing is
-// the frame's: Payload is the Index-th LauncherBundlePayloadBytes of the whole body
-// (SplitWorkspaceBundle), Count how many slices there are, and SHA256 the digest of the body the
-// slices rebuild, which the launcher checks before it writes anything. ID names the sequence, so a
-// repeated slice is recognised as a repeated launcher_start id is.
-//
-// Release is the id of the release that saved the body, which the launcher echoes in its
-// launcher_restored: the daemon deletes the bundle that report names and no other, so a report
-// that reaches it after a later release has saved again deletes nothing (internal/runtime/sandbox's
-// restoreReported). It travels beside the body rather than in it so that a report still names its
-// release when the body could not be read.
-type LauncherBundle struct {
-	ID      string `json:"id"`
-	Index   int    `json:"index"`
-	Count   int    `json:"count"`
-	Release int64  `json:"release"`
-	Payload []byte `json:"payload"`
-	SHA256  string `json:"sha256"`
-}
-
-// LauncherBundleResult answers one LauncherBundle. Held is the launcher holding the whole,
-// digest-checked body, which it answers the last slice of the sequence with: the sequence is
-// over and the daemon sends no more of it. It is not the restore — that runs in the roles
-// container before the first role of the pod starts, and the launcher reports its outcome in a
-// launcher_restored of its own, which is what the daemon drops its saved copy on.
-type LauncherBundleResult struct {
-	ID    string `json:"id"`
-	Index int    `json:"index"`
-	OK    bool   `json:"ok"`
-	Held  bool   `json:"held,omitempty"`
-	Error string `json:"error,omitempty"`
-}
-
-// LauncherRestored is the launcher's own report of what became of the bundle it held: the
-// launcher sends it, unasked, as soon as the start that applied the bundle has run the restore,
-// and again on each later connection until one carries it: this report is the one thing the
-// daemon drops its own copy of the work on, so a restore it never hears of leaves in its
-// database work the pod's workspace already holds. ID is the slice sequence the bundle arrived
-// under and Release the release whose save that sequence carried. OK is the restore that put the
-// work back; a restore that failed carries the reason the launcher wrote the agent, and the
-// daemon keeps its copy, which it sends to no pod again (store.TakeWorkspaceBundleForRestore).
+// LauncherRestored is the report an earlier launcher sends, unasked, once it has restored a
+// released pod's saved work into the pod that replaced it, and again on each later connection
+// until one carries it. Earlier daemons saved a released pod's unpushed work and sent it to the
+// replacement's launcher to restore; this daemon releases no pod whose workspace holds unpushed
+// work, so it saves nothing and sends nothing. A pod an earlier daemon started still runs that
+// earlier launcher after the upgrade, though, and a frame type the daemon's launcher loop does not
+// know closes the connection, so the daemon decodes this one, logs it, and drops it
+// (internal/runtime/sandbox's ServeLauncher). ID is the slice sequence the work arrived under,
+// Release the release whose save it was, OK whether the restore put the work back, and Error why
+// it did not.
 type LauncherRestored struct {
 	ID      string `json:"id"`
 	Release int64  `json:"release,omitempty"`
@@ -978,12 +943,12 @@ type LauncherRestored struct {
 // the daemon reads the check's directory at the tag the launcher's hello named
 // (LauncherHello.LeakCheckTag), packs it, and pushes it before it starts a role of that launcher,
 // so no role of the pod reads GitHub for it. The launcher has no rpc_chunk lane of its own, so
-// the slicing is the frame's, as LauncherBundle's is: Payload is the Index-th
-// LauncherBundlePayloadBytes of the packed directory (SplitLeakCheck), Count how many slices there
-// are, and SHA256 the digest of the body the slices rebuild, which the launcher checks before it
-// installs anything. Tag is the tag the body was read at, which the launcher refuses unless it is
-// its own pin. ID names the sequence, `leak-check-<tag>-<first 12 hex of the digest>`, so a
-// repeated slice is recognised as a repeated launcher_bundle slice is.
+// the slicing is the frame's: Payload is the Index-th LauncherSlicePayloadBytes of the packed
+// directory (SplitLeakCheck), Count how many slices there are, and SHA256 the digest of the body
+// the slices rebuild, which the launcher checks before it installs anything. Tag is the tag the
+// body was read at, which the launcher refuses unless it is its own pin. ID names the sequence,
+// `leak-check-<tag>-<first 12 hex of the digest>`, so a repeated slice is recognised as a
+// repeated launcher_start id is.
 type LauncherLeakCheck struct {
 	ID      string `json:"id"`
 	Index   int    `json:"index"`
@@ -1005,17 +970,6 @@ type LauncherLeakCheckResult struct {
 	OK        bool   `json:"ok"`
 	Installed bool   `json:"installed,omitempty"`
 	Error     string `json:"error,omitempty"`
-}
-
-// WorkspaceBundle is the saved work the LauncherBundle slices carry: the git bundle's own bytes,
-// the commit the working copy sat on, the heads the bundle carries and each local bookmark that
-// pointed into the saved set. It is no frame of its own — it is the body a sequence rebuilds.
-type WorkspaceBundle struct {
-	Bundle    []byte            `json:"-"`
-	Head      string            `json:"head"`
-	Tips      []string          `json:"tips,omitempty"`
-	Bookmarks map[string]string `json:"bookmarks,omitempty"`
-	At        time.Time         `json:"at"`
 }
 
 // RPCChunk is one slice of a logical frame too large for a single line. Data is base64 of the
@@ -1065,12 +1019,8 @@ func (LauncherStart) FrameType() string                { return TypeLauncherStar
 func (LauncherStartResult) FrameType() string          { return TypeLauncherStartResult }
 func (LauncherStop) FrameType() string                 { return TypeLauncherStop }
 func (LauncherStopResult) FrameType() string           { return TypeLauncherStopResult }
-func (BundleWorkspace) FrameType() string              { return TypeBundleWorkspace }
-func (BundleWorkspaceResult) FrameType() string        { return TypeBundleWorkspaceResult }
 func (WorkspaceWork) FrameType() string                { return TypeWorkspaceWork }
 func (WorkspaceWorkResult) FrameType() string          { return TypeWorkspaceWorkResult }
-func (LauncherBundle) FrameType() string               { return TypeLauncherBundle }
-func (LauncherBundleResult) FrameType() string         { return TypeLauncherBundleResult }
 func (LauncherRestored) FrameType() string             { return TypeLauncherRestored }
 func (LauncherMemoryKill) FrameType() string           { return TypeLauncherMemoryKill }
 func (LauncherVolumeReport) FrameType() string         { return TypeLauncherVolumeReport }
@@ -1210,16 +1160,6 @@ func (f LauncherStopResult) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeLauncherStopResult, plain(f))
 }
 
-func (f BundleWorkspace) MarshalJSON() ([]byte, error) {
-	type plain BundleWorkspace
-	return marshalFrame(TypeBundleWorkspace, plain(f))
-}
-
-func (f BundleWorkspaceResult) MarshalJSON() ([]byte, error) {
-	type plain BundleWorkspaceResult
-	return marshalFrame(TypeBundleWorkspaceResult, plain(f))
-}
-
 func (f WorkspaceWork) MarshalJSON() ([]byte, error) {
 	type plain WorkspaceWork
 	return marshalFrame(TypeWorkspaceWork, plain(f))
@@ -1228,16 +1168,6 @@ func (f WorkspaceWork) MarshalJSON() ([]byte, error) {
 func (f WorkspaceWorkResult) MarshalJSON() ([]byte, error) {
 	type plain WorkspaceWorkResult
 	return marshalFrame(TypeWorkspaceWorkResult, plain(f))
-}
-
-func (f LauncherBundle) MarshalJSON() ([]byte, error) {
-	type plain LauncherBundle
-	return marshalFrame(TypeLauncherBundle, plain(f))
-}
-
-func (f LauncherBundleResult) MarshalJSON() ([]byte, error) {
-	type plain LauncherBundleResult
-	return marshalFrame(TypeLauncherBundleResult, plain(f))
 }
 
 func (f LauncherRestored) MarshalJSON() ([]byte, error) {
@@ -1309,42 +1239,10 @@ func (f Compact) Validate() error {
 	return nil
 }
 
-// issueKeyShape is a Dispatch issue key, the one shape an issue has. The shim puts a bundle's
-// issue into a revset (`remote_bookmarks(exact:"legion/<issue>")`), so a frame whose issue is not
-// one is refused here rather than quoted into a command; a workspace read's issue is held to the
-// same shape, since it names the issue whose workspace is read.
+// issueKeyShape is a Dispatch issue key, the one shape an issue has. A workspace read names the
+// issue whose workspace the shim reads, so a frame whose issue is not one is refused here rather
+// than acted on.
 var issueKeyShape = regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]+$`)
-
-// Validate refuses a bundle request the shim would refuse. The daemon is its only sender.
-func (f BundleWorkspace) Validate() error {
-	switch {
-	case f.ID == "":
-		return fmt.Errorf("%w: bundle-workspace carries no id", ErrMalformedFrame)
-	case !issueKeyShape.MatchString(f.Issue):
-		return fmt.Errorf("%w: bundle-workspace issue %q is not an issue key", ErrMalformedFrame, f.Issue)
-	case f.MaxBytes <= 0:
-		return fmt.Errorf("%w: bundle-workspace maxBytes is %d", ErrMalformedFrame, f.MaxBytes)
-	case f.TimeoutMs <= 0:
-		return fmt.Errorf("%w: bundle-workspace timeoutMs is %d", ErrMalformedFrame, f.TimeoutMs)
-	}
-	return nil
-}
-
-// Validate refuses a bundle result the daemon could not act on: one answering no request, a
-// refusal with no reason, or a bundle whose bytes and declared size disagree.
-func (f BundleWorkspaceResult) Validate() error {
-	switch {
-	case f.ID == "":
-		return fmt.Errorf("%w: bundle-workspace-result carries no id", ErrMalformedFrame)
-	case !f.OK && f.Error == "":
-		return fmt.Errorf("%w: bundle-workspace-result refuses without a reason", ErrMalformedFrame)
-	case f.OK && f.Head == "":
-		return fmt.Errorf("%w: bundle-workspace-result carries no head", ErrMalformedFrame)
-	case f.OK && f.SizeBytes != len(f.Bundle):
-		return fmt.Errorf("%w: bundle-workspace-result says %d bytes and carries %d", ErrMalformedFrame, f.SizeBytes, len(f.Bundle))
-	}
-	return nil
-}
 
 // Validate refuses a workspace read the shim would refuse. The daemon is its only sender.
 func (f WorkspaceWork) Validate() error {
@@ -1361,7 +1259,14 @@ func (f WorkspaceWork) Validate() error {
 
 // Validate refuses a workspace read's answer the daemon could not act on: one answering no
 // request, a refusal with no reason, a reading with no working-copy commit, more commits than
-// MaxWorkspaceWorkCommits, or a count below the commits it lists.
+// MaxWorkspaceWorkCommits, a count below the commits it lists, or a head or a commit that is not a
+// commit id.
+//
+// A commit id is 40 lowercase hexadecimal digits (commitIDShape), the ids jj prints for a git
+// repository, and the daemon reads no other: the head and the commits come from the jj of the pod,
+// which the pod's agent controls, and the daemon writes them into a hold record that every issue
+// pod's agent reads (read_release_records) and into the message it sends the role (ASVS
+// v5.0.0-2.2.1). A refusal's head and commits are read as nothing, and are checked all the same.
 func (f WorkspaceWorkResult) Validate() error {
 	switch {
 	case f.ID == "":
@@ -1370,53 +1275,50 @@ func (f WorkspaceWorkResult) Validate() error {
 		return fmt.Errorf("%w: workspace-work-result refuses without a reason", ErrMalformedFrame)
 	case f.OK && f.Head == "":
 		return fmt.Errorf("%w: workspace-work-result carries no head", ErrMalformedFrame)
+	case f.Head != "" && !commitIDShape.MatchString(f.Head):
+		return fmt.Errorf("%w: workspace-work-result head %q is not a commit id", ErrMalformedFrame, cutForError(f.Head))
 	case len(f.Commits) > MaxWorkspaceWorkCommits:
 		return fmt.Errorf("%w: workspace-work-result lists %d commits, limit %d", ErrMalformedFrame, len(f.Commits), MaxWorkspaceWorkCommits)
 	case f.Count < len(f.Commits):
 		return fmt.Errorf("%w: workspace-work-result counts %d commits and lists %d", ErrMalformedFrame, f.Count, len(f.Commits))
 	}
+	for i, commit := range f.Commits {
+		if !commitIDShape.MatchString(commit) {
+			return fmt.Errorf("%w: workspace-work-result commit %d, %q, is not a commit id", ErrMalformedFrame, i, cutForError(commit))
+		}
+	}
 	return nil
 }
 
-// Validate refuses a bundle slice the launcher could not place in its sequence.
-func (f LauncherBundle) Validate() error {
-	switch {
-	case f.ID == "":
-		return fmt.Errorf("%w: launcher_bundle carries no id", ErrMalformedFrame)
-	case f.Count <= 0:
-		return fmt.Errorf("%w: launcher_bundle count is %d", ErrMalformedFrame, f.Count)
-	case f.Index < 0 || f.Index >= f.Count:
-		return fmt.Errorf("%w: launcher_bundle index %d of %d", ErrMalformedFrame, f.Index, f.Count)
-	case f.Release <= 0:
-		return fmt.Errorf("%w: launcher_bundle %d names no release", ErrMalformedFrame, f.Index)
-	case len(f.Payload) == 0:
-		return fmt.Errorf("%w: launcher_bundle %d carries no payload", ErrMalformedFrame, f.Index)
-	case len(f.Payload) > LauncherBundlePayloadBytes:
-		return fmt.Errorf("%w: launcher_bundle payload is %d bytes, limit %d", ErrMalformedFrame, len(f.Payload), LauncherBundlePayloadBytes)
-	case !digestShape.MatchString(f.SHA256):
-		return fmt.Errorf("%w: launcher_bundle sha256 %q is not a hex SHA-256", ErrMalformedFrame, f.SHA256)
+// commitIDShape is a commit id as jj prints one for a git repository: 40 lowercase hexadecimal
+// digits.
+var commitIDShape = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// cutForError is at most the first 64 bytes of a value a refusal names, so a refusal of a long
+// value stays one short line.
+func cutForError(value string) string {
+	if len(value) <= 64 {
+		return value
 	}
-	return nil
+	return value[:64] + "…"
 }
 
 // digestShape is a hex-encoded SHA-256: 64 lowercase hex characters.
 var digestShape = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// LauncherBundlePayloadBytes is how much of a bundle's body one launcher_bundle frame carries.
-// Base64 of it, plus the frame's other members, stays well inside MaxFrameBytes, which is the
-// whole reason the sequence exists: the launcher reads one frame per line and nothing reassembles
-// rpc_chunk on its side.
-const LauncherBundlePayloadBytes = 256 << 10
+// LauncherSlicePayloadBytes is how much of a sequence's body one launcher_leak_check frame
+// carries. Base64 of it, plus the frame's other members, stays well inside MaxFrameBytes, which is
+// the whole reason the sequence exists: the launcher reads one frame per line and nothing
+// reassembles rpc_chunk on its side.
+const LauncherSlicePayloadBytes = 256 << 10
 
-// MaxWorkspaceBundleBodyBytes is the largest body a launcher_bundle sequence carries, and every
-// allocation this file makes for one is under it. It is the wire's own refusal rather than the
-// release's: a release stops above runtime.MaxWorkspaceBundleBytes long before a body reaches
-// here (outbox's release), and this bound says what the sequence itself will build, so a caller
-// that never read that policy cannot ask for a slice count or a body buffer sized by a length
-// nothing checked. 64 MiB leaves the release's 40 MiB its header and room to grow under a bound
-// a test keeps ordered (runtime's workspace_bundle_wire_test.go). A launcher_leak_check sequence
-// is held to the same bound, so a launcher's allocations for one are under it too.
-const MaxWorkspaceBundleBodyBytes = 64 << 20
+// MaxLauncherSequenceBytes is the largest body a launcher_leak_check sequence carries, and every
+// allocation this file makes for one is under it, as is every allocation the launcher makes for
+// one. It is the wire's own bound rather than the reader's: the daemon refuses a packed check far
+// below it (internal/leakguard's maxPackedBytes), and this bound says what the sequence itself
+// will build, so a caller that never read that policy cannot ask for a slice count or a body
+// buffer sized by a length nothing checked.
+const MaxLauncherSequenceBytes = 64 << 20
 
 // LeakCheckTagPattern is the published shape of a tag of the shared public leak check. The pattern
 // is written here rather than imported so the wire depends on nothing of the daemon's; it is the
@@ -1429,9 +1331,9 @@ var leakCheckTagShape = regexp.MustCompile(LeakCheckTagPattern)
 // ValidLeakCheckTag is whether tag is of the published shape LeakCheckTagPattern.
 func ValidLeakCheckTag(tag string) bool { return leakCheckTagShape.MatchString(tag) }
 
-// maxLauncherSlices is the most slices a sequence of LauncherBundlePayloadBytes each may count
-// without the body they rebuild passing MaxWorkspaceBundleBodyBytes.
-const maxLauncherSlices = MaxWorkspaceBundleBodyBytes / LauncherBundlePayloadBytes
+// maxLauncherSlices is the most slices a sequence of LauncherSlicePayloadBytes each may count
+// without the body they rebuild passing MaxLauncherSequenceBytes.
+const maxLauncherSlices = MaxLauncherSequenceBytes / LauncherSlicePayloadBytes
 
 // Validate refuses a leak check slice the launcher could not place in its sequence, or one whose
 // count asks it to hold more than the sequence's bound.
@@ -1443,15 +1345,15 @@ func (f LauncherLeakCheck) Validate() error {
 		return fmt.Errorf("%w: launcher_leak_check count is %d", ErrMalformedFrame, f.Count)
 	case f.Count > maxLauncherSlices:
 		return fmt.Errorf("%w: launcher_leak_check count is %d, which could pass the %d bytes a sequence carries",
-			ErrMalformedFrame, f.Count, MaxWorkspaceBundleBodyBytes)
+			ErrMalformedFrame, f.Count, MaxLauncherSequenceBytes)
 	case f.Index < 0 || f.Index >= f.Count:
 		return fmt.Errorf("%w: launcher_leak_check index %d of %d", ErrMalformedFrame, f.Index, f.Count)
 	case !ValidLeakCheckTag(f.Tag):
 		return fmt.Errorf("%w: launcher_leak_check tag %q is not of the shape %s", ErrMalformedFrame, f.Tag, LeakCheckTagPattern)
 	case len(f.Payload) == 0:
 		return fmt.Errorf("%w: launcher_leak_check %d carries no payload", ErrMalformedFrame, f.Index)
-	case len(f.Payload) > LauncherBundlePayloadBytes:
-		return fmt.Errorf("%w: launcher_leak_check payload is %d bytes, limit %d", ErrMalformedFrame, len(f.Payload), LauncherBundlePayloadBytes)
+	case len(f.Payload) > LauncherSlicePayloadBytes:
+		return fmt.Errorf("%w: launcher_leak_check payload is %d bytes, limit %d", ErrMalformedFrame, len(f.Payload), LauncherSlicePayloadBytes)
 	case !digestShape.MatchString(f.SHA256):
 		return fmt.Errorf("%w: launcher_leak_check sha256 %q is not a hex SHA-256", ErrMalformedFrame, f.SHA256)
 	}
@@ -1487,15 +1389,15 @@ func SplitLeakCheck(tag string, body []byte) ([]LauncherLeakCheck, error) {
 			ErrMalformedFrame, tag, LeakCheckTagPattern)
 	case len(body) == 0:
 		return nil, fmt.Errorf("%w: a launcher_leak_check sequence of %s carries no body", ErrMalformedFrame, tag)
-	case len(body) > MaxWorkspaceBundleBodyBytes:
+	case len(body) > MaxLauncherSequenceBytes:
 		return nil, fmt.Errorf("%w: a leak check body of %d bytes is over the %d a launcher_leak_check sequence carries",
-			ErrMalformedFrame, len(body), MaxWorkspaceBundleBodyBytes)
+			ErrMalformedFrame, len(body), MaxLauncherSequenceBytes)
 	}
-	digest := BundleDigest(body)
+	digest := SequenceDigest(body)
 	id := "leak-check-" + tag + "-" + digest[:12]
-	count := (len(body) + LauncherBundlePayloadBytes - 1) / LauncherBundlePayloadBytes
+	count := (len(body) + LauncherSlicePayloadBytes - 1) / LauncherSlicePayloadBytes
 	frames := make([]LauncherLeakCheck, 0, count)
-	for payload := range slices.Chunk(body, LauncherBundlePayloadBytes) {
+	for payload := range slices.Chunk(body, LauncherSlicePayloadBytes) {
 		frames = append(frames, LauncherLeakCheck{
 			ID: id, Index: len(frames), Count: count, Tag: tag,
 			SHA256: digest, Payload: payload,
@@ -1504,98 +1406,10 @@ func SplitLeakCheck(tag string, body []byte) ([]LauncherLeakCheck, error) {
 	return frames, nil
 }
 
-// SplitWorkspaceBundle slices b, the work release saved, into the launcher_bundle sequence that
-// carries it, every slice declaring the release and the digest of the whole body so the launcher
-// can refuse one that did not arrive as it was sent. The sequence's id is name, the release and
-// that digest, so the same bundle sent again is the same sequence and another bundle, or the same
-// work saved by another release, is another one: a launcher whose connection was replaced
-// mid-sequence answers a slice it already took with the answer it gave, and refuses only a payload
-// that differs from the one that id carried (internal/launcher's bundleRestore.receive).
-func SplitWorkspaceBundle(name string, release int64, b WorkspaceBundle) ([]LauncherBundle, error) {
-	if name == "" {
-		return nil, fmt.Errorf("%w: a launcher_bundle sequence needs a name", ErrMalformedFrame)
-	}
-	if release <= 0 {
-		return nil, fmt.Errorf("%w: a launcher_bundle sequence needs the release that saved it", ErrMalformedFrame)
-	}
-	body, err := marshalWorkspaceBundle(b)
-	if err != nil {
-		return nil, err
-	}
-	digest := BundleDigest(body)
-	id := name + "-" + strconv.FormatInt(release, 10) + "-" + digest
-	count := len(body) / LauncherBundlePayloadBytes
-	if len(body)%LauncherBundlePayloadBytes != 0 {
-		count++
-	}
-	frames := make([]LauncherBundle, 0, count)
-	for index := range count {
-		end := min((index+1)*LauncherBundlePayloadBytes, len(body))
-		frames = append(frames, LauncherBundle{
-			ID: id, Index: index, Count: count, Release: release,
-			Payload: body[index*LauncherBundlePayloadBytes : end], SHA256: digest,
-		})
-	}
-	return frames, nil
-}
-
-// ParseWorkspaceBundle reads the body a launcher_bundle sequence rebuilt: one JSON line naming
-// the saved commits, then the git bundle's own bytes. The bundle is kept raw rather than encoded
-// into that line so a 40 MiB bundle is base64'd once, by the slices that carry it, and not twice.
-func ParseWorkspaceBundle(body []byte) (WorkspaceBundle, error) {
-	head, bundle, found := bytes.Cut(body, []byte("\n"))
-	if !found {
-		return WorkspaceBundle{}, fmt.Errorf("%w: a workspace bundle body carries no header line", ErrMalformedFrame)
-	}
-	var b WorkspaceBundle
-	if err := json.Unmarshal(head, &b); err != nil {
-		return WorkspaceBundle{}, fmt.Errorf("%w: a workspace bundle header: %w", ErrMalformedFrame, err)
-	}
-	if len(bundle) == 0 {
-		return WorkspaceBundle{}, fmt.Errorf("%w: a workspace bundle body carries no bundle", ErrMalformedFrame)
-	}
-	b.Bundle = bundle
-	return b, nil
-}
-
-// BundleDigest is the digest a launcher_bundle or launcher_leak_check sequence declares for the
-// body it carries.
-func BundleDigest(body []byte) string {
+// SequenceDigest is the digest a launcher_leak_check sequence declares for the body it carries.
+func SequenceDigest(body []byte) string {
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
-}
-
-// marshalWorkspaceBundle renders b as the body ParseWorkspaceBundle reads. JSON escapes its own
-// newlines, so the header line is one line. The body it builds is the whole of what the sequence
-// carries — the header, the newline and the bundle's own bytes — so that whole is what
-// MaxWorkspaceBundleBodyBytes bounds, and the two parts are never measured apart: each under the
-// bound and the body over it is the shape this refuses, which TestABundleUnderTheBoundWhoseBodyIsOverItIsRefused
-// is.
-func marshalWorkspaceBundle(b WorkspaceBundle) ([]byte, error) {
-	if b.Head == "" {
-		return nil, fmt.Errorf("%w: a workspace bundle carries no head", ErrMalformedFrame)
-	}
-	if len(b.Bundle) == 0 {
-		return nil, fmt.Errorf("%w: a workspace bundle carries no bundle", ErrMalformedFrame)
-	}
-	head, err := json.Marshal(b)
-	if err != nil {
-		return nil, err
-	}
-	// The body's own size is measured once, as one value, and the allocation below takes that
-	// value and no arithmetic of its own: a reader of this function, and the analysis CI runs
-	// over it, sees the number the buffer is made from bounded by the constant on the line
-	// before. A size that is not positive is a sum that wrapped, which no caller can produce and
-	// which is refused here rather than passed to make.
-	size := len(head) + 1 + len(b.Bundle)
-	if size <= 0 || size > MaxWorkspaceBundleBodyBytes {
-		return nil, fmt.Errorf("%w: a workspace bundle of %d bytes and a header of %d are over the %d a launcher_bundle sequence carries",
-			ErrMalformedFrame, len(b.Bundle), len(head), MaxWorkspaceBundleBodyBytes)
-	}
-	body := make([]byte, 0, size)
-	body = append(body, head...)
-	body = append(body, '\n')
-	return append(body, b.Bundle...), nil
 }
 
 // thumbprintShape is a base64url-encoded SHA-256: 43 characters, no padding (RFC 7638).
@@ -1869,18 +1683,10 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[LauncherStop](trimmed)
 	case TypeLauncherStopResult:
 		return decodeInto[LauncherStopResult](trimmed)
-	case TypeBundleWorkspace:
-		return decodeInto[BundleWorkspace](trimmed)
-	case TypeBundleWorkspaceResult:
-		return decodeInto[BundleWorkspaceResult](trimmed)
 	case TypeWorkspaceWork:
 		return decodeInto[WorkspaceWork](trimmed)
 	case TypeWorkspaceWorkResult:
 		return decodeInto[WorkspaceWorkResult](trimmed)
-	case TypeLauncherBundle:
-		return decodeInto[LauncherBundle](trimmed)
-	case TypeLauncherBundleResult:
-		return decodeInto[LauncherBundleResult](trimmed)
 	case TypeLauncherRestored:
 		return decodeInto[LauncherRestored](trimmed)
 	case TypeLauncherMemoryKill:

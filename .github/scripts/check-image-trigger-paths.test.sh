@@ -2809,15 +2809,25 @@ check "a ! pattern under some is refused" "$(is "$status" 1)"
 check "  and says what some makes of it" "$(contains "$out" "has !\*\*/dist/\*\*, a \`!\` pattern under predicate-quantifier: some, where it matches every file outside")"
 check "  and names the remedy" "$(contains "$out" 'give the step predicate-quantifier: some-with-excludes')"
 
-# The filters themselves live in .github/ci-filters.yaml, which the gating filter must select -
-# a change there can change what the filter selects - and which no image build reads, so the
-# reverse check passes over it as it passes over the workflow whose trigger it is.
-root=$(fixture excludes-filters-file)
+# The filters are computed from the files of .github/ci-gates, and the one that declares a gating
+# filter is selected by it - a change there can change what the filter selects - though no image
+# build reads it, so the reverse check passes over that one file as it passes over the workflow
+# whose trigger it is. Another gate file, which declares some other filter, is no such file.
+root=$(fixture excludes-gate-file)
+mkdir -p "$root/.github/ci-gates"
+printf 'EXCLUDED = excluded("worker_image", "the image check proves it", [])\n' > "$root/.github/ci-gates/worker-image.py"
+printf 'GATE = gate("app", "app")\n' > "$root/.github/ci-gates/app.py"
 ci_router "$root" "$excluding_inputs
-  - '.github/ci-filters.yaml'" some-with-excludes
+  - '.github/ci-gates/worker-image.py'" some-with-excludes
 run_check "$root"
-check "a filter naming the file it lives in passes" "$(is "$status" 0)"
+check "a filter naming the gate file that declares it passes" "$(is "$status" 0)"
 check "  and the filter is still held to the build's files" "$(contains "$out" 'jobs.changes filter worker_image): matches only files its image builds read')"
+ci_router "$root" "$excluding_inputs
+  - '.github/ci-gates/worker-image.py'
+  - '.github/ci-gates/app.py'" some-with-excludes
+run_check "$root"
+check "a gate file of another filter is refused" "$(is "$status" 1)"
+check "  and named" "$(contains "$out" 'jobs.changes filter worker_image) matches .github/ci-gates/app.py, which no image build reads')"
 
 root=$(fixture excludes-other-file)
 ci_router "$root" "$excluding_inputs

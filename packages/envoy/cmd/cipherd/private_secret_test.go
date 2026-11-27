@@ -135,9 +135,12 @@ func TestThePrivateSecretGoesOnlyToTheSessionThatNamesIt(t *testing.T) {
 		t.Fatal("the broker asked Dispatch nothing, so no decision above read the project: the run is blind")
 	}
 
-	t.Run("while Dispatch is down a tagged secret is refused 503 and an untagged one is served", func(t *testing.T) {
-		dispatch.SetDown(true)
-		defer dispatch.SetDown(false)
+	t.Run("while Dispatch cannot answer for a project a tagged secret is refused 503 and an untagged one is served", func(t *testing.T) {
+		// The project route alone goes down: the person route goes on answering, so carol's
+		// member kind is read as ever, and no answer the broker's client cached under
+		// projectaccess.CacheTTL decides this row.
+		dispatch.SetProjectsDown(true)
+		defer dispatch.SetProjectsDown(false)
 		// LATE_KEY's project was never asked about, so no answer the broker's client still holds
 		// (projectaccess.CacheTTL) stands in for Dispatch.
 		code, stdout, stderr := named.run(t, cli, base, lateSecret, "--", "sh", "-c", "echo ran")

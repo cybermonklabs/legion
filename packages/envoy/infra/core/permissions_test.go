@@ -9,15 +9,18 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // listenerBasePublish is the publish grant every user that runs a listener holds for
 // example-host-a, written out by hand from Envoy's names as they stand: every notification topic
 // (the stream's subjects, the role lanes, every exception lane and any ad-hoc topic), the stream
 // (its stored-message get, `bus.Client.NextStoredMessage`) and its own durable, then each bucket
-// in turn, then the interest bucket's purge. HostPermissions and DispatchPermissions are built on
-// it, so neither holds a session consumer's call. TestSessionPermissions's exact list holds none
-// of it: no session gets the stored-message read or a consumer.
+// in turn, then the interest bucket's purge and the known-session bucket's. HostPermissions and
+// DispatchPermissions are built on it, so neither holds a session consumer's call; the edge set
+// (EdgePermissions) and the auth service's edge answers (natsgrant.Edge) hold both purges too.
+// TestSessionPermissions's exact list holds none of it: no session gets the stored-message read or
+// a consumer.
 var listenerBasePublish = []string{
 	"notifications.>",
 	"$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS",
@@ -92,6 +95,7 @@ var listenerBasePublish = []string{
 	"$JS.API.CONSUMER.DELETE.KV_envoy_dpop_proofs.>",
 	"$JS.FC.KV_envoy_dpop_proofs.>",
 	"$JS.API.STREAM.PURGE.KV_envoy_interests",
+	"$JS.API.STREAM.PURGE.KV_envoy_known_sessions",
 }
 
 // sessionConsumerPublish are the session consumers' calls (create with and without a filter
@@ -153,6 +157,56 @@ func TestListenerPermissionsNameTheDurableAndQueueOfAMachineIDWithASpace(t *test
 	require.Contains(t, p.Publish.Allow, "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.listener-example-host")
 	require.Contains(t, p.Publish.Allow, "$JS.ACK.ENVOY_NOTIFICATIONS.listener-example-host.>")
 	require.Contains(t, p.Subscribe.Allow, "notifications.role.> envoy-listener-example-host")
+}
+
+// edgePermissions is core.EdgePermissions(machineID, projects), which must take the list.
+func edgePermissions(t *testing.T, machineID string, projects ...string) core.Permissions {
+	t.Helper()
+	p, err := core.EdgePermissions(machineID, projects)
+	require.NoError(t, err, "EdgePermissions(%q, %v)", machineID, projects)
+	return p
+}
+
+// EdgePermissions refuses what natsgrant.Edge refuses, and renders nothing of it: here a wildcard
+// key, which would render every project's role subjects.
+func TestEdgePermissionsRefuseWhatTheEdgeGrantRefuses(t *testing.T) {
+	p, err := core.EdgePermissions("example-host-a", []string{"*"})
+	require.Error(t, err)
+	require.Equal(t, core.Permissions{}, p)
+}
+
+// A user holding EdgePermissions subscribes to no reply inbox of another client: its replies come
+// under its own machine's prefix, which no other client's inbox begins with, another edge
+// machine's included. The rules are read from the rendered block, as the server reads them; the
+// listener's own set, which the same check reads, subscribes to every reply inbox.
+func TestEdgePermissionsRefuseASubscribeToOtherClientsInboxes(t *testing.T) {
+	_, subscribe := renderedRules(t, edgePermissions(t, "example-host-a", "PRIV"))
+	require.Contains(t, subscribe, "_INBOX_envoy_edge_example-host-a.>")
+	for _, entry := range subscribe {
+		require.False(t, admitsInbox(entry), "the edge's subscribe entry %q admits a reply inbox", entry)
+	}
+	_, other := renderedRules(t, edgePermissions(t, "example-host-b", "PRIV"))
+	require.NotContains(t, other, "_INBOX_envoy_edge_example-host-a.>")
+	_, listener := renderedRules(t, core.ListenerPermissions("example-host-a"))
+	require.True(t, slices.ContainsFunc(listener, admitsInbox), "the listener's set subscribes to the inboxes")
+}
+
+// EdgePermissions is natsgrant.Edge as the rules a User takes, list for list and in order, with no
+// deny list: a rig that renders its edge users from natsgrant.Edge, as cmd/listener's and
+// natsgrant's live tests do since those packages cannot import this one, holds exactly what a hub
+// renders from this set.
+func TestEdgePermissionsAreTheEdgeGrant(t *testing.T) {
+	for _, id := range []string{"m", "example-edge-a"} {
+		for _, projects := range [][]string{{"PRIV"}, {"OTHER", "PRIV"}} {
+			grant, err := natsgrant.Edge(id, projects)
+			require.NoError(t, err)
+			rules := edgePermissions(t, id, projects...)
+			require.Equal(t, grant.Publish, rules.Publish.Allow, "EdgePermissions(%q, %v) publish", id, projects)
+			require.Equal(t, grant.Subscribe, rules.Subscribe.Allow, "EdgePermissions(%q, %v) subscribe", id, projects)
+			require.Empty(t, rules.Publish.Deny, "EdgePermissions(%q, %v) publish deny", id, projects)
+			require.Empty(t, rules.Subscribe.Deny, "EdgePermissions(%q, %v) subscribe deny", id, projects)
+		}
+	}
 }
 
 // A session subscribes to its own relay subject and its agent stream's control subject, and to no
@@ -270,13 +324,14 @@ func TestDispatchPermissions(t *testing.T) {
 	require.Equal(t, want, got)
 }
 
-// The session consumers' calls belong to the sets of a user no session shares, the listener's and
-// the listener-host: a user built on the same base grant, Dispatch's or a host's, holds none of
-// them, nor does a session's, so a listener connecting as one of those users keeps its own durable
-// alone and serves its sessions over core NATS.
+// The session consumers' calls belong to the sets of a user no session shares, the listener's, the
+// listener-host and the edge listener's: a user built on the same base grant, Dispatch's or a
+// host's, holds none of them, nor does a session's, so a listener connecting as one of those users
+// keeps its own durable alone and serves its sessions over core NATS.
 func TestOnlyTheListenersOwnSetsHoldTheSessionConsumersCalls(t *testing.T) {
 	require.Subset(t, core.ListenerPermissions("example-host-a").Publish.Allow, sessionConsumerPublish)
 	require.Subset(t, core.ListenerHostPermissions("example-host-a").Publish.Allow, sessionConsumerPublish)
+	require.Subset(t, edgePermissions(t, "example-host-a", "PRIV").Publish.Allow, sessionConsumerPublish)
 	for name, p := range map[string]core.Permissions{
 		"host":     core.HostPermissions("example-host-a"),
 		"dispatch": core.DispatchPermissions("example-host-a"),
@@ -298,6 +353,7 @@ func TestNoSetRepeatsAnEntry(t *testing.T) {
 		"host":          core.HostPermissions("example-host-a"),
 		"daemon":        core.DaemonPermissions(),
 		"dispatch":      core.DispatchPermissions("example-host-a"),
+		"edge":          edgePermissions(t, "example-host-a", "OTHER", "PRIV"),
 	}
 	for name, p := range sets {
 		for direction, allow := range map[string][]string{"publish": p.Publish.Allow, "subscribe": p.Subscribe.Allow} {

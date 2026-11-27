@@ -64,6 +64,7 @@ jobs:
     # (internal/dispatch/store/storetest/storetest.go:67-71). A skip is a pass, so without the
     # service this job would be green having run almost nothing.
     env:
+      JOB_TIMEOUT_MINUTES: 40 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -73,6 +74,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-envoy, restored only: its modules are the envoy module's, but this job builds the
       # document service's test binary, not the listener and natsd of
@@ -96,6 +99,12 @@ jobs:
       - name: Test the document service under the cleanup detector
         run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/
         working-directory: packages/envoy
+        # This step judges the document service's xid window gaps (storetest.XidJudgesGaps). With
+        # this set, a runner whose kernel stops showing a thread's scheduler clocks, or refuses to
+        # hold a thread out of NUMA balancing, fails those tests naming why, rather than passing
+        # them on the window's shape alone (storetest.XidRequireGapsEnv).
+        env:
+          DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

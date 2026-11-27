@@ -84,7 +84,7 @@ function reminderRig() {
     saveEntry: () => {},
     claim: () => implementer,
     readRecord: async () => undefined,
-    publisher: () => undefined,
+    publisher: async () => undefined,
     project: "legion",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: () => {}, warn: () => {} },

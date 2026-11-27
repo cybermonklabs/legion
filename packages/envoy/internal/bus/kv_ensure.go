@@ -155,35 +155,41 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 		// :11109-11116). A create the server does answer "stream name already in use" is settled
 		// by the branch below, which reads the bucket until the member answering has applied it.
 		//
-		// Sending the step again sends more than the create: nats.go asks the account for its
-		// JetStream info first (nats.go@v1.55.0 kv.go:422-548), and on "stream name already in
-		// use" it reads the stream and, when the stream's configuration equals the one asked for,
-		// sends a STREAM.UPDATE of it. That update goes again with the rest of
-		// the step where updateStream leaves an unanswered update alone, because it carries the
-		// configuration the stream already holds: it changes nothing when it lands twice, while
-		// the replica or age change updateStream guards is a write another one can race. A
-		// request of the step the server refuses under the connection's grant ends the step at
-		// that send instead (refusedBy): it would be refused again.
-		kv, err = sentAgain(ctx, create, func() (nats.KeyValue, error) { return js.CreateKeyValue(config) })
-		if errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
-			// The bucket was created between this start's lookup and its create, by another start
-			// of this deployment, and the member answering may not have applied that create
-			// either: the lookup is taken again until it has. The copies are not raised here, as
-			// they are for a bucket this start found: the start that created it just now carries
-			// the deployment's count too. That start may carry more copies than this one, so the
-			// leader is waited for below whatever this start's count is.
+		// Sending the step again sends more than the create: the step is nats.go's
+		// CreateKeyValue made one request at a time (createBucketStream), which asks the account
+		// for its JetStream info first and, on "stream name already in use", reads the stream and,
+		// when the stream's configuration equals the one asked for, sends a STREAM.UPDATE of it.
+		// That update goes again with the rest of the step where updateStream leaves an
+		// unanswered update alone, because it carries the configuration the stream already holds:
+		// it changes nothing when it lands twice, while the replica or age change updateStream
+		// guards is a write another one can race. A request of the step the server refuses under
+		// the connection's grant ends the step at that send instead (refusedBy): it would be
+		// refused again.
+		_, err = sentAgain(ctx, create, func() (struct{}, error) { return struct{}{}, createBucketStream(conn, js, config) })
+		switch {
+		case err == nil || errors.Is(err, nats.ErrStreamNameAlreadyInUse):
+			// The stream is there, and the member answering may not have applied its create:
+			// the create's answer came from the metadata group. So the bucket is looked up until
+			// that member holds it, which is also how the start gets its handle on the bucket,
+			// since nats.go builds a handle only from a lookup or its own create.
+			//
+			// "Stream name already in use" says the bucket was created between this start's
+			// lookup and its create, by another start of this deployment. The copies are not
+			// raised here, as they are for a bucket this start found: the start that created it
+			// just now carries the deployment's count too. That start may carry more copies than
+			// this one, so the leader is waited for below whatever this start's count is.
 			//
 			// Each of those lookups is sent again when the server leaves it unanswered
 			// (sentAgain). A bucket the member has not applied and a request that drew no answer
 			// are two different answers, and each is waited out in its own way: the first is read
 			// again until the member holds it, the second is sent again. A lost send here would
 			// end the start the create above has just carried through.
-			createdElsewhere = true
+			createdElsewhere = err != nil
 			kv, err = awaitBucketApplied(ctx, config.Bucket, bucketMissing, lookUpBucket)
-		} else if unanswered(err) || ctx.Err() != nil {
+		case unanswered(err) || ctx.Err() != nil:
 			// No answer, or the wait ended: the server refused nothing, so no setting is named.
 			err = namedRequest(create, err)
-		} else {
+		default:
 			err = namedRequest(create, refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas}))
 		}
 		created = err == nil

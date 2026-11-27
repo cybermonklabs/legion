@@ -153,6 +153,15 @@ describe("the box-login model route installer", () => {
     expect(existsSync(join(r.agent, "models.yml"))).toBe(false);
   });
 
+  test("config.yml shuts Oh My Pi's first-run setup wizard, which would hold an interactive session", () => {
+    const r = install();
+    expect(r.code).toBe(0);
+    const config = Bun.YAML.parse(readFileSync(join(r.agent, "config.yml"), "utf8")) as {
+      startup?: unknown;
+    };
+    expect(config.startup).toEqual({ setupWizard: false });
+  });
+
   test("refuses a box whose operator has no agent.db, and writes nothing", () => {
     const r = install({ operatorDb: false });
     expect(r.code).toBe(1);

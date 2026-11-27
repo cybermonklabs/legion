@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The in read of a document, an ask, a comment or a message in GET /api/v1/references reads only the links into the node and its current blocks, through each link table''s target index, and no longer reads every block link of that kind. block_refs'' index of targets now carries the citing document: migration 20261120222732 builds block_refs_to_source on (to_kind, to_id, ((artifact_id)::text)), and 20261120222733 drops block_refs_to. The build takes SHARE on block_refs for one scan of the table while the pod boots, and the census refuses it above CensusTableLimit. The drop waits up to 120 s on each of store.Migrate''s 3 tries for a read of block_refs that the stopped pod left running.'
+time: 2026-11-20T23:25:05.458961655Z
+custom:
+    Issue: pr4675

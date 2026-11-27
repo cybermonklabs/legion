@@ -98,7 +98,7 @@ func (s rollBackStore) entry(key, role string) {
 // pullRequest is key's pull request, #number, in state.
 func (s rollBackStore) pullRequest(key string, number int, state record.PullRequestState) {
 	s.t.Helper()
-	if err := pgx.BeginFunc(s.t.Context(), s.store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(s.t.Context(), s.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(s.t.Context(), tx, record.PullRequest{Issue: key, Repo: "sjawhar/legion", Number: number,
 			Branch: "legion/" + key, HeadSHA: "head-" + key, State: state, MergeState: record.MergeStateClean, Failing: []string{}})
 	}); err != nil {
@@ -107,7 +107,7 @@ func (s rollBackStore) pullRequest(key string, number int, state record.PullRequ
 }
 
 // stepRole and stepType are the role and the type of the record of each place (workflow's
-// stepOf); a retro's and a merge's type is "".
+// stepOfWalk); a retro's and a merge's type is "".
 var (
 	stepRole = map[string]string{"step 1": "planner", "step 2": "implementer", "step 3": "tester", "step 4": "reviewer",
 		"step 5": "acceptance", "retro 0": "implementer", "merge 0": "merger"}
@@ -385,7 +385,8 @@ func TestTheRollForwardUncountsOnlyThePlacesTheEarlierReleaseMayHaveStarted(t *t
 		s.row(key, "step", 4, "ended")
 		s.row(key, "step", 5, "open")
 	}
-	// LEGION-281 ran its retro and its merge once before, and a conflict sent it back.
+	// LEGION-281 ran its retro and its merge once before, and a move back brought it to
+	// accepting again.
 	s.row("LEGION-281", "retro", 0, "ended")
 	s.row("LEGION-281", "merge", 0, "ended")
 	s.wayBack()

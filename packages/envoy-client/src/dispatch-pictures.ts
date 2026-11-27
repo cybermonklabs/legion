@@ -40,14 +40,18 @@ export interface ToolImage {
   readonly mimeType: PictureType;
 }
 
-/** How many leading bytes `sniffPictureType` reads. */
-export const PICTURE_SNIFF_BYTES = 12;
+/** How many leading bytes `sniffPictureType` reads: the 14 of WebP's `RIFF<size>WEBPVP`, the
+ *  longest signature it tests. */
+export const PICTURE_SNIFF_BYTES = 14;
 
 function bytesAt(bytes: Uint8Array, offset: number, expected: readonly number[]): boolean {
   return expected.every((byte, index) => bytes[offset + index] === byte);
 }
 
-/** The picture type `bytes` begin with (PNG, JPEG, GIF or WebP), or undefined for anything else. */
+/** The picture type `bytes` begin with (PNG, JPEG, GIF or WebP), or undefined for anything else.
+ *  The signatures are the ones Go's http.DetectContentType matches, which is how Dispatch decides
+ *  that an upload is a picture (artifactKind in the server's artifacts.go), so a picture here is a
+ *  picture there: WebP is `RIFF`, four bytes of size, then `WEBPVP`. */
 export function sniffPictureType(bytes: Uint8Array): PictureType | undefined {
   if (bytesAt(bytes, 0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "image/png";
   if (bytesAt(bytes, 0, [0xff, 0xd8, 0xff])) return "image/jpeg";
@@ -59,11 +63,19 @@ export function sniffPictureType(bytes: Uint8Array): PictureType | undefined {
   ) {
     return "image/gif";
   }
-  // RIFF <size> WEBP.
-  if (bytesAt(bytes, 0, [0x52, 0x49, 0x46, 0x46]) && bytesAt(bytes, 8, [0x57, 0x45, 0x42, 0x50])) {
+  if (
+    bytesAt(bytes, 0, [0x52, 0x49, 0x46, 0x46]) &&
+    bytesAt(bytes, 8, [0x57, 0x45, 0x42, 0x50, 0x56, 0x50])
+  ) {
     return "image/webp";
   }
   return undefined;
+}
+
+/** The first PICTURE_SNIFF_BYTES bytes of the file at `path`, all `sniffPictureType` reads, so
+ *  judging a large file reads no more of it. */
+export async function readPictureHead(path: string): Promise<Uint8Array> {
+  return new Uint8Array(await Bun.file(path).slice(0, PICTURE_SNIFF_BYTES).arrayBuffer());
 }
 
 /** `bytes` as the image block a model is shown, or undefined when they are no picture it takes. */

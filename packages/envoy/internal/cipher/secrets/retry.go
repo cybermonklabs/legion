@@ -43,9 +43,9 @@ const (
 var backoffCeilings = [mintAttemptsPerCall - 1]time.Duration{2 * time.Second, 4 * time.Second}
 
 // The outcome of one attempt, as broker_mint_attempts_total names it: the answer the call wanted;
-// an upstream failure (a 5xx, no usable answer, an answer past its cap or of a status no call
-// wants); a rate limit (rateLimited); a 4xx that is not one; and a call the caller's context
-// ended.
+// an upstream failure (a 5xx, a 408, no usable answer, an answer past its cap or of a status no
+// call wants); a rate limit (rateLimited); a refusal, a 4xx that is no 408 and no rate limit
+// (mintStatusError.refused); and a call the caller's context ended.
 const (
 	attemptOK          = "ok"
 	attemptUpstream    = "upstream"

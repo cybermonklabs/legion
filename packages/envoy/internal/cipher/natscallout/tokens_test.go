@@ -101,17 +101,18 @@ func TestRequireAudiences(t *testing.T) {
 	require.NoError(t, RequireAudiences(nil, "", ""))
 }
 
-// An edge listener's entry asks for no NATS audience: no edge listener's connection is admitted
-// whatever its token, so an audience would admit nothing, and without one its connection is
-// refused at the token check. Neither kind of edge entry, with neither audience set, is a reason
-// to refuse the start, beside a service that needs its own audience.
-func TestRequireAudiencesAsksAnEdgeListenerForNone(t *testing.T) {
+// An edge listener's entry needs its kind's audience as every service's does: the auth service
+// answers its connection with the edge's grant, so a start that could not verify its token is
+// refused, naming the entry, and with both audiences set none is refused.
+func TestRequireAudiencesHoldsAnEdgeListenerToItsAudience(t *testing.T) {
 	services, err := config.ParseNATSServices("edge-listener/edge-a/PRIV=" + edgeAccount +
-		" edge-listener/edge-g/OTHER=google:example-edge@example-project.iam.gserviceaccount.com daemon/-/*=" + daemonAccount)
+		" edge-listener/edge-g/OTHER=google:example-edge@example-project.iam.gserviceaccount.com")
 	require.NoError(t, err)
-	require.NoError(t, RequireAudiences(services, "envoy-nats", ""))
-	require.NoError(t, RequireAudiences(services[:2], "", ""))
-	err = RequireAudiences(services, "", "")
+	require.NoError(t, RequireAudiences(services, "envoy-nats", "envoy-nats-google"))
+	err = RequireAudiences(services, "", "envoy-nats-google")
 	require.ErrorContains(t, err, "BROKER_NATS_K8S_AUDIENCE")
-	require.ErrorContains(t, err, daemonAccount)
+	require.ErrorContains(t, err, "edge-listener/edge-a")
+	err = RequireAudiences(services, "envoy-nats", "")
+	require.ErrorContains(t, err, "BROKER_NATS_GOOGLE_AUDIENCE")
+	require.ErrorContains(t, err, "edge-listener/edge-g")
 }

@@ -1,32 +1,33 @@
 // Package testdb gives a test a Postgres database of its own on the devbox and CI Postgres that
-// LEGION_TEST_PG_DSN names, dropped when the test ends, so no test sees another's rows, and a way
-// to reach it across a network's delay (Delayed). A test is skipped without it: there is nothing
-// to run against.
+// LEGION_TEST_PG_DSN names, dropped when the test ends, so no test sees another's rows; ways to
+// reach it across a network's delay (Delayed) or through a proxy that holds or cuts a commit's
+// reply (CommitFaults); and a pool whose transactions are cancelled between two statements
+// (CancelAfterScan). A test is skipped without that Postgres: there is nothing to run against.
 //
-// Database is an empty database. A test that needs the daemon's schema takes internal/testpg's
-// Clone or CloneStore instead, which copy a template that package migrated once.
+// Database is an empty database, as a URL a pgx pool opens (PoolBounded), and PlainDatabase the
+// same as a URL any other client reads. A test that needs the daemon's schema takes
+// internal/testpg's Clone or CloneStore instead, which copy a template that package migrated once.
 //
-// A package whose tests migrate into the database their DSN names, rather than making one per
-// test, takes one database for the whole run instead: RunDatabaseMain from its TestMain, and
-// RunDatabaseFor wherever it reads the DSN. The two mechanisms compose, and a package that needs
-// both nests them (internal/daemon's TestMain).
+// This package imports no package of this module except internal/testwait, which imports none,
+// and nothing added here may import another: migrating the template needs internal/store, so
+// internal/testpg imports it, and a test binary of internal/store that imported internal/testpg
+// back would be a cycle. Keeping the schema-free half apart is what lets internal/store's own
+// tests take the same fixture every other package's tests take.
 //
-// This package imports nothing of this module, and nothing added here may: migrating the template
-// needs internal/store, so internal/testpg imports it, and a test binary of internal/store that
-// imported internal/testpg back would be a cycle. Keeping the schema-free half apart is what lets
-// internal/store's own tests take the same fixture every other package's tests take.
-//
-// DatabaseURL is the one rewrite of LEGION_TEST_PG_DSN a test binary of this module makes, and
-// its own comment says which callers make that rewrite and what it refuses. RandomName is
-// exported for internal/testpg alone, which names its template and each clone of it with it.
+// DatabaseURL, Delayed, CommitFaults and PoolBounded are the rewrites of LEGION_TEST_PG_DSN a test
+// binary of this module makes, each through rewriteDSN; DatabaseURL's comment says which callers
+// make them and what the check refuses. RandomName is exported for internal/testpg alone, which
+// names its template and each clone of it with it.
 package testdb
 
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -53,8 +54,26 @@ const SkipMessage = "LEGION_TEST_PG_DSN is unset, so there is no Postgres to tes
 	"  port=$(docker port legion-pg 5432/tcp | head -1 | sed 's/.*://')\n" +
 	"  LEGION_TEST_PG_DSN=postgres://legion:legion@127.0.0.1:$port/legion go test ./..."
 
-// Database is the URL of a new, empty database named <prefix>_<random>, dropped at the test's end.
+// Database is the URL of a new, empty database named <prefix>_<random>, dropped at the test's end,
+// for a pgx pool to open: store.Open, pgxpool, or a daemon's postgres_dsn. A pool opened on it
+// holds PoolConns connections unless LEGION_TEST_PG_DSN sets a size of its own, which it keeps
+// (PoolBounded), so a test's pools do not grow with the machine's CPU count. A URL that libpq,
+// pgx.Connect, psql, a scratch Dispatch or another child process reads is PlainDatabase's, which
+// holds no pool key whatever LEGION_TEST_PG_DSN holds (poolKeys says why).
 func Database(t testing.TB, prefix string) string {
+	t.Helper()
+	plain := PlainDatabase(t, prefix)
+	bounded, err := PoolBounded(os.Getenv(dsnName), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bounded
+}
+
+// PlainDatabase is Database's database as a URL that holds none of pgxpool's keys, even where
+// LEGION_TEST_PG_DSN holds one (DatabaseURL takes them out): the URL a client other than a pgx
+// pool reads (Database says which).
+func PlainDatabase(t testing.TB, prefix string) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
 	if dsn == "" {
@@ -76,8 +95,8 @@ func Database(t testing.TB, prefix string) string {
 // URL and the function that drops it, which also closes the admin connection create opened. Both
 // URLs it connects or points a caller at — the admin database's and the new database's — come
 // from DatabaseURL, and it makes them before it connects, so a DSN whose rewrite names another
-// server ends the call with no connection and no database. Database and RunDatabaseMain are its
-// two callers: one database per test, one per run.
+// server ends the call with no connection and no database. Database is its caller: one database
+// per test.
 func create(dsn, prefix string) (string, func() error, error) {
 	admin, err := DatabaseURL(dsn, "postgres")
 	if err != nil {
@@ -135,9 +154,9 @@ type Execer interface {
 // has not, which a run under load reaches (envoy's storetest retries the same code). Both
 // refusals are waited out for 30 seconds; any other error is the caller's at once.
 //
-// It lives here rather than in internal/testpg because this package imports nothing of the
-// module, so every package's tests can take it — internal/store's among them, whose own tests
-// cannot import internal/testpg at all.
+// It lives here rather than in internal/testpg because this package imports no package of the
+// module except internal/testwait, which imports none, so every package's tests can take it —
+// internal/store's among them, whose own tests cannot import internal/testpg at all.
 func Drop(ctx context.Context, admin Execer, name string) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for attempt := 0; ; attempt++ {
@@ -179,26 +198,30 @@ func RandomName(prefix string) (string, error) {
 	return prefix + "_" + hex.EncodeToString(suffix[:]), nil
 }
 
-// DatabaseURL is the URL of database on the server dsn names: dsn with its path replaced, so the
-// URL keeps dsn's query. Every database a test binary of this module names from
-// LEGION_TEST_PG_DSN is named here — create above, internal/testpg's prepare and Clone, and the
-// live proofs' takeOwnDatabase (internal/daemon/live_agent_proof_test.go) — so one place reads
-// each rewrite back, and no caller checks itself. Delayed's proxy URL is the one other rewrite
-// of a DSN this package makes, and it takes the same check (rewriteDSN below). dsn is what
-// LEGION_TEST_PG_DSN holds, which every caller read from that variable, and a refusal names it.
+// DatabaseURL is the URL of database on the server dsn names: dsn with its path replaced and every
+// pool key taken out of its query (poolKeys), every other byte of the query kept. Its URL goes to
+// readers that are no pool, and PoolBounded puts the pool keys back for a pool. Every database a
+// test binary of this module names from LEGION_TEST_PG_DSN is named here — create above, and
+// internal/testpg's prepare and Clone — so one place reads each rewrite back, and no caller checks
+// itself. The proxy URLs of Delayed and CommitFaults and PoolBounded's pool URL are the other
+// rewrites of a DSN this package makes, and they take the same check (rewriteDSN below). dsn is
+// what LEGION_TEST_PG_DSN holds, which every caller read from that variable, and a refusal names
+// it.
 //
-// A rewrite pgx reads another host, port or user from than dsn is refused, and so is one pgx
-// reads another database from than database. Go's net/url ends the user name at the last `@` and
+// A rewrite from which pgx reads anything other than dsn's reading with the change asked for is
+// refused: another host, port, user or database, and another password, run-time parameter or
+// connection setting (rewriteDSN's reading). Go's net/url ends the user name at the last `@` and
 // it starts the query at the first `?`. libpq and pgx do neither. So a DSN whose host libpq reads
 // as loopback, which is the only DSN the live proofs' shell guard admits
 // (scripts/e2e/lib/loopback-dsn.sh), can rewrite into a URL pgx connects to another machine with.
 //
-// A refusal names which of host, port, user and database pgx reads from the rewrite other than
-// the connection the rewrite was asked for. It prints no value and no text of either parser,
-// because the value it would print is the misreading itself: a password a parser reads as a
-// host, a port or a database is printed as that host, port or database, and the text a parser
-// quotes is the part of the string it stopped in. A string a parser refuses earns a fixed line
-// naming which string it was, the caller's DSN or the rewrite built from it, and nothing more.
+// A refusal names which of host, port, user, database, credential (the password), parameters and
+// connection settings pgx reads from the rewrite other than the connection the rewrite was asked
+// for. It prints no value and no text of either parser, because the value it would print is the
+// misreading itself: a password a parser reads as a host, a port or a database is printed as that
+// host, port or database, and the text a parser quotes is the part of the string it stopped in. A
+// string a parser refuses earns a fixed line naming which string it was, the caller's DSN or the
+// rewrite built from it, and nothing more.
 //
 // What that costs a reader of a refusal: they learn which fields moved, and not what they moved
 // to. The DSN is the caller's own, and the caller can read it.
@@ -209,16 +232,99 @@ func RandomName(prefix string) (string, error) {
 // further than the shell. The comment above require_loopback_dsn is the one place the shell half
 // is written. testdb_test.go drives the cases of this check.
 func DatabaseURL(dsn, database string) (string, error) {
-	return rewriteDSN("LEGION_TEST_PG_DSN", dsn, rewrite{database: database})
+	return rewriteDSN(dsnName, dsn, rewrite{database: database, pools: true})
+}
+
+// dsnName is the variable every DSN this package rewrites was read from, and it starts a refusal.
+const dsnName = "LEGION_TEST_PG_DSN"
+
+// PoolConns is the size PoolBounded gives a pool when LEGION_TEST_PG_DSN sets no size of its own
+// (pool_max_conns); a size the DSN sets is kept. A pool that is not told its size is sized by pgx
+// at the greater of 4 and the machine's CPU count (pgxpool.ParseConfig), so on a box with 288 CPUs
+// one test that runs 100 statements at once asks for 100 connections, which is all PostgreSQL's
+// default max_connections allows, and fails with "too many clients" there while it passes on a
+// small machine. 4 is pgx's own floor: the size every pool has on a machine with 4 CPUs or fewer.
+const PoolConns = 4
+
+// poolMaxConns is the key of a DSN's query that pgxpool reads as its pool's size.
+const poolMaxConns = "pool_max_conns"
+
+// poolKeys are the keys of a DSN's query that pgxpool reads and takes out before it connects
+// (pgxpool.ParseConfig, pgx v5.13.0). Every other reader of a URL fails on one: pgx.Connect sends
+// it to the server as a setting the server does not know, libpq and psql refuse a URL that holds
+// one, and Dispatch's store.Open refuses one that sets pool_max_conns.
+var poolKeys = map[string]bool{
+	poolMaxConns: true, "pool_min_conns": true, "pool_min_idle_conns": true, "pool_max_conn_lifetime": true,
+	"pool_max_conn_lifetime_jitter": true, "pool_max_conn_idle_time": true, "pool_health_check_period": true,
+	"pool_ping_timeout": true,
+}
+
+// splitPoolPairs is a URL's raw query split as pgx splits it, on `&`, into the pairs whose key is
+// one of poolKeys and the rest, each pair kept byte for byte. A key is read as pgx reads it, with
+// its %XX decoded and a `+` kept.
+func splitPoolPairs(rawQuery string) (pool, rest []string) {
+	for _, pair := range strings.Split(rawQuery, "&") {
+		if pair == "" {
+			continue
+		}
+		key, _, _ := strings.Cut(pair, "=")
+		if decoded, err := url.PathUnescape(key); err == nil && poolKeys[decoded] {
+			pool = append(pool, pair)
+		} else {
+			rest = append(rest, pair)
+		}
+	}
+	return pool, rest
+}
+
+// PoolBounded is dsn as a URL for a pgx pool, with the pool keys LEGION_TEST_PG_DSN sets (server,
+// as the caller read it from that variable) in place of any dsn holds, and pool_max_conns set to
+// PoolConns where server sets no size. dsn is a URL DatabaseURL made, which holds no pool key, or
+// server itself. Every other byte of dsn's query is kept, since pgx reads a query with its own
+// libpq-style parser (pgconn's parse_url.go), which decodes only %XX and keeps a `+`, where Go's
+// url.Values would write an encoded space back as `+` and drop a pair holding `;`. Only pgxpool
+// reads a pool key (poolKeys), so its URL goes only to pools: Database's, internal/testpg's Clone
+// and template's, and internal/daemon's and internal/store's testDSN. DatabaseURL's and
+// PlainDatabase's, which an admin connection, psql and a scratch Dispatch are given, hold none.
+func PoolBounded(server, dsn string) (string, error) {
+	parsed, err := url.Parse(server)
+	if err != nil {
+		return "", fmt.Errorf("%s: net/url refuses it", dsnName)
+	}
+	config, err := pgconn.ParseConfig(server)
+	if err != nil {
+		return "", fmt.Errorf("%s: pgx refuses it", dsnName)
+	}
+	pool, _ := splitPoolPairs(parsed.RawQuery)
+	read := map[string]string{}
+	for key, value := range config.RuntimeParams {
+		if poolKeys[key] {
+			read[key] = value
+		}
+	}
+	if _, sized := read[poolMaxConns]; !sized {
+		pool = append(pool, poolMaxConns+"="+strconv.Itoa(PoolConns))
+		read[poolMaxConns] = strconv.Itoa(PoolConns)
+	}
+	return rewriteDSN(dsnName, dsn, rewrite{pools: true, pool: pool, poolRead: read})
 }
 
 // rewrite is what a caller of rewriteDSN changes about the DSN it was given: the database the
-// rewrite must name (DatabaseURL), or the address it must send the connection to (Delayed). A
-// field left empty is one the rewrite keeps.
+// rewrite must name (DatabaseURL), the address it must send the connection to (Delayed,
+// CommitFaults, Outage), the pool keys of its query, and whether TLS is off. With pools set, the
+// rewrite takes every pool key out of the query and appends pool, the raw pairs pgx reads as
+// poolRead: none for DatabaseURL, the server's own or pool_max_conns=PoolConns for PoolBounded.
+// With plain set, it appends sslmode=disable, which pgx reads over an sslmode the query already
+// holds since it keeps the last of a repeated key (pgconn's parse_url.go), so an attempt makes no
+// TLS connection and falls back to none (Outage). A field left empty is one the rewrite keeps.
 type rewrite struct {
 	database string
 	host     string
 	port     uint16
+	pools    bool
+	pool     []string
+	poolRead map[string]string
+	plain    bool
 }
 
 // applied is read with this rewrite in it, which is what pgx must read from the rewritten DSN.
@@ -229,16 +335,67 @@ func (r rewrite) applied(read reading) reading {
 	if r.host != "" {
 		read.host, read.port = r.host, r.port
 	}
+	if r.pools {
+		params := make(map[string]string, len(read.params)+len(r.poolRead))
+		for key, value := range read.params {
+			if !poolKeys[key] {
+				params[key] = value
+			}
+		}
+		maps.Copy(params, r.poolRead)
+		read.params = params
+	}
+	if r.plain {
+		read.settings.tls, read.settings.fallbacks = tlsReading{}, ""
+	}
 	return read
 }
 
-// reading is what pgconn.ParseConfig read from a DSN: the four fields a rewrite keeps or sets,
-// and the four a refusal names. It holds no password, and a refusal prints no value of it.
+// reading is what pgconn.ParseConfig read from a DSN: the host, port, user and database a rewrite
+// keeps or sets, the password, every run-time parameter (each key pgx does not take itself,
+// pool_max_conns among them, which pgxpool takes out after), and the rest of what pgx reads from a
+// DSN's settings (settings). A refusal names the fields that differ and prints no value of one.
 type reading struct {
 	host     string
 	port     uint16
 	user     string
 	database string
+	password string
+	params   map[string]string
+	settings settings
+}
+
+// settings is what pgx reads from a DSN's settings beside the fields reading names on its own:
+// the connect timeout, the TLS each attempt makes (sslmode and the files and checks it names), the
+// attempts it falls back to, and the authentication and protocol options. The server name a TLS
+// attempt verifies, and the host and port of each fallback, follow the host, which reading compares
+// on its own and Delayed moves.
+type settings struct {
+	connectTimeout           time.Duration
+	tls                      tlsReading
+	fallbacks                string
+	kerberosSrvName          string
+	kerberosSpn              string
+	sslNegotiation           string
+	sslCertMode              string
+	minProtocol, maxProtocol string
+	channelBinding           string
+	requireAuth              string
+}
+
+// tlsReading is what a TLS configuration pgx built from a DSN says of the check it makes: none
+// (off), or whether it skips the server's name, verifies the chain itself, trusts named roots, and
+// sends a certificate of its own.
+type tlsReading struct {
+	on, skipsName, verifiesChain, namesRoots, sendsCertificate bool
+}
+
+func tlsReadingOf(config *tls.Config) tlsReading {
+	if config == nil {
+		return tlsReading{}
+	}
+	return tlsReading{on: true, skipsName: config.InsecureSkipVerify, verifiesChain: config.VerifyPeerCertificate != nil,
+		namesRoots: config.RootCAs != nil, sendsCertificate: len(config.Certificates) != 0 || config.GetClientCertificate != nil}
 }
 
 // moved names the fields of this reading that are not asked's, in the order the fields are
@@ -246,17 +403,23 @@ type reading struct {
 // rewrite: which fields moved, and no value of one.
 func (r reading) moved(asked reading) string {
 	var fields []string
-	if r.host != asked.host {
-		fields = append(fields, "host")
-	}
-	if r.port != asked.port {
-		fields = append(fields, "port")
-	}
-	if r.user != asked.user {
-		fields = append(fields, "user")
-	}
-	if r.database != asked.database {
-		fields = append(fields, "database")
+	for _, field := range []struct {
+		name  string
+		moved bool
+	}{
+		{"host", r.host != asked.host},
+		{"port", r.port != asked.port},
+		{"user", r.user != asked.user},
+		{"database", r.database != asked.database},
+		// The password is named "credential": a refusal prints no part of a password, and the
+		// word "password" holds the letters of short ones ("ss", "word").
+		{"credential", r.password != asked.password},
+		{"parameters", !maps.Equal(r.params, asked.params)},
+		{"connection settings", r.settings != asked.settings},
+	} {
+		if field.moved {
+			fields = append(fields, field.name)
+		}
 	}
 	switch len(fields) {
 	case 0:
@@ -270,13 +433,24 @@ func (r reading) moved(asked reading) string {
 
 // readingOf is what pgx read from a DSN it took.
 func readingOf(cfg *pgconn.Config) reading {
-	return reading{host: cfg.Host, port: cfg.Port, user: cfg.User, database: cfg.Database}
+	fallbacks := make([]string, 0, len(cfg.Fallbacks))
+	for _, fallback := range cfg.Fallbacks {
+		fallbacks = append(fallbacks, fmt.Sprintf("%+v", tlsReadingOf(fallback.TLSConfig)))
+	}
+	return reading{host: cfg.Host, port: cfg.Port, user: cfg.User, database: cfg.Database, password: cfg.Password,
+		params: maps.Clone(cfg.RuntimeParams), settings: settings{
+			connectTimeout: cfg.ConnectTimeout, tls: tlsReadingOf(cfg.TLSConfig), fallbacks: strings.Join(fallbacks, ";"),
+			kerberosSrvName: cfg.KerberosSrvName, kerberosSpn: cfg.KerberosSpn, sslNegotiation: cfg.SSLNegotiation,
+			sslCertMode: cfg.SSLCertMode, minProtocol: cfg.MinProtocolVersion, maxProtocol: cfg.MaxProtocolVersion,
+			channelBinding: cfg.ChannelBinding, requireAuth: cfg.RequireAuth,
+		}}
 }
 
 // rewriteDSN is dsn rewritten as want says: one rewrite of dsn's URL, read back with
 // pgconn.ParseConfig, which is the parser pgx connects through. It answers that rewrite where pgx
-// reads it as the reading of dsn with want in it, and a refusal and no DSN at all otherwise. name
-// is what the caller read dsn from, and it starts the refusal.
+// reads it as the reading of dsn with want in it, every value pgx reads compared (reading), and a
+// refusal and no DSN at all otherwise. name is what the caller read dsn from, and it starts the
+// refusal. The query is never rebuilt: a key the rewrite adds is appended to it as it stands.
 //
 // Three strings go through a parser here: dsn through net/url, dsn through pgx, and the rewrite
 // through pgx. A parser that refuses one of them earns the fixed line that names which string it
@@ -292,22 +466,33 @@ func rewriteDSN(name, dsn string, want rewrite) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%s: net/url refuses it", name)
 	}
+	before, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		return "", fmt.Errorf("%s: pgx refuses it", name)
+	}
+	read := readingOf(before)
 	if want.database != "" {
 		parsed.Path = "/" + want.database
 	}
 	if want.host != "" {
 		parsed.Host = net.JoinHostPort(want.host, strconv.Itoa(int(want.port)))
 	}
-	rewritten := parsed.String()
-	before, err := pgconn.ParseConfig(dsn)
-	if err != nil {
-		return "", fmt.Errorf("%s: pgx refuses it", name)
+	if want.pools {
+		_, rest := splitPoolPairs(parsed.RawQuery)
+		parsed.RawQuery = strings.Join(append(rest, want.pool...), "&")
 	}
+	if want.plain {
+		if parsed.RawQuery != "" {
+			parsed.RawQuery += "&"
+		}
+		parsed.RawQuery += "sslmode=disable"
+	}
+	rewritten := parsed.String()
 	after, err := pgconn.ParseConfig(rewritten)
 	if err != nil {
 		return "", fmt.Errorf("the rewrite of %s: pgx refuses it", name)
 	}
-	if moved := readingOf(after).moved(want.applied(readingOf(before))); moved != "" {
+	if moved := readingOf(after).moved(want.applied(read)); moved != "" {
 		return "", fmt.Errorf(
 			"the rewrite of %s is not the connection it was asked for: pgx reads another %s from it",
 			name, moved)
@@ -315,83 +500,12 @@ func rewriteDSN(name, dsn string, want rewrite) (string, error) {
 	return rewritten, nil
 }
 
-// runServer is the server RunDatabaseMain made the run's database on, named by serverKey, and
-// runDatabase the URL of that database; both are empty until a RunDatabaseMain with
-// LEGION_TEST_PG_DSN set runs.
-var (
-	runServer   string
-	runDatabase string
-)
-
-// serverKey is the part of a DSN that names the server rather than a database on it, so two DSNs
-// that differ only in the database they name have one key. It reads the DSN with
-// pgconn.ParseConfig, the parser DatabaseURL and the driver read it with, so the key is the host,
-// the port and the user pgx connects as. A DSN pgx refuses is its own key: every key below holds
-// two NUL bytes, and a DSN a test read out of its environment holds none, so no refused DSN
-// equals a key.
-func serverKey(dsn string) string {
-	cfg, err := pgconn.ParseConfig(dsn)
-	if err != nil {
-		return dsn
-	}
-	return fmt.Sprintf("%s\x00%d\x00%s", cfg.Host, cfg.Port, cfg.User)
-}
-
-// RunDatabaseMain makes one database named <prefix>_<random> for the whole run on the server
-// LEGION_TEST_PG_DSN names, runs run, drops that database and returns run's code; a drop that
-// fails prints why and turns a passing run into exit 1. A package whose tests migrate into the
-// database their DSN names calls it from TestMain, where every test reads the run's database
-// through RunDatabaseFor, so two runs of the package on one server never write each other's rows
-// and neither writes the database that server serves. With LEGION_TEST_PG_DSN unset it makes
-// nothing and returns run(), so those tests skip as they do without a server.
-//
-// It is not internal/testpg's Main, which prepares the template Clone copies: the two are
-// different databases for different needs, and a package that wants both nests them, each under a
-// prefix of its own so a census of either name says which it counted:
-//
-//	os.Exit(testpg.Main("legion_daemon_test", func() int {
-//		return testdb.RunDatabaseMain("legion_daemon_run", m.Run)
-//	}))
-//
-// It takes run rather than *testing.M so that it wraps another TestMain helper.
-func RunDatabaseMain(prefix string, run func() int) int {
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		return run()
-	}
-	database, drop, err := create(dsn, prefix)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "make the package's run database: %v\n", err)
-		return 1
-	}
-	runServer, runDatabase = serverKey(dsn), database
-	code := run()
-	if err := drop(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		if code == 0 {
-			code = 1
-		}
-	}
-	return code
-}
-
-// RunDatabaseFor is the URL of the database RunDatabaseMain made for this run when dsn names the
-// server that database is on, which is the host, the port and the user pgx reads from both
-// (serverKey), and dsn itself otherwise: a test that points LEGION_TEST_PG_DSN at a server of its
-// own keeps what it set. Without a run database — no RunDatabaseMain, or LEGION_TEST_PG_DSN
-// unset — it is dsn.
-func RunDatabaseFor(dsn string) string {
-	if runDatabase == "" || serverKey(dsn) != runServer {
-		return dsn
-	}
-	return runDatabase
-}
-
-// DSNFile is a 0600 file under the test's temporary directory holding Database's URL, as the
-// providers Secret's key holds the session database's.
+// DSNFile is a 0600 file under the test's temporary directory holding PlainDatabase's URL, as the
+// providers Secret's key holds the session database's: the session database is read with
+// pgx.Connect (internal/ompsessions), never through a pool.
 func DSNFile(t testing.TB, prefix string) (dsn, file string) {
 	t.Helper()
-	dsn = Database(t, prefix)
+	dsn = PlainDatabase(t, prefix)
 	file = filepath.Join(t.TempDir(), "OMP_SESSION_SQL_DSN")
 	if err := os.WriteFile(file, []byte(dsn+"\n"), 0o600); err != nil {
 		t.Fatal(err)

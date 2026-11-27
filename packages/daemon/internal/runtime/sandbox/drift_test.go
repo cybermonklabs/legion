@@ -25,7 +25,7 @@ import (
 //
 // PodDrift reads loc's Sandbox and the pod of the same name from r's informer stores. A write gets
 // to those stores through the watch, after the API has it. Thus driftOf first waits until r's
-// stores hold the Sandbox and the pod that g's trackers hold, within Eventually's bound. Where
+// stores hold the Sandbox and the pod that g's trackers hold, within a minute (testwait.Bounded). Where
 // the tracker holds no such pod, the wait holds until the store holds none too. Without
 // the wait, a test that reads a write from the tracker can ask PodDrift about the Sandbox before
 // that write (TestAKeptPodRecordsAndTellsTheManifestItsReconnectedLauncherWasServed). The wait
@@ -115,12 +115,14 @@ func shapedOptions(o *Options) {
 	o.Pod = Pod{Volumes: []corev1.Volume{operatorVolume}, VolumeMounts: []corev1.VolumeMount{operatorMount}}
 }
 
-// The shapes an issue pod built under shapedOptions records. shapedGVisorShape is a gVisor pod's,
-// byte for byte what every release before the sandbox setting recorded for that configuration, so a
-// pod those releases left running is read against it
-// (TestAGVisorPodRecordedBeforeThisReleaseReadsNoDrift). The others are a microVM pod's under
-// testMicroVM's block, under that block naming no metadata endpoint, and under that block with
-// keep_volume on (keptMicroVM), the one shape that records the setting.
+// The shapes a pod built under shapedOptions records. shapedGVisorShape is a gVisor issue pod's,
+// byte for byte what every release before the sandbox setting recorded for that configuration, so
+// a pod those releases left running is read against it
+// (TestAGVisorPodRecordedBeforeThisReleaseReadsNoDrift). The three after it are a microVM issue
+// pod's under testMicroVM's block, under that block naming no metadata endpoint, and under that
+// block with keep_volume on (keptMicroVM), the one shape that records the setting. The last is the
+// controller's pod's in a microVM under testMicroVM's block, on the controller's own reservation,
+// which names no storage class: its disk stays on runtime.kubernetes.storage_class.
 const (
 	shapedGVisorShape = `{"image":"` + testImage + `",` +
 		`"resources":{"limits":{"cpu":"2","ephemeral-storage":"80Gi","memory":"8Gi"},"requests":{"cpu":"2","ephemeral-storage":"6Gi","memory":"8Gi"}},` +
@@ -149,6 +151,14 @@ const (
 		`"sandbox":{"runtime_class":"microvm","compute_class":"example-microvm","storage_class":"example-microvm-rwo","keep_volume":true,` +
 		`"metadata":{"workload_pool":"example-project.svc.id.goog",` +
 		`"identity_provider":"https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"}}}`
+	shapedControllerMicroVMShape = `{"image":"` + testImage + `",` +
+		`"resources":{"limits":{"cpu":"1","ephemeral-storage":"10Gi","memory":"4Gi"},"requests":{"cpu":"1","ephemeral-storage":"1Gi","memory":"4Gi"}},` +
+		`"volumes":[{"name":"operator-extra","configMap":{"name":"legion-operator-extra"}}],` +
+		`"mounts":[{"name":"operator-extra","readOnly":true,"mountPath":"/etc/legion-operator-extra"}],` +
+		`"disk":"200Gi",` +
+		`"sandbox":{"runtime_class":"microvm","compute_class":"example-microvm",` +
+		`"metadata":{"workload_pool":"example-project.svc.id.goog",` +
+		`"identity_provider":"https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"}}}`
 )
 
 // testMicroVMSandboxShape is the sandbox member a microVM pod under testMicroVM's block records,
@@ -157,12 +167,13 @@ const testMicroVMSandboxShape = `{"runtime_class":"microvm","compute_class":"exa
 	`"metadata":{"workload_pool":"example-project.svc.id.goog",` +
 	`"identity_provider":"https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"}}`
 
-// The keys of the three shapes a runtime builds its pods from (podShapes): an issue pod's in
-// either sandbox, and the controller's pod's, which runs in gVisor whatever the configuration says.
+// The keys of the four shapes a runtime builds its pods from (podShapes): an issue pod's and the
+// controller's pod's, each in either sandbox.
 var (
-	issueInGVisor      = podShapeKey{kind: issuePod{}, sandbox: SandboxGVisor}
-	issueInMicroVM     = podShapeKey{kind: issuePod{}, sandbox: SandboxMicroVM}
-	controllerInGVisor = podShapeKey{kind: controllerPod{}, sandbox: SandboxGVisor}
+	issueInGVisor       = podShapeKey{kind: issuePod{}, sandbox: SandboxGVisor}
+	issueInMicroVM      = podShapeKey{kind: issuePod{}, sandbox: SandboxMicroVM}
+	controllerInGVisor  = podShapeKey{kind: controllerPod{}, sandbox: SandboxGVisor}
+	controllerInMicroVM = podShapeKey{kind: controllerPod{}, sandbox: SandboxMicroVM}
 )
 
 // sandboxBlock is a runtime.kubernetes.sandbox of type kind naming testMicroVM's block, its
@@ -177,10 +188,13 @@ func sandboxBlock(kind SandboxType, canaries ...string) func(*Options) {
 // value as the operator wrote it: the image, the kind's own reservation, the operator's volumes and
 // mounts, the disk, and, for a microVM pod alone, where it runs — the microVM RuntimeClass and the
 // microvm block's ComputeClass, StorageClass, keep_volume where it is on, and metadata endpoint,
-// which a block naming none leaves out. A gVisor pod records no sandbox at all, beside a microvm
-// block or without one, keep_volume on or off, so its shape is the one every release before the
-// sandbox setting recorded. It is pinned whole because it is what every later daemon compares a
-// running pod against: a change of spelling here reads as drift on every pod of the fleet at once.
+// which a block naming none leaves out. The controller's microVM pod records no StorageClass and no
+// keep_volume: its disk stays on runtime.kubernetes.storage_class (diskSpec), and it keeps the
+// volume its Sandbox owns whatever keep_volume says (keptVolume), so neither key is in its shape. A
+// gVisor pod records no sandbox at all, beside a microvm block or without one, keep_volume on or
+// off, so its shape is the one every release before the sandbox setting recorded. It is pinned
+// whole because it is what every later daemon compares a running pod against: a change of
+// spelling here reads as drift on every pod of the fleet at once.
 func TestPodShapeRecordsTheConfigurationAPodIsBuiltFrom(t *testing.T) {
 	withoutMetadata := testMicroVM()
 	withoutMetadata.Metadata = nil
@@ -204,6 +218,12 @@ func TestPodShapeRecordsTheConfigurationAPodIsBuiltFrom(t *testing.T) {
 		},
 		"a gVisor issue pod beside a microvm block that keeps its volume": {
 			SandboxConfig{CanaryIssues: []string{"LEGION-209"}, MicroVM: keptMicroVM()}, issueInGVisor, shapedGVisorShape,
+		},
+		"the controller's pod in a microVM": {
+			SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}, controllerInMicroVM, shapedControllerMicroVMShape,
+		},
+		"the controller's pod in a microVM whose block keeps an issue pod's volume": {
+			SandboxConfig{Type: SandboxMicroVM, MicroVM: keptMicroVM()}, controllerInMicroVM, shapedControllerMicroVMShape,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -298,11 +318,11 @@ func TestPodShapeIgnoresTheCacheTrimmersSettings(t *testing.T) {
 	}
 	none := shaped(nil)
 	trimming := shaped(&shimwire.LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60})
-	// Each shape a pod is built from: either kind in gVisor, and an issue pod in a microVM.
+	// Each shape a pod is built from: either kind in gVisor, and either kind in a microVM.
 	for _, shape := range []struct {
 		kind    podKind
 		microVM *MicroVM
-	}{{issuePod{}, nil}, {controllerPod{}, nil}, {issuePod{}, testMicroVM()}} {
+	}{{issuePod{}, nil}, {controllerPod{}, nil}, {issuePod{}, testMicroVM()}, {controllerPod{}, testMicroVM()}} {
 		if podShape(none, shape.kind, shape.microVM) != podShape(trimming, shape.kind, shape.microVM) {
 			t.Fatalf("%T (microvm %v) encodes differently once the trimmer is configured:\n%s\n%s", shape.kind, shape.microVM != nil,
 				podShape(none, shape.kind, shape.microVM), podShape(trimming, shape.kind, shape.microVM))
@@ -719,8 +739,9 @@ func TestPodDriftNamesTheServiceAccountThePodRunsAs(t *testing.T) {
 // No round covers the project controller's pod (roundCovers), so its pod has drifted from nothing
 // whatever the configuration says now — the ServiceAccount it runs as included: the controller
 // holds no issue workspace and has nothing to push, so there is nobody in that pod to task and no
-// round to open over it. What this answers nothing for, its next launch replaces instead, for
-// every kind of drift and as it always did
+// round to open over it. What this answers nothing for, its next launch replaces instead: a launch
+// that installs nothing for every kind of drift, as it always did, and a launch installing a
+// stale-plugin pair for the image alone (podImageDrift)
 // (TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted,
 // TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry, and for the account
 // TestALaunchKeepsAnAccountDriftedPodARoundCoversAndReplacesOneNoRoundCovers): a pod neither

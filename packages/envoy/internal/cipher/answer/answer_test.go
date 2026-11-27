@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -37,9 +38,16 @@ type rig struct {
 // the request with a context of its own, as withRequestDeadline does.
 func newRig(t *testing.T, next http.Handler) *rig {
 	t.Helper()
+	return newRigOf(t, next, answer.Middleware)
+}
+
+// newRigOf is newRig behind the recorder middleware builds: answer.Middleware or
+// answer.EdgeMiddleware.
+func newRigOf(t *testing.T, next http.Handler, middleware func(http.Handler, *metrics.Counter) http.Handler) *rig {
+	t.Helper()
 	r := &rig{log: &logtest.Recorder{}, registry: metrics.New()}
 	logtest.SetDefault(t, r.log)
-	recorded := answer.Middleware(next, answer.NewAnswers(r.registry))
+	recorded := middleware(next, answer.NewAnswers(r.registry))
 	r.handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -383,6 +391,79 @@ func TestTheLineNamesTheRouteAndTheCallersCorrelationID(t *testing.T) {
 	}
 }
 
+// TestTheEdgesAnswersNameTheirPortAndItsUnroutedOnesWriteNoLine: behind EdgeMiddleware, a route's
+// refusal writes its line naming port=edge and is counted with port="edge", and the mux's own 404,
+// 405 and the 400 it answers a request for * (GET * HTTP/1.1), which anyone on the internet can
+// send at any rate, are counted with port="edge" and write no line. The same requests behind
+// Middleware, the API port's, write a line for each of the four, none naming a port, and count
+// samples with no port label.
+//
+// The named reverts: record the edge with Middleware, and its lines name no port and its 404, 405
+// and 400 write lines; drop unrouted's check, and the edge's 404, 405 and 400 write lines; drop its
+// request-for-* clause, and the edge's 400 writes a line.
+func TestTheEdgesAnswersNameTheirPortAndItsUnroutedOnesWriteNoLine(t *testing.T) {
+	mux := func() *http.ServeMux {
+		m := http.NewServeMux()
+		m.HandleFunc("POST /v1/oauth/token", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusBadRequest, `{"code":"EDGE_GRANT_REFUSED","error":"no"}`)
+		})
+		return m
+	}
+	send := func(r *rig) {
+		for _, call := range []struct{ method, target string }{
+			{http.MethodPost, "/v1/oauth/token"},
+			{http.MethodGet, "/wp-login.php"},
+			{http.MethodGet, "/v1/oauth/token"},
+			{http.MethodGet, "*"},
+		} {
+			req := httptest.NewRequest(call.method, call.target, nil)
+			if call.target == "*" && req.RequestURI != "*" {
+				t.Fatalf("a request for * reads its target as %q, want *", req.RequestURI)
+			}
+			r.serve(req)
+		}
+	}
+
+	edge := newRigOf(t, mux(), answer.EdgeMiddleware)
+	send(edge)
+	lines := edge.lines(t)
+	if len(lines) != 1 || lines[0]["code"] != "EDGE_GRANT_REFUSED" || lines[0]["port"] != answer.PortEdge {
+		t.Fatalf("the edge's four refusals wrote lines %v; want one, the route's EDGE_GRANT_REFUSED naming port=edge", lines)
+	}
+	for _, labels := range []string{
+		`outcome="refused",code="EDGE_GRANT_REFUSED",caller_class="public",port="edge"`,
+		`outcome="refused",code="HTTP_404",caller_class="public",port="edge"`,
+		`outcome="refused",code="HTTP_405",caller_class="public",port="edge"`,
+		`outcome="refused",code="HTTP_400",caller_class="public",port="edge"`,
+	} {
+		if got := edge.count(t, labels); got != "1" {
+			t.Errorf("the edge's broker_answers_total{%s} = %s, want 1", labels, got)
+		}
+	}
+
+	api := newRigOf(t, mux(), answer.Middleware)
+	send(api)
+	lines = api.lines(t)
+	if len(lines) != 4 {
+		t.Fatalf("the API port's four refusals wrote %d lines, want 4: %v", len(lines), lines)
+	}
+	for i, line := range lines {
+		if port, named := line["port"]; named {
+			t.Errorf("the API port's line %d names port %v, want none", i, port)
+		}
+	}
+	for _, labels := range []string{
+		`outcome="refused",code="EDGE_GRANT_REFUSED",caller_class="public"`,
+		`outcome="refused",code="HTTP_404",caller_class="public"`,
+		`outcome="refused",code="HTTP_405",caller_class="public"`,
+		`outcome="refused",code="HTTP_400",caller_class="public"`,
+	} {
+		if got := api.count(t, labels); got != "1" {
+			t.Errorf("the API port's broker_answers_total{%s} = %s, want 1", labels, got)
+		}
+	}
+}
+
 // A refusal's line lists the secret names its request named in the request's order, up to 32 KiB
 // of names, and says how many the request named (secrets_count) and, when it left names out, how
 // many it left out (secrets_omitted). Cloud Logging refuses an entry over 256 KiB, and GKE drops a
@@ -703,6 +784,49 @@ func TestEveryFieldTheCallerWroteIsCutToItsFirst256Bytes(t *testing.T) {
 	}
 	if driven != 10 {
 		t.Fatalf("the table drove %d fields, want 10", driven)
+	}
+}
+
+// A port that hands a refusal's line many fields of its own, before correlation_id and after it,
+// gets every one of them back from answer.RefusalLine.Fields, in order, each text value cut to its
+// first 256 bytes: the line's own fields, the names, then the extras, then correlation_id, then
+// the trailing fields. Fields builds the list by append from a fixed capacity, not from one summed
+// from the lengths of what it is handed, whose sum could overflow. The caller's own slices are not
+// cut in place: the line is a copy.
+//
+// The named reverts: drop the extras or the trailing fields, put correlation_id after the
+// trailing fields, or skip ClipFields, and this fails.
+func TestARefusalsLineKeepsEveryFieldAPortAddsInOrder(t *testing.T) {
+	const pairs = 5000
+	long := strings.Repeat("abcdefghij", 100)
+	var extras, trailing, wantExtras, wantTrailing []any
+	for i := range pairs {
+		extra, tail := fmt.Sprintf("%d before %s", i, long), fmt.Sprintf("%d after %s", i, long)
+		extras = append(extras, fmt.Sprintf("extra_%d", i), extra)
+		trailing = append(trailing, fmt.Sprintf("trailing_%d", i), tail)
+		wantExtras = append(wantExtras, fmt.Sprintf("extra_%d", i), extra[:answer.FieldBytes])
+		wantTrailing = append(wantTrailing, fmt.Sprintf("trailing_%d", i), tail[:answer.FieldBytes])
+	}
+	line := answer.RefusalLine{ID: "0123456789abcdef0123456789abcdef", Status: http.StatusForbidden, Code: "REQUEST_NOT_ALLOWED",
+		Method: http.MethodGet, CallerClass: answer.CallerAirlock, Caller: "grant@enrollment", Correlation: "the-caller's-id"}
+	line.Secrets.Note("A_SECRET")
+	want := []any{
+		"answer_id", line.ID, "status", line.Status, "code", line.Code, "method", line.Method, "route", "",
+		"caller_class", line.CallerClass, "caller", line.Caller, "secrets", []string{"A_SECRET"}, "secrets_count", 1,
+	}
+	want = append(append(append(want, wantExtras...), "correlation_id", line.Correlation), wantTrailing...)
+
+	got := line.Fields(extras, trailing...)
+	if len(got) != len(want) {
+		t.Fatalf("Fields answered %d values, want %d: the line's 18, %d extras, correlation_id's 2 and %d trailing", len(got), len(want), 2*pairs, 2*pairs)
+	}
+	for i := range want {
+		if !reflect.DeepEqual(got[i], want[i]) {
+			t.Fatalf("Fields' value %d is %.80q, %d bytes as text, want %.80q, %d bytes", i, got[i], len(fmt.Sprint(got[i])), want[i], len(fmt.Sprint(want[i])))
+		}
+	}
+	if extras[1] != fmt.Sprintf("0 before %s", long) || trailing[1] != fmt.Sprintf("0 after %s", long) {
+		t.Fatalf("Fields cut the caller's own extras or trailing fields in place: %.80q, %.80q", extras[1], trailing[1])
 	}
 }
 

@@ -30,7 +30,7 @@
 # who means to publish a name, and that this change does not try to (dispatch://INFRA-1527).
 #
 # `jj git push` shells out to the `git` PATH names (`git -c core.fsmonitor=false … --git-dir <dir>
-# push --porcelain --no-verify …`, measured with jj 0.45.1-sami), so this one wrapper catches a
+# push --porcelain --no-verify …`, measured with jj 0.46.0-sami), so this one wrapper catches a
 # role's own push and jj's, and jj's `--no-verify` is what the removal is for.
 #
 # Only `--no-verify` is removed. `-n` is `--dry-run` for a push, not `--no-verify` (`git push -h`

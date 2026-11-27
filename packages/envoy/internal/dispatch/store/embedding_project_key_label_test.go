@@ -62,6 +62,7 @@ func projectKeyOf(t *testing.T, database *Store, kind, id string) (string, bool)
 // takes its owner's. The statement below is that release's, word for word but for the issue it
 // names, and the label is read back from the row it wrote.
 func TestARowInsertedAsTheReleaseBeforeThisOneInsertsItCarriesItsProject(t *testing.T) {
+	t.Parallel()
 	database := openLabelTestStore(t)
 	ctx := context.Background()
 
@@ -91,6 +92,7 @@ func TestARowInsertedAsTheReleaseBeforeThisOneInsertsItCarriesItsProject(t *test
 // No rule can give such a row a project, and no meaning arm would have returned it either
 // (20261109120000), so the insert must not fail over it.
 func TestARowWhoseOwnerIsGoneIsInsertedWithNoProject(t *testing.T) {
+	t.Parallel()
 	database := openLabelTestStore(t)
 	ctx := context.Background()
 

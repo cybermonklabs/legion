@@ -101,7 +101,7 @@ func (ts *testServer) askPrivateElsewhere(t *testing.T, box string) (requestID, 
 	enrollmentID, key := ts.newSessionEnrollment(t, "session-"+box+"-"+t.Name(), testApprover)
 	current := ts.machine.Audience
 	ts.machine.Audience = elsewhere
-	created, err := ts.machine.Create(t.Context(), enrollmentID, signAgentSecretRequestFor(t, key, elsewhere, privReason, 600, "SHARED_KEY"), "", nil)
+	created, err := ts.machine.Create(t.Context(), enrollmentID, signAgentSecretRequestFor(t, key, elsewhere, privReason, 600, "SHARED_KEY"), "")
 	ts.machine.Audience = current
 	if err != nil || created.RecordID == nil || created.State != "pending" {
 		t.Fatalf("Create under %s = %+v, %v; want a pending request on a record", elsewhere, created, err)

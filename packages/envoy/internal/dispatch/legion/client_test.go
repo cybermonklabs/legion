@@ -25,12 +25,13 @@ func stateServer(t *testing.T, body string) *httptest.Server {
 	return server
 }
 
-// TestTheStateReadIsBoundedByTheRequestTimeout: the window is the plan's D14, twenty seconds, and
-// New gives it to every client it builds, so a daemon that accepts a connection and never answers
-// ends one pass rather than holding the minute's loop for good.
+// TestTheStateReadIsBoundedByTheRequestTimeout: the window is sixty seconds, room for a full read
+// of the INFRA daemon's state (10.9 to 11.9 s on 2026-11-21, about 3.4 ms more with each issue),
+// and New gives it to every client it builds, so a daemon that accepts a connection and never
+// answers ends one pass rather than holding the minute's loop for good.
 func TestTheStateReadIsBoundedByTheRequestTimeout(t *testing.T) {
-	if RequestTimeout != 20*time.Second {
-		t.Fatalf("RequestTimeout = %s, want the 20s of the plan's D14", RequestTimeout)
+	if RequestTimeout != 60*time.Second {
+		t.Fatalf("RequestTimeout = %s, want 60s", RequestTimeout)
 	}
 	if window := New("http://daemon.internal.example").http.Timeout; window != RequestTimeout {
 		t.Fatalf("New gives a client a %s window, want RequestTimeout (%s)", window, RequestTimeout)
@@ -41,7 +42,7 @@ func TestTheStateReadIsBoundedByTheRequestTimeout(t *testing.T) {
 	defer silent.Close()
 
 	// The client's window is what ends the read, shrunk here so the test does not wait the
-	// production twenty seconds out.
+	// production sixty seconds out.
 	client := New(silent.URL, WithTimeout(150*time.Millisecond))
 
 	started := time.Now()
@@ -57,33 +58,59 @@ func TestTheStateReadIsBoundedByTheRequestTimeout(t *testing.T) {
 	}
 }
 
-// TestABodyOverTheCapIsAFailedRead: a daemon answering more than ResponseLimit is a failed read,
-// never a parse of the first 8 MiB. A body exactly at the cap is read, so the bound refuses only
-// what is over it.
+// stateOfSize is a state document of exactly size bytes, valid JSON throughout, so what refuses
+// one is the cap and not the decode.
+func stateOfSize(size int) string {
+	const head, tail = `{"issues":{},"pad":"`, `"}`
+	return head + strings.Repeat("a", size-len(head)-len(tail)) + tail
+}
+
+// TestABodyOverTheCapIsAFailedRead: a daemon answering more than ResponseLimit, 32 MiB, is a
+// failed read, never a parse of the first 32 MiB, and the refusal names the cap it passed. A body
+// exactly at the cap is read, so the bound refuses only what is over it.
 func TestABodyOverTheCapIsAFailedRead(t *testing.T) {
-	// Valid JSON throughout, so what refuses it is the cap and not the decode.
-	envelope := `{"issues":{},"pad":"` + `"}`
-	padding := strings.Repeat("a", ResponseLimit+1-len(envelope))
-	over := stateServer(t, `{"issues":{},"pad":"`+padding+`"}`)
+	if ResponseLimit != 32<<20 {
+		t.Fatalf("ResponseLimit = %d, want 32 MiB (%d)", ResponseLimit, 32<<20)
+	}
+	over := stateServer(t, stateOfSize(32<<20+1))
 
 	_, bytes, err := New(over.URL).State(t.Context())
 	if !errors.Is(err, ErrResponseTooLarge) || !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("a read of a body over the cap: err = %v, want one wrapping both ErrResponseTooLarge and ErrUnavailable", err)
 	}
-	if bytes != ResponseLimit+1 {
-		t.Errorf("bytes = %d, want the point the read stopped (%d)", bytes, ResponseLimit+1)
+	if !strings.Contains(err.Error(), "33554432-byte cap") {
+		t.Errorf("the refusal = %q, want it to name the 33554432-byte cap", err)
+	}
+	if bytes != 32<<20+1 {
+		t.Errorf("bytes = %d, want the point the read stopped (%d)", bytes, 32<<20+1)
 	}
 
-	atTheCap := stateServer(t, `{"issues":{},"pad":"`+padding[:len(padding)-1]+`"}`)
+	atTheCap := stateServer(t, stateOfSize(32<<20))
 	state, bytes, err := New(atTheCap.URL).State(t.Context())
 	if err != nil {
 		t.Fatalf("a read of a body exactly at the cap: %v", err)
 	}
-	if bytes != ResponseLimit {
-		t.Errorf("bytes = %d, want the cap (%d)", bytes, ResponseLimit)
+	if bytes != 32<<20 {
+		t.Errorf("bytes = %d, want the cap (%d)", bytes, 32<<20)
 	}
 	if len(state.Issues) != 0 {
 		t.Errorf("issues = %v, want none", state.Issues)
+	}
+}
+
+// TestANineMiBStateIsReadWhole: a state past the 8 MiB the cap was before, as the INFRA daemon's
+// will be from about 2026-11-23, is read whole and parsed, not refused.
+func TestANineMiBStateIsReadWhole(t *testing.T) {
+	server := stateServer(t, stateOfSize(9<<20))
+	state, bytes, err := New(server.URL).State(t.Context())
+	if err != nil {
+		t.Fatalf("a read of a 9 MiB state: %v, want it read whole", err)
+	}
+	if bytes != 9<<20 {
+		t.Errorf("bytes = %d, want the whole body (%d)", bytes, 9<<20)
+	}
+	if state.Issues == nil {
+		t.Errorf("the 9 MiB state parsed to no issues map, want the empty map it sent")
 	}
 }
 

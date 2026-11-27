@@ -20,11 +20,17 @@ generated.
 ## `web/src/api`
 
 - **`client.ts`'s transport** — `FetchImplementation`, `UploadImplementation`,
-  `UploadProgress`, `ErrorPayload`, `RequestBounds`, `WriteMethod`, `WriteRequest<T>`,
-  `WriteBounds`, `ArtifactOwner`, `WriteVerb`. These are the page's rules about how a request is
-  sent and how its answer is kept, not what either carries: the silence deadline, the keepalive
-  bound, the replay shape a kept write is stored as, and which of three routes an upload's owner
-  picks.
+  `UploadProgress`, `RequestBounds`, `WriteMethod`, `WriteRequest<T>`, `WriteBounds`,
+  `ArtifactOwner`, `WriteVerb`. These are the page's rules about how a request is sent and how
+  its answer is kept, not what either carries: the silence deadline, the keepalive bound, the
+  replay shape a kept write is stored as, and which of three routes an upload's owner picks.
+- **`client.ts`'s `ErrorPayload`** — what `ApiError` reads from any refusal's body, whatever
+  route gave it: the `{code, error}` every refusal carries, and the members the richer refusals
+  add, each typed from the generated document. `state` is `STATE_STALE`'s, `candidates` the
+  choice `ID_AMBIGUOUS`, `POSSIBLE_DUPLICATE` and an anchored quote list, `issues` what
+  `PARENT_STATUS_CONFLICT` names (`ParentStatusConflictIssue`), and `changed` what a refused
+  `POST /api/v1/issues/{key}/status-change` already changed (`StatusChangeEntry`). The client
+  reads the body before it knows which refusal it holds, so one shape takes every member.
 - **`client.ts`'s projections of generated types** — `CreateArtifactReviewInput` is
   `Body<"/api/v1/artifacts/{id}/reviews", "post">`, `ErrorCandidate` is the union of the
   candidate shapes a refusal carries, and `ReferenceSourceKind` is read off that route's own
@@ -115,7 +121,13 @@ Each is in `packages/contracts/src/dispatch-api.ts`:
   `Refusals`, and the emitter has no route to attach it to. The dashboard reads it from this
   hand-written type, and `scripts/gen-go.ts` renders the code into Go. Giving it a Go type and
   attaching it to the `Refusals` of every route that takes an id would generate it; that is a
-  change to which routes declare which refusals, which this issue does not make.
+  change to which routes declare which refusals, which this issue does not make. Since the
+  type is written by hand, a field the Go candidate (`refs.Candidate`, `refs/prefix.go`) gains
+  is added to it by hand too: `edited_at`, and `deleted_at` with `deleted_by`, are the marks of a
+  candidate comment or message its author edited or deleted, which the match list
+  (`ItemMatchList.tsx`) prints as every other surface prints them, the deleted line in place of
+  the `first_line` the delete cleared. Each is absent on a post that stands unedited, on every
+  other kind, and from a Dispatch older than the fields.
 
 ## What is not generated, and is not an exception either
 

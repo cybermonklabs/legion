@@ -67,12 +67,18 @@
 # and then this file at refs/pull/<number>/head — a ref of this repository, so a fork's head too
 # — for each that changes it. A file list GitHub cut short says nothing about the paths it left
 # out, so that pull request's file is read as well rather than guessed at, and a read that fails
-# refuses the change and names itself.
+# refuses the change and names itself. Each `gh api` runs through gh-read.sh's gh_wait_reset,
+# which waits out a spent API budget within the job's JOB_TIMEOUT_MINUTES and fails by name past
+# it; its own lines reach the step's log as they happen, and gh's words reach the refusal.
 #
 # Run from anywhere: .github/scripts/check-daemon-api-contract.sh
 # CI runs it in ci.yaml's lint job, and its tests in ci.yaml's test job.
 set -euo pipefail
 
+# gh-read.sh beside this script's own file, resolved before the cd: a test fixture links only
+# this script in, and the link leads back to the directory CI runs from.
+GH_READ="$(dirname "$(readlink -f "$0")")/gh-read.sh"
+export GH_READ
 cd "$(dirname "$0")/../.."
 
 python3 <<'PY'
@@ -81,6 +87,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import quote
@@ -139,18 +146,25 @@ def fatal(path: str, message: str) -> None:
 
 
 def gh(args: list[str], what: str) -> str:
-    """Every GitHub read goes through `gh api`, so one stub first on PATH serves them all."""
-    try:
-        done = subprocess.run(
-            ["gh", "api", *args], capture_output=True, text=True, encoding="utf-8"
-        )
-    except OSError as error:
-        fatal(DECLARATION, f"could not read {what}: gh could not be run ({one_line(error)})")
+    """Every GitHub read goes through `gh api`, so one stub first on PATH serves them all, and
+    through gh-read.sh's gh_wait_reset: its own lines (a wait, or a budget spent past the limit)
+    go straight to this step's stderr, and the words gh printed on the call it ended on go to a
+    file, which the refusal quotes."""
+    with tempfile.NamedTemporaryFile(prefix="gh-words.") as words:
+        try:
+            done = subprocess.run(
+                ["bash", "-c", 'source "$0"; gh_wait_reset --stderr "$1" gh api "${@:2}"',
+                 os.environ["GH_READ"], words.name, *args],
+                stdout=subprocess.PIPE, text=True, encoding="utf-8",
+            )
+        except OSError as error:
+            fatal(DECLARATION, f"could not read {what}: gh could not be run ({one_line(error)})")
+        said = Path(words.name).read_text(encoding="utf-8", errors="replace")
     if done.returncode != 0:
         fatal(
             DECLARATION,
             f"could not read {what}: gh api exited {done.returncode} "
-            f"({one_line(done.stderr) or one_line(done.stdout) or 'no output'})",
+            f"({one_line(said) or one_line(done.stdout) or 'no output'})",
         )
     return done.stdout
 

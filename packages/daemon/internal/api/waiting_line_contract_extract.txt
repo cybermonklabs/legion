@@ -29,9 +29,9 @@
 # section, and that is a state a file moves in and out of as its own words change:
 # docs/site/src/content/docs/legion/troubleshooting.md had no section when this copy was written
 # and has one now. A window a file gains is one this copy must gain with it.
-
 # packages/contracts/src/legion-api.ts
-pec` step's row, which a reader that asks one question of one gate takes. */
+step's row, which a reader that asks one
+   * question of one gate takes. */
   gatedSteps: z.array(legionGatedStepView).optional(),
   slot: legionSlotView.optional(),
   /** Where the issue stands in `admission.waiting` (contract 58): present only for an issue that
@@ -50,7 +50,7 @@ pec` step's row, which a reader that asks one question of one gate takes. */
  
 
 # docs/site/src/content/docs/legion/running-legion.md
-ished line still names — each standing
+s — each standing within its priority,
   among the issues whose work came back, oldest first, until the pass that resumes it — and each by key
   with what it waits on (`none` when no root waits). A daemon older than contract 58 serves no
   `waitingLine`, so that count reads 0 against one, which is the true answer for a caller that

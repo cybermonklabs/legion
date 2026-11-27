@@ -213,7 +213,7 @@ func seedHeld(t *testing.T, st *store.Store) (start, notice int64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if start, err = records.EnqueueID(context.Background(), tx, startRow); err != nil {
 			return err
 		}
@@ -306,10 +306,10 @@ func tokens(stops []store.PauseStopClaim) []claim.Token {
 // The controller pauses and resumes the project. The pause's transaction writes one valid
 // pause_stop row for each live role but the controller's; the flag holds the pause from its commit
 // until the resume's; the daemon's after-commit steps get the pause with the claims it asked to
-// stop, after the flag is set and before the pause is logged, and then the ended pause, after the
-// flag is cleared and before the resume is logged; and the store keeps the controller's session as
-// who paused and who resumed. The controller is a registered one, and no notice tells it of its
-// own acts.
+// stop, after the flag is set and after the pause's line, which its commit writes, and then the
+// ended pause, after the flag is cleared and after the resume's line; and the store keeps the
+// controller's session as who paused and who resumed. The controller is a registered one, and no
+// notice tells it of its own acts.
 func TestTheControllersPauseAndResumeSetAndClearTheFlag(t *testing.T) {
 	ctx := context.Background()
 	r := newRig(t)
@@ -378,8 +378,8 @@ func TestTheControllersPauseAndResumeSetAndClearTheFlag(t *testing.T) {
 	if calls[0].pause.ID != pause.ID || !slices.Equal(asked, []claim.Token{implementer, tester}) {
 		t.Fatalf("Effects.Paused got pause %d asking %v, want pause %d asking the implementer and the tester", calls[0].pause.ID, asked, pause.ID)
 	}
-	if calls[0].flag != pause.ID || calls[0].logged {
-		t.Fatalf("Effects.Paused found the flag at %d and the pause logged %t, want the flag set and nothing logged yet", calls[0].flag, calls[0].logged)
+	if calls[0].flag != pause.ID || !calls[0].logged {
+		t.Fatalf("Effects.Paused found the flag at %d and the pause logged %t, want the flag set and the pause logged at its commit", calls[0].flag, calls[0].logged)
 	}
 
 	r.clock.Advance(30 * time.Minute)
@@ -397,8 +397,8 @@ func TestTheControllersPauseAndResumeSetAndClearTheFlag(t *testing.T) {
 		t.Fatalf("project_pauses says pause %d was ended by %+v, want the controller's session", pause.ID, endedBy)
 	}
 	resumes := r.effects.resumedCalls()
-	if len(resumes) != 1 || resumes[0].ended.ID != pause.ID || resumes[0].flagged || resumes[0].logged {
-		t.Fatalf("Effects.Resumed calls = %+v, want one for pause %d with the flag cleared and nothing logged yet", resumes, pause.ID)
+	if len(resumes) != 1 || resumes[0].ended.ID != pause.ID || resumes[0].flagged || !resumes[0].logged {
+		t.Fatalf("Effects.Resumed calls = %+v, want one for pause %d with the flag cleared and the resume logged at its commit", resumes, pause.ID)
 	}
 	if _, notices := controllerNotices(t, r.st); len(notices) != 0 {
 		t.Fatalf("controller notices = %+v, want none: the controller's own acts tell it nothing", notices)
@@ -763,6 +763,85 @@ func TestLoadAndRefreshFollowAPauseAnotherDaemonMade(t *testing.T) {
 	}
 	if flag(second) != 0 {
 		t.Fatalf("the second daemon's flag after its refused resume = %d, want none", flag(second))
+	}
+}
+
+// A pause and a resume another daemon made are no acts of this one. Its Refresh, and its own acts
+// the store refuses for them, move its flag and run none of its Effects: the daemon that made each
+// act runs its own, and this daemon's machines meet the flag at their next decision.
+// Only an act of this daemon's own whose outcome the store could not say is owed its Effects
+// (TestAPauseWhoseCommitReplyIsLostKeepsItsSuccessWork).
+func TestARefreshOfAnotherDaemonsPauseAndResumeRunsNoEffects(t *testing.T) {
+	ctx := context.Background()
+	url := testpg.Clone(t, "legion_pause")
+	open := func() *store.Store {
+		st, err := store.Open(ctx, url)
+		if err != nil {
+			t.Fatalf("open the database: %v", err)
+		}
+		t.Cleanup(st.Close)
+		return st
+	}
+	clock := &testClock{at: pausedAt}
+	first, second := rigOn(t, open(), clock, capable()), rigOn(t, open(), clock, capable())
+	seedClaims(t, first.st)
+	none := func(when string) {
+		t.Helper()
+		if paused, resumed := second.effects.pausedCalls(), second.effects.resumedCalls(); len(paused) != 0 || len(resumed) != 0 {
+			t.Fatalf("%s: the second daemon's Effects.Paused ran %d times and Effects.Resumed %d, want none", when, len(paused), len(resumed))
+		}
+	}
+
+	pause, err := first.svc.Pause(ctx, operator, "the model provider is down")
+	if err != nil {
+		t.Fatalf("the first daemon's pause: %v", err)
+	}
+	if err := second.svc.Refresh(ctx); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if id, paused := second.svc.Paused(); !paused || id != pause.ID {
+		t.Fatalf("the second daemon's flag after Refresh = %d, %t; want pause %d", id, paused, pause.ID)
+	}
+	none("after a Refresh read the first daemon's pause")
+
+	clock.Advance(10 * time.Minute)
+	if _, _, err := first.svc.Resume(ctx, operator); err != nil {
+		t.Fatalf("the first daemon's resume: %v", err)
+	}
+	if err := second.svc.Refresh(ctx); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if _, paused := second.svc.Paused(); paused {
+		t.Fatal("the second daemon's flag after Refresh = paused, want none")
+	}
+	none("after a Refresh read the first daemon's resume")
+
+	clock.Advance(10 * time.Minute)
+	again, err := first.svc.Pause(ctx, controller, "the provider is down again")
+	if err != nil {
+		t.Fatalf("the first daemon's second pause: %v", err)
+	}
+	var standing *store.AlreadyPausedError
+	if _, err := second.svc.Pause(ctx, operator, "the operator's pause"); !errors.As(err, &standing) {
+		t.Fatalf("the second daemon's pause = %v, want an AlreadyPausedError", err)
+	}
+	if id, _ := second.svc.Paused(); id != again.ID {
+		t.Fatalf("the second daemon's flag after its refused pause = %d, want pause %d", id, again.ID)
+	}
+	none("after the second daemon's pause was refused")
+	if _, _, err := first.svc.Resume(ctx, controller); err != nil {
+		t.Fatalf("the first daemon's second resume: %v", err)
+	}
+	var notPaused *store.NotPausedError
+	if _, _, err := second.svc.Resume(ctx, operator); !errors.As(err, &notPaused) {
+		t.Fatalf("the second daemon's resume = %v, want a NotPausedError", err)
+	}
+	if _, paused := second.svc.Paused(); paused {
+		t.Fatal("the second daemon's flag after its refused resume = paused, want none")
+	}
+	none("after the second daemon's resume was refused")
+	if got := len(first.effects.pausedCalls()) + len(first.effects.resumedCalls()); got != 4 {
+		t.Fatalf("the first daemon's Effects ran %d times, want 4: one for each of its own acts", got)
 	}
 }
 

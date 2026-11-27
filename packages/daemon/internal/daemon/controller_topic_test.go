@@ -34,6 +34,7 @@ import (
 // subscriber dedupes on. The controller reads the notice the architect is sent, without the row's
 // routing.
 func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitects(t *testing.T) {
+	t.Parallel()
 	listener := newNoticeListener()
 	server := httptest.NewServer(listener)
 	t.Cleanup(server.Close)
@@ -69,7 +70,7 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 	// that saw the slot without it would take the tree out of the workflow and its architect would
 	// be told nothing. Slot indexes are unique across the shared database, so the tree takes the
 	// next free one.
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		if err := records.PutIssue(context.Background(), tx, record.Issue{
 			Key: issue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: issue, Project: cfg.Project, Title: "held", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U",

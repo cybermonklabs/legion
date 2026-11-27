@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"crypto/rand"
@@ -51,8 +50,8 @@ const (
 	// "OWNG"), a conditional edit's admission's (docs.conditionalEditQueueLockNamespace, "QUEU"),
 	// the issue dependencies'
 	// (lockProjectIssueDependencies), the deployment's own issue dependencies'
-	// (lockDeploymentIssueDependencies), one repository mapping's write (lockRepoProjectWrite) and
-	// the rename graph's own (refuseRepoRenameChain). The second key is the listening connection's
+	// (lockDeploymentIssueDependencies) and the boot's repository rename pass's
+	// (store.repoRenameLockNamespace, "RNAM"). The second key is the listening connection's
 	// backend pid, which no other live connection has, so two processes' keys never meet.
 	testHookLockNamespace int32 = 0x484F4F4B
 	// testHookTimeout bounds a call: the wait for this process's own listener, and then for every
@@ -481,7 +480,7 @@ func (s *server) runTestHook(ctx context.Context, call testHookCall) (int, []byt
 		s.shutAllLiveSockets(contracts.LiveSocketMaxAgeClose, liveSocketMaxAgeReason)
 	case hookQuiesceDocuments:
 		if err := s.deps.Docs.Quiesce(ctx); err != nil {
-			answer := &testHookAnswer{header: http.Header{}}
+			answer := &errorAnswer{header: http.Header{}}
 			s.writeHandlerError(answer, err)
 			return answer.status, answer.body.Bytes()
 		}
@@ -512,18 +511,6 @@ func testHookFailure(status int, code, message string) (int, []byte) {
 	body, _ := json.Marshal(errorBody{Code: code, Error: message})
 	return status, body
 }
-
-// testHookAnswer records what a handler's error writer writes, so a process can send it to the
-// caller as its acknowledgement.
-type testHookAnswer struct {
-	header http.Header
-	status int
-	body   bytes.Buffer
-}
-
-func (a *testHookAnswer) Header() http.Header         { return a.header }
-func (a *testHookAnswer) Write(p []byte) (int, error) { return a.body.Write(p) }
-func (a *testHookAnswer) WriteHeader(status int)      { a.status = status }
 
 // splitTestHookCall splits encoded into the payloads of its notifications, each
 // "<id> <part> <parts> <piece>" with part counted from 1. A piece ends on a character boundary,

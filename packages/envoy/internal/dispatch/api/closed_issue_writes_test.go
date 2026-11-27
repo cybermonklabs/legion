@@ -67,6 +67,7 @@ func assertRefusedOnClosedIssue(t *testing.T, name string, response *httptest.Re
 }
 
 func TestClosedIssueTakesCommentsAndMessagesFromPeopleAndAgents(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Closed conversation", "before")
 	closeIssue(t, handler, issue.Key)
@@ -107,6 +108,7 @@ func TestClosedIssueTakesCommentsAndMessagesFromPeopleAndAgents(t *testing.T) {
 }
 
 func TestClosedIssueDeliversACommentMentionItsRetryAndTheAgentsReply(t *testing.T) {
+	t.Parallel()
 	listener, sends := closedIssueListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Closed mention", "before")
@@ -158,6 +160,7 @@ func TestClosedIssueDeliversACommentMentionItsRetryAndTheAgentsReply(t *testing.
 }
 
 func TestClosedIssueDeliversAMessageItsRetryAndTheAgentsReply(t *testing.T) {
+	t.Parallel()
 	listener, sends := closedIssueListener(t)
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Closed message", "before")
@@ -197,6 +200,7 @@ func TestClosedIssueDeliversAMessageItsRetryAndTheAgentsReply(t *testing.T) {
 }
 
 func TestClosedIssueTakesAnAnchoredCommentAndItsThread(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Closed anchors", "before the close")
 	earlier := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
@@ -243,6 +247,7 @@ func TestClosedIssueTakesAnAnchoredCommentAndItsThread(t *testing.T) {
 }
 
 func TestClosedIssueStillRefusesEveryOtherWriteUntilReopened(t *testing.T) {
+	t.Parallel()
 	listener, _ := closedIssueListener(t)
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Closed for other writes", "before")

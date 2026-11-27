@@ -21,7 +21,6 @@ import {
   getIssueResults,
   patchIssue,
   putArchitectureSource,
-  putRepoProject,
   recordCheckResult,
   replyToCommentBlock,
   syncArchitectureSource,
@@ -175,7 +174,6 @@ async function seedProjectSurroundings(issueKey: string, repository: string): Pr
   if (source.last_error !== null) {
     throw new Error(`the component model did not import: ${source.last_error}`);
   }
-  await putRepoProject(repository, { default: false, project: PROJECT });
 }
 
 /** The sessions a seeded issue routes to, is claimed by and is subscribed by. A subscriber is a

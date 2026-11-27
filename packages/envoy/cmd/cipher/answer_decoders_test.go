@@ -55,7 +55,7 @@ func TestTheAnswerDecodersPrintTheAnswerOnlyAsTheAddressLetsItPrint(t *testing.T
 			return err
 		}},
 		{"decode grant values", `{"values":{},"expires_at":` + echo + `}`, func(c *client) error {
-			_, err := c.GrantValues(ctx, signer, "grant-1", nil, releaseCall{})
+			_, err := c.GrantValues(ctx, signer, "grant-1", releaseCall{})
 			return err
 		}},
 		{"decode self", `{"enrollment_id":"enr-test","lease_expires_at":` + echo + `}`, func(c *client) error {

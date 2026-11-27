@@ -1,11 +1,14 @@
 package config
 
 import (
+	"fmt"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
 // A file that names `hooks:` runs the hooks it names and no default beside them, read whole and
@@ -81,3 +84,56 @@ func TestLoadRunsTheShippedHookWithoutTheKey(t *testing.T) {
 // aHook is minimalFile carrying the hooks the row writes, as a flow sequence so one row of
 // TestLoadRefuses is one line: every refusal of a single hook names it `hooks[0]`.
 func aHook(mappings string) string { return minimalFile + "hooks: [" + mappings + "]\n" }
+
+// A task in another order than today's moves back by its own order, so a hook's `moves` names a
+// move between any two different workflow phases: testing-reviewing, the move back of a task whose
+// review comes before its test, loads, and a phase paired with itself is refused, since it is no
+// move. The twin: a move back of today's line still loads.
+func TestAHookNamesAMoveOfAnyOrder(t *testing.T) {
+	for _, move := range []string{"testing-reviewing", "reviewing-implementing"} {
+		cfg, err := Load(writeConfigFile(t, aHook("{name: stuck, on: work_back, every: 1, moves: ["+move+"], roles: [tester], prompt: Words.}")), noEnv)
+		if err != nil {
+			t.Fatalf("Load(moves: [%s]): %v", move, err)
+		}
+		if len(cfg.Hooks) != 1 || !reflect.DeepEqual(cfg.Hooks[0].Moves, []string{move}) {
+			t.Fatalf("Hooks of moves: [%s] = %+v, want the one move", move, cfg.Hooks)
+		}
+	}
+	_, err := Load(writeConfigFile(t, aHook("{name: stuck, on: work_back, every: 1, moves: [testing-testing], roles: [tester], prompt: Words.}")), noEnv)
+	want := `hooks[0].moves names "testing-testing", which is no move the daemon counts: a move is written "<from>-<to>", two different workflow phases`
+	if err == nil || err.Error() != want {
+		t.Fatalf("Load(moves: [testing-testing]) error = %v, want %q", err, want)
+	}
+}
+
+// A hook that names a move no task's line makes back would never fire, so the loader refuses it,
+// naming the move: each step phase to retro or to merging, and retro to merging, since the retro
+// and the merge end every line; and implementing to testing, reviewing or accepting, since every
+// tester, reviewer and acceptance step comes after the implementer's. These 14 are written out
+// here, not read from the code under test. The twin: each of the other 28 pairs of two different
+// workflow phases loads, a move back of today's line and one of another order alike.
+func TestAHookNamingAMoveNoLineMakesBackIsRefused(t *testing.T) {
+	never := []string{
+		"planning-retro", "implementing-retro", "testing-retro", "reviewing-retro", "accepting-retro",
+		"planning-merging", "implementing-merging", "testing-merging", "reviewing-merging", "accepting-merging",
+		"retro-merging", "implementing-testing", "implementing-reviewing", "implementing-accepting",
+	}
+	loaded := 0
+	for _, move := range phase.MovePairs() {
+		_, err := Load(writeConfigFile(t, aHook("{name: stuck, on: work_back, every: 1, moves: ["+move+"], roles: [tester], prompt: Words.}")), noEnv)
+		if !slices.Contains(never, move) {
+			if err != nil {
+				t.Errorf("Load(moves: [%s]): %v, want the move back loaded", move, err)
+			}
+			loaded++
+			continue
+		}
+		want := fmt.Sprintf(`hooks[0].moves names %q, which no task's line makes as a move back, so the hook would never fire: retro and merging end every line, and every tester, reviewer and acceptance step comes after the implementer's`, move)
+		if err == nil || err.Error() != want {
+			t.Errorf("Load(moves: [%s]) error = %v, want %q", move, err, want)
+		}
+	}
+	if loaded != 28 {
+		t.Errorf("%d pairs were read as moves back, want 28", loaded)
+	}
+}

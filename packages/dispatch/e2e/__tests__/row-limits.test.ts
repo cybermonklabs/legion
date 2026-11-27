@@ -88,11 +88,11 @@ function collectedFiles(root: string, relative: string): string[] {
   return files;
 }
 
-// The walk is `e2e/source-files.ts`'s, which `e2e/fixed-waits.ts` and `e2e/no-browser-rows.ts`
-// walk with too, and the filters `testFiles` hands it are this rule's own, so what it covers is
-// asserted rather than assumed: every file `bun test` collects in this directory, at any depth
-// below it, `fixtures/` included, and no file beside them. The set this row expects is walked
-// above, not asked of the rule.
+// The walk is `e2e/source-files.ts`'s, which the suite's other source scans walk with too, and
+// the filters `testFiles` hands it are this rule's own, so what it covers is asserted rather than
+// assumed: every file `bun test` collects in this directory, at any depth below it, `fixtures/`
+// included, and no file beside them. The set this row expects is walked above, not asked of the
+// rule.
 test("the scan reads every test file of the directory, wherever it stands", () => {
   const collected = collectedFiles(e2eDirectory, "__tests__").sort();
   expect(scannedFiles).toEqual(collected);

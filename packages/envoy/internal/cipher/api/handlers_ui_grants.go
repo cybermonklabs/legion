@@ -5,6 +5,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -94,14 +95,25 @@ func (s *server) revokeByApprover(w http.ResponseWriter, r *http.Request, caller
 // (requests.Machine.RevokeByApprover): login must be the grant's approver, the person its
 // enrollment acts for (operatorOf), or, for a grant the model judge approved in anyone's stead,
 // anyone whom the grant's private project, if it has one, lets see it (mayRevoke). The approver
-// and that person end it whatever Dispatch answers. Anyone else whom the project hides the grant
-// from is answered 404 exactly as for an id no grant has, and a grant Dispatch could not answer
-// for is 503 PROJECT_ACCESS_UNAVAILABLE to them; a grant they may see that names them nowhere is
-// 403 NOT_APPROVER, and one that moved to another box each time the revoke read it is 409
-// GRANT_MOVING; each revokes nothing. When the operator
-// revokes a grant the session got without asking, its secrets are withheld from that session, even
-// when the grant had already ended: its other grants that got them without asking end too, and its
-// later requests for them ask their owner.
+// and that person end it whatever Dispatch answers of its project. Anyone else whom the project
+// hides the grant from is answered 404 exactly as for an id no grant has, and a grant Dispatch
+// could not answer for is 503 PROJECT_ACCESS_UNAVAILABLE to them; a grant they may see that names
+// them nowhere is 403 NOT_APPROVER, and one that moved to another box each time the revoke read it
+// is 409 GRANT_MOVING; each revokes nothing. A person Dispatch calls a restricted member is no
+// approver of a secret, and ends a grant only as the person its enrollment acts for: one the grant
+// admits only as an approver is 403 NOT_APPROVER, saying why, revoking nothing. While Dispatch does
+// not answer what kind of member the person is, only the person the grant names as its approver
+// ends it as an approver, since a revoke only takes access away; every revoke through a group or
+// as anyone then, whatever session holds the grant, and every revoke while Dispatch answers
+// anything else the broker cannot read, is 503 MEMBER_KIND_UNCHECKABLE, revoking nothing. A grant
+// on a person's session can still be ended then by that person, its operator, who asks Dispatch
+// nothing; a grant on a session that acts for no person (a service's pod, a person's pod the
+// broker no longer maps, or a machine's own session) is ended through the broker by nobody but its
+// named approver until Dispatch answers. A revoke whose caller hung up after the member-kind read
+// is 503 REQUEST_ENDED, writes no line and is counted cancelled, as one that hung up during the
+// read is. When the operator revokes a grant the session got without asking, its secrets are
+// withheld from that session, even when the grant had already ended: its other grants that got
+// them without asking end too, and its later requests for them ask their owner.
 func (s *server) revokeGrantAs(w http.ResponseWriter, r *http.Request, id, login, actor string) {
 	if err := s.deps.Machine.RevokeByApprover(r.Context(), id, login, actor); err != nil {
 		writeRevokeRefusal(w, err)
@@ -124,11 +136,23 @@ func writeRevokeRefusal(w http.ResponseWriter, err error) {
 		writeProjectAccessUnavailable(w, "revoke grant", err)
 	case errors.Is(err, requests.ErrNotApprover):
 		writeError(w, http.StatusForbidden, "NOT_APPROVER", err.Error())
+	case writeMemberKindUncheckable(w, "the revoke", err):
+		// The grant admits the person only as an approver, and the broker could not read what kind
+		// of member they are: Dispatch answered what the broker cannot read, the caller went away,
+		// or Dispatch did not answer and the grant does not name the person as its approver.
+		// Nothing was revoked.
 	case errors.Is(err, requests.ErrGrantMoving):
 		// Adoptions kept moving the grant between the person rule and the transaction, so the
 		// revoke decided nothing; it succeeds once the grant stays on one session.
 		slog.Warn("broker: revoke grant: the grant kept moving", "error", err)
 		writeError(w, http.StatusConflict, "GRANT_MOVING", grantMoving)
+	case errors.Is(err, context.Canceled):
+		// The caller hung up, and a read or the transaction after the member-kind read failed on
+		// the request's own cancellation: that says nothing of the broker or of Dispatch, so it
+		// writes no line and is counted cancelled, as a hang-up during that read is
+		// (writeMemberKindUncheckable).
+		answer.FromWriter(w).NoteCallerEnded()
+		writeError(w, http.StatusServiceUnavailable, "REQUEST_ENDED", "the request ended before the revoke finished; send it again")
 	default:
 		writeInternal(w, "revoke grant", err)
 	}

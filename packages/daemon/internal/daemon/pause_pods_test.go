@@ -36,6 +36,7 @@ func (c *factCollector) Apply(_ context.Context, _ pgx.Tx, fact intake.Fact) (in
 // tick, which would queue a tick notice (internal/admit's
 // TestTheResumesPassPromotesAndQueuesNoTickNotice holds what admission does with it).
 func TestTheResumesPassIsAFactOfItsOwnAppliedOnce(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	collector := &factCollector{}
 	p := &projectPause{project: "LEGION", log: quietLogger(),
@@ -77,7 +78,7 @@ func endLegionPause(t *testing.T, pool *store.Pool, id int64, at time.Time) {
 func holdLegionPod(t *testing.T, st *store.Store, pause int64, issue string, at time.Time) {
 	t.Helper()
 	ctx := context.Background()
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := store.LockIssueForPause(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -107,6 +108,7 @@ func podHoldEnd(t *testing.T, pool *store.Pool, issue string) string {
 // runs under its own project and the pause holds, is passed over the same way: the pause is the
 // daemon's project's, not its issue key's.
 func TestTheStuckWarningReadsTheStuckClockAndPassesOverAPausedProject(t *testing.T) {
+	t.Parallel()
 	w, pool, logged := wakeRuntime(t)
 	ctx := context.Background()
 	woke := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
@@ -146,6 +148,7 @@ func TestTheStuckWarningReadsTheStuckClockAndPassesOverAPausedProject(t *testing
 // Decision 13 of dispatch://INFRA-3759: a pod's hold ends at the first ready of a role of the pod,
 // which reaches the daemon as the claim's durable ready (podResume).
 func TestAPodHoldEndsAtTheReadyOfARoleOfThePod(t *testing.T) {
+	t.Parallel()
 	w, pool, _ := wakeRuntime(t)
 	ctx := context.Background()
 	at := time.Now().UTC()
@@ -179,6 +182,7 @@ func (c closeAuthorizingTrees) IssueSuspension(context.Context, string, store.Is
 // that deletes the pod ends the pause's hold of it, as deleted; a suspension the store does not
 // authorize deletes nothing and leaves the hold standing.
 func TestAPodHoldEndsWhenTheIssuesSuspensionDeletesThePod(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		act     bool
@@ -215,6 +219,7 @@ func TestAPodHoldEndsWhenTheIssuesSuspensionDeletesThePod(t *testing.T) {
 // Decision 12 of dispatch://INFRA-3759: no update round opens over a pod a project's pause holds,
 // however its configuration drifted; once the hold ends, the next sweep opens the round.
 func TestPodUpdateOpensNoRoundOverAPodAPauseHolds(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 	pause := openLegionPause(t, rig.pool, podUpdateStart)
@@ -245,6 +250,7 @@ func TestPodUpdateOpensNoRoundOverAPodAPauseHolds(t *testing.T) {
 // the pod was held. A hold of ten minutes from five minutes into the round keeps the pod at the
 // bound, a minute short of the moved bound the roles still have, and the moved bound replaces it.
 func TestPodUpdateRoundWaitsOverAPodAPauseHoldsAndItsBoundMovesByTheHeldTime(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 	rig.tick()
@@ -306,6 +312,7 @@ func TestPodUpdateRoundWaitsOverAPodAPauseHoldsAndItsBoundMovesByTheHeldTime(t *
 // A bound that the hold does not move replaces the pod a minute past the bound the grace alone
 // sets, while the tester's launch is still parked, and the test fails there.
 func TestPodUpdateRoundWaitsForARoleThePauseStoppedUntilTheLetOutOfItsHeldLaunch(t *testing.T) {
+	t.Parallel()
 	const stopped = claim.RoleTester
 	letOut := podUpdateBound.Add(10 * time.Minute)
 	rig := newPodUpdateRigWith(t, podUpdateRigOptions{wakePace: pacedUntil(letOut)},
@@ -411,9 +418,10 @@ func (r *podUpdateRig) wantLaunchKeptForOwed(role, owed claim.Role) {
 // keep of both roles. The round then passes over the implementer, and it replaces the pod through
 // the reviewer's process once the reviewer has answered, before the implementer's launch.
 func TestPodUpdateRoundKeepsThePodForEachRoleThePauseStillOwesALaunch(t *testing.T) {
+	t.Parallel()
 	const first, second = claim.RoleReviewer, pauseStoppedRole
 	// letsOutAtOnce is a wake pacing that lets every paced launch out at the moment it reserves it.
-	letsOutAtOnce := supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now }}
+	letsOutAtOnce := supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time { return now }}
 	waitsFor := fmt.Sprintf("the held launch of the %s", second)
 	// firstRanSecondWaits is a rig of its own, taken to the moment where first's held launch has
 	// run and first has answered and has been suspended, and second's held start has not run.
@@ -495,14 +503,16 @@ func TestPodUpdateRoundKeepsThePodForEachRoleThePauseStillOwesALaunch(t *testing
 // launch with no process recorded (supervisor.restore). Its orphan reconciliation fails, so it does
 // not launch the claim again (reconcileBootOrphans). The sweeps before the bound keep the pod. The
 // next reconciliation succeeds, and the daemon releases the launch to queued, the first of the two
-// steps of its relaunch (launchUnfinishedClaim). The sweeps still keep the pod. The second step,
-// the spawn, waits in the wake pacing until the let-out. At the let-out the launch comes up in the
-// round's pod with one launch, and the hook's reason names the launch that the pause owes.
+// steps of its relaunch (releaseUnfinishedClaim, launchUnfinished). The sweeps still keep the pod.
+// The second step, the spawn, waits in the wake pacing until the let-out. At the let-out the launch
+// comes up in the round's pod with one launch, and the hook's reason names the launch that the
+// pause owes.
 //
 // Where the keep is read of a launching claim alone (review round 4), the claim restored
 // launch_uncertain is no launch the pause owes, and the first sweep after the restart replaces the
 // pod by issue.
 func TestAPodlessRoundKeepsThePodForAHeldLaunchThatARestartLeftUncertain(t *testing.T) {
+	t.Parallel()
 	const stopped = pauseStoppedRole
 	pauseKeepsThePod(t, func(t *testing.T, rig *podUpdateRig) {
 		rig.parkPauseHeldLaunch(stopped, pauseLetOut)
@@ -559,6 +569,7 @@ func TestAPodlessRoundKeepsThePodForAHeldLaunchThatARestartLeftUncertain(t *test
 // no launch of the pause, and the launch replaces the pod that the pause kept as the round's own
 // replacement.
 func TestALaunchUnderARoundKeepsThePodWhereTheLaunchAPauseOwesForgetsItsSession(t *testing.T) {
+	t.Parallel()
 	const stopped = pauseStoppedRole
 	rig := newPodUpdateRig(t, releasedUnasked(stopped), answeredThenSuspended(claim.RoleTester))
 	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
@@ -671,6 +682,7 @@ func (r *podUpdateRig) wantRefusedUnderTurn(line, reason string) {
 // Where the last word reads the holds the sweep read, the round still passes over the reviewer,
 // and the replacement deletes the pod that the pause keeps for the reviewer's work.
 func TestPodUpdateReplacementReadsThePauseHoldsAgainUnderTheLaunchTurn(t *testing.T) {
+	t.Parallel()
 	const woken = claim.RoleReviewer
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), suspendedRole(woken, supervise.SuspendedByReleased))
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
@@ -687,7 +699,7 @@ func TestPodUpdateReplacementReadsThePauseHoldsAgainUnderTheLaunchTurn(t *testin
 	if calls := rig.replacements(); len(calls) != 0 {
 		t.Fatalf("the pod was replaced %d times, want none: the pause owes the %s a launch", len(calls), woken)
 	}
-	rig.wantRefusedUnderTurn(backgroundNotDueLine, fmt.Sprintf("%s has not answered it", woken))
+	rig.wantRefusedUnderTurn(backgroundNotDueLine, fmt.Sprintf("%s has not answered it, or its machine was deciding something", woken))
 	rig.wantPodKept(fmt.Sprintf("the answer of the %s", woken))
 }
 
@@ -708,6 +720,7 @@ func TestPodUpdateReplacementReadsThePauseHoldsAgainUnderTheLaunchTurn(t *testin
 // Where the last word reads the holds the sweep read, nothing holds the pod, and the replacement
 // by issue deletes the pod that the pause keeps for the implementer's work.
 func TestTheByIssueReplacementReadsThePauseHoldsAgainUnderTheLaunchTurn(t *testing.T) {
+	t.Parallel()
 	const woken = pauseStoppedRole
 	rig := newPodUpdateRig(t, releasedUnasked(woken), answeredThenSuspended(claim.RoleTester))
 	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
@@ -738,6 +751,7 @@ func TestTheByIssueReplacementReadsThePauseHoldsAgainUnderTheLaunchTurn(t *testi
 // the runtime waits for the pod's launch turn, a project's pause opens and holds the pod
 // (holdPodUnderLaunchTurn). Only the last word can see that hold.
 func TestTheLastWordRefusesAReplacementWhileAPauseHoldsThePod(t *testing.T) {
+	t.Parallel()
 	// The last word on a replacement through a process (replacementDue). The implementer is the
 	// round's one member. It answers, and the round is complete. The last word refuses the
 	// replacement and names the pause's hold. The next sweeps read the hold too, and they keep the
@@ -823,6 +837,7 @@ func TestTheLastWordRefusesAReplacementWhileAPauseHoldsThePod(t *testing.T) {
 // 2), the pause keeps the pod for the reviewer too: the sweep replaces nothing before the bound,
 // and the reviewer's launch goes into the round's pod.
 func TestAPodlessRoundIsNotKeptForAPauseResumeWhoseRoleCameUp(t *testing.T) {
+	t.Parallel()
 	const stopped, idle = pauseStoppedRole, claim.RoleReviewer
 	members := []claim.Role{stopped, idle, claim.RoleTester}
 	// cameUpThenARoundOpened is a rig of its own, taken to the moment where the daemon has

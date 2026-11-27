@@ -25,9 +25,9 @@ import (
 
 // wantEndedTold is whether the claim's record of what its last let-go ended has been told, and by
 // the confirmation of which delivery (EndedWork.ToldBy), as the machine holds it and as the store
-// holds it: confirm writes the mark with the confirmation. by "" names no delivery: a record still
-// untold, or one the abandonment of its session told (forgetSession), which no take-back of a
-// confirmation untells.
+// holds it: confirmCarrying writes the mark with the confirmation. by "" names no delivery: a
+// record still untold, or one the abandonment of its session told (forgetSession), which no
+// take-back of a confirmation untells.
 func (h *harness) wantEndedTold(told bool, by, when string) {
 	h.t.Helper()
 	for where, got := range map[string]EndedWork{"the machine": h.claim().EndedWork, "the store": h.store.load(h.token).EndedWork} {

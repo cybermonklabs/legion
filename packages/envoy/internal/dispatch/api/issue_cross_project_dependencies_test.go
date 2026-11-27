@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,7 @@ type dependencyEdge struct{ issue, target string }
 // and has nothing but that one lock to order it. A caller whose credential names one project is
 // still refused a target outside it.
 func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	alpha := createListedIssues(t, handler, "ALPHA", 8)
 	beta := createListedIssues(t, handler, "BETA", 8)
@@ -123,8 +125,8 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 	}
 
 	// What stays refused. The cycle walk is project-blind, so a ring of two cross-project links
-	// is refused exactly as one inside a project is; a parent cannot cross a project, so the
-	// parent rules are read inside one.
+	// is refused exactly as one inside a project is. The parent rules are read inside one project
+	// here; TestParentCrossesAProjectAndStillRefusesACycle reads them across two.
 	setBlockers("the first half of a cross-project ring", alpha[1], []string{beta[2]})
 	expectRefusal("a ring of two cross-project links", patchBlockers(beta[2], []string{alpha[1]}),
 		http.StatusConflict, "DEPENDENCY_CYCLE")
@@ -348,4 +350,788 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 			t.Fatalf("blocked_by = %v, want %v", got, []string{sibling})
 		}
 	})
+}
+
+// foreignChildOpenAnswer is the body of a 409 FOREIGN_CHILD_OPEN, declared here rather than taken
+// from the route's own type, so the test reads the wire shape a client reads.
+type foreignChildOpenAnswer struct {
+	Code   string `json:"code"`
+	Error  string `json:"error"`
+	Issues []struct {
+		Key     string `json:"key"`
+		Project string `json:"project"`
+		Status  string `json:"status"`
+	} `json:"issues"`
+}
+
+// TestAnAcceptanceWriteWaitsForAnOpenChildOfAnotherProject: a status write of retro or done that
+// carries refuse_open_foreign_children, which the Legion daemon's sign_off and close_root send, is
+// refused while a child of another project is open. Open is what the daemon's record.ChildOpen
+// says of a child it does not record, which a child of another project always is: any status but
+// done and icebox. A write without the field, a person's, and a write over an open child of the
+// issue's own project, which the parent's own daemon judges, are taken as before.
+func TestAnAcceptanceWriteWaitsForAnOpenChildOfAnotherProject(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	core := createListedIssues(t, handler, "CORE", 4)
+	side := createListedIssues(t, handler, "SIDE", 1)
+	parent, child := core[0], side[0]
+	// The test writes the link itself rather than through the route, so it reads the same at a
+	// build whose routes still refuse a parent of another project.
+	if _, err := database.Pool.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, parent, child); err != nil {
+		t.Fatalf("put %s under %s: %v", child, parent, err)
+	}
+	patch := func(t *testing.T, key string, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, body, "alice")
+	}
+	setStatus := func(t *testing.T, key, status string) {
+		t.Helper()
+		if response := patch(t, key, map[string]any{"status": status}); response.Code != http.StatusOK {
+			t.Fatalf("set %s to %s: status=%d body=%s", key, status, response.Code, response.Body.String())
+		}
+	}
+	statusOf := func(t *testing.T, key string) string {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("read %s: status=%d body=%s", key, response.Code, response.Body.String())
+		}
+		return decodeBody[model.Issue](t, response).Status
+	}
+
+	// Each row is a subtest of its own, so a run against a build without the rule reports every
+	// row: the refused rows fail there, and the taken rows pass, which pins what stays as it was.
+	for _, row := range []struct{ child, write string }{
+		{"triage", "retro"},
+		{"triage", "done"},
+		{"in_progress", "retro"},
+	} {
+		t.Run(row.write+" over a child of another project in "+row.child+" is refused", func(t *testing.T) {
+			setStatus(t, parent, "in_progress")
+			setStatus(t, child, row.child)
+			response := patch(t, parent, map[string]any{"status": row.write, "refuse_open_foreign_children": true})
+			if response.Code != http.StatusConflict {
+				t.Fatalf("status=%d body=%s, want 409 FOREIGN_CHILD_OPEN", response.Code, response.Body.String())
+			}
+			refusal := decodeBody[foreignChildOpenAnswer](t, response)
+			got := make([]string, 0, len(refusal.Issues))
+			for _, issue := range refusal.Issues {
+				got = append(got, issue.Key+" "+issue.Project+" "+issue.Status)
+			}
+			want := []string{child + " SIDE " + row.child}
+			if refusal.Code != "FOREIGN_CHILD_OPEN" || !slices.Equal(got, want) || !strings.Contains(refusal.Error, child) {
+				t.Fatalf("refusal %+v, want FOREIGN_CHILD_OPEN naming %v", refusal, want)
+			}
+			if got := statusOf(t, parent); got != "in_progress" {
+				t.Fatalf("the refused write left %s in %s, want in_progress", parent, got)
+			}
+		})
+	}
+
+	for _, row := range []struct {
+		what, child string
+		field       bool
+	}{
+		{"a child of another project in icebox, which a parent does not count as open", "icebox", true},
+		{"a done child of another project", "done", true},
+		{"an open child of another project, written with no field, as a person writes", "triage", false},
+	} {
+		t.Run("retro over "+row.what+" is taken", func(t *testing.T) {
+			setStatus(t, parent, "in_progress")
+			setStatus(t, child, row.child)
+			body := map[string]any{"status": "retro"}
+			if row.field {
+				body["refuse_open_foreign_children"] = true
+			}
+			if response := patch(t, parent, body); response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s, want 200", response.Code, response.Body.String())
+			}
+			if got := statusOf(t, parent); got != "retro" {
+				t.Fatalf("the write left %s in %s, want retro", parent, got)
+			}
+		})
+	}
+
+	// An open child of the issue's own project is its own daemon's to judge (record.ChildOpen
+	// over the children it records), so Dispatch takes the write.
+	t.Run("retro over an open child of the issue's own project is taken", func(t *testing.T) {
+		ownParent, ownChild := core[2], core[3]
+		if response := patch(t, ownChild, map[string]any{"parent": ownParent}); response.Code != http.StatusOK {
+			t.Fatalf("put %s under %s: status=%d body=%s", ownChild, ownParent, response.Code, response.Body.String())
+		}
+		setStatus(t, ownChild, "in_progress")
+		if response := patch(t, ownParent, map[string]any{"status": "retro", "refuse_open_foreign_children": true}); response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s, want 200", response.Code, response.Body.String())
+		}
+	})
+}
+
+// TestAnAcceptanceFieldGoesOnlyWithAnAcceptanceStatus: refuse_open_foreign_children asks for the
+// check of an acceptance write, so it is refused beside any other status or none.
+func TestAnAcceptanceFieldGoesOnlyWithAnAcceptanceStatus(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	core := createListedIssues(t, handler, "CORE", 1)
+	for _, body := range []map[string]any{
+		{"status": "in_progress", "refuse_open_foreign_children": true},
+		{"title": "Retitled", "refuse_open_foreign_children": true},
+	} {
+		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+core[0], body, "alice")
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_ISSUE"`) {
+			t.Fatalf("%v: status=%d body=%s, want 400 INVALID_ISSUE", body, response.Code, response.Body.String())
+		}
+	}
+}
+
+// TestAnAcceptanceWriteTakesTheDependencyLock: the acceptance check and its write run under the
+// deployment dependency lock that every parent write takes, so no child is filed between the two.
+// A status write without the field takes no dependency lock, as before.
+func TestAnAcceptanceWriteTakesTheDependencyLock(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	core := createListedIssues(t, handler, "CORE", 2)
+	gate, err := database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Rollback(context.Background())
+	if err := lockDeploymentIssueDependencies(context.Background(), gate); err != nil {
+		t.Fatal(err)
+	}
+	plain := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		plain <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+core[1], map[string]any{"status": "retro"}, "alice")
+	}()
+	if response := awaitResponse(t, plain); response.Code != http.StatusOK {
+		t.Fatalf("a status write with no field while the dependency lock is held: status=%d body=%s", response.Code, response.Body.String())
+	}
+	waiting := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		waiting <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+core[0], map[string]any{
+			"status": "retro", "refuse_open_foreign_children": true,
+		}, "alice")
+	}()
+	waitForDatabaseLocks(t, gate, 1)
+	select {
+	case response := <-waiting:
+		t.Fatalf("the acceptance write was answered while the dependency lock was held: status=%d body=%s", response.Code, response.Body.String())
+	default:
+	}
+	if err := gate.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if response := awaitResponse(t, waiting); response.Code != http.StatusOK {
+		t.Fatalf("the acceptance write after the lock's release: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+// createIssueUnder creates an issue of project titled title as alice, under parent where parent
+// is not empty, and answers the response as it came.
+func createIssueUnder(t *testing.T, handler http.Handler, project, title, parent string, fields map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	body := map[string]any{"project": project, "title": title, "force": true}
+	if parent != "" {
+		body["parent"] = parent
+	}
+	for name, value := range fields {
+		body[name] = value
+	}
+	return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", body, "alice")
+}
+
+// createdIssue is the issue a create answered 201 with, failing the test on any other answer.
+func createdIssue(t *testing.T, what string, response *httptest.ResponseRecorder) model.Issue {
+	t.Helper()
+	if response.Code != http.StatusCreated {
+		t.Fatalf("%s: status=%d body=%s, want 201", what, response.Code, response.Body.String())
+	}
+	return decodeBody[model.Issue](t, response)
+}
+
+// patchIssueParent moves key under parent as alice.
+func patchIssueParent(t *testing.T, handler http.Handler, key, parent string) *httptest.ResponseRecorder {
+	t.Helper()
+	return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"parent": parent}, "alice")
+}
+
+// TestParentCrossesAProjectAndStillRefusesACycle: an issue's parent may be an issue of another
+// project, on create and on PATCH, so a root that delivers part of another project's issue can
+// stand under it. The parent lists the child and hears child.added as it does for a child of its
+// own project, and every refusal that stood inside one project stands across two: a ring of
+// parent links, and a chain past the depth cap, whichever projects its links alternate between.
+func TestParentCrossesAProjectAndStillRefusesACycle(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	alpha := createListedIssues(t, handler, "ALPHA", 3)
+	beta := createListedIssues(t, handler, "BETA", 3)
+
+	created := createdIssue(t, "a create under a parent of another project",
+		createIssueUnder(t, handler, "BETA", "Delivers part of another project's issue", alpha[0], nil))
+	if created.Parent == nil || *created.Parent != alpha[0] {
+		t.Fatalf("created %s with parent %v, want %s", created.Key, created.Parent, alpha[0])
+	}
+
+	moved := patchIssueParent(t, handler, beta[1], alpha[1])
+	if moved.Code != http.StatusOK {
+		t.Fatalf("move %s under %s: status=%d body=%s, want 200", beta[1], alpha[1], moved.Code, moved.Body.String())
+	}
+	if parent := decodeBody[model.Issue](t, moved).Parent; parent == nil || *parent != alpha[1] {
+		t.Fatalf("moved %s has parent %v, want %s", beta[1], parent, alpha[1])
+	}
+	listed := false
+	for _, child := range readIssueChildren(t, handler, alpha[1]) {
+		listed = listed || child.Key == beta[1]
+	}
+	if !listed {
+		t.Fatalf("%s does not list %s among its children", alpha[1], beta[1])
+	}
+	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+alpha[1]+"/events", nil, "alice")
+	if events.Code != http.StatusOK {
+		t.Fatalf("read the events of %s: status=%d body=%s", alpha[1], events.Code, events.Body.String())
+	}
+	heard := false
+	for _, event := range decodeBody[[]struct {
+		Type    string `json:"type"`
+		Payload struct {
+			ChildKey string `json:"child_key"`
+		} `json:"payload"`
+	}](t, events) {
+		heard = heard || (event.Type == "child.added" && event.Payload.ChildKey == beta[1])
+	}
+	if !heard {
+		t.Fatalf("no child.added of %s names %s", alpha[1], beta[1])
+	}
+
+	// A ring through two projects: BETA-3 under ALPHA-3 stands, so ALPHA-3 under BETA-3 closes it.
+	if response := patchIssueParent(t, handler, beta[2], alpha[2]); response.Code != http.StatusOK {
+		t.Fatalf("move %s under %s: status=%d body=%s, want 200", beta[2], alpha[2], response.Code, response.Body.String())
+	}
+	ring := patchIssueParent(t, handler, alpha[2], beta[2])
+	if ring.Code != http.StatusConflict || !strings.Contains(ring.Body.String(), `"code":"PARENT_INPUT"`) ||
+		!strings.Contains(ring.Body.String(), "would create a cycle") {
+		t.Fatalf("a ring of parents through two projects: status=%d body=%s, want 409 PARENT_INPUT would create a cycle",
+			ring.Code, ring.Body.String())
+	}
+
+	// A chain of parentDepthCap links whose projects alternate takes no further link, on create
+	// or by moving its root under another issue.
+	chain := []string{createdIssue(t, "the chain's root",
+		createIssueUnder(t, handler, "ALPHA", "The root of a chain over two projects", "", nil)).Key}
+	for link := 1; link <= 32; link++ {
+		project := "ALPHA"
+		if link%2 == 1 {
+			project = "BETA"
+		}
+		chain = append(chain, createdIssue(t, "link "+strconv.Itoa(link)+" of the chain",
+			createIssueUnder(t, handler, project, "Link "+strconv.Itoa(link)+" of a chain over two projects", chain[link-1], nil)).Key)
+	}
+	deeper := createIssueUnder(t, handler, "ALPHA", "One link past the cap", chain[32], nil)
+	if deeper.Code != http.StatusConflict || !strings.Contains(deeper.Body.String(), `"code":"PARENT_INPUT"`) ||
+		!strings.Contains(deeper.Body.String(), "at most 32 links") {
+		t.Fatalf("a create 33 links below its root: status=%d body=%s, want 409 PARENT_INPUT", deeper.Code, deeper.Body.String())
+	}
+	lifted := patchIssueParent(t, handler, chain[0], alpha[0])
+	if lifted.Code != http.StatusConflict || !strings.Contains(lifted.Body.String(), `"code":"PARENT_INPUT"`) ||
+		!strings.Contains(lifted.Body.String(), "at most 32 links") {
+		t.Fatalf("moving the chain's root under %s: status=%d body=%s, want 409 PARENT_INPUT", alpha[0], lifted.Code, lifted.Body.String())
+	}
+}
+
+// TestRacingReparentsAcrossProjectsCommitNoRing: two writes that would close a ring of parents
+// through two projects, an ALPHA issue moved under a BETA issue and that BETA issue moved under
+// the ALPHA one, sent at once. Both take the deployment-wide dependency lock, and each locks the
+// other's project for its parent, so they run one after the other: each round ends with exactly
+// one taken and the other refused as a cycle, never with both committed, never with a deadlock.
+// The race is replayed crossProjectRaceRounds times, each round on the pair cleared of parents.
+func TestRacingReparentsAcrossProjectsCommitNoRing(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	alpha := createListedIssues(t, handler, "ALPHA", 1)[0]
+	beta := createListedIssues(t, handler, "BETA", 1)[0]
+	parentOf := func(key string) string {
+		t.Helper()
+		return valueOrNone(readTestIssue(t, handler, key).Parent)
+	}
+	clearParent := func(key string) {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"parent": nil}, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("clear %s's parent: status=%d body=%s", key, response.Code, response.Body.String())
+		}
+	}
+	for round := range crossProjectRaceRounds {
+		clearParent(alpha)
+		clearParent(beta)
+		start := make(chan struct{})
+		responses := make(chan *httptest.ResponseRecorder, 2)
+		for _, move := range []struct{ key, parent string }{{alpha, beta}, {beta, alpha}} {
+			go func() {
+				<-start
+				responses <- patchIssueParent(t, handler, move.key, move.parent)
+			}()
+		}
+		close(start)
+		taken, refused := 0, 0
+		for range 2 {
+			response := awaitResponse(t, responses)
+			switch {
+			case response.Code == http.StatusOK:
+				taken++
+			case response.Code == http.StatusConflict && (strings.Contains(response.Body.String(), `"code":"PARENT_INPUT"`) ||
+				strings.Contains(response.Body.String(), `"code":"DEPENDENCY_CYCLE"`)):
+				refused++
+			default:
+				t.Fatalf("round %d: status=%d body=%s, want 200 or a 409 cycle refusal", round, response.Code, response.Body.String())
+			}
+		}
+		if taken != 1 || refused != 1 {
+			t.Fatalf("round %d: %d reparents taken and %d refused, want one of each", round, taken, refused)
+		}
+		if parentOf(alpha) == beta && parentOf(beta) == alpha {
+			t.Fatalf("round %d: the ring %s → %s → %s committed", round, alpha, beta, alpha)
+		}
+	}
+}
+
+// TestAParentWriteTakesTheParentsProjectLock: a create with a parent and a reparent take the
+// dependency lock of the parent's project, not only of the issue's own, so a writer that holds
+// that lock - an earlier build's dependency write of that project, which takes no other - fences
+// both. With ALPHA's lock held, a BETA create under ALPHA's issue and a BETA reparent under it
+// wait; once it is released, both land with that parent.
+func TestAParentWriteTakesTheParentsProjectLock(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	alpha := createListedIssues(t, handler, "ALPHA", 1)[0]
+	beta := createListedIssues(t, handler, "BETA", 1)[0]
+	gate, err := database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Rollback(context.Background())
+	if err := lockProjectIssueDependencies(context.Background(), gate, "ALPHA"); err != nil {
+		t.Fatal(err)
+	}
+	waiting := make(chan *httptest.ResponseRecorder, 2)
+	go func() {
+		waiting <- patchIssueParent(t, handler, beta, alpha)
+	}()
+	go func() {
+		waiting <- createIssueUnder(t, handler, "BETA", "Created under ALPHA's issue", alpha, nil)
+	}()
+	waitForDatabaseLocks(t, gate, 2)
+	if parent := readTestIssue(t, handler, beta).Parent; parent != nil {
+		t.Fatalf("the reparent of %s landed under %s while ALPHA's dependency lock was held", beta, *parent)
+	}
+	if err := gate.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		response := awaitResponse(t, waiting)
+		if response.Code != http.StatusOK && response.Code != http.StatusCreated {
+			t.Fatalf("a parent write after the lock's release: status=%d body=%s", response.Code, response.Body.String())
+		}
+		if parent := decodeBody[model.Issue](t, response).Parent; parent == nil || *parent != alpha {
+			t.Fatalf("a parent write after the lock's release left the parent %s, want %s", valueOrNone(parent), alpha)
+		}
+	}
+}
+
+// TestAProjectScopedCallerIsRefusedAParentOfAnotherProject: a credential that may write one
+// project is refused a parent outside it, as it is refused such a blocked_by target, though the
+// issue it writes is of its own project: 403 PROJECT_SCOPE naming the parent and its project,
+// with nothing written. An unforced create that the near-copy gate would refuse is refused for
+// its parent or blocker first, so the gate writes no near_copy_checks row for a create the
+// credential may not make, and a PATCH that also closes the issue is refused before the close
+// settles its documents, so it writes no version. A parent of its own project is the control,
+// and so is the same near copy under its own project's parent, which the gate refuses. The
+// credential is refused a check of another project's issue too, which the results route reaches
+// through a parent of another project, on the record and on the retraction.
+func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
+	rig := newBrokerTokenRigOn(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t), settle: time.Hour})
+	caller := newBrokerCaller(t)
+	for _, project := range []string{"ALPHA", "BETA"} {
+		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
+		}
+	}
+	createIssue := func(project, title string) string {
+		t.Helper()
+		return createdIssue(t, "create "+title, rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": project, "title": title, "spec": "# Spec", "force": true,
+		})).Key
+	}
+	approved := createIssue("ALPHA", "Another project's approved issue")
+	own := createIssue("BETA", "Its own project's issue")
+	sibling := createIssue("BETA", "Another issue of its own project")
+	const token = "a-token-scoped-to-beta"
+	answer := liveNamedToken(caller.jkt)
+	answer.Projects = []string{"BETA"}
+	rig.broker.Says(token, answer)
+	betaIssues := func() int {
+		t.Helper()
+		var count int
+		if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from issues where project_key = 'BETA'`).Scan(&count); err != nil {
+			t.Fatalf("count BETA's issues: %v", err)
+		}
+		return count
+	}
+
+	nearCopyChecks := func() int {
+		t.Helper()
+		var count int
+		if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from near_copy_checks`).Scan(&count); err != nil {
+			t.Fatalf("count the near-copy checks: %v", err)
+		}
+		return count
+	}
+	// An open BETA issue the scoped creates below copy word for word, unforced.
+	createdIssue(t, "the issue a near copy copies", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe,
+	}))
+
+	before, checksBefore := betaIssues(), nearCopyChecks()
+	refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "BETA", "title": "Filed under another project's issue", "spec": "# Spec", "parent": approved, "force": true,
+	}))
+	expectRefusal(t, "a scoped create under a parent of another project", refused, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
+	for _, field := range []string{"parent", "blocked_by"} {
+		var target any = approved
+		if field == "blocked_by" {
+			target = []string{approved}
+		}
+		nearCopy := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+			"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe, field: target,
+		}))
+		expectRefusal(t, "an unforced scoped near copy with a "+field+" of another project", nearCopy, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
+	}
+	if after := betaIssues(); after != before {
+		t.Fatalf("the refused creates took BETA from %d issues to %d, want none written", before, after)
+	}
+	if after := nearCopyChecks(); after != checksBefore {
+		t.Fatalf("the refused creates took near_copy_checks from %d rows to %d, want none written", checksBefore, after)
+	}
+	// The control: the same near copy under its own project's parent meets the gate, which
+	// refuses it and records the refusal.
+	ownNearCopy := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe, "parent": sibling,
+	}))
+	requireDuplicateRefusal(t, ownNearCopy)
+	if after := nearCopyChecks(); after != checksBefore+1 {
+		t.Fatalf("the gate's refusal took near_copy_checks from %d rows to %d, want one more", checksBefore, after)
+	}
+
+	moved := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{"parent": approved}))
+	expectRefusal(t, "a scoped move under a parent of another project", moved, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
+	if parent := decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil)).Parent; parent != nil {
+		t.Fatalf("the refused move left %s under %s, want no parent", own, *parent)
+	}
+	// A move under another project's issue that also closes the issue is refused before the
+	// close settles the issue's documents (settleIssueBeforeClose), so the refusal indexes no ask
+	// and writes no version of the spec, and the issue stays open. The issue is new, its spec holds
+	// a decision block, and the rig settles a document only after an hour, so the spec still owes
+	// the settlement that would open the block's ask and write a version.
+	closer := createdIssue(t, "create the issue a scoped caller closes", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "BETA", "title": "An issue a scoped caller closes", "spec": closeDecision, "force": true,
+	}))
+	settled := func() (versions, asks int) {
+		t.Helper()
+		if err := rig.database.Pool.QueryRow(context.Background(), `
+			select (select count(*) from artifact_versions where artifact_id = $1::uuid),
+			       (select count(*) from asks where issue_key = $2)
+		`, closer.PrimaryArtifactID, closer.Key).Scan(&versions, &asks); err != nil {
+			t.Fatalf("count the versions of %s's spec and its asks: %v", closer.Key, err)
+		}
+		return versions, asks
+	}
+	versionsBefore, asksBefore := settled()
+	for _, field := range []string{"parent", "blocked_by"} {
+		var target any = approved
+		if field == "blocked_by" {
+			target = []string{approved}
+		}
+		closing := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+closer.Key, token, map[string]any{
+			field: target, "status": "done",
+		}))
+		expectRefusal(t, "a scoped close with a "+field+" of another project", closing, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
+	}
+	if versions, asks := settled(); versions != versionsBefore || asks != asksBefore {
+		t.Fatalf("the refused closes took %s from %d spec versions and %d asks to %d and %d, want no settlement",
+			closer.Key, versionsBefore, asksBefore, versions, asks)
+	}
+	if status := decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+closer.Key, nil)).Status; status == "done" {
+		t.Fatalf("the refused closes left %s done", closer.Key)
+	}
+	// The control: the same close under a parent of the credential's own project is taken, and
+	// the settlement it runs first opens the decision block's ask, which the close withdraws.
+	closed := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+closer.Key, token, map[string]any{
+		"parent": sibling, "status": "done",
+	}))
+	if closed.Code != http.StatusOK {
+		t.Fatalf("a scoped close under its own project's issue: status=%d body=%s, want 200", closed.Code, closed.Body.String())
+	}
+	if status := decodeBody[model.Issue](t, closed).Status; status != "done" {
+		t.Fatalf("the taken close left %s %s, want done", closer.Key, status)
+	}
+	if _, asks := settled(); asks != asksBefore+1 {
+		t.Fatalf("the taken close left %s with %d asks, want the %d its settlement opens", closer.Key, asks, asksBefore+1)
+	}
+
+	allowed := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{"parent": sibling}))
+	if allowed.Code != http.StatusOK {
+		t.Fatalf("a scoped move under its own project's issue: status=%d body=%s, want 200", allowed.Code, allowed.Body.String())
+	}
+	if parent := decodeBody[model.Issue](t, allowed).Parent; parent == nil || *parent != sibling {
+		t.Fatalf("%s's parent = %v, want %s", own, parent, sibling)
+	}
+
+	// A check of another project's issue. Once a person puts a BETA issue under ALPHA's, the
+	// results route finds a check among the Verification documents of the issue and every issue
+	// above it, across projects, and a result or its retraction is appended to the check's issue.
+	// A credential scoped to BETA is refused a check of ALPHA's on both, with nothing written; it
+	// still records on its own project's check, which is the control.
+	uploadDocument(t, rig.handler, "/api/v1/issues/"+approved, "verification.md", twoChecks)
+	underAlpha := createdIssue(t, "create a BETA issue under ALPHA's", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "BETA", "title": "Records on another project's check", "parent": approved, "force": true,
+	})).Key
+	checked := createIssue("BETA", "A BETA issue with a check of its own")
+	uploadDocument(t, rig.handler, "/api/v1/issues/"+checked, "verification.md", twoChecks)
+	resultsOn := func(issue string) int {
+		t.Helper()
+		var count int
+		if err := rig.database.Pool.QueryRow(context.Background(),
+			`select count(*) from check_results where check_issue_key = $1`, issue).Scan(&count); err != nil {
+			t.Fatalf("count the results on %s's checks: %v", issue, err)
+		}
+		return count
+	}
+	// A result on ALPHA's check through BETA's issue, recorded as the session the scoped token
+	// proves, under a credential that names no project: the scoped token is that result's
+	// recorder, one of the callers a retraction admits.
+	standing := recordResultAsSession(t, rig.handler, underAlpha, brokerTestSession, resultBody("k1", "pass", headCommit, nil))
+	alphaResults := resultsOn(approved)
+	recorded := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+underAlpha+"/results", token,
+		resultBody("k1", "pass", newHeadCommit, nil)))
+	expectRefusal(t, "a scoped result on another project's check", recorded, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
+	if after := resultsOn(approved); after != alphaResults {
+		t.Fatalf("the refused result took %s's checks from %d results to %d, want none written", approved, alphaResults, after)
+	}
+	retracted := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/results/"+standing.ID+"/retract", token, map[string]any{
+		"reason": "The run was against the wrong commit.",
+	}))
+	expectRefusal(t, "a scoped retraction on another project's check", retracted, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
+	if _, held := storedRetraction(t, rig.database, standing.ID); held {
+		t.Fatalf("the refused retraction left a retraction of %s", standing.ID)
+	}
+	if events := retractionEventsOn(t, rig.database, approved); events != 0 {
+		t.Fatalf("the refused retraction appended %d result.retracted events on %s, want none", events, approved)
+	}
+	ownResult := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+checked+"/results", token,
+		resultBody("k1", "pass", headCommit, nil)))
+	if ownResult.Code != http.StatusCreated {
+		t.Fatalf("a scoped result on its own project's check: status=%d body=%s, want 201", ownResult.Code, ownResult.Body.String())
+	}
+	if after := resultsOn(checked); after != 1 {
+		t.Fatalf("the taken result left %s's checks with %d results, want 1", checked, after)
+	}
+}
+
+// TestInheritedValuesStopAtTheProjectEdge: an issue inherits its repository, its components, its
+// architecture owner and the legion label only from ancestors of its own project, because one
+// project's deployment acts on each. A parent of another project passes on none of them, and
+// neither does a chain that leaves the project and comes back into it: BETA's issue under
+// ALPHA's issue under BETA's issue is a root of its own for every one of the four. A child and a
+// grandchild of the issue's own project still inherit each, which is the control.
+func TestInheritedValuesStopAtTheProjectEdge(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	for _, project := range []string{"ALPHA", "BETA"} {
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+			"key": project, "name": project,
+		}, "alice"); response.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", project, response.Code, response.Body.String())
+		}
+	}
+	for project, repo := range map[string]string{"ALPHA": "acme/alpha-default", "BETA": "acme/beta"} {
+		setDefaultRepository(t, handler, project, repo)
+	}
+	// Each project's model holds a component named web, so an attachment that crossed the edge
+	// would land on the other project's web.
+	for _, statement := range []string{
+		`insert into architecture_sources (project_key, id, repo, branch, installation_id, created_by) values
+			('ALPHA', 1, 'acme/alpha-model', 'main', 1, '{"kind":"system","id":"test"}'),
+			('BETA', 1, 'acme/beta-model', 'main', 1, '{"kind":"system","id":"test"}')`,
+		`insert into architecture_snapshots (id, project_key, commit, files) values (901, 'ALPHA', 'c1', '{}'), (902, 'BETA', 'c1', '{}')`,
+		`insert into components (project_key, id, title, prose, parent, snapshot_id, source_id) values
+			('ALPHA', 'web', 'Web', '', null, 901, 1), ('BETA', 'web', 'Web', '', null, 902, 1)`,
+	} {
+		if _, err := database.Pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("seed the architecture models: %v\n%s", err, statement)
+		}
+	}
+	everyValue := map[string]any{
+		"components": map[string]any{"mode": "explicit", "ids": []string{"web"}},
+		"labels":     []string{"legion"},
+	}
+	withRepo := func(repo string) map[string]any {
+		fields := map[string]any{"repo": repo}
+		for name, value := range everyValue {
+			fields[name] = value
+		}
+		return fields
+	}
+	alphaRoot := createdIssue(t, "ALPHA's root", createIssueUnder(t, handler, "ALPHA", "Approved work of ALPHA", "", withRepo("acme/alpha"))).Key
+
+	// The child of another project is filed by a session, whose create's advice answers who owns
+	// the status from the row the create is about to write (legionManagedStatusOfRow).
+	sessionCreate := func(project, title, parent string) (string, *testWriteAdvice) {
+		t.Helper()
+		response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": project, "title": title, "parent": parent, "force": true,
+			"components": map[string]any{"mode": "inherit"},
+			"actor":      adviceSessionActor("session-across-projects"),
+		})
+		advice := adviceFromResponse(t, response.Code, response.Body.String())
+		return decodeBody[model.Issue](t, response).Key, advice
+	}
+	betaChild, betaChildAdvice := sessionCreate("BETA", "Delivers part of ALPHA's work", alphaRoot)
+	alphaChild, alphaChildAdvice := sessionCreate("ALPHA", "A child of ALPHA's own", alphaRoot)
+	betaGrandchild := createdIssue(t, "BETA's grandchild of ALPHA's root", createIssueUnder(t, handler, "BETA", "Under the child of another project", betaChild, nil)).Key
+	alphaGrandchild := createdIssue(t, "ALPHA's grandchild", createIssueUnder(t, handler, "ALPHA", "A grandchild of ALPHA's own", alphaChild, nil)).Key
+
+	// The chain that comes back: BETA's issue under ALPHA's issue under BETA's top, the top
+	// holding every value.
+	betaBack := createdIssue(t, "BETA's issue that comes back", createIssueUnder(t, handler, "BETA", "Back in BETA", "", nil)).Key
+	betaTop := createdIssue(t, "BETA's top", createIssueUnder(t, handler, "BETA", "BETA's own top", "", withRepo("acme/beta4"))).Key
+	alphaBetween := createdIssue(t, "ALPHA's issue between", createIssueUnder(t, handler, "ALPHA", "ALPHA between two BETA issues", betaTop, nil)).Key
+	if response := patchIssueParent(t, handler, betaBack, alphaBetween); response.Code != http.StatusOK {
+		t.Fatalf("move %s under %s: status=%d body=%s, want 200", betaBack, alphaBetween, response.Code, response.Body.String())
+	}
+
+	legionManaged := func(key string) bool {
+		t.Helper()
+		tx, err := database.Pool.Begin(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(context.Background())
+		managed, err := legionManagedStatus(context.Background(), tx, key)
+		if err != nil {
+			t.Fatalf("read who owns the status of %s: %v", key, err)
+		}
+		return managed
+	}
+	type tree struct {
+		Components []struct {
+			ID     string `json:"id"`
+			Issues []struct {
+				Key      string `json:"key"`
+				Attached string `json:"attached"`
+			} `json:"issues"`
+		} `json:"components"`
+		Unassigned []struct {
+			Key string `json:"key"`
+		} `json:"unassigned"`
+	}
+	readTree := func(project string) tree {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/"+project+"/architecture", nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("read %s's architecture: status=%d body=%s", project, response.Code, response.Body.String())
+		}
+		return decodeBody[tree](t, response)
+	}
+	trees := map[string]tree{"ALPHA": readTree("ALPHA"), "BETA": readTree("BETA")}
+	// owner is how key's project's web component counts it, "" where it does not, and whether
+	// the project's tree lists key as unassigned.
+	owner := func(project, key string) (string, bool) {
+		t.Helper()
+		attached := ""
+		for _, component := range trees[project].Components {
+			for _, issue := range component.Issues {
+				if component.ID == "web" && issue.Key == key {
+					attached = issue.Attached
+				}
+			}
+		}
+		unassigned := false
+		for _, issue := range trees[project].Unassigned {
+			unassigned = unassigned || issue.Key == key
+		}
+		return attached, unassigned
+	}
+
+	for _, want := range []struct {
+		key, project, is string
+		repo             string
+		inheritedFrom    string
+		legion           bool
+		attached         string
+	}{
+		{betaChild, "BETA", "a child of another project's issue", "acme/beta", "", false, ""},
+		{betaBack, "BETA", "an issue whose chain leaves the project and comes back", "acme/beta", "", false, ""},
+		{alphaBetween, "ALPHA", "an issue under an issue of another project", "acme/alpha-default", "", false, ""},
+		{betaGrandchild, "BETA", "a grandchild under the child of another project", "acme/beta", "", false, ""},
+		{alphaChild, "ALPHA", "a child of its own project's issue", "acme/alpha", alphaRoot, true, "inherited"},
+		{alphaGrandchild, "ALPHA", "a grandchild of its own project's issue", "acme/alpha", alphaRoot, true, "inherited"},
+	} {
+		issue := readTestIssue(t, handler, want.key)
+		if repo := valueOrNone(issue.ResolvedRepo); repo != want.repo {
+			t.Errorf("%s, %s: resolved_repo = %s, want %s", want.key, want.is, repo, want.repo)
+		}
+		inheritedFrom := valueOrNone(issue.Components.InheritedFrom)
+		if want.inheritedFrom == "" && (issue.Components.Mode != "inherit" || inheritedFrom != "none" || len(issue.Components.IDs) != 0) {
+			t.Errorf("%s, %s: components mode %s ids %v inherited from %s, want none inherited",
+				want.key, want.is, issue.Components.Mode, issue.Components.IDs, inheritedFrom)
+		}
+		if want.inheritedFrom != "" && (inheritedFrom != want.inheritedFrom || !slices.Equal(issue.Components.IDs, []string{"web"})) {
+			t.Errorf("%s, %s: components mode %s ids %v inherited from %s, want web inherited from %s",
+				want.key, want.is, issue.Components.Mode, issue.Components.IDs, inheritedFrom, want.inheritedFrom)
+		}
+		if got := legionManaged(want.key); got != want.legion {
+			t.Errorf("%s, %s: legionManagedStatus = %t, want %t", want.key, want.is, got, want.legion)
+		}
+		attached, unassigned := owner(want.project, want.key)
+		if attached != want.attached || unassigned != (want.attached == "") {
+			t.Errorf("%s, %s: %s's web counts it %q and unassigned is %t, want %q", want.key, want.is, want.project, attached, unassigned, want.attached)
+		}
+	}
+	if advice := betaChildAdvice.LegionManagedStatus; advice == nil || *advice {
+		t.Errorf("the create of %s under %s answered legion_managed_status %s, want false", betaChild, alphaRoot, answerOrNone(advice))
+	}
+	if advice := alphaChildAdvice.LegionManagedStatus; advice == nil || !*advice {
+		t.Errorf("the create of %s under %s answered legion_managed_status %s, want true", alphaChild, alphaRoot, answerOrNone(advice))
+	}
+
+	// Once the child of another project holds values of its own, its grandchild of the same
+	// project takes each of them from it, across the edge above.
+	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+betaChild, withRepo("acme/beta1"), "alice"); response.Code != http.StatusOK {
+		t.Fatalf("give %s values of its own: status=%d body=%s", betaChild, response.Code, response.Body.String())
+	}
+	grandchild := readTestIssue(t, handler, betaGrandchild)
+	if repo := valueOrNone(grandchild.ResolvedRepo); repo != "acme/beta1" {
+		t.Errorf("%s under %s: resolved_repo = %s, want acme/beta1", betaGrandchild, betaChild, repo)
+	}
+	if inheritedFrom := valueOrNone(grandchild.Components.InheritedFrom); inheritedFrom != betaChild {
+		t.Errorf("%s under %s: components inherited from %s, want %s", betaGrandchild, betaChild, inheritedFrom, betaChild)
+	}
+	if !legionManaged(betaGrandchild) {
+		t.Errorf("%s under %s: legionManagedStatus = false, want true", betaGrandchild, betaChild)
+	}
+	trees["BETA"] = readTree("BETA")
+	if attached, _ := owner("BETA", betaGrandchild); attached != "inherited" {
+		t.Errorf("%s under %s: BETA's web counts it %q, want inherited", betaGrandchild, betaChild, attached)
+	}
+}
+
+// valueOrNone renders an optional string of a read in a failure message.
+func valueOrNone(value *string) string {
+	if value == nil {
+		return "none"
+	}
+	return *value
+}
+
+// answerOrNone renders an optional answer of a read in a failure message.
+func answerOrNone(value *bool) string {
+	if value == nil {
+		return "none"
+	}
+	return strconv.FormatBool(*value)
 }

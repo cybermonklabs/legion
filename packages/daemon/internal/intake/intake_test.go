@@ -1,5 +1,7 @@
 package intake
 
+//ci:reads packages/contracts/fixtures/github-envelopes/* TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer globs it and reads each file; TestAWorkflowRunEnvelopeIsNoFact reads workflow-run-completed.json
+
 import (
 	"bytes"
 	"context"
@@ -31,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -212,7 +215,7 @@ func TestOnCommitRunsOnlyAfterTheFactCommits(t *testing.T) {
 			if _, err := writeHandler(name, nil).Apply(ctx, tx, fact); err != nil {
 				return Result{}, err
 			}
-			OnCommit(ctx, func() { ran = append(ran, fmt.Sprintf("%s saw %d", name, writeCount(t, pool))) })
+			store.OnCommit(ctx, func() { ran = append(ran, fmt.Sprintf("%s saw %d", name, writeCount(t, pool))) })
 			return Result{}, nil
 		})
 	}
@@ -237,22 +240,124 @@ func TestOnCommitRunsOnlyAfterTheFactCommits(t *testing.T) {
 	}
 }
 
-// CommitScoped is true only on a context WithCommitHooks scoped, so a write that wakes a reader
-// on commit can tell a transaction that will commit from one made outside any scope.
-func TestCommitScopedIsTrueOnlyWithinWithCommitHooks(t *testing.T) {
-	ctx := context.Background()
-	if CommitScoped(ctx) {
-		t.Fatal("CommitScoped is true outside WithCommitHooks")
-	}
-	scoped, _ := WithCommitHooks(ctx)
-	if !CommitScoped(scoped) {
-		t.Fatal("CommitScoped is false within WithCommitHooks")
-	}
-	child, cancel := context.WithCancel(scoped)
+// A cancel of the caller's context that lands as ApplyFact commits does not abandon the commit
+// (store.Transact): the fact commits, ApplyFact reports it applied, and its OnCommit hooks run. A
+// commit abandoned after it was sent can still land, and then ApplyFact would report a committed
+// fact as failed and skip the hooks that say what it did, such as admission's "slot taken" line
+// for a slot the store holds.
+func TestACancelAtCommitStillCommitsTheFactAndRunsItsHooks(t *testing.T) {
+	pool := migratedPool(t)
+	createWrites(t, pool)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if !CommitScoped(child) {
-		t.Fatal("CommitScoped is false on a child of a scoped context")
+	var ran []string
+	hooked := handlerFunc(func(ctx context.Context, tx pgx.Tx, fact Fact) (Result, error) {
+		if _, err := writeHandler("first", nil).Apply(ctx, tx, fact); err != nil {
+			return Result{}, err
+		}
+		store.OnCommit(ctx, func() { ran = append(ran, fmt.Sprintf("saw %d", writeCount(t, pool))) })
+		return Result{}, nil
+	})
+
+	if _, err := ApplyFact(ctx, cancelAtCommit{TxPool: pool, cancel: cancel}, "dispatch", "event-cancel-at-commit", DispatchIssue{Key: "LEGION-208"}, hooked); err != nil {
+		t.Fatalf("ApplyFact with its context canceled at commit: %v", err)
 	}
+	if ctx.Err() == nil {
+		t.Fatal("the caller's context was not canceled at commit, so this proves nothing")
+	}
+	if fmt.Sprint(ran) != "[saw 1]" {
+		t.Fatalf("hooks ran %v; want one, seeing the committed write", ran)
+	}
+}
+
+// A fact whose context ends while its handlers run, before ApplyFact commits, does not commit and
+// runs no hook, though every handler returned nil: that is how consumeMessage cuts a handling past
+// its limit whose step ignored the context, and how a stop ends a fact still being applied.
+func TestAFactWhoseContextEndedBeforeItsCommitDoesNotCommit(t *testing.T) {
+	pool := migratedPool(t)
+	createWrites(t, pool)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var ran []string
+	cutWhileRunning := handlerFunc(func(ctx context.Context, tx pgx.Tx, fact Fact) (Result, error) {
+		if _, err := writeHandler("first", nil).Apply(ctx, tx, fact); err != nil {
+			return Result{}, err
+		}
+		store.OnCommit(ctx, func() { ran = append(ran, "hook") })
+		cancel()
+		return Result{}, nil
+	})
+
+	if _, err := ApplyFact(ctx, pool, "dispatch", "event-cut-before-commit", DispatchIssue{Key: "LEGION-208"}, cutWhileRunning); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ApplyFact with its context canceled before its commit = %v, want context.Canceled", err)
+	}
+	if len(ran) != 0 {
+		t.Fatalf("hooks %v ran for a fact whose context ended before its commit", ran)
+	}
+	if got := writeCount(t, pool); got != 0 {
+		t.Fatalf("%d writes committed for a fact whose context ended before its commit, want none", got)
+	}
+}
+
+// A fact whose context ends after its transaction's id is read, before the commit, does not
+// commit (store.Transact): no commit reaches its transaction, nothing is written and no hook runs.
+// Its retry on a live context applies, and its hook runs once.
+func TestAFactCancelledAfterItsIDReadDoesNotCommit(t *testing.T) {
+	pool := migratedPool(t)
+	createWrites(t, pool)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var ran atomic.Int32
+	cut := testdb.CancelAfterScan(pool, "pg_current_xact_id_if_assigned", cancel)
+
+	if _, err := ApplyFact(ctx, cut, "dispatch", "event-cancel-after-id", DispatchIssue{Key: "LEGION-208"}, hooked(&ran)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ApplyFact cancelled after its id read = %v, want context.Canceled", err)
+	}
+	if n := cut.Commits(); n != 0 {
+		t.Errorf("%d commits reached the fact's transaction, want none", n)
+	}
+	if n := writeCount(t, pool); n != 0 {
+		t.Errorf("%d writes committed for a fact cancelled before its commit, want none", n)
+	}
+	if n := ran.Load(); n != 0 {
+		t.Errorf("the fact's hook ran %d times, want none: nothing committed", n)
+	}
+
+	retry, err := ApplyFact(context.Background(), pool, "dispatch", "event-cancel-after-id", DispatchIssue{Key: "LEGION-208"}, hooked(&ran))
+	if err != nil {
+		t.Fatalf("the retry = %v, want nil", err)
+	}
+	if retry.Duplicate {
+		t.Errorf("the retry = %+v, want it applied: the first never committed", retry)
+	}
+	if n := ran.Load(); n != 1 {
+		t.Errorf("the hook ran %d times after the retry, want once", n)
+	}
+}
+
+// cancelAtCommit is a pool whose transactions cancel the context of the fact they apply as they
+// commit: the cancel a stopping daemon sends while a fact's commit is on its way to the server.
+type cancelAtCommit struct {
+	store.TxPool
+	cancel context.CancelFunc
+}
+
+func (p cancelAtCommit) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
+	tx, err := p.TxPool.BeginTx(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+	return cancelingTx{Tx: tx, cancel: p.cancel}, nil
+}
+
+type cancelingTx struct {
+	pgx.Tx
+	cancel context.CancelFunc
+}
+
+func (tx cancelingTx) Commit(ctx context.Context) error {
+	tx.cancel()
+	return tx.Tx.Commit(ctx)
 }
 
 func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
@@ -460,8 +565,9 @@ func TestCapturedIssueUpdatedEnvelopeDecodes(t *testing.T) {
 
 // Dispatch can add issue payload fields, or start filling one it has always sent empty, before a
 // deployed daemon consumes them: the old decoder must keep accepting those events until its
-// matching workflow change rolls out. The daemon reads no priority, and no key the captured
-// fixture lacks, which a decoder rejecting unknown fields would refuse.
+// matching workflow change rolls out. The daemon reads no key the captured fixture lacks, which a
+// decoder rejecting unknown fields would refuse; it does read the priority, which the filled
+// fixture carries as P1 and the fact carries beside everything the original says.
 func TestIssueEventIgnoresFieldsTheDaemonDoesNotConsume(t *testing.T) {
 	original := string(capturedIssueCreatedEnvelope(t))
 	filled := strings.Replace(original, `\"priority\":null`, `\"priority\":1`, 1)
@@ -481,8 +587,13 @@ func TestIssueEventIgnoresFieldsTheDaemonDoesNotConsume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode issue.created with a priority and a field the fixture lacks: %v", err)
 	}
-	if !reflect.DeepEqual(got.Fact, want.Fact) {
-		t.Fatalf("widened fact = %#v, want %#v", got.Fact, want.Fact)
+	carried, ok := want.Fact.(DispatchIssue)
+	if !ok {
+		t.Fatalf("captured issue.created decodes to %#v, want a Dispatch issue", want.Fact)
+	}
+	carried.Priority = record.P1
+	if !reflect.DeepEqual(got.Fact, carried) {
+		t.Fatalf("widened fact = %#v, want %#v", got.Fact, carried)
 	}
 }
 
@@ -1137,6 +1248,9 @@ func TestABootedDaemonOpensNoDispatchServerDurable(t *testing.T) {
 	}
 }
 
+// A message that does not decode is given up at its first delivery: one give-up line at ERROR
+// with the reason undecodable and one given-up record each, and it is terminated, so neither is
+// delivered again.
 func TestConsumeTermsPoisonMessagesOnce(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)
@@ -1148,19 +1262,28 @@ func TestConsumeTermsPoisonMessagesOnce(t *testing.T) {
 
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", []byte(`{`))
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", envelopeJSON(t, "dispatch-poison", "dispatch", `{"id":1,"issue_key":"CAPTURE-208","seq":1,"notify":true,"type":"issue.updated","payload":{"key":"CAPTURE-999","status":"todo","title":"wrong key"}}`))
-	testwait.Eventually(t, "two poison logs", func() bool { return strings.Count(logs.String(), "poison JetStream message") == 2 })
+	const giveUp = "intake: a message was given up"
+	testwait.Eventually(t, "two give-up lines", func() bool { return strings.Count(logs.String(), giveUp) == 2 })
 	time.Sleep(3 * spec.AckWait)
-	if got := strings.Count(logs.String(), "poison JetStream message"); got != 2 {
-		t.Fatalf("poison logs after ack wait = %d, want 2", got)
+	if got := strings.Count(logs.String(), giveUp); got != 2 {
+		t.Fatalf("give-up lines after ack wait = %d, want 2", got)
+	}
+	if got := strings.Count(logs.String(), "reason=undecodable"); got != 2 {
+		t.Fatalf("%d give-up lines name the reason undecodable, want both:\n%s", got, logs)
+	}
+	records := intakeRecords(t, pool)
+	if len(records) != 2 || !records[0].GivenUp() || !records[1].GivenUp() ||
+		records[0].GiveUpReason != record.GiveUpUndecodable || records[1].GiveUpReason != record.GiveUpUndecodable {
+		t.Fatalf("intake_failures = %+v, want one record of each message given up as undecodable", records)
 	}
 	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
 }
 
 // A GitHub envelope with no payload, as an Envoy listener published every commit status on its
 // repository's comment topic (testdata/github/status-no-payload.json is such a message's stored
-// bytes, with this test's repository and ids of its own), is terminated once with its ERROR line,
-// and the GitHub durable goes on: the push stored after it is applied, and nothing waits for an
-// acknowledgement.
+// bytes, with this test's repository and ids of its own), is given up once, its give-up line at
+// ERROR, and terminated, and the GitHub durable goes on: the push stored after it is applied, and
+// nothing waits for an acknowledgement.
 func TestConsumeTermsAGitHubEnvelopeWithNoPayloadAndAppliesTheNext(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)
@@ -1176,11 +1299,11 @@ func TestConsumeTermsAGitHubEnvelopeWithNoPayloadAndAppliesTheNext(t *testing.T)
 	if got := writeHandlers(t, pool); !slices.Equal(got, []string{"push"}) {
 		t.Fatalf("handler writes = %q, want the push after the poison applied", got)
 	}
-	requireLogLine(t, logs, "level=ERROR", "poison JetStream message", "Envoy envelope payload is not JSON",
+	requireLogLine(t, logs, "level=ERROR", "intake: a message was given up", "reason=undecodable", "Envoy envelope payload is not JSON",
 		"subject=notifications.github.sjawhar.legion.comment", "stream_seq="+strconv.FormatUint(poison.Sequence, 10))
 	time.Sleep(3 * spec.AckWait)
-	if got := strings.Count(logs.String(), "poison JetStream message"); got != 1 {
-		t.Fatalf("poison logs after ack wait = %d, want 1: a terminated message is not delivered again", got)
+	if got := strings.Count(logs.String(), "intake: a message was given up"); got != 1 {
+		t.Fatalf("give-up lines after ack wait = %d, want 1: a terminated message is not delivered again", got)
 	}
 	assertNoAckPending(t, stream, githubConsumerName(spec.Project))
 }
@@ -1455,13 +1578,19 @@ func TestAnExistingConsumerKeepsItsPosition(t *testing.T) {
 	}
 }
 
+// consumerInfo reads the named consumer's info. A failed read fails the row, so the read waits
+// for the server until the row's hang guards end, the test binary's deadline less 30 s
+// (testwait.Remaining), in place of the five seconds nats.go gives a request whose context has no
+// deadline (its defaultAPITimeout), which would let a NATS server the machine holds decide it.
 func consumerInfo(t *testing.T, stream jetstream.Stream, name string) *jetstream.ConsumerInfo {
 	t.Helper()
-	consumer, err := stream.Consumer(context.Background(), name)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
+	consumer, err := stream.Consumer(ctx, name)
 	if err != nil {
 		t.Fatalf("look up consumer %s: %v", name, err)
 	}
-	info, err := consumer.Info(context.Background())
+	info, err := consumer.Info(ctx)
 	if err != nil {
 		t.Fatalf("consumer %s info: %v", name, err)
 	}
@@ -1546,9 +1675,15 @@ func testJetStream(t *testing.T) (jetstream.JetStream, jetstream.Stream) {
 	return js, testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
 }
 
+// publish publishes data on subject and returns its acknowledgement. The publish waits for the
+// server's answer until the row's hang guards end, the test binary's deadline less 30 s
+// (testwait.Remaining), in place of the five seconds nats.go gives a request whose context has no
+// deadline (its defaultAPITimeout), so a NATS server the machine holds is waited out.
 func publish(t *testing.T, js jetstream.JetStream, subject string, data []byte) *jetstream.PubAck {
 	t.Helper()
-	ack, err := js.Publish(context.Background(), subject, data)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
+	ack, err := js.Publish(ctx, subject, data)
 	if err != nil {
 		t.Fatalf("publish %s: %v", subject, err)
 	}
@@ -1559,27 +1694,37 @@ func publish(t *testing.T, js jetstream.JetStream, subject string, data []byte) 
 // to the one last names, with none left to deliver. It reads the stream position, not a count of
 // deliveries, because one message can be delivered more than once (the delivery mechanism:
 // ConsumerSpec.HandlerLimit's comment in consume.go). That is at-least-once delivery the consumer
-// deduplicates and which a delivery count would read as more.
+// deduplicates and which a delivery count would read as more. Its reads wait for the server until
+// the row's hang guards end (testwait.Remaining), as assertNoAckPending's do.
 func assertAcknowledgedThrough(t *testing.T, stream jetstream.Stream, consumer string, last *jetstream.PubAck) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
 	testwait.Eventually(t, fmt.Sprintf("%s has acknowledged through stream sequence %d", consumer, last.Sequence), func() bool {
-		item, err := stream.Consumer(context.Background(), consumer)
+		item, err := stream.Consumer(ctx, consumer)
 		if err != nil {
 			return false
 		}
-		info, err := item.Info(context.Background())
+		info, err := item.Info(ctx)
 		return err == nil && info.AckFloor.Stream == last.Sequence && info.NumPending == 0 && info.NumAckPending == 0
 	})
 }
 
+// assertNoAckPending waits for consumer to owe no acknowledgement. Its reads wait for the server
+// until the row's hang guards end (testwait.Remaining), in place of the five seconds nats.go gives
+// a request whose context has no deadline: a read that fails only makes the next poll read again,
+// but each held read spends five seconds of the wait's own bound and the last one it makes decides
+// the row.
 func assertNoAckPending(t *testing.T, stream jetstream.Stream, consumer string) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
 	testwait.Eventually(t, consumer+" has no acknowledgement pending", func() bool {
-		item, err := stream.Consumer(context.Background(), consumer)
+		item, err := stream.Consumer(ctx, consumer)
 		if err != nil {
 			return false
 		}
-		info, err := item.Info(context.Background())
+		info, err := item.Info(ctx)
 		return err == nil && info.NumAckPending == 0
 	})
 }
@@ -1735,6 +1880,122 @@ func TestApplyFactSerializesConcurrentFacts(t *testing.T) {
 	}
 	if n != 2 {
 		t.Fatalf("counter = %d, want both facts applied in turn", n)
+	}
+}
+
+// A fact takes its pool's turn before it takes a connection (store.Pool.FactTurn), so a burst of
+// facts waiting on the fact lock holds one connection, not one each: with one fact inside its
+// handler and twice the pool's size of facts waiting behind it, a read of the pool still answers
+// at once. Before the turn every waiting fact held a connection, the burst held them all, and the
+// read waited for the whole burst (the boot replay's read of which facts are applied, which ran out
+// its budget so in 1 of 20 race-soak runs of internal/daemon).
+func TestABurstOfFactsWaitingOnTheLockLeavesThePoolToOtherReads(t *testing.T) {
+	t.Parallel()
+	raw := migratedPool(t)
+	pool := store.NewPool(raw)
+	ctx := context.Background()
+	inside, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	letFirstFinish := func() { releaseOnce.Do(func() { close(release) }) }
+	// A failing read must still let the first fact finish, or its open transaction holds the pool.
+	defer letFirstFinish()
+	var applied sync.WaitGroup
+	errs := make(chan error, 1+2*int(raw.Config().MaxConns))
+	applied.Go(func() {
+		_, err := ApplyFact(ctx, pool, "test", "burst-0", DispatchConsumerPosition{AckFloorStream: 0}, handlerFunc(func(context.Context, pgx.Tx, Fact) (Result, error) {
+			close(inside)
+			<-release
+			return Result{}, nil
+		}))
+		errs <- err
+	})
+	<-inside
+	var asked sync.WaitGroup
+	for i := range 2 * int(raw.Config().MaxConns) {
+		asked.Add(1)
+		applied.Go(func() {
+			asked.Done()
+			_, err := ApplyFact(ctx, pool, "test", fmt.Sprintf("burst-%d", i+1), DispatchConsumerPosition{AckFloorStream: int64(i + 1)})
+			errs <- err
+		})
+	}
+	asked.Wait()
+	// Without the turn the burst takes every connection of the pool, each waiting on the lock; with
+	// it, only the fact inside its handler holds one. The read goes once the pool is full or a second
+	// has passed, whichever is first, so it never runs ahead of a burst that would starve it.
+	testwait.Holds(time.Second, testwait.Poll, func() bool { return raw.Stat().AcquiredConns() == raw.Config().MaxConns })
+	read, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var one int
+	if err := pool.QueryRow(read, `select 1`).Scan(&one); err != nil {
+		t.Fatalf("a read of the pool beside %d facts waiting on the fact lock = %v, want it answered at once", 2*raw.Config().MaxConns, err)
+	}
+	letFirstFinish()
+	applied.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("a fact of the burst: %v", err)
+		}
+	}
+}
+
+// A fact whose ctx ends while it waits for its pool's turn leaves the line holding nothing: it
+// takes no connection, runs no handler and records nothing, and answers ctx's error naming the
+// wait. The line moves on: once the turn is free, the same fact applies.
+func TestAFactWhoseContextEndsWhileItWaitsForItsTurnTakesNoConnection(t *testing.T) {
+	t.Parallel()
+	raw := migratedPool(t)
+	pool := store.NewPool(raw)
+	ctx := context.Background()
+	held, err := pool.FactTurn(ctx)
+	if err != nil {
+		t.Fatalf("take the pool's turn: %v", err)
+	}
+	ran := false
+	handler := handlerFunc(func(context.Context, pgx.Tx, Fact) (Result, error) {
+		ran = true
+		return Result{}, nil
+	})
+	acquired := raw.Stat().AcquireCount()
+	waiting, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	_, err = ApplyFact(waiting, pool, "test", "turn-ends", DispatchConsumerPosition{AckFloorStream: 1}, handler)
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "wait for the pool's turn to apply fact test/turn-ends") {
+		t.Fatalf("ApplyFact while another holds the turn = %v, want the wait for the turn ended by its context", err)
+	}
+	if got := raw.Stat().AcquireCount(); got != acquired || ran {
+		t.Fatalf("the fact that left the line took %d connections and ran its handler %t, want none and false", got-acquired, ran)
+	}
+	held()
+	if _, err := ApplyFact(ctx, pool, "test", "turn-ends", DispatchConsumerPosition{AckFloorStream: 1}, handler); err != nil || !ran {
+		t.Fatalf("ApplyFact once the turn is free = %v, handler ran %t; want it applied", err, ran)
+	}
+}
+
+// A fact hands its pool's turn on at its COMMIT, before its other commit hooks run: a hook that
+// waits (a NATS publish, say) holds up no other fact. Here the first fact's hook waits until a
+// second fact has applied; a turn held through the hooks would leave the second waiting on the
+// first's hook, and its bound would end it.
+func TestAFactsCommitHookHoldsUpNoOtherFact(t *testing.T) {
+	t.Parallel()
+	pool := store.NewPool(migratedPool(t))
+	ctx := context.Background()
+	second := make(chan error, 1)
+	hooked := handlerFunc(func(ctx context.Context, _ pgx.Tx, _ Fact) (Result, error) {
+		store.OnCommit(ctx, func() {
+			bounded, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err := ApplyFact(bounded, pool, "test", "after-the-commit", DispatchConsumerPosition{AckFloorStream: 2})
+			second <- err
+		})
+		return Result{}, nil
+	})
+	if _, err := ApplyFact(ctx, pool, "test", "hooked", DispatchConsumerPosition{AckFloorStream: 1}, hooked); err != nil {
+		t.Fatalf("the hooked fact: %v", err)
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("a fact applied from the first fact's commit hook = %v, want it applied: the turn was handed on at the first's COMMIT", err)
 	}
 }
 
@@ -2092,8 +2353,8 @@ func TestPrepareArtifactReadiesAReviewEventBeforeItIsApplied(t *testing.T) {
 // said no until its reset. A failure that names no wait is retried after NakDelay. Either way the
 // review of the pull request the daemon records is applied once its read passes.
 func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
-	// rateLimitWait is far longer than the 25 ms nak delay the other row is retried after, so a
-	// loaded runner's scheduling cannot make one row's wait read as the other's.
+	// rateLimitWait is far longer than the 25 ms nak delay the other row is retried after, so the
+	// delay each row's nak asks for tells the two apart.
 	const rateLimitWait = 2 * time.Second
 	for _, tc := range []struct {
 		name    string
@@ -2108,24 +2369,30 @@ func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
 			createWrites(t, pool)
 			recordPullRequest(t, pool, "LEGION-208", 42)
 			js, _ := testJetStream(t)
-			spec := consumerSpec(&lockedBuffer{})
+			logs := &lockedBuffer{}
+			spec := consumerSpec(logs)
 			// The permission reads this test counts are the handler's own, so nothing but the
 			// failed read and its retry may read the permission. AckWait bounds each read the
-			// handler makes (resolveReviewPermission), and consumerSpec's 200 ms is the length of
+			// handler makes (recordedPullRequest, resolveReviewPermission), and any fixed window
+			// lets the machine decide whether one is cut: consumerSpec's 200 ms is the length of
 			// this handler's own work on a loaded runner - two pool reads and the fact's
-			// transaction - so this row sets it as a hang guard far above that work, leaving the
-			// failed read and its retry as the only two reads. The margin is what makes the count
-			// of two sound: a third read needs the whole minute to pass before a handling's nak
-			// or acknowledgement reaches the server. The campaign of dispatch://INFRA-1113
-			// measured that trip at 516.8 ms at its largest, under 16 busy loops on 2 CPUs, and
-			// the handler's own work and that trip together, about 717 ms, are a factor of about
-			// 80 below this window. The progress keeper reports nothing here: it ticks
-			// at a third of the window (spec.AckWait/3 in consume.go), so at 20 s, and each
-			// handling of this row ends, in a nak or in an acknowledgement, in about 200 ms, long
-			// before the first tick is due (keepInProgress, ackprogress.go). Where the margin
-			// closes, a third read can be made no earlier than a second delivery of the message
-			// (the delivery mechanism: ConsumerSpec.HandlerLimit's comment in consume.go).
-			spec.AckWait = time.Minute
+			// transaction - and a minute cuts a permission read of 61 s, whose nak brings a third
+			// read. So the window, and the row's wait for the review to be applied, are what is left
+			// of the test binary's deadline less 30 s (testwait.Remaining): a read however
+			// slow is waited out, leaving the failed read and its retry as the only two reads, and
+			// only one that never answers fails the row, by name, before the binary's own timeout.
+			// The window is also what makes the count of two sound: a third read needs the whole
+			// window to pass before a handling's nak or acknowledgement reaches the server. The
+			// campaign of dispatch://INFRA-1113 measured that trip at
+			// 516.8 ms at its largest, under 16 busy loops on 2 CPUs, and the handler's own work and
+			// that trip together, about 717 ms, are far below this window. The progress keeper
+			// reports nothing here: it ticks at a third of the window (spec.AckWait/3 in
+			// consume.go), and each handling of this row ends, in a nak or in an acknowledgement, in
+			// about 200 ms, long before the first tick is due (keepInProgress, ackprogress.go).
+			// Where the margin closes, a third read can be made no earlier than a second delivery
+			// of the message (the delivery mechanism: ConsumerSpec.HandlerLimit's comment in
+			// consume.go).
+			spec.AckWait = testwait.Remaining(t)
 			var mu sync.Mutex
 			var asks []time.Time
 			spec.ReviewPermission = func(context.Context, PullRequestReview) (bool, error) {
@@ -2141,18 +2408,31 @@ func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
 			defer stop()
 
 			publish(t, js, "notifications.github.sjawhar.legion.pr.42.review", capturedGitHubEnvelope(t, "review.json"))
-			testwait.Eventually(t, "the review applied once its read passed", func() bool { return writeCount(t, pool) == 1 })
+			testwait.WithinPolling(t, testwait.Remaining(t), testwait.Poll, "the review applied once its read passed", func() bool {
+				return writeCount(t, pool) == 1
+			})
 			mu.Lock()
 			defer mu.Unlock()
 			if len(asks) != 2 {
 				t.Fatalf("the permission was read %d times, want twice", len(asks))
 			}
-			gap := asks[1].Sub(asks[0])
-			if tc.limited && gap < rateLimitWait {
-				t.Fatalf("the rate-limited read was made again after %s, want at least the %s GitHub named", gap, rateLimitWait)
+			// What the row holds is the delay the intake asked JetStream for: nakResolve logs it with
+			// the failure, from the value it passes to NakWithDelay. The time between the two
+			// permission reads is no measure of that delay, since it also holds the redelivery's own
+			// handling up to its permission read (the pull-request read among it), which a loaded
+			// machine or a slow store stretches; it is held from below alone, since no redelivery
+			// comes before the delay asked.
+			want := spec.NakDelay
+			if tc.limited {
+				want = rateLimitWait
 			}
-			if !tc.limited && (gap < spec.NakDelay || gap >= rateLimitWait) {
-				t.Fatalf("the failed read was made again after %s, want the %s nak delay", gap, spec.NakDelay)
+			const failed = `msg="read the reviewer's repository permission"`
+			written := logs.String()
+			if naks, line := strings.Count(written, failed), logLine(written, "level=WARN", failed); naks != 1 || !strings.Contains(line, " retry_in="+want.String()+" ") {
+				t.Fatalf("the intake logged %d naks of the failed permission read, the first %q, want one asking a delay of %s:\n%s", naks, line, want, written)
+			}
+			if gap := asks[1].Sub(asks[0]); gap < want {
+				t.Fatalf("the failed read was made again after %s, sooner than the %s its nak asked", gap, want)
 			}
 		})
 	}

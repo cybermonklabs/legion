@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/internal/providers"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/weborigin"
 )
 
@@ -106,7 +107,7 @@ const (
 // counted pools and its permanent listeners. The listener's and the front door's pods open none.
 // TestDispatchConnectionsPerPodIsTheServers fails when a counted pool's size changes and this
 // does not.
-const dispatchConnectionsPerPod = 115
+const dispatchConnectionsPerPod = 117
 
 // Autopilot's bounds for the app pod's total request, the general-purpose compute class's for a pod
 // with pod anti-affinity, which every Dispatch pod carries, or with the safe-to-evict annotation,
@@ -130,7 +131,6 @@ var (
 var (
 	tailnetDNSNameRule = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.ts\.net$`)
 	namespaceRule      = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-	secretKeyRule      = regexp.MustCompile(`^[-._a-zA-Z0-9]+$`)
 	// quantityRule is a Kubernetes resource quantity (k8s.io/apimachinery's resource.Quantity):
 	// a signed decimal, then a binary suffix, a decimal suffix or a decimal exponent.
 	quantityRule = regexp.MustCompile(`^([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))(Ki|Mi|Gi|Ti|Pi|Ei|n|u|m|k|M|G|T|P|E|[eE][+-]?[0-9]+)?$`)
@@ -145,6 +145,21 @@ var (
 	// 97 lowercase letters, digits or hyphens, ending in a letter or digit).
 	connectionNameRule = regexp.MustCompile(`^(?:[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)+:)?[a-z][-a-z0-9]{4,28}[a-z0-9]:[a-z]+-[a-z]+[0-9]+:[a-z](?:[-a-z0-9]{0,96}[a-z0-9])?$`)
 )
+
+// secretKeyChars are the characters of a key of a Secret's data.
+var secretKeyChars = regexp.MustCompile(`^[-._a-zA-Z0-9]+$`)
+
+// secretKeyRule says what a key of a Secret's data may be, as Kubernetes holds it
+// (k8s.io/apimachinery's validation.IsConfigMapKey, which validates a Secret's keys too).
+const secretKeyRule = `a Secret's key: letters, digits, "-", "_" and ".", at most 253 characters, and neither "." nor ".." nor ` +
+	`one that begins with ".."`
+
+// isSecretKey reports whether key can be a key of a Secret's data (secretKeyRule). The API server
+// refuses a Secret with any other key, so a secretKeyRef to one names a key no Secret holds, and
+// the pod that reads it never starts.
+func isSecretKey(key string) bool {
+	return len(key) <= 253 && secretKeyChars.MatchString(key) && key != "." && key != ".." && !strings.HasPrefix(key, "..")
+}
 
 // DispatchArgs are the inputs of an envoy-infra:gcp:Dispatch. Every field of a plain Go type is a
 // value the consumer's program knows when it runs; the pulumi.*Input fields may come from another
@@ -227,6 +242,19 @@ type DispatchArgs struct {
 	// person's, so a Workspace account there could hold a passkey, which Workspace offboarding does
 	// not end. Unset renders nothing.
 	SignInPasskey bool `pulumi:"signInPasskey,optional"`
+	// ParentStatusRule renders DISPATCH_PARENT_STATUS_RULE=on, which turns on Dispatch's
+	// parent-status rule: Dispatch refuses a write that leaves a parent's status out of line with
+	// its children's, and at boot it runs the one-time fix of the pairs that break the rule. Set it
+	// only when two conditions hold. First, each Legion daemon that writes to this Dispatch runs
+	// the releases with the daemon's side of the rule, which send the parent-status options.
+	// Second, each project's instructions retry a failed root architect with a status write of
+	// todo alone, not backlog and then todo, and that project's daemon and controller have read
+	// them. The rule refuses that backlog while an issue under the root is in work. No process of
+	// the earlier setting may serve beside one with the new setting: at one replica the app's
+	// Recreate strategy stops the old pod before the new one starts, and at more replicas the app
+	// is scaled to zero first. Unset renders nothing, so a deployment that leaves it unset renders
+	// what it always rendered.
+	ParentStatusRule bool `pulumi:"parentStatusRule,optional"`
 	// PublicOrigin is the https origin Dispatch is served at when it has no front door: the
 	// address a reader is sent back to, DISPATCH_SERVER_URL and the url output, served by an
 	// entrance the deployment builds itself, such as a load balancer, which forwards to the app's
@@ -316,6 +344,13 @@ type DispatchArgs struct {
 	AppId                   string `pulumi:"appId,optional"`
 	AppPrivateKeySecretName string `pulumi:"appPrivateKeySecretName,optional"`
 	AppPrivateKeySecretKey  string `pulumi:"appPrivateKeySecretKey,optional"`
+	// VerdictAppId is the id of the GitHub App that writes `legion-verdict`, which Dispatch reads
+	// as DISPATCH_VERDICT_APP_ID: its CI reconcile pass leaves that App's check suites out of the
+	// CI record, as the listener does under ENVOY_VERDICT_APP_ID (aws:WebhookListener's
+	// verdictAppId), so give both the same id. It is optional, rendered only when given, and only
+	// with the App above, whose key alone runs that pass; refused blank, and refused when it is
+	// not a GitHub App id (contracts.IsGithubAppID).
+	VerdictAppId *string `pulumi:"verdictAppId,optional"`
 
 	DatabaseVersion    *string `pulumi:"databaseVersion,optional"`
 	DatabaseTier       *string `pulumi:"databaseTier,optional"`
@@ -418,6 +453,18 @@ type DispatchArgs struct {
 	// Unset renders nothing: no limit, and a rate with no burst takes the rate as its burst.
 	SenderMessagesPerMinute *int `pulumi:"senderMessagesPerMinute,optional"`
 	SenderMessageBurst      *int `pulumi:"senderMessageBurst,optional"`
+	// ConsumerNames is how both consumer creators, the app and the listener, name the JetStream
+	// consumers they create: ENVOY_CONSUMER_NAMES on the app's and the listener's containers,
+	// "fixed" or "fresh". Unset renders nothing, and both run fixed; any other value is refused
+	// (core.CheckConsumerNames). Each reads it only at its start, so a change rolls both pods.
+	ConsumerNames string `pulumi:"consumerNames,optional"`
+	// ReplaceUnderHold is the writer hold's update rule (heldReplacement) for the same two
+	// Deployments: true recreates each, whatever its replica count, so its old pods stop before the
+	// new ones start, and lets the apply finish without waiting for the new pods, whose readiness
+	// the hold's refusal of their NATS connections can hold back. The front door, which creates no
+	// consumer, is unchanged. Unset or false, each Deployment updates and is waited for as it always
+	// has.
+	ReplaceUnderHold bool `pulumi:"replaceUnderHold,optional"`
 
 	// SigningKeyGenerations is the ordered key set the server holds, the shape
 	// auth.ParseSigningKeys reads DISPATCH_SIGNING_KEY into: the first entry signs every new
@@ -580,6 +627,7 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"appId", args.AppId},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName},
 		{"appPrivateKeySecretKey", args.AppPrivateKeySecretKey},
+		{"consumerNames", args.ConsumerNames},
 	} {
 		if bus.HoldsSeed(value.value) {
 			return value.input, true
@@ -594,6 +642,9 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		if bus.HoldsSeed(domain) {
 			return fmt.Sprintf("signInWorkspaceDomains[%d]", i), true
 		}
+	}
+	if args.VerdictAppId != nil && bus.HoldsSeed(*args.VerdictAppId) {
+		return "verdictAppId", true
 	}
 	if args.DatabaseVersion != nil && bus.HoldsSeed(*args.DatabaseVersion) {
 		return "databaseVersion", true
@@ -688,9 +739,11 @@ type Dispatch struct {
 // network half both modes build: no other field is read by the cluster and the network the mode
 // builds.
 // natsReplicas, streamMaxBytes, senderMessagesPerMinute and senderMessageBurst are 0 when their
-// inputs are unset, where the component renders none of those settings, and signingKeyGenerations
-// is the generations the component registers a signing key for, in the order the server holds
-// them, [0] when its input is unset. frontDoor and signInOn are the two groups of inputs a
+// inputs are unset, where the component renders none of those settings, consumerNames is "" when
+// its input is unset, where it renders no ENVOY_CONSUMER_NAMES, and signingKeyGenerations is the
+// generations the component registers a signing key for, in the order the server holds them, [0]
+// when its input is unset. replaceUnderHold is the writer hold's update rule for the app's and the
+// listener's Deployments (heldReplacement). frontDoor and signInOn are the two groups of inputs a
 // consumer sets together or not at all: frontDoor is set when any tailnet input is, where the
 // component builds the front door and Dispatch is reached at its tailnet name, and signInOn when
 // any sign-in input is, where the app runs browser sign-in. publicOrigin is the origin Dispatch
@@ -724,11 +777,12 @@ type dispatchSettings struct {
 	signIn                                      struct{ clientID, domain string }
 	signInOutside, signInPasskey                bool
 	signInWorkspaceDomains                      []string
+	parentStatusRule                            bool
 	databaseVersion, databaseTier               string
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
 	oidcAudience, oidcIssuer                    string
-	appClientID, appID                          string
+	appClientID, appID, verdictAppID            string
 	appKeySecretName, appKeySecretKey           string
 	deletionProtection, existingNamespace       bool
 	replicas                                    int
@@ -736,6 +790,8 @@ type dispatchSettings struct {
 	natsInCluster                               bool
 	natsReplicas, streamMaxBytes                int
 	senderMessagesPerMinute, senderMessageBurst int
+	consumerNames                               string
+	replaceUnderHold                            bool
 	signingKeyGenerations                       []int
 	appResources                                dispatchAppResources
 	pprofPort                                   int
@@ -1061,6 +1117,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"signInOutside", args.SignInOutside},
 		{"signInPasskey", args.SignInPasskey},
 		{"signInWorkspaceDomains", len(args.SignInWorkspaceDomains) > 0},
+		{"parentStatusRule", args.ParentStatusRule},
 		{"publicOrigin", args.PublicOrigin != ""},
 		{"iapAudience", args.IapAudience != nil},
 		{"loadBalancerSourceRanges", len(args.LoadBalancerSourceRanges) > 0},
@@ -1077,6 +1134,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"appId", args.AppId != ""},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName != ""},
 		{"appPrivateKeySecretKey", args.AppPrivateKeySecretKey != ""},
+		{"verdictAppId", args.VerdictAppId != nil},
 	}, dispatchDatabaseInputs(args), []dispatchInput{
 		{"namespace", args.Namespace != nil},
 		{"existingNamespace", args.ExistingNamespace != nil},
@@ -1118,6 +1176,8 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"chatEndpoint", args.ChatEndpoint != nil},
 		{"chatModel", args.ChatModel != nil},
 		{"chatTokenSecret", args.ChatTokenSecret != nil},
+		{"consumerNames", args.ConsumerNames != ""},
+		{"replaceUnderHold", args.ReplaceUnderHold},
 	})
 }
 
@@ -1778,8 +1838,21 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if !dnsSubdomain(args.AppPrivateKeySecretName) {
 			return dispatchSettings{}, core.InputErrorf("appPrivateKeySecretName", "appPrivateKeySecretName %q must be a DNS subdomain", args.AppPrivateKeySecretName)
 		}
-		if !secretKeyRule.MatchString(args.AppPrivateKeySecretKey) {
+		if !isSecretKey(args.AppPrivateKeySecretKey) {
 			return dispatchSettings{}, core.InputErrorf("appPrivateKeySecretKey", "appPrivateKeySecretKey %q must match %s", args.AppPrivateKeySecretKey, secretKeyRule)
+		}
+	}
+	// The verdict App's id is read by Dispatch's CI reconcile pass alone, which the App's key
+	// runs, so without the App it would do nothing and is refused rather than dropped; given, it
+	// is held to the rule the listener holds ENVOY_VERDICT_APP_ID to, so the two can match.
+	if args.VerdictAppId != nil {
+		switch {
+		case len(appSet) == 0:
+			return dispatchSettings{}, core.InputErrorf("verdictAppId", "verdictAppId is given without the GitHub App (appClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey), whose key alone runs the CI reconcile pass that reads it: set the App, or leave verdictAppId out")
+		case strings.TrimSpace(*args.VerdictAppId) == "":
+			return dispatchSettings{}, core.InputErrorf("verdictAppId", "verdictAppId is blank: give the verdict App's id, or leave it out")
+		case !contracts.IsGithubAppID(*args.VerdictAppId):
+			return dispatchSettings{}, core.InputErrorf("verdictAppId", "verdictAppId %q is not a GitHub App id: a whole number above 0, with no leading zero", *args.VerdictAppId)
 		}
 	}
 	azure, err := newDispatchAzure(args)
@@ -1816,6 +1889,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	// (dispatchDomainName, workspaceDomainRule).
 	s.signIn.domain = strings.TrimSpace(args.SignInDomain)
 	s.signInOutside = args.SignInOutside
+	s.parentStatusRule = args.ParentStatusRule
 	s.outsideOrigin = outsideOrigin
 	s.signInPasskey = args.SignInPasskey
 	if len(args.SignInWorkspaceDomains) > 0 {
@@ -1834,6 +1908,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.appID = args.AppId
 	s.appKeySecretName = args.AppPrivateKeySecretName
 	s.appKeySecretKey = args.AppPrivateKeySecretKey
+	if args.VerdictAppId != nil {
+		s.verdictAppID = *args.VerdictAppId
+	}
 	s.azure = azure
 	s.answerer = answerer
 	if args.DatabaseVersion != nil {
@@ -1894,6 +1971,11 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if s.senderMessagesPerMinute, s.senderMessageBurst, err = core.CheckSenderLimit("", args.SenderMessagesPerMinute, args.SenderMessageBurst); err != nil {
 		return dispatchSettings{}, err
 	}
+	// The consumer-name setting both creators read, checked here for the sender limit's reason.
+	if err := core.CheckConsumerNames("consumerNames", args.ConsumerNames); err != nil {
+		return dispatchSettings{}, err
+	}
+	s.consumerNames, s.replaceUnderHold = args.ConsumerNames, args.ReplaceUnderHold
 	if s.signingKeyGenerations, err = newDispatchSigningKeyGenerations(args); err != nil {
 		return dispatchSettings{}, err
 	}

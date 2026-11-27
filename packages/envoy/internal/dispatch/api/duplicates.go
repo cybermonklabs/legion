@@ -215,13 +215,13 @@ select s.key, i.title, i.status, s.shared, s.score,
 // title_lexemes() (migration 0088), the function the issues trigger writes issues.title_lexemes
 // with. A spec's are the document vector artifact_versions_search() builds, which 0058's trigger
 // writes on every version and 20261101182454's trigger copies into document_search for the
-// primary document's latest version: search_vector, with an empty head, over search_text of the
-// stored markdown with its ask blocks stripped, as 0087 rewrote that function (0058 built the
-// same vector with to_tsvector, which search_vector only leaves for text too long to hold in one
-// tsvector). The spec this side reads is the new one as Dispatch would store it, rendered by
-// storedMarkdown, because the stored vector is of the rendering and not of the request's
-// markdown. tsvector_to_array answers a vector's lexemes sorted and each once, as title_lexemes
-// does, so array equality is set equality here.
+// primary document's latest version: search_vector, with an empty head, over
+// search_document_text of the stored markdown, its ask blocks removed and then search_text
+// (20261121060636; 0058 built the same vector with to_tsvector, which search_vector only leaves
+// for text too long to hold in one tsvector). The spec this side reads is the new one as Dispatch
+// would store it, rendered by storedMarkdown, because the stored vector is of the rendering and
+// not of the request's markdown. tsvector_to_array answers a vector's lexemes sorted and each
+// once, as title_lexemes does, so array equality is set equality here.
 //
 // A spec is compared whether or not either side has one, which covers the architect's rule for
 // both: with no spec on either side the two empty sets are equal and the titles decide, and with
@@ -240,8 +240,7 @@ select s.key, i.title, i.status, s.shared, s.score,
 var duplicateEqualLexemesQuery = `
 with new_text as (
   select title_lexemes($2) as title_lex,
-         tsvector_to_array(search_vector('',
-           regexp_replace(search_text($3), '(?s):::ask\{.*?:::', '', 'g'))) as spec_lex
+         tsvector_to_array(search_vector('', search_document_text($3))) as spec_lex
 )
 select i.key, i.title, i.status, cardinality(n.title_lex)::int as shared, 1::float8 as score,
        ts_headline('english', search_text(i.title),

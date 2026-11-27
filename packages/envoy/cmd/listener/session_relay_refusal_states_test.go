@@ -146,20 +146,28 @@ func TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid(t *testing.T) {
 	}
 }
 
-// awaitRelayFrame waits for the frame carrying item among those the session's stand-in receives,
-// failing the test when none arrives within the bound. A relay publishes every frame unjudged, so
-// the frames before it are the ones the relay refused nothing of.
-func awaitRelayFrame(t *testing.T, standIn *sessionStandIn, item contracts.Envelope, within time.Duration) {
-	t.Helper()
+// relayFrameArrives reports whether the frame carrying item reaches the session's stand-in within
+// the bound. A relay publishes every frame unjudged, so the frames before it are the ones the relay
+// refused nothing of.
+func relayFrameArrives(standIn *sessionStandIn, item contracts.Envelope, within time.Duration) bool {
 	deadline := time.After(within)
 	for {
 		select {
 		case frame := <-standIn.frames:
 			if frame.item.EventID == item.EventID {
-				return
+				return true
 			}
 		case <-deadline:
-			t.Fatalf("the frame carrying %s never reached the session within %s", item.EventID, within)
+			return false
 		}
+	}
+}
+
+// awaitRelayFrame waits for the frame carrying item, failing the test when none arrives within the
+// bound.
+func awaitRelayFrame(t *testing.T, standIn *sessionStandIn, item contracts.Envelope, within time.Duration) {
+	t.Helper()
+	if !relayFrameArrives(standIn, item, within) {
+		t.Fatalf("the frame carrying %s never reached the session within %s", item.EventID, within)
 	}
 }

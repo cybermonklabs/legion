@@ -27,6 +27,13 @@ func (m storedMessage) Metadata() (*jetstream.MsgMetadata, error) {
 
 func (storedMessage) Subject() string { return "notifications.github.acme.widgets.push.branch.main" }
 
+// observeStored has watch observe m with its metadata, as consumeConsumer parses it once per
+// delivery and hands it on.
+func observeStored(watch *lagWatch, m storedMessage) {
+	metadata, _ := m.Metadata()
+	watch.observe(m, metadata)
+}
+
 // A durable consumer hours behind its stream held phase moves and pull request records back with
 // nothing in the log to say so. lagWatch says so, with how far behind and how many messages wait,
 // for a message stored more than five minutes before it is handled, at most once a minute however
@@ -40,11 +47,11 @@ func TestLagWatchSaysOnceAMinuteThatAConsumerIsBehind(t *testing.T) {
 		return storedMessage{unexpectedMessage: unexpectedMessage{t: t}, stored: at, pending: pending}
 	}
 
-	watch.observe(stored(now.Add(-time.Minute), 3))
+	observeStored(watch, stored(now.Add(-time.Minute), 3))
 	if got := lines(); got != 0 {
 		t.Fatalf("a consumer a minute behind logged %d lines, want none:\n%s", got, logs.String())
 	}
-	watch.observe(stored(now.Add(-2*time.Hour), 4102))
+	observeStored(watch, stored(now.Add(-2*time.Hour), 4102))
 	if got := lines(); got != 1 {
 		t.Fatalf("a consumer two hours behind logged %d lines, want one:\n%s", got, logs.String())
 	}
@@ -54,12 +61,12 @@ func TestLagWatchSaysOnceAMinuteThatAConsumerIsBehind(t *testing.T) {
 		}
 	}
 	now = now.Add(30 * time.Second)
-	watch.observe(stored(now.Add(-2*time.Hour), 4101))
+	observeStored(watch, stored(now.Add(-2*time.Hour), 4101))
 	if got := lines(); got != 1 {
 		t.Fatalf("a second message within the minute logged %d lines in all, want still one", got)
 	}
 	now = now.Add(30 * time.Second)
-	watch.observe(stored(now.Add(-2*time.Hour), 4000))
+	observeStored(watch, stored(now.Add(-2*time.Hour), 4000))
 	if got := lines(); got != 2 {
 		t.Fatalf("a message a minute after the first line logged %d lines in all, want two", got)
 	}

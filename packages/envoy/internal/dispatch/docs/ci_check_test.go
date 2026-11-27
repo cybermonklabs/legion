@@ -86,6 +86,7 @@ func liveCIChecks(t *testing.T, service *Service, artifactID string) map[string]
 // at that version. A block keeping every rule keeps its ci_check. A later settlement of the same
 // document repairs nothing again and adds no event.
 func TestSettlementDeletesTheCICheckOfEachBrokenCheckABrowserWrote(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	checks := writeIndexedDocument(t, database, service, "verification", ciCheckOf("c1", `negative_control="Break the build and watch the run fail."`))
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -160,6 +161,7 @@ func TestSettlementDeletesTheCICheckOfEachBrokenCheckABrowserWrote(t *testing.T)
 // attributes, nor on a check block a peer changed since, which the settlement that change
 // schedules judges again.
 func TestACICheckRepairLandsOnlyOnTheCheckItJudged(t *testing.T) {
+	t.Parallel()
 	broken := ciCheckOf("c1", `run="go test ./..." `+ciCheckKept)
 	read, err := pmdoc.Parse(broken)
 	if err != nil {

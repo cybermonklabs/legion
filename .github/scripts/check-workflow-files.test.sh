@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests for `check-workflow-files.sh`: every file under .github/workflows is within 64,000 bytes,
-# parses as YAML, repeats no mapping key after upper-casing, and calls at most 45 unique reusable
-# workflows.
+# parses as YAML, repeats no mapping key after upper-casing, calls at most 45 unique reusable
+# workflows, and sets JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they
+# stand for.
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
 # script into it, so the script under test is the file CI runs.
@@ -311,7 +312,7 @@ check "exits 0" "$(is "$status" 0)"
 check "says what it read" \
   "$(contains "$out" '^all 46 workflow files under .github/workflows are within 64,000 bytes')"
 check "and what it held them to" \
-  "$(contains "$out" 'call at most 45 unique reusable workflows$')"
+  "$(contains "$out" 'call at most 45 unique reusable workflows, and set JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for$')"
 
 echo "case: job ids and with: keys that differ only in case"
 root=$(fixture folded-elsewhere)
@@ -391,5 +392,185 @@ check "names .github/ci-notes/README.md, where the rule is" \
   "$(contains "$out" '^::error file=.github/workflows/ci.yml::.* into the workflow.s notes file, as \.github/ci-notes/README\.md says\.$')"
 check "read one file" \
   "$(contains "$out" '^1 problem(s) across the 1 workflow file(s) under .github/workflows$')"
+
+echo "case: JOB_TIMEOUT_MINUTES that is its job's timeout-minutes passes, at job and at step level"
+# gh-read.sh waits for a spent API budget within JOB_TIMEOUT_MINUTES, measured from the job's
+# start: a value above the job's timeout-minutes would let the wait outlive the job.
+root=$(fixture timeout-equal)
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Build
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10
+    steps:
+      - run: echo build
+        timeout-minutes: 3
+        env:
+          JOB_TIMEOUT_MINUTES: 10
+          STEP_TIMEOUT_MINUTES: 3
+  plain:
+    runs-on: ubuntu-latest
+    env:
+      JOB_TIMEOUT_MINUTES: 360
+    steps:
+      - run: echo plain
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "says it holds the two equal" "$(contains "$out" 'JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES')"
+
+echo "case: JOB_TIMEOUT_MINUTES that is not its job's timeout-minutes is refused, by file, line and both values"
+root=$(fixture timeout-differs)
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Build
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 30
+    steps:
+      - run: echo build
+        env:
+          JOB_TIMEOUT_MINUTES: 12
+  plain:
+    runs-on: ubuntu-latest
+    env:
+      JOB_TIMEOUT_MINUTES: 30
+    steps:
+      - run: echo plain
+        timeout-minutes: 4
+        env:
+          STEP_TIMEOUT_MINUTES: 5
+      - run: echo bare
+        env:
+          STEP_TIMEOUT_MINUTES: 2
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the job-level value, its line and the job's limit with its line" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=8::.github/workflows/ci.yaml:8: job build sets JOB_TIMEOUT_MINUTES to 30, but its timeout-minutes is 10 (line 6)")"
+check "names a step-level value too" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=12::.github/workflows/ci.yaml:12: job build sets JOB_TIMEOUT_MINUTES to 12, but its timeout-minutes is 10 (line 6)")"
+check "reads a job with no timeout-minutes as GitHub's default of 360" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=16::.github/workflows/ci.yaml:16: job plain sets JOB_TIMEOUT_MINUTES to 30, but its timeout-minutes is 360 (GitHub's default, as the job sets none)")"
+check "names a step's STEP_TIMEOUT_MINUTES against that step's timeout-minutes" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=21::.github/workflows/ci.yaml:21: step 1 of job plain sets STEP_TIMEOUT_MINUTES to 5, but its timeout-minutes is 4 (line 19)")"
+check "and one whose step sets no timeout-minutes at all" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=24::.github/workflows/ci.yaml:24: step 2 of job plain sets STEP_TIMEOUT_MINUTES to 2, but the step sets no timeout-minutes")"
+check "says why the two must be one number" "$(contains "$out" "gh-read.sh waits for a spent API budget within")"
+check "refuses those five and nothing else" "$(contains "$out" '^5 problem(s) across the 1 workflow file(s) under .github/workflows$')"
+
+echo "case: a misplaced limit name, and a step with its own limit that reaches gh-read.sh without passing it, are refused"
+# gh-read.sh, a script that sources it, a script that only names it in a comment, and an action
+# that runs the first script: the reach follows a run or a source, never a mention.
+root=$(fixture timeout-reach)
+printf '%s\n' 'gh_wait_reset() { "$@"; }' > "$root/.github/scripts/gh-read.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'source "$(dirname "$0")/gh-read.sh"' 'gh_wait_reset gh api x' \
+  > "$root/.github/scripts/reader.sh"
+printf '%s\n' '#!/usr/bin/env bash' '# reader.sh, beside this, reads the API; this script does not.' 'echo quiet' \
+  > "$root/.github/scripts/mention.sh"
+mkdir -p "$root/.github/actions/report"
+cat > "$root/.github/actions/report/action.yml" <<'YAML'
+name: report
+description: Runs .github/scripts/reader.sh, in its description too.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: .github/scripts/reader.sh
+YAML
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Build
+on: push
+env:
+  JOB_TIMEOUT_MINUTES: 10
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      STEP_TIMEOUT_MINUTES: 3
+    steps:
+      - run: .github/scripts/reader.sh
+        timeout-minutes: 3
+      - uses: ./.github/actions/report
+        timeout-minutes: 4
+      - run: .github/scripts/mention.sh
+        timeout-minutes: 5
+      - run: echo .github/scripts/reader.sh is a script
+        timeout-minutes: 6
+      - run: .github/scripts/reader.sh
+        timeout-minutes: 7
+        env:
+          STEP_TIMEOUT_MINUTES: 7
+      - run: .github/scripts/reader.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the workflow-level JOB_TIMEOUT_MINUTES" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=4::.github/workflows/ci.yaml:4: the workflow's env sets JOB_TIMEOUT_MINUTES, which stands for no one job's timeout-minutes")"
+check "names a job-level STEP_TIMEOUT_MINUTES" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=10::.github/workflows/ci.yaml:10: job build's env sets STEP_TIMEOUT_MINUTES, which stands for no one step's timeout-minutes")"
+check "names the step that runs the reader with a limit and no STEP_TIMEOUT_MINUTES" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=13::.github/workflows/ci.yaml:13: step 1 of job build sets timeout-minutes 3 and reaches gh-read.sh (through reader.sh), but sets no STEP_TIMEOUT_MINUTES")"
+check "and the step that uses the action that runs it" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=15::.github/workflows/ci.yaml:15: step 2 of job build sets timeout-minutes 4 and reaches gh-read.sh (through ./.github/actions/report), but sets no STEP_TIMEOUT_MINUTES")"
+check "not the step whose script only mentions the reader" "$(is "$(contains "$out" 'step 3 of job build')" false)"
+check "nor the step that only echoes its path" "$(is "$(contains "$out" 'step 4 of job build')" false)"
+check "nor the one that passes its limit, nor the one with no limit of its own" \
+  "$(is "$(contains "$out" 'step [56] of job build')" false)"
+check "refuses those four and nothing else" "$(contains "$out" '^4 problem(s) across the 1 workflow file(s) under .github/workflows$')"
+
+echo "case: STEP_TIMEOUT_MINUTES in a workflow's env, and steps reaching gh-read.sh through ./base/, bash -c, \${{ github.workspace }} or a bare source, are refused"
+root=$(fixture timeout-reach-ways)
+printf '%s\n' 'gh_wait_reset() { "$@"; }' > "$root/.github/scripts/gh-read.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'source "$(dirname "$0")/gh-read.sh"' 'gh_wait_reset gh api x' \
+  > "$root/.github/scripts/reader.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'cd "$(dirname "$0")"' 'source gh-read.sh' 'gh_wait_reset gh api x' \
+  > "$root/.github/scripts/bare.sh"
+mkdir -p "$root/.github/actions/report"
+printf '%s\n' 'name: report' 'description: d' 'runs:' '  using: composite' '  steps:' '    - shell: bash' \
+  '      run: .github/scripts/reader.sh' > "$root/.github/actions/report/action.yml"
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Build
+on: push
+env:
+  STEP_TIMEOUT_MINUTES: 3
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: ./base/.github/actions/report
+        timeout-minutes: 3
+      - run: bash -c '.github/scripts/reader.sh'
+        timeout-minutes: 4
+      - run: '"${{ github.workspace }}/.github/scripts/reader.sh"'
+        timeout-minutes: 5
+      - run: .github/scripts/bare.sh
+        timeout-minutes: 6
+      - run: bash -c 'echo .github/scripts/reader.sh'
+        timeout-minutes: 7
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the workflow-level STEP_TIMEOUT_MINUTES" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=4::.github/workflows/ci.yaml:4: the workflow's env sets STEP_TIMEOUT_MINUTES, which stands for no one step's timeout-minutes")"
+check "names the step that uses the action from ./base/" \
+  "$(contains "$out" "line=11::.github/workflows/ci.yaml:11: step 1 of job build sets timeout-minutes 3 and reaches gh-read.sh (through ./base/.github/actions/report)")"
+check "names the step that runs the reader through bash -c" \
+  "$(contains "$out" "line=13::.github/workflows/ci.yaml:13: step 2 of job build sets timeout-minutes 4 and reaches gh-read.sh (through reader.sh)")"
+check "names the step that runs it from \${{ github.workspace }}" \
+  "$(contains "$out" "line=15::.github/workflows/ci.yaml:15: step 3 of job build sets timeout-minutes 5 and reaches gh-read.sh (through reader.sh)")"
+check "names the step whose script sources gh-read.sh by its bare name" \
+  "$(contains "$out" "line=17::.github/workflows/ci.yaml:17: step 4 of job build sets timeout-minutes 6 and reaches gh-read.sh (through bare.sh)")"
+check "not the step whose bash -c only echoes the path" "$(is "$(contains "$out" 'step 5 of job build')" false)"
+check "refuses those five and nothing else" "$(contains "$out" '^5 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 
 summary "check-workflow-files.sh"

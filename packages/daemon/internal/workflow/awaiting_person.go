@@ -134,7 +134,7 @@ func (e *Engine) itemLeft(ctx context.Context, tx pgx.Tx, root record.Issue, bef
 		e.logOnCommit(ctx, "workflow: the item a root waits on left the person, and its wait moves to what is still with them",
 			"issue", root.Key, "ask", before.Ask, "next_ask", next.Ask, "next_version", next.GateVersion, "left_by", by)
 		root.Awaiting.Ask, root.Awaiting.GateVersion, root.Awaiting.Artifact = next.Ask, next.GateVersion, next.Artifact
-		return e.store.PutIssue(ctx, tx, root)
+		return e.WriteIssue(ctx, tx, root)
 	}
 	e.logOnCommit(ctx, "workflow: an item of a root's wait left the person, and nothing else is with them", "issue", root.Key,
 		"ask", before.Ask, "left_by", by, "detail", detail)
@@ -160,12 +160,12 @@ func (e *Engine) catchUpApplied(ctx context.Context, tx pgx.Tx, fact intake.Catc
 }
 
 // answerWait records that by answered root's wait now, with detail, which puts the root in the
-// waiting line (record.Waiting) — among the issues whose work came back, oldest first — and
+// waiting line (record.Waiting) — within its priority, among the issues whose work came back, oldest first — and
 // names the act in the task its architect resumes with (resumeTask). The detail is the act's
 // own: the ask a person acted on, the version and reason of the review that answered, or who
 // took the question away, so a later act of the same kind does not rename it.
 func (e *Engine) answerWait(ctx context.Context, tx pgx.Tx, root record.Issue, by record.Answer, detail string) error {
 	at := e.now()
 	root.Awaiting.AnsweredAt, root.Awaiting.AnsweredBy, root.Awaiting.AnsweredDetail = &at, by, detail
-	return e.store.PutIssue(ctx, tx, root)
+	return e.WriteIssue(ctx, tx, root)
 }

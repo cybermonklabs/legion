@@ -208,6 +208,12 @@
       "repo": "",
       "ok": true
     },
+    {
+      "subject": "notifications.envoy.takeover.PRIV.lead-reviewer.ses_a.0123",
+      "project": "PRIV",
+      "repo": "",
+      "ok": true
+    },
     { "subject": "notifications.envoy.deliver.ses_a", "project": "_", "repo": "", "ok": true },
     { "subject": "notifications.somethingnew.PRIV.x", "project": "_", "repo": "", "ok": true },
     { "subject": "agent.stream.ses_a.frames", "project": "", "repo": "", "ok": false },

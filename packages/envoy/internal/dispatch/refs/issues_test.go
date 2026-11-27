@@ -19,9 +19,9 @@ import (
 // cap refuses past and migration 0113's census counts against.
 const issueRepoCap = 32
 
-// issueRepoChainDefault is the repository the chain's project maps as its default. No issue in
-// the chain names a repository of its own, so it is the answer for every issue whose walk
-// finishes, and the wrong answer for every issue whose walk does not.
+// issueRepoChainDefault is the default repository of the chain's project. No issue in the chain
+// names a repository of its own, so it is the answer for every issue whose walk finishes, and the
+// wrong answer for every issue whose walk does not.
 const issueRepoChainDefault = "acme/widgets"
 
 // newIssueRepoChain writes a project whose default repository is issueRepoChainDefault and a
@@ -40,11 +40,8 @@ func newIssueRepoChain(t *testing.T, length int) *store.Store {
 	}
 	defer tx.Rollback(ctx)
 	createReferenceProject(t, tx, "CORE")
-	if _, err := tx.Exec(ctx, `
-		insert into repo_projects (repo, project, is_default, created_by)
-		values ($1, 'CORE', true, '{"kind":"user","id":"alice"}')
-	`, issueRepoChainDefault); err != nil {
-		t.Fatalf("map %s as the project's default: %v", issueRepoChainDefault, err)
+	if _, err := tx.Exec(ctx, `update projects set default_repo = $1 where key = 'CORE'`, issueRepoChainDefault); err != nil {
+		t.Fatalf("set %s as the project's default: %v", issueRepoChainDefault, err)
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into issues (key, project_key, number, title, parent_key, created_by, rank)
@@ -133,10 +130,12 @@ func TestIssueRepositoryRefusesALoopedParentChain(t *testing.T) {
 }
 
 // mainIssueRepoLateral is main's own SQL, held here letter for letter as the oracle of the
-// comparison below. It is a copy of the text this change replaced, not text built from the
-// package's constants: a lateral built from those would move with them, and the two sides would
-// agree however the resolution rule changed. IssueDepthCap is written as the 32 main spliced
-// into it for the same reason.
+// comparison below, but for the one read this change moved: the project's default, which main
+// read from the repo_projects row marked is_default, and which is now the project's own
+// default_repo column (migration 20261119000230 copied each such row there). It is a copy of
+// that text, not text built from the package's constants: a lateral built from those would move
+// with them, and the two sides would agree however the resolution rule changed. IssueDepthCap
+// is written as the 32 main spliced into it for the same reason.
 const mainIssueRepoLateral = `
 	left join lateral (
 		with recursive chain as (
@@ -149,7 +148,7 @@ const mainIssueRepoLateral = `
 		select
 			coalesce(
 				(select c.repo from chain c where c.repo is not null order by c.depth limit 1),
-				(select d.repo from repo_projects d where d.project = i.project_key and d.is_default)
+				(select d.default_repo from projects d where d.key = i.project_key)
 			) as resolved,
 			exists (
 				select 1 from chain c
@@ -157,11 +156,10 @@ const mainIssueRepoLateral = `
 			) as too_deep
 	) repo on true`
 
-// issueRepoOwnRepo is the repository CORE-100 names as its own: a mapping of its project that
-// is not the project's default, so an issue resolving to it resolved through the chain and not
-// through the default. issueRepoLoopDefault is project LOOP's own default, which its looped
-// issues must not fall back to; a repository maps to one project (repo_projects' primary key is
-// the repository alone), so each project's mapping is its own.
+// issueRepoOwnRepo is the repository CORE-100 names as its own: not the default of its project,
+// so an issue resolving to it resolved through the chain and not through the default.
+// issueRepoLoopDefault is project LOOP's own default, which its looped issues must not fall back
+// to.
 const (
 	issueRepoOwnRepo     = "acme/gadgets"
 	issueRepoLoopDefault = "acme/loops"
@@ -171,8 +169,8 @@ const (
 // project CORE's chain of issueRepoCap+2 issues, whose deepest issue the walk cannot finish and
 // whose issue at the cap it can; CORE-100, which names a repository of its own, and CORE-101
 // below it, which inherits that one; project LOOP, whose two issues are each other's parent
-// though the project maps a default the walk must not fall back to; and project BARE, which
-// maps no default at all.
+// though the project has a default the walk must not fall back to; and project BARE, which
+// has no default at all.
 func newIssueRepoGround(t *testing.T) *store.Store {
 	t.Helper()
 	database := newIssueRepoChain(t, issueRepoCap+2)
@@ -184,12 +182,8 @@ func newIssueRepoGround(t *testing.T) *store.Store {
 	defer tx.Rollback(ctx)
 	createReferenceProject(t, tx, "LOOP")
 	createReferenceProject(t, tx, "BARE")
-	if _, err := tx.Exec(ctx, `
-		insert into repo_projects (repo, project, is_default, created_by) values
-			($1, 'CORE', false, '{"kind":"user","id":"alice"}'),
-			($2, 'LOOP', true, '{"kind":"user","id":"alice"}')
-	`, issueRepoOwnRepo, issueRepoLoopDefault); err != nil {
-		t.Fatalf("map the ground's repositories: %v", err)
+	if _, err := tx.Exec(ctx, `update projects set default_repo = $1 where key = 'LOOP'`, issueRepoLoopDefault); err != nil {
+		t.Fatalf("set LOOP's default: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into issues (key, project_key, number, title, parent_key, repo, created_by, rank) values
@@ -258,7 +252,7 @@ func issueRepoSetAnswer(t *testing.T, database *store.Store, key string) string 
 // IssueRepository runs the terms the issue reads run, for one key, so it answers key for key
 // what main's lateral walk of that one chain answered: over a loop, a chain at the cap, a chain
 // past it, an issue that names its own repository, an issue inheriting one from above, a
-// project that maps no default, and a key no issue has. The spread check below says the ground
+// project that has no default, and a key no issue has. The spread check below says the ground
 // still holds all four answers, so an agreement on "none" everywhere cannot pass for one.
 func TestIssueRepositoryAnswersWhatMainsLateralDid(t *testing.T) {
 	database := newIssueRepoGround(t)
@@ -271,7 +265,7 @@ func TestIssueRepositoryAnswersWhatMainsLateralDid(t *testing.T) {
 		{"CORE-101", "an issue inheriting the repository above it"},
 		{"LOOP-1", "an issue in a parent loop"},
 		{"LOOP-2", "the other issue in that loop"},
-		{"BARE-1", "an issue of a project that maps no default"},
+		{"BARE-1", "an issue of a project that has no default"},
 		{"BARE-2", "an issue below it"},
 		{"CORE-9999", "a key no issue has"},
 		{"", "the empty key"},
@@ -285,6 +279,61 @@ func TestIssueRepositoryAnswersWhatMainsLateralDid(t *testing.T) {
 	for _, answer := range []string{"refused", "none", issueRepoChainDefault, issueRepoOwnRepo} {
 		if !seen[answer] {
 			t.Errorf("no issue of the ground resolved to %s, so the comparison never covered it", answer)
+		}
+	}
+}
+
+// An issue's repository is read only from ancestors of its own project: the walk ends at its
+// first ancestor of another project as at a root, and the issue takes its own project's default.
+// BETA-1 sits under ALPHA-1, which names acme/alpha, and takes BETA's default acme/beta. BETA-3's
+// chain leaves BETA and comes back, BETA-3 under ALPHA-2 under BETA-4, and it takes nothing from
+// BETA-4's acme/beta4 either; ALPHA-2 takes nothing from BETA-4, and resolves to ALPHA's default
+// alone. ALPHA-5 under ALPHA-1 and BETA-6 under BETA-5 still inherit, which is the control.
+func TestIssueRepositoryStopsAtTheProjectEdge(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the fixture: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "ALPHA")
+	createReferenceProject(t, tx, "BETA")
+	for project, repo := range map[string]string{"ALPHA": "acme/alpha-default", "BETA": "acme/beta"} {
+		if _, err := tx.Exec(ctx, `update projects set default_repo = $1 where key = $2`, repo, project); err != nil {
+			t.Fatalf("set %s's default repository: %v", project, err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into issues (key, project_key, number, title, parent_key, repo, created_by, rank) values
+			('ALPHA-1', 'ALPHA', 1, 'Names a repository', null, 'acme/alpha', '{"kind":"user","id":"alice"}', '00000001'),
+			('ALPHA-5', 'ALPHA', 5, 'Under its own project', 'ALPHA-1', null, '{"kind":"user","id":"alice"}', '00000005'),
+			('BETA-1', 'BETA', 1, 'Under another project', 'ALPHA-1', null, '{"kind":"user","id":"alice"}', '00000001'),
+			('BETA-4', 'BETA', 4, 'Names a repository', null, 'acme/beta4', '{"kind":"user","id":"alice"}', '00000004'),
+			('ALPHA-2', 'ALPHA', 2, 'Between two of BETA', 'BETA-4', null, '{"kind":"user","id":"alice"}', '00000002'),
+			('BETA-3', 'BETA', 3, 'Back in its project', 'ALPHA-2', null, '{"kind":"user","id":"alice"}', '00000003'),
+			('BETA-5', 'BETA', 5, 'Names a repository', null, 'acme/beta5', '{"kind":"user","id":"alice"}', '00000005'),
+			('BETA-6', 'BETA', 6, 'Under its own project', 'BETA-5', null, '{"kind":"user","id":"alice"}', '00000006')
+	`); err != nil {
+		t.Fatalf("write the issues: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the fixture: %v", err)
+	}
+
+	for _, want := range []struct{ key, repo, is string }{
+		{"BETA-1", "acme/beta", "an issue under an issue of another project"},
+		{"BETA-3", "acme/beta", "an issue whose chain leaves its project and comes back"},
+		{"ALPHA-2", "acme/alpha-default", "an issue under an issue of another project that names one"},
+		{"ALPHA-5", "acme/alpha", "an issue under its own project's issue"},
+		{"BETA-6", "acme/beta5", "another issue under its own project's issue"},
+	} {
+		resolved, err := IssueRepository(ctx, database.Pool, want.key)
+		if err != nil {
+			t.Fatalf("resolve %s: %v", want.key, err)
+		}
+		if resolved == nil || *resolved != want.repo {
+			t.Errorf("%s, %s, resolved to %s, want %s", want.key, want.is, repoName(resolved), want.repo)
 		}
 	}
 }

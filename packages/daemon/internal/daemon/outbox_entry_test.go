@@ -91,7 +91,7 @@ func rolePhaseRow(t *testing.T, pool *store.Pool, issue string, role claim.Role)
 	t.Helper()
 	ctx := context.Background()
 	var found record.PhaseRow
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := record.NewStore().Phases(ctx, tx, issue)
 		if err != nil {
 			return err
@@ -120,11 +120,9 @@ func entryEngine(t *testing.T) *workflow.Engine {
 // startPromoted raises role's entry on issue as the promotion of a re-admitted tree does
 // (workflow.Engine.StartPromotedWorker), in a transaction of its own that settles the runs its
 // start ends, as a fact's does (workflow.Engine.OpenFact).
-func startPromoted(ctx context.Context, db interface {
-	Begin(context.Context) (pgx.Tx, error)
-}, engine *workflow.Engine, issue record.Issue, role claim.Role) error {
+func startPromoted(ctx context.Context, db store.TxPool, engine *workflow.Engine, issue record.Issue, role claim.Role) error {
 	ctx = engine.OpenFact(ctx)
-	return pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+	return store.Transact(ctx, db, func(ctx context.Context, tx pgx.Tx) error {
 		if err := engine.StartPromotedWorker(ctx, tx, issue, role); err != nil {
 			return err
 		}
@@ -144,6 +142,7 @@ func startPromoted(ctx context.Context, db interface {
 // owes while it is unleased and leaves a leased one where it is, so the row the lane holds
 // outlives its entry rather than being rewritten under the lane.
 func TestAnAppendOnlyStartRowBelowItsRolesEntryDeliversNothingAndStartsNoRole(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newOneStartRig(t)
 	rows := entryStartRows(t, rig.pool, rig.issue.Key)
@@ -210,6 +209,7 @@ func TestAnAppendOnlyStartRowBelowItsRolesEntryDeliversNothingAndStartsNoRole(t 
 // (workflow.Engine.SendOwedEntry), and the worker is given what the deleted row carried, at the
 // entry it carried.
 func TestAppendOnlyStartRowsLoseNoWorkWhenOneIsDeletedBeforeTheLaneRunsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newOneStartRig(t)
 	rows := entryStartRows(t, rig.pool, rig.issue.Key)
@@ -231,7 +231,7 @@ func TestAppendOnlyStartRowsLoseNoWorkWhenOneIsDeletedBeforeTheLaneRunsIt(t *tes
 	}
 
 	issue := readIssue(t, rig.pool, rig.issue.Key)
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return entryEngine(t).SendOwedEntry(ctx, tx, *issue, claim.RoleImplementer, row)
 	}); err != nil {
 		t.Fatalf("send the implementer the work its entry names: %v", err)
@@ -268,6 +268,7 @@ func TestAppendOnlyStartRowsLoseNoWorkWhenOneIsDeletedBeforeTheLaneRunsIt(t *tes
 // (workflow.Engine.StartPromotedWorker, record.SuperviseRequest.ResumeTask), which a worker
 // already at work needs no second prompt for.
 func TestAnAppendOnlyStartThatDeliversNothingRecordsOnlyTheEntryItsClaimHolds(t *testing.T) {
+	t.Parallel()
 	t.Run("a start of the entry whose task the claim holds records that entry", func(t *testing.T) {
 		ctx := context.Background()
 		rig := newOneStartRig(t)
@@ -384,6 +385,7 @@ func TestAnAppendOnlyStartThatDeliversNothingRecordsOnlyTheEntryItsClaimHolds(t 
 // number in the same transaction and writes the start that carries both, so the worker is started
 // under an entry above every entry a completion still in flight could name.
 func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newOneStartRig(t)
 	rows := entryStartRows(t, rig.pool, rig.issue.Key)
@@ -396,7 +398,7 @@ func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *t
 			before.Entry, before.EntryRaisedAt, before.EntryTask, rows[0].request.Task)
 	}
 
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().ClearGeneration(ctx, tx, rig.issue.Key, time.Now().UTC())
 	}); err != nil {
 		t.Fatalf("clear the generation the re-admission ends: %v", err)
@@ -441,6 +443,7 @@ func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *t
 // entry (record.SuperviseRequest.ResendEntry), and the task reaches the worker; without the
 // mark the claim would be relaunched with no prompt.
 func TestAHeldPhasesRetryReachesAWorkerThatFinishedTheEntrysTask(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newOneStartRig(t)
 	// The worker's own connection, as the integration cases register one: a prompt reaches no
@@ -536,6 +539,7 @@ func TestAHeldPhasesRetryReachesAWorkerThatFinishedTheEntrysTask(t *testing.T) {
 // tests' in-memory claim store, because what the admission pass weighs against the phases row is
 // the claim the record holds (record.RoleClaim.GivenEntry, workflow.OwedEntry).
 func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newOneStartRig(t)
 	// The supervisor's own store, over the rig's database, with the issue's tree admitted as the
@@ -548,7 +552,7 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	// The implementer's completion is held to an open pull request on the issue's branch
 	// (workflow's TriggerImplementationReady), which the record holds here as the opened webhook
 	// records one.
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: rig.issue.Key,
 			Repo: "acme/widgets", Number: 42, Branch: "legion/" + rig.issue.Key, HeadSHA: "head", CheckedHead: "head",
 			Failing: []string{}})

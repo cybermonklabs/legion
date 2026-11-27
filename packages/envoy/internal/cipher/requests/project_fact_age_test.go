@@ -110,7 +110,7 @@ func TestAProjectFactCannotAgePastTheBoundBeforeTheRelease(t *testing.T) {
 			m.Projects = projectaccess.New(dispatch.URL, dispatch.Account, &http.Client{Transport: front})
 
 			start := time.Now()
-			values, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+			values, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 			elapsed := time.Since(start)
 			if c.slow == nil {
 				if err != nil || values.Values["TEAM_TOKEN"] != "team-v1" {
@@ -204,7 +204,7 @@ func TestEveryDecisionOnAnAgedProjectFactIsMadeOnAFreshOne(t *testing.T) {
 		t.Helper()
 		m, _, _, dispatch := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 		pod, podKey := everyonesPod(t, m, "pod-p-shared", "")
-		req, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, reason, "SHARED_KEY"), "", nil)
+		req, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, reason, "SHARED_KEY"), "")
 		if err != nil || req.State != "pending" || req.RecordID == nil {
 			t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", req, err)
 		}
@@ -254,7 +254,7 @@ func TestEveryDecisionOnAnAgedProjectFactIsMadeOnAFreshOne(t *testing.T) {
 		dispatch.SetRow(teamProject, privateTeam(fixtureOperator))
 		front := &agedFront{inner: projectaccess.New(dispatch.URL, dispatch.Account, nil)}
 		m.Projects = front
-		if values, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); !errors.Is(err, errProjectNotNamed) {
+		if values, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); !errors.Is(err, errProjectNotNamed) {
 			t.Errorf("Values on TEAM's aged public state = %+v, %v; want errProjectNotNamed: TEAM is private now, and the session does not name it", values, err)
 		}
 		handedAged(t, front)

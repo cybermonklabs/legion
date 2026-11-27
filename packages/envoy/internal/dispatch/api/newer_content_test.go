@@ -135,6 +135,7 @@ func requireNewerContentWarnings(t *testing.T, logs *logtest.Recorder, least int
 // holding newer content: after it, the document answers 409 DOC_NEWER_CONTENT naming the element.
 // Without DISPATCH_TEST_HOOKS the route is not mounted, and the document is unchanged.
 func TestTheNewerContentHookWritesAnElementThisBuildDoesNotKnow(t *testing.T) {
+	t.Parallel()
 	for _, hooks := range []bool{true, false} {
 		handler, _, _ := newTestServer(t, testServerOptions{testHooks: hooks})
 		issue := createArtifactIssue(t, handler)

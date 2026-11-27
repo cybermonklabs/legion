@@ -549,7 +549,7 @@ function printReport(report: SeedReport): void {
 }
 
 async function run(reference: string): Promise<void> {
-  const { dispatch: resolution, warnings } = sessionDispatchSettings(
+  const { dispatch: resolution, warnings } = await sessionDispatchSettings(
     sessionConfigFile("command", process.env),
     process.env,
     { cwd: process.cwd() }

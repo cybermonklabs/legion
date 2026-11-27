@@ -1,5 +1,5 @@
 import type { RequestCredential } from "@legion/envoy-client/bearer"
-import { createEnvoyClient } from "@legion/envoy-client/transport"
+import { createEnvoyClient, type KeyTakenResult } from "@legion/envoy-client/transport"
 
 export type SendEnvoyMessageOptions = {
   readonly baseUrl: string
@@ -27,6 +27,8 @@ export type SentEnvoyMessage = {
    * went without included, and where the send was handed none to carry.
    */
   readonly withoutCredential: unknown
+  /** Never set on a stored send: see {@link KeyTakenResult}. */
+  readonly keyTaken?: undefined
 }
 
 /**
@@ -86,11 +88,13 @@ function recorded(credential: RequestCredential): {
  *
  * A stored send answers what it went without (`SentEnvoyMessage`), so the command can say so: a
  * sign-in revoked for good is stored without the credential by a listener that asks for none, and
- * nothing else would tell the person.
+ * nothing else would tell the person. A send whose idempotency key another sender's message
+ * already holds stored nothing, and answers that (`KeyTakenResult`), naming that message's event
+ * id: the message was not delivered, and a send under a new key delivers it.
  */
 export async function sendEnvoyMessage(
   options: SendEnvoyMessageOptions,
-): Promise<SentEnvoyMessage> {
+): Promise<SentEnvoyMessage | KeyTakenResult> {
   const kept = options.credential === undefined ? undefined : recorded(options.credential)
   const client = createEnvoyClient({
     baseUrl: options.baseUrl,
@@ -101,11 +105,12 @@ export async function sendEnvoyMessage(
   // session's sending limit; a shell that names no session sends a blank one, which the transport
   // leaves off the wire. A refusal is an `EnvoyApiError` whose message is the listener's own
   // sentence, which `envoy-send` prints.
-  await client.send({
+  const result = await client.send({
     sourceSessionID: options.sourceSession ?? "",
     targetSessionID: options.targetSession,
     message: options.message,
     ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
   })
+  if (result.keyTaken !== undefined) return result
   return { withoutCredential: kept?.lastFailure() }
 }

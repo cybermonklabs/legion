@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  `dispatch_doc_edit`'s validation refuses a `replace` operation that names no `with`, or carries
+  a key `replace` does not take, naming `ops[<index>]` and the key, so every tool built on the
+  shared specs refuses it before it is sent; its `with` field says so, and that the server answers
+  such a replace `400 REPLACE_FIELDS`. `with: ""` still passes.
+time: 2026-11-20T09:21:35.000000000Z
+custom:
+  Issue: doc-edit-replace-fields

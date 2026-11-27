@@ -68,7 +68,7 @@ func publishedSender(t *testing.T, state *listenerDeps, source, target string) *
 func sessionRows(t *testing.T, registry *store.Registry, state *listenerDeps) map[string]listenerwire.SessionInfo {
 	t.Helper()
 	recorder := httptest.NewRecorder()
-	sessionsHandler(registry, state.sessions).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, state.sessions, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d, body %s; want 200", recorder.Code, recorder.Body.String())
 	}
@@ -104,6 +104,7 @@ func roleViewUnanswered(recorder *httptest.ResponseRecorder) bool {
 // claim's holder holds the role though its record lacks the topic, or though it has no interest
 // record at all.
 func TestARoleIsHeldByTheSessionItsClaimNamesWhateverTheRecordsTopics(t *testing.T) {
+	t.Parallel()
 	const (
 		stale  = "ses_claims_stale_topic"
 		holder = "ses_claims_holder_without_topic"
@@ -166,6 +167,7 @@ func TestARoleIsHeldByTheSessionItsClaimNamesWhateverTheRecordsTopics(t *testing
 // bus-unavailable 503 with Retry-After, never a row a roster would take for a role nobody holds. A
 // send only stamps roles as a hint, so it still goes out, its sender carrying no roles.
 func TestAClaimsViewThatCannotAnswerIsTheBusNotAnsweringOnTheSessionRoutes(t *testing.T) {
+	t.Parallel()
 	const (
 		sender = "ses_claims_view_sender"
 		target = "ses_claims_view_target"
@@ -192,7 +194,7 @@ func TestAClaimsViewThatCannotAnswerIsTheBusNotAnsweringOnTheSessionRoutes(t *te
 		path    string
 		handler http.Handler
 	}{
-		{"/v1/sessions", sessionsHandler(registry, sessions)},
+		{"/v1/sessions", sessionsHandler(registry, sessions, nil)},
 		{"/v1/registry/" + sender, sessionEntryHandler(state)},
 	} {
 		recorder := httptest.NewRecorder()
@@ -284,6 +286,7 @@ func requireRolesOrUnanswered(t *testing.T, what string, recorder *httptest.Resp
 // bus-unavailable 503 with Retry-After: 1, never the claim's holder listed with no roles, and a
 // send still goes out, its sender carrying no roles.
 func TestARoleViewWhoseFirstScanTimedOutIsTheBusNotAnsweringOnTheSessionRoutes(t *testing.T) {
+	t.Parallel()
 	const (
 		holder = "ses_timed_out_view_holder"
 		target = "ses_timed_out_view_target"
@@ -303,7 +306,7 @@ func TestARoleViewWhoseFirstScanTimedOutIsTheBusNotAnsweringOnTheSessionRoutes(t
 		path    string
 		handler http.Handler
 	}{
-		{"/v1/sessions", sessionsHandler(registry, sessions)},
+		{"/v1/sessions", sessionsHandler(registry, sessions, nil)},
 		{"/v1/registry/" + holder, sessionEntryHandler(state)},
 	} {
 		recorder := httptest.NewRecorder()
@@ -329,6 +332,7 @@ func TestARoleViewWhoseFirstScanTimedOutIsTheBusNotAnsweringOnTheSessionRoutes(t
 // new bucket writes at a lower revision than the old bucket's claim of the same role
 // (architect's) gives its holder the role, since a read of a recreated bucket drops the fence.
 func TestARecreatedRoleBucketIsNeverAnsweredAsAHolderWithoutItsRole(t *testing.T) {
+	t.Parallel()
 	const (
 		holder = "ses_recreated_roles_holder"
 		filler = "ses_recreated_roles_filler"
@@ -407,7 +411,7 @@ func TestARecreatedRoleBucketIsNeverAnsweredAsAHolderWithoutItsRole(t *testing.T
 		entry := sessionEntryRoute(t, state, holder)
 		entryAnswered := requireRolesOrUnanswered(t, "GET /v1/registry/"+holder, entry, want, kept, entryRoles)
 		list := httptest.NewRecorder()
-		sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+		sessionsHandler(registry, sessions, nil).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 		listAnswered := requireRolesOrUnanswered(t, "GET /v1/sessions", list, want, kept, listedRoles)
 		if entryAnswered && listAnswered {
 			break

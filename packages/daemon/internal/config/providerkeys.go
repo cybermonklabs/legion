@@ -184,7 +184,8 @@ func pathValue(env []string) string {
 }
 
 // writeAtomically replaces path with a 0600 file holding value: a temporary file beside it, synced
-// and renamed into place, so a shim reading the directory never sees half a key.
+// and renamed into place, so a reader of path never sees half of it — a shim reading a provider
+// key's directory, or a launch composing its prompt from an instructions copy.
 func writeAtomically(path, value string) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {

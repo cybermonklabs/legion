@@ -1,5 +1,7 @@
 package workflow
 
+//ci:reads skills/legion-worker/references/merge-gate.md TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries reads it under ../../../..
+
 import (
 	"context"
 	"crypto/rand"
@@ -357,7 +359,7 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 		t.Fatalf("ApplyFact tester completion: %v", err)
 	}
 	task := startTask(t, pool, claim.RoleReviewer)
-	if want := "Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Tester's verdict: pass. Pull request: #42." +
+	if want := "Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Tester's verdict: pass. Pull request: #42." +
 		reviewedPartOf("none") + reviewEntryPartOf(phaseRowOf(t, pool, claim.RoleReviewer).Entry); !strings.HasSuffix(task, want) {
 		t.Fatalf("reviewer task %q, want it to end with %q", task, want)
 	}
@@ -603,6 +605,9 @@ func assertOutboxCount(t *testing.T, pool *pgxpool.Pool, kind string, want int) 
 // until its issue closes. (The merge's row is the close itself, which suspends the tree:
 // TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace.)
 func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
+	// The root's architect, whose sign-off the route names it by; the seeded issue has no run of a
+	// step the record counts, so its route reads none.
+	architect := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
 	cases := []struct {
 		name       string
 		current    phase.Phase
@@ -658,7 +663,7 @@ func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 		{
 			name: "sign-off", current: phase.Accepting,
 			fact: func() intake.Fact {
-				return intake.SignOff{Issue: "LEGION-208"}
+				return intake.SignOff{Issue: "LEGION-208", By: architect, Generation: 1}
 			},
 			wantPhase: phase.Retro, wantStatus: "retro", wantOutbox: []string{"dispatch_status", "supervise"},
 		},
@@ -724,13 +729,18 @@ func assertStartTasksNamePhase(t *testing.T, pool *pgxpool.Pool, want phase.Phas
 // already live.
 func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
 	for _, from := range []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging} {
-		for _, to := range requiredBackwardTargets(from) {
+		for _, to := range requiredBackwardTargets(phase.Order, from) {
 			t.Run(string(from)+"-to-"+string(to), func(t *testing.T) {
 				pool := migratedPool(t)
 				role := phase.RoleFor(from)
 				seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: from, Generation: 1, Status: "in_progress", Rank: "U"})
 				seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: "claim"})
-				if _, err := intake.ApplyFact(context.Background(), pool, "api", string(from)+"-"+string(to), intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: to, Reason: "correct"}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				engine := testEngine(config.DesignGateRootIssues, nil)
+				move := intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: to, Reason: "correct"}
+				if role == claim.RoleArchitect {
+					move = rootsMoveBack(t, pool, engine, "LEGION-208", to, "correct")
+				}
+				if _, err := intake.ApplyFact(context.Background(), pool, "api", string(from)+"-"+string(to), move, engine, admissionStub{}); err != nil {
 					t.Fatalf("ApplyFact backward: %v", err)
 				}
 				if got, pass, rounds := issuePhase(t, pool), implementerPass(t, pool), implementerRounds(t, pool); got != to || pass != 1 || rounds != 0 {
@@ -1018,6 +1028,74 @@ func TestABackwardMovesTaskNamesThePullRequestAndTheReason(t *testing.T) {
 		if !strings.Contains(task, want) {
 			t.Fatalf("task = %q, want it to carry %q", task, want)
 		}
+	}
+}
+
+// A merged change never moves back: the backward move of an issue whose pull request has merged
+// is refused BACKWARD_REFUSED with that reason, in whichever phase the issue stands — a root in
+// merging, whose close can wait on the rest of its tree, an issue still in reviewing whose pull
+// request merged early, and an issue in accepting, where an approval of a merged pull request's
+// head ends the review round (TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound)
+// — and nothing moves, is counted or is started. The controls are the same moves on an issue in
+// merging and in accepting whose pull request is still open: each goes back and starts the
+// phase's worker, so the merge alone is what refuses the others.
+func TestABackwardMoveOfAMergedIssueIsRefused(t *testing.T) {
+	const reason = "its pull request has merged; a merged change never moves back"
+	for _, tc := range []struct {
+		name    string
+		from    phase.Phase
+		to      phase.Phase
+		state   record.PullRequestState
+		refused bool
+	}{
+		{"the merger's on a root in merging whose pull request merged", phase.Merging, phase.Reviewing, record.PullRequestMerged, true},
+		{"the reviewer's on an issue in reviewing whose pull request merged early", phase.Reviewing, phase.Implementing, record.PullRequestMerged, true},
+		{"the architect's on an issue in accepting whose pull request merged", phase.Accepting, phase.Implementing, record.PullRequestMerged, true},
+		{"the merger's on an issue in merging whose pull request is open", phase.Merging, phase.Reviewing, record.PullRequestOpen, false},
+		{"the architect's on an issue in accepting whose pull request is open", phase.Accepting, phase.Implementing, record.PullRequestOpen, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			role := phase.RoleFor(tc.from)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: tc.from, Generation: 1, Status: PhaseStatus(tc.from), Rank: "U"})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: claim.Token(string(role) + "-claim")})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
+			pr := record.PullRequest{State: tc.state, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, Failing: []string{}}
+			if tc.state == record.PullRequestMerged {
+				pr.MergeSHA = "merge-42"
+			}
+			seedPR(t, pool, pr)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			move := intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: tc.to, Reason: "the spec changed"}
+			if role == claim.RoleArchitect {
+				// An architect's request names the claim, the generation and the run of accepting
+				// its route read, which the workflow judges again (rootsMoveBack).
+				move = rootsMoveBack(t, pool, engine, "LEGION-208", tc.to, "the spec changed")
+			}
+			result, err := intake.ApplyFact(context.Background(), pool, "api", "backward", move, engine, admissionStub{})
+			if err != nil {
+				t.Fatalf("ApplyFact backward: %v", err)
+			}
+			if !tc.refused {
+				if result.Refusal != nil {
+					t.Fatalf("the move = %+v, want it applied: the pull request is open", result.Refusal)
+				}
+				if got, pass := issuePhase(t, pool), implementerPass(t, pool); got != tc.to || pass != 1 {
+					t.Fatalf("phase = %q, pass %d; want %q and one pass", got, pass, tc.to)
+				}
+				if started := superviseRequests(t, pool, "start"); started["LEGION-208/"+string(phase.RoleFor(tc.to))] != 1 {
+					t.Fatalf("the move back to %s started %v, want its %s started once", tc.to, started, phase.RoleFor(tc.to))
+				}
+				return
+			}
+			if refusalCode(result) != "BACKWARD_REFUSED" || !strings.Contains(result.Refusal.Message, reason) {
+				t.Fatalf("the move = %+v; want BACKWARD_REFUSED saying %q", result.Refusal, reason)
+			}
+			if got, pass := issuePhase(t, pool), implementerPass(t, pool); got != tc.from || pass != 0 {
+				t.Fatalf("phase = %q, pass %d; want %q and no pass", got, pass, tc.from)
+			}
+			assertOutboxKinds(t, pool, []string{})
+		})
 	}
 }
 

@@ -40,7 +40,8 @@ import (
 	"unicode/utf8"
 )
 
-// URLCredentials is text with the query and the userinfo of every URL written in it removed.
+// URLCredentials is text with the query and the userinfo of every URL written in it removed, but
+// for the query of a `file:` URL.
 //
 // A URL starts at <scheme>://, where the scheme is a letter followed by letters, digits, "+", "-"
 // or ".". It ends at the first white-space character, `"`, `'`, "`", "<" or ">" after the "://",
@@ -53,13 +54,20 @@ import (
 //   - the fragment starts at the first "#" after the authority, and it stays. A "?" after that "#"
 //     is the fragment's;
 //   - the query runs from the first "?" after the authority up to the fragment, or up to the end
-//     of the URL, and it is removed with its "?".
+//     of the URL, and it is removed with its "?". A URL whose scheme is `file`, in any case, keeps
+//     its query: no network request carries a `file:` URL, and its query is a module loader's own
+//     (`?mtime=1`), which a message naming the module it loaded must keep.
+//
+// The rule names no parameter it removes: a list of the names a credential goes by fails open, on
+// each name a service picks that the list lacks (`X-Amz-Signature`, `X-Goog-Credential`, `code`,
+// `state`, `client_assertion`), so every other URL loses its whole query.
 //
 // A URL written in the path or the fragment of another (a redirect's target, an archived page)
-// is a URL of its own, under the same rule. One written in a query goes with that query. Nothing
-// else changes: the scheme, the host and its port, the path, the fragment and every word around
-// the URLs stay as written. The rule removes rather than masks, so neither a part nor the length of
-// a credential is left, and URLCredentials(URLCredentials(s)) == URLCredentials(s).
+// is a URL of its own, under the same rule. One written in a query goes with that query, a
+// `file:` URL's own query aside. Nothing else changes: the scheme, the host and its port, the
+// path, the fragment and every word around the URLs stay as written. The rule removes rather than
+// masks, so neither a part nor the length of a credential is left, and
+// URLCredentials(URLCredentials(s)) == URLCredentials(s).
 //
 // A text the rule does not change, a text with no "://" above all, is returned as it is, with no
 // allocation. The rule takes time linear in the text's length, a run of "://" that nothing ends
@@ -123,6 +131,10 @@ func URLCredentials(text string) string {
 		if u := strings.LastIndexByte(text[at:host], '@'); u >= 0 {
 			remove(at, at+u+1)
 		}
+		// A `file:` URL keeps its query; a URL in it is a URL of its own, as one in its path is.
+		if fileSchemeEndsAt(text, sep) {
+			continue
+		}
 		frag := min(hash.from(text, host), end)
 		if q := question.from(text, host); q < frag {
 			query, fragment = q, frag
@@ -165,6 +177,24 @@ func schemeEndsAt(text string, sep int) bool {
 		}
 	}
 	return letter
+}
+
+// fileSchemeEndsAt reports whether the scheme that ends at sep, the index of a "://" in text, is
+// `file`, in any case: the four bytes before sep are `file`, and the byte before them, if any, is
+// none a scheme holds.
+func fileSchemeEndsAt(text string, sep int) bool {
+	const file = "file"
+	if sep < len(file) || !strings.EqualFold(text[sep-len(file):sep], file) {
+		return false
+	}
+	if sep == len(file) {
+		return true
+	}
+	switch c := text[sep-len(file)-1]; {
+	case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9', c == '+', c == '-', c == '.':
+		return false
+	}
+	return true
 }
 
 // endsURL reports whether r ends a URL: a white-space character, `"`, `'`, "`", "<" or ">". A rune

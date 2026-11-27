@@ -74,8 +74,9 @@ async function isSubagentSession(context: SessionIdentityContext): Promise<Subag
  * Two signals. OMP's own layout for file storage: a subagent's transcript file sits inside a
  * directory named after its parent's transcript file minus the `.jsonl` extension, so
  * `fs.existsSync(path.dirname(sessionFile) + ".jsonl")` finds the parent (oh-my-pi
- * `packages/coding-agent/src/session/session-manager.ts`, `resolveInteractiveRoot`), whether or
- * not the subagent's own file has been written yet. When the session's own transcript is a file
+ * `packages/coding-agent/src/session/session-manager.ts`, `resolveBreadcrumbToInteractiveRoot`,
+ * which walks up through the same `<dir>.jsonl` check), whether or not the subagent's own file
+ * has been written yet. When the session's own transcript is a file
  * on disk with no parent beside it, that layout is a top-level one, even for a top-level session
  * that rotated its transcript (`/new`, `/fork`). When the transcript is not a file on disk (a SQL
  * row, no transcript at all, or a file storage publish that has not happened yet), the

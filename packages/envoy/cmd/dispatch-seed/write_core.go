@@ -35,10 +35,10 @@ func sessionActor(session string) string {
 	return fmt.Sprintf(`{"kind":"session","id":%q}`, session)
 }
 
-// writeProjects writes the projects and their repository mappings. Each project has one default
-// mapping, which an issue with no repository of its own resolves to, and one more that the issues
-// carrying a repository of their own use. Each project also names the seed's own person as its
-// default assignee, the column every project fills
+// writeProjects writes the projects. Each project has a default repository (default_repo), which
+// an issue with no repository of its own resolves to. The issues that carry a repository of their
+// own name a second one (projectPlan.OwnRepo). Each project also names the seed's own person as
+// its default assignee, the column every project fills
 // (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql), and that person
 // is written first as somebody who has signed in (0068_people): every write that stores a
 // default holds it to a people row (allowedLogin, internal/dispatch/api/issue_assignee.go), so
@@ -55,21 +55,10 @@ func (r *seedRun) writeProjects(ctx context.Context) error {
 		}
 		for index, project := range r.plan.projects {
 			if _, err := tx.Exec(ctx, `
-				insert into projects (key, name, default_assignee, next_number, created_at, last_seq)
-				values ($1, $2, $3, 1, $4, 0)
-			`, project.Key, project.Name, seedAuthor.ID, timeAt(index, len(r.plan.projects))); err != nil {
+				insert into projects (key, name, default_assignee, default_repo, next_number, created_at, last_seq)
+				values ($1, $2, $3, $4, 1, $5, 0)
+			`, project.Key, project.Name, seedAuthor.ID, project.Repo, timeAt(index, len(r.plan.projects))); err != nil {
 				return fmt.Errorf("project %s: %w", project.Key, err)
-			}
-			for _, mapping := range []struct {
-				repo    string
-				primary bool
-			}{{project.Repo, true}, {project.OwnRepo, false}} {
-				if _, err := tx.Exec(ctx, `
-					insert into repo_projects (repo, project, created_by, created_at, is_default)
-					values ($1, $2, $3::jsonb, $4, $5)
-				`, mapping.repo, project.Key, seedActor, baseTime, mapping.primary); err != nil {
-					return fmt.Errorf("repo mapping %s: %w", mapping.repo, err)
-				}
 			}
 		}
 		return nil

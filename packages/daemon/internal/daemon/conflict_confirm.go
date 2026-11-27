@@ -37,13 +37,15 @@ import (
 // on attempts, each making at most one read. When the last attempt's read failed or still
 // answered UNKNOWN, the row applies intake.ConflictConfirmDone (Unread for a failed read), naming
 // the first read by its head and its time, which releases that first read so that the next read
-// that finds the head conflicting starts the two reads again, and then hands the head to the
-// runtime's merge-state reader to follow as it follows a climb that ended on `unknown`
-// (queueMergeStateFollow, followMergeState, dispatch://INFRA-4374 R4). Without those reads the
-// record would read whatever the last attempt left for as long as GitHub takes, and nothing would
-// read the head again until its next event. A last read that failed starts them too, since the
-// record then follows GitHub no better. Their CONFLICTING answer is applied as every read's is, so
-// it records a first conflicting read of the head and queues a new row of this kind.
+// that finds the head conflicting starts the two reads again, and then hands the pull request, as
+// this attempt read the record (on the base GitHub's answer names, when it answered: followed), to
+// the runtime's merge-state reader to follow as it follows a climb that ended on `unknown`
+// (queueMergeStateFollow, the reads of its base's batch, followBase, dispatch://INFRA-4374 R4),
+// with no read of the record between the two. Without those reads the record would read whatever
+// the last attempt left for as long as GitHub takes, and nothing would read the head again until
+// its next event. A last read that failed starts them too, since the record then follows GitHub
+// no better. Their CONFLICTING answer is applied as every read's is, so it records a first
+// conflicting read of the head and queues a new row of this kind.
 //
 // The read, its apply, the wait and the follow are the runtime's, which attach gives the outbox:
 // an outbox a test builds by hand has none of them, and the row fails with an error that names the
@@ -96,7 +98,8 @@ func (r *outbox) conflictConfirm(ctx context.Context, row record.OutboxRow, payl
 		intake.ConflictConfirmDone{Issue: row.Issue, Number: payload.Number, Head: payload.Head, FirstReadAt: payload.FirstReadAt, Unread: failed != nil}, r.handlers...); err != nil {
 		return fmt.Errorf("apply the end of the second read of %s's pull request #%d: %w", row.Issue, payload.Number, err)
 	}
-	r.queueMergeStateFollow(row.Issue, payload.Head)
+	follow := followed(*pr, pull)
+	r.queueMergeStateFollow(row.Issue, &follow)
 	return nil
 }
 

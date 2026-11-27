@@ -307,10 +307,10 @@ func eventOwnerKey(e model.Event) (string, error) {
 		return "", fmt.Errorf("event requires at most one owner")
 	}
 	if e.IssueKey != nil {
-		return "issue:" + *e.IssueKey, nil
+		return issueOwnerPrefix + *e.IssueKey, nil
 	}
 	if e.ArtifactID != nil {
-		return "artifact:" + *e.ArtifactID, nil
+		return artifactOwnerPrefix + *e.ArtifactID, nil
 	}
 	return "project:" + *e.ProjectKey, nil
 }
@@ -431,7 +431,9 @@ func Quiet(e model.Event) bool {
 		// the event feed, but nobody is woken by them. A Keep records that a person read a
 		// decision and agreed with it, which asks its agent for nothing. A priority's write is
 		// the deployment's own configuration of what work advances, which open pages refetch on
-		// and nobody is asked anything by.
+		// and nobody is asked anything by. This build writes no settings.repo_project.updated;
+		// the case stays for the events and outbox rows an earlier build wrote
+		// (outbox/publisher.go).
 		return true
 	case "ask.edited":
 		// A version move of an approval request that an earlier version already moved since it was
@@ -491,7 +493,7 @@ func namedVersion(payload any) bool {
 // Quiet is asked of one event from two payload shapes, and must answer the same for both: at
 // append time (Broker.Notify) the payload is the typed value the caller built, and at publish
 // time it is the event the outbox scanned out of Postgres, whose payload JSON decodes into a
-// map[string]any (outbox/publisher.go, scanPendingEvents). quietAskEdit and namedVersion read
+// map[string]any (outbox/batch_read.go, readRows). quietAskEdit and namedVersion read
 // their field the same way.
 func targetedMessage(payload any) bool {
 	switch message := payload.(type) {

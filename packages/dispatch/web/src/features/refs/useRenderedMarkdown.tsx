@@ -304,12 +304,31 @@ export function onMarkdownLatePaint(listener: LatePaintListener): () => void {
 }
 
 /**
- * Where the content under `element` starts, as the reader sees it now: the element's own bottom
- * edge in the viewport. A shift the browser's own scroll anchoring already made is in that
- * measurement, so the page is never moved twice.
+ * The first box laid out under `element`, whose foot on the screen is `foot`: walking from the
+ * element up through its ancestors, the first following sibling that has a box, is in the flow
+ * (neither positioned out of it nor sticky) and starts at or below that foot, or null where none
+ * does. A sibling beside the element in a row starts above its foot, and the walk passes it by:
+ * its top does not move as the body grows. The element's own bottom edge is no measure of where
+ * the content under it starts: the bottom margin of a body's last block collapses through the
+ * element's foot, so a paint that fills an empty element moves that edge against the content
+ * under it. In a Conversation card the first batch of a list moves it 18.4px further than the
+ * card after it, and a correction read from it carried the reader those 18.4px wherever the
+ * document had end room to scroll into.
  */
-function whereTheContentUnderItWas(element: HTMLElement): number {
-  return element.getBoundingClientRect().bottom;
+function contentUnder(element: HTMLElement, foot: number): Element | null {
+  for (
+    let node: Element | null = element;
+    node !== null && node !== document.body;
+    node = node.parentElement
+  ) {
+    for (let next = node.nextElementSibling; next !== null; next = next.nextElementSibling) {
+      const { position } = getComputedStyle(next);
+      if (position === "absolute" || position === "fixed" || position === "sticky") continue;
+      const box = next.getBoundingClientRect();
+      if ((box.width > 0 || box.height > 0) && box.top >= foot - 1) return next;
+    }
+  }
+  return null;
 }
 
 /** The reader's place across one late paint, kept while the paint grows `element` under them. */
@@ -328,9 +347,11 @@ interface ReadersPlace {
  *
  * A body wholly above the top of the page pushes everything the reader is looking at down by
  * what its formatting added, so the page scrolls back by exactly that. A body the reader can see
- * is left alone - its top does not move, and that is where they are reading from. What is
- * measured is the element's own bottom edge in the viewport, which is where the content under it
- * starts.
+ * is left alone - its top does not move, and that is where they are reading from. Whether it is
+ * wholly above is read from the element's own bottom edge; how far it pushed the content under
+ * it, from the top edge of the first box laid out under it (`contentUnder`), or the element's
+ * own bottom edge where none is. A shift the browser's own scroll anchoring already made is in
+ * that measurement, so the page is never moved twice.
  *
  * `keep` runs once per batch of a sliced paint rather than once for the whole of it, because the
  * reader is not still while 32 batches land: with one measurement taken before the first batch
@@ -349,19 +370,31 @@ interface ReadersPlace {
  * not moved, which is every batch of a reader sitting still.
  */
 function keepTheReadersPlace(element: HTMLElement): ReadersPlace {
-  let under = whereTheContentUnderItWas(element);
-  let placedAt = window.scrollY;
+  let above = false;
+  let under: Element | null = null;
+  let at = 0;
+  let placedAt = 0;
+  const where = () =>
+    under === null ? element.getBoundingClientRect().bottom : under.getBoundingClientRect().top;
+  const read = () => {
+    const foot = element.getBoundingClientRect().bottom;
+    above = foot <= 0;
+    // Only a body wholly above the top of the page is corrected, so only then is the content
+    // under it read.
+    under = above ? contentUnder(element, foot) : null;
+    at = under === null ? foot : under.getBoundingClientRect().top;
+    placedAt = window.scrollY;
+  };
+  read();
   return {
     hold() {
-      if (window.scrollY === placedAt) {
-        return;
+      if (window.scrollY !== placedAt) {
+        read();
       }
-      under = whereTheContentUnderItWas(element);
-      placedAt = window.scrollY;
     },
     keep() {
-      if (under <= 0) {
-        const moved = whereTheContentUnderItWas(element) - under;
+      if (above) {
+        const moved = where() - at;
         if (moved !== 0) {
           window.scrollBy(0, moved);
         }

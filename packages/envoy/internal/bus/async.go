@@ -450,7 +450,7 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	// The life the pin holds the window to: it never changes once pinned, so its end, at any moment
 	// from here on, is the loss this request answers.
 	ended := w.lifeEnded()
-	inbox := nats.NewInbox()
+	inbox := w.conn.NewInbox()
 	replies := make(chan *nats.Msg, requestReplies)
 	inboxSub, err := w.conn.ChanSubscribe(inbox, replies)
 	if err != nil {

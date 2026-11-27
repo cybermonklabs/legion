@@ -101,7 +101,7 @@ fixture() {
     "$root/packages/envoy/docker" "$root/packages/envoy/infra/host/heldportwrapper" \
     "$root/packages/daemon/docker" "$root/packages/daemon/internal/testnats" \
     "$root/packages/envoy/internal/testnats" "$root/packages/envoy/internal/testpg" \
-    "$root/packages/envoy/internal/tests3" "$root/packages/envoy-client/src/__tests__" \
+    "$root/packages/envoy/internal/tests3" "$root/packages/envoy-client/test" \
     "$root/scripts/e2e/lib" "$root/packages/dispatch/e2e" \
     "$root/packages/pi-legion/scripts/skill-scenarios" "$root/packages/envoy/deploy/scripts"
   ln -s "$check_script" "$root/.github/scripts/check-ci-images.sh"
@@ -204,7 +204,7 @@ package testimage
 const Image = "$REGISTRY@$NATS"
 YAML
   done
-  cat > "$root/packages/envoy-client/src/__tests__/nats-server.ts" <<YAML
+  cat > "$root/packages/envoy-client/test/nats-server.ts" <<YAML
 const NATS_IMAGE = "$REGISTRY@$NATS";
 export { NATS_IMAGE };
 YAML
@@ -687,7 +687,7 @@ check "names the service and its line" "$(contains "$out" 'ci.yaml:8: the nats s
 
 echo "case: rule 6 — a reference whose digest no row holds"
 root=$(fixture digest-unknown)
-sed -i "s|$NATS|$UNKNOWN|" "$root/packages/envoy-client/src/__tests__/nats-server.ts"
+sed -i "s|$NATS|$UNKNOWN|" "$root/packages/envoy-client/test/nats-server.ts"
 run_check tree "$root"
 check "a digest outside the file fails" "$(is "$status" 1)"
 check "names the file to add it to" "$(contains "$out" 'names a digest no row of .github/ci-images.yaml holds')"

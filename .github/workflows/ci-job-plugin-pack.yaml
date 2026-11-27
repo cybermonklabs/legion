@@ -32,7 +32,7 @@ name: CI job plugin-pack
 #     builds its bundle from the installed workspace and fails rather than skips without it;
 #   * Oh My Pi at the pin .omp-pin names, which the tests install their plugins on
 #     (internal/testbin's OMP refuses on GitHub Actions without LEGION_TEST_OMP), installed
-#     through the mise install-jj leaves at ~/.local/bin/mise;
+#     by .github/actions/install-omp from the release archive, checked against its pinned sha256;
 #   * setup-go and the go-daemon cache restore: the step compiles internal/daemon's test binary,
 #     the same build the daemon-go race step makes, so it restores the same entry.
 # No database, no tmux, no uv and no container image: the tests start none of them.
@@ -64,10 +64,12 @@ jobs:
     runs-on: ubuntu-24.04
     # The step's own -timeout is 15 minutes, as the daemon's plain step carries, so a hung pack
     # prints the goroutine dump that names it before the runner cancels the job. Around it are
-    # the Bun install, the two tool installs and the Go build of internal/daemon's test binary,
+    # the Bun install, the Oh My Pi install and the Go build of internal/daemon's test binary,
     # which the cache restore above makes incremental; 30 minutes leaves that setup room on a
     # slow runner and still fails inside the hour.
     timeout-minutes: 30
+    env:
+      JOB_TIMEOUT_MINUTES: 30 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,6 +88,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
 
       # go-daemon, shared with typecheck, daemon-go and pi-legion: this step compiles the same
@@ -98,13 +102,9 @@ jobs:
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
 
-      # Only for the mise it leaves at ~/.local/bin/mise, which install-omp installs the pin
-      # through: no test of this job runs jj.
-      - uses: ./.github/actions/install-jj
-
       # The tests run the Oh My Pi the worker image ships and refuse on GitHub Actions without
       # one (internal/testbin's OMP). The pin is read from .omp-pin, the repository's one copy of
-      # it, installed through the mise above (.github/actions/install-omp).
+      # it (.github/actions/install-omp).
       - uses: ./.github/actions/install-omp
 
       # The three tests, by name. .github/scripts/ci_job_reads.py builds this text and the

@@ -41,7 +41,7 @@ import {
   startChannelSession,
 } from "../envoy-channel-server"
 import { inboundOffChannelSession } from "../envoy-off"
-import { installedPluginVersion } from "../installed-build"
+import { channelConnectionName, installedPluginVersion } from "../installed-build"
 import { SessionIdentity } from "../session-identity"
 import { sessionTitle } from "../session-title"
 import { type CodexAgentStream, startCodexAgentStream } from "./codex-agent-stream"
@@ -140,7 +140,7 @@ export function callingThread(meta: unknown): string | undefined {
 export function dispatchToolDefinition() {
   return {
     description:
-      'Runs the `dispatch` command as this session, outside Codex\'s sandbox. Pass the words after `dispatch` as `args` (for example ["read", "--issue", "LEGION-3"]) and what the command would read on standard input as `stdin` (the text of a here-document given as `--body-file -`). `["--help"]` lists the commands. Answers with what the command printed and its exit code: 0 written or read, 1 refused by Dispatch, 2 a usage error.',
+      'Runs the `dispatch` command as this session, outside Codex\'s sandbox. Pass the words after `dispatch` as `args` (for example ["read", "--issue", "LEGION-3"]) and what the command would read on standard input as `stdin` (the text of a here-document given as `--body-file -`). `["--help"]` lists the commands. Answers with what the command printed and its exit code: 0 written or read, 2 a usage error, 1 any other failure: Dispatch\'s refusal, a Dispatch the command cannot reach, or `ANSWER_NOT_KEPT` for a call that wrote nothing, which you run again.',
     inputSchema: {
       properties: {
         args: {
@@ -452,7 +452,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
     RECORD_POLL_MS,
   )
   const id = new SessionIdentity(bound.session_id, bound.cwd)
-  const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, {
+  const { dispatch, envoy, notice } = await sessionSettings(configFile, process.env, {
     cwd: bound.cwd,
     session: () => id.id,
   })
@@ -542,7 +542,11 @@ export async function runCodexEnvoyServer(): Promise<void> {
       // taken; or the listener's relay socket, opened again for the new session at a `/new`. A
       // connection that closes for good is replaced as the Claude Code one is (`channelReopener`):
       // Codex starts no plugin server again for a thread whose server lost its connection.
-      const natsName = `codex-envoy-channel-${id.id}`
+      const natsName = channelConnectionName(
+        `codex-envoy-channel-${id.id}`,
+        bundlePath,
+        CODEX_PACKAGE_NAME,
+      )
       // A stop asked for while the token or the dial is awaited ends the start, and is no failure:
       // the process ends as an asked-for stop does, as the Claude Code server's does.
       const dialled = await dialChannelInbound(
@@ -608,9 +612,10 @@ export async function runCodexEnvoyServer(): Promise<void> {
           createCodexUserTurnRouter({
             ask: (question) => askSideQuestion(command(), id.id, question),
             deliver: (item) => codexDelivery.deliver(item),
-            dispatch: (ms) => {
+            dispatch: async (ms) => {
               const active = activeDispatchSettings(
-                sessionDispatchSettings(configFile, process.env, { cwd: bound.cwd }).dispatch,
+                (await sessionDispatchSettings(configFile, process.env, { cwd: bound.cwd }))
+                  .dispatch,
               )
               return active === null
                 ? undefined

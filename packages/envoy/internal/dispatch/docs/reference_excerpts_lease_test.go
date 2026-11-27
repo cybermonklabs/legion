@@ -61,9 +61,7 @@ func TestTwoExcerptReconciliationRunnersNeverPassAtOnceAndBothPass(t *testing.T)
 	}
 
 	runExcerpts(t, func(ctx context.Context) { first.RunReferenceExcerptReconciliation(ctx, firstLeases, nil) })
-	if waiting := storetest.WaitForLockWaiters(t, gate, 1, 30*time.Second); waiting < 1 {
-		t.Fatal("the first runner's pass never reached the refs lock: it never took the lease")
-	}
+	storetest.WaitForLockWaiters(t, gate, 1)
 	runExcerpts(t, func(ctx context.Context) { other.RunReferenceExcerptReconciliation(ctx, secondLeases, nil) })
 	// The second runner's boot attempt and at least one retry find the lease held.
 	waitFor(t, 30*time.Second, "the second runner to find the lease held twice", func() bool {

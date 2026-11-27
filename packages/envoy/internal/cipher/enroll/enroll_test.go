@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -23,12 +24,17 @@ import (
 const testAudience = "broker"
 
 // newService opens a store on a fresh schema (params are extra connection parameters) and returns
-// a Service with no pod verifier configured, wired to the real session-name binder as
-// cmd/cipherd/main.go wires it, so every enrollment these tests make is held to the rule that a
-// session name belongs to one principal. Tests that need a pod verifier call withPodVerifier.
+// a Service on it (serviceOn).
 func newService(t *testing.T, params ...string) *Service {
 	t.Helper()
-	st := storetest.Open(t, params...)
+	return serviceOn(storetest.Open(t, params...))
+}
+
+// serviceOn returns a Service on st with no pod verifier configured, wired to the real
+// session-name binder as cmd/cipherd/main.go wires it, so every enrollment these tests make is
+// held to the rule that a session name belongs to one principal. Tests that need a pod verifier
+// call withPodVerifier.
+func serviceOn(st *store.Store) *Service {
 	return &Service{Store: st, Lease: time.Hour, Sessions: oauthstore.New(st.Pool)}
 }
 

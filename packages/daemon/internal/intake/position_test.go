@@ -2,6 +2,8 @@ package intake
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -35,16 +37,35 @@ import (
 // messages published before it and has none to deliver, which is the state idle is read from.
 func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t *testing.T) {
 	js, stream := testJetStream(t)
+	pool := migratedPool(t)
 	spec := consumerSpec(&lockedBuffer{})
+	// Each read of NATS this row makes gets a deadline of its own (rowRead): a minute, or what is
+	// left of the test binary's deadline less a second when that is sooner (testwait.Bounded).
+	// A read handed a context with no deadline gets nats.go's 5 s default instead
+	// (wrapContextWithoutDeadline), which a loaded machine can outrun, and which would make the row
+	// fail on a clock rather than on what it reads.
+	read := rowRead(t)
+	// A diagnostic for a failure whose cause is not yet known: one loaded run of this package
+	// under the race detector failed the precondition below with "delivered 0, with 2 pending
+	// and 0 awaiting an ack", which is what a durable that already existed before the two
+	// publishes reads (a planted DeliverNew durable reproduces that line exactly), while
+	// CreateStream had found the stream with no consumer moments before. The row's claim is
+	// about a consumer OpenConsumers creates after the publishes, so any consumer here is
+	// another's, and the failure names each by what it carries.
+	requireNoConsumers(t, read, stream)
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.comment.created", envelopeJSON(t, "dispatch-comment", "dispatch",
 		`{"id":2,"issue_key":"CAPTURE-3","seq":9,"notify":true,"type":"comment.created","payload":{"body":"hi"}}`))
 
-	consumers, err := OpenConsumers(context.Background(), js, migratedPool(t), spec)
+	opening, cancelOpening := read()
+	defer cancelOpening()
+	consumers, err := OpenConsumers(opening, js, pool, spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
-	target, err := consumers.DispatchTarget(context.Background())
+	targetRead, cancelTarget := read()
+	defer cancelTarget()
+	target, err := consumers.DispatchTarget(targetRead)
 	if err != nil {
 		t.Fatalf("DispatchTarget: %v", err)
 	}
@@ -55,11 +76,15 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 	// messages, so it has none pending and none awaiting an ack, and no delivery of its own will
 	// ever carry them. A consumer that could still deliver one would make the idle below true for
 	// another reason than the one this test is about.
-	consumer, err := stream.Consumer(context.Background(), dispatchConsumerName(spec.Project))
+	consumerRead, cancelConsumer := read()
+	defer cancelConsumer()
+	consumer, err := stream.Consumer(consumerRead, dispatchConsumerName(spec.Project))
 	if err != nil {
 		t.Fatalf("read the Dispatch consumer: %v", err)
 	}
-	info, err := consumer.Info(context.Background())
+	infoRead, cancelInfo := read()
+	defer cancelInfo()
+	info, err := consumer.Info(infoRead)
 	if err != nil {
 		t.Fatalf("read the Dispatch consumer's info: %v", err)
 	}
@@ -71,13 +96,129 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 		t.Fatalf("the consumer has delivered %d, with %d pending and %d awaiting an ack; want it to have delivered none of the two and to have none to deliver",
 			info.Delivered.Consumer, info.NumPending, info.NumAckPending)
 	}
-	position, err := consumers.DispatchPosition(context.Background())
+	positionRead, cancelPosition := read()
+	defer cancelPosition()
+	position, err := consumers.DispatchPosition(positionRead)
 	if err != nil {
 		t.Fatalf("DispatchPosition: %v", err)
 	}
 	if !position.Idle {
 		t.Fatalf("idle = false for a freshly (re)created consumer with nothing it can ever deliver from before it existed, want true: ack floor %d, target %d",
 			position.AckFloorStream, target)
+	}
+}
+
+// nats-server answers a publish once it has stored the message, and counts the message into each
+// consumer's pending only afterwards, on a goroutine of the stream's own (DispatchPosition). A
+// CONSUMER.INFO read in between counts a Dispatch consumer with a message waiting as having nothing
+// pending and nothing awaiting an ack; read idle, it let the daemon's boot reconcile decide a key
+// that waiting message would still change (internal/daemon's
+// TestReconcileHoldsAKeyTheBootListingShowsOutOfTheWorkflowStatusWindow, 1 of 20 race runs). The
+// stand-in answers that reading every time (lagStandIn's uncounted), so the gap the server leaves
+// for a moment is open for the whole row:
+//   - a GitHub message, which the Dispatch consumer's filter never matches, leaves it idle;
+//   - a Dispatch message stored after the consumer's delivered sequence makes it not idle;
+//   - with the stored-message get refused at once, or never answered until its bound passes (as
+//     NATS answers a user without the grant, and as a loaded server can), the poller's reading
+//     (DispatchPosition) keeps the counts' idle and a reconcile's (ReconcilePosition) reads not
+//     idle, each saying so at Warn.
+func TestDispatchPositionIsNotIdleWhileTheStoreHoldsAMessageTheConsumerHasNotCounted(t *testing.T) {
+	ctx := context.Background()
+	served, _ := testJetStream(t)
+	standIn := &lagStandIn{JetStream: served}
+	logs := &lockedBuffer{}
+	spec := consumerSpec(logs)
+	consumers, err := OpenConsumers(ctx, standIn, migratedPool(t), spec)
+	if err != nil {
+		t.Fatalf("OpenConsumers: %v", err)
+	}
+	standIn.uncounted = true
+	reading := func(read func(context.Context) (DispatchConsumerPosition, error)) DispatchConsumerPosition {
+		t.Helper()
+		bounded, cancel := rowRead(t)()
+		defer cancel()
+		position, err := read(bounded)
+		if err != nil {
+			t.Fatalf("reading the Dispatch consumer's position: %v", err)
+		}
+		return position
+	}
+	position := func() DispatchConsumerPosition { return reading(consumers.DispatchPosition) }
+
+	publish(t, served, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
+	if got := position(); !got.Idle {
+		t.Fatalf("position with only a GitHub message stored = %+v, want idle: the Dispatch consumer's filter never matches it", got)
+	}
+
+	publish(t, served, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	if got := position(); got.Idle {
+		t.Fatalf("position with a Dispatch message stored and not yet counted = %+v, want not idle", got)
+	}
+
+	never := func(ctx context.Context) (*jetstream.RawStreamMsg, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	for _, failing := range []struct {
+		name   string
+		getMsg func(context.Context) (*jetstream.RawStreamMsg, error)
+		err    string
+	}{
+		{"refused", func(context.Context) (*jetstream.RawStreamMsg, error) {
+			return nil, errors.New("nats: permissions violation")
+		}, "nats: permissions violation"},
+		{"never answered", never, context.DeadlineExceeded.Error()},
+	} {
+		standIn.getMsg = failing.getMsg
+		logs.Reset()
+		if got := position(); !got.Idle {
+			t.Fatalf("the poller's position with the stored-message get %s = %+v, want the counts' idle", failing.name, got)
+		}
+		if got := reading(consumers.ReconcilePosition); got.Idle {
+			t.Fatalf("a reconcile's position with the stored-message get %s = %+v, want not idle", failing.name, got)
+		}
+		for _, wants := range [][]string{{"its idle is its own count alone"}, {"a reconcile reads the consumer as not idle"}} {
+			if line := logLine(logs.String(), append(wants, "level=WARN", "on a loaded NATS server or because the daemon's NATS user lacks $JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS", failing.err)...); line == "" {
+				t.Fatalf("logs with the stored-message get %s = %q, want a WARN line saying %q, naming both causes and the error", failing.name, logs.String(), wants[0])
+			}
+		}
+	}
+}
+
+// rowRead returns what gives each read of a row its context: one bounded by a minute, or by what
+// is left of the test binary's deadline less a second when that is sooner (testwait.Bounded),
+// read when the read starts.
+func rowRead(t *testing.T) func() (context.Context, context.CancelFunc) {
+	return func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), testwait.Bounded(t, time.Minute, time.Second))
+	}
+}
+
+// requireNoConsumers fails t when stream holds a consumer, naming each by its name, when the
+// server created it, its config and what it has delivered, so a consumer some other actor made
+// says who it is. The listing takes its context from read, as the row's other reads do, and names
+// that context's bound when it fails.
+func requireNoConsumers(t *testing.T, read func() (context.Context, context.CancelFunc), stream jetstream.Stream) {
+	t.Helper()
+	ctx, cancel := read()
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	bound := time.Until(deadline).Round(time.Second)
+	var held []string
+	listed := stream.ListConsumers(ctx)
+	for info := range listed.Info() {
+		config, err := json.Marshal(info.Config)
+		if err != nil {
+			config = []byte(fmt.Sprintf("%+v", info.Config))
+		}
+		held = append(held, fmt.Sprintf("consumer %s, created %s, delivered %d (stream sequence %d), %d pending, config %s",
+			info.Name, info.Created.Format(time.RFC3339Nano), info.Delivered.Consumer, info.Delivered.Stream, info.NumPending, config))
+	}
+	if err := listed.Err(); err != nil {
+		t.Fatalf("list the stream's consumers before the row's publishes, within %s: %v", bound, err)
+	}
+	if len(held) != 0 {
+		t.Fatalf("the stream holds %d consumers before the row's publishes, want none: %s", len(held), strings.Join(held, "; "))
 	}
 }
 
@@ -189,6 +330,9 @@ func TestEachReadOfTheStreamsInfoBesideALagReadGoesThroughAHandleOfItsOwn(t *tes
 	if err != nil {
 		t.Fatalf("read the waiting Dispatch event back: %v", err)
 	}
+	// The server counts it for the consumer only after the publish's ack (awaitWaiting), and the
+	// Lag loop below wants it waiting from its first read.
+	awaitWaiting(t, stream, dispatch, 1)
 
 	const reads, creations = 50, 10
 	recreated := make(chan struct{})

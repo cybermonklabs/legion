@@ -14,12 +14,7 @@ import {
   stringArg,
   type ToolArguments,
 } from "./context";
-import { dispatchAnswered } from "./failures";
-
-/** A document reference that names no document of its owner. Its message is the hint the Dispatch
- * tools give; `readDocumentBlocks` tells it apart from every other refusal, as the first upload of
- * a file. */
-class DocumentNotFoundError extends Error {}
+import { DocumentNotFoundError, dispatchAnswered } from "./failures";
 
 /** The document `artifactReference` names among `artifacts`. A bare reference is an id, a slug,
  * then a filename; a `canonical` one, the document part of a dispatch:// reference, is a slug by
@@ -489,4 +484,17 @@ async function resolveExistingIssue(
     }
     throw error;
   }
+}
+
+/**
+ * How `refuseMissingOfRef` reads the owner a `dispatch://` reference names, on the failing path
+ * of a read of its item: the issue by its key, or the project document through `readDocument`,
+ * which the caller passes (dispatch://INFRA-1523).
+ */
+export function readRefOwner(
+  client: DispatchClient,
+  owner: Owner,
+  readDocument: () => Promise<unknown>
+): () => Promise<unknown> {
+  return async () => (owner.kind === "issue" ? client.getIssue(owner.issue) : readDocument());
 }

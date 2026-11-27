@@ -151,13 +151,19 @@ func credentialKind(req Request) string {
 	return credentialNone
 }
 
-// serviceGrant is entry's kind's grant, before it is held to the entry's projects.
+// serviceGrant is entry's kind's grant, before it is held to the entry's projects. An edge
+// listener's projects were read by config.ParseNATSServices, by the rule natsgrant.Edge holds them
+// to, so Edge refuses none of them; a list it did refuse answers its zero Permissions, no grant,
+// which the guard refuses as every empty grant is (guard, natsgrant.OpenDirection).
 func serviceGrant(entry config.NATSService) natsgrant.Permissions {
 	switch entry.Kind {
 	case config.NATSDispatch:
 		return natsgrant.Dispatch(entry.MachineID)
 	case config.NATSListener:
 		return natsgrant.Listener(entry.MachineID)
+	case config.NATSEdgeListener:
+		grant, _ := natsgrant.Edge(entry.MachineID, entry.Projects)
+		return grant
 	case config.NATSDaemon:
 		return natsgrant.Daemon()
 	case config.NATSMeasure:

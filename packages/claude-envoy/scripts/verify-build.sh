@@ -47,12 +47,12 @@ set -euo pipefail
 }
 tar_file=$1
 
-package_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+package_dir=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 repo_root=$(cd "$package_dir/../.." && pwd -P)
 
 # <tar>, made absolute from the caller's directory, must sit outside the repository, where jj
 # would record it.
-tar_dir=$(cd "$(dirname -- "$tar_file")" 2>/dev/null && pwd -P) || {
+tar_dir=$(CDPATH='' cd "$(dirname -- "$tar_file")" 2>/dev/null && pwd -P) || {
   echo "::error::verify-build.sh: the directory of $tar_file does not exist" >&2
   exit 2
 }

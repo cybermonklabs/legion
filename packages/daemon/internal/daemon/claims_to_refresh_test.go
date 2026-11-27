@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -35,7 +36,7 @@ func refreshCountSource(t *testing.T, cfg config.Config, st *store.Store) *sourc
 	return &source{
 		store: st, records: record.NewStore(), project: cfg.Project, projectToken: project,
 		runtime: "tmux", admissionCap: cfg.AdmissionCap, startedAt: time.Now(),
-		deployment: func() capabilities.Deployment { return capabilities.Deployment{} },
+		deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 		reports:    func() map[claim.Token]capabilities.Report { return nil },
 		noPluginInstall: func(c supervise.Claim) bool {
 			return c.Role == claim.RoleReviewer
@@ -81,6 +82,7 @@ func refreshCountState(t *testing.T, cfg config.Config, st *store.Store, view *s
 // The count is read a second time with every claim brought onto this contract, because 0 is the
 // answer an operator reads a drained wave by and a count that can only rise says nothing.
 func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	stale := api.DaemonAPIVersion - 1
 
@@ -163,6 +165,7 @@ func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T)
 // TestAKubernetesDaemonWithNoPluginSourceRelaunchesNothing is: a real Kubernetes runtime needs a
 // cluster this pod has none of.
 func TestTheStateCountsWhatADegradedDaemonCannotRefresh(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	no := false
 	rt := fake.NewRuntime()

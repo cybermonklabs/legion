@@ -1,5 +1,7 @@
 package delivery
 
+//ci:reads packages/envoy/scripts/fixtures/github/push.json pushEnvelope os.ReadFile(pushFixture)
+
 import (
 	"context"
 	"encoding/json"
@@ -89,6 +91,7 @@ func pushEnvelope(t *testing.T, owner, name, ref string) contracts.Envelope {
 // GitHub call. So the freshness row is one the intake writes, and its staying null after the
 // pushes shows that they did not write it.
 func TestTheIntakeHandsABranchPushToItsImporter(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	natsClient := intakeTestClient(t)
 	// The delivery_settings row is also the one the event freshness is stamped on, which
@@ -100,7 +103,7 @@ func TestTheIntakeHandsABranchPushToItsImporter(t *testing.T) {
 	}
 	fake := newFakeGitHub(t)
 	pushes := &recordingPushes{}
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), settings)
+	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), settings, unrenamed())
 	intake.pushes = pushes
 	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)

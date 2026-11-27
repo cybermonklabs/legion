@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // applyControllerTick is one turn: it re-reads from Dispatch the issues anything is currently
@@ -68,44 +69,42 @@ func (w *workflowRuntime) observeWaitedOn(ctx context.Context) []intake.IssueSta
 // boot, and its move to icebox, to another parent or out from under its parent would not end the
 // wait it holds.
 func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, error) {
-	tx, err := w.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	issues, err := w.records.LiveIssues(ctx, tx, w.dispatchProject)
-	if err != nil {
-		return nil, fmt.Errorf("list the issues of %s: %w", w.dispatchProject, err)
-	}
-	slots, err := w.records.Slots(ctx, tx)
-	if err != nil {
-		return nil, fmt.Errorf("list the admission slots: %w", err)
-	}
-	facts, err := record.ReadLineFacts(ctx, tx, w.records, w.dispatchProject, issues, w.gatedSteps)
-	if err != nil {
-		return nil, err
-	}
-	// Judged through the one judgement admission itself promotes from (blockers.JudgeLine): the
-	// rows of every issue a blocker can hold come before the line, which leaves such an issue out
-	// and cannot judge that itself (record.LineFacts.Held); the issues the line names are read
-	// after it, since only the line says which they are. This read wants those keys alone and
-	// drops the held rows, so the clock it hands over decides nothing here.
-	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, w.records, w.dispatchProject, issues, slots, facts, nil, time.Now())
-	if err != nil {
-		return nil, err
-	}
 	var keys []string
-	seen := make(map[string]struct{})
-	for _, blocked := range blockers.Blocked(rows, issues, line, record.ChildWaitRows(facts.ChildWaits)) {
-		for _, blocker := range blocked.BlockedBy {
-			if _, repeated := seen[blocker]; repeated {
-				continue
-			}
-			seen[blocker] = struct{}{}
-			keys = append(keys, blocker)
+	err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		issues, err := w.records.LiveIssues(ctx, tx, w.dispatchProject)
+		if err != nil {
+			return fmt.Errorf("list the issues of %s: %w", w.dispatchProject, err)
 		}
-	}
-	return keys, nil
+		slots, err := w.records.Slots(ctx, tx)
+		if err != nil {
+			return fmt.Errorf("list the admission slots: %w", err)
+		}
+		facts, err := record.ReadLineFacts(ctx, tx, w.records, w.dispatchProject, issues, w.gatedSteps)
+		if err != nil {
+			return err
+		}
+		// Judged through the one judgement admission itself promotes from (blockers.JudgeLine):
+		// the rows of every issue a blocker can hold come before the line, which leaves such an
+		// issue out and cannot judge that itself (record.LineFacts.Held); the issues the line
+		// names are read after it, since only the line says which they are. This read wants those
+		// keys alone and drops the held rows, so the clock it hands over decides nothing here.
+		rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, w.records, w.dispatchProject, issues, slots, facts, nil, time.Now())
+		if err != nil {
+			return err
+		}
+		seen := make(map[string]struct{})
+		for _, blocked := range blockers.Blocked(rows, issues, line, record.ChildWaitRows(facts.ChildWaits)) {
+			for _, blocker := range blocked.BlockedBy {
+				if _, repeated := seen[blocker]; repeated {
+					continue
+				}
+				seen[blocker] = struct{}{}
+				keys = append(keys, blocker)
+			}
+		}
+		return nil
+	})
+	return keys, err
 }
 
 // readObserved is Dispatch's answer for keys: one GetIssue each while they number

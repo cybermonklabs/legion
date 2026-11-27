@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -39,7 +40,6 @@ const fakeOMPEnv = "LEGION_SHIM_FAKE_OMP"
 const (
 	bootToken = "boot-token-for-the-pane"
 	grace     = 3 * time.Second
-	waitLimit = 10 * time.Second
 )
 
 func TestMain(m *testing.M) {
@@ -162,9 +162,7 @@ func (o *omp) started() bool {
 // since a test that reads it is asking what the spawn did.
 func (o *omp) environment(t *testing.T) map[string]string {
 	t.Helper()
-	if !testwait.Holds(waitLimit, 5*time.Millisecond, o.started) {
-		t.Fatal("the fake OMP never started, so it recorded no environment")
-	}
+	testwait.Eventually(t, "the fake OMP to start and record its environment", o.started)
 	body, err := os.ReadFile(o.marker)
 	if err != nil {
 		t.Fatalf("read the fake OMP's environment: %v", err)
@@ -231,13 +229,7 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 // already knows (drainCommands' bound, which is what is left of a span).
 func (c *fakeClock) nextAny(t *testing.T, what string) clockWait {
 	t.Helper()
-	select {
-	case w := <-c.waits:
-		return w
-	case <-time.After(waitLimit):
-		t.Fatalf("the shim never waited %s", what)
-		return clockWait{}
-	}
+	return testwait.Receive(t, "the shim to wait "+what, c.waits)
 }
 
 // next is the shim's next wait, which must be of d.
@@ -276,23 +268,12 @@ func (c *fakeClock) idle(t *testing.T) {
 	}
 }
 
-// syncBuffer is the shim's log: what the pane shows. changed signals each write so tests wait on
-// a real event rather than polling the log on a wall clock.
+// syncBuffer is the shim's log: what the pane shows.
 type syncBuffer struct {
 	testlog.Buffer
-	changed chan struct{}
 }
 
-func newSyncBuffer() *syncBuffer { return &syncBuffer{changed: make(chan struct{}, 1)} }
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	n, err := b.Buffer.Write(p)
-	select {
-	case b.changed <- struct{}{}:
-	default:
-	}
-	return n, err
-}
+func newSyncBuffer() *syncBuffer { return &syncBuffer{} }
 
 // count is how many log lines contain substr.
 func (b *syncBuffer) count(substr string) int {
@@ -305,31 +286,26 @@ func (b *syncBuffer) count(substr string) int {
 	return n
 }
 
+// await waits for n log lines that contain substr; a failure prints the log.
 func (b *syncBuffer) await(t *testing.T, substr string, n int) {
 	t.Helper()
-	for b.count(substr) < n {
-		select {
-		case <-b.changed:
-		case <-time.After(waitLimit):
-			t.Fatalf("the shim never logged %q %d time(s); log:\n%s", substr, n, b)
-		}
-	}
+	testwait.Until(t, fmt.Sprintf("the shim to log %q %d time(s)", substr, n), func() (string, bool) {
+		return "log: " + b.String(), b.count(substr) >= n
+	})
 }
 
 // awaitLine waits for n log lines that are exactly line: the pane's one-line frame summaries.
 func (b *syncBuffer) awaitLine(t *testing.T, line string, n int) {
 	t.Helper()
-	if !testwait.Holds(waitLimit, 5*time.Millisecond, func() bool {
+	testwait.Until(t, fmt.Sprintf("the shim to log the line %q %d time(s)", line, n), func() (string, bool) {
 		got := 0
 		for l := range strings.Lines(b.String()) {
 			if strings.TrimSpace(l) == line {
 				got++
 			}
 		}
-		return got >= n
-	}) {
-		t.Fatalf("the shim never logged the line %q %d time(s); log:\n%s", line, n, b)
-	}
+		return "log: " + b.String(), got >= n
+	})
 }
 
 // running is one shim.Run in a goroutine.
@@ -355,13 +331,17 @@ func run(t *testing.T, cfg shim.Config, clock *fakeClock) *running {
 	t.Cleanup(func() {
 		clock.release()
 		r.cancel()
-		select {
-		case <-r.done:
-		case <-time.After(waitLimit):
-			t.Errorf("the shim never exited; log:\n%s", r.log)
-		}
+		r.awaitExit(t)
 	})
 	return r
+}
+
+// awaitExit waits for the shim to exit; a failure prints its log.
+func (r *running) awaitExit(t *testing.T) {
+	t.Helper()
+	testwait.Until(t, "the shim to exit", func() (string, bool) {
+		return "log: " + r.log.String(), r.exited()
+	})
 }
 
 // stop ends the shim's own context and waits for it to exit, without wait's refusal of a
@@ -370,11 +350,7 @@ func run(t *testing.T, cfg shim.Config, clock *fakeClock) *running {
 func (r *running) stop(t *testing.T) {
 	t.Helper()
 	r.cancel()
-	select {
-	case <-r.done:
-	case <-time.After(waitLimit):
-		t.Fatalf("the shim never exited; log:\n%s", r.log)
-	}
+	r.awaitExit(t)
 }
 
 // err is r.failure's text once the shim has ended (r.done is closed by then), or "" when it
@@ -388,11 +364,7 @@ func (r *running) err() string {
 
 func (r *running) wait(t *testing.T) int {
 	t.Helper()
-	select {
-	case <-r.done:
-	case <-time.After(waitLimit):
-		t.Fatalf("the shim never exited; log:\n%s", r.log)
-	}
+	r.awaitExit(t)
 	if r.failure != nil {
 		t.Fatalf("shim.Run: %v; log:\n%s", r.failure, r.log)
 	}
@@ -448,14 +420,9 @@ func (s *stub) accept(t *testing.T) *peer {
 			accepted <- conn
 		}
 	}()
-	select {
-	case conn := <-accepted:
-		t.Cleanup(func() { _ = conn.Close() })
-		return &peer{conn: conn, r: shimwire.NewReader(conn), w: shimwire.NewWriter(conn)}
-	case <-time.After(waitLimit):
-		t.Fatal("the shim never dialled the listener")
-		return nil
-	}
+	conn := testwait.Receive(t, "the shim to dial the listener", accepted)
+	t.Cleanup(func() { _ = conn.Close() })
+	return &peer{conn: conn, r: shimwire.NewReader(conn), w: shimwire.NewWriter(conn)}
 }
 
 type peer struct {
@@ -466,7 +433,9 @@ type peer struct {
 
 func (p *peer) next(t *testing.T) shimwire.Frame {
 	t.Helper()
-	if err := p.conn.SetReadDeadline(time.Now().Add(waitLimit)); err != nil {
+	// The read's deadline is the one every wait has: the moment the shared wait gives up.
+	deadline, _ := testwait.Context(t).Deadline()
+	if err := p.conn.SetReadDeadline(deadline); err != nil {
 		t.Fatalf("set a read deadline: %v", err)
 	}
 	line, err := p.r.ReadLine()
@@ -630,8 +599,7 @@ func installedCheck(t *testing.T, tag string) string {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(t.TempDir(), "leak-check")
-	ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{Dir: dir, Tag: tag, Body: body, Start: procgroup.NoReaper}); err != nil {
 		t.Fatal(err)
 	}
@@ -703,9 +671,7 @@ func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
 			p := daemon.accept(t)
 			p.expectHello(t)
 			p.send(t, shimwire.HelloAck{})
-			if !testwait.Holds(waitLimit, 5*time.Millisecond, sh.exited) {
-				t.Fatalf("the shim kept running with no install of its pin; log:\n%s", sh.log)
-			}
+			sh.awaitExit(t)
 			if sh.code != 1 {
 				t.Errorf("the shim ended %d, want 1", sh.code)
 			}
@@ -782,9 +748,7 @@ func TestTheCodegraphWarmUpStartsOnTheChildsFirstFrameOnce(t *testing.T) {
 	p.expectHello(t)
 	p.send(t, shimwire.HelloAck{})
 	sh.log.await(t, "[worker-shim] spawned ", 1)
-	for deadline := time.Now().Add(200 * time.Millisecond); time.Now().Before(deadline) && !child.started(); {
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the fake OMP to start, held before its first line", child.started)
 	if got := calls(); len(got) != 0 {
 		t.Fatalf("the warm-up started at the spawn, before the child wrote anything: %v", got)
 	}
@@ -792,12 +756,9 @@ func TestTheCodegraphWarmUpStartsOnTheChildsFirstFrameOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.expectRaw(t, "fake_ready")
-	for deadline := time.Now().Add(waitLimit); len(calls()) == 0; {
-		if time.Now().After(deadline) {
-			t.Fatalf("the warm-up never started after the child's first frame; log:\n%s", sh.log)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Until(t, "the warm-up to start after the child's first frame", func() (string, bool) {
+		return "log: " + sh.log.String(), len(calls()) > 0
+	})
 	if got := calls(); !slices.Equal(got, []string{workspace}) {
 		t.Fatalf("the warm-up was started with %v, want once with %q", got, workspace)
 	}
@@ -870,11 +831,7 @@ func TestTheShimEndsOnlyOnceAnInFlightWarmUpHasReturned(t *testing.T) {
 	p.expectRaw(t, "fake_sigterm")
 	expired := clock.next(t, grace)
 	// The child is ignoring its SIGTERM and still running; the warm-up has already been ended.
-	select {
-	case <-ended:
-	case <-time.After(waitLimit):
-		t.Fatalf("the warm-up's context did not end when the child was told to stop; log:\n%s", sh.log)
-	}
+	testwait.Receive(t, "the warm-up's context to end when the child was told to stop", ended)
 	expired.elapse()
 	if code := sh.wait(t); code != 128+int(syscall.SIGKILL) {
 		t.Fatalf("the shim exited %d, want the child's %d", code, 128+int(syscall.SIGKILL))
@@ -1325,10 +1282,7 @@ func TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH(t *testing.T) {
 // phase role left, as a `jj split` of its work into a described commit leaves one, becomes the
 // incoming phase role's, and the described commit under it keeps its id and its author.
 func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t *testing.T) {
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("jj is required: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	for _, tc := range []struct {
 		name       string
 		leave      []string // what the previous role ran once README.md was written, nil for nothing
@@ -1432,10 +1386,7 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 // role's workspace; on a devbox, a checkout), so the adoption runs in the workspace it adopts and
 // leaves the repository the shim runs in as it was.
 func TestAdoptWorkingCopyLeavesTheRepositoryTheShimRunsInUntouched(t *testing.T) {
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("jj is required: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	home := t.TempDir()
 	initialize := func(dir string) {
 		t.Helper()
@@ -1528,10 +1479,7 @@ func treeOf(t *testing.T, root string) map[string]string {
 // backend reported it (the index jj rewrites as it snapshots the working copy, as in LEGION-731)
 // or a git command jj ran; and the lock stays.
 func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("jj is required: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	for _, tc := range []struct {
 		name string
 		// script is the PATH's jj, given the real jj and the lock.
@@ -1663,6 +1611,80 @@ func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testin
 	}
 }
 
+// The jj every role runs, and the one CI tests with, is the pin .github/ci-tools.yaml names
+// (.github/actions/install-jj installs it; the worker image's ARG JJ_TOOL names the same release):
+// a release of sjawhar/jj whose vendored gix-pack maps each pack as chunks kept resident up to a
+// budget, JJ_PACK_MAPPED_LIMIT, where upstream gix-pack maps it whole, and under gVisor the first
+// read of a pack mapped whole counts all of it as the process's memory (dispatch://INFRA-4036). A
+// pin of a release built without that patch, an older one or a later one whose gix raise leaves
+// its [patch.crates-io] entry unused, maps every pack whole again, and no other test sees it: on
+// the small repositories tests build, the two read alike. The variable tells them apart: the
+// patched mapping refuses a value that is not a budget at every pack open
+// (lib/chunked-mmap/src/chunked.rs, open), and an unpatched jj never reads it. So on a git
+// repository whose one commit sits in its one pack, the jj on PATH lists the commit's file under
+// JJ_PACK_MAPPED_LIMIT=512m and fails under JJ_PACK_MAPPED_LIMIT=not-a-number, where jj
+// 0.45.1-sami.20260910-043938 and v0.46.0-sami.20261008-234600 list the file both times. The
+// crate's own refusal names the variable, but it never reaches the user: gix-odb takes the pack it
+// could not open as absent, and jj reports the commit not found, so that is what the test asserts.
+// The chunked mapping is Linux's alone: on any other target the crate maps a pack whole and reads
+// no variable.
+func TestThePinnedJJCarriesTheChunkedPackPatch(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skipf("the chunked pack mapping is Linux's alone: on %s the patched jj reads no JJ_PACK_MAPPED_LIMIT", runtime.GOOS)
+	}
+	jj := fixturegit.CompiledJJ(t)
+	const file = "README.md"
+	home := t.TempDir()
+	repository := t.TempDir()
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(repository, fixturegit.InitWorkTree(repository, "main")...)
+	if err := os.WriteFile(filepath.Join(repository, file), []byte("smoke\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixture.Run(repository, "git", "add", file)
+	fixture.Run(repository, "git", "commit", "--quiet", "-m", "the one commit")
+	fixture.Run(repository, "git", "repack", "-ad")
+	head := fixture.Run(repository, "git", "rev-parse", "HEAD")
+	// jj must read the commit from the pack: the patched mapping reads the variable as it opens a
+	// pack, and a loose copy of the commit is read with no pack opened at all.
+	packs, err := filepath.Glob(filepath.Join(repository, ".git", "objects", "pack", "*.pack"))
+	if err != nil || len(packs) != 1 {
+		t.Fatalf("git repack -ad left the packs %v (%v), want exactly one", packs, err)
+	}
+	loose := filepath.Join(repository, ".git", "objects", head[:2], head[2:])
+	if _, err := os.Lstat(loose); err == nil {
+		t.Fatalf("the commit %s is still a loose object (%s) after git repack -ad, want it in the pack alone", head, loose)
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	// The init takes no -R and opens no workspace, so with no Dir jj would walk up from the test
+	// process's directory to the closest .jj and write that repository.
+	fixture.Run(repository, append([]string{jj}, fixturegit.JJInit(repository, true)[1:]...)...)
+
+	// list lists the files of @-, HEAD's commit, under one JJ_PACK_MAPPED_LIMIT, which the command's
+	// own environment carries: fixtureenv.MustGuard took every JJ_ variable out of the test process.
+	list := func(limit string) (stdout, stderr string, err error) {
+		t.Helper()
+		var out, errOut strings.Builder
+		command := exec.Command(jj, "--ignore-working-copy", "file", "list", "-r", "@-")
+		command.Dir = repository
+		command.Env = append(fixtureenv.Isolated(home), "JJ_PACK_MAPPED_LIMIT="+limit)
+		command.Stdout, command.Stderr = &out, &errOut
+		err = command.Run()
+		return out.String(), errOut.String(), err
+	}
+	if stdout, stderr, err := list("512m"); err != nil || strings.TrimSpace(stdout) != file {
+		t.Fatalf("under JJ_PACK_MAPPED_LIMIT=512m, jj --ignore-working-copy file list -r @- ended %v and printed %q, on stderr %q; want exit 0 and %s listed, as every jj lists it under a budget: an unpatched jj lists it under not-a-number too, and only that run tells the two apart", err, stdout, stderr, file)
+	}
+	stdout, stderr, err := list("not-a-number")
+	if err == nil {
+		t.Fatalf("under JJ_PACK_MAPPED_LIMIT=not-a-number, jj --ignore-working-copy file list -r @- exited 0 and printed %q: this jj ignores the variable, as a jj without the chunked-pack patch does (jj 0.45.1-sami.20260910-043938 and v0.46.0-sami.20261008-234600 list %s here too), where the patched gix-pack refuses the value as it opens the pack and jj reports the commit %s not found", stdout, file, head)
+	}
+	if !strings.Contains(stderr, head) || !strings.Contains(stderr, "not found") {
+		t.Fatalf("under JJ_PACK_MAPPED_LIMIT=not-a-number, jj --ignore-working-copy file list -r @- ended %v and printed %q, on stderr %q; want the commit %s not found, which is how the patched gix-pack's refusal of the value reaches the user (gix-odb takes the pack as absent), where an unpatched jj lists %s", err, stdout, stderr, head, file)
+	}
+}
+
 // The delivery dedupe end to end: the daemon retrying a prompt with the same deliveryId reaches
 // OMP once, and every repeat is answered by the shim with the replay rules of internal/shimwire
 // — the ack, a start carrying the deliveryId once the turn began, and its end once it is over.
@@ -1782,4 +1804,37 @@ func TestAToolCallSummaryCutsTheArgumentsAfterTheURLRule(t *testing.T) {
 			sh.log.awaitLine(t, shimwire.TypeToolExecutionStart+" bash "+summary, 1)
 		})
 	}
+}
+
+// jjRun runs one jj command in the workspace it reads, as every jj a test starts must
+// (docs/testing.md).
+func jjRun(t *testing.T, home, dir string, args ...string) string {
+	t.Helper()
+	return workspaceCommand(t, home, dir, append([]string{"jj"}, args...))
+}
+
+// jjGit runs one git command in the workspace it reads, as jjRun runs a jj.
+func jjGit(t *testing.T, home, dir string, args ...string) string {
+	t.Helper()
+	return workspaceCommand(t, home, dir, append([]string{"git"}, args...))
+}
+
+// workspaceCommand runs one jj or git of a fixture's workspace under the isolated environment
+// this package's fixtures use (fixtureenv.Isolated), so no command of a test reads the git or jj
+// configuration, the credentials or the LEGION_ variables of whoever runs the tests — in a pod, of
+// the role whose live workspace this binary stands in. Isolated's own JJ_CONFIG names a file that
+// does not exist, which is what keeps the host's jj configuration out; the fixture writes none of
+// its own.
+//
+// home is the fixture's, and the shim under test is given the same one, so the two read one
+// configuration (docs/testing.md). It is outside the workspace: a fixture asserts on what the
+// workspace holds, and a home under it would put jj's and git's own files into the very change
+// under test.
+func workspaceCommand(t *testing.T, home, dir string, args []string) string {
+	t.Helper()
+	return fixturegit.Isolated(t, home).With(
+		"JJ_USER=tester", "JJ_EMAIL=tester@example.test",
+		"GIT_AUTHOR_NAME=tester", "GIT_AUTHOR_EMAIL=tester@example.test",
+		"GIT_COMMITTER_NAME=tester", "GIT_COMMITTER_EMAIL=tester@example.test",
+	).Run(dir, args...)
 }

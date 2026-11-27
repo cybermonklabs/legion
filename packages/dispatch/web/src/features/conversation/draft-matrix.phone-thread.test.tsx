@@ -114,6 +114,9 @@ interface Page {
   /** Reads the issue's comments again, as a refetch does, and answers them without Comment A:
    *  its card, and its Reply with it, leave the list. */
   readonly dropCommentA: () => Promise<void>;
+  /** Reads the issue's comments again, as a refetch does, and answers Comment A deleted by its
+   *  author: its card keeps its place, and Dispatch takes no reply to it. */
+  readonly deleteCommentA: () => Promise<void>;
   /** Ends the page as a reload does and loads it again over the same tab, signed in as the same
    *  reader, with a new query client (`endAsAReload`, `signedInAsReader`). */
   readonly reload: () => Promise<void>;
@@ -155,6 +158,19 @@ async function openPhone(stopped: boolean, signedIn = false): Promise<Page> {
       await waitFor(() =>
         expect(document.querySelector('[data-turn="comment:comment-a"]')).toBe(null)
       );
+    },
+    deleteCommentA: async () => {
+      reads.lists.comments = [
+        {
+          ...commentA,
+          body: "",
+          deleted_at: "2026-09-20T00:05:00Z",
+          deleted_by: alice,
+        },
+        commentB,
+      ];
+      await act(() => queryClient.invalidateQueries({ queryKey: ["comments", "CORE-1"] }));
+      await waitFor(() => expect(listTurn(commentA.id).textContent).toContain("Deleted by alice"));
     },
     reload: async () => {
       endAsAReload(() => view.unmount());
@@ -447,6 +463,62 @@ for (const held of HELD) {
         pressReply: false,
         typed: false,
         use: false,
+      });
+    } finally {
+      page.restore();
+    }
+  });
+}
+
+// Cancel reply in the thread over a docked composer that holds a draft of its own puts the reply
+// away (`usePhoneThread`'s `parked`), and the docked composer names Comment A's Reply as the way
+// back. A refetch then answers A deleted by its author: A keeps its place, but Dispatch takes no
+// reply to it, so no Reply goes on with the reply put away. The docked composer draws it itself
+// then, saying A was deleted and giving no word of A, with Discard my draft, which drops it, a
+// refused or stopped send with it, in the page and in the tab, and leaves the docked draft as it
+// was.
+for (const held of HELD) {
+  test(`${HOST} · put away, then its comment is deleted · ${held}`, async () => {
+    const page = await openPhone(held === "stopped", true);
+    try {
+      const form = screen.getByRole("form", { name: "Comment composer" });
+      const dockedField = within(form).getByRole<HTMLTextAreaElement>("textbox", {
+        name: "Comment",
+      });
+      await page.user.click(dockedField);
+      await page.user.paste(DOCKED_DRAFT);
+      const dialog = await holdInThreadA(page, held);
+      await page.user.click(within(dialog).getByRole("button", { name: "Cancel reply" }));
+      await back(page.user, dialog);
+      await page.deleteCommentA();
+      const deleted = { ...goneIn(form), docked: dockedField.value };
+      const discard = within(form).queryByRole("button", { name: "Discard my draft" });
+      if (discard !== null) await page.user.click(discard);
+      expect({
+        deleted,
+        discarded: {
+          ...goneIn(form),
+          docked: dockedField.value,
+          kept: inTheTab(BODY),
+          typed: inAField(BODY),
+        },
+      }).toEqual({
+        deleted: {
+          discard: true,
+          docked: DOCKED_DRAFT,
+          line: `The comment by alice that your reply answered was deleted, so it takes no reply. Your reply is kept here:${BODY}`,
+          pressReply: false,
+          use: false,
+        },
+        discarded: {
+          discard: false,
+          docked: DOCKED_DRAFT,
+          kept: false,
+          line: undefined,
+          pressReply: false,
+          typed: false,
+          use: false,
+        },
       });
     } finally {
       page.restore();

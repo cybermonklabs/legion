@@ -30,7 +30,7 @@ const gitWorktreeLockReason = "legion workspace: its directory may be invisible 
 const rootCommitID = "0000000000000000000000000000000000000000"
 
 // rootHeadRef is the unborn ref jj's own colocated `workspace add` writes to HEAD when a
-// workspace's working copy has no real parent yet (verified against jj 0.45.1-sami).
+// workspace's working copy has no real parent yet (verified against jj 0.46.0-sami).
 const rootHeadRef = "ref: refs/jj/root"
 
 // gitWorktreeEntries is the admin directories of the shared clone's git worktrees registered at

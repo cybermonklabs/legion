@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isShellCommandReport } from "@legion/contracts";
+import { processEnded } from "@legion/test-fixtures/process-end";
 import { procmgr } from "@oh-my-pi/pi-utils";
 import {
   runShellCommand,
@@ -508,42 +509,49 @@ describe("running a person's command", () => {
   }, 60_000);
 
   // The command's group is its own, so nothing but this module's own kill ends it: an `/exit` or
-  // a crash during `!while :; do :; done` must leave no process behind. Proved as the reviewer
-  // proved the defect - a process that ends well before the command's limit, which is the case
-  // the limit cannot cover - and read off this machine's own process table, which again no fake
-  // clock can drive.
-  test("leaves nothing running when the process that started the command exits first", async () => {
-    const directory = scratch();
-    const pidFile = join(directory, "pid");
-    const runner = join(directory, "runner.ts");
-    await Bun.write(
-      runner,
-      [
-        `import { runShellCommand } from ${JSON.stringify(join(import.meta.dir, "typed-shell.ts"))};`,
-        `void runShellCommand(${JSON.stringify(`echo $$ > ${pidFile}; exec sleep 600`)}, {`,
-        `  cwd: ${JSON.stringify(directory)},`,
-        "  limitMs: 600_000,",
-        "});",
-        "// Gone as soon as the command is really running, with six hundred seconds of its limit",
-        "// left and nothing but this process holding a handle on its group.",
-        `while (!(await Bun.file(${JSON.stringify(pidFile)}).text().catch(() => "")).trim()) {`,
-        "  await Bun.sleep(10);",
-        "}",
-        "process.exit(0);",
-      ].join("\n")
-    );
-    try {
-      const runs = Bun.spawn([process.execPath, runner], { stderr: "pipe", stdout: "ignore" });
-      await runs.exited;
-      expect(await new Response(runs.stderr).text()).toBe("");
-      expect(runs.exitCode).toBe(0);
-      const pid = Number(readFileSync(pidFile, "utf8").trim());
-      expect(Number.isInteger(pid)).toBe(true);
-      expect(await untilTrue(() => !alive(pid))).toBe(true);
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
-  }, 60_000);
+  // a crash during `!while :; do :; done` must leave no process behind, and so must a SIGKILL of
+  // the session, which runs nothing as it goes. Proved as the reviewer proved the defect - a
+  // process that ends well before the command's limit, which is the case the limit cannot cover -
+  // and read off this machine's own process table, which again no fake clock can drive.
+  for (const { how, end, code } of [
+    { how: "exits", end: "process.exit(0);", code: 0 },
+    { how: "is killed by SIGKILL", end: 'process.kill(process.pid, "SIGKILL");', code: null },
+  ]) {
+    test(`leaves nothing running when the process that started the command ${how} first`, async () => {
+      const directory = scratch();
+      const pidFile = join(directory, "pid");
+      const runner = join(directory, "runner.ts");
+      await Bun.write(
+        runner,
+        [
+          `import { runShellCommand } from ${JSON.stringify(join(import.meta.dir, "typed-shell.ts"))};`,
+          `void runShellCommand(${JSON.stringify(`echo $$ > ${pidFile}; exec sleep 600`)}, {`,
+          `  cwd: ${JSON.stringify(directory)},`,
+          "  limitMs: 600_000,",
+          "});",
+          "// Gone as soon as the command is really running, with six hundred seconds of its limit",
+          "// left and nothing but this process holding a handle on its group.",
+          `while (!(await Bun.file(${JSON.stringify(pidFile)}).text().catch(() => "")).trim()) {`,
+          "  await Bun.sleep(10);",
+          "}",
+          end,
+        ].join("\n")
+      );
+      try {
+        const runs = Bun.spawn([process.execPath, runner], { stderr: "pipe", stdout: "ignore" });
+        await runs.exited;
+        expect(await new Response(runs.stderr).text()).toBe("");
+        if (code === null) expect(runs.signalCode).toBe("SIGKILL");
+        else expect(runs.exitCode).toBe(code);
+        const pid = Number(readFileSync(pidFile, "utf8").trim());
+        // Its end is the event: a zombie the process it was handed to has not reaped yet has
+        // ended, though `kill(pid, 0)` still answers for it. The row's timeout is the only bound.
+        await processEnded(pid);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }, 60_000);
+  }
 });
 
 describe("the texts a command becomes", () => {

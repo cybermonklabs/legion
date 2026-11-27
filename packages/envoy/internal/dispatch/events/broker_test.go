@@ -696,7 +696,7 @@ func TestAppendsOnDifferentIssuesDoNotWaitForEachOther(t *testing.T) {
 	// then got through before the deadline is caught; its own ceiling is above the write's, so
 	// the write's answer, not the watch, is what ends it.
 	pid := <-backends
-	answer, answered := storetest.WaitForQueuedBehind(t, open, pid, written, 2*writeDeadline)
+	answer, answered := storetest.WaitForQueuedBehind(t, open, pid, written)
 	if !answered {
 		t.Fatalf("backend %d, the append on PP-2, queued behind a lock PP-1's open write holds; "+
 			"an append must wait for no lock of another owner's write", pid)
@@ -767,9 +767,7 @@ func TestAppendsOnOneOwnerCommitInIDOrder(t *testing.T) {
 				}
 				written <- tx.Commit(ctx)
 			}()
-			if waiting := storetest.WaitForLockWaiters(t, open, 1, 10*time.Second); waiting < 1 {
-				t.Fatalf("the second write on the %s did not wait for the first's open transaction", owner.name)
-			}
+			storetest.WaitForLockWaiters(t, open, 1)
 			if err := open.Commit(ctx); err != nil {
 				t.Fatalf("commit the first write: %v", err)
 			}

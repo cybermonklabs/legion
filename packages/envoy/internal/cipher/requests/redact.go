@@ -186,7 +186,7 @@ func (r releasedName) secretParts() []string {
 	parts := []string{r.value}
 	split := r.split
 	if !r.behindAirlock() {
-		split, _ = airlockSplitOf("", r.secretType, r.value)
+		split, _ = airlockSplitOf("", r.secretType, r.gitHubValue, r.value)
 	}
 	for _, value := range split.values {
 		parts = append(parts, value)

@@ -11,16 +11,15 @@ import (
 // Bus is what the publisher publishes through. *bus.Client satisfies it. It is declared here, and
 // not imported from internal/bus, so that this package stays free of the bus and of everything the
 // bus pulls in: a rename is a fact about subjects, and the one thing it needs of a bus is that it
-// takes an envelope. The two methods are the two one-method publisher interfaces this package's
-// callers hold — webhook.Publisher (PublishWithin, the webhook handlers) and cistore.Publisher
-// (Publish, the CI summary loop) — so one *Publisher satisfies both.
+// takes an envelope. Publish serves cistore.Publisher (the CI summary loop), and PublishEachWithin
+// serves webhook.Publisher (the webhook handlers), so one *Publisher satisfies both.
 type Bus interface {
 	Publish(contracts.Envelope) error
-	PublishWithin(context.Context, contracts.Envelope) error
+	PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error
 }
 
-// Publisher is a Bus that publishes each GitHub envelope a second time under the former name of the
-// repository its topic names. Publishing builds one.
+// Publisher publishes each GitHub envelope a second time under the former name of the repository
+// its topic names. Publishing builds one.
 type Publisher struct {
 	bus     Bus
 	renames Renames
@@ -72,13 +71,15 @@ func (p *Publisher) Publish(item contracts.Envelope) error {
 	return p.bus.Publish(item)
 }
 
-// PublishWithin publishes item, then its copy under the former name, each within ctx. It is
-// webhook.Publisher.
+// PublishEachWithin publishes item, then its copy under the former name, each within ctx, and
+// calls published, when it is not nil, once for each of the two as it is published, with that
+// topic and the stream's own acknowledgement for it: the copy is a message of its own under its
+// own Nats-Msg-Id, so the stream can hold one and not the other. It is webhook.Publisher.
 //
-// A copy that fails to publish fails the publish, and its error is the one returned: see Publish
-// for why that failure is not swallowed.
-func (p *Publisher) PublishWithin(ctx context.Context, item contracts.Envelope) error {
-	if err := p.bus.PublishWithin(ctx, item); err != nil {
+// A copy that fails to publish fails the publish, and its error is the one returned, after the
+// envelope's own topic was reported published: see Publish for why that failure is not swallowed.
+func (p *Publisher) PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
+	if err := p.bus.PublishEachWithin(ctx, item, published); err != nil {
 		return err
 	}
 	former, ok := p.formerTopic(item.Topic)
@@ -86,7 +87,7 @@ func (p *Publisher) PublishWithin(ctx context.Context, item contracts.Envelope) 
 		return nil
 	}
 	item.Topic = former
-	return p.bus.PublishWithin(ctx, item)
+	return p.bus.PublishEachWithin(ctx, item, published)
 }
 
 // formerTopic is topic under the former name of the repository it names, and whether there is such

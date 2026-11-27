@@ -199,7 +199,7 @@ func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error)
 // buffered for the check's second go (askAgain), nil where the check asked for none, and the
 // refusal or setup failure of the check's answer, if any (readStatus).
 func (g *Guard) ghGuard(ctx context.Context, check sharedRun, req GhRequest) ([]byte, error) {
-	argv := append([]string{check.path, "gh-guard"}, req.Args...)
+	argv := modeArgv(check.path, "gh-guard", req.Args...)
 	status, printed, err := g.run(ctx, child{argv: argv})
 	if err != nil {
 		return nil, sharedNotRun(whatGhCall, err, printed)

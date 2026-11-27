@@ -12,6 +12,7 @@ import (
 
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Dispatch's Envoy listener client is a cross-service HTTP call bounded only by its five
@@ -349,7 +350,7 @@ func (s *server) resolveThroughTakeover(
 	takeover := s.newTakeoverRetry()
 	var resolved ResolvedMention
 	resolve := func() string {
-		resolved = s.resolveMentionTarget(ctx, target, delivery, mentionLookupTimeout)
+		resolved = s.resolveMentionTarget(ctx, target, delivery, s.commentLookupBound(target))
 		return resolved.ResolveError
 	}
 	if !wait {
@@ -359,6 +360,16 @@ func (s *server) resolveThroughTakeover(
 	// A try that holds nothing has nothing to renew, so retry answers no error.
 	_ = takeover.retry(ctx, resolve, nil)
 	return resolved, takeover
+}
+
+// commentLookupBound is the bound on one try of a comment's listener lookup of target, read as
+// that try starts: mentionLookupTimeout on every server the deployment builds, which sets no
+// mentionLookupBound, and whatever a test set for that target otherwise.
+func (s *server) commentLookupBound(target string) time.Duration {
+	if s.mentionLookupBound != nil {
+		return s.mentionLookupBound(target)
+	}
+	return mentionLookupTimeout
 }
 
 // again reports whether the sender tries once more after a try that recorded failure, having
@@ -461,6 +472,15 @@ func receiptError(failure *string) string {
 // the row whose claim it still holds carries a reply_id, and answeredReceipt builds that
 // receipt from the row, stating what the reply recorded rather than what this send reported -
 // so every attempt carries exactly one receipt and that receipt agrees with its row.
+//
+// stated queues what the attempt states in the node and tuple store in the batch that appends the
+// receipt, right after the receipt: the node of the session a sent attempt reached
+// (graphstore.QueueReached), caused by the receipt as the id sequence left it
+// (graphstore.LatestEvent), as a comment's node is caused by the event that stored it. The
+// receipt and the facts are one statement batch, so the store costs the settle no statement of
+// its own. It runs only where settle itself wrote the row; an owed receipt the answered branch
+// appends states nothing, the reply that answered the attempt having written its own facts. A
+// settle that states nothing passes nil.
 func settleDeliveryAttempt[T any](
 	ctx context.Context,
 	s *server,
@@ -468,6 +488,7 @@ func settleDeliveryAttempt[T any](
 	settle func(context.Context, pgx.Tx) (T, error),
 	answered func(context.Context, pgx.Tx) (row T, mine bool, replyID *string, err error),
 	answeredReceipt func(T) model.Event,
+	stated func(b *store.WriteBatch, attempt T) error,
 ) (T, error) {
 	var zero T
 	tx, err := s.begin(ctx)
@@ -479,6 +500,7 @@ func settleDeliveryAttempt[T any](
 		return zero, err
 	}
 	attempt, err := settle(ctx, tx)
+	wrote := err == nil
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		settled, mine, replyID, err := answered(ctx, tx)
@@ -497,8 +519,16 @@ func settleDeliveryAttempt[T any](
 	case err != nil:
 		return zero, err
 	}
-	event, err := s.appendEvent(ctx, tx, receipt)
-	if err != nil {
+	var event model.Event
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if err := s.deps.Events.QueueAppend(b, receipt, func(written model.Event) { event = written }); err != nil {
+			return err
+		}
+		if stated == nil || !wrote {
+			return nil
+		}
+		return stated(b, attempt)
+	}); err != nil {
 		return zero, err
 	}
 	if err := tx.Commit(ctx); err != nil {

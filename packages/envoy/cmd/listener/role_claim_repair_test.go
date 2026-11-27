@@ -168,6 +168,7 @@ func loseRoleFromCopy(t *testing.T, registry *store.Registry, role string) {
 // the report counts the claim the copy lost as put back and the two it held for no claim as taken
 // out.
 func TestHealthzReportsTheRoleClaimRescanAndIsDegradedPastItsBound(t *testing.T) {
+	t.Parallel()
 	const (
 		consumer = "listener-healthz-role-claim-repair"
 		holder   = "ses_healthz_role_claim_repair"

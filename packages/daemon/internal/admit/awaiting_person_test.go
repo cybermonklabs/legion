@@ -173,7 +173,7 @@ func TestARootWaitingOnAPersonKeepsItsRow(t *testing.T) {
 }
 
 // A person's answer resumes the root in the pass that reads it, with the cap full. The root
-// stands in the line among the issues whose work came back, oldest first, holding the row it
+// stands in the line within its priority, among the issues whose work came back, oldest first, holding the row it
 // took at its admission and kept through the wait, so its promotion takes no second row and
 // the cap holds it back for nothing. The resume is a handout: what it handed back before is
 // cleared, so only its next hand-back starts the next wait.
@@ -336,8 +336,7 @@ func TestAHandBackNoLongerWithThePersonIsTakenIn(t *testing.T) {
 func TestAHeldRootIsNotDecidedBeforeTheConsumerCatchesUp(t *testing.T) {
 	pool := migratedPool(t)
 	admission := awaitingRig(t, pool, 1)
-	admission.pending = map[string]intake.DispatchIssue{"LEGION-208": {Key: "LEGION-208", Status: "todo", Seq: 20}}
-	admission.target = 100
+	admission.holdDeferred(map[string]intake.DispatchIssue{"LEGION-208": {Key: "LEGION-208", Status: "todo", Seq: 20}}, 100)
 	tick(t, pool, admission, "tick-held")
 	if got := issue(t, pool, "LEGION-208").Phase; got != phase.Admitted {
 		t.Fatalf("phase = %s, want the held root left where it stands", got)

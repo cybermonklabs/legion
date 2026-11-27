@@ -1,5 +1,7 @@
 package textcheck
 
+//ci:reads packages/envoy/** TestEveryCreatedDatabaseIsAFileCopy walks every .go file under packages/envoy (../.., infra included)
+
 import (
 	"go/scanner"
 	"go/token"

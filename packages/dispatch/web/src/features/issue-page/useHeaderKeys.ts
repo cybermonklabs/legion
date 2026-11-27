@@ -4,6 +4,7 @@ import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { useKeymap } from "../shell/keymap";
 import { ACTION_WORDS, CHIP_ACTIONS, chipBox } from "./approval-chip-box";
 import { PROPERTY_LABELS } from "./page-structure";
+import { usableControl } from "./usable-control";
 
 /**
  * What the header's keys act on. Every target is a control the header already renders - the
@@ -17,17 +18,37 @@ const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
 const STATUS_SELECT = `select[aria-label="${PROPERTY_LABELS.status}"]`;
 const TITLE_HEADING = 'h1[tabindex="0"]';
 
-/** The header control `selector` names, or `null` when it is absent or refuses input (a closed
- *  issue, a save in flight): the one fact both the key's `run` and the `when` that offers it read,
- *  so a shortcut is listed exactly while its control would take a click. */
-function usableControl(selector: string): HTMLElement | null {
+/** The group around `node` that a control of the header opens and shuts (`aria-expanded`) and
+ *  names by `aria-controls`: the actions menu's, hidden while the menu is shut
+ *  (`IssueActionsMenu.tsx`). The nearest such group is taken, and none where no control names
+ *  one, so no other element around `node`, hidden or not, stands in for it. */
+function menuGroup(node: Element): Element | null {
+  const header = node.closest(HEADER);
+  for (
+    let group = node.parentElement;
+    group !== null && group !== header;
+    group = group.parentElement
+  ) {
+    if (group.id !== "") {
+      const opener = `[aria-expanded][aria-controls~="${CSS.escape(group.id)}"]`;
+      if (header?.querySelector(opener) != null) return group;
+    }
+  }
+  return null;
+}
+
+/** The header control `selector` names while it takes a press by the page's one rule
+ *  (`usable-control.ts`), else `null`: the one fact both the key's `run` and the `when` that
+ *  offers it read. The pin is read up to the actions menu's group that holds it (`menuGroup`),
+ *  which is shut, hidden, while the menu is, since its key presses it there as a click on it in
+ *  the open menu does; no other target stands in a group that shuts. */
+function headerControl(selector: string): HTMLElement | null {
   const node = document.querySelector(HEADER)?.querySelector<HTMLElement>(selector);
   if (node == null) {
     return null;
   }
-  const disabled =
-    (node instanceof HTMLButtonElement || node instanceof HTMLSelectElement) && node.disabled;
-  return disabled ? null : node;
+  const bound = selector === PIN_TOGGLE ? menuGroup(node) : null;
+  return usableControl(node, bound) ? node : null;
 }
 
 /**
@@ -36,7 +57,8 @@ function usableControl(selector: string): HTMLElement | null {
  * request of its document waits on the reader, or the document is approved, which draws no
  * Approve - or when the action refuses a press while its review is written: inside `NoTooltips`,
  * which holds the header, both are `aria-disabled` then and never `disabled`.
- * Like `usableControl`, the one fact a key's `run` and its `when` both read.
+ * Whether the action takes a press is the page's one rule (`usableControl`).
+ * Like `headerControl`, the one fact a key's `run` and its `when` both read.
  */
 function focusedApprovalAction(action: keyof typeof ACTION_WORDS): HTMLButtonElement | null {
   const header = document.querySelector(HEADER);
@@ -59,7 +81,7 @@ function focusedApprovalAction(action: keyof typeof ACTION_WORDS): HTMLButtonEle
   if (button === undefined) {
     return null;
   }
-  return button.getAttribute("aria-disabled") === "true" ? null : button;
+  return usableControl(button) ? button : null;
 }
 
 /**
@@ -102,6 +124,14 @@ function outsideInputsAndAskCards(): boolean {
  * They register into the `issue` scope the view row pushes (`useIssueKeymap.ts`); this hook
  * pushes none. The digits go through the header's one priority write, the one its picker and the
  * palette's Set priority rows use, so a refusal of any of them is said once, by the header.
+ *
+ * `s`, `p` and `e` are offered exactly while their control takes a press by the page's one rule
+ * (`usable-control.ts`, read through `headerControl` here), and the digits and `Shift+P` exactly
+ * while theirs does and the focus is where those two may write (`outsideInputsAndAskCards`). The
+ * rule refuses a control that is disabled (a closed issue, a save in flight), and also one that
+ * is busy (`aria-disabled`), `aria-hidden` or not drawn. The pin is read only up to the shut
+ * actions menu (`headerControl`), so the menu's `hidden` does not refuse it, nor does its not
+ * being drawn there: `Shift+P` is offered while the shut menu hides the pin.
  */
 export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
   useKeymap("issue", [
@@ -109,22 +139,22 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       id: "status",
       keys: "s",
       label: "Focus the status",
-      run: () => usableControl(STATUS_SELECT)?.focus(),
-      when: () => usableControl(STATUS_SELECT) !== null,
+      run: () => headerControl(STATUS_SELECT)?.focus(),
+      when: () => headerControl(STATUS_SELECT) !== null,
     },
     {
       id: "priority",
       keys: "p",
       label: "Focus the priority",
-      run: () => usableControl(PRIORITY_SELECT)?.focus(),
-      when: () => usableControl(PRIORITY_SELECT) !== null,
+      run: () => headerControl(PRIORITY_SELECT)?.focus(),
+      when: () => headerControl(PRIORITY_SELECT) !== null,
     },
     {
       id: "set-priority",
       keys: ["0", "1", "2", "3"],
       label: "Set priority P0–P3",
       run: (event) => priorityWrite.submit(Number(event.key) as IssuePriority),
-      when: () => usableControl(PRIORITY_SELECT) !== null && outsideInputsAndAskCards(),
+      when: () => headerControl(PRIORITY_SELECT) !== null && outsideInputsAndAskCards(),
     },
     {
       // The heading's click opens the editor, and a focus does not, so the key clicks it: a
@@ -134,15 +164,15 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       id: "title",
       keys: "e",
       label: "Edit the title",
-      run: () => usableControl(TITLE_HEADING)?.click(),
-      when: () => usableControl(TITLE_HEADING) !== null,
+      run: () => headerControl(TITLE_HEADING)?.click(),
+      when: () => headerControl(TITLE_HEADING) !== null,
     },
     {
       id: "pin",
       keys: "Shift+P",
       label: "Pin or unpin the issue",
-      run: () => usableControl(PIN_TOGGLE)?.click(),
-      when: () => usableControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
+      run: () => headerControl(PIN_TOGGLE)?.click(),
+      when: () => headerControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
     },
     // `a` and `Shift+R` are the approval's only while the focus is on the chip or entry of a
     // document whose request waits on the reader, or on one of its two actions; anywhere else
@@ -179,7 +209,7 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       run: () => (document.activeElement as HTMLElement | null)?.blur(),
       when: () => {
         const active = document.activeElement;
-        return active === usableControl(STATUS_SELECT) || active === usableControl(PRIORITY_SELECT);
+        return active === headerControl(STATUS_SELECT) || active === headerControl(PRIORITY_SELECT);
       },
     },
   ]);

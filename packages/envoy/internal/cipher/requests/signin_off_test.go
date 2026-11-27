@@ -52,7 +52,7 @@ func TestASignInOffBrokerDeniesAtOnceEveryNameThatWouldWait(t *testing.T) {
 			m.Judge = func(p PendingRequest) { judged = append(judged, p) }
 			m.SignInOff = true
 
-			req, err := m.Create(ctx, enr, signRequest(t, m, key, tc.reason, tc.secret), "", nil)
+			req, err := m.Create(ctx, enr, signRequest(t, m, key, tc.reason, tc.secret), "")
 			if err != nil {
 				t.Fatalf("Create(%s): %v", tc.secret, err)
 			}
@@ -78,7 +78,7 @@ func TestASignInOffBrokerDeniesAtOnceEveryNameThatWouldWait(t *testing.T) {
 			if reason == "" {
 				reason = "with a reason this time"
 			}
-			waiting, err := m.Create(ctx, enr, signRequest(t, m, key, reason, tc.secret), "", nil)
+			waiting, err := m.Create(ctx, enr, signRequest(t, m, key, reason, tc.secret), "")
 			if err != nil || waiting.State != "pending" || waiting.RecordID == nil {
 				t.Fatalf("Create(%s) with sign-in on = %+v, %v; want it to wait for its approver", tc.secret, waiting, err)
 			}
@@ -104,16 +104,16 @@ func TestASignInOffBrokerGrantsWhatThePolicyGrantsAtOnce(t *testing.T) {
 		"the operator's own agent-tier secret": {enr, key, "AUTO_TOKEN", "auto-v1"},
 		"a service's own secret for its pod":   {pod, podKey, "SERVICE_KEY", "service-v1"},
 	} {
-		granted, err := m.Create(ctx, ask.enrollment, signRequest(t, m, ask.key, "", ask.secret), "", nil)
+		granted, err := m.Create(ctx, ask.enrollment, signRequest(t, m, ask.key, "", ask.secret), "")
 		if err != nil || granted.State != "granted" || granted.GrantID == nil || granted.Detail != nil {
 			t.Fatalf("%s: Create(%s) = %+v, %v; want it granted at once", name, ask.secret, granted, err)
 		}
-		if released, err := m.Values(ctx, *granted.GrantID, ask.enrollment, nil, ReleaseCall{}); err != nil || released.Values[ask.secret] != ask.value {
+		if released, err := m.Values(ctx, *granted.GrantID, ask.enrollment, ReleaseCall{}); err != nil || released.Values[ask.secret] != ask.value {
 			t.Fatalf("%s: Values = %v, %v; want %s=%s", name, released.Values, err, ask.secret, ask.value)
 		}
 	}
 
-	both, err := m.Create(ctx, enr, signRequest(t, m, key, "both of them", "AUTO_TOKEN", "DEEL_API_KEY"), "", nil)
+	both, err := m.Create(ctx, enr, signRequest(t, m, key, "both of them", "AUTO_TOKEN", "DEEL_API_KEY"), "")
 	if err != nil {
 		t.Fatalf("Create(AUTO_TOKEN, DEEL_API_KEY): %v", err)
 	}
@@ -143,15 +143,15 @@ func TestTheSweepOfASignInOffBrokerDeniesWhatAnEarlierRunLeftPending(t *testing.
 	ctx := context.Background()
 	m, enr, key, approver := newFixture(t)
 	other, otherKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
-	owned, err := m.Create(ctx, enr, signRequest(t, m, key, "rotating the key", "DEEL_API_KEY"), "", nil)
+	owned, err := m.Create(ctx, enr, signRequest(t, m, key, "rotating the key", "DEEL_API_KEY"), "")
 	if err != nil || owned.State != "pending" || owned.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want it pending", owned, err)
 	}
-	shared, err := m.Create(ctx, other, signRequest(t, m, otherKey, "reading the shared key", "SHARED_KEY"), "", nil)
+	shared, err := m.Create(ctx, other, signRequest(t, m, otherKey, "reading the shared key", "SHARED_KEY"), "")
 	if err != nil || shared.State != "pending" || shared.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", shared, err)
 	}
-	approved, err := m.Create(ctx, other, signRequest(t, m, otherKey, "approved before", "DEEL_API_KEY"), "", nil)
+	approved, err := m.Create(ctx, other, signRequest(t, m, otherKey, "approved before", "DEEL_API_KEY"), "")
 	if err != nil || approved.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY for the other box) = %+v, %v; want it pending", approved, err)
 	}
@@ -163,7 +163,7 @@ func TestTheSweepOfASignInOffBrokerDeniesWhatAnEarlierRunLeftPending(t *testing.
 	// broker still serves its approval page, so this one's sweep must leave it alone.
 	third, thirdKey := newEnrollment(t, m.Store, "session", "box-c-"+t.Name(), new(fixtureOperator), nil)
 	m.Audience = anotherBroker
-	foreign, err := m.Create(ctx, third, signRequest(t, m, thirdKey, "asked of the other broker", "DEEL_API_KEY"), "", nil)
+	foreign, err := m.Create(ctx, third, signRequest(t, m, thirdKey, "asked of the other broker", "DEEL_API_KEY"), "")
 	m.Audience = testAudience
 	if err != nil || foreign.State != "pending" || foreign.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) for another broker = %+v, %v; want it pending", foreign, err)
@@ -230,7 +230,7 @@ func TestTheSweepOfASignInOffBrokerDeniesWhatAnEarlierRunLeftPending(t *testing.
 	if pending, err := m.PendingForApprover(ctx, approver, PendingStates{}); err != nil || len(pending) != 0 {
 		t.Fatalf("PendingForApprover(%s) = %+v, %v; want nothing left to decide", approver, pending, err)
 	}
-	if released, err := m.Values(ctx, decided.GrantID, other, nil, ReleaseCall{}); err != nil || released.Values["DEEL_API_KEY"] != "deel-v1" {
+	if released, err := m.Values(ctx, decided.GrantID, other, ReleaseCall{}); err != nil || released.Values["DEEL_API_KEY"] != "deel-v1" {
 		t.Fatalf("Values of the grant approved before = %v, %v; want DEEL_API_KEY=deel-v1", released.Values, err)
 	}
 	woken = nil
@@ -243,7 +243,7 @@ func TestTheSweepOfASignInOffBrokerDeniesWhatAnEarlierRunLeftPending(t *testing.
 	// public URL, writes a request while this pod runs. This pod's next sweep denies it too, as
 	// operate.md says, since no bound a process takes can tell the overlap apart from a restart.
 	m.SignInOff = false
-	fresh, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of a pod with sign-in on", "DEEL_API_KEY"), "", nil)
+	fresh, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of a pod with sign-in on", "DEEL_API_KEY"), "")
 	m.SignInOff = true
 	if err != nil || fresh.State != "pending" || fresh.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) on a pod with sign-in on = %+v, %v; want it pending", fresh, err)

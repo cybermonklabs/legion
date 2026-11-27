@@ -26,6 +26,7 @@ import (
 // 200 ms. The bucket's maximum age is left at its default, minutes longer than that, so the
 // record is taken away by the pass and never by the bucket's own backstop.
 func TestTheSessionReaperAStartedListenerRunsDeletesTheReapedSessionsConsumer(t *testing.T) {
+	t.Parallel()
 	_, uri := testnats.Start(t)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "session-consumer-reap-wiring",
 		"ENVOY_SESSION_LIVE_WINDOW=1s",

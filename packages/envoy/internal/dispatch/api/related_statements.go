@@ -19,32 +19,34 @@ var (
 	relatedKeywordLegs = searchKeywordLegs(relatedCoordinationRank)
 	// relatedKeywordQuery is the check's stage 1: search's keyword query (searchQueryBody) over the
 	// chosen lexemes, with relatedKeywordLegs and relatedFusedSQL. Parameters: searchQueryBody's
-	// $1-$8, then $9 the lexemes and $10 their idf.
-	relatedKeywordQuery = relatedQOpener + relatedTermWeights(9) + searchQueryBody(relatedKeywordLegs, relatedFusedSQL, "")
+	// $1-$8, then $9 the lexemes, $10 their idf and $11 the acting credential
+	// (refs.VisibilityArg).
+	relatedKeywordQuery = relatedQOpener + relatedTermWeights(9) + searchQueryBody(relatedKeywordLegs, relatedFusedSQL, "", 11)
 	// relatedKeywordExcludingQuery is relatedKeywordQuery with the exclusion filter over one more
-	// parameter, $11 the owners the check leaves out (relatedExcludedOwners).
+	// parameter, $11 the owners the check leaves out (relatedExcludedOwners), which moves the
+	// acting credential to $12.
 	relatedKeywordExcludingQuery = relatedQOpener + relatedTermWeights(9) +
-		searchQueryBody(relatedKeywordLegs, relatedFusedSQL, relatedExcludedOwners(11))
+		searchQueryBody(relatedKeywordLegs, relatedFusedSQL, relatedExcludedOwners(11), 12)
 	// relatedMeaningQuery is the check's stage 2: search's meaning query, which fuses the same
 	// keyword legs with the meaning arms, over the same lexemes and the text's embedding.
-	// Parameters: searchQueryMeaningBody's $1-$11, then $12 the lexemes and $13 their idf. It is
-	// composed three times, as search's own is: scoped on the candidate row's own
-	// `e.project_key = $2`, scoped on the owner each meaning arm joins, and unscoped, with no
-	// project predicate in any arm (meaningProjectScope).
+	// Parameters: searchQueryMeaningBody's $1-$11, then $12 the lexemes, $13 their idf and $14
+	// the acting credential. It is composed three times, as search's own is: scoped on the
+	// candidate row's own `e.project_key = $2`, scoped on the owner each meaning arm joins, and
+	// unscoped, with no project predicate in any arm (meaningProjectScope).
 	relatedMeaningQuery = relatedQOpener + relatedTermWeights(12) +
-		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, "", meaningEveryProject)
+		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, "", 14, meaningEveryProject)
 	relatedMeaningScopedQuery = relatedQOpener + relatedTermWeights(12) +
-		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, "", meaningOneProject)
+		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, "", 14, meaningOneProject)
 	relatedMeaningJoinedQuery = relatedQOpener + relatedTermWeights(12) +
-		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, "", meaningOneProjectJoined)
+		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, "", 14, meaningOneProjectJoined)
 	// relatedMeaningExcludingQuery is relatedMeaningQuery with the same filter, here over $14,
-	// and its two scoped counterparts.
+	// which moves the acting credential to $15, and its two scoped counterparts.
 	relatedMeaningExcludingQuery = relatedQOpener + relatedTermWeights(12) +
-		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, relatedExcludedOwners(14), meaningEveryProject)
+		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, relatedExcludedOwners(14), 15, meaningEveryProject)
 	relatedMeaningScopedExcludingQuery = relatedQOpener + relatedTermWeights(12) +
-		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, relatedExcludedOwners(14), meaningOneProject)
+		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, relatedExcludedOwners(14), 15, meaningOneProject)
 	relatedMeaningJoinedExcludingQuery = relatedQOpener + relatedTermWeights(12) +
-		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, relatedExcludedOwners(14), meaningOneProjectJoined)
+		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, relatedExcludedOwners(14), 15, meaningOneProjectJoined)
 	// relatedKeywordStatement and relatedMeaningStatement are what relatedSearch runs; a check
 	// that names a project runs relatedMeaningScopedStatement in place of the second once the
 	// embeddings project_key fill has finished, and relatedMeaningJoinedStatement until it has
