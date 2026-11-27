@@ -5,7 +5,9 @@ body: |-
   with 500: the Decisions read (`GET /api/v1/issues/{key}/decisions`) and the tree read, with or
   without a view, each walk the issue's conversation, so one such ask row failed every read of the
   issue's decisions and its tree. The open questions, the entries and the tree now answer every
-  other ask.
+  other ask. An ask whose stored options are no list of options is now left out the same way, where
+  the tree read failed with 500, and each reply in the thread of an ask left out so is left out
+  with it, where the tree read answered that reply under the issue.
 time: 2026-11-27T05:25:09Z
 custom:
     Issue: INFRA-1253
