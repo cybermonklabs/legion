@@ -34,7 +34,7 @@ import { ApiError, api, NetworkError } from "../../api/client";
 import { eventRefreshTargets } from "../../api/event-refresh";
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery, referenceTargetsQuery, userStateQuery } from "../../api/queries";
-import { refreshQueries } from "../../api/query-refresh";
+import { isLiveQuery, refreshQueries } from "../../api/query-refresh";
 import type {
   Actor,
   ArchitectureSource,
@@ -3478,7 +3478,8 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blo
       expect(titleReads(titles, waiter)).toBe(1);
       expect(listReads()).toBe(1);
       expect(api.listProjects).toHaveBeenCalledTimes(1);
-      expect(client.isFetching()).toBe(0);
+      // The live Legion query waits on /ws/live, which this setup never opens: reads alone settle.
+      expect(client.isFetching({ predicate: (query) => !isLiveQuery(query) })).toBe(0);
     });
     await focusPastStaleness(client);
     await waitFor(() => expect(getMyState).toHaveBeenCalledTimes(2));

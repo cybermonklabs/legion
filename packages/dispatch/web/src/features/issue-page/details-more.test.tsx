@@ -1,4 +1,13 @@
-import { afterEach, beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  type Mock,
+  setSystemTime,
+  spyOn,
+  test,
+} from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -6,11 +15,18 @@ import { type ReactNode, useEffect, useState } from "react";
 import { MemoryRouter, type NavigateFunction, useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { nextFrame } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import {
+  type FakeLiveSocket,
+  installFakeLiveSockets,
+  snapshotFrame,
+} from "../../__tests__/live-socket-harness";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ApiError, api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
+import { liveSocketFor } from "../../api/live-socket";
 import {
   issueCoverageQuery,
   issueResultsQuery,
@@ -1753,6 +1769,149 @@ test("the line that says what is new holds across a close and an open of Details
     getIssueEvents.mockRestore();
     for (const read of outlineReads) read.mockRestore();
   }
+});
+
+/** The issue's step records, read through `api.listSteps`, which this file's `beforeEach` answers
+ *  with no run. */
+function stepsReads(): Mock<typeof api.listSteps> {
+  return api.listSteps as unknown as Mock<typeof api.listSteps>;
+}
+
+/** The `legion_issue` subscribe frames of the issue `socket` sent. */
+function legionSubscribes(socket: FakeLiveSocket) {
+  return socket
+    .subscribes()
+    .filter((frame) => frame.view.kind === "legion_issue" && frame.view.issue === KEY);
+}
+
+// The runs of the issue and its Legion state, as Details reads them (the plan's table D): the
+// Legion block and the runs' revision observe one live view, `legion_issue`, only while Details
+// is open (the plan's D16), and the runs are read again when that view's runs' revision moves.
+describe("the runs are read as their table says", () => {
+  // Shut, Details holds no subscription and reads no run; open, it holds one, which goes as it
+  // shuts again, and nothing reads after.
+  test("D5: with Details shut nothing subscribes to the Legion state and nothing reads the runs", async () => {
+    const sockets = installFakeLiveSockets();
+    const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
+    const client = readsHeld();
+    const hold: DrawerHold = {};
+    const view = render(
+      <MemoryRouter initialEntries={[`/issues/${KEY}`]}>
+        <QueryClientProvider client={client}>
+          <HistoryInDrawer hold={hold} />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    try {
+      await act(async () => {});
+      expect(sockets.sockets, "Details shut opened the live socket").toHaveLength(0);
+      expect(stepsReads(), "Details shut read the runs").not.toHaveBeenCalled();
+
+      act(() => hold.open?.(true));
+      await waitFor(() => expect(sockets.sockets).toHaveLength(1));
+      const socket = sockets.latest();
+      act(() => socket.open());
+      expect(
+        legionSubscribes(socket).map((frame) => frame.view),
+        "open Details holds other than one subscription of the issue's Legion state"
+      ).toEqual([{ issue: KEY, kind: "legion_issue" }]);
+      await waitFor(() => expect(stepsReads()).toHaveBeenCalledTimes(1));
+
+      act(() => hold.open?.(false));
+      const [held] = legionSubscribes(socket);
+      await waitFor(() =>
+        expect(socket.unsubscribes().map((frame) => frame.sub)).toEqual([held?.sub])
+      );
+      await act(async () => {});
+      expect(legionSubscribes(socket), "Details shut subscribed again").toHaveLength(1);
+      expect(sockets.sockets, "Details shut opened another live socket").toHaveLength(1);
+      expect(stepsReads(), "Details shut read the runs").toHaveBeenCalledTimes(1);
+    } finally {
+      view.unmount();
+      liveSocketFor(client).close();
+      sockets.restore();
+      getIssueEvents.mockRestore();
+    }
+  });
+
+  // A project that names no daemon answers `configured` false: the block draws nothing, and the
+  // answer's runs' revision still reads the runs at once when it moves, a second and a half after
+  // Details opened, half a second before the catch-up's next read. Its first revision reads none.
+  test("D6: a project that names no daemon draws no block and still follows the revision", async () => {
+    await onFakeClock(async () => {
+      setSystemTime(NOON);
+      const sockets = installFakeLiveSockets();
+      const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
+      const readsAt: number[] = [];
+      let openedAt = Date.now();
+      stepsReads().mockImplementation(async () => {
+        readsAt.push(Date.now() - openedAt);
+        return { issue: KEY, tasks: [] };
+      });
+      const client = readsHeld();
+      const hold: DrawerHold = {};
+      const view = render(
+        <MemoryRouter initialEntries={[`/issues/${KEY}`]}>
+          <QueryClientProvider client={client}>
+            <HistoryInDrawer hold={hold} />
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      try {
+        await tick(0);
+        openedAt = Date.now();
+        act(() => hold.open?.(true));
+        await tick(0);
+        const socket = sockets.latest();
+        act(() => socket.open());
+        const [subscription] = legionSubscribes(socket);
+        if (subscription === undefined) throw new Error("open Details subscribed no Legion state");
+        act(() =>
+          socket.receive(
+            snapshotFrame(subscription.sub, {
+              configured: false,
+              issue: KEY,
+              project: "CORE",
+              read: null,
+              runs_revision: 4,
+              state: null,
+            })
+          )
+        );
+        await tick(0);
+        expect(
+          screen.queryByRole("region", { name: CONTROL_LABELS.legion.heading }),
+          "a project that names no daemon drew the Legion block"
+        ).toBeNull();
+        expect(screen.queryByText(CONTROL_LABELS.legion.heading)).toBeNull();
+
+        await tick(1_500, 100);
+        expect(readsAt, "the first runs' revision read the runs").toEqual([0]);
+        const movedAt = Date.now() - openedAt;
+        act(() =>
+          socket.receive({
+            changed_at: null,
+            counts: {},
+            items: {},
+            maps: {},
+            revs: { fields: { runs_revision: "2" } },
+            seq: "2",
+            set: { runs_revision: 5 },
+            sub: subscription.sub,
+            type: "delta",
+          })
+        );
+        await tick(0);
+        expect(readsAt, "a new runs' revision did not read the runs at once").toEqual([0, movedAt]);
+        expect(screen.queryByText(CONTROL_LABELS.legion.heading)).toBeNull();
+      } finally {
+        view.unmount();
+        liveSocketFor(client).close();
+        sockets.restore();
+        getIssueEvents.mockRestore();
+      }
+    });
+  });
 });
 
 /** A thread the Legion daemon began, one message written a minute ago: no row of the outline,

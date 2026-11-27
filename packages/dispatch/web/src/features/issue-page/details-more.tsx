@@ -28,6 +28,7 @@ import { type FocusedNode, useFocusedNode } from "./focused-node";
 import { IssueCollaboratorList } from "./IssueCollaboratorList";
 import { type AddressedTurn, HISTORY_HEADING_LANDED_EVENT, IssueHistory } from "./IssueHistory";
 import { type IssueAddress, issueAddress } from "./issue-address";
+import { LegionBlock, LegionRunsFollower } from "./LegionBlock";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
 import { useOutlineReads } from "./outline-reads";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
@@ -283,6 +284,12 @@ export function DetailsFocusedNode({ issue, state }: DetailsMoreProps): ReactNod
  * thread the history holds is the outline's own landing's answer (`AgentsOnlyTurn`), so Details
  * opens at that turn exactly when the outline lands on the turn's nearest drawn ancestor and says
  * there that the thread is in the history.
+ *
+ * Directly above the history, outside the three sections and with no fold control of its own,
+ * stands the Legion block (`LegionBlock`), drawn only while Details is open, beside the one part
+ * that reads the issue's runs again as their revision moves (`LegionRunsFollower`): the two
+ * observe one live view of the issue's Legion state, so Details open holds one subscription of
+ * it and Details shut holds none.
  */
 export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   const { hash, pathname, search } = useLocation();
@@ -343,6 +350,8 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
     }
   }, [following, holdLandedPlace, openDetails, openDetailsAt, opensCollaborators, opensPanel]);
   const drawsHistory = drawer?.open === true || opensHistory;
+  // Details is open: where it is a column of the page rather than a drawer, wherever it is drawn.
+  const open = drawer === undefined || drawer.open;
   // The reader's read mark for this visit, where the history draws the line that says what is
   // new: where it stood when the history first drew for this issue, and lower once it has
   // been moved back elsewhere, never higher. It is held here and not in the history, which is
@@ -390,6 +399,12 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
       ) : null}
       {drawsHistory ? (
         <>
+          {open ? (
+            <>
+              <LegionBlock issueKey={issue.key} />
+              <LegionRunsFollower issueKey={issue.key} />
+            </>
+          ) : null}
           <IssueHistory
             activityFollowing={route?.kind === "activity" ? following : undefined}
             issue={issue}
@@ -398,10 +413,8 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
             visitMark={visitMark.current?.issue === issue.key ? visitMark.current.seq : lastReadSeq}
           />
           {/* The runs of the issue's steps, read only while Details is open: an address that
-              opens Details draws them a commit before the drawer opens, and they wait for it.
-              Where Details is a column of the page rather than a drawer, it is open wherever
-              it is drawn. */}
-          <DetailsSteps issueKey={issue.key} open={drawer === undefined || drawer.open} />
+              opens Details draws them a commit before the drawer opens, and they wait for it. */}
+          <DetailsSteps issueKey={issue.key} open={open} />
         </>
       ) : null}
     </>

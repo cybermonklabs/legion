@@ -14,7 +14,9 @@ import {
 import {
   ANSWER_LINES,
   CONTROL_LABELS,
+  PHASE_WORDS,
   PROGRESS_NOUNS,
+  ROLE_STATE_WORDS,
 } from "../web/src/features/issue-page/page-words";
 import { PAGE_SIZE, showMoreName } from "../web/src/features/issue-page/show-more-fixture";
 import { priorityTriggerName } from "../web/src/features/priorities/IssuePriorityLine";
@@ -40,6 +42,11 @@ import {
   COMPONENT_TITLE,
   detailsRow,
   filesList,
+  IMPLEMENTING,
+  LEGION_PROJECT,
+  legionBlock,
+  legionLine,
+  legionRead,
   marginSection,
   marginSectionDisclosure,
   marginSlot,
@@ -54,10 +61,14 @@ import {
   pinsList,
   QUESTION,
   REPOSITORY,
+  RUN_AGENT,
+  routeLiveLegion,
   seedDetailsIssue,
+  seedLegionBlock,
   TWENTY_LABELS,
   UNPINNED_COMMENT,
 } from "./issue-page-h";
+import { type LegionStateSeed, seedLegionState } from "./legion-state-seed";
 import { expect, type Locator, type Page, type Request, test } from "./test";
 import { assertWhole } from "./unclipped";
 
@@ -1896,5 +1907,443 @@ test("Details' priority picker's removal of an issue's last priority keeps the f
       addPriority,
       "once the new read moved the line back beside Add, the focus is not on its add control"
     ).toBeFocused();
+  });
+});
+
+// The Legion block of Details (dispatch://INFRA-4870/spec#b-r-block): its words, its place and
+// its read, each state stored as the sampler stores it (`e2e/legion-state-seed.ts`).
+
+/** The Legion block's words (`page-words.ts`). */
+const LEGION = CONTROL_LABELS.legion;
+/** The page's word for each Legion role. */
+const ROLE = CONTROL_LABELS.collaborator_roles;
+
+/** `text` as a regular expression that matches it as written. */
+function literally(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+/** A line of the block that reads `words`, then a time the page did not write. */
+function thenATime(words: string): RegExp {
+  return new RegExp(`^${literally(words)} \\S`, "u");
+}
+
+/** A role's line of the block: the role's word, then its claim's word. */
+function roleLine(role: keyof typeof ROLE, state: keyof typeof ROLE_STATE_WORDS): string {
+  return `${ROLE[role]} ${ROLE_STATE_WORDS[state]}`;
+}
+
+// b-c-block. With the new page on and Details open, the block of its own above the history names
+// ONE's phase and since when, each role with a claim with its word, "At work" and the time of the
+// read, and holds no list of runs or handoffs, while the page's header holds no Legion words. A
+// stored change moves its words with no reload, and TWO, which the daemon records nothing of,
+// draws no block until the row stores one observation of it.
+test("the Details panel holds the Legion block with the phase, every role and the place @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  await phase(browser, seedLegionBlock, async (page, seeded) => {
+    const { one, two } = seeded.keys;
+    await page.setViewportSize(viewportAt(test.info().project.name === "iphone" ? 390 : 1440));
+    const live = await routeLiveLegion(page);
+    await gotoIssue(page, `/issues/${one}`);
+    await openDetails(page);
+    const block = legionBlock(page);
+    await expect(block, `Details holds no block named ${LEGION.heading}`).toBeVisible();
+    const read = await legionRead(one);
+    if (read.state === null || read.read === null) throw new Error(`${one} read no Legion state`);
+
+    // The phase and since when, every role with its word, the place and the read's time.
+    const phaseLine = legionLine(page, "phase");
+    await expect(phaseLine).toHaveText(
+      thenATime(`${PHASE_WORDS.steps.implementing} ${LEGION.since}`)
+    );
+    await expect(phaseLine.locator("time")).toHaveAttribute("datetime", read.state.phase_since);
+    await expect(block.getByRole("listitem")).toHaveText([
+      roleLine("architect", "in_turn"),
+      roleLine("planner", "paused"),
+      roleLine("implementer", "in_turn"),
+      roleLine("tester", "idle"),
+    ]);
+    await expect(legionLine(page, "place")).toHaveText(LEGION.at_work);
+    const readLine = legionLine(page, "read");
+    await expect(readLine).toHaveText(thenATime(LEGION.read_at));
+    await expect(readLine.locator("time")).toHaveAttribute("datetime", read.read.at);
+    await assertWholeInDetails(page, [block]);
+
+    // No list of runs or handoffs: its one list is the roles', and the run Details lists is not
+    // in it.
+    await expect(marginSlot(page), `Details lists no run of ${one}`).toContainText(RUN_AGENT);
+    await expect(block.getByRole("list")).toHaveCount(1);
+    await expect(block, "the block draws a run").not.toContainText(RUN_AGENT);
+    await expect(
+      block.locator("[data-step-run], [data-history-item], [data-event-seq]")
+    ).toHaveCount(0);
+
+    // A block of its own, beside the history: in none of the three sections, directly above the
+    // history, and with no control that folds it.
+    await expect(
+      marginSlot(page).locator('[data-margin-section] [data-testid="legion-block"]')
+    ).toHaveCount(0);
+    await expect(block.getByRole("button"), "the block holds a control").toHaveCount(0);
+    expect(
+      await block.evaluate((element) => element.nextElementSibling?.getAttribute("data-testid")),
+      "the block does not stand directly above the history"
+    ).toBe("issue-history");
+
+    // The page's header holds no Legion words.
+    const header = page.locator("[data-issue-header]");
+    await expect(header).toHaveCount(1);
+    for (const word of [
+      LEGION.heading,
+      PHASE_WORDS.steps.implementing,
+      LEGION.at_work,
+      ROLE_STATE_WORDS.in_turn,
+      ROLE_STATE_WORDS.paused,
+      LEGION.read_at,
+    ]) {
+      await expect(header, `the header says "${word}"`).not.toContainText(word);
+    }
+
+    // The implementer goes idle and ONE moves to testing: the words follow with no reload.
+    await seedLegionState(one, {
+      ...IMPLEMENTING,
+      claims: { ...IMPLEMENTING.claims, implementer: "idle" },
+      phase: "testing",
+    });
+    await expect(phaseLine).toHaveText(thenATime(`${PHASE_WORDS.steps.testing} ${LEGION.since}`), {
+      timeout: 5_000,
+    });
+    await expect(block.getByRole("listitem")).toHaveText([
+      roleLine("architect", "in_turn"),
+      roleLine("planner", "paused"),
+      roleLine("implementer", "idle"),
+      roleLine("tester", "idle"),
+    ]);
+    await expect(block).not.toContainText(PHASE_WORDS.steps.implementing);
+
+    // TWO, of which the daemon records nothing, draws no block once its read has answered, and
+    // draws one as soon as one observation of it is stored.
+    await gotoIssue(page, `/issues/${two}`);
+    await openDetails(page);
+    await expect
+      .poll(() => live.answered.includes(two), { message: `${two}'s Legion read never answered` })
+      .toBe(true);
+    await expect(legionBlock(page), `${two}, which no daemon records, draws a block`).toHaveCount(
+      0
+    );
+    await seedLegionState(two, { phase: "planning" });
+    await expect(legionLine(page, "phase")).toHaveText(
+      thenATime(`${PHASE_WORDS.steps.planning} ${LEGION.since_before}`),
+      { timeout: 5_000 }
+    );
+  });
+});
+
+/** One state of the parent's "Words for the state" that the row of `b-c-states` stores on ONE,
+ *  and what the block then draws: its phase's word, its place and wait line (none for null), and
+ *  the address the wait links to, where it links. */
+interface DrawnState {
+  readonly what: string;
+  readonly state: LegionStateSeed;
+  readonly phase: string;
+  readonly place: string | null;
+  readonly link?: string;
+}
+
+/** A `waiting_on` member that holds markup: an image whose load fails runs its handler, which
+ *  marks the window, and a bold `kind`. Drawn as markup, either is an element the row finds. */
+const ASK_MARKUP = '<img data-wait-markup="ask" src="x" onerror="window.__legionWaitMarkup = 1">';
+const KIND_MARKUP = '<b data-wait-markup="kind">ask</b>';
+
+// b-c-states. Each state of the parent's "Words for the state" is stored on ONE in turn, and the
+// block's place and wait line reads exactly its words, so the words of the state before are gone:
+// the place in line, at work and in line at once, "Waits for", each wait on a person with the link
+// it may draw and the members it draws as text, "Past review", "Not started", "Held" with no place
+// word with and without a slot, an answered wait's place in line, a phase with none of these, no
+// role in a turn, a failed read, "since before", the page's own read failing with its Retry, and
+// no block for a `done` issue and for a project that names no daemon.
+test("the Legion block names the place, the wait and a failed read in each state", async ({
+  browser,
+}) => {
+  test.setTimeout(300_000);
+  await phase(browser, seedLegionBlock, async (page, seeded) => {
+    const { one, quiet, two } = seeded.keys;
+    const { askId, document } = seeded;
+    const live = await routeLiveLegion(page);
+    await gotoIssue(page, `/issues/${one}`);
+    await openDetails(page);
+    const block = legionBlock(page);
+    const place = legionLine(page, "place");
+    await expect(place).toHaveText(LEGION.at_work);
+
+    /** The waiting line of `length` issues, ONE the `at`th of them. */
+    const lineOf = (length: number, at: number) =>
+      Array.from({ length }, (_, index) =>
+        index === at - 1 ? one : `${LEGION_PROJECT}-${90 + index}`
+      );
+    const blockers = [`${LEGION_PROJECT}-71`, `${LEGION_PROJECT}-72`];
+    const unlisted = "0193a6f2-2222-7000-8000-000000000009";
+    const waits = (members: readonly (string | number)[]) =>
+      `${LEGION.waits_on_person} ${members.join(" · ")}`;
+    const states: readonly DrawnState[] = [
+      {
+        phase: PHASE_WORDS.steps.admitted,
+        place: `3rd ${LEGION.place_of} 5 ${LEGION.in_line}`,
+        state: { admission: { waiting: lineOf(5, 3) }, phase: "admitted" },
+        what: "third of five in line",
+      },
+      {
+        phase: PHASE_WORDS.steps.implementing,
+        place: `${LEGION.at_work} · 2nd ${LEGION.place_of} 4 ${LEGION.in_line}`,
+        state: { admission: { waiting: lineOf(4, 2) }, phase: "implementing", slot: 1 },
+        what: "at work and in line at once",
+      },
+      {
+        phase: PHASE_WORDS.steps.implementing,
+        place: `${LEGION.waits_for} ${blockers.join(", ")}`,
+        state: {
+          admission: { blocked: [{ blockedBy: blockers, issue: one }] },
+          phase: "implementing",
+        },
+        what: "waits for two blockers",
+      },
+      {
+        link: buildIssuePath({ id: askId, key: one, kind: "ask" }),
+        phase: PHASE_WORDS.awaiting_person,
+        place: waits(["ask", askId]),
+        state: { phase: "awaiting_person", waitingOn: { ask: askId, kind: "ask" } },
+        what: "a wait on an ask",
+      },
+      {
+        phase: PHASE_WORDS.awaiting_person,
+        place: waits([KIND_MARKUP, ASK_MARKUP]),
+        state: { phase: "awaiting_person", waitingOn: { ask: ASK_MARKUP, kind: KIND_MARKUP } },
+        what: "a wait whose ask and kind hold markup",
+      },
+      {
+        phase: PHASE_WORDS.awaiting_person,
+        place: waits(["ask", "../../settings"]),
+        state: { phase: "awaiting_person", waitingOn: { ask: "../../settings", kind: "ask" } },
+        what: "an ask that is no UUID",
+      },
+      {
+        link: buildIssuePath({ key: one, kind: "artifact", slug: document.slug, version: 1 }),
+        phase: PHASE_WORDS.awaiting_person,
+        place: waits(["gate", document.id, 1]),
+        state: {
+          phase: "awaiting_person",
+          waitingOn: { artifactId: document.id, gateVersion: 1, kind: "gate" },
+        },
+        what: "a design gate's wait",
+      },
+      {
+        phase: PHASE_WORDS.awaiting_person,
+        place: waits(["gate", document.id, -1]),
+        state: {
+          phase: "awaiting_person",
+          waitingOn: { artifactId: document.id, gateVersion: -1, kind: "gate" },
+        },
+        what: "a gate_version of -1",
+      },
+      {
+        phase: PHASE_WORDS.awaiting_person,
+        place: waits(["gate", unlisted, 1]),
+        state: {
+          phase: "awaiting_person",
+          waitingOn: { artifactId: unlisted, gateVersion: 1, kind: "gate" },
+        },
+        what: "a gate on a document the issue's list does not hold",
+      },
+      {
+        phase: PHASE_WORDS.awaiting_person,
+        place: waits(["review", askId]),
+        state: { phase: "awaiting_person", waitingOn: { ask: askId, kind: "review" } },
+        what: "a wait on neither an ask nor a gate",
+      },
+      {
+        phase: PHASE_WORDS.steps.accepting,
+        place: LEGION.past_review,
+        state: { phase: "accepting" },
+        what: "accepting",
+      },
+      {
+        phase: PHASE_WORDS.steps.admitted,
+        place: LEGION.not_started,
+        state: { phase: "admitted" },
+        what: "admitted with nothing else",
+      },
+      { phase: PHASE_WORDS.held, place: null, state: { phase: "held" }, what: "held" },
+      {
+        phase: PHASE_WORDS.held,
+        place: null,
+        state: { admission: { waiting: lineOf(3, 2) }, phase: "held", slot: 2 },
+        what: "held, keeping its slot",
+      },
+      {
+        phase: PHASE_WORDS.awaiting_person,
+        place: `4th ${LEGION.place_of} 6 ${LEGION.in_line}`,
+        state: {
+          admission: { waiting: lineOf(6, 4) },
+          phase: "awaiting_person",
+          slot: 0,
+          waitingOn: {
+            answeredAt: new Date().toISOString(),
+            answeredBy: "ask",
+            ask: askId,
+            kind: "ask",
+          },
+        },
+        what: "an answered wait",
+      },
+      {
+        phase: PHASE_WORDS.steps.planning,
+        place: null,
+        state: { claims: { architect: "idle", planner: "idle" }, phase: "planning" },
+        what: "a phase with none of these, and no role in a turn",
+      },
+    ];
+    for (const { link, phase: phaseWord, place: words, state, what } of states) {
+      await seedLegionState(one, state);
+      await expect(legionLine(page, "phase"), what).toHaveText(
+        thenATime(`${phaseWord} ${LEGION.since}`),
+        { timeout: 5_000 }
+      );
+      if (words === null) {
+        await expect(place, `${what} draws a place word`).toHaveCount(0, { timeout: 5_000 });
+      } else {
+        await expect(place, what).toHaveText(words, { timeout: 5_000 });
+      }
+      // A member of the wait is drawn as text: none became an element, and no handler ran.
+      await expect(block.locator("[data-wait-markup]"), `${what} drew markup`).toHaveCount(0);
+      expect(
+        await page.evaluate(() => "__legionWaitMarkup" in window),
+        `${what} ran a handler a member of the wait holds`
+      ).toBe(false);
+      if (link === undefined) {
+        await expect(block.getByRole("link"), `${what} links`).toHaveCount(0);
+      } else {
+        await expect(place.getByRole("link")).toHaveAttribute("href", link);
+        await place.getByRole("link").click();
+        await expect(page, `${what}'s link`).toHaveURL(
+          (url) => `${url.pathname}${url.search}` === link
+        );
+        await gotoIssue(page, `/issues/${one}`);
+        await openDetails(page);
+      }
+    }
+    await expect(block.getByRole("listitem")).toHaveText([
+      roleLine("architect", "idle"),
+      roleLine("planner", "idle"),
+    ]);
+
+    // The newest read failed: its time and "failed", the error text nowhere, the state stays.
+    await seedLegionState(one, {
+      claims: { architect: "idle", planner: "idle" },
+      phase: "planning",
+      read: { error: "dial tcp 127.0.0.1:9: connect: connection refused", ok: false },
+    });
+    const readLine = legionLine(page, "read");
+    await expect(readLine).toHaveText(
+      new RegExp(
+        `^${literally(LEGION.read_failed.before)} \\S.* ${LEGION.read_failed.after}$`,
+        "u"
+      ),
+      { timeout: 5_000 }
+    );
+    const failed = await legionRead(one);
+    await expect(readLine.locator("time")).toHaveAttribute("datetime", failed.read?.at ?? "");
+    await expect(block, "the block draws the read's error text").not.toContainText("refused");
+    await expect(legionLine(page, "phase")).toHaveText(
+      thenATime(`${PHASE_WORDS.steps.planning} ${LEGION.since}`)
+    );
+
+    // The page's own read fails: the panel's error line with Retry, and Retry reads again.
+    await closeDetails(page);
+    live.refuse = true;
+    await openDetails(page);
+    await expect(block.getByRole("alert")).toHaveText(ANSWER_LINES.legion_unreadable);
+    live.refuse = false;
+    await block.getByRole("button", { exact: true, name: CONTROL_LABELS.retry }).click();
+    await expect(block.getByRole("alert")).toHaveCount(0);
+    await expect(legionLine(page, "phase")).toHaveText(
+      thenATime(`${PHASE_WORDS.steps.planning} ${LEGION.since}`)
+    );
+
+    // A `done` issue draws no block.
+    await seedLegionState(one, { phase: "done" });
+    await expect(block, "a done issue draws a block").toHaveCount(0, { timeout: 5_000 });
+
+    // Dispatch did not see TWO's first phase start: "since before".
+    await seedLegionState(two, { phase: "planning" });
+    await gotoIssue(page, `/issues/${two}`);
+    await openDetails(page);
+    await expect(legionLine(page, "phase")).toHaveText(
+      thenATime(`${PHASE_WORDS.steps.planning} ${LEGION.since_before}`)
+    );
+
+    // A project that names no daemon: its read answers, and no block is drawn.
+    await gotoIssue(page, `/issues/${quiet}`);
+    await openDetails(page);
+    await expect
+      .poll(() => live.answered.includes(quiet), {
+        message: `${quiet}'s Legion read never answered`,
+      })
+      .toBe(true);
+    await expect(legionBlock(page), "a project that names no daemon draws a block").toHaveCount(0);
+  });
+});
+
+// b-c-shut. With Details shut, on a tab of the issue that is no Dashboard, the page subscribes no
+// live view of ONE's Legion state and reads no `/legion`; opening Details subscribes it once
+// through `legionIssueQuery`, whose snapshot comes over `/ws/live`, reads no `/legion` either, and
+// shutting Details lets the subscription go.
+test("the Legion block reads nothing while Details is shut", async ({ browser }) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedLegionBlock, async (page, seeded) => {
+    const { one } = seeded.keys;
+    const live = await routeLiveLegion(page);
+    const legionReads: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === `/api/v1/issues/${one}/legion`) {
+        legionReads.push(request.url());
+      }
+    });
+    const traffic = watchRequests(page);
+    const subscriptions = () => live.subscribed.filter((issue) => issue === one).length;
+    await gotoIssue(page, `/issues/${one}/spec`);
+    await expect
+      .poll(() => traffic.settled(), { message: "the load's reads never ended" })
+      .toBe(true);
+    // An absence window: the claim is that nothing subscribes in it, so it is spent, not polled.
+    await page.waitForTimeout(2_000);
+    expect(subscriptions(), "Details shut subscribed the issue's Legion state").toBe(0);
+    expect(legionReads, "Details shut read the issue's Legion state").toEqual([]);
+
+    await openDetails(page);
+    await expect
+      .poll(subscriptions, {
+        message: "opening Details opened no live view of the issue's Legion state",
+      })
+      .toBe(1);
+    await expect
+      .poll(() => live.answered.includes(one), {
+        message: "no snapshot of the issue's Legion state came over /ws/live",
+      })
+      .toBe(true);
+    await expect(legionBlock(page)).toBeVisible();
+    expect(subscriptions(), "open Details subscribed the issue's Legion state twice").toBe(1);
+    expect(legionReads, "open Details read the issue's Legion state by its route").toEqual([]);
+
+    await closeDetails(page);
+    await expect
+      .poll(() => live.unsubscribed.filter((issue) => issue === one).length, {
+        message: "shutting Details kept the live view of the issue's Legion state",
+      })
+      .toBe(1);
+    // An absence window after the close: nothing may subscribe again while Details stays shut.
+    await page.waitForTimeout(2_000);
+    expect(subscriptions(), "Details shut subscribed the issue's Legion state again").toBe(1);
+    expect(legionReads).toEqual([]);
   });
 });
