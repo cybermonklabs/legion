@@ -100,8 +100,9 @@ func forkBeside(t testing.TB) {
 // answered. ETXTBSY runs the test: the kernel refuses such a run, as Linux does every time. A run
 // (nil) means no run of the test can meet the fault: the test skips, as under gVisor, except under
 // GITHUB_ACTIONS, where it fails, since CI's runners refuse such a run and one that does not is a
-// broken runner, never a green job with the proof gone from it. Any other answer, such as EACCES
-// from a TMPDIR mounted noexec or ENOENT from a machine with no /bin/sh, fails the test.
+// broken runner, never a green job with the proof gone from it. Under gVisor in a build pod on
+// 2026-11-23, the five daemon fork tests passed with the fault present. Any other answer, such as
+// EACCES from a TMPDIR mounted noexec or ENOENT from a machine with no /bin/sh, fails the test.
 func busyRunVerdict(answer error, ci bool) (skip, fail string) {
 	const (
 		ran   = "this kernel ran a program this process held open for writing rather than refuse it with ETXTBSY, "
