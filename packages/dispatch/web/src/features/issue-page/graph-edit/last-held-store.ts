@@ -176,7 +176,7 @@ export function useKnownLastHeldReferences(): LastHeld {
  * address naming, by its `#b-` fragment, a block the read the view draws from lacks, once the
  * names read under a set that holds the block's reference has answered, the version that last
  * held the block, or the same address without its fragment where none is named
- * (`address-target.ts`' `lastHeldOpening`, R9 of INFRA-5705's spec). The page's names read
+ * (`last-held-ask.ts`' `lastHeldOpening`, R9 of Graph editing's spec). The page's names read
  * publishes it (`useIssueTree.ts`), in the layout phase, as it publishes the map above
  * (`usePublishLastHeldReferences`).
  */

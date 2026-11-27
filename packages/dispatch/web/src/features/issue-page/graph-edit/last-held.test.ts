@@ -67,7 +67,7 @@ import {
  *   row's words (`RowText.tsx`, `row-references.ts`) draws the same link in place; with no
  *   `lastHeld` both draw it as they draw any gone reference.
  * - An address on the issue page whose `#b-<block>` names a block that no read holds (the Spec
- *   view's own address: `address-target.ts`' `lastHeldAsk`, through the page's names read in
+ *   view's own address: `last-held-ask.ts`' `lastHeldAsk`, through the page's names read in
  *   `useIssueTree.ts`, which publishes where it opens by the issue's key,
  *   `usePublishLastHeldOpening(issue, address)`, read by `useLastHeldOpening(issue)` and opened by
  *   `slots/view-spec.tsx`) sends one `reference-targets` read for it and opens `lastHeldPath` of

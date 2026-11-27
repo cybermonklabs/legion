@@ -18,7 +18,7 @@ import { issueDecisionsQuery } from "../doc/spec-marks";
 import { type PublishedReferences, usePublishReferenceNames } from "../refs/reference-names";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildDispatchReference, parseIssuePath, parseNodeReference } from "../refs/routes";
-import { lastHeldAsk, lastHeldOpening, lastHeldReference } from "./address-target";
+import { lastHeldAsk, lastHeldOpening, lastHeldReference } from "./graph-edit/last-held-ask";
 import { targetLastHeld } from "./graph-edit/last-held-chips";
 import {
   usePublishLastHeldOpening,
