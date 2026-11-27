@@ -41,20 +41,26 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the words filter would not have matched still draws it, but for a
-  // person's write-up of an answered question (below); the entry it names takes the focus, once
-  // per address (R6).
+  // write-up of an answered question (below); the entry it names takes the focus, once per
+  // address (R6).
   const { named, reveal } = useAddressTarget(root, address);
   // Whether the list draws the node the address names, which the stage is told by the rule for
   // refused reads (`useTellsAddressDrawn`). The list draws a line of its own for the decisions
-  // read and the asks read (`DecisionsFilterBody`). Where the view may tell, the body says
-  // whether it draws the node (`onRevealDrawn`): only the body knows the rows it draws, and which
-  // decisions are a person's write-up of an answered question, which is no row here, so that an
-  // address naming one lands on the row of a question it answers where the list draws one. Where
-  // the list draws none of the node - the tree holds none, the words filter matched none of the
-  // questions a write-up answers, or a read the list draws no line for stands refused - the stage
-  // draws the outline in the view's place, which lands on the node or says that the issue holds
-  // none of it or that its read failed.
-  const tells = useTellsAddressDrawn(failed, readsSettled, ["decisions", "asks"], onAddressDrawn);
+  // read and the asks read (`DecisionsFilterBody`), each under the key the outline draws its line
+  // under (`outline-reads.ts`). Where the view may tell, the body says whether it draws the node
+  // (`onRevealDrawn`): only the body knows the rows it draws, and which nodes are a write-up of
+  // an answered question - a `reading` node under it - which is no row here, so that an address
+  // naming one lands on the row of the question it answers where the list draws one. Where the
+  // list draws none of the node - the tree holds none, the words filter matched not the question
+  // a write-up answers, or a read the list draws no line for stands refused - the stage draws the
+  // outline in the view's place, which lands on the node or says that the issue holds none of it
+  // or that its read failed.
+  const tells = useTellsAddressDrawn(
+    failed,
+    readsSettled,
+    ["issue-decisions", "asks"],
+    onAddressDrawn
+  );
   const view = useMemo(
     () => presetView(root, "decisions", address.filter, named),
     [address.filter, named, root]

@@ -49,7 +49,7 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 	}{
 		// Every architect is told what a pull-request-missing notice asks of it, whatever its tree,
 		// and which code each of the two pre-checked texts is refused with: its length, and the
-		// decision block it holds (INFRA-1201).
+		// ask block it holds.
 		{"root architect", claim.RoleArchitect, true, []string{"architect-root.md"}, []string{"architect-root.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate`", "end the tree with `close_root`", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`"}, architectOperations...)},
 		{"sub-architect", claim.RoleArchitect, false, []string{"architect.md"}, []string{"architect.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate` refuses a child issue", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`"}, architectOperations...)},
 		{"planner", claim.RolePlanner, false, []string{"core/common.md", "core/planner.md", "mechanics/headless.md", "planner.md"}, []string{"planner.md", "worker-common.md"}, []string{`op: "handoff_complete"`, "jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/<issue>", "dispatch handoff-write --issue <issue> --phase <word> --body-file", "dispatch handoff-read --issue <issue> --phase <word> --version <n>", "A handoff is never committed or pushed", "`HANDOFF_SESSION_MISMATCH`", "A refusal records nothing"}},
@@ -497,11 +497,11 @@ func stepClauses(text, marker string) []string {
 // step bound in a clause that names another step binds nothing, since the architect cannot tell
 // which of the two the document belongs to. The prompt also tells a root whose gate was carried
 // what to do about a step nothing has registered — register it, on this issue's own document —
-// rather than only what not to do, and tells every root how to find which step a review notice
-// was of, since `design-approved`, `design-changes-requested` and `carried-gate-opened` each
-// name a version and no step. The policy words the list replaced are gone from both parts: an
+// rather than only what not to do. The policy words the list replaced are gone from both parts: an
 // architect told to read `gates.design: root-issues` off its addressing would wait for a line
-// the daemon no longer writes.
+// the daemon no longer writes. Nor does either part name the `decisions` step, which no
+// deployment gates any more (config's readDesignSteps refuses it): an architect told of it would
+// register a document no step records.
 func TestTheRootArchitectPartNamesTheGatedSteps(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -512,7 +512,6 @@ func TestTheRootArchitectPartNamesTheGatedSteps(t *testing.T) {
 		step     record.DesignStep
 		document string
 	}{
-		{record.DesignStepDecisions, "decisions document"},
 		{record.DesignStepCriteria, "Verification document"},
 		{record.DesignStepSpec, "primary document"},
 	}
@@ -536,6 +535,9 @@ func TestTheRootArchitectPartNamesTheGatedSteps(t *testing.T) {
 			t.Errorf("the composed root architect prompt binds the `%s` step to its %s in no clause of its own",
 				bind.step, bind.document)
 		}
+	}
+	if named := stepClauses(text, "`decisions` step"); len(named) != 0 {
+		t.Errorf("the composed root architect prompt still names the `decisions` step: %q", named)
 	}
 	// The architect reads the steps off its addressing line, so both parts name that line by the
 	// words the daemon writes on it (daemon.DesignGateFragment).
@@ -563,17 +565,6 @@ func TestTheRootArchitectPartNamesTheGatedSteps(t *testing.T) {
 		}
 		if !strings.Contains(paragraph, "this issue's own document for that step") {
 			t.Errorf("the carried-root rule does not say which document that registration names: %s", paragraph)
-		}
-	}
-	notices := ruleParagraphs(text, "`design-changes-requested`")
-	if len(notices) != 2 {
-		t.Fatalf("the composed root architect prompt holds %d paragraphs on the review notices, want one in each part", len(notices))
-	}
-	for _, paragraph := range notices {
-		for _, want := range []string{"`gatedSteps`", "`read_record`"} {
-			if !strings.Contains(paragraph, want) {
-				t.Errorf("the review-notice rule does not send the architect to %s for the step the notice leaves out: %s", want, paragraph)
-			}
 		}
 	}
 }

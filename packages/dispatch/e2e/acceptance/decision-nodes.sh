@@ -1,0 +1,1607 @@
+#!/usr/bin/env bash
+# The check c-census: the child's census over a corpus half of which the release
+# before wrote, the conversion of every section of the old decisions document, and the node read
+# set beside the document read it replaces.
+#
+# It drops and creates the database DATABASE_URL names (seed_reset_database: a database on this
+# machine whose name begins infra_1150_), boots the base release on it through lib-baseline.sh
+# (BASELINE_BINARY, default $TMPDIR/base-dispatch, the stamped build of BASELINE_SHA) with the dev
+# sign-in, the pinned agent bearer e2e-token and the hold setting (DISPATCH_TEST_HOOKS=1 and
+# DISPATCH_TEST_HOLD_DECISIONS_STEP=1, through BASELINE_EXTRA_ENV), and has seed-decisions.sh write
+# the corpus through that server's API (seed_decisions, then seed_decisions_further_kinds, which
+# adds to issue A one section of each of R9's four further kinds and a section under `## Replaced`
+# citing two answered asks, and writes issue E, whose decisions.md holds two sections citing the
+# answered ask its person removed from the spec, one of them under `## Replaced`), with
+# one more ask the base writes on a project document, so the asks rows it wrote name an anchor, an
+# owner and a follower. Before this head boots it captures the document answer, the base's
+# GET /api/v1/issues/{key}/decisions of each issue that holds a decisions.md - A, B and E - with
+# the ask node each section names or holds, the author of the version each section last changed
+# in, and stops the server. The fourth such issue, C, takes its decisions.md later, and its answer
+# is captured then (below).
+#
+# BASELINE_SHA, the commit of the release this branch lands after, is required and has no
+# default: only the caller knows which release that is. Once the base server has booted, the
+# commit it is stamped with (the `commit` of its /healthz, the one it registers in
+# server_processes) must be the commit BASELINE_SHA names in this checkout, or the run fails
+# naming both, so that a binary built from another commit never stands in for that release. In
+# the same way this head's server must be stamped with the commit this checkout stands on (`git
+# rev-parse HEAD`, which the Verification preamble stamps HEAD_BINARY with), so that a binary left
+# from an earlier head never stands in for the head the result is recorded at.
+#
+# It boots this head, HEAD_BINARY (default $TMPDIR/bin/envoy-dispatch), with the hold setting, and
+# reads graph_edges over two asks rows the base wrote: the old anchored_to, owned_by and followed_by
+# arms answer them and the tuple arm does not (the rows are unmarked and their nodes state no such
+# tuple); it runs `envoy-dispatch backfill-graph-store`, the step's first phase, and reads the
+# reverse - the rows marked with asks.node_kind and asks.node_address, the tuples stated, each edge
+# still answered once - with the three old arms still in the view, and the census's unmarked rows,
+# a class of their own, read before and after. It then writes this head's half through this head's
+# API (project NODES): a spec holding four requirements, an ask a person answers in their own words
+# that shapes the first and the fourth, one left open, one declined with a note, a session that
+# follows the answered ask, and an agent's decision with its uncertainty and its reason that shapes
+# the first three, settles the ask and holds a reading; and a second document holding an ask, a
+# copy of the answered ask and an agent's decision whose block id repeats the spec's.
+#
+# It runs the restore and the conversion through their entry points
+# (`envoy-dispatch restore-answered-asks` and `convert-decisions`, --project SEED). It reads every
+# ask block of each version the conversion wrote - the versions its line of each issue names
+# (spec_version, decisions_version) and counts (other_versions), as the artifact.version events the
+# step appends in its own name name them, every such event after the conversion started read with
+# no limit and held to as many as the lines count, so no version it wrote goes unread - and each
+# holds the form R10 keeps, each value equal to
+# its ask's node as the store states it: `state` where the ask is answered or resolved and none
+# where it is open, `answered_by` and `answered_at` where it is answered, and `copied_from` and
+# `copied_from_document` on a copy of an ask of another document; a block that has no ask row and
+# is no copy of an ask holds none of the eight server-owned attributes; and no block holds
+# `selected`, `answer` or `invalid`. A block that differs fails the run, which prints the block, its
+# attributes and the ones its ask's node gives. Then it runs the store census
+# (`envoy-dispatch census --store`). It first reads the section of issue E, which cites the
+# answered ask its person removed from the spec through the base release: R9 deletes it, its
+# heading takes one moved_to to that ask's node, and the census's moved_to store-only line counts
+# every moved_to the store states now, that one among them, with unresolved=0, which a moved_to
+# reads only where its far end is a block that stands or a live ask node. For each of shaped,
+# from_ask, decided_by, followed_by, reading_parent, ask_parent, ask_anchor and ask_answer it then
+# prints the store's count, the projection's count and the differences in each direction, and
+# requires rows on both sides and zero differences; it does the same for graph_edges against the
+# store for each of those kinds graph_edges answers (shaped, from_ask, decided_by, followed_by,
+# ask_parent's owned_by and ask_anchor; no arm of it answers a reading's or an ask's part_of),
+# each a `census pair <kind>: … (graph_edges)` line; it prints the store-only lines of copied_from
+# and moved_to and requires every far end to resolve; it requires the census's count of
+# unconverted sections, and of decisions documents, to read zero; and it reports the two halves of
+# every projection, the base release's (project SEED) and this head's (project NODES), each above
+# zero.
+#
+# It reads each rule of R9 on the section that carries it, in A, B and E, and fails where the
+# capture holds no section with an `Unsure:` paragraph, none under `## Replaced`, none with a
+# standing Keep, none citing an answered ask a person removed or none such under `## Replaced`, each
+# of which the fixture seeds; a reading's part_of is read from the store against the ask the capture
+# names. E's two sections, which the fixture records as the ones citing the answered ask its person
+# removed (deleted_by), are read by R9's deleting rule: each heading takes one current moved_to, to
+# kind ask and id that ask; no reading hangs under that ask; no decision keeps its heading id, as a
+# node or a document's block; and the ask's node still answers the person's answer, character for
+# character the answer the base's capture holds for that ask. Every moved_to of a section's heading
+# is read as the current tuple out of it (current_of: the newest tuple of each far end, where it
+# asserts), so a tuple asserted and later retracted is none. It reads the approved specs still
+# approved at their newest version, as the server's own approval read answers, and its comparison
+# of that version's markdown with the restore's finds no change but decision blocks of the
+# `## Decisions` part, reading blocks inside the blocks of answered asks, and shaped pointers added
+# to ask blocks, each a link of a captured section naming that block's ask, none taken out; it
+# pairs each captured section of A, B and E with the ask node the
+# capture names for it or with the decision node that keeps its heading block id, which entries and
+# the old `decisions` member must each answer once under the address entries give it, and prints
+# missing, extra and unpaired with every reference, a `deleted:` line for each of E's sections,
+# which it pairs with the removed ask's node and counts as one a rule of R9 deleted rather than one in no
+# spec, and the issues holding a section no rule dropped and no spec holds; and it sets the old
+# `decisions` member beside `entries` for each decision, by its address, and finds the same
+# decisions, each under the same block id, in both, an answered ask no document holds read under
+# the block id its asks row names (each decision's stale, changed_version and changed_at, which
+# the handler fills in both members from one value, are held equal too, which proves that wiring
+# alone, so its pass line claims them not). It reads each of R9's four further kinds on its
+# section: the ask block a section held, which no row names, moved into the spec and the rest a
+# decision; and the sections citing two answered asks, an issue-level answered ask, and one answered
+# ask with a body no reading holds, each a decision that keeps its heading id, takes its links as
+# shaped and no from_ask, cites its asks and waits for a person's review with uncertainty high; and
+# the decisions.md retired. Then the two cases planSection takes before the replaced rule, each a
+# section under `## Replaced` the capture holds as such: A's, which cites two answered asks, stays
+# one decision (one live decision node and one decision block keep its heading id, and its heading
+# moves to it), marked replaced, with uncertainty high, a citation of both asks in the spec and no
+# from_ask; E's, which cites the answered ask its person removed, is deleted by that ask's rule: its
+# heading moves to the ask's node and no decision keeps its id.
+#
+# Last it stops this head, boots the base alone and has it write a decisions.md on issue C, whose
+# document answer it captures through the base as it captured A's, B's and E's; boots this head
+# without the hold setting and the base beside it, both stamped, has the base answer an ask this
+# head created, and reads the answer, the selection, the answerer and the time on the ask node, each
+# under that ask.answered event; then it stops both, boots this head alone without the hold
+# setting, and reads that the step at boot leaves no decisions document within a bound, that
+# /healthz then answers decisions_step_owed zero, and that every ask block of each version the step
+# wrote at boot, each an artifact.version event it appended in its own name, holds the form R10
+# keeps, as those of the versions the conversion by hand wrote do. Then it compares C as it compared
+# A, B and E: it pairs C's section, which cites no ask, with the decision node of C's spec that
+# keeps its heading id, and prints missing, extra, unpaired and the issues in no spec again, those
+# counts now over all four issues; sets C's old member beside its entries; and reads C's section by
+# R9's rule for a section that cites no ask.
+#
+# Each passing check prints `PASS: <section> <what>`; the first failing one prints
+# `FAIL: <section> <what>: <observed>` on stderr and the run exits 1; a missing input exits 2. It
+# prints no SKIP line. Every check is `cmd || fail …`, never part of an `&&` list.
+set -euo pipefail
+set +x
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: DATABASE_URL=${LEGION_TEST_PG_DSN%/*}/infra_1150_decision_nodes?sslmode=disable \
+         BASELINE_SHA=<the commit of the release this branch lands after> \
+         [BASELINE_BINARY=$TMPDIR/base-dispatch] [HEAD_BINARY=$TMPDIR/bin/envoy-dispatch] \
+         bash e2e/acceptance/decision-nodes.sh
+       (run from packages/dispatch; DATABASE_URL names a database on this machine whose name
+       begins infra_1150_, which this run drops and creates again. BASELINE_SHA is required and
+       has no default; BASELINE_BINARY must be the server built from it and stamped with it)
+USAGE
+}
+
+# shellcheck source-path=SCRIPTDIR source=lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source-path=SCRIPTDIR source=lib-baseline.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib-baseline.sh"
+# shellcheck source-path=SCRIPTDIR source=seed-decisions.sh
+. "$(dirname "${BASH_SOURCE[0]}")/seed-decisions.sh"
+
+require_env DATABASE_URL TMPDIR BASELINE_SHA
+require_commands cmp curl date diff git jq psql sed sort tr
+# shellcheck disable=SC2031 # the run's own DATABASE_URL: only a server's subshell sets another
+database_url="$DATABASE_URL"
+if [[ -z "${BASELINE_BINARY:-}" ]]; then
+  # shellcheck disable=SC2031 # this shell's own TMPDIR: only a server's subshell sets another
+  BASELINE_BINARY="$TMPDIR/base-dispatch"
+fi
+# shellcheck disable=SC2031 # this shell's own TMPDIR
+head_binary="${HEAD_BINARY:-$TMPDIR/bin/envoy-dispatch}"
+[[ -f "$head_binary" && -x "$head_binary" ]] || {
+  printf 'HEAD_BINARY %s is not an executable file: build it as the Verification preamble does\n' "$head_binary" >&2
+  exit 2
+}
+readonly head_binary
+# The commit BASELINE_SHA names, in full: the one the base server booted below must be stamped with.
+base_sha="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --verify --quiet "${BASELINE_SHA}^{commit}")" || {
+  printf 'BASELINE_SHA %s names no commit of this checkout\n' "$BASELINE_SHA" >&2
+  exit 2
+}
+readonly base_sha
+# The commit this checkout stands on, in full: the one this head's server must be stamped with.
+head_sha="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --verify --quiet HEAD)" || {
+  printf 'this checkout stands on no commit (git rev-parse HEAD)\n' >&2
+  exit 2
+}
+readonly head_sha
+readonly project=SEED nodes_project=NODES
+# The kinds of this child the census holds to their projections.
+readonly -a kinds=(shaped from_ask decided_by followed_by reading_parent ask_parent ask_anchor ask_answer)
+# Those of them graph_edges answers, which the census also holds graph_edges to, each as the kind
+# <kind>_edge: every one but reading_parent, whose part_of no arm answers, and ask_answer, which is
+# values; ask_parent's is its owned_by, since no arm answers an ask's part_of either.
+readonly -a edge_kinds=(shaped from_ask decided_by followed_by ask_parent ask_anchor)
+# How long the step at boot gets to leave no decisions document.
+readonly step_bound_seconds=180
+# The eight server-owned ask attributes. R10 takes `selected` and `answer` out of markdown, keeps
+# the others a version can store in the form keptAskState writes, and no rendering writes `invalid`.
+readonly -a server_attributes=(state answered_by answered_at selected answer invalid copied_from copied_from_document)
+
+work_dir
+head_pid=""
+beside_pid=""
+cleanup() {
+  local code=$?
+  baseline_stop_pid "$head_pid"
+  baseline_stop_pid "$beside_pid"
+  baseline_stop
+  rm -rf "$work"
+  exit "$code"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+mkdir "$work/capture" "$work/home"
+
+# ---------------------------------------------------------------------------------------------
+# The helpers.
+# ---------------------------------------------------------------------------------------------
+# send AS METHOD PATH [JSON]: METHOD PATH to $server as AS, `agent` (the bearer, in $work/auth) or
+# `person` (the dev sign-in's cookie in $work/jar and the server's origin). The answer's body goes
+# to $work/body and its status to $status.
+send() {
+  local -a auth data=()
+  case "$1" in
+    agent) auth=(-H "@$work/auth") ;;
+    person) auth=(-b "$work/jar" -H "Origin: $server") ;;
+  esac
+  [[ $# -lt 4 ]] || data=(-H 'Content-Type: application/json' --data-binary "$4")
+  status="$(curl -sS -X "$2" -o "$work/body" -w '%{http_code}' "${auth[@]}" "${data[@]}" \
+    "$server$3" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
+}
+
+# field SECTION WHAT JQ: one value of the last answer's body, which must be there, in $value.
+field() {
+  value="$(jq -er "$3" "$work/body" 2>/dev/null)" || fail "$1" "$2" "no $3 in: $(body)"
+}
+
+# sign_in SECTION: signs the person in at $server, the cookie in $work/jar.
+sign_in() {
+  status="$(curl -sS -o "$work/body" -w '%{http_code}' -c "$work/jar" \
+    "$server/auth/_dev/signin?login=$seed_person" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
+  [[ "$status" =~ ^[23][0-9][0-9]$ ]] || fail "$1" "sign $seed_person in at $server" "HTTP $status: $(body)"
+  grep -q $'\t' "$work/jar" || fail "$1" "sign $seed_person in at $server" "the dev sign-in set no cookie"
+}
+
+# commit_of SECTION: the commit $server registers, from its /healthz, in $value; it must be one.
+commit_of() {
+  send agent GET /healthz
+  want_status 200 "$1" "read /healthz of $server"
+  field "$1" "the commit $server is stamped with" '.commit'
+}
+
+# dispatch_command NAME ARGS…: this head's `envoy-dispatch ARGS` over the database, in an
+# environment holding only PATH, a home and a TMPDIR of this run's and DATABASE_URL, its output in
+# $work/NAME.out and its exit in $command_code.
+dispatch_command() {
+  local name="$1"
+  shift
+  command_code=0
+  # shellcheck disable=SC2031 # this shell's own PATH: only a server's subshell sets another
+  env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" DATABASE_URL="$database_url" \
+    "$head_binary" "$@" >"$work/$name.out" 2>&1 || command_code=$?
+}
+
+# census SECTION NAME: `envoy-dispatch census --store` into $work/NAME.out, which exits 1 where a
+# kind of another child holds no row; this check reads its lines, not that verdict.
+census() {
+  dispatch_command "$2" census --store
+  [[ "$command_code" -le 1 ]] || fail "$1" "run the store census" "exited $command_code: $(<"$work/$2.out")"
+}
+
+# kind_line NAME KIND: the census line of KIND in $work/NAME.out, in $line, its fields in $fields.
+kind_line() {
+  line="$(grep -E "^census: store kind=$2 (tuples|nodes)=" "$work/$1.out" || true)"
+  [[ -n "$line" ]] || fail census "the census prints a line for $2" "no such line in $1"
+  declare -gA fields=()
+  local pair
+  # shellcheck disable=SC2086 # the line's fields, split on the spaces between them
+  for pair in ${line#census: store }; do
+    [[ "$pair" != *=* ]] || fields["${pair%%=*}"]="${pair#*=}"
+  done
+}
+
+# wait_settled SECTION: waits, within two minutes, until no document owes a settlement or its block
+# index, so a read that follows reads every write before it.
+wait_settled() {
+  local waited=0
+  while true; do
+    query "$1" "read what the documents owe" \
+      "select (select count(*) from doc_settlements_pending) + (select count(*) from document_block_versions where version is null)"
+    [[ "$answer" != 0 ]] || return 0
+    [[ "$waited" -lt 1200 ]] || fail "$1" "every document settles" "$answer settlements and block indexes still owed after 120 s"
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+}
+
+# wait_ask SECTION ISSUE BLOCK: waits for the ask of block BLOCK of ISSUE's documents, its id in
+# $value.
+wait_ask() {
+  local waited=0
+  while true; do
+    send agent GET "/api/v1/issues/$2/asks?state=all"
+    want_status 200 "$1" "read the asks of $2"
+    value="$(jq -r --arg b "$3" '[.[] | select(.block_id == $b)] | if length == 1 then .[0].id else "" end' "$work/body")"
+    [[ -z "$value" ]] || return 0
+    [[ "$waited" -lt 600 ]] || fail "$1" "the ask of block $3 opens" "no single ask of $2 names block $3 after 60 s"
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+}
+
+# rows SQL: SQL's rows, `|` between columns, into $work/rows.
+rows() {
+  env -u PGHOSTADDR psql "$database_url" -XAtq -F '|' -c "$1" >"$work/rows" 2>"$work/psql" ||
+    fail sql "read $1" "psql: $(<"$work/psql")"
+}
+
+# current_of FROM_KIND FROM_ID TUPLE: the far ends of the current TUPLE tuples out of the node
+# FROM_KIND/FROM_ID - the newest tuple of each far end, where it asserts - `to_kind:to_id` one a
+# line, sorted, in $work/rows. A tuple asserted and later retracted is none of them.
+current_of() {
+  rows "select c.to_kind || ':' || c.to_id from (
+          select distinct on (t.to_kind, t.to_id) t.to_kind, t.to_id, t.asserted from graph_tuples t
+          where t.from_kind = '$1' and t.from_id = '$2' and t.kind = '$3' and t.to_kind <> 'value'
+          order by t.to_kind, t.to_id, t.seq desc) c where c.asserted order by 1"
+}
+
+# value_of FROM_KIND FROM_ID ATTRIBUTE: the newest value of ATTRIBUTE on the node, in $answer.
+value_of() {
+  query value "read $3 of $1 $2" \
+    "select coalesce((select t.to_id from graph_tuples t where t.from_kind = '$1' and t.from_id = '$2' and t.kind = '$3' and t.to_kind = 'value' and t.asserted order by t.seq desc limit 1), '')"
+}
+
+# ask_block ID FILE: the markdown of the ask block ID in FILE, its fence and attributes included,
+# on stdout; nothing where FILE holds no such block.
+ask_block() {
+  awk -v id="$1" '
+    !open && match($0, /^:+ask\{#/) {
+      rest = substr($0, RLENGTH + 1)
+      if (index(rest, id " ") == 1 || index(rest, id "}") == 1) {
+        open = 1; fence = substr($0, 1, index($0, "ask{") - 1); print; next
+      }
+    }
+    open { print; if ($0 == fence) exit }
+  ' "$2"
+}
+
+# attribute_of OPENING NAME: the attribute NAME as the opening line OPENING of an ask block holds
+# it, `NAME="<value>"`, or `NAME=` and what follows up to a space or a brace where its value is not
+# quoted; nothing where OPENING holds no such attribute.
+attribute_of() {
+  if [[ "$1" =~ \ $2=\"([^\"]*)\" ]]; then
+    printf '%s="%s"' "$2" "${BASH_REMATCH[1]}"
+  elif [[ "$1" =~ \ $2=([^ }]*) ]]; then
+    printf '%s=%s' "$2" "${BASH_REMATCH[1]}"
+  fi
+}
+
+# kept_form SECTION DOCUMENT NUMBER WHAT: every ask block of version NUMBER of DOCUMENT (WHAT says
+# whose version it is), read through the versions route, holds the form R10 keeps
+# (docs.keptAskState), each value equal to its ask's node as the store states it now: the ask whose
+# row names the block of DOCUMENT under its id, or, for a block no row names whose block node
+# holds a standing copied_from (settlement's claimCopies), the ask it copies. Such a block holds
+# `state` where that node's answer_state is answered or resolved and none where it is open or
+# absent, `answered_by` and `answered_at` as the node holds them where it is answered, and, on a
+# copy, `copied_from`, the ask, and `copied_from_document`, the address of the document that ask's
+# row names (refs.ArtifactRef). A block that has no ask row and is no copy of an ask holds none of
+# the eight server-owned attributes, and no block holds `selected`, `answer` or `invalid`. It prints
+# each block's attributes; a block that differs fails the run, which prints the block, the
+# attributes it holds and the ones its ask's node gives.
+kept_form() {
+  local section="$1" document="$2" number="$3" what="$4" id own source copied state by at name whose
+  local opening got held wants differs blocks=0
+  local -a ids
+  local -A wanted
+  send agent GET "/api/v1/artifacts/$document/versions/$number"
+  want_status 200 "$section" "read version $number of $document, $what"
+  jq -j '.markdown' "$work/body" >"$work/kept-form.md"
+  mapfile -t ids < <(sed -nE 's/^:+ask\{#([^ }]+).*/\1/p' "$work/kept-form.md")
+  if [[ "${#ids[@]}" == 0 ]]; then
+    pass "$section" "version $number of $document, $what, holds no ask block"
+    return 0
+  fi
+  env -u PGHOSTADDR psql "$database_url" -XAtq -F '|' -c "
+    with block (block_id, position) as (
+      select b, p from unnest(string_to_array('${ids[*]}', ' ')) with ordinality as u (b, p)
+    ), owned as (
+      select block.block_id, block.position,
+        (select a.id::text from asks a where a.block_artifact_id = '$document' and a.block_id = block.block_id) as own,
+        (select c.to_id from document_blocks d
+           cross join lateral (
+             select distinct on (t.to_kind, t.to_id) t.to_id, t.asserted from graph_tuples t
+             where t.from_kind = d.node_kind and t.from_id = d.node_address and t.kind = 'copied_from' and t.to_kind = 'ask'
+             order by t.to_kind, t.to_id, t.seq desc) c
+           where d.artifact_id = '$document' and d.block_id = block.block_id and d.node_address is not null and c.asserted
+           limit 1) as copied
+      from block
+    ), asked as (
+      select o.block_id, o.position, o.own, case when o.own is null then o.copied end as source,
+        coalesce(o.own, o.copied) as ask
+      from owned o
+    )
+    select k.block_id, coalesce(k.own, ''), coalesce(k.source, ''),
+      coalesce((select case when sa.session_id is not null then 'dispatch://agent/' || sa.session_id || '/artifact/' || sa.slug
+                            when sa.issue_key is null then 'dispatch://' || sa.project_key || '/artifact/' || sa.slug
+                            when sa.is_primary and sa.kind = 'doc' then 'dispatch://' || sa.issue_key || '/spec'
+                            else 'dispatch://' || sa.issue_key || '/artifact/' || sa.slug end
+                from asks s join artifacts sa on sa.id = s.block_artifact_id where s.id::text = k.source), ''),
+      coalesce(n.state, ''), coalesce(n.answered_by, ''), coalesce(n.answered_at, '')
+    from asked k
+    left join lateral (
+      select max(f.to_id) filter (where f.kind = 'answer_state') as state,
+        string_agg(f.to_id, ',' order by f.to_id) filter (where f.kind = 'answered_by') as answered_by,
+        max(f.to_id) filter (where f.kind = 'answered_at') as answered_at
+      from (
+        select distinct on (g.kind, g.to_kind, case when g.to_kind = 'value' then '' else g.to_id end) g.kind, g.to_id, g.asserted
+        from graph_tuples g
+        where g.from_kind = 'ask' and g.from_id = k.ask and g.kind in ('answer_state', 'answered_by', 'answered_at')
+        order by g.kind, g.to_kind, case when g.to_kind = 'value' then '' else g.to_id end, g.seq desc) f
+      where f.asserted) n on true
+    order by k.position" >"$work/kept-form-rows" 2>"$work/psql" ||
+    fail "$section" "read the ask of each ask block of version $number of $document" "psql: $(<"$work/psql")"
+  [[ "$(wc -l <"$work/kept-form-rows")" == "${#ids[@]}" ]] ||
+    fail "$section" "read the ask of each of the ${#ids[@]} ask blocks of version $number of $document" "$(<"$work/kept-form-rows")"
+  while IFS='|' read -r id own source copied state by at; do
+    blocks=$((blocks + 1))
+    wanted=()
+    whose="no ask row and no copy of an ask"
+    [[ -z "$own" ]] || whose="ask $own, its node's answer_state ${state:-absent}"
+    [[ -z "$source" ]] || whose="a copy of ask $source of $copied, its node's answer_state ${state:-absent}"
+    if [[ -n "$own$source" && -n "$state" && "$state" != open ]]; then
+      wanted[state]="$state"
+    fi
+    if [[ -n "$own$source" && "$state" == answered ]]; then
+      [[ -z "$by" ]] || wanted[answered_by]="$by"
+      [[ -z "$at" ]] || wanted[answered_at]="$at"
+    fi
+    if [[ -n "$source" ]]; then
+      wanted[copied_from]="$source"
+      wanted[copied_from_document]="$copied"
+    fi
+    ask_block "$id" "$work/kept-form.md" >"$work/kept-form-block.md"
+    opening="$(head -n 1 "$work/kept-form-block.md")"
+    held="" wants="" differs=""
+    for name in "${server_attributes[@]}"; do
+      got="$(attribute_of "$opening" "$name")"
+      held+="${got:+ $got}"
+      if [[ -n "${wanted[$name]+set}" ]]; then
+        wants+=" $name=\"${wanted[$name]}\""
+        [[ "$got" == "$name=\"${wanted[$name]}\"" ]] || differs+=" $name"
+      elif [[ -n "$got" ]]; then
+        differs+=" $name"
+      fi
+    done
+    if [[ -n "$differs" ]]; then
+      printf '%s: version %s of %s, %s: the ask block %s (%s):\n%s\n' "$section" "$number" "$document" "$what" "$id" "$whose" \
+        "$(<"$work/kept-form-block.md")"
+      printf '%s: the server-owned attributes it holds:%s\n' "$section" "${held:- none}"
+      printf '%s: the form R10 keeps, from its ask'"'"'s node:%s\n' "$section" "${wants:- none}"
+      fail "$section" "every ask block of version $number of $document, $what, holds the form R10 keeps, each value its ask's node's" \
+        "the block $id ($whose) differs in$differs: it holds${held:- none}, want${wants:- none}"
+    fi
+    printf '%s: version %s of %s: the ask block %s (%s) holds%s\n' "$section" "$number" "$document" "$id" "$whose" \
+      "${held:- none of the eight server-owned attributes}"
+  done <"$work/kept-form-rows"
+  pass "$section" "the $blocks ask blocks of version $number of $document, $what, each hold the form R10 keeps, each value its ask's node's"
+}
+
+# step_events SECTION MARKER ISSUE: every artifact.version event the decisions step appended in its
+# own name (docs.DecisionStepActor) after event MARKER, of ISSUE ("" for every issue), `document
+# number` one a line, oldest first, in $work/step-events. It reads them all, with no limit, so a
+# version the step wrote and no line of it reports is read too.
+step_events() {
+  env -u PGHOSTADDR psql "$database_url" -XAtq -F ' ' -c "
+    select e.payload->>'artifact_id', e.payload->'version'->>'number' from events e
+    where e.id > $2 and ('$3' = '' or e.issue_key = '$3') and e.type = 'artifact.version'
+      and e.actor->>'kind' = 'system' and e.actor->>'id' = 'dispatch-decisions-step'
+    order by e.id" >"$work/step-events" 2>"$work/psql" ||
+    fail "$1" "read the versions the decisions step wrote after event $2" "psql: $(<"$work/psql")"
+}
+
+# step_versions SECTION NAME MARKER: each version the decisions step run by hand, whose output is
+# $work/NAME.out, wrote, `document number` one a line, into $work/NAME.versions. Its line of each
+# issue names the version it wrote of the spec (spec_version) and of the decisions document
+# (decisions_version), 0 for none, and counts the versions it wrote of the issue's other documents
+# (other_versions). It writes each with its artifact.version event in its own name, and nothing
+# else writes in that name while the step is held, so every such event of the issue after event
+# MARKER, read once the command has ended and with no limit, is one of its versions: there must be
+# as many as the line counts, none for an issue whose line counts none, and they must hold the
+# spec's and the decisions document's under the numbers the line names, and name the other
+# documents. Every such event of any issue after MARKER must then be one the lines count, so a
+# version of an issue no line names fails too. The caller reads each version's ask blocks after.
+step_versions() {
+  local section="$1" name="$2" marker="$3" line issue spec_version decisions_version others count spec reported=0
+  : >"$work/$name.versions"
+  while IFS= read -r line <&3; do
+    [[ "$line" =~ \ issue=([^ ]+)\ .*\ spec_version=([0-9]+)\ decisions_version=([0-9]+)\ other_versions=([0-9]+)\  ]] ||
+      fail "$section" "the line of $name names the versions it wrote" "$line"
+    issue="${BASH_REMATCH[1]}" spec_version="${BASH_REMATCH[2]}" decisions_version="${BASH_REMATCH[3]}" others="${BASH_REMATCH[4]}"
+    count=$(((spec_version > 0) + (decisions_version > 0) + others))
+    step_events "$section" "$marker" "$issue"
+    [[ "$(wc -l <"$work/step-events")" == "$count" ]] ||
+      fail "$section" "the step appended an artifact.version event for each of the $count versions $name reports of $issue, and no other" \
+        "it appended $(wc -l <"$work/step-events") after event $marker: $(tr '\n' ';' <"$work/step-events")"
+    [[ "$count" -gt 0 ]] || continue
+    reported=$((reported + count))
+    query "$section" "read the spec of $issue" "select id from artifacts where issue_key = '$issue' and is_primary and kind = 'doc'"
+    spec="$answer"
+    [[ "$spec_version" == 0 ]] || grep -qx -- "$spec $spec_version" "$work/step-events" ||
+      fail "$section" "the versions $name wrote of $issue hold version $spec_version of its spec $spec" "$(tr '\n' ';' <"$work/step-events")"
+    [[ "$decisions_version" == 0 ]] ||
+      awk -v s="$spec" -v n="$decisions_version" '$1 != s && $2 == n { found = 1 } END { exit !found }' "$work/step-events" ||
+      fail "$section" "the versions $name wrote of $issue hold version $decisions_version of its decisions document" \
+        "$(tr '\n' ';' <"$work/step-events")"
+    printf '%s: the versions %s wrote of %s (document number): %s\n' "$section" "$name" "$issue" "$(tr '\n' ';' <"$work/step-events")"
+    cat "$work/step-events" >>"$work/$name.versions"
+  done 3< <(grep -E '^[a-z-]+: issue=[^ ]+ restored=' "$work/$name.out")
+  step_events "$section" "$marker" ""
+  [[ "$(wc -l <"$work/step-events")" == "$reported" ]] ||
+    fail "$section" "every artifact.version event the step appended after event $marker is one of the $reported versions the lines of $name report" \
+      "it appended $(wc -l <"$work/step-events"): $(tr '\n' ';' <"$work/step-events")"
+}
+
+# ---------------------------------------------------------------------------------------------
+# The base release writes its half.
+# ---------------------------------------------------------------------------------------------
+seed_reset_database "$database_url"
+DISPATCH_TOKEN=e2e-token
+BASELINE_EXTRA_ENV=$'DISPATCH_TEST_HOOKS=1\nDISPATCH_TEST_HOLD_DECISIONS_STEP=1'
+baseline_start
+unset DISPATCH_TOKEN DATABASE_URL BASELINE_EXTRA_ENV
+printf 'Authorization: Bearer %s\n' "$baseline_token" >"$work/auth"
+server="$baseline_url"
+# The base server is the release BASELINE_SHA names, as the commit it is stamped with says, before
+# it writes a row.
+commit_of capture
+readonly base_commit="$value"
+[[ "$base_commit" == "$base_sha" ]] ||
+  fail capture "the base release is stamped with the commit BASELINE_SHA names" \
+    "it serves '$base_commit', and BASELINE_SHA $BASELINE_SHA is $base_sha"
+pass capture "the base release serves $base_commit, the commit BASELINE_SHA names"
+# database_url stays writable: lib-baseline.sh's baseline_boot, which boots this head, holds a
+# local of that name.
+seed_decisions
+seed_decisions_further_kinds
+
+readonly issue_a="${seed_ids[issue_a]}" issue_b="${seed_ids[issue_b]}" issue_c="${seed_ids[issue_c]}"
+readonly issue_e="${seed_ids[issue_e]}"
+readonly spec_a="${seed_ids[spec_a]}" spec_b="${seed_ids[spec_b]}"
+readonly decisions_a="${seed_ids[decisions_a]}" decisions_b="${seed_ids[decisions_b]}"
+readonly decisions_e="${seed_ids[decisions_e]}"
+
+# An ask the base writes on a project document, so an asks row it wrote names an owner.
+send agent POST "/api/v1/projects/$project/artifacts" \
+  "$(jq -cn --argjson a "$(seed_actor)" '{name: "project-notes.md", content: "# Project notes\n\nThe corpus has one owner.\n", actor: $a}')"
+want_status 201 capture "upload a project document through the base release"
+field capture "the project document's id" '.artifact.id // .id'
+readonly project_document="$value"
+send agent POST "/api/v1/artifacts/$project_document/asks" \
+  "$(jq -cn --argjson a "$(seed_actor)" '{question: "Who owns the corpus?", actor: $a}')"
+want_status 201 capture "open an ask on the project document through the base release"
+field capture "the project document's ask" '.id // .ask.id'
+readonly owned_ask="$value"
+readonly kept_ask="${seed_ids[ask_kept]}"
+seed_wait_settled "the project document's ask settles"
+
+# The document answer of each issue that holds a decisions.md, and what the capture records of each
+# section: the ask node it names or holds, and the author of the version it last changed in. A
+# section of R9's four further kinds is restated by no ask: it pairs with the decision that keeps
+# its heading block id, and the checks of `kinds` below read each. The section of issue E cites the
+# answered ask its person removed from the spec, which R9 deletes (deleted_by): it pairs with that
+# ask's node, and the rules below read it by that rule.
+declare -A decisions_of=()
+declare -A further_kinds=(
+  ["${seed_ids[section_held]}"]=held
+  ["${seed_ids[section_two_asks]}"]=two_asks
+  ["${seed_ids[section_issue_level]}"]=issue_level
+  ["${seed_ids[section_body]}"]=body
+)
+# The sections R9 deletes, by their heading block ids, and the answered ask its person removed,
+# which each cites: issue E's `##` section, and its `###` section under `## Replaced`, which
+# planSection takes by the removed ask's rule before the replaced rule.
+declare -A deleted_by=(["${seed_ids[section_removed]}"]="${seed_ids[ask_e_removed]}"
+  ["${seed_ids[section_replaced_removed]}"]="${seed_ids[ask_e_removed]}")
+
+# capture ISSUE DECISIONS: the document answer of ISSUE, whose decisions.md is DECISIONS, through the
+# base release at $server: its Decisions read in $work/capture/decisions.ISSUE.json, its asks in
+# $work/capture/asks.ISSUE.json, and one line for each section in $work/capture/sections.ISSUE -
+# the issue, the heading block id, the ask the section names or holds (- for none), and the author
+# of the version the section last changed in. The base must answer at least one section.
+capture() {
+  local issue="$1" heading_id changed named held ask author
+  decisions_of["$issue"]="$2"
+  send agent GET "/api/v1/issues/$issue/decisions"
+  want_status 200 capture "read the Decisions of $issue through the base release"
+  cp "$work/body" "$work/capture/decisions.$issue.json"
+  send agent GET "/api/v1/issues/$issue/asks?state=all"
+  want_status 200 capture "read the asks of $issue through the base release"
+  cp "$work/body" "$work/capture/asks.$issue.json"
+  : >"$work/capture/sections.$issue"
+  while IFS='|' read -r heading_id changed named held; do
+    ask="$named"
+    if [[ -z "$ask" && -n "$held" ]]; then
+      ask="$(jq -r --arg b "$held" --arg d "${decisions_of[$issue]}" \
+        '[.[] | select(.block_id == $b and .block_artifact.id == $d) | .id] | if length == 1 then .[0] else "" end' \
+        "$work/capture/asks.$issue.json")"
+    fi
+    [[ -z "${further_kinds[$heading_id]:-}" ]] || ask=""
+    send agent GET "/api/v1/artifacts/${decisions_of[$issue]}/versions/$changed"
+    want_status 200 capture "read version $changed of the decisions document of $issue"
+    # A version names a person as a user; the node the store states for them is a person's.
+    author="$(jq -r '.authors[0] | "\(if .kind == "user" then "person" else .kind end):\(.id)"' "$work/body")"
+    printf '%s\t%s\t%s\t%s\n' "$issue" "$heading_id" "${ask:--}" "$author" >>"$work/capture/sections.$issue"
+  done < <(jq -r '.decisions[] | [.block_id, (.changed_version | tostring),
+      (if (.asks | length) == 1 then .asks[0] else "" end),
+      ((.text | capture(":::ask\\{#(?<id>[^ }]+)") | .id) // "")] | join("|")' "$work/capture/decisions.$issue.json")
+  [[ -s "$work/capture/sections.$issue" ]] ||
+    fail capture "the base release answers a section of the decisions.md of $issue" \
+      "no section in: $(head -c 600 "$work/capture/decisions.$issue.json")"
+}
+capture "$issue_a" "$decisions_a"
+capture "$issue_b" "$decisions_b"
+capture "$issue_e" "$decisions_e"
+printf 'captured sections (issue, heading block, ask, author of its newest version):\n%s\n' \
+  "$(cat "$work/capture/sections.$issue_a" "$work/capture/sections.$issue_b" "$work/capture/sections.$issue_e")"
+baseline_stop_server
+
+# ---------------------------------------------------------------------------------------------
+# This head, held: graph_edges over the rows the base wrote, before and after the first phase.
+# ---------------------------------------------------------------------------------------------
+baseline_boot head "$head_binary" "$baseline_database_url"
+head_pid="$baseline_boot_pid"
+server="$baseline_boot_url"
+commit_of head
+readonly head_commit="$value"
+[[ "$head_commit" == "$head_sha" && "$head_commit" != "$base_commit" ]] ||
+  fail head "this head is stamped with the commit this checkout stands on, apart from the base" \
+    "it serves '$head_commit', the checkout stands on '$head_sha', the base serves '$base_commit'"
+pass head "this head serves $head_commit, the commit this checkout stands on, over the database the base release ($base_commit) wrote, the step held"
+sign_in head
+
+# edges_of ASK: the graph_edges rows out of ask ASK of the three kinds the old arms answer, one a
+# line, sorted, in $work/rows.
+edges_of() {
+  rows "select kind || ' ' || to_kind || ':' || to_id from graph_edges
+        where from_kind = 'ask' and from_id = '$1' and kind in ('anchored_to', 'owned_by', 'followed_by') order by 1"
+}
+# arm_state ASK: whether the asks row of ASK and its ask_followers rows are marked, and how many
+# anchored_to, owned_by and followed_by tuples its node states, in $answer.
+arm_state() {
+  query edges "read the marks and the tuples of ask $1" "
+    select (select coalesce(node_kind, 'none') || ':' || coalesce(node_address, 'none') from asks where id = '$1')
+      || ' followers_unmarked=' || (select count(*) from ask_followers where ask_id = '$1' and node_kind is null)
+      || ' tuples=' || (select count(*) from graph_tuples where from_kind = 'ask' and from_id = '$1'
+                        and kind in ('anchored_to', 'owned_by', 'followed_by'))"
+}
+
+declare -A edges_before=()
+for ask in "$kept_ask" "$owned_ask"; do
+  edges_of "$ask"
+  edges_before["$ask"]="$(<"$work/rows")"
+  printf 'graph_edges over the asks row %s before the backfill:\n%s\n' "$ask" "$(<"$work/rows")"
+  [[ -n "$(<"$work/rows")" ]] || fail edges "graph_edges answers the asks row $ask the base wrote" "no edge"
+  arm_state "$ask"
+  [[ "$answer" =~ ^none:none\ followers_unmarked=[1-9][0-9]*\ tuples=0$ ]] ||
+    fail edges "before the backfill the asks row $ask is unmarked and its node states no such tuple" "$answer"
+  printf 'asks row %s before the backfill: %s\n' "$ask" "$answer"
+done
+grep -q '^anchored_to ' <<<"${edges_before[$kept_ask]}" || fail edges "an old arm answers anchored_to" "${edges_before[$kept_ask]}"
+grep -q '^owned_by ' <<<"${edges_before[$owned_ask]}" || fail edges "an old arm answers owned_by" "${edges_before[$owned_ask]}"
+grep -q '^followed_by ' <<<"${edges_before[$kept_ask]}" || fail edges "an old arm answers followed_by" "${edges_before[$kept_ask]}"
+pass edges "before the backfill the old anchored_to, owned_by and followed_by arms answer the rows the base wrote, and the tuple arm, whose rows are unmarked and whose tuples are none, does not"
+
+census edges census-unmarked
+for kind in ask_parent ask_anchor ask_answer followed_by; do
+  unmarked="$(grep -E "^census: store kind=$kind unmarked_rows=" "$work/census-unmarked.out" || true)"
+  printf '  %s\n' "${unmarked:-no unmarked_rows line for $kind}"
+  [[ "$unmarked" =~ unmarked_rows=[1-9] ]] || fail edges "the census prints the unmarked rows of $kind as a class of its own" "${unmarked:-no line}"
+done
+pass edges "the census prints the unmarked rows the release before wrote as a class of their own"
+
+dispatch_command backfill backfill-graph-store
+[[ "$command_code" == 0 ]] || fail edges "envoy-dispatch backfill-graph-store" "exited $command_code: $(<"$work/backfill.out")"
+grep -E '^backfill-graph-store: kind=(asks|ask_followers) ' "$work/backfill.out" | sed 's/^/  /' || true
+pass edges "envoy-dispatch backfill-graph-store ran the step's first phase"
+for ask in "$kept_ask" "$owned_ask"; do
+  edges_of "$ask"
+  [[ "$(<"$work/rows")" == "${edges_before[$ask]}" ]] ||
+    fail edges "after the backfill graph_edges answers each edge of $ask once, as before" "before: ${edges_before[$ask]}; after: $(<"$work/rows")"
+  arm_state "$ask"
+  [[ "$answer" =~ ^ask:$ask\ followers_unmarked=0\ tuples=[1-9][0-9]*$ ]] ||
+    fail edges "after the backfill the asks row $ask is marked and its node states the tuples" "$answer"
+  printf 'asks row %s after the backfill: %s\n' "$ask" "$answer"
+done
+pass edges "after the backfill the tuple arm answers the marked rows and the old arms, which answer only unmarked rows, do not"
+query edges "read the view graph_edges" "select pg_get_viewdef('graph_edges'::regclass)"
+viewdef="${answer//$'\n'/ }"
+for arm in "anchored_to asks" "owned_by asks" "followed_by ask_followers"; do
+  kind="${arm% *}"
+  table="${arm#* }"
+  found=""
+  while IFS= read -r branch; do
+    if [[ "$branch" == *"'$kind'::text"* && "$branch" =~ FROM\ \(?$table\ [a-z]* && "$branch" == *"node_kind IS NULL"* ]]; then
+      found="$branch"
+    fi
+  done <<<"${viewdef//UNION ALL/$'\n'}"
+  [[ -n "$found" ]] || fail edges "the old $kind arm over $table still stands in graph_edges" "no such arm in the view"
+  printf 'old arm still in graph_edges: %s\n' "$(tr -s ' ' <<<"$found")"
+done
+pass edges "the three old arms still stand in the view"
+census edges census-marked
+for kind in ask_parent ask_anchor ask_answer followed_by; do
+  grep -q "^census: store kind=$kind unmarked_rows=0 " "$work/census-marked.out" ||
+    fail edges "the census's class of unmarked $kind rows reads zero after the backfill" "$(grep "kind=$kind unmarked" "$work/census-marked.out" || echo 'no line')"
+done
+pass edges "the census's class of unmarked rows reads zero after the backfill"
+
+# ---------------------------------------------------------------------------------------------
+# This head writes its half.
+# ---------------------------------------------------------------------------------------------
+send agent POST /api/v1/projects "$(jq -cn --arg k "$nodes_project" --arg p "$seed_person" --argjson a "$(seed_actor)" \
+  '{key: $k, name: "This head'"'"'s half", default_assignee: $p, actor: $a}')"
+want_status 201 half "create the project $nodes_project at this head"
+send agent POST /api/v1/issues "$(jq -cn --arg p "$nodes_project" --argjson a "$(seed_actor)" '{project: $p,
+  title: "The decision nodes this head writes",
+  spec: ":::requirement{#r1}\nOne.\n:::\n\n:::requirement{#r2}\nTwo.\n:::\n\n:::requirement{#r3}\nThree.\n:::\n\n:::requirement{#r4}\nFour.\n:::\n",
+  actor: $a}')"
+want_status 201 half "create the issue of $nodes_project"
+field half "the issue's key" '.key'
+readonly issue_n="$value"
+field half "the issue's spec" '.primary_artifact_id'
+readonly spec_n="$value"
+pointer() { printf 'dispatch://%s/spec#b-%s' "$issue_n" "$1"; }
+send agent POST "/api/v1/artifacts/$spec_n/edits" "$(jq -cn --arg s "$(pointer r1) $(pointer r4)" --argjson a "$(seed_actor)" '{ops: [{op: "insert", after: "end",
+  markdown: (":::ask{#a-answered urgency=\"med\" shaped=\"" + $s + "\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n\n:::ask{#a-open urgency=\"low\"}\nWhich region?\n:::\n\n:::ask{#a-declined urgency=\"low\"}\nWhich colour?\n:::")}], actor: $a}')"
+want_status 200 half "write the three asks into the spec of $issue_n"
+wait_ask half "$issue_n" a-answered
+readonly answered_n="$value"
+wait_ask half "$issue_n" a-declined
+readonly declined_n="$value"
+send person POST "/api/v1/asks/$answered_n/answer" \
+  '{"text":"Plain HTTP for now, as every service already speaks it.","selected":["REST"],"expected_edited_at":null}'
+want_status 200 half "the person answers a-answered in their own words"
+send person POST "/api/v1/asks/$declined_n/decline" '{"note":"Not mine to choose."}'
+want_status 200 half "the person declines a-declined with a note"
+send agent PUT "/api/v1/asks/$answered_n/followers/ses_decision_nodes_follower" \
+  "$(jq -cn '{actor: {kind: "session", id: "ses_decision_nodes_follower"}}')"
+[[ "$status" =~ ^20[04]$ ]] || fail half "a session follows a-answered" "HTTP $status: $(body)"
+wait_settled half
+send agent POST "/api/v1/artifacts/$spec_n/edits" "$(jq -cn --arg s "$(pointer r1) $(pointer r2) $(pointer r3)" \
+  --arg f "dispatch://$issue_n/ask/$answered_n" --argjson a "$(seed_actor)" '{ops: [{op: "insert", after: "end",
+  markdown: ("::::decision{#d1 uncertainty=\"medium\" uncertainty_reason=\"a second region would change it\" shaped=\"" + $s + "\" from_ask=\"" + $f + "\"}\nREST for every service this quarter.\n\n:::reading{#g1}\nThe agent reads it so.\n:::\n::::")}], actor: $a}')"
+want_status 200 half "an agent writes the decision d1, which shapes three requirements, into the spec"
+send agent POST "/api/v1/issues/$issue_n/artifacts" "$(jq -cn --argjson a "$(seed_actor)" '{name: "choices.md",
+  content: ":::ask{#a-second urgency=\"low\"}\nWhich queue?\n:::\n\n:::ask{#a-answered urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n\n:::decision{#d1}\nA second decision under the spec decision'"'"'s block id.\n:::\n",
+  actor: $a}')"
+want_status 201 half "an agent writes a second document holding an ask, a copy of a-answered and a decision d1"
+wait_settled half
+pass half "this head wrote its half of the corpus in $issue_n"
+
+# ---------------------------------------------------------------------------------------------
+# The restore and the conversion, through their entry points.
+# ---------------------------------------------------------------------------------------------
+dispatch_command restore restore-answered-asks --project "$project"
+grep '^restore-answered-asks: ' "$work/restore.out" | sed 's/^/  /' || true
+[[ "$command_code" == 0 ]] || fail convert "envoy-dispatch restore-answered-asks --project $project" "exited $command_code: $(<"$work/restore.out")"
+wait_settled convert
+declare -A restored_version=()
+for spec in "$spec_a" "$spec_b"; do
+  send agent GET "/api/v1/artifacts/$spec"
+  want_status 200 convert "read the spec $spec"
+  field convert "the newest version of $spec" '[.versions[].number] | max'
+  restored_version["$spec"]="$value"
+  send agent GET "/api/v1/artifacts/$spec/versions/$value"
+  want_status 200 convert "read version $value of $spec"
+  jq -j '.markdown' "$work/body" >"$work/restored.$spec.md"
+done
+# The newest event before the conversion bounds the artifact.version events of the versions it
+# writes (step_versions).
+query convert "read the newest event before the conversion" "select coalesce(max(id), 0) from events"
+readonly before_conversion="$answer"
+dispatch_command convert convert-decisions --project "$project"
+grep '^convert-decisions: ' "$work/convert.out" | sed 's/^/  /' || true
+[[ "$command_code" == 0 ]] || fail convert "envoy-dispatch convert-decisions --project $project" "exited $command_code: $(<"$work/convert.out")"
+wait_settled convert
+pass convert "envoy-dispatch restore-answered-asks and convert-decisions ran over $project"
+
+# ---------------------------------------------------------------------------------------------
+# The form R10 keeps, in every version the conversion wrote.
+# ---------------------------------------------------------------------------------------------
+# Every ask block of each version the conversion wrote - each spec's, which holds the restored
+# blocks, the blocks it held already and the copy of questions.md's ask that the restore moved in,
+# each decisions document's it took the sections out of, and any other its lines count - holds the
+# form R10 keeps, each value equal to its ask's node (kept_form).
+step_versions kept convert "$before_conversion"
+[[ -s "$work/convert.versions" ]] || fail kept "the conversion wrote a version" "its lines name none: $(<"$work/convert.out")"
+while read -r document number <&3; do
+  kept_form kept "$document" "$number" "a version the conversion wrote"
+done 3<"$work/convert.versions"
+pass kept "every ask block of the $(wc -l <"$work/convert.versions") versions the conversion wrote holds the form R10 keeps, each value its ask's node's"
+
+# ---------------------------------------------------------------------------------------------
+# The census.
+# ---------------------------------------------------------------------------------------------
+census census census
+# The section of issue E, which cites the answered ask its person removed from the spec through the
+# base release: R9 deletes it, and its heading takes one moved_to to the ask's node. The census's
+# moved_to store-only line counts every moved_to the store states now - the newest tuple of each
+# near and far end out of a block or an ask's node, while it asserts, as the census reads them -
+# that one among them, and reads it resolved only while the ask's node is live.
+readonly removed_ask="${seed_ids[ask_e_removed]}"
+readonly removed_heading="$issue_e/decisions-md#${seed_ids[section_removed]}"
+current_of block "$removed_heading" moved_to
+[[ "$(<"$work/rows")" == "ask:$removed_ask" ]] ||
+  fail removed "the heading $removed_heading of the section citing ask $removed_ask, which its person removed, takes one moved_to to that ask's node" \
+    "it takes $(tr '\n' ' ' <"$work/rows")"
+query removed "count the moved_to tuples the store states now" "
+  select count(*) from (
+    select distinct on (t.from_kind, t.from_id, t.to_kind, t.to_id) t.asserted from graph_tuples t
+    where t.kind = 'moved_to' and t.from_kind in ('block', 'ask') and t.to_kind <> 'value'
+    order by t.from_kind, t.from_id, t.to_kind, t.to_id, t.seq desc) current
+  where current.asserted"
+readonly stated_moves="$answer"
+line="$(grep -E '^census: store-only kind=moved_to ' "$work/census.out" || true)"
+printf '%s\n' "${line:-no store-only line for moved_to}"
+[[ "$line" =~ tuples=([0-9,]+)\ unresolved=0\ left_out=0$ && "${BASH_REMATCH[1]//,/}" == "$stated_moves" ]] ||
+  fail removed "the census's moved_to line counts the $stated_moves moved_to tuples the store states, the one to ask $removed_ask among them, each resolving" \
+    "${line:-no line}"
+pass removed "the section citing ask $removed_ask, which its person removed, is deleted: its heading moves to the ask's node, and the census reads that moved_to among the $stated_moves it counts, unresolved=0"
+for kind in "${kinds[@]}"; do
+  kind_line census "$kind"
+  printf '%s\n' "$line"
+  if [[ -n "${fields[tuples]:-}" ]]; then
+    store="${fields[tuples]}" missing="${fields[rows_without_a_tuple]}" extra="${fields[tuples_without_a_row]}"
+  else
+    store="${fields[nodes]}" missing="${fields[rows_without_a_node]}" extra="${fields[nodes_without_a_row]}"
+  fi
+  printf 'census pair %s: store=%s projection=%s (%s) differences=%s\n' "$kind" "$store" "${fields[rows]}" \
+    "${fields[table]}" "$((${missing//,/} + ${extra//,/}))"
+  grep -E "^census: store kind=$kind difference at " "$work/census.out" || true
+  [[ "${store//,/}" -gt 0 && "${fields[rows]//,/}" -gt 0 ]] ||
+    fail census "the census compares rows of $kind on both sides" "$line"
+  [[ "${missing//,/}" == 0 && "${extra//,/}" == 0 ]] ||
+    fail census "the store and the projection of $kind agree triple by triple" "$line"
+done
+# graph_edges against the store, for each kind it answers.
+for kind in "${edge_kinds[@]}"; do
+  kind_line census "${kind}_edge"
+  printf '%s\n' "$line"
+  store="${fields[tuples]}" missing="${fields[rows_without_a_tuple]}" extra="${fields[tuples_without_a_row]}"
+  printf 'census pair %s: store=%s projection=%s (%s) differences=%s\n' "$kind" "$store" "${fields[rows]}" \
+    "${fields[table]}" "$((${missing//,/} + ${extra//,/}))"
+  grep -E "^census: store kind=${kind}_edge difference at " "$work/census.out" || true
+  [[ "${store//,/}" -gt 0 && "${fields[rows]//,/}" -gt 0 ]] ||
+    fail census "the census compares graph_edges' edges of $kind with the store on both sides" "$line"
+  [[ "${missing//,/}" == 0 && "${extra//,/}" == 0 ]] ||
+    fail census "the store and graph_edges agree on $kind triple by triple" "$line"
+done
+grep -E '^census: store rows_checked=' "$work/census.out" || true
+grep -qE '^census: store rows_checked=[0-9,]+ differences=0 read_seq=[0-9]+$' "$work/census.out" ||
+  fail census "the census reads zero differences" "$(grep -E '^census: store (rows_checked|kind=.* difference)' "$work/census.out" || echo 'no line')"
+pass census "every kind of this child agrees with every projection it feeds, with zero differences"
+for kind in copied_from moved_to; do
+  line="$(grep -E "^census: store-only kind=$kind " "$work/census.out" || true)"
+  printf '%s\n' "${line:-no store-only line for $kind}"
+  [[ "$line" =~ tuples=([0-9,]+)\ unresolved=0\ left_out=0$ && "${BASH_REMATCH[1]//,/}" -gt 0 ]] ||
+    fail census "the store-only kind $kind holds tuples whose every far end resolves" "${line:-no line}"
+done
+pass census "copied_from and moved_to print their store counts, and every far end resolves"
+line="$(grep '^census: decisions ' "$work/census.out" || true)"
+printf '%s\n' "${line:-no decisions line}"
+[[ "$line" == "census: decisions documents=0 unconverted_sections=0 specs_with_moved_answers=0" ]] ||
+  fail census "no issue of the fixture holds an unconverted section after the conversion" "${line:-no line}"
+pass census "the census counts zero unconverted sections and zero decisions documents after the conversion"
+
+# The two halves of every projection: the base release's (project SEED) and this head's (NODES).
+rows "select p.key,
+        (select count(*) from asks k join issues i on i.key = k.issue_key where i.project_key = p.key),
+        (select count(*) from ask_followers f join asks k on k.id = f.ask_id join issues i on i.key = k.issue_key where i.project_key = p.key),
+        (select count(*) from block_refs r join artifacts a on a.id = r.artifact_id where a.project_key = p.key and r.kind in ('shaped', 'from_ask', 'decided_by')),
+        (select count(*) from document_blocks d join artifacts a on a.id = d.artifact_id where a.project_key = p.key and d.type = 'reading' and d.parent_block_id is not null)
+      from projects p where p.key in ('$project', '$nodes_project') order by p.key"
+while IFS='|' read -r key asks followers typed readings; do
+  printf 'half %s: asks=%s ask_followers=%s block_refs(shaped, from_ask, decided_by)=%s readings_with_a_parent=%s\n' \
+    "$key" "$asks" "$followers" "$typed" "$readings"
+  [[ "$asks" -gt 0 && "$followers" -gt 0 && "$typed" -gt 0 && "$readings" -gt 0 ]] ||
+    fail halves "the half of $key holds rows of every projection" \
+      "asks=$asks ask_followers=$followers block_refs=$typed readings_with_a_parent=$readings"
+done <"$work/rows"
+[[ "$(wc -l <"$work/rows")" == 2 ]] || fail halves "both halves are read" "$(<"$work/rows")"
+pass halves "both halves, the base release's and this head's, hold rows the census compared"
+
+# ---------------------------------------------------------------------------------------------
+# Each rule of R9, on the section that carries it.
+# ---------------------------------------------------------------------------------------------
+declare -A entries_file=()
+# read_entries SECTION ISSUE…: the node read of each ISSUE at this head, in $work/entries.ISSUE.json.
+read_entries() {
+  local section="$1" issue
+  shift
+  for issue in "$@"; do
+    send agent GET "/api/v1/issues/$issue/decisions"
+    want_status 200 "$section" "read the Decisions of $issue at this head"
+    cp "$work/body" "$work/entries.$issue.json"
+    entries_file["$issue"]="$work/entries.$issue.json"
+  done
+}
+read_entries rules "$issue_a" "$issue_b" "$issue_e"
+# entry ISSUE KIND ID: the entry of node KIND/ID in ISSUE's node read, into $work/entry and, for
+# lib.sh's expect, $work/body; empty when there is none.
+entry() {
+  jq --arg k "$2" --arg i "$3" '[.entries[] | select(.node.kind == $k and .node.id == $i)] | .[0] // empty' \
+    "${entries_file[$1]}" >"$work/entry"
+  cp "$work/entry" "$work/body"
+}
+# section_text ISSUE HEADING_ID: the captured text of the section.
+section_text() {
+  jq -r --arg h "$2" '.decisions[] | select(.block_id == $h) | .text' "$work/capture/decisions.$1.json"
+}
+# normal TEXT: TEXT with its whitespace collapsed and its case folded.
+normal() { tr -s '[:space:]' ' ' <<<"${1,,}" | sed -E 's/^ //; s/ $//'; }
+
+# How many sections each conditional rule below read. The fixture seeds a section of each, so a
+# rule that read none fails after the loop rather than passing over nothing. The same holds for the
+# rule that deletes a section citing an answered ask its person removed, which issue E carries.
+unsure_read=0
+replaced_read=0
+kept_read=0
+deleted_read=0
+replaced_deleted_read=0
+# read_rules ISSUE…: reads each rule of R9 on each captured section of each ISSUE that carries it,
+# but the sections of R9's four further kinds, which the checks of `kinds` below read.
+read_rules() {
+  local issue heading ask author heading_node moved text ask_block answer_text body body_words held_block
+  local reading_text reading_node decision reason removed captured_answer sections_read=0
+  for issue in "$@"; do
+    while IFS=$'\t' read -r _ heading ask author; do
+      # A section of R9's four further kinds is read by the checks of `kinds` below.
+      [[ -z "${further_kinds[$heading]:-}" ]] || continue
+      sections_read=$((sections_read + 1))
+      heading_node="$issue/decisions-md#$heading"
+      # A section that cites an answered ask a person removed from its spec, by the fixture's record
+      # of it: R9 deletes it, because the person removed the decision it reads. Its heading takes
+      # one moved_to to the ask's node, whose address still answers the person's answer, no reading
+      # goes under that ask, and no decision keeps its heading id in any document.
+      if [[ -n "${deleted_by[$heading]:-}" ]]; then
+        removed="${deleted_by[$heading]}"
+        [[ "$ask" == "$removed" ]] ||
+          fail rules "the capture names ask $removed, which its person removed, for the section $heading of $issue" "it names $ask"
+        current_of block "$heading_node" moved_to
+        [[ "$(<"$work/rows")" == "ask:$removed" ]] ||
+          fail rules "the heading of section $heading of $issue, which R9 deletes, takes one moved_to, to the node ask:$removed" \
+            "it takes $(tr '\n' ' ' <"$work/rows")"
+        query rules "count the readings under ask $removed" "
+          select count(*) from (
+            select distinct on (t.from_kind, t.from_id) t.from_kind, t.from_id, t.asserted from graph_tuples t
+            where t.kind = 'part_of' and t.to_kind = 'ask' and t.to_id = '$removed'
+            order by t.from_kind, t.from_id, t.seq desc) current
+          join graph_nodes g on g.kind = current.from_kind and g.id = current.from_id
+          where current.asserted and g.supertag = 'reading' and g.state = 'live'"
+        [[ "$answer" == 0 ]] ||
+          fail rules "the section $heading of $issue, which R9 deletes, writes no reading under ask $removed" "$answer readings hang under it"
+        query rules "count the decisions that keep the heading id $heading" "
+          select (select count(*) from graph_nodes
+                  where kind = 'block' and supertag = 'decision' and split_part(id, '#', 2) = '$heading')
+               + (select count(*) from document_blocks where type = 'decision' and block_id = '$heading')"
+        [[ "$answer" == 0 ]] ||
+          fail rules "no decision keeps the heading id $heading of the section R9 deletes, in any document" "$answer nodes and rows do"
+        query rules "read the answer on the node ask:$removed" "
+          select coalesce((select case when t.asserted then to_json(t.to_id)::text end from graph_tuples t
+                           where t.from_kind = 'ask' and t.from_id = '$removed' and t.kind = 'answer' and t.to_kind = 'value'
+                           order by t.seq desc limit 1), 'null')"
+        captured_answer="$(jq -c --arg a "$removed" \
+          '[.[] | select(.id == $a) | .answer.text] | if length == 1 then .[0] else null end' "$work/capture/asks.$issue.json")"
+        [[ "$captured_answer" != null ]] ||
+          fail rules "the capture holds the person's answer to ask $removed" "the base's asks of $issue answer none"
+        jq -en --argjson node "$answer" --argjson base "$captured_answer" '$node == $base' >/dev/null ||
+          fail rules "the node ask:$removed still answers the person's answer, character for character as the base answered it" \
+            "the node answers $answer, the base answered $captured_answer"
+        deleted_read=$((deleted_read + 1))
+        if [[ "$(jq -r --arg h "$heading" '.decisions[] | select(.block_id == $h) | .replaced' "$work/capture/decisions.$issue.json")" == true ]]; then
+          replaced_deleted_read=$((replaced_deleted_read + 1))
+          pass rules "the section $heading of $issue, under ## Replaced, cites ask $removed, which its person removed from the spec: the removed ask's rule, which comes before the replaced rule, deletes it and writes no decision for it"
+        fi
+        pass rules "the section $heading of $issue cites ask $removed, which its person removed from the spec, and R9 deletes it: one moved_to from its heading to ask:$removed, no reading under that ask, no decision keeping its heading id, and the ask's node still answers $captured_answer, character for character as the base did"
+        continue
+      fi
+      # The current moved_to tuples out of the heading, `to_kind:to_id`: a tuple asserted and later
+      # retracted is none of them.
+      current_of block "$heading_node" moved_to
+      moved="$(<"$work/rows")"
+      [[ "$(wc -l <<<"$moved")" == 1 && -n "$moved" ]] || fail rules "one current moved_to tuple from the heading of section $heading" "${moved:-none}"
+      text="$(section_text "$issue" "$heading")"
+      if [[ "$ask" != - ]]; then
+        query rules "read the block of ask $ask" "select block_id from asks where id = '$ask'"
+        ask_block="$issue/spec#$answer"
+        [[ "$moved" == "block:$ask_block" ]] ||
+          fail rules "the section $heading, which cites or holds ask $ask, moves to that ask's block" "it moves to $moved, the block is block:$ask_block"
+        current_of ask "$ask" shaped
+        sed 's/^block://' "$work/rows" >"$work/shaped"
+        jq -r --arg h "$heading" '.decisions[] | select(.block_id == $h) | .links[].to.id' "$work/capture/decisions.$issue.json" |
+          LC_ALL=C sort -u >"$work/links"
+        LC_ALL=C comm -13 "$work/shaped" "$work/links" >"$work/unshaped"
+        [[ ! -s "$work/unshaped" ]] || fail rules "the section $heading gives ask $ask its links as shaped" "not shaped: $(tr '\n' ' ' <"$work/unshaped")"
+        entry "$issue" ask "$ask"
+        [[ -s "$work/entry" ]] || fail rules "the node read holds ask $ask" "no entry"
+        answer_text="$(jq -r '.answer // ""' "$work/entry")"
+        body="$(sed '1d' <<<"$text" | grep -v '^:::' | grep -v '^- ' || true)"
+        body_words="$(normal "$(sed -E 's#dispatch://[^ ]*##g' <<<"$body")")"
+        held_block="$(grep -c '^:::ask{' <<<"$text" || true)"
+        if [[ "$held_block" != 0 ]]; then
+          pass rules "the section $heading held the block of ask $ask, which the restore moved to $ask_block, and its heading moves there"
+        elif [[ "$(normal "$body")" == "$(normal "$answer_text")" ]]; then
+          [[ "$(jq '.readings | length' "$work/entry")" == 0 ]] ||
+            fail rules "the section $heading, which only restates the answer, is dropped and writes no reading" "$(jq -c '.readings' "$work/entry")"
+          pass rules "the section $heading, whose body is the answer and nothing more, is dropped: no reading, one moved_to to $ask_block"
+        else
+          [[ "$(jq '.readings | length' "$work/entry")" == 1 ]] ||
+            fail rules "the body of section $heading becomes a reading under ask $ask" "the ask holds $(jq -c '.readings' "$work/entry")"
+          reading_text="$(normal "$(jq -r '.readings[0].text // ""' "$work/entry" | sed -E 's#dispatch://[^ ]*##g')")"
+          [[ -n "$body_words" && "$reading_text" == *"${body_words:0:80}"* ]] ||
+            fail rules "the reading under ask $ask holds the section's words" "reading: $reading_text; section: $body_words"
+          expect rules "the reading of section $heading is authored by the author of its newest version, $author" \
+            "\"$author\"" '.readings[0].authored_by | "\(.kind):\(.id)"'
+          # The entry is picked by the ask's node, so its own node says nothing: the store's part_of
+          # tuple out of the reading is read against the ask the capture names for this section.
+          reading_node="$(jq -r '.readings[0].node | "\(.kind)|\(.id)"' "$work/entry")"
+          current_of "${reading_node%%|*}" "${reading_node#*|}" part_of
+          [[ "$(<"$work/rows")" == "ask:$ask" ]] ||
+            fail rules "the reading of section $heading hangs under ask:$ask, the ask the capture names, by its part_of tuple" \
+              "the reading ${reading_node#*|} states the part_of $(tr '\n' ' ' <"$work/rows")"
+          pass rules "the section $heading gives ask $ask its links as shaped, and its body becomes a reading under it, by $author"
+        fi
+        continue
+      fi
+      # A section that cites no ask: a decision block that keeps its heading block id.
+      decision="$issue/spec#$heading"
+      [[ "$moved" == "block:$decision" ]] || fail rules "the section $heading moves to the decision that keeps its id" "it moves to $moved, want block:$decision"
+      entry "$issue" block "$decision"
+      [[ -s "$work/entry" ]] || fail rules "the section $heading becomes a decision node of the spec under its heading id" "no entry for $decision"
+      expect rules "the section $heading is an agent's decision" '"agent"' '.kind'
+      if grep -q '^Unsure:' <<<"$text"; then
+        unsure_read=$((unsure_read + 1))
+        reason="$(sed -nE 's/^Unsure: *//p' <<<"$text" | head -n 1)"
+        expect rules "the section $heading with an Unsure: paragraph reads uncertainty high" '"high"' '.uncertainty'
+        expect rules "the section $heading reads the rest of the paragraph as uncertainty_reason" "$(jq -cn --arg r "$reason" '$r')" '.uncertainty_reason'
+      fi
+      if [[ "$(jq -r --arg h "$heading" '.decisions[] | select(.block_id == $h) | .replaced' "$work/capture/decisions.$issue.json")" == true ]]; then
+        replaced_read=$((replaced_read + 1))
+        expect rules "the section $heading under ## Replaced becomes a decision with replaced=\"true\"" true '.replaced'
+        value_of block "$decision" replaced
+        [[ "$answer" == true ]] || fail rules "the decision of section $heading holds the value replaced true" "it holds '$answer'"
+      fi
+      if [[ "$(jq -r --arg h "$heading" '.decisions[] | select(.block_id == $h) | .kept != null' "$work/capture/decisions.$issue.json")" == true ]]; then
+        kept_read=$((kept_read + 1))
+        current_of block "$decision" kept_by
+        [[ "$(<"$work/rows")" == "person:$seed_person" ]] ||
+          fail rules "the section $heading with a standing Keep reads a kept_by tuple to $seed_person" "$(<"$work/rows")"
+        value_of block "$decision" kept_text_sum
+        [[ -n "$answer" && "$answer" == "$(jq -r '.text_sha256' "$work/entry")" ]] ||
+          fail rules "the decision of section $heading holds kept_text_sum where the sum still matches" "kept_text_sum '$answer', text_sha256 $(jq -r '.text_sha256' "$work/entry")"
+      fi
+      pass rules "the section $heading, which cites no ask, is the decision $decision, as R9 names"
+    done <"$work/capture/sections.$issue"
+  done
+  [[ "$sections_read" -gt 0 ]] || fail rules "R9's rules read a section of $*" "none"
+  pass rules "R9's rules read sections=$sections_read of issues=$# ($*), every captured section but those of R9's four further kinds, which the checks of kinds read"
+}
+read_rules "$issue_a" "$issue_b" "$issue_e"
+printf 'sections read by the conditional rules: Unsure=%s Replaced=%s kept=%s\n' "$unsure_read" "$replaced_read" "$kept_read"
+[[ "$unsure_read" -gt 0 ]] ||
+  fail rules "the capture holds a section with an Unsure: paragraph, which the fixture seeds" "the uncertainty rule read none"
+[[ "$replaced_read" -gt 0 ]] ||
+  fail rules "the capture holds a section under ## Replaced, which the fixture seeds" "the replaced rule read none"
+[[ "$kept_read" -gt 0 ]] ||
+  fail rules "the capture holds a section with a standing Keep, which the fixture seeds" "the Keep rule read none"
+pass rules "the conditional rules each read a section: $unsure_read with Unsure:, $replaced_read under ## Replaced, $kept_read kept"
+[[ "$deleted_read" -gt 0 ]] ||
+  fail rules "the capture holds a section citing an answered ask its person removed, which the fixture seeds in $issue_e" "the deleting rule read none"
+[[ "$replaced_deleted_read" -gt 0 ]] ||
+  fail rules "the capture holds a section under ## Replaced citing an answered ask its person removed, which the fixture seeds in $issue_e" "the deleting rule read none under ## Replaced"
+pass rules "the rule that deletes a section citing an answered ask its person removed read $deleted_read sections, $replaced_deleted_read of them under ## Replaced"
+
+# ---------------------------------------------------------------------------------------------
+# R9's four further kinds, each on the section that carries it.
+# ---------------------------------------------------------------------------------------------
+# moved_from ADDRESS: the far end of the one current moved_to tuple out of the block ADDRESS,
+# `to_kind:to_id`, in $moved; there must be one. A tuple asserted and later retracted is none.
+moved_from() {
+  current_of block "$1" moved_to
+  moved="$(<"$work/rows")"
+  [[ "$(wc -l <<<"$moved")" == 1 && -n "$moved" ]] || fail kinds "one current moved_to tuple from $1" "${moved:-none}"
+}
+send agent GET "/api/v1/artifacts/$spec_a/text"
+want_status 200 kinds "read the newest version of $spec_a"
+jq -j '.markdown' "$work/body" >"$work/converted-a.md"
+
+# The section whose body held an ask block no row names: the block moved into the spec by R6's
+# second shape, under its own id, and the rest of the section converted by R9's rules.
+held_heading="${seed_ids[section_held]}"
+moved_from "$issue_a/decisions-md#q-shelf"
+[[ "$moved" == "block:$issue_a/spec#q-shelf" ]] ||
+  fail kinds "the ask block q-shelf the section $held_heading held moves into the spec under its id" "it moves to $moved, want block:$issue_a/spec#q-shelf"
+grep -qF ':::ask{#q-shelf ' "$work/converted-a.md" ||
+  fail kinds "the spec's newest version holds the moved ask block q-shelf" "$(grep -F 'q-shelf' "$work/converted-a.md" || echo 'no line names q-shelf')"
+query kinds "read the rows naming a block of the decisions document of $issue_a" \
+  "select count(*) from asks where block_artifact_id = '$decisions_a'"
+[[ "$answer" == 0 ]] || fail kinds "no row names a block of the retired decisions document" "$answer rows do"
+held_decision="$issue_a/spec#$held_heading"
+moved_from "$issue_a/decisions-md#$held_heading"
+[[ "$moved" == "block:$held_decision" ]] ||
+  fail kinds "the rest of the section $held_heading becomes the decision that keeps its heading id" "it moves to $moved, want block:$held_decision"
+entry "$issue_a" block "$held_decision"
+[[ -s "$work/entry" ]] || fail kinds "the rest of the section $held_heading is a decision node of the spec" "no entry for $held_decision"
+expect kinds "the rest of the section $held_heading is an agent's decision" '"agent"' '.kind'
+pass kinds "the section $held_heading held the ask block q-shelf, which no row names: it moved by R6's second shape to $issue_a/spec#q-shelf, and the rest of the section is the decision $held_decision"
+
+# The three sections the conversion cannot place under one ask: each a decision that keeps its
+# heading id, takes the section's links as shaped and no from_ask, cites each of its asks, and
+# waits for a person's review.
+declare -A further_cause=(
+  [two_asks]="it cites more than one answered ask"
+  [issue_level]="the answered ask it cites has its block in no document of the issue"
+  [body]="its body is no reading one answered ask can hold"
+)
+declare -A further_asks=(
+  [two_asks]="${seed_ids[ask_two_store]} ${seed_ids[ask_two_format]}"
+  [issue_level]="${seed_ids[ask_issue_level]}"
+  [body]="${seed_ids[ask_body]}"
+)
+grep -qF -- '- The census reads every row once.' "$work/converted-a.md" ||
+  fail kinds "the decision of the section whose body no reading holds keeps its list" "no such line in the spec's newest version"
+for kind in two_asks issue_level body; do
+  heading="${seed_ids[section_$kind]}"
+  decision="$issue_a/spec#$heading"
+  moved_from "$issue_a/decisions-md#$heading"
+  [[ "$moved" == "block:$decision" ]] || fail kinds "the section $heading ($kind) moves to the decision that keeps its heading id" "it moves to $moved, want block:$decision"
+  entry "$issue_a" block "$decision"
+  [[ -s "$work/entry" ]] || fail kinds "the section $heading ($kind) is a decision node of the spec" "no entry for $decision"
+  expect kinds "the section $heading ($kind) is an agent's decision" '"agent"' '.kind'
+  expect kinds "the decision of section $heading ($kind) reads uncertainty high" '"high"' '.uncertainty'
+  reason="The conversion of the decisions document could not place this section under one ask: ${further_cause[$kind]}. It waits for a person's review."
+  expect kinds "the decision of section $heading ($kind) gives the reason it waits for a person's review" \
+    "$(jq -cn --arg r "$reason" '$r')" '.uncertainty_reason'
+  current_of block "$decision" shaped
+  sed 's/^block://' "$work/rows" | LC_ALL=C sort -u >"$work/shaped"
+  jq -r --arg h "$heading" '.decisions[] | select(.block_id == $h) | .links[].to.id' "$work/capture/decisions.$issue_a.json" |
+    LC_ALL=C sort -u >"$work/links"
+  [[ -s "$work/links" ]] || fail kinds "the capture holds the links of section $heading ($kind)" "none"
+  cmp -s "$work/shaped" "$work/links" ||
+    fail kinds "the decision of section $heading ($kind) takes the section's links as shaped" \
+      "shaped: $(tr '\n' ' ' <"$work/shaped"); links: $(tr '\n' ' ' <"$work/links")"
+  current_of block "$decision" from_ask
+  [[ ! -s "$work/rows" ]] || fail kinds "the decision of section $heading ($kind) takes no from_ask" "$(tr '\n' ' ' <"$work/rows")"
+  read -ra cited_asks <<<"${further_asks[$kind]}"
+  for cited in "${cited_asks[@]}"; do
+    query kinds "read the spec's mentions of ask $cited" \
+      "select count(*) from block_refs where artifact_id = '$spec_a' and to_kind = 'ask' and kind = 'mentions' and to_id = '$cited'"
+    [[ "$answer" -gt 0 ]] || fail kinds "the decision of section $heading ($kind) cites ask $cited, which the block index records" "no mention of it in $spec_a"
+    current_of ask "$cited" shaped
+    [[ ! -s "$work/rows" ]] || fail kinds "ask $cited takes none of the links of section $heading ($kind)" "$(tr '\n' ' ' <"$work/rows")"
+  done
+  pass kinds "the section $heading ($kind) is the decision $decision: its heading id, its links as shaped, no from_ask, a citation of each of its asks (${further_asks[$kind]}), uncertainty high and the reason: ${further_cause[$kind]}"
+done
+query kinds "read whether the decisions document of $issue_a is retired" \
+  "select (retired_at is not null)::text from artifacts where id = '$decisions_a'"
+[[ "$answer" == true ]] || fail kinds "the decisions.md of $issue_a, holding a section of each further kind, retires" "retired: $answer"
+pass kinds "the decisions.md of $issue_a, which held a section of each of R9's four further kinds, is retired"
+
+# ---------------------------------------------------------------------------------------------
+# The cases planSection takes before the replaced rule, each under `## Replaced`.
+# ---------------------------------------------------------------------------------------------
+# A section under `## Replaced` that cites two answered asks stays one decision: marked replaced,
+# with uncertainty high, citing both asks and taking no from_ask. The capture holds it under
+# `## Replaced`, citing both asks, so the fixture is the case the words name.
+replaced_two="${seed_ids[section_replaced_two_asks]}"
+jq -e --arg h "$replaced_two" --arg s "${seed_ids[ask_first_store]}" --arg f "${seed_ids[ask_first_format]}" \
+  '[.decisions[] | select(.block_id == $h)] | length == 1 and .[0].replaced == true and (.[0].asks | sort) == ([$s, $f] | sort)' \
+  "$work/capture/decisions.$issue_a.json" >/dev/null ||
+  fail replaced "the capture holds the section $replaced_two under ## Replaced, citing ask_first_store and ask_first_format" \
+    "$(jq -c --arg h "$replaced_two" '[.decisions[] | select(.block_id == $h) | {block_id, replaced, asks}]' "$work/capture/decisions.$issue_a.json")"
+replaced_decision="$issue_a/spec#$replaced_two"
+current_of block "$issue_a/decisions-md#$replaced_two" moved_to
+[[ "$(<"$work/rows")" == "block:$replaced_decision" ]] ||
+  fail replaced "the heading of the section $replaced_two, under ## Replaced and citing two answered asks, takes one moved_to, to the decision that keeps its id" \
+    "it takes $(tr '\n' ' ' <"$work/rows")"
+query replaced "count the decisions that keep the heading id $replaced_two" "
+  select (select count(*) from graph_nodes
+          where kind = 'block' and supertag = 'decision' and state = 'live' and split_part(id, '#', 2) = '$replaced_two')
+       || ' ' || (select count(*) from document_blocks where type = 'decision' and block_id = '$replaced_two')"
+[[ "$answer" == "1 1" ]] ||
+  fail replaced "the section $replaced_two, citing two answered asks, stays one decision" "live decision nodes and blocks keeping its id: $answer"
+entry "$issue_a" block "$replaced_decision"
+[[ -s "$work/entry" ]] || fail replaced "the section $replaced_two is a decision node of the spec" "no entry for $replaced_decision"
+expect replaced "the section $replaced_two is an agent's decision" '"agent"' '.kind'
+expect replaced "the decision of section $replaced_two is marked replaced" true '.replaced'
+value_of block "$replaced_decision" replaced
+[[ "$answer" == true ]] || fail replaced "the decision of section $replaced_two holds the value replaced true" "it holds '$answer'"
+expect replaced "the decision of section $replaced_two holds uncertainty high" '"high"' '.uncertainty'
+current_of block "$replaced_decision" from_ask
+[[ ! -s "$work/rows" ]] || fail replaced "the decision of section $replaced_two takes no from_ask" "$(tr '\n' ' ' <"$work/rows")"
+for cited in "${seed_ids[ask_first_store]}" "${seed_ids[ask_first_format]}"; do
+  # Only this section cites the two asks, so a mention of either in the spec is its decision's.
+  query replaced "read the spec's mentions of ask $cited" \
+    "select count(*) from block_refs where artifact_id = '$spec_a' and to_kind = 'ask' and kind = 'mentions' and to_id = '$cited'"
+  [[ "$answer" -gt 0 ]] ||
+    fail replaced "the decision of section $replaced_two cites ask $cited, which the block index records" "no mention of it in $spec_a"
+done
+pass replaced "the section $replaced_two under ## Replaced cites two answered asks and stays one decision, $replaced_decision: replaced, uncertainty high, citing ${seed_ids[ask_first_store]} and ${seed_ids[ask_first_format]}, and no from_ask"
+# A section under `## Replaced` that cites an answered ask a person removed from the spec is deleted
+# by R9's rule for that ask: its heading moves to the ask, and no decision keeps its id. The rules
+# above read it as R9 deletes it (deleted_by); this reads that the capture holds it under
+# `## Replaced`, so the removed ask's rule, and not the replaced rule, is what took it.
+replaced_removed="${seed_ids[section_replaced_removed]}"
+jq -e --arg h "$replaced_removed" --arg k "$removed_ask" \
+  '[.decisions[] | select(.block_id == $h)] | length == 1 and .[0].replaced == true and .[0].asks == [$k]' \
+  "$work/capture/decisions.$issue_e.json" >/dev/null ||
+  fail replaced "the capture holds the section $replaced_removed under ## Replaced, citing ask $removed_ask alone" \
+    "$(jq -c --arg h "$replaced_removed" '[.decisions[] | select(.block_id == $h) | {block_id, replaced, asks}]' "$work/capture/decisions.$issue_e.json")"
+current_of block "$issue_e/decisions-md#$replaced_removed" moved_to
+[[ "$(<"$work/rows")" == "ask:$removed_ask" ]] ||
+  fail replaced "the heading of the section $replaced_removed, under ## Replaced and citing ask $removed_ask, which its person removed, moves to that ask" \
+    "it moves to $(tr '\n' ' ' <"$work/rows")"
+query replaced "count the decisions that keep the heading id $replaced_removed" "
+  select (select count(*) from graph_nodes where kind = 'block' and supertag = 'decision' and split_part(id, '#', 2) = '$replaced_removed')
+       + (select count(*) from document_blocks where type = 'decision' and block_id = '$replaced_removed')"
+[[ "$answer" == 0 ]] ||
+  fail replaced "the converter writes no decision for the section $replaced_removed under ## Replaced, which cites ask $removed_ask, which its person removed" "$answer nodes and blocks keep its id"
+pass replaced "the section $replaced_removed under ## Replaced cites ask $removed_ask, which its person removed from the spec, and is deleted by R9's rule for that ask: its heading moves to ask:$removed_ask, and no decision keeps its id"
+
+# The approved specs still read approved, at a version whose only change is the conversion's. That
+# the approval stands is the server's own answer (approval.state and approval.version below); what
+# changed is this run's comparison of the two versions' markdown, which takes out only what the
+# conversion may add and holds what it added to the sections the capture read.
+# conversion_only FILE ANSWERED: FILE without each decision block of its `## Decisions` part (from
+# that heading to the next heading of level one or two), each reading block nested in an ask block
+# whose id ANSWERED, a space-separated list, names, and the shaped attribute of every ask block,
+# which shaped_given compares on its own; an ask block's wider fence is written as the narrowest,
+# and repeated blank lines as one. A decision block anywhere else, and a reading block anywhere
+# else - at the top level, in a decision, or in an ask block ANSWERED does not name - stays, so the
+# comparison shows it. The blank lines before a removed block go with it: they are the separator
+# its insertion wrote, so a reading added after an ask's last option leaves no blank line above the
+# ask's closing fence.
+conversion_only() {
+  awk -v answered=" $2 " '
+    skip { if ($0 == fence) { skip = 0 } ; next }
+    !ask_fence && /^##? / { decisions = ($0 == "## Decisions") }
+    (!ask_fence && decisions && /^:+decision\{/) || (ask_answered && /^:+reading\{/) {
+      held = 0; skip = 1; match($0, /^:+/); fence = substr($0, 1, RLENGTH); next
+    }
+    $0 == "" { held++; next }
+    { for (; held > 0; held--) print "" }
+    !ask_fence && /^:+ask\{#/ {
+      match($0, /^:+/); ask_fence = substr($0, 1, RLENGTH)
+      id = $0; sub(/^:+ask\{#/, "", id); sub(/[ }].*$/, "", id)
+      ask_answered = index(answered, " " id " ") > 0
+      sub(/^:+/, ":::"); gsub(/ shaped="[^"]*"/, ""); print; next
+    }
+    ask_fence && $0 == ask_fence { ask_fence = ""; ask_answered = 0; print ":::"; next }
+    { print }
+  ' "$1" | cat -s | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
+}
+# shaped_pointers FILE: each shaped pointer each ask block of FILE holds, `<block id> <pointer>` one
+# a line, sorted, read off the block's opening line (attribute_of).
+shaped_pointers() {
+  local opening id shaped pointer
+  local -a pointers
+  while IFS= read -r opening; do
+    [[ "$opening" =~ ^:+ask\{#([^\ }]+) ]] || continue
+    id="${BASH_REMATCH[1]}"
+    shaped="$(attribute_of "$opening" shaped)"
+    shaped="${shaped#shaped=}"
+    shaped="${shaped#\"}"
+    read -ra pointers <<<"${shaped%\"}"
+    for pointer in "${pointers[@]}"; do
+      printf '%s %s\n' "$id" "$pointer"
+    done
+  done < <(grep -E '^:+ask\{' "$1" || true) | LC_ALL=C sort -u
+}
+# shaped_given SPEC ISSUE: every shaped pointer an ask block of the restore's version of SPEC holds,
+# the same block of the converted version ($work/converted.md) holds too, and each pointer that block
+# holds beyond them is a link of a captured section of ISSUE that names the block's ask - the
+# capture's ask column, the one answered ask a section cites or holds - as R9 gives such a section's
+# links to its ask: `dispatch://<document>#b-<block>` of each link's node. read_rules holds the
+# store's side of the same rule: each such section's links are among its ask's shaped tuples. The
+# pointers added, `<block id> <pointer>` one a line, go to $work/shaped.added.
+shaped_given() {
+  local spec="$1" issue="$2" heading ask
+  shaped_pointers "$work/restored.$spec.md" >"$work/shaped.restored"
+  shaped_pointers "$work/converted.md" >"$work/shaped.converted"
+  LC_ALL=C comm -23 "$work/shaped.restored" "$work/shaped.converted" >"$work/shaped.taken"
+  [[ ! -s "$work/shaped.taken" ]] ||
+    fail approval "the conversion's version of $spec keeps every shaped pointer the restore's version held" \
+      "taken out: $(tr '\n' ';' <"$work/shaped.taken")"
+  : >"$work/shaped.allowed"
+  while IFS=$'\t' read -r _ heading ask _; do
+    [[ "$ask" != - ]] || continue
+    query approval "read the block of ask $ask in $spec" \
+      "select coalesce((select block_id from asks where id::text = '$ask' and block_artifact_id = '$spec'), '')"
+    [[ -n "$answer" ]] || continue
+    jq -r --arg h "$heading" --arg b "$answer" \
+      '.decisions[] | select(.block_id == $h) | .links[].to.id | $b + " dispatch://" + sub("#"; "#b-")' \
+      "$work/capture/decisions.$issue.json" >>"$work/shaped.allowed"
+  done <"$work/capture/sections.$issue"
+  LC_ALL=C sort -u -o "$work/shaped.allowed" "$work/shaped.allowed"
+  LC_ALL=C comm -13 "$work/shaped.restored" "$work/shaped.converted" >"$work/shaped.added"
+  LC_ALL=C comm -23 "$work/shaped.added" "$work/shaped.allowed" >"$work/shaped.unlinked"
+  [[ ! -s "$work/shaped.unlinked" ]] ||
+    fail approval "each shaped pointer the conversion gave an ask block of $spec is a link of a captured section naming that block's ask" \
+      "no such link: $(tr '\n' ';' <"$work/shaped.unlinked"); the links: $(tr '\n' ';' <"$work/shaped.allowed")"
+}
+declare -A issue_of_spec=(["$spec_a"]="$issue_a" ["$spec_b"]="$issue_b")
+for spec in "$spec_a" "$spec_b"; do
+  send agent GET "/api/v1/artifacts/$spec"
+  want_status 200 approval "read the spec $spec"
+  field approval "the newest version of $spec" '[.versions[].number] | max'
+  latest="$value"
+  expect approval "the spec $spec a person approved still reads approved after the conversion" '"approved"' '.approval.state'
+  expect approval "the approval of $spec stands at its newest version, $latest" "$latest" '.approval.version'
+  [[ "$latest" -gt "${restored_version[$spec]}" ]] ||
+    fail approval "the conversion wrote a version of $spec" "it is still at ${restored_version[$spec]}"
+  send agent GET "/api/v1/artifacts/$spec/versions/$latest"
+  want_status 200 approval "read version $latest of $spec"
+  jq -j '.markdown' "$work/body" >"$work/converted.md"
+  # The block ids of the spec's answered asks, by their asks rows.
+  query approval "read the answered asks of $spec" \
+    "select coalesce(string_agg(block_id, ' ' order by block_id), '') from asks where block_artifact_id = '$spec' and block_id is not null and state = 'answered'"
+  answered_blocks="$answer"
+  conversion_only "$work/converted.md" "$answered_blocks" >"$work/converted.left"
+  conversion_only "$work/restored.$spec.md" "$answered_blocks" >"$work/restored.left"
+  diff "$work/restored.left" "$work/converted.left" >"$work/diff" ||
+    fail approval "version $latest of $spec changes nothing over version ${restored_version[$spec]} but decision blocks of its ## Decisions part, reading blocks inside its answered asks' blocks and shaped pointers" "$(<"$work/diff")"
+  shaped_given "$spec" "${issue_of_spec[$spec]}"
+  printf 'approval: the shaped pointers version %s of %s adds: %s\n' "$latest" "$spec" "$(tr '\n' ';' <"$work/shaped.added")"
+  pass approval "$spec reads approved at version $latest, as the server's approval read answers; this run's comparison of its markdown with version ${restored_version[$spec]} finds no change but decision blocks of its ## Decisions part, reading blocks inside the blocks of its answered asks ($answered_blocks) and $(wc -l <"$work/shaped.added") shaped pointers added to ask blocks, each a link of a captured section naming that block's ask, none taken out"
+done
+
+# ---------------------------------------------------------------------------------------------
+# The node answer beside the document answer, and the old member beside entries.
+# ---------------------------------------------------------------------------------------------
+# The pairing's counts, over every issue paired so far: A, B and E here, and C once the step at
+# boot has converted it.
+missing=0
+extra=0
+unpaired=0
+outside=0
+deleted=0
+sections_paired=0
+issues_paired=()
+declare -A outside_issues=()
+declare -A paired_nodes=()
+# pair ISSUE…: sets each captured section of each ISSUE beside the node it became - the ask node the
+# capture names for it, or the decision node that keeps its heading block id - which entries must
+# hold once and the old decisions member once, under the address entries name it by; then counts
+# each decision node of the issue no section became. A section a rule of R9 deleted (deleted_by) is
+# paired with the ask its heading moved to, and counted as deleted rather than as in no spec.
+pair() {
+  local issue heading ask file node ref in_entries in_member block_id document
+  for issue in "$@"; do
+    issues_paired+=("$issue")
+    file="${entries_file[$issue]}"
+    while IFS=$'\t' read -r _ heading ask _; do
+      sections_paired=$((sections_paired + 1))
+      if [[ "$ask" != - ]]; then
+        node="ask:$ask"
+      elif jq -e --arg n "$issue/spec#$heading" '[.entries[] | select(.node.kind == "block" and .node.id == $n)] | length == 1' "$file" >/dev/null; then
+        node="block:$issue/spec#$heading"
+      else
+        printf 'unpaired: section %s of %s matches neither the ask the capture names nor a decision keeping its heading id\n' "$heading" "$issue"
+        unpaired=$((unpaired + 1))
+        continue
+      fi
+      paired_nodes["$issue $node"]=1
+      in_entries="$(jq --arg n "$node" '[.entries[] | select("\(.node.kind):\(.node.id)" == $n)] | length' "$file")"
+      block_id="$(jq -r --arg n "$node" '[.entries[] | select("\(.node.kind):\(.node.id)" == $n)][0].document.block_id // ""' "$file")"
+      document="$(jq -r --arg n "$node" '[.entries[] | select("\(.node.kind):\(.node.id)" == $n)][0].document.ref // ""' "$file")"
+      # The old member names a decision by the address entries name it by; an ask entries leave out
+      # is looked for under its own address.
+      ref="$(jq -r --arg n "$node" '[.entries[] | select("\(.node.kind):\(.node.id)" == $n)][0].ref // ""' "$file")"
+      [[ -n "$ref" || "$node" != ask:* ]] || ref="dispatch://$issue/ask/${node#ask:}"
+      in_member="$(jq --arg r "$ref" '[.decisions[] | select(.ref == $r)] | length' "$file")"
+      if [[ "$in_entries" != 1 || "$in_member" != 1 ]]; then
+        printf 'missing: section %s of %s, paired with %s: %s in entries, %s in the old decisions member\n' \
+          "$heading" "$issue" "$node" "$in_entries" "$in_member"
+        missing=$((missing + 1))
+        continue
+      fi
+      if [[ -n "${deleted_by[$heading]:-}" ]]; then
+        printf 'deleted: section %s of %s, paired with %s: R9 deletes a section that cites an answered ask a person removed from its spec, and its heading moves to that ask\n' \
+          "$heading" "$issue" "$node"
+        deleted=$((deleted + 1))
+        continue
+      fi
+      if [[ "$document" != "dispatch://$issue/spec" ]]; then
+        printf 'in no spec: section %s of %s, paired with %s, stands in %s\n' "$heading" "$issue" "$node" "${document:-nothing}"
+        outside=$((outside + 1))
+        outside_issues["$issue"]=1
+        continue
+      fi
+      printf 'paired: section %s of %s with %s, at %s#b-%s\n' "$heading" "$issue" "$node" "$document" "$block_id"
+    done <"$work/capture/sections.$issue"
+    while IFS= read -r node; do
+      [[ -n "${paired_nodes[$issue $node]:-}" ]] && continue
+      printf 'extra: %s of %s is a decision node no section became\n' "$node" "$issue"
+      extra=$((extra + 1))
+    done < <(jq -r '.entries[] | select(.kind == "agent") | "\(.node.kind):\(.node.id)"' "$file")
+  done
+}
+# pairing_verdict: the pairing's counts over every issue paired so far, which must each read zero.
+pairing_verdict() {
+  printf 'pairing: missing=%s extra=%s unpaired=%s\n' "$missing" "$extra" "$unpaired"
+  printf 'issues holding a section no rule dropped and no spec holds: %s%s\n' "${#outside_issues[@]}" \
+    "$([[ "${#outside_issues[@]}" == 0 ]] || printf ' (%s)' "${!outside_issues[*]}")"
+  [[ "$missing" == 0 && "$extra" == 0 && "$unpaired" == 0 ]] ||
+    fail pairing "every section is paired with the node it became" "missing=$missing extra=$extra unpaired=$unpaired, each printed above"
+  [[ "$outside" == 0 ]] || fail pairing "every section no rule dropped stands in a spec" "$outside sections in ${#outside_issues[@]} issues do not"
+  pass pairing "every section of the decisions documents of ${#issues_paired[@]} issues (${issues_paired[*]}), $sections_paired sections, is paired with its node: $((sections_paired - deleted)) in a spec, $deleted deleted by a rule of R9; missing=0 extra=0 unpaired=0"
+}
+pair "$issue_a" "$issue_b" "$issue_e"
+pairing_verdict
+[[ "$deleted" -gt 0 ]] ||
+  fail pairing "the section of $issue_e that R9 deletes is paired with the ask its person removed" "no section was"
+
+# compare_members ISSUE: the old decisions member of ISSUE's node read beside its entries. Both
+# answer the same decisions, each by its node's address (ref), and each decision reads the same
+# block id in both. An entry's block id is the block a document holds of it. An answered ask whose
+# block stands in no document - an ask on the issue itself, or one a person removed from its spec
+# - names none in entries, and the old member answers it under the block id its asks row names: ""
+# where the row names none. Each decision's stale, changed_version and changed_at are held equal
+# in both too, but the handler fills both members' from one model.Decision (api/decisions.go,
+# decisionEntries), so that holds only the wiring, and the pass line claims the decisions and their
+# block ids alone.
+compare_members() {
+  local issue="$1" file="${entries_file[$1]}" ref node block_id member_block_id
+  jq -r '[.entries[] | select(.kind == "agent" or (.kind == "person" and .answer != null)) | .ref] | sort | .[]' "$file" >"$work/entry-refs"
+  jq -r '[.decisions[].ref] | sort | .[]' "$file" >"$work/member-refs"
+  [[ -s "$work/entry-refs" && -s "$work/member-refs" ]] ||
+    fail member "entries and the old decisions member of $issue each answer at least one decision, so that they are compared over one" \
+      "entries answer $(wc -l <"$work/entry-refs") decisions and the old decisions member $(wc -l <"$work/member-refs"): a side that answers none compares nothing"
+  cmp -s "$work/entry-refs" "$work/member-refs" ||
+    fail member "entries and the old decisions member of $issue answer the same decisions" \
+      "entries: $(tr '\n' ' ' <"$work/entry-refs"); decisions: $(tr '\n' ' ' <"$work/member-refs")"
+  while IFS= read -r ref; do
+    jq -cS --arg r "$ref" '[.entries[] | select(.ref == $r)][0] |
+      {changed_version, changed_at, stale: ([.shaped[] | {to: .to.id, stale}] | sort_by(.to))}' "$file" >"$work/from-entries"
+    jq -cS --arg r "$ref" '[.decisions[] | select(.ref == $r)][0] |
+      {changed_version, changed_at, stale: ([.links[] | {to: .to.id, stale}] | sort_by(.to))}' "$file" >"$work/from-member"
+    cmp -s "$work/from-entries" "$work/from-member" ||
+      fail member "the decision $ref of $issue reads the same stale, changed_version and changed_at in both members" \
+        "entries: $(<"$work/from-entries"); decisions: $(<"$work/from-member")"
+    node="$(jq -r --arg r "$ref" '[.entries[] | select(.ref == $r)][0].node | "\(.kind):\(.id)"' "$file")"
+    block_id="$(jq -r --arg r "$ref" '[.entries[] | select(.ref == $r)][0].document.block_id // ""' "$file")"
+    if [[ -z "$block_id" && "$node" == ask:* ]]; then
+      query member "read the block id the asks row of $node names" "select coalesce(block_id, '') from asks where id = '${node#ask:}'"
+      block_id="$answer"
+    fi
+    member_block_id="$(jq -r --arg r "$ref" '[.decisions[] | select(.ref == $r)][0].block_id' "$file")"
+    [[ "$member_block_id" == "$block_id" ]] ||
+      fail member "the decision $ref of $issue reads the same block id in both members" \
+        "entries: '$block_id'; decisions: '$member_block_id'"
+  done <"$work/entry-refs"
+  pass member "entries and the old decisions member of $issue answer the same $(wc -l <"$work/entry-refs") decisions, each under the same block id"
+}
+for issue in "$issue_a" "$issue_b" "$issue_e"; do
+  compare_members "$issue"
+done
+
+# ---------------------------------------------------------------------------------------------
+# The catch-up: the base answers an ask this head created, beside it.
+# ---------------------------------------------------------------------------------------------
+baseline_stop_pid "$head_pid"
+head_pid=""
+baseline_boot base "$BASELINE_BINARY" "$baseline_database_url"
+beside_pid="$baseline_boot_pid"
+server="$baseline_boot_url"
+readonly base_url="$server"
+sign_in catchup
+send agent POST "/api/v1/issues/$issue_c/artifacts" "$(jq -cn --argjson a "$(seed_actor)" '{name: "decisions.md",
+  content: "# Decisions\n\n## The corpus stays on one server\n\nOne server writes the corpus.\n", actor: $a}')"
+want_status 201 catchup "the base release writes a decisions.md on $issue_c"
+field catchup "the id of the decisions.md of $issue_c" '.artifact.id'
+readonly decisions_c="$value"
+seed_wait_settled "the decisions.md of $issue_c settles"
+# The document answer of issue C, captured while the base still serves it, as A's, B's and E's were:
+# the step at boot converts that decisions.md below, and C is compared once it has.
+capture "$issue_c" "$decisions_c"
+printf 'captured sections of %s (issue, heading block, ask, author of its newest version):\n%s\n' \
+  "$issue_c" "$(<"$work/capture/sections.$issue_c")"
+# This head, without the hold setting, beside the base.
+baseline_extra_env=(DISPATCH_TEST_HOOKS=1)
+baseline_boot head-unheld "$head_binary" "$baseline_database_url"
+head_pid="$baseline_boot_pid"
+server="$baseline_boot_url"
+readonly head_url="$server"
+commit_of catchup
+[[ "$value" == "$head_commit" ]] || fail catchup "this head serves its own commit" "$value"
+server="$base_url"
+commit_of catchup
+[[ "$value" == "$base_commit" && "$value" != "$head_commit" ]] ||
+  fail catchup "the base beside it serves a commit of its own" "base $value, head $head_commit"
+pass catchup "this head ($head_commit, unheld) and the base ($base_commit) serve one database, both stamped"
+server="$head_url"
+send agent POST "/api/v1/issues/$issue_n/asks" \
+  "$(jq -cn --argjson a "$(seed_actor)" '{question: "Which day does the corpus refresh?", options: [{label: "Monday"}, {label: "Friday"}], actor: $a}')"
+want_status 201 catchup "this head opens an ask"
+field catchup "the ask's id" '.id // .ask.id'
+readonly catchup_ask="$value"
+server="$base_url"
+send person POST "/api/v1/asks/$catchup_ask/answer" \
+  '{"text":"Friday, after the week'"'"'s writes.","selected":["Friday"],"expected_edited_at":null}'
+want_status 200 catchup "the base answers the ask this head opened"
+send agent GET "/api/v1/asks/$catchup_ask"
+want_status 200 catchup "read the answer through the base"
+field catchup "the answer's time" '.ask.answer.at'
+answered_at="$value"
+query catchup "read the ask.answered event" \
+  "select id from events where type = 'ask.answered' and payload->>'id' = '$catchup_ask' order by id desc limit 1"
+readonly answered_event="$answer"
+[[ "$answered_event" =~ ^[0-9]+$ ]] || fail catchup "the base appended ask.answered" "no event"
+waited=0
+while true; do
+  query catchup "read the catch-up's answer tuple" \
+    "select count(*) from graph_tuples where from_kind = 'ask' and from_id = '$catchup_ask' and kind = 'answer' and source_event = $answered_event"
+  [[ "$answer" == 0 ]] || break
+  [[ "$waited" -lt 1800 ]] || fail catchup "the catch-up states the base's answer on the ask node" "no answer tuple under event $answered_event after 180 s"
+  sleep 0.1
+  waited=$((waited + 1))
+done
+rows "select kind, to_kind, to_id, source_event from graph_tuples
+      where from_kind = 'ask' and from_id = '$catchup_ask' and kind in ('answer', 'selected', 'answered_by', 'answered_at')
+        and source_event = $answered_event and asserted order by kind"
+printf 'the catch-up stated, under event %s:\n%s\n' "$answered_event" "$(<"$work/rows")"
+declare -A stated=()
+while IFS='|' read -r kind to_kind to_id _; do
+  stated["$kind"]="$to_kind:$to_id"
+done <"$work/rows"
+[[ "${stated[answer]:-}" == "value:Friday, after the week's writes." ]] || fail catchup "the answer on the ask node, under that event" "${stated[answer]:-none}"
+[[ "${stated[selected]:-}" == value:*Friday* ]] || fail catchup "the selection on the ask node, under that event" "${stated[selected]:-none}"
+[[ "${stated[answered_by]:-}" == "person:$seed_person" ]] || fail catchup "the answerer on the ask node, under that event" "${stated[answered_by]:-none}"
+[[ -n "${stated[answered_at]:-}" ]] || fail catchup "the answer's time on the ask node, under that event" "none"
+query catchup "compare the stated time with the answer's" \
+  "select ('${stated[answered_at]#value:}'::timestamptz = '$answered_at'::timestamptz)::text"
+[[ "$answer" == true ]] || fail catchup "the time on the ask node is the answer's" "${stated[answered_at]} against $answered_at"
+pass catchup "the answer, the selection, the answerer and the time of the base's answer stand on the ask node, each under ask.answered event $answered_event"
+
+# ---------------------------------------------------------------------------------------------
+# The step at boot leaves no decisions document.
+# ---------------------------------------------------------------------------------------------
+# This head goes first: with the base still live it converts nothing, so the decisions document of
+# issue C still stands when the next boot starts.
+baseline_stop_pid "$head_pid"
+head_pid=""
+baseline_stop_pid "$beside_pid"
+beside_pid=""
+query boot "read the decisions documents left" "select count(*) from decisions_documents()"
+[[ "$answer" -gt 0 ]] || fail boot "a decisions document stands before this head boots" "decisions_documents() answers none"
+printf 'decisions documents standing before the boot: %s\n' "$answer"
+# The newest event before this head boots bounds the artifact.version events of the versions its
+# step writes at boot.
+query boot "read the newest event before the boot" "select coalesce(max(id), 0) from events"
+readonly before_boot="$answer"
+started="$(date +%s)"
+baseline_boot head-boot "$head_binary" "$baseline_database_url"
+head_pid="$baseline_boot_pid"
+server="$baseline_boot_url"
+while true; do
+  query boot "read the decisions documents left" "select count(*) from decisions_documents()"
+  [[ "$answer" != 0 ]] || break
+  [[ $(($(date +%s) - started)) -lt "$step_bound_seconds" ]] ||
+    fail boot "the step at boot leaves no decisions document within ${step_bound_seconds} s" "$answer still stand"
+  sleep 1
+done
+elapsed=$(($(date +%s) - started))
+pass boot "the step at boot left no decisions document, ${elapsed} s after this head started, within ${step_bound_seconds} s"
+
+# /healthz answers decisions_step_owed zero once a tick of the step has counted nothing owed: every
+# decisions.md retired, no answered ask left out of its spec, and no list of gated steps holding
+# `decisions`. The member is absent before the process's first tick has counted.
+started="$(date +%s)"
+while true; do
+  send agent GET /healthz
+  want_status 200 owed "read /healthz of this head"
+  owed="$(jq -r '.decisions_step_owed // "absent"' "$work/body")"
+  [[ "$owed" != 0 ]] || break
+  [[ $(($(date +%s) - started)) -lt "$step_bound_seconds" ]] ||
+    fail owed "/healthz answers decisions_step_owed zero within ${step_bound_seconds} s" "it answers $owed: $(body)"
+  sleep 1
+done
+pass owed "/healthz answers decisions_step_owed 0, $(($(date +%s) - started)) s after the last decisions document left"
+
+# Every ask block of each version the step wrote at boot - the conversion of the decisions.md of
+# issue C among them - holds the form R10 keeps, as those of the versions the conversion by hand
+# wrote do.
+wait_settled boot
+step_events boot "$before_boot" ""
+cp "$work/step-events" "$work/boot.versions"
+[[ -s "$work/boot.versions" ]] ||
+  fail boot "the step wrote a version at boot" "no artifact.version event in its name after event $before_boot"
+printf 'the versions the step wrote at boot (document number): %s\n' "$(tr '\n' ';' <"$work/boot.versions")"
+while read -r document number <&3; do
+  kept_form boot "$document" "$number" "a version the step wrote at boot"
+done 3<"$work/boot.versions"
+pass boot "every ask block of the $(wc -l <"$work/boot.versions") versions the step wrote at boot, the conversion of $issue_c among them, holds the form R10 keeps, each value its ask's node's"
+
+# ---------------------------------------------------------------------------------------------
+# Issue C, whose decisions.md the base wrote after the capture of A, B and E and the step at boot
+# converted: its node answer beside the document answer the base gave before it stopped.
+# ---------------------------------------------------------------------------------------------
+# Its section is paired first, so a conversion that loses its heading id reads in the pairing's
+# own counts, which now cover all four issues; the old member is set beside entries; and the rules
+# of R9 are read on it last, as on the sections of A, B and E.
+wait_settled compare
+read_entries compare "$issue_c"
+pair "$issue_c"
+pairing_verdict
+compare_members "$issue_c"
+read_rules "$issue_c"

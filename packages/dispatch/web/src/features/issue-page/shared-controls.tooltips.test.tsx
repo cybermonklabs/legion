@@ -71,7 +71,6 @@ import {
   CLAIMED_AT,
   classOf,
   colourOf,
-  DECISIONS_ID,
   doc,
   draw,
   FOCUS_VARIANTS,
@@ -95,6 +94,7 @@ import {
   threadOf,
   tokens,
   undraw,
+  VERIFICATION_ID,
 } from "./shared-controls-fixture";
 
 /**
@@ -285,7 +285,12 @@ function answerDefaults(): void {
     read_at: null,
     version: null,
   }));
-  stubs.getIssueDecisions.mockResolvedValue({ decisions: [], document: null, open_questions: [] });
+  stubs.getIssueDecisions.mockResolvedValue({
+    decisions: [],
+    document: null,
+    entries: [],
+    open_questions: [],
+  });
   stubs.getIssueSubscribers.mockResolvedValue([]);
   stubs.getReferences.mockResolvedValue({
     edges: [],
@@ -342,14 +347,16 @@ function notesWith(approval: ArtifactApproval): Artifact {
   return { ...notes, approval };
 }
 
-/** The gate's steps as Details draws them: the spec waits on a request for its version 1, the
- *  decisions were sent back with a reason, and the verification has no document yet. `values`
- *  names the two documents and gives the reason, which the wrap case makes long. */
+/** The gate's two steps as Details draws them: the spec waits on a request for its version 1,
+ *  and the verification was `sent back` with a reason or is `not requested`, with no document
+ *  yet. A gate has two steps, so the mounts draw a gate for each. `values` names the two
+ *  documents and gives the reason, which the wrap case makes long. */
 function stepEntries(
+  verification: "not requested" | "sent back",
   values = {
-    decisions: "decisions.md",
-    reason: "The second decision cites no evidence.",
+    reason: "The checks name no command.",
     spec: "spec.md",
+    verification: "verification.md",
   }
 ): StepEntry[] {
   return [
@@ -362,18 +369,19 @@ function stepEntries(
       label: "Spec",
       step: "spec",
     },
-    {
-      document: doc(DECISIONS_ID, values.decisions, {
-        by: { id: "bob", kind: "user" },
-        latest_version: 3,
-        reason: values.reason,
-        state: "changes_requested",
-        version: 3,
-      }),
-      label: "Decisions",
-      step: "decisions",
-    },
-    { document: undefined, label: "Verification", step: "criteria" },
+    verification === "sent back"
+      ? {
+          document: doc(VERIFICATION_ID, values.verification, {
+            by: { id: "bob", kind: "user" },
+            latest_version: 3,
+            reason: values.reason,
+            state: "changes_requested",
+            version: 3,
+          }),
+          label: "Verification",
+          step: "criteria",
+        }
+      : { document: undefined, label: "Verification", step: "criteria" },
   ];
 }
 
@@ -771,7 +779,17 @@ const MOUNTS: readonly Mount[] = [
     name: "ApprovalSteps, Details' size with versions and reasons",
     node: () => (
       <ApprovalSteps
-        entries={stepEntries()}
+        entries={stepEntries("sent back")}
+        primaryArtifactId={SPEC_ID}
+        versions={{ asks: [specRequest], issueKey: "CORE-1" }}
+      />
+    ),
+  },
+  {
+    name: "ApprovalSteps, Details' size with versions and a step not requested",
+    node: () => (
+      <ApprovalSteps
+        entries={stepEntries("not requested")}
         primaryArtifactId={SPEC_ID}
         versions={{ asks: [specRequest], issueKey: "CORE-1" }}
       />
@@ -781,7 +799,18 @@ const MOUNTS: readonly Mount[] = [
     name: "ApprovalSteps, the header's compact size",
     node: () => (
       <ApprovalSteps
-        entries={stepEntries()}
+        entries={stepEntries("not requested")}
+        primaryArtifactId={SPEC_ID}
+        reasons={false}
+        size="compact"
+      />
+    ),
+  },
+  {
+    name: "ApprovalSteps, the header's compact size with a step sent back",
+    node: () => (
+      <ApprovalSteps
+        entries={stepEntries("sent back")}
         primaryArtifactId={SPEC_ID}
         reasons={false}
         size="compact"
@@ -1516,7 +1545,9 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   ],
   [mountNamed("Timestamp, exact"), [localTime(CLAIMED_AT)]],
   [mountNamed("ApprovalSteps, Details' size with versions and reasons"), []],
+  [mountNamed("ApprovalSteps, Details' size with versions and a step not requested"), []],
   [mountNamed("ApprovalSteps, the header's compact size"), []],
+  [mountNamed("ApprovalSteps, the header's compact size with a step sent back"), []],
   [mountNamed("AssigneeControl, both variants, assigned and not"), []],
   [mountNamed("PriorityControl and PriorityEditor, both variants, set and not"), []],
   [
@@ -1685,7 +1716,7 @@ const LONG = {
   liveTitle: "Implementer-of-the-new-issue-page-whose-title-runs-on-past-its-row",
   login: "a-person-whose-login-runs-on-past-the-row@example.com",
   question: "Should-we-ship-the-new-issue-page-before-its-header-is-done?",
-  reason: "The-second-decision-cites-no-evidence-for-its-claim-at-all.",
+  reason: "The-checks-name-no-command-to-run-and-no-result-to-read-at-all.",
   repository: "acme/the-repository-with-a-44-character-name",
   retired: "a-retired-component-whose-identifier-runs-on",
   route: "role:an-architect-role-whose-address-runs-on-past-its-row",
@@ -1829,10 +1860,10 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
   withLongValues(mountNamed("ApprovalSteps, Details' size with versions and reasons"), {
     node: () => (
       <ApprovalSteps
-        entries={stepEntries({
-          decisions: `decisions-${LONG.document}`,
+        entries={stepEntries("sent back", {
           reason: LONG.reason,
           spec: LONG.document,
+          verification: `verification-${LONG.document}`,
         })}
         primaryArtifactId={SPEC_ID}
         versions={{ asks: [specRequest], issueKey: "CORE-1" }}
@@ -2821,17 +2852,16 @@ test("inside NoTooltips the words come from the page's word list and carry their
         [...root.querySelectorAll("[data-approval-artifact]")].map((chip) =>
           chip.getAttribute("data-approval-artifact")
         )
-      ).toEqual([SPEC_ID, DECISIONS_ID]);
+      ).toEqual([SPEC_ID, VERIFICATION_ID]);
       expectMarks(root, [
-        [CONTROL_LABELS.not_requested, "page-chrome"],
         // The line's own words, the step and the review, around the reviewer and the reason.
-        ["Decisions: requested changes on v3 ·", "page-chrome"],
+        ["Verification: requested changes on v3 ·", "page-chrome"],
         ["bob", "author-text"],
-        ["The second decision cites no evidence.", "author-text"],
+        ["The checks name no command.", "author-text"],
       ]);
       expect(
         root
-          .querySelector("[data-approval-step-reason='decisions']")
+          .querySelector("[data-approval-step-reason='criteria']")
           ?.hasAttribute(PAGE_CHROME_ATTRIBUTE)
       ).toBe(true);
       expectMarks(within(root).getByRole("link", { name: "spec.md, version 1" }), [
@@ -2839,6 +2869,14 @@ test("inside NoTooltips the words come from the page's word list and carry their
         [CONTROL_LABELS.version.toLowerCase(), "page-chrome"],
         ["1", "author-text"],
       ]);
+    }
+  );
+  // A gate has two steps, so the step with no request is read in the gates of its own.
+  await readDrawn(
+    mountNamed("ApprovalSteps, Details' size with versions and a step not requested"),
+    "inside",
+    (view) => {
+      expectMarks(view.container, [[CONTROL_LABELS.not_requested, "page-chrome"]]);
     }
   );
   await readDrawn(mountNamed("ApprovalSteps, the header's compact size"), "inside", (view) => {
@@ -3448,7 +3486,7 @@ test("inside NoTooltips a session nothing names reads as An agent, never by its 
 test("inside NoTooltips ApprovalSteps' version link draws in the page's colours", async () => {
   const node = () => (
     <ApprovalSteps
-      entries={stepEntries()}
+      entries={stepEntries("sent back")}
       primaryArtifactId={SPEC_ID}
       versions={{ asks: [specRequest], issueKey: "CORE-1" }}
     />

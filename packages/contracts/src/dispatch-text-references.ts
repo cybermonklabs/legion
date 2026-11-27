@@ -132,8 +132,14 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
     body: "The conversation: dispatch://CORE-47/conversation, dispatch://CORE-48/log and https://dispatch.test/issues/CORE-54/conversation.",
     refs: ["dispatch://CORE-47", "dispatch://CORE-48", "dispatch://CORE-54"],
   },
+  // The Decisions tab reads the issue's decision nodes, so its address reads as the issue, as a
+  // reference and as the dashboard's page alike.
   {
-    body: "No tab: https://dispatch.test/issues/CORE-49/log, dispatch://CORE-49/plan/, dispatch://CORE-49/Plan, https://dispatch.test/issues/CORE-49/plan/ and dispatch://CORE-49/decisions.",
+    body: "The decisions: dispatch://CORE-55/decisions and https://dispatch.test/issues/CORE-56/decisions.",
+    refs: ["dispatch://CORE-55", "dispatch://CORE-56"],
+  },
+  {
+    body: "No tab: https://dispatch.test/issues/CORE-49/log, dispatch://CORE-49/plan/, dispatch://CORE-49/Plan and https://dispatch.test/issues/CORE-49/plan/.",
     refs: [],
   },
   // A document's page at `artifact/<slug>` is its page at `artifacts/<slug>`, which the issue

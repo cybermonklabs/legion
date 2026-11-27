@@ -729,10 +729,11 @@ func serveTwoBuilds(t *testing.T, database *store.Store) {
 	}
 }
 
-// baseSchemaVersion and baseSchemaCreatable are the schema numbers a process of the release
-// before registers: the base release's pmdoc/schema/blocks.json is version 6, one below this
-// build's 7, and creates nothing past version 5. So a fleet holding one drives the fleet guard at
-// the real boundary, version 6 against this build's 7.
+// baseSchemaVersion and baseSchemaCreatable are the schema numbers a process of a release that
+// still reads answers off block attributes registers: that release's pmdoc/schema/blocks.json is
+// version 6, one below the version at which answers left the markdown (answersLeftTheMarkdown, 7),
+// and creates nothing past version 5. So a fleet holding one drives the fleet guard at the real
+// boundary, version 6 against 7; this build, at version 8, is past it as the release at 7 is.
 const (
 	baseSchemaVersion   = 6
 	baseSchemaCreatable = 5

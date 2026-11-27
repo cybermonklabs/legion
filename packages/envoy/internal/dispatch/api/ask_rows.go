@@ -11,7 +11,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -187,145 +186,32 @@ func askWaitingOnPerson(ctx context.Context, q queryer, owner owner, askedOf *st
 // WaitingOnPerson is askedOfPersonExpression, the person that turn waits on, aliased
 // waiting_on_person for the same reason; every project names a default assignee, so it is null
 // only for a question whose project row the read could not reach. node_answer is the ask's
-// answer state as its node holds it (askNodeAnswerColumn), which scanAskRead lays over the row's:
+// answer state as its node holds it (asks.NodeAnswerColumn), which scanAskRead lays over the row's:
 // every read of an answer reads the node (R3). Queries selecting them read from askReadFrom.
 // Event payloads are built from askRowColumns instead: they carry none of the three. So is the
 // read a transition decides on under its owner's lock (readAskForTransition), whose state is the
 // row's, as the one writer of an answer state checks the state it moves from against the row
 // (asks.Settle, Change.From).
 var askReadColumns = askRowColumns + `, lr.author, lr.created_at, ` + waitingOnExpression +
-	` as waiting_on, ` + askedOfPersonExpression + ` as waiting_on_person, ` + askNodeAnswerColumn + ` as node_answer`
-
-// askNodeAnswerColumn is the answer state of the ask aliased a as its node holds it: each fact of
-// its answer that stands on the node (asks.NodeAnswerTuples), as a JSON list of nodeFact, as
-// docs' askNodeAnswers reads the text routes' asks. It is null for a row that names no node
-// (asks.node_kind): the one writer of an answer state writes the answer on the node only once the
-// row names it (asks.Settle), so the row of an ask a process of the release before wrote, until
-// the boot step's backfill marks it, and of an ask whose relations are past the store's bound
-// (graphstore.AskFacts) is its answer's only record. readAskNodeAnswer decodes it; askNodeAnswerOf
-// writes it for an ask of another alias.
-var askNodeAnswerColumn = askNodeAnswerOf("a")
-
-// askNodeAnswerOf is askNodeAnswerColumn for the ask aliased ask.
-func askNodeAnswerOf(ask string) string {
-	return `case when ` + ask + `.node_kind is not null then (
-		select coalesce(json_agg(json_build_object('kind', f.kind, 'to_kind', f.to_kind, 'to_id', f.to_id)), '[]'::json)
-		from (` + asks.NodeAnswerTuples(ask+`.id::text`) + `) f
-		where f.asserted) end`
-}
-
-// askNodeValueOf is the value of kind that stands on the node of the ask aliased ask, null where
-// none stands: the newest tuple of kind (graphstore.CurrentTupleRead) with its far end bound to a
-// value, so the read walks graph_tuples_values in that index's own order and sorts nothing - the
-// Inbox's reply rows hold their plans to no sort (TestMyRepliesQueriesReadTheirStatesIndex). It is
-// a probe of the ask's own node that the expressions below read under a case or an or, so it ends
-// in an offset 0, which keeps the planner from pulling it up into a read of the log for every ask
-// at once.
-func askNodeValueOf(ask, kind string) string {
-	return `(select f.to_id from (` + graphstore.CurrentTupleRead(`t.kind`, `t.to_id, t.asserted`,
-		`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = `+ask+`.id::text and t.kind = '`+kind+
-			`' and t.to_kind = '`+graphstore.KindValue+`'`) + `) f where f.asserted offset 0)`
-}
-
-// askNodeRelationOf is the far end of the relation of kind that stands on the node of the ask
-// aliased ask, null where none stands: the newest tuple of each far end
-// (graphstore.CurrentTupleRead), read through graph_tuples_current in its own order. The one
-// writer of an answer state keeps one far end of each relation it writes standing and retracts
-// the others (asks.Settle), so the probe answers the first that stands. It ends in an offset 0, as
-// askNodeValueOf does.
-func askNodeRelationOf(ask, kind string) string {
-	return `(select f.to_id from (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_id, t.asserted`,
-		`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = `+ask+`.id::text and t.kind = '`+kind+
-			`' and t.to_kind <> '`+graphstore.KindValue+`'`) + `) f where f.asserted limit 1 offset 0)`
-}
-
-// askNodeStateOf is the answer state of the ask aliased ask as asks.NodeAnswer.ApplyTo lays it
-// over the row, for a statement that picks asks by it (R3): the answer_state its node holds where
-// the row names the node, open where the node holds none, and the row's own where the row names no
-// node. An owner's ask lists by state (listIssueAsksQueryOpen and its siblings) and a session's
-// open asks on one issue (your_open_asks) pick by it alone; a statement that reads open asks
-// across owners picks by it beside the row's state (askOpenOf). A read that decides a transition
-// reads the row's state instead, as the one writer of an answer state checks the state it moves
-// from against the row (asks.Settle), and so do the open counts (agentOpenAskCounts,
-// projectListQuery, issueSummaryJoins, priorityCountsQuery).
-func askNodeStateOf(ask string) string {
-	return `case when ` + ask + `.node_kind is null then ` + ask + `.state else coalesce(` +
-		askNodeValueOf(ask, graphstore.TupleAnswerState) + `, '` + asks.StateOpen + `') end`
-}
+	` as waiting_on, ` + askedOfPersonExpression + ` as waiting_on_person, ` + asks.NodeAnswerColumn("a") + ` as node_answer`
 
 // askOpenOf is how a statement that reads open asks across owners - the Inbox (listInbox), the
 // asks the Replies list leaves out for it (myRepliesOwner), a session's or a project's open asks
 // (listOpenAsks) and the open approval requests of a list of documents
 // (openApprovalAsksStatement) - picks the open ask aliased ask: its row's state open, which the
 // partial index asks_open (0001) holds, so the index picks the candidates out of every ask
-// stored, and its node's state open (askNodeStateOf), which decides (R3). An ask its node holds
+// stored, and its node's state open (asks.NodeStateOf), which decides (R3). An ask its node holds
 // anything but open is never picked. The two agree outside a roll; inside its window the row is
 // the newer of the two, written by a process of the release before and not yet stated on the node
 // by the decisions step's catch-up, so an ask that process answered is left out until then.
 func askOpenOf(ask string) string {
-	return ask + `.state = '` + asks.StateOpen + `' and ` + askNodeStateOf(ask) + ` = '` + asks.StateOpen + `'`
-}
-
-// askNodeAnswerTextOf is the words of the answer of the ask aliased ask as ApplyTo lays them over
-// the row: the answer value its node holds on an ask the node holds answered, none on any other
-// the node holds, and the row's answer's text where the row names no node.
-func askNodeAnswerTextOf(ask string) string {
-	return `case when ` + ask + `.node_kind is null then ` + ask + `.answer->>'text' when ` +
-		askNodeValueOf(ask, graphstore.TupleAnswerState) + ` = '` + asks.StateAnswered + `' then ` +
-		askNodeValueOf(ask, graphstore.TupleAnswer) + ` end`
-}
-
-// askNodeAnswererOf and askNodeAnsweredAtOf are the person who answered the ask aliased ask and
-// when, as ApplyTo lays its answer over the row: the node's answered_by and answered_at on an ask
-// the node holds answered, null on any other the node holds, and the row's answer's user and at
-// where the row names no node. The Replies list's unread count reads an answer as a write in the
-// ask's thread through them (myRepliesPageRest), and an issue's ask page reads its answerer
-// through askNodeAnswererOf (askThreadPageStatement).
-func askNodeAnswererOf(ask string) string {
-	return `case when ` + ask + `.node_kind is null then ` + ask + `.answer->>'user' when ` +
-		askNodeValueOf(ask, graphstore.TupleAnswerState) + ` = '` + asks.StateAnswered + `' then ` +
-		askNodeRelationOf(ask, graphstore.TupleAnsweredBy) + ` end`
-}
-
-func askNodeAnsweredAtOf(ask string) string {
-	return `(` + askNodeAnsweredAtTextOf(ask) + `)::timestamptz`
-}
-
-// askNodeAnsweredAtTextOf is askNodeAnsweredAtOf before its cast: the text the time is stored
-// in, the row's answer's at or the node's answered_at (asks.AnsweredAtValue), each RFC 3339 with
-// every fraction of a second the time carries. An issue's ask page reads it so, to cut the time
-// to microseconds before a cast would round it (askThreadPageStatement).
-func askNodeAnsweredAtTextOf(ask string) string {
-	return `case when ` + ask + `.node_kind is null then ` + ask + `.answer->>'at' when ` +
-		askNodeValueOf(ask, graphstore.TupleAnswerState) + ` = '` + asks.StateAnswered + `' then ` +
-		askNodeValueOf(ask, graphstore.TupleAnsweredAt) + ` end`
-}
-
-// askNodeResolutionOf is the resolution of the ask aliased ask as ApplyTo lays it over the row, as
-// jsonb: the resolution value its node holds on an ask the node holds resolved, none on any other
-// the node holds, and the row's own where the row names no node. The write advice's declined asks
-// read a decline through it (readDeclinedAsks), and an issue's ask page a resolution's time and
-// actor (askThreadPageStatement), as every read of an answer reads the node (R3).
-func askNodeResolutionOf(ask string) string {
-	return `case when ` + ask + `.node_kind is null then ` + ask + `.resolution when ` +
-		askNodeValueOf(ask, graphstore.TupleAnswerState) + ` = '` + asks.StateResolved + `' then (` +
-		askNodeValueOf(ask, graphstore.TupleResolution) + `)::jsonb end`
-}
-
-// askNodeAnswerWordsOf is the answer of the ask aliased ask as ApplyTo lays it over the row, as
-// jsonb of asks.answer's shape, the one ask_search_suffix reads the words of: the answer and
-// selection values its node holds on an ask the node holds answered, null on any other the node
-// holds, and the row's own answer where the row names no node.
-func askNodeAnswerWordsOf(ask string) string {
-	return `case when ` + ask + `.node_kind is null then ` + ask + `.answer when ` +
-		askNodeValueOf(ask, graphstore.TupleAnswerState) + ` = '` + asks.StateAnswered + `' then jsonb_build_object('text', ` +
-		askNodeValueOf(ask, graphstore.TupleAnswer) + `, 'selected', (` + askNodeValueOf(ask, graphstore.TupleSelected) + `)::jsonb) end`
+	return ask + `.state = '` + asks.StateOpen + `' and ` + asks.NodeStateOf(ask) + ` = '` + asks.StateOpen + `'`
 }
 
 // askSearchTextOf is the text of the ask aliased ask that a search hit shows (search's txt
 // lateral) and an answer is given to read for the hit (goingItemTextQuery): its question, a space,
 // and ask_search_suffix of its options and of its answer as its node holds it
-// (askNodeAnswerWordsOf), as every read of an answer reads the node (R3).
+// (asks.NodeAnswerJSONOf), as every read of an answer reads the node (R3).
 //
 // The vector search ranks the ask by is still built from its row (asks_search, over asks.answer:
 // migrations 0087 and 20261120021308). The row is the node's projection, which the one writer of
@@ -337,57 +223,7 @@ func askNodeAnswerWordsOf(ask string) string {
 // answer, and moving it onto the node would take a trigger over graph_tuples and a rewrite of every
 // ask's vector, a migration of its own.
 func askSearchTextOf(ask string) string {
-	return ask + `.question || ' ' || ask_search_suffix(` + ask + `.options, ` + askNodeAnswerWordsOf(ask) + `)`
-}
-
-// nodeFact is one value or relation of a node as a statement aggregates it: its kind, the kind
-// of its far end, and that far end, the value itself for a value.
-type nodeFact struct {
-	Kind   string `json:"kind"`
-	ToKind string `json:"to_kind"`
-	ToID   string `json:"to_id"`
-}
-
-// readAskNodeAnswer decodes askNodeAnswerColumn into what the node of an ask holds of its answer
-// state, as the one decoder of the node's answer reads it (asks.NodeAnswer), or answers which of
-// its facts does not parse. A null column is a row that names no node, whose answer the node does
-// not hold (asks.NodeAnswer.Named).
-func readAskNodeAnswer(encoded []byte) (asks.NodeAnswer, error) {
-	if encoded == nil {
-		return asks.NodeAnswer{}, nil
-	}
-	var facts []nodeFact
-	if err := json.Unmarshal(encoded, &facts); err != nil {
-		return asks.NodeAnswer{}, fmt.Errorf("the node's answer: %w", err)
-	}
-	node := asks.NodeAnswer{Named: true}
-	for _, fact := range facts {
-		if err := node.Read(fact.Kind, fact.ToID); err != nil {
-			return asks.NodeAnswer{}, err
-		}
-	}
-	return node, nil
-}
-
-// askAnswerRead is the answer state and answer of the ask askID as every ask read shows them
-// (asks.NodeAnswer.ApplyTo), for a read that selects the ask's row's state and answer (asks.state,
-// and asks.answer, nil for none) and its node's answer (askNodeAnswerColumn) rather than a whole
-// ask: a person's answers (listMyAnswers), the Inbox's reply rows (answerReplyRows) and the
-// answered questions of other projects (relatedOtherProjects).
-func askAnswerRead(askID, state string, answer, nodeAnswer []byte) (model.Ask, error) {
-	ask := model.Ask{ID: askID, State: state}
-	if len(answer) > 0 {
-		ask.Answer = new(model.AskAnswer)
-		if err := json.Unmarshal(answer, ask.Answer); err != nil {
-			return model.Ask{}, fmt.Errorf("decode the answer of ask %s: %w", askID, err)
-		}
-	}
-	node, err := readAskNodeAnswer(nodeAnswer)
-	if err != nil {
-		return model.Ask{}, fmt.Errorf("read ask %s: %w", askID, err)
-	}
-	node.ApplyTo(&ask)
-	return ask, nil
+	return ask + `.question || ' ' || ask_search_suffix(` + ask + `.options, ` + asks.NodeAnswerJSONOf(ask) + `)`
 }
 
 // askReadFrom is askRowFrom with the three joins askedOfPersonExpression reads beside the ask
@@ -589,7 +425,9 @@ func (s *server) loadAskAnchorArtifact(
 // scanAskRead decodes one askReadColumns row; its state, answer and resolution are its node's
 // (asks.NodeAnswer.ApplyTo), an open ask gets WaitingOn from waitingOnExpression, WaitingOnPerson
 // comes from askedOfPersonExpression, the three steps that end at the project's default assignee,
-// and the newest reply is returned separately (nil when the thread is empty).
+// and the newest reply is returned separately (nil when the thread is empty). A stored value that
+// does not decode - a column of the row, the answer its node holds, or the newest reply's author -
+// answers a docs.UndecodableAskError naming the ask, as docs.ScanAsk answers one for the row.
 func scanAskRead(row pgx.Row, extra ...any) (model.Ask, *model.AskLastReply, error) {
 	var replyAuthor []byte
 	var repliedAt *time.Time
@@ -600,9 +438,9 @@ func scanAskRead(row pgx.Row, extra ...any) (model.Ask, *model.AskLastReply, err
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
-	node, err := readAskNodeAnswer(nodeAnswer)
+	node, err := asks.ReadNodeAnswer(nodeAnswer)
 	if err != nil {
-		return model.Ask{}, nil, fmt.Errorf("read ask %s: %w", ask.ID, err)
+		return model.Ask{}, nil, &docs.UndecodableAskError{AskID: ask.ID, Value: "node's answer", Err: err}
 	}
 	node.ApplyTo(&ask)
 	if ask.State == "open" {
@@ -616,7 +454,7 @@ func scanAskRead(row pgx.Row, extra ...any) (model.Ask, *model.AskLastReply, err
 	}
 	var reply model.AskLastReply
 	if err := json.Unmarshal(replyAuthor, &reply.Author); err != nil {
-		return model.Ask{}, nil, fmt.Errorf("decode ask last reply author: %w", err)
+		return model.Ask{}, nil, &docs.UndecodableAskError{AskID: ask.ID, Value: "newest reply's author", Err: err}
 	}
 	reply.CreatedAt = timestampValue(*repliedAt)
 	return ask, &reply, nil

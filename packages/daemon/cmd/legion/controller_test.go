@@ -1184,15 +1184,17 @@ func TestControllerStartNeverMintsWhenTheRepositoryReadFails(t *testing.T) {
 
 // A daemon that answers the secret without the steps it gates is refused, never guessed at: the
 // controller would otherwise promise, or withhold, a design approval on an assumption. A daemon
-// from before the list names no `designGateSteps` at all, and one beyond this release may name a
-// step this one does not know; the empty list is neither, and is the deployment that gates
+// from before the list names no `designGateSteps` at all, one from before this release may name
+// the `decisions` step, which this one no longer has, and one beyond this release may name a step
+// this one does not know; the empty list is none of them, and is the deployment that gates
 // nothing.
 func TestControllerSecretWithoutTheConfiguredStepsIsRefused(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ body, want string }{
 		{`{"secret":"s"}`, "answered no design gate steps (designGateSteps); upgrade the daemon"},
 		{`{"secret":"s","designGateSteps":null}`, "answered no design gate steps (designGateSteps); upgrade the daemon"},
-		{`{"secret":"s","designGateSteps":["sometimes"]}`, `answered design gate step "sometimes", not 'decisions', 'criteria' or 'spec'; upgrade the daemon`},
+		{`{"secret":"s","designGateSteps":["decisions","spec"]}`, `answered design gate step "decisions", not 'criteria' or 'spec'; upgrade the daemon`},
+		{`{"secret":"s","designGateSteps":["sometimes"]}`, `answered design gate step "sometimes", not 'criteria' or 'spec'; upgrade the daemon`},
 	} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")

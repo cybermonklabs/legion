@@ -190,9 +190,9 @@ export function DecisionsFilterBody({
    *  asks (`outline-request.tsx`). Each ask is acted on once. */
   request?: OutlineRequest;
   /** The node the address names, which takes the focus once per address (R19): its own row, or
-   *  for a person's write-up of an answered question, which is no row here, the row of a
-   *  question it answers, where the list draws one. Undefined where the address names no node
-   *  or the tree holds none it names. */
+   *  for a write-up of an answered question - a `reading` node under it - which is no row here,
+   *  the row of the question it answers, where the list draws one. Undefined where the address
+   *  names no node or the tree holds none it names. */
   reveal?: string;
   /** The whole tree, which holds each ask and each decision and each statement a tie names. */
   root: TreeNode;
@@ -406,12 +406,12 @@ export function DecisionsFilterBody({
   // An address that names an entry puts the focus on it, once per address (R19), and one that
   // names a node of another kind, a comment say, on that node's row, drawn first: the row is
   // not on the page until the reads that hold it have answered, so this looks again on every
-  // list the body draws, and unfolds the foot where the entry is one of its own. A person's
-  // write-up of an answered question is no entry (`writeUps`), so an address naming one puts the
-  // focus on the first row the list draws of a question it answers, and lands nowhere where the
-  // list draws none of them. A decision the list draws before the asks read has answered may
-  // yet turn out to be a write-up, which leaves the list once it does, so the address lands on
-  // no decision until the seam can tell.
+  // list the body draws, and unfolds the foot where the entry is one of its own. A write-up of an
+  // answered question - a `reading` node under it - is no entry (`writeUps`), so an address
+  // naming one puts the focus on the row the list draws of the question it answers, and lands
+  // nowhere where the list draws none. A reading the list draws before the asks read has
+  // answered may yet turn out to be a write-up, which leaves the list once it does, so the
+  // address lands on no reading until the seam can tell.
   const taken = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (reveal === undefined || taken.current === reveal) return;
@@ -424,7 +424,7 @@ export function DecisionsFilterBody({
       if (restated === undefined && partOf.get(reveal) === "agents") setFootShown(true);
       return;
     }
-    if (entry.kind === "decision" && writeUps === undefined) return;
+    if (entry.node.type === "reading" && writeUps === undefined) return;
     const row = rowOf(body.current, entry.node.id);
     if (row === null) return;
     taken.current = reveal;
@@ -434,13 +434,13 @@ export function DecisionsFilterBody({
   // (`onRevealDrawn`), so that where it does not the outline is drawn in the view's place and
   // lands on it as the outline does. The list draws every node the tree holds that an address
   // names - an ask or a decision as an entry, a node of another kind as the row before the
-  // parts, a decision the decisions read holds no row for in the foot - but for a person's
-  // write-up of an answered question, which it draws only as the row of a question it answers,
-  // where the address lands as above. Under words that match none of those questions the list
-  // draws neither the write-up nor any question it answers, so the address would land nowhere
-  // here; the outline draws the write-up under the question it answers. It is said before the
-  // browser paints, so where the reads were held as the view was drawn, as on Back to its
-  // address, no list is painted in the outline's place.
+  // parts, a decision the decisions read holds no row for in the foot - but for a write-up of an
+  // answered question, which it draws only as the row of the question it answers, where the
+  // address lands as above. Under words that question does not hold the list draws neither the
+  // write-up nor its question, so the address would land nowhere here; the outline draws the
+  // write-up under the question it answers. It is said before the browser paints, so where the
+  // reads were held as the view was drawn, as on Back to its address, no list is painted in the
+  // outline's place.
   useLayoutEffect(() => {
     if (onRevealDrawn === undefined) return;
     if (reveal === undefined) {
@@ -1006,7 +1006,7 @@ type DecisionsRead = ReturnType<typeof useDecisionsEntries>["unreadable"][number
  *  body has a line for it. */
 const REFUSED_READ_WORDS: Readonly<Record<DecisionsRead, string>> = {
   asks: STATE_LINES.asks_unreadable,
-  decisions: STATE_LINES.issue_decisions_unreadable,
+  "issue-decisions": STATE_LINES.issue_decisions_unreadable,
 };
 
 /** The row that holds the list's one tab stop, which `passFocus` and the foot's leave look for

@@ -25,14 +25,13 @@ import {
   replyToCommentBlock,
   syncArchitectureSource,
 } from "./api";
-import { blockId } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
   checkBlockId,
   checkStateOf,
   checkText,
-  decisionHeadings,
-  decisionsDocument,
+  decisionBlockId,
+  decisionsPart,
   OPEN_QUESTION_BLOCK_ID,
   planDocument,
   rewordedCheckText,
@@ -202,16 +201,6 @@ export async function seedSessions(
   );
 }
 
-/** The heading block of each decision, in document order: the block id
- *  `GET /api/v1/issues/{key}/decisions` answers each decision under. */
-async function decisionBlockIds(artifactId: string, count: number): Promise<string[]> {
-  const ids: string[] = [];
-  for (const heading of decisionHeadings(count)) {
-    ids.push(await blockId(artifactId, heading));
-  }
-  return ids;
-}
-
 /** One result per check, in the state `checkStateOf` names: a pass and a fail at the pull
  *  request's head, nothing at all for the check nobody ran, a pass whose check is then reworded,
  *  a pass at a commit no pull request names, and a pass recording no negative control.
@@ -281,7 +270,6 @@ export interface SeededSkeleton {
   readonly commentReplies: string[];
   readonly commentThreads: string[];
   readonly decisions: readonly string[];
-  readonly decisionsArtifactId: string;
   readonly key: string;
   readonly openQuestionAskId: string;
   readonly parentKey: string;
@@ -291,8 +279,8 @@ export interface SeededSkeleton {
 }
 
 /** One whole issue: a parent, every property the identity block draws, its children with one
- *  blocked and one done, its spec, Verification, plan and decisions documents, one result per
- *  check, its comment threads and two handoffs. */
+ *  blocked and one done, its spec with the planner's decisions in its `## Decisions` part, its
+ *  Verification and plan documents, one result per check, its comment threads and two handoffs. */
 export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededSkeleton> {
   await createProject({ key: PROJECT, name: "Issue layout" });
   // `force` past the possible-duplicate guard: these titles are deliberately close to each other.
@@ -367,14 +355,25 @@ export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededS
     asPlanner
   );
   await answerAsk(answered.id, { expected_edited_at: null, selected: [], text: "All of them." });
-  const decisions = await createIssueArtifact(issue.key, {
-    content: decisionsDocument({
-      askRef: `dispatch://${issue.key}/ask/${answered.id}`,
-      count: shape.decisions,
-      issueKey: issue.key,
-    }),
-    name: "decisions.md",
-  });
+  // The planner's decisions, each a `decision` block of the spec's `## Decisions` part: Dispatch
+  // refuses a document of decisions (409 `DECISIONS_ARE_NODES`).
+  await editArtifact(
+    specArtifactId,
+    {
+      ops: [
+        {
+          after: "end",
+          markdown: decisionsPart({
+            askRef: `dispatch://${issue.key}/ask/${answered.id}`,
+            count: shape.decisions,
+            issueKey: issue.key,
+          }),
+          op: "insert",
+        },
+      ],
+    },
+    asPlanner
+  );
   await recordSeededResults(issue.key, shape.checks, verification.artifact.id);
 
   const commentThreads: string[] = [];
@@ -407,8 +406,7 @@ export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededS
     children: { blocked, done, keys: children },
     commentReplies,
     commentThreads,
-    decisions: await decisionBlockIds(decisions.artifact.id, shape.decisions),
-    decisionsArtifactId: decisions.artifact.id,
+    decisions: Array.from({ length: shape.decisions }, (_, index) => decisionBlockId(index + 1)),
     key: issue.key,
     openQuestionAskId: await awaitBlockAsk(issue.key, OPEN_QUESTION_BLOCK_ID),
     parentKey: parent.key,

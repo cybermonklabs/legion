@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,10 +9,39 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest/newerversion"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
 )
 
+// readersFirstVersion is the block schema version of the build that reads decision, reading and
+// ask's shaped and creates none of them: each is read from version 7 and created from version 8
+// (pmdoc/schema/blocks.json), and this build, at version 8, creates them.
+const readersFirstVersion = 7
+
+// useReadersFirstSchema makes this build's manifest, at readersFirstVersion, the one the process
+// reads and writes by until t ends (pmdoctest.UseBlockSchema): the manifest of the build that
+// reads the three elements before it creates them. The manifest is package-global, so a test
+// that calls it does not call t.Parallel.
+func useReadersFirstSchema(t *testing.T) {
+	t.Helper()
+	var schema pmdoc.BlockSchema
+	if err := json.Unmarshal(pmdoc.SchemaJSON(), &schema); err != nil {
+		t.Fatalf("decode the block schema: %v", err)
+	}
+	schema.Version = readersFirstVersion
+	pmdoctest.UseBlockSchema(t, schema)
+}
+
+// The readers-first rule, held under the manifest of the build that reads the new elements before
+// it creates them (useReadersFirstSchema): a write that brings decision, reading or ask's shaped
+// into a document holding none of it is refused, and a document a later build stored with them
+// reads, edits and takes more of them beside them. This build is the slice that writes their
+// nodes, so a decision written beside a stored one is a decision node (refs' TypedFacts) even
+// under that manifest.
 func TestTheNewTypesAreReadButNotWrittenBeforeTheirNodePass(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it installs the readers-first manifest for the whole process
+	// (useReadersFirstSchema), which every test beside it would read and write by.
+	useReadersFirstSchema(t)
 	handler, database, documents := settlingCarryDocuments(t, pastTheRun)
 	const intro = "Introductory prose.\n\n"
 	const requirement = ":::requirement{#target}\nA requirement.\n:::\n\n"
@@ -134,16 +164,20 @@ func TestTheNewTypesAreReadButNotWrittenBeforeTheirNodePass(t *testing.T) {
 			t.Fatalf("version %d's display tree lost stored content: %s", version, text.MarkdownTree)
 		}
 	}
+	// The stored ask block's shaped is read as this build reads it, under the readers-first manifest
+	// too: one block_refs row, and its tuple on the ask's node, where this build's node pass hangs an
+	// ask block's shaped (refs' TypedFacts), and none on the block's own node, where the build that
+	// reads it first, which has no node pass, states it.
 	requirePointer := func() {
 		t.Helper()
 		var projections, blockTuples, askTuples int
 		if err := database.Pool.QueryRow(t.Context(), `
 			select (select count(*) from block_refs where artifact_id = $1 and block_id = 'read-it' and kind = 'shaped'),
-			       (select count(*) from graph_tuples where from_kind = 'block' and from_id = a.ref_key || '#read-it' and kind = 'shaped' and asserted),
-			       (select count(*) from graph_tuples where from_kind = 'ask' and from_id = $2 and kind = 'shaped')
+			       (select count(*) from graph_tuples where from_kind = 'block' and from_id = a.ref_key || '#read-it' and kind = 'shaped'),
+			       (select count(*) from graph_tuples where from_kind = 'ask' and from_id = $2 and kind = 'shaped' and asserted)
 			from artifacts a where a.id = $1
-		`, id, asks["read-it"]).Scan(&projections, &blockTuples, &askTuples); err != nil || projections != 1 || blockTuples != 1 || askTuples != 0 {
-			t.Fatalf("shaped projection / block tuple / ask tuple = %d/%d/%d (%v), want 1/1/0", projections, blockTuples, askTuples, err)
+		`, id, asks["read-it"]).Scan(&projections, &blockTuples, &askTuples); err != nil || projections != 1 || blockTuples != 0 || askTuples != 1 {
+			t.Fatalf("shaped projection / block tuple / ask tuple = %d/%d/%d (%v), want 1/0/1", projections, blockTuples, askTuples, err)
 		}
 	}
 	requireRead("Introductory prose.", stored)
@@ -164,17 +198,20 @@ func TestTheNewTypesAreReadButNotWrittenBeforeTheirNodePass(t *testing.T) {
 	}
 	requireRead("Uploaded prose.", stored+3)
 	requirePointer()
+	// Before the node pass the build that reads decisions first wrote the second decision a generic
+	// block with no typed tuple. This build is that pass, so the decision it writes beside the
+	// stored one is a decision node stating its uncertainty, under the readers-first manifest too.
 	var address string
 	if err := database.Pool.QueryRow(t.Context(), `select node_id from document_blocks where artifact_id = $1 and block_id = 'another'`, id).Scan(&address); err != nil {
 		t.Fatalf("read the second decision's block address: %v", err)
 	}
 	node, found, err := graphstore.ReadNode(t.Context(), database.Pool, "block", address)
-	if err != nil || !found || node.Supertag != "block" {
-		t.Fatalf("the second decision's node = %+v (found %t, %v), want a generic block", node, found, err)
+	if err != nil || !found || node.Supertag != "decision" {
+		t.Fatalf("the second decision's node = %+v (found %t, %v), want a decision node", node, found, err)
 	}
 	var typed int
-	if err := database.Pool.QueryRow(t.Context(), `select count(*) from graph_tuples where from_kind = 'block' and from_id = $1 and kind in ('uncertainty', 'decided_by', 'from_ask')`, address).Scan(&typed); err != nil || typed != 0 {
-		t.Fatalf("the second decision has %d typed tuples (%v), want none", typed, err)
+	if err := database.Pool.QueryRow(t.Context(), `select count(*) from graph_tuples where from_kind = 'block' and from_id = $1 and kind = 'uncertainty' and asserted`, address).Scan(&typed); err != nil || typed == 0 {
+		t.Fatalf("the second decision states %d uncertainty tuples (%v), want its uncertainty stated", typed, err)
 	}
 	// A replace and an accepted suggestion whose text holds a decision write it beside the stored
 	// one, as the insert above does, and each is accepted.

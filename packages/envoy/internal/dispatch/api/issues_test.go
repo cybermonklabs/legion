@@ -764,7 +764,7 @@ func TestListIssuesQueryUsesAsksOpenIndex(t *testing.T) {
 // switches the underlying prepared statement from a per-execution custom plan (built for that
 // call's actual bound values) to a cached generic plan, which it automatically considers
 // starting on a statement's 6th execution. The open list picks the issue's asks by their node's
-// state (askNodeStateOf, R3), which no index of asks holds, so it reaches them through the
+// state (asks.NodeStateOf, R3), which no index of asks holds, so it reaches them through the
 // issue's own index, asks_issue_key (20261101182426), keyed on the issue the statement binds,
 // and filters each by its node: the partial index asks_open (0001) is keyed on the row's state,
 // which this read no longer tests. The test's name is from when it read asks_open; what it holds

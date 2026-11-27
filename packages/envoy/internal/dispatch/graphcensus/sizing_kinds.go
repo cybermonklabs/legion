@@ -230,7 +230,7 @@ func storeKinds() []StoreKind {
 			" state, and either its part_of the role it claimed with that role's held_by and the retraction that ends it," +
 			" or a page of its own with that page's visibility, state and part_of - three tuples either way, and two" +
 			" nodes at most, since which one a session took is the role bucket's and no table's",
-		count: `(select count(*) from (` + recordedSessions + `) recorded
+		count: `(select count(*) from (` + recordedSessions(sizingAuthors) + `) recorded
 			where recorded.at > ` + sizingWindow + ` and octet_length(recorded.id) <= ` + addressBound + `)`,
 	}, {
 		Name: graphstore.KindRole, MovedBy: movedHere, Nodes: 1, Tuples: 2,
@@ -335,8 +335,10 @@ func storeKinds() []StoreKind {
 		count:  `(select count(*) from artifacts where created_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "artifact_removed", MovedBy: movedHere, Tuples: 1,
-		Driver: "artifact.removed events in the window: the removed document's node stated gone (api's removeArtifact)",
-		count:  `(select count(*) from events where type = 'artifact.removed' and created_at > ` + sizingWindow + `)`,
+		Driver: "artifact.removed and " + model.DocumentRetiredEventType + " events in the window: the removed or retired" +
+			" document's node stated gone (api's removeArtifact, docs' RetireDocument)",
+		count: `(select count(*) from events where type in ('artifact.removed', '` + model.DocumentRetiredEventType + `')
+			and created_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "document_version", MovedBy: movedWithBlocks, Nodes: 1, Tuples: 2,
 		Driver: "artifact_versions.created_at: the document version node each accepted write appends, and its visibility" +
@@ -427,10 +429,28 @@ func storeKinds() []StoreKind {
 			" that ends it once the block reads again",
 		count: `(select count(*) from events where type = 'block.invalid' and created_at > ` + sizingWindow + `)`,
 	}, {
+		Name: "ask_removal", MovedBy: movedWithAsks, Tuples: 2,
+		Driver: "document_block_texts of the versions written in the window, a row that deleted the block of an" +
+			" answered ask, which only a person's own write takes out: the ask node's removed_by to that person, and" +
+			" at most the retraction that ends it once an ask block of that ask stands in the document again, which" +
+			" no table projects",
+		count: `(select count(*) from artifact_versions v
+			join document_block_texts t on t.artifact_id = v.artifact_id and t.version = v.number
+			where v.created_at > ` + sizingWindow + ` and t.text is null
+			  and exists (select 1 from asks k where k.block_artifact_id = t.artifact_id and k.block_id = t.block_id
+			              and k.state = 'answered'))`,
+	}, {
+		Name: "block_move", MovedBy: movedWithAsks, Tuples: 1, Assumed: 1 * sizingWindowDays,
+		Driver: "assumed at one a day, since the one writer of a moved_to is the decisions step's conversion, which" +
+			" moves each section and ask block of a decisions document an earlier release wrote into its issue's spec" +
+			" once, a backlog no table dates: the moved address's moved_to, its node and placement being a block's," +
+			" which the block terms count",
+	}, {
 		Name: "decision", MovedBy: movedWithAsks, Tuples: 5, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at 10 a day, since production writes no agent's decision before the asks child ships and a" +
-			" decisions.md section, today's form of one, is no row: its uncertainty and uncertainty_reason values, one" +
-			" shaped, its from_ask and its decided_by, its node and placement being a block's, which the block terms count",
+			" section of an issue's decisions document, the form an earlier release wrote one in, is no row: its" +
+			" uncertainty and uncertainty_reason values, one shaped, its from_ask and its decided_by, its node and" +
+			" placement being a block's, which the block terms count",
 	}, {
 		Name: "reading", MovedBy: movedWithAsks, Tuples: 1, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at one under each assumed decision, 10 a day, since production writes no reading before" +
@@ -471,6 +491,15 @@ func storeKinds() []StoreKind {
 			" its lens and one prevented_by",
 	}}
 }
+
+// sizingAuthors is the relation recordedSessions reads storedAuthors as when the sizing reads it:
+// a FROM item named stored, of (kind, id, at), that holds no row. Every writer storedAuthors adds
+// is read off the store itself - a decision's or a reading's decided_by or authored_by, an ask
+// node's authored_by - and the sizing reads no table of the store, so it runs on a database the
+// store does not exist in yet. A session that asked is counted all the same, by the asks rows and
+// the ask.opened events recordedSessions reads beside it, and a decision or a reading is a kind
+// production writes none of yet, whose rate the sizing assumes.
+const sizingAuthors = `(select null::text, null::text, null::timestamptz where false) stored (kind, id, at)`
 
 // reachesANode is true of a topic the outbox reads as a node of the store (outbox's
 // nodeOfSubject): a session's own topic or a role's, with a name after the prefix, and that name

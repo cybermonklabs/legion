@@ -818,10 +818,9 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "inbox-thread-title",
   },
-  // The issue's Decisions panel, which names the decisions document by its artifact id: a
-  // decision's heading and paragraphs, and the open questions. A link to a spec block a decision
-  // shaped draws no stored text: it names the block by its id, in the panel's own words, since
-  // the decisions read sends none of the block's text (`refs.BlockLinks`).
+  // The issue's Decisions panel reads each decision's heading and paragraphs in that
+  // decision's document. A shaped link names the target block by its id, in the panel's
+  // own words: the decisions read sends none of the block's text (`refs.BlockLinks`).
   {
     files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
     reach: "/issues/<ISSUE>/decisions, a decision's heading and paragraphs",
@@ -957,8 +956,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   // A document's margin: the decision card and the pinned conversations, which an issue's page
   // shows beside its spec, a suggestion's two sides and a thread's comments. The decision card's
-  // text is a passage of the issue's `decisions.md`, named by that document's artifact id as the
-  // Decisions panel names it (`issue-decision`).
+  // text is a passage of the decision's document, which the Decisions read names by artifact id.
   {
     files: ["packages/dispatch/web/src/features/margin/DecisionCard.tsx"],
     reach: "/issues/<ISSUE>/spec, a margin decision card's heading and passage",

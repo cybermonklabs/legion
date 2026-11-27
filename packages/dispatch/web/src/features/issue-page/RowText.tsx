@@ -276,8 +276,8 @@ const POST_DELETED = "data-post-deleted";
 
 /** A typed block's source line in a node's words: its opening `:::requirement{#r1}`, or its
  *  closing `:::`. It is markup and no word of the node (part G's R4, the tester's F20): a
- *  decision's text holds the lines of a block its section quotes, and both its stored text and
- *  its reading carry them as they stand. */
+ *  decision's text holds the lines of a typed block inside its own `decision` block, and both
+ *  its stored text and its reading carry them as they stand. */
 const DIRECTIVE_LINE = /^[ \t]*:{3,}(?:[a-z_][^\n]*)?[ \t]*$\n?/gmu;
 
 /** `text` without a typed block's source lines, and with no blank line left where one stood:

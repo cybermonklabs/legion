@@ -25,7 +25,7 @@ everything waiting for you, each as a short row: what kind of row it is, what it
 it was last written in, and the issue or document it belongs to. The right column holds the row
 you selected, whole.
 
-![The Dispatch Inbox in two columns: the list of open questions and unread threads on the left, grouped by priority, and the selected question, a decision block, open in its own document on the right.](/legion/media/dispatch/inbox.png)
+![The Dispatch Inbox in two columns: the list of open questions and unread threads on the left, grouped by priority, and the selected question, an ask block, open in its own document on the right.](/legion/media/dispatch/inbox.png)
 
 Drag the line between the two columns to change how wide each one is. It is also a slider: give
 it the keyboard focus and the arrow keys move it one step at a time, and double-click it to put
@@ -33,8 +33,8 @@ it back where it started. Dispatch keeps the width you leave it at, in this brow
 
 What the right column shows follows the row:
 
-- A question an agent wrote as a decision block opens as its own document, at the section the
-  block sits in. **Skip to the answer** brings the block itself into view.
+- A question an agent wrote as an ask block opens as its own document, at the section the block
+  sits in. **Skip to the answer** brings the block itself into view.
 - A request to approve a document opens as that document's latest version, with **Approve** and
   **Request changes** at the head of the column.
 - A question anchored on a quote, and a question on no document, open as the card described in
@@ -281,7 +281,7 @@ In the drawer each thread row is a card, with **Open**, which goes to the thread
 
 An ask card holds the question and the answer. The Inbox page draws it in the right column, or
 below 1280 px in place of the list, for a question anchored on a quote and a question on no
-document, and in the document itself for a decision block. The drawer draws it in the ask's own
+document, and in the document itself for an ask block. The drawer draws it in the ask's own
 row.
 
 ![An ask card in the Inbox drawer: the question, its two options and Other, a note field, and Answer.](/legion/media/dispatch/ask-card.png)
@@ -309,8 +309,8 @@ record a new review on the document instead.
 
 The agent that asked receives the new answer as it received the first, with the answer it
 replaces. Every earlier answer stays on the ask: the card reads `Changed <time>` and **Show 1
-earlier answer** lists the earlier ones, oldest first. In a document decision, the decision block
-is rewritten with the new answer.
+earlier answer** lists the earlier ones, oldest first. An ask block in a document shows the new
+answer, which Dispatch keeps on the ask, not in the document's text.
 
 If someone changed the answer after you opened the card, Dispatch keeps theirs and shows it, so
 you can decide again from the current answer.
@@ -337,15 +337,14 @@ offers **Ask back instead** and **Answer with it anyway**.
 
 An ask's replies read in the order you chose in **View → Thread order**: **Oldest first**, the
 default, or **Newest first**. That order is the same for every thread in Dispatch — the Inbox,
-the margin, a document's decision block, the Conversation tab — and the reply box sits next to
-the newest message, so it is under the root in **Newest first** and at the end in **Oldest
-first**.
+the margin, a document's ask block, the Conversation tab — and the reply box sits next to the
+newest message, so it is under the root in **Newest first** and at the end in **Oldest first**.
 
 The root and the two newest replies always show. Older ones fold behind **Show N earlier
 replies**, and **Show fewer replies** folds them back; a reply you have not read never folds.
 After an ask is answered, resolved, retracted, declined or withdrawn, its thread still takes a
-follow-up: write it in **Reply**; in the Conversation tab and in a live document's decisions,
-choose **Write a reply** first. A closed issue's document shows a decision's record only, with no
+follow-up: write it in **Reply**; in the Conversation tab and in a live document's ask blocks,
+choose **Write a reply** first. A closed issue's document shows an ask block's record only, with no
 reply box, so a withdrawn ask, which only a closed issue has, takes its reply in the Conversation
 tab. A reply you are still typing survives if its card remounts elsewhere, such as switching
 margin tabs away and back, and if the ask is resolved while you type. If the ask opens again
@@ -376,9 +375,9 @@ the request was for.
 
 When you approved the document before, the card says so under the question:
 `Approved at version N on <date> by <who>.` with a **Show diff** control. Pressing it shows what
-changed between the version you approved and the one you are asked to approve, with every
-decision block left out of both, since the answers in those blocks are your own. A first request,
-on a document nobody has approved, shows neither.
+changed between the version you approved and the one you are asked to approve, with every ask
+block left out of both, so you read what changed outside the questions put to you. A first
+request, on a document nobody has approved, shows neither.
 
 Answering the request is the same review as the **Approve** and **Request changes** buttons on the
 document itself. [Documents](/legion/dispatch/documents/#approvals) covers approval states and what

@@ -363,11 +363,11 @@ func requireOneInDocumentPerBlock(t *testing.T, database *store.Store) {
 }
 
 // takeStoreCensus runs `census --store` over the test's own database, on a connection of its
-// own, exactly as the subcommand runs it. It takes no growth pass: that is `--sizing`, and
-// nothing here reads it.
+// own, exactly as the subcommand runs it, with the restore's test of the returns it declines. It
+// takes no growth pass: that is `--sizing`, and nothing here reads it.
 func takeStoreCensus(t *testing.T, database *store.Store) *graphcensus.StoreReport {
 	t.Helper()
-	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false)
+	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, ReturnDeclined)
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
 	}

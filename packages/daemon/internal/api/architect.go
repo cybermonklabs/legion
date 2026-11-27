@@ -561,25 +561,20 @@ func stepNames(steps []record.DesignStep) string {
 
 // stepDocument says whether document is the one the step records of its issue (stepRecords).
 func stepDocument(step record.DesignStep, document dispatch.Approval) bool {
-	return stepRecords(step, document.Primary, document.Role, document.Slug)
+	return stepRecords(step, document.Primary, document.Role)
 }
 
-// stepRecords says whether a document that is its issue's primary document or not (primary),
-// plays role beside it and is filed under slug is the one step records of its issue: the issue's
-// primary document for spec, its Verification document for criteria, and its decisions document
-// for decisions. It is the one statement of that binding, which a registration's document
-// (stepDocument) and the parts a view is read by (documentPart) both read.
-//
-// A decisions document stored before Dispatch knew the role carries none, so its slug answers for
-// it: that is what lets Dispatch and the daemon of this release deploy in either order.
-func stepRecords(step record.DesignStep, primary bool, role, slug string) bool {
+// stepRecords says whether a document that is its issue's primary document or not (primary) and
+// plays role beside it is the one step records of its issue: the issue's primary document for
+// spec, and its Verification document for criteria. It is the one statement of that binding,
+// which a registration's document (stepDocument) and the parts a view is read by (documentPart)
+// both read.
+func stepRecords(step record.DesignStep, primary bool, role string) bool {
 	switch step {
 	case record.DesignStepSpec:
 		return primary
 	case record.DesignStepCriteria:
 		return role == dispatch.ArtifactRoleVerification
-	case record.DesignStepDecisions:
-		return role == dispatch.ArtifactRoleDecisions || slug == dispatch.DecisionsSlug
 	}
 	return false
 }
@@ -1570,18 +1565,18 @@ func (s *server) closeRoot(w http.ResponseWriter, r *http.Request) {
 	// be on no issue, and the daemon's record would read done while the Dispatch issue kept the
 	// status it had. The text measured is the post the outbox makes, not the reason alone
 	// (record.LongestPost), and the reader is the server's own, so the daemon refuses exactly
-	// what Dispatch refuses (dispatchbody.Check). That one read answers the decision block too:
+	// what Dispatch refuses (dispatchbody.Check). That one read answers the ask block too:
 	// the post's marker is an HTML comment, which the document parser refuses, and the server
 	// reads a refused body for the card its reader would draw all the same
 	// (pmdoc.FindDecisionCard).
 	if over := dispatchbody.Check(record.LongestPost(fact.Message())); over != nil {
-		// What the reason is refused for decides what the architect does about it. A decision
-		// block is refused however short the reason is, since a question in a message is one
-		// nobody can answer, so the refusal names the block as the cause and where the question
-		// belongs rather than asking for a shorter reason.
+		// What the reason is refused for decides what the architect does about it. An ask block
+		// is refused however short the reason is, since a question in a message is one nobody can
+		// answer, so the refusal names the block as the cause and where the question belongs
+		// rather than asking for a shorter reason.
 		if dispatchbody.IsDecisionBlock(over) {
 			s.writeFailure(w, r, http.StatusBadRequest, "CLOSE_REASON_DECISION_BLOCK",
-				fmt.Sprintf("the reason holds a decision block, and the close posts the reason on the issue as a message, where nobody can answer one: %s; the close was not applied, so close again with a reason that states the decision rather than asking for it", over))
+				fmt.Sprintf("the reason holds an ask block, and the close posts the reason on the issue as a message, where nobody can answer one: %s; the close was not applied, so close again with a reason that states the decision rather than asking for it", over))
 			return
 		}
 		s.writeFailure(w, r, http.StatusBadRequest, "CLOSE_REASON_TOO_LONG",

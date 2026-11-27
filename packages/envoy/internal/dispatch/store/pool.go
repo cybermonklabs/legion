@@ -419,7 +419,8 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // (api.RunMaintenanceSweep, which keeps the lease name suggestion-outcomes the suggestion sweep
 // carried that work under), the reference-excerpt reconciliation, the block-index reconciliation,
 // the reference forms drain (docs.RefsFormsLease, beside the block index on a goroutine of its
-// own), the term-statistics refresh, the GitHub webhook redelivery sweep, the CI reconcile pass
+// own, one lease for its three queues), the term-statistics refresh, the GitHub webhook
+// redelivery sweep, the CI reconcile pass
 // (cireconcile.Lease), the CI verify loop (cireconcile.VerifyLease, taken only by a pass with a
 // verify request to answer, beside a reconcile pass that holds its own for minutes), the
 // architecture import, the delivery reconcile, the edit-notice sweep, the

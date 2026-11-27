@@ -1961,7 +1961,7 @@ func countExceededError(code, field string, count, limit int) *apiError {
 // blockBoundError is what a route answers an itemblocks.Check with: nil where the body broke no
 // rule, else the refusal the typed error words, under the code that rule is refused by. A bound
 // broken (itemblocks.CapExceeded names the block, itemblocks.CountExceeded the count) carries
-// CAP_EXCEEDED, the code every cap refusal carries; a body holding a decision block
+// CAP_EXCEEDED, the code every cap refusal carries; a body holding an ask block
 // (itemblocks.DecisionBlock) carries DECISION_BLOCK_IN_BODY, since what it is refused for is
 // what it holds rather than how long it is. Every route that checks a body calls this one
 // helper, so a route added later cannot word the same refusal differently.

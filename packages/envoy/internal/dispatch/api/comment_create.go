@@ -232,13 +232,13 @@ type commentThreadTarget struct {
 	AskID       *string
 	ReplyRoot   *model.Comment
 	AskQuestion string
-	// AskState is the state of the thread's ask as its node holds it (askNodeStateOf), the state
+	// AskState is the state of the thread's ask as its node holds it (asks.NodeStateOf), the state
 	// the comment's event shows (commentEventThread), as every read of an answer reads the node
 	// (R3).
 	AskState string
 	// AskOpen says the ask's row holds it open, which decides whether a reply records a turn
 	// (openAsk). A reply's turn is a write the ask's turn moves by, so it is decided on the row,
-	// as every read that decides a transition reads it (askNodeStateOf); the two differ only
+	// as every read that decides a transition reads it (asks.NodeStateOf); the two differ only
 	// inside a roll's window, where the row is the newer of the two.
 	AskOpen bool
 	// AskMoved says the ask is an approval request a version moved past the one its agent last
@@ -547,7 +547,7 @@ func (s *server) describeAsk(
 ) (commentThreadTarget, error) {
 	target := commentThreadTarget{AskID: askID}
 	err := tx.QueryRow(ctx, `
-		select a.question, `+askNodeStateOf("a")+`, a.state = '`+asks.StateOpen+`', `+approvalMoved+`,
+		select a.question, `+asks.NodeStateOf("a")+`, a.state = '`+asks.StateOpen+`', `+approvalMoved+`,
 		       case when a.author->>'kind' = 'session' then a.author->>'id' end
 		from asks a
 		where a.id = $1
@@ -1318,10 +1318,11 @@ func queueCommentRow(
 		return commentStoreWrite{}, err
 	}
 	// What this comment is in the node and tuple store: its node, queued before the row that names
-	// it, and the facts the row is the projection of, which wait for the event that stores it. The
-	// node write appends nothing (graphstore.QueueNodes): every fact of this write, the two base
-	// attributes it states among them, is appended under that event, which is appended after the
-	// row. A comment left out of the store (unprojected) has no node to write.
+	// it, in the project of the issue or the document it belongs to, and the facts the row is the
+	// projection of, which wait for the event that stores it. The node write appends nothing
+	// (graphstore.QueueNodes): every fact of this write, the base attributes it states among them,
+	// is appended under that event, which is appended after the row. A comment left out of the
+	// store (unprojected) has no node to write.
 	project, parties, err := graphstore.ScopeOf(ctx, tx, comment.IssueKey, comment.ArtifactID)
 	if err != nil {
 		return commentStoreWrite{}, err
@@ -1394,7 +1395,7 @@ func (s *server) queueCommentCreated(
 		return nil, err
 	}
 	// What the comment states, under the event that stored it, queued right after that event
-	// (graphstore.LatestEvent): its node's cause, its two base attributes, and the artifacts it
+	// (graphstore.LatestEvent): its node's cause, its base attributes, and the artifacts it
 	// is anchored to and owned by, with the move of its node row onto that event
 	// (graphstore.QueueCaused). Then who wrote it, as the node and tuple store holds it: the
 	// author's node and the comment's authored_by tuple, under the same event. A comment left out
@@ -1404,7 +1405,7 @@ func (s *server) queueCommentCreated(
 	// takes the author's person node and their session node in one statement in ascending (kind,
 	// id): a follow before it would take the session first and leave the person to that
 	// statement, which is the pair in the other order, and two such writes racing over a session
-	// and an owner the store holds neither of would deadlock. The follow is planned here,
+	// and an owner the store holds neither of would deadlock (R17). The follow is planned here,
 	// in the read phase, under the owner lock the comment's write holds over the ask's thread
 	// (asks.PlanFollowAuthor), and queued in that step.
 	var follow asks.PlannedFollow
@@ -1440,7 +1441,7 @@ func (s *server) queueCommentCreated(
 // the row and there is no node to name otherwise. The facts are not: on the request path no event
 // exists while the row is written, so they wait for the event that caused the write
 // (graphstore.QueueCaused), queued right after it in the same write phase, where refs.QueueStamp
-// already runs. The node's two base attributes wait with them: the write holds them for that
+// already runs. The node's base attributes wait with them: the write holds them for that
 // event rather than letting the node write state them, so that they carry the event that stored
 // the comment like every other fact of this write. The block index states its own nodes the same
 // way (graphstore.Uncaused). Each writer of a comment skips both for a comment left out of the

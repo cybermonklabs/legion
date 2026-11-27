@@ -546,7 +546,7 @@ type memberDraft struct {
 // change sets, or with the review history that could not say which version its holder took, or
 // told nothing, for that reason, where the reconcile raises what its holder took and sends nothing
 // (settlementOf's settleRaise): every item it is owed is recorded as changing nothing of the work
-// (record.DesignChanges.WorkUnchanged: decision blocks alone, or nothing at all), and its holder
+// (record.DesignChanges.WorkUnchanged: ask blocks alone, or nothing at all), and its holder
 // row owes no opening. A member whose row owes the opening is sent a task with it, so it is named
 // with its items and how its holder is told. An owed item the record cannot tell yet
 // (newsRecorded.change) is named by none.

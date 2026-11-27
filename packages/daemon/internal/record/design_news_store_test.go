@@ -100,6 +100,41 @@ func TestToldRowsTakeOneBaselineAndOnlyRise(t *testing.T) {
 	}
 }
 
+// A `decisions` row an earlier release wrote stays in design_gates, whose column still admits the
+// step (DesignStep.Valid), and a baseline takes no version of it: the told row holds the steps of
+// this release alone, as every read of the gate rows does (Postgres.GatesOf), so no news, credit
+// or raise of the row names that step.
+func TestABaselineTakesNoVersionOfAnEarlierReleasesDecisionsRow(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	root := issueFixture("LEGION-310")
+	child := issueFixture("LEGION-311")
+	child.Tree = root.Key
+	at := time.Date(2026, 11, 13, 21, 0, 0, 0, time.UTC)
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, issue := range []Issue{root, child} {
+			must(t, records.PutIssue(ctx, tx, issue))
+		}
+		must(t, records.PutGate(ctx, tx, DesignGate{Issue: root.Key, Step: DesignStepSpec, ArtifactID: "doc-spec", LatestVersion: 3, ApprovedVersion: new(3)}))
+		if _, err := tx.Exec(ctx, `insert into design_gates (issue, step, artifact_id, latest_version, approved_version)
+			values ($1, 'decisions', 'doc-decisions', 2, 2)`, root.Key); err != nil {
+			t.Fatalf("store the decisions row of %s as an earlier release wrote it: %v", root.Key, err)
+		}
+		must(t, records.BaselineTold(ctx, tx, child.Key, AudienceHolder, root.Key, at))
+	})
+	var rows []DesignTold
+	inTx(t, st, func(tx pgx.Tx) {
+		var err error
+		rows, err = records.TreeTold(ctx, tx, root.Key)
+		must(t, err)
+	})
+	if got, want := ToldRow(rows, child.Key, AudienceHolder), (DesignTold{Issue: child.Key, Audience: AudienceHolder,
+		Versions: map[DesignStep]int{DesignStepSpec: 3}, ToldAt: at}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s's baseline = %+v, want %+v: the spec's version alone, and none of the decisions row", child.Key, got, want)
+	}
+}
+
 // Each settlement of the gate's opening on a told row gives the row its next opening number
 // (DesignTold.Opening), through the one SQL function every writer of the owed opening calls: an
 // opening owed to a holder owed news, the opened role message, and the close, which settles every
@@ -292,8 +327,8 @@ func TestChangeSetsAreRecordedPerPairAndAReadOneIsFinal(t *testing.T) {
 // of the text outside every section with the place Dispatch named it at, before the first section
 // or after a named `##` section, kept in the sections column beside the `##` sections, which carry
 // none. A run recorded with no place, as a Dispatch from before the place names it, reads back with
-// none. The control is a decision-only pair, which is not unchanged. An unchanged set that is
-// unavailable, or decision-only too, is refused before the write, naming the pair.
+// none. The control is an ask-only pair, which is not unchanged. An unchanged set that is
+// unavailable, or ask-only too, is refused before the write, naming the pair.
 func TestAChangeSetKeepsWhetherItIsUnchangedAndWhereEachRunStands(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -323,14 +358,14 @@ func TestAChangeSetKeepsWhetherItIsUnchangedAndWhereEachRunStands(t *testing.T) 
 		must(t, err)
 	})
 	if !got[unchanged.VersionPair].Unchanged || got[decisionOnly.VersionPair].Unchanged {
-		t.Fatalf("unchanged read back = %t for the unchanged pair and %t for the decision-only one, want true and false",
+		t.Fatalf("unchanged read back = %t for the unchanged pair and %t for the ask-only one, want true and false",
 			got[unchanged.VersionPair].Unchanged, got[decisionOnly.VersionPair].Unchanged)
 	}
 	if !reflect.DeepEqual(got[placed.VersionPair].Sections, placed.Sections) {
 		t.Fatalf("the sections read back = %+v, want %+v, each run at its place", got[placed.VersionPair].Sections, placed.Sections)
 	}
 	if !got[unchanged.VersionPair].WorkUnchanged() || !got[decisionOnly.VersionPair].WorkUnchanged() || got[placed.VersionPair].WorkUnchanged() {
-		t.Fatalf("work unchanged = %t, %t, %t for the unchanged, decision-only and placed pairs, want true, true and false",
+		t.Fatalf("work unchanged = %t, %t, %t for the unchanged, ask-only and placed pairs, want true, true and false",
 			got[unchanged.VersionPair].WorkUnchanged(), got[decisionOnly.VersionPair].WorkUnchanged(), got[placed.VersionPair].WorkUnchanged())
 	}
 

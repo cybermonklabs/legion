@@ -556,12 +556,15 @@ func TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks(t *testing.T) {
 	copied := decodeBody[struct {
 		Artifact model.Artifact `json:"artifact"`
 	}](t, uploaded).Artifact.ID
-	awaitTextShows(t, handler, copied, "its sources' states", contains(
-		`#rec-answered state="answered" answered_by="alice"`,
-		`copied_from="`+asks["rec-answered"]+`"`,
-		`#rec-resolved state="resolved" copied_from="`+asks["rec-resolved"]+`"`,
-		`#rec-open state="open" copied_from="`+asks["rec-open"]+`"`,
-	), nil)
+	testwait.UntilPolling(t, 20*time.Millisecond, "the copy to show its sources' states (its text as an agent reads it)", func() (string, bool) {
+		text := agentText(t, handler, copied)
+		return text, contains(
+			`#rec-answered state="answered" answered_by="alice"`,
+			`copied_from="`+asks["rec-answered"]+`"`,
+			`#rec-resolved state="resolved" copied_from="`+asks["rec-resolved"]+`"`,
+			`#rec-open state="open" copied_from="`+asks["rec-open"]+`"`,
+		)(text)
+	})
 	// A settlement is what would open the copy's asks: once the copy owes none, no later pass runs
 	// over it that the read below could come before.
 	awaitSettled(t, database, copied)

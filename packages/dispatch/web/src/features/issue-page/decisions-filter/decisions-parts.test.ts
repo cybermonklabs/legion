@@ -1,6 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 
 import type { ArtifactBlock, Decision, DecisionLink, DisplayTree } from "../../../api/types";
+import { withEntries } from "../../issue/decision-entries";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { type ChangeComment, decisionChanges, inReviewList } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
@@ -13,18 +14,19 @@ import {
   answeredAsk,
   ask,
   closing,
-  DECISIONS_DOCUMENT,
   decision,
   decisionNode,
-  decisionRef,
   decisionsRead,
+  entryOf,
   issueDetails,
   issueTree,
   KEY,
   node,
   openAsk,
+  personDecision,
   READER,
   READER_ACTOR,
+  SPEC_DOCUMENT,
   SPEC_SLUG,
   shaped,
   specRef,
@@ -51,22 +53,22 @@ beforeAll(async () => {
 /** How this issue addresses a node, which is the page's own rule (`tree-drafts.ts`). */
 const nodeIdOf = issueNodeIdOf(issueDetails());
 
-/** The decisions document's blocks as the blocks read answers them: each decision's own block,
- *  its heading, in the order the decisions were made. */
-function decisionsBlocks(made: readonly Decision[]): DocumentBlocks[] {
-  const heading = (id: string, at: number): ArtifactBlock => ({
+/** The spec's blocks as the blocks read answers them: each agent's decision's own `decision`
+ *  block, in the order the decisions were made. */
+function specBlocks(made: readonly Decision[]): DocumentBlocks[] {
+  const block = (id: string, at: number): ArtifactBlock => ({
     attributes: [],
     from: at * 2,
     id,
     references: { asks: 0, comments: 0 },
     to: at * 2 + 1,
     token: id,
-    type: "heading",
+    type: "decision",
   });
   return [
     {
-      artifactId: DECISIONS_DOCUMENT.id,
-      blocks: made.map((one, at) => heading(one.block_id, at)),
+      artifactId: SPEC_DOCUMENT.id,
+      blocks: made.filter((one) => one.kind === "agent").map((one, at) => block(one.block_id, at)),
     },
   ];
 }
@@ -81,7 +83,7 @@ function partsOf(
   const decisions = decisionsRead(made);
   return decisionsParts({
     asks,
-    changes: decisionChanges(decisions, comments, issueDetails().artifacts, decisionsBlocks(made)),
+    changes: decisionChanges(decisions, comments, issueDetails(), specBlocks(made)),
     decisions,
     issueKey: KEY,
     nodeIdOf,
@@ -129,7 +131,7 @@ test("each ask and each decision stands in one of the four parts", () => {
       decision("review", { links: [shaped(specRef("s1"))] }),
       decision("kept", {
         kept: {
-          artifact_id: "artifact-decisions",
+          artifact_id: SPEC_DOCUMENT.id,
           block_id: "kept",
           changed_version: 1,
           kept_at: "2026-11-15T09:00:00Z",
@@ -166,8 +168,8 @@ test("each ask and each decision stands in one of the four parts", () => {
 });
 
 // R35, c-review-list: four agent decisions that all wait: two a `shaped` tie names a statement
-// of the issue for, one tied to a node that is no statement, and one tied to nothing. The
-// review list holds the two, newest first, and the other two stand at the foot.
+// of the issue for, one tied to a note of the spec, which is no statement, and one tied to
+// nothing. The review list holds the two, newest first, and the other two stand at the foot.
 test("the review list is read from the shaped ties alone", () => {
   const made = [
     decision("older", {
@@ -178,14 +180,14 @@ test("the review list is read from the shaped ties alone", () => {
       changed_at: "2026-11-11T12:00:00Z",
       links: [shaped(specRef("s2"))],
     }),
-    decision("note", { links: [shaped(specRef("note"))] }),
+    decision("note", { links: [shaped(specRef("callout"))] }),
     decision("nothing"),
   ];
   const parts = partsOf(
     [
       statement("s1"),
       statement("s2"),
-      node({ id: `${SPEC_SLUG}#b-note`, reference: specRef("note"), type: "callout" }),
+      node({ id: `${SPEC_SLUG}#b-callout`, reference: specRef("callout"), type: "callout" }),
       decisionNode("older"),
       decisionNode("newer"),
       decisionNode("note"),
@@ -208,11 +210,16 @@ test("the review list is read from the shaped ties alone", () => {
 
   // The one rule, as the count of what waits on the reader reads it too.
   const isStatement = (reference: string) => /#b-s\d$/.test(reference);
-  expect(made.map((row) => inReviewList(row, isStatement))).toEqual([true, true, false, false]);
+  expect(made.map((row) => inReviewList(entryOf(row), isStatement))).toEqual([
+    true,
+    true,
+    false,
+    false,
+  ]);
   // A decision that does not wait is no entry of the list, whatever its ties.
   expect(
     inReviewList(
-      decision("kept", { links: [shaped(specRef("s1"))], waiting_review: false }),
+      entryOf(decision("kept", { links: [shaped(specRef("s1"))], waiting_review: false })),
       isStatement
     )
   ).toBe(false);
@@ -237,52 +244,94 @@ test("a tie counts where it names a statement of this issue", () => {
   expect(idsOf(parts).agents).toEqual([D("foreign"), D("unreadable")]);
 });
 
-// R2, R9: the filter draws no agent's reading of a person's answer. Today's nearest thing is a
-// section of `decisions.md` the server marks a person's because its blocks name an ask: where
-// that ask is an answered ask of this issue, the ask's own row is the decision, and it carries
-// the statements that section's ties name, which is where today's read holds what the person's
-// decision shaped.
-test("a section that restates a person's answer is no entry, and its ties are the answer's", () => {
-  const parts = partsOf(
-    [
-      statement("s1"),
-      statement("s2"),
-      answeredAsk(
-        "a1",
-        { at: "2026-11-12T09:00:00Z", text: "Keep the rail." },
-        {
-          children: [decisionNode("restated")],
-        }
-      ),
-      openAsk("q1", true, { children: [decisionNode("pending")] }),
-      decisionNode("foreign"),
-    ],
-    [
-      decision("restated", {
-        asks: ["a1"],
-        kind: "person",
-        links: [shaped(specRef("s1")), shaped(specRef("s2"))],
-        waiting_review: false,
-      }),
-      // A section that names a question nobody answered restates no answer.
-      decision("pending", { asks: ["q1"], kind: "person", waiting_review: false }),
-      // And so does one that names an ask this issue does not hold.
-      decision("foreign", { asks: ["elsewhere"], kind: "person", waiting_review: false }),
-    ]
-  );
+// R2, R9: a person's decision is the answered ask itself, which the decisions read names by the
+// ask's own address: the ask's entry is that decision, and it carries the statements its
+// `shaped` ties name. An agent's reading of the answer is a `reading` block under the ask, and
+// the filter draws none (R9: "No restatement of a person's answer appears anywhere in the
+// view"), whether it is handed the whole tree or the Decisions filter's own view of it. An open
+// question has no decision yet, so it carries no ties, and its reading is no entry either.
+test("a person's decision is the answered ask's entry with its ties, and a reading is none", () => {
+  const reading = (id: string) =>
+    node({
+      author: AGENT,
+      id: `${SPEC_SLUG}#b-${id}`,
+      reference: specRef(id),
+      text: "The planner reads the answer as one rail for every width.",
+      type: "reading",
+    });
+  const children = [
+    statement("s1"),
+    statement("s2"),
+    answeredAsk(
+      "a1",
+      { at: "2026-11-12T09:00:00Z", text: "Keep the rail." },
+      { children: [reading("g1")] }
+    ),
+    openAsk("q1", true, { children: [reading("g2")] }),
+  ];
+  const made = [personDecision("a1", { links: [shaped(specRef("s1")), shaped(specRef("s2"))] })];
+  const views = [
+    undefined,
+    presetView(issueTree(children), "decisions", "", new Set<string>()).root,
+  ];
 
-  const all = Object.values(idsOf(parts)).flat();
-  expect(all).not.toContain(D("restated"));
+  for (const view of views) {
+    const parts = partsOf(children, made, [], view);
+    const all = Object.values(idsOf(parts)).flat();
+    expect(all, "the filter drew an agent's reading").not.toContain(reading("g1").id);
+    expect(all, "the filter drew an agent's reading").not.toContain(reading("g2").id);
+    expect(idsOf(parts).yours).toEqual(["a1"]);
+    expect(parts.yours[0]?.shapes.map((shape) => shape.id)).toEqual([
+      statement("s1").id,
+      statement("s2").id,
+    ]);
+    expect(idsOf(parts).open_questions).toEqual(["q1"]);
+    expect(parts.open_questions[0]?.shapes).toEqual([]);
+    // No decision node stands for the person's decision: the ask is the only entry of it.
+    expect([...idsOf(parts).agents, ...idsOf(parts).review, ...idsOf(parts).others]).toEqual([]);
+  }
+});
+
+// The release before answers a person's decision as a section that cites the answered ask,
+// addressed by the section's heading block, which names no ask (`withEntries`). The filter reads
+// it as this build's: the answered ask's entry is the person's decision and carries the
+// statements the section's links name, and nothing else stands for it - the tree draws no node
+// of the section's own, and no other part holds an entry of it.
+test("a person's section of the release before is the entry of the ask it cites, with its ties", () => {
+  const children = [
+    statement("s1"),
+    statement("s2"),
+    answeredAsk("a1", { at: "2026-11-12T09:00:00Z", text: "Keep the rail." }),
+  ];
+  const section = personDecision("a1", {
+    block_id: "h-rail",
+    links: [shaped(specRef("s1")), shaped(specRef("s2"))],
+    ref: `dispatch://${KEY}/artifact/decisions-md#b-h-rail`,
+    text: "## Keep the rail\n\nOne rail for every width.",
+  });
+  const decisions = withEntries(
+    {
+      decisions: [section],
+      document: `dispatch://${KEY}/artifact/decisions-md`,
+      open_questions: [],
+    },
+    KEY
+  );
+  const parts = decisionsParts({
+    asks: [],
+    decisions,
+    issueKey: KEY,
+    nodeIdOf,
+    reader: READER,
+    root: issueTree(children),
+  });
+
   expect(idsOf(parts).yours).toEqual(["a1"]);
   expect(parts.yours[0]?.shapes.map((shape) => shape.id)).toEqual([
     statement("s1").id,
     statement("s2").id,
   ]);
-  // The server's word for whose they are stands, and no read says which person, so they are
-  // no decision of the reader's; neither carries a state of an agent's decision.
-  expect(idsOf(parts).others).toEqual([D("pending"), D("foreign")]);
-  expect(parts.others[0]).toMatchObject({ kind: "decision", shapes: [] });
-  expect(parts.others.find((entry) => "standing" in entry)).toBeUndefined();
+  expect([...idsOf(parts).agents, ...idsOf(parts).review, ...idsOf(parts).others]).toEqual([]);
 });
 
 // R2: the third part is the reader's own decisions. What another person answered, declined or
@@ -301,7 +350,7 @@ test("another person's answer, decline and keep stand with what others decided",
     [
       decision("kept-by-bob", {
         kept: {
-          artifact_id: "artifact-decisions",
+          artifact_id: SPEC_DOCUMENT.id,
           block_id: "kept-by-bob",
           changed_version: 1,
           kept_at: "2026-11-15T09:00:00Z",
@@ -325,7 +374,7 @@ test("another person's answer, decline and keep stand with what others decided",
 test("a decision the reader asked to change leaves the review list and carries the change", () => {
   const comment = (id: string, block: string, at: string): ChangeComment => ({
     anchor: {
-      artifact_id: DECISIONS_DOCUMENT.id,
+      artifact_id: SPEC_DOCUMENT.id,
       block_id: null,
       mark_id: `mark-${id}`,
       orphaned: false,
@@ -372,7 +421,7 @@ test("a decision the reader asked to change leaves the review list and carries t
   // The one rule the count of what waits on the reader reads too.
   const isStatement = (reference: string) => /#b-s\d$/.test(reference);
   expect(
-    inReviewList(decision("asked", { links: [shaped(specRef("s1"))] }), isStatement, true)
+    inReviewList(entryOf(decision("asked", { links: [shaped(specRef("s1"))] })), isStatement, true)
   ).toBe(false);
   expect(waitingOrder(parts)).toEqual([D("stale"), D("waits")]);
 });
@@ -465,7 +514,7 @@ test("closed asks stand by the time each closed, newest first", () => {
 // so it is back in the review list.
 test("a kept decision names who kept it, and one changed since waits again", () => {
   const keep = {
-    artifact_id: "artifact-decisions",
+    artifact_id: SPEC_DOCUMENT.id,
     block_id: "kept",
     changed_version: 1,
     kept_at: "2026-11-15T09:00:00Z",
@@ -502,6 +551,64 @@ test("a kept decision names who kept it, and one changed since waits again", () 
     keptBy: { id: "alice", kind: "user" },
     standing: "kept",
   });
+});
+
+// R2, R4: a `decision` block whose `decided_by` names a person is that person's decision, and
+// stands as an answered ask stands by its answerer: in the decider's part, the reader's own or
+// what others decided, by the time it was made, tied to a statement or not and replaced or not.
+// It is never in the review list and never at the foot, which holds the agents' decisions; the
+// read's `kind` is the node's shape, `agent` for every block, and never says who decided.
+test("a decision block a person decided stands in the decider's part, tied or not", () => {
+  const alice = { id: READER, kind: "person" };
+  const bob = { id: "bob", kind: "person" };
+  const parts = partsOf(
+    [
+      statement("s1"),
+      decisionNode("mine-tied"),
+      decisionNode("mine-loose"),
+      decisionNode("bobs-tied"),
+      decisionNode("bobs-replaced"),
+      decisionNode("agents"),
+    ],
+    [
+      decision("mine-tied", {
+        changed_at: "2026-11-14T09:00:00Z",
+        decided_by: alice,
+        links: [shaped(specRef("s1"))],
+        waiting_review: false,
+      }),
+      decision("mine-loose", {
+        changed_at: "2026-11-13T09:00:00Z",
+        decided_by: alice,
+        waiting_review: false,
+      }),
+      decision("bobs-tied", {
+        changed_at: "2026-11-12T09:00:00Z",
+        decided_by: bob,
+        links: [shaped(specRef("s1"))],
+        waiting_review: false,
+      }),
+      decision("bobs-replaced", {
+        changed_at: "2026-11-11T09:00:00Z",
+        decided_by: bob,
+        replaced: true,
+        waiting_review: false,
+      }),
+      // The agent's own, tied and waiting: the one decision the review list holds.
+      decision("agents", { links: [shaped(specRef("s1"))] }),
+    ]
+  );
+
+  expect(idsOf(parts)).toEqual({
+    agents: [],
+    named: [],
+    open_questions: [],
+    others: [D("bobs-tied"), D("bobs-replaced")],
+    review: [D("agents")],
+    yours: [D("mine-tied"), D("mine-loose")],
+  });
+  expect(parts.yours[0]).toMatchObject({ at: "2026-11-14T09:00:00Z", kind: "decision" });
+  expect(parts.others[1]).toMatchObject({ standing: "replaced" });
 });
 
 // c-decisions: "The decision that shaped three requirements is one entry with one node id, and
@@ -560,8 +667,8 @@ test("a decision that shaped three statements is one entry that reaches all thre
 
 // c-decisions: "Each entry links to the node that holds it." An ask's address is its own; a
 // decision's is the issue's with the decision's block as its fragment, which opens the outline
-// on that node, where the decision's own address opens `decisions.md`. R2: a node's parent is
-// one line on its row, since no row of this filter stands under another.
+// on that node, where the decision's own address opens the spec at its block. R2: a node's
+// parent is one line on its row, since no row of this filter stands under another.
 test("each entry carries its address in the conversation and its parent's line", () => {
   const parts = partsOf(
     [
@@ -590,7 +697,7 @@ test("each entry carries its address in the conversation and its parent's line",
   );
   expect(parts.review.find((entry) => entry.node.id === D("top"))?.parent).toBeUndefined();
 
-  expect(conversationPath({ reference: decisionRef("d1") })).toBe(`/issues/${KEY}#b-d1`);
+  expect(conversationPath({ reference: specRef("d1") })).toBe(`/issues/${KEY}#b-d1`);
   expect(conversationPath({})).toBeUndefined();
   expect(conversationPath({ reference: `dispatch://${KEY}` })).toBeUndefined();
 });

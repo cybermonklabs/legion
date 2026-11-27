@@ -2731,6 +2731,11 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
+		// A row the release before queued may name its `decisions` step, which the enqueue of this
+		// release refuses; the rest of the set is what Dispatch takes, so the row sends that.
+		value.Gates = slices.DeleteFunc(value.Gates, func(gate DesignGateDocument) bool {
+			return !gate.Step.Valid() // kept for one release: design-gate-rows
+		})
 		payload = value
 	case OutboxKindRoleHoldersPublish:
 		value := RoleHoldersPublish{}

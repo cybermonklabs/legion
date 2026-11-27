@@ -97,6 +97,10 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-race-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-race-{0}-{1}-', runner.os, runner.arch) }}
+      # TestAReadingIsAChildNodeOfTheDecisionItReads runs this tree's dispatch command under bun
+      # (runDispatchCLI, internal/dispatch/api/decision_entries_test.go), and fails without it.
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back

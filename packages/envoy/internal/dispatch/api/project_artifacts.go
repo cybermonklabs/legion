@@ -14,10 +14,11 @@ func (s *server) listProjectArtifacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	unlinked := r.URL.Query().Get("unlinked") == "true"
+	// A retired document is in no list of its project's documents (docs.RetireDocument).
 	query := `
 		select ` + artifactColumns + `
 		from artifacts
-		where project_key = $1 and not is_primary`
+		where project_key = $1 and not is_primary and retired_at is null`
 	if unlinked {
 		query += ` and issue_key is null`
 	}

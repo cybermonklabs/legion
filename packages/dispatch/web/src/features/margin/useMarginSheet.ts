@@ -15,8 +15,9 @@ import { composerNameOf, keptForOtherWords, stoppedOfferOf } from "../conversati
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { writePin } from "../issue/pin-write";
 import { eventItemId } from "../issue/pins";
+import type { DecisionDocuments } from "../issue-page/decision-review";
 import { useMarginDrawer } from "../issue-page/margin-slot";
-import { DECISIONS_DOCUMENT_SLUG, parseIssuePath, parseProjectPath } from "../refs/routes";
+import { parseIssuePath, parseProjectPath } from "../refs/routes";
 import { COMPACT_VIEWPORT_QUERY, PHONE_VIEWPORT_QUERY } from "../shell/useDialog";
 import type { MarginComposer } from "./CommentsTab";
 import type { MarginSheetModel } from "./MarginSheet";
@@ -177,11 +178,6 @@ export function useMarginSheet(): MarginSheetModel {
         : artifactAtAddress(issue.data?.artifacts, routeArtifactSlug)
       : documentArtifact.data;
   const visibleArtifactId = visibleArtifact?.id;
-  // The issue's `decisions.md`, by the same find the Decisions panel makes: the record a margin
-  // decision card's text is, so a `#id` in it names a question block of that document.
-  const decisionsDocumentId = issue.data?.artifacts?.find(
-    (artifact) => artifact.slug === DECISIONS_DOCUMENT_SLUG && artifact.kind === "doc"
-  )?.id;
   // The compose of the document the margin shows (`composes`): the one the reader has open there
   // and has not sent, if any, and the number the newest compose there opened under. Each document
   // keeps its own, so one open on another document waits there for the reader's return.
@@ -233,6 +229,20 @@ export function useMarginSheet(): MarginSheetModel {
     placementsReported &&
     visibleArtifact !== undefined &&
     documentBridge?.artifactId === visibleArtifact.id;
+  // The three fields of the issue read that `decisionDocumentId` finds a decision's document by,
+  // memoized on those fields alone: the read takes a new identity at every issue event, and the
+  // margin would build its decision cards again at each.
+  // kept for one release: compat-objects
+  const readIssueKey = issue.data?.key;
+  const primaryArtifactId = issue.data?.primary_artifact_id;
+  const issueArtifacts = issue.data?.artifacts;
+  const decisionDocuments = useMemo<DecisionDocuments | undefined>(
+    () =>
+      readIssueKey === undefined || primaryArtifactId === undefined
+        ? undefined
+        : { artifacts: issueArtifacts, key: readIssueKey, primary_artifact_id: primaryArtifactId },
+    [issueArtifacts, primaryArtifactId, readIssueKey]
+  );
   const {
     actionFailure,
     answeredAsksPending,
@@ -256,9 +266,10 @@ export function useMarginSheet(): MarginSheetModel {
     retryItem,
     threads,
   } = useMarginItems(owner, tab, visibleArtifact, markPlacements, blockPlacements, blockFilterId, {
-    decisionsDocumentId,
     documentShown: placementsPublished,
     held: heldReplyKeys,
+    // kept for one release: compat-objects
+    issue: decisionDocuments,
   });
   const onEdit = useCallback(
     async (id: string, body: string, carried: CarriedBlockIds | undefined, bounds: WriteBounds) => {

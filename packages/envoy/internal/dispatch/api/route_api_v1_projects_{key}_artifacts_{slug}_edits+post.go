@@ -8,7 +8,7 @@ var _ = declareRoute(routeDecl{
 	Method:      http.MethodPost,
 	Pattern:     "/api/v1/projects/{key}/artifacts/{slug}/edits",
 	Auth:        authAny,
-	Description: "Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename.",
+	Description: "Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, and an edit of a retired document, which only its slug finds, 409 DOCUMENT_RETIRED, as POST /api/v1/artifacts/{id}/edits answers them.",
 	Handler:     (*server).editArtifact,
 	WriteClass:  scopeProject,
 	Shape: routeShape{

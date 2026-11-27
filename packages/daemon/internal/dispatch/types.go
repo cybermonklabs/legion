@@ -100,12 +100,12 @@ type Client interface {
 }
 
 // DesignGateDocument is one entry of an issue's design-gate publication, as Dispatch's route
-// takes and answers it: Step is one of `decisions`, `criteria` and `spec`, ArtifactID the
-// document that step's gate recorded, and Holds whether the issue's tree is gated on that step,
-// which Dispatch's advice reads in place of the project's gated steps. Holds is sent as null only
-// for an entry an older daemon queued without it, which Dispatch answers by the project's list.
-// The step is a string here rather than the record's own type, because this package names
-// Dispatch's wire shapes and imports no record of the daemon's.
+// takes and answers it: Step is `criteria` or `spec`, ArtifactID the document that step's gate
+// recorded, and Holds whether the issue's tree is gated on that step, which Dispatch's advice
+// reads in place of the project's gated steps. Holds is sent as null only for an entry an older
+// daemon queued without it, which Dispatch answers by the project's list. The step is a string
+// here rather than the record's own type, because this package names Dispatch's wire shapes and
+// imports no record of the daemon's.
 type DesignGateDocument struct {
 	Step       string `json:"step"`
 	ArtifactID string `json:"artifact_id"`
@@ -274,11 +274,9 @@ type Issue struct {
 	Labels            []string
 	HandedOver        bool
 	PrimaryArtifactID string
-	// VerificationArtifactID and DecisionsArtifactID are the issue's Verification document and its
-	// decisions document (Approval.Role ArtifactRoleVerification and ArtifactRoleDecisions), each
-	// empty when the issue holds none.
+	// VerificationArtifactID is the issue's Verification document (Approval.Role
+	// ArtifactRoleVerification), empty when the issue holds none.
 	VerificationArtifactID string
-	DecisionsArtifactID    string
 	LastSeq                int64
 	// Priority is IssueSummary.Priority.
 	Priority *int
@@ -335,7 +333,7 @@ func (a Actor) Name() string {
 	return a.Kind + ":" + a.ID
 }
 
-// SettlementActor is Dispatch's document settlement, which closes an ask whose decision block left
+// SettlementActor is Dispatch's document settlement, which closes an ask whose ask block left
 // its document in its own name (Dispatch's docs.SettlementActor).
 var SettlementActor = Actor{Kind: "system", ID: "document-settlement"}
 
@@ -349,10 +347,9 @@ var SettlementActor = Actor{Kind: "system", ID: "document-settlement"}
 // recorded before it kept the sequence, and from a Dispatch that predates it. By is who gave the
 // review State shows (an approval or a changes request), zero when Dispatch names nobody.
 //
-// Primary, Role and Slug are what the document is on its issue, which is how a design-gate step
-// finds the document it binds to (api's gateRegister): Primary is the issue's primary document,
-// Role the part it plays beside it (ArtifactRoleVerification, ArtifactRoleDecisions, or "" for
-// none) and Slug the name Dispatch filed it under.
+// Primary and Role are what the document is on its issue, which is how a design-gate step finds
+// the document it binds to (api's gateRegister): Primary is the issue's primary document, and Role
+// the part it plays beside it (ArtifactRoleVerification, or "" for none).
 type Approval struct {
 	IssueKey      string
 	State         string
@@ -366,18 +363,14 @@ type Approval struct {
 	By            Actor
 	Primary       bool
 	Role          string
-	Slug          string
 }
 
-// ArtifactRoleVerification and ArtifactRoleDecisions are two of the parts Dispatch records a
-// document playing on its issue (model.Artifact.Role), and DecisionsSlug and VerificationSlug the
-// names it files those two documents under, which a reference to either names
-// (workflow's stepRef). No mechanism shares a value between this module and Dispatch's, so the
-// spellings change together.
+// ArtifactRoleVerification is the part Dispatch records a Verification document playing on its
+// issue (model.Artifact.Role), and VerificationSlug the name it files that document under, which a
+// reference to it names (workflow's stepRef). No mechanism shares a value between this module and
+// Dispatch's, so the spellings change together.
 const (
 	ArtifactRoleVerification = "verification"
-	ArtifactRoleDecisions    = "decisions"
-	DecisionsSlug            = "decisions-md"
 	VerificationSlug         = "verification-md"
 )
 
@@ -440,8 +433,8 @@ type Review struct {
 
 // Artifact is one document or file an issue holds, as Dispatch lists it: its id, the slug Dispatch
 // filed it under, its kind (Document), whether it is the issue's primary document, the part it
-// plays beside it (ArtifactRoleVerification, ArtifactRoleDecisions, `plan`, or "" for none) and
-// its latest version, 0 for one with none.
+// plays beside it (ArtifactRoleVerification, `plan`, or "" for none) and its latest version, 0 for
+// one with none.
 type Artifact struct {
 	ID            string
 	Slug          string
@@ -488,7 +481,7 @@ var ErrNoBlocks = errors.New("Dispatch answered the document version without its
 // ArtifactChanges is what changed in a document from version From to version To, as Dispatch's
 // GET /api/v1/artifacts/{id}/changes answers it (its artifactChanges), whose JSON it decodes as it
 // stands, as DesignGateDocument names its route's shape. Both versions are compared with their
-// decision blocks cut out, so an answer a person gave, or an ask added or moved, changes no
+// ask blocks cut out, so an answer a person gave, or an ask added or moved, changes no
 // section and no block. Dispatch makes exactly one of three things true of an answer:
 // DecisionOnly, the cut is the whole change (the stored texts differ and cut to the same text);
 // Unchanged, the two versions differ in nothing any section, run or block holds (their stored
@@ -496,7 +489,8 @@ var ErrNoBlocks = errors.New("Dispatch answered the document version without its
 // one item. So an answer that names nothing says which of the first two it is. A Dispatch from
 // before Unchanged sends no such field, so an identical version from it decodes as an answer that
 // names nothing and is neither. Two versions of a document never change, so the answer for one
-// pair never goes stale.
+// pair never goes stale. DecisionOnly is the route's field decision_only, which names ask blocks:
+// the cut keeps every `decision` block, so a change to one is a change of the work.
 type ArtifactChanges struct {
 	ArtifactID   string `json:"artifact_id"`
 	From         int    `json:"from"`

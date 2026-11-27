@@ -93,7 +93,6 @@ func TestGetIssueReturnsWorkflowFields(t *testing.T) {
 			"primary_artifact_id":      "artifact-8",
 			"verification_artifact_id": "artifact-9",
 			"plan_artifact_id":         "artifact-10",
-			"decisions_artifact_id":    "artifact-11",
 			"last_seq":                 47,
 		})
 	}))
@@ -104,7 +103,7 @@ func TestGetIssueReturnsWorkflowFields(t *testing.T) {
 		t.Fatalf("get issue: %v", err)
 	}
 	if issue.Key != "LEGION-8" || issue.Project != "LEGION" || issue.Title != "Ship Dispatch client" || issue.Status != "in_progress" || issue.PrimaryArtifactID != "artifact-8" || issue.LastSeq != 47 ||
-		issue.VerificationArtifactID != "artifact-9" || issue.DecisionsArtifactID != "artifact-11" ||
+		issue.VerificationArtifactID != "artifact-9" ||
 		issue.Rank != "opaque-rank" || !issue.HandedOver || len(issue.Labels) != 2 || issue.Labels[0] != "repo:x" || issue.Labels[1] != "LEGION" {
 		t.Fatalf("issue = %#v, want workflow fields from Dispatch", issue)
 	}
@@ -452,7 +451,7 @@ func TestArtifactsReadsWhatEachArtifactIsOnTheIssueAndItsLatestVersion(t *testin
 			{"id": "artifact-1", "issue_key": "LEGION-5", "slug": "spec", "name": "spec", "kind": "doc", "primary": true, "versions": versions(1, 2, 3),
 				"approval": map[string]any{"state": "approved", "latest_version": 3, "version": 3}},
 			{"id": "artifact-2", "issue_key": "LEGION-5", "slug": "verification-md", "name": "verification.md", "kind": "doc", "primary": false, "role": "verification", "versions": versions(1, 2)},
-			{"id": "artifact-3", "issue_key": "LEGION-5", "slug": "decisions-md", "name": "decisions.md", "kind": "doc", "primary": false, "role": "decisions", "versions": versions()},
+			{"id": "artifact-3", "issue_key": "LEGION-5", "slug": "plan-md", "name": "plan.md", "kind": "doc", "primary": false, "role": "plan", "versions": versions()},
 			{"id": "artifact-4", "issue_key": "LEGION-5", "slug": "screenshot-png", "name": "screenshot.png", "kind": "image", "primary": false, "versions": versions(1)},
 		})
 	}))
@@ -465,7 +464,7 @@ func TestArtifactsReadsWhatEachArtifactIsOnTheIssueAndItsLatestVersion(t *testin
 	want := []Artifact{
 		{ID: "artifact-1", Slug: "spec", Kind: "doc", Primary: true, LatestVersion: 3},
 		{ID: "artifact-2", Slug: "verification-md", Kind: "doc", Role: ArtifactRoleVerification, LatestVersion: 2},
-		{ID: "artifact-3", Slug: "decisions-md", Kind: "doc", Role: ArtifactRoleDecisions},
+		{ID: "artifact-3", Slug: "plan-md", Kind: "doc", Role: "plan"},
 		{ID: "artifact-4", Slug: "screenshot-png", Kind: "image", LatestVersion: 1},
 	}
 	if !reflect.DeepEqual(artifacts, want) {

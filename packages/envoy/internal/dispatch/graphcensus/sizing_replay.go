@@ -121,14 +121,17 @@ func replayParents(ctx context.Context, tx pgx.Tx) (replayedParents, error) {
 // transaction of its own: that would take another snapshot than the versions the replay reads,
 // and the census's one connection holds its transaction open.
 //
-// A database the store does not exist on yet holds no type node, and the sizing takes its
-// readings there too (commentWriterPeople), so there the replay parses against the schema the
-// process holds, which in the census subcommand is the embedded file: it installs no other.
+// A database not migrated to this build (storeAbsence) holds no type node this build reads: the
+// store does not exist on it yet, or it is the store of a release before, whose graph_nodes this
+// build's reader does not read. The sizing takes its readings there too (commentWriterPeople),
+// so there the replay parses against the schema the process holds, which in the census subcommand
+// is the embedded file: it installs no other.
 func installStoreBlockSchema(ctx context.Context, tx pgx.Tx) error {
-	var held bool
-	if err := tx.QueryRow(ctx, `select to_regclass('graph_nodes') is not null`).Scan(&held); err != nil {
-		return fmt.Errorf("look up the store's type nodes: %w", err)
+	absent, err := storeAbsence(ctx, tx)
+	if err != nil {
+		return err
 	}
+	held := absent == ""
 	if held {
 		if err := tx.QueryRow(ctx, `select exists (select 1 from graph_nodes where kind = $1)`,
 			schemanodes.KindSupertag).Scan(&held); err != nil {

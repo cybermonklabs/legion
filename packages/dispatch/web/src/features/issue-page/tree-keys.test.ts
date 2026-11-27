@@ -40,7 +40,7 @@ function node(
 }
 
 /** An issue whose spec holds two open questions and one answered one, under a document the
- *  reader has not opened, with a decision naming the first requirement. */
+ *  reader has not opened, with two decision blocks of the spec naming the first requirement. */
 function issue(): TreeNode {
   return node("CORE-1", "issue", [
     node("spec", "document", [
@@ -49,7 +49,7 @@ function issue(): TreeNode {
       node("spec#b-q2", "ask", [], { question: true }),
       node("spec#b-answered", "ask"),
     ]),
-    node("decisions-md#b-d1", "decision", [], {
+    node("spec#b-d1", "decision", [], {
       chips: [
         {
           answered: true,
@@ -59,7 +59,7 @@ function issue(): TreeNode {
         },
       ],
     }),
-    node("decisions-md#b-d2", "decision", [], {
+    node("spec#b-d2", "decision", [], {
       chips: [
         {
           answered: true,
@@ -80,8 +80,8 @@ test("the nodes read in the order the rows are drawn, the root first", () => {
     "spec#b-r1",
     "spec#b-q2",
     "spec#b-answered",
-    "decisions-md#b-d1",
-    "decisions-md#b-d2",
+    "spec#b-d1",
+    "spec#b-d2",
   ]);
 });
 
@@ -89,7 +89,7 @@ test("the next-question key walks the open questions and reports past the last",
   const root = issue();
   // From nowhere, and from a node that is no question, the key enters at the first question.
   expect(nextQuestion(root, undefined)?.id).toBe("spec#b-q1");
-  expect(nextQuestion(root, "decisions-md#b-d1")?.id).toBe("spec#b-q1");
+  expect(nextQuestion(root, "spec#b-d1")?.id).toBe("spec#b-q1");
   // From a question, the next one; from the last, nothing, which the key reports.
   expect(nextQuestion(root, "spec#b-q1")?.id).toBe("spec#b-q2");
   expect(nextQuestion(root, "spec#b-q2")).toBeUndefined();
@@ -99,9 +99,29 @@ test("the next-question key walks the open questions and reports past the last",
 
 test("the decision behind a node is the first that names it, whatever version it pins", () => {
   const root = issue();
-  expect(decisionBehind(root, "spec#b-r1")?.id).toBe("decisions-md#b-d1");
+  expect(decisionBehind(root, "spec#b-r1")?.id).toBe("spec#b-d1");
   expect(decisionBehind(root, "spec#b-q2")).toBeUndefined();
   expect(decisionBehind(root, "nothing-of-this-issue")).toBeUndefined();
+});
+
+// A person's decision is the answered question itself, whose node carries a chip for each node
+// the decision shaped (`tree-drafts.ts`'s `addDecisions`): the decision behind what it shaped is
+// that question. A question still open, or one closed without an answer, decided nothing, so a
+// chip it carries puts no decision behind anything.
+test("the decision behind a node may be the answered question that shaped it", () => {
+  const shaped = {
+    answered: true,
+    gone: false,
+    reading: { words: "R1" },
+    ref: "dispatch://CORE-1/spec#b-r1",
+  };
+  const root = node("CORE-1", "issue", [
+    node("spec#b-open", "ask", [], { chips: [shaped], question: true, state: "open" }),
+    node("spec#b-declined", "ask", [], { chips: [shaped], state: "declined" }),
+    node("spec#b-r1", "requirement", [], { reference: "dispatch://CORE-1/spec#b-r1" }),
+    node("ask-1", "ask", [], { chips: [shaped], state: "answered" }),
+  ]);
+  expect(decisionBehind(root, "spec#b-r1")?.id).toBe("ask-1");
 });
 
 // R10: a check reaches back through the chain it sits in. No decision names the check itself,
@@ -114,7 +134,7 @@ test("the decision behind a check is the one that informed the requirement it se
   const root = node("CORE-1", "issue", [
     node("spec#b-r1", "requirement", [check], { reference: "dispatch://CORE-1/spec#b-r1" }),
     node("spec#b-r2", "requirement", [unserved], { reference: "dispatch://CORE-1/spec#b-r2" }),
-    node("decisions-md#b-d1", "decision", [], {
+    node("spec#b-d1", "decision", [], {
       chips: [
         {
           answered: true,
@@ -125,7 +145,7 @@ test("the decision behind a check is the one that informed the requirement it se
       ],
     }),
   ]);
-  expect(decisionBehind(root, "verification-md#b-c1")?.id).toBe("decisions-md#b-d1");
+  expect(decisionBehind(root, "verification-md#b-c1")?.id).toBe("spec#b-d1");
   expect(decisionBehind(root, "verification-md#b-c2")).toBeUndefined();
   expect(decisionBehind(root, "result-1")).toBeUndefined();
 });
@@ -141,8 +161,8 @@ test("the last state of the cycle opens every branch of the tree", () => {
     "spec#b-r1",
     "spec#b-q2",
     "spec#b-answered",
-    "decisions-md#b-d1",
-    "decisions-md#b-d2",
+    "spec#b-d1",
+    "spec#b-d2",
   ]);
 });
 

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // TestEverySettlementWriterTakesTheStoreLockOrder drives the settlement's sites of the node and
@@ -28,15 +29,23 @@ import (
 // document's revision fence row before anything it writes (lockSettlementFence), so every write of
 // each path is held to come after that row. The paths are:
 //
+//   - a settlement that opens the ask of a block whose `shaped` pointer names a block of the same
+//     document, and writes no version: the ask's node and its asker's, the ask's row, the ties'
+//     block_refs rows, which name the ask's node (writeOpenedAskTies), the ask.opened, and then,
+//     under it, the follows' facts and the ties' tuples, in that order (causedByEvent);
 //   - a settlement that retracts the ask of a block a person deleted, and writes the version
 //     without it: the ask's row (asks.Settle, held for its event), the version's block index, the
 //     artifact.version and what the index stated under it, then the ask.resolved and the
 //     retraction's facts under it (causedByEvent);
-//   - a settlement that does not write a version states the copy's relation to its source ask
-//     after taking the document's owner lock and revision fence;
+//   - the settlement of a second document holding a copy of another document's ask block, which
+//     writes no version: the copy's copied_from, stated as a claim at the sentinel (claimCopies);
 //   - a settlement that versions an ask block whose question a person emptied: the block index, the
 //     artifact.version and what the index stated, the block.invalid that flags the block, and the
 //     reason on the ask's node under the version's event (asks.PlanInvalidReasons);
+//   - a settlement that versions a decision a session wrote into the live document: the block
+//     index's nodes with the node of the session that wrote it in one statement (the typed-node
+//     pass planned into the block index, refs.PlanBlocks), its rows, and the decision's tie rows,
+//     all before the artifact.version and its facts;
 //   - a settlement whose version holds again the text a person approved, while an approval request
 //     of the document is open: the block index, the request moved to the new version and its
 //     ask.edited, then the carry's answer of the request (answerApprovalAsk) - the approver's
@@ -51,7 +60,10 @@ func TestEverySettlementWriterTakesTheStoreLockOrder(t *testing.T) {
 	ctx := context.Background()
 	database, service := blockIndexService(t)
 	rig := &docsWriterRig{database: database, service: service}
-	for _, writer := range []docsWriter{rig.settledRetraction(), rig.settledCopy(t, ctx), rig.settledInvalidAsk(), rig.settledCarry()} {
+	for _, writer := range []docsWriter{
+		rig.settledAskTies(), rig.settledRetraction(), rig.settledCopy(t, ctx), rig.settledInvalidAsk(),
+		rig.settledDecision(), rig.settledCarry(),
+	} {
 		t.Run(writer.name, func(t *testing.T) {
 			requireTheDocsOrderAdmits(t, writer)
 			requireEachDocsStepIsWaitedAtInTurn(t, ctx, rig, writer)
@@ -62,6 +74,71 @@ func TestEverySettlementWriterTakesTheStoreLockOrder(t *testing.T) {
 // coreIssue is the issue that owns every document of the settlement paths, whose row each path
 // takes first (ownerStep).
 var coreIssue = "CORE-1"
+
+// settledAskTies is a settlement that opens the ask of a block a new session wrote with its
+// version (editAsVersion), whose `shaped` pointer names the requirement block of the same
+// document. A version written while the block had no ask stated none of its shaped ties, so the
+// settlement, which writes no version, states them beside the ask's row (writeOpenedAskTies): the
+// block_refs rows first, naming the ask's node, and their tuples held for the ask.opened:
+// appendEvents states them under it right after the follows' facts (causedByEvent). The ties'
+// rows are the settlement's first write of block_refs, so the table is held; the ties' tuples come
+// after the follows' and are held by their gate.
+func (r *docsWriterRig) settledAskTies() docsWriter {
+	return docsWriter{
+		name: "the opened ask's ties under its ask.opened",
+		steps: []docsStep{
+			r.ownerStep(), settlementFenceStep(), askNodeStep(), askerNodeStep(), askRowStep(),
+			{
+				name: "the ties' rows", order: docsProjectionStep, names: "the ask's node", fenced: true,
+				hold: holdDocsTableWrites("block_refs"), at: "delete from block_refs",
+				takes: []docsTableLock{{"block_refs", docsRowExclusiveMode}},
+			},
+			docsEventAppendStep(),
+			docsCausedTuplesStep("the follows' tuple append", "", holdDocsTableWrites("graph_tuples")),
+			docsCausedPlainTuplesStep("the ties' tuples", "", gatedDocsWrites(r, "insert", "graph_tuples", func() string {
+				return "new.from_kind = 'ask' and new.kind = " + docsLiteral(refs.TupleShaped)
+			})),
+		},
+		ready: func(t *testing.T, ctx context.Context) docsRun {
+			slug := r.fresh("lock-steps-ties")
+			document := r.settledDocument(t, ctx, slug, "# Ties\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n")
+			session, block := r.fresh("lock-steps-asker"), r.fresh("lock-ties")
+			asker := model.Actor{Kind: "session", ID: session}
+			shaped := refs.BlockRef(refs.ArtifactRef(&coreIssue, "CORE", nil, slug, "doc", false), "r1")
+			r.editAsVersion(t, ctx, document, asker, ":::ask{#"+block+` urgency="high" multiple="false" shaped="`+shaped+`"}`+
+				"\nWhich store does "+block+" read?\n:::\n")
+			r.awaitDurable(t, document)
+			return docsRun{
+				document: document,
+				made:     graphstore.SessionNode(session, asker, time.Now().UTC(), graphstore.NoEvent),
+				write: func() error {
+					if err := r.settle(ctx, document); err != nil {
+						return err
+					}
+					return r.tiesCaused(ctx, document, block)
+				},
+			}
+		},
+	}
+}
+
+// tiesCaused answers nil where the ask the settlement opened for block in document holds a shaped
+// tie caused by the ask.opened that records it.
+func (r *docsWriterRig) tiesCaused(ctx context.Context, document, block string) error {
+	var ties int
+	if err := r.database.Pool.QueryRow(ctx, `
+		select count(*) from asks a
+		join graph_tuples t on t.from_kind = $3 and t.from_id = a.id::text and t.kind = $4
+		join events e on e.id = t.source_event and e.type = 'ask.opened'
+		where a.block_artifact_id = $1 and a.block_id = $2
+	`, document, block, graphstore.KindAsk, refs.TupleShaped).Scan(&ties); err != nil {
+		return fmt.Errorf("read the ties of the ask of block %s: %w", block, err)
+	}
+	if ties == 0 {
+		return fmt.Errorf("the ask of block %s holds no shaped tie caused by its ask.opened: the settlement stated none under that event", block)
+	}
+	return nil
+}
 
 // settledRetraction is a settlement that retracts the ask of a block a person deleted from the
 // live document, and writes the version without the block. The retraction goes through the one
@@ -116,12 +193,20 @@ func (r *docsWriterRig) settledRetraction() docsWriter {
 	}
 }
 
-// settledCopy holds the copy relation's write on a settlement that needs no new version.
-// Repeating the same claim must not append a second copied_from tuple.
+// settledCopy is the settlement of a document of the issue written with the ask block of another
+// document of it, whose ask is open: the block is a copy of that ask, opens none, and writes no
+// version, so the settlement states the block node's copied_from to its source as a claim at the
+// sentinel (claimCopies). A copy keeps its provenance in its bytes on a fleet of one build
+// (keptAskState: copied_from and copied_from_document, whatever its source's state), so the
+// copy's first settlement, which classifies it, writes that into the copy and versions it, and
+// states the claim under that version's event. The settlement this path holds is therefore the
+// next one, after a session's edit that versions itself (editAsVersion): it finds the copy as the
+// first left it, writes no version, and states the claim again at the sentinel, which appends
+// nothing the node does not hold. That claim is the settlement's first write of graph_tuples, so
+// the table is held. Each run writes a copy of its own.
 func (r *docsWriterRig) settledCopy(t *testing.T, ctx context.Context) docsWriter {
 	const block = "lock-copied"
-	sourceDoc := r.settledDocument(t, ctx, "lock-steps-source", "# Source\n\n"+askBlockMarkdown(block))
-	source := blockAskOn(t, r.service, sourceDoc, block).ID
+	source := blockAskOn(t, r.service, r.settledDocument(t, ctx, "lock-steps-source", "# Source\n\n"+askBlockMarkdown(block)), block).ID
 	return docsWriter{
 		name: "claimCopies",
 		steps: []docsStep{
@@ -133,7 +218,11 @@ func (r *docsWriterRig) settledCopy(t *testing.T, ctx context.Context) docsWrite
 			},
 		},
 		ready: func(t *testing.T, ctx context.Context) docsRun {
-			copied := r.settledDocument(t, ctx, r.fresh("lock-steps-copy"), "# Copy\n\n"+askBlockMarkdown(block))
+			copied := writeDocumentThroughTheRequestPath(t, r.service, r.database, r.fresh("lock-steps-copy"), "# Copy\n\n"+askBlockMarkdown(block))
+			r.awaitDurable(t, copied)
+			if err := r.settle(ctx, copied); err != nil {
+				t.Fatalf("settle the copy's classification: %v", err)
+			}
 			r.editAsVersion(t, ctx, copied, model.Actor{Kind: "session", ID: r.fresh("lock-steps-copier")}, "A paragraph after the copy.\n")
 			r.awaitDurable(t, copied)
 			return docsRun{document: copied, write: func() error {
@@ -149,7 +238,7 @@ func (r *docsWriterRig) settledCopy(t *testing.T, ctx context.Context) docsWrite
 					return fmt.Errorf("read the copy's copied_from: %w", err)
 				}
 				if claims != 1 {
-					return fmt.Errorf("the copy's block node holds %d copied_from tuples to ask %s, want one", claims, source)
+					return fmt.Errorf("the copy's block node holds %d copied_from tuples to ask %s, want the one claimCopies states", claims, source)
 				}
 				return nil
 			}}
@@ -195,6 +284,63 @@ func (r *docsWriterRig) settledInvalidAsk() docsWriter {
 				}
 				return nil
 			}}
+		},
+	}
+}
+
+// settledDecision is a settlement that versions a decision block a new session wrote into the live
+// document. The version's block index plans the typed-node pass with it (refs.PlanBlocks): its one
+// node write writes the blocks' nodes and the node of the session that introduced the decision
+// (through graphstore's AuthorFacts), in one statement in ascending (kind, id), then the block
+// rows, then the document's block_refs rows, the decision's tie among them, before the
+// artifact.version and what the pass stated under it. The session is new, so its node is held as
+// a row another transaction inserted and has not committed, in that same node statement.
+func (r *docsWriterRig) settledDecision() docsWriter {
+	return docsWriter{
+		name: "the typed-node pass in the block index",
+		steps: []docsStep{
+			r.ownerStep(), settlementFenceStep(), docsBlockNodesStep(),
+			{
+				name: "the decision's author's node", order: docsNodeStep, fenced: true,
+				hold: holdDocsNewNode, at: docsNodeStatement,
+				takes: []docsTableLock{{"graph_nodes", docsRowExclusiveMode}},
+			},
+			docsBlockRowsAt("insert into document_blocks ("),
+			{
+				name: "the decision's tie rows", order: docsProjectionStep, names: "the block nodes", fenced: true,
+				hold: holdDocsTableWrites("block_refs"), at: "delete from block_refs",
+				takes: []docsTableLock{{"block_refs", docsRowExclusiveMode}},
+			},
+			docsEventAppendStep(),
+			docsCausedTuplesStep("the tuple append", "", holdDocsTableWrites("graph_tuples")),
+		},
+		ready: func(t *testing.T, ctx context.Context) docsRun {
+			document := r.settledDocument(t, ctx, r.fresh("lock-steps-decision"), "# Decision\n\nContext.\n")
+			session, block := r.fresh("lock-steps-decider"), r.fresh("lock-decision")
+			decider := model.Actor{Kind: "session", ID: session}
+			if _, err := joinedApplyOps(r.service, document, []model.EditOp{{Op: "insert", After: "end",
+				Markdown: ":::decision{#" + block + "}\nWe chose the store for " + block + ".\n:::\n"}}, decider, nil); err != nil {
+				t.Fatalf("write decision %s as %s: %v", block, session, err)
+			}
+			r.awaitDurable(t, document)
+			return docsRun{
+				document: document,
+				made:     graphstore.SessionNode(session, decider, time.Now().UTC(), graphstore.NoEvent),
+				write: func() error {
+					if err := r.settle(ctx, document); err != nil {
+						return err
+					}
+					var caused int64
+					if err := r.database.Pool.QueryRow(ctx, `select source_event from graph_nodes where kind = $1 and id = $2`,
+						graphstore.KindSession, session).Scan(&caused); err != nil {
+						return fmt.Errorf("read the node of %s, who wrote decision %s: %w", session, block, err)
+					}
+					if caused == graphstore.NoEvent {
+						return fmt.Errorf("the node of %s, who wrote decision %s, is still at the sentinel", session, block)
+					}
+					return nil
+				},
+			}
 		},
 	}
 }

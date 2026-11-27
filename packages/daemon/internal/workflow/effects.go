@@ -305,8 +305,8 @@ func backwardMoveReason(from, to phase.Phase, reason string) string {
 
 // backwardReasonRefusal is the refusal code and message for a backward move whose post Dispatch
 // would refuse, and two empty strings for one it takes. The move posts its reason on the issue
-// (moveReason), and Dispatch refuses a body past the bounds it publishes, or one that holds a
-// decision block, on every attempt: refused at the post, the reason would reach no issue and the
+// (moveReason), and Dispatch refuses a body past the bounds it publishes, or one that holds an
+// ask block, on every attempt: refused at the post, the reason would reach no issue and the
 // worker would never learn why. So backward refuses it before anything moves, as closeRoot does a
 // close's reason (api's closeRoot). The text measured is the post the outbox makes, this move's
 // sentence under its marker (record.LongestPost), read by the server's own reader
@@ -317,7 +317,7 @@ func backwardReasonRefusal(from, to phase.Phase, reason string) (string, string)
 		return "", ""
 	}
 	if dispatchbody.IsDecisionBlock(over) {
-		return "BACKWARD_REASON_DECISION_BLOCK", fmt.Sprintf("the reason holds a decision block, and the move posts the reason on the issue as a message, where nobody can answer one: %s; the move was not applied, so ask again with a reason that states what is wrong rather than asking a question", over)
+		return "BACKWARD_REASON_DECISION_BLOCK", fmt.Sprintf("the reason holds an ask block, and the move posts the reason on the issue as a message, where nobody can answer one: %s; the move was not applied, so ask again with a reason that states what is wrong rather than asking a question", over)
 	}
 	return "BACKWARD_REASON_TOO_LONG", fmt.Sprintf("the reason makes a message Dispatch refuses: %s; the move was not applied, so ask again with a shorter reason", over)
 }

@@ -39,9 +39,13 @@
 # to the fake Envoy's session list and puts the list back when it ends, and builds
 # `envoy-dispatch` from this checkout and runs that build, whatever PATH holds.
 #
-# The node writers' own grep, where a reader wants one: `graphstore\.(PlanUncaused|Write|WriteArms)\(|graphstore\.Node\{`,
-# with api/comment_create.go as its control. `graphstore.Caused` is left out on purpose: it names
-# every deferred write of the store, a block index's and a follow's among them, so it cannot tell a
+# The node writers' own grep, where a reader wants one:
+# `graphstore\.(Write|QueueWrite|PlanUncaused|WriteArms|WriteArmsUncaused)\(|graphstore\.Node\{`, with
+# api/comment_create.go as its control (its commentStoreWrite plans its node with PlanUncaused). A
+# writer whose event follows its node row plans the node with PlanUncaused and queues it with
+# QueueNodes; one with its cause in hand queues it with QueueWrite, or runs it at once with Write.
+# `graphstore.Caused` and `graphstore.QueueCaused` are left out on purpose: they name every
+# deferred write of the store, a block index's and a follow's among them, so they cannot tell a
 # node writer from the cause of another write.
 #
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints

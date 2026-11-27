@@ -1,5 +1,6 @@
 import type { TextAsk } from "@legion/contracts";
-import { askOpenerAttributes, askOpenerLines } from "@legion/contracts";
+import { askOpenerAttributes, askOpenerLines, hasControlCharacter } from "@legion/contracts";
+import { oneLineJson } from "./one-line-json";
 
 /**
  * A document's live text as `GET /api/v1/artifacts/{id}/text` answers it. A Dispatch of this
@@ -31,31 +32,68 @@ export function liveTextAsks(text: LiveText): readonly TextAsk[] {
 
 /** The asks that `lines`, opening lines of ask blocks as `askOpenerLines` gives them, carry on
  *  them, as the release before writes them (`askOpenerAttributes` in packages/contracts, which the
- *  web reads them by too): one per line that names a block id. */
+ *  web reads them by too): one per line that names a block id, without an answerer or a time that
+ *  holds a control character, U+2028 or U+2029 (`withoutForgedAnswer`). */
 // kept for one release: release-before-text
 export function openerAsks(lines: readonly string[]): readonly TextAsk[] {
   return lines.flatMap((line) => {
     const opener = askOpenerAttributes(line);
-    return opener === undefined ? [] : [opener];
+    return opener === undefined ? [] : [withoutForgedAnswer(opener)];
   });
 }
 
+// The older server supplies these values in document attributes. A reader may split at U+2028
+// or U+2029 as well as at ordinary control characters.
+// kept for one release: release-before-text
+const trailerSeparators = /[\u2028\u2029]/u;
+
+// kept for one release: release-before-text
+function unsafeTrailerValue(value: string): boolean {
+  return hasControlCharacter(value) || trailerSeparators.test(value);
+}
+
 /**
- * One line per answered ask of `asks`, for a live read's trailer:
- * `Answered "<block id>" by <answerer> at <time>: <answer>`, the words quoted as JSON, so a line
- * break stays on the line, and the options chosen beside them where the answer chose any. The
- * block id is quoted as JSON for the same reason: it is text the document's writer chooses, and a
- * line break in it would otherwise start a line of the trailer that reads as an answer.
+ * Drop an opener's answerer or time independently if it contains a control character or a Unicode
+ * line or paragraph separator. Without an answerer, the trailer omits the entry. Without a time,
+ * it prints "an unrecorded time".
  */
-export function answeredAskLines(asks: readonly TextAsk[]): string[] {
+// kept for one release: release-before-text
+function withoutForgedAnswer(ask: TextAsk): TextAsk {
+  const { answered_at, answered_by, ...rest } = ask;
+  return {
+    ...rest,
+    ...(answered_by === undefined || unsafeTrailerValue(answered_by) ? {} : { answered_by }),
+    ...(answered_at === undefined || unsafeTrailerValue(answered_at) ? {} : { answered_at }),
+  };
+}
+
+/**
+ * One line per answered or resolved ask of `asks`, for a live read's trailer: `Answered <block id>
+ * by <answerer> at <time>: <answer>` for an answered ask, the words quoted, and the options chosen
+ * beside them, each quoted, where the answer chose any; and `Resolved <block id>` for a resolved or
+ * declined ask, which the markdown no longer shows by a `state` attribute, so an agent does not
+ * take it for an open one. A block id is the document writer's text and can hold a line break, so
+ * it is quoted too. Each quoted field is a JSON string with U+0085, U+2028 and U+2029 escaped as
+ * well (`oneLineJson`), which reads back as the same text and holds no character that ends a line,
+ * whether its reader splits lines on a line feed alone or the Unicode way. The answerer and the
+ * time are not quoted: they come from the ask or, on a Dispatch of the release before, from the
+ * opener, where `openerAsks` takes neither when it holds a control character, U+2028 or U+2029.
+ * So none of them starts a line of its own for either reader, and a trailer line is never forged
+ * by one.
+ */
+export function settledAskLines(asks: readonly TextAsk[]): string[] {
   return asks.flatMap((ask) => {
+    const id = oneLineJson(ask.block_id);
+    if (ask.state === "resolved") {
+      return [`Resolved ${id}`];
+    }
     if (ask.state !== "answered" || ask.answered_by === undefined) return [];
     const words =
-      ask.answer === undefined || ask.answer === "" ? undefined : JSON.stringify(ask.answer);
+      ask.answer === undefined || ask.answer === "" ? undefined : oneLineJson(ask.answer);
     const chose =
       ask.selected === undefined || ask.selected.length === 0
         ? undefined
-        : `chose ${ask.selected.map((option) => JSON.stringify(option)).join(", ")}`;
+        : `chose ${ask.selected.map(oneLineJson).join(", ")}`;
     const answer =
       words === undefined
         ? (chose ?? "no words")
@@ -63,7 +101,7 @@ export function answeredAskLines(asks: readonly TextAsk[]): string[] {
           ? words
           : `${words} (${chose})`;
     return [
-      `Answered ${JSON.stringify(ask.block_id)} by ${ask.answered_by} at ${ask.answered_at ?? "an unrecorded time"}: ${answer}`,
+      `Answered ${id} by ${ask.answered_by} at ${ask.answered_at ?? "an unrecorded time"}: ${answer}`,
     ];
   });
 }

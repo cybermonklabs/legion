@@ -234,6 +234,7 @@ func TestARowAtTheDefaultsPredatesTheFleetColumns(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	var id string
+	// A build that predates the fleet columns predates the owner lock protocol too: its row reads 0.
 	if err := database.Pool.QueryRow(context.Background(), `
 		insert into server_processes (instance, commit, dashboard_build, signing_keys)
 		values (gen_random_uuid(), 'c0', 'build-c0', $1)

@@ -17,6 +17,12 @@ import (
 // inbox reads it; a project with no open ask has no row of that count, which the coalesce reads
 // as the 0 the subquery answered. It is named here rather than written inside the handler so
 // the plan test explains the statement the route runs.
+//
+// The count reads the ask's row's state, not its node's: the one writer of an answer state writes
+// the two in one transaction (asks.Settle), so they differ only inside a roll's window, between a
+// process of the release before writing an answer state to the row alone and the decisions step's
+// catch-up tick that states it on the node; R3 holds the reads that show an answer to the node,
+// and a count shows none.
 const projectListQuery = `
 		select p.key, p.name, coalesce(open_asks.total, 0), p.gated_steps, p.default_repo, p.proven_sessions, p.created_at
 		from projects p
@@ -36,12 +42,17 @@ const projectListQuery = `
 // answer of the proven-sessions routes carries the open-ask count the list shows, not a zero.
 const projectRowQuery = `select * from (` + projectListQuery + `) listed where listed.key = $1`
 
-// scanListedProject reads one row of projectListQuery or projectRowQuery.
+// scanListedProject reads one row of projectListQuery or projectRowQuery. A stored list of gated
+// steps may hold the retired `decisions` step until the decisions step rewrites it, and the
+// database's check still admits it: the project is answered without it, by the list and by the
+// route that answers one row alike.
 func scanListedProject(row pgx.Row) (model.Project, error) {
 	var project model.Project
 	if err := row.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.DefaultRepo, &project.ProvenSessions, &project.CreatedAt); err != nil {
 		return model.Project{}, err
 	}
+	// kept for one release: check-narrowings
+	project.GatedSteps = gatedStepsWithout(project.GatedSteps)
 	return project, nil
 }
 

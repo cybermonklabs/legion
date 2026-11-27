@@ -133,7 +133,9 @@ func blockHolds(alias, fromKind, table, column string) string {
 
 // blockRefListed is whether the block_refs row alias is listed: the types test of a typed
 // block's pointer, made the way the arm of graph_edges that answers the row makes it, so a read
-// of the rows themselves and a read of the view cannot answer one link differently.
+// of the rows themselves and a read of the view cannot answer one link differently. target is
+// the node id of the block the link reaches: the row's own to_id, or, for a read that follows a
+// target no row holds through its moved_to tuples (refs.BlockLinks), the block it reaches there.
 //
 // A row that names its node is the tuple arm's (migration 20261109215947): a mention is listed
 // whatever its target's type, and a pointer only while block_ref_listed holds of the targets the
@@ -141,11 +143,14 @@ func blockHolds(alias, fromKind, table, column string) string {
 // reaches every link of that attribute at its next read, with no pass over documents nobody
 // edits. A row that names no node, which a build before the store wrote, is the old block_refs
 // arm's, whose test reads the to_types the index copied into the row: such a row follows a
-// change of the targets only once a version is indexed again.
-func blockRefListed(alias string) string {
+// change of the targets only once a version is indexed again. Beyond a mention it tests no row's
+// kind, as the view does not, so a decision's decided_by and from_ask, whose attributes declare no
+// targets, are listed as graph_edges lists them; the references read admits only mentions and the
+// pointer kinds the schema declares (blockRefLinked).
+func blockRefListed(alias, target string) string {
 	return `(case when ` + alias + `.node_kind is null
-		then ` + alias + `.to_types is null or block_ref_listed(` + alias + `.to_types, ` + alias + `.to_id)
-		else ` + alias + `.kind = 'mentions' or block_ref_listed(block_pointer_targets(` + alias + `.from_node, ` + alias + `.kind), ` + alias + `.to_id) end)`
+		then ` + alias + `.to_types is null or block_ref_listed(` + alias + `.to_types, ` + target + `)
+		else ` + alias + `.kind = 'mentions' or block_ref_listed(block_pointer_targets(` + alias + `.from_node, ` + alias + `.kind), ` + target + `) end)`
 }
 
 // documentBlockIDs is the node id of every current block of the document whose ref_key is the
@@ -192,29 +197,20 @@ const itemBlockCurrent = `b.position is not null`
 // written over the arm's rows aliased g. It reads the ids once, and then, for each id, every arm
 // of graph_edges that can end at a block of that kind through its own index of targets, keyed by
 // to_kind and to_id (a reply by replies_to_block), each with the view's own rule for a current
-// block (migration 20261105014808): a block's pointer while block_refs lists it, a link an item's
-// block holds while that block is current (itemBlockLinks), and a reply to an ask's part told
-// from one to a comment's block by its prefix. Each edge comes once: a node's block ids are
-// distinct, document_blocks being keyed by document and block and an item's blocks table holding
-// one row for each item and block id.
-//
-// A document block's link is read from its block_refs row whether the row names its node or not,
-// under the rule each kind of row is listed by (blockRefListed), as the out read of a document
-// reads the same rows: a row that names no node is the view's block_refs arm, and one that names
-// its node is the row the view's tuple arm answers that link only while it carries the node
-// (migration 20261109215947), so the row read here is that link whichever arm of the view would
-// answer it, through the one index of targets block_refs has.
-//
-// A block the acting person, whose credential the read binds at seen, may not see holds no edge
-// of the read: its id is tested once against the block kind's predicate (VisibleKind), before
-// any link table is read for it.
-func keyedBlockArm(blockKind, ids, source, seen string) string {
+// block (migration 20261105014808): a block's pointer while block_ref_listed lists it, a link an
+// item's block holds while that block is current (itemBlockLinks), and a reply to an ask's part
+// told from one to a comment's block by its prefix. The view's arm over block_refs answers only
+// the rows that name no node (rowNamesNoNode), and its tuple arm the links of the rows that do
+// (keyedTupleArm), so this reads both, each by the row's target, as the view answers them. Each
+// edge comes once: a node's block ids are distinct, document_blocks being keyed by document and
+// block and an item's blocks table holding one row for each item and block id.
+func keyedBlockArm(blockKind, ids, source string) string {
 	arms := []string{
 		`select r.from_kind, r.from_id, r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq
 				from refs r where r.to_kind = '` + blockKind + `' and r.to_id = k.node_id`,
 		`select 'block', b.from_node, b.kind, b.to_kind, b.to_id, b.created_at, b.source_seq
 				from block_refs b where b.to_kind = '` + blockKind + `' and b.to_id = k.node_id
-				and ` + blockRefListed("b"),
+				and (b.to_types is null or block_ref_listed(b.to_types, b.to_id)) and ` + rowNamesNoNode(`b.node_kind`),
 	}
 	for _, item := range itemKinds {
 		arms = append(arms, `select '`+item.BlockKind()+`', r.from_node, r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq
@@ -227,6 +223,7 @@ func keyedBlockArm(blockKind, ids, source, seen string) string {
 			arms = append(arms, blockRepliesArm(item))
 		}
 	}
+	arms = append(arms, keyedTupleArm(blockKind))
 	return `select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq, g.to_id
 			from ` + ids + ` k (node_id)
 			cross join lateral (
@@ -234,7 +231,32 @@ func keyedBlockArm(blockKind, ids, source, seen string) string {
 				union all
 				`) + `
 			) g (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq)
-			where ` + VisibleKind(blockKind, "k.node_id", seen) + ` and ` + source
+			where ` + source
+}
+
+// keyedTupleArm is graph_edges' tuple arm (migration 20261125163554) for the edges that end at
+// the block k.node_id, of storage kind blockKind: the links of the block_refs rows that name their
+// node, read by the row's target through block_refs_to_source as the arm beside it reads the rows
+// that name none. Such a row is the projection of the tuple of the node it names (node_kind and
+// node_address), a block's link or an answered ask's shaped, and while the row stands the view
+// answers the edge from that node, as the tuple states it: while the newest tuple of its relation
+// asserts (graphstore.CurrentTupleRead, the reading currentTuple makes), while the node is not
+// gone, as the view's join to graph_nodes keeps it, and, for a pointer, while block_ref_listed
+// lists its target among the targets its attribute declares now. Its time and its sequence are
+// that tuple's, as the view answers them. The source's visibility is the read's filter of a
+// source, as for every other arm.
+func keyedTupleArm(blockKind string) string {
+	return `select b.node_kind, b.node_address, b.kind, b.to_kind, b.to_id, newest.at, newest.legacy_source_seq
+				from block_refs b
+				cross join lateral (` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id`,
+		`t.at, t.legacy_source_seq, t.asserted`,
+		`t.from_kind = b.node_kind and t.from_id = b.node_address and t.kind = b.kind
+					and t.to_kind = b.to_kind and t.to_id = b.to_id and t.to_kind <> '`+graphstore.KindValue+`'`) + `
+				) newest
+				where b.to_kind = '` + blockKind + `' and b.to_id = k.node_id and b.node_kind is not null and newest.asserted
+				and (b.kind = 'mentions' or block_ref_listed(block_pointer_targets(b.node_address, b.kind), b.to_id))
+				and exists (select 1 from graph_nodes live
+					where live.kind = b.node_kind and live.id = b.node_address and live.state <> '` + graphstore.StateGone + `')`
 }
 
 // blockRepliesArm is graph_edges' arm of the replies to a block of an item of kind owner, keyed
@@ -381,6 +403,15 @@ func resolveEdges(ctx context.Context, q Queryer, who model.Actor, query Query) 
 // block holding it (heldByABlock). A whole-document read lists each citer by its item instead,
 // an ask citing the document from a part included (asksCitingTheDocument).
 //
+// An inbound read's arm over the node's blocks reads the node's current block ids once, and then
+// each link table by its index of targets for each id (keyedBlockArm), never graph_edges with
+// to_id in those ids: the planner does not push that set into the view's arms, so that form read
+// refs by to_kind alone and hash-joined every block of that kind before a semi-join kept the
+// node's own. Measured at --scale 1 with jit off, it took 165 of the 166 ms of the statement for
+// the seed's root message with the most replies and 205 of the 261 ms of the one for the seed's
+// anchored document, and it grew with every block link of that kind in the database. The arm over
+// the node itself reads graph_edges by to_kind and to_id, which reach each arm's index.
+//
 // Every arm carries the visibility predicate of the end it answers, bound from the registry
 // (visibility.go) and never applied to the rows in Go: an edge whose far end who may not see is
 // no row of this read, and neither is one at a block who may not see. That is what keeps a
@@ -396,15 +427,6 @@ func resolveEdges(ctx context.Context, q Queryer, who model.Actor, query Query) 
 // for every execution, and the read pays for planning the whole view again every time:
 // measured on this pod over the chain of 200 blocks, 6.9 ms a step of which 6.5 ms was that
 // planning, against 0.4 ms a step once the statement is one plan the connection keeps.
-//
-// An inbound read's arm over the node's blocks reads the node's current block ids once, and then
-// each link table by its index of targets for each id (keyedBlockArm), never graph_edges with
-// to_id in those ids: the planner does not push that set into the view's arms, so that form read
-// refs by to_kind alone and hash-joined every block of that kind before a semi-join kept the
-// node's own. Measured at --scale 1 with jit off, it took 165 of the 166 ms of the statement for
-// the seed's root message with the most replies and 205 of the 261 ms of the one for the seed's
-// anchored document, and it grew with every block link of that kind in the database. The arm over
-// the node itself reads graph_edges by to_kind and to_id, which reach each arm's index.
 func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) ([]edgeRow, error) {
 	if !slices.Contains(nodeKinds, query.Kind) {
 		// A kind no loader resolves is the address of no node this build knows, and the
@@ -449,7 +471,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		case document:
 			arms += `
 			union all
-			` + keyedBlockArm("block", documentBlockIDs(id), source, seen)
+			` + keyedBlockArm("block", documentBlockIDs(id), VisibleKind("block", "g.to_id", seen)+` and `+source)
 			if query.WholeDocuments {
 				// An ask's row holds its question's links alone, so the only edge from an ask
 				// that cites the document in an option or in its answer is that part's.
@@ -460,7 +482,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		case itemBlocks:
 			arms += `
 			union all
-			` + keyedBlockArm(item.BlockKind(), itemBlockIDs(item, blocks), source, seen)
+			` + keyedBlockArm(item.BlockKind(), itemBlockIDs(item, blocks), VisibleKind(item.BlockKind(), "g.to_id", seen)+` and `+source)
 		}
 	case query.Direction == "out" && document:
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
@@ -468,7 +490,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 			and ` + VisibleEnd("g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select b.kind, b.to_kind, b.to_id, b.created_at, b.source_seq, b.from_node
-			from block_refs b where b.artifact_id = ` + blocks + `::uuid and ` + blockRefListed("b") + `
+			from block_refs b where b.artifact_id = ` + blocks + `::uuid and ` + blockRefListed("b", "b.to_id") + `
 			and ` + VisibleKind("block", "b.from_node", seen) + ` and ` + VisibleEnd("b.to_kind", "b.to_id", true, seen)
 	case query.Direction == "out" && itemBlocks:
 		tables, _ := item.tables()
@@ -587,16 +609,17 @@ type TargetName struct {
 // One entry per target that resolves for who: a target with no entry is one nothing addresses
 // now — its node was deleted, or its kind is one this build cannot address (resolveNodes) — or
 // one who may not see, which each kind's loader leaves out as it leaves out a node that does not
-// exist (visibility.go). A caller draws either as a reference whose target is gone. A block of a
-// deleted comment or message resolves to nothing too, since the delete indexes the empty body,
-// which takes every block out of its post (api's planEditedItem, in clearDeletedPostBody), but it
-// has an entry: Gone, with no name and its post's marks, the delete's and, where its author
-// edited the post before deleting it, the last edit's time, as a block read of it is refused
-// naming the deletion (api's itemBlockNotFound). That entry is read for who too, so a block of a
-// post who may not see has none. Each kind is read in one statement whatever the number of
-// targets, so a batch costs a statement per kind, not per target; a block of a comment or a
-// message that resolves to nothing, whose post targets does not name too, costs one statement
-// more per kind of post, which reads whether its post was deleted.
+// exist (visibility.go), a target reserved for an author who is not who among them, which answers
+// as an address nobody holds does (Node). A caller draws either as a reference whose target is
+// gone. A block of a deleted comment or message resolves to nothing too, since the delete indexes
+// the empty body, which takes every block out of its post (api's planEditedItem, in
+// clearDeletedPostBody), but it has an entry: Gone, with no name and its post's marks, the
+// delete's and, where its author edited the post before deleting it, the last edit's time, as a
+// block read of it is refused naming the deletion (api's itemBlockNotFound). That entry is read
+// for who too, so a block of a post who may not see has none. Each kind is read in one statement
+// whatever the number of targets, so a batch costs a statement per kind, not per target; a block
+// of a comment or a message that resolves to nothing, whose post targets does not name too, costs
+// one statement more per kind of post, which reads whether its post was deleted.
 func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Target, serverURL string) (map[Target]TargetName, error) {
 	rows := make([]edgeRow, len(targets))
 	for index, target := range targets {
@@ -691,11 +714,6 @@ func (n resolvedNode) name(serverURL string) string {
 
 // resolveNodes loads every distinct other end by kind, each loader answering only what who may
 // see.
-//
-// The block, ask, comment and message loaders join issues, artifacts and artifact_versions by
-// lateral probes by key that each stop at their first row, so however many ids a read passes, the
-// planner cannot hash-join a sequential read of a whole table, as it did for a plain join to
-// issues from about 80 ids with 12,000 issues. Each of those loaders names its probes.
 func resolveNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, rows []edgeRow) (map[[2]string]resolvedNode, error) {
 	return resolveNodesWith(ctx, q, who, byRefKey, rows, nodeRegistry)
 }
@@ -798,9 +816,35 @@ func loadIssueNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 	return rows.Err()
 }
 
+// RetiredDecisionsSlug is the slug of an issue's decisions document, which the decisions step
+// retires: the address `dispatch://KEY/artifact/<this slug>` of a
+// retired one resolves to the issue KEY, as every retired document's address does
+// (loadArtifactNodes). It is the one place the server spells that slug: api refuses a new
+// document that would take it.
+const RetiredDecisionsSlug = "decisions-md"
+
+// DecisionsDocumentOf is the FROM and WHERE of a read of the issue's decisions document while it
+// stands, issue the SQL that names the issue's key (a parameter, or a column of an outer query),
+// with the document's artifacts row aliased `a`: of the documents decisions_documents() answers
+// for the issue, the oldest, by created_at and then id. Every read that names the issue's decisions
+// document - the issue's decisions_artifact_id, the Decisions read's `document` and the decisions
+// step's restore - selects through it, so for an issue that holds two they name the same one.
+// kept for one release: decisions-documents-fn
+func DecisionsDocumentOf(issue string) string {
+	return `from decisions_documents() d join artifacts a on a.id = d.id
+		where d.issue_key = ` + issue + ` order by a.created_at, a.id limit 1`
+}
+
 // loadArtifactNodes resolves artifact nodes. An artifact is made by its creator; its last change
 // is its latest version, by that version's authors. It belongs to its issue, else to the session
 // whose conversation owns it, else (a project document) to no node.
+//
+// The address of a retired document of an issue (artifacts.retired_at, docs.RetireDocument),
+// `dispatch://KEY/artifact/<slug>` read by its ref_key, resolves to the issue KEY, whose node it
+// answers in the document's place: the document plays no part in
+// its issue any more, and a citation of it stays valid and reaches what took its place, the issue
+// and its reads. The document read by its uuid is the document still, so its versions, its blocks
+// and its own edges stay readable.
 func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string, byRefKey bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	predicate := `a.id::text = any($1)`
 	if byRefKey {
@@ -808,7 +852,7 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 	}
 	rows, err := q.Query(ctx, `
 		select a.id::text, a.ref_key, a.issue_key, coalesce(a.project_key, ''), a.session_id, a.slug, a.name, a.kind, a.is_primary,
-		       a.created_by, a.created_at, latest.authors, latest.created_at
+		       a.created_by, a.created_at, latest.authors, latest.created_at, a.retired_at is not null
 		from artifacts a
 		left join lateral (
 			select v.authors, v.created_at from artifact_versions v
@@ -819,19 +863,28 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 		return fmt.Errorf("load artifact nodes: %w", err)
 	}
 	defer rows.Close()
+	// retiredIssues is the issue each retired document's address resolves to, by that address.
+	var retiredIssues map[string]string
 	for rows.Next() {
 		var id, refKey, project, slug, name, kind string
 		var issueKey, session *string
-		var primary bool
+		var primary, retired bool
 		var createdBy, authors []byte
 		var createdAt time.Time
 		var versionAt *time.Time
-		if err := rows.Scan(&id, &refKey, &issueKey, &project, &session, &slug, &name, &kind, &primary, &createdBy, &createdAt, &authors, &versionAt); err != nil {
+		if err := rows.Scan(&id, &refKey, &issueKey, &project, &session, &slug, &name, &kind, &primary, &createdBy, &createdAt, &authors, &versionAt, &retired); err != nil {
 			return fmt.Errorf("scan artifact node: %w", err)
 		}
 		lookup := id
 		if byRefKey {
 			lookup = refKey
+		}
+		if byRefKey && retired && issueKey != nil {
+			if retiredIssues == nil {
+				retiredIssues = make(map[string]string)
+			}
+			retiredIssues[lookup] = *issueKey
+			continue
 		}
 		node := model.GraphNode{Kind: "artifact", ID: id, IssueKey: issueKey, Project: project, Ref: ArtifactRef(issueKey, project, session, slug, kind, primary)}
 		if err := setMadeAndChanged(&node, createdBy, createdAt, authors, versionAt, storedActors); err != nil {
@@ -845,7 +898,31 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 		}
 		nodes[[2]string{"artifact", lookup}] = resolvedNode{GraphNode: node, text: name, refKey: refKey}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	if len(retiredIssues) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(retiredIssues))
+	for _, key := range retiredIssues {
+		if !slices.Contains(keys, key) {
+			keys = append(keys, key)
+		}
+	}
+	// The issue is read as the issue loader reads it, for who: an issue they may not see answers
+	// what an address nobody holds answers, as its own address would.
+	issues := make(map[[2]string]resolvedNode, len(keys))
+	if err := loadIssueNodes(ctx, q, who, "issue", false, keys, issues); err != nil {
+		return err
+	}
+	for lookup, key := range retiredIssues {
+		if issue, found := issues[[2]string{"issue", key}]; found {
+			nodes[[2]string{"artifact", lookup}] = issue
+		}
+	}
+	return nil
 }
 
 // loadBlockNodes resolves block nodes, addressed '<document ref_key>#<block id>', from the
@@ -855,7 +932,7 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 // that version (blockFirstVersion); its last change is its changed version, by that version's
 // authors. It belongs to its document at its changed version.
 //
-// Its joins to artifacts and artifact_versions are lateral probes by key (resolveNodes).
+// Its joins to artifacts and artifact_versions are lateral probes by key (nodeLoader).
 func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	held, args := blockNodesAddressed(ids, who)
 	rows, err := q.Query(ctx, `
@@ -969,7 +1046,7 @@ func anchorVersion(alias string) string {
 // The edit lookup repeats events_ask_payload_id's type list (migration 0030), so the planner can
 // prove the partial index serves it.
 //
-// Its joins to issues and artifacts are lateral probes by key (resolveNodes).
+// Its joins to issues and artifacts are lateral probes by key (nodeLoader).
 func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	anchorArtifact := store.CastableUUID(`k.anchor->>'artifact_id'`)
 	rows, err := q.Query(ctx, `
@@ -1041,7 +1118,7 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 // head's owner, and so the owner its reference, and the reference of the block it names, are
 // written under.
 //
-// Its joins to issues and artifacts are lateral probes by key (resolveNodes).
+// Its joins to issues and artifacts are lateral probes by key (nodeLoader).
 func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select c.id::text, c.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), c.body,
@@ -1102,7 +1179,7 @@ func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 // belongs to that block, another reply to the message it answers, which shares its issue, and
 // another message to its issue; a direct message belongs to no node.
 //
-// Its join to issues is a lateral probe by key (resolveNodes).
+// Its join to issues is a lateral probe by key (nodeLoader).
 func loadMessageNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select m.id::text, m.issue_key, coalesce(i.project_key, ''), m.body, m.author, m.created_at, m.edited_at,

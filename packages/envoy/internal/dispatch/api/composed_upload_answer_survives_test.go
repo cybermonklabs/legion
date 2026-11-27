@@ -173,7 +173,7 @@ func seedAnswerSurvives(t *testing.T) answerSurvivesFixture {
 		t.Fatalf("answer the ask as the person: status=%d body=%s", answered.Code, answered.Body.String())
 	}
 	fixture.answered = fixture.await(t, "the person's answer held for the block she answered", func(state answerSurvivesState) bool {
-		return state.settled() && state.holdsAlicesAnswer("transport")
+		return state.holdsAlicesAnswer("transport")
 	})
 	seeded := []string{fixture.answeredAsk, fixture.removedAsk}
 	slices.Sort(seeded)
@@ -273,13 +273,6 @@ type answerSurvivesState struct {
 func (state answerSurvivesState) String() string {
 	return fmt.Sprintf("the issue's ask rows: %s\nthe document's ask blocks: %v\nits asks member: %s\nit owes a settlement: %t\nalice's Inbox: %s\nthe document:\n%s",
 		askRowLines(state.rows), state.blocks, textAskLines(state.asks), state.owed, askRowLines(state.inbox), state.text)
-}
-
-// settled reports whether the document owes no settlement: a write that changes it marks it owing
-// one in the write's own transaction, and the settlement clears that mark once it has run over
-// what the write left, the body the agent uploaded included.
-func (state answerSurvivesState) settled() bool {
-	return !state.owed
 }
 
 // holdsAlicesAnswer reports whether the text read answers the ask block blockID with alice's

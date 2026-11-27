@@ -265,24 +265,6 @@ function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boo
   return found.size;
 }
 
-/** The decisions of the view that restate a person's answer: the sections of `decisions.md`
- *  the tree hangs under the answered question they name. The Decisions filter draws that
- *  answer as the decision and the section as no entry (R2, R9, `decisions-filter/
- *  decisions-parts.ts`), so its count leaves them out. */
-function restatedAnswers(root: TreeNode): number {
-  const found = new Set<string>();
-  const walk = (node: TreeNode): void => {
-    for (const child of node.children) {
-      if (node.type === "ask" && node.answer !== undefined && child.type === "decision") {
-        found.add(child.id);
-      }
-      walk(child);
-    }
-  };
-  walk(root);
-  return found.size;
-}
-
 /** The signal each filter's control draws under `query`, which its count follows. */
 export function filterSignals(
   root: TreeNode,
@@ -299,9 +281,12 @@ export function filterSignals(
   // to a statement of this issue, which is what the tree marks `waiting` (`decision-review.ts`'s
   // `inReviewList`), so the signal, the list and the header's count cannot disagree.
   const toReview = countOf(decisions.root, "decision", (node) => node.waiting);
+  // Each ask and each decision is one entry of the count: a person's decision is the answered
+  // ask itself (`tree-drafts.ts`'s `addDecisions`), so no decision node restates an answer, and
+  // a decision under an answered question is an agent's own that settles it.
   return {
     decisions: {
-      count: decisions.matches - restatedAnswers(decisions.root),
+      count: decisions.matches,
       ...(toReview === 0 ? {} : { flag: { count: toReview, word: "to_review" } }),
     },
     plan: { count: view("plan").matches, unit: "steps" },

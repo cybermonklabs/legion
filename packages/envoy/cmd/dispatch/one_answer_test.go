@@ -636,10 +636,12 @@ type oneAnswerCase struct {
 func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchProcess, database *pgx.Conn, databaseURL, baseCommit string, c oneAnswerCase) {
 	t.Helper()
 	// In the repeat over the asks the base release wrote, the answer is the first accepted write of
-	// the spec on this build: the decisions step writes no version (DecisionStep: its backfill and
-	// its catch-up state what the release before wrote on the asks' nodes alone). So the answer's
-	// version also takes the state="open" the base release wrote off the source ask's block, which
-	// is still open (R5).
+	// the spec on this build: the decisions step's third phase writes no version of it, since that
+	// phase works only on an issue with an answered ask whose block left its spec or with a
+	// decisions document (graphcensus.ReadRestoreWork, DecisionStep.RestoreAndConvert), and this
+	// issue has neither; its backfill and its catch-up state what the release before wrote on the
+	// asks' nodes alone. So the answer's version also takes the state="open" the base release wrote
+	// off the source ask's block, which is still open (R5).
 	var releaseBeforeOpen []string
 	if c.baseWritten {
 		releaseBeforeOpen = []string{c.sourceBlock}

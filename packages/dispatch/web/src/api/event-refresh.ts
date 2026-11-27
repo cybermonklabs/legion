@@ -2,11 +2,7 @@ import { isIdPrefix } from "@legion/contracts";
 
 import { askProject } from "../features/inbox/list-row";
 import { routeItem } from "../features/refs/block-reference";
-import {
-  buildDispatchReference,
-  DECISIONS_DOCUMENT_SLUG,
-  parseNodeReference,
-} from "../features/refs/routes";
+import { buildDispatchReference, parseNodeReference } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
   agentMessagesQuery,
@@ -998,7 +994,8 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
   if (
     event.type === "artifact.version" ||
     event.type === "artifact.created" ||
-    event.type === "artifact.renamed"
+    event.type === "artifact.renamed" ||
+    event.type === "document.retired"
   ) {
     const created = event.type === "artifact.created";
     targets.push({
@@ -1278,23 +1275,13 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     );
     if (event.type === "artifact.version") {
       targets.push({ queryKey: ["artifact", event.payload.artifact_id] });
-      // The Decisions view reads two of the issue's documents - its decisions.md for the
-      // decisions and its spec for each link's target - and the event names its document by
-      // name alone, which does not say which the spec is, so every version of the issue
-      // refreshes it. The query exists only while that tab is open.
+      // The Decisions view reads every document of the issue - each one's decision blocks and
+      // the spec nodes they shaped - and the event names its document by name alone, so every
+      // version of the issue refreshes it. The query exists only while that tab is open.
       targets.push({ exact: true, queryKey: ["decisions", key] });
     } else {
       // An uploaded document is an `attached_to` edge into its issue.
       targets.push(referencePanel(issueReference));
-      // An issue's decisions.md sends this event alone on its first upload, no version, and the
-      // outline and the margin beside the spec read the decisions under events alone
-      // (`EVENT_FRESH`), so without this they draw none of them until a reload. The server names
-      // that document by its role, which it writes as it creates the row; a server built before
-      // roles sends none, and names it by its slug alone.
-      const { role, slug } = event.payload.artifact;
-      if (role === "decisions" || (role === undefined && slug === DECISIONS_DOCUMENT_SLUG)) {
-        targets.push({ exact: true, queryKey: ["decisions", key] });
-      }
     }
     return targets;
   }
@@ -1306,6 +1293,19 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     targets.push(
       { queryKey: ["artifacts", key] },
       { queryKey: ["artifact", event.payload.artifact.id] },
+      issueSummaryOf(key, event),
+      referencePanel(issueReference)
+    );
+    return targets;
+  }
+  if (event.type === "document.retired") {
+    // A retirement takes the document out of the issue's document list, summary and Decisions
+    // view, states its artifact node gone (moving the backlink panel), and supersedes any
+    // standing approval on its own read.
+    targets.push(
+      { queryKey: ["artifacts", key] },
+      { queryKey: ["artifact", event.payload.artifact_id] },
+      { exact: true, queryKey: ["decisions", key] },
       issueSummaryOf(key, event),
       referencePanel(issueReference)
     );
@@ -1643,7 +1643,8 @@ function addressUnder(address: string, owner: string, next: string): boolean {
 }
 
 /** The slug of the project document `event` is on, where its payload carries it: a created,
- *  renamed or removed document's own, an edited or a deleted comment's document's
+ *  renamed or removed document's own, a retired document's (its `ref_key` after the owner's
+ *  `/`), an edited or a deleted comment's document's
  *  (`artifact_slug`, which the read of a deleted comment's event keeps beside its delete marks),
  *  and an edited ask's document's, the one its anchor quotes (`anchor_artifact`), for an edit
  *  through the ask's own route the one that holds its typed block (`block_artifact`), or for an
@@ -1660,6 +1661,10 @@ function projectDocumentSlug(event: DispatchEvent): string | undefined {
     case "artifact.removed":
     case "artifact.renamed":
       return event.payload.artifact.slug;
+    case "document.retired": {
+      const slash = event.payload.ref_key.indexOf("/");
+      return slash === -1 ? undefined : event.payload.ref_key.slice(slash + 1);
+    }
     case "ask.edited":
       return (
         event.payload.anchor_artifact?.slug ??
@@ -1859,6 +1864,7 @@ function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
     case "artifact.removed":
     case "artifact.renamed":
     case "artifact.version":
+    case "document.retired":
     case "ask.edited":
     case "comment.edited":
     case "comment.deleted":

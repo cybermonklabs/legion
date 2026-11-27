@@ -194,8 +194,9 @@ func (s *Service) RegisterRoomSync(hub *pglisten.Hub) (run func(ctx context.Cont
 // close or a reopen notified while the hub had no connection reached nobody. The removal lane is
 // its own, because closing a room of a row that has gone (Service.documentRemoved) must not wait
 // behind a catch-up reading another document's stored history; it reads the rows of this
-// process's rooms after each LISTEN too (Service.recheckRemovedRooms), since a removal notified
-// while the hub had no connection reached nobody and nothing announces it again.
+// process's rooms after each LISTEN too (Service.recheckRemovedRooms), since a removal or a
+// retirement notified while the hub had no connection reached nobody and nothing announces it
+// again.
 func (r *roomSync) handlers() []roomSyncHandler {
 	catchUps := r.service.catchUps
 	return []roomSyncHandler{
@@ -521,7 +522,8 @@ func queueAnnounceDocumentChange(b *store.WriteBatch, room, processID string) {
 const announceDocumentRemovedStatement = `select pg_notify('` + documentRemovedChannel + `', $1::text)`
 
 // AnnounceDocumentRemoved tells every envoy-dispatch process to close its room of artifactID, the
-// document whose row tx has just deleted. The removal's transaction is package api's
+// document whose row tx has just deleted, or just retired (RetireDocument), whose row stays and
+// whose socket is refused from then on. The removal's transaction is package api's
 // (removeArtifact), so this is the seam it sends through: a package function taking that
 // transaction, as the other document work a removal or an upload runs inside its own transaction
 // is (MoveApprovalAsk, WriteAskResolution, RecordTaskProgress). It needs no room and no state of

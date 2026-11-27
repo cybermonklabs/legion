@@ -55,8 +55,9 @@ const (
 )
 
 // artifactColumns is the canonical artifact column list scanArtifact reads. role is read through
-// coalesce because model.Artifact carries it as "" when the document plays no role.
-const artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ''), created_by, created_at`
+// coalesce because model.Artifact carries it as "" when the document plays no role, and retired_at
+// as whether it is set (model.Artifact.Retired).
+const artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ''), created_by, created_at, retired_at is not null`
 
 func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
@@ -640,11 +641,11 @@ func (s *server) writeUploadNoTokenError(w http.ResponseWriter, name string) {
 	s.writeHandlerError(w, uploadNoTokenRefusal(name))
 }
 
-// queueNewArtifact queues the insert of the artifact an upload creates and returns the row as the
-// insert will leave it. Its id, which the document's own writes name before the row is written, is
-// taken here (gen_random_uuid, which assigns no transaction id), in the statement that reads its
-// created_at, the column's default, the transaction's now(), which the insert writes explicitly;
-// its ref_key is the one the 0071 trigger fills in, the target's owner key and the slug
+// queueNewArtifact queues the insert of the artifact an upload creates, and before it the write of
+// its node, and returns the row as the insert will leave it and the node's write, which waits for
+// the event the upload appends (graphstore.QueueCaused). Its id, which the document's own writes
+// name before the row is written, is taken here (gen_random_uuid, which assigns no transaction
+// id); its ref_key is the one the 0071 trigger fills in, the target's owner key and the slug
 // (artifactTarget.refPrefix). role is the part the new document plays, which its slug decided
 // (documentRole), read once by the caller, which refuses a blank create that takes one: the row
 // the insert leaves carries it, so the reads this transaction makes of the artifact it just
@@ -726,7 +727,8 @@ func (s *server) queueNewArtifact(
 	// new document resolves to that row (refs.Pending). The issue already has its row, so the
 	// address names no pending parent (refs.DocumentAddress).
 	ledger.RegisterPendingArtifact(artifact.ID, refs.DocumentAddress{
-		RefKey: artifact.RefKey, IssueKey: deref(target.IssueKey), Ref: artifactReference(artifact),
+		RefKey: artifact.RefKey, IssueKey: deref(target.IssueKey),
+		Ref:     refs.ArtifactRef(artifact.IssueKey, artifact.Project, artifact.SessionID, artifact.Slug, artifact.Kind, artifact.Primary),
 		Project: deref(project), Session: deref(session),
 	})
 	return artifact, documentNode, queueExec(ledger, `
@@ -816,6 +818,17 @@ func recordDocumentTaskProgress(ctx context.Context, tx pgx.Tx, artifactID strin
 	return docs.RecordTaskProgressMarkdown(ctx, tx, artifactID, markdown)
 }
 
+// personScoped reports whether a bearer's document write is the person's own, its credential
+// holding the person scope, so the write's context is marked as theirs (docs.WithPersonScope): an
+// agent's write may not drop or retype an answered ask's block (docs.ErrAnsweredAskKept), and a
+// person's may. A browser's actor is the person already, so only a bearer's credential is read,
+// whose recorded actor, the session it names, cannot say. It is read before the write's
+// transaction opens: resolving a personal token reads the pool, which a request holding the
+// transaction's connection may not (store.Pool's guard).
+func (s *server) personScoped(r *http.Request, actor model.Actor) bool {
+	return actor.Kind != "user" && s.callerHoldsScope(r, model.ScopePerson)
+}
+
 func (s *server) storeArtifact(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -833,6 +846,7 @@ func (s *server) storeArtifact(
 	if !s.putUploadedFile(w, r, writer, kind, sha, input, target) {
 		return
 	}
+	personScoped := kind == "doc" && s.personScoped(r, actor)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -844,6 +858,9 @@ func (s *server) storeArtifact(
 	// the event - is queued at the point it is made, for Commit to run back to back.
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
+	if personScoped {
+		documentCtx = docs.WithPersonScope(documentCtx)
+	}
 	var issueStatus *string
 	var project, session *string
 	switch {
@@ -890,6 +907,10 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, refusal)
 			return
 		}
+		if refusal := decisionsAreNodes(target, input.name); refusal != nil {
+			s.writeHandlerError(w, refusal)
+			return
+		}
 		slug, err := s.nextArtifactSlug(r.Context(), tx, target, input.name)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -914,6 +935,9 @@ func (s *server) storeArtifact(
 		}
 	} else if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	} else if artifact.Retired {
+		s.writeHandlerError(w, readRetiredDocumentRefusal(r.Context(), tx, artifact, input.name))
 		return
 	} else if artifact.Kind != kind {
 		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))
@@ -965,6 +989,14 @@ func (s *server) storeArtifact(
 	// its event's append, after that insert, holding a transaction id.
 	if target.IssueKey == nil && target.Session == "" && !created {
 		if err := s.requireOpenOwner(r.Context(), tx, ownerForArtifact(artifact)); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		// The find above read the row before this lock, and a retirement takes it too
+		// (docs.RetireDocument): one committed since is read here, under it. An issue's upload
+		// finds its document under its issue's lock already, which is the lock a retirement of
+		// that document takes, and an agent's conversation holds no document.
+		if err := refuseRetiredUnderOwnerLock(r.Context(), tx, artifact, input.name); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1071,11 +1103,11 @@ func (s *server) storeArtifact(
 		}
 		// It carries the document's newest approval as every version the document service writes
 		// does (docs.carryApproval): when its text is the approved text again, or when every
-		// difference from it is a carry case - the server-owned ask attributes an upload drops -
-		// and its ask blocks agree with their nodes. It runs where the route's other document work
-		// runs, so the open approval request and the ask rows it reads are as this transaction's
-		// own queued writes leave them, its own writes join the queue, and its events reach the
-		// ledger beside the move's.
+		// difference from it is a carry case - the readings of its decisions and answered asks, and
+		// the server-owned ask attributes an upload drops - and its ask blocks agree with
+		// their nodes. It runs where the route's other document work runs, so the open approval
+		// request and the ask rows it reads are as this transaction's own queued writes leave
+		// them, its own writes join the queue, and its events reach the ledger beside the move's.
 		if err := docs.CarryUploadedApproval(
 			documentCtx, tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
 		); err != nil {
@@ -1605,9 +1637,8 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 // versionsMarkdown is the stored markdown of each of numbers that the document has, by number, in
-// one read; a number the document has no version of has no entry. The change set reads named
-// versions' own text here (twoVersionsMarkdown); the decisions of each named version read it with
-// its renderer version (storedDecisionsQuery).
+// one read; a number the document has no version of has no entry. The change set reads its two
+// versions' own text here (twoVersionsMarkdown).
 func (s *server) versionsMarkdown(ctx context.Context, artifactID string, numbers []int) (map[int]string, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select number, coalesce(markdown, '') from artifact_versions
@@ -1876,6 +1907,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	personScoped := s.personScoped(r, actor)
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1885,8 +1917,12 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
+	if artifact.Retired {
+		s.writeHandlerError(w, readRetiredDocumentRefusal(r.Context(), s.deps.Store.Pool, artifact, artifact.Name))
+		return
+	}
 	// release ends the conditional edit gate once: right after the commit, which is all a later
-	// conditional edit of this document waits on, so the checks of this edit's new decision blocks
+	// conditional edit of this document waits on, so the checks of this edit's new ask blocks
 	// never hold it; on every earlier return, here.
 	release := func() {}
 	if input.Precondition != nil {
@@ -1916,6 +1952,13 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The test of artifact.Retired above ran before this lock, and the decisions step's retirement
+	// takes it too (docs.RetireDocument): one committed since is read here, under the lock this
+	// edit's version write holds to its commit, and refused as that test refuses it.
+	if err := refuseRetiredUnderOwnerLock(r.Context(), tx, artifact, artifact.Name); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// The check of who writes an issue's spec or Verification document, under the owner's lock and
 	// before ApplyOps, so an edit that would change nothing is refused too.
 	if err := refuseSpecWriterOfDocument(r.Context(), tx, writer, artifact); err != nil {
@@ -1924,6 +1967,9 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
+	if personScoped {
+		documentCtx = docs.WithPersonScope(documentCtx)
+	}
 	edit, err := s.deps.Docs.ApplyOps(documentCtx, artifact.ID, input.Ops, actor, input.Precondition)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -2073,10 +2119,11 @@ func participantsOrEmpty(participants []model.Actor) []model.Actor {
 // issueArtifactsStatement lists an issue's artifacts, $1 the issue key, in the order every
 // reader of the issue shows them; collectArtifacts reads its rows. The issue read queues it in
 // a batch with its other reads (getIssue), so the statement and the scan live apart from the
-// sequential loader that every other route calls.
+// sequential loader that every other route calls. A retired document is in no list of its
+// issue's documents (docs.RetireDocument), and its own address and id still read it.
 const issueArtifactsStatement = `
 		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 order by created_at, id
+		from artifacts where issue_key = $1 and retired_at is null order by created_at, id
 	`
 
 func (s *server) loadArtifacts(ctx context.Context, q queryer, issueKey string) ([]model.Artifact, error) {
@@ -2277,17 +2324,21 @@ func isArtifactNotFound(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.code == "ARTIFACT_NOT_FOUND"
 }
 
+// loadDocumentReferences lists the documents of target, an issue or a project, in the order
+// their owner's reads show them: the list a document reference by filename is matched in, and the
+// one its refusal hints from. A retired document is in no such list, though its slug still reads
+// it (resolveDocumentReference).
 func (s *server) loadDocumentReferences(ctx context.Context, q queryer, target artifactTarget) ([]model.Artifact, error) {
 	query := `
 		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 and kind = 'doc' order by created_at, id`
+		from artifacts where issue_key = $1 and kind = 'doc' and retired_at is null order by created_at, id`
 	value := target.Project
 	if target.IssueKey != nil {
 		value = *target.IssueKey
 	} else {
 		query = `
 			select ` + artifactColumns + `
-			from artifacts where project_key = $1 and issue_key is null and kind = 'doc' order by created_at, id`
+			from artifacts where project_key = $1 and issue_key is null and kind = 'doc' and retired_at is null order by created_at, id`
 	}
 	rows, err := q.Query(ctx, query, value)
 	if err != nil {
@@ -2534,7 +2585,7 @@ func scanArtifact(row pgx.Row) (model.Artifact, error) {
 	var createdBy []byte
 	if err := row.Scan(
 		&artifact.ID, &artifact.IssueKey, &project, &artifact.SessionID, &artifact.RefKey, &artifact.Slug,
-		&artifact.Name, &artifact.Kind, &artifact.Primary, &artifact.Role, &createdBy, &artifact.CreatedAt,
+		&artifact.Name, &artifact.Kind, &artifact.Primary, &artifact.Role, &createdBy, &artifact.CreatedAt, &artifact.Retired,
 	); err != nil {
 		return model.Artifact{}, err
 	}
@@ -2736,13 +2787,12 @@ func artifactSlug(name string) string {
 // spellings are written. Everything that asks what part a document plays is built from it —
 // documentRole, which writes the role on a new row, the SQL predicates that hold a row to a role
 // (documentRolePredicate), documentPlays, which asks the same of a row already read, and
-// documentRoleOf, which names the part one row plays.
+// documentRoleOf, which names the part one row plays. The `decisions` role is gone from every
+// write: a decisions document is found through decisions_documents(),
+// and a new one is refused (decisionsAreNodes).
 var roleSlugs = map[string]string{
 	model.ArtifactRoleVerification: "verification-md",
 	model.ArtifactRolePlan:         "plan-md",
-	// The Decisions view already spells the decisions document's slug, which a reference to it
-	// names, so the role takes that constant rather than a second copy of the same word.
-	model.ArtifactRoleDecisions: decisionsDocumentSlug,
 }
 
 // documentRole is the role a document takes when its row is created: an issue's markdown
@@ -2771,11 +2821,13 @@ func documentRole(target artifactTarget, kind, slug string) *string {
 // an issue's documents alone - documentRole gives none to any other, and the constraint
 // artifacts_role_is_an_issue_document (migration 20261102110000_artifact_document_roles) holds the
 // column to them - so a project document whose slug is a role's, a project's plan.md, plays no
-// role and is a plain document. It is documentRolePredicate's answer about one row, so every
-// reader — the queries that find a document by its role and the routes that judge the document in
-// hand — agrees about the same row.
+// role and is a plain document. A retired document plays none either: its retirement cleared its
+// role (docs.RetireDocument), and its slug, which stays, gives it none back. It is
+// documentRolePredicate's answer about one row, so every reader — the queries that find a document
+// by its role and the routes that judge the document in hand — agrees about the same row.
 func documentPlays(artifact model.Artifact, role string) bool {
-	return artifact.Role == role || (artifact.Role == "" && artifact.IssueKey != nil && artifact.Slug == roleSlugs[role])
+	return artifact.Role == role ||
+		(artifact.Role == "" && !artifact.Retired && artifact.IssueKey != nil && artifact.Slug == roleSlugs[role])
 }
 
 // documentRoleOf is the part a document plays: the role of roleSlugs that documentPlays answers
@@ -2806,26 +2858,105 @@ func isSpecDocument(artifact model.Artifact) bool {
 
 // documentRolePredicate holds the artifacts row of the table aliased `alias` to the issue's
 // document of one role: the role itself, or, for an issue's row a rolling deploy left with no
-// role, the slug a document of that name carries. A project document never plays a role
-// (documentPlays), whatever its slug. `alias` is empty where the query names no alias.
+// role, the slug a document of that name carries, unless the document is retired, whose slug
+// plays no role (documentPlays). A project document never plays a role, whatever its slug.
+// `alias` is empty where the query names no alias.
 func documentRolePredicate(alias, role string) string {
 	if alias != "" {
 		alias += "."
 	}
-	return `(` + alias + `role = '` + role + `' or (` + alias + `role is null and ` + alias + `issue_key is not null and ` +
-		alias + `slug = '` + roleSlugs[role] + `'))`
+	return `(` + alias + `role = '` + role + `' or (` + alias + `role is null and ` + alias + `retired_at is null and ` +
+		alias + `issue_key is not null and ` + alias + `slug = '` + roleSlugs[role] + `'))`
 }
 
 // verificationRolePredicate is documentRolePredicate for the Verification document of a query
 // that names no alias, since the queries that hold a row to it are written as string literals.
 var verificationRolePredicate = documentRolePredicate("", model.ArtifactRoleVerification)
 
-// aliasedVerificationRole, aliasedPlanRole and aliasedDecisionsRole are the same predicate for a
-// query whose artifacts table is aliased `a`: the issue read, the coverage read and the check
-// resolver all join it that way.
+// aliasedVerificationRole and aliasedPlanRole are the same predicate for a query whose artifacts
+// table is aliased `a`: the issue read, the coverage read and the check resolver all join it that
+// way.
 var aliasedVerificationRole = documentRolePredicate("a", model.ArtifactRoleVerification)
 var aliasedPlanRole = documentRolePredicate("a", model.ArtifactRolePlan)
-var aliasedDecisionsRole = documentRolePredicate("a", model.ArtifactRoleDecisions)
+
+// decisionsAreNodes is the 409 refusing an upload or a create named name, on an issue, whose slug
+// is the slug of a decisions document, and any write of new text to an issue's decisions document
+// once it is retired (retiredDocumentRefusal): a decision is a
+// `decision` block of the spec, and a document of that name would be stored where nothing reads
+// it. The refusal stays: a route keeps a thing it stops taking declared and refuses it by name.
+// It reads the name and not the issue, so a document of any other name is taken. An upload that
+// finds an issue's decisions document that still stands is that document's next version, which
+// the decisions step converts, and is never refused.
+func decisionsAreNodes(target artifactTarget, name string) error {
+	if target.IssueKey == nil || artifactSlug(name) != refs.RetiredDecisionsSlug {
+		return nil
+	}
+	return errorf(http.StatusConflict, codeDecisionsAreNodes,
+		"%q names a decisions document, and decisions are nodes now: write each decision as a `decision` block in the `## Decisions` part of the issue's spec (dispatch://%s/spec), with shaped, from_ask and uncertainty as it needs",
+		name, *target.IssueKey)
+}
+
+// retiredDocumentRefusal is the 409 refusing a write of new text to artifact, a retired document
+// (docs.RetireDocument): an upload or a create under name, its name or its slug, an edit by its id
+// or its slug, and a live write the document service refused (docs.RetiredDocumentError), whose
+// name is the document's own. An issue's decisions document - one whose slug, or the name the
+// write gives, is a decisions document's - is refused as a new document of that name is
+// (decisionsAreNodes), since DOCUMENT_RETIRED's advice to write a document of another name would
+// lead its caller to decisions-2.md; any other is DOCUMENT_RETIRED (documentRetiredRefusal),
+// which names the address of the document's latest saved version. latest reads that version's
+// number, and is called only for DOCUMENT_RETIRED.
+func retiredDocumentRefusal(artifact model.Artifact, name string, latest func() (int, error)) error {
+	target := artifactTarget{IssueKey: artifact.IssueKey}
+	for _, held := range []string{name, artifact.Slug} {
+		if refusal := decisionsAreNodes(target, held); refusal != nil {
+			return refusal
+		}
+	}
+	number, err := latest()
+	if err != nil {
+		return err
+	}
+	return documentRetiredRefusal(artifact, number)
+}
+
+// readRetiredDocumentRefusal is retiredDocumentRefusal for artifact, a document its row reads
+// retired, named name by a write of new text, with the number of its latest saved version read in
+// q (settledVersionNumber).
+func readRetiredDocumentRefusal(ctx context.Context, q queryer, artifact model.Artifact, name string) error {
+	return retiredDocumentRefusal(artifact, name, func() (int, error) {
+		return settledVersionNumber(ctx, q, artifact.ID)
+	})
+}
+
+// refuseRetiredUnderOwnerLock is retiredDocumentRefusal's answer for artifact, named name by a
+// write of new text, where its row reads retired in tx, and nil where it does not. tx holds the lock
+// of the document's owner, which docs.RetireDocument takes before it sets retired_at
+// (lockArtifactOwner) and which the write holds to its commit, so a retirement either committed
+// before this read and is read here, or waits for the write to end. A write's first test of the row
+// (model.Artifact.Retired) runs before that lock and spares the work for a document retired before
+// the request came; this read is the one that decides.
+func refuseRetiredUnderOwnerLock(ctx context.Context, tx pgx.Tx, artifact model.Artifact, name string) error {
+	var retired bool
+	if err := tx.QueryRow(ctx, `select retired_at is not null from artifacts where id = $1`, artifact.ID).Scan(&retired); err != nil {
+		return fmt.Errorf("read whether the document is retired: %w", err)
+	}
+	if !retired {
+		return nil
+	}
+	return readRetiredDocumentRefusal(ctx, tx, artifact, name)
+}
+
+// documentRetiredRefusal is the 409 refusing a write of new text to artifact, a retired document
+// that is no decisions document (retiredDocumentRefusal). The document is in no list of its
+// issue's or its project's documents, so text written into it would be stored where no reader
+// looks for it. Its versions stay readable, each at GET /api/v1/artifacts/{id}/versions/{number},
+// and the refusal names that address for latest, its latest saved version: a retired document
+// takes no new version, and no read is served at the bare /versions.
+func documentRetiredRefusal(artifact model.Artifact, latest int) error {
+	return errorf(http.StatusConflict, "DOCUMENT_RETIRED",
+		"%s (%s, %s) was retired: it takes no new text and is in no list of its documents, though its versions stay readable, the latest at /api/v1/artifacts/%s/versions/%d; write a document of another name",
+		artifact.Name, artifact.Slug, artifact.ID, artifact.ID, latest)
+}
 
 // artifactKindMismatch is the 400 refusing an upload under name, of kind, as the next version of
 // artifact, the one the name or slug finds, whose kind is another.

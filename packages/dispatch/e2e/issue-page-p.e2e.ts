@@ -11,6 +11,7 @@ import {
   getArtifactVersion,
   getAsk,
   getIssue,
+  getIssueDecisions,
   patchIssue,
   requestApproval,
   reviewArtifact,
@@ -41,7 +42,6 @@ import {
   holdReviewReads,
   IPHONE_13,
   identityBand,
-  issueDecisions,
   issueHeader,
   LABELS_READING,
   type LabelsAgainstTheCount,
@@ -613,17 +613,12 @@ test("the approval entries stay in the header and read the document each step ap
   test.setTimeout(150_000);
   await phase(browser, seedHeader, async (page) => {
     await createProject({ key: "GATED", name: "Gated" });
-    await setGatedSteps("GATED", ["decisions", "criteria", "spec"]);
+    await setGatedSteps("GATED", ["criteria", "spec"]);
     await createProject({ key: "PLAIN", name: "Plain" });
 
     // A root of a project that gates steps: one entry per step, in the project's order, each
     // reading its own document.
     const root = await createIssue({ project: "GATED", spec: "The plan.", title: "Gated root" });
-    const decisions = await createIssueArtifact(root.key, {
-      content: "# Decisions\n\nHTTP it is.\n",
-      name: "decisions.md",
-    });
-    await reviewArtifact(decisions.artifact.id, { state: "approved" });
     await requestApproval(root.primary_artifact_id ?? "", { summary: "Read it." });
     await gotoIssue(page, `/issues/${root.key}`);
     await expectHeaderDrawn(page);
@@ -636,10 +631,7 @@ test("the approval entries stay in the header and read the document each step ap
             entries.map((entry) => entry.getAttribute("data-approval-step"))
           )
       )
-      .toEqual(["decisions", "criteria", "spec"]);
-    await expect(
-      approvalEntry(page, "decisions").getByRole("button", { name: "Approved v1" })
-    ).toBeVisible();
+      .toEqual(["criteria", "spec"]);
     await expect(approvalEntry(page, "criteria")).toContainText(CONTROL_LABELS.not_requested);
     await expect(
       approvalEntry(page, "spec").getByRole("button", { name: "Awaiting approval" })
@@ -708,7 +700,7 @@ test("the approval entries stay in the header and read the document each step ap
     // issues it opens next it opens within the app, as a link does: so each draws what its gate
     // makes of it, not what a read of the projects still pending would. A root of a project that
     // gates nothing carries the one chip, "Not requested".
-    await expect(steps.locator("[data-approval-step]")).toHaveCount(3);
+    await expect(steps.locator("[data-approval-step]")).toHaveCount(2);
     const openInApp = async (key: string) => {
       await navigateInApp(page, `/issues/${key}`);
       await expect(
@@ -1010,8 +1002,8 @@ test("the count of what waits is a control that opens the Decisions address @pho
       )
     );
 
-    // A decision on the review list is all that waits: the issue's decisions document holds an
-    // agent's decision that names the requirement its spec holds, which the server reads as
+    // A decision on the review list is all that waits: the issue's spec holds an agent's
+    // `decision` block that names the requirement the spec holds, which the server reads as
     // waiting for review, and no ask of the issue is open. The count counts it, and its press
     // opens the Decisions address.
     const decided = await createIssue({
@@ -1020,15 +1012,29 @@ test("the count of what waits is a control that opens the Decisions address @pho
       spec: ":::requirement{#r1}\nThe header counts a decision that waits.\n:::\n",
       title: "Decided",
     });
-    await createIssueArtifact(decided.key, {
-      content: `## The count reads the decisions\n\nThe header counts what the Decisions filter lists for review. It shapes dispatch://${decided.key}/spec#b-r1.\n`,
-      name: "decisions.md",
-    });
+    const requirement = `dispatch://${decided.key}/spec#b-r1`;
+    await editArtifact(
+      decided.primary_artifact_id ?? "",
+      {
+        ops: [
+          {
+            after: "end",
+            markdown: `## Decisions\n\n:::decision{#d1 shaped="${requirement}"}\n### The count reads the decisions\n\nThe header counts what the Decisions filter lists for review. It shapes ${requirement}.\n:::\n`,
+            op: "insert",
+          },
+        ],
+      },
+      asAgent
+    );
+    // The read's entries for the issue's `decision` blocks - an entry that names no document is
+    // an ask's - each with the blocks its `shaped` attribute names.
     expect(
-      ((await issueDecisions(decided.key)).decisions ?? []).map((decision) => ({
-        names: (decision.links ?? []).map((link) => link.to.block_id),
-        waiting: decision.waiting_review,
-      })),
+      ((await getIssueDecisions(decided.key)).entries ?? [])
+        .filter((entry) => entry.document !== null)
+        .map((decision) => ({
+          names: (decision.shaped ?? []).map((link) => link.to.block_id),
+          waiting: decision.waiting_review,
+        })),
       "the server does not read the agent's decision as waiting for review"
     ).toEqual([{ names: ["r1"], waiting: true }]);
     expect((await getIssue(decided.key)).open_asks ?? [], "an ask of the issue is open").toEqual(
@@ -1854,22 +1860,20 @@ test("the header holds its limits on a large gated root @phone", async ({ browse
   );
 });
 
-// R3 at 1440 px on a project that gates two or three steps, where the header draws one approval
-// entry for each step (R6): at most 4 lines and 130 px, with no request waiting and with one on
-// every gated document, so each entry carries Approve and Request changes (decision 213). The
-// root has the large root's shape above - the measured title, 20 labels, 24 children with 3 done
-// and the 16-character login as its assignee - so the properties line is as long as R3's cases.
-// SLOW(>=2s): 3,199 to 3,779 ms in three one-worker runs (Job e2e-rows-klnz7 at 4788afaa): two
-// roots written with 24 children and their gated documents each, a second context signed in as
-// the long login, and four loads, the header's limit measured after each.
-test("the header holds its 1440 px limit on a root whose project gates two or three steps", async ({
+// R3 at 1440 px on a project that gates two steps, where the header draws one approval entry for
+// each step (R6): at most 4 lines and 130 px, with no request waiting and with one on every gated
+// document, so each entry carries Approve and Request changes (decision 213). The root has the
+// large root's shape above - the measured title, 20 labels, 24 children with 3 done and the
+// 16-character login as its assignee - so the properties line is as long as R3's cases.
+// SLOW(>=2s): 3,199 to 3,779 ms in three one-worker runs (Job e2e-rows-klnz7 at 4788afaa), when the
+// row also wrote a root whose project gated three steps, and 8.1 s on one worker in a pod with the
+// one root: a root written with 24 children and its gated documents, a second context signed in
+// as the long login, and two loads, the header's limit measured after each.
+test("the header holds its 1440 px limit on a root whose project gates two steps", async ({
   browser,
 }) => {
   test.setTimeout(240_000);
-  const projects = [
-    { key: "TWO", steps: ["criteria", "spec"] },
-    { key: "THREE", steps: ["decisions", "criteria", "spec"] },
-  ] as const;
+  const projects = [{ key: "TWO", steps: ["criteria", "spec"] }] as const;
   await phase(
     browser,
     async () => {
@@ -1883,12 +1887,15 @@ test("the header holds its 1440 px limit on a root whose project gates two or th
           spec: "The plan.",
           title: MEASURED_TITLE,
         });
-        // The spec is the root's own document; each other gated step gets the document it gates.
+        // The spec is the root's own document; the criteria step gets the Verification document it
+        // gates.
         const documents = [root.primary_artifact_id ?? ""];
         for (const step of steps) {
           if (step === "spec") continue;
-          const name = step === "criteria" ? "verification.md" : "decisions.md";
-          const made = await createIssueArtifact(root.key, { content: `# ${name}\n`, name });
+          const made = await createIssueArtifact(root.key, {
+            content: "# verification.md\n",
+            name: "verification.md",
+          });
           documents.push(made.artifact.id);
         }
         for (let at = 0; at < 24; at += 1) {
@@ -2896,7 +2903,7 @@ test("an approval entry's a approves that entry's document and no other", async 
     browser,
     async () => {
       await createProject({ key: "GATED", name: "Gated" });
-      await setGatedSteps("GATED", ["decisions", "criteria", "spec"]);
+      await setGatedSteps("GATED", ["criteria", "spec"]);
       const root = await createIssue({ project: "GATED", spec: "The plan.", title: "Gated root" });
       const verification = await createIssueArtifact(root.key, {
         content: "# Verification\n\nOne check.\n",
@@ -3803,7 +3810,7 @@ test("an approval entry's a approves its own document when an earlier entry also
     browser,
     async () => {
       await createProject({ key: "LAST", name: "Last entry" });
-      await setGatedSteps("LAST", ["decisions", "criteria", "spec"]);
+      await setGatedSteps("LAST", ["criteria", "spec"]);
       const root = await createIssue({ project: "LAST", spec: "The plan.", title: "Gated root" });
       const verification = await createIssueArtifact(root.key, {
         content: "# Verification\n\nOne check.\n",

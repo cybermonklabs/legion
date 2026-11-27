@@ -48,7 +48,7 @@ func describedAnswer(answer *model.AskAnswer) string {
 // by their answer state: the issue's asks by state (listIssueAsksQueryOpen and
 // listIssueAsksQueryAnswered), the issue's ask page by state (askThreadPageQueryOpen and
 // askThreadPageQueryAnswered), the open asks of the issue's detail (the first of them) and the
-// Inbox (listInbox, askNodeStateOf). The node and the row differ only while a process of the
+// Inbox (listInbox, asks.NodeStateOf). The node and the row differ only while a process of the
 // release before has written the row and the decisions step's catch-up has not yet stated that
 // write on the node: here the catch-up stated alice's answer on both (asks.Settle with
 // asks.Recorded), and then the release before's reopen wrote the row open again, alone. Each
@@ -355,8 +355,8 @@ func TestEveryAnswerAPersonsPagesShowReadsTheAsksNode(t *testing.T) {
 }
 
 // The answered questions of other projects a question's related-item check offers are picked by,
-// and carry, the answer their node holds (R3; relatedOtherProjects through askNodeStateOf,
-// askNodeAnswerTextOf and askNodeAnswerOf): an answered question of XNODE whose row the release
+// and carry, the answer their node holds (R3; relatedOtherProjects through asks.NodeStateOf,
+// asks.NodeAnswerTextOf and asks.NodeAnswerColumn): an answered question of XNODE whose row the release
 // before's reopen wrote open again, alone, is still offered, with the answer alice gave.
 func TestTheAnsweredQuestionsOfOtherProjectsAreReadOffTheirNodes(t *testing.T) {
 	t.Parallel()
@@ -392,18 +392,4 @@ func TestTheAnsweredQuestionsOfOtherProjectsAreReadOffTheirNodes(t *testing.T) {
 	if item.Ask == nil || item.Ask.State != asks.StateAnswered || item.Ask.Answer == nil || deref(item.Ask.Answer.Text) != words || item.Ask.Answer.User != "alice" {
 		t.Errorf("%s carry ask %s as %+v, want it answered with alice's answer %q, as its node holds it", leg, offered, item.Ask, words)
 	}
-}
-
-// approvalStateOf is the approval state GET /api/v1/artifacts/{id} answers.
-func approvalStateOf(t *testing.T, handler http.Handler, artifactID string) string {
-	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID, nil, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("GET /api/v1/artifacts/%s: status=%d body=%s", artifactID, response.Code, response.Body.String())
-	}
-	artifact := decodeBody[model.Artifact](t, response)
-	if artifact.Approval == nil {
-		t.Fatalf("GET /api/v1/artifacts/%s answers no approval", artifactID)
-	}
-	return artifact.Approval.State
 }

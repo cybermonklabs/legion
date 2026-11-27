@@ -58,6 +58,7 @@ export function decisionsAndReadMarkHandlers(): RequestHandler[] {
       Response.json({
         decisions: [],
         document: null,
+        entries: [],
         open_questions: [],
       } satisfies IssueDecisions)
     ),

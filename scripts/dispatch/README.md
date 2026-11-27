@@ -27,7 +27,7 @@ URL from `DISPATCH_URL`, else `dispatch.serverUrl` with `dispatch.enabled`; the 
 `DISPATCH_TOKEN_FILE`, else `DISPATCH_TOKEN`, else `dispatch.token`. A checkout's
 `.opencode/envoy.json`, which is not read, is named on stderr with its rename while the checkout
 has no `.envoy/envoy.json`. With Dispatch off it stops with `Dispatch is not configured: <notice>`,
-the notice saying which file and why, or `dispatch config: <error>`. It prints total asks, decision
+the notice saying which file and why, or `dispatch config: <error>`. It prints total asks, ask
 blocks, standalone question asks, approval requests, per-issue counts, approval rounds, every
 standalone question with a blank `code` column, and a per-session table.
 
@@ -58,7 +58,7 @@ summary) and never arrives; a hand-back with a new summary is an `ask.edited` fo
 `ask.handed_back`, one arrival. Before #1671, when an approval request began following its
 document's versions, a request made again opened a new row, so there each arrival is an
 `ask.opened`. A human turn is an answer to the request or a reply in its thread,
-and, from the round's first request on, an answer or reply on a decision block in the document
+and, from the round's first request on, an answer or reply on an ask block in the document
 the request names: a choice the human raises while the request is open becomes such a block, and
 the hand-back after its answer responds to that turn. A round with more arrivals than human turns
 plus one is flagged. `scripts/e2e/lib/design-gate-approval-requests.jq` reads the same arrivals

@@ -515,11 +515,12 @@ func AnswerKinds() []string {
 // whose id, as text, the SQL expression id names, a value by its kind and a relation by its far
 // end (graphstore.CurrentTupleRead), as t.kind, t.to_kind, t.to_id and t.asserted, which the
 // caller's `where asserted` cuts to the facts that stand. A fact of a kind a reader does not read
-// is left by it, as Read leaves one. It is the one reading of the node's answer in SQL, which
-// every statement that reads the answer off the node shares: api's ask reads (askNodeAnswerOf),
-// docs' text routes and writes (askNodeAnswers), the answers a session was delivered
-// (sessionanswers' nodeAnswer), and the replay's check of the answers it serves, through
-// NodeAnswerTuplesIn (loadtest's servedAnswersQuery).
+// is left by it, as Read leaves one. It is the one reading of the node's answer as a list of facts
+// in SQL, which every statement that reads the answer so shares: every read of NodeAnswerColumn
+// (api's ask reads among them), docs' text routes and writes (askNodeAnswers), and the replay's
+// check of the answers it serves, through NodeAnswerTuplesIn (loadtest's servedAnswersQuery). A
+// statement that reads the answer as values of its own reads it through the Node...Of fragments
+// of node_answer.go instead, as the session answers and the search text read NodeAnswerJSONOf.
 func NodeAnswerTuples(id string) string {
 	return NodeAnswerTuplesIn(`graph_tuples`, id)
 }
@@ -533,8 +534,12 @@ func NodeAnswerTuplesIn(table, id string) string {
 	return graphstore.CurrentTupleReadIn(table,
 		`t.kind, t.to_kind, case when t.to_kind = '`+graphstore.KindValue+`' then '' else t.to_id end`,
 		`t.kind, t.to_kind, t.to_id, t.asserted`,
-		`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = `+id+` and t.kind in ('`+strings.Join(AnswerKinds(), `', '`)+`')`)
+		`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = `+id+` and t.kind in (`+answerKindsList+`)`)
 }
+
+// answerKindsList is AnswerKinds as the SQL list NodeAnswerTuplesIn reads, each quoted, built once:
+// every ask read that selects NodeAnswerColumn splices it in.
+var answerKindsList = `'` + strings.Join(AnswerKinds(), `', '`) + `'`
 
 // NodeAnswer is what an ask's node holds of its answer state, read off the facts of AnswerKinds
 // that stand on it (Read): the answer state, "" where the node holds none; the answer's words,
@@ -560,9 +565,10 @@ type NodeAnswer struct {
 
 // Read takes value, the far end of one fact of kind that stands on the node - the value itself
 // for a value kind, the person for a relation - into the answer, and refuses one that does not
-// decode as Settle encodes it: an answer state none of the three, a selection that is no list of
-// labels (SelectedValue), an answered_at that is no time (AnsweredAtValue), or a resolution that
-// is no resolution (ResolutionValue). A fact of a kind the answer does not read is left.
+// decode as Settle encodes it, with ErrNodeAnswerUnreadable: an answer state none of the three, a
+// selection that is no list of labels (SelectedValue), an answered_at that is no time
+// (AnsweredAtValue), or a resolution that is no resolution (ResolutionValue). A fact of a kind the
+// answer does not read (IsAnswerKind) is left.
 func (n *NodeAnswer) Read(kind, value string) error {
 	switch kind {
 	case graphstore.TupleAnswerState:
@@ -570,20 +576,20 @@ func (n *NodeAnswer) Read(kind, value string) error {
 		case StateOpen, StateAnswered, StateResolved:
 			n.State = value
 		default:
-			return fmt.Errorf("answer_state holds %q, which is none of open, answered and resolved", value)
+			return fmt.Errorf("%w: answer_state holds %q, which is none of open, answered and resolved", ErrNodeAnswerUnreadable, value)
 		}
 	case graphstore.TupleAnswer:
 		n.Answer = &value
 	case graphstore.TupleSelected:
 		selected := []string{}
 		if err := json.Unmarshal([]byte(value), &selected); err != nil {
-			return fmt.Errorf("selected holds %q, which is no list of labels: %w", value, err)
+			return fmt.Errorf("%w: selected holds %q, which is no list of labels: %w", ErrNodeAnswerUnreadable, value, err)
 		}
 		n.Selected = selected
 	case graphstore.TupleAnsweredAt:
 		at, err := time.Parse(time.RFC3339Nano, value)
 		if err != nil {
-			return fmt.Errorf("answered_at holds %q, which is no time: %w", value, err)
+			return fmt.Errorf("%w: answered_at holds %q, which is no time: %w", ErrNodeAnswerUnreadable, value, err)
 		}
 		n.AnsweredAt = &at
 	case graphstore.TupleAnsweredBy:
@@ -591,7 +597,7 @@ func (n *NodeAnswer) Read(kind, value string) error {
 	case graphstore.TupleResolution:
 		var resolution model.AskResolution
 		if err := json.Unmarshal([]byte(value), &resolution); err != nil {
-			return fmt.Errorf("resolution holds %q, which is no resolution: %w", value, err)
+			return fmt.Errorf("%w: resolution holds %q, which is no resolution: %w", ErrNodeAnswerUnreadable, value, err)
 		}
 		n.Resolution = &resolution
 	}

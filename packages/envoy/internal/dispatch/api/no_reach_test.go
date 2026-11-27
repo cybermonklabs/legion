@@ -633,7 +633,6 @@ var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/credential-grants":                                      "the agent-secrets broker",
 	"GET /api/v1/machine-logins":                                         "the agent-secrets broker",
 	"GET /api/v1/signins":                                                "the agent-secrets broker",
-	"GET /api/v1/artifacts/{id}/changes":                                 "two stored versions of one document",
 }
 
 // routeProbeQueries are the queries the reads that require one are sent, each naming the
@@ -642,17 +641,18 @@ var routesNoSeedAnswers = map[string]string{
 func routeProbeQueries(owned crossProject) map[string]string {
 	spec := "dispatch://" + owned.issue + "/spec"
 	return map[string]string{
-		"GET /api/v1/search":               url.Values{"q": {"project"}}.Encode(),
-		"GET /api/v1/search/results":       url.Values{"q": {"project"}}.Encode(),
-		"GET /api/v1/references":           url.Values{"to": {"dispatch://" + owned.issue}}.Encode(),
-		"GET /api/v1/reference-targets":    url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
-		"GET /api/v1/references/questions": url.Values{"kind": {"comment"}, "id": {owned.comment}}.Encode(),
-		"GET /api/v1/block-links":          url.Values{"from": {spec}, "to": {spec}}.Encode(),
-		"GET /api/v1/issues/resolve":       url.Values{"ref": {owned.issue}}.Encode(),
-		"GET /api/v1/asks/open":            url.Values{"project": {"TEST"}}.Encode(),
-		"GET /api/v1/credential-requests":  url.Values{"approver": {"me"}}.Encode(),
-		"GET /api/v1/near-copy-checks":     url.Values{"project": {"TEST"}}.Encode(),
-		"GET /api/v1/deploys":              url.Values{"repo": {owned.deployRepo}}.Encode(),
+		"GET /api/v1/search":                 url.Values{"q": {"project"}}.Encode(),
+		"GET /api/v1/search/results":         url.Values{"q": {"project"}}.Encode(),
+		"GET /api/v1/references":             url.Values{"to": {"dispatch://" + owned.issue}}.Encode(),
+		"GET /api/v1/references/questions":   url.Values{"kind": {"comment"}, "id": {owned.comment}}.Encode(),
+		"GET /api/v1/block-links":            url.Values{"from": {spec}, "to": {spec}}.Encode(),
+		"GET /api/v1/issues/resolve":         url.Values{"ref": {owned.issue}}.Encode(),
+		"GET /api/v1/asks/open":              url.Values{"project": {"TEST"}}.Encode(),
+		"GET /api/v1/credential-requests":    url.Values{"approver": {"me"}}.Encode(),
+		"GET /api/v1/near-copy-checks":       url.Values{"project": {"TEST"}}.Encode(),
+		"GET /api/v1/deploys":                url.Values{"repo": {owned.deployRepo}}.Encode(),
+		"GET /api/v1/reference-targets":      url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
+		"GET /api/v1/artifacts/{id}/changes": url.Values{"from": {"1"}, "to": {"2"}}.Encode(),
 		// The session that opened the seeded ask (createIssueAsk writes it as sessionActor): its
 		// ask.opened event and its follow of the ask are records knownSessionsStatement counts.
 		"GET /api/v1/agents/known": url.Values{"id": {sessionActor()["id"].(string)}}.Encode(),
@@ -811,15 +811,15 @@ type crossProject struct {
 
 // seedTwoProjects writes one project with an issue, a document of the issue (design.md), a
 // comment, an ask, a message, a run of a step of the issue and a run of its retro, a project
-// document and a block of each document, an architecture source, and the Legion daemon it names
-// with a read of it; a second project with an issue, which the cross-project probe addresses them
-// under; one priority, which belongs to neither project and is read at its own id; and one deploy
-// of a repository, which belongs to no project and is read by its repository. Under the
-// second project's key the probe sends each route the object of the first its path names
-// (crossProjectPath): design.md to a route of an issue document, the project document to a route
-// of a project document, the message to the message read, the run of a step to the step write,
-// the retro's run to the rating write and the architecture source's repository to the source's
-// removal and its sync.
+// document at two versions and a block of each document, an architecture source, and the Legion
+// daemon it names with a read of it; a second project with an issue, which the cross-project
+// probe addresses them under; one priority, which belongs to neither project and is read at its
+// own id; and one deploy of a repository, which belongs to no project and is read by its
+// repository. Under the second project's key the probe sends each route the object of the first
+// its path names (crossProjectPath): design.md to a route of an issue document, the project
+// document to a route of a project document, the message to the message read, the run of a step
+// to the step write, the retro's run to the rating write and the architecture source's repository
+// to the source's removal and its sync.
 func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) crossProject {
 	t.Helper()
 	createDuplicateTestProject(t, handler, "OTH")
@@ -872,6 +872,14 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 	putPlanRecordOK(t, handler, issue.Key, owned.plan, defaultPlanBody(daemonSessionOf("TEST"), 1))
 	document := createProjectDocument(t, handler, "TEST", "Notes", "# Notes\n\nA passage of the project's own document.\n")
 	owned.document, owned.documentSlug = document.ID, document.Slug
+	// A second version of the project document: what changed between two of its versions is a
+	// read of its own (GET /api/v1/artifacts/{id}/changes, from=1&to=2 in routeProbeQueries), which
+	// answers no row for a document holding one version alone. It is written before the block is
+	// read, so the block is one the latest version holds.
+	if revised := uploadDocument(t, handler, "/api/v1/projects/TEST", "Notes",
+		"# Notes\n\nA passage of the project's own document, revised.\n"); revised.Version.Number != 2 {
+		t.Fatalf("the project document's second upload = version %d, want 2", revised.Version.Number)
+	}
 	owned.documentBlock = firstBlockOf(t, handler, document.ID)
 	// An architecture source, written into its table as the other tests of this package seed one
 	// (node_facts_test.go): the route that adds one first proves the GitHub App can read the

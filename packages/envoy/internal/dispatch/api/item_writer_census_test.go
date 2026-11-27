@@ -172,6 +172,10 @@ var itemRowWriters = map[string]map[string]string{
 			"it (errDecidedWordingsMoved). Settlement's own call holds the document's owner lock " +
 			"(restoreDocumentDecidedWordings, lockArtifactOwner)",
 	},
+	"internal/dispatch/docs/decision_restore.go": {
+		"moveRows": "the issue's owner lock, which the decisions step's restore takes first in the " +
+			"transaction it opens (restoreIssueDecisions, lockArtifactOwner)",
+	},
 	"internal/dispatch/graphcensus/backfill_asks.go": {
 		"writeAskBatch": "the owner locks of the batch's asks, taken first in the transaction it " +
 			"opens (lockAskOwners, events.LockOwnerRows)",
@@ -415,6 +419,11 @@ var itemRowLockNoRow = map[string]map[string]string{
 	"internal/dispatch/docs/ask_blocks.go": {
 		"createAskBlock":     itemRowCallersTransaction,
 		"reconcileAskBlocks": itemRowCallersTransaction,
+	},
+	"internal/dispatch/docs/decision_restore.go": {
+		"moveRows": "runs in the decisions step's restore of one issue, a background pass no " +
+			"request makes; its lock-step driver holds the restore behind the issue's owner lock " +
+			"(docs' TestTheDecisionsStepsWritersTakeTheStoreLockOrder)",
 	},
 	"internal/dispatch/graphcensus/backfill_asks.go": {
 		"writeAskBatch": "a boot pass of graphcensus.Backfill, no request's; its lock-step test " +

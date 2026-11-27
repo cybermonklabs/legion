@@ -65,7 +65,7 @@ func backfillSessions(ctx context.Context, database *store.Store) (KindBackfill,
 func readSessionRows(ctx context.Context, database *store.Store) ([]sessionRow, error) {
 	rows, err := database.Pool.Query(ctx, `
 		select recorded.id, coalesce(recorded.event, $1), coalesce(e.created_at, recorded.at)
-		from (`+recordedSessions+`) recorded
+		from (`+recordedSessions(inlineAuthors)+`) recorded
 		left join events e on e.id = recorded.event
 		left join graph_nodes node on node.kind = $2::text and node.id = recorded.id
 		where node.id is null and octet_length(recorded.id) <= $3

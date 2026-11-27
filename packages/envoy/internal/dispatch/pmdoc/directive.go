@@ -186,7 +186,8 @@ func textColumn(line string, column int) int {
 }
 
 // fenceColons is the number of colons in line when they are all it holds but spaces, tabs and a
-// line feed, and 0 otherwise.
+// line feed, and 0 otherwise. QuestionBlocks reads a typed block's closing fence with it, as the
+// parser does (typedDirectiveParser.Continue).
 func fenceColons(line string) int {
 	return colonLine(strings.Trim(line, " \t\n"))
 }
@@ -447,6 +448,8 @@ func directiveName(name string) bool {
 	return true
 }
 
+// directiveNameByte reports whether char can stand in a directive's name: an ASCII letter or
+// digit, `_` or `-`.
 func directiveNameByte(char byte) bool {
 	return char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '_' || char == '-'
 }

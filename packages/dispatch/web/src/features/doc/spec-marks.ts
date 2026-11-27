@@ -6,6 +6,7 @@ import { api, documentReadRequest } from "../../api/client";
 import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, ArtifactBlock, GraphReferences, IssueDecisions } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
+import { isDecisionEntry, withEntries } from "../issue/decision-entries";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
 /** What a stale block says when the reader rests on it. */
@@ -27,21 +28,29 @@ export interface ChangedSinceRead {
   readonly version: number;
 }
 
-/** The decisions view, which the margin's decision cards read under the same key. */
+/** The decisions view, which the margin's decision cards, the issue page and the Decisions tab read
+ *  under the same key: the read with its `entries`, whichever release's server answered it
+ *  (`withEntries`). */
 export const issueDecisionsQuery = (issueKey: string, enabled: boolean) => ({
   enabled,
-  queryFn: () => api.getIssueDecisions(issueKey),
+  queryFn: async (): Promise<IssueDecisions> =>
+    // kept for one release: compat-objects
+    withEntries(await api.getIssueDecisions(issueKey), issueKey),
   queryKey: ["decisions", issueKey] as const,
 });
 
-/** Every spec block a stale link of any decision names, each once, in the order the view names
- *  them. A link is stale when its decision changed after it first linked the block and the block
- *  has not changed since. */
-export function staleSpecBlocks(decisions: IssueDecisions | undefined): string[] {
+/** Every spec block a stale link of any decision names, each once, in the order the read names
+ *  them: the `shaped` links of the Decisions read's decisions (isDecisionEntry). A link is stale
+ *  when its decision changed after it first linked the block and the block has not changed since
+ *  (`DecisionLink.stale`). With `refKey`, only the blocks of that document, whose node ids open
+ *  `<refKey>#`. */
+export function staleSpecBlocks(decisions: IssueDecisions | undefined, refKey?: string): string[] {
   const stale: string[] = [];
-  for (const decision of decisions?.decisions ?? []) {
-    for (const link of decision.links ?? []) {
+  for (const entry of decisions?.entries ?? []) {
+    if (!isDecisionEntry(entry)) continue;
+    for (const link of entry.shaped ?? []) {
       const blockId = link.to.block_id;
+      if (refKey !== undefined && !link.to.id.startsWith(`${refKey}#`)) continue;
       if (link.stale && blockId !== undefined && !stale.includes(blockId)) stale.push(blockId);
     }
   }
@@ -164,12 +173,12 @@ export function useSpecMarks({
   );
   const marks = useMemo(() => {
     if (!enabled) return NO_MARKS;
-    const stale = staleSpecBlocks(decisions.data);
+    const stale = staleSpecBlocks(decisions.data, artifact.ref_key);
     const changedIds = changed?.blockIds ?? [];
     return stale.length === 0 && changedIds.length === 0
       ? NO_MARKS
       : specBlockMarks(stale, changedIds);
-  }, [changed, decisions.data, enabled]);
+  }, [artifact.ref_key, changed, decisions.data, enabled]);
   useSendMarkOnce({
     mark:
       enabled && readAtOpen !== undefined && shownVersion !== undefined

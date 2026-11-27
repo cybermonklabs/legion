@@ -31,7 +31,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
-	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest/newerversion"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -95,35 +94,6 @@ func uploadedID(t *testing.T, answer httpAnswer) string {
 		t.Fatalf("read the upload back: %v: %s", err, answer)
 	}
 	return uploaded.Artifact.ID
-}
-
-// agentBearer is the header the shared agent bearer's request carries; the body names the session
-// it writes as.
-func agentBearer() http.Header {
-	return http.Header{"Authorization": {"Bearer " + dispatchTestAgentToken}}
-}
-
-// restoreSession is the agent's session whose writes move the answered asks out of the specs.
-const restoreSession = "ses_restore_approvals_agent"
-
-// asAgentSession sends body, a write the agent's session makes through the shared agent bearer,
-// naming that session as its actor, to p, and fails unless p answers status.
-func asAgentSession(t *testing.T, p *dispatchProcess, method, path string, body map[string]any, status int) httpAnswer {
-	t.Helper()
-	body["actor"] = map[string]string{"kind": "session", "id": restoreSession}
-	answer := p.send(t, method, path, encodeJSON(t, body), agentBearer())
-	if answer.status != status {
-		t.Fatalf("the agent's %s %s: %s, want %d", method, path, answer, status)
-	}
-	return answer
-}
-
-// agentUpload uploads content as the document name of issue, as the agent's session, and answers
-// its id.
-func agentUpload(t *testing.T, p *dispatchProcess, issue, name, content string) string {
-	t.Helper()
-	answer := asAgentSession(t, p, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]any{"name": name, "content": content}, http.StatusCreated)
-	return uploadedID(t, answer)
 }
 
 // documentName is the name the document is stored under, which an upload of a new version names.
@@ -330,24 +300,15 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 	}
 	stopProcess(t, previous)
 
-	// The current build creates and answers the ask. SQL stores the reading as a later build
-	// would, because this release cannot introduce reading blocks.
+	// This head writes a third document holding a reading inside an answered ask: at block schema
+	// version 8 it creates reading blocks.
 	current := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: head, SigningKey: previousBuildSigningKey, SettleDelay: oneAnswerSettleDelay})
 	current.waitHealthy(t)
 	readingAsk := ":::ask{#read-it urgency=\"med\" multiple=\"false\"}\nRead it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 	third := uploadedID(t, uploadDocument(t, current, issue, "reading.md", "# Reading\n\n"+readingAsk))
 	answerAsk(t, current, blockAskOf(t, current, issue, "read-it"), "Yes", "Read it now.")
-	settledDocument(t, ctx, current, database, third)
-	_, answeredMarkdown := latestMarkdown(t, current, third)
-	withReading := strings.Replace(answeredMarkdown, ":::ask{#read-it ", "::::ask{#read-it ", 1)
-	withReading = strings.TrimSuffix(withReading, ":::\n") + "\n:::reading{#read-r1}\nThe agent reads it as reading now.\n:::\n::::\n"
-	stopProcess(t, current)
-	newerversion.StoreNewerVersion(t, database, third, withReading)
-	current = startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: head, SigningKey: previousBuildSigningKey, SettleDelay: oneAnswerSettleDelay})
-	current.waitHealthy(t)
-	asAgentSession(t, current, http.MethodPost, "/api/v1/artifacts/"+third+"/edits", map[string]any{
-		"ops": []map[string]string{{"op": "replace", "find": "Reading", "with": "Reading notes"}},
-	}, http.StatusOK)
+	uploadDocument(t, current, issue, "reading.md", "# Reading\n\n::::ask{#read-it urgency=\"med\" multiple=\"false\"}\nRead it?\n\n- Yes: Now.\n- No: Later.\n\n"+
+		":::reading{#read-r1}\nThe agent reads it as reading now.\n:::\n::::\n")
 	settledDocument(t, ctx, current, database, third)
 	thirdVersions, thirdText := latestMarkdown(t, current, third)
 	if !strings.Contains(thirdText, ":::reading{#read-r1}") {
@@ -512,21 +473,30 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 				t.Errorf("dispatch doc-read prints an ask block with a server-owned attribute: %s", opener)
 			}
 		}
-		answered := 0
+		answered, resolved := 0, 0
 		for _, entry := range servedTextOf(t, current, "/api/v1/artifacts/"+first+"/text").Asks {
-			if entry.State != asks.StateAnswered {
-				continue
+			quotedID, _ := json.Marshal(entry.BlockID)
+			switch entry.State {
+			case asks.StateResolved:
+				resolved++
+				line := fmt.Sprintf("Resolved %s", quotedID)
+				if !strings.Contains(trailer, line) {
+					t.Errorf("dispatch doc-read's trailer holds no line %q:\n%s", line, trailer)
+				}
+			case asks.StateAnswered:
+				answered++
+				line := fmt.Sprintf("Answered %s by %s at %s: ", quotedID, entry.AnsweredBy, entry.AnsweredAt)
+				if entry.Answer != nil {
+					words, _ := json.Marshal(*entry.Answer)
+					line += string(words)
+				}
+				if !strings.Contains(trailer, line) {
+					t.Errorf("dispatch doc-read's trailer holds no line opening %q:\n%s", line, trailer)
+				}
 			}
-			answered++
-			id, _ := json.Marshal(entry.BlockID)
-			line := fmt.Sprintf("Answered %s by %s at %s: ", id, entry.AnsweredBy, entry.AnsweredAt)
-			if entry.Answer != nil {
-				words, _ := json.Marshal(*entry.Answer)
-				line += string(words)
-			}
-			if !strings.Contains(trailer, line) {
-				t.Errorf("dispatch doc-read's trailer holds no line opening %q:\n%s", line, trailer)
-			}
+		}
+		if resolved == 0 {
+			t.Errorf("the first document answers no resolved ask, so its read proves no Resolved line:\n%s", trailer)
 		}
 		if answered == 0 {
 			t.Fatalf("the first document answers no answered ask, so its read proves nothing:\n%s", trailer)

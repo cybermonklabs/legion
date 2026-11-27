@@ -140,14 +140,10 @@ func (s *server) gateAncestors(ctx context.Context, root dispatch.Issue, visit f
 }
 
 // stepDocumentOf is issue's document for step, as stepDocument binds one: its primary document for
-// spec, its Verification document for criteria and its decisions document for decisions; "" for an
-// issue that holds none.
+// spec and its Verification document for criteria; "" for an issue that holds none.
 func stepDocumentOf(step record.DesignStep, issue dispatch.Issue) string {
-	switch step {
-	case record.DesignStepCriteria:
+	if step == record.DesignStepCriteria {
 		return issue.VerificationArtifactID
-	case record.DesignStepDecisions:
-		return issue.DecisionsArtifactID
 	}
 	return issue.PrimaryArtifactID
 }
@@ -466,9 +462,9 @@ type viewDocument struct {
 // view: the basis check and the view fact both ask it (R1's fourth condition, R4).
 //
 // It reads every document of the root Dispatch lists, each at its latest version, and skips a file
-// or an image, whose version is its bytes. The root is a view when its primary, Verification and
-// decisions documents hold no requirement block; its Verification document stands at a version
-// and holds at least one check; no other document holds a check, since a result is recorded only
+// or an image, whose version is its bytes. The root is a view when its primary and Verification
+// documents hold no requirement block; its Verification document stands at a version and holds at
+// least one check; no other document holds a check, since a result is recorded only
 // against a check of the Verification document while coverage counts a check in any; and every
 // check serves at least one block, each a requirement block of basis, compared by issue, document
 // and decoded block id with the reference's own version pin left aside. A refusal answers the
@@ -559,12 +555,12 @@ func (s *server) viewOf(ctx context.Context, root string, basis viewBasis) ([]st
 }
 
 // documentPart is the part a document of the root plays that viewOf reads apart, as the design-gate
-// step that records it: its primary document (the spec step's), its Verification document (the
-// criteria step's) or its decisions document (the decisions step's), each as stepDocument binds a
-// step to its document (stepRecords), and "" for any other document.
+// step that records it: its primary document (the spec step's) or its Verification document (the
+// criteria step's), each as stepDocument binds a step to its document (stepRecords), and "" for any
+// other document.
 func documentPart(artifact dispatch.Artifact) record.DesignStep {
-	for _, step := range []record.DesignStep{record.DesignStepSpec, record.DesignStepCriteria, record.DesignStepDecisions} {
-		if stepRecords(step, artifact.Primary, artifact.Role, artifact.Slug) {
+	for _, step := range []record.DesignStep{record.DesignStepSpec, record.DesignStepCriteria} {
+		if stepRecords(step, artifact.Primary, artifact.Role) {
 			return step
 		}
 	}

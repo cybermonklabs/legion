@@ -495,10 +495,10 @@ func TestARefusedP0WriteWritesNothingElseOfItsRequest(t *testing.T) {
 		if _, err := replaceDocumentText(rig.database, rig.served.deps.Docs, issue.PrimaryArtifactID,
 			"Context\n\n:::ask{#p0-close urgency=\"high\" multiple=\"false\"}\nShip it now?\n:::\n",
 			model.Actor{Kind: "user", ID: brokerTestPerson}); err != nil {
-			t.Fatalf("rig: a person types a decision block into %s's spec: %v", issue.Key, err)
+			t.Fatalf("rig: a person types an ask block into %s's spec: %v", issue.Key, err)
 		}
 		before := readP0Issue(t, rig.database, issue.Key)
-		versions := specVersionCount(t, rig.database, issue.PrimaryArtifactID)
+		versions := uploadedVersionCount(t, rig.database, issue.PrimaryArtifactID)
 		askEvents := func() int64 {
 			return countRows(t, rig.database, `select count(*) from events where issue_key = $1 and type like 'ask.%'`, issue.Key)
 		}
@@ -506,7 +506,7 @@ func TestARefusedP0WriteWritesNothingElseOfItsRequest(t *testing.T) {
 		refused := shared.send(t, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"status": "done", "priority": 0})
 		requireP0Refusal(t, refused)
 		requireP0IssueKept(t, rig.database, issue.Key, before)
-		if after := specVersionCount(t, rig.database, issue.PrimaryArtifactID); after != versions {
+		if after := uploadedVersionCount(t, rig.database, issue.PrimaryArtifactID); after != versions {
 			t.Errorf("the refused close left %s's document with %d versions, want the %d it had: it settled the document", issue.Key, after, versions)
 		}
 		if after := askEvents(); after != asked {

@@ -82,9 +82,24 @@ Two decisions stay with people:
 
 - **The design gate.** Before implementation starts, a person approves the root issue's spec at a
   specific version in Dispatch. A later version of the spec closes the gate again until someone
-  approves it, unless that version is the person's own answer to a decision block and the answer is
-  the whole change since the version they approved: then Dispatch records their approval at the new
-  version and the gate reopens. The gate is on by default; a deployment can turn it off.
+  approves it.
+  A person's answer to an ask block in the spec writes one version, which changes only the block's
+  `state`, answerer and time.
+  Dispatch carries an approval that already stands: an answer never approves a spec that is not
+  approved.
+  When an answer, resolve or decline is the whole change since the approved version, Dispatch
+  records the new version as approved, so the gate stays open.
+  Where the architect added the ask after the approval, which closed the gate, the approver's own
+  answer, given in the browser or under a credential with the approve scope, records the approval
+  again when it is the whole change since the approved version, and the gate opens again.
+  If text that a person was editing in the browser is settled into the same version, the approval
+  does not carry, and the request goes back to its agent.
+  Dispatch also carries the approval to a later version when that version's text
+  is the approved text, or when its only changes are ones that change no decision: the readings of
+  decisions and answered asks, attributes of ask blocks the server owns, or what Dispatch's
+  decisions step moved into the spec. Then Dispatch records the approval in the person's name at
+  the new version, and the gate opens again. The gate is on by default; a deployment can turn it
+  off.
 - **The merge.** The merger reads the pull request and merges it itself, at the head it read and
   under a message it writes. The repository's own rules decide
   whether and when it lands, so a check it requires, or a review a person must give, stays

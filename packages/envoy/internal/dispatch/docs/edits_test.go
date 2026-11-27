@@ -3616,10 +3616,28 @@ func TestApplyOpsMovingAnAnsweredAskBlockKeepsItsAnswer(t *testing.T) {
 		t.Fatalf("ask events after move = %d, want no retract, reopen, or repair", got)
 	}
 
-	// Deleting the answered block leaves the answered row as the record; a resolved row
+	// An agent cannot take the person's answered decision out of the document: its delete is
+	// refused, and the document and its versions stay as they were.
+	before, err := service.Text(context.Background(), artifactID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versions := latestVersionNumber(t, service, artifactID)
+	var kept *ErrAnsweredAskKept
+	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "delete", Block: "decision"}}, editingSession, nil); !errors.As(err, &kept) ||
+		len(kept.Asks) != 1 || kept.Asks[0].Question != "Which transport?" || kept.Asks[0].RetypedTo != "" {
+		t.Fatalf("an agent's delete of the answered ask block = %v, want it refused as the answered ask kept", err)
+	}
+	if after, err := service.Text(context.Background(), artifactID); err != nil || after != before {
+		t.Fatalf("the refused delete left the document %q (%v), want it as it was, %q", after, err, before)
+	}
+	if after := latestVersionNumber(t, service, artifactID); after != versions {
+		t.Fatalf("the refused delete left the document at version %d, want %d", after, versions)
+	}
+	// The person's own delete is taken, and leaves the answered row as the record; a resolved row
 	// carrying an answer is what the asks table forbids, and settlement must not fail on it.
-	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "delete", Block: "decision"}}, editingSession, nil); err != nil {
-		t.Fatalf("delete answered ask block: %v", err)
+	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "delete", Block: "decision"}}, model.Actor{Kind: "user", ID: "alice"}, nil); err != nil {
+		t.Fatalf("the person's delete of the answered ask block: %v", err)
 	}
 	waitForDocumentText(t, service, artifactID, "Context ends with no drift.\n")
 	settle()
@@ -3691,7 +3709,7 @@ func TestAnEditIsRefusedForTheOpenAsksOfTheBlocksItDropsItself(t *testing.T) {
 
 	var invalidAsk *ErrInvalidAskBlock
 	_, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "delete", Block: "decision"}}, editingSession, nil)
-	if !errors.As(err, &invalidAsk) || !strings.Contains(err.Error(), "the open decision block decision,") {
+	if !errors.As(err, &invalidAsk) || !strings.Contains(err.Error(), "the open ask block decision,") {
 		t.Fatalf("delete of the open ask block = %v, want it refused for the block it drops", err)
 	}
 	if strings.Contains(err.Error(), "gone") {

@@ -463,9 +463,9 @@ func TestAReviewOfAnOlderVersionChangesNoGateState(t *testing.T) {
 	}
 }
 
-// A registration Dispatch shows approved at a later version than the one registered (a person's
-// answer to a decision block carried the approval to it) opens the gate at that later version, and
-// the architect is told that version.
+// A registration Dispatch shows approved at a later version than the one registered (Dispatch
+// carried the approval to a version that holds nothing the person has not agreed to) opens the
+// gate at that later version, and the architect is told that version.
 func TestAnApprovalAtALaterVersionTellsTheArchitectThatVersion(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)

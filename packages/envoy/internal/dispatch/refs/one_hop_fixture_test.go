@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -60,6 +61,7 @@ var oneHopTables = []copyTable{
 	{"ask_block_refs", []string{"ask_id", "block_id", "from_node", "to_kind", "to_id", "kind"}},
 	{"comment_block_refs", []string{"comment_id", "block_id", "from_node", "to_kind", "to_id", "kind"}},
 	{"message_block_refs", []string{"message_id", "block_id", "from_node", "to_kind", "to_id", "kind"}},
+	{"graph_nodes", []string{"kind", "id", "supertag", "visibility", "state", "made_at", "made_by", "source_event"}},
 }
 
 // fixtureAuthors is the authors of every version of the one-hop fixture, whose rows are each made
@@ -523,6 +525,10 @@ func newOneHopFixture(t *testing.T, whole bool) oneHopFixture {
 			}
 			add("components", "OPS", id, "Component "+strconv.Itoa(index), "prose", nullable(parent), 1, 1)
 			add("component_facts", "OPS", id, at, at)
+			// Each component a node of the store, everyone in the project's to read, so that
+			// graph_nodes, which every visibility predicate of the read reads (VisibleKind), holds
+			// oneHopMinimumRows too.
+			add("graph_nodes", "component", "OPS/"+id, "component", graphstore.VisibilityProject, graphstore.StateLive, at, edgesFixtureActor, int(graphstore.NoEvent))
 		}
 	}
 

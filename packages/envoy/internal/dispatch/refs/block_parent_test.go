@@ -78,7 +78,7 @@ func newParentDocument(t *testing.T, database *store.Store, name, slug string) p
 
 // writeVersion records one version of the document as a version write records it - its
 // markdown, its writer and its time - with the event that recorded it, and answers all three as
-// the rows hold them.
+// the rows hold them. The event is the issue's, or for a document no issue holds, the document's.
 func (d parentDocument) writeVersion(t *testing.T, number int, markdown string, writer model.Actor) versionRecord {
 	t.Helper()
 	ctx := context.Background()
@@ -111,9 +111,9 @@ func (d parentDocument) writeVersion(t *testing.T, number int, markdown string, 
 		t.Fatalf("encode the version event's payload: %v", err)
 	}
 	if err := d.database.Pool.QueryRow(ctx, `
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		values ($1, $2, 'artifact.version', $3, $4, false) returning id
-	`, d.issue, number, actor, payload).Scan(&record.event); err != nil {
+		insert into events (issue_key, artifact_id, seq, type, actor, payload, notify)
+		values (nullif($1::text, ''), case when $1::text = '' then $5::uuid end, $2, 'artifact.version', $3, $4, false) returning id
+	`, d.issue, number, actor, payload, d.artifact).Scan(&record.event); err != nil {
 		t.Fatalf("record the event of version %d: %v", number, err)
 	}
 	return record
@@ -132,7 +132,7 @@ func (d parentDocument) indexVersion(t *testing.T, number int, doc blockDoc, rec
 		t.Fatalf("begin the index of version %d: %v", number, err)
 	}
 	defer tx.Rollback(ctx)
-	_, won, write, err := IndexBlocks(ctx, tx, d.artifact, number, record.at, doc.markdown, doc.blocks, nil, nil, "")
+	_, won, write, err := IndexBlocks(ctx, tx, d.artifact, number, record.at, doc.markdown, doc.blocks, nil, nil, "", TypedFacts{})
 	if err != nil {
 		t.Fatalf("index version %d: %v", number, err)
 	}
@@ -486,7 +486,7 @@ func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
 			t.Fatalf("begin the pass that rolls back: %v", err)
 		}
 		defer tx.Rollback(ctx)
-		_, stood, write, err := IndexBlocks(ctx, tx, nested.artifact, 2, rolledBack.at, added.markdown, added.blocks, nil, nil, "")
+		_, stood, write, err := IndexBlocks(ctx, tx, nested.artifact, 2, rolledBack.at, added.markdown, added.blocks, nil, nil, "", TypedFacts{})
 		if err != nil {
 			t.Fatalf("index the version that rolls back: %v", err)
 		}

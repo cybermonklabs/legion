@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -104,13 +105,16 @@ func TestAnAgentsComposedUploadLeavesTheAnsweredAskOnItsBlockAndItsRow(t *testin
 // An agent that composes the body with another question writes an ask the document does not hold:
 // the block is not the one the person answered, so it takes a fresh id and opens an ask of its
 // own, and the answered row stays as the record of the question it was given on. This is where
-// the rule above stops. The agent asks it beside the answered question, which it writes from the
-// question alone as above.
+// the rule above stops. Written in place of the answered question, the other question would take
+// the answered ask's block out of the document, which no writer but a person may do
+// (ErrAnsweredAskKept): that body is refused and writes nothing, so the agent asks it beside the
+// answered question, which it writes from the question alone as above.
 func TestAnAgentsComposedUploadOfAnotherQuestionOpensAnAskOfItsOwn(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ask := composedUploadAnsweredAsk(t, service, artifactID, composedUploadDocument)
+	read := asAgentReadsIt(t, service, artifactID)
 	answered := composedUploadAgentMarkdown(t, service, artifactID)
 	start := strings.Index(answered, composedUploadReadOpener)
 	if start < 0 {
@@ -119,9 +123,21 @@ func TestAnAgentsComposedUploadOfAnotherQuestionOpensAnAskOfItsOwn(t *testing.T)
 	keptBlock := strings.Replace(answered, composedUploadReadOpener, composedUploadComposedOpener, 1)
 	otherBlock := strings.Replace(strings.Replace(answered[start:], composedUploadReadOpener, composedUploadComposedOpener, 1),
 		composedUploadQuestion, composedUploadOtherQuestion, 1)
+	inPlace := strings.Replace(keptBlock, composedUploadQuestion, composedUploadOtherQuestion, 1)
 	composed := keptBlock + "\n" + otherBlock
-	if !strings.Contains(composed, composedUploadComposedOpener) || !strings.Contains(composed, composedUploadOtherQuestion) {
-		t.Fatalf("the composed body reads\n%s\nwant the ask written with no id and asking %q", composed, composedUploadOtherQuestion)
+	for _, body := range []string{inPlace, composed} {
+		if !strings.Contains(body, composedUploadComposedOpener) || !strings.Contains(body, composedUploadOtherQuestion) {
+			t.Fatalf("the composed body reads\n%s\nwant the ask written with no id and asking %q", body, composedUploadOtherQuestion)
+		}
+	}
+
+	var kept *ErrAnsweredAskKept
+	if _, err := joinedReplaceText(service, artifactID, inPlace, composedUploadAgent); !errors.As(err, &kept) ||
+		len(kept.Asks) != 1 || kept.Asks[0].Question != composedUploadQuestion {
+		t.Fatalf("the upload of the body asking the other question in place of the answered one = %v, want it refused for the answered ask %s asking %q", err, ask.ID, composedUploadQuestion)
+	}
+	if after := asAgentReadsIt(t, service, artifactID); after != read {
+		t.Fatalf("the document after the refused upload reads, as an agent reads it,\n%s\nwant it as it read before\n%s", after, read)
 	}
 
 	if _, err := joinedReplaceText(service, artifactID, composed, composedUploadAgent); err != nil {

@@ -273,7 +273,7 @@ func (f documentSearchFixture) relatedArguments() (keyword, meaning []any) {
 // the same text with relatedExcludedOwners in its kinds CTE, over one further parameter holding
 // the owners the check leaves out. relatedSearch runs that shape whenever a check excludes
 // anything, and every recording source names an owner - a new issue's key, an ask's id, the
-// document a block sits on - so a create, an ask and a decision block all run these two, and
+// document a block sits on - so a create, an ask and an ask block all run these two, and
 // the plain pair above is the no-write route's alone (INFRA-1160).
 //
 // The owners are the fixture's own issue, as an issue create leaves its own issue out, and the

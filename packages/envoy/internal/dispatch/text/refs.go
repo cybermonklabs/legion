@@ -335,6 +335,11 @@ func parseDispatch(value string) (Ref, bool) {
 		if tail == "spec" {
 			return Ref{Kind: "artifact", IssueKey: key, ID: "spec"}, true
 		}
+		// The issue's Decisions page, which reads the issue's decision nodes: the reference names
+		// the issue, as the page's URL does (parseServer).
+		if tail == "decisions" {
+			return Ref{Kind: "issue", IssueKey: key, ID: key}, true
+		}
 		if artifact, ok := strings.CutPrefix(tail, "artifact/"); ok {
 			if slug, ok := parseArtifactSlug(artifact); ok {
 				return Ref{Kind: "artifact", IssueKey: key, ID: slug}, true
@@ -699,10 +704,11 @@ func parseServer(raw string, base *url.URL) (Ref, bool) {
 		// for an anchored comment or ask.
 		case len(parts) == 3 && parts[2] == "spec":
 			return documentPage(Ref{Kind: "artifact", IssueKey: key, ID: "spec"}, query, "v", value)
-		// The Decisions tab, a view of the issue's decisions.md: its page names that document,
-		// whatever its fragment, as the dashboard and the agent client read it.
+		// The Decisions tab reads the issue's decision nodes, so its page names the issue,
+		// whatever its fragment, as `dispatch://KEY/decisions` does (parseDispatch) and as the
+		// dashboard and the agent client read it.
 		case len(parts) == 3 && parts[2] == "decisions":
-			return Ref{Kind: "artifact", IssueKey: key, ID: "decisions-md"}, true
+			return Ref{Kind: "issue", IssueKey: key, ID: key}, true
 		// A document's page, at `artifacts/<slug>` or at `artifact/<slug>`, which the issue page opens
 		// as the same document (the dashboard's `parseIssuePath`).
 		case len(parts) == 4 && (parts[2] == "artifacts" || parts[2] == "artifact"):

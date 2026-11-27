@@ -52,7 +52,6 @@ func TestAnAskOpenedBesideARepairIsCausedByItsOwnEvent(t *testing.T) {
 // states the follow under it at its new place, and an opened ask whose ask.opened is not among the
 // appended events is an error that names the ask, not a panic.
 func TestAnAskOpenedBesideAWithheldAnswerIsCausedByItsOwnEvent(t *testing.T) {
-	t.Parallel()
 	at := time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)
 	// The answer and the prose are sized so the document holds its block without the answer, and
 	// passes what one upload may hold with it.

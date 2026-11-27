@@ -296,9 +296,9 @@ export const realStackReasons: Record<string, string> = {
   "reading-broadcasts.e2e.ts":
     "each row writes a broadcast or a recipient's reply through the API and reads it back on the broadcast's page, the Broadcasts list or the Agents page; the issue titles and the session name those texts draw come from the server's summaries and the fake listener's registry, and the send row reads the strip the page keeps after Dispatch refuses the send",
   "reading-conversation.e2e.ts":
-    "each row writes a record and then reads its own write, as the server resolves it: the bare key and the address read as the titles of issues the server holds, the party as the name of a session in the fake registry, and the decision is the server's reading of decisions.md; the Activity row pins an event and reads it back in the margin",
+    "each row writes a record and then reads its own write, as the server resolves it: the bare key and the address read as the titles of issues the server holds, the party as the name of a session in the fake registry, and the decision as the person's answer to an ask in the document; the Activity row pins an event and reads it back in the margin",
   "reading-documents.e2e.ts":
-    "each row writes a record through the API and reads it back in the page, where a key and an address read as the titles the server answers for them, a decision card shows where the server's reading of decisions.md links a spec block, and a pinned card is the reader's pin written to the server and read back from its stored state",
+    "each row writes a record through the API and reads it back in the page, where a key and an address read as the titles the server answers for them, the margin shows the decision tied to a spec block, and a pinned card is the reader's pin written to the server and read back from its stored state",
   "reading-inbox-asks.e2e.ts":
     "the server reads each stored question, option, answer, earlier wording and resolution reason into the tree the card draws, resolves each reference's title and the live session's name, and decides which closed asks the Inbox lists as Reply rows",
   "reading-inbox-threads.e2e.ts":

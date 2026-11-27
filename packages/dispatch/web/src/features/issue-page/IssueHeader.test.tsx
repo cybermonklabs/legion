@@ -29,8 +29,10 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import type {
+  ArtifactBlock,
   ArtifactReview,
   Ask,
+  Comment,
   IssueCoverage,
   IssueDetails,
   Project,
@@ -44,12 +46,13 @@ import {
   fixtureRefusal,
 } from "../issue/parent-status/status-change-fixtures";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG, parseIssuePath } from "../refs/routes";
+import { parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { ACTION_WORDS } from "./approval-chip-box";
+import { decision, decisionsRead, shaped, specRef } from "./decisions-filter/decisions-fixtures";
 import { CONTROL_LABELS } from "./page-words";
 import { ShellNavigationContext } from "./shell-navigation";
 import { HeaderSlot } from "./slots/header";
@@ -326,36 +329,27 @@ test("the header hides whose turn when the server sent open asks without waiting
   }
 });
 
-// The count reads the reader's login, the decisions, the coverage, the comments and the decisions
-// document's blocks, under the keys the outline reads them by, and a root issue's header reads the
-// projects for its gated steps, under the key the shell's sidebar reads them by. The header mounts
-// again each time the reader comes back to the issue's page, and under the app's `staleTime` a
-// read is stale 30 s after it answered (`main.tsx`), each observer judging it by its own options:
-// read with the app's defaults, the header mounted again past that would send all five and the
-// projects read again, although the feed's events keep them fresh (decision 180).
+// The count reads the reader's login, the decisions, the coverage, the comments and the blocks of
+// each document the outline reads that a decision's block stands in, under the keys the outline
+// reads them by, and a root issue's header reads the projects for its gated steps, under the key
+// the shell's sidebar reads them by. The header mounts again each time the reader comes back to
+// the issue's page, and under the app's `staleTime` a read is stale 30 s after it answered
+// (`main.tsx`), each observer judging it by its own options: read with the app's defaults, the
+// header mounted again past that would send all five and the projects read again, although the
+// feed's events keep them fresh (decision 180).
 test("the header mounted again past 30 s sends none of its count's reads, nor the projects read, again", async () => {
-  const decisionsDocument = {
-    ...issue.artifacts[0],
-    id: "artifact-decisions",
-    name: "decisions.md",
-    primary: false,
-    ref_key: `CORE-1/${DECISIONS_DOCUMENT_SLUG}`,
-    slug: DECISIONS_DOCUMENT_SLUG,
-  };
-  const restore = stubHeader({ ...issue, artifacts: [...issue.artifacts, decisionsDocument] });
+  const restore = stubHeader(issue);
   // The issue's own read keeps the app's 30 s, so the header mounted again reads it again: that is
   // what says the mount came past the age the five and the projects read would go stale at.
   const getIssue = spyOn(api, "getIssue");
   // The login, the decisions and the blocks answered here, and the coverage and the comments by
-  // what the file already answers them with; the decisions name the issue's decisions document,
-  // so its blocks are read too.
+  // what the file already answers them with; the decisions answer an agent's decision that is a
+  // `decision` block of the issue's spec, so the spec's blocks are read too.
   const reads = [
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
-    spyOn(api, "getIssueDecisions").mockResolvedValue({
-      decisions: [],
-      document: buildDispatchReference({ key: "CORE-1", kind: "decisions" }),
-      open_questions: [],
-    }),
+    spyOn(api, "getIssueDecisions").mockResolvedValue(
+      decisionsRead([decision("d1")], issue.artifacts[0])
+    ),
     spyOn(api, "getIssueCoverage"),
     spyOn(api, "listComments"),
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
@@ -395,6 +389,112 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
     for (const read of reads) read.mockRestore();
     listProjects.mockRestore();
     getIssue.mockRestore();
+    restore();
+  }
+});
+
+// A Change the reader asked of a decision counts under the decision whose block of the spec holds
+// the block they wrote it in (`Anchor.block_id`), though another decision holds its words too: the
+// header reads the spec's blocks to tell which (`decision-review.ts`). Here the reader asked it of
+// a decision tied to no statement, which is on no review list, and the decision of the list, read
+// before it, holds the same words: that one still waits on the reader, and the count draws it. A
+// count that read the Changes by their quotes alone would put the Change on the first decision
+// whose words hold it, the one of the list, and count nothing.
+test("the header counts a Change under the decision whose block of the spec holds its anchor", async () => {
+  const listed = decision("listed", {
+    links: [shaped(specRef("r1"))],
+    text: ":::decision{#listed}\n## Draw it once\n\nDraw it once.\n:::\n",
+  });
+  const untied = decision("untied", {
+    text: ":::decision{#untied}\n## Keep the model pure\n\nKeep the model pure. Draw it once.\n:::\n",
+  });
+  const change: Comment = {
+    anchor: {
+      artifact_id: issue.primary_artifact_id,
+      block_id: "untied-words",
+      mark_id: "change-1",
+      orphaned: false,
+      quote: "Draw it once.",
+      version: 3,
+    },
+    answers: null,
+    artifact_id: issue.primary_artifact_id,
+    ask_id: null,
+    author: { id: "alice", kind: "user" },
+    body: "Say which pages this covers.",
+    created_at: "2026-11-11T09:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
+    deliveries: [],
+    edited_at: null,
+    id: "change-1",
+    issue_key: "CORE-1",
+    mentions: [],
+    reply_block: null,
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+  };
+  // The spec's blocks in their order, as the blocks read answers them: its own paragraph, then
+  // each decision's block, and inside each the heading and the paragraph it holds, whose markdown
+  // ranges lie inside the decision's.
+  const placed = (id: string, type: string, from: number, to: number): ArtifactBlock => ({
+    attributes: [],
+    from,
+    id,
+    references: { asks: 0, comments: 0 },
+    to,
+    token: id,
+    type,
+  });
+  const restore = stubHeader(issue);
+  const reads = [
+    spyOn(api, "getIssueDecisions").mockResolvedValue(
+      decisionsRead([listed, untied], issue.artifacts[0])
+    ),
+    spyOn(api, "getIssueCoverage").mockResolvedValue({
+      gaps: [],
+      has_plan: false,
+      issue: "CORE-1",
+      requirements: [
+        {
+          block_id: "r1",
+          checks: 1,
+          gaps: [],
+          plan_tasks: 0,
+          ref: specRef("r1"),
+          text: "The first.",
+        },
+      ],
+      spec_artifact_id: issue.primary_artifact_id,
+    }),
+    spyOn(api, "listComments").mockResolvedValue([change]),
+  ];
+  const blocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([
+    placed("intro", "paragraph", 0, 14),
+    placed("listed", "decision", 16, 70),
+    placed("listed-heading", "heading", 37, 52),
+    placed("listed-words", "paragraph", 54, 67),
+    placed("untied", "decision", 72, 160),
+    placed("untied-heading", "heading", 93, 115),
+    placed("untied-words", "paragraph", 117, 155),
+  ]);
+  const queryClient = headerClient();
+  // The comments are held before the header mounts, as the outline's read of them leaves them, so
+  // no count is drawn from the decisions and the coverage before the Change is read: that count
+  // would draw the decision of the list whatever the blocks say.
+  queryClient.setQueryData(["comments", "CORE-1"], [change]);
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    expect((await screen.findByTestId("issue-whose-turn")).textContent).toBe("Waiting on you (1)");
+    expect(blocks).toHaveBeenCalledWith(issue.primary_artifact_id);
+  } finally {
+    view.unmount();
+    for (const read of [...reads, blocks]) read.mockRestore();
     restore();
   }
 });
@@ -449,7 +549,7 @@ test("the header draws a gated root issue's steps where the header's one chip sa
   });
   const gated: Project = {
     created_at: "2026-09-09T00:00:00Z",
-    gated_steps: ["decisions", "criteria", "spec"],
+    gated_steps: ["criteria", "spec"],
     open_asks: 0,
     key: "CORE",
     name: "Core",
@@ -467,12 +567,12 @@ test("the header draws a gated root issue's steps where the header's one chip sa
       Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
         step.getAttribute("data-approval-step")
       )
-    ).toEqual(["decisions", "criteria", "spec"]);
+    ).toEqual(["criteria", "spec"]);
     // The primary document keeps today's chip and its review actions, inside its own step.
     expect(within(steps).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
     expect(within(steps).getByRole("button", { name: "Approve" })).not.toBeNull();
-    // The two steps nobody has written say so, rather than borrowing the spec's state.
-    expect(within(steps).getAllByText("Not requested").length).toBe(2);
+    // The step nobody has written says so, rather than borrowing the spec's state.
+    expect(within(steps).getAllByText("Not requested").length).toBe(1);
     // The steps take the chip's place when one of them holds the primary document: the row
     // draws one approval area, not both, so it carries one pair of controls.
     expect(
@@ -492,7 +592,7 @@ test("the header draws the steps of a root whose parent is in another project", 
   const restore = stubHeader({ ...issue, parent: "OTHR-6" });
   const gated: Project = {
     created_at: "2026-09-09T00:00:00Z",
-    gated_steps: ["decisions", "criteria", "spec"],
+    gated_steps: ["criteria", "spec"],
     open_asks: 0,
     key: "CORE",
     name: "Core",
@@ -509,7 +609,7 @@ test("the header draws the steps of a root whose parent is in another project", 
       Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
         step.getAttribute("data-approval-step")
       )
-    ).toEqual(["decisions", "criteria", "spec"]);
+    ).toEqual(["criteria", "spec"]);
   } finally {
     view.unmount();
     listProjects.mockRestore();
@@ -528,11 +628,11 @@ test("the header keeps the primary document's chip when no gated step reviews it
     ],
     open_asks: [approvalAsk()],
   });
-  // A deployment may gate the decisions and the Verification document and not the spec; the
-  // spec still has an approval to answer, and only the header's own chip can answer it.
+  // A deployment may gate the Verification document and not the spec; the spec still has an
+  // approval to answer, and only the header's own chip can answer it.
   const gated: Project = {
     created_at: "2026-09-09T00:00:00Z",
-    gated_steps: ["decisions", "criteria"],
+    gated_steps: ["criteria"],
     open_asks: 0,
     key: "CORE",
     name: "Core",
@@ -549,9 +649,9 @@ test("the header keeps the primary document's chip when no gated step reviews it
       Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
         step.getAttribute("data-approval-step")
       )
-    ).toEqual(["decisions", "criteria"]);
-    // Neither step holds the primary document, so neither carries its state or its actions.
-    expect(within(steps).getAllByText("Not requested").length).toBe(2);
+    ).toEqual(["criteria"]);
+    // The step holds no primary document, so it carries neither its state nor its actions.
+    expect(within(steps).getAllByText("Not requested").length).toBe(1);
     expect(within(steps).queryByRole("button", { name: "Awaiting approval" })).toBeNull();
     // The primary document's own chip stays in the state row, with both of its controls.
     expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();

@@ -15,7 +15,7 @@ package graphstoretest
 // attribute's values may be stored under one of these kinds: a value tuple of one of them out of a
 // node reads as that node's own visibility, state, project or parties, whoever wrote it, so an
 // attribute a type declares under one of these names is stored under another name
-// (pmdoc/schemanodes/schemanodestest.StoreName).
+// (pmdoc/schemanodes.StoreName).
 func BaseAttributes() []string { return []string{"visibility", "state", "project", "parties"} }
 
 // WriteFunctions is the name of every function of graphstore a write of graph_nodes and

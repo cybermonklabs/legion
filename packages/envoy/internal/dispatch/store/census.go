@@ -66,3 +66,26 @@ func CheckVersions(ctx context.Context, databaseURL string) (*pgmigrate.VersionC
 	defer conn.Close(ctx)
 	return pgmigrate.CheckVersions(ctx, conn, migrations, versionTable)
 }
+
+// UnappliedMigrations answers the version of every migration this binary embeds that
+// schema_migrations, read in tx, records no row of, in the order the runner applies them: every
+// one of them where the table does not exist yet (pgmigrate.RecordedVersions). It writes nothing,
+// so a reader that needs a database migrated to this build - the store census - asks it in its own
+// read-only snapshot rather than probing a table or a column of one migration.
+func UnappliedMigrations(ctx context.Context, tx pgx.Tx) ([]int, error) {
+	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
+	if err != nil {
+		return nil, fmt.Errorf("migrations refused: %w", err)
+	}
+	recorded, err := pgmigrate.RecordedVersions(ctx, tx, versionTable)
+	if err != nil {
+		return nil, err
+	}
+	var unapplied []int
+	for _, migration := range migrations {
+		if !recorded[migration.Version] {
+			unapplied = append(unapplied, migration.Version)
+		}
+	}
+	return unapplied, nil
+}

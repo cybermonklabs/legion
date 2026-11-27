@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+    `DESIGN_GATE_STEPS` is `criteria` and `spec`; `GATED_STEPS` and `DocumentRoleSchema` still read `decisions` from a server of the release before. The Decisions read's schema gains `entries`, whose `decided_by` is a `DecisionDecider` with an optional session `title`; `decisions_artifact_id` stays optional. A `DecisionLink` gains `changed_since_tie`, true when the spec node's text changed after the decision tied it, and its `stale` keeps its meaning: the decision changed after the tie and the spec node has not changed since. The tool descriptions say ask block for a question to a person and `decision` block for an agent's decision. The block schema gains the `decision` and `reading` kinds and their fields; the edit op's `insert` takes `into`; the text read answers `asks`, one per ask block of the document. The gated-step view's `step` reads `GATED_STEPS`, so a daemon's recorded `decisions` step still parses.
+    The href reader reads a link to an issue's Decisions page (`/issues/KEY/decisions`), whatever its fragment, as `dispatch://KEY/decisions`, the issue's, rather than as its `decisions.md`.
+time: 2026-11-17T17:20:07.000000000Z
+custom:
+    Issue: pr4173

@@ -45,29 +45,20 @@ function stateActions(page: Page): Locator {
   return page.getByTestId("issue-state-actions");
 }
 
-// @pr: An approval: a gated project's root issue reads each step's own document as approved, approved and changed since, or awaiting.
-test("a root issue of a project gating three steps reads each step's own document: approved, approved and changed since, and awaiting @pr", async ({
+// @pr: An approval: a gated project's root issue reads each step's own document as approved and changed since, or awaiting.
+test("a root issue of a project gating both steps reads each step's own document: approved and changed since, and awaiting @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "GATETHREE", name: "Three steps" });
-  expect(await setGatedSteps("GATETHREE", ["decisions", "criteria", "spec"])).toEqual({
-    project: "GATETHREE",
-    steps: ["decisions", "criteria", "spec"],
+  await createProject({ key: "GATESTEPS", name: "Both steps" });
+  expect(await setGatedSteps("GATESTEPS", ["criteria", "spec"])).toEqual({
+    project: "GATESTEPS",
+    steps: ["criteria", "spec"],
   });
   const issue = await createIssue({
-    project: "GATETHREE",
+    project: "GATESTEPS",
     spec: "The plan.",
     title: "Design gate",
   });
-
-  // The decisions document is approved where it stands.
-  const decisions = await createIssueArtifact(issue.key, {
-    content: "# Decisions\n\nHTTP it is.\n",
-    name: "decisions.md",
-  });
-  expect(
-    (await reviewArtifact(decisions.artifact.id, { state: "approved" }, { login: "alice" })).version
-  ).toBe(1);
 
   // The Verification document was approved and then written again, so its approval is stale.
   const verification = await createIssueArtifact(issue.key, {
@@ -97,17 +88,13 @@ test("a root issue of a project gating three steps reads each step's own documen
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}`);
 
-    // Three lines, in the order the deployment published them, and no second chip beside them.
-    await expect(approvalSteps(page).locator("[data-approval-step]")).toHaveCount(3);
+    // Two lines, in the order the deployment published them, and no second chip beside them.
+    await expect(approvalSteps(page).locator("[data-approval-step]")).toHaveCount(2);
     expect(
       await approvalSteps(page)
         .locator("[data-approval-step]")
         .evaluateAll((entries) => entries.map((entry) => entry.getAttribute("data-approval-step")))
-    ).toEqual(["decisions", "criteria", "spec"]);
-
-    const decisionsEntry = stepEntry(page, "decisions");
-    await expect(decisionsEntry).toContainText("Decisions");
-    await expect(decisionsEntry.getByRole("button", { name: "Approved v1" })).toBeVisible();
+    ).toEqual(["criteria", "spec"]);
 
     const criteriaEntry = stepEntry(page, "criteria");
     await expect(criteriaEntry).toContainText("Verification");
@@ -125,11 +112,11 @@ test("a root issue of a project gating three steps reads each step's own documen
     await expect(
       specEntry.getByRole("button", { exact: true, name: "Request changes" })
     ).toBeVisible();
-    await expect(decisionsEntry.getByRole("button", { exact: true, name: "Approve" })).toHaveCount(
+    await expect(criteriaEntry.getByRole("button", { exact: true, name: "Approve" })).toHaveCount(
       0
     );
     await expect(
-      decisionsEntry.getByRole("button", { exact: true, name: "Request changes" })
+      criteriaEntry.getByRole("button", { exact: true, name: "Request changes" })
     ).toHaveCount(0);
     await expect(
       stateActions(page).getByRole("button", { exact: true, name: "Approve" })
@@ -143,26 +130,26 @@ test("a gated step whose document nobody has written reads Not requested rather 
   browser,
 }) => {
   await createProject({ key: "GATEGAP", name: "A missing document" });
-  await setGatedSteps("GATEGAP", ["decisions", "criteria", "spec"]);
+  await setGatedSteps("GATEGAP", ["criteria", "spec"]);
   const issue = await createIssue({
     project: "GATEGAP",
     spec: "The plan.",
-    title: "No decisions document",
+    title: "No Verification document",
   });
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}`);
-    await expect(approvalSteps(page).locator("[data-approval-step]")).toHaveCount(3);
+    await expect(approvalSteps(page).locator("[data-approval-step]")).toHaveCount(2);
 
     // The step is still a line of the gate: it names the document waiting to be written, and
     // says that nobody has asked for it to be reviewed.
-    const decisionsEntry = stepEntry(page, "decisions");
-    await expect(decisionsEntry).toContainText("Decisions");
-    await expect(decisionsEntry).toContainText("Not requested");
+    const criteriaEntry = stepEntry(page, "criteria");
+    await expect(criteriaEntry).toContainText("Verification");
+    await expect(criteriaEntry).toContainText("Not requested");
     // Nothing to open and nothing to answer: the pill is no control.
-    await expect(decisionsEntry.getByRole("button")).toHaveCount(0);
+    await expect(criteriaEntry.getByRole("button")).toHaveCount(0);
   } finally {
     await alice.close();
   }
@@ -195,7 +182,7 @@ test("a child issue of a gated project keeps the header's one chip: only a root 
   browser,
 }) => {
   await createProject({ key: "GATECHILD", name: "A gated tree" });
-  await setGatedSteps("GATECHILD", ["decisions", "criteria", "spec"]);
+  await setGatedSteps("GATECHILD", ["criteria", "spec"]);
   const root = await createIssue({
     project: "GATECHILD",
     spec: "The root plan.",
@@ -216,7 +203,7 @@ test("a child issue of a gated project keeps the header's one chip: only a root 
     // The root of the same tree reads step by step, so the child's one chip is the issue's own
     // place in the tree rather than a gate the project failed to publish.
     await page.goto(`/issues/${root.key}`);
-    await expect(approvalSteps(page).locator("[data-approval-step]")).toHaveCount(3);
+    await expect(approvalSteps(page).locator("[data-approval-step]")).toHaveCount(2);
 
     await page.goto(`/issues/${child.key}`);
     const actions = stateActions(page);
@@ -300,7 +287,7 @@ test("Approve on the spec step of today's issue header approves the spec on the 
   browser,
 }) => {
   await createProject({ key: "GATEAPPR", name: "Approve a step" });
-  await setGatedSteps("GATEAPPR", ["decisions", "spec"]);
+  await setGatedSteps("GATEAPPR", ["criteria", "spec"]);
   const issue = await createIssue({
     project: "GATEAPPR",
     spec: "The plan.",
@@ -334,7 +321,7 @@ test("a long changes-requested reason names its step and its reviewer whole, and
   browser,
 }) => {
   await createProject({ key: "GATEREASON", name: "A long reason" });
-  await setGatedSteps("GATEREASON", ["decisions", "criteria", "spec"]);
+  await setGatedSteps("GATEREASON", ["criteria", "spec"]);
   const issue = await createIssue({
     project: "GATEREASON",
     spec: "The plan.",
@@ -376,11 +363,11 @@ test("a long changes-requested reason names its step and its reviewer whole, and
   }
 });
 
-test("a deployment that gates the decisions and the Verification document, but not the spec, keeps the primary document's own approval and its controls", async ({
+test("a deployment that gates the Verification document, but not the spec, keeps the primary document's own approval and its controls", async ({
   browser,
 }) => {
   await createProject({ key: "GATENOSPEC", name: "No spec step" });
-  await setGatedSteps("GATENOSPEC", ["decisions", "criteria"]);
+  await setGatedSteps("GATENOSPEC", ["criteria"]);
   const issue = await createIssue({
     project: "GATENOSPEC",
     spec: "The plan.",
@@ -392,7 +379,7 @@ test("a deployment that gates the decisions and the Verification document, but n
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}`);
-    await expect(approvalSteps(page).locator("[data-approval-step]")).toHaveCount(2);
+    await expect(approvalSteps(page).locator("[data-approval-step]")).toHaveCount(1);
 
     // The gate does not hold this deployment's spec, and the open request on it is still the
     // reader's to answer: the header is where it has always been answered, so the primary
@@ -416,7 +403,7 @@ test("a gate with no step for the primary document, and the longest awaiting lab
   browser,
 }) => {
   await createProject({ key: "GATEWIDE", name: "Chip beside steps" });
-  await setGatedSteps("GATEWIDE", ["decisions", "criteria"]);
+  await setGatedSteps("GATEWIDE", ["criteria"]);
   const issue = await createIssue({
     project: "GATEWIDE",
     spec: "The plan.",
@@ -434,7 +421,7 @@ test("a gate with no step for the primary document, and the longest awaiting lab
     await page.goto(`/issues/${issue.key}`);
     const actions = stateActions(page);
     await expect(actions.getByRole("button", { exact: true, name: "Approve" })).toBeVisible();
-    await expect(approvalSteps(page).locator("[data-approval-step]")).toHaveCount(2);
+    await expect(approvalSteps(page).locator("[data-approval-step]")).toHaveCount(1);
     for (const width of [null, 320, 1440]) {
       if (width !== null) {
         await page.setViewportSize({ height: 844, width });

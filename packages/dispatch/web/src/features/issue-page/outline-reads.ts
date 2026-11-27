@@ -121,7 +121,7 @@ function sixReads(key: string) {
     },
     {
       bringsQuestions: false,
-      line: "decisions",
+      line: "issue-decisions",
       message: STATE_LINES.issue_decisions_unreadable,
       query: { ...issueDecisionsQuery(key, true), ...EVENT_FRESH },
     },
@@ -190,13 +190,13 @@ function failedLines(
 }
 
 /** What the outline says where the blocks of the document `id` could not be read: the document
- *  named by the part the tree reads it for (`treeDocumentIds`), the first of them where one
- *  document plays two. */
+ *  named by the part the tree reads it for (`treeDocumentIds`) - the spec, the plan or
+ *  Verification - the first of them where one document plays two. No decisions document plays a
+ *  part: a decision is a `decision` block of a document of the issue. */
 function blocksUnreadable(issue: IssueDetails, id: string): string {
   if (primarySpec(issue)?.id === id) return STATE_LINES.spec_unreadable;
   if (roleDocument(issue, "plan")?.id === id) return STATE_LINES.plan_unreadable;
-  if (roleDocument(issue, "verification")?.id === id) return STATE_LINES.verification_unreadable;
-  return STATE_LINES.decisions_document_unreadable;
+  return STATE_LINES.verification_unreadable;
 }
 
 /** The names' line while it stands (`IssueTreeView.namesFailure`), in the outline's words: the

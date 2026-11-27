@@ -60,6 +60,7 @@ function stubDecisionsRead(): Mock<typeof api.getIssueDecisions> {
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue({
     decisions: [],
     document: null,
+    entries: [],
     open_questions: [],
   });
   const before = restore;

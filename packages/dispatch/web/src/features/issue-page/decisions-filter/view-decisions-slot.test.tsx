@@ -13,7 +13,7 @@ import {
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../../api/queries";
-import type { Comment, IssueAskRow, IssueDecisions } from "../../../api/types";
+import type { ArtifactBlock, Comment, IssueAskRow, IssueDecisions } from "../../../api/types";
 import { type EventFreshness, useIsHuman } from "../../../hooks/useIsHuman";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { answeredAsk } from "../../inbox/ask-card-fixture";
@@ -38,14 +38,18 @@ import {
   rowTakesFocus,
   stubReads,
 } from "../slots/stage-fixtures";
+import { blockNodeId } from "../tree-drafts";
 import { issueAsksQuery } from "../useIssueTree";
 import {
   decision,
   decisionNode,
   decisionsRead,
+  entryOf,
   issueDetails,
   KEY,
+  personDecision,
   READER,
+  SPEC_DOCUMENT,
 } from "./decisions-fixtures";
 
 let stubs: { mockRestore(): void }[] = [];
@@ -156,21 +160,54 @@ const ASKED: readonly IssueAskRow[] = [
   answeredAsk({ id: "ask-answered" }),
 ].map((asked) => ({ ...asked, last_reply: null }));
 
-/** The decisions read: the reader's write-up of their answer to `ask-answered`, a section the
- *  server marks a person's because it names that ask. */
-const WRITE_UP = decisionsRead([
-  decision("writeup", { asks: ["ask-answered"], kind: "person", waiting_review: false }),
-]);
+/** The reader's write-up of their answer to `ask-answered`: a `reading` block of the spec. */
+const WRITE_UP_BLOCK: ArtifactBlock = {
+  attributes: [],
+  from: 0,
+  id: "writeup",
+  references: { asks: 0, comments: 0 },
+  to: 40,
+  token: "writeup",
+  type: "reading",
+};
+
+/** The decisions read: the reader's answer to `ask-answered`, which is their decision, with the
+ *  reading of it the spec holds (`DecisionEntry.readings`), which the tree draws under that ask
+ *  (`tree-drafts.ts`'s `addReadingParents`). */
+const WRITE_UP: IssueDecisions = {
+  ...decisionsRead([]),
+  entries: [
+    {
+      ...entryOf(personDecision("ask-answered")),
+      readings: [
+        {
+          artifact_id: SPEC_DOCUMENT.id,
+          authored_by: { id: READER, kind: "person" },
+          block_id: WRITE_UP_BLOCK.id,
+          node: { id: `${SPEC_DOCUMENT.ref_key}#${WRITE_UP_BLOCK.id}`, kind: "block" },
+          text: "The reader keeps it as it is.",
+        },
+      ],
+    },
+  ],
+};
 
 /** The write-up's node, which the view draws no row for once the asks read tells it. */
-const WRITE_UP_NODE = decisionNode("writeup").id;
+const WRITE_UP_NODE = blockNodeId(SPEC_DOCUMENT.slug, WRITE_UP_BLOCK.id);
 
-// A person's decision whose section names a question of this issue they answered is their
-// write-up of that answer, which the view draws no row for: the question's own row is the
-// decision. An address naming the write-up keeps the view and lands on the row of the question
-// it answers, though a question still open stands first in the list and the stage would give its
-// row the focus.
+/** The spec's blocks read, answering the write-up's block, and every other document's none. */
+function specHoldsWriteUp(): { mockRestore(): void } {
+  return spyOn(api, "getArtifactBlocks").mockImplementation(async (id: string) =>
+    id === SPEC_DOCUMENT.id ? [WRITE_UP_BLOCK] : []
+  );
+}
+
+// A reading of a question of this issue the reader answered is a write-up of that answer, which
+// the view draws no row for: the question's own row is the decision. An address naming the
+// write-up keeps the view and lands on the row of the question it answers, though a question
+// still open stands first in the list and the stage would give its row the focus.
 test("a person's write-up of an answered question, named on the Decisions view's address, keeps the view, with the focus on the question's row", async () => {
+  specHoldsWriteUp();
   const asks = spyOn(api, "listIssueAsks").mockResolvedValue([...ASKED]);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(WRITE_UP);
   // The messages read, which answers last: with it every read is held, and the view has told the
@@ -198,10 +235,11 @@ test("a person's write-up of an answered question, named on the Decisions view's
   }
 });
 
-// Until the asks read answers, nothing tells the write-up from a decision of the person's own, so
-// the list draws it as one, under the reader's decisions. The address waits for the asks rather
-// than land on that row, which leaves the list once they answer and would take the focus with it.
+// Until the asks read answers, the tree holds no ask the write-up stands under, so the list draws
+// it as the node the address names. The address waits for the asks rather than land on that row,
+// which leaves the list once they answer and would take the focus with it.
 test("a write-up's address waits for the asks read, which answers after the decisions read, and lands on the question's row", async () => {
+  specHoldsWriteUp();
   const asksOut = Promise.withResolvers<IssueAskRow[]>();
   const asks = spyOn(api, "listIssueAsks").mockReturnValue(asksOut.promise);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(WRITE_UP);
@@ -210,7 +248,7 @@ test("a write-up's address waits for the asks read, which answers after the deci
     await waitFor(() =>
       expect(
         view.container.querySelector(`[data-node-id="${WRITE_UP_NODE}"]`),
-        "the write-up was drawn as no decision of its own while the asks read is out"
+        "the write-up was not drawn while the asks read is out"
       ).not.toBeNull()
     );
     await act(async () => asksOut.resolve([...ASKED]));
@@ -231,6 +269,7 @@ test("a write-up's address waits for the asks read, which answers after the deci
 // write-up's address has no row of the view to land on. The stage draws the outline in the view's
 // place, which draws the write-up as a row under the question it answers and lands on it.
 test("a write-up's address under words its question does not hold draws the outline, with the focus on the write-up's row", async () => {
+  specHoldsWriteUp();
   const asks = spyOn(api, "listIssueAsks").mockResolvedValue([...ASKED]);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(WRITE_UP);
   try {
@@ -261,6 +300,7 @@ async function writeUpRowAfter(
   frames: { readonly run: () => Promise<void> },
   press?: () => void
 ): Promise<HTMLElement> {
+  specHoldsWriteUp();
   const decisionsOut = Promise.withResolvers<typeof WRITE_UP>();
   spyOn(api, "getIssueDecisions").mockReturnValue(decisionsOut.promise);
   const view = drawStage("?q=flag#b-writeup");
@@ -420,7 +460,7 @@ test("coming back to the outline from Decisions after the app's staleTime asks w
   client.setQueryData(["issue-messages", KEY], [], answered);
   // What the reader holds unread on the issue, which a thread's read mark reads.
   client.setQueryData(myRepliesOwnerQuery({ issue: KEY }).queryKey, NOTHING_UNREAD, answered);
-  // The blocks of each of the issue's documents, the spec and the decisions document.
+  // The blocks of each of the issue's documents: its spec, which holds its decisions.
   for (const { id } of issue.artifacts ?? []) {
     client.setQueryData(artifactBlocksQuery(id).queryKey, [], answered);
   }
@@ -535,15 +575,17 @@ test("a thread's read mark drawn after the app's staleTime asks the unread set n
 });
 
 // Every entry the browser makes has the key "default". Under the Decisions view and words, a
-// decision its fragment names keeps the view, which draws it whatever the words. A person's
+// decision its fragment names keeps the view, which draws it whatever the words. A reader's
 // write-up, changed to with the fragment alone under the same key and words, is no row of the
 // list where the words match no question it answers: the stage draws the outline in the view's
 // place, which lands on the write-up's row.
 test("under the Decisions view and words, a fragment the browser changes under one key from a decision to a write-up the list draws no row for draws the outline, with the focus on the write-up's row", async () => {
+  specHoldsWriteUp();
   spyOn(api, "listIssueAsks").mockResolvedValue([...ASKED]);
-  spyOn(api, "getIssueDecisions").mockResolvedValue(
-    decisionsRead([decision("d1"), ...(WRITE_UP.decisions ?? [])])
-  );
+  spyOn(api, "getIssueDecisions").mockResolvedValue({
+    ...WRITE_UP,
+    entries: [entryOf(decision("d1")), ...(WRITE_UP.entries ?? [])],
+  });
   // The decisions read the view's entries come from reads the comments, so the messages read is
   // the one held: it answers last, and with it every read the tree is built from is held.
   const messagesOut = Promise.withResolvers<[]>();

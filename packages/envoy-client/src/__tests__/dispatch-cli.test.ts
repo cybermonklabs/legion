@@ -58,18 +58,18 @@ function blockCapRefusal(block: number, units: number): string {
 const printedBlockCapRefusal = (block: number, units: number) =>
   `CAP_EXCEEDED: ${blockCapRefusal(block, units)}`;
 
-/** How the Dispatch server refuses a body whose block `block` is a decision block, worded as
+/** How the Dispatch server refuses a body whose block `block` is an ask block, worded as
  *  `itemblocks.DecisionBlock` words it: the card such a block draws is one nobody can answer
  *  where it stands, so the body is refused however short it is (INFRA-1201). */
 function decisionBlockRefusal(block: number): string {
   return (
-    `body block ${block} (ask) holds a decision block, which nobody can answer where it stands: ` +
-    "ask the question in the issue's own document, as a decision block there, or open an ask " +
-    "with `dispatch ask`; to show a decision block as an example, put it in a fenced code block"
+    `body block ${block} (ask) holds an ask block, which nobody can answer where it stands: ` +
+    "ask the question in the issue's own document, as an ask block there, or open an ask " +
+    "with `dispatch ask`; to show an ask block as an example, put it in a fenced code block"
   );
 }
 
-/** The server's refusal of `body`: a decision block in it (400 DECISION_BLOCK_IN_BODY), else a
+/** The server's refusal of `body`: an ask block in it (400 DECISION_BLOCK_IN_BODY), else a
  *  paragraph over the bound Dispatch holds each block to (400 CAP_EXCEEDED), else undefined.
  *  Dispatch bounds a body block by block and never as a whole, so a body of any length in
  *  paragraphs posts and one long paragraph does not. */
@@ -2890,6 +2890,44 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([{ method: "GET", path: "/api/v1/projects", body: undefined }]);
   });
 
+  // An insert's into, the block its markdown goes inside, reaches Dispatch as the caller wrote it,
+  // and `doc-edit --help` names the key with its spelling and a reading inserted into an ask.
+  test("dispatch doc-edit sends an insert's into as given, and its help names into", async () => {
+    const op = {
+      op: "insert",
+      into: "block:a1",
+      markdown: ":::reading{#r1}\nThe agent reads the answer as REST for every service.\n:::",
+    };
+    let sent: { ops?: unknown } | undefined;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const { pathname } = new URL(request.url);
+      if (request.method === "POST" && pathname === "/api/v1/artifacts/doc-2/edits") {
+        sent = await request.json();
+        return Response.json({ applied: 1, version: { number: 4 }, token: "sha256:read" });
+      }
+      return fetch(request);
+    }) as typeof fetch;
+    const { code, stdout } = await run(
+      ["doc-edit", "--issue", "DSP-2", "--ops-json", JSON.stringify([op])],
+      omp,
+      "",
+      { fetchImpl }
+    );
+    expect(code, stdout).toBe(0);
+    expect(stdout).toContain("Applied 1 ops (version 4)");
+    expect(sent?.ops).toEqual([op]);
+
+    const help = await run(["doc-edit", "--help"], omp);
+    expect(help.code).toBe(0);
+    expect(help.stdout).toContain(
+      '\n        into (text): Insert inside this block, after its last child: "block:<id>" is the one form it takes.'
+    );
+    expect(help.stdout).toContain(
+      '{"op":"insert","into":"block:a1","markdown":":::reading{#r1}\\nThe agent reads the answer as REST for every service.\\n:::"}'
+    );
+  });
+
   // Dispatch refuses a read-only token's write with READ_ONLY_TOKEN before anything runs. The
   // command prints that refusal as a line of its own, its code first and then Dispatch's message,
   // and exits 1, as for every write Dispatch refused. The credential is the read trade
@@ -3157,7 +3195,7 @@ describe("the dispatch entry as its own process", () => {
     }
   }, 30_000);
 
-  // A body holding a decision block is refused whatever its length (400 DECISION_BLOCK_IN_BODY,
+  // A body holding an ask block is refused whatever its length (400 DECISION_BLOCK_IN_BODY,
   // INFRA-1201), and what the writer reads is the whole of the server's message, which says
   // where the question belongs. The refusal now opens with the server's code, because
   // `skill://dispatch` has every agent branch on the code and the command printed none

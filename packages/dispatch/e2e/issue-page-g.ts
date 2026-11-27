@@ -31,7 +31,6 @@ import {
   recordCheckResult,
   userHeaders,
 } from "./api";
-import { blockId } from "./editor";
 import { withIssuePage } from "./issue-page-option";
 import type { Box } from "./layout";
 import { ONE_PIXEL_PNG } from "./one-pixel-png";
@@ -1031,10 +1030,9 @@ export const ONE_LINE_WORDS = "The page draws one row per node.";
 /** What the seed wrote, by the ids the page draws its rows under. */
 export interface RowSeed {
   readonly key: string;
-  /** The slug of each document the issue holds: its spec, its notes, its plan, its
-   *  Verification document and its decisions. */
+  /** The slug of each document the issue holds: its spec, its notes, its plan and its
+   *  Verification document. */
   readonly slugs: {
-    readonly decisions: string;
     readonly notes: string;
     readonly plan: string;
     readonly spec: string;
@@ -1061,13 +1059,13 @@ export interface RowSeed {
   /** The open question with two options that waits on the reader, and an answered one. */
   readonly openQuestion: string;
   readonly answered: string;
-  /** The decision that shaped a statement and waits for review, the decision a person asked to
-   *  change, and the comment that asks it. */
+  /** The decision of the spec that shaped a statement and waits for review, the decision of the
+   *  spec a person asked to change, and the comment that asks it. */
   readonly shaping: string;
   readonly changed: string;
   readonly change: string;
-  /** The decision the seed marks unsure, whose words cite `t1` by its address, and the one that
-   *  quotes a typed block and cites `r-one` by its address. */
+  /** The decision of the spec the seed marks unsure, whose words cite `t1` by its address, and
+   *  the plan's decision that holds a typed block and cites `r-one` by its address. */
   readonly unsure: string;
   readonly raw: string;
   /** The result the untitled session recorded against `c1`. */
@@ -1100,10 +1098,15 @@ async function uploadPicture(key: string, name: string): Promise<string> {
  * `blocks.json`); a one-line statement `r-one`; the statement `r-ties`, whose words cite `r-one`'s
  * block by its address (a requirement takes no attribute, so the citation is the tie);
  * a plan task that needs one opening "**1\. Stand"; a check, with a result an untitled session
- * recorded; a decision that shaped a statement, one opening "Unsure:" that cites `t1`, one
- * holding `:::requirement{#r1}` and a block's address, and one a person asked to change; a
+ * recorded; the planner's `decision` blocks in the spec's `## Decisions` part - one that shaped
+ * a statement, one the seed marks of high uncertainty that cites `t1`, and one a person asked to
+ * change - and its `decision` block of the plan holding `:::requirement{#r1}` and a block's
+ * address, so `r1` is a requirement of a document other than the spec (decision 246); a
  * picture; an open question with two options waiting on the reader, an answered one, and the
  * long texts c-cut reads. It is at most three levels deep (`DRAWN_LEVELS`).
+ *
+ * A decision is a `decision` block of the document that holds it, which the seed names by the
+ * id it writes on it: Dispatch refuses a document of decisions (409 `DECISIONS_ARE_NODES`).
  */
 export async function seedRows(): Promise<RowSeed> {
   await createProject({ key: PROJECT, name: "Rows" });
@@ -1208,26 +1211,69 @@ export async function seedRows(): Promise<RowSeed> {
     asPlanner
   );
 
-  const headings = {
-    changed: "Name every node from one read",
-    raw: "Keep the source out of the rows",
-    shaping: "Draw a statement on one line",
-    unsure: "Fold to the frontier and not to a depth",
+  // The planner's decisions, each a `decision` block it writes: three in the spec's `## Decisions`
+  // part, and one of the plan whose typed block is a requirement of a document other than the
+  // spec. A decision is tied to the statement it shaped by its `shaped` attribute, and its
+  // uncertainty is its own attribute.
+  const ids = {
+    changed: "d-changed",
+    raw: "d-raw",
+    shaping: "d-shaping",
+    unsure: "d-unsure",
   };
-  const decisions = await createIssueArtifact(key, {
-    content: [
-      `## ${headings.shaping}\n\nShapes ${spec("r-one")}.`,
-      `## ${headings.changed}\n\n${CHANGED_DECISION_WORDS} Shapes ${spec("r-cites")}.`,
-      `## ${headings.unsure}\n\nUnsure: a reader who never finds the newest question would change this. ` +
-        `It follows dispatch://${key}/artifact/${plan.artifact.slug}#b-t1.`,
-      `## ${headings.raw}\n\nIt names ${spec("r-one")}.\n\n:::requirement{#r1}\nThe page draws no raw source.\n:::`,
-    ].join("\n\n"),
-    name: "decisions.md",
-  });
-  // A person asks to change one decision, by a comment anchored to its words after they last
-  // changed (decision 45: the anchor names the document by its id).
+  const decisionBlock = (id: string, attributes: string, heading: string, words: string) =>
+    `:::decision{#${id}${attributes}}\n### ${heading}\n\n${words}\n:::\n`;
+  await editArtifact(
+    issue.primary_artifact_id,
+    {
+      ops: [
+        {
+          after: "end",
+          markdown: [
+            "## Decisions\n",
+            decisionBlock(
+              ids.shaping,
+              ` shaped="${spec("r-one")}"`,
+              "Draw a statement on one line",
+              `Shapes ${spec("r-one")}.`
+            ),
+            decisionBlock(
+              ids.changed,
+              ` shaped="${spec("r-cites")}"`,
+              "Name every node from one read",
+              `${CHANGED_DECISION_WORDS} Shapes ${spec("r-cites")}.`
+            ),
+            decisionBlock(
+              ids.unsure,
+              ' uncertainty="high"',
+              "Fold to the frontier and not to a depth",
+              "A reader who never finds the newest question would change this. " +
+                `It follows dispatch://${key}/artifact/${plan.artifact.slug}#b-t1.`
+            ),
+          ].join("\n"),
+          op: "insert",
+        },
+      ],
+    },
+    asPlanner
+  );
+  await editArtifact(
+    plan.artifact.id,
+    {
+      ops: [
+        {
+          after: "end",
+          markdown: `::::decision{#${ids.raw}}\n### Keep the source out of the rows\n\nIt names ${spec("r-one")}.\n\n:::requirement{#r1}\nThe page draws no raw source.\n:::\n::::\n`,
+          op: "insert",
+        },
+      ],
+    },
+    asPlanner
+  );
+  // A person asks to change one decision, by a comment anchored to its words in the spec after
+  // they last changed (decision 45: the anchor names the document by its id).
   const change = await createComment(key, {
-    anchor: { artifact: decisions.artifact.id, quote: CHANGED_DECISION_WORDS },
+    anchor: { artifact: issue.primary_artifact_id, quote: CHANGED_DECISION_WORDS },
     body: "Name them from the tree instead.",
   });
 
@@ -1251,18 +1297,13 @@ export async function seedRows(): Promise<RowSeed> {
   const pictured = await createComment(key, {
     body: `The layout at 1440 px:\n\n![The layout at 1440 px](dispatch://${key}/artifact/${picture})`,
   });
-
-  const decisionsSlug = decisions.artifact.slug;
-  // A decision is addressed by its heading block, whose id the server gives.
-  const decision = async (heading: string) =>
-    blockNode(decisionsSlug, await blockId(decisions.artifact.id, `## ${heading}`));
   return {
     answered: answered.id,
     answeredLong: answeredLong.id,
     answerWords,
     blocker: blocker.key,
     change: change.id,
-    changed: await decision(headings.changed),
+    changed: blockNode(specSlug, ids.changed),
     child: child.key,
     childTitle,
     comment: comment.id,
@@ -1273,18 +1314,17 @@ export async function seedRows(): Promise<RowSeed> {
     openQuestion: openQuestion.id,
     picture,
     pictured: pictured.id,
-    raw: await decision(headings.raw),
+    raw: blockNode(plan.artifact.slug, ids.raw),
     replies,
     result: recorded.result.id,
-    shaping: await decision(headings.shaping),
+    shaping: blockNode(specSlug, ids.shaping),
     slugs: {
-      decisions: decisionsSlug,
       notes: notes.artifact.slug,
       plan: plan.artifact.slug,
       spec: specSlug,
       verification: verification.artifact.slug,
     },
-    unsure: await decision(headings.unsure),
+    unsure: blockNode(specSlug, ids.unsure),
     waitingLong: waitingLong.id,
   };
 }

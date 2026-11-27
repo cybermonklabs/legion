@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -173,12 +173,12 @@
           "kind": "enum",
           "choices": ["code", "production", "graph"],
           "since": 6,
-          "creatable_since": 8
+          "creatable_since": 9
         },
         "program": {
           "kind": "string",
           "since": 6,
-          "creatable_since": 8
+          "creatable_since": 9
         }
       },
       "since": 3,

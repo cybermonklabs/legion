@@ -32,9 +32,10 @@ export const versionFields = {
 export const VersionSchema = z.strictObject(versionFields).readonly();
 
 /** The part an issue's document plays beside its spec: `verification` for the document created
- *  as `verification.md`, `plan` for the one created as `plan.md`, `decisions` for the one
- *  created as `decisions.md`. `decisions` is absent from a Dispatch older than the design
- *  gate's steps. */
+ *  as `verification.md`, `plan` for the one created as `plan.md`. `decisions` is the role of an
+ *  issue's decisions document an earlier release stored, which a server answers until the
+ *  decisions step retires that document; this build gives it to no document. */
+// kept for one release: contract-read-side
 export const DocumentRoleSchema = z.enum(["verification", "plan", "decisions"]);
 
 export type DocumentRole = z.output<typeof DocumentRoleSchema>;
@@ -65,8 +66,9 @@ export type AskApprovalDocument = z.output<typeof AskApprovalDocumentSchema>;
 /** The document's approval as of its latest version: `draft` has never been reviewed or
  *  requested; `awaiting` has an open approval ask; `approved` is approved at the latest version;
  *  `stale` is approved at an older version: a later version leaves the approval there unless
- *  Dispatch carries it to that version (`ArtifactReview`); `changes_requested` carries the
- *  reviewer's reason. */
+ *  Dispatch carries it to that version (`ArtifactReview`); a retired document's approval reads
+ *  `stale` too, since its retirement supersedes it; `changes_requested` carries the reviewer's
+ *  reason. */
 export const ArtifactApprovalSchema = z
   .strictObject({
     state: z.enum(["draft", "awaiting", "approved", "stale", "changes_requested"]),
@@ -120,10 +122,10 @@ export const artifactFields = {
   kind: z.enum(["doc", "image", "file"]),
   primary: z.boolean(),
   /** The part an issue's document plays beside its spec: `verification` for the document created
-   *  as `verification.md`, `plan` for the one created as `plan.md`, `decisions` for the one
-   *  created as `decisions.md`. It is set when the document is created and never changes; absent
-   *  for every other document and from a Dispatch older than document roles. A `decisions.md`
-   *  stored before Dispatch knew that role carries no role, and is found by its slug instead. */
+   *  as `verification.md`, `plan` for the one created as `plan.md`. It is set when the document is
+   *  created; absent for every other document and from a Dispatch older than document roles. An
+   *  issue's decisions document an earlier release stored answers `decisions` until the decisions
+   *  step retires it, which clears the role (DocumentRoleSchema). */
   role: DocumentRoleSchema.optional(),
   created_by: ActorSchema,
   created_at: z.string(),
@@ -236,11 +238,18 @@ export const ArtifactHumanEditedEventPayloadSchema = z.object({
  *  pinned to `version`; `reason` is required for changes requested; `ask_id` names the
  *  approval ask the review answered, null when given from the document header with no
  *  approval ask open at that version. A third provenance is the carry: Dispatch records an
- *  `artifact.approved` in a human's name at the version his answer to a decision block writes,
- *  when that answer is the whole change since the version he approved, and at a version whose
- *  text is byte for byte the approved version's with no decision block in it decided since; its
- *  `reason` names the carry and the version it follows, and its `ask_id` is null unless a request
- *  was open at the carry, which it answers (see `ArtifactReview`). */
+ *  `artifact.approved` in a human's name at a later version whose change since the version he
+ *  approved is one the carry takes - a version whose text is byte for byte the approved
+ *  version's with no ask block in it decided since, among others. A person's answer, resolve or
+ *  decline of an ask writes one version. When the answer, resolve or decline is that version's
+ *  whole change, the version changes only the server-owned attributes of the ask's block, and the
+ *  carry takes it. The version carries an approval only when the person's answer, resolve or
+ *  decline is its whole change. If text that a person was editing in the browser is settled into
+ *  the same version, the approval does not carry, and the request goes back to its agent. A closed
+ *  issue's settlement carries nothing, so the version an issue's close writes carries no approval.
+ *  Its `reason` names the carry and the version it
+ *  follows, and its `ask_id` is null unless a request was open at the carry, which it answers
+ *  (see `ArtifactReview`). */
 export const artifactReviewEventPayloadFields = {
   artifact_id: z.string(),
   name: z.string(),
@@ -298,8 +307,9 @@ export const BlockInvalidEventPayloadSchema = z
 export type BlockInvalidEventPayload = z.output<typeof BlockInvalidEventPayloadSchema>;
 
 /** `decision.kept`, which a person's Keep appends on the decision's issue: the document, the
- *  decision's heading block and the version its text stood at. It wakes nobody - a Keep records
- *  that a person agreed, which asks its agent for nothing. */
+ *  decision's block (a `decision` block, or a section heading of a decisions document an earlier
+ *  release stored, until that document is retired) and the version its text stood at. It wakes
+ *  nobody - a Keep records that a person agreed, which asks its agent for nothing. */
 export const DecisionKeptEventPayloadSchema = z
   .strictObject({
     artifact_id: z.string(),
@@ -309,3 +319,27 @@ export const DecisionKeptEventPayloadSchema = z
   .readonly();
 
 export type DecisionKeptEventPayload = z.output<typeof DecisionKeptEventPayloadSchema>;
+
+/** `document.retired`: `docs.RetireDocument` retired the document, once, on its owner: the
+ *  document, the role it played until its retirement cleared it (absent where it had none), why
+ *  it was retired, and the standing approval the retirement superseded (null where none stood). */
+export const DocumentRetiredEventPayloadSchema = z
+  .strictObject({
+    artifact_id: z.string(),
+    ref_key: z.string(),
+    name: z.string(),
+    role: z.string().optional(),
+    reason: z.string(),
+    superseded_approval: z
+      .strictObject({
+        review_id: z.string(),
+        approved_version: z.number().int(),
+        approved_by: ActorSchema,
+        kind: ArtifactReviewKindSchema,
+      })
+      .readonly()
+      .nullable(),
+  })
+  .readonly();
+
+export type DocumentRetiredEventPayload = z.output<typeof DocumentRetiredEventPayloadSchema>;

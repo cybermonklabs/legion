@@ -216,7 +216,7 @@ func (r *versionNewsLive) a1() {
 	r.held("version 2 of the Verification document closed the criteria row, the spec row standing approved: %s", versionNewsSteps(views))
 }
 
-// Step A3. Two trees register both documents. An answer to the open decision block in the
+// Step A3. Two trees register both documents. An answer to the open ask block in the
 // implementing root's spec, the whole of its next version, which Dispatch approves by carrying the
 // person's approval to it, sends the implementer and the tree's architect nothing; in the same
 // window a checks-only version of the accepting root's Verification document, approved, reaches
@@ -243,7 +243,7 @@ func (r *versionNewsLive) a3() {
 		}
 	}
 	if wave == "" {
-		r.fail("Dispatch lists no ask of the decision block wave on %s: %+v", key, asks)
+		r.fail("Dispatch lists no ask of the ask block wave on %s: %+v", key, asks)
 	}
 	mark := time.Now()
 	r.dispatchAs(versionNewsPerson, http.MethodPost, "/api/v1/asks/"+wave+"/answer", map[string]any{"selected": []string{"Two"}, "expected_edited_at": nil}, nil)
@@ -252,7 +252,7 @@ func (r *versionNewsLive) a3() {
 		view := views[record.DesignStepSpec]
 		return view.CurrentVersion == 2 && view.Status == api.GatedStepApproved
 	})
-	r.held("the answer to the decision block wrote version 2 of %s's spec, which Dispatch approved by carrying the person's approval, and the gate stands open at it", key)
+	r.held("the answer to the ask block wrote version 2 of %s's spec, which Dispatch approved by carrying the person's approval, and the gate stands open at it", key)
 
 	r.newVersion(accepting, record.DesignStepCriteria, versionNewsCheck, versionNewsCheckAgain, 2)
 	r.approve(accepting.verification, 2)
@@ -268,7 +268,7 @@ func (r *versionNewsLive) a3() {
 	r.holdPhase(accepting.root().key, phase.Accepting)
 	r.held("%s stays in accepting (%s)", accepting.root().key, liveSettle)
 	r.quiet(silent, mark, task.at.Add(liveSettle))
-	r.held("the decision-only version sent %s nothing, in the window the accepting root's task arrived in", versionNewsNames(silent))
+	r.held("the ask-only version sent %s nothing, in the window the accepting root's task arrived in", versionNewsNames(silent))
 
 	mark = time.Now()
 	r.newVersion(implementing, record.DesignStepCriteria, versionNewsCheck, versionNewsCheckAgain, 2)

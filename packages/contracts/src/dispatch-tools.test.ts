@@ -1776,8 +1776,8 @@ describe("dispatchToolSpecs", () => {
     expect(existsSync(resolve(repoRoot, "skills/dispatch-writing-specs/SKILL.md"))).toBe(true);
   });
 
-  // Each tool that writes a body states the server's bounds and the decision
-  // block it refuses, so `dispatch comment --help` and its four siblings print them before a
+  // Each tool that writes a body states the server's bounds and the ask block it
+  // refuses, so `dispatch comment --help` and its four siblings print them before a
   // writer puts one in a body. The names are asserted whole: an empty or shortened table would
   // make the rows below assert nothing.
   test("the five tools that write a body are the ones this table names", () => {
@@ -1792,7 +1792,7 @@ describe("dispatchToolSpecs", () => {
 
   test.each(
     BODY_WRITING_TOOLS
-  )("%s's %s gives the server's two body bounds and names the decision block it refuses", (name, field) => {
+  )("%s's %s gives the server's two body bounds and names the ask block it refuses", (name, field) => {
     const flag = argumentDescription(name, field);
     expect(flag, `${name} --${field}`).toContain(`${DISPATCH_BLOCK_UNITS} characters`);
     expect(flag, `${name} --${field}`).toContain(`${DISPATCH_ITEM_BLOCKS} blocks`);

@@ -160,6 +160,31 @@ func (n *Node) Validate() error {
 	return validateNode(n, 0)
 }
 
+// validateWithin is the validation of doc, the tree markdown parsed to, as the children a block of
+// type parent holds after its own: each is held to the schema as Validate holds it, and each is a
+// block or of a type parent admits after its content (AdmitsAfterContent), which stands nowhere
+// at a document's level. parent "" is the document itself (Validate). Where among the block's
+// children such a block may stand is the block's content rule, which only the whole block can be
+// held to (InsertInto).
+func validateWithin(doc *Node, parent string) error {
+	if parent == "" {
+		return doc.Validate()
+	}
+	for _, child := range doc.Children {
+		if err := validateNode(child, 1); err != nil {
+			return err
+		}
+		if isBlockNodeType(child.Type) || AdmitsAfterContent(parent, child.Type) {
+			continue
+		}
+		if err := misplacedBlock([]*Node{child}); err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: %s cannot hold %s", ErrSchema, blockName(parent), blockName(child.Type))
+	}
+	return nil
+}
+
 func validateNode(n *Node, depth int) error {
 	if n == nil {
 		return fmt.Errorf("%w: nil node", ErrSchema)

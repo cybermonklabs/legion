@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -16,9 +15,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -333,8 +332,9 @@ func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
 }
 
 // blockReferenceNode is the block node ref names (query addresses it), with its whole current
-// text. A block no current version of its document holds answers 404, unless ref is pinned to a
-// version N that held it: the node then carries what N recorded (model.BlockPin), "unchanged"
+// text. A block no current version of its document holds is the block its moved_to tuples reach
+// (movedBlockNode), and answers 404 where they reach none, unless ref is pinned to a version N
+// that held it: the node then carries what N recorded (model.BlockPin), "unchanged"
 // or "changed" by comparing the current text with N's, or "removed" with the version that deleted
 // it, as a node with no text or changed version whose facts are a removed block's
 // (refs.RemovedBlockNode); a pin to a current block carries the current block's facts. A pin to
@@ -344,7 +344,7 @@ func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
 func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	documentKey, _, _ := strings.Cut(query.ID, "#")
-	document, found, err := refs.Node(ctx, pool, who, "artifact", documentKey, true)
+	document, found, err := s.documentAtAddress(ctx, who, documentKey)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
@@ -357,7 +357,7 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	}
 	if ref.Pin == 0 {
 		if !current {
-			return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no block %q in %s", ref.Block, document.Ref)
+			return s.movedBlockNode(ctx, who, query.ID, ref, document)
 		}
 		node.Text, err = refs.CurrentBlockText(ctx, pool, document.ID, ref.Block)
 		return node, err
@@ -409,6 +409,64 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	}
 	node.Pin = pin
 	return node, nil
+}
+
+// movedBlockNode is the block an address no current version holds moved to: the block the
+// address's moved_to tuples reach (graphstore.MovedTo), named by its own
+// address and carrying its whole current text, so a citation written before the block moved reads
+// the block where it stands now. A chain that ends at an ask - the heading of a decisions
+// document's section that cites an answered ask a person removed from its spec - answers that
+// ask's own node, as a reference of the ask's address reads it, which holds its question and the
+// person's answer. Where no move reaches a block or an ask, and where who may not see the one it
+// reaches, it answers the 404 of a block no current version holds, naming the address asked, so a
+// move says nothing of a node the reader may not see. The edges the read lists beside it are
+// those at the address asked: the citations of that address.
+func (s *server) movedBlockNode(ctx context.Context, who model.Actor, address string, ref text.Ref, document model.GraphNode) (model.GraphNode, error) {
+	pool := s.deps.Store.Pool
+	noBlock := errorf(http.StatusNotFound, "NOT_FOUND", "no block %q in %s", ref.Block, document.Ref)
+	reached, moved, err := graphstore.MovedTo(ctx, pool, address)
+	if err != nil {
+		return model.GraphNode{}, err
+	}
+	if !moved {
+		return model.GraphNode{}, noBlock
+	}
+	if reached.Ask != "" {
+		node, found, err := refs.Node(ctx, pool, who, graphstore.KindAsk, reached.Ask, true)
+		if err != nil {
+			return model.GraphNode{}, err
+		}
+		if !found {
+			return model.GraphNode{}, noBlock
+		}
+		return node, nil
+	}
+	node, found, err := refs.Node(ctx, pool, who, refs.BlockNodeKind, reached.Address, true)
+	if err != nil {
+		return model.GraphNode{}, err
+	}
+	if !found || node.Parent == nil {
+		return model.GraphNode{}, noBlock
+	}
+	node.Text, err = refs.CurrentBlockText(ctx, pool, node.Parent.ID, node.BlockID)
+	return node, err
+}
+
+// documentAtAddress is the document stored at refKey, as a read of its blocks needs it: the node
+// refs.Node answers for the address, or, where the address is a retired document's, which refs
+// answers as the document's issue (refs.loadArtifactNodes), the document itself, read by its uuid,
+// since a retired document's blocks and versions stay readable.
+func (s *server) documentAtAddress(ctx context.Context, who model.Actor, refKey string) (model.GraphNode, bool, error) {
+	pool := s.deps.Store.Pool
+	document, found, err := refs.Node(ctx, pool, who, graphstore.KindArtifact, refKey, true)
+	if err != nil || !found || document.Kind == graphstore.KindArtifact {
+		return document, found, err
+	}
+	var id string
+	if err := pool.QueryRow(ctx, `select id::text from artifacts where ref_key = $1`, refKey).Scan(&id); err != nil {
+		return model.GraphNode{}, false, fmt.Errorf("read the retired document at %s: %w", refKey, err)
+	}
+	return refs.Node(ctx, pool, who, graphstore.KindArtifact, id, false)
 }
 
 // itemBlockReferenceNode is the block node ref, a part of an ask or a block of a comment or a
@@ -666,204 +724,6 @@ func (s *server) documentMentionExcerpts(ctx context.Context, who model.Actor, q
 		}
 	}
 	return nil
-}
-
-// getIssueReferences answers an issue's references read, one hop in each direction (refs.Closure):
-// links, every node the issue's own content links to, and linked_from, every node that links to
-// the issue or to its own content, each written [] when it has no row and never null. members are
-// the documents of links, each read whole by its ref_key, at depth 1 and with its row's via, and
-// truncated is false, since a read of one hop is never cut: both stay for the clients of the build
-// before, which read them alone. The read runs under referencesClosureBound (boundedClosure);
-// loadIssue before it and loadArtifactsByRefKey after it read by key on the pool, outside the
-// bound. ?versions=latest leaves each member's artifact.versions holding only its latest version,
-// under its own ETag; absent, empty or all is the full answer. A repeated versions is refused
-// rather than read by its first value.
-func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
-	if !ok {
-		return
-	}
-	versionsValues := r.URL.Query()["versions"]
-	if len(versionsValues) > 1 {
-		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_QUERY", "versions must be given once, as all or latest"))
-		return
-	}
-	var latestOnly bool
-	if len(versionsValues) == 1 {
-		switch versionsValues[0] {
-		case "", "all":
-		case "latest":
-			latestOnly = true
-		default:
-			s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_QUERY", "versions must be all or latest"))
-			return
-		}
-	}
-	issue, err := s.loadIssue(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	closure, err := s.boundedClosure(r.Context(), who, issue.Key)
-	if err != nil {
-		if closureBoundHit(err) {
-			s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "REFERENCES_TIMEOUT",
-				"the issue's reference closure ran past its %s bound, so no reference was read; try again later", referencesClosureBound))
-			return
-		}
-		s.writeHandlerError(w, err)
-		return
-	}
-	refKeys := make([]string, len(closure.Members))
-	for index, member := range closure.Members {
-		refKeys[index] = member.RefKey
-	}
-	artifacts, err := s.loadArtifactsByRefKey(r.Context(), s.deps.Store.Pool, refKeys, latestOnly)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	members := make([]model.ReferenceMember, 0, len(closure.Members))
-	for _, closureMember := range closure.Members {
-		artifact, ok := artifacts[closureMember.RefKey]
-		if !ok {
-			s.writeHandlerError(w, fmt.Errorf("reference target %q disappeared while loading closure", closureMember.RefKey))
-			return
-		}
-		members = append(members, model.ReferenceMember{
-			Artifact: *artifact,
-			Depth:    closureMember.Depth,
-			Via:      closureMember.Via,
-		})
-	}
-	// Each row's name reaches a caller that sent Dispatch-Trees: 1 with its tree, read where it
-	// stands (newIssueReferencesRead). The answer is encoded once, exactly as WriteJSON writes it,
-	// trailing newline and all, so the token hashes the bytes it validates and those are the bytes
-	// written; the token names the reading and the parser that read the trees too
-	// (referencesETag), so a validator given for one reading never answers the other.
-	trees := wantsDisplayTrees(r)
-	var answer bytes.Buffer
-	if err := json.NewEncoder(&answer).Encode(newIssueReferencesRead(model.IssueReferences{
-		Members:    members,
-		Truncated:  false,
-		Links:      closure.Links,
-		LinkedFrom: closure.LinkedFrom,
-	}, trees)); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("encode the issue's references: %w", err))
-		return
-	}
-	if answerNotModified(w, r, s.referencesETag(answer.Bytes(), latestOnly, trees)) {
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(answer.Bytes())
-}
-
-// referencesClosureBound is the budget every statement of one GET of an issue's references shares
-// (boundedClosure). A read that reaches it answers 503 REFERENCES_TIMEOUT, which the CLI prints as
-// references unavailable, rather than holding a connection and a CPU for as long as the read
-// takes. On 2026-11-20 from 00:27Z the eight-hop walk this read replaced held Dispatch's Cloud SQL
-// instance at full CPU: every `dispatch read --issue` and the Artifacts tab ask for it, and Query
-// Insights gave that one statement 31,299 s of execution in 20 minutes, 12 times every other
-// statement together (cybermonklabs/legion#4554).
-const referencesClosureBound = 2 * time.Second
-
-// boundedClosure runs refs.Closure, as who reads it, in a read transaction of its own, through
-// closureBudget, so that every statement of the read - the out and in statements and each loader
-// that names their nodes - runs under what is left of referencesClosureBound since the read
-// started. One statement_timeout of the whole bound for the transaction would not hold the bound:
-// the read sends several statements, whose sum can pass the context's deadline with none past the
-// bound, and at that deadline pgx closes the connection while the server's statement runs on (its
-// default BuildContextWatcherHandler, as outbox/lease.go records). The context, a second past the
-// bound, stays as the last guard, for a wait no statement_timeout covers, such as the begin's. The
-// rollback runs on a context of its own, as the near-copy gate's does (duplicates.go): the read's
-// context has expired exactly when the rollback matters, and pgx answers a rollback on an expired
-// context by destroying the connection instead of returning it to the pool.
-func (s *server) boundedClosure(ctx context.Context, who model.Actor, issueKey string) (refs.References, error) {
-	started := time.Now()
-	ctx, cancel := context.WithTimeout(ctx, referencesClosureBound+time.Second)
-	defer cancel()
-	tx, err := s.begin(ctx)
-	if err != nil {
-		return refs.References{}, err
-	}
-	defer func() {
-		rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), duplicateGateRollback)
-		defer cancelRollback()
-		_ = tx.Rollback(rollback)
-	}()
-	return refs.Closure(ctx, closureBudget{tx: tx, started: started}, who, issueKey, s.deps.ServerURL)
-}
-
-// closureBudget is boundedClosure's transaction tx as refs.Closure reads it (refs.Queryer). Before
-// each statement it passes on, it gives that statement what is left of referencesClosureBound
-// since started, the start of the read (setStatementBudget), so a statement that waits, on a lock
-// or for the CPU, takes its wait out of the time of every statement after it. It answers the
-// budget's refusal in place of a statement it does not send.
-type closureBudget struct {
-	tx      pgx.Tx
-	started time.Time
-}
-
-func (b closureBudget) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-	if err := b.spend(ctx); err != nil {
-		return nil, err
-	}
-	return b.tx.Query(ctx, sql, args...)
-}
-
-func (b closureBudget) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	if err := b.spend(ctx); err != nil {
-		return refusedRow{err: err}
-	}
-	return b.tx.QueryRow(ctx, sql, args...)
-}
-
-// spend gives the next statement of the read what is left of referencesClosureBound since
-// started (setStatementBudget).
-func (b closureBudget) spend(ctx context.Context) error {
-	return setStatementBudget(ctx, b.tx, referencesClosureBound-time.Since(b.started))
-}
-
-// refusedRow is the row closureBudget answers for a statement it did not send: its Scan answers
-// the refusal.
-type refusedRow struct{ err error }
-
-func (r refusedRow) Scan(...any) error { return r.err }
-
-// errClosureBudgetSpent is setStatementBudget's answer when less than a millisecond of
-// referencesClosureBound is left before a statement of boundedClosure's read: the read is at its
-// bound, and the route answers it as it answers a statement Postgres cancelled there.
-var errClosureBudgetSpent = errors.New("the reference closure's budget has less than 1ms left")
-
-// setStatementBudget gives the next statement of boundedClosure's transaction tx what is left of
-// referencesClosureBound, left, so that the statements of the read share the one bound rather
-// than each having it whole. It sets statement_timeout for the rest of tx to the whole
-// milliseconds of left, rounded down, 1ms at 1 ms left, with
-// `select set_config('statement_timeout', $1, true)` after refs.ClosureTag, which starts every
-// statement of the read, so that pg_stat_activity names this statement as the read's too. Under
-// 1 ms left it sends no statement and answers errClosureBudgetSpent, which closureBoundHit reads
-// as the bound, because the timeout rounded down would be 0, and a statement_timeout of 0 turns
-// the timeout off.
-func setStatementBudget(ctx context.Context, tx pgx.Tx, left time.Duration) error {
-	milliseconds := left.Milliseconds()
-	if milliseconds < 1 {
-		return errClosureBudgetSpent
-	}
-	_, err := tx.Exec(ctx, refs.ClosureTag+"select set_config('statement_timeout', $1, true)", strconv.FormatInt(milliseconds, 10)+"ms")
-	return err
-}
-
-// closureBoundHit says whether boundedClosure's read ended at its bound: Postgres cancelled a
-// statement at the statement_timeout its budget set (SQLSTATE 57014), the budget had less than a
-// millisecond left for the next statement (errClosureBudgetSpent), or the context expired first.
-func closureBoundHit(err error) bool {
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errClosureBudgetSpent) {
-		return true
-	}
-	var pgError *pgconn.PgError
-	return errors.As(err, &pgError) && pgError.Code == "57014" // query_canceled
 }
 
 func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {

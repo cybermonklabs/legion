@@ -48,7 +48,7 @@ func decisionBlockChecksOf(t *testing.T, response *httptest.ResponseRecorder) ([
 	return checks, true
 }
 
-// decisionBlockRow is one related_checks row of a decision block source.
+// decisionBlockRow is one related_checks row of an ask block source.
 type decisionBlockRow struct {
 	IssueKey   *string
 	ArtifactID *string
@@ -64,19 +64,19 @@ func readDecisionBlockRows(t *testing.T, database *store.Store) []decisionBlockR
 		select source_issue_key, source_artifact_id::text, source_block_id, outcome, reason, actor_id
 		  from related_checks where source_kind = 'decision_block' order by created_at, source_block_id`)
 	if err != nil {
-		t.Fatalf("read decision block checks: %v", err)
+		t.Fatalf("read ask block checks: %v", err)
 	}
 	defer rows.Close()
 	var found []decisionBlockRow
 	for rows.Next() {
 		var row decisionBlockRow
 		if err := rows.Scan(&row.IssueKey, &row.ArtifactID, &row.BlockID, &row.Outcome, &row.Reason, &row.ActorID); err != nil {
-			t.Fatalf("scan decision block check: %v", err)
+			t.Fatalf("scan ask block check: %v", err)
 		}
 		found = append(found, row)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("read decision block checks: %v", err)
+		t.Fatalf("read ask block checks: %v", err)
 	}
 	return found
 }
@@ -98,7 +98,7 @@ func insertAtEnd(markdown string) map[string]any {
 	return map[string]any{"ops": []map[string]any{{"op": "insert", "markdown": markdown, "after": "end"}}}
 }
 
-// A decision block an edit adds is checked like an ask: its question finds the issue that holds
+// An ask block an edit adds is checked like an ask: its question finds the issue that holds
 // its rare words, the answer names the block, and the check is recorded against the document's
 // issue. An edit after it that adds no block - plain text, a reworded block - answers no check.
 func TestDecisionBlockCheckAnswersTheEditsNewBlock(t *testing.T) {
@@ -129,7 +129,7 @@ func TestDecisionBlockCheckAnswersTheEditsNewBlock(t *testing.T) {
 	rows := readDecisionBlockRows(t, database)
 	if len(rows) != 1 || rows[0].BlockID != "rounding" || rows[0].IssueKey == nil || *rows[0].IssueKey != issue.Key ||
 		rows[0].ArtifactID != nil || rows[0].Outcome != "found" || rows[0].ActorID != "alice" {
-		t.Fatalf("decision block rows = %+v, want one found check of rounding on %s", rows, issue.Key)
+		t.Fatalf("ask block rows = %+v, want one found check of rounding on %s", rows, issue.Key)
 	}
 
 	for name, body := range map[string]map[string]any{
@@ -144,11 +144,11 @@ func TestDecisionBlockCheckAnswersTheEditsNewBlock(t *testing.T) {
 		}
 	}
 	if rows := readDecisionBlockRows(t, database); len(rows) != 1 {
-		t.Fatalf("decision block rows = %+v, want only the first edit's check", rows)
+		t.Fatalf("ask block rows = %+v, want only the first edit's check", rows)
 	}
 }
 
-// An edit adding six decision blocks checks the first five, in document order, and answers the
+// An edit adding six ask blocks checks the first five, in document order, and answers the
 // sixth that its check was not made, recording that too.
 func TestDecisionBlockChecksPastFiveAreNotMade(t *testing.T) {
 	t.Parallel()
@@ -179,13 +179,13 @@ func TestDecisionBlockChecksPastFiveAreNotMade(t *testing.T) {
 		}
 	}
 	sixth := checks[5].Suggestions
-	if sixth.Outcome != "not_made" || sixth.Missing != "more than five new decision blocks in one edit" ||
+	if sixth.Outcome != "not_made" || sixth.Missing != "more than five new ask blocks in one edit" ||
 		sixth.Related == nil || len(sixth.Related) != 0 {
 		t.Fatalf("sixth check = %+v, want not made for too many blocks", sixth)
 	}
 	rows := readDecisionBlockRows(t, database)
 	if len(rows) != 6 {
-		t.Fatalf("decision block rows = %+v, want six", rows)
+		t.Fatalf("ask block rows = %+v, want six", rows)
 	}
 	var tooMany []string
 	for _, row := range rows {
@@ -202,7 +202,7 @@ func TestDecisionBlockChecksPastFiveAreNotMade(t *testing.T) {
 }
 
 // A conditional edit's gate is released at its commit: a second conditional edit of the same
-// document completes while the first is still waiting on its decision block's check, here held
+// document completes while the first is still waiting on its ask block's check, here held
 // behind a lock on the term statistics every check reads.
 func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
 	t.Parallel()
@@ -269,7 +269,7 @@ func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
 	}
 }
 
-// A decision block on a project document, which has no issue, is checked in the document's
+// An ask block on a project document, which has no issue, is checked in the document's
 // project with the document itself left out, though it holds the block's words, and is recorded
 // against that document.
 func TestDecisionBlockCheckOnAProjectDocumentLeavesTheDocumentOut(t *testing.T) {
@@ -307,7 +307,7 @@ func TestDecisionBlockCheckOnAProjectDocumentLeavesTheDocumentOut(t *testing.T) 
 	rows := readDecisionBlockRows(t, database)
 	if len(rows) != 1 || rows[0].IssueKey != nil || rows[0].ArtifactID == nil || *rows[0].ArtifactID != document ||
 		rows[0].BlockID != "rounding" || rows[0].Outcome != "found" {
-		t.Fatalf("decision block rows = %+v, want one found check of rounding on the document %s", rows, document)
+		t.Fatalf("ask block rows = %+v, want one found check of rounding on the document %s", rows, document)
 	}
 }
 
@@ -380,6 +380,6 @@ func TestDecisionBlockChecksEachReadTheirAskStatesAndRecord(t *testing.T) {
 	}
 	slices.Sort(recorded)
 	if want := []string{"fjord", "hangar", "harbour", "lacquer", "pilot"}; !slices.Equal(recorded, want) {
-		t.Fatalf("recorded decision blocks = %v, want %v", recorded, want)
+		t.Fatalf("recorded ask blocks = %v, want %v", recorded, want)
 	}
 }

@@ -38,7 +38,7 @@ const (
 // between two of its stored versions, read off their markdown. It names what it compared - the
 // document and the two versions - so a caller that keeps it can check what it holds.
 //
-// Both versions are compared with their decision blocks cut out (docs.WithoutAskBlocks), so an
+// Both versions are compared with their ask blocks cut out (docs.WithoutAskBlocks), so an
 // answer a person gave, or an ask added, reworded or moved, changes no section and no block.
 //
 // Exactly one of three things is true of a change set, and compareVersions decides which in one
@@ -162,7 +162,7 @@ func (s *server) twoVersionsMarkdown(ctx context.Context, artifactID string, fro
 }
 
 // cutVersion is one stored version as a change set compares it: the text it cuts to once its
-// decision blocks are left out, that cut text's top-level units in document order (cutUnits),
+// ask blocks are left out, that cut text's top-level units in document order (cutUnits),
 // and its typed blocks.
 type cutVersion struct {
 	text   string
@@ -215,6 +215,14 @@ type placeKey struct {
 	run        string
 	placed     bool
 	at         sectionKey
+	occurrence int
+}
+
+// sectionKey names one `##` section of a cut version across its versions: its heading, and how
+// many sections before it carry that heading (cutUnits). The zero key is no section's, since a
+// `##` heading with no words is keyed from occurrence 1.
+type sectionKey struct {
+	heading    string
 	occurrence int
 }
 
@@ -333,9 +341,9 @@ func keyRuns(earlier, later []cutUnit) {
 }
 
 // readCutVersion parses one stored version with the parser every read of a stored text uses
-// (pmdoc.ParseRendering, as typedBlocksIn and docs.CutDecisionBlocks parse), cuts its decision
-// blocks out of the tree and renders what is left once, which is the text docs.CutDecisionBlocks
-// answers for it, with the offset of every block in that text.
+// (pmdoc.ParseRendering, as typedBlocksIn parses), cuts its ask blocks out of the tree
+// (docs.WithoutAskBlocks) and renders what is left once, with the offset of every block in that
+// text.
 func readCutVersion(markdown string) (cutVersion, error) {
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {

@@ -86,16 +86,17 @@ func sessionParties(session string) string {
 }
 
 // scopedRows is every row of a project-owned kind whose node the store must hold, as (kind, id,
-// project, parties, row_id, owner_key, removable, past_bound): the address its node is written
-// under, the project or the parties that node must carry, by the rule its writer follows -
+// project, parties, row_id, owner_key, removable, past_bound, retired): the address its node is
+// written under, the project or the parties that node must carry, by the rule its writer follows -
 // graphstore.ScopeOf for an ask and a comment, graphstore.ThreadParties for a message on no issue,
-// the document's own for a block - and, for a document, its row's id, its issue and whether a
+// the document's own for a block - and, for a document, its row's id, its issue, whether a
 // removal can take the row away, which a later row's create then takes the address of again
-// (removableDocument, ownLiveStatement). past_bound marks a row whose address is past the store's
-// bound, which every writer leaves out of the store - a document whose ref_key is, a block whose
-// address is, and a comment one of whose relations names such a document - and which the census
-// counts as a class of its own rather than as a row without a node. Each kind is named by its
-// constant, filled in by scopedRowsSQL, so a renamed kind cannot leave its rows uncounted.
+// (removableDocument, ownLiveStatement), and whether it is retired (retiredDocument). past_bound
+// marks a row whose address is past the store's bound, which every writer leaves out of the store
+// - a document whose ref_key is, a block whose address is, and a comment one of whose relations
+// names such a document - and which the census counts as a class of its own rather than as a row
+// without a node. Each kind is named by its constant, filled in by scopedRowsSQL, so a renamed
+// kind cannot leave its rows uncounted.
 const scopedRows = `
 	with recursive threads (id, root) as (
 		select m.id, m.id from messages m where m.issue_key is null and m.in_reply_to is null
@@ -103,19 +104,20 @@ const scopedRows = `
 		select m.id, thread.root from messages m join threads thread on m.in_reply_to = thread.id
 		where m.issue_key is null
 	),
-	scoped (kind, id, project, parties, row_id, owner_key, removable, past_bound) as (
-		select 'KIND_ISSUE', i.key, i.project_key, null::text[], null::text, null::text, false, false from issues i
+	scoped (kind, id, project, parties, row_id, owner_key, removable, past_bound, retired) as (
+		select 'KIND_ISSUE', i.key, i.project_key, null::text[], null::text, null::text, false, false, false from issues i
 		union all
 		select 'KIND_ARTIFACT', a.ref_key, a.project_key, ARTIFACT_PARTIES, a.id::text, a.issue_key, REMOVABLE_DOCUMENT,
-		       octet_length(a.ref_key) > ADDRESS_BOUND
+		       octet_length(a.ref_key) > ADDRESS_BOUND, RETIRED_DOCUMENT
 		from artifacts a
 		union all
 		select 'KIND_ASK', k.id::text, coalesce(i.project_key, a.project_key),
-		       case when coalesce(i.project_key, a.project_key) is null then ASK_PARTIES end, null::text, null::text, false, false
+		       case when coalesce(i.project_key, a.project_key) is null then ASK_PARTIES end, null::text, null::text, false, false,
+		       false
 		from asks k left join issues i on i.key = k.issue_key left join artifacts a on a.id = k.artifact_id
 		union all
 		select 'KIND_MESSAGE', m.id::text, i.project_key,
-		       case when m.issue_key is null then MESSAGE_PARTIES end, null::text, null::text, false, false
+		       case when m.issue_key is null then MESSAGE_PARTIES end, null::text, null::text, false, false, false
 		from messages m
 		left join issues i on i.key = m.issue_key
 		left join threads thread on thread.id = m.id
@@ -124,14 +126,15 @@ const scopedRows = `
 		select 'KIND_COMMENT', c.id::text, coalesce(i.project_key, owner.project_key),
 		       case when coalesce(i.project_key, owner.project_key) is null then COMMENT_PARTIES end, null::text, null::text, false,
 		       c.node_kind is null and (coalesce(octet_length(anchor.ref_key) > ADDRESS_BOUND, false)
-		                                or coalesce(octet_length(owner.ref_key) > ADDRESS_BOUND, false))
+		                                or coalesce(octet_length(owner.ref_key) > ADDRESS_BOUND, false)),
+		       false
 		from comments c
 		left join issues i on i.key = c.issue_key
 		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid
 		left join artifacts owner on owner.id = c.artifact_id
 		union all
 		select 'KIND_BLOCK', d.node_id, a.project_key, BLOCK_PARTIES, null::text, null::text, false,
-		       octet_length(d.node_id) > ADDRESS_BOUND
+		       octet_length(d.node_id) > ADDRESS_BOUND, false
 		from document_blocks d join artifacts a on a.id = d.artifact_id
 	)`
 
@@ -150,6 +153,7 @@ var scopedRowsSQL = strings.NewReplacer(
 	"COMMENT_PARTIES", sessionParties("owner.session_id"),
 	"BLOCK_PARTIES", sessionParties("a.session_id"),
 	"REMOVABLE_DOCUMENT", removableDocument("a"),
+	"RETIRED_DOCUMENT", retiredDocument("a"),
 ).Replace(scopedRows)
 
 // removableDocument is, for the artifacts row a, whether a removal can take it away: a document
@@ -167,6 +171,18 @@ var scopedRowsSQL = strings.NewReplacer(
 // holds and fails on a shape the removal takes that this reads by the node's state alone, or the reverse.
 func removableDocument(a string) string {
 	return `(` + a + `.issue_key is not null and not ` + a + `.is_primary and ` + a + `.role is null and ` + a + `.kind = 'doc')`
+}
+
+// retiredDocument is, for the artifacts row a, whether the document is retired (docs'
+// RetireDocument): its row stays, so every address it held still resolves, and the retirement
+// states its node gone in the transaction that sets the row's retired_at. A retired row is a row
+// whose node is gone on purpose, so nothing that reads a row against its node owes it a live
+// one: the backfill's marker reads it as marked (unmarkedDocument), the backfill's read under its
+// locks leaves it as it is (heldNodes), and the census reads it as no gone row (rowClass). A
+// document has no column naming its node, so its node is its marker, and this is the one place
+// that says a retired row's gone node is that marker.
+func retiredDocument(a string) string {
+	return `(` + a + `.retired_at is not null)`
 }
 
 // The classes the census and ProjectComplete name a row or a node by. missing is a row whose node
@@ -252,16 +268,18 @@ func ownLiveStatement(node, rowID, ownerKey string) string {
 // for a row whose address is past the store's bound, which no writer projects and the census
 // counts as a class of its own (ProjectKindReport.PastBound). A node at any state but gone is one
 // the row projects: a state a later release adds, such as a requirement's proposed, reads here as
-// live does, as the store census reads it (presentNodes). A node that names another project than
-// its row's is differs at any state, gone included, and read before gone: a node's project never
-// moves (graphstore.ErrProjectMoved), so the backfill, which a gone line names as its cure, cannot
-// write it, and only a person can tell which of the two is wrong.
+// live does, as the store census reads it (presentNodes). A retired document's node is gone on
+// purpose (retiredDocument), so its row is no gone row, as the backfill owes it nothing. A node
+// that names another project than its row's is differs at any state, gone included, and read
+// before gone: a node's project never moves (graphstore.ErrProjectMoved), so the backfill, which a
+// gone line names as its cure, cannot write it, and only a person can tell which of the two is
+// wrong.
 var rowClass = `case
 		when scoped.past_bound then null
 		when n.id is null then '` + classMissing + `'
 		when n.project_key is not null and n.project_key is distinct from scoped.project then '` + classDiffers + `'
-		when scoped.kind in (` + orphanKindList + `) and n.state = '` + graphstore.StateGone + `' then '` + classGone + `'
-		when scoped.removable and not ` + ownLiveStatement("n", "scoped.row_id", "scoped.owner_key") + ` then '` + classGone + `'
+		when scoped.kind in (` + orphanKindList + `) and n.state = '` + graphstore.StateGone + `' and not scoped.retired then '` + classGone + `'
+		when scoped.removable and not scoped.retired and not ` + ownLiveStatement("n", "scoped.row_id", "scoped.owner_key") + ` then '` + classGone + `'
 		when n.project_key is null and n.parties is null then '` + classUnscoped + `'
 		when n.project_key is distinct from scoped.project or n.parties is distinct from scoped.parties then '` + classDiffers + `'
 	end`

@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -138,7 +139,7 @@ type adviceAsks struct {
 // ordinary issue gains no query at all. status is the issue's status as the write committed it,
 // the same value writeAdvice reports. route names the caller for the two queries whose failure
 // is logged rather than returned (declinedAsksAdvice, legionManagedStatusAdvice). appending is
-// the event the write appends after the advice is read (writeAdvice), and asks what the write
+// the event the write appends after the advice is read (writeAdvice), and moved what the write
 // moves about the issue's open asks (adviceAsks). row is the issue row as the write leaves it
 // when the write reads its advice before it writes that row (writeAdviceBefore), nil to read
 // the stored one.
@@ -148,7 +149,7 @@ func (s *server) computeWriteAdvice(
 	route string,
 	issueKey string,
 	actor model.Actor,
-	asks adviceAsks,
+	moved adviceAsks,
 	status string,
 	appending string,
 	opensAQuestion bool,
@@ -179,17 +180,17 @@ func (s *server) computeWriteAdvice(
 	if err := s.runAdviceQueryHook(ctx, tx, "your_open_asks"); err != nil {
 		return nil, &adviceQueryError{query: "your_open_asks", err: err}
 	}
-	// An ask is open as its node holds it (askNodeStateOf), as every read of an answer reads it
+	// An ask is open as its node holds it (asks.NodeStateOf), as every read of an answer reads it
 	// (R3): the read takes one issue's asks, so it picks by the node alone.
 	rows, err := tx.Query(ctx, `
 		select id::text, question from asks a
 		where issue_key = $1
 		  and author->>'kind' = 'session' and author->>'id' = $2
-		  and ((`+askNodeStateOf("a")+` = 'open' and id::text <> all(coalesce($3::text[], '{}')))
+		  and ((`+asks.NodeStateOf("a")+` = 'open' and id::text <> all(coalesce($3::text[], '{}')))
 		    or id::text = any(coalesce($5::text[], '{}')))
 		order by created_at, id
 		limit $4
-	`, issueKey, actor.ID, asks.excluded, adviceOpenAskLimit, asks.opened)
+	`, issueKey, actor.ID, moved.excluded, adviceOpenAskLimit, moved.opened)
 	if err != nil {
 		return nil, &adviceQueryError{query: "your_open_asks", err: err}
 	}
@@ -325,7 +326,7 @@ func declinedAskHead(text string) string {
 }
 
 // declinedResolution is the SQL predicate, on resolution, an ask's resolution as its node holds it
-// (askNodeResolutionOf), that holds for an ask a person declined to answer
+// (asks.NodeResolutionOf), that holds for an ask a person declined to answer
 // (model.AskResolutionDeclined), as withdrawnAsk is the one for an ask a close withdrew. The
 // resolution is read off the node, as every read of an answer reads it (R3); it is none on an ask
 // the node holds other than resolved.
@@ -350,7 +351,7 @@ func (s *server) readDeclinedAsks(ctx context.Context, tx pgx.Tx, issueKey strin
 	rows, err := tx.Query(ctx, `
 		select a.id::text, a.question, coalesce(r.resolution->>'reason', '')
 		from asks a
-		cross join lateral (select `+askNodeResolutionOf("a")+` as resolution) r
+		cross join lateral (select `+asks.NodeResolutionOf("a")+` as resolution) r
 		where a.issue_key = $1 and r.`+declinedResolution+`
 		order by a.created_at, a.id
 	`, issueKey)
@@ -555,7 +556,7 @@ type editBlocks struct {
 	DecisionBlockChecks []decisionBlockCheck `json:"decision_block_checks,omitempty"`
 }
 
-// decisionBlockCheck is one added decision block's related-item check: the block, its
+// decisionBlockCheck is one added ask block's related-item check: the block, its
 // question, and the check's result.
 type decisionBlockCheck struct {
 	BlockID     string             `json:"block_id"`
@@ -601,7 +602,8 @@ type supersededApproval struct {
 // the one the advice is about, so the row names it nowhere.
 type supersededApprovalGate struct {
 	Issue string `json:"issue"`
-	Step  string `json:"step" enum:"decisions,criteria,spec"`
+	// kept for one release: steps-write-admits
+	Step string `json:"step" enum:"decisions,criteria,spec"`
 }
 
 // supersededApprovalAdvice reports the approval the write of version just made stale, or nil when
@@ -701,7 +703,10 @@ func (s *server) supersededApprovalAdvice(
 // working.
 //
 // The order is the issue's key and then the order a gate runs the steps in ($2,
-// model.GatedStepsKnown), the order the issue read lists an issue's own gates in.
+// model.GatedStepsKnown), the order the issue read lists an issue's own gates in. A row of a step
+// outside that list, the retired `decisions` step a daemon of the release before wrote, is left
+// out, and a project's stored list of that step alone reads as [spec], as every read of a stored
+// list does (gatedStepsWithout).
 func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID string) ([]supersededApprovalGate, error) {
 	rows, err := q.Query(ctx, `
 		select g.issue, g.step
@@ -709,9 +714,12 @@ func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID str
 		join issues i on i.key = g.issue
 		join projects p on p.key = i.project_key
 		where g.artifact_id = $1 and not (i.status = any($3::text[]))
-			and coalesce(g.holds, g.step = any(p.gated_steps))
+		  and g.step = any($2::text[]) -- kept for one release: design-gate-rows
+		  and coalesce(g.holds, g.step = any(p.gated_steps) or (g.step = $4 and p.gated_steps = array[$5]::text[])) -- kept for one release: check-narrowings
 		order by g.issue, array_position($2::text[], g.step)
-	`, artifactID, model.GatedStepsKnown, model.IssueStatusesOutOfWorkflow)
+	`, artifactID, model.GatedStepsKnown, model.IssueStatusesOutOfWorkflow,
+		// kept for one release: check-narrowings
+		model.GatedStepSpec, retiredDecisionsStep)
 	if err != nil {
 		return nil, fmt.Errorf("read the design gates this document records: %w", err)
 	}
@@ -943,7 +951,7 @@ var typedOpening = regexp.MustCompile(`:{3,}[A-Za-z0-9_-]+\{`)
 func readDocumentBlocks(markdown string) *documentBlocks {
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
-		slog.Warn("dispatch: decision block count failed", "error", err)
+		slog.Warn("dispatch: ask block count failed", "error", err)
 		return nil
 	}
 	return documentBlocksOf(tree)

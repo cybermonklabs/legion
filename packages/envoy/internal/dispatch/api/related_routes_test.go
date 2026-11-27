@@ -234,7 +234,7 @@ type seededCheck struct {
 }
 
 // seedRelatedChecks replaces every related_checks row (the fixture's own writes recorded some)
-// with checks, an ask check on askID and a decision block check on block b1.
+// with checks, an ask check on askID and an ask block check on block b1.
 func seedRelatedChecks(t *testing.T, database *store.Store, askID string, checks []seededCheck) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), "delete from related_checks"); err != nil {

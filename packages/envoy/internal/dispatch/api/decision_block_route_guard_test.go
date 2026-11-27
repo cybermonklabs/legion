@@ -18,7 +18,7 @@ import (
 )
 
 // sharedBodyCheck is the one check a stored body is held to (itemblocks.Check): the bounds on
-// its blocks, and the decision block it may not hold. sharedBodyRefusal is the shared helper
+// its blocks, and the ask block it may not hold. sharedBodyRefusal is the shared helper
 // that words that check's answer (blockBoundError, server.go), which is what makes
 // DECISION_BLOCK_IN_BODY one refusal with one wording rather than one per route. Both are
 // written as the call graph names a function: its package's name, then its own.
@@ -44,15 +44,15 @@ var decisionBlockExempt = map[string]string{
 
 	// The five ask writes. The reason is one decision, recorded as "An ask's own question, its
 	// options and its answers are left alone" (dispatch://INFRA-1201/artifact/decisions-md): the
-	// same card is drawn for a decision block written in an ask's question, in an option's label,
+	// same card is drawn for an ask block written in an ask's question, in an option's label,
 	// in an answer's text or in a resolution's reason, and none of those writes is refused,
 	// because an ask already reaches a person, so a block inside one is ugly rather than silent;
 	// because that wording is held by the ask's own check (validateAskWording, asks.go) and not
 	// by the body bound this rule sits beside; and because refusing a person's answer text would
 	// stop the one act this issue exists to protect.
-	"POST /api/v1/issues/{key}/asks":      "an ask's question and options are held by validateAskWording, and a decision block in an ask is left alone (dispatch://INFRA-1201/artifact/decisions-md)",
-	"POST /api/v1/artifacts/{id}/asks":    "an ask's question and options are held by validateAskWording, and a decision block in an ask is left alone (dispatch://INFRA-1201/artifact/decisions-md)",
-	"PATCH /api/v1/asks/{id}":             "an edit's question and options are held by validateAskWording against the ask as it will be stored, and a decision block in an ask is left alone (dispatch://INFRA-1201/artifact/decisions-md)",
+	"POST /api/v1/issues/{key}/asks":      "an ask's question and options are held by validateAskWording, and an ask block in an ask is left alone, as an ask's own wording is",
+	"POST /api/v1/artifacts/{id}/asks":    "an ask's question and options are held by validateAskWording, and an ask block in an ask is left alone, as an ask's own wording is",
+	"PATCH /api/v1/asks/{id}":             "an edit's question and options are held by validateAskWording against the ask as it will be stored, and an ask block in an ask is left alone, as an ask's own wording is",
 	"POST /api/v1/asks/{id}/answer":       "refusing a person's answer text would stop the one act this issue exists to protect; the text is held to contracts.DispatchEventBodyMax (ask_transitions.go)",
 	"POST /api/v1/asks/{id}/resolve":      "a resolution's reason is a person's or a session's own wording on an ask that already reached a person, left alone by the same decision (dispatch://INFRA-1201/artifact/decisions-md)",
 	"POST /api/v1/artifacts/{id}/reviews": reviewRouteExemption,
@@ -62,7 +62,7 @@ var decisionBlockExempt = map[string]string{
 }
 
 // reviewRouteExemption is why decisionBlockExempt leaves both review routes unrefused.
-const reviewRouteExemption = "while an approval request is open this route answers it, closing the ask with answerTransition, and the decisions document leaves an answer's text alone (dispatch://INFRA-1201/artifact/decisions-md); the same reason text reaches artifact_reviews unchecked through POST /api/v1/asks/{id}/answer (ask_transitions.go), so refusing one side would be inconsistent rather than protective. A decision block written there still draws a card nobody can answer on the approval chip, which this issue does not close"
+const reviewRouteExemption = "while an approval request is open this route answers it, closing the ask with answerTransition, and the decision that leaves an ask's own wording alone leaves an answer's text alone too; the same reason text reaches artifact_reviews unchecked through POST /api/v1/asks/{id}/answer (ask_transitions.go), so refusing one side would be inconsistent rather than protective. An ask block written there still draws a card nobody can answer on the approval chip, which this issue does not close"
 
 // decisionBlockGuardSees are the three writes the issue exists for, named so the guard cannot
 // pass by seeing nothing: a comment, a message and a broadcast. They are a control over the walk,
@@ -128,7 +128,7 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 		}
 	}
 	if len(unchecked) > 0 {
-		t.Errorf("a body a person reads is stored by a route that refuses no decision block in it:\n\t%s\n"+
+		t.Errorf("a body a person reads is stored by a route that refuses no ask block in it:\n\t%s\n"+
 			"Call blockBoundError(itemblocks.Check(\"body\", <the body>)) in the handler, as the comment, message and broadcast writes do, or name the route in decisionBlockExempt with the reason it is left alone.",
 			strings.Join(unchecked, "\n\t"))
 	}

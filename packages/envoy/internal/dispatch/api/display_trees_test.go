@@ -117,11 +117,11 @@ func sameShape(t *testing.T, tree json.RawMessage) json.RawMessage {
 // it when, and only when, the request holds `Dispatch-Trees: 1`, and the tree is the one
 // pmdoc.ReadForDisplay makes of exactly that text, and the document the route table emits
 // declares that tree where the answer carries it. The routes covered here are the issue's
-// comment list and one comment's thread, the issue's ask list and one ask, the issue's message
-// list, the issue's event log, a document's text, the caller's own answers, the caller's own
-// replies (each row's subject line), a project's architecture, one node's references and the
-// excerpt of each of its backlinks; the search snippet, whose tree is cut and marked rather than
-// read whole, has its own test below.
+// comment list and one comment's thread, the issue's ask list and one ask, the answer of an ask
+// the issue's Decisions read lists, the issue's message list, the issue's event log, a
+// document's text, the caller's own answers, the caller's own replies (each row's subject line),
+// a project's architecture, one node's references and the excerpt of each of its backlinks; the
+// search snippet, whose tree is cut and marked rather than read whole, has its own test below.
 func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
@@ -180,8 +180,9 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 	// and a block reference this issue has neither of - and they are the two rows that were
 	// found naming the model. A backlink's excerpt is read live: the reply above
 	// is a replies_to edge of the comment it answers, whose excerpt is the head of the reply's
-	// body. A decision's text is a row of the schema reading too: its live reading is the
-	// decisions view's own test, which has a decisions.md to read (decisions_test.go).
+	// body. A decision's text is a row of the schema reading too: its live reading is the old
+	// decisions member's own test, which reads a decision node
+	// (TestTheOldDecisionsMembersAnswerFromTheStore, decisions_test.go).
 	node, _ := readOpenAPITree(t)
 	document, _ := node.(map[string]any)
 	for _, test := range []struct{ name, pattern, target, textPath, treePath string }{
@@ -218,6 +219,8 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 			"/api/v1/references?to=dispatch://" + issue.Key + "/comment/" + commentID + "&kind=replies_to",
 			"edges.0.excerpt.text", "edges.0.excerpt.text_tree"},
 		{"a decision's text", "/api/v1/issues/{key}/decisions", "", "", "decisions.0.text_tree"},
+		{"an answered ask's entry in the Decisions read", "/api/v1/issues/{key}/decisions",
+			"/api/v1/issues/" + issue.Key + "/decisions", "entries.0.answer", "entries.0.answer_tree"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.target != "" {

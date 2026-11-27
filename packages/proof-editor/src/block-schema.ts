@@ -298,9 +298,10 @@ function domAttrs(type: BlockTypeSchema, node: ProseMirrorNode): Record<string, 
  * the others keep their defaults. A section whose attribute the schema refuses, or holds a value an
  * editor of schema version `version` may not write yet, is not read as the typed block at all (the
  * rule does not match), since this editor never writes one. So is one naming something of another
- * issue than the document's, `documentRef` (`otherIssueRefusal`): a paste - HTML, or plain text,
- * which the editor reads through this rule too - builds no block that ties the document to
- * another issue.
+ * issue than the document's, `documentRef` (`otherIssueRefusal`), which the document service
+ * refuses on every write that takes markdown and records no tie of on a browser's write: a paste -
+ * HTML, or plain text, which the editor reads through this rule too - builds no block a write of
+ * the document would be refused for.
  */
 function parsedDomAttrs(type: BlockTypeSchema, dom: HTMLElement, version: number, documentRef: string | undefined): Record<string, unknown> | false {
   const attributes: Record<string, unknown> = {};

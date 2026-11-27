@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"testing"
 
@@ -123,7 +124,7 @@ func TestGatedStepsOnTheProjectRow(t *testing.T) {
 	if again := projectUpdates(t, database, "GATED"); again != published {
 		t.Fatalf("republishing the same list appended %d project events, want the %d already there", again, published)
 	}
-	gated := []string{"spec", "decisions", "criteria"}
+	gated := []string{"spec", "criteria"}
 	publishGatedSteps(t, handler, "GATED", gated)
 	if changed := projectUpdates(t, database, "GATED"); changed != published+1 {
 		t.Fatalf("a changed list appended %d project events, want %d", changed, published+1)
@@ -150,11 +151,9 @@ func TestGatedStepsOnTheProjectRow(t *testing.T) {
 	}
 
 	// The published list and the approval records of the root issue's own documents are enough
-	// to say where each step stands. The three states a reader must tell apart are set up on one
-	// issue: its spec approved, changes asked for on its Verification document, and its
-	// decisions document still with the person it was sent to.
+	// to say where each step stands. The states a reader must tell apart are set up on one issue:
+	// its spec approved, and changes asked for on its Verification document.
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "# Verification\n\nOne.\n")
-	decisions := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "decisions.md", "# Decisions\n\nOne.\n")
 	approved := sessionRequest(t, handler, http.MethodPost,
 		"/api/v1/artifacts/"+issue.PrimaryArtifactID+"/approval-requests", map[string]any{"actor": sessionActor()})
 	if approved.Code != http.StatusCreated {
@@ -169,11 +168,9 @@ func TestGatedStepsOnTheProjectRow(t *testing.T) {
 		map[string]any{"selected": []string{"Approve"}}, "alice"); answered.Code != http.StatusOK {
 		t.Fatalf("approve the spec: status=%d body=%s", answered.Code, answered.Body.String())
 	}
-	for _, document := range []string{verification.Artifact.ID, decisions.Artifact.ID} {
-		if requested := sessionRequest(t, handler, http.MethodPost,
-			"/api/v1/artifacts/"+document+"/approval-requests", map[string]any{"actor": sessionActor()}); requested.Code != http.StatusCreated {
-			t.Fatalf("request approval of %s: status=%d body=%s", document, requested.Code, requested.Body.String())
-		}
+	if requested := sessionRequest(t, handler, http.MethodPost,
+		"/api/v1/artifacts/"+verification.Artifact.ID+"/approval-requests", map[string]any{"actor": sessionActor()}); requested.Code != http.StatusCreated {
+		t.Fatalf("request approval of the Verification document: status=%d body=%s", requested.Code, requested.Body.String())
 	}
 	if review := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+verification.Artifact.ID+"/reviews",
 		map[string]any{"state": "changes_requested", "reason": "Name the case nobody checks."}, "alice"); review.Code != http.StatusCreated {
@@ -200,10 +197,6 @@ func TestGatedStepsOnTheProjectRow(t *testing.T) {
 				if document.Role == model.ArtifactRoleVerification {
 					return document, true
 				}
-			case model.GatedStepDecisions:
-				if document.Slug == "decisions-md" {
-					return document, true
-				}
 			}
 		}
 		return model.Artifact{}, false
@@ -220,9 +213,109 @@ func TestGatedStepsOnTheProjectRow(t *testing.T) {
 		}
 		state[step] = approval.Approval.State
 	}
-	if state[model.GatedStepSpec] != "approved" ||
-		state[model.GatedStepCriteria] != "changes_requested" ||
-		state[model.GatedStepDecisions] != "awaiting" {
-		t.Fatalf("the steps stand at %#v, want spec approved, criteria changes_requested and decisions awaiting", state)
+	if state[model.GatedStepSpec] != "approved" || state[model.GatedStepCriteria] != "changes_requested" {
+		t.Fatalf("the steps stand at %#v, want spec approved and criteria changes_requested", state)
+	}
+}
+
+// The `decisions` step is gone, and a page of the release
+// before still publishes it, so the gated-steps write takes it and stores the list without it: a
+// list of that step and others stores the others, and a list of that step alone stores [spec],
+// never the empty list, which would gate nothing. A list this build reads back holds no
+// `decisions`: a stored list that holds it beside another step reads without it, and a stored list
+// of it alone reads as [spec].
+func TestTheGatedStepsWriteTakesTheDecisionsStepAndStoresTheListWithoutIt(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	createInteractionIssue(t, handler, "OLDER", "The root", "A spec\n")
+	for _, write := range []struct{ published, stored []string }{
+		{[]string{"decisions", "criteria", "spec"}, []string{"criteria", "spec"}},
+		{[]string{"spec", "decisions"}, []string{"spec"}},
+		{[]string{"decisions"}, []string{"spec"}},
+	} {
+		if answer := publishGatedSteps(t, handler, "OLDER", write.published); !slices.Equal(answer.Steps, write.stored) {
+			t.Fatalf("publishing %v answered %v, want %v", write.published, answer.Steps, write.stored)
+		}
+		var stored []string
+		if err := database.Pool.QueryRow(context.Background(), `select gated_steps from projects where key = 'OLDER'`).Scan(&stored); err != nil {
+			t.Fatalf("read the stored list: %v", err)
+		}
+		if !slices.Equal(stored, write.stored) {
+			t.Fatalf("publishing %v stored %v, want %v", write.published, stored, write.stored)
+		}
+	}
+	for _, read := range []struct{ stored, listed []string }{
+		{[]string{"decisions", "criteria", "spec"}, []string{"criteria", "spec"}},
+		{[]string{"decisions"}, []string{"spec"}},
+	} {
+		if _, err := database.Pool.Exec(context.Background(), `update projects set gated_steps = $1 where key = 'OLDER'`, read.stored); err != nil {
+			t.Fatalf("store %v as the release before published it: %v", read.stored, err)
+		}
+		if listed := listedGatedSteps(t, handler, "OLDER"); !slices.Equal(listed, read.listed) {
+			t.Fatalf("a stored %v reads %v, want %v", read.stored, listed, read.listed)
+		}
+	}
+}
+
+// A stored list that holds the retired `decisions` step stays on the row until the decisions step
+// rewrites it, and this build answers the row without that step wherever it answers it: the
+// project list does (above), and so do the writes that read the row to answer it or to carry it as
+// project.updated's payload - PUT and DELETE /api/v1/projects/{key}/proven-sessions, and PUT
+// /api/v1/projects/{key}/default-repository. A list of that step alone reads as [spec], never as
+// none, which would gate nothing. Each write changes the row, so each appends one event.
+func TestAProjectWriteAnswersAndCarriesAStoredListWithoutTheDecisionsStep(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	for _, held := range []struct {
+		project      string
+		stored, read []string
+	}{
+		{"HELDSPEC", []string{"decisions", "spec"}, []string{"spec"}},
+		{"HELDALONE", []string{"decisions"}, []string{"spec"}},
+	} {
+		createAdviceProject(t, handler, held.project)
+		if _, err := database.Pool.Exec(context.Background(), `update projects set gated_steps = $1 where key = $2`, held.stored, held.project); err != nil {
+			t.Fatalf("store %v on %s as the release before published it: %v", held.stored, held.project, err)
+		}
+		base := "/api/v1/projects/" + held.project
+		for _, write := range []struct {
+			what    string
+			send    func() *httptest.ResponseRecorder
+			answers bool
+		}{
+			{"PUT proven-sessions", func() *httptest.ResponseRecorder {
+				return agentRequest(t, handler, http.MethodPut, base+"/proven-sessions", map[string]any{"actor": sessionActor()}, "agent-token")
+			}, true},
+			{"DELETE proven-sessions", func() *httptest.ResponseRecorder {
+				return dispatchRequest(t, handler, http.MethodDelete, base+"/proven-sessions", nil, "alice")
+			}, true},
+			{"PUT default-repository", func() *httptest.ResponseRecorder {
+				return dispatchRequest(t, handler, http.MethodPut, base+"/default-repository", map[string]any{"repo": "acme/widgets"}, "alice")
+			}, false},
+		} {
+			updates := projectUpdates(t, database, held.project)
+			response := write.send()
+			if response.Code != http.StatusOK {
+				t.Fatalf("%s on %s: status=%d body=%s", write.what, held.project, response.Code, response.Body.String())
+			}
+			if write.answers {
+				if answered := decodeBody[model.Project](t, response).GatedSteps; !slices.Equal(answered, held.read) {
+					t.Errorf("%s on %s holding %v answers the gated steps %v, want %v", write.what, held.project, held.stored, answered, held.read)
+				}
+			}
+			if after := projectUpdates(t, database, held.project); after != updates+1 {
+				t.Fatalf("%s on %s left %d project.updated events, want %d: the write changes the row", write.what, held.project, after, updates+1)
+			}
+			if carried := latestProjectUpdate(t, database, held.project).gatedSteps; !slices.Equal(carried, held.read) {
+				t.Errorf("%s on %s holding %v appends project.updated carrying the gated steps %v, want %v", write.what, held.project, held.stored, carried, held.read)
+			}
+		}
+		var stored []string
+		if err := database.Pool.QueryRow(context.Background(), `select gated_steps from projects where key = $1`, held.project).Scan(&stored); err != nil {
+			t.Fatalf("read the stored list of %s: %v", held.project, err)
+		}
+		if !slices.Equal(stored, held.stored) {
+			t.Fatalf("%s now stores %v, want %v: only the decisions step rewrites a stored list", held.project, stored, held.stored)
+		}
 	}
 }

@@ -10,7 +10,7 @@ import (
 )
 
 // The change set is read as Dispatch's route writes it (its api.artifactChanges): the pair it
-// compared, whether the decision blocks were the whole change and whether nothing changed, and
+// compared, whether the ask blocks were the whole change and whether nothing changed, and
 // each changed unit and typed block with how it changed. Each run of the text outside every `##`
 // section carries the place it stands at: before the first section, or after a named section,
 // a repeated heading by its occurrence. The pair is asked for in the query, so the route compares
@@ -71,7 +71,7 @@ func TestArtifactChangesReadsTheChangeSetDispatchAnswers(t *testing.T) {
 }
 
 // Two versions that hold no change at all are one unchanged answer: the route says so, names no
-// unit and no block, and is not decision-only. A Dispatch from before the field sends no
+// unit and no block, and is not ask-only. A Dispatch from before the field sends no
 // `unchanged` and no place for a run, and the client reads its answer as neither unchanged nor
 // placed, so nothing it says is read as more than it says.
 func TestArtifactChangesReadsAnUnchangedPair(t *testing.T) {
@@ -106,7 +106,7 @@ func TestArtifactChangesReadsAnUnchangedPair(t *testing.T) {
 	}
 }
 
-// Two versions whose only difference is an answered decision block are one decision-only change:
+// Two versions whose only difference is an answered ask block are one ask-only change:
 // the route says so and names no section and no block, and the client keeps both lists empty
 // rather than reading the change as unknown.
 func TestArtifactChangesReadsADecisionOnlyChange(t *testing.T) {
@@ -121,7 +121,7 @@ func TestArtifactChangesReadsADecisionOnlyChange(t *testing.T) {
 		t.Fatalf("read the change set: %v", err)
 	}
 	if !changes.DecisionOnly || len(changes.Sections) != 0 || len(changes.Blocks) != 0 {
-		t.Fatalf("change set = %#v, want a decision-only change naming no section and no block", changes)
+		t.Fatalf("change set = %#v, want an ask-only change naming no section and no block", changes)
 	}
 }
 

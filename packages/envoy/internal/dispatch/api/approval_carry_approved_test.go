@@ -16,9 +16,12 @@ import (
 //
 // Each test approves inside the window a live write opens, so each guards the race it could lose:
 // the review route pins the latest version, and a settlement that fires first repairs the block
-// and moves the latest on. The tests settle on demand so those writes cannot race the approval.
-// The review must still name the intended version, and its markdown must show what the test put
-// there, or the test fails as setup rather than passing over a version that never showed it.
+// and moves the latest on. The window is pastTheRun, longer than any run of this package's test
+// binary, and the test settles the document at once (docs.SettleNow) wherever it needs a
+// settlement, so no settlement fires between the write and the approval however slow the machine
+// is. The review's version must still be the one the test meant, and that version's markdown must
+// show what the test put there, or the test fails as setup rather than passing over a version that
+// never showed it.
 
 // approveVersion approves the document as login through the review route, which pins its latest
 // version, and fails t unless that is version number: the version the test meant.
@@ -128,7 +131,7 @@ func TestAnApprovedVersionShowingADecidedBlockUnderOtherWordingCarriesNothing(t 
 	}
 
 	answerDecisionBlock(t, handler, asks["wave"], "alice", []string{"Two"}, "", nil)
-	settledVersion(t, handler, documents, issue.PrimaryArtifactID, 5)
+	documents.SettleNow(issue.PrimaryArtifactID)
 	requireStateVersionsPast(t, handler, database, issue.PrimaryArtifactID, 4, 1)
 	requireNoCarry(t, handler, issue.PrimaryArtifactID, 1, "stale")
 }

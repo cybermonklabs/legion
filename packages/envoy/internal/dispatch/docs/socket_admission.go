@@ -228,6 +228,12 @@ func socketRoom(r *http.Request) string {
 // the socket is held: the admission reads the count of switches first and again once the socket
 // is held, and a count that moved closes it the same way (refuseSwitchedAdmission).
 //
+// A retired document takes no socket (refuseRetired), which the admission reads twice: first,
+// before it reserves anything, so a browser that keeps coming back to a retired document costs a
+// read and no load of the document; and again once the room is reserved and the socket held, the
+// last step before ygo loads or joins the room, so a retirement that commits while the socket
+// reserves its room and loads the document refuses it too.
+//
 // The room's name has to be the document's id as Dispatch writes it, lower case and hyphenated,
 // and a name uuid.Parse takes in any other spelling - upper case, braced, a dash-free run of hex,
 // urn:uuid:<id> - is refused below rather than rewritten. That is what makes one document one
@@ -267,6 +273,12 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	issue, err := s.readIssue(r.Context(), s.queryFrom(r.Context()), room)
 	if err != nil {
 		http.Error(w, "document not found", http.StatusNotFound)
+		return
+	}
+	// A retired document takes no new text (RetireDocument), so no socket opens on it: its
+	// retirement closed every room of it, and a browser that comes back is refused here, before
+	// anything reserves a room for it.
+	if s.refuseRetired(w, r, room) {
 		return
 	}
 	if err := s.awaitRoomRecovery(r.Context(), room); err != nil {
@@ -339,9 +351,34 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuseSwitchedAdmission(w, r, room)
 		return
 	}
+	// The retirement is read again here, once the room is reserved and the socket held, as the last
+	// step before ygo loads or joins the room: a retirement that committed after the read above,
+	// while this socket took its places and loaded the document, refuses it as that read would
+	// have. One that commits after this read closes the room once ygo has handed it out
+	// (documentRemoved, which closes a room GetDoc answers, so not one ygo is still loading). A
+	// room whose retirement it missed takes no version of the retired document: settlement writes
+	// none (settlement.commitVersion), and the room's text is kept in its stored updates.
+	if s.refuseRetired(w, r, room) {
+		return
+	}
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
 	// frames (awareness_limit.go).
 	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room}, r.WithContext(ctx))
+}
+
+// refuseRetired refuses a socket to room 409 DOCUMENT_RETIRED while the document is retired
+// (RetireDocument, documentRetired), before the upgrade, and answers whether it refused it. A read
+// that fails refuses it 404, as a document the admission cannot read is.
+func (s *Service) refuseRetired(w http.ResponseWriter, r *http.Request, room string) bool {
+	retired, err := documentRetired(r.Context(), s.queryFrom(r.Context()), room)
+	if err != nil {
+		http.Error(w, "document not found", http.StatusNotFound)
+		return true
+	}
+	if retired {
+		http.Error(w, "DOCUMENT_RETIRED: the document was retired; it takes no new text, and its versions stay readable", http.StatusConflict)
+	}
+	return retired
 }
 
 // ProcessHeader names, on every answer to a document socket's request and on its upgrade above

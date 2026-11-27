@@ -14,14 +14,15 @@ import (
 )
 
 // TestEveryAskTransitionAndKeepTakesTheStoreLockOrder holds the routes of this package that write
-// an ask's answer state through asks' one writer (asks.PlanSettle, queued) to the store's lock
-// order, with the machinery of TestEveryApiStoreWriterTakesTheStoreLockOrder: each path lists its
-// steps in the order it takes them, the list is checked against the order written on
-// api/inbox_read.go's markInboxReadThreads (requireTheWrittenOrderAdmits), and each step is held
-// in turn while the path's own backend is read at the statement it waits at, at the table locks it
-// holds and at the rows it has locked (requireEachStepIsWaitedAtInTurn). Each path takes its
-// owner's lock first, reads under it holding no transaction id, and writes in one write phase, the
-// batch its ledger or its own store.RunWrite sends. The paths are:
+// an ask's answer state through asks' one writer (asks.PlanSettle, queued), and the Keep of an
+// agent's decision, to the store's lock order, with the machinery of
+// TestEveryApiStoreWriterTakesTheStoreLockOrder: each path lists its steps in the order it takes
+// them, the list is checked against the order written on api/inbox_read.go's markInboxReadThreads
+// (requireTheWrittenOrderAdmits), and each step is held in turn while the path's own backend is
+// read at the statement it waits at, at the table locks it holds and at the rows it has locked
+// (requireEachStepIsWaitedAtInTurn). Each path takes its owner's lock first, reads under it
+// holding no transaction id, and writes in one write phase, the batch its ledger or its own
+// store.RunWrite sends. The paths are:
 //
 //   - a person's answer of an open ask (closeAskTx, through the answer route): the issue's owner
 //     lock, then in the write phase the answerer's node, which the settle writes before the row it
@@ -33,21 +34,26 @@ import (
 //     ask's row, and recordRestoredAsksTx, which queues its ask.opened and the restoration's
 //     facts under it): the issue's owner lock, the ask's row written open, the ask.opened, and
 //     those facts;
+//   - a person's Keep of an agent's decision (keepDecisionNode, through the Keep route): the
+//     issue's owner lock, then in one batch the person's node, the decision_keeps row that
+//     projects the Keep, the decision.kept, and the kept_by and kept_text_sum under it.
 //
 // The ask's row is the row its node projects (asks.node_kind), and none of these paths writes
 // that node, so no node step orders the row; the answerer, whose node an answer writes, is the far
 // end of a tuple, which no row names. No path locks the ask's row before it writes it: every
-// writer of an ask takes its owner's lock first, under which the row is read plainly. Each run
-// answers or closes something of its own, made just before it through the rig's own server; the
-// answer is a person's no write has recorded, whose node is held as a row another transaction
-// inserted and has not committed. Every other write of a step is the path's first of its table,
-// held as that table. The Keep of an agent's decision, the other half of the name, is driven here
-// once the Decisions read and its Keep land (slice 6 of cybermonklabs/legion#4173).
+// writer of an ask takes its owner's lock first, under which the row is read plainly. A Keep's
+// decision_keeps row names its keeper (kept_by), whose node the Keep writes before it. Each run
+// answers, closes or keeps something of its own, made just before it through the rig's own
+// server; the answer and the Keep are a person's no write has recorded, whose node is held as a
+// row another transaction inserted and has not committed. Every other write of a step is the
+// path's first of its table, held as that table.
 func TestEveryAskTransitionAndKeepTakesTheStoreLockOrder(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	rig := newStoreWriterRig(t)
-	for _, writer := range []storeWriter{rig.askAnswer(), rig.issueCloseWithdrawing(), rig.issueReopenRestoring()} {
+	for _, writer := range []storeWriter{
+		rig.askAnswer(), rig.issueCloseWithdrawing(), rig.issueReopenRestoring(), rig.decisionKeep(t, ctx),
+	} {
 		t.Run(writer.name, func(t *testing.T) {
 			requireTheWrittenOrderAdmits(t, writer)
 			requireEachStepIsWaitedAtInTurn(t, ctx, rig, writer)
@@ -194,6 +200,56 @@ func (r *storeWriterRig) issueReopenRestoring() storeWriter {
 				return statusOrError(dispatchRequest(t, r.call, http.MethodPatch, "/api/v1/issues/"+reopening,
 					map[string]any{"status": "todo"}, "alice"), http.StatusOK)
 			}}
+		},
+	}
+}
+
+// decisionKeep is a person's Keep of an agent's decision (keepDecisionNode), through the Keep
+// route, on a document of the issue the agent uploaded. It takes the issue's owner lock
+// (LockOwners), reads the node's keepers under it, and then in one batch (store.RunWrite) writes
+// the person's node (graphstore.QueueNodes), then the decision_keeps row that projects the Keep,
+// appends decision.kept, and appends the kept_by and the kept_text_sum under it
+// (graphstore.QueueCaused). Each run keeps the decision as a person no write has recorded.
+func (r *storeWriterRig) decisionKeep(t *testing.T, ctx context.Context) storeWriter {
+	const name = "lock-steps-choices.md"
+	requireAgentWrite(t, "upload the agent's decision", sessionRequest(t, r.handler, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
+		"name": name, "content": "::::decision{#d1}\nThe lock steps hold REST first.\n::::\n", "actor": sessionActor(),
+	}), http.StatusCreated)
+	choices := readDecisionDocument(t, r.database, r.issue, artifactSlug(name))
+	document, err := r.direct.loadArtifact(ctx, r.database.Pool, choices.id)
+	if err != nil {
+		t.Fatalf("load %s: %v", name, err)
+	}
+	decision, found, err := r.direct.readDecisionNode(ctx, r.database.Pool, model.Actor{Kind: "user", ID: "alice"}, document, "d1")
+	if err != nil || !found {
+		t.Fatalf("read the decision d1 of %s: found %t, %v", name, found, err)
+	}
+	return storeWriter{
+		name: "keepDecisionNode",
+		steps: []storeStep{
+			ownerLockStep(store.IssueOwner(r.issue)),
+			{
+				name: "the keeper's node", order: nodeStep,
+				hold: holdNewNode, at: nodeWriteStatement,
+				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
+			},
+			{
+				name: "the Keep's row", order: projectionStep, names: "the keeper's node",
+				hold: holdTableWrites("decision_keeps"), at: "insert into decision_keeps (",
+				takes: []tableLock{{"decision_keeps", rowExclusiveMode}},
+			},
+			eventAppendStep(),
+			tupleAppendStep(),
+		},
+		ready: func(t *testing.T, _ context.Context) storeWriterRun {
+			login := r.fresh("lock-keeper")
+			return storeWriterRun{
+				made: graphstore.PersonNode(login, model.Actor{Kind: "user", ID: login}, time.Now().UTC(), graphstore.NoEvent),
+				write: func() error {
+					return statusOrError(dispatchRequest(t, r.call, http.MethodPost, "/api/v1/artifacts/"+choices.id+"/blocks/d1/keep",
+						map[string]any{"text_sha256": decision.TextSHA256}, login), http.StatusOK)
+				},
+			}
 		},
 	}
 }

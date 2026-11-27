@@ -286,7 +286,7 @@ var askNodeAnswersQuery = `
 
 // askNodeAnswers reads, in tx, what the node of each ask ids names holds of its answer, by ask
 // id, from the node's tuples as they stand now (askNodeAnswersQuery), as a read of an ask's row
-// reads them (api's askNodeAnswerColumn). An ask whose row names no node - one a process of the
+// reads them (asks.NodeAnswerColumn). An ask whose row names no node - one a process of the
 // release before wrote, until the boot step's backfill marks it, or one whose relations are past
 // the store's bound (graphstore.AskFacts) - is absent, and reads as its row holds it, its answer's
 // only record (asks.NodeAnswer.ApplyTo, onItsNode); an ask whose node holds no answer_state

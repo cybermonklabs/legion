@@ -1404,6 +1404,13 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return "", nil, nil, fmt.Errorf("decode what the task held for %s names: %w", c.Token, err)
 	}
 	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
+	// A pair a task of an earlier release kept of its `decisions` step names a document no step of
+	// this release records, so the rewrite names no approval, as the record's read of the pair
+	// leaves it (record.Store.UnclaimedKept).
+	// kept for one release: design-gate-rows
+	if stays.Step != "" && !stays.Step.Valid() {
+		stays.KeptApproval = record.KeptApproval{}
+	}
 	// The record every rewrite of a recorded root reads (workflow.NarrowRootTask): the tree's root
 	// as the record holds it at the narrowing, and what its first task is derived from, read by the
 	// reader every start of a root architect reads it through (workflow.ArchitectStartOf). Every

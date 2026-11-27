@@ -1,4 +1,4 @@
-// The refusals a call meets while a document holds a decision block a person has yet to answer:
+// The refusals a call meets while a document holds an ask block a person has yet to answer:
 // an approval request over one (`dispatch request-approval`, and the `legion` tool's register_gate
 // on an ancestor's basis), and an edit that would take one out of the document (`dispatch doc-edit`).
 import type { ArtifactBlock, AskWithTrees, EditOp, TextAsk } from "@legion/contracts";
@@ -30,14 +30,11 @@ async function blockAsks(
   );
 }
 
-/** The words and rule a refusal over open decision blocks uses around the blocks it names:
- * `call`, the call it refused (`dispatch request-approval`, `legion register_gate`); `blocks`,
- * what its count calls an open block (`ask block` in `dispatch request-approval`'s words,
- * `decision block` in `legion register_gate`'s); `decidedBy`, below; `effect`, the sentence on
- * why an open block stops that call; `remedy`, what to do instead. */
+/** The words and rule a refusal over open ask blocks uses around the blocks it names: `call`, the
+ * call it refused (`dispatch request-approval`, `legion register_gate`); `decidedBy`, below;
+ * `effect`, the sentence on why an open block stops that call; `remedy`, what to do instead. */
 export interface OpenDecisionBlockRefusal {
   readonly call: string;
-  readonly blocks: string;
   /** Which state decides a block that is not open live: `"live"` takes the server's live ask
    * state once the live text answers `asks` (which `dispatch request-approval` uses, since
    * approval carry moves an open request to the version an answer writes), whereas `"version"`
@@ -51,7 +48,7 @@ export interface OpenDecisionBlockRefusal {
   readonly remedy: string;
 }
 
-/** The sentence every `remedy` over open decision blocks gives to reach the human: tell them
+/** The sentence every `remedy` over open ask blocks gives to reach the human: tell them
  * which block is open and ask them to answer it or to waive it. */
 export const OPEN_BLOCK_ASK_THE_HUMAN =
   "Tell the human which block is open and ask them to answer it or to waive it.";
@@ -61,12 +58,12 @@ export const OPEN_BLOCK_ASK_THE_HUMAN =
  * waits on it (`refuseOpenDecisionBlocks`), and `OPEN_BLOCK_SETTLES` tells the agent it. */
 const SETTLES_ON_ITS_OWN = "it settles into a version on its own in about two seconds";
 
-/** The sentence `register_gate`'s `remedy` over open decision blocks adds after
+/** The sentence `register_gate`'s `remedy` over open ask blocks adds after
  * `OPEN_BLOCK_ASK_THE_HUMAN`: an answered block settles into a version on its own, the wait
  * `refuseOpenDecisionBlocks` names under `"version"` (`SETTLES_ON_ITS_OWN`). */
 export const OPEN_BLOCK_SETTLES = `Once it is answered, ${SETTLES_ON_ITS_OWN}.`;
 
-/** How every `remedy` over open decision blocks closes a block the human waives, which each one
+/** How every `remedy` over open ask blocks closes a block the human waives, which each one
  * continues with its own next step. */
 export const OPEN_BLOCK_WAIVED =
   "If they waive it, close the block with dispatch resolve-ask (--kind resolved, their words as the --reason)";
@@ -207,9 +204,8 @@ export async function refuseOpenDecisionBlocks(
     const document = copy.copied_from_document;
     const answeredBy = source.answer?.user || undefined;
     const answeredAt = source.answer?.at;
-    // Each optional key is set only where it holds a value, so the copy is a `TextAsk` under
-    // `exactOptionalPropertyTypes`. Every reader of the copies below reads a missing key as it
-    // reads an undefined one.
+    // TextAsk under exactOptionalPropertyTypes requires absent optional fields to be omitted.
+    // The readers treat an absent field the same as an explicit undefined.
     return {
       block_id: copy.block_id,
       copied_from: id,
@@ -342,8 +338,7 @@ export async function refuseOpenDecisionBlocks(
     if (line !== undefined) open.push(line);
   }
   if (open.length === 0) return;
-  const noun = refusal.blocks;
-  const count = open.length === 1 ? `1 open ${noun}` : `${open.length} open ${noun}s`;
+  const count = open.length === 1 ? "1 open ask block" : `${open.length} open ask blocks`;
   throw new Error(
     [
       `${refusal.call} was not called: ${artifact.name} (version ${latest}) has ${count}. ${refusal.effect}`,
@@ -363,9 +358,11 @@ export async function refuseOpenDecisionBlocks(
  * does not exempt it: telling a block written back from an opener quoted in code needs the
  * server's parser, so the executor fails closed. An open block is reworded with `replace`, moved
  * with `move`, or, when this session asked it, has its question, options, urgency or multiple
- * changed with `dispatch_edit_ask`; each keeps it. Costs nothing for an edit with no such
- * operation, then one `GET /artifacts/{id}/blocks`, and the owner's asks only when an operation
- * reaches an `ask` block.
+ * changed with `dispatch_edit_ask`; each keeps it. An answered block is none of this check's: it
+ * stays in its document, and the server refuses an agent's removal or retype of one, `409
+ * ANSWERED_ASK_KEPT`, so only a resolved block may be removed. Costs nothing for an edit with no
+ * such operation, then one `GET /artifacts/{id}/blocks`, and the owner's asks only when an
+ * operation reaches an `ask` block.
  */
 export async function refuseRemovingOpenDecisionBlocks(
   client: DispatchClient,
@@ -410,7 +407,7 @@ export async function refuseRemovingOpenDecisionBlocks(
       ...open.map(
         (ask) => `- ${JSON.stringify(ask.question)} (block ${ask.block_id}, ask ${ask.id})`
       ),
-      "An ask block leaves the document once its ask is answered or resolved. Until then, reword it with replace, relocate it with move, or change its question, options, urgency or multiple with dispatch edit-ask if you asked it; each keeps it.",
+      "An answered ask block stays in its document (an agent's removal or retype of one is refused 409 ANSWERED_ASK_KEPT); only a resolved one may be removed. While an ask is open, reword its block with replace, relocate it with move, or change its question, options, urgency or multiple with dispatch edit-ask if you asked it; each keeps it.",
     ].join("\n")
   );
 }

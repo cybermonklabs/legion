@@ -792,6 +792,45 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 	}
 }
 
+// A design-gates publish the release before queued may carry the `decisions` step, which this
+// release no longer has, and still wait in the outbox when this release boots: the boot queues a
+// fresh set over it only for an issue Dispatch does not show as done (the daemon's
+// queueRecordedGatesPublish). Such a row decodes with that step left out, so the outbox sends the
+// other gates, a set Dispatch takes, rather than retrying for ever a row it cannot decode. A row
+// that named that step alone sends the empty set, which clears the set Dispatch holds.
+func TestAQueuedDesignGatesPublishLeavesTheDecisionsStepOut(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    []DesignGateDocument
+	}{
+		{
+			name: "beside the remaining steps",
+			payload: `{"issue":"LEGION-208","gates":[{"step":"decisions","artifactId":"artifact-decisions"},` +
+				`{"step":"criteria","artifactId":"artifact-criteria"},{"step":"spec","artifactId":"artifact-208"}]}`,
+			want: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria"}, {Step: DesignStepSpec, ArtifactID: "artifact-208"}},
+		},
+		{
+			name:    "alone",
+			payload: `{"issue":"LEGION-208","gates":[{"step":"decisions","artifactId":"artifact-decisions"}]}`,
+			want:    []DesignGateDocument{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := OutboxRow{ID: 62, Kind: OutboxKindDesignGatesPublish, Issue: "LEGION-208", Payload: json.RawMessage(tc.payload)}
+			got, err := DecodeOutboxPayload(row)
+			if err != nil {
+				t.Fatalf("DecodeOutboxPayload: %v, want the row decoded with the decisions step left out", err)
+			}
+			publish, ok := got.(DesignGatesPublish)
+			if !ok || publish.Issue != "LEGION-208" || len(publish.Gates) != len(tc.want) ||
+				(len(tc.want) > 0 && !reflect.DeepEqual(publish.Gates, tc.want)) {
+				t.Fatalf("decoded %#v, want the publish of LEGION-208 carrying %#v", got, tc.want)
+			}
+		})
+	}
+}
+
 // checkLookRefusal is the validation's words for a supervise row whose check look is not a start
 // of the implementer or the tester with no phase.
 const checkLookRefusal = "a supervise check look names a start of the implementer or the tester with no phase"
@@ -1268,14 +1307,14 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "catch-up", Role: claim.RoleArchitect, PacedAt: paced, PacedFrom: answered,
 			Reason: "the tree of LEGION-208 at generation 3 as the daemon records it now; start or resume it as your role says",
 			CatchUp: &CatchUp{Generation: 3, Launch: 2,
-				// The spec step on a person's approval, and two steps on an ancestor's basis, one
-				// open on its approval and one waiting on its request (dispatch://INFRA-3320, R2).
+				// Two steps on an ancestor's basis: the spec step waiting on its request, beside a
+				// person's approval of an earlier version of the root's own spec, and the criteria
+				// step open on its approval (dispatch://INFRA-3320, R2).
 				Gates: []CatchUpGate{
-					{Step: DesignStepSpec, Gated: true, Artifact: "artifact-208", Version: 3, Approved: 3, Open: true},
+					{Step: DesignStepSpec, Gated: true, Artifact: "artifact-208", Version: 3, Approved: 2, Pending: true,
+						Basis: &CatchUpBasis{Issue: "LEGION-100", Artifact: "artifact-100", Version: 2, Ask: "ask-100"}},
 					{Step: DesignStepCriteria, Gated: true, Artifact: "artifact-208-verification", Version: 2, Open: true,
 						Basis: &CatchUpBasis{Issue: "LEGION-100", Artifact: "artifact-100-verification", Version: 4, Approver: "user:alice", ApprovedAt: answered}},
-					{Step: DesignStepDecisions, Gated: true, Artifact: "artifact-208-decisions", Version: 1, Pending: true,
-						Basis: &CatchUpBasis{Issue: "LEGION-100", Artifact: "artifact-100-decisions", Version: 2, Ask: "ask-100"}},
 				},
 				Issues: []CatchUpIssue{{Key: "LEGION-208", Title: "The outbox's notices", Phase: phase.Implementing, Status: "in_progress"}}}},
 		{Kind: "checks-red", Role: claim.RoleArchitect, Phase: phase.Testing, Reason: "CI is red at head: pytest"},

@@ -41,7 +41,6 @@ type issueResponse struct {
 	Labels                 []string        `json:"labels"`
 	PrimaryArtifactID      string          `json:"primary_artifact_id"`
 	VerificationArtifactID string          `json:"verification_artifact_id"`
-	DecisionsArtifactID    string          `json:"decisions_artifact_id"`
 	LastSeq                int64           `json:"last_seq"`
 	ResolvedRepo           *string         `json:"resolved_repo"`
 	BlockedBy              []string        `json:"blocked_by"`
@@ -63,7 +62,6 @@ func (r issueResponse) issue() Issue {
 		HandedOver:             CarriesLegionLabel(r.Labels),
 		PrimaryArtifactID:      r.PrimaryArtifactID,
 		VerificationArtifactID: r.VerificationArtifactID,
-		DecisionsArtifactID:    r.DecisionsArtifactID,
 		LastSeq:                r.LastSeq,
 		ResolvedRepo:           deref(r.ResolvedRepo),
 		BlockedBy:              r.BlockedBy,
@@ -126,7 +124,6 @@ type issueEventResponse struct {
 
 type artifactResponse struct {
 	IssueKey *string           `json:"issue_key"`
-	Slug     string            `json:"slug"`
 	Primary  bool              `json:"primary"`
 	Role     string            `json:"role"`
 	Approval *approvalResponse `json:"approval"`

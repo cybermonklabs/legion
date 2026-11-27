@@ -2084,8 +2084,14 @@ func TestSpecWriteChecksEachCopyOfAResolvedAsk(t *testing.T) {
 			})
 		})
 	notes := uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.c.key, "notes.md", "The notes of the child issue.\n\n"+specWriterAsk(noted)).Artifact.ID
-	awaitDocumentText(t, rig.handler, spec, "the copy of "+copied, contains(`copied_from="`+rig.asks[copied]+`"`), nil)
-	awaitDocumentText(t, rig.handler, notes, "the copy of "+noted, contains(`copied_from="`+rig.asks[noted]+`"`), nil)
+	// A copy's source is held on the ask's node, and the text route serves it in the asks member,
+	// never on the block's opening line (agentText).
+	for _, held := range []struct{ document, block string }{{spec, copied}, {notes, noted}} {
+		testwait.UntilPolling(t, 20*time.Millisecond, "the copy of "+held.block+" in its document's asks", func() (string, bool) {
+			text := agentText(t, rig.handler, held.document)
+			return text, strings.Contains(text, `copied_from="`+rig.asks[held.block]+`"`)
+		})
+	}
 	rig.quiet(t)
 
 	resolve := func(ask, kind string) func(t *testing.T) *httptest.ResponseRecorder {
@@ -2492,7 +2498,7 @@ func (rig *specWriterRig) requireRefusedWith(t *testing.T, status int, code stri
 // versionsOf is how many versions the document id holds.
 func (rig *specWriterRig) versionsOf(t *testing.T, id string) int {
 	t.Helper()
-	return specVersionCount(t, rig.database, id)
+	return uploadedVersionCount(t, rig.database, id)
 }
 
 // commentState is a comment's row as it is stored: whether it is resolved, and, for a suggestion,

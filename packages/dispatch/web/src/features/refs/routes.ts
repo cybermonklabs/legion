@@ -172,22 +172,22 @@ export type IssueTab =
   | "decisions"
   | "collaborators";
 
-/** The slug of an issue's `decisions.md`, the document its Decisions tab is a view of. */
-export const DECISIONS_DOCUMENT_SLUG = "decisions-md";
+/** An issue tab whose whole route is the tab itself: each tab of `@legion/contracts`'s
+ *  `PLAIN_ISSUE_TABS`, which the server reads the same way, and the Decisions tab. No block, no
+ *  slug, no id. Each one is parsed from the segment of its own name, built as `<issue>/<kind>`,
+ *  shown as `<KEY> <kind>` and is the tab of its own name, so the chains below hold the eight in
+ *  one arm rather than one apiece and a ninth tab is that list. The spec and the conversation stay
+ *  out of it: a spec route carries a block, and the conversation is written `log` in a reference
+ *  and `conversation` in a path. The Decisions tab reads the issue's decision nodes, so its page
+ *  and its reference `dispatch://<KEY>/decisions` name the issue, as the server's `text` reads
+ *  both, and its reference is written as the issue, as every tab's is (`buildDispatchReference`). */
+const ISSUE_TAB_ROUTES = [...PLAIN_ISSUE_TABS, "decisions"] as const;
 
-/** An issue tab whose whole route is the tab itself (`@legion/contracts`'s `PLAIN_ISSUE_TABS`,
- *  which the server reads the same way): no block, no slug, no id. Each one is parsed from the
- *  segment of its own name, built as `<issue>/<kind>`, shown as `<KEY> <kind>` and is the tab of
- *  its own name, so the chains below hold the seven in one arm rather than one apiece and an eighth
- *  tab is that list. The spec, the conversation and the decisions stay out of it: a spec route
- *  carries a block, the conversation is written `log` in a reference and `conversation` in a
- *  path, and the Decisions tab is a view of the issue's `decisions.md`, which a reference names as
- *  that document. */
-type PlainIssueTab = (typeof PLAIN_ISSUE_TABS)[number];
+type PlainIssueTab = (typeof ISSUE_TAB_ROUTES)[number];
 
 /** The plain tab a path segment names, or `undefined` for anything else. */
 function plainIssueTab(value: string): PlainIssueTab | undefined {
-  return PLAIN_ISSUE_TABS.find((tab) => tab === value);
+  return ISSUE_TAB_ROUTES.find((tab) => tab === value);
 }
 
 type PlainIssueRoute = Extract<IssueRoute, { kind: PlainIssueTab }>;
@@ -197,7 +197,7 @@ type PlainIssueRoute = Extract<IssueRoute, { kind: PlainIssueTab }>;
 function isPlainIssueRoute(
   route: DispatchRoute | DispatchReferenceRoute
 ): route is PlainIssueRoute {
-  return PLAIN_ISSUE_TABS.some((tab) => tab === route.kind);
+  return ISSUE_TAB_ROUTES.some((tab) => tab === route.kind);
 }
 
 const projectKeyPattern = "[A-Z][A-Z0-9]{1,9}";
@@ -272,9 +272,6 @@ export function issueTabForRoute(
   }
   if (route.kind === "conversation") {
     return "conversation";
-  }
-  if (route.kind === "decisions") {
-    return "decisions";
   }
   if (route.kind === "artifact") {
     return isPrimaryDocumentArtifactRoute(route, artifact) ? "spec" : "artifacts";
@@ -501,9 +498,6 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
   if (target === "conversation") {
     return { key, kind: "conversation" };
   }
-  if (target === "decisions") {
-    return { key, kind: "decisions" };
-  }
   const artifact = target.match(/^artifacts?\/([^/?#\s]+)$/);
   if (artifact !== null) {
     return artifactRoute(key, artifact[1] ?? "", new URLSearchParams(search).get("v"));
@@ -681,14 +675,6 @@ function pageRoutes(
   if (route === undefined || (isProjectRoute(route) && route.kind !== "document")) {
     return undefined;
   }
-  // The Decisions tab is a view of the issue's decisions.md, so its page names that document,
-  // whatever its fragment, as the server's `text` and the agent client read the page.
-  if (route.kind === "decisions") {
-    return {
-      block: undefined,
-      page: { key: route.key, kind: "artifact", slug: DECISIONS_DOCUMENT_SLUG },
-    };
-  }
   if ("slug" in route && !artifactSlugOnlyPattern.test(route.slug)) {
     return undefined;
   }
@@ -755,12 +741,10 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
   // An issue's tabs are the issue: the grammar lets only `spec`, `artifact/…`, `ask/…`,
   // `comment/…` and `message/…` follow an issue key, so the eight forms this once wrote -
   // verification, plan, steps, activity, children, artifacts, collaborators and the
-  // conversation's `log` - were references the server refused to read.
+  // conversation's `log` - were references the server refused to read. The Decisions tab, whose
+  // `decisions` the server reads as the issue, is written as the issue too.
   if (isPlainIssueRoute(route) || route.kind === "conversation") {
     return issue;
-  }
-  if (route.kind === "decisions") {
-    return `${issue}/artifact/${DECISIONS_DOCUMENT_SLUG}`;
   }
   if (route.kind === "artifact") {
     return `${issue}/artifact/${encodeURIComponent(route.slug)}${
@@ -995,8 +979,6 @@ export function shortForm(route: DispatchReferenceRoute): string {
       return `${route.key} spec${block}`;
     case "conversation":
       return `${route.key} log`;
-    case "decisions":
-      return `${route.key} decisions`;
     case "artifact":
       return `${route.key} ${route.slug}${block}`;
     case "ask":
@@ -1140,9 +1122,6 @@ export function buildIssuePath(route: IssueRoute): string {
   }
   if (route.kind === "conversation") {
     return `${issue}/conversation`;
-  }
-  if (route.kind === "decisions") {
-    return `${issue}/decisions`;
   }
   if (route.kind === "artifact") {
     const artifact = `${issue}/artifacts/${encodeURIComponent(route.slug)}`;

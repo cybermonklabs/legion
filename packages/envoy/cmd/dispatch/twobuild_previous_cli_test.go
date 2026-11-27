@@ -80,7 +80,7 @@ func TestThePreviousReleasesCLIRequestsApprovalOverDecidedAsksOnceTheFleetIsOneB
 	// This build's decisions step catches the previous build's answer up onto the ask's node while
 	// both serve (ruling E1), which every version this build writes then reads it from.
 	for deadline := time.Now().Add(90 * time.Second); ; time.Sleep(time.Second) {
-		if state, _, _ := askNodeAnswerOf(t, ctx, builds, first); state == asks.StateAnswered {
+		if state, _, _ := nodeAnswerOf(t, ctx, builds, first); state == asks.StateAnswered {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -140,7 +140,7 @@ func TestThePreviousReleasesCLIRequestsApprovalOverDecidedAsksOnceTheFleetIsOneB
 			t.Errorf("the spec's latest version holds no ask block %s:\n%s", want.block, markdown)
 			continue
 		}
-		state, answeredBy, answeredAt := askNodeAnswerOf(t, ctx, builds, want.ask)
+		state, answeredBy, answeredAt := nodeAnswerOf(t, ctx, builds, want.ask)
 		if state != want.state || node.Attrs["state"] != state {
 			t.Errorf("block %s's opener holds state %v, want its node's %q (the node holds %q)", want.block, node.Attrs["state"], want.state, state)
 		}
@@ -223,7 +223,7 @@ func TestThePreviousReleasesCLIRequestsApprovalOverAnAskItAnsweredBeforeTheCatch
 	// Beside a build that states no answer on an ask's node, the window: the held step has stated
 	// no answer on it. Beside one that states answers, the node holds the answer it recorded: state
 	// answered, and the answerer and the time the previous build's own version stored.
-	nodeState, nodeAnsweredBy, nodeAnsweredAt := askNodeAnswerOf(t, ctx, builds, ship)
+	nodeState, nodeAnsweredBy, nodeAnsweredAt := nodeAnswerOf(t, ctx, builds, ship)
 	if statesAnswers {
 		if nodeState != asks.StateAnswered {
 			t.Fatalf("the %s stated the answer to the probe's ask on that ask's node, and not the answer to ask %s on its own: the node holds state %q, answered_by %q and answered_at %q, want the answer it recorded",
@@ -291,7 +291,7 @@ func TestThePreviousReleasesCLIRequestsApprovalOverAnAskItAnsweredBeforeTheCatch
 func previousStatesAnswersOnAskNodes(t *testing.T, ctx context.Context, builds *twoBuilds) bool {
 	t.Helper()
 	_, _, ask := answeredThroughThePrevious(t, ctx, builds, "PRP", "Whether the previous build states answers on ask nodes", "An ask the previous build answers alone")
-	state, _, _ := askNodeAnswerOf(t, ctx, builds, ask)
+	state, _, _ := nodeAnswerOf(t, ctx, builds, ask)
 	return state == asks.StateAnswered
 }
 
@@ -401,9 +401,9 @@ func askBlockOf(tree *pmdoc.Node, blockID string) *pmdoc.Node {
 	return found
 }
 
-// askNodeAnswerOf is what the ask's node holds now: its answer_state, the person its answered_by
+// nodeAnswerOf is what the ask's node holds now: its answer_state, the person its answered_by
 // names and its answered_at, each "" where it holds none.
-func askNodeAnswerOf(t *testing.T, ctx context.Context, builds *twoBuilds, askID string) (state, answeredBy, answeredAt string) {
+func nodeAnswerOf(t *testing.T, ctx context.Context, builds *twoBuilds, askID string) (state, answeredBy, answeredAt string) {
 	t.Helper()
 	rows, err := builds.database.Pool.Query(ctx, `
 		select kind, to_id from (

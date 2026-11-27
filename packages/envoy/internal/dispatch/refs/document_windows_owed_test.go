@@ -310,7 +310,7 @@ func TestAVersionWriteOwesADocumentItsWindowsAndWritingThemClearsIt(t *testing.T
 		{"b1", "heading", "# Marked"},
 		{"b2", "paragraph", "The first paragraph."},
 	})
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil, ""); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil, "", TypedFacts{}); err != nil {
 		t.Fatalf("index version 1: %v", err)
 	}
 	requireDocumentOwedWindows(t, tx, artifact, true, "the version write")
@@ -330,7 +330,7 @@ func TestAVersionWriteOwesADocumentItsWindowsAndWritingThemClearsIt(t *testing.T
 		{"b1", "heading", "# Marked"},
 		{"b2", "paragraph", "The first paragraph, rewritten."},
 	})
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 2, time.Now(), markdown, blocks, nil, nil, ""); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 2, time.Now(), markdown, blocks, nil, nil, "", TypedFacts{}); err != nil {
 		t.Fatalf("index version 2: %v", err)
 	}
 	requireDocumentOwedWindows(t, tx, artifact, true, "the second version write")
@@ -356,7 +356,7 @@ func TestADocumentWhoseVersionHoldsNoBlockIsListedAndWindowed(t *testing.T) {
 	// Project documents rather than an issue's: an issue holds one primary document, and this
 	// test writes two.
 	empty, _ := createReferenceArtifact(t, tx, "", "WIND", "empty-md")
-	if _, _, _, err := IndexBlocks(ctx, tx, empty, 1, time.Now(), "", nil, nil, nil, ""); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, empty, 1, time.Now(), "", nil, nil, nil, "", TypedFacts{}); err != nil {
 		t.Fatalf("index version 1 of the empty document: %v", err)
 	}
 	requireDocumentOwedWindows(t, tx, empty, true, "the version write of the empty document")
@@ -379,7 +379,7 @@ func TestADocumentWhoseVersionHoldsNoBlockIsListedAndWindowed(t *testing.T) {
 	if windows := windowRowsOf(t, tx, DocumentWindowKind, emptied); len(windows) == 0 {
 		t.Fatalf("version 1 of the emptied document left it unwindowed")
 	}
-	if _, _, _, err := IndexBlocks(ctx, tx, emptied, 2, time.Now(), "", nil, nil, nil, ""); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, emptied, 2, time.Now(), "", nil, nil, nil, "", TypedFacts{}); err != nil {
 		t.Fatalf("index version 2 of the emptied document: %v", err)
 	}
 	requireDocumentOwedWindows(t, tx, emptied, true, "the version write that emptied the document")

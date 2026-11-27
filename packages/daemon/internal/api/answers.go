@@ -730,9 +730,14 @@ var mergeWaitStates = valuesFrom(mergeWaitContract,
 // contract `gatedSteps` arrived at, and gatedStepStatuses every place an issue can stand in one.
 // Four statuses arrived with `gatedSteps`, and the gate-basis entry adds two in its own file:
 // `open_on_basis` and `pending_on_basis`, a step on an ancestor's basis (dispatch://INFRA-3320).
-// So it is written out value by value, sorted by value, as waitAnswers is.
+// So it is written out value by value, sorted by value, as waitAnswers is. `decisions` is no step
+// any more (record.DesignSteps: decisions are nodes of the spec, and a gate row or a queued
+// publication naming the step is left out), so no answer of this daemon carries it; it stays
+// recorded because a value, once a contract admits it, stays admitted (each contract's record in
+// contract-shapes.json holds it), and this build's reader of the view still parses it
+// (packages/contracts' legionGatedStepView reads GATED_STEPS).
 var designSteps = valuesFrom(gatedStepsContract,
-	record.DesignStepDecisions, record.DesignStepCriteria, record.DesignStepSpec)
+	record.DesignStep("decisions"), record.DesignStepCriteria, record.DesignStepSpec)
 var gatedStepStatuses = []EnumeratedValue{
 	{Value: string(GatedStepApproved), Since: gatedStepsContract},
 	{Value: string(GatedStepChangesRequested), Since: gatedStepsContract},

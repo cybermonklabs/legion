@@ -131,7 +131,7 @@ type offerFixture struct {
 	database     *store.Store
 	deps         Deps
 	host         string   // the issue of the asking project the question is asked on
-	hostArtifact string   // that issue's primary document, where a decision block is added
+	hostArtifact string   // that issue's primary document, where an ask block is added
 	owner        string   // the issue of the other project holding the answered questions
 	offered      []string // those questions, the nearest the check's text first
 }
@@ -242,7 +242,7 @@ func TestSuggestionOffersOfAnAskOnAProjectDocumentAreRecorded(t *testing.T) {
 		askID, document, fixture.offered[0], rows[0])
 }
 
-// A new decision block offers the answered question of the other project and records no row of
+// A new ask block offers the answered question of the other project and records no row of
 // it: the table keys a row of the role by the ask it was offered on, and such a check holds the
 // document block's own id and no ask id (persistSuggestions).
 func TestSuggestionOffersOfANewDecisionBlockReachNoRow(t *testing.T) {
@@ -256,7 +256,7 @@ func TestSuggestionOffersOfANewDecisionBlockReachNoRow(t *testing.T) {
 		t.Fatalf("decision_block_checks = %+v (present %t), want one with its suggestions", checks, present)
 	}
 	if ids := crossProjectItemIDs(checks[0].Suggestions.OtherProjects); !slices.Equal(ids, fixture.offered) {
-		t.Fatalf("the decision block offered %v, want %v: the case measures a check that had an offer to record",
+		t.Fatalf("the ask block offered %v, want %v: the case measures a check that had an offer to record",
 			ids, fixture.offered)
 	}
 
@@ -268,7 +268,7 @@ func TestSuggestionOffersOfANewDecisionBlockReachNoRow(t *testing.T) {
 	if len(blocks) != 0 {
 		t.Fatalf("write_suggestions holds %v of the role with no ask, want the block's offer recorded nowhere", blocks)
 	}
-	t.Logf("measured: the decision block offered %s and left write_suggestions at %d row(s) of the role other_project, "+
+	t.Logf("measured: the ask block offered %s and left write_suggestions at %d row(s) of the role other_project, "+
 		"each of them an ask create's", fixture.offered[0], len(after))
 }
 

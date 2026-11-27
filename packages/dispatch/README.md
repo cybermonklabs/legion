@@ -476,7 +476,7 @@ carries: a comment and a message of 48,000 characters taken and read back whole,
 32,001 characters refused by name, and `dispatch limits` (A8); a passage only at the end of a block
 longer than 32,000 characters found by meaning and a one-line ask option found by its text, each
 hit naming the block (A9, skipped with one `SKIP:` line on a server with no embedder); and a
-question of 2,001 characters taken by `dispatch ask` and by a document's decision block (A14).
+question of 2,001 characters taken by `dispatch ask` and by a document's ask block (A14).
 Each passing check prints `PASS: <section> <what>`; the first
 failure prints `FAIL: <section> <what>: <observed>` and exits 1. Its inputs:
 
@@ -506,7 +506,7 @@ failure prints `FAIL: <section> <what>: <observed>` and exits 1. Its inputs:
   line, and every other section runs.
 
 It writes two issues in `PROJECT`: the first holds the spec, comments, messages and the documents
-`cites.md`, `decisions.md`, `changes.md` and `list.md`; the second is its child, retitled, holding an
+`cites.md`, `rollout.md`, `changes.md` and `list.md`; the second is its child, retitled, holding an
 ask the script rewords, a comment on a quote of its spec and a reply, a message and a reply, and the
 uploads `notes.txt` and `pixel.png`. It resolves the ask and closes both issues, also when a check
 fails.

@@ -181,7 +181,10 @@ func scanOpenApprovalRequests(rows pgx.Rows, requests map[string]openApprovalReq
 }
 
 // applyApprovals fills each document's Approval from its latest review and its open request, the
-// rule queueApprovals's apply runs once both statements have been read.
+// rule queueApprovals's apply runs once both statements have been read. A retired document's
+// approval is superseded by its retirement (docs.RetireDocument), which writes no version, so it
+// reads stale at its latest version as an approval a later version left behind reads: a gate or
+// a reader that asks whether the document stands approved hears that it does not.
 func applyApprovals(
 	byID map[string]*model.Artifact,
 	latestReviews map[string]model.ArtifactReview,
@@ -211,7 +214,7 @@ func applyApprovals(
 			switch {
 			case review.State == "changes_requested":
 				approval.State = "changes_requested"
-			case review.Version == latest:
+			case review.Version == latest && !artifact.Retired:
 				approval.State = "approved"
 			default:
 				approval.State = "stale"

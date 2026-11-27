@@ -748,8 +748,9 @@ func TestProjectJudgesAdmissionOverThisProjectsRecordsAlone(t *testing.T) {
 
 // Every root answers the deployment's gated steps as its own rows stand, a step it holds no row
 // for included, and a child answers none: the gate is the root's, and its tree's work is held at
-// its steps. A row of a step the deployment no longer gates is kept in the record and is in no
-// entry, while the spec row still fills `designGate` beside the list.
+// its steps. A row of a step the deployment no longer gates — here the spec's, under a deployment
+// that gates the criteria alone — is kept in the record and is in no entry, while that spec row
+// still fills `designGate` beside the list.
 func TestProjectAnswersEveryRootsGatedStepsAndNoChildsOwn(t *testing.T) {
 	approved := 3
 	store := projectionStore{
@@ -761,7 +762,6 @@ func TestProjectAnswersEveryRootsGatedStepsAndNoChildsOwn(t *testing.T) {
 		},
 		gates: map[string]map[record.DesignStep]record.DesignGate{
 			"LEGION-208": {
-				record.DesignStepDecisions: {Issue: "LEGION-208", Step: record.DesignStepDecisions, ArtifactID: "decisions-doc", LatestVersion: 1},
 				record.DesignStepSpec: {Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: "spec-doc",
 					LatestVersion: 3, ApprovedVersion: &approved},
 			},
@@ -769,16 +769,13 @@ func TestProjectAnswersEveryRootsGatedStepsAndNoChildsOwn(t *testing.T) {
 	}
 
 	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION",
-		Steps: []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, Now: projectedAt})
+		Steps: []record.DesignStep{record.DesignStepCriteria}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
-	want := []api.GatedStepView{
-		{Step: record.DesignStepCriteria, Status: api.GatedStepUnregistered},
-		{Step: record.DesignStepSpec, ArtifactID: "spec-doc", CurrentVersion: 3, ApprovedVersion: &approved, Status: api.GatedStepApproved},
-	}
+	want := []api.GatedStepView{{Step: record.DesignStepCriteria, Status: api.GatedStepUnregistered}}
 	if root := got.Issues["LEGION-208"]; !reflect.DeepEqual(root.GatedSteps, want) {
-		t.Errorf("the root's gatedSteps = %+v, want %+v: the two steps the deployment gates, and not its decisions row", root.GatedSteps, want)
+		t.Errorf("the root's gatedSteps = %+v, want %+v: the one step the deployment gates, and not its spec row", root.GatedSteps, want)
 	} else if root.DesignGate == nil || root.DesignGate.ArtifactID != "spec-doc" || root.DesignGate.CurrentVersion != 3 {
 		t.Errorf("the root's designGate = %+v, want the spec row beside the list", root.DesignGate)
 	}

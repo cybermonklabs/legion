@@ -511,9 +511,9 @@ func main() {
 	// failure stops the boot, and the release before keeps serving in a roll until this process
 	// can. The process waits here for the step's lock only while the first phase owes a row, so a
 	// process that holds the lock, stalled or not, keeps no boot waiting when nothing is owed. Its
-	// catch-up and its later passes run on its own tick once the server listens, below: the boot
-	// reads only what the first phase reads, so a table it does not need, held by another
-	// transaction, keeps no process from serving.
+	// catch-up, its count of what the restore and the conversion owe, and its later passes run on
+	// its own tick once the server listens, below: the boot reads only what the first phase reads,
+	// so a table it does not need, held by another transaction, keeps no process from serving.
 	// kept for one release: decisions-step
 	decisionStep := docs.NewDecisionStep(database, buildCommit, nil)
 	// kept for one release: decisions-step
@@ -598,6 +598,11 @@ func main() {
 		BuildCommit: buildCommit,
 	})
 	publishRoomFigures(documentService)
+	// The decisions step's third phase writes the issues' documents through this service: the
+	// restore of the answered asks that left their specs and the conversion of the decisions
+	// documents, on the step's tick below.
+	// kept for one release: decisions-step
+	decisionStep.UseDocuments(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
 	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
 	// interval below. It appends events and takes no copy lock, so it runs after
@@ -819,7 +824,9 @@ func main() {
 	blockIndexLeases := reserve("block index")
 	// The reference forms drain's, a caller of its own beside the block index's: the two passes
 	// run on their own goroutines under their own leases, so each can hold a connection while the
-	// other does.
+	// other does. It drains all of its queues under the one lease, a pass of each one after the
+	// other (docs.Service.RunRefsFormsReconciliation), so it keeps the one connection it had
+	// before the added queues, and the pool's size stays what it was.
 	refsFormsLeases := reserve("refs forms")
 	issueAskRepairLeases := reserve("issue ask repair")
 	// The webhook redelivery sweep's and the CI reconcile pass's, reserved whether or not this
@@ -1123,20 +1130,23 @@ func main() {
 	// rebuild-refs marks - and each comment, ask and issue message citing a block (`#b-`) that such
 	// a build indexed without the block grammar.
 	go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
+	// The reference forms drain: each comment, ask, issue message and document a build that
+	// predates an issue's tab addresses and a document's dashboard URLs indexed without them
+	// (refs_forms_owed), and each one the release before settled that reads an issue's Decisions
+	// page as no more than its document (refs_decisions_forms_owed, and refs_decisions_forms_seed_owed
+	// for the text stored before it). A loop of its own under a
+	// lease of its own, on the block index's interval: a period a process of the previous release
+	// served under the block index's lease would otherwise drain none of it, and a document's row
+	// is settled only by this build's own index of the document.
+	go documentService.RunRefsFormsReconciliation(ctx, refsFormsLeases)
 	// The decisions step's tick, for as long as the process runs: the backfill while a row the
-	// release before wrote stands unmarked, and the catch-up of what a process of another build
-	// writes while one lives.
+	// release before wrote stands unmarked, the catch-up of what a process of another build
+	// writes while one lives, and, once the fleet is this one build, the restore of the answered
+	// asks that left their specs and the conversion of every decisions document.
 	// kept for one release: decisions-step
 	if !boot.HoldDecisionsStep {
 		go decisionStep.Run(ctx)
 	}
-	// The reference forms drain: each comment, ask, issue message and document a build that
-	// predates an issue's tab addresses and a document's dashboard URLs indexed without them
-	// (refs_forms_owed). A loop of its own under a lease of its own, on the block index's
-	// interval: a period a process of the previous release served under the block index's lease
-	// would otherwise drain none of it, and a document's row is settled only by this build's own
-	// index of the document.
-	go documentService.RunRefsFormsReconciliation(ctx, refsFormsLeases)
 	// The asks a process older than the withdrawal leaves on an issue it closes or
 	// reopens during a roll are withdrawn or restored every interval after the boot's own pass.
 	go api.RunIssueAskRepair(ctx, issueAskRepairDeps, issueAskRepairLeases)
@@ -1378,7 +1388,10 @@ func main() {
 			githubreads.CIReconcile:        reconciler != nil,
 		}}
 	}
-	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
+	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer,
+		// kept for one release: decisions-step
+		decisionStep,
+		issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
 	// does either before serving, so a socket it cannot serve on or an address it cannot take ends
@@ -2410,9 +2423,15 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // it says only that the process answers, for a liveness or startup probe, which must not wait on
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
-func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.Handler {
+func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer,
+	// kept for one release: decisions-step
+	decisions *docs.DecisionStep,
+	issuers issuers, reads *gitHubReads) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers, reads))
+	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer,
+		// kept for one release: decisions-step
+		decisions,
+		issuers, reads))
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.Handle("GET /metrics", registry.Handler())
 	mux.Handle("/", handler)
@@ -2688,7 +2707,19 @@ func proofOrigins(serverURL string, added []string) []string {
 // api/request_keys.go): the deploy check reads it (scripts/e2e/lib/dispatch-keyed-comment.ts), since
 // an earlier Dispatch ignores the header and would run a retried write again. It is a fact of the
 // binary, never of the probe, so it is true whatever the database or NATS answer.
-func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.HandlerFunc {
+//
+// `decisions_step_owed` is one number: the sum of what the decisions step's last pass found the
+// restore and the conversion still owe (docs.DecisionStepOwed.Total) - the decisions documents
+// still standing, the answered asks whose block left their spec, and the stored lists of gated
+// steps that hold `decisions`. The step logs the three parts at each count. A deploy check reads
+// the member at zero as the step having nothing left to do. It is absent until a tick of the step
+// has counted - the boot's pass counts nothing (docs.DecisionStep.Boot), and
+// DISPATCH_TEST_HOLD_DECISIONS_STEP holds the tick for as long as it is set - and it is read from
+// the step, so the probe adds no statement to the database. It never decides `ok`.
+func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer,
+	// kept for one release: decisions-step
+	decisions *docs.DecisionStep,
+	issuers issuers, reads *gitHubReads) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
 		reportedCommit = &commit
@@ -2759,10 +2790,14 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 			SchemaVersion   *int               `json:"schema_version"`
 			OutboxPublisher bool               `json:"outbox_publisher"`
 			IdempotencyKeys bool               `json:"idempotency_keys"`
+			// kept for one release: decisions-step
+			DecisionsStepOwed *int64 `json:"decisions_step_owed,omitempty"`
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
 			GitHub: reads.member(), Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
 			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true,
+			// kept for one release: decisions-step
+			DecisionsStepOwed: decisions.OwedTotal(),
 		})
 	}
 }

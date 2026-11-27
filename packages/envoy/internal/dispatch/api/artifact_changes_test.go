@@ -10,7 +10,7 @@ import (
 )
 
 // GET /api/v1/artifacts/{id}/changes answers what changed between two stored versions of one
-// document, read off their markdown with every decision block cut out: whether the cut is the
+// document, read off their markdown with every ask block cut out: whether the cut is the
 // whole change, whether nothing changed at all, each `##` section whose text differs or that
 // moved, named by its heading and occurrence, each run of the text outside every `##` section
 // that differs or moved, named under the heading "" with the place it stands at, and each typed
@@ -113,7 +113,7 @@ func uploadVersionsTo(t *testing.T, handler http.Handler, issueKey, name string,
 }
 
 // requireChanges fails t unless the change set names exactly sections and blocks, and is neither
-// decision-only nor unchanged.
+// ask-only (decision_only) nor unchanged.
 func requireChanges(t *testing.T, changes servedChanges, sections []servedSection, blocks []servedBlockRef) {
 	t.Helper()
 	if changes.DecisionOnly || changes.Unchanged {
@@ -210,11 +210,11 @@ func TestTheChangeSetNamesACheckWhoseRunOrWordsChanged(t *testing.T) {
 	})
 }
 
-// decisionSpec is a spec with one section of prose and a decision block in a section of its own,
-// the document the two decision tests answer the block of.
+// decisionSpec is a spec with one section of prose and an ask block in a section of its own. The
+// tests of an answered ask answer that block.
 const decisionSpec = "# Plan\n\n## Rollout\n\nThe service ships behind a flag.\n\n## Decisions\n\n" + waveAsk
 
-// answeredDecisionSpec writes decisionSpec into a new issue's spec, has alice answer its decision
+// answeredDecisionSpec writes decisionSpec into a new issue's spec, has alice answer its ask
 // block, and waits for the version settlement writes her answer into: version 2.
 func answeredDecisionSpec(t *testing.T, handler http.Handler) string {
 	t.Helper()
@@ -228,8 +228,8 @@ func answeredDecisionSpec(t *testing.T, handler http.Handler) string {
 	return issue.PrimaryArtifactID
 }
 
-// An answer a person gave to a decision block is the whole difference between the version before
-// it and the version it wrote: the change set is decision-only, and names no section and no block,
+// An answer a person gave to an ask block is the whole difference between the version before
+// it and the version it wrote: the change set is ask-only, and names no section and no block,
 // the section that holds the block included.
 func TestAnAnsweredAskAloneIsADecisionOnlyChange(t *testing.T) {
 	t.Parallel()
@@ -245,8 +245,8 @@ func TestAnAnsweredAskAloneIsADecisionOnlyChange(t *testing.T) {
 	}
 }
 
-// An answer beside a change to a section's words is no decision-only change: the changed section
-// is named, and neither the decision block nor the section holding it is.
+// An answer beside a change to a section's words is no ask-only change: the changed section
+// is named, and neither the ask block nor the section holding it is.
 func TestAnAskAnsweredBesideAChangedSectionIsNoDecisionOnlyChange(t *testing.T) {
 	t.Parallel()
 	handler := approvalCarryHandler(t)
@@ -284,7 +284,7 @@ func sectionedPlan(sections ...string) string {
 	return "# Plan\n\n" + strings.Join(sections, "\n")
 }
 
-// A version that only swaps two sections changes the document, so it is no decision-only change,
+// A version that only swaps two sections changes the document, so it is no ask-only change,
 // and it names exactly one of the two moved: the one the later version holds second, the other
 // keeping its place among the sections both versions hold. The section after them is not named.
 func TestTheChangeSetNamesOneOfTwoSwappedSectionsMoved(t *testing.T) {
@@ -531,18 +531,18 @@ func TestTheChangeSetNamesEachRunOutsideTheSectionsWhereItStands(t *testing.T) {
 }
 
 // R2 of dispatch://INFRA-175 sends the session holding the work a task naming what an approved new
-// version changed, read off this change set. decision_only is a change that tells nobody anything
+// version changed, read off this change set. decision_only (ask blocks alone) tells nobody anything
 // of the work, and unchanged is no change at all; neither sends a task. Every other change set
 // must name a section or a block, since one that names neither tells the session the document
 // changed and nothing of where to read. This test drives the route over each kind of pair this
-// tree has met, and holds each to that invariant - exactly one of decision-only, unchanged, and
+// tree has met, and holds each to that invariant - exactly one of ask-only, unchanged, and
 // at least one item named - and to the one of the three its case must be. The store renders every
 // upload, so a version that differs from the one before it in blank lines alone is stored as the
 // same text, and is unchanged as an identical version is.
 func TestTheChangeSetEitherNamesWhatChangedOrReportsNoChange(t *testing.T) {
 	t.Parallel()
 	const (
-		decisionOnly = "decision-only"
+		decisionOnly = "ask-only"
 		unchanged    = "unchanged"
 		named        = "named"
 	)
@@ -627,13 +627,13 @@ func TestTheChangeSetEitherNamesWhatChangedOrReportsNoChange(t *testing.T) {
 		namesSome := len(changes.Sections)+len(changes.Blocks) > 0
 		switch {
 		case changes.DecisionOnly && (changes.Unchanged || namesSome), changes.Unchanged && namesSome:
-			t.Fatalf("the change set is more than one of decision-only, unchanged and naming what changed: %+v", changes)
+			t.Fatalf("the change set is more than one of ask-only, unchanged and naming what changed: %+v", changes)
 		case changes.DecisionOnly:
 			return decisionOnly
 		case changes.Unchanged:
 			return unchanged
 		case !namesSome:
-			t.Fatalf("the change set is neither decision-only nor unchanged and names no section and no block, so it says the document changed and nothing of where: %+v", changes)
+			t.Fatalf("the change set is neither ask-only nor unchanged and names no section and no block, so it says the document changed and nothing of where: %+v", changes)
 		}
 		return named
 	}
@@ -645,7 +645,7 @@ func TestTheChangeSetEitherNamesWhatChangedOrReportsNoChange(t *testing.T) {
 	}
 	artifactID := uploadVersionsTo(t, handler, createPlainIssue(t, handler, "CHG"), "plan.md", texts...)
 
-	t.Run("an answered decision block", func(t *testing.T) {
+	t.Run("an answered ask block", func(t *testing.T) {
 		if got := state(t, readChanges(t, handler, decided, 1, 2)); got != decisionOnly {
 			t.Fatalf("the change set is %s, want %s", got, decisionOnly)
 		}

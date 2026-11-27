@@ -6,14 +6,12 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -65,29 +63,16 @@ func answerDigest(state, user string, selected []string, text *string) string {
 	return fmt.Sprintf("answered by %s, %d selected, %s", model.CanonicalLogin(user), len(selected), textDigest(words))
 }
 
-// servedAnswersQuery reads the ask of each typed ask block of the document $1, with its state and
-// its answer as its node holds them, as every read of an ask shows them (api's
-// askNodeAnswerColumn): each value and relation of its answer that stands on the node where the
-// row names one - the newest tuple of each, while it asserts, read as every statement that reads
-// the answer off the node reads it, from public's table (asks.NodeAnswerTuplesIn), since every
-// statement of this package names the schema of each Dispatch table it reads, as a schema named
-// as the database's login shadows public for every unqualified name (dispatch://INFRA-988) - and
-// open where the node holds no state; the row's own state and answer where the row names no node.
+// servedAnswersQuery reads the ask of each typed ask block of the document $1, with its row's state
+// and answer and its node's answer, which servedAnswers lays over the row as every read of an ask
+// shows them (asks.ReadAnswer): the node's state and answer where the row names a node, open where
+// the node holds no state, and the row's own state and answer where the row names no node. The
+// node's answer is read from public's table (asks.NodeAnswerColumnIn), since every statement of
+// this package names the schema of each Dispatch table it reads, as a schema named as the
+// database's login shadows public for every unqualified name (dispatch://INFRA-988).
 var servedAnswersQuery = `
-select a.block_id,
-       case when a.node_kind is null then a.state else coalesce(f.state, 'open') end,
-       coalesce(case when a.node_kind is null then a.answer->>'user' else f.answered_by end, ''),
-       case when a.node_kind is null then a.answer->'selected' else f.selected::jsonb end,
-       case when a.node_kind is null then a.answer->>'text' else f.answer end
+select a.block_id, a.state, a.answer, ` + asks.NodeAnswerColumnIn(`public.graph_tuples`, `a`) + `
   from public.asks a
-  cross join lateral (
-    select max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnswerState + `') as state,
-           max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnswer + `') as answer,
-           max(n.to_id) filter (where n.kind = '` + graphstore.TupleSelected + `') as selected,
-           max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnsweredBy + `') as answered_by
-      from (` + asks.NodeAnswerTuplesIn(`public.graph_tuples`, `a.id::text`) + `) n
-     where n.asserted
-  ) f
  where a.block_artifact_id = $1 and a.block_id is not null`
 
 // servedAnswers is the served answer of the ask of each typed ask block of the local document
@@ -98,17 +83,18 @@ func servedAnswers(ctx context.Context, conn *pgx.Conn, local string) (map[strin
 		return nil, fmt.Errorf("read the answers of document %s: %w", local, err)
 	}
 	out := map[string]servedAnswer{}
-	var block, state, user string
-	var text *string
-	var selected []byte
-	_, err = pgx.ForEachRow(rows, []any{&block, &state, &user, &selected, &text}, func() error {
-		answer := servedAnswer{state: state, user: user, text: text}
-		if len(selected) > 0 {
-			if err := json.Unmarshal(selected, &answer.selected); err != nil {
-				return fmt.Errorf("read the selection of block %s of document %s: %w", block, local, err)
-			}
+	var block, state string
+	var answer, nodeAnswer []byte
+	_, err = pgx.ForEachRow(rows, []any{&block, &state, &answer, &nodeAnswer}, func() error {
+		ask, err := asks.ReadAnswer(block, state, answer, nodeAnswer)
+		if err != nil {
+			return fmt.Errorf("read the answer of block %s of document %s: %w", block, local, err)
 		}
-		out[block] = answer
+		served := servedAnswer{state: ask.State}
+		if ask.Answer != nil {
+			served.user, served.selected, served.text = ask.Answer.User, ask.Answer.Selected, ask.Answer.Text
+		}
+		out[block] = served
 		return nil
 	})
 	return out, err

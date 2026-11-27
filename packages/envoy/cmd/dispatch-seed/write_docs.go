@@ -95,16 +95,17 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 
 	versionAt := created.Add(time.Duration(document.Versions-1) * versionStep)
 	located := text.ExtractAt(latest, serverURL)
-	// No block pointers: a typed block's `block[]` attribute is what carries one, and every
-	// document this tool writes is plain markdown with no typed block in it, so the list the
-	// server builds from a document's block tree is empty here.
+	// No block pointers and no typed facts: a typed block's `block[]` attribute is what carries
+	// a pointer, and a decision, a reading or an ask is what the typed-node pass reads, and every
+	// document this tool writes is plain markdown with no typed block in it, so the lists the
+	// server builds from a document's block tree are empty here.
 	//
 	// The index the version is planned against is the one the document holds, which is empty:
 	// this is its first indexing, the rows being written here. The seed's transaction joins no
 	// write phase of anyone's, so the plan's statements run at once, as a batch of their own
 	// (refs.IndexBlocks). The targets the plan moves are counted by nobody: the seed appends no
 	// event for a document write, which is what names them.
-	_, _, blockWrite, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil, serverURL)
+	_, _, blockWrite, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil, serverURL, refs.TypedFacts{})
 	if err != nil {
 		return fmt.Errorf("index blocks: %w", err)
 	}

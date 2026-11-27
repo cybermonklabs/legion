@@ -483,7 +483,7 @@ func gateStanding(gate record.TreeGate) string {
 }
 
 // gatedDocuments names every gated step's own document, in the deployment's order, as a sentence
-// lists them (listed): "its decisions document and its Verification document".
+// lists them (listed): "its Verification document and its primary document".
 func gatedDocuments(steps []record.DesignStep) string {
 	named := make([]string, len(steps))
 	for i, step := range steps {

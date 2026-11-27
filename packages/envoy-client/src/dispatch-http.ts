@@ -2547,9 +2547,9 @@ export class DispatchClient {
    *  `signal` aborts the call beside the client's own signal. `writes: false` marks a POST that
    *  writes nothing (a conversion, `markdownRoundTrip` or `fileRoundTrip`, or a dry run,
    *  `dryRunResult`): it is sent as a POST is, under one key with its retries, but never read as a
-   *  write that may have landed (`WriteCall.writes`). `headers` are a read's own request headers,
-   *  which a GET sends beside the credential's (`#liveText`'s `Dispatch-Asks`). `via` sends a
-   *  write through Cipher's proxy (`#throughProxy`); a read takes none. */
+   *  write that may have landed (`WriteCall.writes`). `via` sends a write through Cipher's proxy
+   *  (`#throughProxy`); a read takes none. `headers` are a read's own request headers, which a GET
+   *  sends beside the credential's (`#liveText`'s `Dispatch-Asks`). */
   async #jsonAnswer<T>(
     method: string,
     path: readonly string[],
@@ -2559,11 +2559,11 @@ export class DispatchClient {
       readonly signal?: AbortSignal | undefined;
       readonly key?: string | undefined;
       readonly writes?: boolean;
-      readonly headers?: Readonly<Record<string, string>>;
       readonly via?: ProxyTransport | undefined;
+      readonly headers?: Readonly<Record<string, string>>;
     } = {}
   ): Promise<{ readonly status: number; readonly payload: T }> {
-    const { query, signal, key, writes = true, headers, via } = options;
+    const { query, signal, key, writes = true, via, headers } = options;
     const url = this.#url(path, query);
     const encoded: EncodedBody | undefined =
       body === undefined ? undefined : { content: JSON.stringify(body), type: "application/json" };

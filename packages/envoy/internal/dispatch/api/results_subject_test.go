@@ -29,8 +29,9 @@ const subjectChecks = ":::check{#k5 when=\"after_merge\" subject=\"production\" 
 // written under a manifest that creates both marks, this build's raised one version
 // (pmdoc.UseManifestForTest), and read after the restore, so the test asserts nothing of the
 // build's own version: the build that reads the marks and does not create them yet, and the build
-// that creates them, each pass it. TestTheCheckMarksAreReadAtNAndWrittenFromNPlusTwo holds which
-// version reads them and which writes them.
+// that creates them, each pass it.
+// TestTheCheckMarksAreReadFromNAndCreatedOnlyFromTheirCreatableVersion holds which version reads
+// them and which writes them.
 //
 // It stays serial: the manifest is the package's, and every other test reads it.
 func TestACheckBlockServesItsSubjectAndProgram(t *testing.T) {

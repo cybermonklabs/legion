@@ -289,7 +289,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     since: { type: "string" },
     artifactId: { type: "string" },
     version: { type: "number" },
-    step: { type: "string", enum: ["decisions", "criteria", "spec"] },
+    step: { type: "string", enum: ["criteria", "spec"] },
     basis: { type: "string" },
     basisVersion: { type: "number" },
     issues: { type: "array", items: { type: "string" } },
@@ -341,7 +341,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
  * operations, fields, flags and values that description names. */
 const DESCRIBED_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
   artifactId: ["register_gate", "register_plan", "--artifact"],
-  step: ["register_gate", "decisions", "criteria", "spec"],
+  step: ["register_gate", "criteria", "spec"],
   basis: ["register_gate", "basisVersion", "reason"],
   basisVersion: ["register_gate"],
   task: ["stop_task", "plan_task", "default"],
@@ -893,10 +893,10 @@ const ROOT_VERIFICATION = "3b9e7f10-5c2d-4e8a-9f61-0a7d2c4b8e15";
 const ANCESTOR_SPEC = "6f4a2c8e-1b3d-4f5a-8c7e-9d0b1a2c3e4f";
 const ANCESTOR_VERIFICATION = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
 
-/** The question the root's spec puts to a person in its one decision block. */
+/** The question the root's spec puts to a person in its one ask block. */
 const OPEN_QUESTION = "Which store holds the export?";
 
-/** The ask of the root's decision block b-1 as the issue's asks list answers it: in `state`, with
+/** The ask of the root's ask block b-1 as the issue's asks list answers it: in `state`, with
  * `answer`, who answered and when, where it has one. */
 const ownAsk = (
   state: "open" | "answered",
@@ -911,13 +911,13 @@ const ownAsk = (
   ...(answer === undefined ? {} : { answer: { ...answer, selected: [], text: null } }),
 });
 
-/** The root's one decision block, b-1, as a Dispatch serves it: `asks`, the issue's asks list;
+/** The root's one ask block, b-1, as a Dispatch serves it: `asks`, the issue's asks list;
  * `versionOpener`, the block's opening line in the spec's version 4; `liveAsks`, the `asks` of
  * the spec's live text; and `liveOpener`, the block's opening line in that text, one with none of
  * an ask's attributes where there is no `liveOpener`. A Dispatch of the release before serves no
  * `asks` and writes them on that line instead: such a block gives no `liveAsks`. `routes` are
  * further routes the Dispatch answers, such as a copy's source ask and its document. */
-interface DecisionBlock {
+interface AskBlock {
   readonly asks: readonly unknown[];
   readonly versionOpener: string;
   readonly liveAsks?: readonly unknown[];
@@ -925,16 +925,15 @@ interface DecisionBlock {
   readonly routes?: Readonly<Record<string, unknown>>;
 }
 
-/** The root's decision block with its ask open: in the asks list, in version 4 and live. */
-const OPEN_BLOCK: DecisionBlock = {
+/** The root's ask block with its ask open: in the asks list, in version 4 and live. */
+const OPEN_BLOCK: AskBlock = {
   asks: [ownAsk("open")],
   versionOpener: ':::ask{#b-1 urgency="med" multiple="false" state="open"}',
   liveAsks: [{ block_id: "b-1", state: "open" }],
 };
 
 /** A register_gate call on a basis: the root's spec at version 4, on its ancestor LEGION-100's
- * spec at version 3, which the tool makes only once the root's spec holds no open decision
- * block. */
+ * spec at version 3, which the tool makes only once the root's spec holds no open ask block. */
 const basisCall = {
   op: "register_gate",
   issue: "LEGION-208",
@@ -948,11 +947,11 @@ const basisCall = {
 
 /**
  * A Dispatch holding the root LEGION-208 and its ancestor LEGION-100, each with a spec and a
- * Verification document. The root's spec holds one decision block, as `block` gives it, and none
+ * Verification document. The root's spec holds one ask block, as `block` gives it, and none
  * where there is no `block`; its Verification document holds none. `paths` is every request the
  * tool sent it.
  */
-function treeDispatch(block?: DecisionBlock) {
+function treeDispatch(block?: AskBlock) {
   const document = (id: string, slug: string, name: string, primary: boolean, latest: number) => ({
     id,
     slug,
@@ -1086,8 +1085,8 @@ test("register_gate takes the document reference the Dispatch tools take, and re
 
 // A basis names the ancestor's document for the same step (dispatch://INFRA-3320, R1). Its
 // reference names its own issue, the ancestor's, so the tool looks it up there, never on the root;
-// an artifact id goes to the daemon as it is. The root's own document is read for an open
-// decision block first, as `dispatch request-approval` reads it.
+// an artifact id goes to the daemon as it is. The root's own document is read for an open ask
+// block first, as `dispatch request-approval` reads it.
 test("register_gate resolves a basis reference on the issue it names, and sends the basis, its version and the reason", async () => {
   const { calls, daemon } = recordingDaemon({});
   const { paths, dispatch } = treeDispatch();
@@ -1290,7 +1289,7 @@ test("register_gate refuses a basis named in part, or one that names no issue's 
 // document still puts to a person refuses the call with the test `dispatch request-approval`
 // makes, and the daemon is asked nothing: no grant, no registration. A registration with no basis
 // opens the step only on a person's approval, which the approval request's own refusal guards.
-test("register_gate refuses a basis while the root's document holds an open decision block, before the daemon is asked anything", async () => {
+test("register_gate refuses a basis while the root's document holds an open ask block, before the daemon is asked anything", async () => {
   const { calls, daemon } = recordingDaemon({});
   const { paths, dispatch } = treeDispatch(OPEN_BLOCK);
 
@@ -1305,7 +1304,7 @@ test("register_gate refuses a basis while the root's document holds an open deci
   const [refusal] = refused.content;
   const lines = refusal?.type === "text" ? refusal.text.split("\n") : [];
   expect(lines.slice(0, 2)).toEqual([
-    "legion register_gate was not called: spec.md (version 4) has 1 open decision block. A basis opens the step with no person's review of this document, so its open question would go unanswered, and answering one writes a new version, which this registration does not name.",
+    "legion register_gate was not called: spec.md (version 4) has 1 open ask block. A basis opens the step with no person's review of this document, so its open question would go unanswered, and answering one writes a new version, which this registration does not name.",
     `- ${JSON.stringify(OPEN_QUESTION)} (block b-1, ask ask-b-1)`,
   ]);
   expect(lines[2]).toStartWith("Do not register on a basis over an open block.");
@@ -1327,7 +1326,7 @@ test("register_gate refuses a basis while the root's document holds an open deci
     content: [
       {
         type: "text",
-        text: "register_gate cannot register LEGION-208 on a basis: this pane has no Dispatch configured, where the tool reads the root's document for an open decision block",
+        text: "register_gate cannot register LEGION-208 on a basis: this pane has no Dispatch configured, where the tool reads the root's document for an open ask block",
       },
     ],
     details: {},
@@ -1365,7 +1364,7 @@ test("register_gate refuses a basis while the root's document holds an open deci
 // and on one of the release before, which writes it onto the copy's lines only at the copy's own
 // settlement, the source ask's own route does.
 test("register_gate on a basis waits for the saved version to record an answered ask or copy settled", async () => {
-  const runWith = async (block: DecisionBlock) => {
+  const runWith = async (block: AskBlock) => {
     const { calls, daemon } = recordingDaemon({});
     const { dispatch, paths } = treeDispatch(block);
     const result = await gateTool(daemon, dispatch).execute(
@@ -1652,7 +1651,7 @@ test("register_gate on a basis waits for a copy whose source's answer changed on
       version: 3,
     },
   });
-  const runWith = async (block: DecisionBlock) => {
+  const runWith = async (block: AskBlock) => {
     const { calls, daemon } = recordingDaemon({});
     const { dispatch } = treeDispatch(block);
     const result = await gateTool(daemon, dispatch).execute(

@@ -19,11 +19,13 @@ import (
 // nothing. Dispatch carries the document's newest approval to that version in the transaction
 // that writes it (docs.carryApproval), so the approval reads approved there, the write reports no
 // approval it superseded, and a request for approval finds nothing to ask. A person's answer is
-// held on the ask's node and changes no byte of the document, so text
-// restored around a block answered since is still the approved text. Text one character away
-// from the approved text is a change, and a version holding the approved text around a changed
-// decision block is judged by the carry's cases (docs.carryVerdict), which carry no question's
-// words.
+// held on the ask's node. When the answer is the whole change of the one version it writes (docs'
+// changesAskAttributesAlone: text a person was editing in the browser can settle into the same
+// version), that version changes only the server-owned attributes of the ask's block (R3), which
+// R10's case carries an approval across, so text restored around a block answered since still
+// carries the approval. Text one character away from the approved text
+// is a change, and a version holding the approved text around a changed ask block is judged by the
+// carry's cases (docs.carryVerdict), which carry no question's words.
 
 // restoreSpec is the approved text the restore tests edit and restore.
 const restoreSpec = "# Plan\n\nThe service ships behind a flag.\n\n- Announce the dates.\n- Pick the regions.\n"
@@ -60,14 +62,14 @@ func replaceOp(find, with string) map[string]string {
 }
 
 // approvedDocument is a document approveThenChange approved and then changed: its issue, its id and
-// the ask of each decision block it was written with, by block id.
+// the ask of each ask block it was written with, by block id.
 type approvedDocument struct {
 	issueKey, artifactID string
 	asks                 map[string]string
 }
 
 // approveThenChange writes restoreSpec followed by extra into a new issue's spec, waits for
-// settlement to index each decision block blocks names (id to question), approves version 1 from
+// settlement to index each ask block blocks names (id to question), approves version 1 from
 // the header as alice, then has the agent change its paragraph at version 2, which stales that
 // approval.
 func approveThenChange(t *testing.T, handler http.Handler, title, extra string, blocks map[string]string) approvedDocument {
@@ -82,7 +84,7 @@ func approveThenChange(t *testing.T, handler http.Handler, title, extra string, 
 	return approvedDocument{issueKey: issue.Key, artifactID: issue.PrimaryArtifactID, asks: asks}
 }
 
-// waveBlock is the one decision block of the restore tests that hold one, waveAsk, by its id.
+// waveBlock is the one ask block of the restore tests that hold one, waveAsk, by its id.
 var waveBlock = map[string]string{"wave": "How many regions take the first wave?"}
 
 // (a) The agent edits the approved spec by accident and undoes the edit: version 3's text is
@@ -351,8 +353,9 @@ func TestANamedVersionKeepsCurrentAnApprovalOfATextAnotherRendererVersionStored(
 // approveThenOthersAnswer writes restoreSpec and waveAsk into a new issue's spec, has alice approve
 // version 1 while the block is open, and has bob answer the block, which writes version 2, its
 // block's kept state alone (R3): the block's row now holds bob's decision, and R5's case carries
-// alice's approval to version 2. The agent then deletes the block, which writes version 3 and
-// stales the approval.
+// alice's approval to version 2. The agent cannot delete the block bob answered (R6): its delete
+// is refused and writes no version. Bob then deletes the block, which writes version 3 and stales
+// the approval.
 func approveThenOthersAnswer(t *testing.T, handler http.Handler, database *store.Store, title string) approvedDocument {
 	t.Helper()
 	issue := createInteractionIssue(t, handler, "TEST", title, restoreSpec+"\n"+waveAsk)
@@ -361,12 +364,21 @@ func approveThenOthersAnswer(t *testing.T, handler http.Handler, database *store
 	answerDecisionBlock(t, handler, asks["wave"], "bob", []string{"Two"}, "", nil)
 	requireStateVersionsPast(t, handler, database, issue.PrimaryArtifactID, 1, 1)
 	requireCarriedByTheAttributeCase(t, handler, issue.PrimaryArtifactID, "alice", 1, 2)
-	agentEdit(t, handler, issue.PrimaryArtifactID, 3, map[string]string{"op": "delete", "block": "wave"})
+	deleteWave := map[string]any{"actor": sessionActor(), "ops": []map[string]string{{"op": "delete", "block": "wave"}}}
+	if refused := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", deleteWave); refused.Code != http.StatusConflict ||
+		decodeBody[errorBody](t, refused).Code != codeAnsweredAskKept {
+		t.Fatalf("the agent deletes the block bob answered: status=%d body=%s, want 409 %s", refused.Code, refused.Body.String(), codeAnsweredAskKept)
+	}
+	requireNoVersionPast(t, handler, database, issue.PrimaryArtifactID, 2)
+	if deleted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", deleteWave, "bob"); deleted.Code != http.StatusOK {
+		t.Fatalf("bob deletes the block he answered: status=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 3)
 	requireNoCarry(t, handler, issue.PrimaryArtifactID, 2, "stale")
 	return approvedDocument{issueKey: issue.Key, artifactID: issue.PrimaryArtifactID, asks: asks}
 }
 
-// requireApprovedTextRestored fails t unless the write the test made since the agent's delete wrote
+// requireApprovedTextRestored fails t unless the write the test made since bob's delete wrote
 // version 4, version 1's text byte for byte - the block as an agent writes it, with none of the
 // server-owned attributes - and the settlement after it wrote version 5, version 2's text byte for
 // byte, with the block's kept state from its ask's node, which bob answered (docs.keptAskState),
@@ -389,7 +401,7 @@ func requireApprovedTextRestored(t *testing.T, handler http.Handler, database *s
 
 // The approved text over a block decided since is still the approved text: bob answered the block
 // alice approved open, whose state that writes into the block (R3), which R5's case carries her
-// approval across; the agent deleted the block and inserts its approved markdown again.
+// approval across; bob deleted the block, and the agent inserts its approved markdown again.
 // Version 4 is version 1 byte for byte, and its block agrees with its row and its node - it shows
 // no answer state, and asks the wording the row was decided on - so R5's case carries alice's
 // approval to it, and answers the approval request the agent opened at version 3; the settlement
@@ -448,7 +460,7 @@ func TestAVersionOneCharacterFromTheApprovedTextLeavesTheApprovalStale(t *testin
 	}
 }
 
-// (c) Version 3 holds version 1's text outside its decision block, restored, and a decision block
+// (c) Version 3 holds version 1's text outside its ask block, restored, and an ask block
 // changed since. Such a version is judged by the carry's cases (docs.carryVerdict), which carry
 // the server-owned attributes of an ask block and no word of its question: an agent's reword of
 // the open block is a change, so the approval stays stale.
@@ -490,12 +502,12 @@ func TestARestoredTextAroundTheApproversOwnAnswerIsTheApprovedText(t *testing.T)
 }
 
 // requireRestoredAroundAChangedBlock fails t unless version number of the document holds version
-// 1's text outside its decision blocks and is not version 1's text.
+// 1's text outside its ask blocks and is not version 1's text.
 func requireRestoredAroundAChangedBlock(t *testing.T, handler http.Handler, artifactID string, number int) {
 	t.Helper()
 	approved, restored := versionMarkdown(t, handler, artifactID, 1), versionMarkdown(t, handler, artifactID, number)
 	if cutAskBlocks(t, restored) != cutAskBlocks(t, approved) || restored == approved {
-		t.Fatalf("version %d = %q, want version 1's text %q outside a changed decision block", number, restored, approved)
+		t.Fatalf("version %d = %q, want version 1's text %q outside a changed ask block", number, restored, approved)
 	}
 }
 

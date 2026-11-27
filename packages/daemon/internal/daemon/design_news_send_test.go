@@ -430,7 +430,7 @@ func TestTheRootArchitectsSummaryNamesAParentAwaitingChildrenAsToldNothing(t *te
 	}
 }
 
-// A member whose owed news is decision blocks alone is told nothing, and the summary says so: the
+// A member whose owed news is ask blocks alone is told nothing, and the summary says so: the
 // reconcile raises what its holder took and sends nothing. A member whose holder row also owes the
 // opening is sent a task with it, which says nothing its issue holds changed, so the summary names
 // that member as owed and how its holder is told, never as told nothing.
@@ -441,10 +441,10 @@ func TestTheRootArchitectsSummaryNamesADecisionOnlyMemberOwedTheOpeningAsTold(t 
 		DecisionOnly: true, ReadAt: time.Now()})
 }
 
-// A member whose owed version holds the same text as the one it took is told nothing, as a
-// decision-only one is, and the summary says so in words true of it: the approved version holds
-// the same text, and no decision block is said to have changed. A member whose holder row also owes
-// the opening is named as owed and how its holder is told, as a decision-only one is.
+// A member whose owed version holds the same text as the one it took is told nothing, as an
+// ask-only one is, and the summary says so in words true of it: the approved version holds
+// the same text, and no ask block is said to have changed. A member whose holder row also owes
+// the opening is named as owed and how its holder is told, as an ask-only one is.
 func TestTheRootArchitectsSummaryNamesAnUnchangedMemberAsToldNothingAndOneOwedTheOpeningAsTold(t *testing.T) {
 	t.Parallel()
 	summaryOfAMemberOwedNoWork(t, record.DesignChanges{
@@ -476,7 +476,7 @@ func summaryOfAMemberOwedNoWork(t *testing.T, changes record.DesignChanges) {
 	}
 
 	task, _ := r.sendAlone(newsRoot, claim.RoleArchitect, rootSummary())
-	if got, want := line(task), tested+"told nothing: the approved version holds the same text as the one it took, apart from decision blocks."; got != want {
+	if got, want := line(task), tested+"told nothing: the approved version holds the same text as the one it took, apart from ask blocks."; got != want {
 		t.Fatalf("the tester's line, owed no opening = %q, want %q", got, want)
 	}
 

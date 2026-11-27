@@ -114,19 +114,23 @@ func seedAgreeingStore(t *testing.T, database *store.Store) agreeingStore {
 }
 
 // storeCensusOf takes the store census over database as `envoy-dispatch census --store` takes
-// it, on a connection of its own.
+// it, on a connection of its own, with no test of the returns the restore declines: this package
+// cannot read docs' (docs.ReturnDeclined), and a fixture that owes a return takes its census with
+// a test of its own.
 func storeCensusOf(t *testing.T, database *store.Store) *StoreReport {
 	t.Helper()
-	report, err := StoreCensus(context.Background(), database.Pool.Config().ConnString(), false)
+	report, err := StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, nil)
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
 	}
 	return report
 }
 
-// seededKinds are the kinds seedAgreeingStore writes rows of, which are every kind the census
-// reads, each of which must count rows and live nodes: a kind that read zero of either compared
-// nothing, and its zero differences would prove nothing.
+// seededKinds are the kinds seedAgreeingStore writes rows of, which are every earlier kind the
+// census reads, each of which must count rows and live nodes: a kind
+// that read zero of either compared nothing, and its zero differences would prove nothing. The
+// tie kinds of decisions, readings and asks (KindReport.EmptyAgrees) are none of them: the fixture
+// writes no decision and no ask, and those kinds read empty on both sides, which is no refusal.
 var seededKinds = []string{"comment", "block", "block_ref", graphstore.KindPerson, graphstore.KindSession,
 	graphstore.KindRole, graphstore.KindPage}
 
@@ -166,9 +170,13 @@ func censusKind(t *testing.T, report *StoreReport, name string) KindReport {
 
 // The census passes only where it checked more than zero rows of every kind it covers and found
 // zero differences (R19): a total over the kinds is no such proof, because two empty sides of one
-// kind agree. The census of the agreeing store, which checked rows of every kind, passes. The
-// same report with any one kind's rows and nodes taken out, which still reads zero differences
-// and still holds rows of every other kind, must refuse and name that kind in its verdict.
+// kind agree. The census of the agreeing store, which checked rows of every earlier kind,
+// passes. The same report with any one of those kinds' rows and nodes taken
+// out, which still reads zero differences and still holds rows of every other kind, must refuse
+// and name that kind in its verdict. A tie kind of decisions, readings and asks is a kind a
+// deployment holds none of until somebody writes one, and the agreeing store holds none: no row
+// and no node of it
+// is no refusal, and the report says so on that kind's own line.
 func TestTheStoreCensusRefusesAKindThatCheckedNoRow(t *testing.T) {
 	database := storetest.Open(t)
 	seedAgreeingStore(t, database)
@@ -182,6 +190,18 @@ func TestTheStoreCensusRefusesAKindThatCheckedNoRow(t *testing.T) {
 		emptied.Kinds[index].Rows, emptied.Kinds[index].Nodes = 0, 0
 		var printed strings.Builder
 		emptied.Write(&printed)
+		if held.EmptyAgrees {
+			side := "node"
+			if held.Triples {
+				side = "tuple"
+			}
+			line := "census: store kind=" + held.Kind + " holds no row and no " + side + ": nothing of it is written yet, which is no refusal\n"
+			if emptied.Refused() || !strings.Contains(printed.String(), line) || !strings.HasSuffix(printed.String(), "census: store ok\n") {
+				t.Errorf("a census whose %s kind holds no row and no node reads refused=%t, want a pass printing %q:\n%s",
+					held.Kind, emptied.Refused(), line, printed.String())
+			}
+			continue
+		}
 		verdict := "census: store REFUSED (kind(s) " + held.Kind + " checked no row, so the census proves nothing of them)\n"
 		if !emptied.Refused() || emptied.Rows() == 0 || !strings.HasSuffix(printed.String(), verdict) {
 			t.Errorf("a census that checked no %s row but %d rows of the other kinds reads refused=%t, want a refusal ending %q:\n%s",
@@ -208,7 +228,7 @@ func TestTheStoreCensusReadsOneSnapshot(t *testing.T) {
 	seeded := seedAgreeingStore(t, database)
 	ghost := seeded.document.refKey + "#ghost"
 	committedAfter := ""
-	report, err := storeCensus(ctx, database.Pool.Config().ConnString(), false, func(ctx context.Context, kind string) error {
+	report, err := storeCensus(ctx, database.Pool.Config().ConnString(), false, nil, func(ctx context.Context, kind string) error {
 		if committedAfter != "" {
 			return nil
 		}
@@ -274,7 +294,7 @@ func TestTheStoreCensusRecordsTheReadSequenceOfItsSnapshot(t *testing.T) {
 	}
 	ghost := seeded.document.refKey + "#ghost"
 	committedAfter := ""
-	report, err := storeCensus(ctx, database.Pool.Config().ConnString(), false, func(ctx context.Context, kind string) error {
+	report, err := storeCensus(ctx, database.Pool.Config().ConnString(), false, nil, func(ctx context.Context, kind string) error {
 		if committedAfter != "" {
 			return nil
 		}

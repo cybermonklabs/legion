@@ -84,10 +84,10 @@ the spec and while the issue is open. Under `Production check: off`, write none.
 spec is never gated: the architect above you reviews each version of this child's spec and
 Verification document instead (`skill://legion-architect/references/decomposition.md`,
 "Reviewing a child's spec"). So do not call `dispatch request-approval`, do not register a gate,
-and do not wait for `design-approved`. Tell the architect above you of each version you write,
-with `envoy_publish`. Tell your workers of that version only after its approving `Spec review of`
-comment. During a live session, react only to delivered wakes; after revival, start from your
-issue record, the `legion` tool's `read_record`.
+and do not wait for `design-approved`. Send each version you write to the architect above you for
+its review, with `envoy_publish`, and tell your workers of that version only after its approving
+`Spec review of` comment. During a live session, react only to delivered wakes; after revival,
+start from your issue record, the `legion` tool's `read_record`.
 
 A new version of a spec or Verification document you write reaches no worker from the daemon,
 because a person approves only the root's documents. So you send that news yourself, whether the
@@ -165,7 +165,7 @@ decides, the child's notices come to you (`skill://legion-architect/references/w
 | A child that looks independent of the tree, or capacity | Message the controller with `envoy_publish` to the controller topic your `Legion addressing` line names. The controller asks a person before it re-files a child as a root. |
 | A cross-tree conflict | Write to the other tree's architect: a Dispatch comment on its issue that mentions its role. |
 | A problem outside this tree | Never file an issue for it. Fix a clear defect in this tree, in an open pull request of the tree or in a child, in whichever repository it is. When its repository is one this tree's token does not reach, write it to the controller of the project that repository maps to, or to your own project's controller when Dispatch maps it to none, which files it. Send a defect that needs a person's decision, a deploy window or work much larger than this tree's own, and any other problem that needs a decision, to the architect above you. The root architect opens the `dispatch ask` for it, as `skill://legion-worker/references/findings.md` says. |
-| Product, scope, or design decision, yours or a worker's | Answer from tree context, or send it up. A sub-architect writes no decision block. It sends a decision only a person can make to the architect above it, never into the child's spec, and the root architect asks it on the root. The root architect writes the root spec's, knowing the new version closes the design gate for the whole tree until the human answers. An answer that is the whole change since the version they approved carries their approval to the new version, so it requests nothing. After an answer that changes the spec's text outside the block, it rewrites that text and requests approval again with a one-sentence `--summary` naming what changed since the earlier approval. A to-do only a human can do goes up the same way, and the root architect opens a `dispatch ask` for it. |
+| Product, scope, or design decision, yours or a worker's | Answer from tree context, or send it up to the architect above you. A decision that asks to change what the root's approved spec states goes up the same way, and the root's architect writes it as an ask block in the root spec, then checks and renews that approval as `skill://legion-architect/references/design-gate.md`, "After approval", says. A to-do only a human can do goes up the same way, and the root architect opens a `dispatch ask` for it. |
 | Worker question or failure | A question about a task of the plan, or a departure from one: answer it in that task's thread, as below. Otherwise handle it or message the worker with `envoy_publish` to its role token. |
 
 A worker's question about a task of the plan, or its departure from one, reaches you as a message

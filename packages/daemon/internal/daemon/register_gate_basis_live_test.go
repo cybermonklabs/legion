@@ -85,7 +85,7 @@ func TestRegisterGateBasisToolLive(t *testing.T) {
 	r := newRegisterGateBasisLive(t)
 	r.step("p-is-approved-with-requirement-blocks-and-r-is-a-view-under-it", r.world)
 	r.step("the-tool-registers-rs-spec-step-on-ps-approval-and-the-daemon-records-the-basis", r.registers)
-	r.step("with-a-decision-block-open-in-rs-spec-the-tool-refuses-before-the-daemon-and-nothing-is-recorded", r.refusesOverAnOpenBlock)
+	r.step("with-an-ask-block-open-in-rs-spec-the-tool-refuses-before-the-daemon-and-nothing-is-recorded", r.refusesOverAnOpenBlock)
 }
 
 // newRegisterGateBasisLive starts Dispatch on the script's broker and boots the daemon on the rig,
@@ -219,7 +219,7 @@ func (r *registerGateBasisLive) registers() {
 	r.note("the message the daemon posted on %s:\n%s", r.root.Key, message)
 }
 
-// Step 3. A session writes a decision block into R's spec, and Dispatch opens its ask. The same
+// Step 3. A session writes an ask block into R's spec, and Dispatch opens its ask. The same
 // call, at the version that holds the block, is refused by the tool, naming the block, with no
 // request sent to the daemon; the daemon's record of R, its gate rows, its gate facts and R's
 // Dispatch issue are as they were.
@@ -233,13 +233,13 @@ func (r *registerGateBasisLive) refusesOverAnOpenBlock() {
 	r.dispatchRowsDone(r.root.Key)
 	r.quiet(r.root.Key)
 	before := r.snapshot(r.root.Key)
-	r.note("version %d of %s's spec holds decision block wave, open as ask %s; the daemon records %s in %s with %d gate facts",
+	r.note("version %d of %s's spec holds ask block wave, open as ask %s; the daemon records %s in %s with %d gate facts",
 		version, r.root.Key, ask, r.root.Key, before.phase, before.gateFacts)
 	answer := r.tool(r.call(version))
 	if !answer.IsError || len(answer.DaemonRequests) != 0 {
 		t.Fatalf("the tool's call over the open block answered %+v, want a refusal that sent the daemon nothing", answer)
 	}
-	for _, want := range []string{"legion register_gate was not called", fmt.Sprintf("(version %d) has 1 open decision block", version), "block wave, ask " + ask} {
+	for _, want := range []string{"legion register_gate was not called", fmt.Sprintf("(version %d) has 1 open ask block", version), "block wave, ask " + ask} {
 		if !strings.Contains(answer.Text, want) {
 			t.Errorf("the tool's refusal does not say %q:\n%s", want, answer.Text)
 		}

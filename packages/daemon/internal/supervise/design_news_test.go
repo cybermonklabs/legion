@@ -15,7 +15,7 @@ import (
 // the gate's opening. The machine carries it as the bytes the start wrote (Delivery.News).
 const queuedNews = `{"task":"Review the change. Issue: LEGION-209. Phase: reviewing.",` +
 	`"items":[{"issue":"LEGION-209","audience":"holder","step":"spec","artifact":"artifact-spec","from":3,"to":5},` +
-	`{"issue":"LEGION-209","audience":"holder","step":"decisions","artifact":"artifact-decisions","from":1,"to":2}],` +
+	`{"issue":"LEGION-209","audience":"holder","step":"criteria","artifact":"artifact-criteria","from":1,"to":2}],` +
 	`"openings":[{"issue":"LEGION-209","audience":"holder"}]}`
 
 // queuedTask is the text the start queued with it, rendered when the start ran.
@@ -314,10 +314,10 @@ func TestATaskCarryingNoNewsIsNeverPutToDesignNews(t *testing.T) {
 // request's own mark (RequestDeliver.NewsOnly), never the news's.
 const newsOnlyNews = `{"task":"",` +
 	`"items":[{"issue":"LEGION-209","audience":"holder","step":"spec","artifact":"artifact-spec","from":3,"to":5},` +
-	`{"issue":"LEGION-209","audience":"holder","step":"decisions","artifact":"artifact-decisions","from":1,"to":2}]}`
+	`{"issue":"LEGION-209","audience":"holder","step":"criteria","artifact":"artifact-criteria","from":1,"to":2}]}`
 
 // newsCarryingStart is one start that carries news of the approved design, and what DesignNews
-// answers of its task once the record has moved under it: its decisions item stopped standing.
+// answers of its task once the record has moved under it: its criteria item stopped standing.
 type newsCarryingStart struct {
 	name      string
 	start     RequestDeliver

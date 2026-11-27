@@ -127,6 +127,8 @@ function describe(
       return `renamed ${event.payload.previous_name} to ${event.payload.artifact.name}`;
     case "artifact.removed":
       return `removed ${event.payload.artifact.name}`;
+    case "document.retired":
+      return `retired ${event.payload.name}`;
     case "artifact.version":
       return `saved ${event.payload.name} v${event.payload.version.number}`;
     case "artifact.human_edited":

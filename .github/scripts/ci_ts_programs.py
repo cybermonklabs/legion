@@ -79,6 +79,10 @@ BUNDLES = [
     ("dispatch_two_builds_go", "packages/envoy-client/bin/dispatch.ts",
      at("dispatch-two-builds", "Two-build tests of the Dispatch server (`packages/envoy/cmd/dispatch/twobuild_cli_test.go#currentCLI` runs "
                                "`bun ../../../envoy-client/bin/dispatch.ts`, this tree's dispatch command)")),
+    ("envoy_go_race_api", "packages/envoy-client/bin/dispatch.ts",
+     at("envoy-go-race-api-legs", "Race-test the Dispatch API (internal/dispatch/api/decision_entries_test.go's "
+                                  "runDispatchCLI runs `bun ../../../../envoy-client/bin/dispatch.ts`, this tree's "
+                                  "dispatch command)", "envoy-go-race-api")),
     ("envoy_go_checks", "packages/envoy/scripts/approve/scan.ts",
      at("envoy-go-checks", "Scan tests of approve-check's session (bun test scripts/approve/, whose tests spawn "
                            "`bun scripts/approve/scan.ts`)")),
@@ -142,6 +146,12 @@ LISTED = [
     ("dispatch_two_builds_go", "packages/contracts/src", ("dispatch_two_builds_go",),
      "the step's cmd/dispatch/twobuild_cli_test.go runs `bun packages/envoy-client/bin/dispatch.ts`, which loads "
      "the contracts modules that entry's bundle loads and no other"),
+    # The API race job reaches packages/contracts through the same dispatch command, which its
+    # TestAReadingIsAChildNodeOfTheDecisionItReads runs and BUNDLES builds for it.
+    ("envoy_go_race_api", "packages/contracts/src", ("envoy_go_race_api",),
+     "the job's internal/dispatch/api/decision_entries_test.go (runDispatchCLI) runs "
+     "`bun packages/envoy-client/bin/dispatch.ts`, which loads the contracts modules that entry's bundle loads and "
+     "no other"),
     # The two-build job runs that Go step and a browser half, which is dispatch_browser's case: it
     # builds the SPA from packages/dispatch and runs the Playwright config and the e2e helpers of
     # packages/dispatch/e2e (`bun run e2e:multiprocess -- cross-build.multiprocess`), and its

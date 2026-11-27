@@ -375,12 +375,12 @@ func TestBlockTextsReadsEachBlockAsTheOneItemReadsDo(t *testing.T) {
 	artifact, document := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
 	parts := []part{{"intro", "heading", "# Rollout"}, {"plan", "paragraph", "Ship it on Monday."}}
 	markdown, blocks := documentOf(parts)
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil, ""); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil, "", TypedFacts{}); err != nil {
 		t.Fatalf("index version 1 of the document: %v", err)
 	}
 	parts[1].text = "Ship it on Tuesday, after the freeze."
 	markdown, blocks = documentOf(parts)
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 2, time.Now(), markdown, blocks, nil, nil, ""); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 2, time.Now(), markdown, blocks, nil, nil, "", TypedFacts{}); err != nil {
 		t.Fatalf("index version 2 of the document: %v", err)
 	}
 

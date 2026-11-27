@@ -253,34 +253,44 @@ func rowNamesNoNode(column string) string { return column + ` is null` }
 // release before this one deletes a row and appends no retraction, so the tuple outlives the row,
 // and only the row can say the edge still stands; that build may also write the row again with
 // no node, which its table's arm then answers alone. graph_edges' tuple arm makes the same join
-// (migration 20261109215947).
+// (migrations 20261109215947 and 20261125163553). An ask holds a follower row per session, so the
+// follower row that carries a followed_by is the one of the session the tuple reaches.
 func projectionCarries(table, fromKind, alias string) string {
+	session := ""
+	// kept for one release: asks-arms
+	if table == "ask_followers" {
+		session = ` and projected.session_id = ` + alias + `.to_id`
+	}
 	return `exists (select 1 from ` + table + ` projected
-		where projected.node_kind = '` + fromKind + `' and projected.node_address = ` + alias + `.from_id)`
+		where projected.node_kind = '` + fromKind + `' and projected.node_address = ` + alias + `.from_id` + session + `)`
 }
 
-// blockRefCarries is projectionCarries for a block's link, whose projection row is the
-// block_refs row of the pair: the same block, kind and far end as the tuple at alias.
-func blockRefCarries(alias string) string {
+// blockRefCarries is projectionCarries for a link, whose projection row is the block_refs row of
+// the pair: the same node, kind and far end as the tuple at alias. The node is fromKind's: a
+// block's own link, or an answered ask's shaped, whose block_refs row names the ask's node
+// (migration 20261125163553).
+func blockRefCarries(fromKind, alias string) string {
 	return `exists (select 1 from block_refs projected
-		where projected.node_kind = '` + BlockNodeKind + `' and projected.node_address = ` + alias + `.from_id
+		where projected.node_kind = '` + fromKind + `' and projected.node_address = ` + alias + `.from_id
 			and projected.kind = ` + alias + `.kind and projected.to_kind = ` + alias + `.to_kind
 			and projected.to_id = ` + alias + `.to_id)`
 }
 
 // TupleKinds is every relation kind this build writes as tuples and graph_edges answers from
 // them, sorted: a block's in_document and mentions, the pointer kinds the installed block schema
-// declares (pmdoc.LinkKinds), a comment's and an ask's anchored_to and owned_by, and an ask's
-// followed_by. It is the list the view's tuple arm renders (migrations 20261109215947 and
-// 20261125163554) and the list the announcer writes into server_build_announcements.tuple_kinds
-// (startup.Deps), which is how the release that deletes an old arm of the view reads whether the
-// release a rollback would reach writes that arm's kinds as tuples too. A child that moves another
-// relation into the store adds its kinds here, so the arm and the announcement read one list.
+// declares (pmdoc.LinkKinds), a comment's and an ask's anchored_to and owned_by, an ask's
+// followed_by, and a decision block's from_ask and decided_by, which the
+// arm renders through the block_refs row of the pair as it renders a block's every other link. It
+// is the list the view's tuple arm renders (migrations 20261109215947 and 20261125163554) and the
+// list the announcer writes into server_build_announcements.tuple_kinds (startup.Deps), which is
+// how the release that deletes an old arm of the view reads whether the release a rollback would
+// reach writes that arm's kinds as tuples too. A child that moves another relation into the store
+// adds its kinds here, so the arm and the announcement read one list.
 func TupleKinds() []string {
 	kinds := append([]string{TupleInDocument, "mentions", graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy,
-		graphstore.TupleFollowedBy}, pmdoc.LinkKinds()...)
+		graphstore.TupleFollowedBy, TupleFromAsk, graphstore.TupleDecidedBy}, pmdoc.LinkKinds()...)
 	slices.Sort(kinds)
-	return kinds
+	return slices.Compact(kinds)
 }
 
 // currentTuple is the test that the row alias names is the fact the store holds now: the newest
@@ -445,16 +455,21 @@ var backlinkArms = map[string][]backlinkArm{
 	// The view addresses an artifact by artifacts.ref_key, so each arm starts at artifacts
 	// through the unique artifacts_ref_key_key and joins the table that points at it.
 	"artifact": {
-		// asks_anchor_artifact, on the same coalesce the join makes.
+		// asks_anchor_artifact, on the same coalesce the join makes; the store states the same
+		// fact as an ask's anchored_to, answered while the ask's row carries its node. It goes
+		// with graph_edges' arm over asks, and the store's reading of an ask's anchored_to then
+		// joins no asks row, as the view's tuple arm does then.
+		// kept for one release: asks-arms
 		{kind: "anchored_to", from: `artifacts a join asks k on coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid) = a.id`, toID: `a.ref_key`,
-			fromKind: "ask", fromID: `k.id::text`},
+			fromKind: "ask", fromID: `k.id::text`, projected: `k.node_kind`, tupleKind: graphstore.TupleAnchoredTo, projectedIn: "asks"},
 		// comments_anchor_artifact, on the same cast the join makes; the store states the same
 		// fact as a comment's anchored_to, answered while the comment's row carries its node.
 		{kind: "anchored_to", from: `artifacts a join comments c on (c.anchor->>'artifact_id')::uuid = a.id`, toID: `a.ref_key`,
 			fromKind: graphstore.KindComment, fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: graphstore.TupleAnchoredTo, projectedIn: "comments"},
-		// asks_artifact_id.
+		// asks_artifact_id, and the ask's owned_by in the store, which go as an ask's anchored_to does.
+		// kept for one release: asks-arms
 		{kind: "owned_by", from: `artifacts a join asks k on k.artifact_id = a.id`, toID: `a.ref_key`,
-			fromKind: "ask", fromID: `k.id::text`},
+			fromKind: "ask", fromID: `k.id::text`, projected: `k.node_kind`, tupleKind: graphstore.TupleOwnedBy, projectedIn: "asks"},
 		// comments_artifact_id, and the comment's owned_by in the store.
 		{kind: "owned_by", from: `artifacts a join comments c on c.artifact_id = a.id`, toID: `a.ref_key`,
 			fromKind: graphstore.KindComment, fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: graphstore.TupleOwnedBy, projectedIn: "comments"},
@@ -505,9 +520,13 @@ var backlinkArms = map[string][]backlinkArm{
 			fromKind: "issue", fromID: `m.issue_key`},
 	},
 	"session": {
-		// ask_followers_session_id (migration 20261101182419), which exists for this arm.
+		// ask_followers_session_id (migration 20261101182419), which exists for this arm; the
+		// store states the same fact as an ask's followed_by, answered while the follower row of
+		// that ask and that session carries the ask's node (projectionCarries' session test). It
+		// goes as the artifact's arms over asks do.
+		// kept for one release: asks-arms
 		{kind: "followed_by", from: `ask_followers f`, toID: `f.session_id`,
-			fromKind: "ask", fromID: `f.ask_id::text`},
+			fromKind: "ask", fromID: `f.ask_id::text`, projected: `f.node_kind`, tupleKind: graphstore.TupleFollowedBy, projectedIn: "ask_followers"},
 	},
 	// A person, a role and a page are pointed at by mentions alone. The tuples the store holds
 	// of them - authored_by, delivered_to, held_by and part_of - are no arm of graph_edges, so
@@ -540,13 +559,14 @@ var backlinkArms = map[string][]backlinkArm{
 	},
 }
 
-// mentionBacklinkArms is the six arms of graph_edges whose edge kind and target kind are
-// columns rather than literals: refs, the four tables of block references, and the store's own
-// tuples, which hold the links of a document block whose row names its node. Every
-// node kind gets all six, since a mention can name any node. The target kind is written as a
-// literal (see BacklinkCounts), and excludeKinds the caller's excluded edge kinds, bound as
-// $4 - on these arms the edge kind is a column, so an exclusion is a predicate and never drops
-// an arm, and an empty list adds nothing.
+// mentionBacklinkArms is the arms of graph_edges whose edge kind and target kind are columns
+// rather than literals: refs, the four tables of block references, and the store's own tuples,
+// which hold the links of a document block whose row names its node. Every node kind gets those
+// six, since a mention can name any node; a document's block gets a seventh, an answered ask's
+// shaped, which points at a block alone. The target kind is written as a literal (see
+// BacklinkCounts), and excludeKinds the caller's excluded edge kinds, bound as $4 - on these arms
+// the edge kind is a column, so an exclusion is a predicate and never drops an arm, and an empty
+// list adds nothing.
 //
 // Each arm carries the visibility predicate of the node its mention comes from: the refs arm's
 // source kind is a column, so it binds the registry over every kind at once (VisibleEnd, over
@@ -594,8 +614,17 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		arm(`graph_tuples r`, ` and r.from_kind = 'block' and r.kind <> '`+TupleInDocument+`'
 			and r.kind <> '`+graphstore.TuplePartOf+`' and `+currentTuple("r")+`
 			and (r.kind = 'mentions' or block_ref_listed(block_pointer_targets(r.from_id, r.kind), r.to_id))
-			and `+blockRefCarries("r"),
+			and `+blockRefCarries(BlockNodeKind, "r"),
 			liveVisibleNode("block", `r.from_id`)),
+	}
+	// An answered ask's shaped, its tie to a block of its issue, which the store states from the
+	// ask's node and the view's tuple arm answers while the block_refs row of the pair, marked with
+	// that node, stands (migration 20261125163553). An ask's shaped declares no targets, so it
+	// carries no types test.
+	if target.kind == BlockNodeKind {
+		arms = append(arms, arm(`graph_tuples r`, ` and r.from_kind = '`+graphstore.KindAsk+`' and r.kind = '`+TupleShaped+`'
+			and `+currentTuple("r")+` and `+blockRefCarries(graphstore.KindAsk, "r"),
+			liveVisibleNode(graphstore.KindAsk, `r.from_id`)))
 	}
 	// One arm per item kind over the links its blocks hold: <kind>_block_refs_to
 	// (to_kind, to_id, (<item>::text)), then the blocks table's primary key for the join. The

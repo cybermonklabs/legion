@@ -1,4 +1,4 @@
-import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
+import { DESIGN_GATE_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
 import {
   LEGION_PHASES,
   LegionGateRegisterRequest,
@@ -551,14 +551,14 @@ function toolSchema(pi: PiApi): unknown {
       )
       .optional(),
     version: z.number().optional(),
-    // The steps are `GATED_STEPS`, the one tuple the contracts package holds them in, so this
-    // schema and the daemon's own (`LegionGateRegisterRequest.shape.step`) admit the same words
-    // and a step added to the contract reaches both. The tuple is what crosses, not a zod
+    // The steps are `DESIGN_GATE_STEPS`, the one tuple the contracts package holds them in, so
+    // this schema and the daemon's own (`LegionGateRegisterRequest.shape.step`) admit the same
+    // words and a step added to the contract reaches both. The tuple is what crosses, not a zod
     // schema: this schema is built with the host's own zod instance (`pi.zod`).
     step: z
-      .enum(GATED_STEPS)
+      .enum(DESIGN_GATE_STEPS)
       .describe(
-        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it"
+        "register_gate's design-gate step: criteria for the issue's Verification document, spec for its primary document. A deployment that gates one step takes the registration without it"
       )
       .optional(),
     // A basis (dispatch://INFRA-3320, R1): the ancestor's document for the same step, which the
@@ -804,12 +804,11 @@ async function documentIdOf(
   );
 }
 
-/** register_gate's words around the open decision blocks of the root's own document, which it
- * refuses a basis over as `dispatch request-approval` refuses an approval request
+/** register_gate's words around the open ask blocks of the root's own document, which it refuses
+ * a basis over as `dispatch request-approval` refuses an approval request
  * (`refuseOpenDecisionBlocks`). */
 const OPEN_BLOCKS_UNDER_A_BASIS = {
   call: "legion register_gate",
-  blocks: "decision block",
   // kept for one release: stored-ask-state
   decidedBy: "version",
   effect:
@@ -859,7 +858,7 @@ export function createLegionTool(deps: {
   /** Resolves to the pane's Dispatch, the one its `dispatch` commands reach, or to undefined where
    * the pane has none configured. register_gate looks a document reference up there
    * (`resolveIssueDocumentId`, as a `dispatch` command's `--artifact` is) and, for a registration
-   * on a basis, reads the root's own document for an open decision block
+   * on a basis, reads the root's own document for an open ask block
    * (`refuseOpenDecisionBlocks`). */
   readonly dispatch: () => Promise<DispatchClient | undefined>;
   /** The clock `handoff_complete` and `sign_off` wait out a daemon restart on; a test's own. */
@@ -906,7 +905,7 @@ export function createLegionTool(deps: {
         "The daemon takes a basis only where your root's spec is a view on the nearest reviewed ancestor, which carries the " +
         "legion label and is not accepted, and the version is that document's latest, approved by a person or asked of one in an " +
         "open request, and refuses any other with a code that names what Dispatch shows; the tool refuses one while your " +
-        "document holds an open decision block, as dispatch request-approval does. " +
+        "document holds an open ask block, as dispatch request-approval does. " +
         "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
         "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
         "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
@@ -1309,7 +1308,7 @@ export function createLegionTool(deps: {
             // registration without it, and one that gates several refuses it.
             const named = LegionGateRegisterRequest.shape.step.safeParse(parameters.step);
             if (!named.success) {
-              throw new Error(`register_gate's step is one of ${GATED_STEPS.join(", ")}`);
+              throw new Error(`register_gate's step is one of ${DESIGN_GATE_STEPS.join(", ")}`);
             }
             const step = named.data;
             // A basis is checked whole before anything is read, Dispatch or the daemon.
@@ -1323,7 +1322,7 @@ export function createLegionTool(deps: {
               const board = await dispatch();
               if (board === undefined) {
                 throw new Error(
-                  `register_gate cannot register ${issue} on a basis: this pane has no Dispatch configured, where the tool reads the root's document for an open decision block`
+                  `register_gate cannot register ${issue} on a basis: this pane has no Dispatch configured, where the tool reads the root's document for an open ask block`
                 );
               }
               // A basis opens the step with no person's review of the root's own document, so a

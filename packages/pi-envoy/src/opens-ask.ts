@@ -9,7 +9,7 @@ function adviceCount(details: unknown, key: "decision_blocks" | "decision_blocks
 /**
  * Whether a successful Dispatch call opened the ask itself, so the run-end nudge has nothing to
  * say: `dispatch ask`, `dispatch request-approval`, a `dispatch issue` or `dispatch artifact` whose
- * stored document holds a decision block (`advice.decision_blocks`), or a `dispatch doc-edit` that
+ * stored document holds an ask block (`advice.decision_blocks`), or a `dispatch doc-edit` that
  * added one (`advice.decision_blocks_added`). `toolName` is the call's spec name, as the CLI's
  * ledger records it. Both counts are the server's own reading of the
  * document, so an opener quoted in code counts nothing and one in a blockquote or a list item

@@ -82,6 +82,27 @@ var storeWriteCallSites = map[string]string{
 	// node write it holds for its cause (PlanUncaused, QueueNodes), then the event and the gone
 	// statement in one batch, appendCausingEvent).
 	"api/artifact_removal.go#removeArtifact": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
+	// A document's retirement, in the same order under the document's
+	// owner row: its artifact node stated gone, then the artifacts row that retires it, then
+	// document.retired and the node's facts under it.
+	"docs/retire.go#RetireDocument":   "docs#TestTheDecisionsStepsWritersTakeTheStoreLockOrder",
+	"docs/retire.go#writeRetiredNode": "docs#TestTheDecisionsStepsWritersTakeTheStoreLockOrder",
+	// A person's Keep of an agent's decision: under the issue's owner
+	// row, the person's node, then the decision_keeps row that projects the Keep, then
+	// decision.kept, and the kept_by tuple and the kept_text_sum value under it, through Caused.
+	"api/decisions.go#keepDecisionNode": "api#TestEveryAskTransitionAndKeepTakesTheStoreLockOrder",
+	// The decisions step's restore and conversion of an issue,
+	// under the issue's owner row and its asks' rows: each document's version and its event, the
+	// index pass's facts under that event through Caused, then the moves, the restored asks'
+	// relations and the carried Keeps, with the person node a Keep names, under the spec's event.
+	"docs/decision_restore.go#writeVersion": "docs#TestTheDecisionsStepsWritersTakeTheStoreLockOrder",
+	"docs/decision_restore.go#writeFacts":   "docs#TestTheDecisionsStepsWritersTakeTheStoreLockOrder",
+	// A person's own write that takes an answered ask's block out of its document: the person's
+	// node at the sentinel, after the version's block index and before the event that records the
+	// version, and the removed_by tuple appended with the index's facts under that event. A
+	// rendered version's removals ride in its block index's own write (refs.PlanBlocks' beside);
+	// an unrendered one's are queued here.
+	"docs/removed_by.go#queueRemovals": "docs#TestAPersonsRemovalOfAnAnsweredAskTakesTheStoreLockOrder",
 	// The seed's comments, with their author's person node and each comment's authored_by
 	// tuple, which its one batch write states as a seeded database's own writer, the session
 	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,
@@ -133,11 +154,14 @@ var storeWriteCallSites = map[string]string{
 	// appends what a transition held under the event it appends after it, through QueueCaused:
 	// the answer, resolve and decline routes' transition, an issue's close and reopen, the
 	// approval carry's answer, and a settlement's retractions and restorations (appendEvents,
-	// above). The settlement states beside them the readability of each ask whose block it read,
-	// as that ask node's `invalid` value, through the writer of that value (PlanInvalidReasons),
-	// and the backfill of the boot step's first phase states the asks and the followers written
-	// before this release, each batch under its owners' locks first. The decisions step's catch-up
-	// drives Settle, under the ask's owner lock and then its row.
+	// above). The settlement states the copies among a document's ask blocks as claims once its
+	// version is indexed, and beside them the readability of each ask whose block it read, as
+	// that ask node's `invalid` value, through the writer of that value (PlanInvalidReasons), and
+	// the retraction of each removed_by such a node holds (planRemovalRetractions); and the backfill
+	// of the boot step's first phase states
+	// the asks and the followers written before this release, each batch under its owners' locks
+	// first. The decisions step's catch-up drives Settle, under the ask's owner lock and then its
+	// row.
 	"api/ask_transitions.go#closeAskTx":                  "api#TestEveryAskTransitionAndKeepTakesTheStoreLockOrder",
 	"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx":   "api#TestEveryAskTransitionAndKeepTakesTheStoreLockOrder",
 	"api/issue_ask_lifecycle.go#recordRestoredAsksTx":    "api#TestEveryAskTransitionAndKeepTakesTheStoreLockOrder",
@@ -146,6 +170,7 @@ var storeWriteCallSites = map[string]string{
 	"asks/settle.go#Queue":                               "docs#TestTheCatchUpTakesTheAsksOwnerRowBeforeItsRow",
 	"docs/approval_carry.go#answerApprovalAsk":           "docs#TestEverySettlementWriterTakesTheStoreLockOrder",
 	"docs/ask_blocks.go#claimCopies":                     "docs#TestEverySettlementWriterTakesTheStoreLockOrder",
+	"docs/ask_blocks.go#planRemovalRetractions":          "docs#TestEverySettlementWriterTakesTheStoreLockOrder",
 	"graphcensus/backfill_asks.go#writeAskBatch":         "graphcensus#TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows",
 	"graphcensus/backfill_asks.go#writeAskFollowerBatch": "graphcensus#TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows",
 	// The publisher's record of a batch, which splices the store's arms into its statement, and
@@ -153,8 +178,12 @@ var storeWriteCallSites = map[string]string{
 	"outbox/mentions.go#recordFallbackCopies": "outbox#TestAFallbackCopyThePassPublishedIsADelivery",
 	"outbox/publisher.go#recordBatch":         "outbox#TestRecordBatchTakesAPrefixOfTheStoreLockOrder",
 	// The block index: its nodes inside the revision fence, queued on the write phase of the
-	// writer that runs it (BlockIndexing.Queue), whose tuples and cause wait for the event that
+	// writer that runs it (BlockIndexing.Queue), with the typed-node pass's own nodes and their
+	// authors' (refs.PlanBlocks' typed facts), whose tuples and cause wait for the event that
 	// recorded the version (the sites of QueueCaused above), driven inside the tick and the
-	// settlement that run it.
-	"refs/blocks.go#Queue": "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
+	// settlement that run it. Above the deferral bound the typed-node pass runs on its own
+	// (refs.DecisionIndexing.Queue), under the document's owner lock its caller holds, its tuples
+	// and cause waiting for the same event.
+	"refs/blocks.go#Queue":         "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
+	"refs/decision_nodes.go#Queue": "docs#TestEverySettlementWriterTakesTheStoreLockOrder",
 }

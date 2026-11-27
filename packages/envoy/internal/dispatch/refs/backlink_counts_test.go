@@ -9,11 +9,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -146,6 +148,37 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		insert into ask_followers (ask_id, session_id) values ($1::uuid, 'session-backlink')
 	`, anchoredAsk)
 
+	// The same three relations as the store holds them for an ask whose row names its node: an
+	// ask on the notes document, anchored on it and owned by it, and a
+	// session that follows it, each stated on the ask's node, the rows marked. graph_edges' old
+	// arms leave these rows to the tuple arm, and the count reads the store's tuples for them.
+	// The answered ask's tie to a block, its shaped, is the store's alone: a block_refs row of the
+	// spec's block marked with the ask's node, as the writer of an ask block's links marks it.
+	storedAsk := scanFixture(t, tx, "create the ask the store holds", `
+		insert into asks (artifact_id, author, question, anchor)
+		values ($1::uuid, '{"kind":"user","id":"alice"}', 'held by the store?', jsonb_build_object('artifact_id', $1::text))
+		returning id::text
+	`, notesID)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	stated := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	nodes, tuples, _ := graphstore.AskFacts(storedAsk, "CORE", nil, alice, stated, graphstore.NoEvent,
+		graphstore.AskPlaces{Anchor: notesRef, Owner: notesRef})
+	nodes = append(nodes, graphstore.SessionNode("session-stored", alice, stated, graphstore.NoEvent))
+	tuples = append(tuples,
+		graphstore.Tuple{FromKind: graphstore.KindAsk, FromID: storedAsk, Kind: graphstore.TupleFollowedBy,
+			ToKind: graphstore.KindSession, ToID: "session-stored", At: stated, Who: alice, Asserted: true},
+		graphstore.Tuple{FromKind: graphstore.KindAsk, FromID: storedAsk, Kind: "shaped",
+			ToKind: BlockNodeKind, ToID: notesRef + "#b1", At: stated, Who: alice, Asserted: true})
+	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		t.Fatalf("state the ask the store holds: %v", err)
+	}
+	execFixture(t, tx, "mark the ask the store holds", `
+		update asks set node_kind = 'ask', node_address = id::text where id = $1::uuid
+	`, storedAsk)
+	execFixture(t, tx, "follow the ask the store holds", `
+		insert into ask_followers (ask_id, session_id, node_kind, node_address) values ($1::uuid, 'session-stored', 'ask', $1)
+	`, storedAsk)
+
 	// components: part_of, depends_on; issue_component_members: affects.
 	sourceID := scanFixture(t, tx, "create the architecture source", `
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
@@ -185,6 +218,10 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version)
 		values ($1::uuid, 'b1', $2, 'block', $3, 'mentions', 1)
 	`, specID, specBlock, notesBlock)
+	execFixture(t, tx, "tie the ask the store holds to the notes block", `
+		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version, node_kind, node_address)
+		values ($1::uuid, 'b1', $2, 'block', $3, 'shaped', 1, 'ask', $4)
+	`, specID, specBlock, notesBlock, storedAsk)
 
 	// comment_blocks: a comment block's part_of; comment_block_refs: its mentions. b3 is the
 	// block a later revision removed, which keeps its row with no position and its reference.

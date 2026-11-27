@@ -417,8 +417,9 @@ export function getIssue(key: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}", { params: { key } }, options);
 }
 
-/** `GET /api/v1/issues/{key}/decisions`: the issue's decision records, each with whether it
- *  waits for the reader's review and the Keep a person recorded. */
+/** `GET /api/v1/issues/{key}/decisions`: the issue's Decisions read, whose `entries` are its
+ *  decision nodes - each `decision` block, and each ask of the issue with its answer state - as
+ *  the Decisions tab reads them. */
 export function getIssueDecisions(key: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}/decisions", { params: { key } }, options);
 }

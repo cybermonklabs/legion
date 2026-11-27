@@ -37,11 +37,9 @@ const (
 
 	rSpec         = "a2080000-0000-4000-8000-000000000001"
 	rVerification = "a2080000-0000-4000-8000-000000000002"
-	rDecisions    = "a2080000-0000-4000-8000-000000000003"
 	rDiagram      = "a2080000-0000-4000-8000-000000000004"
 	pSpec         = "b1500000-0000-4000-8000-000000000001"
 	pVerification = "b1500000-0000-4000-8000-000000000002"
-	pDecisions    = "b1500000-0000-4000-8000-000000000003"
 	gSpec         = "c1200000-0000-4000-8000-000000000001"
 	sSpec         = "d1600000-0000-4000-8000-000000000001"
 )
@@ -96,12 +94,11 @@ func basisReason(n int) string {
 // basisWorld is the Dispatch every basis case starts from, the one k2's negative control names: P
 // carries legion and is in progress; its primary document marks requirement blocks p1 to p3 and
 // p:4, whose id a reference percent-encodes, and a person approved its latest version 3; its
-// Verification document holds a person's approval of its latest version 2 and its decisions
-// document marks a requirement block d1. R, at version 4 of its primary document, holds no review
-// and no requirement block, lists a diagram file beside its documents, and its Verification
-// document's one check serves P2. G is above nobody until a case makes it P's parent, and S, R's
-// sibling under P, marks requirement block s1. seq is R's event sequence, which a case sets apart
-// so that each registration that records is its own fact.
+// Verification document holds a person's approval of its latest version 2. R, at version 4 of its
+// primary document, holds no review and no requirement block, lists a diagram file beside its
+// documents, and its Verification document's one check serves P2. G is above nobody until a case
+// makes it P's parent, and S, R's sibling under P, marks requirement block s1. seq is R's event
+// sequence, which a case sets apart so that each registration that records is its own fact.
 func basisWorld(seq int64) statusRecorder {
 	p := basisP
 	return statusRecorder{
@@ -109,24 +106,22 @@ func basisWorld(seq int64) statusRecorder {
 			basisR: {Key: basisR, LastSeq: seq, Parent: &p, Status: "in_progress", Labels: []string{"legion"},
 				PrimaryArtifactID: rSpec, VerificationArtifactID: rVerification},
 			basisP: {Key: basisP, LastSeq: 40, Status: "in_progress", Labels: []string{"Legion"},
-				PrimaryArtifactID: pSpec, VerificationArtifactID: pVerification, DecisionsArtifactID: pDecisions},
+				PrimaryArtifactID: pSpec, VerificationArtifactID: pVerification},
 			basisG: {Key: basisG, LastSeq: 50, Status: "in_progress", Labels: []string{"legion"}, PrimaryArtifactID: gSpec},
 			basisS: {Key: basisS, LastSeq: 60, Parent: &p, Status: "in_progress", Labels: []string{"legion"}, PrimaryArtifactID: sSpec},
 		},
 		documents: map[string]string{
-			rSpec: basisR, rVerification: basisR, rDecisions: basisR, rDiagram: basisR,
-			pSpec: basisP, pVerification: basisP, pDecisions: basisP, gSpec: basisG, sSpec: basisS,
+			rSpec: basisR, rVerification: basisR, rDiagram: basisR,
+			pSpec: basisP, pVerification: basisP, gSpec: basisG, sSpec: basisS,
 		},
 		approvals: map[string]dispatch.Approval{
 			rSpec:         {State: "draft", LatestVersion: 4},
-			rVerification: {State: "draft", LatestVersion: 2, Role: dispatch.ArtifactRoleVerification, Slug: dispatch.VerificationSlug},
-			rDecisions:    {State: "draft", LatestVersion: 1, Role: dispatch.ArtifactRoleDecisions, Slug: dispatch.DecisionsSlug},
+			rVerification: {State: "draft", LatestVersion: 2, Role: dispatch.ArtifactRoleVerification},
 			pSpec:         {State: "approved", LatestVersion: 3, Version: new(3), By: basisAlice, Seq: 21, At: basisApprovedAt},
 			pVerification: {State: "approved", LatestVersion: 2, Version: new(2), By: basisAlice, Seq: 22, At: basisApprovedAt,
-				Role: dispatch.ArtifactRoleVerification, Slug: dispatch.VerificationSlug},
-			pDecisions: {State: "draft", LatestVersion: 1, Role: dispatch.ArtifactRoleDecisions, Slug: dispatch.DecisionsSlug},
-			gSpec:      {State: "draft", LatestVersion: 5},
-			sSpec:      {State: "approved", LatestVersion: 1, Version: new(1), By: basisAlice, Seq: 61, At: basisApprovedAt},
+				Role: dispatch.ArtifactRoleVerification},
+			gSpec: {State: "draft", LatestVersion: 5},
+			sSpec: {State: "approved", LatestVersion: 1, Version: new(1), By: basisAlice, Seq: 61, At: basisApprovedAt},
 		},
 		reviews: map[string][]dispatch.Review{
 			pSpec:         {{Version: 3, State: "approved", Actor: basisAlice, At: basisApprovedAt}},
@@ -136,12 +131,10 @@ func basisWorld(seq int64) statusRecorder {
 		versions: map[string]map[int]string{
 			pSpec:         {3: requirementBlocks("p1", "p2", "p3", "p:4")},
 			pVerification: {2: checkBlockOf("pk1", "dispatch://LEGION-150/spec#b-p1")},
-			pDecisions:    {1: requirementBlocks("d1")},
 			gSpec:         {5: requirementBlocks("g1", "g2")},
 			sSpec:         {1: requirementBlocks("s1")},
 			rSpec:         {4: rViewSpec},
 			rVerification: {2: checkBlockOf("k1", p2)},
-			rDecisions:    {1: "# Decisions\n\nNone yet.\n"},
 		},
 		artifacts: map[string][]dispatch.Artifact{
 			basisR: {
@@ -358,9 +351,6 @@ func TestBasisGateRefusals(t *testing.T) {
 		{name: "a requirement block in R's Verification document", change: func(world *statusRecorder, _ map[string]any) {
 			world.withVersion(rVerification, 2, checkBlockOf("k1", p2)+":::requirement{#rv1}\nR's own.\n:::\n")
 		}, status: http.StatusConflict, code: "VIEW_HOLDS_REQUIREMENT", says: []string{"Verification document verification-md at version 2 holds requirement block rv1"}},
-		{name: "a requirement block in R's decisions document", change: func(world *statusRecorder, _ map[string]any) {
-			withDecisions(world, ":::requirement{#rd1}\nR's own.\n:::\n")
-		}, status: http.StatusConflict, code: "VIEW_HOLDS_REQUIREMENT", says: []string{"decisions document decisions-md at version 1 holds requirement block rd1"}},
 		{name: "no Verification document on R", change: func(world *statusRecorder, _ map[string]any) {
 			world.artifacts[basisR] = slices.DeleteFunc(slices.Clone(world.artifacts[basisR]), func(a dispatch.Artifact) bool { return a.ID == rVerification })
 		}, status: http.StatusConflict, code: "VIEW_NO_VERIFICATION", says: []string{"no Verification document of LEGION-208"}},
@@ -388,9 +378,9 @@ func TestBasisGateRefusals(t *testing.T) {
 		{name: "one check serving P2 and another serving only a requirement of S", change: func(world *statusRecorder, _ map[string]any) {
 			world.withVersion(rVerification, 2, checkBlockOf("k1", p2)+checkBlockOf("k2", "dispatch://LEGION-160/spec#b-s1"))
 		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"check k2", "serves dispatch://LEGION-160/spec#b-s1"}},
-		{name: "a check that serves a requirement block of P's decisions document", change: func(world *statusRecorder, _ map[string]any) {
-			world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-150/artifact/decisions-md#b-d1"))
-		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"serves dispatch://LEGION-150/artifact/decisions-md#b-d1"}},
+		{name: "a check that serves a requirement block of another document of P", change: func(world *statusRecorder, _ map[string]any) {
+			world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-150/artifact/notes-md#b-d1"))
+		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"serves dispatch://LEGION-150/artifact/notes-md#b-d1"}},
 		{name: "P's live text past its approved version: a check serving P5, which only the live text holds", change: func(world *statusRecorder, _ map[string]any) {
 			liveTextPastApproval(world)
 			world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-150/spec#b-p5"))
@@ -455,13 +445,6 @@ func gUnderP(world *statusRecorder) {
 	world.approvals[gSpec] = dispatch.Approval{State: "approved", LatestVersion: 5, Version: new(5), By: basisAlice, Seq: 51, At: basisApprovedAt}
 	world.reviews[gSpec] = []dispatch.Review{{Version: 5, State: "approved", Actor: basisAlice, At: basisApprovedAt}}
 	world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-120/spec#b-g1"))
-}
-
-// withDecisions gives R a decisions document holding markdown at version 1.
-func withDecisions(world *statusRecorder, markdown string) {
-	world.artifacts[basisR] = append(slices.Clone(world.artifacts[basisR]),
-		dispatch.Artifact{ID: rDecisions, Slug: dispatch.DecisionsSlug, Kind: "doc", Role: dispatch.ArtifactRoleDecisions, LatestVersion: 1})
-	world.withVersion(rDecisions, 1, markdown)
 }
 
 func setStatus(world *statusRecorder, key, status string) {
@@ -634,47 +617,6 @@ func TestTheCriteriaStepsBasisGateIsTheAncestorsVerificationDocument(t *testing.
 	if got := facts.recorded(); len(got) != 1 {
 		t.Fatalf("the refused criteria registration applied %#v, want nothing more recorded", got[1:])
 	}
-}
-
-// A deployment that gates the decisions step takes, as its basis, P's decisions document a person
-// approved: the step's document of the ancestor, as stepDocument binds one, on which R registers
-// its own decisions document. R's checks are held to the requirement blocks of P's primary
-// document at its latest version, as for the criteria step, and a registration of the decisions
-// step reads no view fact. P's primary document named for the decisions step is another step's
-// document, refused as one, and records nothing.
-func TestTheDecisionsStepsBasisGateIsTheAncestorsDecisionsDocument(t *testing.T) {
-	h, facts, statuses, architect := basisHarness(t, []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec})
-	*statuses = basisWorld(301)
-	withDecisions(statuses, "# Decisions\n\nNone yet.\n")
-	statuses.approvals[pDecisions] = dispatch.Approval{State: "approved", LatestVersion: 1, Version: new(1), By: basisAlice, Seq: 23, At: basisApprovedAt,
-		Role: dispatch.ArtifactRoleDecisions, Slug: dispatch.DecisionsSlug}
-	statuses.reviews[pDecisions] = []dispatch.Review{{Version: 1, State: "approved", Actor: basisAlice, At: basisApprovedAt}}
-	body := basisBody(architect.grant(t))
-	body["step"], body["artifactId"], body["version"], body["basisArtifactId"], body["basisVersion"] = "decisions", rDecisions, 1, pDecisions, 1
-	if recorder := h.request(http.MethodPost, "/legion/v1/gates/register", body, nil); recorder.Code != http.StatusOK {
-		t.Fatalf("register the decisions step on P's decisions document = %d: %s", recorder.Code, recorder.Body)
-	}
-	want := intake.GateRegistered{Issue: basisR, Step: record.DesignStepDecisions, ArtifactID: rDecisions, Version: 1, DispatchVersion: 1,
-		Since: record.EventMark{Seq: 301}, By: architect.token,
-		Basis: &record.GateBasis{Issue: basisP, ArtifactID: pDecisions, Version: 1, Approval: record.EventMark{Seq: 23, At: basisApprovedAt},
-			Approver: "user:alice", Serves: []string{"dispatch://LEGION-150/spec#b-p2@v3"}, Reason: basisReason(reasonRunes), Session: architect.session}}
-	if got := facts.recorded(); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
-		t.Fatalf("decisions registration facts = %#v, want %#v", got, want)
-	}
-	t.Logf("the decisions step of %s registered on version 1 of %s's decisions document, approved by %s", basisR, basisP, want.Basis.Approver)
-
-	body = basisBody(architect.grant(t))
-	body["step"], body["artifactId"], body["version"] = "decisions", rDecisions, 1
-	refusal := refused(t, h.request(http.MethodPost, "/legion/v1/gates/register", body, nil), http.StatusConflict, "GATE_STEP_DOCUMENT_MISMATCH")
-	for _, named := range []string{pSpec, "decisions step's document of LEGION-150"} {
-		if !strings.Contains(refusal, named) {
-			t.Errorf("refusal = %q, want it naming %q", refusal, named)
-		}
-	}
-	if got := facts.recorded(); len(got) != 1 {
-		t.Fatalf("the refused decisions registration applied %#v, want nothing more recorded", got[1:])
-	}
-	t.Logf("P's primary document named for the decisions step: %s", refusal)
 }
 
 // Every registration of the spec step records the view fact (R4), with a basis or without: the

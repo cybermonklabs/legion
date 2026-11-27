@@ -246,11 +246,13 @@ func awaitLockWaits(t *testing.T, ctx context.Context, database *store.Store, wh
 	})
 }
 
-// awaitCopyShows waits for the copy's text (agentText) to show the source ask's state in its
-// asks member, with no settlement owed. Its one bound is the test binary's deadline.
+// awaitCopyShows waits for the text of copy as an agent reads it (agentText), whose asks member
+// shows each ask block's state, read from the store, to hold want, with no document owing a
+// settlement, reading both every 20 ms. Its one bound is the test binary's deadline
+// (testwait.UntilPolling).
 func awaitCopyShows(t *testing.T, ctx context.Context, handler http.Handler, database *store.Store, copy, want string) {
 	t.Helper()
-	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the copy's text to hold %s with nothing owed", want), func() (string, bool) {
+	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the copy's text to hold %s with nothing owed (owed, then the text)", want), func() (string, bool) {
 		var pending int
 		if err := database.Pool.QueryRow(ctx, `select count(*) from doc_settlements_pending`).Scan(&pending); err != nil {
 			t.Fatalf("count the owed settlements: %v", err)

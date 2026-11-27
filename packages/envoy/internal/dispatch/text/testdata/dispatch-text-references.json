@@ -168,7 +168,14 @@
     ]
   },
   {
-    "body": "No tab: https://dispatch.test/issues/CORE-49/log, dispatch://CORE-49/plan/, dispatch://CORE-49/Plan, https://dispatch.test/issues/CORE-49/plan/ and dispatch://CORE-49/decisions.",
+    "body": "The decisions: dispatch://CORE-55/decisions and https://dispatch.test/issues/CORE-56/decisions.",
+    "refs": [
+      "dispatch://CORE-55",
+      "dispatch://CORE-56"
+    ]
+  },
+  {
+    "body": "No tab: https://dispatch.test/issues/CORE-49/log, dispatch://CORE-49/plan/, dispatch://CORE-49/Plan and https://dispatch.test/issues/CORE-49/plan/.",
     "refs": []
   },
   {

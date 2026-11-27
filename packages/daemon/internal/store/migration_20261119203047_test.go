@@ -48,7 +48,7 @@ const designNewsVersion = 20261119203047
 // merge_forward and design_changes among them, and so is phase_ended, which no lane runs and the
 // list keeps for a rollback, since this migration writes the list last on any database; an unread
 // history is taken only with its reason and a version above 0, and a change set is taken as
-// unchanged only where Dispatch answered it and it is not decision-only.
+// unchanged only where Dispatch answered it and it is not ask-only (decision_only).
 func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261119203047(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -179,7 +179,7 @@ func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261119203047(t 
 			values ('doc-100', 7, 8, 'read', true, true, now())`,
 	} {
 		if _, err := store.Pool().Exec(ctx, refused); err == nil || !strings.Contains(err.Error(), "violates check constraint") {
-			t.Fatalf("%s = %v, want an unchanged change set that is unavailable, or decision-only, refused by a check", refused, err)
+			t.Fatalf("%s = %v, want an unchanged change set that is unavailable, or ask-only, refused by a check", refused, err)
 		}
 	}
 	if _, err := store.Pool().Exec(ctx, `insert into design_history_unread (artifact_id, to_version, reason, read_at)

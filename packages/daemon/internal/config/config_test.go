@@ -63,7 +63,7 @@ github_apps:
     private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
 gates:
-  design: [decisions, criteria]
+  design: [criteria, spec]
 `
 
 const gatesEmptyListFile = `project: DEMO
@@ -523,7 +523,9 @@ func TestDispatchTokenTransitionFileNeedsTheBroker(t *testing.T) {
 // words it took before the list as the lists they mean. A key that names nothing, written as
 // `design:` or as the empty string, is the unset key the loader read before the list, the single
 // step spec. A value it does not take, and a list naming one step twice, are refused by a
-// message naming what the key takes.
+// message naming what the key takes. The `decisions` step an earlier release gated is refused by
+// a message of its own, which says the step is gone, that decisions are nodes of the spec, and to
+// gate `spec`, and still names the steps the key takes.
 func TestLoadReadsTheDesignGateSteps(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -531,7 +533,7 @@ func TestLoadReadsTheDesignGateSteps(t *testing.T) {
 		want    []record.DesignStep
 		refusal string
 	}{
-		{name: "a list", body: gatesListFile, want: []record.DesignStep{record.DesignStepDecisions, record.DesignStepCriteria}},
+		{name: "a list", body: gatesListFile, want: []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}},
 		{name: "the empty list", body: gatesEmptyListFile, want: []record.DesignStep{}},
 		{name: "no gates key", body: gatesAbsentFile, want: []record.DesignStep{record.DesignStepSpec}},
 		{name: "the word root-issues", body: minimalFile, want: []record.DesignStep{record.DesignStepSpec}},
@@ -541,13 +543,16 @@ func TestLoadReadsTheDesignGateSteps(t *testing.T) {
 		{
 			name:    "a word the key does not take",
 			body:    gatesUnknownWordFile,
-			refusal: "gates.design must be a list of 'decisions', 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step",
+			refusal: "gates.design must be a list of 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step",
 		},
 		{name: "a step named twice", body: gatesRepeatedStepFile, refusal: "gates.design names 'spec' twice"},
 		{name: "a step the key does not take", body: strings.Replace(minimalFile, "design: root-issues", "design: [spec, later]", 1),
-			refusal: "gates.design[1] must be 'decisions', 'criteria' or 'spec'"},
+			refusal: "gates.design[1] must be 'criteria' or 'spec'"},
+		{name: "the decisions step, which is gone", body: strings.Replace(minimalFile, "design: root-issues", "design: [decisions]", 1),
+			refusal: "gates.design[0] names the 'decisions' step, which is gone: decisions are nodes of the spec, " +
+				"so gate 'spec' to have a person approve them; gates.design[0] must be 'criteria' or 'spec'"},
 		{name: "a value that is neither a string nor a list", body: strings.Replace(minimalFile, "design: root-issues", "design: {step: spec}", 1),
-			refusal: "gates.design must be a list of 'decisions', 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step"},
+			refusal: "gates.design must be a list of 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := Load(writeConfigFile(t, tc.body), noEnv)
@@ -1014,7 +1019,7 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 		{
 			name: "gates design is invalid",
 			body: minimalFile + "gates: {design: later}\n",
-			want: "gates.design must be a list of 'decisions', 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step",
+			want: "gates.design must be a list of 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step",
 		},
 		{
 			name: "gates has an unknown setting",

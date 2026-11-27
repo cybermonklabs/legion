@@ -207,6 +207,7 @@ on:
       - 'packages/envoy/internal/dispatch/cireconcile/*'
       - 'packages/envoy/internal/dispatch/config/**'
       - 'packages/envoy/internal/dispatch/dashboard/**'
+      - 'packages/envoy/internal/dispatch/decisionread/**'
       - 'packages/envoy/internal/dispatch/docs/*'
       - 'packages/envoy/internal/dispatch/docs/crafted/**'
       - 'packages/envoy/internal/dispatch/duty/**'

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,23 +16,35 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// The sizes of TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks' seed: the issue's
-// own documents and the current blocks each one holds, 2,000 blocks, and the other documents and
-// the blocks each one holds, 10,000 blocks, each of which mentions one of the 2,000.
+// The blocks each of the issue's own documents holds and the blocks each linking document holds in
+// an issue seedLinkedIntoIssue seeds; each block of a linking document mentions one of the issue's.
 const (
-	linkedIntoOwnDocuments     = 40
-	linkedIntoOwnBlocks        = 50
-	linkedIntoLinkingDocuments = 500
-	linkedIntoLinkingBlocks    = 20
+	linkedIntoOwnBlocks     = 50
+	linkedIntoLinkingBlocks = 20
 )
 
+// referencesGrowthBound is the most refs.Closure's read of the issue 10,000 blocks link into may
+// take, as a multiple of its read of the issue 2,000 blocks link into, each time the median of 3
+// reads that no budget cuts short (closureRead), in
+// TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks. It is set from that ratio as
+// measured on 2026-11-22 with the test's two issues. The anti-join the read leaves the issue's own
+// targets out by (refs' oneRowPerNode) gave 2.87 and 3.46 in the implementer's pod (2 CPUs) and
+// 3.59, 2.86 and 3.37 on the build farm (a Job of 12 CPUs running PostgreSQL 18). The array
+// exclusion of the test's negative control gave 11.52 and 12.36 in the pod and 14.84, 14.84 and
+// 14.23 on the build farm that day, and from 13.21 to 16.33 in its build-farm runs from
+// 2026-11-22 to 2026-11-24. 6.5 is about the geometric middle of the anti-join's highest ratio and
+// the array's lowest: 1.81 times the one, and the other 1.77 times it.
+const referencesGrowthBound = 6.5
+
 // The references read of an issue that 10,000 blocks of other documents link into answers 200
-// through the server's own route, inside its 2 s budget (referencesClosureBound), and linked_from
-// lists each of the 500 documents that hold those blocks once.
+// through the server's own route inside its 2 s budget (referencesClosureBound), and linked_from
+// lists each of the 500 documents that hold those blocks once; and the read's time grows with the
+// links it reads, not with the links times the issue's own targets.
 //
 // The seed stands for production, where 17 issues never got a 200 from the route and 57 of its 65
 // statement timeouts were in its in statement (refs' linksInQuery). The issue holds its spec and
@@ -41,43 +55,103 @@ const (
 // links, 5 into each block. The server's sessions run with JIT off, as production's Cloud SQL runs
 // every statement: it does not support PostgreSQL's LLVM JIT.
 //
-// seedLinkedInto writes the seed. One document of each side is written through the API, and the
-// rest are copies of its rows written in SQL (seedDocumentCopies), so the rows the read reads are
-// as the server's own writes make them. The database is then vacuumed and analyzed, as
-// dispatch-seed leaves the database it seeds.
+// The budget alone measures the machine as much as the query: the negative control below reads that
+// issue in 0.9 s on the build farm, inside it, and in about 6 s in the implementer's pod. So the
+// test also seeds an issue a fifth the size: its spec and 8 documents of 50 blocks, so 410 own
+// targets, and 100 documents of 20 blocks that link into them, 2,000 links, 5 into each block. A
+// read linear in its links reads 5 times the rows at the large issue as at the small one; a test of
+// each link against every own target makes 10,000 × 2,042 comparisons at the one and 2,000 × 410 at
+// the other, 25 times as many. refs.Closure, the read the route makes, reads each issue 3 times,
+// the two in turn, with no budget (closureRead), and the median of the large issue's reads is at
+// most referencesGrowthBound times the median of the small one's. The route then reads the large
+// issue 3 times, and their median answers 200 inside the budget: one read a slow spell of the
+// machine pushes past it does not fail the test, and two do. Each issue has a database and a server
+// of its own (seedLinkedIntoIssue).
 //
-// Negative control: with the array put back in oneRowPerNode,
-// `not (row(f.node_kind, f.node_id) = any(array(...)))` over `select row(o.kind, o.id) from own o`
-// in the out statement and `select row(t.kind, t.id) from targets t` in the in statement, the read
-// answers 503 REFERENCES_TIMEOUT on a slow machine, where the test fails at its status, and 200 on
-// a fast one, where it passes.
-// TestTheReferencesInStatementLeavesTheIssuesOwnNodesOutByAnAntiJoin is the control that fails on
-// every machine: it holds the in statement's plan to the anti-join.
+// One document of each side is written through the API, and the rest are copies of its rows
+// written in SQL (seedDocumentCopies), so the rows the read reads are as the server's own writes
+// make them. The database is then vacuumed and analyzed, as dispatch-seed leaves the database it
+// seeds.
+//
+// Negative control: with oneRowPerNode's exclusion written back as the array, `where not
+// (row(f.node_kind, f.node_id) = any(array(select row(x.kind, x.id) from ` + own + ` x)))`, the
+// test fails at the ratio: 11.52 and 12.36 in the implementer's pod (2026-11-22), where it also
+// fails at the budget, every route read answering 503 REFERENCES_TIMEOUT, and from 13.21 to 16.33
+// on the build farm (2026-11-22 to 2026-11-24), where every route read answers 200 inside the
+// budget: the runs referencesGrowthBound's comment names.
+// TestTheReferencesInStatementLeavesTheIssuesOwnNodesOutByAnAntiJoin holds the in statement's plan
+// to the anti-join, so it fails on the array whatever the machine's speed.
 func TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks(t *testing.T) {
-	// Not parallel: it holds the read to a wall-clock budget, the route's 2 s
-	// (referencesClosureBound), which the package's parallel tests would share the machine with.
-	seed := seedLinkedInto(t)
+	// Not parallel: it holds the route's reads to their 2 s budget (referencesClosureBound) and
+	// refs.Closure's read times to a ratio (referencesGrowthBound), wall clock that the load of the
+	// tests beside it can push past.
+	small := seedLinkedIntoIssue(t, 8, 100)
+	large := seedLinkedIntoIssue(t, 40, 500)
+	const reads = 3
 
-	started := time.Now()
-	response := issueReferencesRequest(t, seed.handler, seed.issue.Key, "")
-	took := time.Since(started)
-	t.Logf("the references read of %s, which %d blocks link into, answered %d in %s", seed.issue.Key, seed.linksInto, response.Code, took.Round(time.Millisecond))
-	if response.Code != http.StatusOK {
-		t.Fatalf("references of an issue %d blocks link into: status=%d after %s body=%s, want 200 inside the %s budget",
-			seed.linksInto, response.Code, took.Round(time.Millisecond), response.Body.String(), referencesClosureBound)
+	// The growth, on reads no budget cuts short (closureRead); the two issues are read in turn, so
+	// that a slow spell of the machine falls on both.
+	smallTook := make([]time.Duration, 0, reads)
+	largeTook := make([]time.Duration, 0, reads)
+	for number := 1; number <= reads; number++ {
+		smallRead, largeRead := closureRead(t, small), closureRead(t, large)
+		smallTook, largeTook = append(smallTook, smallRead), append(largeTook, largeRead)
+		t.Logf("closure read %d: %s for the issue %d blocks link into, %s for the issue %d blocks link into",
+			number, smallRead.Round(time.Millisecond), small.links, largeRead.Round(time.Millisecond), large.links)
 	}
-	answer := decodeBody[model.IssueReferences](t, response)
+	smallMedian, largeMedian := medianTook(smallTook), medianTook(largeTook)
+	ratio := float64(largeMedian) / float64(smallMedian)
+	if ratio > referencesGrowthBound {
+		t.Errorf("refs.Closure's read of an issue %d blocks link into took a median %s of %d reads, %.2f times the median %s of an issue %d blocks link into; want at most %v times (referencesGrowthBound)",
+			large.links, largeMedian.Round(time.Millisecond), reads, ratio, smallMedian.Round(time.Millisecond), small.links, referencesGrowthBound)
+	} else {
+		t.Logf("median of %d closure reads: %s for the issue %d blocks link into, %s for the issue %d blocks link into, %.2f times as long, at most %v",
+			reads, smallMedian.Round(time.Millisecond), small.links, largeMedian.Round(time.Millisecond), large.links, ratio, referencesGrowthBound)
+	}
+
+	// The budget, on the route's reads of the large issue: their median, so at least 2 of the 3,
+	// answers 200 inside it, a read that answers anything else counting as one past it.
+	var answer *httptest.ResponseRecorder
+	var inside int
+	routeReads := make([]string, 0, reads)
+	for range reads {
+		started := time.Now()
+		response := issueReferencesRequest(t, large.handler, large.key, "")
+		took := time.Since(started)
+		described := strconv.Itoa(response.Code) + " in " + took.Round(time.Millisecond).String()
+		if response.Code != http.StatusOK {
+			described += " " + strings.TrimSpace(response.Body.String())
+		}
+		routeReads = append(routeReads, described)
+		if response.Code == http.StatusOK && took <= referencesClosureBound {
+			inside++
+			if answer == nil {
+				answer = response
+			}
+		}
+	}
+	if inside <= reads/2 {
+		t.Errorf("the route's %d reads of the references of an issue %d blocks link into answered %s; want their median to answer 200 inside the %s budget",
+			reads, large.links, strings.Join(routeReads, "; "), referencesClosureBound)
+	} else {
+		t.Logf("the route's %d reads of the references of the issue %d blocks link into answered %s", reads, large.links, strings.Join(routeReads, "; "))
+	}
+
+	if answer == nil {
+		return
+	}
+	references := decodeBody[model.IssueReferences](t, answer)
 	listed := map[string]int{}
 	var others []string
-	for _, row := range answer.LinkedFrom {
-		if row.Node.Kind != "artifact" || !seed.linking[row.Node.ID] {
+	for _, row := range references.LinkedFrom {
+		if row.Node.Kind != "artifact" || !large.linking[row.Node.ID] {
 			others = append(others, row.Node.Kind+" "+row.Node.ID)
 			continue
 		}
 		listed[row.Node.ID]++
 	}
 	var missing, repeated int
-	for id := range seed.linking {
+	for id := range large.linking {
 		switch count := listed[id]; {
 		case count == 0:
 			missing++
@@ -87,29 +161,66 @@ func TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks(t *testing
 	}
 	if missing != 0 || repeated != 0 || len(others) != 0 {
 		t.Errorf("linked_from holds %d rows: %d of the %d linking documents missing, %d listed more than once, and %d other nodes %v; want each linking document once",
-			len(answer.LinkedFrom), missing, len(seed.linking), repeated, len(others), others)
+			len(references.LinkedFrom), missing, len(large.linking), repeated, len(others), others)
 	}
 }
 
-// linkedIntoSeed is what seedLinkedInto seeded: the server that serves it, through handler, and
-// its store, whose every session runs with JIT off; the issue; how many block links reach the
-// issue's blocks; and the id of each document that holds those links.
-type linkedIntoSeed struct {
-	handler   http.Handler
-	server    *server
-	store     *store.Store
-	issue     model.Issue
-	linksInto int
-	linking   map[string]bool
+// linkedIntoReader is who the test's reads read as: alice, as the route records the person its
+// requests name (issueReferencesRequest).
+var linkedIntoReader = model.Actor{Kind: "user", ID: "alice", Proven: true}
+
+// closureRead reads the references of issue as the route reads them, refs.Closure for alice in a
+// transaction of its own on the issue's database, but with no budget (the route's boundedClosure),
+// so that the read runs to its end however long it takes, and answers the time refs.Closure took.
+// It fails t unless the read lists each of the issue's linking documents in linked_from.
+func closureRead(t *testing.T, issue linkedIntoIssue) time.Duration {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := issue.served.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the references read of %s: %v", issue.key, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	started := time.Now()
+	references, err := refs.Closure(ctx, tx, linkedIntoReader, issue.key, "")
+	took := time.Since(started)
+	if err != nil {
+		t.Fatalf("refs.Closure's read of the references of %s: %v", issue.key, err)
+	}
+	if len(references.LinkedFrom) != len(issue.linking) {
+		t.Fatalf("refs.Closure's read of the references of %s lists %d nodes in linked_from, want its %d linking documents",
+			issue.key, len(references.LinkedFrom), len(issue.linking))
+	}
+	return took
 }
 
-// seedLinkedInto writes the seed TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks
-// describes, which TestTheReferencesInStatementLeavesTheIssuesOwnNodesOutByAnAntiJoin reads too,
-// on a database of its own whose server reads it with JIT off: an issue whose 40 documents beside
-// its spec hold 50 blocks each, and 500 other documents of 20 blocks, each block mentioning one of
-// the issue's 2,000. It fails t unless the issue's documents hold 2,000 blocks and 10,000 block
-// links reach them.
-func seedLinkedInto(t *testing.T) linkedIntoSeed {
+// medianTook is the middle of an odd number of read times.
+func medianTook(times []time.Duration) time.Duration {
+	sorted := slices.Clone(times)
+	slices.Sort(sorted)
+	return sorted[len(sorted)/2]
+}
+
+// linkedIntoIssue is an issue seedLinkedIntoIssue seeded: the server that reads its database,
+// through handler, and the store it reads through, whose every session runs with JIT off; the
+// issue's key; the number of block links into its blocks; and the uuids of the documents that hold
+// those links.
+type linkedIntoIssue struct {
+	handler http.Handler
+	server  *server
+	served  *store.Store
+	key     string
+	links   int
+	linking map[string]bool
+}
+
+// seedLinkedIntoIssue seeds, in a database of its own, an issue of project CORE that holds
+// ownDocuments documents of linkedIntoOwnBlocks blocks, and linkingDocuments documents of project
+// OPS of linkedIntoLinkingBlocks blocks, each block of which mentions one of the issue's blocks,
+// the issue's blocks in turn; and it starts a server on that database. It fails t unless the
+// issue's documents hold ownDocuments × linkedIntoOwnBlocks blocks and the block links into them
+// are linkingDocuments × linkedIntoLinkingBlocks.
+func seedLinkedIntoIssue(t *testing.T, ownDocuments, linkingDocuments int) linkedIntoIssue {
 	t.Helper()
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -126,8 +237,8 @@ func seedLinkedInto(t *testing.T) linkedIntoSeed {
 	createReferenceAPIProject(t, handler, "OPS")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
 
-	// The issue's own documents: own-1.md through the API, and own-2.md to own-40.md its copies.
-	// own lists their blocks, document by document, each in its place in its document.
+	// The issue's own documents: own-1.md through the API, and the others its copies. own lists
+	// their blocks, document by document, each in its place in its document.
 	ownTexts := make([]string, linkedIntoOwnBlocks)
 	for index := range ownTexts {
 		ownTexts[index] = "Block " + strconv.Itoa(index+1) + " of a document of the issue's own."
@@ -135,12 +246,12 @@ func seedLinkedInto(t *testing.T) linkedIntoSeed {
 	ownTemplate := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "own-1.md", paragraphsMarkdown(ownTexts)).Artifact
 	ownTemplateBlocks := templateBlockIDs(t, served, ownTemplate.ID, ownTexts)
 	type ownBlock struct{ slug, refKey, id string }
-	own := make([]ownBlock, 0, linkedIntoOwnDocuments*linkedIntoOwnBlocks)
+	own := make([]ownBlock, 0, ownDocuments*linkedIntoOwnBlocks)
 	for _, id := range ownTemplateBlocks {
 		own = append(own, ownBlock{ownTemplate.Slug, ownTemplate.RefKey, id})
 	}
-	ownCopies := make([]seededDocument, 0, linkedIntoOwnDocuments-1)
-	for number := 2; number <= linkedIntoOwnDocuments; number++ {
+	ownCopies := make([]seededDocument, 0, ownDocuments-1)
+	for number := 2; number <= ownDocuments; number++ {
 		slug := "own-" + strconv.Itoa(number) + "-md"
 		document := seededDocument{
 			id: uuid.NewString(), slug: slug, name: "own-" + strconv.Itoa(number) + ".md",
@@ -154,8 +265,8 @@ func seedLinkedInto(t *testing.T) linkedIntoSeed {
 		ownCopies = append(ownCopies, document)
 	}
 
-	// The linking documents: Linking document 1 through the API, and the 499 others its copies.
-	// Block j of document k mentions the block own[(k*20+j) mod 2,000].
+	// The linking documents: Linking document 1 through the API, and the others its copies.
+	// Block j of document k mentions the block own[(k*linkedIntoLinkingBlocks+j) mod len(own)].
 	linkTexts := func(document int) (texts, targets []string) {
 		for index := range linkedIntoLinkingBlocks {
 			target := own[(document*linkedIntoLinkingBlocks+index)%len(own)]
@@ -168,8 +279,8 @@ func seedLinkedInto(t *testing.T) linkedIntoSeed {
 	linkingTemplate := createProjectDocument(t, handler, "OPS", "Linking document 1", paragraphsMarkdown(templateTexts))
 	linkingTemplateBlocks := templateBlockIDs(t, served, linkingTemplate.ID, templateTexts)
 	linking := map[string]bool{linkingTemplate.ID: true}
-	linkingCopies := make([]seededDocument, 0, linkedIntoLinkingDocuments-1)
-	for document := 1; document < linkedIntoLinkingDocuments; document++ {
+	linkingCopies := make([]seededDocument, 0, linkingDocuments-1)
+	for document := 1; document < linkingDocuments; document++ {
 		texts, targets := linkTexts(document)
 		number := strconv.Itoa(document + 1)
 		copied := seededDocument{
@@ -199,15 +310,15 @@ func seedLinkedInto(t *testing.T) linkedIntoSeed {
 	`, issue.Key).Scan(&ownBlocks, &linksInto); err != nil {
 		t.Fatalf("count the seed's blocks and links: %v", err)
 	}
-	if want := linkedIntoOwnDocuments * linkedIntoOwnBlocks; ownBlocks != want {
+	if want := ownDocuments * linkedIntoOwnBlocks; ownBlocks != want {
 		t.Fatalf("the issue's documents hold %d blocks, want %d", ownBlocks, want)
 	}
-	if want := linkedIntoLinkingDocuments * linkedIntoLinkingBlocks; linksInto != want {
+	if want := linkingDocuments * linkedIntoLinkingBlocks; linksInto != want {
 		t.Fatalf("%d block links reach the issue's blocks, want %d", linksInto, want)
 	}
 	t.Logf("seed: %d own blocks, %d links into them from %d documents, copied and vacuumed in %s",
 		ownBlocks, linksInto, len(linking), time.Since(seeded).Round(time.Millisecond))
-	return linkedIntoSeed{handler: handler, server: registered, store: served, issue: issue, linksInto: linksInto, linking: linking}
+	return linkedIntoIssue{handler: handler, server: registered, served: served, key: issue.Key, links: linksInto, linking: linking}
 }
 
 // paragraphsMarkdown is the markdown of a document of texts, one paragraph each.
@@ -302,15 +413,15 @@ func seedDocumentCopies(t *testing.T, database *store.Store, template model.Arti
 		args      []any
 	}{
 		{"the documents", `
-			insert into artifacts (id, issue_key, slug, name, kind, is_primary, created_by, created_at, project_key, ref_key, last_seq, session_id, role)
-			select d.id::uuid, a.issue_key, d.slug, d.name, a.kind, a.is_primary, a.created_by, a.created_at, a.project_key, d.ref_key, a.last_seq, a.session_id, a.role
+			insert into artifacts (id, issue_key, slug, name, kind, is_primary, created_by, created_at, project_key, ref_key, last_seq, session_id, role, retired_at)
+			select d.id::uuid, a.issue_key, d.slug, d.name, a.kind, a.is_primary, a.created_by, a.created_at, a.project_key, d.ref_key, a.last_seq, a.session_id, a.role, a.retired_at
 			from seeded_documents d cross join artifacts a where a.id = $1`, []any{template.ID}},
 		{"the store's nodes", `
-			insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
-			select n.kind, d.ref_key, n.supertag, n.visibility, n.state, n.attributes, n.made_at, n.made_by, n.source_event
+			insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event, project_key, parties)
+			select n.kind, d.ref_key, n.supertag, n.visibility, n.state, n.attributes, n.made_at, n.made_by, n.source_event, n.project_key, n.parties
 			from seeded_documents d join graph_nodes n on n.kind = 'artifact' and n.id = $1::text
 			union all
-			select n.kind, b.node_id, n.supertag, n.visibility, n.state, n.attributes, n.made_at, n.made_by, n.source_event
+			select n.kind, b.node_id, n.supertag, n.visibility, n.state, n.attributes, n.made_at, n.made_by, n.source_event, n.project_key, n.parties
 			from seeded_blocks b join graph_nodes n on n.kind = 'block' and n.id = $1::text || '#' || b.template_block`, []any{template.RefKey}},
 		{"the store's tuples", `
 			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)

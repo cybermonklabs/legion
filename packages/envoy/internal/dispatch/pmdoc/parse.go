@@ -125,7 +125,7 @@ func ParseRendering(markdown string) (*Node, error) {
 // blocks begin (itemblocks.Split).
 func ParseWithSourceStarts(markdown string) (*Node, []int, error) {
 	var starts []int
-	doc, err := parseMarkdown(markdown, fromStart, true, NewWriteBudget(), func(doc *Node, root ast.Node, _ []byte, rest int) {
+	doc, err := parseMarkdown(markdown, fromStart, true, "", NewWriteBudget(), func(doc *Node, root ast.Node, _ []byte, rest int) {
 		starts = startsInMarkdown(sourceStarts(doc, root, rest), markdown)
 	})
 	if err != nil {
@@ -181,7 +181,7 @@ type OutlineTypedBlock struct {
 // outline.
 func RenderingOutline(markdown string) (Outline, error) {
 	var outline Outline
-	_, err := parseMarkdown(markdown, fromStart, true, readBackBudget(), func(_ *Node, root ast.Node, source []byte, rest int) {
+	_, err := parseMarkdown(markdown, fromStart, true, "", readBackBudget(), func(_ *Node, root ast.Node, source []byte, rest int) {
 		outline = outlineOf(root, source, rest, markdown)
 	})
 	if err != nil {
@@ -228,7 +228,7 @@ func ParseForWrite(markdown string, live *Node) (*Node, error) {
 // for its blocks - shares this parse rather than making a second one of the same markdown. A
 // refused parse answers the zero read-back.
 func ParseWritten(markdown string, live *Node) (*Node, WrittenReadBack, error) {
-	doc, err := parseForWrite(markdown, live, true, NewWriteBudget())
+	doc, err := parseForWrite(markdown, live, true, "", NewWriteBudget())
 	if err != nil {
 		return nil, WrittenReadBack{}, err
 	}
@@ -275,7 +275,7 @@ func withWrittenReadBack(doc *Node) (*Node, WrittenReadBack, error) {
 // markdown against no document, so an element this build cannot create yet is refused wherever
 // it is written: a write into a live document parses with ParseFragmentHolding.
 func ParseFragment(markdown string, opensDocument bool, budget *WriteBudget) (*Node, error) {
-	return parseForWrite(markdown, nil, opensDocument, budget)
+	return parseForWrite(markdown, nil, opensDocument, "", budget)
 }
 
 // ParseFragmentHolding is ParseFragment of markdown written into live - an insert, a replace's
@@ -283,7 +283,19 @@ func ParseFragment(markdown string, opensDocument bool, budget *WriteBudget) (*N
 // element live already holds need not be creatable by this build, as an upload of the whole
 // document over live may keep it.
 func ParseFragmentHolding(markdown string, opensDocument bool, budget *WriteBudget, live *Node) (*Node, error) {
-	return parseForWriteHolding(markdown, nil, live, opensDocument, budget)
+	return parseForWriteHolding(markdown, nil, live, opensDocument, "", budget)
+}
+
+// ParseFragmentInto parses markdown a caller writes inside a block of type parent of live, after
+// that block's last child, as ParseFragmentHolding parses one written between blocks: its blocks
+// are read as that block's children rather than a document's, so a block of a type whose parents
+// name parent - a reading in a decision or an ask (TypedContent) - is read where it is written, as
+// it is nowhere at a document's level. A block's children hold no front matter, so none is read.
+// It carries none of live's block IDs, and an element live already holds need not be creatable by
+// this build. The tree is a document holding those blocks, as ParseFragment's is; whether they may
+// close the block is InsertInto's to judge, against the children the block holds already.
+func ParseFragmentInto(markdown, parent string, budget *WriteBudget, live *Node) (*Node, error) {
+	return parseForWriteHolding(markdown, nil, live, false, parent, budget)
 }
 
 // parseForWrite is the parse ParseForWrite and ParseFragment share. The markdown's tree is judged
@@ -291,16 +303,18 @@ func ParseFragmentHolding(markdown string, opensDocument bool, budget *WriteBudg
 // of live it leaves unchanged (carryBlockIDs), and only then is an id minted for each block still
 // without one (EnsureBlockIDs), so the refusal and the carry see only the ids the markdown named.
 // The tree is held to the content rule of each block a live document keeps in any order
-// (writtenContentError), since a caller wrote it in one piece.
-func parseForWrite(markdown string, live *Node, readFrontmatter bool, budget *WriteBudget) (*Node, error) {
-	return parseForWriteHolding(markdown, live, live, readFrontmatter, budget)
+// (writtenContentError), since a caller wrote it in one piece. within is the type of the block
+// whose children the markdown's blocks are, "" for a document's (validateWithin).
+func parseForWrite(markdown string, live *Node, readFrontmatter bool, within string, budget *WriteBudget) (*Node, error) {
+	return parseForWriteHolding(markdown, live, live, readFrontmatter, within, budget)
 }
 
 // parseForWriteHolding is parseForWrite whose markdown may keep an element held holds that this
 // build cannot create (refuseUncreatable), live being the tree whose block ids it carries:
-// ParseFragmentHolding carries none, and holds the live document it writes into.
-func parseForWriteHolding(markdown string, live, held *Node, readFrontmatter bool, budget *WriteBudget) (*Node, error) {
-	doc, err := parseUnstamped(LineFeeds(markdown), fromStart, readFrontmatter, budget)
+// ParseFragmentHolding and ParseFragmentInto carry none, and hold the live document they write
+// into.
+func parseForWriteHolding(markdown string, live, held *Node, readFrontmatter bool, within string, budget *WriteBudget) (*Node, error) {
+	doc, err := parseMarkdown(LineFeeds(markdown), fromStart, readFrontmatter, within, budget, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -371,14 +385,16 @@ func LineFeedAttrs(attrs map[string]any) map[string]any {
 // as the blocks its lines make. at is where markdown stands in what the caller wrote, which a
 // refusal's line number counts from.
 func parseUnstamped(markdown string, at origin, readFrontmatter bool, budget *WriteBudget) (*Node, error) {
-	return parseMarkdown(markdown, at, readFrontmatter, budget, nil)
+	return parseMarkdown(markdown, at, readFrontmatter, "", budget, nil)
 }
 
-// parseMarkdown is parseUnstamped that, given read, also hands it what the parse read once the
-// tree is converted and valid: the tree, the goldmark tree root it was converted from, the source
-// root's offsets count, and rest, how many bytes of front matter the parse read ahead of that
-// source, 0 where it read none (a closed front-matter block is never empty). ParseWithSourceStarts
-// reads its starts there (sourceStarts) and RenderingOutline its outline (outlineOf).
+// parseMarkdown is parseUnstamped whose top-level children are those of a block of type within
+// where within names one (validateWithin), and that, given read, also hands it what the parse read
+// once the tree is converted and valid: the tree, the goldmark tree root it was converted from,
+// the source root's offsets count, and rest, how many bytes of front matter the parse read ahead
+// of that source, 0 where it read none (a closed front-matter block is never empty).
+// ParseWithSourceStarts reads its starts there (sourceStarts) and RenderingOutline its outline
+// (outlineOf).
 //
 // Every U+0000 in markdown is read as U+FFFD (nulAsReplacement) before any parser sees a byte of
 // it, as CommonMark requires of a reader (§2.3 Insecure characters) and the browser editor's parser
@@ -392,7 +408,7 @@ func parseUnstamped(markdown string, at origin, readFrontmatter bool, budget *Wr
 // U+0000 and so keeps its length, and the offsets read hands on are offsets into source until
 // startsInMarkdown maps each of them back to the byte of markdown it stands at.
 func parseMarkdown(
-	markdown string, at origin, readFrontmatter bool, budget *WriteBudget,
+	markdown string, at origin, readFrontmatter bool, within string, budget *WriteBudget,
 	read func(doc *Node, root ast.Node, source []byte, rest int),
 ) (doc *Node, err error) {
 	defer recoverPanic(&doc, &err, "reading markdown")
@@ -428,7 +444,7 @@ func parseMarkdown(
 		doc.Children = []*Node{{Type: "paragraph"}}
 	}
 	sortNodeMarks(doc)
-	if err := doc.Validate(); err != nil {
+	if err := validateWithin(doc, within); err != nil {
 		return nil, err
 	}
 	if read != nil {

@@ -193,3 +193,17 @@ func TestReplaySeedReadsPublicUnderAShadowingUserSchema(t *testing.T) {
 		t.Fatalf("a resumed seed reads comment c1 as %q (%v), want local-c1", local, ok)
 	}
 }
+
+// TestTheServedAnswersQueryReadsTheTupleLogFromPublic: the check reads an ask's answer as its node
+// holds it through the one reading every read of an answer shares (asks.NodeAnswerColumn), which
+// names graph_tuples bare, and every statement of the check names public, so a schema named as the
+// login cannot answer in the table's place (TestReplaySeedReadsPublicUnderAShadowingUserSchema).
+// The statement reads the log from public and names no bare table.
+func TestTheServedAnswersQueryReadsTheTupleLogFromPublic(t *testing.T) {
+	if !strings.Contains(servedAnswersQuery, "from public.graph_tuples ") {
+		t.Errorf("the served answers statement reads no public.graph_tuples:\n%s", servedAnswersQuery)
+	}
+	if strings.Contains(servedAnswersQuery, "from graph_tuples ") {
+		t.Errorf("the served answers statement reads a bare graph_tuples, which a schema named as the login can shadow:\n%s", servedAnswersQuery)
+	}
+}

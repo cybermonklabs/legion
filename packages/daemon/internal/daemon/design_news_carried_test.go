@@ -528,7 +528,7 @@ func (r *newsPathRig) checksEvent(kind intake.DispatchArtifactKind, version int)
 // which settles that opening, and the news task is sent while the gate is closed, so it says
 // nothing of an opening, and its confirmation raises spec to 4. The Verification document is
 // approved: the reviewer is owed nothing now, so it is sent the opened message, which settles the
-// opening too. A version of the spec that changes decision blocks alone, which Dispatch carries
+// opening too. A version of the spec that changes ask blocks alone, which Dispatch carries
 // approved, then sends the reviewer nothing: the reconcile raises what it took.
 func TestAnOpenedMessageAndACloseSettleTheOpeningSoADecisionOnlyVersionSendsNothing(t *testing.T) {
 	t.Parallel()
@@ -593,7 +593,7 @@ func TestAnOpenedMessageAndACloseSettleTheOpeningSoADecisionOnlyVersionSendsNoth
 		t.Fatalf("the reviewer's role messages = %q, want the opened message last", published)
 	}
 
-	// Step 5: a decision-only version of the spec, which Dispatch carries approved, sends nothing.
+	// Step 5: an ask-only version of the spec, which Dispatch carries approved, sends nothing.
 	r.client.answer = func(pair record.VersionPair) (dispatch.ArtifactChanges, error) {
 		if pair.ArtifactID == pathDoc && pair.To == 5 {
 			return dispatch.ArtifactChanges{ArtifactID: pair.ArtifactID, From: pair.From, To: pair.To, DecisionOnly: true}, nil
@@ -607,12 +607,12 @@ func TestAnOpenedMessageAndACloseSettleTheOpeningSoADecisionOnlyVersionSendsNoth
 	r.run(ofKind(record.OutboxKindDesignChanges))
 	r.run(ofKind(record.OutboxKindRoleMessage))
 	if addressed := r.seenSince(mark, addressedTo(pathChild, claim.RoleReviewer, token)); len(addressed) != 0 {
-		t.Fatalf("outbox rows addressed to the reviewer after a carried decision-only version = %+v, want none", addressed)
+		t.Fatalf("outbox rows addressed to the reviewer after a carried ask-only version = %+v, want none", addressed)
 	}
 	if prompted := promptsAfter(conn, before); len(prompted) != 0 {
-		t.Fatalf("the reviewer's prompts after a carried decision-only version = %+v, want none", prompted)
+		t.Fatalf("the reviewer's prompts after a carried ask-only version = %+v, want none", prompted)
 	}
-	r.wantTold("after the carried decision-only version", pathChild, record.AudienceHolder, 5, false)
+	r.wantTold("after the carried ask-only version", pathChild, record.AudienceHolder, 5, false)
 }
 
 // A restart and a close and reopening together. The reviewer's news task carries the opening, and

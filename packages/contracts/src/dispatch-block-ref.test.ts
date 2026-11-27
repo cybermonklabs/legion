@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import {
   askOpenerAttributes,
@@ -157,197 +158,45 @@ test("the Go renderer's table of typed block id spellings is the same table", as
 /** A line that opens the ask block `id`, with the attributes the release before wrote on it. */
 const opener = (id: string) => `:::ask{#${id} state="answered" answer="Ship it."}`;
 
-test.each([
-  {
-    name: "a line opens the block past its indentation and its containers' markers",
-    lines: [
-      opener("a"),
-      `   ${opener("b")}`,
-      `> ${opener("c")}`,
-      `>>${opener("d")}`,
-      `- ${opener("e")}`,
-      `*\t${opener("f")}`,
-      `+ ${opener("g")}`,
-      `1. ${opener("h")}`,
-      `12) ${opener("i")}`,
-      `[^note]: ${opener("j")}`,
-      `> - [^x]:  ${opener("k")}`,
-      `::::${opener("l").slice(3)}`,
-    ],
-    want: [
-      opener("a"),
-      opener("b"),
-      opener("c"),
-      opener("d"),
-      opener("e"),
-      opener("f"),
-      opener("g"),
-      opener("h"),
-      opener("i"),
-      opener("j"),
-      opener("k"),
-      `::::${opener("l").slice(3)}`,
-    ],
-  },
-  {
-    // A list marker with no space or tab after it, a blank footnote label, text before the
-    // directive, two colons and another block type open no ask block.
-    name: "a line opens no ask block past what is not a container marker",
-    lines: [
-      `-${opener("a")}`,
-      `1.${opener("b")}`,
-      `[^ ]: ${opener("c")}`,
-      `Quoted: ${opener("d")}`,
-      `::${opener("e").slice(3)}`,
-      ":::callout{#f}",
-    ],
-    want: [],
-  },
-  {
-    // A fence of backticks or tildes, three or more, is closed only by a fence of the same
-    // character at least as long with nothing after it but blanks.
-    name: "no line of fenced code opens a block",
-    lines: [
-      "```",
-      opener("a"),
-      "```",
-      "~~~",
-      opener("b"),
-      "~~~  ",
-      "````markdown",
-      opener("c"),
-      "```",
-      opener("d"),
-      "`````",
-      "~~~",
-      opener("e"),
-      "```",
-      opener("f"),
-      "~~~~",
-      "```",
-      opener("g"),
-      "``` text",
-      opener("h"),
-      "```",
-      opener("i"),
-    ],
-    want: [opener("i")],
-  },
-  {
-    // A backtick fence's info string holds no backtick, so a line that starts with a code span
-    // opens no fence; nor do two backticks.
-    name: "a line that only starts like a fence opens none",
-    lines: ["``` a ` b", opener("a"), "``", opener("b")],
-    want: [opener("a"), opener("b")],
-  },
-  {
-    name: "a fence opened past a container's marker is code like any other",
-    lines: [
-      "> ```",
-      `> ${opener("a")}`,
-      "> ```",
-      "[^x]: ```",
-      `    ${opener("b")}`,
-      "    ```",
-      "- ~~~",
-      `  ${opener("c")}`,
-      "  ~~~",
-      opener("d"),
-    ],
-    want: [opener("d")],
-  },
-  {
-    name: "no line of the front matter a document opens with opens a block",
-    lines: ["---  ", opener("a"), "title: Plan", "---\t", opener("b")],
-    want: [opener("b")],
-  },
-  {
-    // A rule after text is no front matter.
-    name: "front matter opens only on the first line",
-    lines: ["Intro", "---", opener("a"), "---"],
-    want: [opener("a")],
-  },
-  {
-    // An opening `---` that nothing closes is no front matter, and after it no typed block opens
-    // at the document's level (pmdoc's frontmatterAttempt, which wraps the typed block's parser
-    // in pmdoc/parse.go). The opener is paragraph text.
-    name: "an opening `---` nothing closes is no front matter",
-    lines: ["---", opener("a")],
-    want: [],
-  },
-  {
-    // After an opening `---` that nothing closes, a callout does not open at the document's
-    // level either, so the ask block's opener inside it is paragraph text (pmdoc's
-    // frontmatterAttempt).
-    name: "after an opening `---` nothing closes, neither a callout nor an ask block in it opens",
-    lines: ["---", ":::callout{#c}", opener("a"), ":::", ":::"],
-    want: [],
-  },
-  {
-    // A backslash before ASCII punctuation escapes it, so `\]` and `\[` are part of the label. An
-    // unescaped `[` makes the line no footnote label.
-    name: "a footnote label holds an escaped bracket, and a block opens on its line",
-    lines: [
-      `[^a\\]b]: ${opener("a")}`,
-      "",
-      `[^c\\[d]: ${opener("b")}`,
-      "",
-      `[^e[f]: ${opener("c")}`,
-    ],
-    want: [opener("a"), opener("b")],
-  },
-  {
-    name: "a fence opened on the line of a footnote label that holds an escaped bracket is code",
-    lines: ["[^a\\]b]: ```", `    ${opener("a")}`, "    ```", "", opener("b")],
-    want: [opener("b")],
-  },
-  {
-    // An inline code span keeps the spaces at the start of its later lines, so such a line can
-    // start with an opener. Four columns or more past its containers' lines, the line goes on
-    // with the paragraph and opens no block. The columns of a footnote definition or a list item
-    // that the line goes on with are its containers' columns.
-    name: "a line of an inline code span four columns past its containers opens no block",
-    lines: [
-      "Text `code",
-      `    ${opener("a")}\` more.`,
-      "",
-      "[^n]: Note `code",
-      `        ${opener("b")}\` more.`,
-      "",
-      `    ${opener("c")}`,
-      "",
-      "10. Item",
-      "",
-      `    ${opener("d")}`,
-    ],
-    want: [opener("c"), opener("d")],
-  },
-  {
-    // An opener four columns or more past the marker before it is indented code.
-    name: "a line four columns past its containers' markers opens no block",
-    lines: [`    > ${opener("a")}`, "", `>     ${opener("b")}`, "", `-     ${opener("c")}`],
-    want: [],
-  },
-  {
-    // An empty item takes its content from the next line where that line reaches the item's
-    // content column and no blank line stands between them. So the list stays open, though
-    // goldmark closes it at a marker of another bullet character (pmdoc's
-    // emptyItemGuard.Continue).
-    name: "a list stays open at a line that reaches its empty last item's content column",
-    lines: ["-", "   *", `\t${opener("a")}`],
-    want: [opener("a")],
-  },
-  {
-    // After indented code, a line of only `>` counts as blank only where the list opens in no
-    // container that its own line opens (pmdoc's interruptsOpenBlock). Here the `>` line opened
-    // the quote a line before the item, so the code holds nothing open on the item's line, and
-    // the item numbered 10 opens a list in the quote.
-    name: "after indented code, an item numbered 10 opens a list in the quote a line of `>` opened",
-    lines: ["    code", ">", `> 10. ${opener("a")}`],
-    want: [opener("a")],
-  },
-])("askOpenerLines: $name", ({ lines, want }) => {
-  expect(askOpenerLines(lines.join("\n"))).toEqual([...want]);
+/**
+ * One row of `packages/envoy/internal/dispatch/pmdoc/testdata/ask-block-scanner.json`, the one
+ * corpus of the two hand-written block scanners: `readAskBlocks` here (read through
+ * `askOpenerLines`) and Go's `pmdoc.QuestionBlocks`, whose test reads the same file. `lines` is a
+ * document, `ids` the ids of the ask blocks that open in it, `why` the rule the row holds.
+ */
+interface AskBlockScannerRow {
+  readonly name: string;
+  readonly why: string;
+  readonly lines: readonly string[];
+  readonly ids: readonly string[];
+}
+
+const SCANNER_CORPUS: readonly AskBlockScannerRow[] = JSON.parse(
+  readFileSync(
+    new URL("../../envoy/internal/dispatch/pmdoc/testdata/ask-block-scanner.json", import.meta.url),
+    "utf8"
+  )
+);
+
+test("the shared corpus of the two block scanners is not empty", () => {
+  expect(SCANNER_CORPUS.length).toBeGreaterThan(0);
+});
+
+test.each([...SCANNER_CORPUS])("askOpenerLines: $name", ({ lines, ids, why }) => {
+  const openers = askOpenerLines(lines.join("\n"));
+  // Each opener is its line from the directive's first colon on, past the containers' markers.
+  for (const line of openers) {
+    expect(line, why).toMatch(/^:{3,}ask\{/);
+    expect(
+      lines.some((original) => original.endsWith(line)),
+      why
+    ).toBe(true);
+  }
+  // The blocks Go's scanner reads are the ones that name an id.
+  expect(
+    openers.flatMap((line) => askOpenerBlockId(line) ?? []),
+    why
+  ).toEqual([...ids]);
 });
 
 test("askOpenerLines reads lines that end in a carriage return and a line feed", () => {
@@ -380,6 +229,74 @@ test("askOpenerBlockId reads back each id as the renderer writes it, and no othe
   for (const line of [':::ask{id="a"}', ":::ask{#a.b}", ":::ask{#}", ':::ask{state="open" #a}']) {
     expect(askOpenerBlockId(line)).toBeUndefined();
   }
+});
+
+// The character references a value reads back: every numeric reference, which the renderer writes
+// for `"`, a line feed and a carriage return (`&#x22;`, `&#xA;`, `&#xD;`) and a browser's parser
+// for any character, and the five named ones. A character a reference decodes to starts no
+// reference of its own: the value is read in one pass.
+test.each([
+  { name: "a hexadecimal quote", written: "a&#x22;b", read: 'a"b' },
+  { name: "a hexadecimal line feed", written: "a&#xA;b", read: "a\nb" },
+  { name: "a hexadecimal carriage return", written: "a&#xD;b", read: "a\rb" },
+  { name: "an upper-case hexadecimal marker", written: "&#X41;&#x61;", read: "Aa" },
+  { name: "a decimal quote", written: "a&#34;b", read: 'a"b' },
+  { name: "a decimal letter", written: "&#65;&#66;", read: "AB" },
+  { name: "an astral character", written: "&#x1F4CA;&#128202;", read: "\u{1F4CA}\u{1F4CA}" },
+  { name: "an ampersand", written: "R&amp;D", read: "R&D" },
+  { name: "a greater-than sign", written: "a&gt;b", read: "a>b" },
+  { name: "a less-than sign", written: "a&lt;b", read: "a<b" },
+  { name: "a named quote", written: "a&quot;b", read: 'a"b' },
+  { name: "a named apostrophe", written: "it&apos;s", read: "it's" },
+  { name: "an ampersand that starts a numeric reference", written: "&amp;#x22;", read: "&#x22;" },
+  { name: "an ampersand that starts a named reference", written: "&amp;amp;", read: "&amp;" },
+  { name: "a named reference this reader does not know", written: "a&nbsp;b", read: "a&nbsp;b" },
+  {
+    name: "a name that is a property of every object",
+    written: "&constructor;",
+    read: "&constructor;",
+  },
+  { name: "a reference with no semicolon", written: "a&amp b &#x22 c", read: "a&amp b &#x22 c" },
+  { name: "a bare ampersand", written: "a & b", read: "a & b" },
+  { name: "zero", written: "a&#0;b&#x0;c", read: "a\uFFFDb\uFFFDc" },
+  { name: "a surrogate", written: "&#xD800;&#57343;", read: "\uFFFD\uFFFD" },
+  { name: "a code point past U+10FFFF", written: "&#x110000;&#99999999999;", read: "\uFFFD\uFFFD" },
+])("askOpenerAttributes reads $name in a value", ({ written, read }) => {
+  expect(askOpenerAttributes(`:::ask{#a answer="${written}"}`)?.answer).toBe(read);
+});
+
+test("askOpenerAttributes reads every quoted attribute of an opener, whatever its id's spelling", () => {
+  const ask = askOpenerAttributes(
+    ':::ask{#q state="answered" answered_by="bob" answered_at="2026-11-18T12:05:00Z" selected="[&#x22;REST&#x22;]" answer="Plain &#x22;HTTP&#x22;.&#xA;Next." copied_from="c-1" copied_from_document="CORE-1/spec"}'
+  );
+  expect(ask).toEqual({
+    block_id: "q",
+    state: "answered",
+    answered_by: "bob",
+    answered_at: "2026-11-18T12:05:00Z",
+    selected: ["REST"],
+    answer: 'Plain "HTTP".\nNext.',
+    copied_from: "c-1",
+    copied_from_document: "CORE-1/spec",
+  });
+  // An id written in quotes is read back as the other attributes are.
+  expect(askOpenerAttributes(':::ask{id="a&#xA;b" state="open"}')).toEqual({
+    block_id: "a\nb",
+    state: "open",
+  });
+});
+
+test("askOpenerAttributes reads a name written twice as its last value, and no attribute off a line with no braces", () => {
+  expect(askOpenerAttributes(':::ask{#a state="open" state="answered"}')?.state).toBe("answered");
+  expect(askOpenerAttributes(':::ask state="open"')).toBeUndefined();
+  expect(askOpenerAttributes("")).toBeUndefined();
+  // A name that every object inherits is no attribute of an ask, and the ask read holds none.
+  expect(askOpenerAttributes(':::ask{#a __proto__="x" constructor="y"}')).toEqual({
+    block_id: "a",
+  });
+  expect(Object.hasOwn(askOpenerAttributes(':::ask{#a state="open"}') ?? {}, "constructor")).toBe(
+    false
+  );
 });
 
 // An opening line is text a document's writer controls, so its `state` is read only where it is

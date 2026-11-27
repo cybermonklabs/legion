@@ -38,14 +38,15 @@ func (s *server) getBlockLinks(w http.ResponseWriter, r *http.Request) {
 // blockLinksDocument is the document node the query parameter param names: a reference to an
 // issue's or a project's document, parsed as GET /api/v1/references parses one (text.ParseRef,
 // whatever the length of its name). Anything else is 400 INVALID_REFERENCE, and a document that
-// does not exist is 404 NOT_FOUND.
+// does not exist is 404 NOT_FOUND. A retired document's address names the document still, whose
+// blocks stay readable (documentAtAddress).
 func (s *server) blockLinksDocument(r *http.Request, who model.Actor, param string) (model.GraphNode, error) {
 	raw := strings.TrimSpace(r.URL.Query().Get(param))
 	ref, ok := text.ParseRef(raw, s.deps.ServerURL)
 	if !ok || ref.Kind != "artifact" || ref.Session != "" {
 		return model.GraphNode{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%s must name a document: dispatch://KEY/spec, dispatch://KEY/artifact/<slug> or dispatch://PROJECT/artifact/<slug>", param)
 	}
-	document, found, err := refs.Node(r.Context(), s.deps.Store.Pool, who, "artifact", text.TargetID(ref), true)
+	document, found, err := s.documentAtAddress(r.Context(), who, text.TargetID(ref))
 	if err != nil {
 		return model.GraphNode{}, err
 	}

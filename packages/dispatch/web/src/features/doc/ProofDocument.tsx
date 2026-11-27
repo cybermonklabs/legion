@@ -20,7 +20,7 @@ import {
 } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
-import type { Artifact, AskWithTrees, AuthenticatedUser, Version } from "../../api/types";
+import type { Artifact, Ask, AskWithTrees, AuthenticatedUser, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
 import { copyText } from "../../lib/clipboard";
@@ -116,12 +116,16 @@ export const liveTextQueryOptions = (artifactId: string) =>
     queryFn: () => api.getArtifactText(artifactId),
   });
 
+/** An ask of the owner's read, with the server's reading of its question beside it, which the
+ *  open-decision link draws (`document-open-decision`). */
+type OwnerAsk = Ask & Pick<AskWithTrees, "question_tree">;
+
 /** The asks of the document `artifactId`'s owner, in every state: the issue's, under the key and
  * with the read the issue page takes them from (`issueAsksQuery`), or, where `issueKey` is null,
  * the document's own, as a project document's are. A rendered ask block reads who asked from
  * these, and the server's read of its ask (`servedAskOfBlock`). The issue's read answers rows that
- * carry more than an ask, so the options take either read's key and fetch and read both as asks
- * with their display trees (`AskWithTrees`), which the open decision's question draws from. */
+ * carry more than an ask, so the options take either read's key and fetch and read both as asks,
+ * each with its question's reading. */
 export const ownerAsksQueryOptions = (artifactId: string, issueKey: string | null) => {
   const { queryKey, queryFn } =
     issueKey === null
@@ -130,7 +134,7 @@ export const ownerAsksQueryOptions = (artifactId: string, issueKey: string | nul
           queryFn: () => api.listArtifactAsks(artifactId),
         }
       : issueAsksQuery(issueKey);
-  return queryOptions<AskWithTrees[], Error, AskWithTrees[], string[]>({ queryKey, queryFn });
+  return queryOptions<OwnerAsk[], Error, OwnerAsk[], string[]>({ queryKey, queryFn });
 };
 
 /** Why an admission left the live editor closed, from its own `/text` read: a tree outside the
@@ -446,13 +450,7 @@ export function ProofDocument({
   const [askBlockHosts, setAskBlockHosts] = useState<readonly AskBlockHost[]>([]);
   // The server's read of the ask the block `blockId` shows (`servedAskOfBlock`).
   const servedAsk = (blockId: string): ServedAsk | undefined =>
-    servedAskOfBlock(
-      asksQuery.data ?? [],
-      liveTextQuery.data,
-      artifact.id,
-      blockId,
-      owner.kind === "issue" ? undefined : owner.project
-    );
+    servedAskOfBlock(asksQuery.data ?? [], liveTextQuery.data, artifact.id, blockId);
   // The server's read of the ask each mounted block shows, by block id, read once per render for
   // the cards below and for the editor's refusal of a reading in an open ask, which reads the
   // answer states at each edit: a ref, so the editor made once reads the latest asks read.

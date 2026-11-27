@@ -79,7 +79,7 @@ func TestMarkdownPastTheElementLimitIsRefusedBeforeItIsBuilt(t *testing.T) {
 			parse func(string, *WriteBudget) error
 		}{
 			{"document", func(markdown string, budget *WriteBudget) error {
-				_, err := parseForWrite(markdown, nil, true, budget)
+				_, err := parseForWrite(markdown, nil, true, "", budget)
 				return err
 			}},
 			{"fragment", func(markdown string, budget *WriteBudget) error {

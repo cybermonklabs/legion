@@ -47,6 +47,7 @@ import {
   writeMayHaveLanded,
 } from "./failures";
 import { linkFor } from "./links";
+import { oneLineJson } from "./one-line-json";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
 import { formatCheckResults } from "./render-results";
 import { notSubscribed } from "./results";
@@ -622,14 +623,11 @@ function breaksRow(value: string): boolean {
 }
 
 /** One part of a row as `breaksRow` says: as written, or quoted as JSON quotes it, with the three
- *  separators JSON leaves raw (U+0085, U+2028, U+2029) escaped too, so no quoted part splits the
- *  row for a reader that breaks lines on them. */
+ *  separators JSON leaves raw (U+0085, U+2028, U+2029) escaped too (`oneLineJson`), so no quoted
+ *  part splits the row for a reader that breaks lines on them. */
 function rowPart(value: string): string {
   if (!breaksRow(value)) return value;
-  return JSON.stringify(value).replace(
-    /[\u0085\u2028\u2029]/g,
-    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`
-  );
+  return oneLineJson(value);
 }
 
 /** Whether the whole output of a call is one JSON object a program reads: `dispatch issues

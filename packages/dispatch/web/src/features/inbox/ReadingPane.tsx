@@ -238,13 +238,7 @@ function ApprovalBody({
   });
   const liveTextQuery = useQuery({ ...liveTextQueryOptions(artifactId), enabled: readsAsks });
   const servedAsk = (blockId: string): ServedAsk | undefined =>
-    servedAskOfBlock(
-      asksQuery.data ?? [],
-      liveTextQuery.data,
-      artifactId,
-      blockId,
-      issueKey === null ? artifact?.project : undefined
-    );
+    servedAskOfBlock(asksQuery.data ?? [], liveTextQuery.data, artifactId, blockId);
   /** The request the column has read a version for, which is what the start of the column is
    *  written for: the one scroller outlives the row, so a second request on a document opens
    *  where the first one was left unless the column is sent back. The write waits for the

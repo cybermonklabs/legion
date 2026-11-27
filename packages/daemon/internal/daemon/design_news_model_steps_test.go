@@ -133,16 +133,16 @@ func (m *newsModel) enabled() []string {
 		switch {
 		case window:
 			add("approve-changed", 1)
-			add("approve-decision-only", 1)
+			add("approve-ask-only", 1)
 		case stale:
 			add("approve-changed", 6)
-			add("approve-decision-only", 6)
+			add("approve-ask-only", 6)
 		case architectOpening, prompt != "" && tells && m.child.base != newsModelUnknown, prompt == "" && !reconciles && !starts:
 			add("approve-changed", 3)
-			add("approve-decision-only", 3)
+			add("approve-ask-only", 3)
 		default:
 			add("approve-changed", 1)
-			add("approve-decision-only", 1)
+			add("approve-ask-only", 1)
 		}
 	}
 	if rev.next != "" && rev.turn == "" {
@@ -257,8 +257,8 @@ func (m *newsModel) do(name string) {
 	m.t.Helper()
 	rev := m.reviewer
 	switch name {
-	case "approve-changed", "approve-decision-only":
-		m.approve(name == "approve-decision-only")
+	case "approve-changed", "approve-ask-only":
+		m.approve(name == "approve-ask-only")
 	case "close-and-reopen":
 		m.r.dispatchEvent(intake.DispatchArtifactChangesRequested, m.latest)
 		m.r.dispatchEvent(intake.DispatchArtifactApproved, m.latest)
@@ -440,7 +440,7 @@ func (m *newsModel) reconcile() {
 
 // settled is the model's side of what the reconcile settles for row: a row that knows no version
 // is filled from the review history, which names the version below the approved one
-// (newNewsModel), and a row owed only versions that changed decision blocks alone, and no opening,
+// (newNewsModel), and a row owed only versions that changed ask blocks alone, and no opening,
 // is raised past them, by a credit counted from the version it took (record.Store.RaiseTold), so a
 // raise read off a version an unfinal credit gave reaches nothing once that credit is given back.
 func (m *newsModel) settled(row *newsModelRow, stored map[claim.Token]*supervise.Delivery) {

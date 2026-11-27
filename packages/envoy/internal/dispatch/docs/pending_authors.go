@@ -389,6 +389,48 @@ func (capture authorCapture) withoutInflight(actor *model.Actor) authorCapture {
 	return capture
 }
 
+// roomAuthors is whom the capture read as the authors of the room's edits no version has listed -
+// the pending authors it read (rAuthors) and its in-flight credits (inflight) - without the
+// calling transaction's own credits or the version's writer, which authors lists beside them: the
+// authors a settlement of the same room state lists, whose person a version taking the room in
+// that settlement's place holds the room's removals as (holdRoomRemovals). The credits are read
+// under the room's state lock, as captureAuthors read them.
+func (capture authorCapture) roomAuthors() []model.Actor {
+	authors := make(map[string]model.Actor, len(capture.rAuthors))
+	for _, author := range capture.rAuthors {
+		mergeAuthor(authors, author)
+	}
+	if len(capture.inflight) > 0 {
+		capture.state.mu.Lock()
+		for _, record := range capture.inflight {
+			mergeAuthors(authors, record.authors)
+		}
+		capture.state.mu.Unlock()
+	}
+	return actorSlice(authors)
+}
+
+// pendingRoomAuthors is the authors of room's edits no version has listed that write's read of the
+// room holds, as a capture of that read lists them (authorCapture.roomAuthors): the pending authors
+// its transaction reads (transactionPendingAuthors) and the in-flight credits observed by the read
+// (liveWrite.forkSeq), none for a fork read from the store. An upload's version lists none of them
+// and clears them all (uploadCapture), so its write reads them first, for the room's removals
+// (holdRoomRemovals).
+func pendingRoomAuthors(ctx context.Context, tx pgx.Tx, room string, write *liveWrite) ([]model.Actor, error) {
+	authors, err := transactionPendingAuthors(ctx, tx, room)
+	if err != nil {
+		return nil, err
+	}
+	if write != nil && !write.cold && write.state != nil {
+		write.state.mu.Lock()
+		for _, record := range write.state.unconsumedInflightLocked(write.forkSeq) {
+			mergeAuthors(authors, record.authors)
+		}
+		write.state.mu.Unlock()
+	}
+	return actorSlice(authors), nil
+}
+
 // uploadCapture is an upload's capture over write: the in-flight credits observed by its read of
 // the room (liveWrite.forkSeq), and the updates the room instance it read held then
 // (liveWrite.forkHold) with the room's updates the write's transaction stored ahead of its own

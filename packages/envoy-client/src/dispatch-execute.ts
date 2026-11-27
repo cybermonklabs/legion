@@ -23,6 +23,12 @@ export type {
   ExecuteDispatchToolInput,
 } from "./dispatch-commands/context";
 export { asObject } from "./dispatch-commands/context";
+export {
+  OPEN_BLOCK_ASK_THE_HUMAN,
+  OPEN_BLOCK_SETTLES,
+  OPEN_BLOCK_WAIVED,
+  refuseOpenDecisionBlocks,
+} from "./dispatch-commands/decision-blocks";
 export type {
   DocumentBlock,
   DocumentBlocks,
@@ -35,12 +41,6 @@ export {
   resolveIssueDocumentId,
 } from "./dispatch-commands/document-targets";
 export { dispatchRefFromUrl, linkBaseOf } from "./dispatch-commands/links";
-export {
-  OPEN_BLOCK_ASK_THE_HUMAN,
-  OPEN_BLOCK_SETTLES,
-  OPEN_BLOCK_WAIVED,
-  refuseOpenDecisionBlocks,
-} from "./dispatch-commands/open-decision-blocks";
 export { formatOpenAsksSummary, positionText } from "./dispatch-commands/render-item";
 // The reader of a `dispatch://` reference the commands read theirs with, for a host that takes one
 // of its own: the `legion` tool's register_gate basis names its issue's document by one.

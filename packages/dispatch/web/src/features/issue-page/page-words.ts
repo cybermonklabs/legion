@@ -661,7 +661,8 @@ export const STATE_LINES = joinWords("STATE_LINES", {
    *  that stands failed, beside that read's Retry (`outline-reads.ts`): the names the rows cite,
    *  which checks serve each statement, the issue's decisions, the checks' results, the
    *  questions, the comments, the messages, and each document whose blocks it draws, named by
-   *  the part the document plays. */
+   *  the part the document plays: the spec, the plan or Verification, since a decision is a block
+   *  of a document and no document of its own. */
   names_unreadable: "Could not load the names this issue's rows cite.",
   coverage_unreadable: "Could not load which checks serve each statement.",
   issue_decisions_unreadable: "Could not load this issue's decisions.",
@@ -672,7 +673,6 @@ export const STATE_LINES = joinWords("STATE_LINES", {
   spec_unreadable: "Could not load the spec.",
   plan_unreadable: "Could not load the plan.",
   verification_unreadable: "Could not load the verification document.",
-  decisions_document_unreadable: "Could not load the decisions document.",
 } as const);
 
 /**
@@ -1185,9 +1185,10 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
    *  identifier (R9, R22), so the page says what it is rather than which one
    *  (`AgentText.author`, `features/refs/AgentName.tsx`). */
   unnamed_author: "An agent",
-  /** Who made a node the model holds no author for (R9): a requirement, a check, a plan task,
-   *  a note and a decision, whose reads carry none. It is the page's own word, drawn with a
-   *  shape of its own (`AuthorKind`), so no reader takes it for somebody's name. */
+  /** Who made a node the model holds no author for (R9): a requirement, a check, a plan task
+   *  and a note, whose reads carry none, and a decision whose entry in the decisions read names
+   *  no decider (`DecisionEntry.decided_by`). It is the page's own word, drawn with a shape of
+   *  its own (`AuthorKind`), so no reader takes it for somebody's name. */
   unknown_author: "Author unknown",
   /** What the claim says of a holder that has missed its heartbeats without ending: it has not
    *  gone, it still holds the issue, and it may yet answer (R11, row four). */

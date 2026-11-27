@@ -15,7 +15,7 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
 
 - Check each claim against the code as fetched now (the default branch your addressing line names, or the head under review), and tell every reader you dispatch to do the same.
 
-- Before you end a turn that waits on a person, make sure their question is open: a decision block, a `dispatch ask` or `dispatch request-approval`.
+- Before you end a turn that waits on a person, make sure their question is open: an ask block, a `dispatch ask` or `dispatch request-approval`.
   A root's questions go on the root: one on a child starts no wait, and the tree stands still.
   A child's own architect opens none; it sends each question to the architect above it with `envoy_publish`.
 
@@ -35,7 +35,7 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
 
 2. Where you doubt that a design is the right thing to build, state the problem to `task(agent="design-outsider")` and read its answer with `wait`: it asks whether the thing should exist at all, what the smallest thing that gives the person what they asked for is, and what to delete.
 
-3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says, since a new version closes the gate, except two kinds it names.
+3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says: a new version closes the gate, except as its "After approval" says.
    A child: as `skill://legion-architect/references/decomposition.md`, "Creating children", says.
 
 4. Decompose, adopt, split across repositories or record a wait on other work as `skill://legion-architect/references/decomposition.md` says.
@@ -80,7 +80,8 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would:
   a passing check does not show that a person can do their job with it.
 
-- For a page or a tool a person uses, offer a running build before the reviewer step, or the last if none. The deployment instructions say how a pod runs one.
+- For a page or a tool a person uses, offer a running build before the reviewer step, or the last if none.
+  The deployment instructions say how a pod runs one.
 
 ## 5. Retro
 

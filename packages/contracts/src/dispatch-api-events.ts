@@ -27,6 +27,7 @@ import type {
   BlockInvalidEventPayload,
   BlockRepairedEventPayload,
   DecisionKeptEventPayload,
+  DocumentRetiredEventPayload,
 } from "./dispatch-api-documents";
 import type {
   CheckResultEventPayload,
@@ -149,6 +150,10 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "decision.kept";
       readonly payload: DecisionKeptEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "document.retired";
+      readonly payload: DocumentRetiredEventPayload;
     })
   /** A priority's write: it names no owner, so `issue_key` is null and `project` empty, and it
    *  never notifies. */
@@ -416,6 +421,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "comment.resolved": true,
   "decision.kept": true,
   "deploy.recorded": true,
+  "document.retired": true,
   "handoff.recorded": true,
   "issue.claimed": true,
   "issue.closed": true,

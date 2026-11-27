@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -183,8 +184,8 @@ const myRepliesDismissedCut = `
 		limit $4`
 
 // myRepliesPageRest is what every state selects over the rows the cut kept. The unread count
-// reads an ask's answer as a write in its thread as the ask's node holds it (askNodeAnswererOf,
-// askNodeAnsweredAtOf), as every read of an answer reads it (R3).
+// reads an ask's answer as a write in its thread as the ask's node holds it (asks.NodeAnswererOf,
+// asks.NodeAnsweredAtOf), as every read of an answer reads it (R3).
 var myRepliesPageRest = `
 	message_replies as (
 		select p.thread_id as root_id, m.id, m.created_at, m.author
@@ -252,10 +253,10 @@ var myRepliesPageRest = `
 			select c.created_at, c.author from comments c
 			where p.kind = 'ask' and c.ask_id = p.thread_id
 			union all
-			select ` + askNodeAnsweredAtOf("ac") + `,
-			       jsonb_build_object('kind', 'user', 'id', ` + askNodeAnswererOf("ac") + `)
+			select ` + asks.NodeAnsweredAtOf("ac") + `,
+			       jsonb_build_object('kind', 'user', 'id', ` + asks.NodeAnswererOf("ac") + `)
 			from asks ac
-			where p.kind = 'ask' and ac.id = p.thread_id and ` + askNodeAnswererOf("ac") + ` is not null
+			where p.kind = 'ask' and ac.id = p.thread_id and ` + asks.NodeAnswererOf("ac") + ` is not null
 			union all
 			select c.created_at, c.author from comments c
 			where p.kind = 'comment' and (c.id = p.thread_id or c.reply_to = p.thread_id)
@@ -764,7 +765,7 @@ func (s *server) readMyReplyRows(
 
 // answerReplyRows sets the reply of each row of read that answered names, a row whose newest write
 // by somebody else is its ask's answer, from that answer as the ask's node holds it
-// (askAnswerRead), as every read of an answer reads it (R3): kind answer, the answerer as its
+// (asks.ReadAnswer), as every read of an answer reads it (R3): kind answer, the answerer as its
 // author, and the answer's options and then its text, joined by " - ", as its first line, cut as
 // the page cuts every other first line (refs.FirstLine), so no reference is cut in half. A row
 // whose ask holds no answer as its node holds it keeps the reply the page's statement read for it,
@@ -783,7 +784,7 @@ func answerReplyRows(ctx context.Context, tx pgx.Tx, read []model.MyReplyRow, an
 		ids[index] = read[row].ThreadID
 		rowOf[read[row].ThreadID] = row
 	}
-	rows, err := tx.Query(ctx, `select a.id::text, a.state, a.answer, `+askNodeAnswerColumn+` from asks a where a.id = any($1::uuid[])`, ids)
+	rows, err := tx.Query(ctx, `select a.id::text, a.state, a.answer, `+asks.NodeAnswerColumn("a")+` from asks a where a.id = any($1::uuid[])`, ids)
 	if err != nil {
 		return fmt.Errorf("read the answers of my replies: %w", err)
 	}
@@ -794,7 +795,7 @@ func answerReplyRows(ctx context.Context, tx pgx.Tx, read []model.MyReplyRow, an
 		if err := rows.Scan(&id, &state, &answer, &nodeAnswer); err != nil {
 			return fmt.Errorf("scan the answer of my reply: %w", err)
 		}
-		ask, err := askAnswerRead(id, state, answer, nodeAnswer)
+		ask, err := asks.ReadAnswer(id, state, answer, nodeAnswer)
 		if err != nil {
 			return err
 		}

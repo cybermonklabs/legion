@@ -33,6 +33,11 @@ const (
 	// TupleCopiedFrom points from the block node of a copy of an ask, on another document of its
 	// owner, to the ask it was copied from (docs' copiedAskSources). No table projects it.
 	TupleCopiedFrom = "copied_from"
+	// TupleRemovedBy points from an answered ask's node to the person who took its block out of
+	// the document its row names: that person's removal stays, and the decisions step never
+	// writes the block back. It is retracted once an ask block of that ask stands in that document
+	// again. No table projects it.
+	TupleRemovedBy = "removed_by"
 )
 
 // AskPlaces are the addresses (artifacts.ref_key) of the documents an ask's node relates to, each
@@ -84,6 +89,9 @@ func ReadAskPlaces(ctx context.Context, q Queryer, anchor, owner, block *string)
 // states for a row written before. at is the asks row's created_at, so each relation is dated as
 // graph_edges' old arm dated it, and event the event that recorded the ask, or NoEvent for a write
 // held for its cause (PlanUncaused).
+//
+// A later move of the ask - which the restore alone makes - states the three relations as
+// Claims through WriteArms instead (AskClaims), so the far ends it leaves are retracted.
 func AskFacts(id, project string, parties []string, author model.Actor, at time.Time, event int64, places AskPlaces) (nodes []Node, tuples []Tuple, marked bool) {
 	node := AskNode(id, project, parties, author, at)
 	node.SourceEvent = event
@@ -105,6 +113,22 @@ func AskFacts(id, project string, parties []string, author model.Actor, at time.
 		tuples = append(tuples, facts...)
 	}
 	return nodes, tuples, marked
+}
+
+// AskClaims is the three relations of an ask's node as Claims, for the write that moves an ask
+// from where its row stood (the restore): each claim retracts the far end the node held under
+// that kind and asserts the new one, and a relation the ask no longer has retracts what it held.
+func AskClaims(id string, places AskPlaces, who model.Actor, at time.Time, event int64) []Claim {
+	relations := askRelations(places)
+	claims := make([]Claim, 0, len(relations))
+	for _, relation := range relations {
+		claims = append(claims, Claim{
+			FromKind: KindAsk, FromID: id, Kind: relation.kind,
+			ToKind: KindArtifact, ToID: relation.address,
+			At: at, Who: who, SourceEvent: event,
+		})
+	}
+	return claims
 }
 
 // askRelations is the three relations of places in the order every writer states them.

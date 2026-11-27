@@ -32,15 +32,17 @@ import (
 // anotherBuildServes reports whether processes.Live, read through q, lists a process of a build
 // that still reads an ask's state and answer from the attributes of its block: one whose
 // registered schema version is below the version at which answers left the markdown
-// (answersLeftTheMarkdown). That version is fixed, the one this release introduced: the release
-// before this one reads schema version 6 and this release 7, so a process of it makes two builds,
-// and so does a process of a build older still, which registers no schema number at all and
-// whose row holds the column's default, 0 (processes.Process.PredatesFleetColumns). A process at
-// that version or past it reads every answer from the server, as this build does, so to this
-// guard the fleet is one build however many commits and schema versions it serves: a later
-// release, at the version dispatch://INFRA-5571 sets next, which still holds this guard, reads a
-// process of this release as one of its own fleet rather than as a reader of block attributes,
-// and writes them back into nobody's documents.
+// (answersLeftTheMarkdown). That version is fixed: the `decision` type's since, 7, the version of
+// slice 2 (legion/INFRA-5570), which took the answer out of the markdown. This build is block
+// schema version 8 (pmdoc/schema/blocks.json) and the release before this one reads version 6, so
+// a process of the release before makes two builds, and so does a process of a build older still,
+// which registers no schema number at all and whose row holds the column's default, 0
+// (processes.Process.PredatesFleetColumns). A process at version 7 or past it - slice 2's, and
+// this build's at 8 - reads every answer from the server, as this build does, so to this guard
+// the fleet is one build however many commits and schema versions it serves: a later release, at
+// the version dispatch://INFRA-5571 sets next, which still holds this guard, reads a process of
+// this release as one of its own fleet rather than as a reader of block attributes, and writes
+// them back into nobody's documents.
 //
 // The rule reads the schema numbers, never the commits among themselves, for two reasons. This
 // process writes documents before it registers - main restores the decided wordings, repairs the
@@ -70,13 +72,15 @@ func anotherBuildServes(ctx context.Context, q processes.Querier) (bool, error) 
 }
 
 // answersLeftTheMarkdown is the schema version from which no build reads an ask's answer from
-// its block: the version that introduced the `decision` type, read off the installed schema
-// (its since), which is the version this release, the one that took the answer out of the
-// markdown, introduced. At this release it is this build's own version, so the rule reads as R5
-// words it - no process below this build's schema version - and a later schema keeps that since
-// as it keeps every element's, so the number does not move with the build reading it. A manifest
-// that declares no `decision` type - only one a test installs in place of this build's - bounds
-// the fleet at its own version. It serves anotherBuildServes alone, and goes with it.
+// its block: the version that introduced the `decision` type, read off the installed schema (its
+// since), which is 7, the version of slice 2 (legion/INFRA-5570), the one that took the answer
+// out of the markdown. This build is version 8 (pmdoc/schema/blocks.json) and the release before
+// reads 6, so the rule bounds the fleet at the `decision` type's since and not at this build's
+// own version: a process at 7 reads every answer from the server and counts as this fleet, and
+// one at 6 or below does not. A later schema keeps that since as it keeps every element's, so the
+// number does not move with the build reading it. A manifest that declares no `decision` type -
+// only one a test installs in place of this build's - bounds the fleet at its own version. It
+// serves anotherBuildServes alone, and goes with it.
 //
 // kept for one release: roll-window-attributes
 // kept for one release: stored-ask-state
@@ -129,8 +133,10 @@ func keptAskState(ask model.Ask, copied string) func(*pmdoc.Node) bool {
 // is one build holds - the answer's words and selection (answerWords), and an open state, which a
 // version keeps of no ask (keptAskState) - and reports whether it held any. It is that write, for
 // a block that has an ask (askBlocksWithAnAsk), of a writer that reads no ask's state: a version
-// written without settling (storableVersionTree). The rest stays as the live tree holds it, which
-// every write of an ask's state keeps in step with it (keptAskState).
+// written without settling (storableVersionTree) and the decisions step's restore (writePresent,
+// and movedBlockOf for a block a row of the spec names; a copy movedBlockOf moves takes its
+// source's kept form from the source's node instead). The rest stays as the live tree holds it,
+// which every write of an ask's state keeps in step with it (keptAskState).
 //
 // kept for one release: stored-ask-state
 func withoutUnkeptAskAttributes(node *pmdoc.Node) bool {
@@ -451,8 +457,10 @@ func askStringItems(value any) ([]string, bool) {
 // withoutStoredAskAttributes takes the seven attributes a version can store
 // (storedAskAttributes) off node, an ask block, and reports whether it held any: the write once
 // the fleet is one build to a block whose ask no write knows - one settlement cannot read and no
-// row indexes, or one a version writes that has no ask row and is no copy (storableVersionTree) -
-// whose state is no ask's, a forged state or answerer among them where a browser put them on it.
+// row indexes, one the decisions step moves that no row names and is no copy (movedBlockOf), or
+// one a version or the decisions step's restore writes that has no ask row and is no copy
+// (storableVersionTree, writePresent, withoutAsklessAskAttributes) - whose state is no ask's, a
+// forged state or answerer among them where a browser put them on it.
 func withoutStoredAskAttributes(node *pmdoc.Node) bool {
 	changed := false
 	for _, name := range storedAskAttributes() {
@@ -510,17 +518,14 @@ func askBlocksWithAnAsk(ctx context.Context, tx pgx.Tx, document string, tree *p
 
 // askReadableWrite is settlement's write to an ask block it reads (readAskBlockStrictly), whose
 // ask, or the ask it is a copy of on the document whose address is copied, is ask: the block
-// parses, so it carries no `invalid` and no old reason shows on it; and its other server
-// attributes are kept in step with ask while another build serves (rollWindowAskAttributes), and
-// once the fleet is one build only those a version keeps (keptAskState).
+// parses (askReadableWith), so it carries no `invalid` and no old reason shows on it; and its
+// other server attributes are kept in step with ask while another build serves
+// (rollWindowAskAttributes), and once the fleet is one build only those a version keeps
+// (keptAskState), as fleetAskAttributes writes them.
 func askReadableWrite(twoBuilds bool, ask model.Ask, copied string) func(*pmdoc.Node) bool {
 	// kept for one release: roll-window-attributes
 	// kept for one release: stored-ask-state
-	keep := fleetAskAttributes(twoBuilds, ask, copied)
-	return func(node *pmdoc.Node) bool {
-		changed := clearAskInvalidAttribute(node)
-		return keep(node) || changed
-	}
+	return askReadableWith(fleetAskAttributes(twoBuilds, ask, copied))
 }
 
 // askReadableWriteWithheld is askReadableWrite while another build serves, for a block whose
@@ -528,7 +533,13 @@ func askReadableWrite(twoBuilds bool, ask model.Ask, copied string) func(*pmdoc.
 //
 // kept for one release: roll-window-attributes
 func askReadableWriteWithheld(ask model.Ask, copied string) func(*pmdoc.Node) bool {
-	keep := rollWindowAskAttributesWithheld(ask, copied)
+	return askReadableWith(rollWindowAskAttributesWithheld(ask, copied))
+}
+
+// askReadableWith is a write to an ask block settlement reads (readAskBlockStrictly): the block
+// parses, so it carries no `invalid` and no old reason shows on it, and keep writes its other
+// server attributes. It reports whether either changed the block.
+func askReadableWith(keep func(*pmdoc.Node) bool) func(*pmdoc.Node) bool {
 	return func(node *pmdoc.Node) bool {
 		changed := clearAskInvalidAttribute(node)
 		return keep(node) || changed

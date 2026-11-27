@@ -127,7 +127,8 @@ export function DecisionsRow({
   /** Whether this row draws what its focus adds: it has the focus, the reader pinned it open,
    *  or the cycle key opens every body. */
   body: boolean;
-  /** The decisions document a decision is a block of, which its Keep writes against. */
+  /** The document a decision's `decision` block stands in - the spec, or another document of the
+   *  issue - which its Keep writes against. */
   document?: Artifact;
   entry: DecisionsEntry | NamedEntry;
   focused: boolean;

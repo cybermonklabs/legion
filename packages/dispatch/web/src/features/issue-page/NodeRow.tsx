@@ -151,8 +151,9 @@ export function NodeRow({
    *  marked, and the arrow keys reach it as they reach any other row (R2). */
   context: boolean;
   /** The document this row's node is a block of, which its body writes against: a decision's
-   *  Keep and Change are writes on the decisions document (R7). Undefined for a node that is
-   *  no block of a document of this issue. */
+   *  Keep and Change are writes on the document its `decision` block stands in, the spec or
+   *  another of the issue's (R7). Undefined for a node that is no block of a document of this
+   *  issue. */
   document?: Artifact;
   /** Whether the row carries `data-editable`, for a view that lets the reader edit its words in
    *  place and draws such a row its own way: part I's outline passes it, and its styles draw the

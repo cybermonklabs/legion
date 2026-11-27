@@ -10,7 +10,7 @@ var _ = declareRoute(routeDecl{
 	Method:      http.MethodPost,
 	Pattern:     "/api/v1/comments/{id}/reject",
 	Auth:        authAny,
-	Description: "Reject a suggestion.",
+	Description: "Reject a suggestion. A suggestion in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec.",
 	Handler:     (*server).rejectComment,
 	WriteClass:  scopeProject,
 	ID:          &idRoute{Kind: "comment", NotFound: "NOT_FOUND"},

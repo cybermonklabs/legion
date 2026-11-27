@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
@@ -36,15 +36,16 @@ import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { APPROVAL_CHIP } from "./approval-chip-box";
-import { decisionsDocumentId } from "./decision-review";
+import { changeDocumentIds } from "./decision-review";
 import { presetPath } from "./issue-address";
 import { statusGlyph, statusTone } from "./issue-status";
+import type { DocumentBlocks } from "./issue-tree";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
 import { nodeIdOf as issueNodeIdOf } from "./tree-drafts";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
-import { issueCommentsQuery } from "./useIssueTree";
+import { issueCommentsQuery, treeDocumentIds } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
 /**
@@ -89,12 +90,14 @@ export function IssuePropertiesRow({
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
   // reader's login, the decisions, the coverage's statements, the comments a Change is written
-  // as, and the decisions document's blocks, whose sections say which decision a Change's anchor
-  // belongs to - and kept fresh by the outline's own rule (`reference-target.ts`'s `EVENT_FRESH`):
-  // events refresh them, never their age (decision 180). Staleness is per observer, so each read
-  // here takes that rule too, and the count costs no request of its own (`waiting.ts`). Until
-  // those blocks answer the count reads the Changes by their quotes, as `decision-review.ts` does
-  // with no blocks read.
+  // as, and the blocks of each document the outline reads (`treeDocumentIds`) that a decision a
+  // Change can be asked of stands in (`changeDocumentIds`), which say which decision a Change's
+  // anchor belongs to - and kept fresh by the outline's own rule (`reference-target.ts`'s
+  // `EVENT_FRESH`): events refresh them, never their age (decision 180). Staleness is per
+  // observer, so each read here takes that rule too, and the count costs no request of its own
+  // (`waiting.ts`). Until a document's blocks answer the count reads the Changes anchored in it
+  // by their quotes, as `decision-review.ts` does with no blocks read; a Change in a document the
+  // outline does not read is read by its quote alone, as the tree places it.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const decisions = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
@@ -102,19 +105,20 @@ export function IssuePropertiesRow({
     ...issueCommentsQuery(issue.key),
     ...EVENT_FRESH,
   });
-  const decisionsDocument = decisionsDocumentId(issue.artifacts, decisions.data);
-  const decisionsBlocks = useQuery({
-    ...artifactBlocksQuery(decisionsDocument ?? ""),
-    ...EVENT_FRESH,
-    enabled: decisionsDocument !== undefined,
-  }).data;
-  const documents = useMemo(
-    () =>
-      decisionsDocument === undefined || decisionsBlocks === undefined
-        ? undefined
-        : [{ artifactId: decisionsDocument, blocks: decisionsBlocks }],
-    [decisionsDocument, decisionsBlocks]
-  );
+  const decided = changeDocumentIds(issue, decisions.data);
+  const decisionDocuments = treeDocumentIds(issue).filter((id) => decided.has(id));
+  // `combine` keeps one value for the documents' blocks, replaced only when a document's own read
+  // changes, as the outline's does (`useIssueTree`), so the count is not counted again each render.
+  const documents = useQueries({
+    combine: (answers): DocumentBlocks[] =>
+      answers.flatMap((answer, index) => {
+        const artifactId = decisionDocuments[index];
+        return artifactId === undefined || answer.data === undefined
+          ? []
+          : [{ artifactId, blocks: answer.data }];
+      }),
+    queries: decisionDocuments.map((id) => ({ ...artifactBlocksQuery(id), ...EVENT_FRESH })),
+  });
   const nodeIdOf = useMemo(() => issueNodeIdOf(issue), [issue]);
   const statements = useMemo(
     () => new Set((coverage.data?.requirements ?? []).map((one) => nodeIdOf(one.ref))),

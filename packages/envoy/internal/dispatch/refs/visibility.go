@@ -35,6 +35,11 @@ import (
 // SQL, so a node reserved for another author is one the read never answers. Artifact ids are
 // uuids on the from side of an edge and ref_keys on the to side; byRefKey says which the ids
 // are.
+//
+// The block, ask, comment and message loaders join issues, artifacts and artifact_versions by
+// lateral probes by key that each stop at their first row, so however many ids a read passes, the
+// planner cannot hash-join a sequential read of a whole table, as it did for a plain join to
+// issues from about 80 ids with 12,000 issues. Each of those loaders names its probes.
 type nodeLoader func(ctx context.Context, q Queryer, who model.Actor, kind string, byRefKey bool, ids []string, nodes map[[2]string]resolvedNode) error
 
 // nodeRegistry is every node kind this build knows, each with the loader that reads its nodes,

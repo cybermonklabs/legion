@@ -1,6 +1,7 @@
-import { type ReactNode, useCallback } from "react";
+import { type ReactNode, useCallback, useMemo } from "react";
 import { Link } from "react-router-dom";
 
+import type { DecisionEntry, DisplayTree } from "../../api/types";
 import {
   card,
   decisionUnsureBorder,
@@ -12,7 +13,9 @@ import {
   textMutedOnSelectedCard,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { useDecisionHeadingWords } from "../issue/decision-heading";
+import { isPersonDecision } from "../issue/decision-entries";
+import { decisionHeading, useDecisionHeadingWords } from "../issue/decision-heading";
+import { holdsUnsureParagraph, plainParagraph, unsureWords } from "../issue/decision-text";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { parseDispatchReference, referenceHref } from "../refs/routes";
@@ -20,12 +23,36 @@ import { textSourceOf } from "../refs/text-references";
 import { useCardStack } from "./card-stack";
 import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
 
+/** What a card previews of a decision beside its words: the doubt its node holds (`unsureWords`)
+ *  where those words hold no `Unsure:` paragraph, as the paragraph it was moved from ran on in
+ *  the preview, and the reading of the words with that paragraph after its blocks. The card hands
+ *  the renderer (`MarkdownPreview`) both, and the words with the doubt as their last block for a
+ *  card whose decision carries no reading. */
+function previewOf(decision: DecisionEntry): {
+  doubt: string | undefined;
+  tree: DisplayTree | undefined;
+} {
+  const { text, text_tree: tree } = decision;
+  const doubt = unsureWords(decision);
+  if (doubt === undefined || holdsUnsureParagraph(tree, text)) {
+    return { doubt: undefined, tree };
+  }
+  const content = tree?.content;
+  return {
+    doubt,
+    tree:
+      tree === undefined || !Array.isArray(content)
+        ? tree
+        : { ...tree, content: [...(content as DisplayTree[]), plainParagraph(doubt)] },
+  };
+}
+
 /** One decision beside a spec block it shaped: whose decision it is, whether its maker was
- *  unsure, its heading as a link to it in `decisions.md`, and the head of its text. Selecting the
- *  card lights up the block, as selecting an anchored comment lights up its text. The heading
+ *  unsure, its name as a link to the node that holds it, and the head of its text. Selecting the
+ *  card lights up the block, as selecting an anchored comment lights up its text. The name
  *  names the card and words a link, neither of which holds markup, so there it is read as its
- *  plain words; with no page to link to it is drawn by the renderer, as the passage is. Both
- *  are the record the issue's `decisions.md` is. */
+ *  plain words (`useDecisionHeadingWords`); with no page to link to it is drawn by the renderer,
+ *  as the passage is. Both are the record of the document the decision is written in. */
 export function DecisionCard({
   hovered = false,
   item,
@@ -43,6 +70,9 @@ export function DecisionCard({
   // person (R5) - leaves the heading as plain words.
   const href = route === undefined ? undefined : referenceHref(route);
   const active = selected || hovered;
+  const unsure = decision.uncertainty === "high";
+  // Read once per decision, so a repaint of the card repaints no preview it already drew.
+  const preview = useMemo(() => previewOf(decision), [decision]);
   const source = textSourceOf(
     "artifact",
     item.documentId,
@@ -58,8 +88,8 @@ export function DecisionCard({
       aria-label={`Decision: ${heading}`}
       className={`rounded-xl border p-3 text-sm shadow-sm ${
         active ? `${selectedCardBorder} ${selectedCardBg}` : card
-      } ${decision.unsure ? `border-l-4 ${decisionUnsureBorder}` : ""}`}
-      data-decision-unsure={decision.unsure ? "true" : undefined}
+      } ${unsure ? `border-l-4 ${decisionUnsureBorder}` : ""}`}
+      data-decision-unsure={unsure ? "true" : undefined}
       data-margin-item={item.id}
       onClick={(event) => {
         if (event.target instanceof Element && event.target.closest("a, button") !== null) {
@@ -77,16 +107,14 @@ export function DecisionCard({
       }}
     >
       <p className={`flex flex-wrap gap-x-2 text-xs ${textMutedOnSelectedCard}`}>
-        <span>{decision.kind === "person" ? "A person's decision" : "Agent's decision"}</span>
-        {decision.unsure ? (
-          <span className={`font-semibold ${decisionUnsureText}`}>Unsure</span>
-        ) : null}
+        <span>{isPersonDecision(decision) ? "A person's decision" : "Agent's decision"}</span>
+        {unsure ? <span className={`font-semibold ${decisionUnsureText}`}>Unsure</span> : null}
       </p>
       <h3 className={`mt-1 font-medium ${textPrimaryOnSurface}`}>
         {reads}
         {href === undefined ? (
           <MarkdownBody
-            markdown={decision.heading}
+            markdown={decisionHeading(decision)}
             source={source}
             surface="margin-decision-passage"
             tree={headingTree}
@@ -102,10 +130,12 @@ export function DecisionCard({
       <MarkdownPreview
         className={`mt-1 ${textPrimaryOnSurface}`}
         lines={3}
-        markdown={decision.text}
+        markdown={
+          preview.doubt === undefined ? decision.text : `${decision.text}\n\n${preview.doubt}`
+        }
         source={source}
         surface="margin-decision-passage"
-        tree={decision.text_tree}
+        tree={preview.tree}
       />
     </article>
   );

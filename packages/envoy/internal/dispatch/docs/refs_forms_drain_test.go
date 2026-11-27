@@ -12,34 +12,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// formsOwedRows is every row of the forms queue as "kind id", with the enqueued_at each holds.
+// formsOwedRows is every row of the forms queue as "kind id", with the enqueued_at each holds
+// (owedRowsOf).
 func formsOwedRows(t *testing.T, database *store.Store) map[string]time.Time {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), `select kind || ' ' || id::text, enqueued_at from refs_forms_owed`)
-	if err != nil {
-		t.Fatalf("read refs_forms_owed: %v", err)
-	}
-	defer rows.Close()
-	owed := map[string]time.Time{}
-	for rows.Next() {
-		var row string
-		var at time.Time
-		if err := rows.Scan(&row, &at); err != nil {
-			t.Fatalf("scan refs_forms_owed: %v", err)
-		}
-		owed[row] = at
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate refs_forms_owed: %v", err)
-	}
-	return owed
+	return owedRowsOf(t, database, "refs_forms_owed")
 }
 
 // reconcileRefsForms runs one pass of a forms drain from the start of the queue, as a loop that
 // has found no document live ahead before runs its first.
 func reconcileRefsForms(t *testing.T, service *Service) RefsFormsTick {
 	t.Helper()
-	tick, err := service.ReconcileRefsForms(context.Background(), refs.Owed{}, newFormsLiveAhead())
+	tick, err := service.ReconcileRefsForms(context.Background(), refs.RefsFormsOwed, refs.Owed{}, newFormsLiveAhead())
 	if err != nil {
 		t.Fatalf("forms drain pass: %v", err)
 	}
@@ -240,7 +224,7 @@ func raceAnotherBlockIndex(t *testing.T, database *store.Store, service *Service
 	passed := make(chan RefsFormsTick, 1)
 	failed := make(chan error, 1)
 	go func() {
-		tick, err := service.ReconcileRefsForms(ctx, refs.Owed{}, newFormsLiveAhead())
+		tick, err := service.ReconcileRefsForms(ctx, refs.RefsFormsOwed, refs.Owed{}, newFormsLiveAhead())
 		if err != nil {
 			failed <- err
 			return
@@ -411,7 +395,7 @@ func TestTheFormsDrainPassesOverMoreStuckDocumentsThanOnePassTakes(t *testing.T)
 	liveAhead := newFormsLiveAhead()
 	pass := func(after refs.Owed) RefsFormsTick {
 		t.Helper()
-		tick, err := service.ReconcileRefsForms(ctx, after, liveAhead)
+		tick, err := service.ReconcileRefsForms(ctx, refs.RefsFormsOwed, after, liveAhead)
 		if err != nil {
 			t.Fatalf("forms drain pass: %v", err)
 		}
@@ -453,7 +437,7 @@ func TestTheFormsDrainDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) 
 	liveAhead := newFormsLiveAhead()
 	pass := func() RefsFormsTick {
 		t.Helper()
-		tick, err := service.ReconcileRefsForms(ctx, refs.Owed{}, liveAhead)
+		tick, err := service.ReconcileRefsForms(ctx, refs.RefsFormsOwed, refs.Owed{}, liveAhead)
 		if err != nil {
 			t.Fatalf("forms drain pass: %v", err)
 		}
@@ -542,7 +526,7 @@ func TestABlockPassThatLosesTheFenceLeavesTheFormsRowOwed(t *testing.T) {
 			t.Fatalf("begin the index of version %d: %v", version, err)
 		}
 		defer tx.Rollback(ctx)
-		_, _, err = service.indexRenderedVersion(ctx, tx, document, version, versionAt, live, blocks, nil)
+		_, _, err = service.indexRenderedVersion(ctx, tx, document, version, versionAt, live, blocks, nil, nil)
 		if err != nil {
 			t.Fatalf("index version %d: %v", version, err)
 		}

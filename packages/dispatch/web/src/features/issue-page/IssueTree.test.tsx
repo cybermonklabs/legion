@@ -57,7 +57,7 @@ import {
 import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
-import { issueDetails } from "./decisions-filter/decisions-fixtures";
+import { decisionsRead, issueDetails } from "./decisions-filter/decisions-fixtures";
 import {
   DocumentAdmissionProvider,
   type ReportAdmission,
@@ -119,28 +119,25 @@ import { overflowing } from "./words-scroll-fixtures";
 
 const KEY = "CORE-1";
 
-const decisionsDocument: Artifact = {
+/** The issue's spec, whose `decision` blocks are the agent's decisions: the document a Keep is
+ *  written against and a Change is anchored in. */
+const specDocument: Artifact = {
   created_at: "2026-11-05T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
-  id: "artifact-decisions",
+  id: "artifact-spec",
   issue_key: KEY,
   kind: "doc",
-  name: "Decisions",
+  name: "Spec",
   primary: false,
   project: "CORE",
-  ref_key: "artifact:artifact-decisions",
+  ref_key: "artifact:artifact-spec",
   session_id: null,
-  slug: "decisions",
+  slug: "spec",
   versions: [],
 };
 
-const specDocument: Artifact = {
-  ...decisionsDocument,
-  id: "artifact-spec",
-  name: "Spec",
-  slug: "spec",
-};
-
+/** The agent's one decision: a `decision` block of the spec's `## Decisions` part, whose entry the
+ *  decisions read answers (`decisionsRead`), drawn as the spec's block node `spec#b-d1`. */
 const decision: Decision = {
   asks: [],
   block_id: "d1",
@@ -150,9 +147,9 @@ const decision: Decision = {
   kept: null,
   kind: "agent",
   links: [],
-  ref: `dispatch://${KEY}/decisions#b-d1`,
+  ref: `dispatch://${KEY}/spec#b-d1`,
   replaced: false,
-  text: "## Ship behind a flag\n\nWe ship it behind a flag.",
+  text: ":::decision{#d1}\n### Ship behind a flag\n\nWe ship it behind a flag.\n:::\n",
   text_sha256: "sha256:one",
   unsure: false,
   waiting_review: true,
@@ -686,7 +683,7 @@ test("the whole tree is one tab stop, and the focused row's keys work its contro
             ref: `dispatch://${KEY}/spec#b-r1`,
           },
         ],
-        id: "decisions#b-d1",
+        id: "spec#b-d1",
         reference: decision.ref,
         type: "decision",
         waiting: true,
@@ -696,11 +693,11 @@ test("the whole tree is one tab stop, and the focused row's keys work its contro
     type: "issue",
   });
   const view = renderTree(root, {
-    artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, open_questions: [] },
+    artifacts: [specDocument],
+    decisions: decisionsRead([decision]),
   });
   try {
-    const [row] = rowsFor(view.container, "decisions#b-d1");
+    const [row] = rowsFor(view.container, "spec#b-d1");
     if (row === undefined) throw new Error("the decision has no row");
 
     // The tree offers one tab stop and nothing inside a row offers another, standing on the
@@ -735,11 +732,11 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
   setViewport(1440);
   const user = userEvent.setup();
   const sent = spyOn(api, "createComment").mockResolvedValue({ id: "comment-1" } as never);
-  const read = readDecisionsText();
+  const read = readSpecText();
   const root = node({
     children: [
       node({
-        id: "decisions#b-d1",
+        id: "spec#b-d1",
         reference: decision.ref,
         type: "decision",
         waiting: true,
@@ -749,11 +746,11 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
     type: "issue",
   });
   const view = renderTree(root, {
-    artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, open_questions: [] },
+    artifacts: [specDocument],
+    decisions: decisionsRead([decision]),
   });
   try {
-    const [row] = rowsFor(view.container, "decisions#b-d1");
+    const [row] = rowsFor(view.container, "spec#b-d1");
     await act(async () => row?.focus());
     await user.click(await view.findByRole("button", { name: "Change" }));
     await user.click(view.getByRole("textbox", { name: "Your change" }));
@@ -776,20 +773,18 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
 /** The one decision's tree the two rows below press its controls in. */
 function decisionTree(): TreeNode {
   return node({
-    children: [
-      node({ id: "decisions#b-d1", reference: decision.ref, type: "decision", waiting: true }),
-    ],
+    children: [node({ id: "spec#b-d1", reference: decision.ref, type: "decision", waiting: true })],
     id: KEY,
     type: "issue",
   });
 }
 
-/** Answers the decisions document's text, which a Change reads as it is sent to count its
- *  quote's places over (`DecisionActions.tsx`). */
-function readDecisionsText() {
+/** Answers the text of the spec, which holds the decision's block in its `## Decisions` part and
+ *  which a Change reads as it is sent to count its quote's places over (`DecisionActions.tsx`). */
+function readSpecText() {
   return spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: decision.text,
-    token: "sha256:decisions-text",
+    markdown: `## Decisions\n\n${decision.text}`,
+    token: "sha256:spec-text",
     version: null,
   });
 }
@@ -805,11 +800,11 @@ test("Keep keeps the focus on its decision's row while its write is out, and aft
   const answer = Promise.withResolvers<never>();
   const kept = spyOn(api, "keepDecision").mockReturnValue(answer.promise);
   const view = renderTree(decisionTree(), {
-    artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, open_questions: [] },
+    artifacts: [specDocument],
+    decisions: decisionsRead([decision]),
   });
   try {
-    const [row] = rowsFor(view.container, "decisions#b-d1");
+    const [row] = rowsFor(view.container, "spec#b-d1");
     if (row === undefined) throw new Error("the decision has no row");
     await act(async () => row.focus());
     const keep = await view.findByRole("button", { name: "Keep" });
@@ -835,13 +830,13 @@ test("Send change keeps the focus on its decision's row while the comment is out
   const user = userEvent.setup();
   const answer = Promise.withResolvers<never>();
   const sent = spyOn(api, "createComment").mockReturnValue(answer.promise);
-  const read = readDecisionsText();
+  const read = readSpecText();
   const view = renderTree(decisionTree(), {
-    artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, open_questions: [] },
+    artifacts: [specDocument],
+    decisions: decisionsRead([decision]),
   });
   try {
-    const [row] = rowsFor(view.container, "decisions#b-d1");
+    const [row] = rowsFor(view.container, "spec#b-d1");
     if (row === undefined) throw new Error("the decision has no row");
     await act(async () => row.focus());
     await user.click(await view.findByRole("button", { name: "Change" }));
@@ -875,17 +870,17 @@ test("a Change the reader typed in comes back with its decision's body", async (
   const user = userEvent.setup();
   const root = node({
     children: [
-      node({ id: "decisions#b-d1", reference: decision.ref, type: "decision", waiting: true }),
+      node({ id: "spec#b-d1", reference: decision.ref, type: "decision", waiting: true }),
       node({ id: "comment-1", text: "The next words.", type: "comment" }),
     ],
     id: KEY,
     type: "issue",
   });
   const view = renderTree(root, {
-    artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, open_questions: [] },
+    artifacts: [specDocument],
+    decisions: decisionsRead([decision]),
   });
-  const [row] = rowsFor(view.container, "decisions#b-d1");
+  const [row] = rowsFor(view.container, "spec#b-d1");
   if (row === undefined) throw new Error("the decision has no row");
   await act(async () => row.focus());
   await view.findByRole("button", { name: "Change" });
@@ -902,7 +897,7 @@ test("a Change the reader typed in comes back with its decision's body", async (
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
   expect(view.queryByRole("textbox", { name: "Your change" })).toBeNull();
   await user.keyboard("k");
-  await waitFor(() => expect(focusedRow(view.container)).toBe("decisions#b-d1"));
+  await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-d1"));
   const back = await view.findByRole("textbox", { name: "Your change" });
   expect((back as HTMLTextAreaElement).value).toBe("Say more about the flag.");
 });
@@ -1425,7 +1420,7 @@ test("a statement's and a check's rows carry data-editable, a comment's, a resul
   const artifacts: Artifact[] = [
     specDocument,
     {
-      ...decisionsDocument,
+      ...specDocument,
       id: "artifact-verification",
       name: "Verification",
       slug: "verification",
@@ -1494,7 +1489,7 @@ test("the rows of a document its room admitted read-only carry no data-editable,
   const artifacts: Artifact[] = [
     specDocument,
     {
-      ...decisionsDocument,
+      ...specDocument,
       id: "artifact-verification",
       name: "Verification",
       slug: "verification",
@@ -3813,6 +3808,90 @@ test("the keys that would change the node's heading's level or lines leave it as
   // editor lets it in.
   expect(view.state.doc.child(1).attrs.id, "the heading's name did not follow its words").toBe(
     "#a-heading"
+  );
+});
+
+// A decision is a `decision` block whose heading and words are blocks of their own inside it, and
+// the editor holds every block inside the node's block to the type and the attributes it had, as
+// it holds the node's block itself (`holdEditsToBlock`): measured on the outline's row of a
+// decision, three Backspaces at its heading's start made the heading a paragraph. Delete and
+// Backspace at the heading's start lower it a level (DowngradeHeading) and Ctrl+Alt+0 makes it a
+// paragraph; Backspace at the start of the words joins them to the heading, and Ctrl+Alt+1 and
+// `# ` typed at their start make them a heading. The editor refuses each, and leaves every block
+// as it was; a letter typed in either goes in. The editor mints an id for the heading as it draws
+// it, so Enter's caret at the decision's start is in a block of another id than `r1`, inside `r1`'s
+// section: the row is entered here rather than through `editLive`, which waits for the caret in a
+// block of `r1`'s own id.
+test("the keys that would change a block inside the node's decision leave it as it was", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const blocks = liveBlocks({
+    attrs: { blockId: "r1" },
+    content: [
+      {
+        attrs: { level: 3 },
+        content: [{ text: "Ship behind a flag", type: "text" }],
+        type: "heading",
+      },
+      { content: [{ text: "We ship it behind a flag.", type: "text" }], type: "paragraph" },
+    ],
+    type: "decision",
+  });
+  const room = liveRoom();
+  const { editable } = await enterStatement(user, (onEditor) => (
+    <LiveEditor blocks={blocks} onEditor={onEditor} room={room} />
+  ));
+  const caretInDecision = () => {
+    const anchor = window.getSelection()?.anchorNode;
+    const element = anchor instanceof Element ? anchor : anchor?.parentElement;
+    return element?.closest('[data-block-id="r1"]') != null;
+  };
+  await waitFor(
+    () =>
+      expect(
+        document.activeElement === editable && caretInDecision(),
+        "Enter did not put the caret in the decision"
+      ).toBe(true),
+    { timeout: 10_000 }
+  );
+  const view = room.editor?.view;
+  if (view === undefined) throw new Error("the row's editor was never made");
+  /** The words of the decision's block `tag` draws: its heading, `h3`, or its words, `p`. */
+  const wordsIn = (tag: "h3" | "p"): Text => {
+    const drawn = editable.querySelector(`[data-block-id="r1"] ${tag}`)?.firstChild;
+    if (!(drawn instanceof Text)) throw new Error(`the editor draws no ${tag} in the decision`);
+    return drawn;
+  };
+  /** The blocks `blocksOf` reads, with the id of each block inside the decision left out: the
+   *  editor mints one for a block of it an edit goes into. */
+  const shapes = (lines: readonly string[]) => lines.map((line) => line.replace(/^1 \S+ /, "1 "));
+  const before = blocksOf(view);
+  /** `lines`, read without ids (`shapes`), with the line of the decision's block of `type`,
+   *  `heading 3` or `paragraph`, now holding `text`. */
+  const inside = (lines: readonly string[], type: string, text: string) =>
+    lines.map((line) => (line.startsWith(`1 ${type}: `) ? `1 ${type}: ${text}` : line));
+  for (const [tag, key, modifiers] of [
+    ["h3", "Delete", {}],
+    ["h3", "Backspace", {}],
+    ["h3", "0", { altKey: true, ctrlKey: true }],
+    ["p", "Backspace", {}],
+    ["p", "1", { altKey: true, ctrlKey: true }],
+  ] as const) {
+    await select(wordsIn(tag), 0);
+    pressIn(editable, key, modifiers);
+    const name = `${Object.keys(modifiers).join("+")} ${key} at the ${tag}'s start`;
+    expect(blocksOf(view), `${name} changed the document`).toEqual(before);
+  }
+  await select(wordsIn("p"), 0);
+  typeInEditor(view, "# ");
+  const typed = inside(shapes(before), "paragraph", "#We ship it behind a flag.");
+  expect(shapes(blocksOf(view)), "`# ` typed at the words' start made them a heading").toEqual(
+    typed
+  );
+  await select(wordsIn("h3"), 4);
+  typeInEditor(view, "Y");
+  expect(shapes(blocksOf(view)), "a letter typed in the heading did not go in").toEqual(
+    inside(typed, "heading 3", "ShipY behind a flag")
   );
 });
 
@@ -8879,7 +8958,7 @@ function seedBodyReads(
   client.setQueryData(["whoami"], { kind: "user", login: "alice" });
   client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
   client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
-  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
+  client.setQueryData(["decisions", KEY], decisionsRead([]));
   client.setQueryData(["asks", KEY], []);
   if (comments !== undefined) client.setQueryData(["comments", KEY], comments);
   client.setQueryData(["issue-messages", KEY], []);
@@ -9123,11 +9202,7 @@ test("the outline mounted again past 30 s reads none of the reads it waits on ag
   seedBodyReads(client, { comments: [] });
   const reads = [
     spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
-    spyOn(api, "getIssueDecisions").mockResolvedValue({
-      decisions: [],
-      document: null,
-      open_questions: [],
-    } as never),
+    spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
     spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] } as never),
     spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
     spyOn(api, "listComments").mockResolvedValue([] as never),
@@ -9425,8 +9500,8 @@ test("an item's failed line stays drawn, with the focus on it and the same alert
     );
     const alert = body.view.getByRole("alert");
 
-    // The issue's read answers with its spec and its decisions document, whose blocks are then
-    // read, and are out.
+    // The issue's read answers with its spec, whose blocks are then read, and are out; no
+    // decisions document stands beside it, a decision being a block of the spec.
     body.redraw(issueDetails());
     await waitFor(() =>
       expect(blocks, "the added documents' blocks were never read").toHaveBeenCalled()
@@ -9538,8 +9613,8 @@ test("an agents-only turn's landing on the issue, kept while a document added to
     const zoomedOn = focusedRow(container);
     expect(zoomedOn, "the zoom left the focus on no row").toBeDefined();
 
-    // The issue's read answers with its spec and its decisions document, whose blocks are then
-    // read, and are out.
+    // The issue's read answers with its spec, whose blocks are then read, and are out; no
+    // decisions document stands beside it, a decision being a block of the spec.
     body.redraw(issueDetails());
     await waitFor(() =>
       expect(blocks, "the added documents' blocks were never read").toHaveBeenCalled()
@@ -11282,8 +11357,8 @@ test("the line that the issue has no children stays drawn, with the focus on it,
       expect(document.activeElement, "the children's line does not hold the focus").toBe(heading)
     );
 
-    // The issue's read answers with its spec and its decisions document, whose blocks are then
-    // read, and are out.
+    // The issue's read answers with its spec, whose blocks are then read, and are out; no
+    // decisions document stands beside it, a decision being a block of the spec.
     body.redraw(issueDetails());
     await waitFor(() =>
       expect(blocks, "the added documents' blocks were never read").toHaveBeenCalled()

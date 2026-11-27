@@ -35,8 +35,9 @@ type RebuildReport struct {
 // supplied markdown, which changes the document), a latest version holding an element this build
 // does not know (ErrDocNewerContent, as every read of it answers), and markdown that is not a
 // Proof document, drops an open ask block, introduces a check block that breaks a rule of a check
-// CI proves (refuseCICheckText, refuseCICheckBlocks) or a block pointer at a block the attribute
-// may not name (refuseBlockPointers), each against the latest version. Supplied markdown is caller
+// CI proves (refuseCICheckText, refuseCICheckBlocks), a block pointer at a block the attribute
+// may not name (refuseBlockPointers), or a reading in an ask that holds no answer
+// (refuseReadingsWithoutAnswers), each against the latest version. Supplied markdown is caller
 // text: it is parsed as an upload is, and its rendering is weighed as a new document's is
 // (SeedText). The latest version is the server's own rendering of the document, read back as
 // every stored rendering is (pmdoc.ParseRendering), so a document whose version is past what one
@@ -131,9 +132,14 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	}
 	// The owner's lock before the room lock the write below takes, as every writer that takes both
 	// does (lockDocumentRoom). Held, it also keeps the open asks the replacement must keep, and
-	// the approval request the version moves, from changing under this transaction.
+	// the approval request the version moves, from changing under this transaction. A retired
+	// document, which takes no new text, read beside that lock, is refused (retiredWriteRefusal):
+	// its history is not replaced and no version is written.
 	owner, open, err := lockArtifactOwner(ctx, tx, artifactID)
 	if err != nil {
+		return RebuildReport{}, VersionResult{}, err
+	}
+	if err := retiredWriteRefusal(ctx, tx, artifactID, owner); err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
 	latest, err := latestVersion(ctx, tx, artifactID)
@@ -181,8 +187,9 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	if err := content(tree); err != nil {
 		return RebuildReport{}, VersionResult{}, &ErrInvalidAskBlock{Reason: err}
 	}
-	if err := s.refuseDroppedAskBlocks(ctx, artifactID, tree); err != nil {
-		return RebuildReport{}, VersionResult{}, &ErrInvalidAskBlock{Reason: err}
+	// A rebuild is a person's own write: its route needs the person scope (api's routeScopes).
+	if err := s.refuseDroppedAskBlocks(ctx, artifactID, tree, dropper{person: true, remover: personOf(actor), actor: actor}); err != nil {
+		return RebuildReport{}, VersionResult{}, err
 	}
 	// A closed issue's document shows its asks as the close left them, and the tree read from the
 	// latest version need not: no settlement versions a document whose history does not load,
@@ -241,6 +248,9 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 			return RebuildReport{}, VersionResult{}, err
 		}
 		if err := refuseCICheckBlocks(ctx, tx, artifactID, introduced); err != nil {
+			return RebuildReport{}, VersionResult{}, err
+		}
+		if err := refuseReadingsWithoutAnswers(ctx, tx, artifactID, tree, prior); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
 	}
@@ -334,11 +344,14 @@ func liveRebuildRefusal(ctx context.Context, tx pgx.Tx, artifactID, cause, next 
 		ErrDocumentLive, artifactID, cause, latest, next)
 }
 
-// savedVersionNumber is the number of artifactID's latest saved version, which a refused rebuild
-// names: a rebuild discards every edit made after it.
-func savedVersionNumber(ctx context.Context, tx pgx.Tx, artifactID string) (int, error) {
+// savedVersionNumber is the number of artifactID's latest saved version, read in q: the version a
+// refused rebuild names, since a rebuild discards every edit made after it, and the one a refused
+// write into a retired document names (RetiredDocumentError). A retired document takes no new
+// version, so its number stays the latest, and the version's own address
+// (GET /api/v1/artifacts/{id}/versions/{number}) answers a read of it.
+func savedVersionNumber(ctx context.Context, q Queryer, artifactID string) (int, error) {
 	var number int
-	if err := tx.QueryRow(ctx, `
+	if err := q.QueryRow(ctx, `
 		select coalesce(max(number), 0) from artifact_versions where artifact_id = $1
 	`, artifactID).Scan(&number); err != nil {
 		return 0, fmt.Errorf("read latest document version number: %w", err)

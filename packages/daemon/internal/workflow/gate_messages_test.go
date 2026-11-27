@@ -160,11 +160,11 @@ func TestTheOpeningIsOwedToAnAcceptingChildsRowOnlyWhereAChildsArchitectHoldsIt(
 	}
 }
 
-// A version whose only change is an answered decision block arrives as Dispatch writes it: the
+// A version whose only change is an answered ask block arrives as Dispatch writes it: the
 // approval it carries forward first, then the version (docs/mutation.go appends the carried
 // approval before the version), so the gate goes from open to open and never moves. Nothing is
 // sent: no role message, and no opening is owed to anyone. The carried approval raises the gate's
-// approved version, so it queues the reconcile, which finds the change decision-only and raises
+// approved version, so it queues the reconcile, which finds the change ask-only and raises
 // what each holder took without a task (the daemon's design_changes executor).
 func TestADecisionOnlyCarryFromOpenToOpenSendsNothing(t *testing.T) {
 	t.Parallel()

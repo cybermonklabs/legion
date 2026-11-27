@@ -29,6 +29,14 @@ const (
 	codeInternal              = "INTERNAL"
 )
 
+// codeAnsweredAskKept refuses a document write by a credential with no person scope that would
+// drop or retype the block of an answered ask (docs.ErrAnsweredAskKept).
+const codeAnsweredAskKept = "ANSWERED_ASK_KEPT"
+
+// codeDecisionsAreNodes refuses an upload or a create of a decisions document on an issue
+// (decisionsAreNodes): a decision is a `decision` block of the spec. It stays for good.
+const codeDecisionsAreNodes = "DECISIONS_ARE_NODES"
+
 // documentErrorCode names an error a document operation returns when it could not read or serve
 // the document, and is empty for any other error. writeHandlerError and anchorBlock both name a
 // document error by it, and both in one order, so the two cannot name one error differently.
@@ -235,6 +243,11 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, "EDIT_QUEUE_FULL", http.StatusTooManyRequests, docs.ErrPreconditionBusy.Error())
 		return
 	}
+	var answeredAskKept *docs.ErrAnsweredAskKept
+	if errors.As(err, &answeredAskKept) {
+		writeError(w, codeAnsweredAskKept, http.StatusConflict, answeredAskKept.Error())
+		return
+	}
 	var invalidAskBlock *docs.ErrInvalidAskBlock
 	if errors.As(err, &invalidAskBlock) {
 		writeError(w, "INVALID_ASK_BLOCK", http.StatusBadRequest, invalidAskBlock.Error())
@@ -302,6 +315,18 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	}
 	if errors.Is(err, docs.ErrIssueClosed) {
 		writeError(w, "ISSUE_CLOSED", http.StatusConflict, err.Error())
+		return
+	}
+	// A write the document service refused under the document owner's lock because the document
+	// is retired (docs.RetiredDocumentError): a write api did not test the row for itself - a
+	// comment's mark, an ask block, a named version, a rebuild - is refused as an edit or an upload
+	// of the retired document is (retiredDocumentRefusal): 409 DOCUMENT_RETIRED, naming the latest
+	// version the document service read, or 409 DECISIONS_ARE_NODES for an issue's decisions
+	// document, not 500.
+	var retired *docs.RetiredDocumentError
+	if errors.As(err, &retired) {
+		artifact := model.Artifact{ID: retired.ID, IssueKey: retired.IssueKey, Name: retired.Name, Slug: retired.Slug}
+		s.writeHandlerError(w, retiredDocumentRefusal(artifact, retired.Name, func() (int, error) { return retired.LatestVersion, nil }))
 		return
 	}
 	if errors.Is(err, pgx.ErrNoRows) {

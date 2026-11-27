@@ -40,8 +40,8 @@ import type { ReviewSeed, SeededReadMarks } from "./review-routes";
 import { sessionIds } from "./session-ids";
 import { asWorkspaceSession, reviewSessions, seedWorkspace, workspaceSessions } from "./workspace";
 
-/** The decision `decisions.md` records, which the Decisions tab lists under the reader's review
- *  and the Spec tab draws beside the block it shaped. */
+/** The decision a `decision` block of the issue records, which the Decisions tab lists under the
+ *  reader's review and the Spec tab draws beside the block it shaped. */
 const DECISION = "Seed one corpus for both review layers";
 const REASON = "Chosen so a scan and a shot read the same page.";
 
@@ -783,10 +783,20 @@ Each page is read once it is drawn.
 
   const specId = (await getIssue(issue)).primary_artifact_id ?? "";
   const shaped = await blockId(specId, "One command, a seeded corpus, a signed-in browser.");
-  await createIssueArtifact(issue, {
-    content: `## ${DECISION}\n\n${REASON} Shapes dispatch://${issue}/spec#b-${shaped}.\n`,
-    name: "decisions.md",
-  });
+  // The decision's words cite the block it shaped as well as its `shaped` attribute tying them:
+  // a decision card draws its words, so the card beside the spec draws that block's own words,
+  // which `e2e/review-routes.ts`'s `issue-spec` row waits on to know the reference graph answered.
+  // The agent writes it, so its `decided_by` names the seed's session and it waits for alice's
+  // review, under "Waiting for your review", where the `issue-decisions` row reads it: a decision
+  // alice wrote would be hers, which waits for nobody's review.
+  await createIssueArtifact(
+    issue,
+    {
+      content: `:::decision{#d1 shaped="dispatch://${issue}/spec#b-${shaped}"}\n### ${DECISION}\n\n${REASON} Shapes dispatch://${issue}/spec#b-${shaped}.\n:::\n`,
+      name: "choices.md",
+    },
+    { as: "agent" }
+  );
 
   // The workflow issue's header reads as a working issue's does: the decision its spec asks
   // waits on alice, the signed-in reader, so the header carries "Waiting on you"; it carries two

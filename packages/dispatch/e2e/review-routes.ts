@@ -281,28 +281,40 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "reviewed",
-    // Not shot: under "Shaped in the spec:" the panel lists every block a decision shaped, and
-    // a block the reference graph answers with no text of its own is drawn as `Block <uuid>`
-    // (`DecisionsPanel.tsx`). That id is fresh in every seeded corpus and no wait resolves it,
-    // because there is nothing for it to resolve to; a mask does not hold it either, since a
-    // uuid is a fixed count of characters and not a fixed width, so the painted rectangle
-    // moves with the glyphs. Three container runs measured it at 153, 781 and 794 pixels. A
-    // scan reads the DOM and does not care, so this page is reviewed by that layer alone.
+    // Not shot: under "Shaped:" the panel intentionally draws each shaped block link as
+    // `Block <id>` (`DecisionsPanel.tsx`, #3125), never by the block's words. That id is a
+    // minted UUID fresh in every seeded corpus; a mask does not hold it either, since a uuid is
+    // a fixed count of characters and not a fixed width, so the painted rectangle moves with the
+    // glyphs. Three container runs measured it at 153, 781 and 794 pixels. A scan reads the DOM
+    // and does not care, so this page is reviewed by that layer alone.
     layers: ["scan"],
     name: "issue-decisions",
     path: (seed) => `/issues/${seed.issue}/decisions`,
     pattern: "/issues/:key/*",
-    // The panel's region, and the link to the spec block the decision shaped once the
-    // reference graph has answered. Until it does, `DecisionsPanel.tsx` draws that link as
-    // `Block <uuid>`, and a uuid is fresh in every seeded corpus - so a page read on the
-    // region alone was captured sometimes with the words and sometimes with the id. Masking
-    // the id does not settle it either: a uuid is a fixed count of characters and not a fixed
-    // width, so the painted rectangle moves with the glyphs. Waiting for the words settles it
-    // and needs no mask, because the words are the spec block `e2e/review-seed.ts` names.
-    ready: (page) => [
-      page.getByRole("region", { name: "Waiting for your review" }),
-      page.getByRole("link", { name: "One command, a seeded corpus, a signed-in browser." }),
-    ],
+    // The panel's region and the two distinct links on the decision `e2e/review-seed.ts` seeds:
+    // the body reference (`data-dispatch-ref`), titled by the spec block's own words once the
+    // reference graph answers, and the shaped link under "Shaped:", which `DecisionsPanel.tsx`
+    // intentionally draws as `Block <id>` (#3125) and which carries the same
+    // `/issues/<KEY>/spec#b-<id>` href as that body reference. The decision's card
+    // (`li[data-decision]`) is found by that body reference rather than by its block id: this
+    // release's seed writes the decision as the spec's block `d1`, and a stubbed row replays what
+    // its recording run's server answered (`e2e/__recordings__`), whose corpus may hold it as a
+    // block of the issue's decisions document under an id minted in that run.
+    ready: (page) => {
+      const specWords = "One command, a seeded corpus, a signed-in browser.";
+      const waiting = page.getByRole("region", { name: "Waiting for your review" });
+      const cited = page
+        .getByRole("link", { name: specWords })
+        .and(page.locator("[data-dispatch-ref]"));
+      const decision = waiting.locator("li[data-decision]").filter({ has: cited });
+      return [
+        waiting,
+        decision.getByRole("link", { name: specWords }).and(page.locator("[data-dispatch-ref]")),
+        decision.locator(
+          `xpath=.//a[not(@data-dispatch-ref) and starts-with(normalize-space(.), "Block ") and @href = ancestor::li[@data-decision][1]//a[@data-dispatch-ref and normalize-space(.) = "${specWords}"]/@href]`
+        ),
+      ];
+    },
   },
   {
     kind: "reviewed",

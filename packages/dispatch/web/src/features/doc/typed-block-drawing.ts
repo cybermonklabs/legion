@@ -200,14 +200,15 @@ export interface AskBlockFacts {
 
 /**
  * The ask the server reads for a block, keyed by the block's id. Mostly its row (`ask`): the
- * block's own ask on its document, or, for a copy of an ask on another document of the same owner
- * (the same block id, asking the same), that source ask and the `dispatch://` address of the
- * document it is on (`copiedFrom`), from `GET /api/v1/issues/{key}/asks` or a project document's
- * asks (`servedAskOf`). Otherwise what the document's live text answers for the block in its
- * `asks` member, or, from a Dispatch of the release before, which sends none, renders on the
- * block's opening line (`rendered`, `liveAskOf`): a copy on a project document reads its source
- * there, since no route lists the asks of a project's other documents. A person's answer is held
- * on the ask alone, so a block reads its state and answer from here.
+ * block's own ask on its document, or, for a copy of an ask on another document of the same owner,
+ * that source ask, the one the document's live text names as the copy's (`copied_from`), and the
+ * `dispatch://` address of the document it is on (`copiedFrom`, `copied_from_document`), from
+ * `GET /api/v1/issues/{key}/asks` or a project document's asks (`servedAskOfBlock`). Otherwise
+ * what the document's live text answers for the block in its `asks` member, or, from a Dispatch
+ * of the release before, which sends none, renders on the block's opening line (`rendered`,
+ * `liveAskOf`): a copy on a project document reads its source there, since no route lists the
+ * asks of a project's other documents. A person's answer is held on the ask alone, so a block
+ * reads its state and answer from here.
  */
 export type ServedAsk =
   | { readonly ask: Ask; readonly copiedFrom?: string }
@@ -314,38 +315,20 @@ function recordedAnswer(attrs: Readonly<Record<string, unknown>>): AnswerFacts {
 }
 
 /**
- * The ask the server reads for the block `blockId` of the document `artifactId`, among `asks`, the
- * asks of its owner: the block's own ask, or the ask on another document of the owner it is a copy
- * of, which carries the same block id, with that document's `dispatch://` address. `project` is
- * the owner's project where it is a project, whose documents' asks name no issue.
+ * The block `blockId`'s own ask among `asks`, the asks of the owner of the document
+ * `artifactId`: the ask indexed from that block of that document. A copy has no ask of its own,
+ * and the ask on another document that carries the same block id is not its source by that alone
+ * (`servedAskOfBlock`).
  */
 export function servedAskOf(
   asks: readonly Ask[],
   artifactId: string,
-  blockId: string,
-  project?: string
+  blockId: string
 ): ServedAsk | undefined {
   const own = asks.find(
     (candidate) => candidate.block_id === blockId && candidate.block_artifact?.id === artifactId
   );
-  if (own !== undefined) {
-    return { ask: own };
-  }
-  const source = asks.find(
-    (candidate) =>
-      candidate.block_id === blockId &&
-      candidate.block_artifact !== undefined &&
-      candidate.block_artifact.id !== artifactId
-  );
-  const document = source?.block_artifact;
-  if (source === undefined || document === undefined) {
-    return undefined;
-  }
-  const place = document.primary ? "spec" : `artifact/${encodeURIComponent(document.slug)}`;
-  const owner = source.issue_key ?? project;
-  return owner === undefined || owner === null
-    ? { ask: source }
-    : { ask: source, copiedFrom: `dispatch://${owner}/${place}` };
+  return own === undefined ? undefined : { ask: own };
 }
 
 /**
@@ -410,20 +393,29 @@ export function liveAskOf(
 
 /**
  * The server's read of the ask the block `blockId` of the document `artifactId` shows, as the
- * document page and the Inbox's reading pane both read it: its row among `asks`, the asks of the
- * document's owner (`servedAskOf`), else what `text`, the document's live text, answers for the
- * block (`liveAskOf`), which is the one read of a copy's source on a project document: the
- * document's own asks hold no row of another document's. `project` is the owner's project where
- * it is a project.
+ * document page and the Inbox's reading pane both read it: its own row among `asks`, the asks of
+ * the document's owner (`servedAskOf`), else what `text`, the document's live text, answers for
+ * the block (`liveAskOf`). For a copy, that answer names its source by id (`copied_from`), as the
+ * server matched it - by the question, the options and more than the block id, and the earliest
+ * source where several match - and the source's row is the one of `asks` with that id, with the
+ * document the answer names it on. Another document's ask under the same block id is no source
+ * of it: a copy whose answer names none, or a source `asks` does not hold - a project document's,
+ * whose asks list no other document's - reads what the live text answers. A text not yet read
+ * names no source either.
  */
 export function servedAskOfBlock(
   asks: readonly Ask[],
   text: { readonly markdown: string; readonly asks?: readonly TextAsk[] | null } | undefined,
   artifactId: string,
-  blockId: string,
-  project?: string
+  blockId: string
 ): ServedAsk | undefined {
-  return servedAskOf(asks, artifactId, blockId, project) ?? liveAskOf(text, blockId);
+  const own = servedAskOf(asks, artifactId, blockId);
+  if (own !== undefined) return own;
+  const live = liveAskOf(text, blockId);
+  const copied = live !== undefined && "rendered" in live ? live.rendered.copiedFrom : undefined;
+  if (copied === undefined) return live;
+  const source = asks.find((ask) => ask.id === copied.ask);
+  return source === undefined ? live : { ask: source, copiedFrom: copied.document };
 }
 
 /**

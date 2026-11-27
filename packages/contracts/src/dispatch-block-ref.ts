@@ -524,26 +524,44 @@ export function askOpenerLines(markdown: string): string[] {
 }
 
 /**
- * The character references the renderer writes in a directive attribute's value (pmdoc's
- * escapeDirectiveAttribute), each with the character it stands for. A quoted id holds the four
- * `typedBlockIdAttribute` writes. It is the one table every reader of an ask opener's attributes
- * reads them back by (`askOpenerBlockId`, `askOpenerAttributes`).
+ * The named character references an ask opener's quoted value reads back, each with its
+ * character: the `&amp;`, `&lt;` and `&gt;` the renderer writes (pmdoc's escapeDirectiveAttribute),
+ * and `&quot;` and `&apos;`.
  */
-const ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
-  "&amp;": "&",
-  "&#x22;": '"',
-  "&lt;": "<",
-  "&gt;": ">",
-  "&#xA;": "\n",
-  "&#xD;": "\r",
+const NAMED_ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
+  amp: "&",
+  apos: "'",
+  gt: ">",
+  lt: "<",
+  quot: '"',
 };
 
-/** `raw`, a quoted attribute value, with the character references the renderer writes in it
- *  (ATTRIBUTE_REFERENCES) read back. */
+/**
+ * `raw`, a quoted attribute value, with its character references read back, in one pass, so a
+ * character a reference decodes to starts no reference of its own (`&amp;#x22;` is `&#x22;`):
+ * every numeric reference, hexadecimal or decimal (`&#x22;`, `&#xA;`, `&#xD;`, `&#34;`), and the
+ * five named ones (NAMED_ATTRIBUTE_REFERENCES). Any other named reference stays as written. A
+ * numeric reference that names no character - zero, a surrogate, one past U+10FFFF - is U+FFFD,
+ * as it is to Go's `html.UnescapeString`, which pmdoc's directive reader decodes an attribute with
+ * (`pmdoc.ParseTypedDirectiveOpen`). Those are the references the renderer writes (pmdoc's
+ * escapeDirectiveAttribute: `&amp;`, `&#x22;`, `&lt;`, `&gt;`, `&#xA;` and `&#xD;`) and a
+ * browser's parser reads back; Go's reader holds the whole HTML named-reference table besides,
+ * which no renderer writes into an opener. It is the one reading every reader of an ask opener's
+ * attributes reads them back by (`askOpenerBlockId`, `askOpenerAttributes`).
+ */
 function attributeValue(raw: string): string {
   return raw.replace(
-    /&(?:amp|#x22|lt|gt|#xA|#xD);/g,
-    (reference) => ATTRIBUTE_REFERENCES[reference] ?? reference
+    /&(?:#([xX][0-9a-fA-F]+|[0-9]+)|(amp|apos|gt|lt|quot));/g,
+    (whole: string, number: string | undefined, name: string | undefined) => {
+      if (number === undefined) return NAMED_ATTRIBUTE_REFERENCES[name ?? ""] ?? whole;
+      const codePoint =
+        number.startsWith("x") || number.startsWith("X")
+          ? Number.parseInt(number.slice(1), 16)
+          : Number.parseInt(number, 10);
+      return codePoint === 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)
+        ? "\uFFFD"
+        : String.fromCodePoint(codePoint);
+    }
   );
 }
 
@@ -586,13 +604,14 @@ export function askOpenerBlockId(line: string): string | undefined {
 /**
  * The ask that `line`, an ask block's opener as `askOpenerLines` gives it, carries on it, as a
  * Dispatch of the release before writes it there: the block id (`askOpenerBlockId`) and each of
- * the block's server-owned attributes the line holds, its value with the character references the
- * renderer writes read back (attributeValue), `state` only where it is `open`, `answered` or
- * `resolved`, and `selected` read as the JSON list of strings it is written as. An attribute the
- * line does not hold, a `state` that is none of those three, or a `selected` that holds no such
- * list, is absent. Undefined where the line names no block id. The CLI's reader of a live text and
- * its check of a version for open ask blocks, and the web's reader of a live text of the release
- * before, all read an opener's attributes here, so they read one line one way.
+ * the block's server-owned attributes the line holds, its value with its character references
+ * read back (attributeValue), `state` only where it is `open`, `answered` or `resolved`, and
+ * `selected` read as the JSON list of strings it is written as. A name written twice keeps its
+ * last value. An attribute the line does not hold, a `state` that is none of those three, or a
+ * `selected` that holds no such list, is absent. Undefined where the line has no braces or names
+ * no block id. The CLI's reader of a live text and its check of a version for open ask blocks, and
+ * the web's reader of a live text of the release before, all read an opener's attributes here, so
+ * they read one line one way.
  */
 // kept for one release: release-before-text
 export function askOpenerAttributes(line: string): TextAsk | undefined {

@@ -783,7 +783,7 @@ func TestApprovedSpecStaysApprovedThroughItsAskBlockSettlement(t *testing.T) {
 		t.Fatalf("approval of the spec as written = %#v, want approved at version 1", got.Approval)
 	}
 
-	// The settlement has run once it has indexed the decision block.
+	// The settlement has run once it has indexed the ask block.
 	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "decision", "Which transport?")
 	got := readApproval(t, handler, issue.PrimaryArtifactID)
 	if got.Approval.State != "approved" || got.Approval.LatestVersion != 1 || got.Approval.Version == nil || *got.Approval.Version != 1 {

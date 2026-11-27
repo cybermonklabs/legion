@@ -36,13 +36,13 @@ import {
   optionalString,
   stringArg,
 } from "./context";
-import { approvalLine, documentPlaysPlan, liveBlocks } from "./document-targets";
 import {
   OPEN_BLOCK_ASK_THE_HUMAN,
   OPEN_BLOCK_WAIVED,
   refuseOpenDecisionBlocks,
   refuseRemovingOpenDecisionBlocks,
-} from "./open-decision-blocks";
+} from "./decision-blocks";
+import { approvalLine, documentPlaysPlan, liveBlocks } from "./document-targets";
 import { openAnchoredThreads, waitsOnPerson } from "./render-item";
 import {
   documentResultDetails,
@@ -59,7 +59,7 @@ import {
   storedTextCheckFailed,
   uploadedFile,
 } from "./stored-text";
-import { answeredAskLines, liveTextAsks } from "./text-asks";
+import { liveTextAsks, settledAskLines } from "./text-asks";
 import { artifactNameExistsProblem, artifactUnderName, uploadKindOf } from "./upload-checks";
 
 /**
@@ -422,14 +422,14 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
   const threads = threadsResult.value;
   const approval = approvalLine(resolved.artifact, typeof resolved.issue?.closed_at === "string");
   // A live read's markdown holds no ask's state or answer: each answered ask is named beside the
-  // token, from the text's asks (liveTextAsks). A version read prints the stored bytes, which are
-  // the record a person approved, and names none.
-  const answered = version === undefined ? answeredAskLines(liveTextAsks(document)) : [];
+  // token, and each resolved one, from the text's asks (liveTextAsks). A version read prints the
+  // stored bytes, which are the record a person approved, and names none.
+  const settled = version === undefined ? settledAskLines(liveTextAsks(document)) : [];
   const trailer = [
     ...("token" in document && document.token !== undefined
       ? [`Document token: ${document.token}`]
       : []),
-    ...answered,
+    ...settled,
     ...("sha256" in document && document.sha256 !== undefined
       ? [`Content: sha256:${document.sha256}`]
       : []),
@@ -451,10 +451,8 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
-/** `dispatch request-approval`'s words around the open blocks it refuses over, which it counts as
- *  ask blocks. */
+/** `dispatch request-approval`'s words around the open ask blocks it refuses over. */
 const APPROVAL_REQUEST_OPEN_BLOCKS = {
-  blocks: "ask block",
   // kept for one release: stored-ask-state
   decidedBy: "live",
   effect:

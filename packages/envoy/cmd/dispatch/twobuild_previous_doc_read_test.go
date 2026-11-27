@@ -76,7 +76,7 @@ func TestThePreviousReleasesDocReadReadsWhichAsksAreDecided(t *testing.T) {
 		if ask.state != asks.StateAnswered {
 			continue
 		}
-		state, answeredBy, answeredAt := askNodeAnswerOf(t, ctx, builds, ask.ask)
+		state, answeredBy, answeredAt := nodeAnswerOf(t, ctx, builds, ask.ask)
 		if state != asks.StateAnswered || answeredBy == "" || answeredAt == "" {
 			t.Fatalf("the node of ask %s (block %s) holds state %q, answered_by %q and answered_at %q, want the person's answer", ask.ask, ask.block, state, answeredBy, answeredAt)
 		}
@@ -123,6 +123,8 @@ func TestThePreviousReleasesDocReadReadsWhichAsksAreDecided(t *testing.T) {
 			}
 		}
 	}
+	// This build's trailer quotes each block id as JSON, so a block id holding a line feed forges no
+	// trailer line (text-asks.ts, settledAskLines).
 	words := map[string]string{"first": "Ship the first now.", "second": "Hold the second."}
 	for block, node := range answered {
 		id, _ := json.Marshal(block)

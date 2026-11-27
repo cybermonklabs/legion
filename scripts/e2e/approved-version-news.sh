@@ -27,7 +27,7 @@
 #     gatedSteps, and a new Verification version closes the criteria row;
 #   - a3-a-checks-change-reaches-accepting-and-implementing: a checks-only approval reaches the
 #     root architect for a root in accepting and the implementer for one in implementing; an
-#     answered decision block alone sends nothing, in a window the accepting root's task arrives in;
+#     answered ask block alone sends nothing, in a window the accepting root's task arrives in;
 #   - a5-the-tester-passes-and-the-reviewer-is-told: a tester in a turn at a checks-only approval
 #     completes with a pass, and the reviewer's start task names the changed check, while in a
 #     second tree, whose root waits at admitted for its child, the start task of that child's

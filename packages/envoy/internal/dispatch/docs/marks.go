@@ -57,6 +57,11 @@ var (
 	ErrAnchorMissing = errors.New("anchor mark is not in the document")
 	// ErrAnchorOrphaned reports a suggestion mark that no longer exists.
 	ErrAnchorOrphaned = errors.New("anchor mark no longer exists")
+	// ErrRetiredDocumentKeepsText answers RejectDeletedCommentSuggestion for a suggestion in a
+	// retired document (RetireDocument): a retired document takes no new text, so the suggestion
+	// can never apply there, and its mark, an insert's words with it, stays in the frozen text.
+	// The reject writes nothing.
+	ErrRetiredDocumentKeepsText = errors.New("a retired document keeps the suggestion in its text")
 )
 
 type skippedAnchorRefreshKey struct{}
@@ -305,7 +310,20 @@ func (s *Service) RejectSuggestion(ctx context.Context, artifactID, id string, a
 // which this reject takes out again (rejectedInsert); a replace's and a delete's wrap document
 // text, which an accept would replace and a reject leaves. So only an insert's anchor quote, the
 // text its mark wrapped, is a copy of the comment's own text.
+//
+// A retired document (RetireDocument), read under its owner's lock as ProjectMark reads it
+// (retiredUnderOwnerLock), takes no new text, so its suggestion can never apply and stays in the
+// frozen text: the reject writes nothing and answers ErrRetiredDocumentKeepsText. A transaction
+// that holds its write to the document already read the document standing under that lock
+// (joinLiveWrite), so it reads nothing again.
 func (s *Service) RejectDeletedCommentSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) (string, error) {
+	retired, err := retiredOutsideLiveWrite(ctx, artifactID)
+	if err != nil {
+		return "", err
+	}
+	if retired {
+		return "", ErrRetiredDocumentKeepsText
+	}
 	return s.applySuggestion(context.WithValue(commentMarkOperation(ctx), skippedAnchorRefreshKey{}, id), artifactID, id, "", actor, false)
 }
 
@@ -504,8 +522,16 @@ func suggestionKind(attrs pmdoc.Attrs, id string) (string, error) {
 
 // ProjectMark writes a comment or suggestion record for Proof's margin projection. Under
 // WithCommentMarks - a comment's own record, or its thread root's that a reply adds itself to -
-// it is written on a closed issue's document too.
+// it is written on a closed issue's document too. A document that is retired (RetireDocument),
+// read under its owner's lock (retiredUnderOwnerLock), is written nothing: a thread's resolve,
+// reopen, edit and reply change the thread's own rows, and the retired document, which takes no new
+// text, keeps the record it holds. A transaction that holds its write to the document already read
+// the document standing under that lock (joinLiveWrite), which no retirement passes before the
+// transaction ends, so it reads nothing again.
 func (s *Service) ProjectMark(ctx context.Context, artifactID, markID string, record MarkRecord, actor model.Actor) error {
+	if retired, err := retiredOutsideLiveWrite(ctx, artifactID); err != nil || retired {
+		return err
+	}
 	plain, err := toPlain(record)
 	if err != nil {
 		return err

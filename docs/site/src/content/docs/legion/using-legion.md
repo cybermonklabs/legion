@@ -86,23 +86,20 @@ mention made then gets no reply, so ask again once it runs.
 
 Shortly after admission the architect claims the issue (the issue shows **Claimed by** Legion's
 session), then grows your spec into a design: how the work splits, how each outcome is proven, and
-the decisions it needs from you. Each open question is a **decision block** in the spec, with
+the decisions it needs from you. Each open question is an **ask block** in the spec, with
 options and a recommendation, and it reaches your Inbox.
 
-1. Answer each decision block. The architect reads every answer and revises the spec.
+1. Answer each ask block. The architect reads every answer and revises the spec.
 2. When nothing is open, the architect asks you to approve the spec, with a short summary of what
    the work will do that you have not already agreed to. Approve it from the approval question in
    your Inbox or with **Approve** in the document's header.
 3. If it is not right, choose **Request changes** and say why. The architect revises the spec and
    asks again.
 
-No code is written until you approve. The approval is for that version of the spec: if the spec
-changes afterwards, you are asked again. (`gates.design` says which documents of the root issue a
-person approves: by default the spec, and also the issue's Verification document when the
-architect asks you to approve both in one request, and a deployment can add the issue's decisions
-document or its Verification document, each approved the same way. A deployment that sets
-`gates.design: []` turns the design gate off; then the work starts as soon as the spec is written,
-and nobody is asked.)
+No code is written until you approve.
+The approval is for that version of the spec: if the spec changes afterwards, you are asked again.
+(`gates.design` says which documents of the root issue a person approves: by default the spec, and also the issue's Verification document when the architect asks you to approve both in one request, and a deployment can add the issue's Verification document, approved the same way.
+A deployment that sets `gates.design: []` turns the design gate off; then the work starts as soon as the spec is written, and nobody is asked.)
 
 If a phase gets stuck, or the architect hits something only a person can decide, it asks you the
 same way: a question in your Inbox that says what is blocked, the options, and what it recommends.

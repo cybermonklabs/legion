@@ -159,6 +159,38 @@ func TestSchemaRepairKeepsOpenAskBlocks(t *testing.T) {
 	}
 }
 
+// A repair is refused to an agent only for the answered asks whose block the document held before
+// it, as its block index holds them: an answered ask whose block a person removed earlier is no
+// block the repair drops, so it neither refuses the repair nor is named by its refusal. The spec
+// holds two answered asks; alice, a person, removes q-gone; the document then falls outside the
+// Proof schema, and an agent's session repairs it. A repair dropping q-kept too is refused for
+// q-kept alone, and one keeping q-kept is taken.
+func TestAnAgentsRepairIsRefusedOnlyForTheAnsweredAsksTheDocumentStillHeld(t *testing.T) {
+	const head = "# Spec\n\nThe corpus is written once.\n\n"
+	kept := removedRestoreAsk("q-kept", "Which build writes the corpus?")
+	issue := newRestoreIssue(t, head+removedRestoreAsk("q-gone", "Which store holds the corpus?")+kept)
+	issue.answer(issue.spec, "q-gone", "The database we run.")
+	issue.answer(issue.spec, "q-kept", "The base release.")
+	issue.replaceAsPerson(issue.spec, head+kept)
+	if removals := heldRemovalsOf(t, issue, blockAskOn(t, issue.service, issue.spec, "q-gone").ID); len(removals) != 1 || removals[0].ToID != "alice" {
+		t.Fatalf("alice's removal of q-gone left the removals %+v, want one to alice", removals)
+	}
+	writeSchemaInvalidElement(t, issue.service, issue.spec)
+	agent := model.Actor{Kind: "session", ID: "ses-repairing-agent"}
+
+	_, err := joinedReplaceText(issue.service, issue.spec, head+"Repaired without either ask.\n", agent)
+	var refused *ErrAnsweredAskKept
+	if !errors.As(err, &refused) || len(refused.Asks) != 1 || !strings.HasSuffix(refused.Asks[0].Block, "#b-q-kept") {
+		t.Fatalf("the agent's repair dropping q-kept answered %v, want ErrAnsweredAskKept naming q-kept alone", err)
+	}
+	if _, err := joinedReplaceText(issue.service, issue.spec, head+kept+"Repaired.\n", agent); err != nil {
+		t.Fatalf("the agent's repair keeping q-kept answered %v, want it taken: q-gone left the spec in alice's earlier write", err)
+	}
+	if text, err := issue.service.Text(context.Background(), issue.spec); err != nil || !strings.Contains(text, "Repaired.") {
+		t.Fatalf("the repaired spec reads %q (%v), want the agent's repair", text, err)
+	}
+}
+
 // A repair's markdown is a whole new document, so every ask block it holds is held to the ask
 // content rule, as a replacement over a readable document holds each ask it writes: a question
 // given only a list is refused, and the unreadable document stays as it was rather than taking

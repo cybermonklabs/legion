@@ -826,16 +826,15 @@ const respellDecisionSpec = "Context\n\n- first\n\n- second\n\n- third\n\n" +
 	":::ask{#reopen-decision urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 
 // A reopen carries an approval of a closed issue's version that another renderer version stored:
-// the version the settlement after the reopen writes differs from that version only in the
-// server-owned attributes of its ask block, which R5's case carries (docs' attributeRemovalCase),
-// and the case compares the approved version's stored text as this build renders it (docs'
-// carryVerdict, approvedVersion). As in
+// R5's case compares the version the settlement after the reopen writes with that stored text
+// as this build reads it, once the server-owned attributes of their ask blocks are taken off both
+// (docs.carryVerdictOver, carryInput.approvedOtherRenderer). As in
 // TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved, the close withdraws the spec's
 // decision and the settlement on the closed issue writes version L showing it resolved, here
 // stored as another renderer version stored it, in another spelling of its loose list
 // (respellVersion). alice approves L between the reopen and its settlement, and the settlement's
-// version L+1, which shows the decision open, with no state on its opener, in this build's
-// spelling, reads approved by her, carried from her approval of L by R5's case.
+// version L+1, which shows the decision open in this build's spelling, reads approved by her,
+// carried from her approval of L by R5's case.
 func TestAReopenCarriesAnApprovalOfAClosedVersionAnotherRendererVersionStored(t *testing.T) {
 	t.Parallel()
 	handler, database, documents := settlingCarryDocuments(t, time.Hour)
@@ -868,19 +867,24 @@ func TestAReopenCarriesAnApprovalOfAClosedVersionAnotherRendererVersionStored(t 
 	if _, written := documentTexts(t, handler, c.spec); reopened != closed+1 || !strings.Contains(written, `#reopen-decision urgency="med" multiple="false"}`) {
 		t.Fatalf("the reopened issue's settlement left the spec at version %d reading:\n%s\nwant version %d showing the restored decision open, with no state on its opener", reopened, written, closed+1)
 	}
-	requireCarriedTo(t, handler, c.spec, closed, reopened, "after the reopen's settlement")
+	read := readApproval(t, handler, c.spec)
+	want := attributeRemovalSentence(closed)
+	if carried := read.Approval; carried == nil || carried.State != "approved" || carried.LatestVersion != reopened || carried.Version == nil || *carried.Version != reopened ||
+		carried.By == nil || carried.By.ID != "alice" || carried.Reason == nil || *carried.Reason != want {
+		t.Fatalf("the spec's approval after the reopen's settlement = %s, want approved by alice at version %d with the reason %q", describeApproval(read), reopened, want)
+	}
 }
 
 // A reopen keeps the approval request with the person over a settlement's version of the text
 // the request names when another renderer version stored that text: the move compares it as the
-// restore does, as this build renders it (docs.MoveApprovalAsk, docs.restoresApprovedText). As in
-// the settlement case of TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson, the
-// spec's request waits on alice at version N, here stored as another renderer version stored it,
-// in another spelling of its loose list (respellVersion). The close and the settlement on the
-// closed issue write the withdrawn decision
-// resolved, the reopen writes it open, and the settlement it leaves owed writes N's tree again in
-// this build's spelling: the request still waits on alice, names and requests that version, and
-// its last move is quiet.
+// restore does, as this build renders it (docs.MoveApprovalAsk, docs.restoresApprovedText), and
+// R5's turn rule reads it so too (docs.changesAskAttributesAlone). As in the settlement case of
+// TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson, the spec's request waits on
+// alice at version N, here stored as another renderer version stored it, in another spelling of
+// its loose list (respellVersion). The close and the settlement on the closed issue write the
+// withdrawn decision resolved, the reopen writes it open, and the settlement it leaves owed writes
+// N's tree again in this build's spelling: the request still waits on alice, names and requests
+// that version, and its last move is quiet.
 func TestAReopenKeepsTheRequestWithThePersonOverATextAnotherRendererVersionStored(t *testing.T) {
 	t.Parallel()
 	handler, database, documents := settlingCarryDocuments(t, time.Hour)

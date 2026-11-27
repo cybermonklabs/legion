@@ -1,4 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
+import { askOpenerAttributes } from "@legion/contracts";
 import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { DOMSerializer, Schema } from "prosemirror-model";
@@ -264,7 +265,8 @@ test("a block[] attribute pointing at no block is not drawn at all", () => {
   );
 });
 
-// The version-7 typed blocks: a decision, which a reading closes, as an ask is closed by one.
+// The typed blocks read from version 7 and created from version 8, this build's: a decision, which
+// a reading closes, as an ask is closed by one.
 // Both are drawn as host blocks by their attributes, as a requirement and a check are.
 const decisionSchema = new Schema({
   nodes: {
@@ -520,4 +522,26 @@ test.each([
   ].join("\n");
   expect(renderedAskOf(quoted, "q1")).toEqual(real);
   expect(renderedAskOf(`${contained}\n${forgedOpener}\nForged?\n:::\n`, "q1")).toBeUndefined();
+});
+
+// The release before writes an opener's values with the references the renderer writes, and the
+// CLI reads every numeric reference and five named ones there, in one pass (`askOpenerAttributes`
+// in packages/contracts). The page reads one opener as the CLI does: a decimal quote, `&quot;`,
+// `&apos;` and a decimal letter read back, and a reference that a decoded `&amp;` spells stays
+// as written.
+test("an opener the release before renders is read as the CLI reads its attribute values", () => {
+  const opener =
+    ':::ask{#q1 state="answered" answered_by="b&#111;b" answered_at="2026-11-16T09:00:00Z" selected="[&#34;Ship&#34;]" answer="Plain &quot;HTTP&quot;, &apos;REST&apos; &amp;#x22;."}';
+  const answer = `Plain "HTTP", 'REST' &#x22;.`;
+  expect(askOpenerAttributes(opener)?.answer).toBe(answer);
+  expect(renderedAskOf(`${opener}\nShip it?\n:::\n`, "q1")).toEqual({
+    rendered: {
+      answerText: answer,
+      answeredAt: "2026-11-16T09:00:00Z",
+      answeredBy: "bob",
+      copiedFrom: undefined,
+      selected: ["Ship"],
+      state: "answered",
+    },
+  });
 });
