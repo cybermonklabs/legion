@@ -32,7 +32,7 @@ func TestSettingsKeepEachStoresFields(t *testing.T) {
 			if err := json.Unmarshal(raw, &settings); err != nil {
 				t.Fatal(err)
 			}
-			fixed := map[string]bool{"store": true, "secrets_prefix": true, "google_exchange_audience": true, "secret_type_tag": true, "judge_keys": true}
+			fixed := map[string]bool{"store": true, "secrets_prefix": true, "google_exchange_audience": true, "secret_type_tag": true, "judge_keys": true, "approver_fields": true}
 			kept := 0
 			for name, value := range record {
 				if fixed[name] {

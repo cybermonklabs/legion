@@ -233,7 +233,8 @@ func TestASecretManagerCallThatDidNotReachItSaysSo(t *testing.T) {
 // ends the call (its context is cancelled once that attempt returns), so a retry is counted, not
 // timed, and a row ends as soon as it has its answer.
 func TestGaxStillStopsRetryingACertificateNoRootHereTrusts(t *testing.T) {
-	t.Parallel()
+	// Not parallel: its interceptor sets environment variables of the whole process
+	// (main.gcpInterceptor, gcptest.UseNoADC, t.Setenv at internal/cipher/secretstore/gcp/gcptest/use.go:188).
 	attempts := func(t *testing.T, to unreachedTarget) (int32, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()

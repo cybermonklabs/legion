@@ -33,6 +33,11 @@ type Settings struct {
 	// seconds and its guidance tag; absent where no key carries one. `secret show` reads it to
 	// say who decides a request for a key and what the judge will look for.
 	JudgeKeys map[string]JudgeKey `json:"judge_keys,omitempty"`
+	// ApproverFields is the broker's own field, true where it takes a machine login's approver
+	// account in a decision (api.settingsResponse.ApproverFields). No form reads it; it is held
+	// here, among the fixed fields, so the settings this command reads and writes back are the
+	// broker's answer member for member, and so no store may take its name.
+	ApproverFields bool `json:"approver_fields,omitempty"`
 	// Fields is every other string member of the body, by its JSON name: the store's own fields,
 	// which its registry entry reads (store).
 	Fields map[string]string `json:"-"`
@@ -48,10 +53,11 @@ type settingsFixed struct {
 	GoogleExchangeAudience string              `json:"google_exchange_audience,omitempty"`
 	SecretTypeTag          bool                `json:"secret_type_tag,omitempty"`
 	JudgeKeys              map[string]JudgeKey `json:"judge_keys,omitempty"`
+	ApproverFields         bool                `json:"approver_fields,omitempty"`
 }
 
 // settingsFixedNames are settingsFixed's JSON names, which Fields never holds.
-var settingsFixedNames = map[string]bool{"store": true, "secrets_prefix": true, "google_exchange_audience": true, "secret_type_tag": true, "judge_keys": true}
+var settingsFixedNames = map[string]bool{"store": true, "secrets_prefix": true, "google_exchange_audience": true, "secret_type_tag": true, "judge_keys": true, "approver_fields": true}
 
 // UnmarshalJSON reads the fixed fields, and puts every other member whose value is a JSON string
 // into Fields; a member of any other kind is no store field, and is left out.
@@ -74,7 +80,7 @@ func (s *Settings) UnmarshalJSON(data []byte) error {
 	}
 	*s = Settings{
 		Store: fixed.Store, SecretsPrefix: fixed.SecretsPrefix, GoogleExchangeAudience: fixed.GoogleExchangeAudience,
-		SecretTypeTag: fixed.SecretTypeTag, JudgeKeys: fixed.JudgeKeys, Fields: fields,
+		SecretTypeTag: fixed.SecretTypeTag, JudgeKeys: fixed.JudgeKeys, ApproverFields: fixed.ApproverFields, Fields: fields,
 	}
 	return nil
 }
@@ -84,7 +90,7 @@ func (s *Settings) UnmarshalJSON(data []byte) error {
 func (s Settings) MarshalJSON() ([]byte, error) {
 	raw, err := json.Marshal(settingsFixed{
 		Store: s.Store, SecretsPrefix: s.SecretsPrefix, GoogleExchangeAudience: s.GoogleExchangeAudience,
-		SecretTypeTag: s.SecretTypeTag, JudgeKeys: s.JudgeKeys,
+		SecretTypeTag: s.SecretTypeTag, JudgeKeys: s.JudgeKeys, ApproverFields: s.ApproverFields,
 	})
 	if err != nil || len(s.Fields) == 0 {
 		return raw, err
