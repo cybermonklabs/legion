@@ -234,6 +234,10 @@ func TestFarSideErrorBoundsTheCleanedTextKeepingItsStart(t *testing.T) {
 			if strings.Contains(got, "token") || strings.Contains(got, planted) {
 				t.Fatalf("FarSideError(%.80q…) holds a part of the URL's credentials", tc.text)
 			}
+			// The planted URLs' user name is u: neither it nor its "@" may stay.
+			if strings.Contains(got, "://u:") || strings.Contains(got, "://u@") {
+				t.Fatalf("FarSideError(%.80q…) holds the URL's user name", tc.text)
+			}
 			if again := FarSideError(got); again != got {
 				t.Fatalf("FarSideError of its own result gave %.80q…, want the result kept", again)
 			}
@@ -288,6 +292,9 @@ func TestFarSideErrorEndsKeepsBothEnds(t *testing.T) {
 			}
 			if !utf8.ValidString(got) || utf8.RuneCountInString(got) > FarSideErrorRunes || strings.Contains(got, planted) {
 				t.Fatalf("FarSideErrorEnds gave %d runes, want valid UTF-8 of at most %d runes with no credential", utf8.RuneCountInString(got), FarSideErrorRunes)
+			}
+			if strings.Contains(got, "://u:") || strings.Contains(got, "://u@") {
+				t.Fatalf("FarSideErrorEnds(%.80q…) holds the URL's user name", tc.text)
 			}
 		})
 	}

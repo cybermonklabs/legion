@@ -308,6 +308,10 @@ interface CallWrapper {
  *  walk reads. A composer, or an element holding one, handed to any other call the census does
  *  not follow is unread. */
 const CALL_WRAPPERS: Readonly<Record<string, CallWrapper>> = {
+  "react#createElement": {
+    reason:
+      "is what JSX compiles to: it makes one element of its type and props, and draws its children - each argument after the props - as they are, in that element, so what it is handed mounts and unmounts with the call's own place (`features/issue-page/useDocumentToolbars.ts` writes its two providers with it, in a file with no JSX)",
+  },
   "react-dom#createPortal": {
     reason:
       "draws its first argument as it is, into another DOM node; React keeps the portal in this tree, so what it draws mounts and unmounts with the call's own place",

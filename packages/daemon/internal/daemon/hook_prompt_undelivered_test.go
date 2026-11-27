@@ -334,8 +334,8 @@ func TestTheHookPromptsOfOneRoleThatEndWithinAnHourShareOneMessage(t *testing.T)
 func TestAHookPromptReachesItsWokenRoleAfterAClaimSlowerThanTwoRetries(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	runner, sup, pool, publisher, topic := unheldHookRunner(t)
-	machine := releasedClaim(t, sup, claim.RoleImplementer)
+	runner, _, pool, publisher, topic := unheldHookRunner(t)
+	machine := recordedReleasedClaim(t, runner, claim.RoleImplementer)
 	hookRowMadeAt(t, runner, pool, firedHook, time.Now().Add(-time.Minute))
 
 	if err := runner.RunOnce(ctx); err != nil {

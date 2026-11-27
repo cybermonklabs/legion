@@ -13,6 +13,9 @@
 // merely be posted, before the window closes. At equality it has not yet paid for its round trip,
 // and `setInterval` only ever fires late, so equality really buys one failed refresh, not two.
 // Change one of these numbers and check the sum again.
+//
+// The file also holds the words that open the listener's answer to a request its message bus did
+// not answer, which the listener writes and envoy-client reads.
 
 /**
  * The interval at which an Oh My Pi pane's pi-envoy plugin refreshes its Envoy listener
@@ -70,3 +73,15 @@ export const LISTENER_CALL_RETRY_DELAY_MS = 250;
  * wherever it is checked against `SESSION_LIVE_WINDOW_MS`.
  */
 export const LISTENER_CALL_ATTEMPTS = 2;
+
+/**
+ * The words that open the error of every 503 the Envoy listener answers when its message bus did
+ * not answer a request: `{"error":"envoy: the message bus did not answer: <reason>"}` with
+ * `Retry-After: 1` (`writeBusUnavailable`, `packages/envoy/cmd/listener/api.go`). The reason names
+ * the call the bus did not answer. envoy-client's `isBusUnanswered` reads this prefix to tell that
+ * answer from the starting gate's 503 and from every other failure, and the pi-envoy and
+ * claude-envoy warnings for that outage are given only where it reads true. Generated into Go as
+ * `contracts.BusUnansweredPrefix`, which is the listener's `busUnansweredPrefix`, so the listener
+ * writes and a client reads one literal.
+ */
+export const BUS_UNANSWERED_PREFIX = "envoy: the message bus did not answer";

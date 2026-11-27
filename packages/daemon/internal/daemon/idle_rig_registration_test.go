@@ -29,6 +29,7 @@ import (
 // arrived: it is the process's pacing, which the rows hold to the pause the answer asked for, and
 // no bound of the test's.
 func TestTheIdleRigRoleProcessRegistersThroughABusyListener(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv in idleRigBusyListener.start).
 	subscribe := func(p *idleRigRoleProcess) error { return p.subscribe(nil) }
 	claimRole := func(p *idleRigRoleProcess) error { return p.claimRole() }
 	const (

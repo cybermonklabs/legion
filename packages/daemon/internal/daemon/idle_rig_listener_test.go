@@ -29,7 +29,8 @@ import (
 // checkout's cmd/listener, then PORT, ENVOY_LISTEN_HOST, ENVOY_MACHINE_ID, NATS_URLS and a HOME of
 // its own, waited on until /healthz says healthy — but on a listening socket the test holds from
 // the listener's first start until the test ends, handed to each start as ENVOY_LISTEN_FD, so no
-// other program can take the port before the first start or between a stop and the next.
+// other program can take the port before the first start or between a stop and the next. The rig
+// adds one other setting of its own, its agent wait (idleRigAgentWait).
 type idleRigListener struct {
 	t   *testing.T
 	url string
@@ -43,6 +44,16 @@ type idleRigListener struct {
 	port   int
 	stop   func()
 }
+
+// idleRigAgentWait is the rig listener's ENVOY_UNPLACEABLE_RETRY_WINDOW: how long the listener
+// waits before it reports the wake of a message stored for a session with no record
+// (cmd/listener's noRecordAgentDelivery). The listener's default is 60 seconds. At ten seconds,
+// the wake report of a pod woken only by that report, as a message routed straight onto the
+// stream wakes one, comes ten seconds after the message rather than a minute after it, and the
+// pod comes back after its launch on top of that. The held-stop pod's stop lasts longer than this
+// wait (idleRigStopDelay), so the listener's report of its stored copy comes during the release,
+// as the send route's report does.
+const idleRigAgentWait = 10 * time.Second
 
 // idleRigListenerSpare is how long before the test binary's deadline the rig's requests to the
 // listener end: half of testwait's margin. Every wait of the rig gives up at that margin, 30 s
@@ -86,18 +97,35 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.Fi
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A test that fails prints the end of this listener's log, as it prints the daemon's
+	// (idleWakeRig.logFile), so a failure the listener caused shows its cause. The cleanup is
+	// registered before the two that close the file and stop the process, so it runs after them
+	// and the log holds the listener's shutdown too. It runs before the removal of the directory
+	// that holds the log, which testtmp.Dir registered first.
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		tail, omitted, err := idleRigLogTail(logs)
+		switch {
+		case err != nil:
+			t.Logf("the Envoy listener's log %s could not be read back: %v", logs, err)
+		case tail == "":
+			t.Logf("the Envoy listener's log %s is empty: the listener wrote nothing to it", logs)
+		case omitted > 0:
+			t.Logf("the Envoy listener's log %s, its last %d bytes, %d earlier bytes left out:\n%s", logs, len(tail), omitted, tail)
+		default:
+			t.Logf("the Envoy listener's log %s, whole, %d bytes:\n%s", logs, len(tail), tail)
+		}
+	})
 	t.Cleanup(func() { _ = file.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, binary)
 	cmd.Dir = home
-	// The unplaceable window is ten seconds rather than the shipped minute: a copy stored on the
-	// agent subject of a session with no record is held for that window before the listener gives
-	// it up and reports the wake (cmd/listener's unplaceableAgentDelivery), so the wake report of a
-	// pod woken that way comes ten seconds after the message rather than a minute after it, and
-	// the pod comes back after its launch on top of that.
 	cmd.Env = append(os.Environ(),
 		"HOME="+home, "PORT="+fmt.Sprint(port), "ENVOY_LISTEN_HOST=127.0.0.1", "ENVOY_LISTEN_FD=3",
-		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL, "ENVOY_UNPLACEABLE_RETRY_WINDOW=10s")
+		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL,
+		"ENVOY_UNPLACEABLE_RETRY_WINDOW="+idleRigAgentWait.String())
 	// ExtraFiles' first entry is the listener's descriptor 3. The test keeps its own descriptor of
 	// the socket open, so the port stays held while no listener runs.
 	cmd.ExtraFiles = []*os.File{socket}
@@ -138,11 +166,6 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.Fi
 		})
 	}
 	t.Cleanup(l.stop)
-	defer func() {
-		if t.Failed() {
-			t.Logf("the Envoy listener's own log:\n%s", l.log())
-		}
-	}()
 	idleRigEventually(t, "the Envoy listener answering /healthz healthy", func() bool {
 		request, err := http.NewRequestWithContext(l.ctx, http.MethodGet, l.url+"/healthz", nil)
 		if err != nil {
@@ -164,7 +187,8 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.Fi
 	return l
 }
 
-// log is the listener's own output so far, which a failure names.
+// log is the listener's own output so far, which a test reads its request lines from
+// (idleRigNoSessionRefusals).
 func (l *idleRigListener) log() string {
 	read, err := os.ReadFile(l.logs)
 	if err != nil {

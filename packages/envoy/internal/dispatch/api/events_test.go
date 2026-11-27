@@ -84,7 +84,7 @@ func TestEventPayloadsAreServedAsStoredForEveryEventKind(t *testing.T) {
 
 	eventTypes := []string{
 		"issue.created", "issue.updated", "issue.closed", "issue.reopened", "issue.claimed", "issue.released", "issue.deployed",
-		"issue.pull_request_attribution_changed",
+		"issue.pull_request_attribution_changed", "issue.role_holders_changed",
 		"child.added", "child.removed", "child.status",
 		"artifact.created", "artifact.version", "artifact.human_edited", "artifact.approved", "artifact.changes_requested",
 		"ask.opened", "ask.anchor_refreshed", "ask.answered", "ask.resolved", "ask.edited", "ask.handed_back", "ask.asked_of",

@@ -68,17 +68,6 @@ function namesCheck(args: Readonly<Record<string, unknown>>): boolean {
   return args["check_opened_at"] !== undefined;
 }
 
-/** The input gate effect of a successful call. A look's report leaves phase input open. */
-export function phaseInputAfter(
-  op: string,
-  args: { readonly check_opened_at?: unknown }
-): "phase-closed" | "update-answered" | undefined {
-  if (op === "ready_for_update") return "update-answered";
-  if (op === "request_backward_move" || (op === "handoff_complete" && !namesCheck(args)))
-    return "phase-closed";
-  return undefined;
-}
-
 /** A string field `op` requires: present, and not blank. The value is passed on as it was sent. */
 const requiredString = (op: PhaseOp, field: string) => {
   const message = `${op} requires ${field}`;
@@ -768,8 +757,8 @@ const percentile = (sorted: readonly number[], share: number): number | null =>
  * role to the first wake of its pod, and to `asOf` for one nothing has woken yet, since that pod
  * is gone now. A pod's roles wake one resume each, so the first of them ends the release. A
  * resume names the release it ended, except a wake a project pause held, which names none
- * (`release` 0, `PodRecords.TakePodWake` in `packages/daemon/internal/store/wake.go`). A held wake
- * therefore ends every release of its issue that came before it, where no resume that names the
+ * (`release` 0, `PodRecords.TakePodWake` in `packages/daemon/internal/store/wake_take.go`). A held
+ * wake therefore ends every release of its issue that came before it, where no resume that names the
  * release came sooner: a pod released before a pause and woken during it would otherwise be
  * charged to `asOf` at every read, for ever. The release ends at the wake's own moment, which is
  * when the pod was wanted again. The pod stays gone from there until the project runs again, and
