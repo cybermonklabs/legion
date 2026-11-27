@@ -1854,23 +1854,28 @@ describe("EnvoyClient", () => {
         "this listener may not manage session consumers, so it can give ses_sender none",
       ],
       ["consumer_error", "the session consumer of ses_sender could not be read or created"],
-    ] as const)("a retry the listener refuses with its %s 503 fails with that refusal, told at once", async (reason, error) => {
-      const session = registrations(async () => Response.json({ error, reason }, { status: 503 }));
+    ] as const)(
+      "a retry the listener refuses with its %s 503 fails with that refusal, told at once",
+      async (reason, error) => {
+        const session = registrations(async () =>
+          Response.json({ error, reason }, { status: 503 })
+        );
 
-      const failure = await session.register().catch((thrown: unknown) => thrown);
+        const failure = await session.register().catch((thrown: unknown) => thrown);
 
-      expect(session.calls()).toBe(2);
-      expect(isBusUnanswered(failure)).toBe(false);
-      expect(failure).toMatchObject({ reason, details: { status: 503 } });
-      expect(session.told).toEqual([`${error} (reason: ${reason})`]);
-      expect(session.kinds).toEqual(["refused"]);
-      const refusedNotice = inboundUnavailableNoticeText({
-        kind: "refused",
-        why: session.told[0] ?? "",
-      });
-      expect(refusedNotice).toContain("no durable consumer");
-      expect(refusedNotice).toContain("receives none");
-    });
+        expect(session.calls()).toBe(2);
+        expect(isBusUnanswered(failure)).toBe(false);
+        expect(failure).toMatchObject({ reason, details: { status: 503 } });
+        expect(session.told).toEqual([`${error} (reason: ${reason})`]);
+        expect(session.kinds).toEqual(["refused"]);
+        const refusedNotice = inboundUnavailableNoticeText({
+          kind: "refused",
+          why: session.told[0] ?? "",
+        });
+        expect(refusedNotice).toContain("no durable consumer");
+        expect(refusedNotice).toContain("receives none");
+      }
+    );
 
     test("a retry the listener refuses with a 4xx fails with that refusal, told at once", async () => {
       const refusal =
@@ -1925,26 +1930,29 @@ describe("EnvoyClient", () => {
       },
     ],
     ["gets a 5xx that names no reason", async () => new Response("bad gateway", { status: 502 })],
-  ] as const)("an unsubscribe whose first attempt got the bus-outage 503 and whose retry %s fails with that 503", async (_name, retry) => {
-    const outage = `${BUS_UNANSWERED_PREFIX}: set the filter of ses_sender's session consumer: bus: NATS is reconnecting`;
-    let calls = 0;
-    const client = createEnvoyClient({
-      baseUrl: "http://listener",
-      fetch: async () => {
-        calls += 1;
-        if (calls === 1) return Response.json({ error: outage }, { status: 503 });
-        return retry();
-      },
-    });
+  ] as const)(
+    "an unsubscribe whose first attempt got the bus-outage 503 and whose retry %s fails with that 503",
+    async (_name, retry) => {
+      const outage = `${BUS_UNANSWERED_PREFIX}: set the filter of ses_sender's session consumer: bus: NATS is reconnecting`;
+      let calls = 0;
+      const client = createEnvoyClient({
+        baseUrl: "http://listener",
+        fetch: async () => {
+          calls += 1;
+          if (calls === 1) return Response.json({ error: outage }, { status: 503 });
+          return retry();
+        },
+      });
 
-    const failure = await client
-      .unsubscribe({ sessionID: "ses_sender", topics: ["notifications.role.reviewer"] })
-      .catch((thrown: unknown) => thrown);
+      const failure = await client
+        .unsubscribe({ sessionID: "ses_sender", topics: ["notifications.role.reviewer"] })
+        .catch((thrown: unknown) => thrown);
 
-    expect(calls).toBe(2);
-    expect(isBusUnanswered(failure)).toBe(true);
-    expect((failure as Error).message).toBe(outage);
-  });
+      expect(calls).toBe(2);
+      expect(isBusUnanswered(failure)).toBe(true);
+      expect((failure as Error).message).toBe(outage);
+    }
+  );
 
   test("retries one 503 response and keeps the direct-send recipient", async () => {
     const recorded = recordFetch([
