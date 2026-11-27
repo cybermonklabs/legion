@@ -48,14 +48,38 @@ const definition = /^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm;
 // last segments, so it is resolved whole. A word this file cannot resolve without running the
 // shell is no library it can read: `unreadableSources` names those lines, and a scan that walks
 // what a script sources fails on them rather than passing over a file it never read.
-// A quoted word runs to the last quote of its kind on the line, since the `$(dirname …)` forms
-// hold quotes of their own and shell nesting is not a thing a pattern can read; an unquoted word
-// runs to the first space, as the shell reads it. A line whose closing quote this misreads ends
-// as a word that resolves to nothing, which is refused rather than passed over.
+// A quoted word ends at the quote that closes it at the top level, which is what the shell reads,
+// not at the last quote on the line: read to the last one, a trailing comment holding a quoted
+// word named a path that does not exist, and the library behind it was neither read nor refused.
+// Inside double quotes a `$(` opens a substitution whose own quotes do not close the word, so the
+// `$(dirname …)` forms still end at their own closing quote. A word no quote closes keeps its
+// opening quote, and `resolvedSource` refuses any word that still holds one. An unquoted word
+// runs to the first space, as the shell reads it.
 const sourceLine = /^[ \t]*(?:\.|source)[ \t]+(\S.*)$/;
 
+/** The text of the quoted word `rest` starts with, up to the quote that closes it at the top
+ *  level, or `undefined` when no quote closes it. */
+function closedWord(rest: string, quote: string): string | undefined {
+  let depth = 0;
+  for (let index = 1; index < rest.length; index++) {
+    if (quote === '"' && rest.startsWith("$(", index)) {
+      depth++;
+      index++;
+      continue;
+    }
+    const char = rest[index];
+    if (depth > 0) {
+      if (char === ")") depth--;
+      continue;
+    }
+    if (char === quote) return rest.slice(1, index);
+  }
+  return undefined;
+}
+
 /** The word each `.` or `source` line of `text` names, with the line it is on (counting from 1)
- *  and the line itself, in order. The word is unquoted where the line quoted it. */
+ *  and the line itself, in order. A quoted word is given without its quotes; one no quote closes
+ *  is given with its opening quote, so `resolvedSource` refuses it. */
 function sourceWords(text: string): { word: string; at: number; line: string }[] {
   const found: { word: string; at: number; line: string }[] = [];
   const lines = text.split("\n");
@@ -65,10 +89,7 @@ function sourceWords(text: string): { word: string; at: number; line: string }[]
     if (match === null) continue;
     const rest = match[1] ?? "";
     const quote = rest.startsWith('"') ? '"' : rest.startsWith("'") ? "'" : "";
-    const word =
-      quote === ""
-        ? (/^\S+/.exec(rest)?.[0] ?? "")
-        : rest.slice(1, rest.lastIndexOf(quote) > 0 ? rest.lastIndexOf(quote) : undefined);
+    const word = quote === "" ? (/^\S+/.exec(rest)?.[0] ?? "") : (closedWord(rest, quote) ?? rest);
     found.push({ word, at: index + 1, line });
   }
   return found;
@@ -83,11 +104,15 @@ const ownDirectory =
   /^(?:\$\(dirname "\$0"\)|\$\(cd "\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)" && pwd -P\))\/(.+)$/;
 
 /** Where `written` reaches from the script at `from`, or `undefined` when reading it would mean
- *  running the shell: a word that is a variable whole (`. "$lib"`), a glob, or any other command
- *  substitution. Such a line is named by `unreadableSources` instead. */
+ *  running the shell: a word that is a variable whole (`. "$lib"`), a glob, any other command
+ *  substitution, or a word that still holds a quote, which is one no quote closed. Such a line is
+ *  named by `unreadableSources` instead. */
 function resolvedSource(from: string, written: string): string | undefined {
   const own = ownDirectory.exec(written);
   if (own !== null) return resolve(dirname(from), own[1] ?? "");
+  // The own-directory forms hold quotes inside their substitution and are read above; any other
+  // word that holds a quote is one sourceWords could not close, so it names no file this reads.
+  if (written.includes('"') || written.includes("'")) return undefined;
   if (written.includes("$(") || written.includes("`") || written.includes("*")) return undefined;
   const against = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?\/(.+)$/.exec(written);
   if (against === null) {

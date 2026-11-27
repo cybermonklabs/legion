@@ -198,3 +198,17 @@ test("a source line that goes on past its path is read, and refused where the pa
   ]);
   expect(refusedBy('. "$pg_url_lib" || exit 1')).toEqual(['. "$pg_url_lib" || exit 1']);
 });
+
+// A quoted word ends at the quote that closes it, not at the last quote on the line. Read to the
+// last one, a source with a quoted word in its trailing comment named a path that does not exist,
+// so its library was neither read nor refused. The `$(dirname …)` forms hold quotes of their own
+// inside their substitution, and still end where their own closing quote is.
+test("a source line with a quote in its trailing comment reads the library it names", () => {
+  expect(sourcedBy('. "$lib/port-file.sh" # see "notes"')).toEqual([
+    "scripts/e2e/lib/port-file.sh",
+  ]);
+});
+
+test("a quoted word this reader cannot close is refused, rather than read as a path", () => {
+  expect(refusedBy('. "$lib/port-file.sh')).toEqual(['. "$lib/port-file.sh']);
+});
