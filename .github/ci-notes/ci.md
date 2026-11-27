@@ -2790,10 +2790,15 @@ the tests the tag adds, one call per package: envoy-infra-build's "Unit test env
 runs every untagged test of core, seed and gcp, so each call takes its -run from
 .github/scripts/go-tagged-tests.sh, which reads the names off the source at run time, and
 ci_job_reads.py's TAG_RUNS holds envoy-infra-build's filter to every file the natslive step
-reads, so a change that starts the tagged run starts the untagged one with it. The gcp
-natslive tests pull no image: they install helm, nats-server, the config reloader and the
-exporter with go install, at the versions the clustered hub runs, and render the vendored chart
-in gcp/testdata. The per-target compile runs in the lint job's notices step.
+reads, so a change that starts the tagged run starts the untagged one with it. The three calls
+run at once: each package waits on real servers rather than computing (core 0.44 of a core, gcp
+0.66 of the runner's four), so in series they took 239 + 1 + 402 seconds with three of the four
+cores idle, and together about 428, the longest of them and the little they take from each
+other. Each run's output is printed whole under its own heading when it ends, and the step fails
+naming each package that failed. The gcp natslive tests pull no image: they install helm,
+nats-server, the config reloader and the exporter with go install, at the versions the clustered
+hub runs, and render the vendored chart in gcp/testdata. The per-target compile runs in the lint
+job's notices step.
 
 ## The checks whose subject is text: each module's internal/textcheck package, the Dispatch
 

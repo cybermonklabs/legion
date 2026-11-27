@@ -100,11 +100,39 @@ jobs:
         # one package shares with a natslive test of another would then run a second time with
         # nothing to say so. Each assignment is a line of its own, so under bash -e an empty or
         # refused list fails the step instead of running -run "", which matches every test.
+        #
+        # The three calls run at once, not one after another. Each package's tests wait on real
+        # servers rather than compute - alone, core keeps 0.44 of a core busy and gcp 0.66 of the
+        # runner's four - so run in series they took 239 + 1 + 402 s while three of the four cores
+        # sat idle, and run together they take about 428 s, the longest of them plus the little
+        # they take from each other (run 45953651943, job 140355033892, ubuntu-24.04-arm). Each
+        # has servers, ports and temporary directories of its own, and none opens this job's
+        # database, since the job has no service. The pattern of each is read before any run
+        # starts, so a refused list still fails the step before a test runs; each run's output
+        # goes to a file and is printed whole under its own heading once it ends, so two runs
+        # never interleave their lines; and the step fails when any of them failed, naming each.
+        # Waiting is by process id: `wait` with no argument, and `wait %1`, would also wait for
+        # anything else the shell has in the background.
         run: |
-          for pkg in ./core ./seed ./gcp; do
-            pattern=$(../../../.github/scripts/go-tagged-tests.sh natslive "$pkg")
-            go test -count=1 -timeout 30m -tags natslive -run "$pattern" "$pkg"
+          declare -A pid=()
+          for pkg in core seed gcp; do
+            pattern=$(../../../.github/scripts/go-tagged-tests.sh natslive "./$pkg")
+            go test -count=1 -timeout 30m -tags natslive -run "$pattern" "./$pkg" > "$RUNNER_TEMP/natslive-$pkg.txt" 2>&1 &
+            pid[$pkg]=$!
           done
+          failed=()
+          for pkg in core seed gcp; do
+            status=0
+            wait "${pid[$pkg]}" || status=$?
+            echo "::group::$pkg (exit $status)"
+            cat "$RUNNER_TEMP/natslive-$pkg.txt"
+            echo "::endgroup::"
+            [ "$status" -eq 0 ] || failed+=("$pkg (exit $status)")
+          done
+          if [ ${#failed[@]} -ne 0 ]; then
+            echo "::error::the natslive tests failed in: ${failed[*]}"
+            exit 1
+          fi
         working-directory: packages/envoy/infra
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
