@@ -3,6 +3,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { TABLE_SHELL } from "../../__tests__/table-shell";
 import type { DeliveryDailyPoint, DeliveryMeasuresResponse } from "../../api/types";
 import { borderDefault } from "../../theme/classes";
 import { MeasuresPanel } from "./MeasuresPanel";
@@ -280,7 +281,7 @@ test("the per-day table pads its cells 2 px above and below, in a box with a rou
   // `py-0.5` is 0.125rem: a row is the 16 px line, 2 px above and below it, and its top border.
   const unpadded = cells.filter((cell) => !cell.classList.contains("py-0.5"));
   expect(unpadded.map((cell) => `${cell.textContent}: ${cell.className}`)).toEqual([]);
-  const box = table.closest('[data-control="table-shell"]');
+  const box = table.closest(TABLE_SHELL);
   expect(box?.className.split(" ")).toEqual(
     expect.arrayContaining(["rounded", "border", ...borderDefault.split(" ")])
   );

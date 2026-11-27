@@ -430,7 +430,7 @@ export function AnchoredPanel({
   useEffect(() => {
     const panel = panelRef.current;
     if (takesFocus.current && panel !== null && !panel.contains(document.activeElement))
-      (focusableIn(panel)[0] ?? panel).focus();
+      (firstFocusableIn(panel, () => true) ?? panel).focus();
     inside.current = panel?.contains(document.activeElement) === true;
     // Every move of the focus: onto one of the panel's two edges, which is answered here, or
     // anywhere else, which is noted, and which, on a control of the panel's own, shows that

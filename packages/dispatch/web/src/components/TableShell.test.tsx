@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { render, screen, within } from "@testing-library/react";
 
+import { TABLE_SHELL } from "../__tests__/table-shell";
 import {
   TableBody,
   TableCell,
@@ -38,7 +39,7 @@ function withStylesheet(body: () => void): void {
 
 /** The box the shell draws the table in. */
 function shell(): HTMLElement {
-  const found = document.querySelector<HTMLElement>('[data-control="table-shell"]');
+  const found = document.querySelector<HTMLElement>(TABLE_SHELL);
   if (found === null) throw new Error("no table shell is drawn");
   return found;
 }
