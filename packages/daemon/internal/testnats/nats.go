@@ -279,10 +279,10 @@ func reset(t testing.TB) *server {
 }
 
 // external is the running server LEGION_TEST_NATS_URL and LEGION_TEST_NATS_MONITOR_URL name: its
-// client URL and its monitoring endpoint's base URL, without a trailing slash, as this package's
-// tests append /jsz to it (the reset joins /connz onto its path, connectionsAt). Neither set is no
-// external server, both empty; one set without the other is an error naming both, each value as
-// shownSetting names it, since either URL can carry a credential.
+// client URL and its monitoring endpoint's base URL, without a trailing slash, onto whose path the
+// reset (connectionsAt) and this package's tests (streamsDirectory) join their routes. Neither set
+// is no external server, both empty; one set without the other is an error naming both, each value
+// as shownSetting names it, since either URL can carry a credential.
 func external() (string, string, error) {
 	server, monitoring := os.Getenv(externalURLEnv), os.Getenv(externalMonitorEnv)
 	if (server == "") != (monitoring == "") {
