@@ -587,6 +587,33 @@ func TestAResumeOfASuspendedArchitectAnswersWhileItsStartRuns(t *testing.T) {
 	}
 }
 
+// R4: the controller's own resume_agent, through the agent door, of an architect it suspended
+// answers once the claim is written launching, 202, while its start still hangs; the claim
+// reaches ready once the start ends. Posted through Machine.Handle, the door would wait out the
+// whole start, as the operator's resume did before this change.
+func TestTheControllersResumeOfASuspendedArchitectAnswersWhileItsStartRuns(t *testing.T) {
+	h := newHarness(t)
+	if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody()); recorder.Code != http.StatusCreated {
+		t.Fatalf("spawn the root = %d, want 201; body %s", recorder.Code, recorder.Body)
+	}
+	h.ready(architectToken, "ses_architect", 1)
+	wantAgentActionAnswer(t, askAgentAction(t, h, "/legion/v1/agents/suspend", "LEGION-208", claim.RoleArchitect),
+		http.StatusOK, AgentActionResponse{State: "suspended", SuspendedBy: "controller"})
+	hung := hangStarts(t, h, nil)
+
+	recorder := answerWithin(t, "the controller's resume of the suspended architect", func() *httptest.ResponseRecorder {
+		return askAgentAction(t, h, "/legion/v1/agents/resume", "LEGION-208", claim.RoleArchitect)
+	})
+
+	wantAgentActionAnswer(t, recorder, http.StatusAccepted, AgentActionResponse{State: "launching"})
+	hung.release()
+	after := startEnded(h, architectToken)
+	h.ready(architectToken, "ses_architect", after.Generation)
+	if got := h.stored(architectToken); got.State != supervise.StateReady {
+		t.Errorf("the architect is %s once its start ended, want ready", got.State)
+	}
+}
+
 // R4: a fresh session of an architect answers once the claim is written launching, through both
 // doors and both of its starts: the retry of a failed one, and the resume of an idle one the
 // request suspended itself.

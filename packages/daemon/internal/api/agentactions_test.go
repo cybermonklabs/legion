@@ -150,8 +150,11 @@ func TestTheControllerSuspendsAnAgentAsItsOwnAndResumesIt(t *testing.T) {
 		t.Fatal("the controller's suspension does not hold against the daemon's rules")
 	}
 
+	// The resume answers once its start is under way, 202 with the claim launching
+	// (dispatch://INFRA-5649 R4); the start is read once it ended.
 	wantAgentActionAnswer(t, askAgentAction(t, h, "/legion/v1/agents/resume", "LEGION-209", claim.RoleImplementer),
-		http.StatusOK, AgentActionResponse{State: "launching"})
+		http.StatusAccepted, AgentActionResponse{State: "launching"})
+	startEnded(h, token)
 	if resume := h.runtime.CallsOf("Resume"); len(resume) != 1 {
 		t.Fatalf("the resume made %d resumes of the session, want 1", len(resume))
 	}

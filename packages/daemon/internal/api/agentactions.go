@@ -24,9 +24,10 @@ import (
 type AgentActionResponse struct {
 	// State is the claim's state after the request: retired after a stop; suspended after a
 	// suspension that landed, and still working or launching after one held for the agent's
-	// turn or its ready (the 202 answer); launching after a resume, or a retry the claim's own
-	// machine ran; and still failed or retired after a retry of a phase worker, whose start the
-	// issue's phase queued and runs once that start comes (the 202 answer, retryStart).
+	// turn or its ready (the 202 answer); launching after a resume, answered 202 once its start
+	// is under way (dispatch://INFRA-5649 R4), or after a retry the claim's own machine ran; and
+	// still failed or retired after a retry of a phase worker, whose start the issue's phase
+	// queued and runs once that start comes (the 202 answer, retryStart).
 	State string `json:"state"`
 	// SuspendedBy is who suspended the agent while its claim is suspended — operator, controller,
 	// daemon, exit, released or unknown (supervise.SuspendSource) — and absent otherwise.
@@ -101,12 +102,13 @@ var (
 		did:         "suspended",
 	}
 	resumeOp = agentAction{
-		name:         "a resume",
-		invalidRole:  "the controller does not resume its own agent",
-		request:      "resume",
-		did:          "resumed",
-		refusesATurn: true,
-		reaches:      "A resume reaches a suspended agent: the controller's every one but one the operator's own suspension holds",
+		name:           "a resume",
+		invalidRole:    "the controller does not resume its own agent",
+		request:        "resume",
+		did:            "resumed",
+		refusesATurn:   true,
+		startsTheAgent: true,
+		reaches:        "A resume reaches a suspended agent: the controller's every one but one the operator's own suspension holds",
 	}
 )
 
@@ -203,7 +205,11 @@ func (s *server) retryAgent(w http.ResponseWriter, r *http.Request) {
 // event builder has the operator's door's shape: it answers the request itself and reports false
 // where it refuses it, as the resume's does while the project is paused (resumeAgent,
 // refusedWhilePaused), and nothing is posted then. A suspension the machine holds for the agent's
-// turn is no refusal and answers 202, as the operator's does.
+// turn is no refusal and answers 202, as the operator's does. An event that starts the agent
+// (agentAction.startsTheAgent, the resume) is answered once its start is under way, 202 with the
+// claim launching, and 200 where it wrote no launch, as the operator's resume is (startedStatus,
+// dispatch://INFRA-5649 R4): run through Machine.Handle, it would hold the caller until the start
+// ended.
 func (s *server) agentEventAction(w http.ResponseWriter, r *http.Request, op agentAction,
 	event func(http.ResponseWriter, *http.Request, claimTarget) (supervise.Event, bool)) {
 	target, ok := s.agentDoor(w, r, op)
@@ -212,6 +218,20 @@ func (s *server) agentEventAction(w http.ResponseWriter, r *http.Request, op age
 	}
 	ev, ok := event(w, r, target)
 	if !ok {
+		return
+	}
+	if op.startsTheAgent {
+		underWay, stopping, err := s.startUnderWay(r, target.machine, target.token, op.request, ev)
+		switch {
+		case stopping != "":
+			s.refuse(w, r, http.StatusServiceUnavailable, stopping)
+		case underWay, errors.Is(err, supervise.ErrSuspendHeld):
+			s.answerAgentAction(w, r, target, op.did, http.StatusAccepted, "")
+		case err != nil:
+			s.refuseAgentAction(w, r, target, err, op)
+		default:
+			s.answerAgentAction(w, r, target, op.did, http.StatusOK, "")
+		}
 		return
 	}
 	posted, err := s.postClaimEvent(w, r, target.machine, target.token, op.request, ev)
