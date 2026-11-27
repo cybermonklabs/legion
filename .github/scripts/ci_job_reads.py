@@ -899,13 +899,13 @@ def two_builds_go_reads():
 
 # ---------------------------------------------------------------- reading a Go file as text
 # The lanes below read Go source as text rather than with a toolchain's listing of each step's
-# build: the holds of PLUGIN_PACK_TESTS, SUPERVISE_TABLE_TESTS, WEB_FIXTURE_TESTS and
-# UNIT_ALONE_TESTS read the tests a package declares (declared_tests), and the envoy lane finds the
-# tests only a plain run covers (race_impossible_tests_of). Each looks for an identifier the
-# compiler reads, so each blanks what it does not read first. Which files the four holds read is
-# no reading of theirs: `go list -find` says which test files a runner's build compiles
-# (declared_tests, through go_build_tags.compiled), so Go's own constraint grammar, `// +build`
-# lines, file-name suffixes and cgo decide it.
+# build: the holds of PLUGIN_PACK_TESTS, SESSION_CLIENT_LEFT_TESTS, SUPERVISE_TABLE_TESTS,
+# WEB_FIXTURE_TESTS and UNIT_ALONE_TESTS read the tests a package declares (declared_tests), and
+# the envoy lane finds the tests only a plain run covers (race_impossible_tests_of). Each looks for
+# an identifier the compiler reads, so each blanks what it does not read first. Which files the
+# five holds read is no reading of theirs: `go list -find` says which test files a runner's build
+# compiles (declared_tests, through go_build_tags.compiled), so Go's own constraint grammar,
+# `// +build` lines, file-name suffixes and cgo decide it.
 def go_code_only(text: str) -> str:
     """`text` with every comment, string and rune literal blanked out and its newlines kept, so a
     name found in what is left is an identifier the compiler reads, at its own offset."""
@@ -1320,6 +1320,82 @@ def hold_plugin_pack_tests():
 hold_plugin_pack_tests()
 
 
+# ---------------------------------------------------------------- the session client under left settings
+# internal/ompsessions' test of the session client under each setting another client can leave on
+# a server connection, `packages/daemon/internal/ompsessions/left_test.go#TestTheClientHoldsUnderEveryLeftSetting`:
+# it starts a PostgreSQL 16 server and a PgBouncer in front of it with docker, from the two images
+# the daemon-go legs' pull step pulls first (`packages/daemon/internal/ompsessions/searchpath_test.go#Postgres16Image`
+# and `packages/daemon/internal/ompsessions/searchpath_test.go#PoolImage`), and reads no LEGION_TEST_*
+# variable. It runs in a step of its own, with -v: under `go test` without -v, Go prints a passing
+# test's log lines nowhere, so the test's last log line, its count of each server's cases and of
+# the client's logged statements, reaches the job's log only from a step that runs it with -v, and
+# -v on the plain legs' step would print every test of every package that step runs. That step,
+# which runs the test's package, skips it by name, so it runs once per run of the router. The step
+# runs in the plain leg that runs its package (SESSION_CLIENT_LEFT_LEG), so its build is the test
+# build that leg's plain step compiled, and it reads nothing that step does not read.
+# Both step texts are built from this one list, and check-ci-filters.sh pins each step's whole
+# script, so the -skip and the -run cannot come to name different tests.
+SESSION_CLIENT_LEFT_TESTS = ["TestTheClientHoldsUnderEveryLeftSetting"]
+SESSION_CLIENT_LEFT_PACKAGE = "internal/ompsessions"
+SESSION_CLIENT_LEFT_SOURCE = f"{DAEMON}/{SESSION_CLIENT_LEFT_PACKAGE}"
+# The leg the step's `if:` names, `matrix.leg == 2`: a move of the step changes both.
+SESSION_CLIENT_LEFT_LEG = "2"
+SESSION_CLIENT_LEFT_STEP = "Test the session client under left settings"
+SESSION_CLIENT_LEFT_PATTERN = f"'^({'|'.join(sorted(SESSION_CLIENT_LEFT_TESTS))})$'"
+# The 10-minute -timeout is Go's own default written out, so the job's timeout-minutes counts it.
+SESSION_CLIENT_LEFT_SCRIPT = (f"go test -count=1 -v -timeout 10m -run {SESSION_CLIENT_LEFT_PATTERN} "
+                              f"./{SESSION_CLIENT_LEFT_PACKAGE}/")
+# The skip belongs to the step that would otherwise run this test, and the step that runs it by
+# name to the leg that runs its package, so both are held here rather than by a reader noticing:
+# the package moved into a race leg would run the test there too, since only the plain step skips
+# it, and moved to another plain leg it would leave this step compiling the package's test build
+# again in a leg whose plain step compiles none of it.
+_left_legs = DAEMON_LEGS[DAEMON_PLAIN_JOB]
+_left_whole = [package for package, group in
+               map(go_legs.item, _left_legs.get(go_legs.leg_key(_left_legs, SESSION_CLIENT_LEFT_LEG)) or [])
+               if group is None]
+if SESSION_CLIENT_LEFT_PACKAGE not in _left_whole:
+    raise ValueError(f"the session client's left-setting test is in {SESSION_CLIENT_LEFT_PACKAGE}, which leg "
+                     f"{SESSION_CLIENT_LEFT_LEG} of {DAEMON_PLAIN_JOB} in {GO_LEGS} does not run whole, while "
+                     f"{job_file(DAEMON_PLAIN_JOB)}'s step \"{SESSION_CLIENT_LEFT_STEP}\" runs the test in that leg "
+                     f"alone (`if: matrix.leg == {SESSION_CLIENT_LEFT_LEG}`): in a race leg the package's step would "
+                     f"run the test a second time, since only the plain step skips it, and in another plain leg this "
+                     f"step would compile the package's test build again. Put the package back in leg "
+                     f"{SESSION_CLIENT_LEFT_LEG}, or move the step's `if:` and SESSION_CLIENT_LEFT_LEG to the plain leg "
+                     f"that runs it")
+
+
+def hold_session_client_left_tests():
+    """Refuse a SESSION_CLIENT_LEFT_TESTS that is no longer the truth about internal/ompsessions'
+    tests: a name this list holds that no file of the package that the daemon-go legs' runner
+    compiles declares as a test `go test` runs.
+    Held to nothing, a rename passes every other check green: the left-setting step's -run matches
+    nothing, which is a pass, and the plain step's -skip then skips nothing, so the renamed test runs
+    in the plain step without -v, where its summary line reaches no log, while the step named for it
+    runs no test at all. A test is what hold_supervise_table_tests() reads one as (declared_tests),
+    and only in a file the two steps' runner (daemon-go-legs, ubuntu-24.04, amd64) compiles with no
+    -tags, since neither step passes -tags. As that hold does, it reads only the package's files
+    that write one of these names, and it does not see a test of one of these names that another
+    package of the module declares, which the plain step's -skip, the module's, would skip and this
+    step's -run of ./internal/ompsessions/ would not run: go-test-step-expansion.py's unrun verdict
+    is what finds that."""
+    files = declared_tests(DAEMON, [SESSION_CLIENT_LEFT_SOURCE], SESSION_CLIENT_LEFT_TESTS, (AMD64,))
+    declared = {name for names in files.values() for name in names}
+    gone = ", ".join(name for name in sorted(SESSION_CLIENT_LEFT_TESTS) if name not in declared)
+    if gone:
+        raise ValueError(f"SESSION_CLIENT_LEFT_TESTS names {gone}, which no file of {SESSION_CLIENT_LEFT_SOURCE} that "
+                         f"the daemon-go legs' linux/amd64 build compiles declares as a test `go test` runs (a "
+                         f"top-level `func Test…`, `func Fuzz…` or `func Example…`, TestMain apart): the step "
+                         f"\"{SESSION_CLIENT_LEFT_STEP}\"'s -run matches nothing of that name and passes green, and "
+                         f"the plain step's -skip skips nothing, so the test runs in the plain step without -v, where "
+                         f"its summary line reaches no log. Neither step passes -tags, so a declaration in a file that "
+                         f"build leaves out, behind a tag or for another platform, is none here. Follow the rename, or "
+                         f"move the test to a file that build compiles")
+
+
+hold_session_client_left_tests()
+
+
 # ---------------------------------------------------------------- the supervise table's pure pins
 # The two tests of internal/supervise/table_test.go whose subject is the table itself rather than a
 # claim in motion: TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState, which holds every
@@ -1355,8 +1431,11 @@ if SUPERVISE_TABLE_PACKAGE not in DAEMON_PLAIN_PACKAGES:
     raise ValueError(f"the table pins are in {SUPERVISE_TABLE_PACKAGE}, which no plain leg of {GO_LEGS} runs, so "
                      f"nothing skips them there; name that package's step here, or move the -skip to the step "
                      f"that runs them")
+# The plain legs' step skips both lists' tests, the supervise table's pins and the session client's
+# left-setting test, as one anchored pattern of their names, sorted as each list's own pattern is.
+DAEMON_PLAIN_SKIP = f"'^({'|'.join(sorted(SUPERVISE_TABLE_TESTS + SESSION_CLIENT_LEFT_TESTS))})$'"
 DAEMON_PLAIN_SCRIPT = legs_script(DAEMON, DAEMON_PLAIN_JOB,
-                                  f"go test -count=1 -timeout 15m -skip {SUPERVISE_TABLE_PATTERN}")
+                                  f"go test -count=1 -timeout 15m -skip {DAEMON_PLAIN_SKIP}")
 DAEMON_RACE_SCRIPT = legs_script(DAEMON, DAEMON_RACE_JOB,
                                  f"go test -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN}")
 
