@@ -415,35 +415,6 @@ const ISSUE_NODE_MOVERS: Readonly<Record<keyof IssueTreeNode, readonly string[]>
   edited_at: MOVED_BY_NO_WRITE,
 };
 
-/** The relations an issue states out of its own node that are edges of the reference graph,
- *  each named by the field an issue write names in `changed` when it moves one: its parent
- *  (`child_of`, and the `part_of` a parent move retracts), its waits (`needs`, which a Dispatch
- *  of the release before names `blocked_by`), the issue it repeats, the item it was filed out of
- *  and its components (`affects`). `changesReferenceGraph` reads the same fields as
- *  `ISSUE_RELATION_FIELDS`, with the components and the title, so an edit to one list finds the
- *  other. */
-const ISSUE_EDGE_FIELDS: readonly string[] = [
-  "parent",
-  "needs",
-  "blocked_by",
-  "duplicate_of",
-  "filed_from",
-  "components",
-];
-
-/** The relations an issue states out of its own node: its edges of the reference graph
- *  (`ISSUE_EDGE_FIELDS`), and its priorities (`advances`), which are none. A tree read carries
- *  each one whose far end its answer holds as a tuple out of the issue's node. */
-const ISSUE_NODE_RELATIONS: readonly string[] = [...ISSUE_EDGE_FIELDS, "advances"];
-
-/** Every field an issue write names in `changed` that moves the issue's node in a tree read of
- *  another issue: a relation out of it (`ISSUE_NODE_RELATIONS`) or a member of it
- *  (`ISSUE_NODE_MOVERS`). */
-const ISSUE_NODE_FIELDS: ReadonlySet<string> = new Set([
-  ...ISSUE_NODE_RELATIONS,
-  ...Object.values(ISSUE_NODE_MOVERS).flat(),
-]);
-
 /**
  * What a node of an issue is, in a tree read of another issue, for which of the issue's events
  * can move it: the issue's own node; one of its documents, which an answer names only as the
@@ -1556,6 +1527,26 @@ const ISSUE_RELATION_FIELDS = [
   "duplicate_of",
   "filed_from",
 ] as const;
+
+/** The relations an issue states out of its own node that are edges of the reference graph,
+ *  each named by the field an issue write names in `changed` when it moves one: its parent
+ *  (`child_of`, and the `part_of` a parent move retracts), its waits (`needs`, which a Dispatch
+ *  of the release before names `blocked_by`), the issue it repeats, the item it was filed out of
+ *  and its components (`affects`). */
+const ISSUE_EDGE_FIELDS: readonly string[] = [...ISSUE_RELATION_FIELDS, "components"];
+
+/** The relations an issue states out of its own node: its edges of the reference graph
+ *  (`ISSUE_EDGE_FIELDS`), and its priorities (`advances`), which are none. A tree read carries
+ *  each one whose far end its answer holds as a tuple out of the issue's node. */
+const ISSUE_NODE_RELATIONS: readonly string[] = [...ISSUE_EDGE_FIELDS, "advances"];
+
+/** Every field an issue write names in `changed` that moves the issue's node in a tree read of
+ *  another issue: a relation out of it (`ISSUE_NODE_RELATIONS`) or a member of it
+ *  (`ISSUE_NODE_MOVERS`). */
+const ISSUE_NODE_FIELDS: ReadonlySet<string> = new Set([
+  ...ISSUE_NODE_RELATIONS,
+  ...Object.values(ISSUE_NODE_MOVERS).flat(),
+]);
 
 /** The kinds of edge an issue states out of its own node: its parent, its waits under both the
  *  spelling this Dispatch answers and the one a Dispatch of the release before answers, the

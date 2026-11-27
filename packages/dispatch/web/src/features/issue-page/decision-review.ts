@@ -259,8 +259,11 @@ function changeableByDocument(
 /**
  * The documents a Change of one of the issue's decisions can be anchored in
  * (`changeableByDocument`). A caller reads the blocks of those of them the tree reads, which name
- * the decision whose block holds a Change's anchor (`decisionChangeComments`): the header's count
- * and the Decisions filter read them so, and the tree reads them all.
+ * the decision whose block holds a Change's anchor (`decisionChangeComments`): until part U only
+ * the Decisions filter reads them so (part Q's seam, `decisions-filter/decisions-entries.ts`).
+ * The outline and the header's count read no block of a document to match a Change (R3): each
+ * takes it from the comment the tree read hangs under a decision node, and for a decision the
+ * tree holds no node of, by the quote alone.
  */
 export function changeDocumentIds(
   issue: DecisionDocuments,
