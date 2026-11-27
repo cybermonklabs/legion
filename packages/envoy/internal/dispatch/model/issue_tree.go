@@ -177,6 +177,12 @@ type IssueTreeNode struct {
 	Checks         *int               `json:"checks,omitempty"`
 	Title          *string            `json:"title,omitempty"`
 	Anchor         *IssueTreeAnchor   `json:"anchor,omitempty"`
+	// BlockAnchor, on an ask whose stored anchor names a block of a document, is that document and
+	// that block (IssueTreeBlockAnchor), as GET /api/v1/artifacts/{id}/blocks counts the ask among
+	// that block's references; absent on an ask whose anchor names no block, as one anchored nowhere
+	// or across two top-level blocks, and on every other node. A server of the release before sends
+	// none.
+	BlockAnchor *IssueTreeBlockAnchor `json:"block_anchor,omitempty"`
 	*IssueTreeIssue
 }
 
@@ -233,6 +239,15 @@ func (a IssueTreeAnchor) MarshalJSON() ([]byte, error) {
 			a.Occurrence, a.ContainerNodeID})
 	}
 	return json.Marshal(CommentNodeAnchor{Node: *a.Node, Quote: a.Quote, Occurrence: a.Occurrence, Orphaned: a.Orphaned})
+}
+
+// IssueTreeBlockAnchor is the block an ask's stored anchor names, by the members a comment's
+// document anchor names it by (IssueTreeAnchor): the document's artifact_id and the block's
+// block_id within that document, the two GET /api/v1/artifacts/{id}/blocks counts the ask by
+// among that block's references.
+type IssueTreeBlockAnchor struct {
+	ArtifactID string `json:"artifact_id"`
+	BlockID    string `json:"block_id"`
 }
 
 // IssueTreeAnchorNode is the node a node anchor names: its store kind and id, a finding's the
