@@ -1,5 +1,7 @@
 import { beforeAll, describe, expect, spyOn, test } from "bun:test";
 import type {
+  AskThreadPage,
+  AskThreadRow,
   CommentThreadPage,
   CommentThreadRow,
   MessageThreadPage,
@@ -17,6 +19,7 @@ import { prependEventToLog } from "../../../api/event-feed";
 import { eventRefreshTargets } from "../../../api/event-refresh";
 import { refreshQueries } from "../../../api/query-refresh";
 import type { Actor, DispatchEvent, MyRepliesResponse, MyReplyRow } from "../../../api/types";
+import { compareTimestamps } from "../../../lib/timestamps";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import {
   ANSWER_LINES,
@@ -25,6 +28,7 @@ import {
   EMPTY_STATE_LINES,
   THREADS_WORDS,
 } from "../page-words";
+import asksThreadBody from "./fixtures/asks-thread.json";
 import commentReplyToBody from "./fixtures/comment-reply-to.json";
 import commentsInBody from "./fixtures/comments-in.json";
 import commentsInBeforeBody from "./fixtures/comments-in-before.json";
@@ -45,12 +49,14 @@ import { answerThreads, drawThreads, stubWindow, threadsAt } from "./threads-vie
  * event reaches the page as the event feed hands it over (`useEventFeed`): prepended to the
  * issue's log, then its refresh targets read again through the one scheduler
  * (`eventRefreshTargets`, `refreshQueries`), so the reads it reaches are the very queries Threads
- * renders, under whatever keys they stand.
+ * renders, under whatever keys they stand. Waiting on me's order (R6) is read over the same
+ * answers, with the open ask resolved by its agent.
  */
 
 /** The reader the fixtures were read for. */
 const READER = "alice";
 
+const ASKS = asksThreadBody as unknown as AskThreadPage;
 const COMMENTS = commentsInBody as unknown as CommentThreadPage;
 const COMMENTS_NEXT = commentsInBeforeBody as unknown as CommentThreadPage;
 const MESSAGES = messagesInBody as unknown as MessageThreadPage;
@@ -237,6 +243,8 @@ interface ThreadRead {
 
 /** What the server answers Threads' reads with, which a case moves as a write lands. */
 interface Server {
+  /** All's ask page. */
+  asks: AskThreadPage;
   comments: CommentThreadPage;
   /** What the answer of All's first comment page waits for, where a case holds it. */
   commentsHeld: Promise<void> | undefined;
@@ -255,11 +263,12 @@ interface Server {
   threadReads: Map<string, number>;
 }
 
-/** Answers every read Threads sends from `Server`, which starts as the captured answers, and
- *  every other read as Threads' own (`answerThreads`). */
-function answerServer(): Server {
+/** Answers every read Threads sends from `Server`, which starts as the captured answers moved by
+ *  `start`, and every other read as Threads' own (`answerThreads`). */
+function answerServer(start: Partial<Server>): Server {
   const server: Server = {
     agents: AGENTS_PAGE,
+    asks: ASKS,
     comments: COMMENTS,
     commentsHeld: undefined,
     commentsNext: COMMENTS_NEXT,
@@ -269,6 +278,7 @@ function answerServer(): Server {
     replies: REPLIES,
     threads: new Map([[POST.comment.id, { body: commentReplyToBody }]]),
     threadReads: new Map(),
+    ...start,
   };
   answerThreads();
   // Answered last, so each runs before Threads' own.
@@ -287,6 +297,7 @@ function answerServer(): Server {
       await server.messagesHeld;
       return Response.json(server.messages);
     }),
+    http.get("/api/v1/issues/:key/asks", () => Response.json(server.asks)),
     http.get("/api/v1/issues/:key/events", () => Response.json(server.events)),
     // The read mark's read, with `limit`, stays Threads' own.
     http.get("/api/v1/me/replies", ({ request }) =>
@@ -304,10 +315,11 @@ function answerServer(): Server {
   return server;
 }
 
-/** Threads at 1440 px at `path`, every read answered from the server's state. */
-function drawAt(path: string, client?: QueryClient) {
+/** Threads at 1440 px at `path`, every read answered from the server's state, which starts as
+ *  `start` moves the captured answers. */
+function drawAt(path: string, client?: QueryClient, start: Partial<Server> = {}) {
   const window = stubWindow(1440);
-  const server = answerServer();
+  const server = answerServer(start);
   const drawn = drawThreads(path, client === undefined ? {} : { client });
   return {
     ...drawn,
@@ -709,6 +721,73 @@ describe("live updates (R14)", () => {
       expect(new Set(rowIds())).toEqual(new Set(paged));
     } finally {
       watch?.stop();
+      drawn.done();
+    }
+  });
+});
+
+describe("Waiting on me's order (R6)", () => {
+  test("an ask its agent resolved after the newest reply in the reader's remark is drawn below the remark, where the route lists it by its own newest reply", async () => {
+    // The open ask that waits on the reader, once its planner resolved it after the newest reply
+    // in the reader's remark: its resolution is the newest write of either thread, while its own
+    // newest reply, the planner's, is older than the remark's, so the route lists it below.
+    const remark = commentThread("73914aae");
+    const open = (ASKS.threads ?? []).find((row) => row.id.startsWith("4b7efdcf"));
+    const [readerReply, plannerReply] = open?.thread?.replies ?? [];
+    const shape = (REPLIES.rows ?? []).find((row) => row.thread_id === remark.comment.id);
+    if (
+      open === undefined ||
+      readerReply === undefined ||
+      plannerReply === undefined ||
+      shape === undefined
+    ) {
+      throw new Error("The fixtures hold no open ask with two replies, or no row of the remark.");
+    }
+    const resolved: AskThreadRow = {
+      ...open,
+      last_activity_at: LATER,
+      resolution: { actor: PLANNER, at: LATER, kind: "resolved", reason: "Settled in the remark." },
+      state: "resolved",
+    };
+    // The ask's row in the shape of the remark's: read through the reader's reply, with the
+    // planner's reply after it.
+    const askRow: MyReplyRow = {
+      ...shape,
+      kind: "ask",
+      read_through: readerReply.created_at,
+      ref: shape.ref.replace(`comments/${remark.comment.id}`, `asks/${open.id}`),
+      reply: {
+        ...shape.reply,
+        author: plannerReply.author,
+        created_at: plannerReply.created_at,
+        first_line: plannerReply.body,
+        id: plannerReply.id,
+      },
+      root_author: open.author,
+      subject: open.question,
+      thread_id: open.id,
+      unread_count: 1,
+    };
+    // `me/replies` lists the newest reply first (`myRepliesPageCut`).
+    const unread = [...(REPLIES.rows ?? []), askRow].sort((one, two) =>
+      compareTimestamps(two.reply.created_at, one.reply.created_at)
+    );
+    const drawn = drawAt(threadsAt(), undefined, {
+      asks: { ...ASKS, threads: [resolved, ...(ASKS.threads ?? []).filter((ask) => ask !== open)] },
+      replies: { ...REPLIES, rows: unread, total: REPLIES.total + 1 },
+    });
+    const user = userEvent.setup();
+    try {
+      await waitFor(() => expect(rows().length, "All drew no row").toBe(20));
+      await user.click(choice(THREADS_WORDS.choices.waiting));
+      await waitFor(() =>
+        expect(rowIds(), "Waiting on me draws no row of the resolved ask").toContain(open.id)
+      );
+      expect(
+        rowIds().filter((id) => id === remark.comment.id || id === open.id),
+        "Waiting on me draws the resolved ask above the reader's remark"
+      ).toEqual([remark.comment.id, open.id]);
+    } finally {
       drawn.done();
     }
   });

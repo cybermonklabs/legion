@@ -55,6 +55,7 @@ import {
   putIssueState,
   replyToCommentBlock,
   replyToMessageBlock,
+  resolveAsk,
   userHeaders,
 } from "./api";
 import { issuePage, openMenu, presetChooser, presetRow } from "./issue-page";
@@ -496,6 +497,10 @@ export interface ThreadsSeed {
     /** The open question that waits on the reader, and the reader's reply in its thread. */
     readonly open: string;
     readonly openReply: string;
+    /** With `resolved` alone, else null: the planner's question that the reader wrote in, whose
+     *  newest reply, the planner's, is older than the replies in the reader's remark, and which
+     *  the planner resolved after them (row 3). */
+    readonly resolved: string | null;
     /** The settled question with replies. */
     readonly settled: string;
   };
@@ -593,15 +598,33 @@ async function seedSecondIssue(
   return { key: issue.key, note: note.id };
 }
 
+/** Row 3's question: the planner asks it, the reader writes in it, and the planner answers the
+ *  reader there. Answers the ask's id; `seedThreads` has the planner resolve it later. */
+async function writeResolvedQuestion(key: string): Promise<string> {
+  const question = await createAsk(
+    key,
+    { question: "Does a resolved question keep its place in Waiting on me?" },
+    as(PLANNER)
+  );
+  await createComment(key, { ask_id: question.id, body: "By its reply or by its resolution?" });
+  await createComment(
+    key,
+    { ask_id: question.id, body: "By its newest reply, as the route orders it." },
+    as(PLANNER)
+  );
+  return question.id;
+}
+
 /**
  * The Verification document's "The seed", with its quoting message reply (R8), written through the
  * routes a person and an agent write through, in an order that sets each thread's last activity
  * and the reader's last read of the issue where the rows need them. The project's key is fresh,
  * as `mainHolds` in `e2e/dashboard-seed.ts` makes one, so no row depends on another's records.
- * With `second`, the second issue too (rows 4 and 10).
+ * With `second`, the second issue too (rows 4 and 10). With `resolved`, a question the reader
+ * wrote in that the planner resolves after the replies in the reader's remark (row 3).
  */
 export async function seedThreads(
-  options: { readonly second?: boolean } = {}
+  options: { readonly resolved?: boolean; readonly second?: boolean } = {}
 ): Promise<ThreadsSeed> {
   const project = `P${randomUUID().replaceAll("-", "").slice(0, 8).toUpperCase()}`;
   const daemon: Actor = { id: `legion-daemon:${project}`, kind: "session" };
@@ -794,6 +817,10 @@ export async function seedThreads(
     as(PLANNER)
   );
 
+  // With `resolved`, the question the reader wrote in, whose newest reply, the planner's, stands
+  // before the replies in the reader's remark below.
+  const resolved = options.resolved === true ? await writeResolvedQuestion(key) : null;
+
   // The reader's remark, with the planner's reply and the daemon's.
   const remark = await createComment(key, {
     body: "The list should name the daemon by its project.",
@@ -804,6 +831,12 @@ export async function seedThreads(
     as(PLANNER)
   );
   await createComment(key, { body: "Noted.", reply_to: remark.id }, as(daemon));
+
+  // The planner resolves that question after the remark's newest reply: `me/replies` places it
+  // by its own newest reply, below the remark, and its resolution makes its last activity newer.
+  if (resolved !== null) {
+    await resolveAsk(resolved, { kind: "resolved", reason: "Settled in the remark." }, as(PLANNER));
+  }
 
   // The second message thread: the reader wrote last, after the first thread's last reply.
   const second = await createMessage(key, {
@@ -837,7 +870,7 @@ export async function seedThreads(
   const secondIssue = options.second === true ? await seedSecondIssue(project) : null;
   const titles = [PLANNER, REVIEWER, TESTER].map((agent) => agent.origin?.session_title ?? "");
   return {
-    asks: { open: open.id, openReply: openReply.id, settled: settled.id },
+    asks: { open: open.id, openReply: openReply.id, resolved, settled: settled.id },
     comments: {
       agentText: agentText.id,
       agentsTalk: agentsTalk.id,

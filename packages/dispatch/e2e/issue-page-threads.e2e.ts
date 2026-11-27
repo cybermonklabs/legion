@@ -16,6 +16,7 @@ import {
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
 import { buildIssuePath } from "../web/src/features/refs/routes";
+import { compareTimestamps } from "../web/src/lib/timestamps";
 import { createComment, createMessage, getAsk, getComment, getMessage, listComments } from "./api";
 import { literal } from "./dashboard-support";
 import { nextFrames } from "./frames";
@@ -647,13 +648,14 @@ test("All merges the three pages by last activity, 20 at a time, and says how ma
 // Row 3
 // =============================================================================================
 
-// SLOW(>=2s): the whole seed, then every page of Waiting on me, Mine and Agents drawn, each read
-// against its own route's pages and the requests the page sent.
+// SLOW(>=2s): the whole seed with the resolved question, then every page of Waiting on me, Mine
+// and Agents drawn, each read against its own route's pages and the requests the page sent.
 test("Mine, Waiting on me and Agents each list their own threads from their own reads", async ({
   browser,
 }) => {
   test.setTimeout(240_000);
-  await phase(browser, seedThreads, async (page, seed) => {
+  const seedWithResolvedQuestion = () => seedThreads({ resolved: true });
+  await phase(browser, seedWithResolvedQuestion, async (page, seed) => {
     const key = seed.key;
     const reads = watchApiRequests(page);
     await loadThreads(page, key);
@@ -668,14 +670,46 @@ test("Mine, Waiting on me and Agents each list their own threads from their own 
     // Waiting on me: the rows of `me/replies` less the daemon's, in the route's order, each
     // drawn from a page the view holds, else from its thread's own read.
     const waiting = await waitingPages(key, seed.project);
+    // The resolved question: the route lists it by its newest reply, below the reader's remark,
+    // while its resolution, newer than every other entry of either thread, makes its last
+    // activity the newer, so the route's order and last activity's order differ.
+    const resolved = seed.asks.resolved ?? "";
+    const routeOrder = waiting.rows.map((row) => row.thread_id);
+    expect(routeOrder, "the route lists no row of the reader's remark").toContain(
+      seed.comments.remark
+    );
+    expect(
+      routeOrder.indexOf(seed.comments.remark),
+      "the route lists the resolved question above the reader's remark"
+    ).toBeLessThan(routeOrder.indexOf(resolved));
+    const threads = await allThreads(key);
+    const question = threads.get(resolved);
+    const remark = threads.get(seed.comments.remark);
+    const resolution = question?.entries.find((entry) => entry.id === `${resolved}#resolution`);
+    if (question === undefined || remark === undefined || resolution === undefined) {
+      throw new Error("All holds no resolved question with its resolution, or no remark");
+    }
+    expect(
+      [...question.entries, ...remark.entries]
+        .filter((entry) => entry !== resolution && compareTimestamps(entry.at, resolution.at) >= 0)
+        .map((entry) => entry.id),
+      "an entry of the question or of the remark is no older than the question's resolution"
+    ).toEqual([]);
     reads.reset();
     await pickChoice(page, "waiting");
     const waitingDrawn = await drawEveryPage(page, "Waiting on me");
+    const waitingIds = waitingDrawn.pages.flat();
+    expect(waitingIds, "Waiting on me draws no row of the reader's remark").toContain(
+      seed.comments.remark
+    );
+    expect(
+      waitingIds.indexOf(seed.comments.remark),
+      "Waiting on me draws the resolved question above the reader's remark"
+    ).toBeLessThan(waitingIds.indexOf(resolved));
     expect(waitingDrawn.pages, "Waiting on me is not the route's rows in its order").toEqual(
       pageIds(waiting.pages)
     );
     expect(waitingDrawn.left).toEqual(waiting.pages.map((one) => one.left));
-    const waitingIds = waitingDrawn.pages.flat();
     expect(waitingIds, "Waiting on me draws no row of the first message thread").toContain(
       seed.messages.first
     );
