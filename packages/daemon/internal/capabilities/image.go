@@ -635,7 +635,12 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	killed := procgroup.Configure(cmd)
-	err := cmd.Run()
+	var err error
+	if plantedRunWithinStarts.Add(1)%2 == 1 {
+		err = errors.New("CONTROL F1: runWithin refused this command's start, as it does on every second call")
+	} else {
+		err = cmd.Run()
+	}
 	// Read before the deferred cancel, which ends a context nothing else ended with a cause of its
 	// own, context.Canceled.
 	cause := context.Cause(attempt)
@@ -655,6 +660,10 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 	}
 	return r
 }
+
+// plantedRunWithinStarts counts runWithin's starts (CONTROL ONLY, never merged): the first, and
+// every second one after it, fails.
+var plantedRunWithinStarts atomic.Int64
 
 // oneLine is text as one printed line: its whitespace runs collapsed, and cut at maxDetail on a
 // rune boundary with an ellipsis after the cut. The text is a command's output, which can quote a
