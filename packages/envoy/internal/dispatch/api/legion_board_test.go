@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -1125,8 +1126,9 @@ func TestALegionCardSaysWhatItsSlotHolds(t *testing.T) {
 
 // TestALegionCardSaysWhyItWaits: a card's `waiting` is the server's one answer for why its issue
 // waits, since when, and what holds it (legion.CardWaiting) — ready for the daemon to start it,
-// waiting for a slot to come back, held by a blocker link, or waiting for a person — and it is
-// null for an issue that waits for nothing. The Legion tab's waiting line reads the field.
+// waiting for a slot to come back, held by a blocker link, waiting for a person, or a parent in
+// `awaiting_children` blocked on its open children — and it is null for an issue that waits for
+// nothing. The Legion tab's waiting line reads the field.
 func TestALegionCardSaysWhyItWaits(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
@@ -1153,12 +1155,22 @@ func TestALegionCardSaysWhyItWaits(t *testing.T) {
 		`{"kind":"ask","since":"2026-11-03T09:00:00Z","answeredAt":"2026-11-03T10:00:00Z"}`, ago(6))
 	seedLegionObservation(t, database, "INFRA", person, legion.FieldWaitingOn,
 		`{"kind":"gate","since":"`+asked+`"}`, ago(6))
+	// One tree of the facts' own rig whose root waited on its children (legiontest.Spec's
+	// AwaitingChildren), numbered after the issues above. The rig puts the root back in
+	// `accepting` at hour 48 of its history and closes it at hour 56, four hours ago, so the
+	// daemon's stand-in reports it in `awaiting_children` again after that, as the state of the
+	// moment the card is read: blocked on the tree's open child, and holding no slot, since the
+	// rig's root gave its slot up at hour 50.
+	tree := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "INFRA", Trees: 1, IssueOffset: 10, Now: now, AwaitingChildren: true})
+	parent, openChild := tree.Roots[0], tree.Open[0]
+	waited := ago(2)
+	seedLegionObservation(t, database, "INFRA", parent, legion.FieldPhase, `"`+legion.PhaseAwaitingChildren+`"`, waited)
 	seedLegionObservation(t, database, "INFRA", legion.AdmissionKey, legion.FieldAdmission, fmt.Sprintf(`{
 		"cap": 4,
 		"active": [%q],
 		"waiting": [%q, %q, %q],
-		"blocked": [{"issue": %q, "blockedBy": [%q]}]
-	}`, held, answered, ready, back, blocked, "INFRA-99"), ago(3))
+		"blocked": [{"issue": %q, "blockedBy": [%q]}, {"issue": %q, "blockedBy": [%q]}]
+	}`, held, answered, ready, back, blocked, "INFRA-99", parent, openChild), ago(3))
 	seedLegionRead(t, database, "INFRA", ago(0.01), "")
 
 	board := legionBoardOf(t, handler, "INFRA")
@@ -1168,6 +1180,7 @@ func TestALegionCardSaysWhyItWaits(t *testing.T) {
 		back:     legion.WaitingSlot,
 		blocked:  legion.WaitingBlocked,
 		person:   legion.WaitingPerson,
+		parent:   legion.WaitingBlocked,
 	} {
 		card := legionCard(t, board, key)
 		if card.Waiting == nil || card.Waiting.Reason != want {
@@ -1186,11 +1199,12 @@ func TestALegionCardSaysWhyItWaits(t *testing.T) {
 		t.Errorf("the implementing column holds %v, want the two issues at that phase", got)
 	}
 	// Every card the daemon's line names, every card of the Queue column and every card waiting
-	// on a person says why it waits, since when, and what a blocker link holds it on.
+	// on a person or on its children says why it waits, since when, and what holds it.
 	reached := map[string]int{}
 	for _, column := range board.Columns {
 		for _, card := range column.Cards {
-			if card.WaitingPlace == nil && column.ID != legion.ColumnQueue && column.ID != legion.ColumnAwaiting {
+			if card.WaitingPlace == nil && column.ID != legion.ColumnQueue && column.ID != legion.ColumnAwaiting &&
+				column.ID != legion.ColumnAwaitingChildren {
 				continue
 			}
 			if card.Waiting == nil {
@@ -1202,7 +1216,7 @@ func TestALegionCardSaysWhyItWaits(t *testing.T) {
 				t.Errorf("%s waits for %s since nothing, want the moment its wait began", card.Key, card.Waiting.Reason)
 			}
 			if !slices.Equal(card.Waiting.BlockedBy, card.BlockedBy) {
-				t.Errorf("%s waits on %v, want the %v a blocker link holds it on", card.Key, card.Waiting.BlockedBy, card.BlockedBy)
+				t.Errorf("%s waits on %v, want the %v its card names as what holds it", card.Key, card.Waiting.BlockedBy, card.BlockedBy)
 			}
 		}
 	}
@@ -1226,5 +1240,23 @@ func TestALegionCardSaysWhyItWaits(t *testing.T) {
 	if card := legionCard(t, board, ready); card.Waiting != nil &&
 		(card.Waiting.Since == nil || card.Waiting.Since.Sub(entered).Abs() > time.Second) {
 		t.Errorf("the ready issue's wait began at %v, want its phase entry %s", card.Waiting.Since, entered)
+	}
+	// The parent stands in its own column, neither in the line nor in the Queue, holding no slot
+	// and so no slot use, and it waits as blocked on its open child from the moment it entered
+	// `awaiting_children`, which is its card's phase entry.
+	if got := legionColumnKeys(t, board, legion.ColumnAwaitingChildren); !slices.Equal(got, []string{parent}) {
+		t.Errorf("the awaiting_children column holds %v, want the parent %s alone", got, parent)
+	}
+	parentCard := legionCard(t, board, parent)
+	if parentCard.WaitingPlace != nil || parentCard.Slot != nil || parentCard.SlotUse != nil {
+		t.Errorf("the parent's card = %+v, want no place in the line, no slot and no slot use", parentCard)
+	}
+	if parentCard.Waiting != nil && !slices.Equal(parentCard.Waiting.BlockedBy, []string{openChild}) {
+		t.Errorf("the parent waits on %v, want its open child %s", parentCard.Waiting.BlockedBy, openChild)
+	}
+	if parentCard.Waiting != nil && (parentCard.Waiting.Since == nil || parentCard.PhaseSince == nil ||
+		!parentCard.Waiting.Since.Equal(*parentCard.PhaseSince) || parentCard.Waiting.Since.Sub(waited).Abs() > time.Second) {
+		t.Errorf("the parent's wait began at %v and its phase at %v, want both the moment it entered awaiting_children, %s",
+			parentCard.Waiting.Since, parentCard.PhaseSince, waited)
 	}
 }

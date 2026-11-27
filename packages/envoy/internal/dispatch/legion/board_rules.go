@@ -66,10 +66,10 @@ type Column struct {
 // phases share a column is the board's own choice, made here: `retro` has a column of its own, as
 // it has a word of its own in the spec's tables ("Phase words in tables"), Merging holds the two
 // phases those tables name merging, `merging` and `awaiting_merge` (dispatch://INFRA-1077's
-// b74df7a79b), and
-// `awaiting_children` has a column of its own: a parent in it keeps no slot and waits for none,
-// and no role works it. The metrics key an issue's hours by these columns, so an issue's retro
-// hours are under `retro` there too, and on no merger figure.
+// b74df7a79b), and `awaiting_children` has a column of its own: a parent in it keeps no slot and
+// waits on its open children rather than for a slot, and no role works it. The metrics key an
+// issue's hours by these columns, so an issue's retro hours are under `retro` there too, and on
+// no merger figure.
 var Columns = []Column{
 	{ColumnQueue, nil},
 	{ColumnDesign, []string{PhaseAdmitted}},
@@ -230,7 +230,9 @@ var ChildWork = map[string]bool{
 // the slot was given for. With no worker in a turn, a root waiting on a person holds it for the
 // person; a root in a phase of its own holds it between turns; and a root in a phase it can only
 // leave once its children answer (heldForChildren) holds it for them — busy where a child of its
-// tree works (childWorks), idle where none does.
+// tree works (childWorks), idle where none does. A parent in `awaiting_children` holds no slot
+// of its own, since the daemon gives it none while it waits on its children, so it carries no
+// use.
 //
 // phase is the daemon's phase of the issue, roles the roles of it that are in a turn, slot the
 // slot it holds of its own, and childWorks whether a child of its tree is in a phase of
@@ -301,9 +303,10 @@ func ParseSlot(value []byte) (*int, bool) {
 	return slot, true
 }
 
-// Waiting is why an issue waits, since when, and the issues a blocker link holds it on. Since is
-// when the wait began: when the person was asked for a wait on a person, and the phase entry
-// otherwise; nil where neither was recorded.
+// Waiting is why an issue waits, since when, and the issues that hold it: the ones a blocker link
+// holds it on, or for a parent in `awaiting_children` the open children the daemon lists it as
+// blocked on. Since is when the wait began: when the person was asked for a wait on a person, and
+// the phase entry otherwise; nil where neither was recorded.
 type Waiting struct {
 	Reason    string
 	Since     *time.Time
@@ -312,8 +315,8 @@ type Waiting struct {
 
 // WaitingInput is what CardWaiting reads of one issue: the daemon's phase, the column the issue
 // is on, its place in the daemon's waiting line from 1 (nil for an issue the line does not name),
-// the issues a blocker link holds it on, when it entered its phase, and the wait the daemon
-// recorded of it.
+// the issues that hold it, which both readers take from the admission block's blocked list
+// (WaitingLine.BlockedBy), when it entered its phase, and the wait the daemon recorded of it.
 type WaitingInput struct {
 	Phase        string
 	Column       string
@@ -327,11 +330,18 @@ type WaitingInput struct {
 // rule, which the Legion tab's waiting line reads rather than working out again.
 //
 // An issue waits when the daemon's line names it (WaitingPlace), when it is in the Queue column,
-// or when it waits on a person. Of those, a blocker link holds the ones it names; an issue the
-// line names that is on a column of its own has started its work and waits for a slot to come
-// back; an issue whose wait on a person no answer has ended waits for the person; and the rest
-// are ready for the daemon to start them.
+// when it waits on a person, or when it is a parent in the column of `awaiting_children`. Such a
+// parent waits on its children and on no slot, so it is blocked, since it entered the phase, on
+// the open children the daemon lists it as blocked on (dispatch://INFRA-3320, R11); after its
+// last child closed no list names it, and it is blocked on none until the pass that returns it.
+// Of the others, a blocker link holds the ones it names; an issue the line names that is on a
+// column of its own has started its work and waits for a slot to come back; an issue whose wait
+// on a person no answer has ended waits for the person; and the rest are ready for the daemon to
+// start them.
 func CardWaiting(in WaitingInput) *Waiting {
+	if in.Column == ColumnAwaitingChildren {
+		return &Waiting{Reason: WaitingBlocked, Since: in.PhaseSince, BlockedBy: in.BlockedBy}
+	}
 	placed := in.WaitingPlace != nil || in.Column == ColumnQueue
 	if !placed && in.Column != ColumnAwaiting {
 		return nil

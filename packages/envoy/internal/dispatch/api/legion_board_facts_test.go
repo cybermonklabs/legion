@@ -392,11 +392,19 @@ func legionCardHeld(board legionBoardResponse, key string) (legionBoardCard, boo
 // the card above it, so it waits for nothing, while the stored row read the fallback for an
 // issue of its own and said `ready`. One line answers both now, with a block recorded and
 // without one.
+//
+// The last is a parent in `awaiting_children`, the root of a tree of the facts' own rig whose root
+// waited on its children (legiontest.Spec's AwaitingChildren). It stands in its own column, out of
+// the line and out of the Queue, and both readers answer `blocked` for it: on the open child the
+// block names, and on none where no block was read.
 func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t *testing.T) {
 	// child is the key of the unstarted child, which carries no card and whose stored row must
 	// say it waits for nothing, and above is the card that counts it. They are the same two
-	// issues in both cases below, because neither admission block names either of them.
+	// issues in both cases below, because neither admission block names either of them. parent
+	// and openChild are the rig's root and its open child, the first and the fourth issue of a
+	// tree the rig numbers from 11, after the issues below (legiontest.Spec's IssueOffset).
 	const child, above = "INFRA-4", "INFRA-3"
+	const parent, openChild = "INFRA-11", "INFRA-14"
 	for _, test := range []struct {
 		what      string
 		admission string
@@ -404,13 +412,17 @@ func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t 
 	}{
 		{
 			what: "no read recorded an admission block",
-			want: map[string]string{"INFRA-1": legion.WaitingReady, "INFRA-2": legion.WaitingReady, "INFRA-3": ""},
+			want: map[string]string{
+				"INFRA-1": legion.WaitingReady, "INFRA-2": legion.WaitingReady, "INFRA-3": "", parent: legion.WaitingBlocked,
+			},
 		},
 		{
 			what: "a read recorded one",
 			admission: `{"cap": 2, "active": [], "waiting": ["INFRA-1"],
-				"blocked": [{"issue": "INFRA-2", "blockedBy": ["INFRA-9"]}]}`,
-			want: map[string]string{"INFRA-1": legion.WaitingReady, "INFRA-2": legion.WaitingBlocked, "INFRA-3": ""},
+				"blocked": [{"issue": "INFRA-2", "blockedBy": ["INFRA-9"]}, {"issue": "` + parent + `", "blockedBy": ["` + openChild + `"]}]}`,
+			want: map[string]string{
+				"INFRA-1": legion.WaitingReady, "INFRA-2": legion.WaitingBlocked, "INFRA-3": "", parent: legion.WaitingBlocked,
+			},
 		},
 	} {
 		t.Run(test.what, func(t *testing.T) {
@@ -436,6 +448,14 @@ func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t 
 				seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"`+issue.phase+`"`, hourAgo)
 				seedLegionHandoff(t, database, key, "plan", hourAgo)
 			}
+			// The rig puts its root back in `accepting` at hour 48 of its history and closes it at
+			// hour 56, four hours ago, so the daemon's stand-in reports it in `awaiting_children`
+			// again after that, as the state of the moment the card and the row are read.
+			tree := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "INFRA", Trees: 1, IssueOffset: 10, Now: now, AwaitingChildren: true})
+			if tree.Roots[0] != parent || tree.Open[0] != openChild {
+				t.Fatalf("the rig's tree has the root %s and the open child %s, want %s and %s", tree.Roots[0], tree.Open[0], parent, openChild)
+			}
+			seedLegionObservation(t, database, "INFRA", parent, legion.FieldPhase, `"`+legion.PhaseAwaitingChildren+`"`, now.Add(-30*time.Minute))
 			if test.admission != "" {
 				seedLegionObservation(t, database, "INFRA", legion.AdmissionKey, legion.FieldAdmission, test.admission, hourAgo)
 			}
@@ -470,6 +490,18 @@ func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t 
 					t.Errorf("%s waits for %q on its card, want %q", key, reason, test.want[key])
 				}
 			}
+			// The parent stands in its own column in both cases, and its wait names the open child
+			// the block names, or none where no block was read.
+			if got := legionColumnKeys(t, board, legion.ColumnAwaitingChildren); !slices.Equal(got, []string{parent}) {
+				t.Errorf("the awaiting_children column holds %v, want the parent %s alone", got, parent)
+			}
+			blockers := []string{}
+			if test.admission != "" {
+				blockers = []string{openChild}
+			}
+			if waiting := legionCard(t, board, parent).Waiting; waiting != nil && !slices.Equal(waiting.BlockedBy, blockers) {
+				t.Errorf("the parent waits on %v, want %v", waiting.BlockedBy, blockers)
+			}
 
 			// The unstarted child: the board draws it no card and counts it on the card above
 			// it, so the one line answers that it waits for nothing, and its stored row says so
@@ -490,8 +522,8 @@ func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t 
 			if counting.Children != 1 {
 				t.Errorf("%s counts %d unstarted children, want the one %s is", above, counting.Children, child)
 			}
-			t.Logf("%s: the card and the stored row of each of INFRA-1, INFRA-2 and INFRA-3 answer the same reason, and %s, which stands under %s's card on no card of its own, waits for nothing on both sides while %s counts %d unstarted child",
-				test.what, child, above, above, counting.Children)
+			t.Logf("%s: the card and the stored row of each of INFRA-1, INFRA-2, INFRA-3 and %s answer the same reason, and %s, which stands under %s's card on no card of its own, waits for nothing on both sides while %s counts %d unstarted child",
+				test.what, parent, child, above, above, counting.Children)
 		})
 	}
 }

@@ -394,8 +394,8 @@ type legionBoardCard struct {
 	// SlotUse is what the slot this issue holds of its own is used for (legion.SlotUse); null for
 	// an issue holding no slot of its own.
 	SlotUse *string `json:"slot_use"`
-	// Waiting is why the issue waits, since when, and the issues a blocker link holds it on
-	// (legion.CardWaiting); null for an issue that waits for nothing.
+	// Waiting is why the issue waits, since when, and the issues a blocker link holds it on, or
+	// a parent's open children (legion.CardWaiting); null for an issue that waits for nothing.
 	Waiting  *legionBoardWaiting `json:"waiting"`
 	Tree     string              `json:"tree"`
 	Children int                 `json:"children"`
@@ -415,10 +415,11 @@ type legionBoardWait struct {
 	AnsweredAt *time.Time `json:"answered_at"`
 }
 
-// legionBoardWaiting is why one card's issue waits, since when, and the issues a blocker link
-// holds it on, as the rule answered it (legion.CardWaiting). Since is when the wait began: when
-// the person was asked for a wait on a person, and the phase entry otherwise; null where neither
-// was recorded.
+// legionBoardWaiting is why one card's issue waits, since when, and the issues that hold it, as
+// the rule answered it (legion.CardWaiting): the ones a blocker link holds it on, or for a parent
+// in `awaiting_children`, which waits as `blocked`, the open children its card names. Since is
+// when the wait began: when the person was asked for a wait on a person, and the phase entry
+// otherwise; null where neither was recorded.
 type legionBoardWaiting struct {
 	Reason    string     `json:"reason"`
 	Since     *time.Time `json:"since"`

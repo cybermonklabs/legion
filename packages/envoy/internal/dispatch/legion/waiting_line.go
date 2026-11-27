@@ -92,9 +92,10 @@ func NewWaitingLine(input WaitingLineInput) *WaitingLine {
 
 // SameLine is whether two admission blocks build the same line: the fields NewWaitingLine reads,
 // which are whether a block is recorded at all (nil for none), its Waiting, and the Issue and the
-// BlockedBy of each of its Blocked, each in its order. The cap, the active slots and the live
-// trees build no part of the line. The facts consumer asks it of each new block against the one
-// before it, and recomputes no waiting reason where it holds (legionfacts' blockMoved).
+// BlockedBy of each of its Blocked, each in its order. The cap, the P0 holders, the active slots
+// and the live trees build no part of the line. The facts consumer asks it of each new block
+// against the one before it, and recomputes no waiting reason where it holds (legionfacts'
+// blockMoved).
 func SameLine(a, b *Admission) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil

@@ -1,20 +1,30 @@
 package legion
 
-import "testing"
+import (
+	"reflect"
+	"slices"
+	"testing"
+)
 
 // TestSameLineComparesTheFieldsTheLineReads: two blocks build the same line where neither is
 // recorded, or both are and their Waiting and each Blocked entry's Issue and BlockedBy agree, in
-// order, whatever their cap, active slots and live trees; a move of any field the line reads, or
-// a block recorded beside none, builds another. Each case is asked both ways round.
+// order, whatever their cap, P0 holders, active slots and live trees; a move of any field the
+// line reads, or a block recorded beside none, builds another. Each case is asked both ways round.
+//
+// Every field of Admission is classified by reflection, as one the line reads or one it does not
+// read, and moved alone: SameLine must answer another line for a move of a field the line reads,
+// and the same line for a move of one it does not. A field the daemon's block gains, as it gained
+// `p0Holders`, fails here until it is named on one side.
 func TestSameLineComparesTheFieldsTheLineReads(t *testing.T) {
 	capOf := func(slots int) *int { return &slots }
 	block := Admission{
-		Cap: capOf(3), Active: []string{"A-1"}, Trees: []string{"A-1"},
+		Cap: capOf(3), P0Holders: capOf(1), Active: []string{"A-1"}, Trees: []string{"A-1"},
 		Waiting: []string{"A-2", "A-3"},
 		Blocked: []BlockedIssue{{Issue: "A-4", BlockedBy: []string{"A-5", "A-6"}}},
 	}
 	moved := func(move func(*Admission)) *Admission {
 		next := block
+		next.Active, next.Trees = slices.Clone(block.Active), slices.Clone(block.Trees)
 		next.Waiting = append([]string(nil), block.Waiting...)
 		next.Blocked = []BlockedIssue{{Issue: block.Blocked[0].Issue, BlockedBy: append([]string(nil), block.Blocked[0].BlockedBy...)}}
 		move(&next)
@@ -29,8 +39,8 @@ func TestSameLineComparesTheFieldsTheLineReads(t *testing.T) {
 		{"a block beside none", &block, nil, false},
 		{"an empty block beside none", &Admission{}, nil, false},
 		{"the same block", &block, moved(func(*Admission) {}), true},
-		{"the cap, the active slots and the live trees alone moved", &block, moved(func(next *Admission) {
-			next.Cap, next.Active, next.Trees = capOf(5), []string{"A-1", "A-7"}, nil
+		{"the cap, the P0 holders, the active slots and the live trees alone moved", &block, moved(func(next *Admission) {
+			next.Cap, next.P0Holders, next.Active, next.Trees = capOf(5), nil, []string{"A-1", "A-7"}, nil
 		}), true},
 		{"an empty Waiting beside a missing one", &Admission{Waiting: []string{}}, &Admission{}, true},
 		{"the Waiting reordered", &block, moved(func(next *Admission) { next.Waiting = []string{"A-3", "A-2"} }), false},
@@ -47,6 +57,46 @@ func TestSameLineComparesTheFieldsTheLineReads(t *testing.T) {
 				t.Errorf("%s: SameLine(%+v, %+v) = %t, want %t", test.name, order[0], order[1], got, test.same)
 			}
 		}
+	}
+
+	// The fields NewWaitingLine reads, which SameLine compares, and the fields it does not read.
+	reads := map[string]bool{"Waiting": true, "Blocked": true}
+	notRead := map[string]bool{"Cap": true, "P0Holders": true, "Active": true, "Trees": true}
+	fields := reflect.TypeFor[Admission]()
+	for index := range fields.NumField() {
+		name := fields.Field(index).Name
+		switch {
+		case reads[name] && notRead[name]:
+			t.Errorf("Admission.%s is named both as a field the line reads and as one it does not", name)
+			continue
+		case !reads[name] && !notRead[name]:
+			t.Errorf("Admission.%s is neither compared by SameLine nor named as a field the line does not read", name)
+			continue
+		}
+		next := moved(func(next *Admission) { moveField(t, name, reflect.ValueOf(next).Elem().Field(index)) })
+		for _, order := range [][2]*Admission{{&block, next}, {next, &block}} {
+			if got := SameLine(order[0], order[1]); got == reads[name] {
+				t.Errorf("a move of Admission.%s alone: SameLine(%+v, %+v) = %t, want %t", name, order[0], order[1], got, !reads[name])
+			}
+		}
+	}
+}
+
+// moveField moves one field of an admission block to another value: a pointer to none where it
+// points to one, or to the zero value where it points to none, and a list one entry longer.
+func moveField(t *testing.T, name string, field reflect.Value) {
+	t.Helper()
+	switch field.Kind() {
+	case reflect.Pointer:
+		if field.IsNil() {
+			field.Set(reflect.New(field.Type().Elem()))
+		} else {
+			field.SetZero()
+		}
+	case reflect.Slice:
+		field.Set(reflect.Append(field, reflect.Zero(field.Type().Elem())))
+	default:
+		t.Fatalf("Admission.%s is a %s, which moveField cannot move: give it a move of its own", name, field.Kind())
 	}
 }
 
