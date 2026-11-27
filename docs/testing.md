@@ -853,7 +853,10 @@ takes 226 s of that: where a row ends with a message handed back with a delay, t
 real time for its redelivery, up to `ReadRetryAfter`, a minute (seed 12's row waits 59 s of its
 92 s).
 CI's `envoy-go` unit step runs it with `-timeout 20m` (`.github/workflows/ci-job-envoy-go.yaml`),
-and a command that runs the whole package passes the same:
+in two legs, a group of its tests each (`.github/go-legs/packages/envoy/internal/dispatch/legion.yaml`):
+on CI's runner that test alone took 508 s and the whole package 919 s, so the test has a leg to
+itself and the package's other tests the next. A command that runs the whole package passes the
+same `-timeout`:
 
 ```sh
 cd packages/envoy

@@ -183,12 +183,14 @@ packages/envoy:
   # packages/envoy/scripts/database-skips.sh, which counts the skips of the broker's packages among
   # a leg's packages; every package of the module but the race lane's, the text checks, the
   # integration suite and envoy-go-build's. The legs are by area, so a change to one area's code
-  # runs that area's legs (legs 1-2 the broker, 3-4 Dispatch, 5 the rest); each leg lists its
-  # longest package first. The times beside the packages are each package's `Elapsed` in throwaway
-  # run 45676312472 (2026-11-25, main at 7102278681e2), which ran these legs, each on an
-  # ubuntu-24.04-arm runner of its own with this job's setup (unit legs 1-5: jobs 139424681543,
-  # 139424681329, 139424680750, 139424681174, 139424681322; race legs 3-5: 139424681558,
-  # 139424681328, 139424681325, and cmd/listener alone, which legs 1-2 split, 139424681394).
+  # runs that area's legs (legs 1-2 the broker, 3-4 the Legion state intake, a group of its tests
+  # each, 5 the rest of Dispatch and of the module); each leg lists its longest package first. The
+  # times beside the packages are each package's `Elapsed` in throwaway run 45676312472
+  # (2026-11-25, main at 7102278681e2), which ran these legs, each on an ubuntu-24.04-arm runner of
+  # its own with this job's setup (unit legs 1-5: jobs 139424681543, 139424681329, 139424680750,
+  # 139424681174, 139424681322; race legs 3-5: 139424681558, 139424681328, 139424681325, and
+  # cmd/listener alone, which legs 1-2 split, 139424681394), but envoy-go's legs 3-5, whose
+  # comments below name the runs their times are from.
   # Rebalance from the times the legs' own runs print,
   # `pass <package> <seconds>s` in the unit legs and `ok <package> <seconds>s` in the race legs.
   # why: .github/ci-notes/ci.md#why-envoys-go-tests-run-in-legs
@@ -257,55 +259,86 @@ packages/envoy:
       - internal/ciphertoken/ciphertokentest
       - internal/holdrecord/holdrecordtest
       - testprereq
-    # Dispatch's commands and the lighter half of its packages.
+    # The Legion state intake, internal/dispatch/legion, in two legs, a group of its tests each
+    # (.github/go-legs/packages/envoy/internal/dispatch/legion.yaml), each group alone in its leg,
+    # since a group's -run would choose the tests of any package beside it. Whole in one leg it took
+    # 909-919 s in the every-job runs 46040397906, 46040403701 and 46040410283 (2026-11-27, at
+    # 09bf0bc6aa0; leg 3 jobs 140647302877, 140647425996 and 140646999931), every test of it serial:
+    # its seeded model of the read rule 508 s and its other 119 tests 414 s, and that leg took
+    # 16.3-16.5 minutes. Group 1 is the model alone and group 2 the rest, each test weighed at its
+    # longest of the three runs.
     3:
-      - internal/dispatch/legion                # 489 s alone in an issue pod (docs/testing.md)
-      - cmd/dispatch                            # 316 s
-      - cmd/dispatch-seed                       # 83 s
+      - internal/dispatch/legion: 1             # 1 test, 508 s modelled
+    4:
+      - internal/dispatch/legion: 2             # 119 tests, 414 s modelled
+    # Dispatch's commands and its other packages, with everything else: the NATS rig, the
+    # migrations both stores apply, the Postgres helpers, the load test and the small packages.
+    # Each time is the package's longest `Elapsed` over the legs 3-5 of the same three runs (jobs
+    # 140647302877, 140647302738 and 140647302865; 140647425996, 140647426132 and 140647426423;
+    # 140646999931, 140646999777 and 140646999843): 1,876 s in all, 469 s over four cores.
+    5:
+      - cmd/dispatch                            # 326 s
+      - internal/dispatch/pmdoc                 # 264 s
+      - internal/dispatch/cireconcile           # 183 s
+      - internal/testnats                       # 142 s
+      - internal/pgmigrate                      # 88 s
+      - internal/dispatch/outbox                # 85 s
+      - cmd/dispatch-seed                       # 81 s
+      - internal/dispatch/embedqueue            # 73 s
+      - internal/dispatch/textversions          # 70 s
+      - internal/dispatch/graphstore            # 40 s
+      - internal/dispatch/files                 # 40 s
+      - internal/dispatch/graphcensus           # 34 s
+      - loadtest                                # 32 s
       - internal/dispatch/duty                  # 31 s
-      - internal/dispatch/architecture          # 31 s
+      - internal/dispatch/refs                  # 30 s
+      - internal/dispatch/legion/metrics        # 29 s
       - internal/dispatch/githubapp             # 27 s
-      - internal/dispatch/processes             # 23 s
-      - internal/dispatch/workflowstore         # 21 s
-      - internal/dispatch/events                # 17 s
-      - internal/dispatch/access                # 9 s
+      - internal/dispatch/architecture          # 23 s
+      - internal/cistore                        # 23 s
+      - internal/dispatch/identity              # 19 s
+      - internal/dispatch/processes             # 17 s
+      - clitest                                 # 17 s
+      - internal/dispatch/routes                # 17 s
+      - internal/dispatch/redeliver             # 16 s
+      - internal/dispatch/texttreefill          # 14 s
+      - internal/dispatch/sessionanswers        # 11 s
+      - internal/dispatch/workflowstore         # 10 s
+      - internal/dispatch/events                # 10 s
+      - internal/dispatch/access                # 8 s
       - internal/dispatch/pmdoc/schemanodes     # 8 s
+      - internal/pglisten                       # 8 s
       - internal/dispatch/deliveryaudit         # 6 s
-      - internal/dispatch/dashboard             # 5 s
-      - internal/dispatch/legion/metrics        # 5 s
-      - internal/dispatch/startup               # 5 s
+      - cmd/dev-oidc-issuer                     # 6 s
+      - internal/dispatch/texttrees             # 6 s
       - internal/dispatch/embed                 # 5 s
-      - internal/dispatch/prioritystore         # 5 s
-      - internal/dispatch/githubapp/ratelimit   # 5 s
       - internal/dispatch/asks                  # 5 s
-      - internal/dispatch/texttrees             # 5 s
-      - internal/dispatch/sessionanswers        # 4 s
+      - internal/dispatch/dashboard             # 5 s
+      - internal/dispatch/githubapp/ratelimit   # 5 s
+      - internal/dispatch/legion/legiontest     # 5 s
+      - internal/dispatch/startup               # 5 s
+      - internal/roles                          # 5 s
+      - internal/dispatch/prioritystore         # 5 s
+      - internal/dispatch/legionfacts/independent  # 4 s
+      - internal/bus/kvrecords                  # 4 s
+      - cmd/dev-proxy-stands                    # 3 s
+      - internal/googleidentity                 # 3 s
+      - internal/webhook                        # 3 s
+      - internal/dispatch/githubapi             # 2 s
+      - cmd/natsprobe                           # 2 s
+      - internal/dispatch/bytelru               # 2 s
       - internal/dispatch/outbox/copyrule       # 2 s
+      - internal/kvchunk                        # 2 s
+      - internal/mcpbridge                      # 2 s
+      - internal/cmdtest                        # 1 s
+      - agentloop                               # 1 s
+      - internal/testwait                       # 1 s
       - internal/dispatch/itemblocks
       - internal/dispatch/auth
       - internal/dispatch/specgraph/specgraphtest
       - dispatchblocks
-      - internal/dispatch/legion/legiontest
-      - internal/dispatch/legionfacts/independent
-    # Dispatch's heavier packages.
-    4:
-      - internal/dispatch/outbox                # 320 s
-      - internal/dispatch/pmdoc                 # 242 s
-      - internal/dispatch/refs                  # 186 s
-      - internal/dispatch/cireconcile           # 171 s
-      - internal/dispatch/embedqueue            # 99 s
-      - internal/dispatch/textversions          # 95 s
-      - internal/dispatch/files                 # 40 s
-      - internal/dispatch/graphstore            # 37 s
-      - internal/dispatch/routes                # 25 s
       - internal/dispatch/routefile
-      - internal/dispatch/graphcensus           # 24 s
-      - internal/dispatch/redeliver             # 22 s
-      - internal/dispatch/identity              # 14 s
-      - internal/dispatch/texttreefill          # 9 s
-      - internal/dispatch/githubapi             # 1 s
       - internal/dispatch/agentstream
-      - internal/dispatch/bytelru
       - internal/dispatch/envoy
       - internal/dispatch/rank
       - internal/dispatch/text
@@ -332,34 +365,13 @@ packages/envoy:
       - internal/dispatch/pmdoc/schemanodes/schemanodestest
       - internal/dispatch/refs/refstest
       - internal/dispatch/textversions/textversionstest
-    # Everything else: the NATS rig, the migrations both stores apply, the Postgres helpers, the
-    # load test and the small packages.
-    5:
-      - internal/testnats                       # 142 s
-      - internal/pgmigrate                      # 84 s
-      - loadtest                                # 41 s
-      - internal/cistore                        # 25 s
-      - clitest                                 # 16 s
-      - internal/pglisten                       # 14 s
-      - cmd/dev-oidc-issuer                     # 5 s
-      - internal/roles                          # 5 s
-      - internal/legionagents                   # 4 s
-      - internal/bus/kvrecords                  # 4 s
-      - internal/googleidentity                 # 3 s
-      - internal/webhook                        # 3 s
-      - cmd/natsprobe                           # 2 s
-      - cmd/dev-proxy-stands                    # 2 s
-      - internal/mcpbridge                      # 1 s
-      - internal/testwait                       # 1 s
-      - agentloop                               # 1 s
-      - natsversion                             # 1 s
+      - internal/legionagents
+      - natsversion
       - internal/oidc/oidctest
       - internal/contracts
       - internal/testtmp
       - going
-      - internal/cmdtest
       - internal/testpg/testdb
-      - internal/kvchunk
       - internal/cputest
       - cmd/natstail
       - loadtest/browsertype
@@ -432,7 +444,6 @@ packages/envoy:
       - testpool
       - githubrate
       - internal/dispatch/answerswindow
-      # These five, each under 1 s (run 45919416826, job 140246566580).
       - fileerr
       - httpoutage
       - natsconn

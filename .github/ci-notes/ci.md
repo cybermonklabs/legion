@@ -2752,8 +2752,9 @@ to one area's code can run that area's legs:
 
 - envoy-go's unit step, through `packages/envoy/scripts/database-skips.sh --count-table`, in five
   legs: the broker's command cmd/cipherd with the writer hold's client and the NATS auth service,
-  the rest of the broker, Dispatch's commands and lighter packages, Dispatch's heavier packages,
-  and the rest of the module. The step kept go test's four `-p` slots: a leg is slot-bound as the
+  the rest of the broker, the Legion state intake (`internal/dispatch/legion`) in two, a group of
+  its tests each (`.github/go-legs/packages/envoy/internal/dispatch/legion.yaml`), and Dispatch's
+  other packages with the rest of the module. The step kept go test's four `-p` slots: a leg is slot-bound as the
   one step was, so more slots on one runner would add load where more runners add none.
 - envoy-go's other steps, which ran one after another before the unit step and after it, each on a
   runner of its own beside the legs: envoy-go-alone, the rows that measure time; envoy-go-race-impossible,
@@ -2790,11 +2791,23 @@ forced-order steps' minute in the last. cmd/listener ran 902 s alone, 226 serial
 781 s and 698 parallel ones 824 s at its -parallel 8, so its tests are split in two groups,
 modelled at 442 s each.
 
+The Legion state intake outgrew its leg. In the every-job runs 46040397906, 46040403701 and
+46040410283 (2026-11-27, at 09bf0bc6aa0), leg 3 took 16.3-16.5 minutes as a job, Dispatch's
+commands and lighter packages beside `internal/dispatch/legion`, which ran 909-919 s of it with
+every test serial: its seeded model of the read rule
+(`TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndReadsOnceAMinute`, #4432)
+508 s and its other 119 tests 414 s, where cmd/dispatch took 326 s. So its tests run in two groups,
+the model alone and the rest, in legs 3 and 4, modelled at 508 and 414 s from each test's longest
+time in those runs. A leg that runs a group runs that package alone, so Dispatch's other packages,
+1,529 s of package time in those runs, run in leg 5 with the rest of the module: 1,876 s there,
+469 s over four cores, cmd/dispatch the longest, where leg 2's 1,541 s took 377-394 s of step in
+the same runs.
+
 The rules the legs keep are the daemon's
 ([ci-job-daemon-go.md](ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs)): each package
 runs once, in one leg, which `.github/scripts/go_legs.py` holds against `go list ./...` in each leg;
 a package the file names in no place runs in the last leg of the job `unlisted` names (here
-envoy-go, whose leg 5 is the rest of the module), with a warning in every leg, since envoy-go is
+envoy-go, whose leg 5 is Dispatch's other packages and the rest of the module), with a warning in every leg, since envoy-go is
 held back on a pull request and a package added with no line would otherwise pass the pull
 request and fail every leg of both jobs in the merge group; the gate's Run for the plain legs is
 built from the module's `go list ./...` rather than from the file
