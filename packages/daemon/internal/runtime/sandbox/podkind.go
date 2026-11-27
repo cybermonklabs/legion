@@ -179,13 +179,13 @@ func (issuePod) claimToken(project, issue string, slot claim.Agent) (claim.Token
 }
 
 // issueSlots adds to the slots of the pod l launches into (l.roles, the kind's roles) where that
-// pod is an issue's: each agent name of its plan in force that no role has (agentSlots over
-// Store.PlanAgents), then the slot of l's own claim where they lack it (a claim whose agent the
-// plan in force no longer names, started again), so no launch waits for a launcher its own pod
-// lacks. A slot is never shared: each agent runs in the slot of its own name, so no start ends
-// another agent's process. l.agentRoles holds the role of each plan agent's first step, the App
-// its slot holds until a claim of it runs there (gitHubBundles). The controller's pod keeps its
-// one slot, and reads no plan.
+// pod is an issue's: each agent name of its plan in force that no role has, whose first step's
+// role names an App (agentSlots over Store.PlanAgents), then the slot of l's own claim where they
+// lack it (a claim whose agent the plan in force no longer names, started again), so no launch
+// waits for a launcher its own pod lacks. A slot is never shared: each agent runs in the slot of
+// its own name, so no start ends another agent's process. l.agentRoles holds the role of each
+// plan agent's first step, the App its slot holds until a claim of it runs there (gitHubBundles).
+// The controller's pod keeps its one slot, and reads no plan.
 //
 // A plan that cannot be read fails nothing, as the stored claims' failed read fails nothing in
 // gitHubBundles: the pod gets the slots of the kind's roles and of l's own claim, and the launch
@@ -204,7 +204,7 @@ func (r *Runtime) issueSlots(ctx context.Context, l *launch) {
 	// The kind's roles are the runtime's own slice (issuePod.roles), so the pod's slots are a copy.
 	l.roles = slices.Clone(l.roles)
 	l.agentRoles = map[claim.Role]claim.Role{}
-	for _, slot := range agentSlots(l.roles, agents) {
+	for _, slot := range r.agentSlots(l.roles, agents) {
 		l.roles = append(l.roles, slot)
 		l.agentRoles[slot] = agents[claim.Agent(slot)]
 	}
@@ -214,12 +214,22 @@ func (r *Runtime) issueSlots(ctx context.Context, l *launch) {
 }
 
 // agentSlots are the slots an issue pod has beyond its runtime's roles, roles, for a plan in force
-// that names agents (Store.PlanAgents): each agent's name that no role has, in the order of names.
-// A plan whose agents are all roles has none, so its pod is the pod of an issue with no plan.
-func agentSlots(roles []claim.Role, agents map[claim.Agent]claim.Role) []claim.Role {
+// that names agents (Store.PlanAgents): each agent's name that no role has, in the order of names,
+// where the role of the agent's first step names an App (namesApp). A plan whose agents are all
+// roles has none, so its pod is the pod of an issue with no plan.
+//
+// An agent whose first step's role names no App — a role the deployment no longer defines, such as
+// the agent `checker` of a plan made while the deployment defined the checker — gets no slot: no
+// App is there to write into it before a claim of the agent runs (gitHubBundles), and a build that
+// asked for one would fail the whole launch, whichever claim it was for. Nothing of that agent can
+// start meanwhile: a task that names such a role is stopped, and a launch of its role is refused
+// (gitHubBundles, writeLaunchCredential). The pod's build (issueSlots) and the update sweep
+// (slotsDrift) both take their slots from here, so a pod built without such a slot does not drift
+// for it, and once its role names an App again the sweep reads the slot as one the pod lacks.
+func (r *Runtime) agentSlots(roles []claim.Role, agents map[claim.Agent]claim.Role) []claim.Role {
 	var slots []claim.Role
 	for _, agent := range slices.Sorted(maps.Keys(agents)) {
-		if slot := claim.Role(agent); !slices.Contains(roles, slot) {
+		if slot := claim.Role(agent); !slices.Contains(roles, slot) && r.namesApp(agents[agent]) {
 			slots = append(slots, slot)
 		}
 	}

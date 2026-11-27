@@ -67,6 +67,14 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // (Options.GitHubCredential nil: a daemon with no GitHub Apps) wrote no pane any gh files, so it
 // has nothing to refresh.
 //
+// A pane whose role names no App — a role the deployment no longer defines, of a claim whose pane
+// still runs — is passed over without a word too, and its lease expires without another mint, as
+// the sandbox runtime leaves such a slot's (its refreshGitHubCredential). The credential function
+// is the one role-to-App decision, over the deployment's roles (appauth.GitHubCredential's
+// deployed, the map this runtime is given no copy of), and it refuses that role
+// (appauth.ErrRoleNotDefined) before it asks GitHub for anything; logged, the refusal would recur
+// at every tick for the pane's life.
+//
 // The walk builds each bundle once (appauth.Bundles): the daemon's function answers from the App
 // role the pane's claim role runs as (appauth.AppRoleFor) and the pane's repository alone, and
 // each build opens with a live read of every page of its App's installations under a fresh JWT
@@ -107,6 +115,9 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 			bundle, err = bundles.Bundle(ctx, role, repo)
 		}
 		if role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner) {
+			continue
+		}
+		if errors.Is(err, appauth.ErrRoleNotDefined) {
 			continue
 		}
 		if err != nil {

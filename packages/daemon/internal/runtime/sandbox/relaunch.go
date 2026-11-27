@@ -1653,6 +1653,17 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 	// and each one's next launch writes its slot's credential for its role, as the refresher does
 	// within a minute. A slot of an agent of the plan that no stored claim runs in holds the App of
 	// that agent's first step (l.agentRoles), since its name is no role's.
+	//
+	// A stored claim of another slot whose role names no App (namesApp: a role the deployment no
+	// longer defines, such as a keyed agent's claim held at a step of the dropped checker) does not
+	// hold its slot here: it can never start, since its launch asks the App of that role before any
+	// child starts and is refused (this build for the launching claim, writeLaunchCredential in a
+	// pod a launch keeps), so no process of that role ever reads the slot's files. The slot is built
+	// as one no claim runs in: a role's slot holds its own name's App, and an agent's slot that of
+	// its agent's first step, which names an App (agentSlots). Without that, the one claim would fail
+	// the build of every pod of its issue, whichever claim the launch was for. The launching claim's
+	// own slot is never built so: a launch of a role that names no App is refused here, naming the
+	// role, and never runs as its slot's other App.
 	holders, err := r.slotHolders(ctx)
 	if err != nil {
 		r.log.Warn("sandbox runtime: a pod's build cannot read the stored claims; its other slots hold their own names' Apps until their launches",
@@ -1674,6 +1685,11 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 			app, first := l.agentRoles[role]
 			if _, runs := holders[slotKey{sandbox: l.name, slot: slot}]; runs || !first {
 				app, err = r.slotAppRole(minting, holders, l.name, slot, "")
+				if err == nil && slot != launching && !r.namesApp(app) {
+					if app, first = l.agentRoles[role]; !first {
+						app, err = r.slotAppRole(minting, nil, l.name, slot, "")
+					}
+				}
 			}
 			if err == nil {
 				bundle, err = memo.Bundle(minting, app, l.spec.Repository)

@@ -833,9 +833,11 @@ func (r *Runtime) PodSlotsDrift(ctx context.Context, k runtime.Known) ([]string,
 // the template holds and the plan no longer names is no reason, since the pod still runs every
 // agent there is, and neither is a template no launcher of this layout wrote, which binds none.
 // Where the plan names no agent beside the runtime's roles, as a plan of roles alone does, it
-// decodes nothing.
+// decodes nothing. Its slots are the ones a launch builds (agentSlots, as issueSlots takes them),
+// so an agent whose first step's role names no App, which no build gives a slot, is no reason
+// either: a round over it would build the same pod again, and the next sweep would open another.
 func (r *Runtime) slotsDrift(agents map[claim.Agent]claim.Role, u *unstructured.Unstructured) ([]string, error) {
-	slots := agentSlots(r.issueRoles, agents)
+	slots := r.agentSlots(r.issueRoles, agents)
 	if len(slots) == 0 {
 		return nil, nil
 	}

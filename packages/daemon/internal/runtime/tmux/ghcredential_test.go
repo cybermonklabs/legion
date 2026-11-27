@@ -992,3 +992,73 @@ func TestAWalkBuildsOneBundlePerAppRoleAndRepository(t *testing.T) {
 		}
 	}
 }
+
+// A pane whose role names no App — the checker, which the deployment no longer defines — is passed
+// over by the refresher without a word, and its gh files keep what they hold until it expires:
+// the pane launched as the checker keeps the lease its launch wrote, and a pane the runtime
+// adopted, whose role is the daemon's record of its claim's (Options.ClaimRole), gets no gh
+// directory. In the same tick the tester's pane is refreshed, its root made again. The daemon's
+// credential function refuses such a role (appauth.ErrRoleNotDefined) before it asks GitHub for
+// anything, as staticCredential refuses it here. The fault: the refusal logged for each such pane
+// at every tick for the pane's life.
+func TestTheRefresherPassesOverAPaneWhoseRoleNamesNoApp(t *testing.T) {
+	ctx := context.Background()
+	const checker claim.Role = "checker"
+	var logs strings.Builder
+	repo := ghrepo.MustParse("sjawhar/widgets")
+	r := &Runtime{
+		stateDir:             t.TempDir(),
+		gitHubCredential:     staticCredential,
+		controllerCredential: staticControllerCredential,
+		claimRepository:      func(context.Context, claim.Token) (ghrepo.Repository, error) { return repo, nil },
+		claimRole:            func(context.Context, claim.Token) (claim.Role, error) { return checker, nil },
+		log:                  slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		tracked:              map[string]*trackedProcess{},
+		writeBundle:          ghconfig.WriteBundle,
+	}
+	token := func(issue string, role claim.Role) claim.Token {
+		t.Helper()
+		token, err := claim.NewToken("omp", issue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	launched, adopted, tester := token("LEGION-50", checker), token("LEGION-51", checker), token("LEGION-52", claim.RoleTester)
+	for i, pane := range []struct {
+		token claim.Token
+		issue string
+		role  claim.Role
+	}{{launched, "LEGION-50", checker}, {adopted, "", ""}, {tester, "LEGION-52", claim.RoleTester}} {
+		var at ghrepo.Repository
+		if pane.issue != "" {
+			at = repo
+		}
+		r.track(runtime.Locator{
+			Runtime: runtime.RuntimeTmux, Claim: pane.token, Incarnation: "4242:" + string(rune('1'+i)),
+			Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%" + string(rune('1'+i))},
+		}, pane.issue, at, "sjawhar", pane.role)
+	}
+	root := func(token claim.Token) string { return runtime.GHConfigDir(r.stateDir, token) }
+	written := ghconfig.Bundle{Default: "sjawhar", Dirs: map[string]ghconfig.Rendered{
+		"sjawhar": ghconfig.Render("ghs_checker_launch_lease", string(appauth.Implement), staticCredentialExpiry),
+	}}
+	if _, err := ghconfig.WriteBundle(root(launched), written); err != nil {
+		t.Fatal(err)
+	}
+
+	r.refreshGitHubCredentials(ctx)
+
+	if failed := logLines(logs.String(), "refresh failed"); len(failed) != 0 {
+		t.Errorf("the refresher logged %q, want no failure for a pane whose role names no App", failed)
+	}
+	if got := readHostsToken(t, ghconfig.Dir(root(launched), "sjawhar")); got != "ghs_checker_launch_lease" {
+		t.Errorf("the checker's pane's sjawhar hosts.yml holds %q, want the lease its launch wrote", got)
+	}
+	if _, err := os.Stat(root(adopted)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the refresher made a gh directory for the adopted checker's pane (%v), want none", err)
+	}
+	if got := readHostsToken(t, ghconfig.Dir(root(tester), "sjawhar")); got != staticCredentialToken(claim.RoleTester) {
+		t.Errorf("the tester's pane's sjawhar hosts.yml holds %q, want the refreshed %q: the tick refreshed no pane", got, staticCredentialToken(claim.RoleTester))
+	}
+}

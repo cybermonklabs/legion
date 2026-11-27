@@ -245,7 +245,9 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 // a claim of the implementer runs, names the implement App and is refreshed, while the slot of
 // the dropped role `checker` is passed over. Asked for that role, the daemon's credential
 // function refuses it (appauth.ErrRoleNotDefined), and the refresh would log the refusal at
-// every tick for the pod's life.
+// every tick for the pod's life. A pod built while such a claim is stored writes its slot as one
+// no claim runs in, since that claim can never start (gitHubBundles); the refresh passes over
+// that slot all the same, so the lease the build wrote expires too.
 //
 // A workflow role's credential is rendered for that repository, and not for the Secret's
 // recorded default, which names an owner and so could never name a repository: the repository
@@ -321,7 +323,7 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 		if role, err = r.slotAppRole(ctx, held, pod.Name, slot, secret.Annotations[launchedRoleAnnotation]); err != nil {
 			return role, err
 		}
-		if _, err = appauth.AppRoleFor(role, r.deploymentApps); err != nil {
+		if !r.namesApp(role) {
 			return role, errSlotNamesNoApp
 		}
 		return role, nil
@@ -345,6 +347,16 @@ var errSlotLaunching = errors.New("a launch into the slot is in flight")
 // no App (appauth.ErrRoleNotDefined): a role the deployment no longer defines, of a claim still
 // stored while its pod lives. The slot keeps its last lease, which expires without another mint.
 var errSlotNamesNoApp = errors.New("the slot's role names no App the deployment defines")
+
+// namesApp is whether role acts as an App (appauth.AppRoleFor over the runtime's deploymentApps,
+// the map the daemon's credential function is built over): each of Legion's roles, the controller
+// and each role the deployment defines, and no role it no longer defines. It is the one test of a
+// slot's role that the refresh (refreshGitHubCredential), the slots of an issue pod and of its
+// sweep (agentSlots) and a pod's build (gitHubBundles) ask.
+func (r *Runtime) namesApp(role claim.Role) bool {
+	_, err := appauth.AppRoleFor(role, r.deploymentApps)
+	return err == nil
+}
 
 // markSlotLaunch marks key's slot as launched into until the answered func is called
 // (Runtime.launching), so no refresh writes it meanwhile (refreshUpdate). A refresh's write of the
