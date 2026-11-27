@@ -20,7 +20,7 @@ These are the actions on an agent (stop, retry, suspend, resume_agent, compact a
 | `suspend` | Stops the agent and keeps its session and owed task; a turn runs to its end or the stop timeout. Only your `resume_agent` or the operator's starts it again. |
 | `resume_agent` | Starts a suspended agent again in its recorded session with the task it owes. |
 | `stop` | Ends the agent at once, also in a turn, and retires it; only `retry` or its phase's start runs it again. Refused for a tree's root architect: suspend that agent. |
-| `retry` | Starts a failed or stopped agent again in its recorded session, with new launch budgets. Where its phase's start waits for an admission slot, the answer's `phaseNotRestarted` says so and the agent stays failed or stopped until then. A suspended agent takes `resume_agent`. |
+| `retry` | Starts a failed or stopped agent again in its recorded session, with new launch budgets. A suspended agent takes `resume_agent`. |
 | `compact` | Shortens the session to a summary and sends the task again in the same session and workspace. Use it first for a session a provider keeps refusing; an agent with no process behind its claim (`CLAIM_NOT_RUNNING`) takes `fresh_session`. |
 | `fresh_session` | Starts the agent in a new session, leaving the old one and all it knew. Use it for an agent whose claim no process stands behind, or one still refused after `compact`. |
 
