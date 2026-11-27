@@ -97,6 +97,13 @@ type Options struct {
 	// write the step a call is in for a caller that asked (its LEGION_GH_STEP_FILE); Push and Text
 	// tell it nothing.
 	OnStep func(Step)
+	// OnTLSTimeout is told the host of a TLS handshake timeout of gh's REST visibility read (from
+	// gh's own line, tlstimeout.HostInLine: api.github.com) as the guard meets it, before the read
+	// goes on to curl (Guard.ghVisibility). Nil is the ordinary case. cmd/legion's `legion gh` and
+	// `legion leak-check pre-push` fill it to note the host and record the timeout once the call
+	// is over (tlstimeout.Recorder), never in the middle of the guard's reads, which a record
+	// would delay; the shared check's own read, which `legion gh` answers, fills none.
+	OnTLSTimeout func(host string)
 	// Env is the environment the guard's children start from: the shared check, the visibility
 	// reads, and the git commands a push's records are read with. Nil means this process's own
 	// (os.Environ()). Every child keeps all of it but the read with no credential (Guard.lsRemote)

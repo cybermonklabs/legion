@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/tlstimeout"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -538,10 +539,11 @@ func ghReadEnv(slug string) []string {
 // own. gh runs under a bound of the guard's own (ghReadContext), which leaves part of the caller's
 // bound to the read through curl. A rate limit is a *rateLimitError. A failure on gh's connection
 // to GitHub with no answer from GitHub is a *transportError: one gh reports (ghTransportFailure),
-// or a stop by the guard's own bound before GitHub sent a status line (ghStoppedByItsBound). A gh
-// that exited non-zero after GitHub's status line 404, and was no rate limit, is a *notFoundError.
-// A gh that the caller's bound stopped is the *stoppedError run answers, since no bound is left for
-// another read.
+// or a stop by the guard's own bound before GitHub sent a status line (ghStoppedByItsBound). A
+// reported failure that is a TLS handshake timeout tells Options.OnTLSTimeout its host, read from
+// gh's line (tlstimeout.HostInLine), where the caller set one. A gh that exited non-zero after
+// GitHub's status line 404, and was no rate limit, is a *notFoundError. A gh that the caller's
+// bound stopped is the *stoppedError run answers, since no bound is left for another read.
 func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, error) {
 	bounded, cancel := ghReadContext(ctx)
 	defer cancel()
@@ -559,6 +561,9 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 		return "", limited
 	}
 	if unreached := ghTransportFailure(status, printed, slug); unreached != nil {
+		if host, ok := tlstimeout.HostInLine(printed); ok && g.opts.OnTLSTimeout != nil {
+			g.opts.OnTLSTimeout(host)
+		}
 		return "", unreached
 	}
 	if status != 0 {

@@ -1,0 +1,19 @@
+kind: Added
+body: |-
+    A TLS handshake timeout is recorded where it is met, as one line on standard error:
+    `<client>: tls handshake timeout recorded: host=<host> …`, naming the host and port alone,
+    the phases of a fresh Go handshake and of one `curl` handshake to it (each probe bounded at
+    5 s, `curl` given no credential), the process's user and system CPU, and the cgroup's CPU
+    quota, period and usage and its process count, at most once a minute for each client.
+    `legion gh` writes it as `legion-gh` where the real gh of a call whose output is the
+    caller's prints Go's `net/http: TLS handshake timeout` line and exits non-zero, with gh's own
+    CPU beside its own, and where the leak guard's own gh read meets one, once the call is over;
+    `legion leak-check pre-push` writes the guard's after its answer. To read gh's line, `legion gh`
+    hands gh a pipe for its standard error where its own is no terminal, and copies it on at once.
+    The daemon's GitHub REST client, the launcher's token exchange and the session
+    proxy's write it as `legion`. None changes a call's error or status, or what the leak guard
+    allows. A role's command's standard error stays in the role's transcript and does not reach
+    Cloud Logging.
+time: 2026-11-27T23:00:00Z
+custom:
+    Issue: INFRA-3562

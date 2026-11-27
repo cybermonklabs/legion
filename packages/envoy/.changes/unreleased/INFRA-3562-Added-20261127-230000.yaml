@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  `agent-secrets` records a call to the broker that fails with `net/http: TLS handshake timeout`
+  as one line on its standard error, at that moment: `agent-secrets: tls handshake timeout
+  recorded: host=<host> …`, naming the broker's host and port alone, the phases of a fresh Go
+  handshake and of one `curl` handshake to it (each probe bounded at 5 s, `curl` given no
+  credential), the process's user and system CPU, and the cgroup's CPU quota, period and usage and
+  its process count, a figure it could not read written `-`. It writes at most one such line a
+  minute, keeping a stamp in `legion-tls-timeout` under the system's temporary directory, and the
+  call fails with the same error as before. The new package `tlstimeout` is the record, its
+  transport wrapper and its reader of gh's line, which the Legion daemon and `legion` use too.
+time: 2026-11-27T23:00:00Z
+custom:
+    Issue: INFRA-3562

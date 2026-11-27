@@ -36,6 +36,7 @@ import (
 	"google.golang.org/api/impersonate"
 	"google.golang.org/api/option"
 
+	"github.com/sjawhar/envoy/tlstimeout"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
 
@@ -528,6 +529,13 @@ type googleEndpoints struct {
 	stsURL string
 }
 
+// tlsTimeouts is the record the session proxy writes to its standard error when a call of the
+// writer token's clients meets `net/http: TLS handshake timeout` (tlstimeout.Recorder.Record): the
+// host, the phases of a fresh Go handshake and a curl handshake to it, this process's CPU and the
+// cgroup's, at most once a minute (connectorOptions). One record serves both clients, so both
+// share its rate limit.
+var tlsTimeouts = &tlstimeout.Recorder{Client: "legion", Stderr: os.Stderr}
+
 // connectorOptions are the Cloud SQL connector's options for a pod. The connector uses automatic
 // IAM database authentication, which puts a login token in the ephemeral-certificate exchange. It
 // dials the instance's private IP, which is the only address a pod's network reaches. Its built-in
@@ -556,6 +564,11 @@ type googleEndpoints struct {
 // with it, so a credential that fetches its own token with that context keeps doing so for as
 // long as the proxy serves; never Start's own context, which ends once the proof dial is over.
 // Each source refreshes its one-hour token by itself when the connector next asks for one.
+//
+// The writer token's two clients, the exchange's and the IAM Credentials client's, each send over
+// http.DefaultTransport (or google.iam) with a record of each TLS handshake timeout they meet
+// (tlsTimeouts), which hands the call the transport's own error. The client the library builds
+// from the pod's own credentials for an account alone is the library's, and records nothing.
 func connectorOptions(ctx context.Context, signer Signer, google googleEndpoints) ([]cloudsqlconn.Option, error) {
 	opts := make([]cloudsqlconn.Option, 0, 4)
 	opts = append(opts,
@@ -572,7 +585,7 @@ func connectorOptions(ctx context.Context, signer Signer, google googleEndpoints
 	case signer.WriterAudience != "":
 		// The exchange takes its HTTP client from the context (oauth2.HTTPClient), as the
 		// metadata endpoint's does, so the bound reaches it there.
-		exchange := context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: writerCallTimeout})
+		exchange := context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: writerCallTimeout, Transport: tlstimeout.Transport(http.DefaultTransport, tlsTimeouts)})
 		federated, err := externalaccount.NewTokenSource(exchange, externalaccount.Config{
 			Audience:         signer.WriterAudience,
 			SubjectTokenType: JWTTokenType,
@@ -583,10 +596,11 @@ func connectorOptions(ctx context.Context, signer Signer, google googleEndpoints
 		if err != nil {
 			return nil, fmt.Errorf("exchange the writer token to impersonate %s: %w", account, err)
 		}
-		// oauth2.Transport sends over http.DefaultTransport when Base is nil, which is a pod's case.
+		// The base is http.DefaultTransport when google.iam is nil, which is a pod's case, as
+		// oauth2.Transport's own nil Base was (tlstimeout.Transport).
 		iam = []option.ClientOption{option.WithHTTPClient(&http.Client{Timeout: writerCallTimeout, Transport: &oauth2.Transport{
 			Source: oauth2.ReuseTokenSourceWithExpiry(nil, federated, writerTokenEarlyRefresh),
-			Base:   google.iam,
+			Base:   tlstimeout.Transport(google.iam, tlsTimeouts),
 		}})}
 	case google.iam != nil:
 		iam = []option.ClientOption{option.WithHTTPClient(&http.Client{Transport: google.iam})}

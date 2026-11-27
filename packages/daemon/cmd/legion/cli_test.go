@@ -32,13 +32,17 @@ var legionBuildDir string
 // this binary's own: the built binary reads no LEGION_CMD_TEST_CURL, and without the link its
 // guards would run the system's /usr/bin/curl, with a token of the test's bundle, wherever their
 // REST read through a stand-in gh fails on its connection or is stopped by its bound (INFRA-3904).
+// It links the same path as its record's curl and tlsTimeoutStamps as its record's stamps
+// directory, so no record of a TLS handshake timeout it makes probes a host or keeps a stamp of the
+// machine's, as TestMain gives this binary's own (testTLSStampsEnv).
 // It also links in this test binary's deadline (programbound's linkedDeadline, from
 // testDeadlineEnv), so each wait the built binary bounds on a program it starts takes what is left
 // of that deadline, as this binary's own runs as `legion` do; under -timeout 0 it links none, and
-// the product's bounds hold. The two go in one -ldflags, since go build takes only the last.
+// the product's bounds hold. They go in one -ldflags, since go build takes only the last.
 var legionBuild = sync.OnceValues(func() (string, error) {
 	binary := filepath.Join(legionBuildDir, "legion")
-	ldflags := leakguardtest.NoCurlLinked + " -X main.ghRoleStateBase=/nonexistent/legion-test-names-no-role-state"
+	ldflags := leakguardtest.NoCurlLinked + " -X main.ghRoleStateBase=/nonexistent/legion-test-names-no-role-state" +
+		" -X main.tlsTimeoutCurl=" + leakguardtest.NoCurl + " -X main.tlsTimeoutStampDir=" + tlsTimeoutStamps
 	if deadline, ok := os.LookupEnv(testDeadlineEnv); ok {
 		ldflags += " -X github.com/sjawhar/legion/daemon/internal/programbound.linkedDeadline=" + deadline
 	}

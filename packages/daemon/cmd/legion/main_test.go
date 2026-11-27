@@ -46,11 +46,29 @@ import (
 const testMainEnv = "LEGION_CMD_TEST_MAIN"
 
 // testCurlEnv names, to this package's test binary run as `legion` (TestMain), the stand-in curl
-// the leak guard's curl reads run (leakguardCurl). A run that names none has leakguardtest.NoCurl,
-// a path with no file, and so has every guard of this binary's own process unless its test sets
-// leakguardCurl: no guard here runs the system's /usr/bin/curl (INFRA-3904). The `legion` these
-// tests build links the same path (legionBuild).
+// the leak guard's curl reads run (leakguardCurl), and the curl probe of the record of a TLS
+// handshake timeout (tlsTimeoutCurl). A run that names none has leakguardtest.NoCurl, a path with
+// no file, for both, and so has every guard and record of this binary's own process unless its
+// test sets leakguardCurl: no guard here runs the system's /usr/bin/curl (INFRA-3904). The `legion`
+// these tests build links the same path (legionBuild).
 const testCurlEnv = "LEGION_CMD_TEST_CURL"
+
+// testTLSStampsEnv and testTLSBoundEnv name, to this package's test binary run as `legion`
+// (TestMain), the directory the record of a TLS handshake timeout keeps its stamps in
+// (tlsTimeoutStampDir) and the bound of its probes, a Go duration (tlsTimeoutBound). A run that
+// names no stamps directory has tlsTimeoutStamps, a path with no directory, and so has every
+// record of this binary's own process: no record of these tests keeps a stamp of the machine's or
+// probes a host a test did not name, api.github.com among them, which the guard's reads of the
+// rows that stand in gh's TLS handshake timeout would otherwise probe. Only this test binary reads
+// them; the legion binary has none.
+const (
+	testTLSStampsEnv = "LEGION_CMD_TEST_TLS_STAMPS"
+	testTLSBoundEnv  = "LEGION_CMD_TEST_TLS_BOUND"
+)
+
+// tlsTimeoutStamps is where no record of these tests keeps a stamp: a path with no directory,
+// which the record cannot make, so it records nothing (tlstimeout.Recorder.Record).
+const tlsTimeoutStamps = "/nonexistent/legion-test-names-no-tls-timeout-stamps"
 
 // testRoleStateEnv names, to this package's test binary run as `legion` (TestMain), the role
 // state volume base directory the leak guard keeps private and internal visibility answers under
@@ -92,6 +110,9 @@ func TestMain(m *testing.M) {
 	// No guard of this binary reads through the system's curl (leakguardtest.NoCurl); a run as
 	// `legion` whose test names a stand-in takes it below.
 	leakguardCurl = leakguardtest.NoCurl
+	// No record of a TLS handshake timeout runs the system's curl or keeps a stamp either
+	// (testTLSStampsEnv); a run as `legion` whose test names them takes them below.
+	tlsTimeoutCurl, tlsTimeoutStampDir = leakguardtest.NoCurl, tlsTimeoutStamps
 	if os.Getenv(testMainEnv) == "1" {
 		// A test's stand-in shared check is no copy of the pinned one, so the test names the
 		// public_leak_check.py its stand-in carries as the one the read rule was proven against
@@ -99,11 +120,25 @@ func TestMain(m *testing.M) {
 		if proven := os.Getenv(testProvenCheckEnv); proven != "" {
 			ghReadsProvenCheck.sha256 = proven
 		}
-		// A test's stand-in curl for the guard's curl reads, which reach no network. Only this
-		// test binary reads the variable; the legion binary has none, and its guards run the
-		// system's own curl.
+		// A test's stand-in curl for the guard's curl reads and for the curl probe of the record of
+		// a TLS handshake timeout, which reach no network. Only this test binary reads the
+		// variable; the legion binary has none, and its guards and records run the system's own
+		// curl.
 		if curl := os.Getenv(testCurlEnv); curl != "" {
-			leakguardCurl = curl
+			leakguardCurl, tlsTimeoutCurl = curl, curl
+		}
+		// A test's stamps directory and bound for the record of a TLS handshake timeout. Only
+		// this test binary reads the variables; the legion binary has none.
+		if stamps := os.Getenv(testTLSStampsEnv); stamps != "" {
+			tlsTimeoutStampDir = stamps
+		}
+		if value := os.Getenv(testTLSBoundEnv); value != "" {
+			bound, err := time.ParseDuration(value)
+			if err != nil || bound <= 0 {
+				fmt.Fprintf(os.Stderr, "TestMain: %s is %q, which is no duration\n", testTLSBoundEnv, value)
+				os.Exit(2)
+			}
+			tlsTimeoutBound = bound
 		}
 		// A test's role state directory for the guard's private/internal visibility keep. Only
 		// this test binary reads the variable; the legion binary has none. Where unset, point at

@@ -19,8 +19,10 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 
+	"github.com/sjawhar/envoy/tlstimeout"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -139,6 +141,14 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // call does or the status it exits with. LEGION_GH_DEADLINE (ghDeadlineVar) is the caller's
 // deadline, which the guard runs under, so it waits for no rate-limit reset the caller would not
 // see the end of.
+//
+// A TLS handshake timeout is recorded in the pod at the moment it is met, as one line on this
+// command's standard error (ghTLSTimeouts, tlstimeout.Recorder): the host, the phases of a fresh
+// Go handshake and of one curl handshake to it, this process's CPU and the cgroup's CPU and process
+// count, bounded and at most once a minute. The real gh's own, where its output is the caller's,
+// is read off gh's standard error as gh exits (runGhChild); the guard's own gh read's is told by
+// the guard (leakguard.Options.OnTLSTimeout) and recorded once the call is over. Neither changes
+// the status the call exits with or what the guard allows or refuses.
 func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status int) {
 	started := time.Now()
 	env := processEnvironment()
@@ -178,6 +188,12 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// one ends the command with its status rather than with the refusal its stopped work made.
 	beforeGh, stopHangup := hangupCancels(ctx)
 	defer stopHangup()
+	// guardTLSHost is the host of a TLS handshake timeout the guard's own gh read met
+	// (leakguard.Options.OnTLSTimeout, below). It is recorded once, when the call is over, after
+	// the real gh's own run, and never in the middle of the guard's work: the record's probes
+	// take up to their bound, and the guard's curl and ls-remote reads would wait for them.
+	guardTLSHost := ""
+	defer func() { recordGuardTLSTimeout(guardTLSHost, stderr, beforeGh, ctx) }()
 	if read, ok := sharedCheckVisibilityRead(args, env); ok {
 		// The shared check's own read, which this command answers by the guard's rule. Like the
 		// guard's own reads, it is not logged as a wrapped call.
@@ -352,9 +368,10 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			OnVisibility: func(source leakguard.VisibilitySource) {
 				visibilitySource = string(source)
 			},
-			OnStep:    onStep,
-			Curl:      leakguardCurl,
-			RoleState: ghRoleStateBase,
+			OnStep:       onStep,
+			OnTLSTimeout: func(host string) { guardTLSHost = host },
+			Curl:         leakguardCurl,
+			RoleState:    ghRoleStateBase,
 		})
 		// The guard bounds its wait for a near rate-limit reset by its context's deadline
 		// (leakguard's Guard.waitFits), and beforeGh has none: a caller's own bound ends this
@@ -435,7 +452,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		return status
 	}
 	steps.write(ghStepGh)
-	return runGhChild(ctx, gh, args, childEnv, buffered, stderr)
+	return runGhChild(ctx, gh, args, childEnv, buffered, stderr, mode != ghVisibilityCall)
 }
 
 // ghCallMode is what runGh does with a call before gh runs it, decided once per call
@@ -600,9 +617,24 @@ func ghVisibilityRead(argv []string, env map[string]string) (ghrepo.Repository, 
 // gh is a child rather than this process exec'd into, as it was before the guard: the guard may
 // have read this process's standard input to check it, and exec cannot put those bytes back,
 // while a child can be handed them (buffered, nil where the guard read none and gh gets this
-// process's own standard input whole). Standard output and standard error are this process's
-// own descriptors, so gh's reading of its terminal — its colour, its spinner, its prompts — is
-// what an exec'd gh would have read.
+// process's own standard input whole). Standard output is this process's own descriptor, and so
+// is standard error where it is a terminal, so gh's reading of its terminal — its colour, its
+// spinner, its prompts — is what an exec'd gh would have read.
+//
+// Where callersOutput says gh's output is the caller's (every call but the guard's own visibility
+// reads, whose output the guard reads, ghVisibilityCall) and this process's standard error is no
+// terminal, gh's standard error is a pipe this process copies on to its own at once and keeps
+// the end of (ghStderrTail), so that a TLS handshake timeout gh met is recorded where it happened:
+// after a gh that exited non-zero whose kept text holds a line of Go's `<Method> "<URL>":
+// net/http: TLS handshake timeout` (tlstimeout.HostInLine, its last), this writes the record line
+// for that URL's host on stderr, with gh's own CPU (ghTLSTimeouts), unless a signal ended ctx.
+// gh's status is the status either way, and its standard error reaches this process's whole and
+// in order; where standard output and standard error are one file, a line gh writes to each at
+// the same moment can reach it in the other order, since the copy is a step of its own. A gh that
+// exits while something it started still holds that pipe is waited for no longer than
+// procgroup's WaitDelay, as every other child's output here is, and its status is still gh's own.
+// A terminal is left to gh, and nothing is recorded there: the line is the person's to read, and
+// gh's terminal is gh's to read.
 //
 // This child is given no process group of its own (no procgroup.Configure), unlike every other
 // child of this module. gh is an interactive program — its pager and its editor read the
@@ -636,7 +668,7 @@ func ghVisibilityRead(argv []string, env map[string]string) (ghrepo.Repository, 
 // signal it was, forwarded here or from the terminal, and gh ends on it and answers with its
 // own status, where the cancellation would kill gh outright, mid-clone, and answer with a
 // status nobody sent.
-func runGhChild(ctx context.Context, gh string, args, env []string, buffered []byte, stderr io.Writer) int {
+func runGhChild(ctx context.Context, gh string, args, env []string, buffered []byte, stderr io.Writer, callersOutput bool) int {
 	child := exec.CommandContext(context.WithoutCancel(ctx), gh, args...)
 	child.Env = env
 	child.Stdin = os.Stdin
@@ -681,24 +713,39 @@ func runGhChild(ctx context.Context, gh string, args, env []string, buffered []b
 		return 1
 	}
 	child.Stdout, child.Stderr = os.Stdout, os.Stderr
+	var tail *ghStderrTail
+	if callersOutput && !term.IsTerminal(int(os.Stderr.Fd())) {
+		tail = &ghStderrTail{to: os.Stderr}
+		child.Stderr = tail
+		child.WaitDelay = procgroup.WaitDelayNow()
+	}
 	if err := child.Start(); err != nil {
 		printGhRefusal(stderr, fmt.Errorf("run %s: %w", gh, err))
 		return 1
 	}
 	defer forwardTo(child.Process, signals)()
 	err := child.Wait()
-	if err == nil {
-		return 0
-	}
+	status := 0
 	var exited *exec.ExitError
-	if !errors.As(err, &exited) {
+	switch {
+	case err == nil, errors.Is(err, exec.ErrWaitDelay):
+		// exec answers ErrWaitDelay only for a gh that exited 0 while something it started still
+		// held its standard error WaitDelay later: gh's own status is 0.
+	case !errors.As(err, &exited):
 		printGhRefusal(stderr, fmt.Errorf("run %s: %w", gh, err))
 		return 1
+	default:
+		status = exited.ExitCode()
+		if signaled, ok := exited.Sys().(syscall.WaitStatus); ok && signaled.Signaled() {
+			status = 128 + int(signaled.Signal())
+		}
 	}
-	if status, ok := exited.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-		return 128 + int(status.Signal())
+	if _, ended := signalled(ctx); tail != nil && status != 0 && !ended {
+		if host, ok := tlstimeout.HostInLine(string(tail.kept)); ok {
+			ghTLSTimeouts(stderr, ghChildCPU(child.ProcessState)).Record(host)
+		}
 	}
-	return exited.ExitCode()
+	return status
 }
 
 // forwardTo sends each signal it reads from signals on to process, until the returned stop is

@@ -17,6 +17,8 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google/externalaccount"
 
+	"github.com/sjawhar/envoy/tlstimeout"
+
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 )
@@ -247,11 +249,18 @@ func metadataJSON(v any) []byte {
 	return encoded
 }
 
+// metadataTLSTimeouts is the record the launcher writes to its standard error when the metadata
+// endpoint's exchange at Google's security token service meets `net/http: TLS handshake timeout`
+// (tlstimeout.Recorder.Record): the host, the phases of a fresh Go handshake and a curl handshake
+// to it, this process's CPU and the cgroup's, at most once a minute. The exchange's client sends
+// over http.DefaultTransport with it (tlstimeout.Transport).
+var metadataTLSTimeouts = &tlstimeout.Recorder{Client: "legion", Stderr: os.Stderr}
+
 func newMetadataServer(ctx context.Context, cfg MetadataConfig, logf func(format string, args ...any)) *metadataServer {
 	accounts := []string{"default/", cfg.WorkloadPool + "/"}
 	slices.Sort(accounts)
 	return &metadataServer{
-		ctx:       context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: exchangeTimeout}),
+		ctx:       context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: exchangeTimeout, Transport: tlstimeout.Transport(http.DefaultTransport, metadataTLSTimeouts)}),
 		pool:      cfg.WorkloadPool,
 		audience:  "identitynamespace:" + cfg.WorkloadPool + ":" + cfg.IdentityProvider,
 		tokenFile: cfg.tokenFile, tokenURL: cmp.Or(cfg.tokenURL, sessionproxy.STSTokenURL),

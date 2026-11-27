@@ -376,6 +376,42 @@ func TestOnlyATransportFailureOfGhIsReadThroughCurl(t *testing.T) {
 	}
 }
 
+// The guard tells its caller the host of a TLS handshake timeout of gh's REST read
+// (Options.OnTLSTimeout), once, from gh's own line: api.github.com, whose read then goes on to
+// curl as it does without the callback. No other failure of the read is told: another of gh's
+// transport failures, which goes on to curl the same way, the TLS words beside GitHub's status
+// line, which refuse the call, and a read that answers. A guard with no callback reads as before.
+func TestTheGuardTellsAGhTLSHandshakeTimeoutsHost(t *testing.T) {
+	for _, tc := range []struct {
+		name, rest string
+		told       []string
+	}{
+		{name: "a TLS handshake timeout", rest: ghTLSTimeout, told: []string{"api.github.com"}},
+		{name: "a dial timeout", rest: ghFailsOn("dial tcp 140.82.112.5:443: i/o timeout")},
+		{name: "the HTTP client's own timeout", rest: ghFailsOn("context deadline exceeded (Client.Timeout exceeded while awaiting headers)")},
+		{
+			name: "a TLS handshake timeout beside a status line",
+			rest: printsResponse("HTTP/2.0 502 Bad Gateway", []string{"Content-Type: application/json; charset=utf-8"}, `{"message":"Server Error"}`) +
+				printsToStderr(`Get "https://api.github.com/repos/`+theRepo+`": net/http: TLS handshake timeout`) + "exit 1\n",
+		},
+		{name: "an answer", rest: printsResponse("HTTP/2.0 200 OK", []string{"Content-Type: application/json; charset=utf-8", "X-Ratelimit-Remaining: 4999"}, "private") + "exit 0\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var told []string
+			rig := newTransportRig(t, tc.rest, noGraphQL, curlAnswers("private"), answersTheRefs)
+			rig.guard.opts.OnTLSTimeout = func(host string) { told = append(told, host) }
+			_, _ = rig.guard.Visibility(bound(t), theRepo)
+			if !slices.Equal(told, tc.told) {
+				t.Errorf("the guard told the hosts %q, want %q", told, tc.told)
+			}
+		})
+	}
+	rig := newTransportRig(t, ghTLSTimeout, noGraphQL, curlAnswers("private"), answersTheRefs)
+	if visibility, err := rig.guard.Visibility(bound(t), theRepo); err != nil || visibility != Private {
+		t.Errorf("a guard with no OnTLSTimeout read %q, %v; want curl's private", visibility, err)
+	}
+}
+
 // The curl read carries the token on its standard input, as the one header `--header @-` reads,
 // and never in its argv or its environment. The token is the caller's GH_TOKEN, else its
 // GITHUB_TOKEN, which gh would have sent, and else what `gh auth git-credential get` answers, which

@@ -70,7 +70,10 @@ func leakCheckCommand(use string, words int, usage, short string, do func(ctx co
 
 // runLeakCheckPrePush is the hook's half: git hands it the remote's name and URL and the update
 // lines it computed, and the repository it runs the hook in is the working directory, which is
-// the repository the guard reads the push's commits from.
+// the repository the guard reads the push's commits from. A TLS handshake timeout the guard's own
+// gh read met (leakguard.Options.OnTLSTimeout) is recorded after the guard's answer is reported,
+// as `legion gh` records one once its call is over (recordGuardTLSTimeout): the push is cleared or
+// refused as it is without the record.
 func runLeakCheckPrePush(ctx context.Context, args []string, stderr io.Writer) int {
 	remote, url := args[0], args[1]
 	what := leakguard.PushName(remote)
@@ -82,13 +85,16 @@ func runLeakCheckPrePush(ctx context.Context, args []string, stderr io.Writer) i
 	if err != nil {
 		return leakCheckReport(ctx, stderr, "", &leakguard.SetupFailure{What: what, Why: "the repository the hook runs in could not be read", Err: err})
 	}
-	guard := leakguard.New(leakguard.Options{Curl: leakguardCurl, RoleState: ghRoleStateBase})
-	return leakCheckReport(ctx, stderr, "", guard.Push(ctx, leakguard.PushRequest{
+	tlsHost := ""
+	guard := leakguard.New(leakguard.Options{Curl: leakguardCurl, RoleState: ghRoleStateBase, OnTLSTimeout: func(host string) { tlsHost = host }})
+	status := leakCheckReport(ctx, stderr, "", guard.Push(ctx, leakguard.PushRequest{
 		Dir:     dir,
 		Remote:  remote,
 		URL:     url,
 		Updates: updates,
 	}))
+	recordGuardTLSTimeout(tlsHost, stderr, ctx)
+	return status
 }
 
 // runLeakCheckText is the text half: the whole of standard input is the text, its first line the
