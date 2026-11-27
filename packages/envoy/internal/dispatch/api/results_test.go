@@ -20,9 +20,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -3374,6 +3376,106 @@ func TestARetractedPassDoesNotStand(t *testing.T) {
 	}
 }
 
+// respelledCheck is a Verification document as another renderer version stored it, in a
+// spelling no build writes that reads as the tree this build writes otherwise: check k1's
+// paragraph escapes the full stop that ends it, which needs no escape. A check holds paragraphs
+// alone, so this, and not a list, is how its text can be spelled otherwise.
+// respelledCheckParagraph and respelledCheckBlock are the paragraph's and the check's slices of
+// it, as that renderer's build indexed them, and checkParagraph is the paragraph as every build
+// writes it.
+const (
+	checkParagraph          = "The server records a result against a check."
+	respelledCheckParagraph = "The server records a result against a check\\."
+	respelledCheckBlock     = ":::check{#k1 surface=\"cli\" run=\"go test ./...\"}\n" + respelledCheckParagraph + "\n:::"
+	respelledCheck          = respelledCheckBlock + "\n\n" +
+		":::check{#k3 surface=\"cli\" run=\"go test ./...\"}\n" +
+		"A sibling check nobody reworded.\n" +
+		":::\n"
+)
+
+// respellVerification makes version number of Verification document artifactID, uploaded as
+// respelledCheck, what another renderer version stored and indexed: the version holds
+// respelledCheck, stamped with the renderer version before this build's, and check k1 and its
+// paragraph, changed at that version, carry the sums and excerpts of their slices of it, which
+// document_block_texts records as their texts there. Every other block's slice is the same in
+// both spellings.
+func respellVerification(t *testing.T, database *store.Store, artifactID string, number int) {
+	t.Helper()
+	ctx := context.Background()
+	var written, paragraph string
+	if err := database.Pool.QueryRow(ctx, `
+		select (select text from document_block_texts where artifact_id = $1 and block_id = 'k1' and version = $2),
+		       (select block_id from document_block_texts where artifact_id = $1 and version = $2 and text = $3)
+	`, artifactID, number, checkParagraph).Scan(&written, &paragraph); err != nil {
+		t.Fatalf("read check k1 and its paragraph at version %d: %v", number, err)
+	}
+	if written == respelledCheckBlock {
+		t.Fatalf("this build writes check k1 as %q; the test needs a spelling no build writes", written)
+	}
+	another := pmdoc.RendererVersion - 1
+	storeVersionAs(t, database, artifactID, number, respelledCheck, &another)
+	for id, body := range map[string]string{"k1": respelledCheckBlock, paragraph: respelledCheckParagraph} {
+		indexed, err := database.Pool.Exec(ctx, `
+			update document_blocks set text_sha256 = $3, excerpt = $4
+			where artifact_id = $1 and block_id = $2 and changed_version = $5
+		`, artifactID, id, refs.BlockTextSum(body), text.HeadRunes(body, refs.BlockExcerptRunes), number)
+		if err != nil || indexed.RowsAffected() != 1 {
+			t.Fatalf("index block %s as %q at version %d: %d rows (%v)", id, body, number, indexed.RowsAffected(), err)
+		}
+		recorded, err := database.Pool.Exec(ctx, `
+			update document_block_texts set text = $3 where artifact_id = $1 and block_id = $2 and version = $4
+		`, artifactID, id, body, number)
+		if err != nil || recorded.RowsAffected() != 1 {
+			t.Fatalf("record block %s as %q at version %d: %d rows (%v)", id, body, number, recorded.RowsAffected(), err)
+		}
+	}
+}
+
+// A pass recorded against a check whose version another renderer version stored keeps its
+// words when the next version, which rewords another check, writes the check in this build's
+// spelling: the check's digest moves, but its words did not, and the block index keeps its
+// changed version (refs.BlockIndexing.KeepRespelled), so the pass reads check_words_moved false
+// and stands. A version that rewords the check itself moves its words, and the pass no longer
+// stands.
+func TestAPassKeepsItsChecksWordsAcrossAnotherRenderersSpelling(t *testing.T) {
+	t.Parallel()
+	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
+		func(string, string) string { return "diverged" })
+	issue := issueInRepository(t, handler, "RESRS", "acme/widgets", "Respelled")
+	owner := "/api/v1/issues/" + issue.Key
+	uploaded := uploadDocument(t, handler, owner, "verification.md", respelledCheck)
+	writeHead(t, database, "acme/widgets", 65, headCommit, "open", issue.Key)
+	respellVerification(t, database, uploaded.Artifact.ID, uploaded.Version.Number)
+
+	pass := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil)))
+	if pass.Result.CheckVersion != uploaded.Version.Number || pass.Result.CheckSHA256 != refs.BlockTextSum(respelledCheckBlock) {
+		t.Fatalf("the pass recorded check version %d and digest %s, want version %d and the digest of %q",
+			pass.Result.CheckVersion, pass.Result.CheckSHA256, uploaded.Version.Number, respelledCheckBlock)
+	}
+
+	uploadDocument(t, handler, owner, "verification.md",
+		strings.Replace(respelledCheck, "A sibling check nobody reworded.", "A sibling check, reworded.", 1))
+	read := readResults(t, handler, issue.Key)
+	standsAt(t, read, "k1", pass.Result.ID,
+		"a pass recorded against the check as another renderer version spelled it", model.CommitAtBasis, false)
+	check := checkOf(t, read, "k1")
+	if check.PassStands.Answer != model.PassStandsYes {
+		t.Errorf("the check answers pass_stands %+v after another check was reworded, want yes", check.PassStands)
+	}
+	if check.Version != pass.Result.CheckVersion || check.SHA256 == pass.Result.CheckSHA256 {
+		t.Errorf("the check is at version %d with digest %s, want the pass's version %d under a digest other than the pass's",
+			check.Version, check.SHA256, pass.Result.CheckVersion)
+	}
+
+	uploadDocument(t, handler, owner, "verification.md",
+		strings.Replace(respelledCheck, respelledCheckParagraph, "The server records a result against a check, reworded.", 1))
+	reworded := readResults(t, handler, issue.Key)
+	standsAt(t, reworded, "k1", pass.Result.ID, "a pass recorded before the check was reworded", model.CommitAtBasis, true)
+	if stood := checkOf(t, reworded, "k1").PassStands; stood.Answer != model.PassStandsNo {
+		t.Errorf("the reworded check answers pass_stands %+v, want no: a pass whose words moved does not stand", stood)
+	}
+}
+
 // A check CI proves takes no result from any role: a tester's and an implementer's are both
 // refused, 409 CHECK_PROVED_BY_CI naming the block and the check run, and nothing is stored. The
 // refusal comes before the commit is asked of GitHub: the commit here is one the repository does
@@ -3750,6 +3852,8 @@ func assertUnread(t *testing.T, check model.CheckBlock, words ...string) {
 // (githubapp.RequestTimeout) is raised past any run, so the deadline the read's context carries is
 // the one thing that can end it, and the detail names that deadline.
 func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
+	// Not parallel: it writes the package variables ciReadDeadline (shortenCIReadDeadline) and
+	// githubapp.RequestTimeout.
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCU", "acme/widgets", "Unread")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))

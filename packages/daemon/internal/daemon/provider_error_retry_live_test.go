@@ -87,16 +87,12 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -110,7 +106,7 @@ const (
 
 // ladderSends is how many times the daemon sends the ladder's task: the first send and five
 // re-sends, so the sixth turn's error is the one that reaches providerErrorRunTold and tells the
-// controller.
+// issue's architect and the project's controller.
 const ladderSends = 6
 
 // ladderWaitedOut is how many of the ladder's rungs the proof waits out where they are real: its
@@ -141,7 +137,6 @@ const ladderTolerance = 45 * time.Second
 // each pane, the daemon's own log as this driver reads it back, and the three issues it drives.
 type providerErrorLive struct {
 	liveAgentProof
-	built *built
 	clock *ladderClock
 	// ladder, refused and failing are the three issues, each in the phase its one worker works.
 	ladder, refused, failing string
@@ -162,6 +157,7 @@ type providerErrorLive struct {
 // the sixth turn, a content filter's refusal that carries no status, an error that cannot clear,
 // and the operator's commands over the claims the first and the fourth leave.
 func TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newProviderErrorLive(t)
 	r.step("step1-a-529-keeps-the-task-and-walks-the-30-60-120-ladder", r.ladderWalks)
@@ -184,8 +180,8 @@ func newProviderErrorLive(t *testing.T) *providerErrorLive {
 	proof := newLiveProof(t, "scripts/e2e/provider-error-retry.sh")
 	r := &providerErrorLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
-		built:          &built{}, clock: &ladderClock{},
-		ladder: proof.cfg.Project + "-1", refused: proof.cfg.Project + "-2", failing: proof.cfg.Project + "-3",
+		clock:          &ladderClock{},
+		ladder:         proof.cfg.Project + "-1", refused: proof.cfg.Project + "-2", failing: proof.cfg.Project + "-3",
 		stands: map[string]*providerStandin{},
 	}
 	r.seeded = []seededIssue{
@@ -231,11 +227,11 @@ func newProviderErrorLive(t *testing.T) *providerErrorLive {
 }
 
 // registerController registers a controller session for the project. The daemon tells a
-// controller nothing while none is registered (admit's wakeController), and the notice a run of
-// provider errors earns is the one thing step 2 reads, so a session is registered here as `legion
-// controller start` registers the operator's own (ControllerLaunchOperator). No controller process
-// runs: the proof reads what the daemon published to the listener for it, never what an agent did
-// with it.
+// controller nothing while none is registered (admit's wakeController), and the controller's copy
+// of the notice a run of provider errors earns is the one thing step 2 reads, so a session is
+// registered here as `legion controller start` registers the operator's own
+// (ControllerLaunchOperator). No controller process runs: the proof reads what the daemon published
+// to the listener for it, never what an agent did with it.
 func (r *providerErrorLive) registerController() {
 	t := r.t
 	t.Helper()
@@ -258,22 +254,12 @@ func (r *providerErrorLive) registerController() {
 	r.note("the project's controller is registered as %s, so a notice for it is published rather than dropped", session)
 }
 
-// overrides is the daemon this proof boots: the local runtime over the real worker stream, the
-// ladder's clock, the API listener the fixture holds, and the workflow's App tokens stood in for.
+// overrides is the daemon this proof boots: the local runtime's own wiring (daemonOverrides), the
+// ladder's clock, and the workflow's App tokens stood in for.
 func (r *providerErrorLive) overrides() overrides {
-	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
-			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
-			r.built.mu.Lock()
-			defer r.built.mu.Unlock()
-			r.built.conns, r.built.address = listener, address
-			r.rt.conns, r.rt.stream = listener, address
-			return r.rt, nil
-		},
-		clock:          r.clock,
-		listen:         heldListen,
-		workflowTokens: &workflowTokenRecorder{},
-	}
+	o := r.rt.daemonOverrides(r.rt)
+	o.clock, o.workflowTokens = r.clock, &workflowTokenRecorder{}
+	return o
 }
 
 // seed records the three issues as the daemon would hold them at the moment each one's worker
@@ -464,8 +450,9 @@ func (r *providerErrorLive) ladderWalks() {
 		r.stands[overloadedProvider].count(), r.stands[overloadedProvider].requestsHolding(marker))
 }
 
-// controllerIsTold reads the one notice the run of provider errors earns: at the sixth turn in a
-// row, the project's controller is told, once, and nothing is held.
+// controllerIsTold reads the controller's copy of the notice a run of provider errors earns, one
+// of two, since the issue's architect and the project's controller are each told: at the sixth
+// turn in a row the controller is told, once, and nothing is held.
 func (r *providerErrorLive) controllerIsTold() {
 	t := r.t
 	topic := notify.ControllerTopic(r.project)
@@ -494,7 +481,7 @@ func (r *providerErrorLive) controllerIsTold() {
 	if issue := r.issue(r.ladder); issue.Phase == phase.Held {
 		t.Fatalf("%s was held by the run of provider errors: %+v", r.ladder, issue)
 	}
-	r.note("%s is still %s: the notice is the one exit from a run, and no attempt limit holds the issue",
+	r.note("%s is still %s: the notice holds nothing, and no attempt limit holds the issue",
 		r.ladder, r.issue(r.ladder).Phase)
 }
 

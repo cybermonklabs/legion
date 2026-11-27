@@ -35,8 +35,8 @@ func rolesLocator(token claim.Token, uid string) runtime.Locator {
 // private, state and agent-secrets key directories its own — and none at the fixed paths a role
 // reads them at, which role-init binds inside the role's namespaces; the role homes volume is a
 // disk emptyDir at /var/run/legion/roles/.homes; the shared mounts are mounted once. The container
-// and both init containers carry the one issue-pod reservation, by default the six roles' former
-// sum: 3 CPU and 19Gi, each requested in full, and an 80Gi disk limit over a 6Gi request.
+// and both init containers carry the one issue-pod reservation, by default 2 CPU and 8Gi, each
+// requested in full, and an 80Gi disk limit over a 6Gi request.
 func TestAnIssuePodRunsEveryRoleInOneContainer(t *testing.T) {
 	t.Parallel()
 	opts := goldenOptions()
@@ -126,8 +126,8 @@ func TestAnIssuePodRunsEveryRoleInOneContainer(t *testing.T) {
 		t.Errorf("the role homes volume is %+v, want an emptyDir on the node's disk", homes)
 	}
 	reservation := corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("19Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("6Gi")},
-		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("19Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("80Gi")},
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("8Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("6Gi")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("8Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("80Gi")},
 	}
 	for _, container := range slices.Concat(pod.InitContainers, pod.Containers) {
 		if !sameRequirements(container.Resources, reservation) {
@@ -355,7 +355,10 @@ func TestAnInjectedSidecarLeavesAPodOfTheEarlierLayout(t *testing.T) {
 // replaces it where it stands, an installing launch included, where a launch into a pod that has
 // merely drifted keeps it; the replacement is a fresh pod on the configured image, so that launch
 // installs nothing; the pod it makes runs one container, the siblings' old processes read as the
-// daemon's replacement (Displaced), and a sibling resumes into the same new pod.
+// daemon's replacement (Displaced), and a sibling resumes into the same new pod. Each launch here
+// must succeed, so its waits end on the rig's controller ending and making a pod, under a boot
+// timeout as long as the test binary's deadline allows (withWaitsToTheDeadline), not one a loaded
+// machine outruns.
 func TestAnIssuePodOfTheEarlierLayoutIsStaleForEveryRoleAndReplacedByTheNextLaunch(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)

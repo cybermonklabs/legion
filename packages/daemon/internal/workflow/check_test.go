@@ -226,12 +226,12 @@ func TestACheckReportIsRefusedWhereNoLookIsOpenToIt(t *testing.T) {
 func TestCheckLookEndedEndsASilentLook(t *testing.T) {
 	t.Parallel()
 	rig := childCheckRig(t)
-	rig.apply("stale-look", intake.CheckLookEnded{Issue: "LEGION-209", Look: 2, Cause: "look bound"})
+	rig.apply("stale-look", intake.CheckLookEnded{Issue: "LEGION-209", Look: 2, Cause: "look bound", OpenedAt: checkOpened})
 	if check := productionCheck(t, rig.pool, "LEGION-209"); !check.LookOpen {
 		t.Fatalf("the check after a row of a look it has not reached = %+v, want look 1 still open", check)
 	}
 	rig.clock.now = checkOpened.Add(CheckLookBound)
-	rig.apply("look-bound", intake.CheckLookEnded{Issue: "LEGION-209", Look: 1, Cause: "look bound"})
+	rig.apply("look-bound", intake.CheckLookEnded{Issue: "LEGION-209", Look: 1, Cause: "look bound", OpenedAt: checkOpened})
 	check := productionCheck(t, rig.pool, "LEGION-209")
 	if !check.Open() || check.Looks != 1 || check.LookOpen {
 		t.Fatalf("the check after its look's bound = %+v, want it open at look 1 with the look ended", check)
@@ -502,15 +502,21 @@ func TestTheBoundStartsTheLastLookWhoseNothingClosesTheCheckAsNotRun(t *testing.
 			rig.clock.now = rig.clock.now.Add(CheckLookBound)
 			rig.apply("bound", intake.CheckBound{Issue: "LEGION-209"})
 			check = productionCheck(t, rig.pool, "LEGION-209")
-			if check.Looks != 2 || !check.LookOpen || !check.Last || check.LastWakeKind != "bound" || check.LastWakeDetail != "2 days since the issue closed" {
+			if check.Looks != 2 || !check.LookOpen || !check.Last || check.LastWakeKind != "bound" || check.LastWakeDetail != "2 days since the merge" {
 				t.Fatalf("the check at its bound = %+v, want its last look 2 open, woken by the bound", check)
 			}
 			starts := superviseRowsOf(t, rig.pool, "LEGION-209", "start")
 			if len(starts) != 2 || starts[1].CheckLook != 2 || !strings.Contains(starts[1].Task, "This is the last look: no look follows.") ||
-				!strings.Contains(starts[1].Task, "woken by the bound: 2 days since the issue closed.") || !strings.Contains(starts[1].Task, "did not run") {
+				!strings.Contains(starts[1].Task, "woken by the bound: 2 days since the merge.") || !strings.Contains(starts[1].Task, "did not run") {
 				t.Fatalf("start rows = %+v, want the last look's task saying so", starts)
 			}
-			rig.apply("end", tc.end)
+			end := tc.end
+			if ended, ok := end.(intake.CheckLookEnded); ok {
+				// The look's bound row names the check its start named, read from that row.
+				ended.OpenedAt = starts[1].CheckOpenedAt
+				end = ended
+			}
+			rig.apply("end", end)
 			check = productionCheck(t, rig.pool, "LEGION-209")
 			if check.Open() || check.Outcome != record.CheckNotRun || check.LookOpen {
 				t.Fatalf("the check after its last look's %s = %+v, want it closed as not run", tc.name, check)
@@ -544,11 +550,11 @@ func TestTheBoundsLookIsToldTheBoundTheCheckOpenedWith(t *testing.T) {
 	rig.clock.now = checkOpened.Add(checkBound)
 	applyFacts(t, rig.pool, rebuilt)("bound", intake.CheckBound{Issue: "LEGION-209"})
 	check := productionCheck(t, rig.pool, "LEGION-209")
-	if check.Looks != 2 || !check.LookOpen || !check.Last || check.LastWakeKind != "bound" || check.LastWakeDetail != "2 days since the issue closed" {
+	if check.Looks != 2 || !check.LookOpen || !check.Last || check.LastWakeKind != "bound" || check.LastWakeDetail != "2 days since the merge" {
 		t.Fatalf("the check at its bound under a rebuilt 3-day bound = %+v, want its last look 2 open, woken by its own 2-day bound", check)
 	}
 	starts := superviseRowsOf(t, rig.pool, "LEGION-209", "start")
-	if len(starts) != 2 || !strings.Contains(starts[1].Task, "woken by the bound: 2 days since the issue closed.") {
+	if len(starts) != 2 || !strings.Contains(starts[1].Task, "woken by the bound: 2 days since the merge.") {
 		t.Fatalf("start rows = %+v, want the last look's task naming the check's own 2-day bound", starts)
 	}
 }
@@ -701,7 +707,7 @@ func TestTheCheckTaskAsksForARecordedResultAndNoRetiredLine(t *testing.T) {
 	issue := record.Issue{Key: "LEGION-208", Title: "A production check"}
 	check := record.ProductionCheck{Issue: issue.Key, Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43", OpenedAt: checkOpened, Looks: 1}
 	for _, last := range []bool{false, true} {
-		task := checkTask(issue, check, wakeMerge, "", last)
+		task := checkTask(issue, check, wakeMerge, "", last, nil)
 		for _, retired := range []string{"Production: line", "pending deploy of", "proof array"} {
 			if strings.Contains(task, retired) {
 				t.Errorf("the check task (last %t) still says %q", last, retired)

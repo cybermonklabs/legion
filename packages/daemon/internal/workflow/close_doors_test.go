@@ -113,6 +113,52 @@ func TestAPersonsDoneClosesAndSaysWhatWaited(t *testing.T) {
 	}
 }
 
+// A person's done on a merged child that waits in verifying suspends the child's pod once. Where
+// its production check closed there, that close deleted nothing of the pod, and no check runs on
+// after the leave, so the leave queues the one IssueSuspend. Where the check is still open, the
+// leave queues none, and the check's close after it queues the one.
+func TestAPersonsDoneOnAMergedChildSuspendsItsPodOnce(t *testing.T) {
+	t.Parallel()
+	personsDone := func(rig *waitRig) {
+		rig.t.Helper()
+		rig.fact(intake.DispatchIssue{Key: waitChild, Seq: 2, Type: "issue.closed", Status: "done", Title: waitChild, Parent: waitRoot, Rank: "V"})
+		if got := issueAt(rig.t, rig.pool, waitChild); got != phase.Done {
+			rig.t.Fatalf("%s stands at %s after a person's done, want done", waitChild, got)
+		}
+	}
+	merged := func(t *testing.T) *waitRig {
+		t.Helper()
+		rig := newWaitRig(t, claim.RoleTester)
+		rig.seedRoot(phase.Implementing, "in_progress")
+		rig.seedChild(waitChild, phase.Merging, "retro")
+		rig.mergeChild()
+		rig.read(waitChild, answerOf(waitChild, nil, noResult("c-after", waitChildMerge)))
+		return rig
+	}
+	t.Run("its check closed in verifying", func(t *testing.T) {
+		rig := merged(t)
+		rig.report(waitChild, 1, "pass", "the check passed in production", nil)
+		if got := issueSuspensions(t, rig.pool, waitChild); len(got) != 0 {
+			t.Fatalf("suspensions at the check's close in verifying = %+v, want none", got)
+		}
+		personsDone(rig)
+		if got := issueSuspensions(t, rig.pool, waitChild); len(got) != 1 {
+			t.Fatalf("suspensions after the person's done = %+v, want one", got)
+		}
+	})
+	t.Run("its check still open", func(t *testing.T) {
+		rig := merged(t)
+		personsDone(rig)
+		if got := issueSuspensions(t, rig.pool, waitChild); len(got) != 0 {
+			t.Fatalf("suspensions after the person's done = %+v, want none while the check runs", got)
+		}
+		rig.report(waitChild, 1, "pass", "the check passed in production", nil)
+		if got := issueSuspensions(t, rig.pool, waitChild); len(got) != 1 {
+			t.Fatalf("suspensions after the check's close = %+v, want one", got)
+		}
+	})
+}
+
 // The owning architect's done on a child whose pull request merged is set back, as a session's
 // write is, and the architect is told what the close waits for: such a child closes by its checks.
 func TestAnArchitectsDoneOnAMergedChildIsSetBack(t *testing.T) {

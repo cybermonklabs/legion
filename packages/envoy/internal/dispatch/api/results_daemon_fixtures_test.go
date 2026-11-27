@@ -266,15 +266,60 @@ func TestTheResultsReadOfEachState(t *testing.T) {
 		rig, issue := integration(t, true)
 		holdResultsFixture(t, "default-branch-merged-elsewhere-landed", wantAnswer(t, rig.handler, issue, "", "k6", "yes", ""))
 	})
-	t.Run("before-merge-second-pull-request-open", func(t *testing.T) {
+	// beforeMerge is a before_merge check's issue whose #101 merged at headCommit and whose #102 is
+	// open at newHeadCommit, with the tester's verdict recorded at headCommit where verdict is not
+	// "", whose id it answers. The read with no query names #102's head alone as a subject, and the
+	// read at headCommit answers the state of that one head.
+	beforeMerge := func(t *testing.T, verdict string) (*afterMergeRig, string, string) {
+		t.Helper()
 		rig := newAfterMergeRig(t)
 		issue := rig.issue(t, "A change with a second pull request", ":::check{#k1 when=\"before_merge\"}\nThe change answers at its head.\n:::\n")
 		writeKnownMergeOnBase(t, rig.database, "acme/widgets", 101, headCommit, issue, "main", afterMergeM)
 		writeHeadOnBase(t, rig.database, "acme/widgets", 102, newHeadCommit, "open", issue, "main")
-		rig.record(t, issue, "k1", "tester", "pass", headCommit)
+		result := ""
+		if verdict != "" {
+			result = rig.record(t, issue, "k1", "tester", verdict, headCommit)
+		}
+		return rig, issue, result
+	}
+	t.Run("before-merge-second-pull-request-open", func(t *testing.T) {
+		rig, issue, _ := beforeMerge(t, "pass")
 		holdResultsFixture(t, "before-merge-second-pull-request-open", wantAnswer(t, rig.handler, issue, "", "k1", "no", ""))
 		holdResultsFixture(t, "before-merge-at-first-head", wantAnswer(t, rig.handler, issue, "?at="+headCommit, "k1", "yes", ""))
 	})
+	// A fail at the merged head, and no result there: the read at that head answers no for the
+	// reason a subject there gives, and a fail names its result and the head, so a reader of that
+	// one head tells the two apart.
+	for _, tc := range []struct{ name, verdict, reason string }{
+		{name: "before-merge-fail", verdict: "fail", reason: "fail"},
+		{name: "before-merge-no-result", reason: "no_result"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig, issue, result := beforeMerge(t, tc.verdict)
+			open := wantAnswer(t, rig.handler, issue, "", "k1", "no", "")
+			atHead := wantAnswer(t, rig.handler, issue, "?at="+headCommit, "k1", "no", tc.reason)
+			var read struct {
+				Checks []struct {
+					PassStands struct {
+						Results []string `json:"results"`
+						Commit  string   `json:"commit"`
+					} `json:"pass_stands"`
+				} `json:"checks"`
+			}
+			if err := json.Unmarshal(atHead, &read); err != nil || len(read.Checks) != 1 {
+				t.Fatalf("decode the read at %s: %v (%d checks): %s", headCommit, err, len(read.Checks), atHead)
+			}
+			wantResults, wantCommit := []string(nil), ""
+			if result != "" {
+				wantResults, wantCommit = []string{result}, headCommit
+			}
+			if stands := read.Checks[0].PassStands; !slices.Equal(stands.Results, wantResults) || stands.Commit != wantCommit {
+				t.Fatalf("the read at %s names the results %q at %q, want %q at %q: %s", headCommit, stands.Results, stands.Commit, wantResults, wantCommit, atHead)
+			}
+			holdResultsFixture(t, tc.name+"-second-pull-request-open", open)
+			holdResultsFixture(t, tc.name+"-at-first-head", atHead)
+		})
+	}
 }
 
 // fixtureUUID and fixtureTime are the ids and the times a server makes, which a fixture writes as a

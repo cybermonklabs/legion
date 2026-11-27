@@ -92,9 +92,10 @@ func TestTheComposedPromptsTellEveryArchitectToWriteTheProductionCheck(t *testin
 }
 
 // A production check that finds no `after_merge` check on its issue records no result and writes
-// no check, since a closed issue refuses every new document, and names the gap in its
-// pull-request comment and its report, as a named gap and never a failure (dispatch://INFRA-175
-// R8). The tester works the production check (dispatch://INFRA-809), so each of its three parts
+// no check, since an open issue's checks are the architect's to write and a closed issue refuses
+// every new document, and names the gap in its pull-request comment and its report, as a named gap
+// and never a failure (dispatch://INFRA-175 R8). The tester works the production check
+// (dispatch://INFRA-809), so each of its three parts
 // that hold the check carries the rule; a check opened before that release keeps the implementer,
 // so each of the implementer's two paragraphs on such a check carries it too. Each part holds it
 // once, and the composed prompt of each role carries it. Removing it from the implementer's part,
@@ -136,11 +137,12 @@ func TestTheComposedPromptsNameAMissingProductionCheckAsAGap(t *testing.T) {
 // carries the opening a news task can bring in place of the opened message, and the WAITING line
 // that lets a task reach it between turns. Every architect carries the answers in `accepting` (a
 // sign-off, or a move back to the phase of an earlier step of its task), the root architect's
-// summary duty for a member whose pull request merged, and R4's message: the architect's own Envoy
-// message for a new version the daemon tells nobody of. Each rule is counted once in each part that
-// holds it, then read in the composed prompt of each role, and the composed architect prompts no
-// longer say the moves back that left planning out. This shows the text is loaded, never that a
-// role follows it.
+// summary with both of its openers (a person's approval, or an ancestor's approval that every
+// version it names stands on) and its duty for a member whose pull request merged, and R4's
+// message: the architect's own Envoy message for a new version the daemon tells nobody of. Each
+// rule is counted once in each part that holds it, then read in the composed prompt of each role,
+// and the composed architect prompts no longer say the moves back that left planning out. This
+// shows the text is loaded, never that a role follows it.
 func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -181,15 +183,16 @@ func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 	})
 	t.Run("architects", func(t *testing.T) {
 		const (
-			accepting = "`The approved design of <tree> changed for <issue>, which you hold in accepting:`"
-			summary   = "`A person approved a new version of the design of <tree>.`"
-			message   = "Request no approval for it."
+			accepting      = "`The approved design of <tree> changed for <issue>, which you hold in accepting:`"
+			summary        = "`A person approved a new version of the design of <tree>.`"
+			summaryOnBasis = "`A new version of the design of <tree> stands approved on an ancestor's approval.` when every version it names stands on an ancestor's approval"
+			message        = "Request no approval for it."
 		)
 		// The moves back name the phase of an earlier step of the issue's task, any of them, as the
 		// owner's plan reads them: a list of named phases holds only for the default steps, since a
 		// reviewer step before the acceptance is an earlier step too.
 		answers := []string{accepting, "to the phase of an earlier step of its task, with a `reason` that names the version and the change"}
-		duty := []string{summary, "a merged change never moves back", "whose pull request is still open", "`dispatch ask` the person on the root"}
+		duty := []string{summary, summaryOnBasis, "a merged change never moves back", "whose pull request is still open", "`dispatch ask` the person on the root"}
 		r4 := []string{message, "`envoy_publish` to the role topic of the phase holder of each issue the version changes, naming the version and what changed"}
 		ruleIn(t, "go/architect-common.md", accepting, answers...)
 		ruleIn(t, "go/architect-common.md", summary, duty...)

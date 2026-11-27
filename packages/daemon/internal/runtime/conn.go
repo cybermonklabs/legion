@@ -27,9 +27,9 @@ var ErrPromptRefused = errors.New("runtime: the agent refused the prompt")
 // and fails, which the workflow reports.
 //
 // What is not this, and is charged nothing because it is no answer about the workspace: no answer
-// within the RPC timeout, a closed connection, a frame lost on the way — the prompt never reached
-// the far side — and a failure to mint the role's identity, which is ErrIdentityUnavailable
-// below.
+// within the request's reply deadline (ErrNoAnswer), a closed connection, a frame lost on the way
+// — the prompt never reached the far side — and a failure to mint the role's identity, which is
+// ErrIdentityUnavailable below.
 //
 // Every `ok: false` is this, the shim's own command timeout included, and the refusal's text is
 // never read to decide: a jj wedged on a stale lock reports as that timeout, and that is the very
@@ -58,6 +58,24 @@ var ErrStartAtRefused = errors.New("runtime: the shim refused to start the worki
 // transport loss, it sends that operator to the wrong side of the daemon.
 var ErrIdentityUnavailable = errors.New("runtime: the role's GitHub App identity could not be minted")
 
+// ErrNoAnswer is a request whose reply did not arrive within that request's reply deadline, the
+// wait the stream gives it once its frame is written. For most requests the deadline is the RPC
+// timeout (worker_rpc_timeout_seconds), the bound the shipped client puts on a request
+// (worker-rpc.ts:407-421). Three carry a longer one of their own: a compaction waits for the bound
+// its caller passes (CompactTimeout), and an adoption of the working copy and a read of the
+// workspace's work wait for the shim's own timeout plus the RPC timeout, the round trip. It is the
+// transport's silence, which is no answer of either kind.
+var ErrNoAnswer = errors.New("no answer on the worker stream within the request's reply deadline")
+
+// ErrPromptUnanswered is a prompt whose frame the daemon wrote to the worker stream and whose
+// reply did not come within its deadline. It says the frame was written, not that the agent
+// received it. It is the one no-answer of a send that says a prompt frame went out: an adoption,
+// an identity mint or a protocol negotiation that times out comes before the prompt is written,
+// and carries ErrNoAnswer or the context's error alone. Oh My Pi can hold a prompt it was handed
+// and answer it only later — it parks a prompt that reaches it while a handoff runs until the
+// handoff ends — so the prompt this names may still run.
+var ErrPromptUnanswered = errors.New("the prompt was written and no answer came within its wait")
+
 // RefusalReason is the words the agent refused with — Oh My Pi's `error` beside its
 // `success: false` — read from the error in err's chain that carries them, or "" when none does.
 // The stream's refusal carries them (stream.RefusedError), and so does the fake connection's.
@@ -83,13 +101,13 @@ var ErrTokenRefused = errors.New("runtime: the shim did not read its projected t
 // inside that bound rather than by the caller's deadline.
 const WorkspaceWorkTimeout = 30 * time.Second
 
-// CompactTimeout is how long Oh My Pi is given to compact a session: the operation's own bound,
-// not worker_rpc_timeout_seconds, because a compaction is a model call over the whole transcript
-// where every other request on this interface is a frame the far side answers at once. It is a
-// constant rather than a setting for the reason WorkspaceWorkTimeout is one: a compaction that
-// cannot finish in this long is one the caller is told about rather than one the daemon waits
-// longer for. Ten minutes is the ladder's own widest step (supervise's promptRetryMax), so a
-// compaction never outlasts the wait the stuck claim is already in.
+// CompactTimeout is how long Oh My Pi is given to shorten a session: the operation's own bound,
+// not worker_rpc_timeout_seconds, because the handoff that shortens it is a model call over the
+// whole transcript where every other request on this interface is a frame the far side answers
+// at once. It is a constant rather than a setting for the reason WorkspaceWorkTimeout is one: a
+// compaction that cannot finish in this long is one the caller is told about rather than one the
+// daemon waits longer for. Ten minutes is the ladder's own widest step (supervise's
+// promptRetryMax), so a compaction never outlasts the wait the stuck claim is already in.
 const CompactTimeout = 10 * time.Minute
 
 // Conn is one agent's live connection, as everything above the transport sees it: a way to ask
@@ -102,10 +120,15 @@ const CompactTimeout = 10 * time.Minute
 // on these methods rather than on the stream's own struct.
 type Conn interface {
 	// Prompt hands the agent a task and returns when Oh My Pi has acknowledged the frame — or
-	// refused it, or the transport failed. A refusal wraps ErrPromptRefused; every other error
-	// is transport. The turn it may start is observed on the stream. The delivery id is the
-	// daemon's: an agent that receives the same id twice answers it without starting a second
-	// turn.
+	// refused it, or the transport failed. Its errors are of three kinds, which the supervisor
+	// tells apart (supervise's refused). A refusal wraps ErrPromptRefused. A reply deadline that
+	// passes after the prompt frame was written wraps ErrPromptUnanswered beside its own cause
+	// (ErrNoAnswer or the context's deadline): the frame was written, not known to be received,
+	// and the agent may still run it. Every other error is transport and wraps neither, a deadline
+	// that passes before the prompt frame is written among them, such as a protocol
+	// negotiation's: an implementation wraps ErrPromptUnanswered only once the frame is written.
+	// The turn it may start is observed on the stream. The delivery id is the daemon's: an agent
+	// that receives the same id twice answers it without starting a second turn.
 	Prompt(ctx context.Context, deliveryID, message string) error
 	// GetState asks the agent what it is doing. The one field the daemon reads back is whether
 	// a turn is in flight, which is how a restart tells a delivery already in progress from one
@@ -119,11 +142,14 @@ type Conn interface {
 	// StartAtBranch makes the agent's side start the working copy of its workspace at the
 	// issue's branch, within timeout, and answers what it did (Runtime.StartAtBranch).
 	StartAtBranch(ctx context.Context, at StartAt, timeout time.Duration) (StartedAt, error)
-	// Compact asks Oh My Pi to compact its session's context, writing the summary to
-	// customInstructions, and returns when it answers or bound runs out. Nil is a session
-	// compacted. A compaction Oh My Pi refused or skipped — a session too small, one already
-	// compacted, a summarizer that failed — is a refusal carrying its words (RefusalReason);
-	// every other error is transport.
+	// Compact asks Oh My Pi to shorten its session's context with a handoff, the document
+	// written to customInstructions, and returns when it answers or bound runs out. It never
+	// asks for Oh My Pi's `compact`, whose summary request Anthropic refuses for a long Claude
+	// session (dispatch://INFRA-5798). Nil is a session shortened. A handoff Oh My Pi refused —
+	// one asked for in a turn, a session with nothing to hand off, a model call that failed —
+	// answered with no document, or answered with a result that is not an object, is a refusal
+	// carrying the reason (RefusalReason), and the session is not reported shortened; every other
+	// error is transport.
 	Compact(ctx context.Context, customInstructions string, bound time.Duration) error
 	// WorkspaceWork has the agent's side read whether the workspace every role of issue shares
 	// holds work that no branch or tag on origin holds, within timeout. The read snapshots the

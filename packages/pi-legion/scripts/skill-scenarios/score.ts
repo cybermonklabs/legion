@@ -497,9 +497,9 @@ const GateEntry = z.looseObject({
 type GateEntry = z.infer<typeof GateEntry>;
 /** How a refused call's error result starts when a model's revise in block mode stopped it. */
 const NOT_SENT = "AskGate did not send this call.";
-/** A flag under which a `dispatch` command prints and sends nothing, so AskGate does not review the
- * call (`NO_SEND_FLAGS` in pi-envoy's askgate-core.ts). */
-const NO_SEND = /(?:^|\s)--(?:help|dry-run)(?=\s|$)/;
+/** A flag under which a `dispatch` command stores nothing, so AskGate does not review the call
+ * (`NO_STORE_FLAGS` in pi-envoy's askgate-core.ts). */
+const NO_STORE = /(?:^|\s)--(?:help|dry-run)(?=\s|$)/;
 /** Every case rig.sh's run_askgate has a prompt for. */
 const ASKGATE_CASES = [
   "facts",
@@ -573,8 +573,8 @@ const FAILURE_12 = /\bcontent\s+(?:failures?\s+)?12\b|(?:^|[^\w.])12\s*\(\s*cont
 /** The gate entry outcomes that record a refusal no review stands behind (askgateReview). */
 const NOT_REVIEWS = ["unreadable", "unmarked"];
 
-/** askgate: AskGate (the pi-envoy plugin's review of each Dispatch write) on a seeded issue whose
- * one comment is the person's. The run's label is its profile: `off` was built with
+/** askgate: AskGate (the pi-envoy plugin's review of each gated Dispatch write) on a seeded issue
+ * whose one comment is the person's. The run's label is its profile: `off` was built with
  * `{"askgate":{"enabled":false}}` in its envoy.json, every other label leaves the gate on. The
  * run's directory names its case, and `case.txt` names the prompt rig.sh gave, which must be the
  * same case. The row's scenario is `askgate:<case>`, so the counts are per case. A gate entry with
@@ -631,7 +631,7 @@ function askgateReview(runDir: string, run: string, label: string, dirCase: stri
       (c) =>
         c.tool === "bash" &&
         /\bdispatch\s+ask\b/.test(c.command) &&
-        !NO_SEND.test(c.command) &&
+        !NO_STORE.test(c.command) &&
         !NOT_REVIEWS.includes(gates.find((g) => g.toolCallId === c.id)?.outcome ?? "")
     );
     if (call === undefined) return row(false, "askCall=none");
@@ -1325,9 +1325,9 @@ function withPythonDispatch(code: string): string {
  * command ends the call, except one after `&&` that follows a shown refusal: the shell never ran
  * it.
  *
- * The refusals score does not rest on this attribution: the CLI logs each call it ran, refused or
- * not, in its ledger (refusalBlocks), and the attribution only says which command of a call a
- * ledger line belongs to. The output does not show:
+ * The refusals score does not rest on this attribution: the CLI logs each spec command it ran,
+ * refused or not, in its ledger (refusalBlocks), and the attribution only says which command of a
+ * call a ledger line belongs to. The output does not show:
  * - the end of another command's output (`cat`, `sed`, a `dispatch` command that succeeded), so a
  *   refusal after it could be that output's text;
  * - output a `$(…)` or a redirect to a file takes;
@@ -1538,11 +1538,12 @@ type LedgerLine = z.infer<typeof LedgerLine>;
  * The CLI logs every call it ran, refused or not, whatever the shell did with its output: a pipe,
  * `$(…)`, a loop or another program (Python's subprocess.run) hides nothing from it. A refusal the
  * CLI makes before the call reaches Dispatch is logged too whenever the call knows its session: a
- * refusal of a command's own arguments (`dispatch <command> was not called`, exit 1) under its
+ * refusal of a command's own arguments (`dispatch <command> was not called`, exit 2) under its
  * tool, and a usage refusal (`dispatch: …`, exit 2) under its tool, or under `dispatch` when the
- * CLI could not name the command. It logs no `--help` call that printed help and no dry run that
- * passed; a `--help` of an unknown command is a usage refusal and is logged. A run with
- * no ledger is the rig's fault: its CLI kept no record where the rig reads it. */
+ * CLI could not name the command. It logs no `--help` call that printed help, no dry run that
+ * passed and no `dispatch proxy` or `dispatch login` call; a `--help` of an unknown command is a
+ * usage refusal and is logged. A run with no ledger is the rig's fault: its CLI kept no record
+ * where the rig reads it. */
 function ledgerOf(runDir: string, session: string): LedgerLine[] {
   const state = { XDG_STATE_HOME: path.join(runDir, "home", ".local", "state") };
   const file = path.join(sessionDirectory(state, session), "results.jsonl");
@@ -1604,12 +1605,14 @@ function refusalBlocks(
   }));
   const logged = new Set<number>();
   for (const call of calls) {
-    // The commands of the call the CLI logged: every one but a `--help` that printed help, and a
-    // `--dry-run` only when its argument check refused it. The CLI checks a command's name before
-    // its flags, so a help call of an unknown command is refused and logged like any usage
-    // refusal. A usage refusal (`dispatch: …`) is logged under tool `dispatch` when the CLI could
-    // not name the command, so the ledger line and the printed refusal are one refusal and match
-    // here.
+    // The commands of the call the CLI may have logged: every one but a `--help` that printed help,
+    // and a `--dry-run` only when the CLI refused it, whichever check did (the check of a text it
+    // reads, the argument check or the dry run's own step): the CLI logs every refusal and no dry
+    // run that passed. `dispatch proxy` and `dispatch login` are among them though the CLI logs
+    // neither, so no ledger line has their tool. The CLI checks a command's name before its flags,
+    // so a help call of an unknown command is refused and logged like any usage refusal. A usage
+    // refusal (`dispatch: …`) is logged under tool `dispatch` when the CLI could not name the
+    // command, so the ledger line and the printed refusal are one refusal and match here.
     const candidates = ops.flatMap((op, place) =>
       op.kind === "dispatch" &&
       op.step.id === call.step.id &&
@@ -2784,9 +2787,11 @@ const indented = (text: string, depth = 6) =>
  *     are not judged (SpecWork.unjudged: it pastes a sibling issue's spec) is printed with why, and
  *     the row is flagged `unjudged=N`: a write whose only check is one of these has no answer to
  *     whether the agent acted on what came back.
- *   - refusals: every refused `dispatch` call (refusalBlocks: an `error` line of the CLI's ledger,
- *     or a refusal a call's output shows that the ledger holds no line of: an `eval` cell's, whose
- *     kernel knows no session, or one the CLI made with no session) is followed by a call
+ *   - refusals: every refused `dispatch` call (refusalBlocks: an `error` line of the CLI's
+ *     ledger, which logs spec commands alone, or a refusal a call's output shows that the ledger
+ *     holds no line of: an `eval` cell's, whose kernel knows no session, one the CLI made with no
+ *     session, or a refusal of `dispatch login`'s arguments or of `dispatch proxy`'s session or
+ *     configuration, which the CLI logs nowhere) is followed by a call
  *     the ledger logs as a success, in a later tool call, with no skill file read between them. A
  *     call the agent made before the refusal came back is no fix: it cannot show that the agent
  *     fixed the call from the refusal alone. Each failing refusal is printed with its text.

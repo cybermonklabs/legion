@@ -1,0 +1,17 @@
+# requests-own-scopes-not-in-digest: a google-service-account secret served by its own name is
+# fingerprinted without its scopes tag, so a grant decided under devstorage.read_only goes on
+# releasing after the tag is widened, and its next release asks Google for cloud-platform. Applied
+# with patch -p1 from a copy; its tests need the Postgres BROKER_TEST_DATABASE_URL names.
+# must fail: TestAScopesTagChangeEndsTheGrantsDecidedUnderTheOldScopes
+
+--- a/packages/envoy/internal/cipher/policy/load.go
++++ b/packages/envoy/internal/cipher/policy/load.go
+@@ -595,7 +595,7 @@
+ 	}
+ 	raw, tagged := tags[TagProxy]
+ 	if !tagged {
+-		s.ProfileDigest = scopesDigest(s.Scopes)
++		// MUTANT: a secret by its own name behind no proxy is fingerprinted without its scopes.
+ 		return "", ""
+ 	}
+ 	kind := proxyrules.Rules{Kinds: file.Kinds()}.Kind(raw)

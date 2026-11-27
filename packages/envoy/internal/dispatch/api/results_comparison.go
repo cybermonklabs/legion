@@ -239,6 +239,15 @@ func (c comparison) served() []model.CheckBasis {
 	return slices.Concat(c.bases, c.linked)
 }
 
+// namedCommit is the one basis of a read at a commit a reader named (`?at=`), which comparedWith
+// makes the only basis of every check, and false for every other read.
+func (c comparison) namedCommit() (model.CheckBasis, bool) {
+	if len(c.bases) == 1 && c.bases[0].Kind == model.CheckBasisNamed {
+		return c.bases[0], true
+	}
+	return model.CheckBasis{}, false
+}
+
 // headSubject is one subject of a check compared with heads (comparison.subjects): its basis, as
 // the answer names it, and repo, the repository it is a head of, the pull request row's own. The
 // basis names a repository only where it is another than the issue's (headBasis), so the read of
@@ -319,9 +328,13 @@ const noDefaultBranchNamed = ""
 //
 // The two facts a result states are kept apart and read apart. Where its commit stands is one
 // question, answered against the bases, and whether the check's words moved is another,
-// answered by the digest the result recorded beside the digest the check carries now. A result
-// at the compared commit under an older wording is both, and one word for both would hide
-// which of the two a reader is looking at.
+// answered by the digest and the changed version the result recorded beside those the check
+// carries now: the words moved when the digests differ and the versions differ too. A check's
+// changed version moves with every change of its words. The one case where its digest moves
+// while its changed version stays is refs.BlockIndexing.KeepRespelled keeping a block whose text
+// recorded at that version another renderer version spelled and which reads as its text now, the
+// same words in a new spelling. A result at the compared commit under an older wording is both,
+// and one word for both would hide which of the two a reader is looking at.
 func (c *comparisonReader) answer(ctx context.Context, check *model.CheckBlock) {
 	compared := c.comparedWith(ctx, *check)
 	compared.ci = c.headCI[check.BlockID]
@@ -329,7 +342,7 @@ func (c *comparisonReader) answer(ctx context.Context, check *model.CheckBlock) 
 	check.ComparedNothing = compared.reason
 	for index := range check.Results {
 		result := &check.Results[index]
-		moved := check.SHA256 != result.CheckSHA256
+		moved := check.SHA256 != result.CheckSHA256 && check.Version != result.CheckVersion
 		result.CheckWordsMoved = &moved
 		stands := c.commitStands(ctx, *check, compared, *result)
 		result.CommitStands = &stands

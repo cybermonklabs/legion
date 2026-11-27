@@ -579,9 +579,10 @@ func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
 // the reconcile queues a news-only start for (holderTold). A claim that a news-only start reaches
 // but that holds such a task gets no start until a turn takes that task, so the member's news
 // waits for it (workflow.NewsWaitsForTask). Otherwise the next start of its phase tells it
-// (workflow.NewsAtNextStart): a claim owed its phase start (workflow.OwedEntry), none at all, or
-// one retired, failed or suspended by an operator. A member in accepting is answered by the
-// architect that owns it (newsClaims.holderOf, the owner walk): the root architect itself
+// (workflow.NewsAtNextStart): a claim owed its phase start (workflow.OwedEntry), none at all, one
+// retired or failed, or one a suspension that holds (the operator's or the controller's) is
+// over. A member in accepting is answered by the architect that owns it (newsClaims.holderOf, the
+// owner walk): the root architect itself
 // (workflow.NewsYouAnswer), or a child's architect, whose claim is told as any holder's is
 // (holderTold) and which the summary names as the one told (memberTelling.architect). Who holds
 // each member is the one answer the reconcile and the start read too (readOwedHolders).
@@ -687,6 +688,8 @@ func untoldReason(reason record.UntoldReason) workflow.NewsState {
 		return workflow.NewsAwaitingPerson
 	case record.UntoldHeld:
 		return workflow.NewsStopped
+	case record.UntoldAwaitingChildren:
+		return workflow.NewsAwaitingChildren
 	}
 	return workflow.NewsGateClosed
 }

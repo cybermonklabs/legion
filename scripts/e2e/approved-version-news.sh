@@ -29,9 +29,9 @@
 #     root architect for a root in accepting and the implementer for one in implementing; an
 #     answered decision block alone sends nothing, in a window the accepting root's task arrives in;
 #   - a5-the-tester-passes-and-the-reviewer-is-told: a tester in a turn at a checks-only approval
-#     completes with a pass, and the reviewer's start task names the changed check, while the
-#     start task of the reviewer of the root's child, whose issue that version changed nothing of,
-#     names none;
+#     completes with a pass, and the reviewer's start task names the changed check, while in a
+#     second tree, whose root waits at admitted for its child, the start task of that child's
+#     reviewer, whose issue its root's checks-only version changed nothing of, names none;
 #   - a6-a-merged-root-is-told-nothing: a root whose pull request GitHub reports merged moves from
 #     merging to verifying, where its close waits for its child, is sent nothing, and its merger's
 #     request_backward_move is refused, while its unmerged child in reviewing is sent the task;
@@ -89,12 +89,28 @@
 # the head arm alone that head_only holds no measurement for, or makes a step head_only holds one
 # for in both arms or not at all. off is the one step whose control can bite at its base. The driver
 # stops at the first head run that does not pass, since the proof then fails whatever the rest
-# show. The model key is read from APPROVED_VERSION_NEWS_MODEL_KEY_FILE (default
-# /var/run/model-gateway-key/key, where a role pod mounts the gateway's key) by the driver itself,
-# which gives it to each pane's environment alone. This script exports no key, and it unsets the
-# caller's ANTHROPIC_API_KEY before either part, so no build, broker or service it starts holds
-# one. Once part two ran, the key-leak check counts the key's first 8 characters in the evidence
-# directory, without printing them, and fails the run on any.
+# show.
+#
+# Part two's model key is a file: APPROVED_VERSION_NEWS_MODEL_KEY_FILE, by default
+# /var/run/model-gateway-key/key, where a role pod mounts the gateway's key. Where that file holds
+# no key, APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE names the audience the cluster model gateway
+# takes a pod's identity token for, and part two runs on the pod's own Google identity token for
+# that audience in its place: the GKE metadata server mints it, it lasts an hour, and the gateway
+# takes it from a pod it lets in so, such as a Job of the builds namespace that carries the
+# deployment's gateway label (<deployment domain>/model-gateway: "true"), which holds no key. The
+# gateway-token check mints it into a key file of the run's own scratch, mode 600, before anything
+# is built, and a refresher in the background mints it again whenever the token in that file has
+# gateway_keep_seconds left, until the script ends (mint_gateway_token, refresh_gateway_token). A
+# run of part two with no key in the file and no audience is refused with exit 2. The driver reads
+# the key file at the start of each run of part two and gives the key to that run's panes'
+# environment alone, so a run that starts late reads the token minted last. This script exports
+# no key and prints no token, and it unsets the caller's ANTHROPIC_API_KEY before either part, so
+# no build, broker or service it starts holds one. Each of its functions that holds the key or the
+# token turns the shell's xtrace off for itself (jwt_exp, mint_gateway_token, key_leaks), and the
+# loopback guard reads LEGION_TEST_PG_DSN by its name (require_loopback_env), so a run under
+# `bash -x` traces no part of the key, the token or the DSN. Once part two ran, the key-leak check
+# counts in the evidence directory, without printing them, the key file's first 8 characters, or,
+# for a minted token, the header of each token the run minted, and fails the run on any.
 #
 # Three variables narrow part two to the runs one measurement needs, and the script passes them to
 # its driver unchanged: APPROVED_VERSION_NEWS_STEP names one step by the word the last line names
@@ -124,19 +140,22 @@
 # to start without them), tar, awk, bun and python3, as
 #   LEGION_OMP_PATH=/opt/omp/bin/omp ANTHROPIC_BASE_URL=<model gateway> \
 #     LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+#     [APPROVED_VERSION_NEWS_MODEL_KEY_FILE=<file>] \
+#     [APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE=<gateway audience>] \
 #     [APPROVED_VERSION_NEWS_STEP=a4|off|answers] [APPROVED_VERSION_NEWS_ARM=head|base] \
 #     [APPROVED_VERSION_NEWS_RUNS=<n>] \
 #     bash scripts/e2e/approved-version-news.sh [--part one|both] [--control | --base-commit <rev>]
 # LEGION_TEST_PG_DSN is required and names a loopback PostgreSQL with the pgvector extension: the
 # drivers create their daemon runs' databases and Dispatch's on it and drop them on exit, and the
 # arguments check refuses a DSN that is unset or whose host is not loopback with exit 2, before
-# anything is built or extracted. LEGION_OMP_PATH (an executable), ANTHROPIC_BASE_URL and the key
-# file are part two's, refused with exit 2 when part two would run without them; part one needs
-# none. APPROVED_VERSION_NEWS_MODEL names part two's model (default claude-opus-5-5, at the xhigh
-# thinking level, the fleet's own: a cheaper model measures itself rather than the prompts). Part
-# one's broker is the run's own: a nats-server from LEGION_E2E_NATS_BIN, or the pinned one the lib
-# installs with `go install`; part two's driver runs natsd beside it, since the listener is built
-# and tested against the checkout's nats-server. APPROVED_VERSION_NEWS_EVIDENCE_DIR (default a
+# anything is built or extracted. LEGION_OMP_PATH (an executable), ANTHROPIC_BASE_URL and the
+# model key, a key file that holds one or the audience of the pod's identity token, are part two's,
+# refused with exit 2 when part two would run without them, and a minted token needs curl; part one
+# needs none. APPROVED_VERSION_NEWS_MODEL names part two's model (default claude-opus-5-5, at the
+# xhigh thinking level, the fleet's own: a cheaper model measures itself rather than the prompts).
+# Part one's broker is the run's own: a nats-server from LEGION_E2E_NATS_BIN, or the pinned one the
+# lib installs with `go install`; part two's driver runs natsd beside it, since the listener is
+# built and tested against the checkout's nats-server. APPROVED_VERSION_NEWS_EVIDENCE_DIR (default a
 # fresh directory under TMPDIR, or /tmp when it is unset, kept and printed) keeps this script's
 # transcript and, in fresh part-one.* and part-two.* directories of their own, the lib's: its
 # transcript, the nats-server's log, the daemon's (daemon.log), Dispatch's (dispatch.log) and the
@@ -144,27 +163,38 @@
 # output (panes/) and each run's session transcripts (transcripts/). Nothing reaches github.com or
 # a deployed Dispatch.
 #
-# The base is the commit before this change: `git merge-base HEAD origin/main`, main's tip as this
-# branch last merged it, which holds everything this branch carries but its own change. That is the
-# base by default because main moves under the branch and each forward merge brings its changes
-# in: a fixed older commit would differ from the head by those too. The driver compiles there, and
-# its registeredStep refuses nothing A2 needs, since A2 registers its spec alone. The plan's own
+# The base is the newest commit that carries none of the head's news marks: the first parent of
+# the first commit, in HEAD's history, that adds a news mark to packages/daemon/internal/prompts
+# (news_base). The news marks are the sentences part two's driver reads a pane's prompt for to
+# tell the arms apart, every sessions…Mark constant of its file, and this script reads them from
+# there and keeps no copy of them. The base was `git merge-base HEAD origin/main` until #3995
+# merged: that change brought the news marks to main, so the merge base of a branch merged forward
+# past it carries #3995's own sentences, part two's driver refuses a base arm whose prompts carry
+# the head's mark, and part one's control passes there, so the merge base is no control. The base
+# no longer moves with main, so it differs from the head by main's later changes as well. The
+# driver compiles there, and its registeredStep refuses nothing A2 needs, since A2 registers its
+# spec alone. The base's Dispatch serves no PUT /api/v1/projects/{key}/default-repository, which
+# #4457 added after #3995, so the driver sets the project's default repository through the route
+# that Dispatch serves where it answers 404 (setDefaultRepository in its file). The plan's own
 # control runs used 2a6ff6c03269dc9377bf60f8f06e6682df55419e, the base before the forward merges.
 # Part two's base arm takes that commit's role prompt files (`git archive <base>
 # packages/daemon/internal/prompts/{roles,go}`), which its driver writes over the snapshot the
 # daemon takes at boot. So part two and the control need the checkout's history down to the base,
-# which a shallow clone lacks: the arguments check refuses a base it cannot find with exit 2.
+# which a shallow clone lacks: the arguments check refuses with exit 2 a history in which no commit
+# adds a news mark, or whose first such commit has no parent in the clone.
 #
 # --control runs part one's negative control against the base, and --base-commit <rev> against
-# <rev>: `git archive <rev> | tar -x` into a scratch tree under TMPDIR, this checkout's part-one
-# driver copied into it, and part one built and run there, daemon and Dispatch both of that
-# commit; nothing of this checkout is written. Either runs part one alone, since the control is
-# part one's. The run must fail at a2-the-reviewer-is-told-the-changed-sections, past that step's
-# setup checks, on the one-approval check after them, in that check's own words (control_failure
-# below): the script reports the control as biting then. It reports no control for a pass, a
-# failure in an earlier check or step, a build failure, a killed driver, a failure line that names
-# no step, and a failure at that step in other words, such as the line the driver prints when its
-# harness fails because the base daemon died.
+# <rev> in its place, with no search for the base (news_base): `git archive <rev> | tar -x` into a
+# scratch tree under TMPDIR, this checkout's part-one driver copied into it, with a file of the
+# control's own for each seam the driver calls that the base lacks (control_compat), and part
+# one built and run there, daemon and Dispatch both of that commit; nothing of this checkout is
+# written. Either runs part one alone, since the control is part one's. The run must fail at
+# a2-the-reviewer-is-told-the-changed-sections, past that step's setup checks, on the one-approval
+# check after them, in that check's own words (control_failure below): the script reports the
+# control as biting then. It reports no control for a pass, a failure in an earlier check or step,
+# a build failure, a killed driver, a failure line that names no step, and a failure at that step
+# in other words, such as the line the driver prints when its harness fails because the base
+# daemon died.
 #
 # Exit 0 is a pass, a control that bites, or a measurement that reached its end; exit 2 is an
 # input of the caller's the run refuses, here, in the plan check or in the lib's prerequisites;
@@ -178,11 +208,15 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 driver_file=packages/daemon/internal/daemon/approved_version_news_live_test.go
-# Part one's driver is three files: the test and its harness, its steps, and its seed and setup
-# checks, which the control copies into the base tree together, since the test runs the steps and
-# the steps call the seed.
+# Part one's driver is three files: the test and its harness, its steps, and its seed, setup
+# checks and requests to Dispatch, which the control copies into the base tree together, since
+# the test runs the steps and both call the seed's file.
 steps_file=packages/daemon/internal/daemon/approved_version_news_part_one_steps_live_test.go
 seed_file=packages/daemon/internal/daemon/approved_version_news_seed_live_test.go
+# Part two's driver, whose sessions…Mark constants are the news marks news_base finds the base by,
+# and the prompts those marks are written in.
+sessions_file=packages/daemon/internal/daemon/approved_version_news_sessions_live_test.go
+prompts_dir=packages/daemon/internal/prompts
 driver_test=TestAnApprovedVersionReachesItsHolderLive
 sessions_test=TestRealSessionsTellAndAnswerANewVersionLive
 
@@ -193,7 +227,7 @@ part_one_checks=(
   a2-the-reviewer-is-told-the-changed-sections:11
   a1-one-request-opens-both-rows:5
   a3-a-checks-change-reaches-accepting-and-implementing:7
-  a5-the-tester-passes-and-the-reviewer-is-told:8
+  a5-the-tester-passes-and-the-reviewer-is-told:9
   a6-a-merged-root-is-told-nothing:5
   a7-the-merger-waits-then-reads-the-opening:7
   r6-only-the-root-is-told-of-its-checks:4
@@ -251,6 +285,17 @@ head_only=(
   "answers:the base arm passed 10 of 10 at 578c6abb, the daemon's news task states the rule in both arms"
 )
 
+# Part two's identity token, where the run mints one (the header says when). A token the metadata
+# server mints lasts an hour, and the refresher mints the next once the one in the key file has
+# gateway_keep_seconds left, 20 minutes after an hour's token was minted. A run of part two reads
+# the file at its start and keeps that token for part_two_minutes at the most, so it never holds a
+# token that ends inside it, even after 31 minutes of mints that failed. A mint that fails is tried
+# again gateway_retry_seconds later, and each mint has gateway_mint_seconds at the most, its curl's
+# retries with it (timeout).
+gateway_keep_seconds=2400
+gateway_retry_seconds=30
+gateway_mint_seconds=30
+
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
 
@@ -265,20 +310,35 @@ counted=0
 expected=0
 verdict=''
 part_two_said=''
+# The identity token's state (mint_gateway_token, refresh_gateway_token): the audience, empty for a
+# run on a key file's key, the scratch directory its key file is in, the refresher's pid, the exp
+# claim of the token in the key file, and the reason the last mint failed, empty after one that
+# did not.
+gateway_audience=''
+gateway_tree=''
+gateway_refresher=''
+gateway_exp=0
+gateway_said=''
 version_news_started=$SECONDS
 # Each of the script's two ends, the exit of a run of part one alone and the last statement, calls
 # run_end (lib/run-verdict.sh, which lib/live-daemon-proof.sh sources), and nothing else marks the
 # run's end. The runs of part one and part two are made in subshells, whose marks are their own.
 
-# finish removes the scratch trees the run made, by their exact paths, and prints the run's last
-# line through run_verdict: what part one counted beside what it expects, what part two counted in
-# each arm, or that it did not run, and, for the control, whether it bit, or, for a run that picks
-# part two's runs, MEASURED in place of PASS (pick_said). A verdict or PASS needs status 0 and a
-# run that reached one of its ends; a run that ended before that with status 0, as a signal leaves
-# the EXIT trap, reads FAIL at the check it stopped in, and says so.
+# finish stops the refresher of the identity token, removes the scratch trees the run made, by
+# their exact paths, and prints the run's last line through run_verdict: what part one counted
+# beside what it expects, what part two counted in each arm, or that it did not run, and, for the
+# control, whether it bit, or, for a run that picks part two's runs, MEASURED in place of PASS
+# (pick_said). A verdict or PASS needs status 0 and a run that reached one of its ends; a run that
+# ended before that with status 0, as a signal leaves the EXIT trap, reads FAIL at the check it
+# stopped in, and says so.
 finish() {
   local status=$? said passed
-  for tree in "$base_tree" "$prompts_tree" "$plan_tree"; do
+  # The refresher first, so that it writes no token into the directory removed below.
+  if [ -n "$gateway_refresher" ]; then
+    kill "$gateway_refresher" 2>/dev/null || :
+    wait "$gateway_refresher" 2>/dev/null || :
+  fi
+  for tree in "$base_tree" "$prompts_tree" "$plan_tree" "$gateway_tree"; do
     [ -z "$tree" ] || rm -rf "$tree"
   done
   said="assertions: $counted/$expected"
@@ -339,6 +399,207 @@ check_jj() {
     fail "$jj --version printed '${said%%$'\n'*}', which names no release, so this run cannot tell its jj is 0.38 or later"
   ((BASH_REMATCH[1] > 0 || BASH_REMATCH[2] >= 38)) ||
     fail "$jj is jj ${BASH_REMATCH[1]}.${BASH_REMATCH[2]}, below 0.38, the oldest jj the daemon's boot starts with"
+}
+
+# news_base sets base_sha to the base where no --base-commit names one: the first parent of the
+# first commit, in HEAD's history, that adds a news mark to prompts_dir, which is the newest commit
+# that carries none. The news marks are the text between the quotes of every sessions…Mark
+# constant of sessions_file, part two's driver; a driver that names none, writes one with a
+# backslash or a quote in its text, or assigns one in another form than its name, = and its text
+# in double quotes alone on the line, such as with a comment after it, fails the run, the last
+# naming the line, since a mark left unread would move the base later. `git log -S<mark>` names
+# each commit that adds or removes a mark and skips merge commits, so a forward merge that brings
+# a mark in from main is never the commit found. Of those commits, the first in
+# `git rev-list --topo-order --reverse HEAD`, where each commit comes after its parents, has none
+# of the others before it in its history. A history in which no commit adds a mark, and a first
+# such commit whose parent the clone lacks, as at the edge of a shallow clone, are refused with
+# exit 2, naming the remedies.
+news_base() {
+  local line number=0 marks=() mark found sha adders=() order first remedy
+  remedy="a shallow clone lacks that history: fetch it (git fetch --unshallow), or, for part one's control alone, name its base with --base-commit <rev>"
+  [ -r "$root/$sessions_file" ] || fail "this checkout holds no $sessions_file to read the news marks from"
+  while IFS= read -r line; do
+    number=$((number + 1))
+    if [[ "$line" =~ ^[[:space:]]*(sessions[A-Za-z0-9_]*Mark)[[:space:]]*=[[:space:]]*\"(.*)\"[[:space:]]*$ ]]; then
+      [[ "${BASH_REMATCH[2]}" != *[\\\"]* ]] ||
+        fail "$sessions_file writes the news mark ${BASH_REMATCH[1]} with a backslash or a quote in its text, which this script does not read"
+      marks+=("${BASH_REMATCH[2]}")
+    elif [[ "$line" =~ (^|[^A-Za-z0-9_])(sessions[A-Za-z0-9_]*Mark)([[:space:]]+[A-Za-z_][A-Za-z0-9_.]*)?[[:space:]]*=([^=]|$) ]]; then
+      fail "$sessions_file line $number assigns the news mark ${BASH_REMATCH[2]} in a form this script does not read, so the run would find the base without that mark: write it as ${BASH_REMATCH[2]} = \"<text>\", alone on its line; the line reads: ${line#"${line%%[![:space:]]*}"}"
+    fi
+  done <"$root/$sessions_file"
+  [ "${#marks[@]}" -gt 0 ] ||
+    fail "$sessions_file names no news mark (no sessions…Mark constant), so this run cannot find the base, the parent of the first commit that adds one"
+  for mark in "${marks[@]}"; do
+    found=$(git -C "$root" log --format=%H -S"$mark" HEAD -- "$prompts_dir") ||
+      fail "git log could not read the history of $root for the commits that add a news mark"
+    while IFS= read -r sha; do
+      [ -z "$sha" ] || adders+=("$sha")
+    done <<<"$found"
+  done
+  [ "${#adders[@]}" -gt 0 ] ||
+    refuse "no commit in HEAD's history adds a news mark to $prompts_dir, so this run finds no base for part one's control or part two's base arm: $remedy"
+  order=$(git -C "$root" rev-list --topo-order --reverse HEAD) || fail "git rev-list could not read the history of $root"
+  first=$(grep -m1 -Fx -f <(printf '%s\n' "${adders[@]}") <<<"$order") ||
+    fail "git rev-list HEAD lists none of the commits git log names as adding a news mark: ${adders[*]}"
+  base_sha=$(git -C "$root" rev-parse --verify --quiet "$first^1^{commit}") ||
+    refuse "$first, the first commit in HEAD's history that adds a news mark to $prompts_dir, has no parent in this clone, so this run finds no base for part one's control or part two's base arm: $remedy"
+  note "the base: $base_sha, the parent of $first, the first commit that adds a news mark"
+}
+
+# control_compat TREE writes into TREE, the scratch copy of the base that part one's control
+# builds, the base's version of each of the three seams this checkout's part-one driver calls
+# that an older base lacks, each a test file of package daemon of the control's own under
+# //go:build e2e, so the base's own packages and any daemon built from them carry none. The
+# head defines all three beside the basis tests (basis_stays_scratch_dispatch_test.go), a file the
+# control does not copy. Each seam's Go is a file under scripts/e2e/lib whose name ends .go.txt,
+# which no Go tool reads there, and the control copies it where TREE's package daemon defines no
+# function of that name. seedTransact, the seed's transaction
+# (approved-version-news-control-transact.go.txt), opens a commit scope
+# (intake.WithCommitHooks), runs the write in one transaction on the base's Pool and runs the hooks
+# once it committed, as the seed did before #4533 moved it onto store.Transact, which the base
+# lacks. recordTaskAt, which keeps a member's plan task where its recorded phase stands
+# (approved-version-news-control-task.go.txt), does nothing, since the base records no task place,
+# so a record the seed writes in a phase needs no move there. versionNewsPluginContract, the
+# contract the driver's claims register with (approved-version-news-control-contract.go.txt),
+# returns the base's constant api.DaemonAPIVersion, which #5399 made a function of the registry.
+# The transcript names each file written and each seam TREE already defines.
+control_compat() {
+  local tree=$1 daemon_dir seam fn source file use
+  daemon_dir=$tree/packages/daemon/internal/daemon
+  for seam in \
+    "seedTransact approved-version-news-control-transact.go.txt approved_version_news_control_transact_live_test.go takes its transaction through" \
+    "recordTaskAt approved-version-news-control-task.go.txt approved_version_news_control_task_live_test.go calls" \
+    "versionNewsPluginContract approved-version-news-control-contract.go.txt approved_version_news_control_contract_live_test.go registers its claims' contract through"; do
+    read -r fn source file use <<<"$seam"
+    if grep -q -E "^func $fn\\(" "$daemon_dir"/*.go 2>/dev/null; then
+      note "the base's package daemon defines $fn, so the control writes no file for it"
+    else
+      cp "$root/scripts/e2e/lib/$source" "$daemon_dir/$file" || fail "could not write $daemon_dir/$file"
+      note "wrote $daemon_dir/$file: the base's package daemon defines no $fn, which part one's driver $use"
+    fi
+  done
+  # Only the copied driver's calls change. The control still runs the base's worker start code.
+  if grep -q -E '^func .*StartPromotedWorker\(.*role claim\.Role\) error \{' \
+    "$tree/packages/daemon/internal/workflow/effects.go" 2>/dev/null; then
+    local copied_seed=$daemon_dir/approved_version_news_seed_live_test.go
+    sed -i -E 's/if _, err := (engine\.StartPromotedWorker\(.*), false\);/if err := \1);/' "$copied_seed" ||
+      fail "could not adapt StartPromotedWorker calls in $copied_seed"
+    note "adapted the copied seed's StartPromotedWorker calls to the base's signature"
+  fi
+}
+
+# jwt_exp TOKEN prints the exp claim of the JWT TOKEN, the second it ends at, read from its payload
+# with no check of its signature, which is the gateway's to check. It prints nothing and fails
+# where the payload holds no exp claim. Like every reader of a secret here, it turns the shell's
+# xtrace off for itself (`local -`) before it expands TOKEN, so a run under `bash -x` writes no
+# part of the token into its transcript.
+jwt_exp() {
+  local -
+  set +x
+  local payload=${1#*.} claims
+  payload=${payload%%.*}
+  case $((${#payload} % 4)) in
+    2) payload+='==' ;;
+    3) payload+='=' ;;
+  esac
+  claims=$(tr '_-' '/+' <<<"$payload" | base64 -d 2>/dev/null) || return 1
+  [[ "$claims" =~ \"exp\":[[:space:]]*([0-9]+) ]] || return 1
+  echo "${BASH_REMATCH[1]}"
+}
+
+# mint_gateway_token mints the pod's identity token for gateway_audience from the GKE metadata
+# server (format=full), as the deployment repository's cluster-grants/methodrun.sh does
+# (read_gateway_token), and writes it alone to key_file, mode 600, beside it first and then moved
+# over, so the driver never reads half a token. It sets gateway_exp to the token's exp claim, and
+# adds the token's header, the part before its first dot, to the list the key-leak check reads
+# (gateway_tree/headers). The token is in no output and in no command's arguments: curl writes it
+# into this shell's variable, and printf, a builtin, writes it to the file. It turns the shell's
+# xtrace off for itself (`local -`) before the token stands in a variable, so a run under `bash -x`
+# traces no command that holds the token or a part of it. A mint that fails, an answer that is no
+# JWT, and a token whose exp claim leaves it gateway_keep_seconds or less write nothing: each sets
+# gateway_said to the reason and fails.
+mint_gateway_token() {
+  local -
+  set +x
+  local token exp now header
+  if ! token=$(timeout "$gateway_mint_seconds" curl -sSf --retry 3 -H 'Metadata-Flavor: Google' \
+    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=$gateway_audience&format=full"); then
+    gateway_said="the metadata server minted no identity token for the audience $gateway_audience; curl's error, when it printed one, is above"
+    return 1
+  fi
+  if ! [[ "$token" =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]]; then
+    gateway_said="the metadata server answered the audience $gateway_audience with something other than a JWT"
+    return 1
+  fi
+  if ! exp=$(jwt_exp "$token"); then
+    gateway_said="the identity token the metadata server minted for the audience $gateway_audience holds no exp claim"
+    return 1
+  fi
+  printf -v now '%(%s)T' -1
+  if [ $((exp - now)) -le "$gateway_keep_seconds" ]; then
+    gateway_said="the identity token the metadata server minted for the audience $gateway_audience has $((exp - now)) seconds left, $gateway_keep_seconds or less"
+    return 1
+  fi
+  if ! (umask 077 && printf '%s' "$token" >"$key_file.new") || ! mv -f "$key_file.new" "$key_file"; then
+    gateway_said="the identity token could not be written to $key_file"
+    return 1
+  fi
+  header=${token%%.*}
+  grep -qxF -e "$header" "$gateway_tree/headers" 2>/dev/null || printf '%s\n' "$header" >>"$gateway_tree/headers"
+  gateway_exp=$exp
+}
+
+# refresh_gateway_token is the refresher, which the gateway-token check starts in the background
+# after the first mint, and finish stops. It sleeps until the token in key_file has
+# gateway_keep_seconds left, mints the next (mint_gateway_token) and says so, with the seconds the
+# new token has. After a mint that fails it says why, with the seconds the token in the file has
+# left, and tries again gateway_retry_seconds later, for as long as the script runs. It ends by
+# itself, and mints nothing more, once the script's own process is gone, as after a KILL that ran
+# no finish. Its sleep holds none of the script's output open, so a sleep it leaves behind keeps no
+# reader of that output waiting. A TERM ends the refresher and its sleep: bash runs the trap as
+# soon as the TERM interrupts the wait, or once a mint in flight has ended.
+refresh_gateway_token() {
+  local pause now sleeper=''
+  trap 'kill "$sleeper" 2>/dev/null; exit 0' TERM
+  while :; do
+    printf -v now '%(%s)T' -1
+    if [ -n "$gateway_said" ]; then
+      pause=$gateway_retry_seconds
+    else
+      pause=$((gateway_exp - now - gateway_keep_seconds))
+    fi
+    [ "$pause" -gt 0 ] || pause=1
+    sleep "$pause" >/dev/null 2>&1 &
+    sleeper=$!
+    wait "$sleeper" || :
+    kill -0 "$$" 2>/dev/null || exit 0
+    gateway_said=''
+    if mint_gateway_token; then
+      printf -v now '%(%s)T' -1
+      note "the identity token for the audience $gateway_audience was minted again at $(date -u +%Y-%m-%dT%H:%M:%SZ) into $key_file (not printed), with $((gateway_exp - now)) seconds left"
+    else
+      printf -v now '%(%s)T' -1
+      note "the identity token for the audience $gateway_audience was not minted again at $(date -u +%Y-%m-%dT%H:%M:%SZ): $gateway_said; the token in $key_file has $((gateway_exp - now)) seconds left, and the next try is in $gateway_retry_seconds s" >&2
+    fi
+  done
+}
+
+# key_leaks prints how many times the first 8 characters of the key in key_file occur in the
+# evidence directory (the key-leak check), and prints nothing of the key: grep reads those
+# characters from a pipe, and only the count of matches leaves it. The key stands in a variable of
+# this function alone, which turns the shell's xtrace off for itself (`local -`) before it reads
+# the file, so a run under `bash -x` writes no part of the key into its transcript. It fails, and
+# prints no count, where the key file cannot be read or holds nothing: its caller runs it in a
+# command substitution, where bash clears -e, so a read that failed would otherwise count the
+# empty key's no characters and pass the check.
+key_leaks() {
+  local -
+  set +x
+  local key
+  key=$(<"$key_file") || return 1
+  [ -n "$key" ] || return 1
+  { grep -rFoa -f <(printf '%s\n' "${key:0:8}") "$version_news_evidence" || true; } | wc -l
 }
 
 # head_only_why WORD prints the why of WORD's entry of head_only, and answers 1 for a step that
@@ -599,28 +860,30 @@ for tool in go git tar awk python3; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
 check_jj
-[ -n "${LEGION_TEST_PG_DSN:-}" ] ||
+[ -n "${LEGION_TEST_PG_DSN:+set}" ] ||
   refuse "LEGION_TEST_PG_DSN is required: it names the PostgreSQL the daemon migrates and runs on (postgres://<user>@<host>:<port>/<database>?sslmode=disable). This script starts no database."
 # require_loopback_dsn in lib/loopback-dsn.sh says why a caller of the loopback guard clears
-# these three. The lib's prerequisites reads the DSN again, inside the run it makes.
+# these three. The lib's prerequisites reads the DSN again, inside the run it makes. Both name
+# the variable and not its value (require_loopback_env), so a run under `bash -x` traces no DSN.
 unset PGHOSTADDR PGSERVICE PGSERVICEFILE
 # A caller's own model key reaches nothing the run starts, in either part: no build, no Dispatch
 # and no daemon holds it, and part two's driver reads the key file and gives the key to each pane
 # alone.
 unset ANTHROPIC_API_KEY
-require_loopback_dsn db_host LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "this run creates and drops databases there" ||
+require_loopback_env db_host LEGION_TEST_PG_DSN "this run creates and drops databases there" ||
   refuse "$db_host"
 note "store LEGION_TEST_PG_DSN on $db_host (not printed)"
-# The base is read only by a run that uses it: the control, and part two's base arm.
+# The base is read only by a run that uses it: the control, and part two's base arm. It is the
+# commit --base-commit names, or else the one news_base finds.
 base_sha=''
 if [ -n "$control" ] || [ "$parts" = both ]; then
-  if [ -z "$base_commit" ]; then
-    base_commit=$(git -C "$root" merge-base HEAD origin/main 2>/dev/null) ||
-      refuse "no merge base of HEAD and origin/main, the base the control and part two's base arm run against: fetch main, or name the control's base with --base-commit <rev>"
+  if [ -n "$base_commit" ]; then
+    base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
+      refuse "the base '$base_commit' names no commit of $root"
+    note "the base: $base_sha"
+  else
+    news_base
   fi
-  base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
-    refuse "the base '$base_commit' names no commit of $root"
-  note "the base: $base_sha"
 fi
 for entry in "${part_one_checks[@]}"; do
   expected=$((expected + ${entry##*:}))
@@ -642,16 +905,46 @@ if [ "$parts" = both ]; then
     refuse "LEGION_OMP_PATH is required: it names the Oh My Pi every pane of part two runs (an absolute executable path). Part two launches real agents and guesses no build"
   [ -x "$LEGION_OMP_PATH" ] || refuse "LEGION_OMP_PATH ($LEGION_OMP_PATH) is not an executable file"
   [ -n "${ANTHROPIC_BASE_URL:-}" ] || refuse "ANTHROPIC_BASE_URL is required: it names the model gateway part two's sessions reach"
+  # Part two's model key: the key file's key where it holds one, and otherwise the pod's identity
+  # token for the audience APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE names, which the gateway-token
+  # check below mints into a key file of the run's own.
   key_file=${APPROVED_VERSION_NEWS_MODEL_KEY_FILE:-/var/run/model-gateway-key/key}
-  [ -r "$key_file" ] && [ -s "$key_file" ] ||
-    refuse "the model key file $key_file is not a readable file with a key in it: part two's sessions run their turns on it (APPROVED_VERSION_NEWS_MODEL_KEY_FILE names another)"
+  if [ -r "$key_file" ] && [ -s "$key_file" ]; then
+    key_said="model key file $key_file (read by the driver, never printed)"
+  else
+    gateway_audience=${APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE:-}
+    [ -n "$gateway_audience" ] ||
+      refuse "the model key file $key_file is not a readable file with a key in it, and APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE names no audience of the pod's identity token to run on in its place: part two's sessions run their turns on one of the two (APPROVED_VERSION_NEWS_MODEL_KEY_FILE names another key file; APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE names the audience the cluster model gateway takes, and mints the token in a pod the gateway lets in so)"
+    case "$gateway_audience" in
+      *[!A-Za-z0-9._~:/-]*)
+        refuse "APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE holds a character other than letters, digits and ._~:/-, which the metadata server's URL would need escaped"
+        ;;
+    esac
+    command -v curl >/dev/null || fail "curl is not on PATH: it mints the pod's identity token from the metadata server"
+    key_said="the pod's identity token for the audience $gateway_audience in place of a key, since the model key file $key_file holds none (minted below, read by the driver, never printed)"
+  fi
   command -v bun >/dev/null || fail "bun is not on PATH: part two packs the two plugins with it"
-  [ -n "$(git -C "$root" ls-tree --name-only "$base_sha" packages/daemon/internal/prompts/roles)" ] ||
-    refuse "the base $base_sha holds no packages/daemon/internal/prompts/roles, so part two has no base prompts"
-  note "part two against the base $base_sha's prompts, Oh My Pi $LEGION_OMP_PATH, model key file $key_file (read by the driver, never printed)"
+  [ -n "$(git -C "$root" ls-tree --name-only "$base_sha" "$prompts_dir/roles")" ] ||
+    refuse "the base $base_sha holds no $prompts_dir/roles, so part two has no base prompts"
+  note "part two against the base $base_sha's prompts, Oh My Pi $LEGION_OMP_PATH, $key_said"
 fi
 note "parts: $parts; evidence: $version_news_evidence"
 pass
+
+# The pod's identity token, where part two runs on it in place of a key file's key: the first mint,
+# into a key file of the run's own scratch before anything is built, so a pod that cannot mint
+# costs no build, and the refresher, which mints it again until the script ends (finish stops it).
+if [ -n "$gateway_audience" ]; then
+  begin gateway-token
+  gateway_tree=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-approved-version-news-gateway.XXXXXXXX")
+  key_file=$gateway_tree/key
+  mint_gateway_token || fail "$gateway_said"
+  refresh_gateway_token &
+  gateway_refresher=$!
+  printf -v now '%(%s)T' -1
+  note "the pod's identity token for the audience $gateway_audience, minted into $key_file (not printed), has $((gateway_exp - now)) seconds left; the refresher (pid $gateway_refresher) mints the next once it has $gateway_keep_seconds left"
+  pass
+fi
 
 # Part two's plan is its driver's: the plan check builds the driver from this checkout
 # (build_daemon_driver), the one build both parts run (plan_driver), and reads the driver's plan
@@ -693,6 +986,7 @@ if [ -n "$control" ]; then
   done
   build_tree=$base_tree
   note "$base_sha extracted into $base_tree, with this checkout's $driver_file, $steps_file and $seed_file"
+  control_compat "$base_tree"
   pass
 fi
 
@@ -757,7 +1051,7 @@ fi
 # Part two is the lib's run too, over this checkout and of the driver the plan check built, with
 # the base commit's prompt files extracted for its base arm into a scratch directory of their own.
 prompts_tree=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-approved-version-news-prompts.XXXXXXXX")
-git -C "$root" archive "$base_sha" packages/daemon/internal/prompts/roles packages/daemon/internal/prompts/go |
+git -C "$root" archive "$base_sha" "$prompts_dir/roles" "$prompts_dir/go" |
   tar -x -C "$prompts_tree" || fail "git archive of $base_sha's prompts into $prompts_tree failed"
 part_two=$(mktemp -d "$version_news_evidence/part-two.XXXXXX")
 check=part-two
@@ -773,14 +1067,23 @@ set -e
 proof=$part_two/proof.log
 [ "$part_two_status" -ne 2 ] || exit 2
 
-# The key's first 8 characters, counted in every file the run kept and printed nowhere: grep reads
-# them from a pipe, and only the count of matches leaves it.
+# The key, counted in every file the run kept and printed nowhere: grep reads what it looks for from
+# a pipe or a file, and only the count of matches leaves it. For a key file's key that is the key's
+# first 8 characters (key_leaks). For the identity token it is the header of each token the run
+# minted, which mint_gateway_token lists: the first 8 characters of a JWT are those of every JWT
+# whose header names its algorithm first, while the header of a token Google signs also names the
+# key it signs with, and every token signed with that key opens with it, so the list stands for
+# every token a run of part two read.
 begin key-leak
-key=$(<"$key_file")
-leaks=$({ grep -rFoa -f <(printf '%s\n' "${key:0:8}") "$version_news_evidence" || true; } | wc -l)
-unset key
-note "the key's first 8 characters occur $leaks times in $version_news_evidence"
-[ "$leaks" -eq 0 ] || fail "the model key's first 8 characters are in the evidence directory $leaks times"
+if [ -n "$gateway_audience" ]; then
+  leaks=$({ grep -rFoa -f "$gateway_tree/headers" "$version_news_evidence" || true; } | wc -l)
+  note "the headers of the identity tokens the run minted occur $leaks times in $version_news_evidence"
+  [ "$leaks" -eq 0 ] || fail "the header of an identity token the run minted is in the evidence directory $leaks times"
+else
+  leaks=$(key_leaks) || fail "the key-leak check could not read the model key file $key_file"
+  note "the key's first 8 characters occur $leaks times in $version_news_evidence"
+  [ "$leaks" -eq 0 ] || fail "the model key's first 8 characters are in the evidence directory $leaks times"
+fi
 pass
 
 # A run that picks part two's runs is a measurement, a partial run, and never c-live's pass: its

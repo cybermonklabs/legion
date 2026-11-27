@@ -175,8 +175,9 @@ func backwardRows(line []phase.Phase) []Row {
 // Legion works it, and merging keeps the retro that the phase before it wrote. The phases where an
 // issue waits rather than works have no status of their own: the issue keeps the one it already
 // shows, which is what the empty status does, since no write is enqueued for one (Engine.status).
-// Verifying is the one wait with a status of its own, testing, since what it waits for is the
-// checks of the merged work.
+// Two waits have a status of their own: verifying shows testing, since what it waits for is the
+// checks of the merged work, and awaiting_children shows in_progress, since the parent's work is
+// under way (dispatch://INFRA-3320 R11).
 func PhaseStatus(to phase.Phase) string {
 	return phaseStatus[to]
 }
@@ -190,13 +191,16 @@ var phaseStatus = map[phase.Phase]string{
 	phase.Admitted: "",
 	// The root keeps the status of the phase it waits in.
 	phase.AwaitingPerson: "",
-	phase.Planning:       "in_progress",
-	phase.Implementing:   "in_progress",
-	phase.Testing:        "testing",
-	phase.Reviewing:      "needs_review",
-	phase.Accepting:      "needs_review",
-	phase.Retro:          "retro",
-	phase.Merging:        "retro",
+	// A parent waiting on its open children shows in_progress, as a child first shows that Legion
+	// works it: it holds no slot, but its work is under way, not stopped (dispatch://INFRA-3320 R11).
+	phase.AwaitingChildren: "in_progress",
+	phase.Planning:         "in_progress",
+	phase.Implementing:     "in_progress",
+	phase.Testing:          "testing",
+	phase.Reviewing:        "needs_review",
+	phase.Accepting:        "needs_review",
+	phase.Retro:            "retro",
+	phase.Merging:          "retro",
 	// The issue's work merged and its close waits for the checks of its goal: Dispatch's own word for
 	// testing on a production-like surface.
 	phase.Verifying: "testing",

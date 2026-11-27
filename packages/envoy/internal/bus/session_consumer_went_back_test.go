@@ -74,8 +74,9 @@ func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path
 
 	srv.CutStream(t, Stream, func(int64) int64 { return 0 })
 
-	testwait.Eventually(t, "the stream's owner and the session consumers to reconnect", func() bool {
-		return owner.Connected() && consumers.client.Connected()
+	testwait.Until(t, "the stream's owner and the session consumers to reconnect", func() (string, bool) {
+		ownerUp, consumersUp := owner.Connected(), consumers.client.Connected()
+		return fmt.Sprintf("owner connected %t, session consumers connected %t", ownerUp, consumersUp), ownerUp && consumersUp
 	})
 	var state sessionStreamState
 	testwait.UntilPolling(t, 100*time.Millisecond, "the stream to answer a state read after the cut and the restart", func() (string, bool) {

@@ -31,7 +31,10 @@ import (
 // its parent keeps running in a pod of its own. A child closed as done at its merge still owes its
 // production check, where the project opens one (Engine.checkRole): five of its claims are
 // closed, the checking role's is not, no IssueSuspend is written, and the check opens in that
-// role's live session; the check's close writes the suspension (closeCheck). A project whose
+// role's live session; the check's close writes the suspension (closeCheck). Where the child's
+// check of its generation and that merge has closed already, as one that closed while the child
+// waited in verifying, no check runs on: that close closed the checking role's claim and deleted
+// nothing of the pod, so the leave writes the one IssueSuspend. A project whose
 // `production_check` is off checks nothing in production, so its merged child close is like any
 // other done: every claim is closed and the Sandbox deleted with the pod and the disk it ran on.
 // A done child set back to todo opens a new run, and each of its claims comes back on the session
@@ -52,6 +55,14 @@ import (
 // the backstop. The child's check opens after that close, so its start row follows the linger's
 // suspends and resumes the checking role as a root's own check does, rather than being stopped by
 // them.
+//
+// Whatever the departure, the held start goes with the phase it was held in: an issue that leaves
+// from awaiting_children stands at done holding nothing (record.Issue.ChildrenWait, the children
+// of the wait among it, which the record's shape ties to that phase), as a held issue's hold goes
+// with its leave, while the fact of its run that outlives the phase, the moment it last waited,
+// stays on the record. A root a person moves to the backlog while it waits on its children leaves
+// like any root moved to the backlog, and a person's todo re-admits it as a new generation
+// (admit's readmit).
 //
 // Whatever the departure, the issue carries no mark of a slot released for a wait afterwards.
 // The mark is the daemon's answer to "this issue was started and its row is gone because it
@@ -78,12 +89,19 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err := e.untellUnresumedChanges(ctx, tx, issue); err != nil {
 		return err
 	}
-	if err := e.clearMergeForward(ctx, tx, issue.Key); err != nil {
+	if _, err := e.clearMergeForward(ctx, tx, issue.Key); err != nil {
 		return err
 	}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		if issue.Lingers() {
 			return nil
+		}
+		// A root whose step rests on an ancestor's approval ends here the wait that ancestor's
+		// sign-off and close hold for it (dispatch://INFRA-3320, R8), whichever way it leaves, so
+		// that ancestor's architect is told, and a step of it that waits on an ancestor's approval
+		// request ends that wait with nobody told, so no approval opens it later (leaveBases).
+		if err := e.leaveBases(ctx, tx, issue, status); err != nil {
+			return err
 		}
 		if held, err := record.OperatorHoldsTree(ctx, e.store, tx, issue); err != nil || held {
 			if err != nil {
@@ -117,8 +135,14 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if status == "done" {
 		op = "issue_close"
 	}
+	podFree := true
 	if merged {
 		except = e.checkRole()
+		check, err := e.store.ProductionCheck(ctx, tx, issue.Key)
+		if err != nil {
+			return err
+		}
+		podFree = except == "" || (check != nil && !check.Open() && check.Generation == issue.Generation && check.MergeSHA == mergeOf(issue, *pr).SHA)
 	}
 	if err := e.everyClaim(ctx, tx, issue, op, fmt.Sprintf("%s is %s", issue.Key, status), except); err != nil {
 		return err
@@ -141,7 +165,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if root == nil {
 		return fmt.Errorf("suspend issue %s: tree root %s is not recorded", issue.Key, issue.Tree)
 	}
-	if except == "" {
+	if podFree {
 		if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{
 			Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.TreeRun(),
 		}); err != nil {
@@ -187,7 +211,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err != nil {
 		return err
 	}
-	return e.openCheck(ctx, tx, issue, *pr, lingers)
+	return e.openCheck(ctx, tx, issue, mergeOf(issue, *pr), lingers)
 }
 
 // leaveState is the state the task of w is in once its issue leaves the workflow at status: done
@@ -207,7 +231,8 @@ func leaveState(w Walk, status string) record.TaskState {
 
 // endTaskWithLeave writes issue out of the workflow at status: its task ends with its run where it
 // stands, in the state its leave gives it (moveTask, leaveState), which writes the phase done, and
-// its hold and its wait on a person are cleared, in the caller's transaction (writeIssueOn). Every
+// its hold, its wait on a person and the start it held while it waited on its children
+// (record.Issue.ChildrenWait) are cleared, in the caller's transaction (writeIssueOn). Every
 // leave ends a task here: a child's (leave), a root's that begins its linger (beginLinger) and a
 // waiting root's while the operator runs a tree under its key (leaveUnderOperator). issue is the
 // caller's record, which it writes with any field it set, and which stands as written after.
@@ -219,7 +244,7 @@ func (e *Engine) endTaskWithLeave(ctx context.Context, tx pgx.Tx, issue *record.
 	if err := e.moveTask(ctx, tx, issue, &w, phase.Done, leaveState(w, status)); err != nil {
 		return err
 	}
-	issue.Hold, issue.Awaiting = nil, nil
+	issue.Hold, issue.Awaiting, issue.ChildrenWait = nil, nil, nil
 	return e.writeIssueOn(ctx, tx, *issue, w)
 }
 
@@ -301,7 +326,7 @@ func (e *Engine) openCheckIfMerged(ctx context.Context, tx pgx.Tx, issue record.
 	if err != nil || pr == nil || pr.State != record.PullRequestMerged {
 		return err
 	}
-	return e.openCheck(ctx, tx, issue, *pr, wake)
+	return e.openCheck(ctx, tx, issue, mergeOf(issue, *pr), wake)
 }
 
 // awaitsMerge says whether issue awaits its merge: in merging, or held from merging (a failed

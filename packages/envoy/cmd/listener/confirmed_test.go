@@ -182,7 +182,7 @@ func expectFrames(t *testing.T, frames <-chan contracts.Envelope, want int, quie
 		select {
 		case frame := <-frames:
 			got = append(got, frame)
-		case <-time.After(5 * time.Second):
+		case <-time.After(listenerWaitBound(t)):
 			t.Fatalf("the stand-in received %d frames, want %d", len(got), want)
 		}
 	}
@@ -325,6 +325,8 @@ func TestPublishRouteStoresOneCopyOfARoleForwardSentTwice(t *testing.T) {
 // /v1/roles/<role> gives the same stalled read - the bus-unavailable 503 with Retry-After: 1,
 // naming the read - rather than holding the sender past its window.
 func TestPublishRouteAnswersBusUnavailableWhenTheClaimReadStalls(t *testing.T) {
+	// Not parallel: it requires the 503 at sendRequestBudget (3.5 s) and inside 4.5 s, a bound
+	// one second past what it waits for.
 	srv, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
@@ -456,7 +458,7 @@ func TestDurableAcknowledgesAStoredForwardCopyAndDeliversNothing(t *testing.T) {
 
 	forwardCopy := listenerTestEnvelope(topic, "publish.stored-copy")
 	publishTo(t, harness.client, contracts.LegacyAgentSubject("ses_self_subscribed"), forwardCopy)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		info, err := harness.client.JS().ConsumerInfo(bus.Stream, consumer)
 		if err != nil {

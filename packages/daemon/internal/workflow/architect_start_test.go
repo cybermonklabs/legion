@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -31,8 +32,8 @@ const (
 	carriedClosing       = " The daemon starts that phase's own worker itself."
 	carriedOwnClosing    = " That phase is your own, so the daemon starts no worker for it."
 	carriedHeldClosing   = " No worker works that phase, so the daemon starts none for it."
-	carriedMergedClosing = " Its pull request has merged, so the daemon starts no worker for that phase, and the root stands " +
-		"there until the rest of its tree has left the workflow, when the daemon closes it."
+	carriedMergedClosing = " Its pull request has merged, so the daemon starts no worker for that phase. The root moves into " +
+		"verifying, where it waits for its checks and the rest of its tree before the daemon closes it."
 	gateStandingClosing  = " Its own first phase starts only once its design gate opens."
 	gateOpenClosing      = " The daemon starts its first phase itself once it holds an admission slot and neither an open child under it nor an issue it is blocked by holds that phase back."
 	readmittedClosing    = " Its own first phase starts only once its design gate opens again."
@@ -247,15 +248,59 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 	}
 }
 
+// Where the root's gate stands is said of every step the tree is gated on, each by what opened it.
+// A step open on an ancestor's approval names that approval, and that no person approved the
+// root's version, never that a person approved it (dispatch://INFRA-3320, R2). A Verification
+// document the architect registered under a deployment that gates the spec alone gates the tree
+// too (record.TreeSteps), so its clause stands beside the spec's.
+func TestTheArchitectTaskSaysEachStepTheTreeIsGatedOnByWhatOpenedIt(t *testing.T) {
+	basis := record.GateBasis{Issue: "LEGION-90", ArtifactID: "artifact-90", Version: 5, Approver: "user:alice", RegisteredAt: time.Unix(0, 0).UTC()}
+	for _, tc := range []struct {
+		name  string
+		start ArchitectStart
+		want  string
+	}{
+		{
+			name: "a root whose one gated step stands open on an ancestor's approval, so its gate is open",
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: map[record.DesignStep]record.DesignGate{
+				record.DesignStepSpec: record.OpenOnBasis(record.DesignGate{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: "artifact-208",
+					LatestVersion: 2}, basis)}}},
+			want: "LEGION-208 is yours and its design gate is open: " +
+				"its primary document is registered at version 2, which no person has approved, and its spec step stands open on an " +
+				"ancestor's approval, since a person approved version 5 of the primary document of LEGION-90 (dispatch://LEGION-90/spec). " +
+				gateOpenInstructions + gateOpenClosing,
+		},
+		{
+			name: "a root whose spec a person approved beside a Verification document it registered under a deployment that gates the spec alone",
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: map[record.DesignStep]record.DesignGate{
+				record.DesignStepSpec:     {Issue: "LEGION-208", Step: record.DesignStepSpec, LatestVersion: 1, ApprovedVersion: new(1)},
+				record.DesignStepCriteria: {Issue: "LEGION-208", Step: record.DesignStepCriteria, LatestVersion: 1}}}},
+			want: "LEGION-208 is yours and its design gate already stands part way: " +
+				"its primary document is registered at version 1 and a person has approved that version; " +
+				"its Verification document is registered at version 1 and no person has answered it. " +
+				"Take it up in this turn, as your role says: claim it in Dispatch, carry that gate on from where it stands " +
+				"and take the tree up from there." + gateStandingClosing,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ArchitectStartTask(tc.start); got != tc.want {
+				t.Fatalf("the architect's start task =\n%q\nwant\n%q", got, tc.want)
+			}
+		})
+	}
+}
+
+// shapeLabels is the label of each shape of a root architect's start task, one per shape.
+var shapeLabels = []string{ArchitectFreshTreeLabel, ArchitectCarriedPhaseLabel, ArchitectGateRowsLabel, ArchitectGateOpenLabel,
+	ArchitectReadmittedLabel}
+
 // Every label is a label of one shape: a task carries its own shape's label, carries no other
 // shape's, and ends with its own shape's closing sentence. The decomposition is asked for by the
 // one shape that opens a tree.
 func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 	t.Parallel()
-	labels := []string{ArchitectFreshTreeLabel, ArchitectCarriedPhaseLabel, ArchitectGateRowsLabel, ArchitectGateOpenLabel,
-		ArchitectReadmittedLabel}
-	for i, label := range labels {
-		for j, other := range labels {
+	for i, label := range shapeLabels {
+		for j, other := range shapeLabels {
 			if i != j && strings.Contains(label, other) {
 				t.Fatalf("the label %q holds the label %q, so a test cannot tell the two shapes apart", label, other)
 			}
@@ -309,7 +354,7 @@ func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 			if !strings.Contains(task, tc.label) {
 				t.Fatalf("the task %q does not carry its own label %q", task, tc.label)
 			}
-			for _, other := range labels {
+			for _, other := range shapeLabels {
 				if other != tc.label && strings.Contains(task, other) {
 					t.Fatalf("the task %q carries another shape's label %q", task, other)
 				}
@@ -709,7 +754,8 @@ func TestTheArchitectTaskOfACarriedRootNamesThePhaseItStandsInAndItsGate(t *test
 // phase, one waiting on a person and one in accepting. Each of those is told its work by its
 // phase's own role, by the resume a person's answer composes, or by the notice that moved it, so
 // a first act stated here would be false. The answer is what a person decided on the tree and
-// nothing else, the empty string where nobody decided anything, and it carries no first-task tail.
+// the roots that rest on its approval (TestTheArchitectTaskNamesTheRootsRestingOnItInEveryShape)
+// and nothing else, the empty string where there is neither, and it carries no first-task tail.
 func TestTheArchitectTaskIsNoneForARootPastAdmitted(t *testing.T) {
 	t.Parallel()
 	registered := registeredSpec()
@@ -762,6 +808,72 @@ func TestTheArchitectTaskNamesAKeptDecisionFirstInEveryShape(t *testing.T) {
 				t.Fatalf("the architect's start task =\n%q\nwant\n%q", got, want)
 			}
 		})
+	}
+}
+
+// restingOnTheRoot is the text that names a root resting on LEGION-208's approval, as
+// restingRootsTask writes it.
+const restingOnTheRoot = "These roots rest on the approval of LEGION-208 and are still in the workflow: LEGION-300 (its spec step, in implementing). " +
+	"The daemon refuses the sign-off and the close of LEGION-208, and holds its retro where its task has no acceptance step, while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). " +
+	"Each root's own architect, or a person, moves it."
+
+// The roots that rest on the root's approval are named in every shape, apart from what a person
+// decided (dispatch://INFRA-3320, R8): after the decided text and before the shape's own words, so
+// each shape still carries its own label alone and still ends on its own closing sentence. A root
+// past admitted under its own power, which the derivation gives no first act, is given them too,
+// and the narrowing of a held task writes them again, whether the task is of an entry or of none
+// and whether or not a decision is left, so a task with no decision left still names them.
+func TestTheArchitectTaskNamesTheRootsRestingOnItInEveryShape(t *testing.T) {
+	for _, label := range append(slices.Clone(shapeLabels), ArchitectDecompositionLabel) {
+		if strings.Contains(restingOnTheRoot, label) {
+			t.Fatalf("the resting roots' text carries the label %q, so a task would carry a shape's label it is not of", label)
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		start ArchitectStart
+	}{
+		{"a tree nobody has architected", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}}},
+		{"a root a hand-over carried in", ArchitectStart{Root: rootAt(phase.Planning), Carried: true, Gate: record.TreeGate{Steps: specGated}}},
+		{"a root that holds design gate rows", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: registeredSpec()}}},
+		{"a root whose design gate is open", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: approvedSpec()}}},
+		{"a tree that ran at an earlier generation", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Served: 1}},
+		{"a root past admitted under its own power", ArchitectStart{Root: rootAt(phase.Planning), Gate: record.TreeGate{Steps: specGated, Rows: registeredSpec()}, Served: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bare := ArchitectStartTask(tc.start)
+			then := func(lead string) string {
+				if bare == "" {
+					return lead
+				}
+				return lead + "\n\n" + bare
+			}
+			tc.start.Resting = restingOnTheRoot
+			task := ArchitectStartTask(tc.start)
+			if want := then(restingOnTheRoot); task != want {
+				t.Fatalf("the architect's start task =\n%q\nwant\n%q", task, want)
+			}
+			decided := tc.start
+			decided.Decided = decidedOnTheTree
+			if got, want := ArchitectStartTask(decided), then(decidedOnTheTree+"\n\n"+restingOnTheRoot); got != want {
+				t.Fatalf("the architect's start task with a decision =\n%q\nwant\n%q", got, want)
+			}
+			// The held task of an entry narrowed of every decision still names the resting root, in
+			// the shape the record gives the root now.
+			if got, want := NarrowRootTask(tc.start, heldEntry, record.KeptDecisions{}), then(restingOnTheRoot); got != want {
+				t.Fatalf("the held task of an entry narrowed of every decision =\n%q\nwant\n%q", got, want)
+			}
+		})
+	}
+	// A held task of no entry is narrowed into the decisions and the resting roots alone, whatever
+	// shape the record gives the root, so it is the resting roots alone where no decision is left.
+	held := ArchitectStart{Root: admittedRoot(), Resting: restingOnTheRoot}
+	if got := NarrowRootTask(held, 0, record.KeptDecisions{}); got != restingOnTheRoot {
+		t.Fatalf("the held task of no entry narrowed of every decision = %q, want the resting roots alone %q", got, restingOnTheRoot)
+	}
+	stays := childDecision()
+	if got, want := NarrowRootTask(held, 0, stays), KeptDecisionsTask("LEGION-208", stays)+"\n\n"+restingOnTheRoot; got != want {
+		t.Fatalf("the held task of no entry narrowed to one decision = %q, want %q", got, want)
 	}
 }
 

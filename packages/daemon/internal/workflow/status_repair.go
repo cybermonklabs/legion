@@ -123,8 +123,9 @@ func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record
 // an hour by default, with the first tick a minute after the runtime starts. The same tick is the
 // backstop of every event that judges a merged issue's close (D15): each issue in verifying has its
 // checks read again where no read stands, which reads its children from Dispatch too, and is
-// judged (judgeEachVerifying). It returns the zero intake.Result: the workflow owns no other part
-// of the tick.
+// judged (judgeEachVerifying). Its first run of each UTC day also tells the owning architect of
+// each issue that still waits what holds its close (tellEachStanding). It returns the zero
+// intake.Result: the workflow owns no other part of the tick.
 //
 // It reads the project's live records (LiveIssues), not every record the project keeps, because a
 // fact's cost must not grow with the done records a project holds for good
@@ -146,5 +147,8 @@ func (e *Engine) statusRepairTick(ctx context.Context, tx pgx.Tx) (intake.Result
 	if err := e.correctStatuses(ctx, tx, issues, running, "tick"); err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.judgeEachVerifying(ctx, tx, issues)
+	if err := e.judgeEachVerifying(ctx, tx, issues); err != nil {
+		return intake.Result{}, err
+	}
+	return intake.Result{}, e.tellEachStanding(ctx, tx, issues)
 }

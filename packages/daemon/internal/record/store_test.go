@@ -488,8 +488,9 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		if len(slots) != 1 || slots[0].Issue != slot.Issue || slots[0].Index != slot.Index || !slots[0].AdmittedAt.Equal(slot.AdmittedAt) {
 			t.Fatalf("slots = %#v, want %#v", slots, slot)
 		}
-		// The slotted read admission makes on every fact returns the whole issue record, every
-		// column the issue read returns, so a column added to the issue is never left out of it.
+		// The slotted read admission makes on every pass (the pass rule on admit's
+		// Admission.Apply) returns the whole issue record, every column the issue read returns, so
+		// a column added to the issue is never left out of it.
 		slotted, err := records.SlottedIssues(ctx, tx, issue.Project)
 		must(t, err)
 		if !reflect.DeepEqual(writtenAll(t, slotted), []Issue{issue}) {
@@ -1686,6 +1687,62 @@ func TestDueRowsListsOnlyTheRowsALaneMayRunNow(t *testing.T) {
 	})
 }
 
+// A status write waits while an older close_wait_publish row of its issue is unfinished: the close
+// on the checks queues close-wait.md's last version before the done, and Dispatch refuses an upload
+// to a closed issue. So a publish whose first try failed, and which waits for its retry, still runs
+// before the done. A status write older than the publish, the publish itself and another issue's
+// status write run as they come due, and the done runs once the publish finished.
+func TestAStatusWriteWaitsBehindItsIssuesOlderCloseWaitPublish(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) {
+		row, err := NewOutboxRow(issue, payload, now)
+		must(t, err)
+		must(t, records.Enqueue(ctx, tx, row))
+	}
+	due := func(tx pgx.Tx, at time.Time) []OutboxRow {
+		rows, err := records.DueRows(ctx, tx, "LEGION", "", nil, at)
+		must(t, err)
+		return rows
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		enqueue(tx, "LEGION-208", OrdinaryStatusWrite("testing", "retro", ""))
+		enqueue(tx, "LEGION-208", CloseWaitPublish{Generation: 3})
+		enqueue(tx, "LEGION-208", OrdinaryStatusWrite("done", "testing", ""))
+		enqueue(tx, "LEGION-209", OrdinaryStatusWrite("done", "testing", ""))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		if got, want := outboxKeys(due(tx, now)), []string{"dispatch_status:LEGION-208:testing", "close_wait_publish:LEGION-208", "dispatch_status:LEGION-209:done"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("due rows = %v, want %v: 208's done behind its older status write and its publish", got, want)
+		}
+		for _, row := range claimEachDue(t, records, tx, "LEGION", now) {
+			switch row.Kind {
+			case OutboxKindCloseWaitPublish:
+				must(t, records.RetryOutbox(ctx, tx, row.ID, row.LeaseToken, now.Add(time.Minute), "Dispatch unavailable"))
+			default:
+				must(t, records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken))
+			}
+		}
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		if got := outboxKeys(due(tx, now)); len(got) != 0 {
+			t.Fatalf("due rows while the publish waits for its retry = %v, want none: 208's done waits behind it", got)
+		}
+		later := now.Add(time.Minute)
+		if got, want := outboxKeys(due(tx, later)), []string{"close_wait_publish:LEGION-208"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("due rows at the publish's retry = %v, want %v", got, want)
+		}
+		for _, row := range claimEachDue(t, records, tx, "LEGION", later) {
+			must(t, records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken))
+		}
+		if got, want := outboxKeys(due(tx, later)), []string{"dispatch_status:LEGION-208:done"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("due rows once the publish finished = %v, want %v", got, want)
+		}
+	})
+}
+
 // An issue's lifecycle rows run one at a time, and the store says so, not the lane alone: while one
 // lifecycle row of an issue is under a live lease — a lane of this daemon's, or of another's in a
 // rolling restart — a due lifecycle row of the issue is listed by nobody and ClaimRow refuses it,
@@ -1987,7 +2044,10 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 	// drop that returned before then read the row without waiting on the lane at all.
 	dropped := make(chan error, 1)
 	go func() {
-		dropped <- store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return records.DropCatchUps(ctx, tx, "LEGION-1", now) })
+		dropped <- store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+			_, err := records.DropCatchUps(ctx, tx, "LEGION-1", now)
+			return err
+		})
 	}()
 	returned := false
 	testwait.Eventually(t, "the drop to wait on the lane's lease or to return", func() bool {
@@ -2085,7 +2145,7 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 	}
 
 	// The adoption then drops the root's catch-ups, and both commit.
-	if err := records.DropCatchUps(ctx, txAdopt, "LEGION-1", now); err != nil {
+	if _, err := records.DropCatchUps(ctx, txAdopt, "LEGION-1", now); err != nil {
 		t.Fatalf("drop the catch-ups of LEGION-1 while a lane finishes one: %v; want no wait on the finishing row", err)
 	}
 	must(t, txAdopt.Commit(ctx))
@@ -2148,7 +2208,8 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 	txDrop, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = txDrop.Rollback(ctx) }()
-	must(t, records.DropCatchUps(ctx, txDrop, "LEGION-1", now))
+	_, err = records.DropCatchUps(ctx, txDrop, "LEGION-1", now)
+	must(t, err)
 
 	// The lane's claim of the copy, which must wait for the drop and take nothing.
 	claimed := make(chan error, 1)
@@ -2382,19 +2443,21 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"default_branch", "github_repo", "awaiting_ask", "awaiting_gate_version", "awaiting_artifact", "awaiting_answered_at", "awaiting_answered_by",
 			"awaiting_answered_detail", "awaiting_since_seq", "awaiting_since", "handout_seq", "declared_seq", "declared_at", "caught_up_seq",
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
-			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "members_owed", "priority",
+			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "view_of",
+			"children_wait_start", "children_wait_task", "children_wait_reason", "children_wait_since", "children_wait_children", "children_waited_at",
+			"members_owed", "priority", "resolved_known", "resolved_priority", "priority_from",
 			"merge_number", "merge_head", "merge_sha", "merge_base", "merge_repo", "merged_at", "close_wait_since",
 			"close_wait", "closed_on_checks_at", "next_change", "next_changes", "merger_completion_owed", "standing_told_at", "tree_generation"},
-		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
+		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "entry_from", "entry_given_task", "entry_given_entry", "entry_given_generation", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "reviews_requested", "head_checks", "null_mergeable_reads", "null_mergeable_since", "evidence_read_at", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
-		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at"},
+		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at", "earlier_givers"},
 		"plan_tasks":        {"issue", "generation", "task", "plan_version", "block_text", "needs", "part_of", "owner_role", "merges", "steps_by_default", "state", "stopped_reason", "running_kind", "position", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told"},
 		"plan_steps":        {"issue", "generation", "task", "position", "role", "type", "agent_key"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome", "failed_looks", "relook_seq", "generation"},
 		"defects": {"id", "issue", "generation", "kind", "text", "role", "head", "check_block", "result_id", "reported_at", "carried_by", "merged_at",
 			"withdrawn_at", "withdraw_reason"},
 		"close_reads":  {"issue", "generation", "read_at", "failure", "answer", "recorded_at"},
-		"design_gates": {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened"},
+		"design_gates": {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened", "basis_issue", "basis_artifact_id", "basis_version", "basis_approved_seq", "basis_approved_at", "basis_approver", "basis_serves", "basis_reason", "basis_session", "basis_registered_at", "basis_pending_ask", "kept_person_version", "kept_person_seq", "kept_person_at", "rests_on", "basis_moves"},
 		"root_asks":    {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},
 		"dispatch_issues": {"key", "project", "status", "blockers", "dispatch_seq", "parent", "labels", "rank",
 			"status_seq", "parent_seq", "blockers_seq", "labels_seq", "rank_seq", "applied_seq"},

@@ -320,7 +320,7 @@ func holdFixLease(t *testing.T, database *store.Store) (end func() bool) {
 	var passed bool
 	go func() {
 		defer close(finished)
-		passed = duty.Exclusive(context.Background(), leases, "parent-status-fix", time.Time{}, 0, func(context.Context) {
+		passed = duty.Exclusive(context.Background(), nil, leases, "parent-status-fix", time.Time{}, 0, func(context.Context) {
 			close(entered)
 			<-done
 		})

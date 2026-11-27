@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // sessionConsumerRig is a listener's /v1 routes and durable handler over the in-process server,
@@ -187,7 +188,7 @@ func (rig *sessionConsumerRig) startSeq(t *testing.T, sessionID string) uint64 {
 // when it does not within 2 s.
 func (rig *sessionConsumerRig) awaitPending(t *testing.T, sessionID string, want uint64) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		info, err := rig.consumers.Info(context.Background(), sessionID)
 		if err != nil {
@@ -923,6 +924,7 @@ func TestSessionConsumerRegistrationTellsTheRelayWhenTheEpochChanges(t *testing.
 // apply starts on the entry's change. The edge side, where the resume does fire, is
 // TestAnEdgeRoleClaimResumesARelayRunThatEndedForWantOfAnAdmission.
 func TestAHubRoleClaimSendsNoRelayResume(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	relay := &recordingRelay{}
 	rig.deps.consumers.relay = relay
@@ -950,21 +952,20 @@ func lockUsers(locks *sessionLocks, sessionID string) int {
 	return 0
 }
 
-// awaitLockUsers waits up to 10 s for exactly n callers to hold or wait for sessionID's consumer
-// lock: a test that holds it learns that the call it started waits for it (2), and that the call
-// is done with it (0).
+// awaitLockUsers waits for exactly n callers to hold or wait for sessionID's consumer lock: a test
+// that holds it learns that the call it started waits for it (2), and that the call is done with
+// it (0). The wait ends on the count, bounded by listenerWaitBound like the package's other waits:
+// a lock a caller reaches a moment later under load is the same lock, so no span of this helper's
+// own decides the row, and over three instrumented whole-package runs no wait of this kind reached
+// a second. Its failure prints the count it last read.
 func awaitLockUsers(t *testing.T, locks *sessionLocks, sessionID string, n int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		users := lockUsers(locks, sessionID)
-		if users == n {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d callers hold or wait for the consumer lock of %s after 10s, want %d", users, sessionID, n)
-		}
-		time.Sleep(5 * time.Millisecond)
+	var users int
+	if !testwait.Holds(listenerWaitBound(t), testwait.Poll, func() bool {
+		users = lockUsers(locks, sessionID)
+		return users == n
+	}) {
+		t.Fatalf("%d callers hold or wait for the consumer lock of %s, want %d", users, sessionID, n)
 	}
 }
 
@@ -1092,7 +1093,7 @@ func TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow(t *testing
 		// The registration leaves this window only once the restart has reached it: waiting for
 		// the lock (two callers) with the fix, and done with it without one, which is the drop
 		// this case is about.
-		deadline := time.Now().Add(10 * time.Second)
+		deadline := time.Now().Add(listenerWaitBound(t))
 		for lockUsers(&rig.deps.consumers.locks, sessionID) != 2 {
 			select {
 			case <-restarted:
@@ -1100,7 +1101,7 @@ func TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow(t *testing
 			default:
 			}
 			if time.Now().After(deadline) {
-				t.Errorf("after 10s the restart of %s neither waits for the consumer lock nor is done with it", sessionID)
+				t.Errorf("in the time it was given the restart of %s neither waits for the consumer lock nor is done with it", sessionID)
 				return
 			}
 			time.Sleep(5 * time.Millisecond)
@@ -1198,6 +1199,8 @@ func listenerGrantBeforeSessionConsumers() []string {
 // reports one as live. The grant is the negative control: the same registration on a hub that
 // carries session consumers is answered consumer (the tests above).
 func TestSessionConsumerWithoutTheGrantIsRefusedAndWritesNothing(t *testing.T) {
+	// Not parallel: it sets an environment variable of the whole process (t.Setenv of
+	// NATS_NKEY_SEED).
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, listenerGrantBeforeSessionConsumers()...)
 	t.Setenv("NATS_NKEY_SEED", seed)
@@ -1297,6 +1300,7 @@ func fillConsumerLimit(t *testing.T, client *bus.Client, limit int) {
 // holds is answered consumer delivery after that refusal: the cap refuses creates alone, which is
 // why this refusal takes no listener-wide backoff as no_grant does.
 func TestSessionConsumerAtTheStreamsConsumerLimitIsRefusedAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	const limit = 8
 	url := testnats.URL(t)
 	cappedNotificationStream(t, url, limit)
@@ -1363,7 +1367,7 @@ func TestSessionConsumerPortlessSessionIsDeliveredByItsRelayAlone(t *testing.T) 
 func awaitSkipped(t *testing.T, harness listenerDeliveryHarness, want int) {
 	t.Helper()
 	line := fmt.Sprintf(`test_messages_delivered{delivery_status="skipped"} %d`, want)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		body := deliveredMetrics(t, harness)
 		if strings.Contains(body, line) {
