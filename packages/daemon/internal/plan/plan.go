@@ -292,7 +292,7 @@ var movesBackPairs = sync.OnceValue(func() []string { return movesBackPairsOf(Mo
 // TestMovesBackPairsLoseNoPairPastMostEnumeratedSteps reads one step more and finds no pair more;
 // at two steps the set lacks implementing-testing, implementing-reviewing and
 // implementing-accepting, which only a task that names the implementer at two steps makes.
-const MostEnumeratedSteps = 3
+const MostEnumeratedSteps = 2 // control: one step lower than the bound needs
 
 // movesBackPairsOf is each pair of phase.MovePairs, in its order, whose to stands before its from
 // on the Line of some task of at most most steps that Supported and Validate take (eachTakenTask).
@@ -344,9 +344,6 @@ func eachTakenTask(most int, take func(steps []Step)) {
 			return
 		}
 		for _, role := range roles {
-			if slices.ContainsFunc(steps, func(step Step) bool { return step.Role == role.Name }) {
-				continue // control: the enumeration before the fix put each role on a line once
-			}
 			for _, key := range stepKeys {
 				choose(append(slices.Clone(steps), Step{Role: role.Name, Key: key}))
 			}
