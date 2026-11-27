@@ -342,13 +342,20 @@ export interface HeldBodiesRead {
 
 /** Holds each read of issue `key`'s handoff bodies the page sends from the call on until the row
  *  releases it (`HeldBodiesRead`), or, once `passAll` is called, lets each through as it comes,
- *  the ones held then among them. `reads` lists them in the order sent. */
+ *  the ones held then among them. `reads` lists them in the order sent, and `sentBy(index,
+ *  deadline)` answers read `index` of them as soon as the page sends it, or undefined where the
+ *  page has not sent it by `deadline`, a time by the row's clock. */
 export async function holdBodiesReads(
   page: Page,
   key: string
-): Promise<{ readonly passAll: () => void; readonly reads: readonly HeldBodiesRead[] }> {
+): Promise<{
+  readonly passAll: () => void;
+  readonly reads: readonly HeldBodiesRead[];
+  readonly sentBy: (index: number, deadline: number) => Promise<HeldBodiesRead | undefined>;
+}> {
   const reads: HeldBodiesRead[] = [];
   const gates: (() => void)[] = [];
+  const waiting: (() => void)[] = [];
   let passing = false;
   const path = `/api/v1/issues/${key}/handoffs/bodies`;
   await page.route(
@@ -368,6 +375,7 @@ export async function holdBodiesReads(
         },
         sentAt: Date.now(),
       });
+      for (const wake of waiting.splice(0)) wake();
       gates.push(gate.resolve);
       if (passing) gate.resolve();
       await gate.promise;
@@ -385,6 +393,16 @@ export async function holdBodiesReads(
       for (const open of gates) open();
     },
     reads,
+    sentBy: async (index, deadline) => {
+      while (reads[index] === undefined && Date.now() < deadline) {
+        const sent = Promise.withResolvers<void>();
+        waiting.push(sent.resolve);
+        const timer = setTimeout(sent.resolve, deadline - Date.now());
+        await sent.promise;
+        clearTimeout(timer);
+      }
+      return reads[index];
+    },
   };
 }
 

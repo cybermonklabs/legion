@@ -7904,9 +7904,12 @@ async function readTheBand(page: Page, runs: BandIssue): Promise<void> {
  * The band's second half, over `large`: the first read asks for the six handoffs newest first,
  * and its answer leaves the two oldest. With the reader not scrolling, 2 seconds after that
  * answer is drawn the page asks for the left ones whose entries stand within one screen of the
- * view, as they stand once the answer is drawn, and for none beyond it; `every` says that the
- * viewport holds the six in its view, so both are asked for. Answers the viewport's height that
- * holds the six, as drawn once their bodies are.
+ * view as it asks, and for none beyond it. The row holds that read and measures the band while
+ * it is held, so the measure is taken at the request and nothing the read brings has moved an
+ * entry; where the page sends no such read, the band is measured at the end of the window, and
+ * no left one may stand within one screen then. `every` says that the viewport holds the six in
+ * its view, so both are asked for. Answers the viewport's height that holds the six, as drawn
+ * once their bodies are.
  */
 async function readTheLeftIds(page: Page, large: BandIssue, every: boolean): Promise<number> {
   const held = await holdBodiesReads(page, large.key);
@@ -7917,7 +7920,6 @@ async function readTheLeftIds(page: Page, large: BandIssue, every: boolean): Pro
   expect(first.ids, "the first read does not ask for the six handoffs, newest first").toEqual(
     large.handoffs
   );
-  held.passAll();
   await first.release();
   const answered = first.answeredAt() ?? Date.now();
   const left = large.handoffs.slice(4);
@@ -7925,9 +7927,21 @@ async function readTheLeftIds(page: Page, large: BandIssue, every: boolean): Pro
   for (const id of large.handoffs.slice(0, 4)) {
     await expect(handoffFieldsOf(page, id)).toHaveCount(1);
   }
-  const drawnAt = Date.now();
+  // The window the claim is about: 2 s after the answer is drawn the page asks for the left ids
+  // in the band, and 1.5 s more lets that read reach the route. The row waits to its end before
+  // it measures only where the page sends no read in it.
+  const windowEnd = Date.now() + 3_500;
+  const later = await held.sentBy(1, windowEnd);
+  // The read is held, so each left handoff stands where it stood as the page sent it; with no
+  // read, it stands where it stands at the window's end.
   const places = await bandPlaces(page, left);
   const near = left.filter((id) => places[id]?.near === true);
+  if (later !== undefined) {
+    expect(
+      later.sentAt - answered,
+      "the left handoffs were asked for sooner than 2 s after the answer"
+    ).toBeGreaterThanOrEqual(1_900);
+  }
   expect(
     left.filter((id) => places[id]?.edge === true),
     "a left handoff stands at an edge of the band, where the row cannot tell which side"
@@ -7935,20 +7949,19 @@ async function readTheLeftIds(page: Page, large: BandIssue, every: boolean): Pro
   expect(near, "the viewport does not hold the six handoffs within one screen").toEqual(
     every ? left : near
   );
-  // The window the claim is about: 2 s after the answer is drawn the page asks for the left ids
-  // in the band, and 1.5 s more lets that read reach the route before the row reads what came.
-  await page.waitForTimeout(Math.max(0, drawnAt + 3_500 - Date.now()));
   expect(
-    held.reads.slice(1).map((read) => read.ids),
+    later === undefined ? [] : [later.ids],
     "the reads after the first do not ask for the left handoffs within one screen alone"
   ).toEqual([near].filter((ids) => ids.length > 0));
-  for (const read of held.reads.slice(1)) {
-    expect(
-      read.sentAt - answered,
-      "the left handoffs were asked for sooner than 2 s after the answer"
-    ).toBeGreaterThanOrEqual(1_900);
-  }
+  held.passAll();
   for (const id of near) await expect(handoffFieldsOf(page, id)).toHaveCount(1);
+  // The page asks for the left ids once: no other read of bodies comes in the rest of the window.
+  if (later !== undefined) {
+    expect(
+      await held.sentBy(2, windowEnd),
+      "the reads after the first do not ask for the left handoffs within one screen alone"
+    ).toBeUndefined();
+  }
   // The four bodies were waited for drawn above, so the last entry has its box at this instant.
   const lastEntry = await historyPanel(page)
     .locator(`[data-history-entry="handoff:${large.handoffs.at(-1)}"]`)
@@ -7965,10 +7978,11 @@ async function readTheLeftIds(page: Page, large: BandIssue, every: boolean): Pro
 // being read, a scroll sends the next read, and the reader's entry keeps its place as the bodies
 // of entries above it arrive. An answer that leaves ids, as the route's 1 MiB leaves two of six
 // bodies of 250,000 bytes, is followed 2 seconds after it is drawn by a read of the left ids
-// within one screen and of none beyond; at a viewport tall enough that all six stand within one
-// screen, that read names both. It carries `@phone` for the reader's place at 390 px, where the
-// entries are tallest and the place-keeping control of the check is read.
-// SLOW(>=2s): 26 handoffs and 20 runs written, three loads, and two windows of 3.5 s.
+// within one screen as they stand when the page sends it, which the row measures while it holds
+// that read, and of none beyond; at a viewport tall enough that all six stand within one screen,
+// that read names both. It carries `@phone` for the reader's place at 390 px, where the entries
+// are tallest and the place-keeping control of the check is read.
+// SLOW(>=2s): 26 handoffs and 20 runs written, three loads, and two waits of 2 s to 3.5 s.
 test("the history reads the bodies of the entries near the view and keeps the reader in place @phone", async ({
   browser,
 }) => {
