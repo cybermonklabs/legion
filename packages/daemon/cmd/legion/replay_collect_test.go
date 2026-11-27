@@ -64,25 +64,36 @@ func TestReplayCollectPrintsEachAncestorDispatchDoesNotShow(t *testing.T) {
 	}
 }
 
-// `legion replay collect-git` refuses, as a usage error that reads and writes nothing, the GitHub
-// phase alone with the git phase alone, the git phase alone with a GitHub token's variable or
-// GitHub's API, both phases with no token's variable, and a memory cap of no bytes.
+// `legion replay collect-git` refuses, as a usage error that reads and writes nothing, any two of
+// its four runs of a part alone (--github-only, --git-only, --fetch-only, --merge-only); the git
+// phase alone, its fetching alone and its merging alone each with a GitHub token's variable,
+// GitHub's API, a reserve or a rate; both phases with no token's variable; and a memory cap of no
+// bytes.
 func TestReplayCollectGitRefusesThePhasesFlagsThatExcludeEachOther(t *testing.T) {
 	t.Parallel()
 	window := t.TempDir()
 	base := []string{"replay", "collect-git", "--repo", "acme/widgets", "--branch", "main", "--out", window}
-	for _, tc := range []struct {
+	type refusal struct {
 		args   []string
 		stderr string
-	}{
+	}
+	cases := []refusal{
 		{[]string{"--github-token-env", "GITHUB_TOKEN", "--github-only", "--git-only"}, "--github-only and --git-only exclude each other"},
-		{[]string{"--git-only", "--github-token-env", "GITHUB_TOKEN"}, "--git-only reads no GitHub API"},
-		{[]string{"--git-only", "--github-api", "https://api.github.com"}, "--git-only reads no GitHub API"},
-		{[]string{"--git-only", "--github-reserve", "10"}, "--git-only reads no GitHub API"},
-		{[]string{"--git-only", "--github-rate", "1"}, "--git-only reads no GitHub API"},
-		{nil, "--github-token-env is required but with --git-only"},
+		{[]string{"--github-token-env", "GITHUB_TOKEN", "--github-only", "--fetch-only"}, "--github-only and --fetch-only exclude each other"},
+		{[]string{"--github-token-env", "GITHUB_TOKEN", "--merge-only", "--github-only"}, "--github-only and --merge-only exclude each other"},
+		{[]string{"--git-only", "--fetch-only"}, "--git-only and --fetch-only exclude each other"},
+		{[]string{"--merge-only", "--git-only"}, "--git-only and --merge-only exclude each other"},
+		{[]string{"--fetch-only", "--merge-only"}, "--fetch-only and --merge-only exclude each other"},
+		{nil, "--github-token-env is required but with --git-only, --fetch-only or --merge-only"},
 		{[]string{"--git-only", "--memory-cap", "0"}, "--memory-cap 0"},
-	} {
+	}
+	for _, run := range []string{"--git-only", "--fetch-only", "--merge-only"} {
+		for _, share := range [][]string{{"--github-token-env", "GITHUB_TOKEN"}, {"--github-api", "https://api.github.com"}, {"--github-reserve", "10"},
+			{"--github-rate", "1"}} {
+			cases = append(cases, refusal{append([]string{run}, share...), run + " reads no GitHub API"})
+		}
+	}
+	for _, tc := range cases {
 		args := append(slices.Clone(base), tc.args...)
 		code, stdout, stderr := legionRun(t, args...)
 		if code != 2 || stdout != "" || !strings.Contains(stderr, tc.stderr) {
@@ -91,6 +102,23 @@ func TestReplayCollectGitRefusesThePhasesFlagsThatExcludeEachOther(t *testing.T)
 	}
 	if entries, err := os.ReadDir(window); err != nil || len(entries) != 0 {
 		t.Errorf("the refused runs left %v in the window (%v), want nothing", entries, err)
+	}
+}
+
+// `legion replay collect-git --help` names its four runs of a part alone on its usage line, which
+// exclude each other, and says where each half of the git phase runs: the fetching where the git
+// credential is, the clone's directory copied, and the merging where none is.
+func TestReplayCollectGitHelpNamesTheFourRunsAndTheTwoMachines(t *testing.T) {
+	t.Parallel()
+	code, stdout, stderr := legionRun(t, "replay", "collect-git", "--help")
+	if code != 0 || stderr != "" {
+		t.Fatalf("legion replay collect-git --help = %d, stderr %q", code, stderr)
+	}
+	for _, want := range []string{"[--github-only | --git-only | --fetch-only | --merge-only]", "--fetch-only", "--merge-only",
+		"copy the clone's directory"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("legion replay collect-git --help prints\n%s\nwant it to hold %q", stdout, want)
+		}
 	}
 }
 

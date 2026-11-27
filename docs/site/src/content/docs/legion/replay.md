@@ -522,21 +522,53 @@ legion replay collect-git \
   --out windows/acme-2026-10-05
 ```
 
+A private repository's merges take hours of CPU, which belong on a machine that holds no git credential.
+So the git phase also runs in two halves.
+`--fetch-only` runs its fetches alone: it makes or opens the clone in `--clones`, and fetches every commit that the merges will read, as the git phase does.
+It reads no head, merges nothing and writes nothing into the window.
+It prints one line: the commits that the merges read that the clone holds, and the heads and base commits that the remote did not give.
+`--merge-only` runs the git phase's reads and merges alone, on the clone that `--clones` holds, and opens no connection to the remote.
+It runs no `git clone`, `git fetch` or `git ls-remote`, each git command that it runs has lazy fetching off, and it needs no `origin` remote.
+It refuses a `--clones` that holds no clone of `--repo`.
+A head or a base commit that the clone does not hold is a `head-unreachable` or `base-unreachable` missing input, whose detail says that the clone does not hold the commit and that this run asks the remote for nothing.
+So run `--fetch-only` where your git credential is, and copy the clone's directory, `<clones>/<owner>__<name>`, to a machine that holds no credential and holds the window.
+Then run `--merge-only` there.
+The two in turn write the same file as `--git-only`.
+
+```sh
+legion replay collect-git \
+  --repo <owner>/<name> --branch main --fetch-only \
+  --clones <dir outside the window> \
+  --out windows/acme-2026-10-05
+
+tar -C <dir outside the window> -cf clone.tar <owner>__<name>
+# Copy clone.tar to the machine with no credential, and unpack it there.
+tar -C <dir outside the window> -xf clone.tar
+
+legion replay collect-git \
+  --repo <owner>/<name> --branch main --merge-only \
+  --clones <dir outside the window> \
+  --out windows/acme-2026-10-05
+```
+
 `collect-git` prints one line for each pull request that a phase finishes, then a summary: the pull requests, heads, verdicts and conflicts, the missing inputs by reason, git's peak memory and the time taken.
+`--fetch-only` prints its one line instead, with git's peak memory and the time taken.
 
 | Flag | What it gives |
 | --- | --- |
 | `--repo <owner>/<name>` | The repository (required). |
 | `--branch <name>` | The base branch, whose merges file `collect-merges` wrote (required). |
-| `--github-token-env <VAR>` | The environment variable that holds the GitHub token, which `collect-git` never prints (required, but refused with `--git-only`). |
-| `--github-api <url>` | GitHub's REST API (`https://api.github.com` by default; refused with `--git-only`). |
-| `--github-reserve <n>` | The requests of the shared quota left to the daemon and the other roles (3000 by default; 0 for none; refused with `--git-only`). |
-| `--github-rate <n>` | The most requests a second sent to GitHub (0.6 by default; 0 for no pacing; refused with `--git-only`). |
+| `--github-token-env <VAR>` | The environment variable that holds the GitHub token, which `collect-git` never prints (required, but refused with `--git-only`, `--fetch-only` and `--merge-only`). |
+| `--github-api <url>` | GitHub's REST API (`https://api.github.com` by default; refused with `--git-only`, `--fetch-only` and `--merge-only`). |
+| `--github-reserve <n>` | The requests of the shared quota left to the daemon and the other roles (3000 by default; 0 for none; refused with `--git-only`, `--fetch-only` and `--merge-only`). |
+| `--github-rate <n>` | The most requests a second sent to GitHub (0.6 by default; 0 for no pacing; refused with `--git-only`, `--fetch-only` and `--merge-only`). |
 | `--out <dir>` | The directory of the window that `collect` wrote (required). |
-| `--clones <dir>` | The directory that the repository is cloned into, never inside the window (`clones/` beside the window by default). |
+| `--clones <dir>` | The directory that the repository is cloned into, never inside the window (`clones/` beside the window by default), where `--merge-only` reads the clone and makes none. |
 | `--memory-cap <bytes>` | The memory that one git command's processes may hold before the guard kills them (1610612736, 1.5 GiB, by default). |
 | `--github-only` | Run the GitHub phase alone. |
 | `--git-only` | Run the git phase alone, from the file that the GitHub phase wrote. |
+| `--fetch-only` | Run the git phase's fetches alone, where your git credential is: fill the clone in `--clones` with every commit that the merges read, and write nothing into the window. |
+| `--merge-only` | Run the git phase's reads and merges alone, on the clone that `--clones` holds, with no connection to the remote. |
 
 ### Neutralize a window for test data
 

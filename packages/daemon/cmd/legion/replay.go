@@ -338,7 +338,7 @@ once for each repository of the project's issues.`,
 // newReplayCollectGitCommand is `legion replay collect-git` (replay.CollectGit).
 func newReplayCollectGitCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "collect-git --repo <owner/name> --branch <name> --github-token-env <VAR> --out <dir> [--github-only | --git-only]",
+		Use:   "collect-git --repo <owner/name> --branch <name> --github-token-env <VAR> --out <dir> [--github-only | --git-only | --fetch-only | --merge-only]",
 		Short: "add each pull request's heads, read from GitHub, and git's verdict of merging each head with its base, to a collected window",
 		Long: `Write into the window collect wrote in --out, as git/<owner>__<name>.jsonl, with window.json's
 digest of the file written again, what git says of each pull request of --repo of the window's
@@ -373,32 +373,58 @@ public repository's git phase runs in a build job, a private one's where your gi
 A run on a window whose git file exists asks GitHub and git for nothing that file holds, so a run
 that was killed goes on where it stopped. It prints a line as it finishes each pull request.
 
-` + githubShareHelp + ` --git-only takes neither.`,
+The git phase also runs in two halves, so that a private repository's merges run where no
+credential is. --fetch-only runs its fetches alone: it makes or opens the clone in --clones,
+fetches every commit the merges will read, reads no head, merges nothing, writes nothing into the
+window, and prints one line of what the clone holds and what the remote did not give.
+--merge-only runs its reads and merges alone on the clone --clones holds, and opens no connection
+to the remote: it runs no git clone, fetch or ls-remote, needs no origin remote, and refuses a
+--clones with no clone; a head or base commit the clone lacks is a missing input. So run
+--fetch-only where your git credential is, copy the clone's directory, <clones>/<owner>__<name>,
+to a machine with no credential that holds the window, and run --merge-only there: the two write
+the file --git-only writes.
+
+` + githubShareHelp + ` --git-only, --fetch-only and --merge-only take neither.`,
 		Args: noArguments,
 	}
 	flags := cmd.Flags()
 	repo := flags.String("repo", "", "the repository as owner/name (required)")
 	branch := flags.String("branch", "", "the base branch, whose merges file collect-merges wrote (required)")
-	tokenEnv := flags.String("github-token-env", "", "the environment variable that holds the GitHub token (required but with --git-only)")
+	tokenEnv := flags.String("github-token-env", "", "the environment variable that holds the GitHub token (required but with --git-only, --fetch-only or --merge-only)")
 	api := flags.String("github-api", replay.DefaultGitHubAPI, "GitHub's REST API")
 	out := flags.String("out", "", "the directory of the window collect wrote (required)")
 	clones := flags.String("clones", "", "the directory the repository is cloned into, outside the window (else clones/ beside the window)")
 	memoryCap := flags.Int64("memory-cap", replay.DefaultGitMemoryCap, "the bytes of resident memory one git command's processes may hold before they are killed")
 	githubOnly := flags.Bool("github-only", false, "run the GitHub phase alone: the pull requests and their heads")
 	gitOnly := flags.Bool("git-only", false, "run the git phase alone, from the heads the GitHub phase wrote, reading no GitHub API")
+	fetchOnly := flags.Bool("fetch-only", false,
+		"run the git phase's fetches alone, where the git credential is: fill the clone in --clones with every commit the merges read, and write nothing into the window")
+	mergeOnly := flags.Bool("merge-only", false,
+		"run the git phase's reads and merges alone, on the clone --clones holds, opening no connection to the remote")
 	reserve, rate := githubShareFlags(cmd)
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		if missing := missingFlag(cmd, "repo", "branch", "out"); missing != "" {
 			return refuse(cmd, "--%s is required", missing)
 		}
+		var alone []string
+		for _, part := range []struct {
+			run  bool
+			flag string
+		}{{*githubOnly, "--github-only"}, {*gitOnly, "--git-only"}, {*fetchOnly, "--fetch-only"}, {*mergeOnly, "--merge-only"}} {
+			if part.run {
+				alone = append(alone, part.flag)
+			}
+		}
+		gitAlone := *gitOnly || *fetchOnly || *mergeOnly
 		switch {
-		case *githubOnly && *gitOnly:
-			return refuse(cmd, "--github-only and --git-only exclude each other; give neither to run both phases")
-		case *gitOnly && (cmd.Flags().Changed("github-token-env") || cmd.Flags().Changed("github-api") ||
+		case len(alone) > 1:
+			return refuse(cmd, "%s exclude each other; give one of --github-only, --git-only, --fetch-only and --merge-only, or none to run both phases",
+				strings.Join(alone, " and "))
+		case gitAlone && (cmd.Flags().Changed("github-token-env") || cmd.Flags().Changed("github-api") ||
 			cmd.Flags().Changed("github-reserve") || cmd.Flags().Changed("github-rate")):
-			return refuse(cmd, "--git-only reads no GitHub API, so it takes none of --github-token-env, --github-api, --github-reserve and --github-rate")
-		case !*gitOnly && *tokenEnv == "":
-			return refuse(cmd, "--github-token-env is required but with --git-only")
+			return refuse(cmd, "%s reads no GitHub API, so it takes none of --github-token-env, --github-api, --github-reserve and --github-rate", alone[0])
+		case !gitAlone && *tokenEnv == "":
+			return refuse(cmd, "--github-token-env is required but with --git-only, --fetch-only or --merge-only")
 		case *memoryCap <= 0:
 			return refuse(cmd, "--memory-cap %d: name the bytes git's processes may hold, above zero", *memoryCap)
 		}
@@ -406,7 +432,7 @@ that was killed goes on where it stopped. It prints a line as it finishes each p
 			return refuse(cmd, "--github-reserve %d, --github-rate %v: %v", *reserve, *rate, err)
 		}
 		config := replay.GitConfig{Repo: *repo, Branch: *branch, Window: *out, Clones: *clones, MemoryCap: *memoryCap,
-			GitHubOnly: *githubOnly, GitOnly: *gitOnly, Finished: func(done replay.GitPullFinished) {
+			GitHubOnly: *githubOnly, GitOnly: *gitOnly, FetchOnly: *fetchOnly, MergeOnly: *mergeOnly, Finished: func(done replay.GitPullFinished) {
 				if done.Kept {
 					fmt.Fprintf(stdout, "legion replay collect-git: %s phase: #%d kept as the window's git file holds it\n", done.Phase, done.PR)
 					return
@@ -414,7 +440,7 @@ that was killed goes on where it stopped. It prints a line as it finishes each p
 				fmt.Fprintf(stdout, "legion replay collect-git: %s phase: #%d: %d heads, %d verdicts, %d conflicts, %d missing inputs\n",
 					done.Phase, done.PR, done.Heads, done.Verdicts, done.Conflicts, done.Missing)
 			}}
-		if !*gitOnly {
+		if !gitAlone {
 			if config.Token = strings.TrimSpace(os.Getenv(*tokenEnv)); config.Token == "" {
 				fmt.Fprintf(stderr, "legion replay collect-git: the environment variable %s holds no token\n", *tokenEnv)
 				return 1
@@ -425,6 +451,12 @@ that was killed goes on where it stopped. It prints a line as it finishes each p
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay collect-git: %v\n", err)
 			return 1
+		}
+		if *fetchOnly {
+			fmt.Fprintf(stdout, "legion replay collect-git: fetched what the merges of %s %s read into the clone: it holds %d commits they read; "+
+				"the remote did not give %d heads and %d base commits, which --merge-only writes as missing inputs; git's peak memory %d MiB; took %s\n",
+				*repo, *branch, collected.Held, collected.LackingHeads, collected.LackingBases, collected.PeakMemory>>20, collected.Took.Round(time.Second))
+			return 0
 		}
 		missing := "none"
 		if len(collected.Missing) > 0 {

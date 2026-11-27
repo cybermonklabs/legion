@@ -12,7 +12,10 @@ body: |-
     estimates separately, and writes each commit's committer's time beside it as `committed`.
     `collect-git` adds, for each pull request of the window, its heads, the paths each head changes
     and git's own verdict of merging each head with each later commit of its base that changes one
-    of those paths, and names each input it could not get with its reason. The three GitHub
+    of those paths, and names each input it could not get with its reason. Its `--fetch-only`
+    runs only the git phase's fetches, where the git credential is, and its `--merge-only` runs
+    only the reads and merges, on a copy of that clone, and opens no connection to the remote, so
+    a private repository's merges run on a machine that holds no credential. The three GitHub
     collectors send only GET requests, wait out GitHub's rate limit, leave the daemon and the other
     roles a reserve of the quota they share (`--github-reserve`, 3,000 requests by default) and send
     at most `--github-rate` requests a second (0.6 by default). `neutralize` renames the private

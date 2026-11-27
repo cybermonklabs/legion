@@ -457,7 +457,7 @@ func TestCollectGitWritesEachHeadsVerdictsAndSendsGetAlone(t *testing.T) {
 			t.Errorf("git ran %q, which leaves objects out of the clone", call)
 		}
 	}
-	if lacked := lackedObjects(t, filepath.Join(clones, "acme__widgets")); len(lacked) != 0 {
+	if lacked := lackedObjects(t, filepath.Join(clones, "acme__widgets"), "--all"); len(lacked) != 0 {
 		t.Errorf("the clone lacks the objects %q, which its refs reach", lacked)
 	}
 	read, err := ReadWindow(dir)
@@ -640,15 +640,18 @@ func checkMergesWroteNothing(t *testing.T, dir string, before clonePicture) {
 	}
 }
 
-// lackedObjects is each object a ref of the repository in dir reaches that it does not hold, asked
-// with lazy fetching off (git rev-list --objects --missing=print --all).
-func lackedObjects(t *testing.T, dir string) []string {
+// lackedObjects is each object the revisions revs of the repository in dir reach that it does not
+// hold, asked with lazy fetching off (git rev-list --objects --missing=print <revs>); a revision it
+// does not hold fails t.
+func lackedObjects(t *testing.T, dir string, revs ...string) []string {
 	t.Helper()
-	cmd := exec.Command("git", "-C", dir, "rev-list", "--objects", "--missing=print", "--all")
+	cmd := exec.Command("git", append([]string{"-C", dir, "rev-list", "--objects", "--missing=print"}, revs...)...)
 	cmd.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=1")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("git rev-list --objects --missing=print --all in %s: %v", dir, err)
+		t.Fatalf("git rev-list --objects --missing=print %s in %s: %v: %s", strings.Join(revs, " "), dir, err, stderr.Bytes())
 	}
 	var lacked []string
 	for line := range strings.Lines(string(out)) {
@@ -681,6 +684,68 @@ func (c *gitCase) gitOnly(dir, clones string, calls *gitCalls) GitConfig {
 	config := c.config(dir, clones, calls)
 	config.Token, config.API, config.GitOnly = "", "", true
 	return config
+}
+
+// fetchOnly and mergeOnly are the case's configs of the git phase's fetching alone and of its
+// merging alone into the window in dir, the clones in clones, git's calls told to calls.
+func (c *gitCase) fetchOnly(dir, clones string, calls *gitCalls) GitConfig {
+	config := c.gitOnly(dir, clones, calls)
+	config.GitOnly, config.FetchOnly = false, true
+	return config
+}
+
+func (c *gitCase) mergeOnly(dir, clones string, calls *gitCalls) GitConfig {
+	config := c.gitOnly(dir, clones, calls)
+	config.GitOnly, config.MergeOnly = false, true
+	return config
+}
+
+// notInClone is the detail of the missing input of a commit the clone does not hold, where the git
+// phase's merging alone, which asks the remote for nothing, reads it.
+const notInClone = "the clone does not hold the commit, and this run of the merges alone asks the remote for nothing"
+
+// fetchingAlone is each git subcommand the git phase's fetching alone may run: the clone, the check
+// of what the clone holds, the ask of the remote for the pull requests' head refs, and the fetch.
+var fetchingAlone = []string{"clone", "cat-file", "ls-remote", "fetch"}
+
+// remoteWords is each argument of a git command that names the remote or reaches it.
+var remoteWords = []string{"origin", "clone", "fetch", "ls-remote"}
+
+// checkNoRemote fails t where a git command of calls, which the git phase's merging alone ran,
+// names the remote or reaches it (remoteWords).
+func checkNoRemote(t *testing.T, calls [][]string) {
+	t.Helper()
+	for _, call := range calls {
+		if slices.ContainsFunc(call, func(arg string) bool { return slices.Contains(remoteWords, arg) }) {
+			t.Errorf("the merging alone ran git %q, which names the remote or reaches it", call)
+		}
+	}
+}
+
+// windowBytes is the bytes of the window's git file of acme/widgets and of its window.json, in dir,
+// by name.
+func windowBytes(t *testing.T, dir string) map[string][]byte {
+	t.Helper()
+	files := make(map[string][]byte)
+	for _, name := range []string{"git/acme__widgets.jsonl", windowFile} {
+		data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[name] = data
+	}
+	return files
+}
+
+// checkSameBytes fails t where got, what windowBytes read of the window what names, is not want,
+// file by file.
+func checkSameBytes(t *testing.T, what string, got, want map[string][]byte) {
+	t.Helper()
+	for name, data := range want {
+		if !bytes.Equal(got[name], data) {
+			t.Errorf("%s holds %s as\n%s\nwant\n%s", what, name, got[name], data)
+		}
+	}
 }
 
 // collect-git fetches each pull request's head ref before any commit of it: it asks the remote
@@ -1046,6 +1111,234 @@ func TestCollectGitsTwoPhasesInTurnWriteWhatOneRunWrites(t *testing.T) {
 		if !bytes.Equal(got, want) {
 			t.Errorf("the two phases in turn wrote %s as\n%s\nwant, as one run wrote it,\n%s", name, got, want)
 		}
+	}
+}
+
+// The git phase's fetching alone (FetchOnly) reads no GitHub API, clones the repository and fetches
+// every commit the merges of the window's heads read, as the git phase does, but reads no head,
+// merges nothing and leaves the window's git file and window.json byte for byte as they were. Here
+// the git file the GitHub phase wrote gives #12, merged as m5, the heads p1, p1b and p2, and #13 the
+// head q, off c1; the remote holds every head, and #12's head ref at p1b. The fetching alone runs no
+// git but the clone, the checks of what the clone holds, the ask for the head refs and the fetches;
+// the clone then holds each head, each commit of main the merges file holds and c1, the base
+// commit a read names, with every object they reach; and the run counts those eleven commits held
+// and no head or base commit the remote did not give. The merging alone (MergeOnly) on that clone,
+// its origin remote removed, runs no git command that names the remote, a clone, a fetch or an
+// ls-remote, and writes the git file and window.json the git phase alone writes on a copy of the
+// window, byte for byte. It fails where the fetching alone reads or merges a head or writes the
+// window, where the clone lacks an object a merge reads, or where the merging alone reaches the
+// remote or writes another file than the git phase alone.
+func TestCollectGitsFetchingAloneThenMergingAloneWriteWhatTheGitPhaseWrites(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	c.remote.git("update-ref", "refs/pull/12/head", c.p1b)
+	c.remote.git("checkout", "--quiet", "--detach", c.c1)
+	q := c.remote.commit("q", map[string]string{"f.txt": nineLines(map[int]string{5: "PR"}), "other.txt": "o3\n"})
+	c.remote.git("checkout", "--quiet", "main")
+	at := func(clock string) time.Time { return capturedTime(t, "2001-03-05T"+clock+"Z") }
+	c.window.Git = map[string]GitInput{"acme/widgets": {Pulls: []GitPull{
+		{Number: 12, Merge: c.m5, Base: "main", Heads: []GitHead{{SHA: c.p1, At: at("07:30:00"), From: GitHeadCommit},
+			{SHA: c.p1b, At: at("09:30:00"), From: GitHeadRead}, {SHA: c.p2, At: at("10:00:00"), From: GitHeadForcePush}}},
+		{Number: 13, Base: "main", Heads: []GitHead{{SHA: q, At: at("09:15:00"), From: GitHeadCommit}}},
+	}}}
+	split, whole := c.windowDir(t), c.windowDir(t)
+	clones := filepath.Join(t.TempDir(), "clones")
+	clone := filepath.Join(clones, "acme__widgets")
+	before := windowBytes(t, split)
+	calls := &gitCalls{}
+	fetched, err := CollectGit(context.Background(), c.fetchOnly(split, clones, calls))
+	if err != nil {
+		t.Fatalf("CollectGit --fetch-only: %v", err)
+	}
+	ran := calls.take()
+	for _, call := range ran {
+		if !slices.Contains(fetchingAlone, call[0]) {
+			t.Errorf("the fetching alone ran git %q, want none but %q", call, fetchingAlone)
+		}
+	}
+	if countCalls(ran, "clone") != 1 || countCalls(ran, "ls-remote") == 0 || countCalls(ran, "fetch") == 0 {
+		t.Errorf("the fetching alone ran git %q, want a clone, an ask for the head refs and fetches", ran)
+	}
+	checkSameBytes(t, "the window after the fetching alone", windowBytes(t, split), before)
+	commits := []string{c.p1, c.p1b, c.p2, q, c.m1, c.m2, c.m3, c.m4, c.m5, c.m6, c.c1}
+	if lacked := lackedObjects(t, clone, commits...); len(lacked) != 0 {
+		t.Errorf("the clone the fetching alone left lacks the objects %q, which a merge reads", lacked)
+	}
+	if fetched.Held != len(commits) || fetched.LackingHeads != 0 || fetched.LackingBases != 0 {
+		t.Errorf("the fetching alone counts %d commits held and %d heads and %d base commits the remote did not give, want %d, 0 and 0",
+			fetched.Held, fetched.LackingHeads, fetched.LackingBases, len(commits))
+	}
+
+	c.remote.git("-C", clone, "remote", "remove", "origin")
+	if _, err := CollectGit(context.Background(), c.mergeOnly(split, clones, calls)); err != nil {
+		t.Fatalf("CollectGit --merge-only: %v", err)
+	}
+	checkNoRemote(t, calls.take())
+	if _, err := CollectGit(context.Background(), c.gitOnly(whole, filepath.Join(t.TempDir(), "clones"), &gitCalls{})); err != nil {
+		t.Fatalf("CollectGit --git-only: %v", err)
+	}
+	checkSameBytes(t, "the window the fetching alone and then the merging alone wrote", windowBytes(t, split), windowBytes(t, whole))
+	read, err := ReadWindow(whole)
+	if err != nil {
+		t.Fatalf("ReadWindow of the window collect-git wrote: %v", err)
+	}
+	input, heads := read.Git["acme/widgets"], 0
+	for _, pull := range input.Pulls {
+		for _, h := range pull.Heads {
+			if h.Read() && len(h.Verdicts) > 0 {
+				heads++
+			}
+		}
+	}
+	if heads != 4 || len(input.Missing) != 0 {
+		t.Errorf("the git phase alone wrote %d heads read with verdicts and the missing inputs %+v, want the 4 heads and none missing", heads, input.Missing)
+	}
+}
+
+// The git phase's merging alone (MergeOnly) opens no connection to the remote, though a head the
+// clone lacks is among its heads. Here the GitHub phase alone writes the case's git file (gitCase),
+// and the fetching alone fills the clone with each commit the merges read but #13's head, which
+// the remote does not hold, and counts ten commits held and one head the remote did not give. Then
+// the clone's origin names a directory that does not exist, and its upload-pack, which git starts
+// as it reaches a remote of a path, for an ls-remote as for a fetch, is a script that writes a
+// marker file. The merging alone ends without error, writes #12's heads with their verdicts and
+// #13's head as a head-unreachable missing input whose detail says the clone does not hold the
+// commit and the run asks the remote for nothing (notInClone), runs no git command that names the
+// remote, a clone, a fetch or an ls-remote, and leaves no marker. The git phase alone in the same
+// setting reaches for #13's head and leaves the marker, so a merging alone that fell back to a fetch
+// would too. It fails where the merging alone reaches the remote, fails on the head the clone
+// lacks, or writes the file otherwise.
+func TestCollectGitMergingAloneOpensNoConnectionToTheRemote(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	dir, clones := c.windowDir(t), filepath.Join(t.TempDir(), "clones")
+	clone := filepath.Join(clones, "acme__widgets")
+	calls := &gitCalls{}
+	config := c.config(dir, clones, calls)
+	config.GitHubOnly = true
+	if _, err := CollectGit(context.Background(), config); err != nil {
+		t.Fatalf("CollectGit --github-only: %v", err)
+	}
+	fetched, err := CollectGit(context.Background(), c.fetchOnly(dir, clones, calls))
+	if err != nil {
+		t.Fatalf("CollectGit --fetch-only: %v", err)
+	}
+	if fetched.Held != 10 || fetched.LackingHeads != 1 || fetched.LackingBases != 0 {
+		t.Errorf("the fetching alone counts %d commits held and %d heads and %d base commits the remote did not give, want 10, 1 and 0",
+			fetched.Held, fetched.LackingHeads, fetched.LackingBases)
+	}
+	scratch := t.TempDir()
+	marker, uploadPack := filepath.Join(scratch, "marker"), filepath.Join(scratch, "upload-pack")
+	if err := os.WriteFile(uploadPack, fmt.Appendf(nil, "#!/bin/sh\necho \"$@\" >> '%s'\nexit 1\n", marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c.remote.git("-C", clone, "remote", "set-url", "origin", "file://"+filepath.Join(scratch, "gone"))
+	c.remote.git("-C", clone, "config", "remote.origin.uploadpack", uploadPack)
+	calls.take()
+	if _, err := CollectGit(context.Background(), c.mergeOnly(dir, clones, calls)); err != nil {
+		t.Fatalf("CollectGit --merge-only with a head the clone lacks: %v", err)
+	}
+	checkNoRemote(t, calls.take())
+	if data, err := os.ReadFile(marker); err == nil {
+		t.Errorf("the merging alone reached the remote: git started its upload-pack for %q", data)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal(err)
+	}
+	want := c.wantLines(true)
+	want[len(want)-1] = fmt.Sprintf(`{"kind":"missing","pr":13,"head":%q,"base":"","reason":"head-unreachable","detail":%q}`, unreachableHead, notInClone)
+	if got := gitFileLines(t, dir, fetchFailed); !slices.Equal(got, want) {
+		t.Errorf("the merging alone wrote%s\nwant%s", describeLines(got), describeLines(want))
+	}
+
+	if _, err := CollectGit(context.Background(), c.gitOnly(dir, clones, &gitCalls{})); err != nil {
+		t.Fatalf("CollectGit --git-only: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("the git phase alone, which reaches for #13's head, left no marker (%v), so the marker shows nothing of a reach", err)
+	}
+}
+
+// The git phase's merging alone (MergeOnly) refuses a clones' directory that holds no clone of the
+// repository, which only a clone from the remote could make, with an error that names the clone's
+// directory and says to run the fetching alone first; it runs no git, makes no directory, and leaves
+// the window's git file and window.json byte for byte as they were. Here the git file alone gives
+// #13 the one head p1.
+func TestCollectGitMergingAloneRefusesAClonesDirectoryWithNoClone(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	heads := []GitHead{{SHA: c.p1, At: c.window.From, From: GitHeadCommit}}
+	c.window.Git = map[string]GitInput{"acme/widgets": {Pulls: []GitPull{{Number: 13, Base: "main", Heads: heads}}}}
+	dir, clones := c.windowDir(t), filepath.Join(t.TempDir(), "clones")
+	clone := filepath.Join(clones, "acme__widgets")
+	before := windowBytes(t, dir)
+	calls := &gitCalls{}
+	if _, err := CollectGit(context.Background(), c.mergeOnly(dir, clones, calls)); err == nil || !strings.Contains(err.Error(), clone) ||
+		!strings.Contains(err.Error(), "run --fetch-only first") {
+		t.Errorf("CollectGit --merge-only with no clone in %s = %v, want a refusal that names %s and says to run --fetch-only first", clones, err, clone)
+	}
+	if ran := calls.take(); len(ran) != 0 {
+		t.Errorf("the refused merging alone ran git %q, want none", ran)
+	}
+	if _, err := os.Stat(clones); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the refused merging alone left the clones' directory %s (%v)", clones, err)
+	}
+	checkSameBytes(t, "the window after the refused merging alone", windowBytes(t, dir), before)
+}
+
+// collect-git's four runs of a part alone exclude each other: the GitHub phase alone, the git phase
+// alone, the git phase's fetching alone and its merging alone. The fetching alone and the merging
+// alone, as the git phase alone, read no GitHub API, so each refuses a GitHub token, GitHub's API, a
+// reserve and a rate. Each refusal comes before any read of GitHub or git, with nothing written.
+func TestCollectGitRefusesTheRunsThatExcludeEachOther(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	dir, clones := c.windowDir(t), filepath.Join(t.TempDir(), "clones")
+	calls := &gitCalls{}
+	runs := []struct {
+		name string
+		set  func(*GitConfig)
+	}{
+		{"the GitHub phase alone", func(config *GitConfig) { config.GitHubOnly = true }},
+		{"the git phase alone", func(config *GitConfig) { config.GitOnly = true }},
+		{"the git phase's fetching alone", func(config *GitConfig) { config.FetchOnly = true }},
+		{"the git phase's merging alone", func(config *GitConfig) { config.MergeOnly = true }},
+	}
+	for i, a := range runs {
+		for _, b := range runs[i+1:] {
+			config := c.config(dir, clones, calls)
+			a.set(&config)
+			b.set(&config)
+			want := a.name + " and " + b.name + " exclude each other"
+			if _, err := CollectGit(context.Background(), config); err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("CollectGit of %s and %s = %v, want the refusal %q", a.name, b.name, err, want)
+			}
+		}
+	}
+	for _, run := range runs[2:] {
+		for _, share := range []struct {
+			name string
+			set  func(*GitConfig)
+		}{
+			{"a GitHub token", func(config *GitConfig) { config.Token = stubGitHubToken }},
+			{"GitHub's API", func(config *GitConfig) { config.API = c.server.URL }},
+			{"a reserve", func(config *GitConfig) { config.Reserve = 10 }},
+			{"a rate", func(config *GitConfig) { config.Rate = 1 }},
+		} {
+			config := c.gitOnly(dir, clones, calls)
+			config.GitOnly = false
+			run.set(&config)
+			share.set(&config)
+			want := run.name + " reads no GitHub API, so it takes no GitHub token, API, reserve or rate"
+			if _, err := CollectGit(context.Background(), config); err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("CollectGit of %s with %s = %v, want the refusal %q", run.name, share.name, err, want)
+			}
+		}
+	}
+	if ran, sent := calls.take(), c.seen.all(); len(ran) != 0 || len(sent) != 0 {
+		t.Errorf("the refused runs ran git %q and sent GitHub %v, want nothing", ran, sent)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "git")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a refused run left the window's git directory (%v)", err)
 	}
 }
 
