@@ -1273,22 +1273,24 @@ func TestARetroWakeTaskIsNotSentAtTheTreesReadmission(t *testing.T) {
 	}
 }
 
-// A message to the agent of a retro after a close, which an idle release took once its turn
-// ended, can come while a release of its pod still stands. The workflow's wake (wakeReleased)
-// takes it after the release recorded the claim as `released`, and queues the start that carries
-// the retro's run (RetroWakeOf, record.SuperviseRequest.RetroRun), which waits for the release's
-// teardown. The release is then cancelled for another cause: here the teardown's read finds the
-// issue's generation moved on, as TestACancelAfterASettlementWakeTellsTheRoleTheSettlement makes
-// it. The cancel drops that wake and queues the role's own resume in its place
-// (store.CancelIssueRelease). The issue has left the workflow, so the outbox finishes a start of it
-// without acting unless the retro's record fences the start (retroHolds): the resume carries the
-// run of the start it replaced (store.DroppedWake.RetroRun, releaseResume), and the agent comes
-// back in the pod that stayed. A resume with no run would leave it `released`, with the message its
-// wake was for unread.
-func TestACancelledReleaseResumesTheRetroAgentWhoseWakeItDropped(t *testing.T) {
-	t.Parallel()
-	rig := newIdleRig(t)
+// retroIdleChild is retroClosedChild at work in its implementing phase on its second run, before
+// its close: the issue of the idle rig newRetroIdleRig builds.
+func retroIdleChild() record.Issue {
+	child := retroClosedChild()
+	child.Phase, child.Status, child.LastDispatchSeq = phase.Implementing, "in_progress", 1
+	return child
+}
+
+// newRetroIdleRig is the idle rig over retroIdleChild under the root of a tree the workflow still
+// runs (retroRunningTree), with a release of the child's pod marked and its implementer released by
+// that release, whose teardown is held back so the test runs it (holdTeardownBack). A person then
+// closed the child, whose run had no retro, and the close kept the released implementer as the
+// agent of the retro after it (workflow's openRetroAfterClose). It answers the closed child and the
+// run of that retro.
+func newRetroIdleRig(t *testing.T) (*idleRig, record.Issue, uint64) {
+	t.Helper()
 	ctx := context.Background()
+	rig := newIdleRigOf(t, retroIdleChild(), retroRunningTree())
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
 	holdTeardownBack(t, rig)
 	rig.drain(t)
@@ -1296,13 +1298,10 @@ func TestACancelledReleaseResumesTheRetroAgentWhoseWakeItDropped(t *testing.T) {
 		t.Fatalf("the implementer = %s by %s and the mark stands = %t, want it released under a release still running",
 			got.State, got.SuspendedBy, rig.marked(t))
 	}
-
-	// A person closed the issue, whose run had no retro, and the close kept the released
-	// implementer as the agent of the retro after it (workflow's openRetroAfterClose).
 	closed := rig.issue
 	closed.Phase, closed.Status = phase.Done, "done"
 	putOutboxIssue(t, rig.pool, rig.issues, closed)
-	const run = 1
+	run := closed.Generation
 	started := time.Now().Add(-time.Minute).UTC().Truncate(time.Microsecond)
 	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := rig.issues.MarkRunStarted(ctx, tx, closed.Key, run, closed.Tree, started.Add(-24*time.Hour)); err != nil {
@@ -1315,41 +1314,156 @@ func TestACancelledReleaseResumesTheRetroAgentWhoseWakeItDropped(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("open the retro after the close of %s: %v", closed.Key, err)
 	}
+	return rig, closed, run
+}
 
-	// The role message's wake, as the workflow takes it for the retro's agent: the resume, and the
-	// start that carries the wake's kind, its detail, its task and the retro's run.
-	if taken, err := rig.st.TakePodWake(ctx, "legion", closed.Key, rig.token, pods.WakeRoleMessage, time.Now().UTC(), 0); err != nil || !taken {
+// wakeRetroAgent is a role message to the retro's agent while the release stands, as the
+// workflow's wake takes it for that agent (wakeReleased): the resume, and the start that carries
+// the wake's kind, its detail, its task and the retro's run (RetroWakeOf), which waits for the
+// release's teardown.
+func wakeRetroAgent(t *testing.T, rig *idleRig, closed record.Issue, run uint64) {
+	t.Helper()
+	if taken, err := rig.st.TakePodWake(context.Background(), "legion", closed.Key, rig.token, pods.WakeRoleMessage, time.Now().UTC(), 0); err != nil || !taken {
 		t.Fatalf("take the role message's wake = %t, %v; want it taken", taken, err)
 	}
 	enqueueOutbox(t, rig.pool, rig.issues, mustOutboxRow(t, closed.Key, record.SuperviseRequest{Op: "start", Tree: closed.Tree,
 		Role: claim.RoleImplementer, Generation: closed.Generation, Task: workflow.WakeTask(pods.WakeRoleMessage, string(rig.token), workflow.StoppedByRelease),
 		WakeKind: pods.WakeRoleMessage, WakeDetail: string(rig.token), RetroRun: run}, time.Now().UTC()))
+}
 
-	if _, err := rig.pool.Exec(ctx, `update issues set generation = 2 where key = $1`, closed.Key); err != nil {
-		t.Fatalf("move the issue's generation on: %v", err)
+// implementerStarts is each start of the rig's implementer the outbox holds for issue, in id order.
+func implementerStarts(t *testing.T, rig *idleRig, issue string) []record.SuperviseRequest {
+	t.Helper()
+	var starts []record.SuperviseRequest
+	for _, start := range startRequestsOf(t, rig.pool, issue) {
+		if start.Role == claim.RoleImplementer {
+			starts = append(starts, start)
+		}
 	}
-	rig.runRow(t, "issue_release", "")
-	if rig.marked(t) {
-		t.Fatal("the teardown left the release marked, want it cancelled")
-	}
-	starts := startRequestsOf(t, rig.pool, closed.Key)
-	if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].RetroRun != run || starts[0].Task != "" {
-		t.Fatalf("queued starts = %+v, want the cancel's one resume of the implementer, carrying run %d of the retro after the close and no task: the wake's start went with the wake",
-			starts, run)
-	}
+	return starts
+}
 
+// resumedOnceInThePodThatStayed drains the rig's issue with every row of it due, and fails unless
+// that brought the rig's implementer back from `released`, by one resume of its process.
+func resumedOnceInThePodThatStayed(t *testing.T, rig *idleRig) {
+	t.Helper()
 	resumes := len(rig.rt.CallsOf("Resume"))
-	if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() where issue = $1`, closed.Key); err != nil {
+	if _, err := rig.pool.Exec(context.Background(), `update outbox set next_at = now() where issue = $1`, rig.issue.Key); err != nil {
 		t.Fatalf("make the issue's rows due: %v", err)
 	}
 	rig.drain(t)
 	if got := rig.machine.Claim(); got.Released() {
-		t.Fatalf("the retro's agent after the drain = %s by %s, want the cancel's resume to have brought it back in the pod that stayed",
+		t.Fatalf("the implementer after the drain = %s by %s, want the cancel's resume to have brought it back in the pod that stayed",
 			got.State, got.SuspendedBy)
 	}
 	if n := len(rig.rt.CallsOf("Resume")) - resumes; n != 1 {
-		t.Fatalf("the retro's agent was resumed %d times after the cancel, want once", n)
+		t.Fatalf("the implementer was resumed %d times after the cancel, want once", n)
 	}
+}
+
+// The agent of a retro after a close, which an idle release released once its turn ended, works
+// in a pod the retro holds although its issue has left the workflow (retroHoldsPod). A release of
+// that pod can be cancelled, as any release can: here a production check's look of the tester is
+// queued once the release's rows stand, which is the pod given work, so the teardown cancels the
+// release as overtaken (store.IssueRelease). The cancel queues the agent's resume in the pod that
+// stayed (store.CancelIssueRelease). The outbox finishes a start of an issue that has left the
+// workflow without acting unless the retro's record fences the start (retroHolds), so the resume
+// carries the run of the retro: the cancel reads it from the issue's open retro after its close in
+// its own transaction, and not from a wake it dropped.
+//
+// The first row is a message that woke the agent after the release recorded it (wakeReleased): the
+// cancel drops that wake and its start, and its resume takes their place. In the second row no
+// wake of the agent was taken, so the cancel drops nothing of it. A resume with no run would leave
+// the agent `released` for as long as its retro runs, and while that resume is queued no wake of
+// the agent is taken (workflow's StartQueued).
+func TestACancelledReleaseResumesTheRetrosAgentWhetherOrNotItDroppedAWakeOfIt(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		woken bool
+	}{
+		{name: "a wake of the agent dropped", woken: true},
+		{name: "no wake of the agent dropped", woken: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			rig, closed, run := newRetroIdleRig(t)
+			if tc.woken {
+				wakeRetroAgent(t, rig, closed, run)
+			}
+			const lookTask = "Production check of LEGION-209: the look the merge's deploy woke."
+			enqueueOutbox(t, rig.pool, rig.issues, mustOutboxRow(t, closed.Key, record.SuperviseRequest{Op: "start", Tree: closed.Tree,
+				Role: claim.RoleTester, Generation: closed.Generation, Task: lookTask, CheckLook: 1,
+				CheckOpenedAt: time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)}, time.Now().UTC()))
+			var teardown int64
+			if err := rig.pool.QueryRow(ctx, `select id from outbox where issue = $1 and kind = 'issue_release'`, closed.Key).Scan(&teardown); err != nil {
+				t.Fatalf("read the teardown row: %v", err)
+			}
+			decision, err := rig.st.IssueRelease(ctx, "legion", store.IssueReleased{Issue: closed.Key, Tree: closed.Tree,
+				IssueGeneration: closed.Generation, TreeGeneration: retroRunningTree().Generation, Row: teardown}, record.OutOfWorkflow)
+			if err != nil || decision.Act != store.ReleaseCancel || decision.Cause != store.ReleaseCauseOvertaken {
+				t.Fatalf("the teardown's decision = %s for %s, %v; want a cancel, the release overtaken by the look", decision.Act, decision.Cause, err)
+			}
+
+			rig.runRow(t, "issue_release", "")
+			if rig.marked(t) {
+				t.Fatal("the teardown left the release marked, want it cancelled")
+			}
+			if starts := implementerStarts(t, rig, closed.Key); len(starts) != 1 || starts[0].RetroRun != run || starts[0].Task != "" ||
+				starts[0].WakeKind != "" || starts[0].Generation != closed.Generation {
+				t.Fatalf("queued starts of the implementer = %+v, want the cancel's one resume at generation %d, carrying run %d of the retro after the close and no task",
+					starts, closed.Generation, run)
+			}
+			resumedOnceInThePodThatStayed(t, rig)
+		})
+	}
+}
+
+// A person sets the closed child back to `todo` while the release of its pod stands, and the
+// engine takes it into its next run (workflow.Engine.ReenterChild): its generation rises, and its
+// retro after the close ends, stopped by the todo. The release's teardown then reads the
+// generation moved on and cancels the release, and the pod is live again by the ordinary rule,
+// since the child runs again under a tree the workflow runs. So the cancel's resume of the
+// implementer, which a message had woken for the retro (wakeReleased), carries no mark of that
+// retro: it is a resume of the role in the new run. A resume that carried the run that closed would
+// be finished by the retro's fence ("the issue runs again", retroHolds) and leave the implementer
+// `released`, where this one brings it back in the pod that stayed.
+func TestACancelAfterTheRetrosIssueWentBackToTodoResumesTheRoleWithNoRetroMark(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	rig, closed, run := newRetroIdleRig(t)
+	wakeRetroAgent(t, rig, closed, run)
+
+	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
+		Linger: time.Hour}, quietLogger())
+	if _, err := intake.ApplyFact(ctx, rig.pool, "dispatch", "child-todo", intake.DispatchIssue{Key: closed.Key, ResolvedRepo: "acme/widgets",
+		Seq: closed.LastDispatchSeq + 1, Type: "issue.updated", Status: "todo", Title: closed.Title, Parent: *closed.Parent, Rank: closed.Rank}, engine); err != nil {
+		t.Fatalf("apply the person's todo on %s: %v", closed.Key, err)
+	}
+	var retro *record.RunRetro
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		retro, err = rig.issues.RunRetro(ctx, tx, closed.Key, run)
+		return err
+	}); err != nil {
+		t.Fatalf("read the record of run %d of %s: %v", run, closed.Key, err)
+	}
+	if again := readIssue(t, rig.pool, closed.Key); again == nil || again.Generation != run+1 || retro == nil || retro.Open() || retro.EndedBy != record.RetroEndTodo {
+		t.Fatalf("after the todo the child = %+v and its retro of run %d = %+v, want the child at generation %d and the retro ended by the todo",
+			again, run, retro, run+1)
+	}
+
+	rig.runRow(t, "issue_release", "")
+	if rig.marked(t) {
+		t.Fatal("the teardown left the release marked, want it cancelled")
+	}
+	if starts := implementerStarts(t, rig, closed.Key); len(starts) != 1 || starts[0].Generation != run+1 || starts[0].RetroRun != 0 ||
+		starts[0].RetroWake || starts[0].WakeKind != "" || starts[0].Task != "" {
+		t.Fatalf("queued starts of the implementer = %+v, want the cancel's one resume at generation %d with no mark of the retro that ended and no task",
+			starts, run+1)
+	}
+	resumedOnceInThePodThatStayed(t, rig)
 }
 
 // The same cancel of the root architect that a retro's finding woke and an idle release took
@@ -1358,14 +1472,22 @@ func TestACancelledReleaseResumesTheRetroAgentWhoseWakeItDropped(t *testing.T) {
 // carries (record's validation of it). The outbox fences that resume on the tree's retros
 // (retroWakeHolds) rather than on the root, which has left the workflow and lingers, and resumes
 // the architect in the session it kept.
+//
+// The resume carries the dropped start's task too, in the words of a release that did not finish
+// (workflow.TakenOverWakeTask), as a kept wake's start does: that is what makes the architect's
+// delivery a retro wake's (supervise.RetroWakeTaskID), which the claim holds until the turn that
+// takes it ends. The end of another retro of the tree reads that delivery as the wake still owed
+// (workflow's retroWakeOwed) and leaves the architect to the turn it works the finding in, where a
+// resume with no task would leave it nothing owed, and that end would suspend it.
 func TestACancelsResumeOfTheRootArchitectARetrosFindingWokeResumesIt(t *testing.T) {
 	t.Parallel()
 	root := checkRoot()
 	r := newRetroOutboxRig(t, []record.Issue{root})
 	architect, token := r.claimOf(root, claim.RoleArchitect, supervise.StateSuspended, supervise.SuspendedByReleased)
 	r.openRetroAfterClose(root, mustClaimToken(t, root.Key, claim.RoleImplementer))
+	dropped := workflow.WakeTask(pods.WakeRoleMessage, string(token), workflow.StoppedByRelease)
 	resume, err := r.runner.releaseResume(root.Key, root.Tree)(claim.RoleArchitect, root.Generation,
-		store.DroppedWake{Kind: pods.WakeRoleMessage, Detail: string(token), RetroWake: true})
+		store.DroppedWake{Kind: pods.WakeRoleMessage, Detail: string(token), Task: dropped, RetroWake: true})
 	if err != nil {
 		t.Fatalf("build the cancel's resume of the root architect: %v", err)
 	}
@@ -1373,9 +1495,17 @@ func TestACancelsResumeOfTheRootArchitectARetrosFindingWokeResumesIt(t *testing.
 	if err := r.runner.execute(r.ctx, row); err != nil {
 		t.Fatalf("the cancel's resume of the root architect = %v, want the architect resumed", err)
 	}
-	if got := architect.Claim(); got.State == supervise.StateSuspended || got.LastStartRow != 83 {
+	got := architect.Claim()
+	if got.State == supervise.StateSuspended || got.LastStartRow != 83 {
 		t.Fatalf("the root architect after the cancel's resume = %s by %s with last start %d, want it resumed by row 83",
 			got.State, got.SuspendedBy, got.LastStartRow)
+	}
+	want := workflow.TakenOverWakeTask(pods.WakeRoleMessage, string(token), dropped)
+	if p := got.Pending; p == nil || p.ID != supervise.RetroWakeTaskID("outbox:83") || !p.RetroWake() || p.Task != want || p.Generation != 0 {
+		t.Fatalf("the root architect's pending delivery = %+v, want the retro wake's task of row 83, %q, at generation 0", p, want)
+	}
+	if strings.Contains(want, "while your pod was gone") {
+		t.Fatalf("the resume's task %q says the pod went away, which the cancel made false", want)
 	}
 	relaunchedInItsSession(t, r.rt, token)
 }

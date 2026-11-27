@@ -4358,21 +4358,30 @@ func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold wor
 // reach the role only through that task, so the resume carries it (workflow.CancelledWakeTask). A
 // task in the release's words is told again in the words of a release that did not finish. A task
 // in a pause's words goes as it is, since the cancel kept the pod those words name. Every other
-// wake leaves the resume no task. A reviewer's wake task ends with the daemon's two sentences of
-// its review round, as every task the workflow queues for the reviewer does (workflow's
-// queuedRow), so a reviewer's resume that carries one says so (RoundNamed), and its send adds no
-// second pair.
+// wake leaves the resume no task, but for the retro's wake of a root architect (below). A
+// reviewer's wake task ends with the daemon's two sentences of its review round, as every task the
+// workflow queues for the reviewer does (workflow's queuedRow), so a reviewer's resume that carries
+// one says so (RoundNamed), and its send adds no second pair.
 //
-// A dropped wake of the retro Legion runs after a close (store.DroppedWake.RetroRun, RetroWake:
-// the retro's agent, or the tree root's architect for a finding of it) leaves its marks on the
-// resume. Its issue has left the workflow or its tree lingers, so the outbox finishes a start of
-// it without acting unless the retro's record fences the start (retroHolds, retroWakeHolds), and
-// the role would stay `released` in the pod that stayed, with the message its wake was for
-// unread. The wake of a root architect is a start with a wake's kind (record's validation of
-// RetroWake), so its resume carries the dropped wake's kind and detail too.
+// The cancel hands this the marks of a retro Legion runs after a close (store.DroppedWake.RetroRun
+// and RetroWake) where that retro alone holds the pod: the retro's run, on the resume of its agent,
+// and the mark of a retro's wake of the tree root's architect for a finding of it, which the start
+// the cancel dropped carried. The issue has left the workflow or its tree lingers, so the outbox
+// finishes a start of it without acting unless the retro's record fences the start (retroHolds,
+// retroWakeHolds), and the role would stay `released` in the pod that stayed. The resume carries
+// the marks. The wake of a root architect is a start with a wake's kind (record's validation of
+// RetroWake), so its resume carries the dropped wake's kind and detail too, and its task, retold in
+// the words of a release that did not finish as a kept wake's start is (workflow.TakenOverWakeTask):
+// a task makes the architect's delivery a retro wake's (supervise.RetroWakeTaskID), which the
+// claim holds until the turn that takes it ends, so the end of another retro of the tree leaves
+// the architect to the turn it reads the finding in (workflow's retroWakeOwed) rather than suspend
+// it.
 func (r *outbox) releaseResume(issue, tree string) store.ReleaseWokenRow {
 	return func(role claim.Role, generation uint64, wake store.DroppedWake) (store.IdleReleaseRow, error) {
 		task := workflow.CancelledWakeTask(wake.Kind, wake.Detail, wake.Task)
+		if wake.RetroWake {
+			task = workflow.TakenOverWakeTask(wake.Kind, wake.Detail, wake.Task)
+		}
 		start := record.SuperviseRequest{Op: "start", Tree: tree, Role: role, Generation: generation, Task: task,
 			RoundNamed: task != "" && role == claim.RoleReviewer, RetroRun: wake.RetroRun}
 		if wake.RetroWake {

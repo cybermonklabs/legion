@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -569,6 +570,92 @@ func TestACancelResumesARoleItsMarkDoesNotRecordThatNoStartBringsBack(t *testing
 			}
 			if releaseMarked(t, st) {
 				t.Error("the cancel left its mark behind")
+			}
+		})
+	}
+}
+
+// A cancel's resumes carry the marks of a retro Legion runs after a close (DroppedWake.RetroRun and
+// RetroWake) only where the pod is live only because that retro holds it (retroHoldsPod): the
+// outbox fences a start that carries one on the retro's record, and finishes it where the issue
+// runs again. The release here suspended the root's implementer and its architect. The root then
+// closed, and the retro after its close opened with the implementer as its agent. A message woke
+// the architect for a finding of that retro (the workflow's wakeReleased), with the start of a
+// retro's wake (record.SuperviseRequest.RetroWake), which the cancel drops.
+//
+// In the first row the root stands closed, and the retro holds its pod. The builder is told the
+// run of that retro for the claim of its agent, which the cancel reads from the record in its own
+// transaction though it dropped no wake of the agent, and the dropped start's mark of a retro's
+// wake for the architect, beside the start's kind, its detail and its task. In the second row a
+// todo took the root into its next run, which ended the retro a minute ago: the pod is live by the
+// ordinary rule, though the tree still takes a retro's wake for the hour after that end, and the
+// builder is told no mark of a retro at all, at the new run's generation.
+func TestACancelCarriesARetrosMarksOnlyWhereTheRetroAloneHoldsThePod(t *testing.T) {
+	t.Parallel()
+	const architectToken = claim.Token("legion-legion-legion-208-architect")
+	woke := DroppedWake{Kind: pods.WakeRoleMessage, Detail: "the wake's detail", Task: "the wake's task"}
+	retroWake := woke
+	retroWake.RetroWake = true
+	for _, tc := range []struct {
+		name       string
+		readmitted bool
+		generation uint64
+		want       map[claim.Role]DroppedWake
+	}{
+		{name: "the closed root's retro after its close holds the pod", generation: 1,
+			want: map[claim.Role]DroppedWake{claim.RoleArchitect: retroWake, claim.RoleImplementer: {RetroRun: 1}}},
+		{name: "a todo took the root into its next run", readmitted: true, generation: 2,
+			want: map[claim.Role]DroppedWake{claim.RoleArchitect: woke, claim.RoleImplementer: {}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			st := migratedStore(t)
+			ctx := context.Background()
+			exec := func(what, query string, args ...any) {
+				t.Helper()
+				if _, err := st.Pool().Exec(ctx, query, args...); err != nil {
+					t.Fatalf("%s: %v", what, err)
+				}
+			}
+			openRunningTree(t, st)
+			rootClaim(t, st, claim.RoleImplementer, supervise.StateIdle, "")
+			rootClaim(t, st, claim.RoleArchitect, supervise.StateIdle, "")
+			boundary, stop, _ := releaseTwoRolesThroughTheStore(t, st)
+			stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
+			stoppedByTheRelease(t, st, claim.RoleArchitect, stop)
+			exec("close the root", `update issues set phase = 'done', status = 'done', linger_until = now() + interval '1 hour'
+				where key = $1`, rootIssue)
+			exec("open the retro after the root's close", `insert into run_retros
+				(issue, generation, tree, started_at, retro_started_at, opened_at, bound_at, agent)
+				values ($1, 1, $1, now() - interval '2 hours', now() - interval '1 hour', now() - interval '1 hour',
+					now() + interval '23 hours', $2)`, rootIssue, string(releasedToken))
+			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, architectToken, pods.WakeRoleMessage, time.Now().UTC(), 0); err != nil || !taken {
+				t.Fatalf("take the architect's wake = %t, %v; want it taken", taken, err)
+			}
+			queueSupervise(t, st, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: claim.RoleArchitect, Generation: 1,
+				Task: woke.Task, WakeKind: woke.Kind, WakeDetail: woke.Detail, RetroWake: true})
+			if tc.readmitted {
+				exec("re-admit the root into its next run", `update issues set phase = 'implementing', status = 'in_progress',
+					generation = 2, linger_until = null where key = $1`, rootIssue)
+				exec("end the retro by the todo", `update run_retros set ended_at = now() - interval '1 minute', outcome = 'stopped',
+					ended_by = 'todo' where issue = $1`, rootIssue)
+			}
+			told := map[claim.Role]DroppedWake{}
+			at := map[claim.Role]uint64{}
+			woken := func(role claim.Role, generation uint64, wake DroppedWake) (IdleReleaseRow, error) {
+				told[role], at[role] = wake, generation
+				return resumeRow(role, generation, wake)
+			}
+
+			cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, woken, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()})
+			if err != nil || !slices.Equal(cancelled.Resumed, []claim.Role{claim.RoleArchitect, claim.RoleImplementer}) {
+				t.Fatalf("CancelIssueRelease = %+v, %v; want the architect and the implementer resumed", cancelled, err)
+			}
+			if !maps.Equal(told, tc.want) {
+				t.Errorf("the builder was told %+v, want %+v", told, tc.want)
+			}
+			if want := map[claim.Role]uint64{claim.RoleArchitect: tc.generation, claim.RoleImplementer: tc.generation}; !maps.Equal(at, want) {
+				t.Errorf("the builder was told the generations %v, want %v", at, want)
 			}
 		})
 	}

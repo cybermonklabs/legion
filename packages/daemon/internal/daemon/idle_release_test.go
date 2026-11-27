@@ -215,9 +215,6 @@ func newIdleRig(t *testing.T) *idleRig {
 // daemon's plugin contract and the configured image.
 func newIdleRigIn(t *testing.T, at phase.Phase) *idleRig {
 	t.Helper()
-	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: at, Generation: 1,
 		Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
@@ -227,8 +224,23 @@ func newIdleRigIn(t *testing.T, at phase.Phase) *idleRig {
 			Reason: endedTheImplementersPhase.Reason, Since: waited}
 		issue.ChildrenWaitedAt = &waited
 	}
+	return newIdleRigOf(t, issue)
+}
+
+// newIdleRigOf is the rig over issue, its implementer at the issue's generation and holding the
+// implementing phase's task unless the issue waits on its children, as newIdleRigIn's does, with
+// each of above recorded before it: where issue is a child, its tree's root. The rig admits
+// issue's tree as admission admits one (outboxTreeStore).
+func newIdleRigOf(t *testing.T, issue record.Issue, above ...record.Issue) *idleRig {
+	t.Helper()
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	for _, other := range above {
+		putOutboxIssue(t, pool, records, other)
+	}
 	putOutboxIssue(t, pool, records, issue)
-	st := outboxTreeStore(t, pool, issue.Key)
+	st := outboxTreeStore(t, pool, issue.Tree)
 	// The store of a daemon with a workflow, which an idle release needs: its claim writes queue
 	// the role-holder publication (store.PublishRoleHolders), so the seeded idle implementer
 	// leaves one queued row of that kind before any release is decided, and a test reads what a
@@ -253,12 +265,13 @@ func newIdleRigIn(t *testing.T, at phase.Phase) *idleRig {
 	// issue share one Sandbox, so the implementer's token names the pod's.
 	rt.sandboxName = sandbox.SandboxName(token)
 	pending := supervise.Delivery{ID: "outbox:7", Task: "implement it", Phase: phase.Implementing,
-		Generation: 1, QueuedAt: time.Now().UTC().Add(-time.Hour)}
+		Generation: issue.Generation, QueuedAt: time.Now().UTC().Add(-time.Hour)}
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
-		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
+		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: issue.Generation, ServingGeneration: issue.Generation,
 		State: supervise.StateIdle, Locator: &locator, Session: "ses-implementer",
 		SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion(), Pending: &pending}
-	if at == phase.AwaitingChildren {
+	waits := issue.Phase == phase.AwaitingChildren
+	if waits {
 		stored.Pending = nil
 		if err := st.PutClaim(ctx, stored); err != nil {
 			t.Fatalf("seed the idle implementer: %v", err)
@@ -273,7 +286,7 @@ func newIdleRigIn(t *testing.T, at phase.Phase) *idleRig {
 	if !ok {
 		t.Fatalf("no machine for %s", token)
 	}
-	if got := machine.Claim(); got.State != supervise.StateIdle || (got.Pending == nil) != (at == phase.AwaitingChildren) {
+	if got := machine.Claim(); got.State != supervise.StateIdle || (got.Pending == nil) != waits {
 		t.Fatalf("the restored claim = %+v, want it idle, holding its phase's task where its phase runs", got)
 	}
 	// The pod last did something half an hour ago, and its session reported five minutes later

@@ -325,7 +325,9 @@ func wakeWords(stop WakeStop) (preamble, away, backstop string) {
 //
 // Every other wake answers "": a message wake's message reaches the session anyway, so the
 // resume needs none of its text. The text of a message wake for a session a release stopped also
-// says that the message came "while your pod was gone", which the cancel makes false.
+// says that the message came "while your pod was gone", which the cancel makes false. The one
+// resume that carries a message wake's task is that of a root architect a retro's finding woke,
+// whose builder takes the task from TakenOverWakeTask instead.
 func CancelledWakeTask(kind, detail, task string) string {
 	if kind != pods.WakeChecks && kind != pods.WakeBackstop {
 		return ""
@@ -384,6 +386,11 @@ func ReleasedWakeTask(kind, detail, task string) string {
 // wake's own sentences stay, a message wake's among them, because the role reads this start's task
 // when it comes back. The review round's sentences that the queue appended stay too. A task that
 // does not begin with WakeTask of the wake for a session a release stopped is answered as it is.
+//
+// The cancel's resume of a tree root's architect that a retro's finding woke (the daemon's
+// releaseResume, record.SuperviseRequest.RetroWake) carries the task of the wake's start it
+// dropped in the same words, a message wake's included: that task is what makes the architect's
+// delivery a retro wake's, which retroWakeOwed reads as the wake still owed.
 func TakenOverWakeTask(kind, detail, task string) string {
 	told, _ := retellWakeTask(kind, detail, task, StoppedByRelease, stoppedByCancelledRelease)
 	return told

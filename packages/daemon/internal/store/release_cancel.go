@@ -20,23 +20,28 @@ import (
 // cancel uses. The release's mark, its rows, its decline's record and its teardown's decisions are
 // in idle.go and issue_release.go.
 
-// DroppedWake is what a cancel deleted of one role's wake (dropWakesUnderRelease): Kind, Detail
-// and Task, the wake kind, the detail and the task of the start it deleted
-// (record.SuperviseRequest.WakeKind, WakeDetail and Task), each "" where the cancel found no start
-// of the wake. Kind is the kind that the start's task was rendered with (workflow.WakeTask), and
-// the builder needs that kind to render the task again. The role's newest resume can be the
-// resume of another wake of the role, of another kind. The zero DroppedWake is a role whose wake
-// the cancel did not drop. A start that an earlier daemon queued carries no detail, so its task
-// cannot be rendered again (retellStarts says why), and the cancel hands its builder the zero
-// DroppedWake for that role.
+// DroppedWake is what a cancel tells the builder of one role's resume (ReleaseWokenRow) of the
+// role's wake. Kind, Detail and Task are the wake kind, the detail and the task of the start the
+// cancel deleted (dropWakesUnderRelease; record.SuperviseRequest.WakeKind, WakeDetail and Task),
+// each "" where the cancel found no start of the wake. Kind is the kind that the start's task was
+// rendered with (workflow.WakeTask), and the builder needs that kind to render the task again.
+// The role's newest resume can be the resume of another wake of the role, of another kind. A
+// start that an earlier daemon queued carries no detail, so its task cannot be rendered again
+// (retellStarts says why), and the cancel tells its builder no kind, detail or task for that role.
 //
-// RetroRun and RetroWake are the marks of a retro Legion runs after a close that the deleted start
-// carried (record.SuperviseRequest.RetroRun and RetroWake), 0 and false for every other wake: the
-// wake of that retro's agent, or of the tree root's architect for a finding of it, whose issue has
-// left the workflow or whose tree lingers. The outbox fences such a start on the retro's record
-// rather than on the issue's standing, and finishes every other start of such an issue without
-// acting, so the builder carries the marks into the resume that takes the dropped start's place,
-// and the role comes back in the pod that stayed as the dropped start would have brought it back.
+// RetroRun and RetroWake are the marks of a retro Legion runs after a close that the resume
+// carries (record.SuperviseRequest.RetroRun and RetroWake). The outbox fences a start that carries
+// one on the retro's record rather than on the issue's standing, and finishes every other start of
+// an issue that has left the workflow, or whose tree lingers, without acting. So the cancel sets
+// them only where the pod is live only because such a retro holds it (retroHoldsPod,
+// issueStanding.retroMarks). An issue the ordinary rule reads as live runs again, and the todo
+// that took it back ended its retro: a mark there would have the outbox finish the resume as a
+// start of a retro that has nothing left to start (the daemon's retroHolds, retroWakeHolds), where
+// a resume with none brings the role back. RetroRun is the run of the issue's open retro after its
+// close, which the cancel reads in its own transaction, on the resume of the claim of that retro's
+// agent, whether or not the cancel dropped a wake of it, and 0 on every other resume. RetroWake is
+// the mark of the wake of the tree root's architect for a finding of such a retro, where the start
+// the cancel deleted carried it, beside that start's kind, detail and task; false otherwise.
 type DroppedWake struct {
 	Kind, Detail, Task string
 	RetroRun           uint64
@@ -45,9 +50,10 @@ type DroppedWake struct {
 
 // ReleaseWokenRow builds the outbox row that brings one claim a cancelled release suspended back,
 // at the generation the cancel read of the issue, told what the cancel dropped of the role's wake
-// (DroppedWake). It is the caller's because the payload is record's to encode, as every row of a
-// release is (IdleReleaseRow), and because what of the dropped wake the resume's own task carries
-// is the workflow's rule (workflow.CancelledWakeTask).
+// and the marks of a retro after a close the resume carries (DroppedWake). It is the caller's
+// because the payload is record's to encode, as every row of a release is (IdleReleaseRow), and
+// because what of the dropped wake the resume's own task carries is the workflow's rule
+// (workflow.CancelledWakeTask).
 type ReleaseWokenRow func(role claim.Role, generation uint64, wake DroppedWake) (IdleReleaseRow, error)
 
 // CancelIssueRelease ends a release that did not finish, in one transaction: the resume of each
@@ -61,8 +67,8 @@ type ReleaseWokenRow func(role claim.Role, generation uint64, wake DroppedWake) 
 // retries it until the role has it back.
 //
 // woken builds the row that resumes each claim (ReleaseWokenRow). It is told the kind, the detail
-// and the task of the wake the cancel dropped for that role, and the zero DroppedWake for a role
-// whose wake it did not drop.
+// and the task of the wake the cancel dropped for that role, none for a role whose wake it did not
+// drop, and the marks of a retro after a close where that retro alone holds the pod (DroppedWake).
 //
 // It answers the roles it queued a resume for (ReleaseCancelled.Resumed): the claims this release
 // suspended that are still suspended as `released`, less a role whose stop the mark does not
@@ -350,7 +356,7 @@ func (s *Store) cancelIssueRelease(ctx context.Context, project, issue string, w
 			roles = nil
 		}
 		for _, r := range roles {
-			row, err := woken(r.role, standing.generation, dropped[r.role])
+			row, err := woken(r.role, standing.generation, standing.retroMarks(r, dropped[r.role]))
 			if err != nil {
 				return err
 			}
@@ -524,36 +530,70 @@ func retellWakesOf(ctx context.Context, tx pgx.Tx, project, issue string, roles 
 
 // issueStanding is what a cancel reads of its issue before it queues a resume (resumeStanding):
 // the generation the resume names, the phase whose worker a paused cancel arms a backstop for,
-// and whether the issue and its tree root are both still the workflow's to run
-// (pods.InWorkflowNotLingering).
+// whether the issue and its tree root are both still the workflow's to run
+// (pods.InWorkflowNotLingering), and what of a retro after a close its resumes carry
+// (retroMarks). retroOnly is whether the pod is live only because such a retro holds it
+// (retroHoldsPod), the issue or its root having left the workflow or lingering. retroRun and
+// retroAgent are the run of the issue's open retro after its close and the claim of that retro's
+// agent, 0 and "" where none is open.
 type issueStanding struct {
 	generation uint64
 	phase      phase.Phase
 	live       bool
+	retroOnly  bool
+	retroRun   uint64
+	retroAgent claim.Token
 }
 
 // resumeStanding is issue's standing as a cancel reads it. An issue or a root the record no
 // longer holds is not live. A pod a retro after a close holds (retroHoldsPod) is live, as the pod
-// gate reads it.
+// gate reads it. The same statement reads the issue's open retro after its close, the record the
+// resume of that retro's agent takes its run from (retroMarks): an issue holds one at most, and
+// were there two, the newest run's is the one read, as record.Postgres.OpenRetroOfIssue reads it.
 func resumeStanding(ctx context.Context, tx pgx.Tx, issue string, outOfWorkflow func(status string) bool) (issueStanding, error) {
-	var generation int64
-	var issuePhase, status, rootPhase, rootStatus string
+	var generation, retroRun int64
+	var issuePhase, status, rootPhase, rootStatus, retroAgent string
 	var lingering, rootLingering, retroHolds bool
 	err := tx.QueryRow(ctx, `select i.generation, i.phase, i.status, i.linger_until is not null,
-		root.phase, root.status, root.linger_until is not null, `+retroHoldsPod+`
-		from issues i join issues root on root.key = i.tree where i.key = $1`, issue).Scan(
-		&generation, &issuePhase, &status, &lingering, &rootPhase, &rootStatus, &rootLingering, &retroHolds)
+		root.phase, root.status, root.linger_until is not null, `+retroHoldsPod+`,
+		coalesce(open_retro.generation, 0), coalesce(open_retro.agent, '')
+		from issues i join issues root on root.key = i.tree
+		left join lateral (select generation, agent from run_retros
+			where issue = i.key and opened_at is not null and ended_at is null
+			order by generation desc limit 1) open_retro on true
+		where i.key = $1`, issue).Scan(
+		&generation, &issuePhase, &status, &lingering, &rootPhase, &rootStatus, &rootLingering, &retroHolds, &retroRun, &retroAgent)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return issueStanding{}, nil
 	}
 	if err != nil {
 		return issueStanding{}, fmt.Errorf("read %s for the resumes of its cancelled release: %w", issue, err)
 	}
-	live := pods.InWorkflowNotLingering(
-		pods.Standing{Phase: phase.Phase(issuePhase), Status: status, Lingers: lingering, RetroHolds: retroHolds},
-		pods.Standing{Phase: phase.Phase(rootPhase), Status: rootStatus, Lingers: rootLingering},
-		outOfWorkflow)
-	return issueStanding{generation: uint64(generation), phase: phase.Phase(issuePhase), live: live}, nil
+	own := pods.Standing{Phase: phase.Phase(issuePhase), Status: status, Lingers: lingering}
+	root := pods.Standing{Phase: phase.Phase(rootPhase), Status: rootStatus, Lingers: rootLingering}
+	ordinary := pods.InWorkflowNotLingering(own, root, outOfWorkflow)
+	own.RetroHolds = retroHolds
+	live := pods.InWorkflowNotLingering(own, root, outOfWorkflow)
+	return issueStanding{generation: uint64(generation), phase: phase.Phase(issuePhase), live: live, retroOnly: live && !ordinary,
+		retroRun: uint64(retroRun), retroAgent: claim.Token(retroAgent)}, nil
+}
+
+// retroMarks is wake, what the cancel dropped of r's wake, with the marks of a retro after a close
+// that r's resume carries (DroppedWake.RetroRun and RetroWake). Where the pod is live only because
+// such a retro holds it, the resume of the claim of the agent of the issue's open retro carries
+// that retro's run, read from the record whether or not the cancel dropped a wake of the agent, and
+// the resume of the tree root's architect keeps the dropped start's mark of a retro's wake. Where
+// the pod is live by the ordinary rule, as for an issue a todo took into its next run, which ended
+// its retro, no resume carries a mark.
+func (s issueStanding) retroMarks(r releasedRole, wake DroppedWake) DroppedWake {
+	if !s.retroOnly {
+		wake.RetroWake = false
+		return wake
+	}
+	if r.token == s.retroAgent {
+		wake.RetroRun = s.retroRun
+	}
+	return wake
 }
 
 // releasedRole is one claim a release suspended that is still suspended as `released`: the role
@@ -676,15 +716,16 @@ func pairUnrecordedWakesWithNoRelease(ctx context.Context, tx pgx.Tx, project, i
 // holdWakesUnderPause.
 //
 // It answers, for each role whose wake it dropped, the wake kind, the detail and the task of the
-// start it deleted, the newest of each, with the marks of a retro after a close that start carried,
-// which the cancel hands its builder (DroppedWake). The kind is the start's own
-// (record.SuperviseRequest.WakeKind), the kind its task was rendered with: the builder renders that
-// task again (workflow.CancelledWakeTask), and the deleted resume can be another wake's, of another
-// kind. A role it dropped nothing of is not in the answer, and reads as the zero DroppedWake. So
-// does a role whose resume it deleted with no start, and a role whose
-// deleted start an earlier daemon queued, which carries a task and no detail (retellStarts says
-// why): its resume then carries no task of the wake. The transaction logs why once it commits, and
-// the line carries the deleted task, since the row is gone (logStartWithoutDetail).
+// start it deleted, the newest of each, with that start's mark of a retro's wake of the tree
+// root's architect (record.SuperviseRequest.RetroWake), which the cancel hands its builder
+// (DroppedWake) where that retro alone holds the pod (issueStanding.retroMarks). The kind is the
+// start's own (record.SuperviseRequest.WakeKind), the kind its task was rendered with: the builder
+// renders that task again (workflow.CancelledWakeTask), and the deleted resume can be another
+// wake's, of another kind. A role it dropped nothing of is not in the answer, and reads as the zero
+// DroppedWake. So does a role whose resume it deleted with no start, and a role whose deleted
+// start an earlier daemon queued, which carries a task and no detail (retellStarts says why): its
+// resume then carries no task of the wake. The transaction logs why once it commits, and the line
+// carries the deleted task, since the row is gone (logStartWithoutDetail).
 func dropWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string, roles []string, wake, last int64) (map[claim.Role]DroppedWake, error) {
 	if len(roles) == 0 {
 		return nil, nil
@@ -696,10 +737,8 @@ func dropWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string
 				and outbox.payload->>'role' in (select role from woken)
 			returning outbox.id, outbox.payload->>'role' as role, outbox.payload->>'wakeKind' as kind,
 				coalesce(outbox.payload->>'task', '') as task, outbox.payload->>'wakeDetail' as detail,
-				coalesce((outbox.payload->>'retroRun')::bigint, 0) as retro_run,
 				coalesce((outbox.payload->>'retroWake')::boolean, false) as retro_wake)
-		select w.role, coalesce(s.kind, ''), coalesce(s.id, 0), coalesce(s.task, ''), s.detail,
-			coalesce(s.retro_run, 0), coalesce(s.retro_wake, false)
+		select w.role, coalesce(s.kind, ''), coalesce(s.id, 0), coalesce(s.task, ''), s.detail, coalesce(s.retro_wake, false)
 		from woken w left join started s on s.role = w.role
 		order by w.id desc, s.id desc`,
 		project, issue, wake, roles, last)
@@ -710,16 +749,15 @@ func dropWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string
 	dropped := map[claim.Role]DroppedWake{}
 	for rows.Next() {
 		var role string
-		var start, retroRun int64
+		var start int64
 		var detail *string
 		var got DroppedWake
-		if err := rows.Scan(&role, &got.Kind, &start, &got.Task, &detail, &retroRun, &got.RetroWake); err != nil {
+		if err := rows.Scan(&role, &got.Kind, &start, &got.Task, &detail, &got.RetroWake); err != nil {
 			return nil, fmt.Errorf("delete the wakes taken while the release of %s stood: %w", issue, err)
 		}
 		if _, seen := dropped[claim.Role(role)]; seen {
 			continue
 		}
-		got.RetroRun = uint64(retroRun)
 		switch {
 		case got.Task != "" && detail == nil:
 			logStartWithoutDetail(ctx, issue, start, role, got.Kind, got.Task, "the cancel's resume carries no task of that wake")
