@@ -1887,25 +1887,36 @@ legion merge-history-report --config <legion.yaml> --project <PROJECT> --repo <o
 
 Each issue is in one class, which the command derives from the rows at each run, and which no row stores:
 
-- `ANSWERED`: a row proves the merge. It is the issue's merge snapshot, its pull request row in state `merged`, or a production check of a pull request other than 0.
-- `PARTIAL`: rows name the issue, and none proves a merge. They are a pull request row that did not merge, a clock that a clear kept, or a production check of pull request 0.
-- `NONE`: no row bears on the merge. This does not prove that the work never merged.
+- `ANSWERED`: a row proves the merge.
+  It is the issue's merge snapshot, its pull request row in state `merged`, or a production check of a pull request other than 0.
+
+- `PARTIAL`: rows name the issue, and none proves a merge.
+  They are a pull request row that did not merge, a clock that a clear kept, or a production check of pull request 0.
+
+- `NONE`: no row bears on the merge.
+  This does not prove that the work never merged.
 
 `--repo` counts only the issues on that repository, compared without case: give it once for each repository.
 Without `--repo` the command counts every recorded issue of the project, and without `--project` it counts the file's own project.
 Each line of the report is a name and its values:
 
 - `project` and `repos`: the selection, where `all` is every repository.
+
 - `snapshot_at`: the time of the database snapshot that the counts are of.
+
 - `selected`: the count of issues, then the key of each.
+
 - `ANSWERED`, `PARTIAL`, `NONE` and `total`: `issues`, `done` (in the phase `done`), `requested` (done, and Dispatch shows `todo`) and `missing_metadata` (an `ANSWERED` merge whose base or final head is unknown).
 
 A count that the command could not read is `UNKNOWN`, never 0.
 Then the report ends with a line `unknown` and one of four codes, the error goes to stderr, and the command exits 1:
 
 - `config`: the file was refused.
+
 - `connect`: the database was not reached.
+
 - `read`: the read failed, or the database's catalog shows no record.
+
 - `empty`: the selection holds no issue.
 
 Before the release that routes a request on a closed issue by its merge history, take this reading of each project.
@@ -2494,7 +2505,7 @@ The roll-forward appends one pair again to each task a reviewer's row stores, so
 
 This release adds two outbox kinds, and its migration `20261114031356_merge_queue_removal` adds both names to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, `update_ask` among its kinds, and its version stands above the update round's `20261113082214`, so the update round's list never runs after it.
-Nine migrations write the list after it, `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events` and then the done-by-checks release's `20261126223725_done_by_checks`, and each list keeps both names.
+Ten migrations write the list after it, `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events`, and then the done-by-checks release's `20261126223725_done_by_checks` and `20261127135256_merged_new_work`, in that order, and each list keeps both names.
 A `merge_queue_read` row is the daemon's read of a pull request that GitHub reported out of the merge queue: one read, or up to five in all while the reads fail.
 A `merge_queue_removal` row is the message that tells the issue's merger of that removal.
 The migration changes no column.
@@ -2543,7 +2554,7 @@ An ask of the merger that has landed stays: the earlier release reads it as a la
 This release adds the outbox kind `merge_holds_changed`, the notice kind `merge-holds-changed`, and a suspension source of a claim, `controller`.
 It serves the project's controller six actions on an agent, `POST /legion/v1/claims/compact` and `POST /legion/v1/claims/fresh-session`, which it served before, and `POST /legion/v1/agents/stop`, `agents/retry`, `agents/suspend` and `agents/resume`, and it refuses every other grant, an architect's included, `403 CONTROLLER_REQUIRED` at all six (`agentDoor`, `packages/daemon/internal/api/agentdoor.go`).
 Its migration `20261126110259_merge_holds_changed` adds the outbox kind to the outbox's kind check (`outbox_kind_check`), and it writes the whole list, `step_record`, `plan_record`, `conflict_confirm`, `merge_forward`, `design_changes`, `phase_ended`, `pending_basis_seed` and `reparent_seed` among its kinds, and its version stands above `20261122154643_outbox_kinds_with_the_basis_seeds`, `20261119203047_design_news`, `20261119003157_conflict_reads_and_merge_forward`, `20261117023932_outbox_kinds_with_the_plan_record` and `20261117000528_outbox_kinds_with_the_step_record`, whose lists do not name the kind, so none of those lists runs after it.
-Two migrations write the list after it, `20261126163320_state_events` and then the done-by-checks release's `20261126223725_done_by_checks`, and both lists keep `merge_holds_changed`; on a database the done-by-checks release migrated, its list is the last word.
+Three migrations write the list after it, `20261126163320_state_events` and then the done-by-checks release's `20261126223725_done_by_checks` and `20261127135256_merged_new_work`, in that order, and each list keeps `merge_holds_changed`; on a database the done-by-checks release migrated, the last of them is the last word.
 Its migration `20261115060739_claim_suspended_by_controller` adds the source to the claims' check (`claims_suspended_by_check`).
 The migrations change no column.
 This release also tells an issue's architect of a run of provider errors, in a `notice` row of the kind `provider-errors`, which only the controller was told before.
@@ -2601,7 +2612,7 @@ The earlier release then runs the controller's pod as `runtime.kubernetes.pod.se
 
 This release stops a conflict from sending an issue back to `implementing`.
 Its migration `20261119003157_conflict_reads_and_merge_forward` adds two outbox kinds to the kind check (`outbox_kind_check`), keeps `phase_ended` in it, deletes every queued `phase_ended` row, and adds two nullable columns to `pull_requests`.
-Five migrations write the list after it, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events` and then the done-by-checks release's `20261126223725_done_by_checks`, and each list keeps both names and `phase_ended`.
+Six migrations write the list after it, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events`, and then the done-by-checks release's `20261126223725_done_by_checks` and `20261127135256_merged_new_work`, in that order, and each list keeps both names and `phase_ended`.
 The release that holds a parent's start while a child of it is open queues `phase_ended` rows again for one move of its own ([Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open)).
 A `conflict_confirm` row is the second read of a head a first read found conflicting, due a minute after it, and `pull_requests.conflict_read` holds that first read.
 A `merge_forward` row is one message to one role about a conflict the daemon acted on, and `pull_requests.merge_forward` holds the ask that the implementer merge the base forward.
@@ -2690,7 +2701,7 @@ The given-up records stay as they were, and after the roll forward a replay or a
 
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, and its version stands above `20261114031356`, so the merge-queue list never runs after it.
-Eight migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events` and then the done-by-checks release's `20261126223725_done_by_checks`, and each list keeps the name.
+Nine migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events`, and then the done-by-checks release's `20261126223725_done_by_checks` and `20261127135256_merged_new_work`, in that order, and each list keeps the name.
 A `role_holders_publish` row publishes the session of each role of one issue whose claim holds it to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
 The daemon queues one at the boot ready of a claim, at each boot, and in the transaction of each claim write that changes the session that holds a role: the agent registers, the claim takes another session or forgets its own, or the claim retires, fails, or is suspended by any source but the idle release.
 A claim whose idle pod the daemon released, or that a project pause's stop suspended, keeps its role, and so does a claim launched again over the session it kept.
@@ -2743,7 +2754,7 @@ Before it, Dispatch read each configured daemon's `GET /legion/v1/state` once a 
 The daemon writes each event as an outbox row in the transaction of the write it reports, on one `state` lane per project, and it publishes the rows of each committed transaction as one message on `notifications.legion.<token>.state`, or as consecutive messages split between events where they pass 900 KB (`stateMessageBound`).
 Its migration `20261126163320_state_events` adds the three state kinds to the outbox's kind check (`outbox_kind_check`), the tables `state_publication` and `state_admission_blocks`, three columns on `outbox`, and the commit trigger that gives each state row its sequence.
 That migration writes the whole list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed`, `merge_holds_changed` and `phase_ended` among its kinds, and its version stands above `20261126110259_merge_holds_changed`, the last migration before it that writes the list, so it writes the list last on a database this release is the newest of.
-On a database the done-by-checks release migrated, one migration writes the list after it, `20261126223725_done_by_checks`, whose list keeps the three state kinds and is the last word.
+On a database the done-by-checks release migrated, two migrations write the list after it, `20261126223725_done_by_checks` and then `20261127135256_merged_new_work`, whose lists keep the three state kinds, and the second is the last word.
 Dispatch's migration `20261118212431_legion_events` adds `kind` and `recorded_at` to `legion_reads`, each with a default, and `reason`, which is null on a row that names no reason.
 It also adds the index `legion_reads_project_recorded_at` and the tables `legion_event_cursors` and `legion_event_parts`.
 It adds `legion_state_intake` to `server_processes`, with the default 0: a process of this release registers 1, and a process of an earlier release does not name the column, so its row reads 0.
@@ -2844,7 +2855,7 @@ The rollback needs no statement.
 
 This release adds one outbox kind, `step_record`, the tables `step_starts` and `step_starts_rollback`, and the function `step_run_witness`; its migration `20261117000528_outbox_kinds_with_the_step_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the role-holders publication's kind and the two merge-queue kinds among its kinds, and its version stands above `20261116165926_role_holders_publish`, so the role-holders list never runs after it.
-Seven migrations write the list after it, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events` and then the done-by-checks release's `20261126223725_done_by_checks`, and each list keeps the name.
+Eight migrations write the list after it, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events`, and then the done-by-checks release's `20261126223725_done_by_checks` and `20261127135256_merged_new_work`, in that order, and each list keeps the name.
 A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
 That migration changes no column.
 
@@ -2902,7 +2913,7 @@ Roll back and roll forward every daemon of one database in the same change, and 
 
 This release adds one outbox kind, `plan_record`; its migration `20261117023932_outbox_kinds_with_the_plan_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the role-holders publication's kind and `step_record` among its kinds, and its version stands above `20261117000528_outbox_kinds_with_the_step_record`, so the step record's list never runs after it.
-Six migrations write the list after it, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events` and then the done-by-checks release's `20261126223725_done_by_checks`, and each list keeps the name.
+Seven migrations write the list after it, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events`, and then the done-by-checks release's `20261126223725_done_by_checks` and `20261127135256_merged_new_work`, in that order, and each list keeps the name.
 A `plan_record` row writes the plan one run of an issue carries out onto Dispatch (`PUT /api/v1/issues/{key}/plans/{id}`), when the run's work starts and again at each later version of the owner's plan that Legion takes, and Dispatch then shows that version.
 This release also writes the rating a retro gave the plan as a `step_record` row that carries `rating` and `rating_reason`, which the daemon sends to the record's rating route (`PUT /api/v1/issues/{key}/steps/{id}/rating`).
 That migration changes no column.
@@ -3356,7 +3367,7 @@ So one project can roll back while another stays on this release, and the statem
 This release's migration `20261119203047_design_news` adds the tables `design_news_told` (with its columns `opening_seq` and `unreached`), `design_changes` and `design_history_unread`, the columns `pending_task_deliveries.design_news`, `carried_news`, `carried_ran` and `news_only`, the functions `design_news_known`, `design_news_folded`, `design_news_opening_settled`, `design_news_opening_told`, `design_news_current`, `design_news_credits`, `design_news_openings` and `design_news_told_in`, and the outbox kind `design_changes`.
 No statement of the release before this one names the three tables, the four new columns or the eight functions, and this migration's kind list names every kind of the list the release before set, `step_record` of `20261117000528_outbox_kinds_with_the_step_record`, `plan_record` of `20261117023932_outbox_kinds_with_the_plan_record`, `conflict_confirm` and `merge_forward` of `20261119003157_conflict_reads_and_merge_forward`, and `phase_ended`, which that list keeps, among them, with `design_changes` added, so the schema needs no restore.
 Its version stands above `20261119003157`, so the list of that migration never runs after it.
-Four migrations write the list after it, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the release whose daemon tells a held role of a merge hold (`20261126110259_merge_holds_changed`), `20261126163320_state_events` and then the done-by-checks release's `20261126223725_done_by_checks`, whose list is the last word of the kind check, and each list keeps `design_changes`.
+Five migrations write the list after it, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the release whose daemon tells a held role of a merge hold (`20261126110259_merge_holds_changed`), `20261126163320_state_events`, and then the done-by-checks release's `20261126223725_done_by_checks` and `20261127135256_merged_new_work`, in that order, the last of whose lists is the last word of the kind check, and each list keeps `design_changes`.
 A `design_changes` row that this release queued waits in the outbox under the earlier daemon, which runs no lane of that kind, and it runs once this release is back.
 
 **Four statements must run before the earlier image is pinned.**
@@ -3603,7 +3614,7 @@ It adds four columns to `phases` beside the phase entry.
 `entry_given_task`, `entry_given_entry` and `entry_given_generation` are the last task a phase worker was given for an entry, as it was composed, that entry, and the issue's generation it was given in (`record.PhaseRow.Given`, one `record.GivenTask`, which `record.PhaseRow.GivenFor` reads), `''`, 0 and 0 until this release writes them, and on every architect's row: the raise of an entry writes the work it is raised with, and a retry of the entry writes the retry's own task, beside `entry_task`, which keeps the text the role was sent with the daemon's decorations of a send, the base-merge sentence of a testing task of a parent and the reviewer's two sentences of its review round.
 The admission pass holds the given task for a parent whose start has not reached its worker, or whose worker it stops in the middle of its phase, where the given entry is the entry the row stands on and the given generation is the issue's, after the turn that took the task has ended too, and the return decorates the task it gives back once.
 The design-gate basis of dispatch://INFRA-3320, in this same release, adds the basis and kept-approval columns of `design_gates` and the column `issues.view_of` (`20261114064234_design_gate_basis`), and the outbox kinds `pending_basis_seed` and `reparent_seed` (`20261122154643_outbox_kinds_with_the_basis_seeds`).
-That migration writes the kind check above the design news's `20261119203047_design_news` and keeps `design_changes` and `phase_ended` in it; three migrations write the list after it, the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events` and then the done-by-checks release's `20261126223725_done_by_checks`, and each list keeps all four kinds: `pending_basis_seed`, `reparent_seed`, `design_changes` and `phase_ended`.
+That migration writes the kind check above the design news's `20261119203047_design_news` and keeps `design_changes` and `phase_ended` in it; four migrations write the list after it, the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events`, and then the done-by-checks release's `20261126223725_done_by_checks` and `20261127135256_merged_new_work`, in that order, and each list keeps all four kinds: `pending_basis_seed`, `reparent_seed`, `design_changes` and `phase_ended`.
 This release queues rows of `phase_ended` again: the message that tells a parent's worker that the admission pass ended its phase.
 The release also queues the notice kinds `awaiting-children`, `basis-ended`, `basis-changes-requested` and `resting-root`, and the supervise operation `retire_task`.
 

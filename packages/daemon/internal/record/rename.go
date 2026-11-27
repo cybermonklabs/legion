@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -215,12 +214,11 @@ func RenameIssueRepository(ctx context.Context, tx pgx.Tx, issue, from, to strin
 	case err != nil:
 		return RenameWrite{}, fmt.Errorf("read whether the pull request of %s would hold %s twice: %w", issue, to, err)
 	default:
-		var now time.Time
-		if err := tx.QueryRow(ctx, "select now()").Scan(&now); err != nil {
-			return RenameWrite{}, fmt.Errorf("read the time of the clear of the pull request of %s: %w", issue, err)
-		}
-		if err := NewStore().clearPullRequests(ctx, tx, now, "issue = $1 and lower(repo) = lower($2)", issue, from); err != nil {
-			return RenameWrite{}, fmt.Errorf("delete the pull request of %s, which %s holds on %s: %w", issue, collision.Holder, to, err)
+		// The clear keeps the deleted row's merge as its issue's snapshot and its clock, at the
+		// moment of this transaction, as every clear does (clearPullRequests).
+		describe := fmt.Sprintf("delete the pull request of %s, which %s holds on %s", issue, collision.Holder, to)
+		if err := NewStore().clearPullRequests(ctx, tx, "issue = $1 and lower(repo) = lower($2)", describe, issue, from); err != nil {
+			return RenameWrite{}, err
 		}
 		collision.Issue = issue
 		written.Deleted = &collision

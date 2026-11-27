@@ -2244,7 +2244,7 @@ func queuedChanges(ctx context.Context, tx pgx.Tx, where, key string) ([]QueuedC
 // where it merges the moved row into one the new name already holds, that row names the moved
 // row's issue (RenameIssueRepository).
 func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, describe string) ([]string, error) {
-	if err := s.clearPullRequests(ctx, tx, where, key, describe); err != nil {
+	if err := s.clearPullRequests(ctx, tx, notOpen(where), describe, key); err != nil {
 		return nil, err
 	}
 	if err := clearNeverMergedConfirmations(ctx, tx, where, key, describe); err != nil {
@@ -2284,7 +2284,7 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, d
 // task and its counts are of a run that goes on. It touches no other issue's rows.
 func (s *Postgres) ClearChangeGeneration(ctx context.Context, tx pgx.Tx, issue string) error {
 	describe := fmt.Sprintf("clear the generation of %s for its next change", issue)
-	if err := s.clearPullRequests(ctx, tx, clearedIssue, issue, describe); err != nil {
+	if err := s.clearPullRequests(ctx, tx, notOpen(clearedIssue), describe, issue); err != nil {
 		return err
 	}
 	if err := clearNeverMergedConfirmations(ctx, tx, clearedIssue, issue, describe); err != nil {
@@ -2321,21 +2321,27 @@ func clearNeverMergedConfirmations(ctx context.Context, tx pgx.Tx, where, key, d
 	return nil
 }
 
-// clearPullRequests deletes the pull requests of the issues where selects, with key as $1, that
-// are not open, and keeps each deleted row's clock, in the caller's transaction. It is the one
-// writer of a clear's clocks, so the clock of a deleted row is recorded one way whichever clear
-// deleted it, and the clear of a whole generation (clearGeneration) and the clear a next change
-// makes (ClearChangeGeneration) read one rule.
+// notOpen is where, a clear's predicate over its issues' rows, narrowed to the pull requests that
+// are not open: a clear keeps an open pull request across a new generation (runStatements).
+func notOpen(where string) string {
+	return where + " and state <> 'open'"
+}
+
+// clearPullRequests deletes the pull requests where selects, with args from $1, and keeps each
+// deleted row's clock, in the caller's transaction. It is the one writer of a clear's clocks, so
+// the clock of a deleted row is recorded one way whichever writer deleted it: the clear of a whole
+// generation and the clear a next change makes, which take the rows of their issues that are not
+// open (notOpen), and the rename pass's delete of a pull request a configured rename would hold twice
+// (RenameIssueRepository), which takes the row whatever its state.
 //
 // Before the delete it locks those rows and saves the merge of each merged one as its issue's
 // snapshot (PutMergeSnapshot): the row's number, repository, merge commit, base and final head,
 // with no merged_at, which the row never held, so it writes only where no snapshot stands. The
 // snapshot is on the issue's own row (Issue.Merge), which no clear touches, so the merge outlives
 // the row this deletes and the issue keeps its positive evidence (MergeHistoryOf).
-func (s *Postgres) clearPullRequests(ctx context.Context, tx pgx.Tx, where, key, describe string) error {
-	selects := where + " and state <> 'open'"
+func (s *Postgres) clearPullRequests(ctx context.Context, tx pgx.Tx, selects, describe string, args ...any) error {
 	rows, err := tx.Query(ctx, `select issue, state, number, head_sha, merge_sha, base, repo from pull_requests
-		where `+selects+` order by issue for update`, key)
+		where `+selects+` order by issue for update`, args...)
 	if err != nil {
 		return fmt.Errorf("%s: read the pull requests to delete: %w", describe, err)
 	}
@@ -2372,7 +2378,7 @@ func (s *Postgres) clearPullRequests(ctx context.Context, tx pgx.Tx, where, key,
 		select distinct on (repo, number) repo, number, issue, head_updated_at, now() from cleared order by repo, number, head_updated_at desc
 		on conflict (repo, number) do update set issue = excluded.issue,
 			head_updated_at = greatest(cleared_pull_requests.head_updated_at, excluded.head_updated_at), cleared_at = excluded.cleared_at`,
-		key)
+		args...)
 	if err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
 	}
