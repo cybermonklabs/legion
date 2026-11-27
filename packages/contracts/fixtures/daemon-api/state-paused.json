@@ -7,7 +7,7 @@
     "startedAt": "2126-09-22T09:15:02Z"
   },
   "admission": {
-    "cap": 6,
+    "cap": 7,
     "p0Holders": 1,
     "p0Bound": {
       "bound": 3,
@@ -28,7 +28,9 @@
       "LEGION-212",
       "LEGION-218",
       "LEGION-219",
-      "LEGION-220"
+      "LEGION-220",
+      "LEGION-240",
+      "LEGION-241"
     ],
     "waiting": [
       "LEGION-212",
@@ -43,7 +45,9 @@
       "LEGION-215",
       "LEGION-216",
       "LEGION-218",
-      "LEGION-219"
+      "LEGION-219",
+      "LEGION-240",
+      "LEGION-241"
     ],
     "blocked": [
       {
@@ -1006,6 +1010,104 @@
           "drawnAt": "2126-09-21T18:42:11Z"
         }
       ]
+    },
+    "LEGION-240": {
+      "key": "LEGION-240",
+      "generation": 1,
+      "phase": "step",
+      "stepRole": "checker",
+      "startWaitsForPod": [
+        "checker"
+      ],
+      "status": "in_progress",
+      "tree": "LEGION-240",
+      "treeRuns": true,
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "priority": null,
+      "workers": {},
+      "designGate": {
+        "artifactId": "2c6e8a40-5f17-4b93-8d2e-7a1c9f3b5e60",
+        "currentVersion": 1,
+        "approvedVersion": 1
+      },
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "2c6e8a40-5f17-4b93-8d2e-7a1c9f3b5e60",
+          "currentVersion": 1,
+          "approvedVersion": 1,
+          "status": "approved"
+        }
+      ],
+      "slot": {
+        "index": 6,
+        "admittedAt": "2126-09-22T07:58:03Z"
+      },
+      "phaseEntry": 1,
+      "treeMovedAt": "2126-09-22T08:36:09Z",
+      "quietHours": 0.7002777777777778
+    },
+    "LEGION-241": {
+      "key": "LEGION-241",
+      "generation": 1,
+      "phase": "held",
+      "stepRole": "checker",
+      "status": "in_progress",
+      "tree": "LEGION-241",
+      "treeRuns": true,
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "holdReason": "escalated",
+      "heldFrom": "step",
+      "priority": null,
+      "workers": {
+        "checker": {
+          "claim": {
+            "session": "ses_checker_241",
+            "state": "failed",
+            "pluginContract": 0,
+            "updateState": "none",
+            "failure": {
+              "cause": "died",
+              "detail": "launch failures ran out",
+              "at": "2126-09-22T08:12:40Z",
+              "attempts": {
+                "launchFailures": 4,
+                "deaths": 1,
+                "promptFailures": 0,
+                "promptRetires": 0
+              }
+            }
+          },
+          "pass": 0,
+          "rounds": 0
+        }
+      },
+      "designGate": {
+        "artifactId": "8d0f2b64-1a39-4c75-9e4b-3c7a5d9f1b82",
+        "currentVersion": 1,
+        "approvedVersion": 1
+      },
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "8d0f2b64-1a39-4c75-9e4b-3c7a5d9f1b82",
+          "currentVersion": 1,
+          "approvedVersion": 1,
+          "status": "approved"
+        }
+      ],
+      "slot": {
+        "index": 7,
+        "admittedAt": "2126-09-22T07:41:20Z"
+      },
+      "why": {
+        "state": "claim_stopped",
+        "reason": "Its phase is held and the checker's claim is stranded at failed, so nothing will wake it."
+      },
+      "treeMovedAt": "2126-09-22T08:12:47Z",
+      "quietHours": 1.0897222222222223
     }
   },
   "pendingStatusWrites": [],
@@ -1025,6 +1127,11 @@
       "issue": "LEGION-219",
       "role": "architect",
       "state": "retired"
+    },
+    {
+      "issue": "LEGION-241",
+      "role": "checker",
+      "state": "failed"
     }
   ],
   "wakesWaiting": [
@@ -1435,7 +1542,7 @@
         }
       }
     },
-    "admission_cap": 6,
+    "admission_cap": 7,
     "admission_p0_bound": 4,
     "daemon_url": "http://legion-daemon.internal.example:13370",
     "worker_stream_port": 13371,
@@ -1564,6 +1671,15 @@
           "implementer"
         ],
         "prompt_file": "/etc/legion/hooks/back-to-implementing.md"
+      }
+    ],
+    "roles": [
+      {
+        "name": "checker",
+        "type": "testing",
+        "model": "checker-model",
+        "github_app": "review",
+        "prompt_file": "/etc/legion/roles/checker.md"
       }
     ]
   },

@@ -7,7 +7,7 @@
     "startedAt": "2026-11-15T08:30:00Z"
   },
   "admission": {
-    "cap": 6,
+    "cap": 7,
     "p0Holders": 0,
     "p0Bound": {
       "bound": 4,
@@ -276,7 +276,7 @@
         }
       }
     },
-    "admission_cap": 6,
+    "admission_cap": 7,
     "admission_p0_bound": 4,
     "daemon_url": "http://legion-daemon.internal.example:13370",
     "worker_stream_port": 13371,

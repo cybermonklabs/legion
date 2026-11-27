@@ -3590,9 +3590,9 @@ test("read_state's summary names the live trees and each held issue with its rea
 
   const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
   expect(admissionLines(golden)).toEqual([
-    "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219 LEGION-220 LEGION-240",
+    "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219 LEGION-220 LEGION-240 LEGION-241",
     "waiting LEGION-212 LEGION-211 LEGION-216",
-    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-215 LEGION-216 LEGION-218 LEGION-219",
+    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-215 LEGION-216 LEGION-218 LEGION-219 LEGION-240 LEGION-241",
     "blocked LEGION-209 on LEGION-210 LEGION-213",
     "blocked LEGION-216 on LEGION-210",
     "held LEGION-209 dispatch_blocker by LEGION-210 LEGION-213",
