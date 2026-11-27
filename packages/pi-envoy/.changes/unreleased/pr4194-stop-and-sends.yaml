@@ -1,0 +1,30 @@
+kind: Fixed
+body: |-
+  A stopping session gives back its role claims before it deletes its session record, on SIGTERM
+  and on every clean stop, so the session's next process claims the role at once. In RPC mode,
+  which a Legion pane runs, a SIGTERM emits no `session_shutdown`, so before this a stopped pane
+  sent neither the release nor the record's delete; the stop now also runs from the host's exit
+  callbacks. A release that does not answer in 250 ms is left, and the delete still goes. Once
+  the stop has begun, the session registers, unsubscribes and claims nothing, writes no ledger
+  entry or role record, and tells its pane, transcript and log nothing, apart from the stop's own
+  release, delete and log lines. Three gates do this, each in one place: the client's stop gate,
+  the extension's tell gate and its write gate. A pass, a session event, the start's retry and
+  `envoy_unsubscribe` that come after the stop began do nothing: a session event runs no subagent
+  check either, so it publishes no transcript and logs nothing. A heartbeat's pass whose
+  registration the listener accepts after that point reads and claims no role. A role move that
+  runs or waits its turn when the stop begins sends no claim after that point. It claims no role
+  back after the release and fires no regain hook. A claim already on the wire when the stop
+  begins writes no transcript record, also when the listener grants it. `envoy_role_set`, the
+  Legion role claim and a Legion notice subscription that lasts while the session holds a role
+  are refused once the stop has begun, with
+  `this session is stopping, so it claims no role: role <role> is not held here`, and
+  `envoy_unsubscribe` with `this session is stopping, so it unsubscribes nothing`. The session
+  stays on the Legion plugin's role-claim bridge after its stop ends, so a Legion claim made for
+  it then is refused in the same words and reaches no other Envoy instance of the process. A
+  relay frame that is being delivered when the stop begins is still shown and answered. A turn of
+  the host that runs on after the stop began is not stopped: AskGate's answers in that turn and
+  the turn's own records are still written, as any answer inside a turn is. A send answered
+  `no_receiver` says the session takes no message into its conversation now instead of live.
+time: 2026-11-16T18:40:00Z
+custom:
+    Issue: pr4194

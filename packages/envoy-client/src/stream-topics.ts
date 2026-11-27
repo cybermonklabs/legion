@@ -33,8 +33,9 @@ const STREAM_SUBJECT_PREFIXES = [
 
 /**
  * The kinds of topic the stream stores, in the order of its prefixes: the token after
- * `notifications.` of each prefix but the two exception ones. The subscribe and publish tools list
- * them (`STORED_DELIVERY` in tool-contract.ts), so a kind the stream comes to store reaches those
+ * `notifications.` of each prefix but the two exception ones. The subscribe tool lists them, and
+ * the publish tool lists each of them whose lane its route does not refuse (`STORED_DELIVERY` and
+ * `PUBLISHED_DELIVERY` in tool-contract.ts), so a kind the stream comes to store reaches those
  * texts from this list alone.
  */
 export const STORED_TOPIC_KINDS: readonly string[] = STREAM_SUBJECT_PREFIXES.filter(
