@@ -20,7 +20,7 @@
  */
 
 import { expect, test } from "bun:test";
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -809,33 +809,63 @@ function asSubreaper(): string[] {
 /** Bash for a driver that runs under `asSubreaper`. Once what it started has ended, `count` lists
  *  every process still below the driver, which is every process its tree left, and prints each one
  *  that nothing has killed or is ending as `left: <pid> <command line>`, then `left behind: <n>`.
- *  A process counts as ended once its state is Z or X, as killed once SIGKILL stands in its shared
- *  pending set (`ShdPnd`, where a kill of a process or a group puts it, and where it stays until
- *  the process is gone), and as ending once its flags carry PF_EXITING. One whose files are gone
- *  between two reads is gone. Each process left is then killed, so the row leaves nothing running.
- *  The walk reads with builtins only, so it starts no process that it would count itself, and it
- *  reads no process outside the driver's own tree.
+ *  A process counts as killed once SIGKILL stands in its shared pending set (`ShdPnd`, where a kill
+ *  of a process or a group puts it, and where it stays until the process is gone), and as ended
+ *  once its stat, read after its status, is gone, says Z or X, or carries PF_EXITING in its flags.
+ *  So a process that ends while the walk reads it is ended, whatever its status read gave: no file,
+ *  an empty text (a read after the process is gone fails with ESRCH), or a text cut short. Each
+ *  process left is then killed, so the row leaves nothing running. The walk reads with builtins
+ *  only, so it starts no process that it would count itself, and it reads no process outside the
+ *  driver's own tree.
+ *
+ *  `shdpnd` reads a status whole, with one `mapfile`, which takes the text in one read. A `read`
+ *  per line seeks back after each line, and the kernel writes a status anew at each seek, so where
+ *  a line above `ShdPnd:` changed width between two reads, the read after it begins inside its
+ *  line, and `ShdPnd:` reads as `hdPnd:`. Two such lines change while a driver runs: `SigQ`, the
+ *  count of signals queued for every process of the user, which on a busy runner can go from 10 to
+ *  9 between two reads, and `State`, which goes from `S (sleeping)` to `R (running)` each time a
+ *  process wakes. A process reads its own `State` as R, so `SigQ` is the line that moved in harness
+ *  lane job 140222405203 (run 45912026705), where the driver read `no ShdPnd: line` in its own
+ *  status, on a kernel whose status has that line.
  *
  *  It fails closed, printing `left behind: unknown: <why>`, wherever it could not tell: `capable`,
  *  before the driver starts anything, where the driver's own status has no `ShdPnd:` line, as
- *  under gVisor, or its own children list is missing; `seen`, where that list does not show the
- *  pid the driver started, as `$1`; and `count`, where a process's status reads with no `ShdPnd:`
- *  line, which is unknown and not gone. `PROC_ROOT` (default `/proc`) and `WALK_ROOT` (default the
- *  driver's own pid) are for the row that reads `count` over a stub process tree. */
+ *  under gVisor, or cannot be read, or its own children list is missing; `seen`, where that list
+ *  does not show the pid the driver started, as `$1`; and `count`, where a process that has not
+ *  ended has a status with no `ShdPnd:` line, which is unknown and not gone, or a status that
+ *  cannot be opened. `PROC_ROOT` (default `/proc`) and `WALK_ROOT` (default the driver's own pid)
+ *  are for the row that reads a stub process tree. Each redirection of a read goes after its
+ *  `2>/dev/null`, since bash applies them in order and reports a file it cannot open before a
+ *  later `2>` applies. */
 const leftBehind = `
 proc=\${PROC_ROOT:-/proc}
 root=\${WALK_ROOT:-$$}
+shdpnd() {
+  local line status=()
+  shd=""
+  mapfile -t status 2>/dev/null <"$proc/$1/status" || return 1
+  for line in "\${status[@]}"; do
+    case $line in ShdPnd:*) shd=\${line#ShdPnd:}; shd=\${shd//[[:space:]]/}; return 0 ;; esac
+  done
+}
+ended() {
+  local stat fields
+  read -r stat 2>/dev/null <"$proc/$1/stat" || return 0
+  fields=(\${stat##*) })
+  case \${fields[0]} in Z | X) return 0 ;; esac
+  ((fields[6] & 4))
+}
 capable() {
-  local key value shd=no children=no t
-  while read -r key value; do [ "$key" = ShdPnd: ] && shd=yes; done <"$proc/$root/status" 2>/dev/null
+  local shd children=no t
+  shdpnd "$root" || { echo "left behind: unknown: could not read $proc/$root/status"; return 1; }
   for t in "$proc/$root"/task/*/children; do [ -r "$t" ] && children=yes; done
-  [ "$shd" = yes ] || { echo "left behind: unknown: no ShdPnd: line in $proc/$root/status"; return 1; }
+  [ -n "$shd" ] || { echo "left behind: unknown: no ShdPnd: line in $proc/$root/status"; return 1; }
   [ "$children" = yes ] || { echo "left behind: unknown: no children list under $proc/$root/task"; return 1; }
 }
 seen() {
   local t c
   for t in "$proc/$root"/task/*/children; do
-    c=""; read -r c <"$t" 2>/dev/null
+    c=""; read -r c 2>/dev/null <"$t"
     case " $c " in *" $1 "*) return 0 ;; esac
   done
   return 1
@@ -846,35 +876,27 @@ walk() {
   while ((\${#queue[@]})); do
     p=\${queue[0]}; queue=("\${queue[@]:1}")
     for t in "$proc/$p"/task/*/children; do
-      c=""; read -r c <"$t" 2>/dev/null
+      c=""; read -r c 2>/dev/null <"$t"
       for k in $c; do tree+=("$k"); queue+=("$k"); done
     done
   done
 }
 count() {
-  local p stat fields key value shd found unknown=()
+  local p shd unknown=() unread=()
   left=()
   walk
   for p in "\${tree[@]}"; do
-    stat=""; read -r stat <"$proc/$p/stat" 2>/dev/null || continue
-    fields=(\${stat##*) })
-    case \${fields[0]} in Z | X) continue ;; esac
-    ((fields[6] & 4)) && continue
-    { exec 9<"$proc/$p/status"; } 2>/dev/null || continue
-    shd="" found=no
-    while read -r key value <&9; do [ "$key" = ShdPnd: ] && { shd=$value; found=yes; break; }; done
-    exec 9<&-
-    [ "$found" = yes ] || { unknown+=("$p"); continue; }
-    ((0x$shd & 0x100)) && continue
+    if ! shdpnd "$p"; then ended "$p" || unread+=("$p"); continue; fi
+    [ -n "$shd" ] && ((0x$shd & 0x100)) && continue
+    ended "$p" && continue
+    [ -n "$shd" ] || { unknown+=("$p"); continue; }
     left+=("$p")
   done
-  for p in "\${left[@]}" "\${unknown[@]}"; do echo "left: $p $(tr '\\0' ' ' <"$proc/$p/cmdline" 2>/dev/null)"; done
-  if ((\${#unknown[@]})); then
-    echo "left behind: unknown: no ShdPnd: line in the status of \${unknown[*]}"
-  else
-    echo "left behind: \${#left[@]}"
-  fi
-  for p in "\${left[@]}" "\${unknown[@]}"; do kill -KILL "$p" 2>/dev/null; done
+  for p in "\${left[@]}" "\${unknown[@]}" "\${unread[@]}"; do echo "left: $p $(tr '\\0' ' ' 2>/dev/null <"$proc/$p/cmdline")"; done
+  ((\${#unknown[@]})) && echo "left behind: unknown: no ShdPnd: line in the status of \${unknown[*]}"
+  ((\${#unread[@]})) && echo "left behind: unknown: could not read the status of \${unread[*]}"
+  ((\${#unknown[@]} + \${#unread[@]})) || echo "left behind: \${#left[@]}"
+  for p in "\${left[@]}" "\${unknown[@]}" "\${unread[@]}"; do kill -KILL "$p" 2>/dev/null; done
 }
 `;
 
@@ -1519,6 +1541,63 @@ test(
     expect(await run(blind, "capable || exit 2; echo capable")).toBe(
       `left behind: unknown: no ShdPnd: line in ${blind}/9000001/status\n`
     );
+    // A process that ended while the walk read it: its status read empty, as a read after the
+    // process is gone does (ESRCH), and its stat, read after, says Z. It is ended, not unknown.
+    const ending = join(directory, "ending");
+    stubTree(ending, { driver: "0000000000000000", below: null });
+    writeFileSync(join(ending, "9000006", "status"), "");
+    writeFileSync(join(ending, "9000006", "stat"), "9000006 (stub) Z 1 1 1 0 -1 0 0 0\n");
+    expect(leftOf(await run(ending, "count"), "")).toEqual(["9000005 stub 9000005 "]);
+    // A process whose status cannot be opened while its stat says it runs is not gone: the walk
+    // cannot tell whether it was killed, and says so.
+    const unread = join(directory, "unread");
+    stubTree(unread, { driver: "0000000000000000", below: "0000000000000000" });
+    rmSync(join(unread, "9000006", "status"));
+    const unopened = await run(unread, "count");
+    expect(unopened).toContain("left behind: unknown: could not read the status of 9000006\n");
+    expect(() => leftOf(unopened, "")).toThrow("could not list what the leg left behind");
   },
-  rowLimit("short", "short", "short")
+  rowLimit("short", "short", "short", "short", "short")
+);
+
+driverRow(
+  "a status whose lines above ShdPnd: change width while it is read still shows that line",
+  async () => {
+    // The lie: the kernel writes a status anew at each seek, and a read builtin per line seeks
+    // back after each line, so where a line above `ShdPnd:` changes width between two reads, a
+    // walk that reads line by line reads `hdPnd:`: a process left, or the driver itself, reads as
+    // unknown (harness lane job 140222405203). Here each of 50 rounds starts four children whose
+    // `State` flips between S and R all the time, as each waits 1 us at a time on a FIFO that
+    // never has data; `capable` reads each one as its root, and `count` must list all four. On
+    // a development box on 2026-11-27 a read per line missed the line in 102 and 160 of 1,000
+    // reads of four such children, and one `mapfile` in none.
+    const directory = scratch();
+    const { stdout } = await runBounded({
+      argv: [
+        "bash",
+        "-c",
+        leftBehind +
+          'mkfifo "$NEVER" || exit 2\n' +
+          "for ((r = 0; r < 50; r++)); do\n" +
+          '  kids=""\n' +
+          '  for i in 1 2 3 4; do (exec 9<>"$NEVER"; while :; do read -t 0.000001 -u 9; done) & kids="$kids $!"; done\n' +
+          "  for p in $kids; do root=$p capable; done\n" +
+          '  count >"$COUNTED"\n' +
+          '  while IFS= read -r line; do case $line in "left behind: "*) echo "$line" ;; esac; done <"$COUNTED"\n' +
+          "  wait\n" +
+          "done\n",
+      ],
+      bound: "short",
+      env: {
+        PATH: process.env.PATH ?? "",
+        NEVER: join(directory, "never"),
+        COUNTED: join(directory, "counted"),
+      },
+      from: import.meta.url,
+    });
+    expect(stdout.split("\n").filter(Boolean)).toEqual(
+      Array.from({ length: 50 }, () => "left behind: 4")
+    );
+  },
+  rowLimit("short")
 );
