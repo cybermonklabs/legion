@@ -36,9 +36,11 @@ package api
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"maps"
+	"math"
 	"net/http"
 	"slices"
 	"strings"
@@ -180,6 +182,115 @@ func legionBoardGrowthOf(row legionfacts.Row) (*time.Time, *legionBoardGrowth) {
 		growth.HoursByPhase = map[string]float64{}
 	}
 	return legionFactTime(&row.AsOf), &growth
+}
+
+// mapRevisions is the revision of every issues entry, by issue key, which the live hub sends the
+// map by (deliveryLiveMapReviser), and false for any other name: the board's other fields are
+// sent whole. Each is deliveryLiveRevision's hash of the entry's kept values (appendKept), taken
+// from the entry's typed values rather than from its encoding: a board of INFRA's size holds
+// thousands of entries, and reading each back out of the body's encoding to drop its growing
+// values and encode it again took about half of each of its recomputes.
+func (b legionBoardResponse) mapRevisions(name string) (map[string]string, bool) {
+	if name != "issues" {
+		return nil, false
+	}
+	revisions := make(map[string]string, len(b.Issues))
+	var form []byte
+	for key, entry := range b.Issues {
+		form = entry.appendKept(form[:0], key)
+		revisions[key] = deliveryLiveRevision(form)
+	}
+	return revisions, true
+}
+
+// appendKept appends to form the issue's key and every value of the entry its revision keeps,
+// which is every value the entry carries but the two kinds that move with the clock: each value
+// whose rate its growth carries, and its as_of, of which it keeps only whether it is null. A value
+// that stands is kept, so a write that moves it moves the revision as its updated_at does. The
+// growth goes first, rates and all, so the values after it are read by what it says; each string
+// and map goes with its length, so no two sets of kept values write one form. A time is its
+// instant, which is all its UTC encoding says.
+func (f legionBoardFacts) appendKept(form []byte, key string) []byte {
+	var rates legionBoardGrowth
+	form = appendKeptString(form, key)
+	form = appendKeptBool(form, f.AsOf != nil)
+	form = appendKeptBool(form, f.Growth != nil)
+	if f.Growth != nil {
+		rates = *f.Growth
+		form = appendKeptHours(form, rates.HoursByPhase, nil)
+		form = appendKeptFloat(form, rates.WorkHours)
+		form = appendKeptFloat(form, rates.SlotHours)
+		form = appendKeptFloat(form, rates.WorkLastAt)
+	}
+	form = appendKeptTime(form, f.OpenedAt)
+	form = appendKeptMoment(form, f.ClosedAt)
+	form = appendKeptHours(form, f.HoursByPhase, rates.HoursByPhase)
+	if rates.WorkHours == 0 {
+		form = appendKeptFloat(form, f.WorkHours)
+	}
+	form = binary.AppendVarint(form, int64(f.ReviewRounds))
+	form = appendKeptString(form, f.RootKey)
+	form = binary.AppendVarint(form, int64(f.TreeDepth))
+	if rates.SlotHours == 0 {
+		form = appendKeptFloat(form, f.SlotHours)
+	}
+	form = appendKeptString(form, f.WaitingReason)
+	form = appendKeptMoment(form, f.WorkFirstAt)
+	if rates.WorkLastAt == 0 {
+		form = appendKeptMoment(form, f.WorkLastAt)
+	}
+	return appendKeptTime(form, f.UpdatedAt)
+}
+
+// appendKeptHours appends the hours of each column of hours that growing gives no rate, by
+// column id in order, after how many they are.
+func appendKeptHours(form []byte, hours, growing map[string]float64) []byte {
+	// The board has twelve columns, so the ids sort on the stack.
+	var held [16]string
+	columns := held[:0]
+	for column := range hours {
+		if growing[column] == 0 {
+			columns = append(columns, column)
+		}
+	}
+	slices.Sort(columns)
+	form = binary.AppendUvarint(form, uint64(len(columns)))
+	for _, column := range columns {
+		form = appendKeptString(form, column)
+		form = appendKeptFloat(form, hours[column])
+	}
+	return form
+}
+
+// appendKeptString appends s after its length.
+func appendKeptString(form []byte, s string) []byte {
+	return append(binary.AppendUvarint(form, uint64(len(s))), s...)
+}
+
+// appendKeptBool appends set as one byte.
+func appendKeptBool(form []byte, set bool) []byte {
+	if set {
+		return append(form, 1)
+	}
+	return append(form, 0)
+}
+
+// appendKeptFloat appends value's 64 bits, which differ wherever two values' encodings do.
+func appendKeptFloat(form []byte, value float64) []byte {
+	return binary.LittleEndian.AppendUint64(form, math.Float64bits(value))
+}
+
+// appendKeptTime appends at's instant: its second and its nanosecond.
+func appendKeptTime(form []byte, at time.Time) []byte {
+	return binary.AppendUvarint(binary.AppendVarint(form, at.Unix()), uint64(at.Nanosecond()))
+}
+
+// appendKeptMoment appends whether at is set, and its instant where it is.
+func appendKeptMoment(form []byte, at *time.Time) []byte {
+	if at == nil {
+		return appendKeptBool(form, false)
+	}
+	return appendKeptTime(appendKeptBool(form, true), *at)
 }
 
 // legionBoardHeader is what the view's header shows: the slots in use against the cap, the P0

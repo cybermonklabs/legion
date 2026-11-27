@@ -6,10 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"hash/fnv"
-	"maps"
 	"reflect"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -305,7 +302,7 @@ type deliveryLiveClasses struct {
 	lists []string
 	// maps are sent entry by entry, by key, an entry whole when its revision changes; each names
 	// the subfields of an entry its revision leaves out (they are still sent, with the rest, when
-	// the entry is).
+	// the entry is), and a map the body revises itself (deliveryLiveMapReviser) names none.
 	maps map[string][]string
 	// counts are {facet: {value: count}}, sent count by count.
 	counts []string
@@ -386,22 +383,23 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	// An entry is sent only when its stored row moved. Each read closes every open row at its own
 	// clock (legionfacts.Row.At), so an open issue's hours, work time, slot hours and last moment
 	// of work, and the as_of they are of, differ on every recompute, a sampler's read once a
-	// minute among them; the entry's revision leaves out every value the entry's growth names
-	// (legionBoardGrowth's fields, which are the entry's own names for the values it grows) and
-	// their as_of, so a recompute that moved only the clock sends no entry, where it would
-	// otherwise resend every open issue's (about 2,600 at INFRA's size), and a value that comes to
-	// grow is left out once its rate joins the growth. What the revision keeps moves whenever the
-	// stored row does: a write of a row whose values moved stamps its updated_at
-	// (legionfacts.WriteProject), and its growth, why it waits, its close and every other value
-	// the entry carries are kept as stored. An entry whose values grow carries its as_of and its
-	// growth, so a page closes the values it holds at its own clock by the rule the read closes
-	// them by; one whose values stand carries null for both. An entry that is sent goes whole, its
-	// values grown to the moment of the recompute that sent it.
+	// minute among them. So the board revises the map itself (legionBoardResponse's mapRevisions),
+	// from the typed values it built each entry of rather than from the entry's encoding, and the
+	// class names no subfield: an entry's revision leaves out each value whose rate the entry's
+	// growth carries, and the as_of they are of, of which it keeps only whether it is null
+	// (legionBoardFacts' appendKept). A recompute that moved only the clock sends no entry, where
+	// it would otherwise resend every open issue's (about 2,600 at INFRA's size), and a value that
+	// comes to grow is left out once its rate joins the growth, which moves the revision itself.
+	// What the revision keeps moves whenever the stored row does: a write of a row whose values
+	// moved stamps its updated_at (legionfacts.WriteProject), and its growth, why it waits, its
+	// close, each value that stands and every other value the entry carries are kept as stored.
+	// An entry whose values grow carries its as_of and its growth, so a page closes the values it
+	// holds at its own clock by the rule the read closes them by; one whose values stand carries
+	// null for both. An entry that is sent goes whole, its values grown to the moment of the
+	// recompute that sent it.
 	legionBoardView: {
 		body: reflect.TypeFor[legionBoardResponse](),
-		maps: map[string][]string{
-			"issues": append(slices.Sorted(maps.Keys(bodyKeysOf(reflect.TypeFor[legionBoardGrowth]()))), "as_of"),
-		},
+		maps: map[string][]string{"issues": nil},
 		whole: map[string][]string{
 			"project": nil, "header": nil, "columns": nil, "settings": nil,
 		},
@@ -433,41 +431,9 @@ func (spec deliveryLiveSpec) classes() deliveryLiveClasses {
 	return deliveryLiveKinds[spec.kind]
 }
 
-// bodyKeys is the keys a JSON object of one Go struct takes, each spelled exactly as its field's
-// `json` tag spells it, with the keys the value under each takes in turn: nil for a value whose
-// keys are not checked here (a scalar, a map, a time, json.RawMessage). A list's value, and a
-// pointer's, takes the keys of what it holds.
-type bodyKeys map[string]bodyKeys
-
-// bodyKeysOf is the keys a JSON value of shape takes: each exported field's `json` name, or its Go
-// name where its tag names none, with the keys of that field's own type; an embedded struct with
-// no name of its own lends its fields, as encoding/json promotes them. A type that decodes itself
-// (json.Unmarshaler) takes keys of its own making, so it is not checked.
-func bodyKeysOf(shape reflect.Type) bodyKeys {
-	for shape.Kind() == reflect.Pointer || shape.Kind() == reflect.Slice {
-		shape = shape.Elem()
-	}
-	if shape.Kind() != reflect.Struct || reflect.PointerTo(shape).Implements(reflect.TypeFor[json.Unmarshaler]()) {
-		return nil
-	}
-	keys := bodyKeys{}
-	for field := range shape.Fields() {
-		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
-		switch {
-		case name == "-" || (!field.IsExported() && !field.Anonymous):
-		case field.Anonymous && name == "":
-			maps.Copy(keys, bodyKeysOf(field.Type))
-		case name == "":
-			keys[field.Name] = bodyKeysOf(field.Type)
-		default:
-			keys[name] = bodyKeysOf(field.Type)
-		}
-	}
-	return keys
-}
-
-// deliveryLiveRevision is a value's revision: the 64-bit FNV-1a of its JSON encoding, as 16
-// lowercase hex digits.
+// deliveryLiveRevision is a value's revision: the 64-bit FNV-1a of its encoding, as 16 lowercase
+// hex digits. The encoding is the value's JSON but for a Legion board's issues entry, whose
+// revision is over the byte form of the values it keeps (legionBoardFacts' appendKept).
 func deliveryLiveRevision(encoded []byte) string {
 	hash := fnv.New64a()
 	_, _ = hash.Write(encoded)

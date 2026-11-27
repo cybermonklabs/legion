@@ -457,8 +457,9 @@ func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 //     (the issues an event marks the view by, the next expiry);
 //   - encode, the body's JSON encoding and its reading back into the list items, map entries,
 //     counts and fields a delta sends (encodeDeliveryBody), but for their revisions;
-//   - revision, the revisions of those (deliveryLiveRevision, deliveryLiveRevisionWithout), a
-//     Legion board's issues map and the timeline's maps and lists among them;
+//   - revision, the revisions of those (deliveryLiveRevision, deliveryLiveRevisionWithout, and a
+//     Legion board's own of its issues map, legionBoardResponse's mapRevisions), the timeline's
+//     maps and lists among them;
 //   - diff, the send to every subscriber of its snapshot or of its delta against the revisions
 //     it holds (sendLocked), each built and queued on its connection.
 //

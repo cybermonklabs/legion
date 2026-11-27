@@ -38,12 +38,26 @@ type deliveryLiveValue struct {
 	rev string
 }
 
+// deliveryLiveMapReviser is a body that revises the entries of a map of its own, from the typed
+// values each entry is built of, so encodeDeliveryBody neither reads such an entry back out of
+// the body's encoding nor encodes it again to revise it: a Legion board's issues
+// (legionBoardResponse's mapRevisions), thousands of entries on each recompute.
+type deliveryLiveMapReviser interface {
+	// mapRevisions is the revision of every entry of the map the body writes under name, by the
+	// entry's key, and false for a map it does not revise.
+	mapRevisions(name string) (map[string]string, bool)
+}
+
 // encodeDeliveryBody encodes body, a view of kind's GET body, by its kind's field classes. It
 // refuses a list item without an id, and two items of one list with the same id, since either
-// would leave a page holding something no delta can reach. The duration is how long its revisions
-// took, the recompute's revision stage (deliveryRecomputeTimes), which the caller takes from its
-// own time of the call to leave the encode stage. The revisions are timed where they are made,
-// entry by entry, since each entry's encoding is read just before its revision in the same loop.
+// would leave a page holding something no delta can reach. A map entry's revision is the body's
+// own where it revises the map (deliveryLiveMapReviser: a Legion board's issues entry, from the
+// typed values the board built it of), which must name every entry the map's encoding holds and
+// no other, and otherwise that of its encoding (deliveryLiveRevisionWithout). The duration is how
+// long its revisions took, the recompute's revision stage (deliveryRecomputeTimes), which the
+// caller takes from its own time of the call to leave the encode stage. The revisions are timed
+// where they are made, entry by entry, since each entry's encoding is read just before its
+// revision in the same loop, and a map the body revises as one call.
 func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, time.Duration, error) {
 	var revising time.Duration
 	classes, ok := deliveryLiveKinds[kind]
@@ -109,6 +123,7 @@ func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, time.Durati
 		encoded.revs.Items[list] = revs
 	}
 
+	reviser, _ := body.(deliveryLiveMapReviser)
 	for name, excluded := range classes.maps {
 		value, err := field(name)
 		if err != nil {
@@ -118,9 +133,29 @@ func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, time.Durati
 		if err := json.Unmarshal(value, &entries); err != nil {
 			return deliveryLiveEncoded{}, revising, fmt.Errorf("delivery live: read %s.%s: %w", kind, name, err)
 		}
+		var revs map[string]string
+		revised := false
+		if reviser != nil {
+			started := time.Now()
+			revs, revised = reviser.mapRevisions(name)
+			revising += time.Since(started)
+		}
+		if revised && len(revs) != len(entries) {
+			return deliveryLiveEncoded{}, revising, fmt.Errorf("delivery live: %s.%s revises %d entries and holds %d", kind, name, len(revs), len(entries))
+		}
+		if !revised {
+			revs = make(map[string]string, len(entries))
+		}
 		values := make(map[string]deliveryLiveValue, len(entries))
-		revs := make(map[string]string, len(entries))
 		for key, entry := range entries {
+			if revised {
+				rev, held := revs[key]
+				if !held {
+					return deliveryLiveEncoded{}, revising, fmt.Errorf("delivery live: %s.%s[%q] has no revision", kind, name, key)
+				}
+				values[key] = deliveryLiveValue{raw: entry, rev: rev}
+				continue
+			}
 			started := time.Now()
 			rev, err := deliveryLiveRevisionWithout(entry, excluded)
 			revising += time.Since(started)
@@ -214,9 +249,8 @@ func deliveryLiveCountRevision(count int) string {
 
 // deliveryLiveRevisionWithout is a whole field's or a map entry's revision, over its encoding
 // without the subfields excluded leaves out: the timeline's measures move their computed_at,
-// window and freshness on every compute, and a Legion board's open issue its grown values and
-// their as_of, and a page is sent the measures only when a number in them moved, and the entry
-// only when its stored row did.
+// window and freshness on every compute, and a page is sent the measures only when a number in
+// them moved.
 func deliveryLiveRevisionWithout(value json.RawMessage, excluded []string) (string, error) {
 	if len(excluded) == 0 {
 		return deliveryLiveRevision(value), nil
