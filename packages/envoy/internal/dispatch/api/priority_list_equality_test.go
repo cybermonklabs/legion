@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -20,14 +21,15 @@ import (
 // mainListFilteredTerm keeps the merge base's query shape: the `advances` filter joins
 // `advancing` and `advances_originating` to each issue, and the query reads rows straight
 // from that scan. The optimized query tests each key's membership and reads the matched
-// rows back from an array. The oracle uses the current label-fold map at $16 and $17,
-// with the pinned login at $18, so both statements accept the same arguments and match
-// labels the same way. The term is written out independently so a change to the production
-// priority query cannot change both sides of the comparison.
+// rows back from an array. The oracle uses the current label-fold map at $16 and $17, the
+// caller's viewer at $18 and the pinned login at $19, as listIssues binds them, so both
+// statements accept the same arguments, match labels the same way and keep out the same
+// issues of a project the caller does not see. The term is written out independently so a
+// change to the production priority query cannot change both sides of the comparison.
 func mainListFilteredTerm(pinned bool) string {
 	pinnedJoin := ""
 	if pinned {
-		pinnedJoin = "\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $18 and s.pinned"
+		pinnedJoin = "\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $19 and s.pinned"
 	}
 	return `filtered as (
 		select i.key, i.status, i.rank, i.created_at
@@ -51,6 +53,7 @@ func mainListFilteredTerm(pinned bool) string {
 		           or ($13::boolean and advancing.key is not null)))
 		       or ($15::boolean and (coalesce(originating.named, false)
 		           or ($13::boolean and originating.key is not null))))
+		  and ` + access.ProjectClause("i.project_key", "$18") + `
 	)`
 }
 
