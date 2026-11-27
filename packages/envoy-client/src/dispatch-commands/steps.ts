@@ -8,11 +8,12 @@ function orDash(value: string | null): string {
 }
 
 /** A check id the line prints as it stands: a plain word, holding no space of any kind, no
- *  quotation mark, no backslash and no control character. A check id is a Dispatch block id,
- *  which holds whatever the writer of the check wrote, so anything else prints as a JSON string
- *  (`oneLineJson`): a line break in an id would otherwise print a line of a run nobody ran, and a
- *  space would hide where the id begins. */
-const plainWord = /^[^\s"\\\p{Cc}]+$/u;
+ *  quotation mark, no backslash, no control character, no format character and no lone surrogate.
+ *  A check id is a Dispatch block id, which holds whatever the writer of the check wrote, so
+ *  anything else prints as a JSON string (`oneLineJson`): a line break in an id would otherwise
+ *  print a line of a run nobody ran, a space would hide where the id begins, and a format
+ *  character, such as a bidi override, would show the line in another order. */
+const plainWord = /^[^\s"\\\p{Cc}\p{Cf}\p{Cs}]+$/u;
 
 /** What a run's line ends with after its result: ` at <start>..<end>`, the commits its task's head
  *  was at when the run started and when it ended, where the record holds either, each cut to its

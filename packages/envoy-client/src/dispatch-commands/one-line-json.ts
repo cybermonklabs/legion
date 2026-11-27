@@ -1,16 +1,13 @@
-/** The characters other than a line feed and a carriage return that a reader splitting lines the
- *  Unicode way breaks a line at, and JSON leaves as they are: NEXT LINE, LINE SEPARATOR and
- *  PARAGRAPH SEPARATOR. (JSON escapes every other one, each below U+0020.) */
-const unescapedLineBreaks = /[\u0085\u2028\u2029]/g;
+import { printableJson } from "../runner-log";
 
-/** `text` as a JSON string that holds no line break: JSON's own escapes, and the `\u` escape of
- *  each of `unescapedLineBreaks`, which reads back as the same string. A command that prints one
- *  line per record writes through this each field another writer filled, so no value of one can
- *  end its line early or add a line nobody wrote: `dispatch plans` a retro's reason, and
- *  `dispatch steps` the id of the check a fix fixes. */
+/** `text` as a JSON string that holds no line break and no character that changes how the rest of
+ *  its line reads: JSON's own escapes, and the `\u` escape of each character `printableJson`
+ *  escapes, which JSON leaves as it is (DEL and the C1 controls, U+0085 NEXT LINE among them; each
+ *  format character, such as a bidi override or a zero-width joiner; and the line and paragraph
+ *  separators), with the `[` of a `##[` as `\u005b`. It reads back as the same string. A command
+ *  that prints one line per record writes through this each field another writer filled, so no
+ *  value of one can end its line early, add a line nobody wrote, or show its line in another
+ *  order: `dispatch plans` a retro's reason, and `dispatch steps` the id of the check a fix fixes. */
 export function oneLineJson(text: string): string {
-  return JSON.stringify(text).replace(
-    unescapedLineBreaks,
-    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`
-  );
+  return printableJson(JSON.stringify(text));
 }
