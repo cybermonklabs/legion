@@ -482,11 +482,15 @@ func requireOwnerLockFree(t *testing.T, database *store.Store, what, key string)
 //     the mark is gone; its node is caused at graphstore.NoEvent.
 //   - A node DELETE of a decision's reading, which takes it out of the spec's text and out of the
 //     decisions query's record: at the start of its drain (docs.Service.HoldDrains) nothing is
-//     published yet, the reading reads gone, the mark stands as the PATCH's does, the decisions
-//     query holds no new version, and the versions the DELETE itself wrote - the spec's - stand
-//     with their artifact.version in alice's name. Its trace inserts no version of the decisions
-//     query before its COMMIT; the drain then writes that version alone, under graphstore.NoEvent,
-//     in alice's name, published by the request, and clears the mark.
+//     published yet, the reading reads gone, the mark stands with greatest_seq the newest tuple
+//     sequence, alice its writer, and greatest_event null or the artifact.version of the spec's
+//     version the DELETE wrote; the route's own tuples out of the reading stand at
+//     graphstore.NoEvent and that version's index pass states the reading gone under its
+//     artifact.version; the decisions query holds no new version, and the versions the DELETE
+//     itself wrote - the spec's - stand with their artifact.version in alice's name. Its trace
+//     inserts no version of the decisions query before its COMMIT; the drain then writes that
+//     version alone, caused by the mark's greatest_event (graphstore.NoEvent where it holds
+//     none), in alice's name, published by the request, and clears the mark.
 //   - A drain behind an owed record digest: an edit of the spec leaves its version's digest owed,
 //     its own fill held, and a result is recorded; the result's drain runs its fill first, held
 //     too. While that fill waits the mark stands, the digest is owed, no version of the
@@ -1012,6 +1016,9 @@ func TestIssueQueryMarksDrainAfterCommit(t *testing.T) {
 		// (docs.Service.HoldDrains), once the DELETE and the drain's fill have committed.
 		var committed bool
 		var written map[string]int
+		// drainCause is what the drained version's facts are caused by: the mark's greatest_event
+		// as the drain read it, graphstore.NoEvent where it holds none.
+		drainCause := graphstore.NoEvent
 		documents.HoldDrains(func(drainedKey string) {
 			if drainedKey != key || committed {
 				return
@@ -1023,61 +1030,70 @@ func TestIssueQueryMarksDrainAfterCommit(t *testing.T) {
 			if state := nodeStateOf(t, database, "block", reading); state != graphstore.StateGone {
 				t.Errorf("once the DELETE committed %s reads %s, want %s", reading, state, graphstore.StateGone)
 			}
+			// The spec's version the DELETE itself wrote, whose artifact.version causes that
+			// version's index pass, which states the removed block gone.
+			specEvent, _, specHeld := documentEventOf(t, database, "artifact.version", removed.PrimaryArtifactID, versions["spec"]+1)
+			if !specHeld {
+				t.Errorf("version %d of the spec, which the DELETE writes, has no artifact.version once the DELETE committed", versions["spec"]+1)
+			}
 			mark, marked := readQueryMarkRow(t, database, key)
 			newest := newestTupleSeq(t, database)
 			switch {
 			case !marked:
 				t.Errorf("the DELETE of %s committed and left no issue_query_marks row of %s", reading, key)
-			case mark.event != nil:
-				t.Errorf("the DELETE's mark of %s holds greatest_event %d, want null: the delete writes its tuples at graphstore.NoEvent", key, *mark.event)
+			case mark.event != nil && *mark.event != specEvent:
+				t.Errorf("the DELETE's mark of %s holds greatest_event %d, want null or %d, the artifact.version of the spec's version the DELETE wrote", key, *mark.event, specEvent)
 			case mark.seq != newest:
 				t.Errorf("DELETE mark cause sequence %d, want %d, the newest tuple sequence once the DELETE committed", mark.seq, newest)
 			case mark.writer.ID != "alice":
 				t.Errorf("the tuple at the DELETE's mark's greatest_seq %d was written by %+v, want alice", mark.seq, mark.writer)
 			}
-			// The DELETE's own node write states its tuples at graphstore.NoEvent. The version it
-			// writes of the spec states the reading's block gone in its own index pass
-			// (node_delete.go's head), whose facts that version's write causes; the case names
-			// those facts and their cause in its log and asserts nothing of them (TickActor-r5.md,
-			// item 1: the spec's "The PATCH and the DELETE write their tuples and states at
-			// graphstore.NoEvent" against that pass).
+			drainCause = graphstore.NoEvent
+			if mark.event != nil {
+				drainCause = *mark.event
+			}
+			// The route's own node write states its tuples at graphstore.NoEvent; the spec's version
+			// states the reading's block gone in its own index pass, under that version's
+			// artifact.version (node_delete.go's head).
 			rows, err := database.Pool.Query(ctx, `
-				select g.seq, g.kind, g.asserted, g.source_event, coalesce(e.type, ''), coalesce(e.payload->>'artifact_id', '')
-				from graph_tuples g left join events e on e.id = g.source_event
+				select g.seq, g.kind, g.asserted, g.source_event from graph_tuples g
 				where g.from_kind = 'block' and g.from_id = $1 and g.seq > $2 order by g.seq`, reading, preceding)
 			if err != nil {
 				t.Fatalf("read the tuples the DELETE wrote out of %s: %v", reading, err)
 			}
-			unevented := 0
+			unevented, stated := 0, false
 			for rows.Next() {
 				var seq, cause int64
-				var kind, causeType, causeArtifact string
+				var kind string
 				var asserted bool
-				if err := rows.Scan(&seq, &kind, &asserted, &cause, &causeType, &causeArtifact); err != nil {
+				if err := rows.Scan(&seq, &kind, &asserted, &cause); err != nil {
 					rows.Close()
 					t.Fatalf("read a tuple the DELETE wrote out of %s: %v", reading, err)
 				}
-				if cause == graphstore.NoEvent {
+				switch cause {
+				case graphstore.NoEvent:
 					unevented++
-					continue
+				case specEvent:
+					stated = stated || (kind == "state" && asserted)
+				default:
+					t.Errorf("the DELETE wrote the %s tuple %d out of %s under event %d, want graphstore.NoEvent or %d, the spec version's artifact.version", kind, seq, reading, cause, specEvent)
 				}
-				t.Logf("the DELETE's transaction wrote the %s tuple %d out of %s (asserted %t) under event %d, %s of %s", kind, seq, reading, asserted, cause, causeType, causeArtifact)
 			}
 			rows.Close()
 			if err := rows.Err(); err != nil {
 				t.Fatalf("read the tuples the DELETE wrote out of %s: %v", reading, err)
 			}
 			if unevented == 0 {
-				t.Errorf("the DELETE wrote no tuple out of %s at graphstore.NoEvent, want its own node write's there", reading)
+				t.Errorf("the DELETE wrote no tuple out of %s at graphstore.NoEvent, want the route's own node write's there", reading)
 			}
 			var nodeCause int64
-			var nodeCauseType string
-			if err := database.Pool.QueryRow(ctx, `
-				select n.source_event, coalesce(e.type, '') from graph_nodes n left join events e on e.id = n.source_event
-				where n.kind = 'block' and n.id = $1`, reading).Scan(&nodeCause, &nodeCauseType); err != nil {
+			if err := database.Pool.QueryRow(ctx, `select source_event from graph_nodes where kind = 'block' and id = $1`, reading).Scan(&nodeCause); err != nil {
 				t.Fatalf("read the node of %s: %v", reading, err)
 			}
-			t.Logf("the node of %s, gone, is caused by event %d (%s)", reading, nodeCause, nodeCauseType)
+			if !stated || nodeCause != specEvent {
+				t.Errorf("the spec version's index pass stated %s gone under its artifact.version %d: state tuple %t, node caused by %d; want both under %d",
+					reading, specEvent, stated, nodeCause, specEvent)
+			}
 			if version := newestQueryVersion(t, database, decisions); version.number != before.number {
 				t.Errorf("the decisions query of %s stands at version %d once the DELETE committed and before its drain, want %d", key, version.number, before.number)
 			}
@@ -1136,7 +1152,7 @@ func TestIssueQueryMarksDrainAfterCommit(t *testing.T) {
 		}
 		requireDrainTrace(t, "the DELETE of "+reading, decisions, sent.Statements()[from:])
 		requireRecordedDigest(t, database, "the DELETE's drained version", key, graphstore.QueryDecisions, version)
-		requireRevisedVersion(t, database, "the DELETE's drained version", decisions, refKeyOf(t, database, decisions), version.number, graphstore.NoEvent)
+		requireRevisedVersion(t, database, "the DELETE's drained version", decisions, refKeyOf(t, database, decisions), version.number, drainCause)
 	})
 
 	t.Run("a drain behind an owed record digest", func(t *testing.T) {

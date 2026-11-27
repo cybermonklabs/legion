@@ -193,7 +193,10 @@ func writeFirstVersion(t *testing.T, database *store.Store, service *Service, id
 // (writeMismatchedSpec). alice approves version 1, pinning its stored markdown's digest. The seed's
 // pending row is settled as the product settles it (settleOwedNow): no content changed since
 // version 1, so no version is written and the row goes. One tick then states the document's tree
-// at version 1 and marks the row tree_mismatch: no time, no digest, no seq. The version answers
+// at version 1 and marks the row tree_mismatch: no time, no digest, no seq. The digest fill, as a
+// write's caller runs it for the issue (fillOwedDigests) and as the tick repairs the fills requests
+// lost (fillLostDigests), leaves that row with no time and its mark: the fill consumes no row with
+// no time. The version answers
 // its stored bytes, the census counts the row tree_mismatch, prints it on a mark line of its own,
 // and counts it neither deferred nor a difference, the census alone
 // refuses, and alice's approval stands with nothing carried. The next tick, with no update in
@@ -228,6 +231,20 @@ func renderStepTreeMismatch(t *testing.T, rig *renderRig, service *Service) {
 	if row := readRenderRow(t, database, spec, 1); row.at != nil || row.digest != nil || row.readSeq != nil || !row.mismatch {
 		t.Errorf("after the tick the row of %s@v1 holds %v, %v and %v, tree_mismatch %t; want no time, no digest, no seq and tree_mismatch",
 			refKey, row.at, row.digest, row.readSeq, row.mismatch)
+	}
+	// The digest fill consumes no row with no time (R15): the fill a write's caller runs for the
+	// issue (fillOwedDigests), and the tick's repair of the fills requests lost (fillLostDigests),
+	// which runs that fill for each issue that owes a digest, each leave the mismatch row with no
+	// time and its tree_mismatch mark.
+	if _, err := service.fillOwedDigests(ctx, "MISS-1", 0); err != nil {
+		t.Fatalf("fill the record digests MISS-1 owes: %v", err)
+	}
+	if err := service.fillLostDigests(ctx); err != nil {
+		t.Fatalf("the tick's repair of the record digests requests left owed: %v", err)
+	}
+	if row := readRenderRow(t, database, spec, 1); row.at != nil || !row.mismatch {
+		t.Errorf("after the digest fill the tree_mismatch row of %s@v1 holds at %v and tree_mismatch %t; want no time and tree_mismatch: the fill consumes no row with no at",
+			refKey, row.at, row.mismatch)
 	}
 	if got := rig.renderVersion(t, spec, 1); got.Source != StoredBytes || got.Markdown != other {
 		t.Errorf("version 1 of %s renders %d bytes from %s, want its %d stored bytes from %s", refKey, len(got.Markdown), got.Source, len(other), StoredBytes)
