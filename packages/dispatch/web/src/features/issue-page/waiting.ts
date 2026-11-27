@@ -122,9 +122,14 @@ export function waitingOnReader(
   // Each open ask and node at or under an overtaken node taken out, the decisions among those
   // nodes with them, and the count made of what is left. The nodes are closed over both reads
   // (`joinedReads`), so a question's block, which only Conversation's read holds, closes with its
-  // ask's node, and so does each node the decisions view hangs under that block.
+  // ask's node, and so does each node the decisions view hangs under that block. The reads are
+  // joined only where one of them holds a node whose `state` is overtaken (`holdsOvertaken`):
+  // `closedReadIds` closes nothing of a read with no node overtaken by its own state, the same as
+  // of no read, so without one the join is not built.
   const { askIds: closedAsks, readIds: closed } = closedReadIds(
-    viewer === undefined ? undefined : joinedReads(tree, answer),
+    viewer !== undefined && (holdsOvertaken(tree) || holdsOvertaken(answer))
+      ? joinedReads(tree, answer)
+      : undefined,
     { asks: asksRead, issue }
   );
   if (closed.size > 0) {
@@ -176,8 +181,9 @@ export function waitingOnReader(
 
 /** The nodes of Conversation's read `tree` and of the read the count is read from, `answer`, as
  *  one read, `answer`'s node where both hold one id, which the header's count closes nodes and
- *  asks over (`closedReadIds`): `answer` alone where it is Conversation's read itself, either read
- *  alone where the count is handed only that one, and none while it is handed neither. */
+ *  asks over (`closedReadIds`) where either read holds an overtaken node (`holdsOvertaken`):
+ *  `answer` alone where it is Conversation's read itself, either read alone where the count is
+ *  handed only that one, and none while it is handed neither. */
 function joinedReads(
   tree: TreeAnswer | undefined,
   answer: TreeAnswer | undefined
@@ -189,6 +195,18 @@ function joinedReads(
     ...answer,
     nodes: [...(tree.nodes ?? []).filter((node) => !held.has(node.id)), ...answerNodes],
   };
+}
+
+/** Whether `read` holds a node whose `state` is overtaken. `closedReadIds` closes nothing of a
+ *  read with no node overtaken by its own state (`ownStatesOf`), and a node's own state is
+ *  overtaken only where its `state` is, so while neither read the count is handed holds one, the
+ *  reads are not joined. It stops at the first such node and allocates nothing. */
+function holdsOvertaken(read: TreeAnswer | undefined): boolean {
+  if (!read?.nodes) return false;
+  for (const node of read.nodes) {
+    if (node.state === "overtaken") return true;
+  }
+  return false;
 }
 
 /** What the count leaves in the address's history entry, which the Decisions filter reads to put
