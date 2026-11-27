@@ -108,6 +108,7 @@ export function MachineLoginsSection(): ReactNode {
         ])
       }
       query={logins}
+      readKey={machineLoginsQuery().queryKey}
       revoke={(login, bounds) => api.revokeMachineLogin(login.credential_id, bounds)}
       rowKey={(login) => login.credential_id}
       rowName={(login) => `the machine login for ${machineName(login)}`}

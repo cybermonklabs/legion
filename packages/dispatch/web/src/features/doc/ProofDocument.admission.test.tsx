@@ -669,6 +669,73 @@ test("inside NoTooltips, a rebuild whose read has not answered by the request de
   }
 });
 
+// A row's editor is drawn only while a row is edited in it, so the editor closed and opened again
+// is a new one while a rebuild's read of the document is still out. Its own admission waits on
+// that read, so it draws no offer and no Rebuild to press a second time until the read settles.
+// The read has one hold for every editor of the document (`useReadBound`): at the bound the
+// editor drawn again says why the read has not settled, as the editor it was pressed in would
+// have, until the read settles and the admission draws the offer again, with Rebuild free and the
+// rebuild sent once (the tester's row of `issue-page-i.e2e.ts`).
+test("inside NoTooltips, an editor drawn again while its rebuild's read is out says why at the bound until the read settles", async () => {
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const refusal = () =>
+    new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL });
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(refusal());
+  const rebuilt = Promise.withResolvers<ArtifactRebuildReport>();
+  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(() => rebuilt.promise);
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const reread = Promise.withResolvers<ArtifactText>();
+  const queryClient = freshReadsQueryClient();
+  // The editor as it is drawn now: the one the press is made in, then the one drawn again.
+  let drawn = renderProofDocument({ noTooltips: true, queryClient }).view;
+  const why = "The rebuilt document is not read yet. Dispatch did not answer within 30 seconds.";
+  const rebuildOf = () =>
+    screen.getByRole<HTMLButtonElement>("button", {
+      name: /^(Rebuild from the latest version|Rebuilding…)$/,
+    });
+  try {
+    await screen.findByRole("button", { name: "Rebuild from the latest version" });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(rebuildOf());
+    await tick(0);
+    expect(rebuildArtifact).toHaveBeenCalledTimes(1);
+    getArtifactText.mockImplementation(() => reread.promise);
+    await act(async () => rebuilt.resolve(REBUILT_REPORT));
+    await tick(0);
+
+    drawn.unmount();
+    drawn = renderProofDocument({ noTooltips: true, queryClient }).view;
+    await tick(1_000);
+    expect(
+      screen.queryByRole("button", { name: /^Rebuild/ }),
+      "the editor drawn again offered Rebuild while the rebuild's read was out"
+    ).toBeNull();
+    expect(screen.queryByText(why)).toBeNull();
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(
+      screen.queryByText(why),
+      "the editor drawn again said nothing of the rebuild's read at the bound"
+    ).toBeInTheDocument();
+
+    await act(async () => reread.reject(refusal()));
+    await tick(0);
+    expect(screen.queryByText(why)).toBeNull();
+    expect(heldNotDisabled(rebuildOf(), "Rebuild")).toBe(false);
+    expect(rebuildArtifact).toHaveBeenCalledTimes(1);
+  } finally {
+    drawn.unmount();
+    queryClient.clear();
+    realClock();
+    confirm.mockRestore();
+    rebuildArtifact.mockRestore();
+    getArtifactText.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifact.mockRestore();
+  }
+});
+
 // The line a rebuild's read the bound ended draws is that rebuild's own: the next rebuild takes it
 // away as it lands, though the earlier read is still out, and that rebuild's read answering says
 // nothing more. Dispatch holds the first rebuild's read of the text until the row answers it, so

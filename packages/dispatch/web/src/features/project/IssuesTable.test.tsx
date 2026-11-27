@@ -178,12 +178,12 @@ function table(
   });
   client.setQueryData(["whoami"], { event_head: "0", login: "alice", kind: "user" });
   const list = <IssuesTable listing={{ project: "CORE" }} {...props} />;
-  const view = render(
+  const page = (drawn: boolean) => (
     <MemoryRouter initialEntries={[`/projects/CORE/issues${search}`]}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <Route />
-          {inMain ? (
+          {!drawn ? null : inMain ? (
             <>
               <a href="/">Inbox</a>
               <main>{list}</main>
@@ -195,6 +195,7 @@ function table(
       </QueryClientProvider>
     </MemoryRouter>
   );
+  const view = render(page(true));
   restores.push(() => {
     view.unmount();
     client.clear();
@@ -205,7 +206,13 @@ function table(
     if (descriptor) Object.defineProperty(HTMLElement.prototype, "clientHeight", descriptor);
     else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
   });
-  return { client, listing, registry, view };
+  /** Takes the List off the page and draws it again, as the project page does on a switch to
+   *  the Board and back. */
+  const drawAgain = () => {
+    view.rerender(page(false));
+    view.rerender(page(true));
+  };
+  return { client, drawAgain, listing, registry, view };
 }
 
 /** Fills in the in-page dialog an epic is named or renamed through, once it opens. */
@@ -3420,6 +3427,74 @@ test("the line a Start next's list read the bound ended adds goes as the next St
     await act(async () => reread.resolve());
     await tick(0);
     expect(startNext).not.toHaveAttribute("aria-disabled");
+    expect(screen.queryByRole("alert")).toBeNull();
+  } finally {
+    realClock();
+  }
+});
+
+// The project page draws the List only while its List view is picked, so a switch to the Board
+// and back draws a new List while an action's list read is still out. The listing's read has one
+// hold for every List of it (`useUnsettledRead`), under what the action said it did: the List
+// drawn again holds its controls through that read, as the List the action ran in did, and at the
+// bound and after says what the action did and why its read has not settled, until the read
+// answers (the tester's row of `table-controls.e2e.ts`).
+test("a List drawn again while an action's list read is out holds its controls through it, and says what the action did and why at the bound until the read answers", async () => {
+  // Each write's answer, held until the row gives it, so what it sets off runs in `act`.
+  const { answers, next } = heldAnswers<Issue>();
+  const send = spyOn(api, "send").mockImplementation(() => next() as never);
+  restores.push(() => send.mockRestore());
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { drawAgain, listing } = table(
+    [
+      issue("CORE-1", { labels: ["legion"], rank: "B" }),
+      issue("CORE-2", { labels: ["legion"], rank: "C" }),
+    ],
+    "",
+    { client }
+  );
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  // The list read after the write, held until the row answers it.
+  const listed = listing.getMockImplementation();
+  const reread = Promise.withResolvers<void>();
+  listing.mockImplementationOnce(async (...args) => {
+    await reread.promise;
+    if (listed === undefined) throw new Error("the list read has no answer");
+    return listed(...args);
+  });
+  const startNextOf = () =>
+    within(screen.getByRole("row", { name: "CORE-2 Work CORE-2" })).getByRole("button", {
+      name: "Start next",
+    });
+  const why =
+    "CORE-2 “Work CORE-2” now starts next. Could not load issues. Dispatch did not answer within 30 seconds.";
+  jest.useFakeTimers();
+  try {
+    await userOnFakeClock().click(startNextOf());
+    await tick(0);
+    await act(async () => answers[0]?.(savedIssue("CORE-2")));
+    await tick(0);
+
+    drawAgain();
+    await tick(0);
+    expect(
+      startNextOf(),
+      "the List drawn again let its controls go while the action's list read was out"
+    ).toHaveAttribute("aria-disabled", "true");
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(startNextOf()).not.toHaveAttribute("aria-disabled");
+    expect(screen.getByRole("alert").textContent).toBe(why);
+    drawAgain();
+    await tick(0);
+    expect(
+      screen.queryByRole("alert")?.textContent,
+      "the List drawn again after the bound lost what the action did and why its read is out"
+    ).toBe(why);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    await act(async () => reread.resolve());
+    await tick(0);
     expect(screen.queryByRole("alert")).toBeNull();
   } finally {
     realClock();

@@ -674,6 +674,61 @@ test("inside NoTooltips, the line a write's reads the bound ended draws goes as 
   }
 });
 
+// Inside `NoTooltips` the line reads the priorities only while its picker is open or the issue
+// advances one. The first priority added to an issue that advances none is written with the
+// picker closed, so the invalidation after it reads no priorities, though the line the next issue
+// read draws names that priority from them: the write reads them itself, and its hold waits on
+// that read too. The trigger stays held until the read answers or the request deadline, and at
+// the deadline the line says why the priorities are not read, until the read answers (the
+// tester's row of `issue-page-h.e2e.ts`).
+test("inside NoTooltips, the first priority added to an issue that advances none holds through the priorities read, and the line says why at the bound until it answers", async () => {
+  const view = renderLine([], false, body, { page: true });
+  const answer = Promise.withResolvers<never>();
+  view.patchIssue.mockImplementation(() => answer.promise);
+  const reread = Promise.withResolvers<Priorities>();
+  const name = "Edit priorities";
+  const why = "Could not load the priorities. Dispatch did not answer within 30 seconds.";
+  try {
+    const trigger = view.trigger() as HTMLButtonElement;
+    const user = userEvent.setup();
+    await user.click(trigger);
+    const listbox = await view.picker();
+    await user.click(
+      await within(listbox).findByRole("option", { name: "#1 Evals collecting data now" })
+    );
+    expect(view.listPriorities).toHaveBeenCalledTimes(1);
+    jest.useFakeTimers();
+    view.listPriorities.mockImplementation(() => reread.promise);
+    await userOnFakeClock().keyboard("{Escape}");
+    await tick(0);
+    expect(view.patchIssue).toHaveBeenCalledTimes(1);
+    await act(async () => answer.resolve({} as never));
+    await tick(0);
+    // The issue read again names the priority added, from the priorities' read.
+    view.reread([{ id: "evals-now", inherited: false }], REVISION + 1);
+    await tick(0);
+    expect(view.listPriorities).toHaveBeenCalledTimes(2);
+    expect(
+      heldNotDisabled(trigger, name),
+      "the first add let the trigger go before the priorities were read"
+    ).toBe(true);
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(heldNotDisabled(trigger, name)).toBe(false);
+    expect(view.q.getByRole("alert").textContent).toBe(why);
+
+    await act(async () => reread.resolve(body));
+    await tick(0);
+    expect(view.q.queryByRole("alert")).toBeNull();
+  } finally {
+    reread.resolve(body);
+    cleanup();
+    view.unmountAll();
+    view.queryClient.clear();
+    realClock();
+  }
+});
+
 test("a closed issue reads its priorities and writes none of them", async () => {
   const view = renderLine([{ id: "rocq-lean", inherited: false }], true);
   try {

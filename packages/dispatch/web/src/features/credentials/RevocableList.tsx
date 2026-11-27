@@ -1,4 +1,4 @@
-import type { UseQueryResult } from "@tanstack/react-query";
+import type { QueryKey, UseQueryResult } from "@tanstack/react-query";
 import { type ReactNode, useRef } from "react";
 
 import type { WriteBounds } from "../../api/client";
@@ -72,6 +72,7 @@ export function RevocableList<Row>({
   noun,
   onRevoked,
   query,
+  readKey,
   revoke,
   rowKey,
   rowName,
@@ -89,6 +90,8 @@ export function RevocableList<Row>({
    *  fetch the network has paused (`invalidateWaitingForPaused`). */
   onRevoked: () => Promise<unknown>;
   query: UseQueryResult<readonly Row[]>;
+  /** The query key of `query`, the read a revoke holds every Revoke through (`useReadBound`). */
+  readKey: QueryKey;
   /** One attempt of `row`'s revoke - a `POST` of its revoke route - under the write's key. */
   revoke: (row: Row, bounds: WriteBounds) => Promise<void>;
   rowKey: (row: Row) => string;
@@ -102,7 +105,7 @@ export function RevocableList<Row>({
   const submitGuard = useSubmitGuard();
   // Why the read the latest landed revoke made has not settled, once its hold ran out: the next
   // revoke takes it away as it lands (`useReadBound`).
-  const [unsettled, holdThrough] = useReadBound();
+  const [unsettled, holdThrough] = useReadBound(readKey);
   // What the list says of a read that failed, and of the read a landed revoke made that has not
   // settled.
   const notLoaded = `Couldn't load ${noun}.`;

@@ -161,7 +161,7 @@ export function IssuePropertiesRow({
   // step's - through those reads with one hold: a review that lands forgets why an earlier one's
   // reads had not settled, whichever chip's it was, and only the chip whose review made the latest
   // reads says why those have not (`ApprovalChip`'s `reviewReads`).
-  const reviewReads = useListReadBound();
+  const reviewReads = useListReadBound(["issue", issue.key]);
   const line = useRef<HTMLDivElement>(null);
 
   // The count's press, where an ask or a decision waits: it sets the Decisions filter's address

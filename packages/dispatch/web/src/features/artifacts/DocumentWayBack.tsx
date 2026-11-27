@@ -9,7 +9,7 @@ import {
   removedEvenIfGone,
 } from "../../api/client";
 import { waitingForPausedReads } from "../../api/query-client";
-import type { ListReadHold } from "../../api/read-bound";
+import { useListReadBound } from "../../api/read-bound";
 import type { Artifact } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -28,8 +28,9 @@ export const CLOSED_ISSUE_RENAME_REFUSAL = "This issue is closed. Reopen it to c
 export const CLOSED_ISSUE_REMOVE_REFUSAL =
   "This issue is closed. Reopen it to remove this document.";
 
-/** What the Artifacts tab says when its list read failed, and what a removal's row says before
- *  why the list read after it has not settled. */
+/** What the Artifacts tab says when its list read failed, and what a removal's Remove says, in
+ *  the tab's row or in a document page's header, before why the reads after it have not
+ *  settled. */
 export const ARTIFACTS_NOT_LOADED = "Could not load artifacts.";
 
 /** Who holds `artifact`: its issue, its project, or the agent whose conversation holds it. */
@@ -42,25 +43,49 @@ function artifactOwner(artifact: Artifact): ArtifactOwner {
     : { issue: artifact.issue_key };
 }
 
+/** Refreshes the reads of the document itself: its own read, and the project document page,
+ *  which reads it by `project/slug`. The slug does not move with a correction, so the same keys
+ *  name the document after it. */
+function refreshDocumentReads(queryClient: QueryClient, artifact: Artifact): void {
+  void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+  void queryClient.invalidateQueries({
+    queryKey: ["artifact-ref", `${artifact.project}/${artifact.slug}`],
+  });
+}
+
 /**
- * Refreshes every read that shows the document's title or its row, so a correction and a removal
- * both land on the open page with no reload: its owner's document list and, for an issue, the
- * issue read the artifact page's header draws from; the document's own read; and the project
- * document page, which reads it by `project/slug`. The slug does not move with a correction, so
- * the same keys name the document after it. Answers when the owner's document list has been read
- * again, or has failed to be (`refreshOwnerArtifacts`).
+ * Refreshes every read that shows the document's title or its row, so a correction lands on the
+ * open page with no reload: its owner's document list and, for an issue, the issue read the
+ * artifact page's header draws from (`refreshOwnerArtifacts`), and the document's own reads
+ * (`refreshDocumentReads`). A removal refreshes the same reads (`refreshRemoval`).
  *
  * The live stream refreshes the same reads from the event the write appends
  * (`api/event-refresh.ts`), which is how one reader's correction reaches another's page; this is
  * what makes the writer's own page move whether or not that stream is up.
  */
-function refreshArtifact(queryClient: QueryClient, artifact: Artifact): Promise<void> {
-  const list = refreshOwnerArtifacts(queryClient, artifactOwner(artifact));
-  void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
-  void queryClient.invalidateQueries({
-    queryKey: ["artifact-ref", `${artifact.project}/${artifact.slug}`],
-  });
-  return list;
+function refreshArtifact(queryClient: QueryClient, artifact: Artifact): void {
+  void refreshOwnerArtifacts(queryClient, artifactOwner(artifact));
+  refreshDocumentReads(queryClient, artifact);
+}
+
+/**
+ * Refreshes what a removal of `artifact` changed, the reads a correction refreshes
+ * (`refreshArtifact`), and answers once the two that take the document away have been read
+ * again, or have failed to be: the issue read, which the document's own page draws it from
+ * (`useIssueDetail`), and the issue's document list, which its Artifacts tab draws. The list is
+ * read even where nothing on the page draws it, as on the document's own page, whose way back
+ * opens the Artifacts tab: the tab then finds that read out, and the removal's hold through it
+ * (`RemoveDocument`). A removal is offered for an issue's document alone (`removalIsOffered`).
+ */
+function refreshRemoval(queryClient: QueryClient, artifact: Artifact): Promise<unknown> {
+  refreshDocumentReads(queryClient, artifact);
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: ["issue", artifact.issue_key] }),
+    queryClient.invalidateQueries({
+      queryKey: ["artifacts", artifact.issue_key],
+      refetchType: "all",
+    }),
+  ]);
 }
 
 /** What the correction form says of a correction the reader stopped: Dispatch may have saved it,
@@ -113,14 +138,14 @@ export function CorrectTitle({
     onSettled: () => submitGuard.release(),
     onSuccess: (_result, { artifact: corrected }) => {
       setCorrecting(false);
-      void refreshArtifact(queryClient, corrected);
+      refreshArtifact(queryClient, corrected);
     },
     // A correction the reader stopped may have landed, and the heading still shows the title the
     // page held before it. Reading the document again is all this does - the write is settled and
     // no attempt of it is left to make - so the heading shows the title Dispatch holds, which is
     // what the form's sentence sends the reader to read.
     onError: (error, { artifact: corrected }) => {
-      if (error instanceof SendStoppedError) void refreshArtifact(queryClient, corrected);
+      if (error instanceof SendStoppedError) refreshArtifact(queryClient, corrected);
     },
   });
   const held = rename.isPending && !rename.late;
@@ -215,11 +240,13 @@ export function correctionIsOffered(artifact: Artifact): boolean {
  * it sits in (`ArtifactRow`), and the page's header, which the issue's page draws for one document
  * after another, keys the control itself (`ArtifactHeader`).
  *
- * Its host holds every removal it draws through the read of the document list with one hold
- * (`useListReadBound`): the issue's document list holds all its rows' removals so, since each of
- * them reads that one list again, and a later removal forgets why an earlier one's read had not
- * settled, whichever row made it. The host hands this control that hold (`holdThrough`) and why
- * that read has not settled where this document's removal made the latest one (`unsettled`).
+ * Every removal of an issue's document reads that issue's one document list again, so every
+ * Remove of the issue takes that list's one hold (`useListReadBound`), whichever host draws it:
+ * a later removal forgets why an earlier one's read had not settled, whichever document's it
+ * was, and this control says why that read has not settled only where its own document's
+ * removal made the latest one. A host that draws this control again while that read is out - the
+ * Artifacts tab left and opened again, or opened by a document page's way back - finds the hold:
+ * the control is held through it, as the one the press was made on was, and then says why.
  *
  * `onRemoved` is the host's own way back from the page of a document that has gone, handed the
  * document the removal was of. It is called when the removal lands, by when the reader may have
@@ -227,23 +254,16 @@ export function correctionIsOffered(artifact: Artifact): boolean {
  */
 export function RemoveDocument({
   artifact,
-  holdThrough,
   onRemoved,
   refusal = null,
-  unsettled,
 }: {
   readonly artifact: Artifact;
-  /** The host's hold through its read of the document list, which a landed removal makes as the
-   *  document's it removed (`useListReadBound`). */
-  readonly holdThrough: ListReadHold;
   readonly onRemoved?: (removed: Artifact) => void;
   readonly refusal?: string | null;
-  /** Why the host's read of the document list has not settled, where this document's removal
-   *  made the latest one, else undefined. */
-  readonly unsettled: string | undefined;
 }): ReactNode {
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
+  const [unsettledOf, holdThrough, holdingOf] = useListReadBound(["artifacts", artifact.issue_key]);
   const remove = useKeyedWrite({
     inline: true,
     // The press carries the document it removes: the indicator names it, and the route takes its
@@ -257,19 +277,21 @@ export function RemoveDocument({
     write: ({ id }, bounds) =>
       removedEvenIfGone(api.deleteArtifact(id, bounds), isArtifactNotFound),
     onSettled: () => submitGuard.release(),
-    // Pending, and the button held, through the read of the document list that takes the row
-    // away, so the button keeps the reader's focus until the row goes. That read settles either
-    // way, and a failed one lets the button go. A read that has not settled by the request
-    // deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - lets it go
-    // then, and the row says why the list is not read yet (`useListReadBound`) until that read
-    // settles or another removal makes the next one.
+    // Pending, and the button held, through the reads that take the document away - the issue's
+    // document list, where its row goes, and the issue read, where its own page goes - so the
+    // button keeps the reader's focus until the row goes (`refreshRemoval`). Those reads settle
+    // either way, and a failed one lets the button go. Reads that have not settled by the request
+    // deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - let it go
+    // then, and the control says why the list is not read yet (`useListReadBound`) until they
+    // settle or another removal makes the next one.
     onSuccess: (_result, removed) => {
-      // The read waits on a fetch the network had already paused, which that deadline ends too.
-      const list = waitingForPausedReads(queryClient, () => refreshArtifact(queryClient, removed));
+      // The reads wait on a fetch the network had already paused, which that deadline ends too.
+      const reads = waitingForPausedReads(queryClient, () => refreshRemoval(queryClient, removed));
       onRemoved?.(removed);
-      return holdThrough(removed.id, list);
+      return holdThrough(removed.id, reads);
     },
   });
+  const unsettled = unsettledOf(artifact.id);
   useReleaseWhenLate(submitGuard, remove.late);
   // A removal the reader stopped may have been made, and Remove is its Retry (`onPress`). A list
   // read that has not settled is said in the words the Artifacts tab says for one that failed.
@@ -288,7 +310,9 @@ export function RemoveDocument({
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2">
       <RefusableButton
-        busy={remove.isPending && !remove.late ? "Removing…" : undefined}
+        busy={
+          (remove.isPending && !remove.late) || holdingOf(artifact.id) ? "Removing…" : undefined
+        }
         look="secondary-compact"
         // A press of Remove while its refusal is on screen is the Retry of the press that refusal
         // is about (`retry`). Where the reader stopped that removal and it had landed, the Retry

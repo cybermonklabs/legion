@@ -83,7 +83,7 @@ export function ArchitectureSourcesSection(): ReactNode {
     () => list.current,
     () => null
   );
-  const [unsettled, holdThrough] = useReadBound();
+  const [unsettled, holdThrough] = useReadBound(architectureSourcesQuery().queryKey);
   // The form shows a refused save beside the repository it was refused over.
   const saveSource = useKeyedWrite({
     inline: true,

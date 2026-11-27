@@ -224,9 +224,9 @@ export function ReplacingUploadNote(): ReactNode {
   );
 }
 
-/** Refreshes the lists a write to `owner` adds a row to: an upload's, and a new document's.
- *  Answers when the owner's document list has been read again, or has failed to be: a removal
- *  waits on it, so its button stays held until that read takes the row away. */
+/** Refreshes the lists a write to `owner` adds a row to: an upload's, and a new document's, and a
+ *  correction's of a title (`refreshArtifact`). Answers when the owner's document list has been
+ *  read again, or has failed to be. A removal reads its own (`refreshRemoval`). */
 export function refreshOwnerArtifacts(
   queryClient: QueryClient,
   owner: ArtifactOwner

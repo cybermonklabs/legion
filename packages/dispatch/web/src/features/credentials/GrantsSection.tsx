@@ -117,6 +117,7 @@ export function GrantsSection(): ReactNode {
       noun="grants"
       onRevoked={() => invalidateWaitingForPaused(queryClient, credentialGrantsQuery().queryKey)}
       query={grants}
+      readKey={credentialGrantsQuery().queryKey}
       revoke={(grant, bounds) => api.revokeCredentialGrant(grant.grant_id, bounds)}
       rowKey={(grant) => grant.grant_id}
       rowName={({ enrollment, names }) => {

@@ -4,7 +4,6 @@ import { memo, type ReactNode, useId, useMemo } from "react";
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
-import { type ListReadHold, useListReadBound } from "../../api/read-bound";
 import type { Artifact, IssueReferencesAnswer, ReferenceLink } from "../../api/types";
 import { ControlRow } from "../../components/ControlRow";
 import { QueryError } from "../../components/QueryError";
@@ -377,18 +376,12 @@ const References = memo(function References({
  */
 function ArtifactRow({
   artifact,
-  holdRemovalThrough,
   isClosed,
   issueKey,
-  removalUnsettled,
 }: {
   artifact: Artifact;
-  /** The list's one hold through its read after a removal (`useListReadBound`). */
-  holdRemovalThrough: ListReadHold;
   isClosed: boolean;
   issueKey: string;
-  /** Why the list's read has not settled, where this document's removal made the latest one. */
-  removalUnsettled: string | undefined;
 }): ReactNode {
   const versions = versionsNewestFirst(artifact.versions);
   const latestVersion = versions[0];
@@ -464,9 +457,7 @@ function ArtifactRow({
         {removalIsOffered(artifact) ? (
           <RemoveDocument
             artifact={artifact}
-            holdThrough={holdRemovalThrough}
             refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
-            unsettled={removalUnsettled}
           />
         ) : null}
       </div>
@@ -476,13 +467,11 @@ function ArtifactRow({
 
 /** The issue's artifacts: a control that makes a document, an upload that a closed issue refuses
  *  before a file is picked, and every artifact the issue holds. Every document's removal reads the
- *  one document list again, so the list holds every row's Remove through that read with one hold
- *  (`useListReadBound`): a removal that lands forgets why an earlier one's read had not settled,
- *  whichever row made it, and only the row whose removal made the latest read says why that one
- *  has not (`RemoveDocument`). */
+ *  one document list again, so every row's Remove takes that list's one hold (`RemoveDocument`):
+ *  a removal that lands forgets why an earlier one's read had not settled, whichever row made it,
+ *  and only the row whose removal made the latest read says why that one has not. */
 export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): ReactNode {
   const { pathname } = usePageAddress();
-  const [removalUnsettledOf, holdRemovalThrough] = useListReadBound();
   const route = parseIssuePath(pathname);
   const issueKey = route?.key;
   // The words that narrow the list live in the address (`?q=`), so a reader who reloads, shares
@@ -598,11 +587,9 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
             {visibleArtifacts.map((artifact) => (
               <ArtifactRow
                 artifact={artifact}
-                holdRemovalThrough={holdRemovalThrough}
                 isClosed={isClosed}
                 issueKey={issueKey}
                 key={artifact.id}
-                removalUnsettled={removalUnsettledOf(artifact.id)}
               />
             ))}
           </ul>

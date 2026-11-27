@@ -1,7 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
-import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+  QueryObserver,
+} from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
@@ -461,6 +466,74 @@ test("the line an Unsubscribe's read the bound ended draws goes as the next Unsu
     page.unmount();
     client.clear();
     unsubscribeIssueSession.mockRestore();
+  }
+});
+
+// Below 1280 px the ask's card is drawn in the reading view only while its row is open, and the
+// window resized across 1280 px draws it in the other place: either way a new card is drawn while
+// an Unfollow's read of the ask's thread is still out. The read has one hold for every card of it
+// (`useReadBound`), so the card drawn again holds its Unfollow through that read as the card it
+// was pressed on did, and says why at the bound and after, until the read answers (the tester's
+// rows of `followers.e2e.ts`).
+test("a card drawn again while an Unfollow's read of the ask is out holds Unfollow through it, and says why at the bound until the read answers", async () => {
+  const client = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  // The ask's thread, which lists its followers, as its card's host reads it: the read the
+  // Unfollow's landing starts is held until the row answers it.
+  client.setQueryData(["ask-thread", "ask-1"], { followers: [] });
+  const reread = Promise.withResolvers<object>();
+  const thread = new QueryObserver(client, {
+    queryFn: () => reread.promise,
+    queryKey: ["ask-thread", "ask-1"],
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const unsubscribe = thread.subscribe(() => {});
+  const page = await renderRecipients({ client });
+  const why = "Could not load the recipients. Dispatch did not answer within 30 seconds.";
+  const section = () => screen.getByRole("region", { name: "Recipients" });
+  /** The second follower's Unfollow, with the routing list of the card as drawn now unfolded. */
+  const unfollowOfDrawn = async (user: UserEvent) => {
+    const toggle = within(section()).getByRole("button", { name: /^Reaches/ });
+    if (toggle.getAttribute("aria-expanded") === "false") await user.click(toggle);
+    return within(section()).getAllByRole("button", { name: "Unfollow" })[1] as HTMLButtonElement;
+  };
+  try {
+    await onFakeClock(async () => {
+      const user = userOnFakeClock();
+      await user.click(await unfollowOfDrawn(user));
+      await user.click(
+        within(screen.getByRole("dialog", { name: "Unfollow" })).getByRole("button", {
+          name: "Confirm",
+        })
+      );
+      await tick(0);
+
+      page.drawAgain();
+      const unfollow = await unfollowOfDrawn(user);
+      expect(
+        heldNotDisabled(unfollow, "Unfollow"),
+        "the card drawn again let Unfollow go while the read of the ask was out"
+      ).toBe(true);
+      expect(within(section()).queryByText(why)).toBeNull();
+
+      await tick(REQUEST_DEADLINE_MS);
+      expect(heldNotDisabled(unfollow, "Unfollow")).toBe(false);
+      expect(within(section()).getByText(why)).toBeInTheDocument();
+      page.drawAgain();
+      expect(
+        within(section()).queryByText(why),
+        "the card drawn again after the bound said nothing of the read still out"
+      ).toBeInTheDocument();
+
+      await act(async () => reread.resolve({ followers: [] }));
+      await tick(0);
+      expect(within(section()).queryByText(why)).toBeNull();
+    });
+  } finally {
+    unsubscribe();
+    page.unmount();
+    client.clear();
   }
 });
 

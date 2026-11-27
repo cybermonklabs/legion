@@ -59,6 +59,7 @@ export function SignInsSection(): ReactNode {
       noun="sign-ins"
       onRevoked={() => invalidateWaitingForPaused(queryClient, signInsQuery().queryKey)}
       query={signIns}
+      readKey={signInsQuery().queryKey}
       revoke={(signIn, bounds) => api.revokeSignIn(signIn.signin_id, bounds)}
       rowKey={(signIn) => signIn.signin_id}
       rowName={(signIn) => `your sign-in on ${signIn.machine}`}

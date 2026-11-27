@@ -366,19 +366,26 @@ function ChangeComposer({
   // `readingRef` is the same fact for a press that lands before the render shows it.
   const [reading, setReading] = useState(false);
   const readingRef = useRef(false);
-  // Why the latest press's document read had not settled by the request deadline: the form says
-  // why the change it sent named no place until that read settles or the next press of Send
-  // change reads the document again (`useUnsettledRead`). `useReadBound` is not used here, since
-  // its hold on the press's hand-off would end with the read, before the comment the press sends
-  // has answered.
-  const [unsettled, waitWithinBound] = useUnsettledRead();
+  // The latest press's document read, as every form of the decisions document sees it: each
+  // form's Send change reads that one document (`api.getArtifactText`), so they take one hold of
+  // its read (`useUnsettledRead`), whichever decision's form pressed, and a form drawn again while
+  // its read is out finds that hold. Its reason is this form's while this form's press made the
+  // latest read (`ownRead`): the form says why the change it sent named no place until that read
+  // settles or the next press of Send change, on any form of the document, reads it again.
+  // `useReadBound` is not used here, since its hold on the press's hand-off would end with the
+  // read, before the comment the press sends has answered.
+  const [documentRead, waitWithinBound] = useUnsettledRead(["artifact", documentId, "text"]);
+  const ownRead = documentRead?.row === decision.ref ? documentRead : undefined;
+  const unsettled = ownRead?.unsettled;
   // What the form says of the latest press's document read that failed, which left the change it
   // sent no place, from the moment the read fails: before its bound, or after the bound ended it,
   // in the place of why it had not settled. The line is the press's own: it goes at the next
-  // press of Send change and with the form, and a refusal of the comment leaves it.
+  // press of Send change, on any form of the document (`ownRead`), and with the form, and a
+  // refusal of the comment leaves it.
   const [readFailed, setReadFailed] = useState<string>();
-  // How many presses of Send change read the document: a read that fails says so only while its
-  // press is still the latest.
+  const failed = ownRead === undefined ? undefined : readFailed;
+  // How many presses of this form's Send change read the document: a read that fails says so only
+  // while its press is still the latest.
   const presses = useRef(0);
   // Whether this press has spent `SEND_DEADLINE_MS` across its document read and its comment
   // together: a read that runs to its own deadline followed by an offline comment must not hold
@@ -432,8 +439,11 @@ function ChangeComposer({
   });
   // A press past its deadline (`pressLate`, or `KeyedWriteResult.late` for a comment sent at
   // once) holds Send no longer. A press then would post the change twice, so it sends nothing
-  // while that comment is out, and the form says so (`oneChange`).
-  const sendHeld = !pressLate && (reading || (send.isPending && !send.late));
+  // while that comment is out, and the form says so (`oneChange`). A form drawn again while its
+  // press's document read is out holds Send through that read's hold (`ownRead`), whose press
+  // posts its change once the hold ends.
+  const sendHeld =
+    !pressLate && (reading || ownRead?.holding === true || (send.isPending && !send.late));
   const oneChange = useOneCreateOut(send);
   // The one place inside a row that takes the tab order, and only while it is open: this is a
   // form a reader is typing in, so Tab walks its field, Send change and Cancel as it does in
@@ -481,12 +491,13 @@ function ChangeComposer({
         // `NetworkError`'s message, and nothing for any other failure, whose text is the server's
         // (`readFailed`): the client sets its own deadline (`REQUEST_DEADLINE_MS`) as the read
         // starts, before the bound, so a read Dispatch never answers fails as a timeout. A read
-        // the bound ended adds why it has not settled, until it does or the next press reads the
-        // document again (`unsettled`); if it then fails, the line says why it failed in that
-        // place (`readFailed`). No press starts while `readingRef` holds, and only the end of the
-        // press's wait (`waitWithinBound`) clears it, so a read that fails before its bound is
-        // always the latest press's; one the bound ended says so only while its press is still
-        // the latest (`presses`).
+        // the bound ended adds why it has not settled, until it does or the next press of any
+        // form of the document reads it again (`unsettled`); if it then fails, the line says why
+        // it failed in that place (`readFailed`). No press of this form starts while `readingRef`
+        // holds, and only the end of the press's wait (`waitWithinBound`) clears it, so a read
+        // that fails before its bound is always this form's latest press's; one the bound ended
+        // says so only while its press is still the latest (`presses`), and either says so only
+        // while no other form's press has read the document since (`ownRead`).
         readingRef.current = true;
         setReading(true);
         setPressLate(false);
@@ -509,7 +520,7 @@ function ChangeComposer({
             );
           }
         );
-        void waitWithinBound(read).then(() => {
+        void waitWithinBound(decision.ref, read).then(() => {
           readingRef.current = false;
           setReading(false);
           const anchor = changeAnchor(
@@ -548,9 +559,9 @@ function ChangeComposer({
       />
       {/* One line says why a change named no place: the latest press's failed read, else why a
           read the bound ended has not settled. */}
-      {(readFailed ?? unsettled) === undefined ? null : (
+      {(failed ?? unsettled) === undefined ? null : (
         <p className={`text-xs ${tones.failed}`} role="alert" {...pageChrome}>
-          {readFailed ?? `${STATE_LINES.decisions_document_unreadable} ${unsettled}.`}
+          {failed ?? `${STATE_LINES.decisions_document_unreadable} ${unsettled}.`}
         </p>
       )}
       {send.error === null ? null : (

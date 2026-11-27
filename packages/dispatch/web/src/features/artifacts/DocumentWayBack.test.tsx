@@ -1,22 +1,24 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { Link, MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { graphNode } from "../../__tests__/graph-fixture";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ArtifactHeader } from "./ArtifactHeader";
+import { ArtifactRoutePanel } from "./ArtifactRoutePanel";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -816,5 +818,207 @@ test("the issue's spec offers no correction and an ordinary document does", asyn
   } finally {
     documentPage.unmount();
     listDocument.mockRestore();
+  }
+});
+
+/**
+ * The issue's page cut to its documents' panel (`ArtifactRoutePanel`), as the issue's page draws
+ * it: the document the route names comes from the issue read, as `useIssueDetail` takes it, so
+ * nothing on a document's own page reads the issue's document list, which only the Artifacts tab
+ * draws. A removal's way back - the document's address, which says the document is gone - and its
+ * `View artifacts` link are the panel's own.
+ */
+function IssuePage(): ReactNode {
+  const { pathname } = useLocation();
+  const route = parseIssuePath(pathname);
+  const issue = useQuery({ queryKey: ["issue", "CORE-1"], queryFn: () => api.getIssue("CORE-1") });
+  if (route === undefined || issue.data === undefined) return null;
+  const artifactRoute = route.kind === "artifact" ? route : undefined;
+  return (
+    <ArtifactRoutePanel
+      active
+      artifact={issue.data.artifacts?.find(({ slug }) => slug === artifactRoute?.slug)}
+      artifactRoute={artifactRoute}
+      isClosed={false}
+      isPrimaryArtifactRoute={false}
+      mounted
+      onShowDiffChange={() => {}}
+      route={route}
+      showDiff={false}
+      toolbar={toolbar()}
+    >
+      {null}
+    </ArtifactRoutePanel>
+  );
+}
+
+/** A read of the issue's page a row holds from `hold()` on, each answered once the row calls
+ *  `answer()`, with what the page holds by then. */
+function heldRead<T>(read: () => T): {
+  readonly answer: () => void;
+  readonly hold: () => void;
+  readonly next: () => Promise<T>;
+} {
+  let holding = false;
+  const waiting: (() => void)[] = [];
+  return {
+    answer: () => {
+      holding = false;
+      for (const give of waiting.splice(0)) give();
+    },
+    hold: () => {
+      holding = true;
+    },
+    next: () => {
+      if (!holding) return Promise.resolve(read());
+      const { promise, resolve } = Promise.withResolvers<T>();
+      waiting.push(() => resolve(read()));
+      return promise;
+    },
+  };
+}
+
+/** The issue's page at `path` (`IssuePage`), over an issue that holds `stored()`'s documents,
+ *  with the issue read and the document list read handed out by `issue` and `list`. */
+function renderIssuePage(
+  path: string,
+  stored: () => Artifact[],
+  { issue, list }: { issue: () => Promise<unknown>; list: () => Promise<Artifact[]> }
+) {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const mocks = [
+    spyOn(api, "getIssue").mockImplementation(
+      () => issue().then(() => ({ artifacts: stored(), key: "CORE-1" })) as never
+    ),
+    spyOn(api, "listArtifacts").mockImplementation(list),
+    spyOn(api, "getIssueReferences").mockResolvedValue({
+      linked_from: [],
+      links: [],
+      members: [],
+      truncated: false,
+    }),
+    // The document's Referenced by panel (`ArtifactDetails`) reads its edges.
+    spyOn(api, "getReferences").mockResolvedValue({
+      edges: [],
+      node: graphNode({ id: "artifact-1", kind: "artifact" }),
+    }),
+  ];
+  const view = render(
+    <MemoryRouter initialEntries={[path]}>
+      <QueryClientProvider client={queryClient}>
+        <IssuePage />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return {
+    queryClient,
+    unmount: () => {
+      view.unmount();
+      queryClient.clear();
+      for (const mock of mocks) mock.mockRestore();
+    },
+  };
+}
+
+/** What a removal says once the reads after it have outlived the request deadline. */
+const ARTIFACTS_UNREAD = "Could not load artifacts. Dispatch did not answer within 30 seconds.";
+
+// A document's own page draws the document from the issue read and reads no document list, so
+// its Remove holds through the issue read, which takes the document off the page
+// (`refreshRemoval`): held until that read answers, and beside Remove, once the read has outlived
+// the request deadline, the header says why, until the read answers and the page says the
+// document is gone (the tester's row of `document-way-back.e2e.ts`).
+test("a Remove on a document's own page holds through the issue read and says why beside Remove at the bound until that read answers", async () => {
+  let stored = [document()];
+  const issueRead = heldRead(() => undefined);
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(async () => {
+    stored = [];
+  });
+  const page = renderIssuePage(documentPath, () => stored, {
+    issue: issueRead.next,
+    list: () => Promise.resolve(stored),
+  });
+  try {
+    await screen.findByRole("heading", { name: "Lauch notes" });
+    const header = () => screen.getByTestId("artifact-header");
+    const remove = () => within(header()).getByRole("button", { name: /^(Remove|Removing…)$/ });
+    jest.useFakeTimers();
+    issueRead.hold();
+    await userOnFakeClock().click(remove());
+    await tick(0);
+    expect(deleteArtifact).toHaveBeenCalledTimes(1);
+    expect(remove().textContent, "Remove let go before the issue read answered").toBe("Removing…");
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(remove().textContent).toBe("Remove");
+    expect(
+      within(header()).queryByRole("alert")?.textContent,
+      "the header said nothing of the issue read the removal made"
+    ).toBe(ARTIFACTS_UNREAD);
+
+    await act(async () => issueRead.answer());
+    await tick(0);
+    expect(screen.queryByTestId("artifact-header")).toBeNull();
+    expect(screen.getByText("No artifact lauch-notes on CORE-1.")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  } finally {
+    realClock();
+    page.unmount();
+    deleteArtifact.mockRestore();
+  }
+});
+
+// The removal's way back keeps the reader on the document's address, which says it is gone, and
+// its `View artifacts` opens the Artifacts tab. The removal reads the issue's document list even
+// though nothing on the document's page draws it (`refreshRemoval`), so the tab finds that read
+// out and the removal's hold through it: it lists the removed document while the read is out, and
+// says why on its row once the read has outlived the request deadline, until the read answers and
+// takes the row away (the tester's second row of `document-way-back.e2e.ts`).
+test("the Artifacts tab a document page's Remove opens on its way back says why on the removed row while the list read the removal made is out", async () => {
+  let stored = [document()];
+  const listRead = heldRead(() => stored);
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(async () => {
+    stored = [];
+  });
+  // The reader comes to the document from the Artifacts tab, which reads the issue's documents.
+  const page = renderIssuePage(buildIssuePath({ key: "CORE-1", kind: "artifacts" }), () => stored, {
+    issue: () => Promise.resolve(),
+    list: listRead.next,
+  });
+  try {
+    const user = userEvent.setup();
+    await user.click(
+      within(await screen.findByTestId("artifact-lauch-notes")).getByRole("link", {
+        name: "Lauch notes",
+      })
+    );
+    await screen.findByRole("heading", { name: "Lauch notes" });
+    jest.useFakeTimers();
+    const clockUser = userOnFakeClock();
+    listRead.hold();
+    await clockUser.click(screen.getByRole("button", { name: "Remove" }));
+    await tick(0);
+    expect(deleteArtifact).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("No artifact lauch-notes on CORE-1.")).toBeInTheDocument();
+
+    await clockUser.click(screen.getByRole("link", { name: "View artifacts" }));
+    await tick(0);
+    const row = () => screen.getByTestId("artifact-lauch-notes");
+    expect(row(), "the tab lists the removed document while its list read is out").not.toBeNull();
+    await tick(REQUEST_DEADLINE_MS);
+    expect(
+      within(row()).queryByRole("alert")?.textContent,
+      "the tab said nothing of the list read the removal made"
+    ).toBe(ARTIFACTS_UNREAD);
+
+    await act(async () => listRead.answer());
+    await tick(0);
+    expect(screen.queryByTestId("artifact-lauch-notes")).toBeNull();
+  } finally {
+    realClock();
+    page.unmount();
+    deleteArtifact.mockRestore();
   }
 });

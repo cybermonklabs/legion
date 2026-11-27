@@ -471,6 +471,77 @@ test("the line one card's Mark read leaves goes as another card's mark lands", a
   }
 });
 
+// The Peek drawer draws nothing while it is closed (`InboxDrawer`), so the drawer opened again
+// draws a new list of cards while a Mark read's re-read is still out. That read has one hold for
+// every list of it (`useListReadBound`), so the card drawn again holds its Mark read through the
+// read as the card it was pressed on did, and says why at the bound and after, until the read
+// answers (the tester's row of `inbox-read-state.e2e.ts`).
+test("a card drawn again while its Mark read's re-read is out holds Mark read through it, and says why at the bound until it answers", async () => {
+  // Each mark's answer, held until the row gives it, so what it sets off runs in `act`.
+  const { answers: marks, next } = heldAnswers<void>();
+  answerThreadReads().mockImplementation(next);
+  mockCommentReads();
+  // The mark's re-read of the list, held until the row answers it.
+  const reread = Promise.withResolvers<MyRepliesResponse>();
+  restores.push(spyOn(api, "listMyReplies").mockReturnValue(reread.promise));
+  const thread = { ...commentRow("comment-1", "The retry budget"), unread: false, unread_count: 0 };
+  const client = seeded(
+    [thread],
+    new DispatchQueryClient({
+      defaultOptions: {
+        mutations: { retry: false },
+        queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+      },
+    })
+  );
+  // The drawer's list of cards, closed and drawn again as the drawer is.
+  const drawAgain = () => {
+    cleanup();
+    renderInbox(client, { pane: false });
+  };
+  renderInbox(client, { pane: false });
+  const why = "Could not load your inbox. Dispatch did not answer within 30 seconds.";
+  const card = () =>
+    document.querySelector<HTMLElement>('[data-inbox-row="reply:comment-1"]') as HTMLElement;
+  const markOf = () =>
+    card().querySelector<HTMLButtonElement>('[data-inbox-action="mark-read"]') as HTMLButtonElement;
+  try {
+    await screen.findByTestId("inbox-thread-comment");
+    jest.useFakeTimers();
+    await userOnFakeClock().click(markOf());
+    await tick(0);
+    await act(async () => marks[0]?.());
+    await tick(0);
+
+    drawAgain();
+    await tick(0);
+    expect(
+      heldNotDisabled(markOf(), "Mark read"),
+      "the card drawn again let Mark read go while its re-read was out"
+    ).toBe(true);
+    expect(markOf()).toHaveTextContent("Marking read…");
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(heldNotDisabled(markOf(), "Mark read")).toBe(false);
+    expect(markOf()).toHaveTextContent("Mark read");
+    expect(within(card()).getByRole("alert")).toHaveTextContent(why);
+    drawAgain();
+    await tick(0);
+    expect(
+      within(card()).queryByRole("alert"),
+      "the card drawn again after the bound said nothing of the re-read still out"
+    ).toHaveTextContent(why);
+
+    await act(async () => reread.resolve(threadsRead([thread])));
+    await tick(0);
+    expect(within(card()).queryByRole("alert")).toBeNull();
+  } finally {
+    cleanup();
+    client.clear();
+    realClock();
+  }
+});
+
 // A mark that never answers - offline, each try failing at the network - holds Mark read until
 // its deadline and no longer: past it the mark is still tried, and a press then marks again.
 test("Mark read lets go at the mark's write deadline and marks again", async () => {

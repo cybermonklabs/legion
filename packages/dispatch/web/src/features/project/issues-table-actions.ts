@@ -10,9 +10,9 @@ import {
   type WriteRequest,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { advancesIssuesParams } from "../../api/queries";
+import { advancesIssuesParams, advancesIssuesQuery, projectIssuesQuery } from "../../api/queries";
 import { invalidateWaitingForPaused } from "../../api/query-client";
-import { useReadBound } from "../../api/read-bound";
+import { useUnsettledRead } from "../../api/read-bound";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { holdHandOff } from "../../components/focus-place";
 import { issueProject } from "../../lib/issue-key";
@@ -202,9 +202,16 @@ export function useIssueTableActions({
     [writes]
   );
   const [notice, setNotice] = useState<Notice>();
-  // Why the list read after the latest action has not settled, once its hold ran out: the next
-  // action takes it away as its hold begins (`useReadBound`).
-  const [unsettled, holdThrough] = useReadBound();
+  // The latest action's hold through the read of this table's listing after it, under what that
+  // action said it did, the row its press made (`useUnsettledRead`): why that read has not
+  // settled once the hold ran out, which the next action takes away as its hold begins, and
+  // whether the hold is on. A table drawn again while it is - the List switched to the Board and
+  // back - finds both, and says what the action did before why, as the table it ran in did.
+  const [listRead, waitWithinBound] = useUnsettledRead(
+    ("project" in listing ? projectIssuesQuery(listing.project, []) : advancesIssuesQuery(listing))
+      .queryKey
+  );
+  const unsettled = listRead?.unsettled;
   const [moved, setMoved] = useState<ReadonlySet<string>>(new Set());
   // The issues the action in hand is taking out of the view, which `leaving` names: each issue its
   // writes are for, from the reader's press that began it (`perform`, and `askTarget` while its dry
@@ -365,6 +372,9 @@ export function useIssueTableActions({
     let mayHaveChanged = false;
     // Whether the action answered what it changed. Only such an action clears the selection.
     let answered = false;
+    // What the notice says the action did, which its hold through the list read keeps: a table
+    // drawn again while that read is out says it before why the read has not settled.
+    let told: string | undefined;
     const unwatch = writes.onOutcome((outcome) => {
       if (
         outcome.kind === "landed" ||
@@ -377,14 +387,17 @@ export function useIssueTableActions({
       if (changed !== undefined) {
         mayHaveChanged = true;
         answered = true;
+        told = said;
         setNotice({ kind: "success", text: said });
         setMoved(new Set(changed));
       }
     } catch (error) {
       if (error instanceof ApiError && error.code === "POSSIBLE_DUPLICATE" && duplicate)
         duplicate(error);
-      else
-        setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      else {
+        told = error instanceof Error ? error.message : String(error);
+        setNotice({ kind: "error", text: told });
+      }
     } finally {
       unwatch();
       // An action that may have changed the list keeps its controls held (`busy`) through the read
@@ -394,7 +407,7 @@ export function useIssueTableActions({
       // list too. The read settles either way, and a failed one lets them go. A read that has not
       // settled by the request deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is
       // offline - lets them go then, and the notice says why the list is not read yet
-      // (`useReadBound`). An action that changed nothing - every write refused, or none made -
+      // (`useUnsettledRead`). An action that changed nothing, every write refused or none made,
       // lets them go at once, while the list is still read again behind them.
       // An action that answered what it changed clears the selection in the same batch that lets
       // its controls go. So the selection bar, held, stays until that read settles or the
@@ -403,11 +416,11 @@ export function useIssueTableActions({
       // (`useLastMarkedPlace`). Where the row marked last is still listed, the focus goes to its
       // checkbox. An action that failed or changed nothing keeps the selection.
       // Read again waiting on a fetch the network has paused, since the hold below has a bound
-      // of its own (`invalidateWaitingForPaused`, `useReadBound`).
+      // of its own (`invalidateWaitingForPaused`, `useUnsettledRead`).
       const listed = invalidateWaitingForPaused(client, ["issues"]);
       void client.invalidateQueries({ queryKey: ["issue"] });
       void client.invalidateQueries({ queryKey: ["inbox"] });
-      if (mayHaveChanged) await holdThrough(listed);
+      if (mayHaveChanged) await waitWithinBound(told, listed);
       // The bar's going and its hand-off are one render. This line runs outside any event of the
       // reader's - the turn a write's answer takes, or the read's own bound - so React would
       // commit it at normal priority and run the bar's hand-off, a passive effect
@@ -1171,14 +1184,20 @@ export function useIssueTableActions({
     }).finally(unwatch);
   };
   // An action holds the List's controls from its press through the read of the list after it,
-  // that read's hold bounded by the request deadline (`useReadBound`), but not while every write
-  // it waits on is past its deadline: each is tried under its key until Dispatch decides it, so
-  // offline an action holds them no longer than that, and a press then goes behind those writes
-  // on their issues' lines. An action still out keeps its record, and the List offers no Finish
-  // or Dismiss of it until it ends, late or not (`interrupted`): a Finish then would run its
-  // steps a second time beside it.
-  const busy = running > 0 && !(waiting.length > 0 && waiting.every((key) => lateKeys.has(key)));
+  // that read's hold bounded by the request deadline (`useUnsettledRead`), but not while every
+  // write it waits on is past its deadline: each is tried under its key until Dispatch decides
+  // it, so offline an action holds them no longer than that, and a press then goes behind those
+  // writes on their issues' lines. A List drawn again while an action's hold is on holds them by
+  // that hold. An action still out keeps its record, and the List offers no Finish or Dismiss of
+  // it until it ends, late or not (`interrupted`): a Finish then would run its steps a second
+  // time beside it.
+  const busy =
+    (running > 0 && !(waiting.length > 0 && waiting.every((key) => lateKeys.has(key)))) ||
+    listRead?.holding === true;
   const interrupted = running > 0 ? undefined : recovery.action;
+  // What the action said it did, which a list read that has not settled is said after: the
+  // notice this List drew, else, for a List drawn again since, what the hold kept of it.
+  const said = notice?.text ?? listRead?.row;
   return {
     busy,
     // A list read that has not settled is said after what the action did, in the words the List
@@ -1188,7 +1207,7 @@ export function useIssueTableActions({
         ? notice
         : {
             kind: "error" as const,
-            text: `${notice === undefined ? "" : `${notice.text} `}${ISSUES_NOT_LOADED} ${unsettled}.`,
+            text: `${said === undefined ? "" : `${said} `}${ISSUES_NOT_LOADED} ${unsettled}.`,
           },
     moved,
     // Whether the press of this action is taking row `key` out of the view: an issue the action's

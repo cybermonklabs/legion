@@ -245,7 +245,7 @@ export function CredentialRequestsSection({
     requests.some((row) => credentialSessionNamesAnyone(row.session)),
     true
   );
-  const [unsettledOf, holdThrough] = useListReadBound();
+  const [unsettledOf, holdThrough] = useListReadBound(credentialPendingQuery().queryKey);
   const list = useRef<HTMLUListElement>(null);
   // The rows as the latest commit drew them, which the hand-off reads for the row a commit after
   // it took away (`controlNear`).

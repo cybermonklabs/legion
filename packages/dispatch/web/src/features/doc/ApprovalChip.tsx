@@ -499,9 +499,10 @@ export function ApprovalChip({ reviewReads, ...chip }: ApprovalChipProps): React
   );
 }
 
-/** The chip where its line holds no reads for it: the chip holds its own. */
+/** The chip where its line holds no reads for it: the chip holds its own, through its document's
+ *  read, which its review reads again first (`approvalReads`). */
 function ChipWithOwnReads(chip: Omit<ApprovalChipProps, "reviewReads">): ReactNode {
-  const reviewReads = useListReadBound();
+  const reviewReads = useListReadBound(["artifact", chip.artifact?.id]);
   return <ChipOfReads {...chip} reviewReads={reviewReads} />;
 }
 

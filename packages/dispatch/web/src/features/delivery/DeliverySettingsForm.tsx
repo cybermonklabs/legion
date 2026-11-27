@@ -206,7 +206,7 @@ function DeliverySettingsFields({
   // The write time of the record the newest press was made over.
   const [pressedOver, setPressedOver] = useState(version);
   const [drawing, holdUntilDrawn] = useHoldUntilDrawn(version);
-  const [unsettled, holdThrough] = useReadBound();
+  const [unsettled, holdThrough] = useReadBound(deliverySettingsQuery().queryKey);
   // The form shows its own refusal, under the fields it was refused over.
   const save = useKeyedWrite({
     method: "PUT",

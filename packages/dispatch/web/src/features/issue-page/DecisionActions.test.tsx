@@ -1,7 +1,7 @@
 import { beforeAll, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { dispatchWritingBox } from "@legion/contracts";
 import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
@@ -112,11 +112,12 @@ function spyDocumentText(markdown: string | Error): DocumentTextSpy {
 
 /** Draws the decision's controls over `answer`, with the decisions document's text read answered
  *  by `documentText`; inside the page's `NoTooltips` where `page` says so, as the issue page
- *  draws them. `client` is the page's query client, whose store holds the writes. */
+ *  draws them; one decision's controls for each of `nodes`, its reference. `client` is the page's
+ *  query client, whose store holds the writes. */
 function renderActions(
   answer: IssueDecisions = read,
   documentText: string | Error = DOCUMENT_TEXT,
-  { page = false }: { page?: boolean } = {}
+  { nodes = [REFERENCE], page = false }: { nodes?: readonly string[]; page?: boolean } = {}
 ): { client: QueryClient; text: DocumentTextSpy; unmount: () => void } {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["decisions", KEY], answer);
@@ -128,7 +129,9 @@ function renderActions(
     </QueryClientProvider>
   );
   const view = render(
-    <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />,
+    nodes.map((node) => (
+      <DecisionActions document={document_} isClosed={false} key={node} nodeReference={node} />
+    )),
     { wrapper }
   );
   return {
@@ -369,8 +372,14 @@ test("once a change out past its deadline is refused, Send change posts it again
 });
 
 /** The decision's node body as a view draws it, under the view's `ChangeDraftsProvider`:
- *  `close` takes the body away, as the focus leaving the rows does, and `open` draws it again. */
-function renderBody(): { close: () => void; open: () => void; unmount: () => void } {
+ *  `close` takes the body away, as the focus leaving the rows does, and `open` draws it again;
+ *  `text` is the spy on the decisions document's text read. */
+function renderBody(): {
+  close: () => void;
+  open: () => void;
+  text: DocumentTextSpy;
+  unmount: () => void;
+} {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["decisions", KEY], read);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(read);
@@ -388,6 +397,7 @@ function renderBody(): { close: () => void; open: () => void; unmount: () => voi
   return {
     close: () => view.rerender(body(false)),
     open: () => view.rerender(body(true)),
+    text,
     unmount: () => {
       view.unmount();
       decisions.mockRestore();
@@ -1215,6 +1225,123 @@ test("the line a document read the bound ended draws beside Send change goes at 
   } finally {
     realClock();
     unmount();
+    createComment.mockRestore();
+  }
+});
+
+/** The Change form of the decision `heading` names, and its Send change. */
+function changeForm(heading: string): { form: HTMLElement; send: HTMLButtonElement } {
+  const form = screen.getByRole("form", { name: `${CONTROL_LABELS.change_decision} ${heading}` });
+  return {
+    form,
+    send: within(form).getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    }),
+  };
+}
+
+// Every decision's Send change reads the one decisions document, so every form of the document
+// holds one bound of its read (`useUnsettledRead`): another decision's Send change, which reads
+// the document again and is answered, takes away the line the first form left for its read,
+// though that read never settles, and the second form, whose read was answered, says nothing of
+// a read. Dispatch refuses each change, so both forms stay drawn with their refusal (the tester's
+// row of `issue-page-q.e2e.ts`, "a Change whose document read the bound ended loses that read's
+// line when another decision's Send change reads the document again").
+test("the line one decision's document read the bound ended draws goes as another decision's Send change reads the document again", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    ambiguousQuote("Draw it once.", 2)
+  );
+  const { text, unmount } = renderActions(
+    { ...read, decisions: [ABOVE, OWN] },
+    twoDecisionsText("The decisions this issue made."),
+    { nodes: [ABOVE.ref, OWN.ref] }
+  );
+  // Dispatch never answers the first form's read; the second form's is answered.
+  text.mockReturnValueOnce(new Promise<never>(() => {}));
+  const why = `${STATE_LINES.decisions_document_unreadable} Dispatch did not answer within 30 seconds.`;
+  try {
+    const user = userEvent.setup();
+    for (const change of await screen.findAllByRole("button", {
+      name: CONTROL_LABELS.change_decision,
+    })) {
+      await user.click(change);
+    }
+    for (const field of screen.getAllByLabelText(CONTROL_LABELS.your_change)) {
+      await user.type(field, "Say where.");
+    }
+    const first = changeForm(ABOVE.heading);
+    const second = changeForm(OWN.heading);
+    const linesOf = (form: HTMLElement) =>
+      within(form)
+        .queryAllByRole("alert")
+        .map((line) => line.textContent);
+    jest.useFakeTimers();
+    const onFakeClock = userOnFakeClock();
+    await onFakeClock.click(first.send);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(linesOf(first.form)).toEqual([why, ANSWER_LINES.change_not_sent]);
+
+    await onFakeClock.click(second.send);
+    await tick(0);
+    expect(text).toHaveBeenCalledTimes(2);
+    expect(createComment).toHaveBeenCalledTimes(2);
+    expect(linesOf(second.form)).toEqual([ANSWER_LINES.change_not_sent]);
+    expect(
+      linesOf(first.form),
+      "the first form kept its read's line past the second form's read of the document"
+    ).toEqual([ANSWER_LINES.change_not_sent]);
+  } finally {
+    realClock();
+    unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A Change sent and left while its document read is out comes back closed, and the Change pressed
+// again draws a new form. That form finds the press's read in the document's one hold
+// (`useUnsettledRead`): its Send change is held, as the press's own was, until the read's bound
+// ends, and the form then says why that read has not settled, as the form the press was made in
+// would have said.
+test("a Change opened again while its sent change's document read is out holds Send change through that read, and says why at its bound", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    ambiguousQuote("Draw it once.", 2)
+  );
+  const body = renderBody();
+  // Dispatch never answers the press's read of the document.
+  body.text.mockReturnValue(new Promise<never>(() => {}));
+  const why = `${STATE_LINES.decisions_document_unreadable} Dispatch did not answer within 30 seconds.`;
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Keep one preset.");
+    jest.useFakeTimers();
+    const onFakeClock = userOnFakeClock();
+    await onFakeClock.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await tick(0);
+    expect(body.text).toHaveBeenCalledTimes(1);
+    body.close();
+    body.open();
+    await onFakeClock.click(screen.getByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await onFakeClock.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Again.");
+    const send = screen.getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    });
+    expect(
+      heldNotDisabled(send, CONTROL_LABELS.send_change),
+      "the form drawn again let Send change go while the press's read was out"
+    ).toBe(true);
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(heldNotDisabled(send, CONTROL_LABELS.send_change)).toBe(false);
+    expect(
+      screen.queryByText(why),
+      "the form drawn again said nothing of the press's read"
+    ).toBeInTheDocument();
+  } finally {
+    realClock();
+    body.unmount();
     createComment.mockRestore();
   }
 });

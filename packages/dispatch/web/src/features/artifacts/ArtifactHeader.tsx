@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { useListReadBound } from "../../api/read-bound";
 import type { Artifact, Version } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { MultiSelect } from "../../components/MultiSelect";
@@ -120,10 +119,6 @@ export function ArtifactHeader({
   // removal lands when Dispatch answers it, by when the reader may have moved on, so its way back
   // reads this rather than the document the header drew when Remove was pressed (`onRemoved`).
   const drawn = useRef<string | undefined>(undefined);
-  // Remove's hold through the document list's read, one for every document the header draws:
-  // why that read has not settled is said only beside the document whose removal made it
-  // (`useListReadBound`).
-  const [removalUnsettledOf, holdRemovalThrough] = useListReadBound();
 
   useEffect(() => {
     drawn.current = artifact.id;
@@ -285,7 +280,6 @@ export function ArtifactHeader({
                   // document's removal as its Retry.
                   <RemoveDocument
                     artifact={artifact}
-                    holdThrough={holdRemovalThrough}
                     key={artifact.id}
                     onRemoved={(removed) => {
                       // The route stays on the document the issue no longer holds, so the
@@ -304,7 +298,6 @@ export function ArtifactHeader({
                       }
                     }}
                     refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
-                    unsettled={removalUnsettledOf(artifact.id)}
                   />
                 )}
                 {version === undefined ? null : nameVersion}

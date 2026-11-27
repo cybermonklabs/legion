@@ -493,8 +493,10 @@ export function ProofDocument({
   });
   const namingVersion = nameVersion.isPending && !nameVersion.late;
   const oneVersion = useOneCreateOut(nameVersion);
-  // Why the read of the latest rebuilt document has not settled, once the hold over it ran out.
-  const [rebuildUnsettled, holdThrough] = useReadBound();
+  // Why the read of the latest rebuilt document has not settled, once the hold over it ran out,
+  // and whether that hold is on: an editor drawn again while the rebuild's read is out - the row's
+  // editor closed and opened again - finds both (`useReadBound`).
+  const [rebuildUnsettled, holdThrough, rebuildHolding] = useReadBound(["artifact", artifact.id]);
   const rebuild = useKeyedWrite({
     inline: true,
     label: () => `Rebuild of ${artifact.name}`,
@@ -1242,7 +1244,7 @@ export function ProofDocument({
             // held then (`heldPress`), `aria-disabled` in place of `disabled`, and a press does
             // nothing.
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${tooltips ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : controlOnPage}`}
-            {...heldPress(rebuild.isPending && !rebuild.late, () => {
+            {...heldPress((rebuild.isPending && !rebuild.late) || rebuildHolding, () => {
               if (
                 window.confirm(
                   "Rebuild this document from its latest version? This discards its unreadable history."
@@ -1253,7 +1255,9 @@ export function ProofDocument({
             })}
             type="button"
           >
-            {rebuild.isPending ? "Rebuilding…" : "Rebuild from the latest version"}
+            {rebuild.isPending || rebuildHolding
+              ? "Rebuilding…"
+              : "Rebuild from the latest version"}
           </button>
           {rebuild.isError ? (
             <p className={failedText}>
@@ -1275,6 +1279,16 @@ export function ProofDocument({
             <p className={failedText}>{`${REBUILT_DOCUMENT_NOT_READ} ${rebuildUnsettled}.`}</p>
           )}
         </div>
+      )}
+      {/* An editor drawn again while a rebuild's read is out - the row's editor closed and opened
+          again - waits on that read for its own admission (`admit`), so it draws no offer and no
+          Rebuild yet. Once the rebuild's hold has run out it says why the read has not settled in
+          the offer's place, until the read settles and the admission draws the offer or the
+          editor. */}
+      {!page || rebuildError !== undefined || rebuildUnsettled === undefined ? null : (
+        <p className={failedText} role="alert">
+          {`${REBUILT_DOCUMENT_NOT_READ} ${rebuildUnsettled}.`}
+        </p>
       )}
       {/* The server admits a socket read-only for a closed issue as it does for a page the
           fleet's schema numbers do not admit, so the admission alone cannot say whether a reload

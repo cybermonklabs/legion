@@ -1,5 +1,11 @@
-import { onlineManager } from "@tanstack/react-query";
-import { useCallback, useRef, useState } from "react";
+import {
+  hashKey,
+  onlineManager,
+  type QueryClient,
+  type QueryKey,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { useCallback, useSyncExternalStore } from "react";
 
 import { holdHandOff } from "../components/focus-place";
 import { NETWORK_ERROR_MESSAGE, REQUEST_DEADLINE_MS, requestTimeoutMessage } from "./client";
@@ -37,63 +43,166 @@ export function readWithinBound(read: Promise<unknown>): Promise<string | undefi
 }
 
 /**
- * Why the latest read handed to `waitWithinBound` has not settled, and nothing of an earlier one.
- * `waitWithinBound` takes a read as it begins, forgets at once why any earlier read had not
- * settled, and answers once the read settles or `readWithinBound`'s bound ends, whichever is
- * first. Where the bound ends first and no later read has begun, it keeps why the read has not
- * settled, which goes once that read settles or a later read begins, whichever is first. An
- * earlier read whose bound ends, or which settles, once a later read has begun changes nothing
- * (`latest`). The page shows `unsettled` beside the sentence it shows for a read that failed.
+ * The latest hold through one read, as every caller of that read sees it (`useUnsettledRead`):
+ * whose press made it, whether it holds still, and why its read has not settled once the bound
+ * ended it.
  */
-export function useUnsettledRead(): readonly [
-  unsettled: string | undefined,
-  waitWithinBound: (read: Promise<unknown>) => Promise<void>,
-] {
-  // The read of the latest call, the one whose reason the page may show.
-  const latest = useRef<Promise<unknown>>(undefined);
-  const [unsettled, setUnsettled] = useState<string>();
-  const waitWithinBound = useCallback(async (read: Promise<unknown>) => {
-    latest.current = read;
-    setUnsettled(undefined);
-    const reason = await readWithinBound(read);
-    if (reason === undefined || latest.current !== read) return;
-    setUnsettled(reason);
-    const settled = () => {
-      if (latest.current === read) setUnsettled(undefined);
-    };
-    read.then(settled, settled);
-  }, []);
-  return [unsettled, waitWithinBound];
+export interface ReadHold {
+  /** The row whose press made the hold, in its caller's own name for it: a list's key for the row
+   *  (`useListReadBound`), a decision's form (`DecisionActions`), or, where one control speaks for
+   *  each press in turn, what it said that press did (the issues table's notice,
+   *  `useIssueTableActions`). `undefined` for a control's own hold (`useReadBound`). */
+  readonly row: string | undefined;
+  /** Whether the hold is on: from its start until its read settles or `readWithinBound`'s bound
+   *  ends, whichever is first. */
+  readonly holding: boolean;
+  /** Why its read has not settled, once the bound ended the hold, until that read settles;
+   *  `undefined` while the hold is on and once the read has settled. */
+  readonly unsettled: string | undefined;
+}
+
+/** A hold as the store keeps it: what its callers read of it, and the read it waits on. */
+interface KeptHold extends ReadHold {
+  readonly read: Promise<unknown>;
 }
 
 /**
- * A control's hold through the re-read that draws what its write changed, bounded by
- * `readWithinBound`. `holdThrough` answers once its read settles or the bound runs out, whichever
- * is first, so a write that returns it from `onSuccess` stays pending, and its control held, for
- * that long and no longer. While it waits, the hold keeps the armed hand-off of the reader's
- * press that made the write live (`holdHandOff`), so a row or a form that read takes away is still
- * the press's doing (`causedByReader`). `unsettled` is why the read of the latest hold has not
- * settled, once that hold ran out: it goes once that read settles, and at once as a later hold
- * begins, and an earlier hold's read never puts its reason back (`useUnsettledRead`). A list whose
- * rows each read the whole list again takes one hold for every row, so any row's press forgets
- * why an earlier read had not settled: one that says that reason once, for the whole list, takes
- * this hook (`RevocableList`, `AgentsPage`'s conversation), and one that says it on the row whose
- * press made the read takes `useListReadBound`.
+ * The holds through reads that live with one query client (`readHoldsOf`): the latest hold of
+ * each read, by the hash of the read's query key. Every caller of a read draws this one hold, so
+ * two callers of one read share one bound and one reason, and a caller drawn again while the read
+ * is out - a card's view closed and opened, a tab or a view switched away and back - finds the
+ * hold and its reason where the caller drawn before it left them.
  */
-export function useReadBound(): readonly [
+class ReadHolds {
+  readonly #holds = new Map<string, KeptHold>();
+  readonly #listeners = new Set<() => void>();
+
+  /** Tells `listener` each time the latest hold of any read changes. */
+  readonly subscribe = (listener: () => void): (() => void) => {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  };
+
+  /** The latest hold through the read whose query key hashes to `hash`: the same object until it
+   *  changes, and `undefined` where no hold of that read was ever taken. */
+  latest(hash: string): ReadHold | undefined {
+    return this.#holds.get(hash);
+  }
+
+  /**
+   * Holds through `read`, a read of the query whose key hashes to `hash`, for `row`: it forgets
+   * the earlier hold of that read, and why its read had not settled, as it begins, and answers
+   * once `read` settles or `readWithinBound`'s bound ends, whichever is first. Where the bound
+   * ends first, the hold keeps why `read` has not settled until it does. An earlier hold whose
+   * bound ends, or whose read settles, once a later hold of the same read has begun changes
+   * nothing.
+   */
+  async wait(hash: string, row: string | undefined, read: Promise<unknown>): Promise<void> {
+    this.#keep(hash, { holding: true, read, row, unsettled: undefined });
+    const unsettled = await readWithinBound(read);
+    if (this.#holds.get(hash)?.read !== read) return;
+    this.#keep(hash, { holding: false, read, row, unsettled });
+    if (unsettled === undefined) return;
+    const settled = () => {
+      if (this.#holds.get(hash)?.read === read) {
+        this.#keep(hash, { holding: false, read, row, unsettled: undefined });
+      }
+    };
+    read.then(settled, settled);
+  }
+
+  #keep(hash: string, hold: KeptHold): void {
+    this.#holds.set(hash, hold);
+    for (const listener of this.#listeners) listener();
+  }
+}
+
+const stores = new WeakMap<QueryClient, ReadHolds>();
+
+/** The holds through reads that live with `client`: one store per app, as there is one client,
+ *  as the writes are (`writesOf`). */
+function readHoldsOf(client: QueryClient): ReadHolds {
+  let store = stores.get(client);
+  if (store === undefined) {
+    store = new ReadHolds();
+    stores.set(client, store);
+  }
+  return store;
+}
+
+/**
+ * The latest hold through the read `readKey` names, the query key of the read its caller holds
+ * through (`ReadHold`), and the hold that caller takes (`waitWithinBound`). Every caller of one
+ * read, and every caller drawn again while it is out, reads that one hold (`ReadHolds`).
+ * `waitWithinBound` takes a read as it begins, with the row whose press made it, forgets at once
+ * why the earlier read of that key had not settled, and answers once the read settles or
+ * `readWithinBound`'s bound ends, whichever is first. Where the bound ends first and no later
+ * read of the key has begun, the hold keeps why the read has not settled, which goes once that
+ * read settles or a later read begins, whichever is first. An earlier read whose bound ends, or
+ * which settles, once a later read has begun changes nothing. The page shows the hold's
+ * `unsettled` beside the sentence it shows for a read that failed.
+ */
+export function useUnsettledRead(
+  readKey: QueryKey
+): readonly [
+  latest: ReadHold | undefined,
+  waitWithinBound: (row: string | undefined, read: Promise<unknown>) => Promise<void>,
+] {
+  const holds = readHoldsOf(useQueryClient());
+  const hash = hashKey(readKey);
+  const latest = useSyncExternalStore(holds.subscribe, () => holds.latest(hash));
+  const waitWithinBound = useCallback(
+    (row: string | undefined, read: Promise<unknown>) => holds.wait(hash, row, read),
+    [hash, holds]
+  );
+  return [latest, waitWithinBound];
+}
+
+/** `waitWithinBound` of `row` and `read` (`useUnsettledRead`), with the armed hand-off of the
+ *  reader's press that made the write kept live while it waits (`holdHandOff`). */
+async function holdWithPress(
+  waitWithinBound: (row: string | undefined, read: Promise<unknown>) => Promise<void>,
+  row: string | undefined,
+  read: Promise<unknown>
+): Promise<void> {
+  const answered = holdHandOff();
+  await waitWithinBound(row, read);
+  answered();
+}
+
+/**
+ * A control's hold through the re-read that draws what its write changed, `readKey`'s read,
+ * bounded by `readWithinBound`. `holdThrough` answers once its read settles or the bound runs
+ * out, whichever is first, so a write that returns it from `onSuccess` stays pending, and its
+ * control held, for that long and no longer. While it waits, the hold keeps the armed hand-off of
+ * the reader's press that made the write live (`holdHandOff`), so a row or a form that read takes
+ * away is still the press's doing (`causedByReader`). `unsettled` is why the read of the latest
+ * hold has not settled, once that hold ran out: it goes once that read settles, and at once as a
+ * later hold of the same read begins, and an earlier hold's read never puts its reason back.
+ * `holding` is whether that hold is on: a control drawn again while it is, whose write is out of
+ * its own hook's reach, holds by it until the hold ends. Every caller of one read takes and reads
+ * one hold (`useUnsettledRead`), and this hook's are the holds no row made: a row's hold of the
+ * same read (`useListReadBound`) forgets this one's reason as it begins, and is said only on its
+ * row. A list whose rows each read the whole list again says that reason once, for the whole
+ * list, with this hook (`RevocableList`, `AgentsPage`'s conversation), and on the row whose press
+ * made the read with `useListReadBound`.
+ */
+export function useReadBound(
+  readKey: QueryKey
+): readonly [
   unsettled: string | undefined,
   holdThrough: (read: Promise<unknown>) => Promise<void>,
+  holding: boolean,
 ] {
-  const [unsettled, waitWithinBound] = useUnsettledRead();
+  const [latest, waitWithinBound] = useUnsettledRead(readKey);
   const holdThrough = useCallback(
-    async (read: Promise<unknown>) => {
-      const answered = holdHandOff();
-      await waitWithinBound(read);
-      answered();
-    },
+    (read: Promise<unknown>) => holdWithPress(waitWithinBound, undefined, read),
     [waitWithinBound]
   );
-  return [unsettled, holdThrough];
+  const own = latest?.row === undefined ? latest : undefined;
+  return [own?.unsettled, holdThrough, own?.holding === true];
 }
 
 /** A list's hold through its re-read, as each of its rows takes it (`useListReadBound`): it holds
@@ -102,37 +211,40 @@ export function useReadBound(): readonly [
 export type ListReadHold = (row: string, read: Promise<unknown>) => Promise<void>;
 
 /** A list's one hold through its re-read (`useListReadBound`): why that read has not settled, for
- *  the row whose press made the latest one (`unsettledOf`), and the hold each row takes. */
+ *  the row whose press made the latest one (`unsettledOf`), the hold each row takes, and whether
+ *  that hold is on, for that row (`holdingOf`). */
 export type ListReadBound = readonly [
   unsettledOf: (row: string) => string | undefined,
   holdThrough: ListReadHold,
+  holdingOf: (row: string) => boolean,
 ];
 
 /**
- * One hold through a list's re-read for every row of the list (`useReadBound`), for a list whose
- * rows each press a write that reads the whole list again and that says why that read has not
- * settled on the row whose press made it: the expired requests of the Inbox's Credential requests
- * section (`CredentialRequestsSection`), the documents of an issue's Artifacts tab
- * (`ArtifactsTab`) and of a document page's header, which draws one document after another
- * (`ArtifactHeader`), the Inbox's thread cards (`Inbox`), the comments of an issue's Conversation,
- * whose every edit reads the comments again (`ConversationTab`), and the approval chips of the new
- * issue page's header, whose every review reads the issue again (`IssuePropertiesRow`); every
- * other approval chip holds one of its own (`ApprovalChip`). `holdThrough` takes the row whose
- * press made the read with the read (`ListReadHold`). Each press begins a new read of the same
- * list, so it forgets why an earlier read had not settled, whichever row's press made that one.
- * `unsettledOf` answers that reason for the row whose press made the latest read, and nothing for
- * every other row.
+ * One hold through a list's re-read, `readKey`'s read, for every row of the list
+ * (`useReadBound`), for a list whose rows each press a write that reads the whole list again and
+ * that says why that read has not settled on the row whose press made it: the expired requests of
+ * the Inbox's Credential requests section (`CredentialRequestsSection`), the documents of an
+ * issue, each of whose Remove takes the hold of the issue's one document list, on its row of the
+ * Artifacts tab and in a document page's header alike (`RemoveDocument`), the Inbox's thread
+ * cards (`Inbox`), the comments of an issue's Conversation, whose every edit reads the comments
+ * again (`ConversationTab`), the approval chips of the new issue page's header, whose every
+ * review reads the issue again (`IssuePropertiesRow`), every other approval chip, through its own
+ * document's read (`ApprovalChip`), and the priority line of each issue, through the priorities
+ * read (`usePriorityLineWrite`). `holdThrough` takes the row whose press made the read with the
+ * read (`ListReadHold`). Each press begins a new read of the same list, so it forgets why an
+ * earlier read had not settled, whichever row's press made that one. `unsettledOf` answers that
+ * reason for the row whose press made the latest read, and `holdingOf` whether its hold is on,
+ * for that row: nothing for every other row.
  */
-export function useListReadBound(): ListReadBound {
-  const [unsettled, holdThrough] = useReadBound();
-  // The row whose press made the latest read, the one row that says why it has not settled.
-  const [readBy, setReadBy] = useState<string>();
-  const holdRowThrough = useCallback<ListReadHold>(
-    (row, read) => {
-      setReadBy(row);
-      return holdThrough(read);
-    },
-    [holdThrough]
+export function useListReadBound(readKey: QueryKey): ListReadBound {
+  const [latest, waitWithinBound] = useUnsettledRead(readKey);
+  const holdThrough = useCallback<ListReadHold>(
+    (row, read) => holdWithPress(waitWithinBound, row, read),
+    [waitWithinBound]
   );
-  return [(row) => (row === readBy ? unsettled : undefined), holdRowThrough];
+  return [
+    (row) => (latest?.row === row ? latest.unsettled : undefined),
+    holdThrough,
+    (row) => latest?.row === row && latest.holding,
+  ];
 }

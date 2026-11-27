@@ -12,7 +12,7 @@ import {
   useState,
 } from "react";
 
-import { inboxQuery, usersQuery, whoAmIQuery } from "../../api/queries";
+import { inboxQuery, myRepliesKey, usersQuery, whoAmIQuery } from "../../api/queries";
 import { type ListReadHold, useListReadBound } from "../../api/read-bound";
 import type { InboxRow, MyReplyRow } from "../../api/types";
 import { Chip } from "../../components/Chip";
@@ -758,6 +758,7 @@ function ThreadCardRow({
   group: groupKey,
   holdMarkReadThrough,
   marked,
+  markReadHolding,
   markReadUnsettled,
   onMark,
   onRelease,
@@ -767,6 +768,8 @@ function ThreadCardRow({
 }: InboxRowProps & {
   /** The list's hold through its read after a Mark read (`useListReadBound`). */
   holdMarkReadThrough: ListReadHold;
+  /** Whether that hold is on, where this card's mark made it. */
+  markReadHolding: boolean;
   /** Why the list's read has not settled, where this card's mark made the latest one. */
   markReadUnsettled: string | undefined;
   thread: MyReplyRow;
@@ -785,6 +788,7 @@ function ThreadCardRow({
         <ThreadMarkCheckbox marked={marked} onMark={onMark} row={row} thread={thread} />
       </div>
       <ThreadRowCard
+        holding={markReadHolding}
         holdThrough={holdMarkReadThrough}
         thread={thread}
         unsettled={markReadUnsettled}
@@ -1278,8 +1282,10 @@ function InboxBody({
   // Every card's Mark read reads this list again (`ThreadRowCard`), so the list holds them all
   // through that read with one hold: a mark that lands forgets why an earlier one's read had not
   // settled, whichever card made it, and only the card whose mark made the latest read says why
-  // that one has not (`useListReadBound`).
-  const [markReadUnsettledOf, holdMarkReadThrough] = useListReadBound();
+  // that one has not (`useListReadBound`). The hold is the Inbox read's own, so the Peek drawer's
+  // list, drawn again each time the drawer opens, finds it while that read is out.
+  const [markReadUnsettledOf, holdMarkReadThrough, markReadHoldingOf] =
+    useListReadBound(myRepliesKey);
   /** Every row this list could hold before its five fields narrow it: what the bar counts. */
   const candidates = [...askRows, ...threads.rows];
   /** Whether the row with this id is still in the reader's Inbox, whatever this list's filters,
@@ -2531,6 +2537,7 @@ function InboxBody({
         {...shared}
         holdMarkReadThrough={holdMarkReadThrough}
         key={id}
+        markReadHolding={markReadHoldingOf(row.thread.thread_id)}
         markReadUnsettled={markReadUnsettledOf(row.thread.thread_id)}
         thread={row.thread}
       />

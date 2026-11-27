@@ -1235,7 +1235,7 @@ export function ConversationTab({
   // why an earlier one's read had not settled, whichever comment's it was, and only the turn whose
   // save made the latest read says why that one has not (`useListReadBound`). The phone's thread
   // view draws the same turn, so it takes the same hold, under the same conversation.
-  const [editUnsettledOf, holdEditThrough] = useListReadBound();
+  const [editUnsettledOf, holdEditThrough] = useListReadBound(["comments", issueKey]);
   // The conversation a deep link names, and the reply inside it when the link names one.
   const focus = useMemo(
     () =>

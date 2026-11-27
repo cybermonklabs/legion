@@ -102,6 +102,16 @@ export async function renderRecipients({
     })
   );
   return {
+    /** Takes the card off the page and draws it again, its routing list folded, as a host whose
+     *  reading view closes and opens again does. */
+    drawAgain: () => {
+      view.rerender(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>{null}</QueryClientProvider>
+        </MemoryRouter>
+      );
+      view.rerender(recipients(props));
+    },
     getArtifactSubscribers,
     getIssueSubscribers,
     queryClient,

@@ -126,7 +126,10 @@ export function LegionDaemonsSection(): ReactNode {
     () => list.current,
     () => null
   );
-  const [unsettled, holdThrough] = useReadBound();
+  // Each project's daemon is a read of its own, and the section's one line says why the latest
+  // write's read of a daemon has not settled: the hold is over the reads of every project's
+  // daemon, under the key each of them begins with.
+  const [unsettled, holdThrough] = useReadBound(["legion-daemon"]);
   const daemonKey = (named: string) => legionDaemonQuery(named).queryKey;
   // The line both writes of a daemon go on (`target`), in press order.
   const daemonTarget = (named: string) => `legion-daemon:${named}`;

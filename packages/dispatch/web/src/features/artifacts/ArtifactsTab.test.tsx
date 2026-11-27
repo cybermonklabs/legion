@@ -112,17 +112,24 @@ function renderTab(
   } else {
     getIssueReferences.mockResolvedValue(references);
   }
-  const view = render(
+  const tab = (drawn: boolean) => (
     <MemoryRouter
       initialEntries={[`${buildIssuePath({ key: "CORE-1", kind: "artifacts" })}${search}`]}
     >
       <QueryClientProvider client={queryClient}>
-        <ArtifactsTab isClosed={isClosed} />
+        {drawn ? <ArtifactsTab isClosed={isClosed} /> : null}
         <Location />
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { getIssueReferences, listArtifacts, view };
+  const view = render(tab(true));
+  /** Takes the tab off the page and draws it again, as the issue page does on a switch to
+   *  another tab and back. */
+  const drawAgain = () => {
+    view.rerender(tab(false));
+    view.rerender(tab(true));
+  };
+  return { drawAgain, getIssueReferences, listArtifacts, view };
 }
 
 test("Create and Cancel let go at the document write deadline without making a second document", async () => {
@@ -1486,6 +1493,68 @@ test("the line one document's removal leaves goes as another document's removal 
     await tick(REQUEST_DEADLINE_MS);
     expect(within(secondRow).getByRole("alert").textContent).toBe(why);
     expect(within(firstRow).queryByRole("alert")).toBeNull();
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
+// The issue page draws the Artifacts tab only on its own address (`ArtifactRoutePanel`), so a
+// switch to the Spec tab and back draws a new tab while a removal's list read is still out.
+// Every Remove of the issue takes the document list's one hold (`RemoveDocument`), so the tab
+// drawn again holds the removed document's Remove through that read, as the tab it was pressed on
+// did, and says why on its row at the bound and after, until the read answers and takes the row
+// away (the tester's row of `artifacts.e2e.ts`).
+test("a tab drawn again while a removal's list read is out holds that row's Remove, and says why on it at the bound until the read takes the row away", async () => {
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const { drawAgain, getIssueReferences, listArtifacts, view } = renderTab([notes], noReferences, {
+    queryClient,
+  });
+  // Each removal's answer, held until the row moves the clock, so what it sets off runs in `act`.
+  const { answers: removals, next } = heldAnswers<void>();
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(next);
+  await screen.findByTestId("artifact-design-notes");
+  // The removal's read of the list, held until the row answers it.
+  const reread = Promise.withResolvers<Artifact[]>();
+  listArtifacts.mockReturnValueOnce(reread.promise);
+  const why = "Could not load artifacts. Dispatch did not answer within 30 seconds.";
+  const row = () => screen.getByTestId("artifact-design-notes");
+  const removeOf = () => within(row()).getByRole("button", { name: /^(Remove|Removing…)$/ });
+  jest.useFakeTimers();
+  try {
+    await userOnFakeClock().click(removeOf());
+    await tick(0);
+    removals[0]?.();
+    await tick(0);
+
+    drawAgain();
+    await tick(0);
+    expect(
+      removeOf().textContent,
+      "the tab drawn again let Remove go while the removal's read was out"
+    ).toBe("Removing…");
+    expect(removeOf()).toHaveAttribute("aria-disabled", "true");
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(removeOf().textContent).toBe("Remove");
+    expect(within(row()).getByRole("alert").textContent).toBe(why);
+    drawAgain();
+    await tick(0);
+    expect(
+      within(row()).queryByRole("alert")?.textContent,
+      "the tab drawn again after the bound said nothing of the read still out"
+    ).toBe(why);
+
+    await act(async () => reread.resolve([]));
+    await tick(0);
+    expect(screen.queryByTestId("artifact-design-notes")).toBeNull();
   } finally {
     view.unmount();
     queryClient.clear();

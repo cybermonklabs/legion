@@ -48,13 +48,18 @@ export const INBOX_NOT_LOADED = "Could not load your inbox.";
  * (`heldPress`, `late`) and through the re-read it starts, up to the read's request deadline.
  * Every Mark read reads the Inbox's one list again, so the list holds every card's Mark read
  * through that read with one hold (`useListReadBound`), which it hands the card (`holdThrough`)
- * with why that read has not settled where this card's mark made the latest one (`unsettled`).
+ * with why that read has not settled where this card's mark made the latest one (`unsettled`),
+ * and whether its hold is on (`holding`): a card drawn again while it is - the Peek drawer closed
+ * and opened - holds Mark read by it, as the card its mark was made on did.
  */
 export function ThreadRowCard({
+  holding,
   holdThrough,
   thread,
   unsettled,
 }: {
+  /** Whether the list's hold through its re-read is on, where this card's mark made it. */
+  holding: boolean;
   /** The list's hold through its re-read, which a landed mark makes as the thread's it marked
    *  (`useListReadBound`). */
   holdThrough: ListReadHold;
@@ -121,10 +126,12 @@ export function ThreadRowCard({
         <button
           className={`min-h-11 font-medium ${linkText} ${linkHoverText}`}
           {...inboxActionMark("inbox.mark-read")}
-          {...heldPress(markRead.isPending && !markRead.late, () => markRead.mutate(thread))}
+          {...heldPress((markRead.isPending && !markRead.late) || holding, () =>
+            markRead.mutate(thread)
+          )}
           type="button"
         >
-          {markRead.isPending ? "Marking read…" : "Mark read"}
+          {markRead.isPending || holding ? "Marking read…" : "Mark read"}
         </button>
         <DismissControl shown thread={thread} />
       </div>

@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
-import { useReadBound } from "../../api/read-bound";
+import { useListReadBound } from "../../api/read-bound";
 import type { Issue, PriorityRow } from "../../api/types";
 import { CappedGroup } from "../../components/CappedGroup";
 import { MultiSelect } from "../../components/MultiSelect";
@@ -85,10 +85,11 @@ interface AdvancesWrite {
 
 /** What the line draws from its write (`usePriorityLineWrite`). */
 interface PriorityLineWrite {
-  /** Whether the trigger is held: a write of the line is out within its deadline. */
+  /** Whether the trigger is held: a write of the line is out within its deadline, or the hold
+   *  through the reads it made stale is on. */
   readonly held: boolean;
   /** Why the reads the latest write made stale have not settled, once the hold over them ran
-   *  out (`useReadBound`). */
+   *  out (`useListReadBound`). */
   readonly unsettled: string | undefined;
   /** The write of the issue's own set, whose refusal the line says. */
   readonly write: KeyedWriteResult<Issue, AdvancesWrite, unknown>;
@@ -106,7 +107,10 @@ interface PriorityLineWrite {
 export function usePriorityLineWrite(issueKey: string): PriorityLineWrite {
   const page = usePageWords();
   const queryClient = useQueryClient();
-  const [unsettled, holdThrough] = useReadBound();
+  // The hold of the line's write through the reads it made stale is the priorities read's, which
+  // the line says is not read, as the issue's line whose write made it (`useListReadBound`): a
+  // line drawn again while it is on finds it, and no other issue's line says why for it.
+  const [unsettledOf, holdThrough, holdingOf] = useListReadBound(prioritiesQuery().queryKey);
   const write = useKeyedWrite({
     // The line says why a write was refused, beside its trigger.
     inline: true,
@@ -117,7 +121,7 @@ export function usePriorityLineWrite(issueKey: string): PriorityLineWrite {
     // The set and the revision of the read it was drawn from, both taken when the picker
     // opened: a retry sends the same pair, never a revision read after the set was chosen.
     request: (input: AdvancesWrite) => issuePatchRequest(issueKey, input),
-    onSettled: () => {
+    onSettled: (_answer, refusal, written) => {
       // Every open issue, this one included: a descendant inherits the change with no event of
       // its own, and a refused write leaves this issue's read stale, so the next write must
       // carry the revision it holds now. The priorities body and the rail's two counts move with
@@ -132,15 +136,29 @@ export function usePriorityLineWrite(issueKey: string): PriorityLineWrite {
       // issue it draws is the one read after the write, or until the request deadline where
       // that read has not settled - one the network paused while the browser is offline - so no
       // read holds the line for good, and the line says why until the reads settle or the next
-      // write lands (`useReadBound`).
+      // write lands (`useListReadBound`).
       if (page === null) return;
-      return holdThrough(Promise.all(rereads));
+      // The line reads the priorities only while its picker is open or the issue advances one
+      // (`PriorityLine`), so the invalidation reads them only then. A set that lands with a
+      // priority in it, written by a line that read none - the first priority added, the picker
+      // closed - leaves the line the next issue read draws to name that priority from a read
+      // nothing started: so the write reads them itself, and its hold waits on that read too.
+      // While the line reads them, that read is the invalidation's own (`fetchQuery` joins it).
+      const named =
+        refusal === null && written.advances.length > 0
+          ? [queryClient.fetchQuery(prioritiesQuery()).catch(() => undefined)]
+          : [];
+      return holdThrough(issueKey, Promise.all([...rereads, ...named]));
     },
   });
   // Held while a write is out within its deadline: the trigger keeps the focus and sends nothing
   // more until the write lands (`MultiSelect`'s `ariaDisabled`). Past the deadline (`late`) it is
-  // let go.
-  return { held: write.isPending && !write.late, unsettled, write };
+  // let go. A line drawn again while the write's hold is on holds by that hold.
+  return {
+    held: (write.isPending && !write.late) || holdingOf(issueKey),
+    unsettled: unsettledOf(issueKey),
+    write,
+  };
 }
 
 /**

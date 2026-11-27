@@ -304,10 +304,23 @@ export function AskRecipients({
   // stopped, and what its landing reads again, are of that press's ask, not of the one the card
   // shows.
   // Each write stays pending through the read its landing starts, for the request deadline at
-  // the most (`useReadBound`), and `unsettled` is why the latest such read has not settled once
-  // its hold ran out, until the next write lands. The read waits on a fetch the network had
-  // already paused too (`invalidateWaitingForPaused`), which the bound ends as well.
-  const [unsettled, holdThrough] = useReadBound();
+  // the most (`useReadBound`): an Unfollow through the read of the ask's thread, which lists its
+  // followers, and an Unsubscribe through the read of the owner's subscribers. Each read has one
+  // hold for every card of it, which a card drawn again while the read is out - the reading view
+  // closed and opened, the window resized across 1280 px - finds: why that read has not settled,
+  // once its hold ran out, until it settles or the next write of the same read lands, and whether
+  // the hold is on, which holds that write's controls as the card the press was made on did. The
+  // read waits on a fetch the network had already paused too (`invalidateWaitingForPaused`),
+  // which the bound ends as well.
+  const [unfollowUnsettled, holdUnfollowThrough, unfollowHolding] = useReadBound([
+    "ask-thread",
+    askId,
+  ]);
+  const [unsubscribeUnsettled, holdUnsubscribeThrough, unsubscribeHolding] = useReadBound([
+    "subscribers",
+    subscription?.id,
+  ]);
+  const unsettled = unfollowUnsettled ?? unsubscribeUnsettled;
   const unfollow = useKeyedWrite({
     method: "DELETE",
     readsLate: true,
@@ -315,7 +328,7 @@ export function AskRecipients({
       removedEvenIfGone(removeFollower(press.askId, press.sessionId, bounds), isFollowerNotFound),
     label: (press) => `${text.sessionText(press.sessionId, undefined)} taken off this ask`,
     onSuccess: (_result, press) =>
-      holdThrough(invalidateWaitingForPaused(queryClient, ["ask-thread", press.askId])),
+      holdUnfollowThrough(invalidateWaitingForPaused(queryClient, ["ask-thread", press.askId])),
   });
   const unsubscribe = useKeyedWrite({
     method: "DELETE",
@@ -335,10 +348,14 @@ export function AskRecipients({
     label: (press) =>
       `${text.sessionText(press.sessionId, subscribers.find((row) => row.session_id === press.sessionId)?.title)} unsubscribed from ${press.subscription?.label ?? "this ask"}`,
     onSuccess: (_result, press) =>
-      holdThrough(invalidateWaitingForPaused(queryClient, ["subscribers", press.subscription?.id])),
+      holdUnsubscribeThrough(
+        invalidateWaitingForPaused(queryClient, ["subscribers", press.subscription?.id])
+      ),
   });
-  const unfollowHeld = useHeldThroughAnswer(unfollow.isPending && !unfollow.late);
-  const unsubscribeHeld = useHeldThroughAnswer(unsubscribe.isPending && !unsubscribe.late);
+  const unfollowHeld =
+    useHeldThroughAnswer(unfollow.isPending && !unfollow.late) || unfollowHolding;
+  const unsubscribeHeld =
+    useHeldThroughAnswer(unsubscribe.isPending && !unsubscribe.late) || unsubscribeHolding;
 
   if (
     followers.length === 0 &&
