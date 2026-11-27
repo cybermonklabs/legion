@@ -2,21 +2,7 @@ kind: Fixed
 body: |-
   A document of many footnotes parses in time in proportion to its size. The parser looked up each
   footnote reference by a walk over every footnote definition of the document, so 1 MiB of
-  references and definitions took about 6 s to parse, and now takes about 0.3 s. The judgment of
-  the form of The Spec judges each footnote one time for each document, also when many texts refer
-  to it, and gives each of its findings one time, under the first text that refers to it and whose
-  kind the rule reads, in the order that it judges the texts: each text but a term line in the
-  order of the document, then each term line. An instruction of the procedure of a check (a
-  sentence that opens with a verb of the reviewed list that specform/instruction-verbs.txt holds)
-  breaks the form with more than 20 words, a description of it with more than 25, and a sentence
-  breaks it with two instructions (rule instructions), as ASD-STE100 writes a procedure. A word
-  outside that list is no verb, so a plain procedure of one instruction, such as "Read the log,
-  especially the last line.", passes. The finding of two instructions quotes the first words of
-  the second one.
-  An address with no scheme is read against every page that draws its document, as the dashboard's
-  route table lists them, as well as against the origin of the server, so a short path such as
-  artifacts/notes-md, decisions or #b-x1 in a spec links to a record from the issue's page and from
-  the spec's own page. Two links to two records of one issue give two findings.
+  references and definitions took about 6 s to parse, and now takes about 0.3 s.
 time: 2026-11-17T13:30:06Z
 custom:
     Issue: pr4179

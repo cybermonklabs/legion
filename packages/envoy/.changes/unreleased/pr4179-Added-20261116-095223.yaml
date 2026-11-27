@@ -1,5 +1,31 @@
 kind: Added
-body: "Dispatch refuses an approval request and a person's approval with 409 SPEC_FORM when a text of a covered document breaks the form of The Spec, and the refusal names each text and its rule, with the refusal and its next step apart (refusal, next_step). No approval carries to a version that breaks the form. A document is covered when it is the spec or the Verification document of an issue under a root that the setting DISPATCH_SPEC_ROOTS names, or the terms.md of such a root. The backfill-block-ids and backfill-anchor-blocks commands read the setting too, so a settlement that they run carries an approval through the same form gate. A reopen and the repair pass judge a request at the versions that it names when they end, and leave a request that breaks the form resolved. GET /api/v1/artifacts/{id}/spec-form shows the same findings before a request, and the lines that list them (finding_lines), each finding's line as the refusal writes it. The form section of cmd/dispatch/README.md states each rule and how it reads a name, a link and an address."
+body: |-
+  Dispatch refuses an approval request and a person's approval with 409 SPEC_FORM when a text of a
+  covered document breaks the form of The Spec, and the refusal names each text and its rule, with
+  the refusal and its next step apart (refusal, next_step). No approval carries to a version that
+  breaks the form. A document is covered when it is the spec or the Verification document of an
+  issue under a root that the setting DISPATCH_SPEC_ROOTS names, or the terms.md of such a root.
+  The backfill-block-ids and backfill-anchor-blocks commands read the setting too, so a settlement
+  that they run carries an approval through the same form gate. A reopen and the repair pass judge
+  a request at the versions that it names when they end, and leave a request that breaks the form
+  resolved. GET /api/v1/artifacts/{id}/spec-form shows the same findings before a request, and the
+  lines that list them (finding_lines), each finding's line as the refusal writes it. The form
+  section of cmd/dispatch/README.md states each rule and how it reads a name, a link and an
+  address.
+  The judgment of the form of The Spec judges each footnote one time for each document, also when
+  many texts refer to it, and gives each of its findings one time, under the first text that
+  refers to it and whose kind the rule reads, in the order that it judges the texts: each text but
+  a term line in the order of the document, then each term line. An instruction of the procedure
+  of a check (a sentence that opens with a verb of the reviewed list that
+  specform/instruction-verbs.txt holds) breaks the form with more than 20 words, a description of
+  it with more than 25, and a sentence breaks it with two instructions (rule instructions), as
+  ASD-STE100 writes a procedure. A word outside that list is no verb, so a plain procedure of one
+  instruction, such as "Read the log, especially the last line.", passes. The finding of two
+  instructions quotes the first words of the second one.
+  An address with no scheme is read against every page that draws its document, as the
+  dashboard's route table lists them, as well as against the origin of the server, so a short path
+  such as artifacts/notes-md, decisions or #b-x1 in a spec links to a record from the issue's page
+  and from the spec's own page. Two links to two records of one issue give two findings.
 time: 2026-11-16T09:52:23.463482113Z
 custom:
     Issue: pr4179
