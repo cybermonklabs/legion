@@ -53,14 +53,20 @@
       "match": "^gh run view",
       "stdout": "unit-limits\ttest\tsrc/limit.test.ts:\nunit-limits\ttest\t(fail) keeps a limit of 10\nunit-limits\ttest\t  expect(received).toBe(expected)\nunit-limits\ttest\t  Expected: 10\nunit-limits\ttest\t  Received: 9\nunit-limits\ttest\t      at <anonymous> (src/limit.test.ts:5:26)\nunit-limits\ttest\t(pass) cuts a limit above 10 to 10\nunit-limits\ttest\t 1 pass\nunit-limits\ttest\t 1 fail\n"
     },
-    { "match": "^gh pr (edit|comment|review|ready)", "stdout": "https://github.com/acme/widgets/pull/41#issuecomment-1" },
+    {
+      "match": "^gh pr (edit|comment|review|ready)",
+      "stdout": "https://github.com/acme/widgets/pull/41#issuecomment-1"
+    },
     {
       "match": "^gh api graphql.*reviewThreads",
       "stdout": {
         "data": {
           "repository": {
             "pullRequest": {
-              "reviewThreads": { "pageInfo": { "hasNextPage": false, "endCursor": null }, "nodes": [] }
+              "reviewThreads": {
+                "pageInfo": { "hasNextPage": false, "endCursor": null },
+                "nodes": []
+              }
             }
           }
         }
@@ -71,14 +77,22 @@
       "stdout": {
         "total_count": 2,
         "check_runs": [
-          { "name": "unit", "status": "completed", "conclusion": "success", "head_sha": "{{HEAD}}" },
+          {
+            "name": "unit",
+            "status": "completed",
+            "conclusion": "success",
+            "head_sha": "{{HEAD}}"
+          },
           {
             "name": "unit-limits",
             "status": "completed",
             "conclusion": "failure",
             "head_sha": "{{HEAD}}",
             "details_url": "https://github.com/acme/widgets/actions/runs/9002/job/9102",
-            "output": { "title": "1 fail", "summary": "(fail) keeps a limit of 10: Expected: 10, Received: 9 (src/limit.test.ts:5)" }
+            "output": {
+              "title": "1 fail",
+              "summary": "(fail) keeps a limit of 10: Expected: 10, Received: 9 (src/limit.test.ts:5)"
+            }
           }
         ]
       }

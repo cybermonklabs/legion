@@ -45,14 +45,21 @@
       "stdout": {
         "data": {
           "addPullRequestReviewThreadReply": {
-            "comment": { "id": "PRRC_kwDOAcme4300", "url": "https://github.com/acme/widgets/pull/41#discussion_r4300" }
+            "comment": {
+              "id": "PRRC_kwDOAcme4300",
+              "url": "https://github.com/acme/widgets/pull/41#discussion_r4300"
+            }
           }
         }
       }
     },
     {
       "match": "^gh api graphql.*resolveReviewThread",
-      "stdout": { "data": { "resolveReviewThread": { "thread": { "id": "PRRT_kwDOAcme4242", "isResolved": true } } } }
+      "stdout": {
+        "data": {
+          "resolveReviewThread": { "thread": { "id": "PRRT_kwDOAcme4242", "isResolved": true } }
+        }
+      }
     },
     {
       "match": "^gh api graphql.*reviewThreads",
@@ -89,7 +96,10 @@
     },
     {
       "match": "^gh api .*pulls/41/comments/4242/replies",
-      "stdout": { "id": 4300, "html_url": "https://github.com/acme/widgets/pull/41#discussion_r4300" }
+      "stdout": {
+        "id": 4300,
+        "html_url": "https://github.com/acme/widgets/pull/41#discussion_r4300"
+      }
     },
     {
       "match": "^gh api .*pulls/41/comments",
@@ -105,12 +115,17 @@
       ]
     },
     { "match": "^gh api .*pulls/41/reviews", "stdout": [] },
-    { "match": "^gh pr (edit|comment|review|ready)", "stdout": "https://github.com/acme/widgets/pull/41#issuecomment-1" },
+    {
+      "match": "^gh pr (edit|comment|review|ready)",
+      "stdout": "https://github.com/acme/widgets/pull/41#issuecomment-1"
+    },
     {
       "match": "^gh api .*(check-runs|status)",
       "stdout": {
         "total_count": 1,
-        "check_runs": [{ "name": "unit", "status": "completed", "conclusion": "success", "head_sha": "{{HEAD}}" }]
+        "check_runs": [
+          { "name": "unit", "status": "completed", "conclusion": "success", "head_sha": "{{HEAD}}" }
+        ]
       }
     },
     { "match": "^gh (api user|auth status)", "stdout": { "login": "rig[bot]" } }

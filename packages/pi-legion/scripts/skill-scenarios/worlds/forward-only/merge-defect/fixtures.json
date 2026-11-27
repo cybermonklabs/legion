@@ -44,14 +44,20 @@
       "match": "^gh pr checks",
       "stdout": "unit\tpass\t21s\thttps://github.com/acme/widgets/actions/runs/9001/job/9101\n"
     },
-    { "match": "^gh pr (edit|comment|review|ready)", "stdout": "https://github.com/acme/widgets/pull/41#issuecomment-1" },
+    {
+      "match": "^gh pr (edit|comment|review|ready)",
+      "stdout": "https://github.com/acme/widgets/pull/41#issuecomment-1"
+    },
     {
       "match": "^gh api graphql.*reviewThreads",
       "stdout": {
         "data": {
           "repository": {
             "pullRequest": {
-              "reviewThreads": { "pageInfo": { "hasNextPage": false, "endCursor": null }, "nodes": [] }
+              "reviewThreads": {
+                "pageInfo": { "hasNextPage": false, "endCursor": null },
+                "nodes": []
+              }
             }
           }
         }
@@ -61,7 +67,9 @@
       "match": "^gh api .*(check-runs|status)",
       "stdout": {
         "total_count": 1,
-        "check_runs": [{ "name": "unit", "status": "completed", "conclusion": "success", "head_sha": "{{HEAD}}" }]
+        "check_runs": [
+          { "name": "unit", "status": "completed", "conclusion": "success", "head_sha": "{{HEAD}}" }
+        ]
       }
     },
     { "match": "^gh api .*pulls/41/(reviews|comments)", "stdout": [] },
