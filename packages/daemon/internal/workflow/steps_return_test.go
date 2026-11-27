@@ -166,6 +166,7 @@ func assertWalksAt(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string,
 // task: each return counts and tells as today, on the task. A plan whose one step is the tester is
 // refused, since it has no implementer.
 func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
+	t.Parallel()
 	t.Run("a review that requests changes returns to the implementer, the same agents on", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -204,7 +205,7 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 
 	t.Run("a plan whose one step is the tester is refused: it has no implementer", func(t *testing.T) {
 		given := plan.Plan{ArtifactID: "plan-artifact", Version: 2, Tasks: []plan.Task{{ID: "a", Steps: []plan.Step{{Role: "tester"}}, Text: "Test it."}}}
-		refusals := append(plan.Validate(given, builtinDeployment), plan.Supported(given)...)
+		refusals := plan.Refusals(given, builtinDeployment)
 		want := []plan.Refusal{
 			{Task: "a", Reason: "task a has no step implementer. This release of Legion does not carry it out yet."},
 			{Task: "a", Reason: "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads. This release of Legion does not carry it out yet."},
@@ -311,6 +312,7 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 // (step_stop) and its session kept, and the owner told once (task-stopped). The first test's
 // assertion of that review, that the issue stands in implementing, fails on it.
 func TestAReturnWithNoImplementationStepStopsTheTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -411,6 +413,7 @@ func assertRefusedReturnTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key
 // refused today. An issue with no plan rows has no step to name: a report naming one is refused,
 // and the same report naming none returns to implementing as today.
 func TestReturnToNamesAnEarlierStep(t *testing.T) {
+	t.Parallel()
 	// planned is LEGION-208 walking the steps planner implementer tester, standing in testing at
 	// step 3, its implementer started once.
 	planned := func(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
@@ -438,7 +441,7 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		if len(starts) != planners+1 {
 			t.Fatalf("the return wrote %d starts of the planner, want one", len(starts)-planners)
 		}
-		report := "Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1). " + testerVerdictLabel + ": fail."
+		report := strings.TrimPrefix(handoffPartOf(t, "LEGION-208", "test", 1), " ") + " " + testerVerdictLabel + ": fail."
 		if start := starts[len(starts)-1]; start.FreshSession || start.Phase != phase.Planning || !strings.Contains(start.Task, report) {
 			t.Fatalf("the planner's start = %+v, want a start of planning in its own session whose task holds the tester's report %q", start, report)
 		}
@@ -517,6 +520,7 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 // is. The same fail naming no step is then taken on the tester's own row and moves nothing. Before,
 // the walk's error answered the route 500 FACT_APPLY_FAILED at every retry of the same fail.
 func TestALateFailNamingAStepOnALineThatLostItsPhaseIsRefused(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -563,6 +567,7 @@ func TestALateFailNamingAStepOnALineThatLostItsPhaseIsRefused(t *testing.T) {
 // its plan of one task, which walks it. Each walk is read in a transaction of its own and with no
 // boot pass, which would read the same walk first.
 func TestTheWalkTakesItsTaskByTheStoresOneRule(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)

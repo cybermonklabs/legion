@@ -17,10 +17,10 @@ import (
 )
 
 // streamStep is the step of a start a wait on a stream follows (awaitStream). It names the step
-// in the wait's error, `create KV_legion_agents: the stream had no leader when the wait ended:
-// ...`, and says what a read answered "stream not found" means: after a create, a member that has
-// not applied it yet, which is read again (awaitsApply); after any other step, a stream that is
-// gone, which ends the wait.
+// in the wait's error, `create KV_legion_agents: the stream had no leader that takes writes when
+// the wait ended: ...`, and says what a read answered "stream not found" means: after a create, a
+// member that has not applied it yet, which is read again (awaitsApply); after any other step, a
+// stream that is gone, which ends the wait.
 type streamStep int
 
 const (
@@ -117,39 +117,67 @@ func pause(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// leaderless reports whether info describes a stream of more than one copy that has no leader:
-// one whose group has not elected one yet, after a create or a raise. A stream of one copy is its
-// one member's, and needs no election.
+// leaderless reports whether info describes a stream of more than one copy that has no leader
+// that takes a write yet (leaderNotServing): one whose group has not elected one yet after a
+// create or a raise, or whose new leader has not yet applied its first entry as leader. A stream
+// of one copy is its one member's, and needs no election.
 func leaderless(info *nats.StreamInfo) bool {
-	return info.Config.Replicas > 1 && (info.Cluster == nil || info.Cluster.Leader == "")
+	return info.Config.Replicas > 1 && leaderNotServing(info) != ""
 }
 
-// awaitStreamLeader waits until stream reports a leader, for as long as ctx lasts, after step: a
-// create of more than one copy that this start made or that a concurrent start made
-// (afterCreate), a raise of the notification stream's copies (afterRaise), or a read of a stream
-// another program created or raised a moment ago (afterOpen). A create sent again while the
-// stream's first election runs is answered before that election ends, and a raise of a one-copy
-// stream at once (EnsureKeyValue, ensureStreamWithConfig); a stream with no leader answers no
-// write, and a publish sent then draws no answer even once the leader is there. It asks for the
-// leader alone and not for every copy current: a new stream holds no message a copy could be
-// behind on, a create with one member of three stopped lands with that member offline and serves
-// on the other two (TestOneServerStoppedACreateAtThreeCopiesLandsAndTheStoppedMemberCatchesUp),
-// and the notification stream is read through consumers, which its leader serves.
-func awaitStreamLeader(ctx context.Context, js nats.JetStreamContext, step streamStep, stream string) error {
-	return awaitStream(ctx, js, step, stream, "the stream had no leader", "envoy nats stream has no leader yet, waiting", func(info *nats.StreamInfo) string {
-		if info.Cluster == nil || info.Cluster.Leader == "" {
-			return "the stream has no leader yet"
-		}
-		return ""
-	})
+// leaderNotServing says why the stream info describes has no leader that takes a write yet, and
+// is empty when it has one. A read names a group's new leader before that leader takes a write:
+// nats-server reports the Raft node's leader (Cluster.Leader) from the moment the node wins its
+// election (switchToLeader), and the stream takes a write only once that leader has applied its
+// first entry as leader, when the node sets its leader state and the time it took the lead, which
+// a read reports as Cluster.LeaderSince (v2.15.1 server/raft.go:6307 and :1603-1613,
+// server/jetstream_cluster.go:14075-14076). A publish that reaches the leader in between is
+// dropped with no answer (processClusteredInboundMsg, "not leader", jetstream_cluster.go:13120),
+// and nats.go sends it once, so its caller waits out its whole bound for an acknowledgement that
+// never comes and the stream holds nothing: the first publish after a raise to three copies failed
+// so (envoy-go-race job 139083337221). The four releases read for this, v2.11.12, v2.12.4,
+// v2.14.0 and v2.15.1 (the first of each line natsversion.FixedReleases admits, and the hub's),
+// set LeaderSince at that one point and nowhere else; v2.11.8's Raft node keeps no such time. The
+// wait assumes a server that sets it: a program checks its server against that floor only after
+// its bus start has run, so on a server that never reports LeaderSince a wait on a stream of more
+// than one copy would end at the start's hang guard, where the floor would have refused the server
+// anyway. A read that a member other than the leader answers names the leader with no
+// LeaderSince, the member's own, and reads as not serving yet, so the wait reads again. A stream
+// of one copy has no Raft node, takes a write from its member at once and reports no LeaderSince
+// (jetstream_cluster.go:14013-14019), so its named member is its serving leader: a start waits on
+// such a stream when another start created a bucket at one copy (ensureKeyValue).
+func leaderNotServing(info *nats.StreamInfo) string {
+	switch {
+	case info.Cluster == nil || info.Cluster.Leader == "":
+		return "the stream has no leader yet"
+	case info.Config.Replicas > 1 && info.Cluster.LeaderSince == nil:
+		return info.Cluster.Leader + " leads the stream and takes no write yet"
+	}
+	return ""
+}
+
+// awaitStreamLeader waits until stream has a leader that takes a write (leaderNotServing), for as
+// long as ctx lasts, after step: a create of more than one copy that this start made or that a
+// concurrent start made (afterCreate), a raise of the notification stream's copies (afterRaise), or
+// a read of a stream another program created or raised a moment ago (afterOpen). A create sent
+// again while the stream's first election runs is answered before that election ends, and a raise
+// of a one-copy stream at once (EnsureKeyValue, ensureStreamWithConfig); a stream whose leader is
+// not serving yet answers no write, and a publish sent then draws no answer even once the leader
+// serves. It asks for the leader alone and not for every copy current: a new stream holds no
+// message a copy could be behind on, a create with one member of three stopped lands with that
+// member offline and serves on the other two
+// (TestOneServerStoppedACreateAtThreeCopiesLandsAndTheStoppedMemberCatchesUp), and the
+// notification stream is read through consumers, which its leader serves.
+func awaitStreamLeader(ctx context.Context, logger *slog.Logger, js nats.JetStreamContext, step streamStep, stream string) error {
+	return awaitStream(ctx, logger, js, step, stream, "the stream had no leader that takes writes", "envoy nats stream has no leader yet, waiting", leaderNotServing)
 }
 
 // awaitStream reads stream every bucketAppliedInterval until short, given what a read answered,
 // reports nothing short, or ctx ends: the wait after a raise (awaitReplicasCurrent) and after a
 // create or a read of a stream with no leader (awaitStreamLeader), step naming which. Its first
-// read that is short logs waiting, the WARN that says a start waited and for which stream. The
-// end of ctx is an error naming step, the stream, want (what was still short), the last thing
-// short reported and ctx's cause.
+// read that is short logs waiting to logger, the WARN that says a start waited and for which
+// stream. The end of ctx is an error naming step, the stream, want (what was still short), the
+// last thing short reported and ctx's cause.
 //
 // A read the server answers with an error is returned as it is, since the stream is there: this
 // runs only after a raise or a create of it answered, or a read found it. The one exception is a
@@ -159,8 +187,9 @@ func awaitStreamLeader(ctx context.Context, js nats.JetStreamContext, step strea
 // as sentAgain sends a request again. Each read is waited for up to the read limit of ctx's run of
 // reads (limitedRead), so one lost read costs the start a fraction of a second rather than the
 // caller's whole ten second wait after the fact it waits for is true; a read in flight when ctx
-// ends is abandoned too.
-func awaitStream(ctx context.Context, js nats.JetStreamContext, step streamStep, stream, want, waiting string, short func(*nats.StreamInfo) string) error {
+// ends is abandoned too. A read nats.go refuses while the bus reconnects is returned at once too,
+// named ErrReconnecting, as every request through js is (namedRequests).
+func awaitStream(ctx context.Context, logger *slog.Logger, js nats.JetStreamContext, step streamStep, stream, want, waiting string, short func(*nats.StreamInfo) string) error {
 	behind := "no read of the stream answered yet"
 	limits := readLimitOf(ctx)
 	for attempt := 1; ; attempt++ {
@@ -183,7 +212,7 @@ func awaitStream(ctx context.Context, js nats.JetStreamContext, step streamStep,
 			return nil
 		}
 		if attempt == 1 {
-			slog.Warn(waiting,
+			logger.Warn(waiting,
 				slog.String("stream", stream),
 				slog.String("behind", behind),
 				slog.String("retry_in", bucketAppliedInterval.String()))
@@ -195,11 +224,11 @@ func awaitStream(ctx context.Context, js nats.JetStreamContext, step streamStep,
 }
 
 // sentAgain is what send answers, sent again while the server leaves it unanswered (unanswered)
-// and ctx lasts, with request naming it in the line each further send logs: the stream read and
-// the create of ensureStreamWithConfig, the handle open EnsureKeyValue makes, and EnsureKeyValue's
-// lookup of a KV bucket and its create (kv_ensure.go). A wait that runs out is either a
-// request the server will never answer, on one of the paths listed below, or one it is still
-// working on, and either is safe to send again: a read changes nothing, and a second identical
+// and ctx lasts, with request naming it in the line each further send logs to logger: the stream
+// read and the create of ensureStreamWithConfig, the handle open EnsureKeyValue makes, and
+// EnsureKeyValue's lookup of a KV bucket and its create (kv_ensure.go). A wait that runs out is
+// either a request the server will never answer, on one of the paths listed below, or one it is
+// still working on, and either is safe to send again: a read changes nothing, and a second identical
 // create is deduplicated and carries the same id as the one that may have landed, so no second
 // send can contradict the send before it (an update is read again rather than sent again,
 // updateStream). The create of a stream of more than one copy is one the server is still working
@@ -255,11 +284,13 @@ func awaitStream(ctx context.Context, js nats.JetStreamContext, step streamStep,
 //
 // So a start that sent a request once through a member in one of those states waited that send's
 // bound out, and ended the program over a send that was never going to be answered.
-func sentAgain[T any](ctx context.Context, request string, send func() (T, error)) (T, error) {
+func sentAgain[T any](ctx context.Context, logger *slog.Logger, request string, send func() (T, error)) (T, error) {
 	var last T
 	var lastErr error
 	for sends := 1; ; sends++ {
-		answer, answered, err := Bounded(ctx, send)
+		// No connection is waited for (Bounded's nil conn): a send nats.go refuses while it
+		// reconnects fails at once as ErrReconnecting (namedRequests), and that is an answer.
+		answer, answered, err := Bounded(ctx, nil, send)
 		if !answered {
 			return last, unansweredUntil(sends-1, lastErr, context.Cause(ctx))
 		}
@@ -267,7 +298,7 @@ func sentAgain[T any](ctx context.Context, request string, send func() (T, error
 			return answer, err
 		}
 		last, lastErr = answer, err
-		slog.Warn("envoy nats stream request unanswered; sending it again",
+		logger.Warn("envoy nats stream request unanswered; sending it again",
 			slog.String("request", request), slog.Int("sent", sends), slog.String("error", err.Error()))
 		if ended := pause(ctx, bucketAppliedInterval); ended != nil {
 			return last, unansweredUntil(sends, lastErr, ended)
@@ -376,7 +407,7 @@ func limitedRead[T any](ctx context.Context, limit *readLimit, read func() (T, e
 	readCtx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	sent := time.Now()
-	value, answered, err = Bounded(readCtx, read)
+	value, answered, err = Bounded(readCtx, nil, read)
 	if !answered || unanswered(err) {
 		limit.lost()
 	} else {
@@ -393,8 +424,8 @@ func limitedRead[T any](ctx context.Context, limit *readLimit, read func() (T, e
 // stream and its handle open (wrapKeyValue), the stream ensure's read (ensureStreamWithConfig),
 // SetKeyValueMaxAge's read and updateStream's read after an update that drew no answer; and the
 // keeper's first read of the stream (keepStream) and of each bucket it raises (raiseReplicas).
-func readAgain[T any](ctx context.Context, request string, limit *readLimit, read func() (T, error)) (T, error) {
-	return sentAgain(ctx, request, func() (T, error) {
+func readAgain[T any](ctx context.Context, logger *slog.Logger, request string, limit *readLimit, read func() (T, error)) (T, error) {
+	return sentAgain(ctx, logger, request, func() (T, error) {
 		value, wait, answered, err := limitedRead(ctx, limit, read)
 		if !answered {
 			err = fmt.Errorf("no answer within %s: %w", wait, context.DeadlineExceeded)

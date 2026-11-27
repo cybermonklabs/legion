@@ -3,12 +3,13 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createServer, type Socket } from "node:net"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { daemonContract } from "@legion/contracts/daemon-contract"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
-import { legion } from "../package.json" with { type: "json" }
+import pkg from "../package.json" with { type: "json" }
 import { PHASE_HOOK_TOOL_NAME } from "../src/legion-phase-hook"
 import { waitFor } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
@@ -18,6 +19,9 @@ import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
+/** The contract the pane's server speaks, as `legion-claim.ts` reads it (`daemonContract`): this
+ * checkout's. */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir)
 
 beforeEach(rowStarted)
 setDefaultTimeout(ROW_GUARD_MS)
@@ -54,8 +58,7 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       if (path === "/legion/v1/claims/register") return Response.json(registered)
       if (path === "/legion/v1/claims/ready") return new Response(null, { status: 204 })
       if (path === "/legion/v1/state") return Response.json(await daemonFixture("state.json"))
-      // `read_record` and the reminder's record check read one issue's record
-      // (dispatch://INFRA-2694).
+      // `read_record` reads one issue's record (dispatch://INFRA-2694).
       if (path === "/legion/v1/issues/LEGION-208/record") {
         const state = (await daemonFixture("state.json")) as { issues: Record<string, unknown> }
         return Response.json(state.issues["LEGION-208"])
@@ -196,7 +199,7 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
           sessionId: SESSION,
           ompSessionFile: transcript,
           agentId: SESSION,
-          pluginContract: legion.daemonApiVersion,
+          pluginContract: PLUGIN_CONTRACT,
         },
       },
       {

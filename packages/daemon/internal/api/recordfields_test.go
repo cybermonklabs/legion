@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -90,6 +91,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 	answeredAt := at.Add(-time.Minute)
 	token := claim.Token("legion-legion-legion-500-implementer")
 	podUID := "7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11"
+	working := ghrepo.MustParse("acme/widgets")
 	current := supervise.Claim{
 		Token: token, Project: "OTHER", Tree: "LEGION-500", Issue: "LEGION-500", Role: claim.RoleImplementer,
 		Generation: 3, TreeEpoch: 2,
@@ -105,10 +107,11 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 				Container: runtime.IssuePodContainer, Generation: 5,
 			},
 		},
-		Enrollment: &supervise.Enrollment{ID: "enr_42", Incarnation: podUID + "/5"},
-		State:      supervise.StateFailed,
-		Budgets:    supervise.Budgets{LaunchFailures: 4, Deaths: 1, PromptFailures: 2, PromptRetires: 3},
-		Failure:    "launch failures ran out", FailureCause: supervise.CauseDied, FailedAt: failedAt,
+		WorkingRepository: &working,
+		Enrollment:        &supervise.Enrollment{ID: "enr_42", Incarnation: podUID + "/5"},
+		State:             supervise.StateFailed,
+		Budgets:           supervise.Budgets{LaunchFailures: 4, Deaths: 1, PromptFailures: 2, PromptRetires: 3},
+		Failure:           "launch failures ran out", FailureCause: supervise.CauseDied, FailedAt: failedAt,
 		PodEnd:         "Evicted: The node was low on resource: ephemeral-storage.",
 		PendingCause:   supervise.CauseDied,
 		LeakCheckCause: "the shared public leak check could not be installed: the tarball of example-org/deployment at leak-check-v3 holds no leak-check directory",
@@ -122,22 +125,36 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		UncertainStreak: 1,
 		SuspendedBy:     supervise.SuspendedByOperator, SuspensionHeld: true,
 		SuspensionHeldBy: supervise.SuspendedByDaemon, Compacting: true, ProcessGone: true, DeathCharged: true,
-		PluginContract: DaemonAPIVersion, PluginRelaunchFor: DaemonAPIVersion - 1, AgentResumeGeneration: 3,
+		MessageMarkAt: at.Add(-90 * time.Second),
+		AwaitsPod: &runtime.Locator{
+			Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(podUID, 6),
+			Sandbox: &runtime.SandboxLocator{
+				Namespace: "legion", Name: "legion-legion-legion-500", PodUID: podUID,
+				Container: runtime.IssuePodContainer, Generation: 6,
+			},
+		},
+		RegisteredPods: supervise.RegisteredPods{Pods: []string{podUID}, Unknown: true},
+		PluginContract: DaemonAPIVersion(), PluginRelaunchFor: DaemonAPIVersion() - 1, AgentResumeGeneration: 3,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
-		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
-		UpdateHead:       "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
-		UpdateToldAt:     &answeredAt,
-		UpdateLeftRound:  "pod:older",
-		ProviderErrorRun: 6,
-		LastTurnStart:    at.Add(-2 * time.Minute),
-		LastTurnEnd:      at.Add(-30 * time.Second),
-		LastReady:        at.Add(-3 * time.Minute),
-		LastDeathCause:   "the pod was evicted",
-		LastStartFailure: "the launcher refused the start",
+		UpdateRepository: ghrepo.MustParse("acme/widgets"),
+		UpdateOpenedAt:   &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
+		UpdateHead:         "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+		UpdateToldAt:       &answeredAt,
+		UpdateLeftRound:    "pod:older",
+		ProviderErrorRun:   6,
+		LastTurnStart:      at.Add(-2 * time.Minute),
+		LastTurnEnd:        at.Add(-30 * time.Second),
+		LastReady:          at.Add(-3 * time.Minute),
+		LastDeathCause:     "the pod was evicted",
+		LastDeathAt:        at.Add(-4 * time.Minute),
+		LastStartFailure:   "the launcher refused the start",
+		LastStartFailureAt: at.Add(-5 * time.Minute),
 		TurnOutcomes: []supervise.TurnOutcome{{
 			Generation: 3, Sequence: 2, Refused: true, Message: "the provider refused this turn",
 		}},
 		Abandoned: supervise.AbandonedSession{Session: "ses_implementer_499", Why: "the provider refused every turn of it", At: at.Add(-time.Hour)},
+		SessionRun: supervise.SessionRun{Ends: 1, Endings: []string{"its process died after the controller was ready: gone: OOMKilled"},
+			TurnFinished: true},
 		EndedWork: supervise.EndedWork{At: at.Add(-40 * time.Minute), Cause: "the process died: gone: OOMKilled",
 			Generation: 2, Turn: true, TaskTurn: true, Background: true, Kinds: []string{"subagent"}, Reported: true},
 		SessionLost: supervise.SessionLossGone,

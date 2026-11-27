@@ -11,7 +11,8 @@ import { changed, fakeDispatchRead } from "./fake-dispatch-command";
 // the fake `dispatch` of lib/fake-dispatch-command.ts, first on PATH. The whole answer below is
 // what `dispatch plans` (packages/envoy-client/src/dispatch-commands/plans.ts) prints of typed
 // finished issues, rendered by that command itself, so a line the command prints and the script
-// cannot read fails here: a header, then one finished issue per line, newest close first. Bun
+// cannot read fails here: a header, then one finished issue per line, newest close first, the line
+// of an issue in an experiment's group ending with ` variant <experiment>/<variant>`. Bun
 // drops the answer's types when it runs this file, so the typecheck of scripts/e2e/lib, whose
 // tsconfig.json includes it, holds the answer to the contract's types.
 const script = join(import.meta.dir, "..", "plan-ratings-read.sh");
@@ -33,7 +34,8 @@ function uuidOf(issue: string, which: number): string {
   return `00000000-0000-5000-8000-${String(number * 100 + which).padStart(12, "0")}`;
 }
 
-/** The plan of issue's first run: its owner's, of these tasks' steps, or the default one. */
+/** The plan of issue's first run: its owner's, of these tasks' steps, or the default one. Each task
+ *  needs none, as this release's daemon writes a plan of one task. */
 function planOf(issue: string, tasks?: string[][]): PlanRecord {
   const id = uuidOf(issue, 1);
   return tasks === undefined
@@ -44,7 +46,7 @@ function planOf(issue: string, tasks?: string[][]): PlanRecord {
         source: "default",
         artifact_id: null,
         version: null,
-        tasks: [{ id: "default", steps: defaultSteps }],
+        tasks: [{ id: "default", needs: [], steps: defaultSteps }],
       }
     : {
         id,
@@ -53,7 +55,7 @@ function planOf(issue: string, tasks?: string[][]): PlanRecord {
         source: "owner",
         artifact_id: uuidOf(issue, 2),
         version: 2,
-        tasks: tasks.map((steps, place) => ({ id: `task-${place + 1}`, steps })),
+        tasks: tasks.map((steps, place) => ({ id: `task-${place + 1}`, needs: [], steps })),
       };
 }
 
@@ -90,6 +92,8 @@ function finished(
     ended_at: start === null ? null : at(end),
     duration_seconds: seconds,
     failed_steps: failed,
+    experiment: null,
+    variant: null,
   };
 }
 
@@ -132,13 +136,31 @@ const answer: ProjectPlans = {
   ],
 };
 
-/** The whole answer's lines as `dispatch plans` printed them, and the line of the issue judged. */
+// The same answer with the issue judged and INFRA-44 drawn into the experiment planning's group,
+// at its variants b and a, so `dispatch plans` ends the line of each with
+// ` variant planning/<variant>`; the other three are in no experiment's group.
+const drawn = new Map([
+  [key, "b"],
+  ["INFRA-44", "a"],
+]);
+const groupedAnswer: ProjectPlans = {
+  project,
+  issues: (answer.issues ?? []).map((issue) => {
+    const variant = drawn.get(issue.issue);
+    return variant === undefined ? issue : { ...issue, experiment: "planning", variant };
+  }),
+};
+
+/** The whole answer's lines as `dispatch plans` printed them, the line of the issue judged, and the
+ *  grouped answer's lines. */
 let whole: string[] = [];
 let line42 = "";
+let grouped: string[] = [];
 // read runs the script with args against the fake dispatch, which prints err on stderr and out on
 // stdout and exits exit, on path, which by default finds the fake first.
 const read = fakeDispatchRead(script, dir, [project, key]);
-beforeAll(async () => {
+/** plans as `dispatch plans` prints them: the command itself renders them, one line each. */
+async function render(plans: ProjectPlans): Promise<string[]> {
   const rendered = await executeDispatchTool({
     tool: "dispatch_plans",
     args: { project },
@@ -150,10 +172,13 @@ beforeAll(async () => {
     exec: async (file, argv) => {
       throw new Error(`unexpected command: ${file} ${argv.join(" ")}`);
     },
-    fetchImpl: fakeDispatchFetch({ routes: { [`/api/v1/projects/${project}/plans`]: answer } })
+    fetchImpl: fakeDispatchFetch({ routes: { [`/api/v1/projects/${project}/plans`]: plans } })
       .fetchImpl,
   });
-  whole = rendered.text.split("\n");
+  return rendered.text.split("\n");
+}
+beforeAll(async () => {
+  [whole, grouped] = await Promise.all([render(answer), render(groupedAnswer)]);
   line42 = whole.find((line) => line.startsWith(`${key} `)) ?? "";
 });
 
@@ -207,6 +232,38 @@ describe("plan-ratings-read.sh", () => {
     expect(stdout.split("\n").filter((line) => line.startsWith("FAIL: "))).toHaveLength(2);
     expect(stdout).not.toContain("PASS");
     expect(code).toBe(1);
+  });
+
+  test("an issue drawn into an experiment's group passes, exit 0, naming its variant, and the issues of no group still read", () => {
+    expect(grouped.find((line) => line.startsWith(`${key} `))).toEndWith(
+      " failed steps 1 variant planning/b"
+    );
+    const judged = read(printed(grouped));
+    expect(judged.stdout).toContain(
+      `PASS: ${key}: ${plan}, ratings 4/5 "The plan fit the work; the review sent it back once.", time 2h20m, failed steps 1, variant planning/b`
+    );
+    expect(judged.code).toBe(0);
+    const other = read(printed(grouped), [project, "INFRA-43"]);
+    expect(other.stdout).toContain(
+      `PASS: INFRA-43: ${plan}, ratings 2/5 "The plan had no test step.", 5/5 "It said \\"ship it\\"\\nand it shipped.", time 0h55m, failed steps 0\n`
+    );
+    expect(other.code).toBe(0);
+  });
+
+  test("a line whose end after its failed steps is no variant of an experiment is no finished issue: UNKNOWN, exit 2", () => {
+    for (const end of [
+      " variant planning",
+      " variant planning/b now",
+      " variant Planning/b",
+      " planning/b",
+    ]) {
+      const { code, stdout } = read(
+        changed(grouped, /^INFRA-42 /, (line) => line.replace(/ variant planning\/b$/, end))
+      );
+      expect(stdout).toContain(`UNKNOWN: the line is no finished issue: ${key} closed`);
+      expect(stdout).not.toContain("PASS");
+      expect(code).toBe(2);
+    }
   });
 
   test("a plan with no rating fails, exit 1, naming it", () => {

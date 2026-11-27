@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
@@ -96,11 +98,67 @@ func (c *stopClock) fire(timer stopTimer) bool {
 	return true
 }
 
+// TestMain runs this binary as the fake Claude Code where fakeClaudeEnv is set, and runs the tests
+// otherwise. Only TestMain makes the fake of a copy a test starts: in a build of these tests
+// without it, such a copy runs the tests, each of which starts copies that run them again.
+// fakeClaudeCopy refuses to start a copy in such a process (fakeClaudeCopyRefusal), and
+// TestACopyStartedAsTheFakeClaudeRunsAsTheFake fails in such a build by name.
 func TestMain(m *testing.M) {
 	if os.Getenv(fakeClaudeEnv) == "1" {
 		os.Exit(fakeClaude())
 	}
 	os.Exit(m.Run())
+}
+
+// fakeClaudeCopy is the path of this test binary, which a test runs as the fake Claude Code with
+// fakeClaudeEnv=1 in the copy's environment. It fails t where fakeClaudeCopyRefusal refuses.
+func fakeClaudeCopy(t *testing.T) string {
+	t.Helper()
+	if err := fakeClaudeCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	return os.Args[0]
+}
+
+// fakeClaudeCopyRefusal is why this process may start no copy of this test binary, nil when it
+// may. A process that has fakeClaudeEnv=1 was started as the fake Claude Code, and TestMain runs
+// such a process as the fake, so one that runs the tests runs in a build without TestMain, and a
+// copy started there would run the tests again.
+func fakeClaudeCopyRefusal() error {
+	if os.Getenv(fakeClaudeEnv) == "1" {
+		return fmt.Errorf("this process has %s=1, so a test started it as the fake Claude Code, but it runs the tests: this build of the tests has no TestMain that runs the fake, and a copy started here would run the tests again", fakeClaudeEnv)
+	}
+	return nil
+}
+
+// fakeClaudeCopyRefusal, which fakeClaudeCopy asks before any copy starts, refuses a process that
+// has fakeClaudeEnv=1 and no other. While TestMain is in the build no copy reaches it, so this test
+// is what holds the refusal.
+func TestAProcessStartedAsTheFakeClaudeStartsNoCopy(t *testing.T) {
+	fixtureenv.Unset(t, fakeClaudeEnv)
+	if err := fakeClaudeCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", fakeClaudeEnv, err)
+	}
+	t.Setenv(fakeClaudeEnv, "1")
+	if err := fakeClaudeCopyRefusal(); err == nil || !strings.Contains(err.Error(), fakeClaudeEnv+"=1") {
+		t.Fatalf("with %s=1: %v, want a refusal that names it", fakeClaudeEnv, err)
+	}
+}
+
+// A copy started with fakeClaudeEnv=1 runs as the fake Claude Code: it records its arguments, -h
+// among them. In a build without TestMain, the testing package reads -h before any test runs,
+// prints its own flag usage and exits, so the copy records nothing, this test fails there by name,
+// and the copy starts no copy of its own.
+func TestACopyStartedAsTheFakeClaudeRunsAsTheFake(t *testing.T) {
+	t.Parallel()
+	record := filepath.Join(t.TempDir(), "record")
+	cmd := exec.Command(fakeClaudeCopy(t), "-h")
+	cmd.Env = append(os.Environ(), fakeClaudeEnv+"=1", "FAKE_CLAUDE_RECORD="+record)
+	out, err := cmd.CombinedOutput()
+	recorded, readErr := os.ReadFile(record)
+	if want := "argv -h\n"; err != nil || readErr != nil || !strings.HasPrefix(string(recorded), want) {
+		t.Fatalf("a copy started as the fake Claude Code with -h: %v, recorded %q (%v), want exit 0 and a record that starts %q\n%s", err, recorded, readErr, want, out)
+	}
 }
 
 // fakeClaude answers Claude Code's stream-json the way the probes recorded it: each user message
@@ -378,7 +436,7 @@ func startRig(t *testing.T, extra []string, clock Clock, args ...string) *rig {
 	// room for the inbox's socket.
 	t.Setenv("TMPDIR", testtmp.Dir(t, InboxLongestPath))
 	record, gate := filepath.Join(dir, "record"), filepath.Join(dir, "gate")
-	argv := append([]string{os.Args[0]}, args...)
+	argv := append([]string{fakeClaudeCopy(t)}, args...)
 	env := append(os.Environ(), fakeClaudeEnv+"=1", "FAKE_CLAUDE_RECORD="+record, fakeClaudeGateEnv+"="+gate,
 		fakeClaudeGateDeadlineEnv+"="+time.Now().Add(deadlineWait(t)).Format(time.RFC3339Nano),
 		"CLAUDE_CONFIG_DIR="+dir, "LEGION_ROLE=implementer", "LEGION_ISSUE=ACME-7")
@@ -677,9 +735,11 @@ func TestATurnIsOneUserMessageWhenTheHandoffSucceeds(t *testing.T) {
 	}
 }
 
-// A prompt during a turn is acknowledged and then refused in Oh My Pi's busy words, so the daemon
-// takes the task back uncharged and sends it again at the turn's end. The gate holds the turn's
-// own result back, so the turn is still running when the second prompt arrives.
+// A prompt during a turn is acknowledged and then refused busy: the bridge's words (busyWords) and
+// beside them the busy code (shimwire.CodeSessionBusy), which the daemon's stream mints as the
+// agent being in a turn of its own (outcome_test.go), so the daemon takes the task back uncharged
+// and sends it again at the turn's end. The gate holds the turn's own result back, so the turn is
+// still running when the second prompt arrives.
 func TestAPromptDuringATurnIsRefusedBusy(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
 	r.prompt("p1", backgroundDuringPrompt)
@@ -689,8 +749,9 @@ func TestAPromptDuringATurnIsRefusedBusy(t *testing.T) {
 	}
 	r.prompt("p2", "say again")
 	refusal := r.expect("response", map[string]any{"id": "p2", "command": "prompt", "success": false})
-	if !strings.HasPrefix(refusal["error"].(string), "Agent is already processing") {
-		t.Errorf("the refusal %q is not Oh My Pi's busy answer", refusal["error"])
+	if refusal["error"] != busyWords || refusal["code"] != shimwire.CodeSessionBusy {
+		t.Errorf("the refusal %q with code %v is not the bridge's busy refusal %q with code %q", refusal["error"],
+			refusal["code"], busyWords, shimwire.CodeSessionBusy)
 	}
 	r.open()
 	r.expect("agent_end", nil)
@@ -759,7 +820,7 @@ func TestOnlyAProviderFailureFillsThePromptResultsError(t *testing.T) {
 				t.Errorf("the error's message %q is not Claude Code's own words", got)
 			}
 			// False for every failure of the bridge's: it knows nothing that says one can clear,
-			// and the daemon decides from the status alone (supervise's holdsTheIssue).
+			// and the daemon decides from the status alone (supervise's classifyProviderError).
 			if failure["retryable"] != false {
 				t.Errorf("retryable = %v, want false", failure["retryable"])
 			}
@@ -1038,8 +1099,9 @@ func TestAPromptDuringAClaudeStartedTurnIsRefusedBusy(t *testing.T) {
 	}
 	r.prompt("p2", "say again")
 	refusal := r.expect("response", map[string]any{"id": "p2", "command": "prompt", "success": false})
-	if !strings.HasPrefix(refusal["error"].(string), "Agent is already processing") {
-		t.Errorf("the refusal %q is not Oh My Pi's busy answer", refusal["error"])
+	if refusal["error"] != busyWords || refusal["code"] != shimwire.CodeSessionBusy {
+		t.Errorf("the refusal %q with code %v is not the bridge's busy refusal %q with code %q", refusal["error"],
+			refusal["code"], busyWords, shimwire.CodeSessionBusy)
 	}
 	r.open()
 	r.expect("agent_end", nil)
@@ -1423,6 +1485,9 @@ func TestUnknownRequestsAreRefusedByName(t *testing.T) {
 	frame := r.expect("response", map[string]any{"id": "s1", "command": "steer", "success": false})
 	if !strings.Contains(frame["error"].(string), "does not support steer") {
 		t.Errorf("the refusal is %q", frame["error"])
+	}
+	if code, coded := frame["code"]; coded {
+		t.Errorf("the refusal of a command the bridge does not support carries code %v, want none: it is no busy answer", code)
 	}
 }
 

@@ -39,10 +39,10 @@ func walkTree(t *testing.T, at time.Time) string {
 		mkdirFixture(t, filepath.Join(root, dir))
 		writeAged(t, filepath.Join(root, dir, "one"), at)
 	}
-	// The pod's feed: a read-only mount of files inside the same claim, with no directory of
-	// its own, so the walk measures the child itself and nothing on the volume goes unaccounted.
-	mkdirFixture(t, filepath.Join(root, "feed"))
-	writeAged(t, filepath.Join(root, "feed", "issue.json"), at)
+	// An auxiliary directory with a file has no child directory of its own, so the walk measures
+	// that child itself and no byte of the volume goes unaccounted.
+	mkdirFixture(t, filepath.Join(root, "archive"))
+	writeAged(t, filepath.Join(root, "archive", "issue.json"), at)
 	// A file directly under the volume root, which is a child that holds no directory either.
 	writeAged(t, filepath.Join(root, "lost+found.txt"), at)
 	return root
@@ -61,6 +61,7 @@ func walkOf(root string, clock *fakeClock, ticks *fakeTicks, measure func(contex
 // the go children, then the rest. A walk that ends early must lose the least useful numbers,
 // and everything the trimmer can delete is under those two.
 func TestTheWalkMeasuresTwoLevelsUnderTheRootInItsOwnOrder(t *testing.T) {
+	t.Parallel()
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := walkTree(t, clock.at.Add(-2*time.Hour))
 	result := walkOf(root, clock, &fakeTicks{}, measureTree).run(context.Background())
@@ -71,7 +72,7 @@ func TestTheWalkMeasuresTwoLevelsUnderTheRootInItsOwnOrder(t *testing.T) {
 		// then go
 		"go/build", "go/mod",
 		// then the rest, in the order the root's own children sort
-		"feed", "lost+found.txt", "uv/cache", "uv/python", "workspaces/cybermonklabs",
+		"archive", "lost+found.txt", "uv/cache", "uv/python", "workspaces/cybermonklabs",
 	}
 	var got []string
 	for _, size := range result.Sizes {
@@ -121,6 +122,7 @@ func TestTheWalkMeasuresTwoLevelsUnderTheRootInItsOwnOrder(t *testing.T) {
 // than an hour and more than a day old: the same walk already stats every file for the first
 // number, and the two splits are what tell a reader a working set from cold bytes.
 func TestEachSizeCarriesItsTwoAgeSplits(t *testing.T) {
+	t.Parallel()
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := walkTree(t, clock.at.Add(-2*time.Hour))
 	measured := filepath.Join(root, "scratch", "tmp")
@@ -168,6 +170,7 @@ func TestEachSizeCarriesItsTwoAgeSplits(t *testing.T) {
 // or left out one a second past it, is as green. The clock stands on a whole second, so every time
 // is one a file on this volume holds exactly, and each is read back before the walk.
 func TestAFileExactlyAnHourOrADayOldIsNotOverItAndOneASecondOlderIs(t *testing.T) {
+	t.Parallel()
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := walkTree(t, clock.at.Add(-2*time.Hour))
 	measured := filepath.Join(root, "scratch", "tmp")
@@ -217,6 +220,7 @@ func TestAFileExactlyAnHourOrADayOldIsNotOverItAndOneASecondOlderIs(t *testing.T
 // sizes it did produce are the first in the order the rule names, and everything it had not
 // reached is named as missing rather than reported as a directory of no bytes.
 func TestTheWalkEndsOnItsBudgetAgainstAWalkerThatBlocks(t *testing.T) {
+	t.Parallel()
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := walkTree(t, clock.at.Add(-2*time.Hour))
 	ticks := &fakeTicks{}
@@ -269,31 +273,28 @@ func TestTheWalkEndsOnItsBudgetAgainstAWalkerThatBlocks(t *testing.T) {
 	}
 }
 
-// A read the kernel refuses under a target ends nothing and is no early end: the pod's feed is a
-// read-only mount inside the same claim, so the walk reaches it and its bytes are already in the
-// statfs reading the marks are taken from. The walk goes on to its end, so it is not partial,
-// and each directory it could read only in part is a size that names the first read refused
-// there and how many were, so that its bytes are never read as the directory's whole. Four
-// shapes are staged: two mode-0000 directories under the feed's own directory, which the walk
-// reads the rest of; a mode-0000 directory at the foot of a chain thirty directories deep, which
-// is named by the target, its own name and its depth and never by the path between, as the
-// deleter's removal failure is (removalFailure); a target that is itself mode 0000, whose lstat
-// in its readable parent succeeds and whose open is refused, so the walk reads nothing of it and
-// names it as unmeasured with the read the kernel refused, and as no size; and an immediate
-// child of the root that is mode 0000, which the walk cannot list and names as unmeasured the
-// same way. The negative control is every other target of the tree, which carries no refusal.
+// A read the kernel refuses under a target ends nothing and is no early end: the walk goes on to
+// its end, so it is not partial, and each directory it could read only in part is a size that names
+// the first read refused there and how many were, so that its bytes are never read as the
+// directory's whole. Four shapes are staged: two mode-0000 directories under one auxiliary
+// directory, which the walk reads the rest of; a mode-0000 directory at the foot of a chain thirty
+// directories deep, which is named by the target, its own name and its depth and never by the path
+// between, as the deleter's removal failure is (removalFailure); a target that is itself mode 0000,
+// whose lstat in its readable parent succeeds and whose open is refused, so the walk reads nothing
+// of it and names it as unmeasured with the read the kernel refused, and as no size; and an
+// immediate child of the root that is mode 0000, which the walk cannot list and names as unmeasured
+// the same way. The negative control is every other target of the tree, which carries no refusal.
 func TestARefusedReadUnderATargetIsNamedOnItsSizeAndIsNoEarlyEnd(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("the test process is root, which reads a mode-000 directory: a refused read cannot be staged for it")
 	}
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := walkTree(t, clock.at.Add(-2*time.Hour))
-	// The feed as workspace-fetch writes it: a directory of its own under the mount, which is
-	// what the walk measures, with two directories under that the reader is refused.
-	feed := filepath.Join(root, "feed", "pack")
-	mkdirFixture(t, feed)
-	writeAged(t, filepath.Join(feed, "issue.json"), clock.at.Add(-2*time.Hour))
-	first, second := filepath.Join(feed, "a-locked"), filepath.Join(feed, "b-locked")
+	auxiliary := filepath.Join(root, "archive", "pack")
+	mkdirFixture(t, auxiliary)
+	writeAged(t, filepath.Join(auxiliary, "issue.json"), clock.at.Add(-2*time.Hour))
+	first, second := filepath.Join(auxiliary, "a-locked"), filepath.Join(auxiliary, "b-locked")
 	locked := filepath.Join(root, "workspaces", "locked")
 	sealed := filepath.Join(root, "sealed")
 	// The chain a role can make under any target: thirty levels of 100-byte names, which the
@@ -330,8 +331,8 @@ func TestARefusedReadUnderATargetIsNamedOnItsSizeAndIsNoEarlyEnd(t *testing.T) {
 		}
 		return result.Sizes[at], true
 	}
-	if size, ok := sizeOf(feed); ok && (size.Bytes != 1 || size.Refused != first || size.Refusals != 2) {
-		t.Errorf("the walk measured the feed as %+v, want the 1 B it could read, refused first at %s and 2 refusals in all", size, first)
+	if size, ok := sizeOf(auxiliary); ok && (size.Bytes != 1 || size.Refused != first || size.Refusals != 2) {
+		t.Errorf("the walk measured the auxiliary directory as %+v, want the 1 B it could read, refused first at %s and 2 refusals in all", size, first)
 	}
 	if at := slices.IndexFunc(result.Sizes, func(size shimwire.LauncherVolumeSize) bool { return size.Path == locked }); at >= 0 {
 		t.Errorf("the walk reports the directory it could not open as the size %+v, want it named as unmeasured and no size at all", result.Sizes[at])
@@ -344,7 +345,7 @@ func TestARefusedReadUnderATargetIsNamedOnItsSizeAndIsNoEarlyEnd(t *testing.T) {
 		}
 	}
 	for _, size := range result.Sizes {
-		if size.Path != feed && size.Path != locked && size.Path != deep && (size.Refused != "" || size.Refusals != 0) {
+		if size.Path != auxiliary && size.Path != locked && size.Path != deep && (size.Refused != "" || size.Refusals != 0) {
 			t.Errorf("the walk marks %s, which it read whole, as read in part: %+v", size.Path, size)
 		}
 	}
@@ -359,6 +360,7 @@ func TestARefusedReadUnderATargetIsNamedOnItsSizeAndIsNoEarlyEnd(t *testing.T) {
 // kernel refused, and nothing cut the walk, so it is not partial: the report still goes, and a
 // reader is not told the walk ended early when it never began.
 func TestAVolumeRootTheWalkCannotOpenIsNamedMissingAndIsNoEarlyEnd(t *testing.T) {
+	t.Parallel()
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := filepath.Join(t.TempDir(), "gone")
 	result := walkOf(root, clock, &fakeTicks{}, measureTree).run(context.Background())
@@ -377,6 +379,7 @@ func TestAVolumeRootTheWalkCannotOpenIsNamedMissingAndIsNoEarlyEnd(t *testing.T)
 // The negative control is the walk keeping every one, as it did at b7085e21, where only the
 // report's copy was cut: its list held all eighty.
 func TestTheWalkKeepsAsManyUnmeasuredDirectoriesAsAReportNamesAndCountsTheRest(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("the test process is root, which opens a mode-000 directory: a refused open cannot be staged for it")
 	}
@@ -421,6 +424,7 @@ func TestTheWalkKeepsAsManyUnmeasuredDirectoriesAsAReportNamesAndCountsTheRest(t
 // budget was armed not among them, and measured a target before it saw the budget spent in 49
 // of 50 runs; it failed all 50.
 func TestTheWalksBudgetCutsTheListingOfItsTargets(t *testing.T) {
+	t.Parallel()
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := t.TempDir()
 	const children = 2000
@@ -488,6 +492,7 @@ func TestTheWalksBudgetCutsTheListingOfItsTargets(t *testing.T) {
 // here: the walk asks nothing inside go or scratch, its four live asks run out at none of its
 // children, and the listing is not partial, with 2,002 targets to measure.
 func TestTheWalksBudgetCutsTheListingOfOneChildBetweenItsBatches(t *testing.T) {
+	t.Parallel()
 	const names = 2000
 	root := t.TempDir()
 	mkdirFixture(t, filepath.Join(root, "go", "build"))
@@ -529,6 +534,7 @@ func TestTheWalksBudgetCutsTheListingOfOneChildBetweenItsBatches(t *testing.T) {
 // ba4e3d98, read whole and not cut: the listing was cut only before the root's second child, and
 // named the first child, a target it had listed, and the other 599 children, 600 in all.
 func TestTheWalksBudgetCutsTheListingOfTheVolumeRootBetweenItsBatches(t *testing.T) {
+	t.Parallel()
 	const names = 600
 	root := t.TempDir()
 	for at := range names {
@@ -562,6 +568,7 @@ func TestTheWalksBudgetCutsTheListingOfTheVolumeRootBetweenItsBatches(t *testing
 // negative control is readBatched keeping its first batch alone: the walk measured 256 of the
 // three hundred, named none of the rest as unmeasured and was not partial.
 func TestTheWalkListsEveryBatchOfAChildItIsNotCutIn(t *testing.T) {
+	t.Parallel()
 	const dirs = 300
 	if dirs <= walkEntriesBatch {
 		t.Fatalf("the case's scratch holds %d directories, want more than the %d of one batch", dirs, walkEntriesBatch)
@@ -611,6 +618,7 @@ func (c *liveFor) Err() error {
 // names a path is (quotedPathText): a name holding a newline would otherwise begin a line of its
 // own in the pod's log.
 func TestAPathOpenVolumeDirRefusesIsQuotedInItsError(t *testing.T) {
+	t.Parallel()
 	const relative = "scratch\nthe trimmer is fine"
 	_, err := openVolumeDir(relative)
 	if !errors.Is(err, syscall.EINVAL) {
@@ -643,6 +651,7 @@ func TestAPathOpenVolumeDirRefusesIsQuotedInItsError(t *testing.T) {
 // TestAShardSwappedForARelativeLinkCrossingAnAbsoluteOneIsSkipped drives this shape for the
 // sweep's shards.
 func TestTheWalkMeasuresNothingThroughAChildSwappedForARelativeLinkCrossingAnAbsoluteOne(t *testing.T) {
+	t.Parallel()
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := walkTree(t, clock.at.Add(-2*time.Hour))
 	// The absolute link the relative one crosses, left in the volume root as a role can leave
@@ -734,6 +743,7 @@ func TestTheWalkMeasuresNothingThroughAChildSwappedForARelativeLinkCrossingAnAbs
 // numbers with the time they were read: the walk stats every file on the volume, and a pod that
 // is full sweeps every interval.
 func TestNoSecondWalkIsMadeInsideTheHour(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 1)
 	tr := f.trimmer()
 	calls := 0
@@ -780,6 +790,7 @@ func TestNoSecondWalkIsMadeInsideTheHour(t *testing.T) {
 // walk made again only past the hour, or a minute short of it, is as green. The clock does not
 // move on reading, so every reading of it is where the case put it.
 func TestAWalkAnHourOldIsMadeAgainAndOneASecondYoungerIsNot(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 1)
 	tr := f.trimmer()
 	calls := 0
@@ -813,6 +824,7 @@ func TestAWalkAnHourOldIsMadeAgainAndOneASecondYoungerIsNot(t *testing.T) {
 // asked the clock for is read against the minute written out: a budget a second either side of it
 // is a clock of another period.
 func TestTheTrimmersWalkIsGivenABudgetOfAMinute(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 1)
 	tr := f.trimmer()
 	before := f.ticks.count()
@@ -857,11 +869,12 @@ func lockedUnder(t *testing.T, dir string, at time.Time) {
 // used to say `ended early` and `left 0 unmeasured ([], and 0 more)` of exactly this walk, and
 // named the unreadable directory nowhere.
 func TestAWalkThatMetARefusedReadSaysWhereAndNotThatItEndedEarly(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("the test process is root, which reads a mode-000 directory: a refused read cannot be staged for it")
 	}
 	f := newTrimFixture(t, 1)
-	pack := filepath.Join(f.root, "feed", "pack")
+	pack := filepath.Join(f.root, "unprotected", "pack")
 	refused := filepath.Join(pack, "under")
 	mkdirFixture(t, pack)
 	writeAged(t, filepath.Join(pack, "issue.json"), f.clock.at)
@@ -909,6 +922,7 @@ func TestAWalkThatMetARefusedReadSaysWhereAndNotThatItEndedEarly(t *testing.T) {
 // file can be a target of its own (sizeWalk.targets); the negative control for that word is the
 // line as it stood at a3f5d0965f3f, which said "every directory".
 func TestAWalkThatWasCutSaysSoWithWhatItDidNotReach(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 1)
 	tr := f.trimmer()
 	calls := 0
@@ -949,6 +963,7 @@ func TestAWalkThatWasCutSaysSoWithWhatItDidNotReach(t *testing.T) {
 // refused, so the fifty sizes the walk keeps (walkResult.keep) are planted ones and not the
 // fixture's own few bytes.
 func TestDirectoriesReadInPartAreBoundedInTheReportAndTheLog(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("the test process is root, which reads a mode-000 directory: a refused read cannot be staged for it")
 	}
@@ -1005,6 +1020,7 @@ func TestDirectoriesReadInPartAreBoundedInTheReportAndTheLog(t *testing.T) {
 // The volume root's two first children are named by the roots the trimmer sweeps: the walk's
 // order is worth nothing if it names a directory the pod does not have.
 func TestTheWalksFirstTwoChildrenAreTheOnesTheReclaimableRootsLieUnder(t *testing.T) {
+	t.Parallel()
 	under := map[string]int{}
 	for _, root := range ReclaimableRoots {
 		relative := root.Path[len(VolumeRoot)+1:]
@@ -1049,6 +1065,7 @@ func sizedFile(t *testing.T, path string, size int64, at time.Time) {
 // fifty-six for the hour and left the cut to the report's bound, and the cut as it stood at
 // b7085e21, the first fifty, which carried fifty empty directories and left go/build out.
 func TestTheWalkKeepsTheLargestSizesInTheOrderItMeasuredThem(t *testing.T) {
+	t.Parallel()
 	const empty, build = 55, 5 << 20
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := t.TempDir()
@@ -1089,6 +1106,7 @@ func TestTheWalkKeepsTheLargestSizesInTheOrderItMeasuredThem(t *testing.T) {
 // 8a30be78, which held every name's entry and lstat for as long as the walk was below that
 // level.
 func TestTheSizeWalkHoldsABatchOfALevelsNamesAndNotAllOfThem(t *testing.T) {
+	// Not parallel: it measures the whole process's heap, which parallel tests allocate on.
 	const names, sample, bound = 20000, 2000, 1 << 20
 	dir := t.TempDir()
 	wide := filepath.Join(dir, "target", "wide")
@@ -1149,6 +1167,7 @@ func (c askedContext) Done() <-chan struct{} {
 // under exactly one size. The negative control is the walk as it stood at b7085e21, which
 // measured `scratch/tmp` alone and left the 7 MiB in nothing.
 func TestAFileBesideTheDirectoriesOfAChildIsASizeOfItsOwn(t *testing.T) {
+	t.Parallel()
 	const big = 7 << 20
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := t.TempDir()
@@ -1196,6 +1215,7 @@ func TestAFileBesideTheDirectoriesOfAChildIsASizeOfItsOwn(t *testing.T) {
 // it, which it does not. The negative control is the walk with no bound on its descent, which
 // opened every level, counted both files and named no refusal.
 func TestTheWalkDescendsNoDeeperThanItsDepthAndCountsTheRestRefused(t *testing.T) {
+	t.Parallel()
 	const reached, past = 3, 5
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := t.TempDir()

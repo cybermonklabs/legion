@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -10,11 +9,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // personNodeTitleRunes is how much of a row's text the page shows: its first line, cut here so
-// the answer carries a title and not a whole comment.
+// the answer carries a title and not a whole comment, by refs.FirstLineWithin, which moves the cut
+// back before a reference that crosses it, except where text.HeadRefs says the cut by length
+// stands.
 const personNodeTitleRunes = 240
 
 // personNode is one thing on a person's page: a node they are tied to, which of the two ties it
@@ -28,12 +28,21 @@ type personNode struct {
 	// delivered_to, or both where the person wrote a thing that was delivered back to a
 	// session of theirs.
 	Relations []string `json:"relations"`
-	// Title is the first line of the node's text, cut to personNodeTitleRunes.
+	// Title is the first line of the node's text, cut to personNodeTitleRunes. A comment its
+	// author deleted keeps its row with the title "", the body the delete cleared.
 	Title string `json:"title"`
 	// CreatedAt is when the node was written, which is the order the page reads in.
 	CreatedAt time.Time `json:"created_at"`
 	// Href is the dashboard path the row opens, as askItemRefExpression answers one for an ask.
 	Href string `json:"href"`
+	// EditedAt is when the comment's author last edited it, so the page marks it as edited;
+	// absent on a comment nobody edited.
+	EditedAt *time.Time `json:"edited_at,omitempty"`
+	// DeletedAt and DeletedBy mark a comment its author deleted, as every read of the post
+	// carries them (model.DeletedPostMark), so the page draws the deleted line in its place.
+	// Both are absent on a comment that stands.
+	DeletedAt *time.Time   `json:"deleted_at,omitempty"`
+	DeletedBy *model.Actor `json:"deleted_by,omitempty"`
 }
 
 // personNodes is one page of a person's nodes, newest first.
@@ -129,8 +138,15 @@ var personPageKinds = refs.VisibilityKinds()
 // here when this build learns to open it. The visibility predicate of that kind is bound from
 // the registry (refs.VisibleKind), so a comment its author keeps to themselves is on no other
 // person's page.
+//
+// Each row carries its comment's marks, as every read of a post does: edited_at where its author
+// edited it, and deleted_at and deleted_by where its author deleted it. A deleted comment keeps
+// its row, and its text is the empty body the delete left. An edit or a delete of a comment
+// delivers from the comment's own node (the outbox's deliveredItem), so the delivered_to tuples
+// it writes fold into the comment's one row in related, and no correction is a row of its own.
 var personNodesQuery = personNodesTied + `, items as (
 		select r.from_kind as kind, c.id::text as id, r.relations, c.body as text, c.created_at,
+		       c.edited_at, c.deleted_at, c.deleted_by,
 		       case
 		         when i.key is not null then '/issues/' || i.key || '/comments/' || c.id::text
 		         else '/projects/' || a.project_key || '/documents/' || a.slug || '?comment=' || c.id::text
@@ -142,7 +158,7 @@ var personNodesQuery = personNodesTied + `, items as (
 		where (i.key is not null or a.id is not null)
 		  and ` + refs.VisibleKind(graphstore.KindComment, "c.id::text", "$2") + `
 	)
-	select count(*) over () as total, kind, id, relations, text, created_at, href
+	select count(*) over () as total, kind, id, relations, text, created_at, href, edited_at, deleted_at, deleted_by
 	from items
 	order by created_at desc, kind, id desc
 	limit $3 offset $4`
@@ -152,7 +168,7 @@ var personNodesQuery = personNodesTied + `, items as (
 //
 // It is a named read of the graph and no traversal: the route takes the person and a page, and
 // takes no kind, no filter and no edge to walk, so no caller chooses what the store is asked.
-// The whole route belongs to people - routeScopes gives it model.ScopePerson, and gateRouteScopes
+// The whole route belongs to people - its declaration states model.ScopePerson, and gateRouteScopes
 // refuses a credential the deployment configured with 403 OAUTH_SCOPE_REQUIRED before this
 // handler runs - and every row it answers passes the visibility predicate of its own kind.
 //
@@ -223,13 +239,23 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var row personNode
 		var body string
-		if err := rows.Scan(&response.Total, &row.Kind, &row.ID, &row.Relations, &body, &row.CreatedAt, &row.Href); err != nil {
+		var editedAt, deletedAt *time.Time
+		var deletedBy []byte
+		if err := rows.Scan(&response.Total, &row.Kind, &row.ID, &row.Relations, &body, &row.CreatedAt, &row.Href,
+			&editedAt, &deletedAt, &deletedBy); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		first, _, _ := strings.Cut(body, "\n")
-		row.Title = text.HeadRunes(first, personNodeTitleRunes)
+		row.Title = refs.FirstLineWithin(body, s.deps.ServerURL, personNodeTitleRunes)
 		row.CreatedAt = row.CreatedAt.UTC()
+		if editedAt != nil {
+			edited := editedAt.UTC()
+			row.EditedAt = &edited
+		}
+		if row.DeletedAt, row.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 		response.Rows = append(response.Rows, row)
 	}
 	if err := rows.Err(); err != nil {

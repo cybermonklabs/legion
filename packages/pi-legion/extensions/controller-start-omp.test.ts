@@ -9,6 +9,7 @@ import {
   ROLE_TOPIC_PREFIX,
   slackMentionTopic,
 } from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import { LegionHealthResponse } from "@legion/contracts/legion-api";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import {
@@ -468,11 +469,11 @@ async function serveController(
       return new Response(null, { status: 204 });
     }
     // The controller's boot check reads the daemon's project here, and `read_build` the contract
-    // the header states, which is this build's own `legion.daemonApiVersion` (the contract a
-    // daemon this build pairs with speaks).
+    // the header states, which is this build's own (`daemonContract`, the contract a daemon this
+    // build pairs with speaks).
     if (url.pathname === "/healthz") {
       return Response.json(health, {
-        headers: { "Legion-Daemon-Contract": String(pkg.legion.daemonApiVersion) },
+        headers: { "Legion-Daemon-Contract": String(daemonContract(pkg, import.meta.dir)) },
       });
     }
     if (url.pathname === "/legion/v1/state") return Response.json(daemonState);
@@ -734,8 +735,8 @@ interface DaemonController {
  * project's Slack channels (none unless `launch` names them), and no
  * LEGION_CONTROLLER_START_MESSAGE, since the daemon delivers the start message itself once the
  * controller reports ready — against the controller's stand-in (`serveController`), which answers
- * the daemon's state while the daemon holds the controller's claim (internal/projection's
- * golden), with `hooks`. `launch.heartbeatMs` is Envoy's registration heartbeat
+ * the daemon's state while the daemon holds the controller's claim (state-controller-claim.json,
+ * which internal/daemon's composition test writes), with `hooks`. `launch.heartbeatMs` is Envoy's registration heartbeat
  * (ENVOY_HEARTBEAT_MS, 90 s by default), which a case that watches a pass shortens.
  */
 async function startDaemonController(
@@ -1595,7 +1596,7 @@ test.skipIf(skip)(
     });
     await session.shows(
       "a wait of the busy claim on screen",
-      "was answered 503 at attempt 1, so nothing was claimed; claiming it again in"
+      "was answered 503 at attempt 1; claiming it again in"
     );
     await session.shows(
       "the busy claim's failure on screen",
@@ -1618,7 +1619,7 @@ test.skipIf(skip)(
     });
     await session.shows(
       "a wait of the busy claim on screen",
-      "was answered 503 at attempt 1, so nothing was claimed; claiming it again in"
+      "was answered 503 at attempt 1; claiming it again in"
     );
     await landed.promise;
     expect(claims).toBe(LISTENER_CALL_ATTEMPTS + 1);

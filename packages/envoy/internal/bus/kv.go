@@ -19,10 +19,11 @@ import (
 // refusal of a key outside its alphabet is named the ErrInvalidKey it is (invalidKey), so every
 // key a call refuses however often it is named is an ErrRefused. A write (Put, PutString, Create,
 // Update) is held to the longest subject any call on its key builds, a watcher's create request, so
-// a key written through it stays readable, watchable and deletable. Any other call is held only to
-// the subject it builds itself, so a key an earlier build stored past the write bound still lists
-// and deletes, and still reads while its get fits: a store serves it or skips it, and a reaper
-// removes it.
+// a key written through it stays readable, watchable and deletable, and a value the bus refuses for
+// its size, past the server's max payload or the bucket's largest value, is ErrTooLarge naming the
+// size and the bound (tooLarge). Any other call is held only to the subject it builds itself, so
+// a key an earlier build stored past the write bound still lists and deletes, and still reads
+// while its get fits: a store serves it or skips it, and a reaper removes it.
 //
 // Every read and write goes through the bucket's legacy nats.KeyValue, except what nats.go runs as
 // a watcher and the reads beside them: a watch of the bucket (WatchKeys), a key's history
@@ -82,10 +83,11 @@ const RequestTimeout = 10 * time.Second
 // none and reads js's MaxWait alone) is waited for only until ctx ends, its answer then dropped
 // (Bounded; the lookup changes nothing, so a dropped one leaves nothing behind). A reconnect hook
 // gives it the run's context, so a lookup sent on a connection that then drops ends the hook at
-// the drop.
+// the drop. An open while the bus reconnects fails as ErrReconnecting: a wait that ends first
+// (Bounded), or a lookup nats.go refused (namedJetStream).
 func OpenKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string) (KeyValue, error) {
-	js = readsRefusals(conn, js)
-	kv, _, err := Bounded(ctx, func() (nats.KeyValue, error) { return js.KeyValue(bucket) })
+	js = readsRefusals(conn, namedJetStream(conn, js))
+	kv, _, err := Bounded(ctx, conn, func() (nats.KeyValue, error) { return js.KeyValue(bucket) })
 	if err != nil {
 		return KeyValue{}, err
 	}
@@ -110,7 +112,8 @@ const (
 )
 
 // wrapKeyValue is WrapKeyValue, with two things its callers choose, under ctx, which bounds the
-// handle's open as well as RequestTimeout does.
+// handle's open as well as RequestTimeout does. Its lines, the WARNs of a wait on the member and
+// of an open sent again, go where the client owning conn writes (loggerOwning).
 //
 // created says this start has just created the bucket, so the STREAM.INFO that opens the
 // jetstream handle is taken again until the member answering has applied that create
@@ -134,6 +137,9 @@ const (
 // for a read whose caller waits two seconds for it, and an open that kept sending would leave that
 // read and every one after it unanswered rather than save a start.
 func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
+	// Its lines go where the client owning conn writes, and where slog.Default() points at each
+	// line when no client owns it: every caller of this function wants that one reading.
+	logger := loggerOwning(conn)
 	js, err := jetstream.New(conn)
 	if err != nil {
 		return KeyValue{}, err
@@ -157,16 +163,16 @@ func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, create
 	}
 	if sendAgain {
 		send := open
-		open = func() (jetstream.KeyValue, error) { return readAgain(ctx, request, readLimitOf(ctx), send) }
+		open = func() (jetstream.KeyValue, error) { return readAgain(ctx, logger, request, readLimitOf(ctx), send) }
 	}
 	var watch jetstream.KeyValue
 	if created {
-		watch, err = awaitBucketApplied(ctx, kv.Bucket(), bucketMissing, open)
+		watch, err = awaitBucketApplied(ctx, logger, kv.Bucket(), bucketMissing, open)
 	} else {
 		watch, err = open()
 	}
 	if err != nil {
-		return KeyValue{}, fmt.Errorf("open the jetstream handle of KV bucket %s: %w", kv.Bucket(), err)
+		return KeyValue{}, fmt.Errorf("open the jetstream handle of KV bucket %s: %w", kv.Bucket(), Reconnecting(err))
 	}
 	return KeyValue{legacy: kv, watch: watch, streams: js, owner: owner}, nil
 }
@@ -369,6 +375,16 @@ func (kv KeyValue) Streams() jetstream.JetStream {
 	return kv.streams
 }
 
+// Conn is the connection kv's calls go on, the one its jetstream context was opened on, and nil
+// for a handle a test built with no jetstream context. A caller that bounds a call on kv by its
+// own deadline passes it to Bounded, which waits for it while nats.go reconnects it.
+func (kv KeyValue) Conn() *nats.Conn {
+	if kv.streams == nil {
+		return nil
+	}
+	return kv.streams.Conn()
+}
+
 // Bucket is the name of the bucket kv is a handle on.
 func (kv KeyValue) Bucket() string {
 	return kv.legacy.Bucket()
@@ -389,7 +405,7 @@ func (kv KeyValue) WatchKeys(ctx context.Context, keys string, opts ...jetstream
 		return nil, err
 	}
 	watcher, err := kv.watchRefused(kv.watchCreate([]string{keys}), func() (jetstream.KeyWatcher, error) { return kv.watch.Watch(ctx, keys, opts...) })
-	return watcher, invalidKey(keys, err)
+	return watcher, kvAnswer(keys, err)
 }
 
 // WatchFilteredKeys is WatchKeys over several key patterns at once, the watch a caller that reads
@@ -403,7 +419,7 @@ func (kv KeyValue) WatchFilteredKeys(ctx context.Context, keys []string, opts ..
 		}
 	}
 	watcher, err := kv.watchRefused(kv.watchCreate(keys), func() (jetstream.KeyWatcher, error) { return kv.watch.WatchFiltered(ctx, keys, opts...) })
-	return watcher, invalidKey(keys, err)
+	return watcher, kvAnswer(keys, err)
 }
 
 // The subjects nats.go builds from a key of bucket, each as the bytes it puts around the key. A put
@@ -452,6 +468,58 @@ func invalidKey(key any, err error) error {
 	return err
 }
 
+// kvAnswer is err, the answer of a call on key through the handle, with the two refusals nats.go
+// makes before it sends anything named: a key outside its alphabet (invalidKey), and a send while
+// it reconnects the connection, which with the reconnect buffer off it refuses at once
+// (Reconnecting). So a call on a bucket while the bus reconnects fails with an error that says so,
+// and that was not sent. A call a caller bounds by its deadline waits for the connection first
+// (Bounded), and meets the refusal only when the connection drops again before its send.
+func kvAnswer(key any, err error) error {
+	return Reconnecting(invalidKey(key, err))
+}
+
+// jsStreamMessageExceedsMaximum is nats-server's code for a message larger than its stream takes
+// (JSStreamMessageExceedsMaximumErr): for a bucket, a value past the bucket's largest value
+// (nats.KeyValueConfig.MaxValueSize). nats.go names no constant for it.
+const jsStreamMessageExceedsMaximum = 10054
+
+// MaxPayload is the largest message, headers and value together, that the server this handle's
+// connection is on takes now (nats.Conn.MaxPayload, from the server's INFO, which a reconnect to
+// another server renews). A caller that lays a value out to fit one message reads it at each
+// write, so a server that raises or lowers its max payload changes the layout with no new build.
+func (kv KeyValue) MaxPayload() int {
+	return int(kv.streams.Conn().MaxPayload())
+}
+
+// tooLarge names the bus's refusal of a write of value bytes under key for the value's size as the
+// ErrTooLarge it is, naming the size and the bound: nats.go's refusal of a message past the
+// server's max payload, which it makes before sending anything (nats.ErrMaxPayload), and the
+// stream's refusal of a value past the bucket's largest value (jsStreamMessageExceedsMaximum). The
+// same write is refused at every retry, so its caller answers it as the caller's own input, a 413,
+// rather than as a bus that did not answer. The bucket's bound is read from its stream only here,
+// on the refusal, and a read of it that fails leaves it out of the error. Any other error is
+// returned as it is.
+func (kv KeyValue) tooLarge(key string, value int, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, nats.ErrMaxPayload) {
+		return fmt.Errorf("%w: a value of %d bytes for key %q against the server's max payload of %d bytes: %w", ErrTooLarge, value, key, kv.MaxPayload(), err)
+	}
+	var apiErr *nats.APIError
+	if !errors.As(err, &apiErr) || apiErr.ErrorCode != jsStreamMessageExceedsMaximum {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
+	defer cancel()
+	stream, streamErr := kv.streams.Stream(ctx, "KV_"+kv.Bucket())
+	if streamErr != nil {
+		return fmt.Errorf("%w: a value of %d bytes for key %q past the largest value of bucket %s: %w", ErrTooLarge, value, key, kv.Bucket(), err)
+	}
+	return fmt.Errorf("%w: a value of %d bytes for key %q past the largest value of bucket %s, %d bytes with its headers: %w",
+		ErrTooLarge, value, key, kv.Bucket(), stream.CachedInfo().Config.MaxMsgSize, err)
+}
+
 // Get reads key's latest value from the bucket.
 //
 // The read is a direct get, as every read of this build's buckets is but an edge listener's, which
@@ -489,7 +557,7 @@ func (kv KeyValue) Get(key string) (nats.KeyValueEntry, error) {
 		return nil, err
 	}
 	entry, err := refusedAfterOn(kv, kv.getSubjects(key), func() (nats.KeyValueEntry, error) { return kv.legacy.Get(key) })
-	return entry, invalidKey(key, err)
+	return entry, kvAnswer(key, err)
 }
 
 // RefusesRead answers the refusal a Get of key through this handle would answer before anything is
@@ -561,7 +629,7 @@ func natsKeyValid(key string) bool {
 // only nats.go's alphabet check refuses a key here.
 func (kv KeyValue) GetRevision(key string, revision uint64) (nats.KeyValueEntry, error) {
 	entry, err := refusedAfterOn(kv, kv.revisionSubjects, func() (nats.KeyValueEntry, error) { return kv.legacy.GetRevision(key, revision) })
-	return entry, invalidKey(key, err)
+	return entry, kvAnswer(key, err)
 }
 
 func (kv KeyValue) Put(key string, value []byte) (uint64, error) {
@@ -569,7 +637,7 @@ func (kv KeyValue) Put(key string, value []byte) (uint64, error) {
 		return 0, err
 	}
 	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Put(key, value) })
-	return revision, invalidKey(key, err)
+	return revision, kv.tooLarge(key, len(value), kvAnswer(key, err))
 }
 
 func (kv KeyValue) PutString(key string, value string) (uint64, error) {
@@ -577,7 +645,7 @@ func (kv KeyValue) PutString(key string, value string) (uint64, error) {
 		return 0, err
 	}
 	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.PutString(key, value) })
-	return revision, invalidKey(key, err)
+	return revision, kv.tooLarge(key, len(value), kvAnswer(key, err))
 }
 
 func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
@@ -585,7 +653,7 @@ func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
 		return 0, err
 	}
 	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Create(key, value) })
-	return revision, invalidKey(key, err)
+	return revision, kv.tooLarge(key, len(value), kvAnswer(key, err))
 }
 
 func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error) {
@@ -593,7 +661,7 @@ func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error)
 		return 0, err
 	}
 	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Update(key, value, last) })
-	return revision, invalidKey(key, err)
+	return revision, kv.tooLarge(key, len(value), kvAnswer(key, err))
 }
 
 // IsCASConflict reports whether err is JetStream's refusal of a conditional write over a record
@@ -623,7 +691,7 @@ func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 		return err
 	}
 	_, err := refusedAfterOn(kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Delete(key, opts...) })
-	return invalidKey(key, err)
+	return kvAnswer(key, err)
 }
 
 // ReadStored is key's newest record, read by a direct get and read again from the stream's leader
@@ -643,39 +711,53 @@ func (kv KeyValue) ReadStored(ctx context.Context, key string, readable func(val
 }
 
 // DeleteAtRead deletes key at the revision the stream's leader reports for it (ReadFromLeader), so
-// a write that lands in between is kept, and returns that revision, 0 when there was none to read.
-// The read is the leader's and never a direct get: on a replicated bucket a direct get is answered
-// by any copy near enough to current (Get), and a copy that has not applied the registration made
-// a moment ago answers that the key is absent, so the delete a session's stop asks for would be
-// dropped and its record kept until it expires. The leader holds every write the bucket took. It
-// reports a record the server wrote, which a direct get can report at another stream's sequence,
-// at the sequence it is stored at, so it is deleted there like any other record. A delete the
-// bucket refuses at that revision is a write that landed between the read and the delete, and the
-// refusal stands, that writer's record kept (DeleteAt).
+// a write that lands in between is kept, and answers what it deleted as the leader classified it
+// (LeaderEntry): a writer's put (LeaderPut) with the revision the delete was fenced on and the value,
+// which a caller reads to remove what that value named (store's interest record chunks); a put the
+// server wrote (LeaderServerWritten) with the sequence it was deleted at and no value, since a
+// message no writer stored names nothing a caller removes; and the zero LeaderEntry when it deleted
+// nothing it read. The read is the leader's and never a direct get: on a replicated bucket a direct
+// get is answered by any copy near enough to current (Get), and a copy that has not applied the
+// registration made a moment ago answers that the key is absent, so the delete a session's stop asks
+// for would be dropped and its record kept until it expires. The leader holds every write the bucket
+// took. It reports a record the server wrote, which a direct get can report at another stream's
+// sequence, at the sequence it is stored at, so it is deleted there like any other record. A delete
+// the bucket refuses at that revision is a write that landed between the read and the delete, and
+// the refusal stands, that writer's record kept (DeleteAt), unless DeleteAt's own leader read finds
+// a record the server wrote since, which it deletes and this answers as LeaderServerWritten. A
+// writer's put the leader answers can still be no record of key - a writer of the bucket can store
+// a copy of another key's value under it, another session's manifest among them - so a caller acts
+// on the value only behind a guard of its own (store's deleteInterest deletes chunks only for a
+// cached row of the same generation; session's Delete reads only the revision).
 //
 // A key the read finds missing, or holding a delete or purge marker, is deleted at no revision at
 // all, which fences nothing: nats.go sends no expected-last-subject-sequence header for revision
 // 0, so that delete would take whatever the bucket holds, and a write that landed between the read
 // and it - a registration storing the row this delete read none of - would be deleted whole. So no
-// delete is made for it: the key is reported absent, at revision 0, and there is nothing there to
-// remove.
+// delete is made for it: the answer is the zero LeaderEntry, and there is nothing there to remove.
 //
 // A key it may not read (ErrRefused) it may not write either, since a write is held to the longest
 // bound and nats.go refuses a key outside its alphabet everywhere, so nothing can land in between:
-// that key is deleted at no revision, which removes a key an earlier build stored past the write
-// bound, and a key outside the alphabet is refused by the delete too.
-func (kv KeyValue) DeleteAtRead(ctx context.Context, key string) (uint64, error) {
+// that key is deleted at no revision, answered as the zero LeaderEntry, which removes a key an
+// earlier build stored past the write bound, and a key outside the alphabet is refused by the delete
+// too.
+func (kv KeyValue) DeleteAtRead(ctx context.Context, key string) (LeaderEntry, error) {
 	leader, err := kv.ReadFromLeader(ctx, key)
 	switch {
 	case errors.Is(err, ErrRefused):
-		return 0, kv.Delete(key)
+		return LeaderEntry{}, kv.Delete(key)
 	case err != nil:
-		return 0, err
+		return LeaderEntry{}, err
 	case leader.Kind == LeaderAbsent || leader.Kind == LeaderMarker:
-		return 0, nil
-	default:
-		return kv.DeleteAt(ctx, key, leader.Revision)
+		return LeaderEntry{}, nil
 	}
+	revision, err := kv.DeleteAt(ctx, key, leader.Revision)
+	if revision != leader.Revision {
+		// DeleteAt's fallback took a record the server wrote since the read, at its own sequence:
+		// the record read is gone, and what was deleted names nothing a caller removes.
+		leader = LeaderEntry{Kind: LeaderServerWritten, Revision: revision}
+	}
+	return leader, err
 }
 
 // DeleteAt deletes key fenced on revision, the revision a read of the key reported, and returns the
@@ -707,33 +789,74 @@ func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {
 		return err
 	}
 	_, err := refusedAfterOn(kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Purge(key, opts...) })
-	return invalidKey(key, err)
+	return kvAnswer(key, err)
 }
 
 // Status reads the bucket's status through the legacy handle, which waits out that handle's
 // JetStream MaxWait: the open-time read of a bucket's TTL and a store's health probe, whose
-// openers chose that wait. A read held to RequestTimeout instead is ReadStreamState.
+// openers chose that wait. A read held to RequestTimeout instead is ReadStreamState. A read while
+// the bus reconnects fails as ErrReconnecting (Reconnecting).
 func (kv KeyValue) Status() (nats.KeyValueStatus, error) {
-	return refusedOn(kv, []string{jsAPI("STREAM.INFO", "KV_"+kv.Bucket())}, kv.legacy.Status)
+	status, err := refusedOn(kv, []string{jsAPI("STREAM.INFO", "KV_"+kv.Bucket())}, kv.legacy.Status)
+	return status, Reconnecting(err)
 }
 
-// Bounded is call, a bucket call that takes no context, as a caller holding ctx waits for it:
-// nats.go's KV reads, writes and deletes take none and wait out the JetStream MaxWait (10 s), so
-// the wait ends at the earlier of call's answer and ctx's end. answered is false when ctx ended
-// first, and err is then ctx's error; the abandoned call runs on to its own end and its answer is
-// dropped, so a write or a delete it sent may still land after the caller has answered (each
-// caller says why that is safe). A ctx that has already ended starts no call, and a ctx that can
-// never end (context.Background, which a caller with no request behind it passes) is simply
-// call, in this goroutine. A background loop is not such a caller: the role claim reaper passes
-// its own loop's ctx, which the listener's shutdown ends under a pass in flight
-// (store.StartRoleClaimReaper).
-func Bounded[T any](ctx context.Context, call func() (T, error)) (value T, answered bool, err error) {
+// Bounded is call, a bucket call on conn that takes no context, as a caller holding ctx waits for
+// it: nats.go's KV reads, writes and deletes take none and wait out the JetStream MaxWait (10 s), so
+// the wait ends at the earlier of call's answer and ctx's end. conn is the connection the bucket's
+// handle is on (KeyValue.Conn), and nil waits for none.
+//
+// call starts only once conn can take it. While nats.go reconnects conn, which with the reconnect
+// buffer off refuses every send at once, call waits for the connection within ctx
+// (awaitConnected). A ctx that ends in that wait starts no call: answered is false, and err is
+// ErrReconnecting with ctx's error, `bus: NATS is reconnecting: context deadline exceeded`, so the
+// caller's answer says why the bus did not answer. ctx is read again once the wait ends, before
+// the call starts, so a call never starts after its caller's ctx has ended. A ctx found ended
+// there starts no call either, and its err is the same ErrReconnecting while nats.go reconnects
+// conn, and ctx's bare error while nats.go is not connecting or reconnecting conn (endedUnsent). A
+// connection that drops again after the wait refuses the call itself, which a KeyValue call names
+// ErrReconnecting (kvAnswer).
+//
+// The wait and endedUnsent read conn's state, and each read waits for nats.go's connection lock,
+// which nats.go holds through a reconnect's dial and handshake. So each read is made on a goroutine
+// of its own and waited for within ctx (readWithin). A call made during a handshake waits for the
+// connection as a call made between two attempts does: when ctx ends first, it starts no call, and
+// its err is the same ErrReconnecting, at ctx's end. Each read is given ConnLockWait however soon
+// ctx ends, so a connection whose lock is free gives the answers above under any ctx, and a call
+// made during a handshake under a ctx that ends sooner answers once ConnLockWait has passed. A read
+// left running when Bounded returns ends when nats.go lets the lock go, and changes nothing.
+//
+// A start's waits on the cluster pass a nil conn (sentAgain, limitedRead, updateStream and the
+// stream ensure's migrate and purge): their requests go through a JetStream context that names a
+// send nats.go refuses while it reconnects (namedRequests), so such a send fails at once as
+// ErrReconnecting, and the step ends on that answer as it ends on any answer that is not a silence
+// (unanswered). A call that waits for its client's connection itself passes a nil conn too: a send
+// window's first pin (window.pinFirst). So does a call that reads its connection's state itself, an
+// intake's flush of its hand-backs (delivery's flushHandBacks), and a read of roles.Buckets, which
+// begins its bucket's open at once (roles.within). So does the listener's flush that /healthz and
+// /readyz share (cmd/listener busAnswers): a flush takes nats.go's connection lock before it waits
+// on its context, and again to forget its PING once that context ends, so a reconnect's handshake
+// would otherwise hold the check past its budget.
+//
+// Once call has started, answered is false when ctx ended first, and err is then ctx's error; the
+// abandoned call runs on to its own end and its answer is dropped. So a write or a delete that was
+// sent may still land after the caller has answered (each caller says why that is safe), and one
+// still waiting for the connection when ctx ended was never sent and never lands. A ctx that can
+// never end (context.Background, which a caller with no request behind it passes) is simply call,
+// in this goroutine, with no wait: there is no deadline to wait within, so a call on a
+// reconnecting connection fails at once as ErrReconnecting. A background loop is not such a
+// caller: the role claim reaper passes its own loop's ctx, which the listener's shutdown ends
+// under a pass in flight or a wait (store.StartRoleClaimReaper).
+func Bounded[T any](ctx context.Context, conn *nats.Conn, call func() (T, error)) (value T, answered bool, err error) {
 	if ctx.Done() == nil {
 		value, err = call()
 		return value, true, err
 	}
-	if err := ctx.Err(); err != nil {
+	if err := awaitConnected(ctx, conn); err != nil {
 		return value, false, err
+	}
+	if ctx.Err() != nil {
+		return value, false, endedUnsent(ctx, conn)
 	}
 	type answer struct {
 		value T
@@ -783,7 +906,7 @@ func (kv KeyValue) ReadStreamState(ctx context.Context) (StreamState, error) {
 		return StreamState{}, fmt.Errorf("read the stream of KV bucket %s: %w: %w", kv.Bucket(), nats.ErrStreamNotFound, err)
 	}
 	if err != nil {
-		return StreamState{}, err
+		return StreamState{}, Reconnecting(err)
 	}
 	info := stream.CachedInfo()
 	return StreamState{

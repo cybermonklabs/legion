@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // Event is one agent fact the stream observed. The set is sealed: a connection arriving
@@ -86,13 +87,17 @@ type ToolStep struct {
 // prompt that ran no turn at all. Error is OMP's reason when the work ended in one: the message
 // of the frame's error object (shimwire.PromptError), which is what the daemon's own log records.
 //
-// Four of the other members of that error object come with it. Retryable is Oh My Pi's own word
-// for a failure that may succeed on a later try, HTTPStatus the status of the provider request
-// that failed (zero when the failure had none, as a content-filter refusal does), and Provider
-// and Model the provider and the model that request went to. Code, Oh My Pi's class of the
-// failure, does not, since no decision reads it. Whether such a failure can clear is read from
-// HTTPStatus alone (supervise's providerErrored); the message is never parsed, since it is a
-// provider's own prose and changes without notice.
+// The other members of that error object come with it. Retryable is Oh My Pi's own word for a
+// failure that may succeed on a later try, HTTPStatus the status of the provider request that
+// failed (zero when the failure had none, as a content-filter refusal does), Provider and Model
+// the provider and the model that request went to, and Code Oh My Pi's class of the failure
+// (shimwire.PromptError.Code; empty when it gives none). Whether such a failure can clear is read
+// from HTTPStatus and Code (supervise's providerErrored); the message is never parsed, since it is
+// a provider's own prose and changes without notice.
+//
+// Outcome is minted here for a prompt that ran no turn, from the result's machine-readable code
+// (PromptRefusalOutcome), never its words: runtime.OutcomeAgentBusy where the code says the agent
+// was busy, else runtime.OutcomeNoTurnRun. A result whose prompt ran a turn carries none.
 type PromptResult struct {
 	Claim        claim.Token
 	DeliveryID   string
@@ -102,20 +107,23 @@ type PromptResult struct {
 	HTTPStatus   int
 	Provider     string
 	Model        string
+	Code         string
+	Outcome      runtime.Outcome
 }
 
 // LateRefusal is OMP answering `{success:false}` for a prompt it had already answered
-// `{success:true}` — "Agent is already processing…" once it finds a turn it did not start, and
-// whatever a prompt that failed before any turn began says
-// (worker-rpc.ts:359-368). DeliveryID is the delivery that prompt carried, so a delivery the
-// supervisor counted as started by a turn that was never its own can be taken back. A refusal OMP
-// gave while no daemon was connected reaches the next connection from the shim's backlog; the
-// prompt's request id names its delivery, so it is a LateRefusal there too. Error is OMP's reason,
-// verbatim.
+// `{success:true}` — its busy answer once it finds a turn it did not start, and whatever a prompt
+// that failed before any turn began says (worker-rpc.ts:359-368). DeliveryID is the delivery that
+// prompt carried, so a delivery the supervisor counted as started by a turn that was never its own
+// can be taken back. A refusal OMP gave while no daemon was connected reaches the next connection
+// from the shim's backlog; the prompt's request id names its delivery, so it is a LateRefusal
+// there too. Error is OMP's reason, verbatim, for the log, and Outcome the member minted here from
+// the code beside it (PromptRefusalOutcome), which is what the supervisor decides on.
 type LateRefusal struct {
 	Claim      claim.Token
 	DeliveryID string
 	Error      string
+	Outcome    runtime.Outcome
 	// Replayed is a refusal for a prompt this connection did not send, read from the shim's
 	// backlog: it answers a prompt an earlier connection sent.
 	Replayed bool

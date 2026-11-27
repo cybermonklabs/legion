@@ -1,0 +1,99 @@
+---
+type: requirement
+id: relay-answers-requests
+kind: behavior
+text:
+  - The relay answers each request that it receives.
+---
+type: requirement
+id: relay-answers-in-time
+kind: behavior
+parent: relay-answers-requests
+text:
+  - The relay answers a request within the time that the request names.
+---
+type: check
+id: relay-answers-within-the-limit
+serves: relay-answers-in-time
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: github.com/sjawhar/envoy/cmd/listener TestTheRelayAnswersWithinTheLimit
+  job: go-checks
+time_limit: 24h0m0s
+claim: The relay answers a request that names one second within one second.
+procedure_text:
+  - The program sends one request that names one second.
+  - It must get the answer within one second.
+failing_example:
+  - A relay that waits two seconds before each answer.
+---
+type: requirement
+id: relay-answers-on-each-platform
+kind: behavior
+parent: relay-answers-requests
+text:
+  - The relay answers each request on Linux machines and on Arm machines.
+---
+type: check
+id: relay-answers-on-linux-and-arm
+serves: relay-answers-on-each-platform
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: github.com/sjawhar/envoy/cmd/listener TestTheRelayAnswersOnEachPlatform
+  job: go-checks-platforms
+claim: The relay answers one request on each machine of the job.
+procedure_text:
+  - The program sends one request to the relay and reads the answer.
+  - It must get one answer.
+failing_example:
+  - A relay that stops before it answers.
+---
+type: requirement
+id: relay-answers-once
+kind: behavior
+parent: relay-answers-requests
+text:
+  - The relay sends one answer for each request.
+---
+type: check
+id: relay-answers-once-per-request
+serves: relay-answers-once
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: github.com/sjawhar/envoy/cmd/listener TestTheRelayAnswersOnce
+  job: go-checks
+claim: The relay sends one answer to a request that it receives two times.
+procedure_text:
+  - The program sends one request two times and counts the answers.
+  - It must count one answer.
+failing_example:
+  - A relay that answers each copy of a request.
+---
+type: requirement
+id: relay-refuses-a-bad-request
+kind: behavior
+parent: relay-answers-requests
+text:
+  - The relay refuses a request that it cannot read.
+---
+type: check
+id: relay-refuses-a-malformed-request
+serves: relay-refuses-a-bad-request
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: github.com/sjawhar/envoy/cmd/listener TestTheRelayRefusesAMalformedRequest
+  job: go-checks
+claim: The relay refuses a request whose body is not valid.
+procedure_text:
+  - The program sends one request with a body that is not valid.
+  - It must get a refusal.
+failing_example:
+  - A relay that answers a request with a body that is not valid.

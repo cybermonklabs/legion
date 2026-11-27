@@ -7,8 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
 // A suspension that arrives while the agent is in a turn waits for that turn to end (LEGION-283).
@@ -335,7 +337,7 @@ func TestAStartWaitsOutTheOperatorsSuspension(t *testing.T) {
 	if got := h.claim().LastStartRow; got != 0 {
 		t.Fatalf("the claim recorded start row %d, want none while the operator's suspension holds", got)
 	}
-	h.must(RequestResume{Claim: testToken})
+	h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 	if err := h.m.StartedBy(h.ctx, 42, nil); err != nil {
 		t.Fatalf("the start after the operator's resume: %v", err)
 	}
@@ -371,23 +373,29 @@ func TestAProcessThatDiesWhileItsSuspensionWaitsIsSuspendedNotRelaunched(t *test
 // A prompt retirement while a suspension is held is that suspension's stop: the process is alive,
 // so a stop the runtime refuses leaves the claim working and still holding the suspension, retried
 // at the probe interval, rather than marked suspended over a process that still runs. Nothing is
-// charged — here the retirement would be the claim's last, which would fail it. The prompt was on
-// its way when a turn began, and the agent refuses it at the prompt-failure limit.
+// charged — here the retirement would be the claim's last, which would fail it. The phase task was
+// on its way when a turn began, and the shim refuses to adopt the working copy for it at the
+// prompt-failure limit. A refusal of the agent's own cannot reach that limit here: one that
+// arrives while the daemon's record holds the claim in a turn is its busy answer, charged nothing
+// (agentRefusalOutcome).
 func TestAPromptRetirementWhileASuspensionIsHeldRunsTheHeldStop(t *testing.T) {
 	h := newBareHarness(t)
 	h.deps.Limits = Limits{LaunchFailures: 3, PromptFailures: 1, PromptRetires: 1}
+	h.deps.Identity = func(context.Context, claim.Role, string) (runtime.GitIdentity, error) {
+		return runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}, nil
+	}
+	gated := &gatedAdoption{Runtime: h.rt, entered: make(chan string, 1), release: make(chan struct{}, 1)}
+	h.deps.Runtime = gated
 	if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
 		t.Fatal(err)
 	}
 	h.start(queuedClaim())
 	h.reach(StateReady)
-	gated := newGatedConn()
-	gated.RefusePrompt("the model provider refused the request")
-	h.conns.Register(testToken, gated)
-	if err := h.m.Handle(h.ctx, RequestDeliver{Claim: testToken, Task: "the task"}); err != nil {
+	h.rt.FailAdoptWorkingCopy(adoptRefusal(staleLockRefusal))
+	if err := h.m.Handle(h.ctx, RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing}); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the send", gated.entered)
+	waitFor(t, "the adoption", gated.entered)
 	if err := h.m.Handle(h.ctx, StreamTurnStart{Claim: testToken}); err != nil {
 		t.Fatal(err)
 	}
@@ -410,6 +418,21 @@ func TestAPromptRetirementWhileASuspensionIsHeldRunsTheHeldStop(t *testing.T) {
 	h.wantCalls("Suspend", 2)
 	h.wantCalls("Resume", 0)
 	h.wantBudgets(Budgets{})
+}
+
+// gatedAdoption holds the adoption of the working copy until the test lets it through, as the
+// shim's adoption runs ahead of a phase task's prompt, so a turn can start while it is out. It
+// says which claim's working copy it holds when it is entered.
+type gatedAdoption struct {
+	*fake.Runtime
+	entered chan string
+	release chan struct{}
+}
+
+func (g *gatedAdoption) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
+	g.entered <- string(loc.Claim)
+	<-g.release
+	return g.Runtime.AdoptWorkingCopy(ctx, loc, id)
 }
 
 // Only a held suspension lets a row end in suspended without naming that state. A row that

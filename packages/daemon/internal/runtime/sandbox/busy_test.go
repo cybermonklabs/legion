@@ -5,14 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -31,10 +35,12 @@ func etcdThrottled() error {
 }
 
 // An API server's overloaded or failed answer is told from its refusal of a request, and from no
-// answer at all, in one place: a status error by its reason, and by its code (429, or 500 and up)
-// only when it names no reason; a webhook's denial is a refusal whatever its code; and an error
-// that carries no status got no answer and is not busy, wherever each sits in the error's chain.
+// answer at all, in one place: a status error by its reason, and by its code (an outage: 408, 429,
+// or 500 and up) only when it names no reason; a webhook's denial is a refusal whatever its code;
+// and an error that carries no status got no answer and is not busy, wherever each sits in the
+// error's chain.
 func TestServerBusyTellsAnOverloadedServerFromARefusal(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		err  error
 		busy bool
@@ -55,6 +61,12 @@ func TestServerBusyTellsAnOverloadedServerFromARefusal(t *testing.T) {
 		"a connection refused":     {errors.New("dial tcp 192.0.2.1:443: connect: connection refused"), false},
 		"no error":                 {nil, false},
 		"a 500 with no reason":     {&apierrors.StatusError{ErrStatus: metav1.Status{Code: http.StatusInternalServerError}}, true},
+		"a 408 with no reason":     {&apierrors.StatusError{ErrStatus: metav1.Status{Code: http.StatusRequestTimeout}}, true},
+		"a proxy's 408 as client-go reads it": {apierrors.NewGenericServerResponse(http.StatusRequestTimeout, http.MethodPatch,
+			sandboxGVR.GroupResource(), "s", "<html>408 Request Timeout</html>", 0, true), true},
+		"a proxy's 505 as client-go reads it": {apierrors.NewGenericServerResponse(http.StatusHTTPVersionNotSupported, http.MethodPatch,
+			sandboxGVR.GroupResource(), "s", "", 0, true), true},
+		"a 400 with no reason": {&apierrors.StatusError{ErrStatus: metav1.Status{Code: http.StatusBadRequest}}, false},
 		"a 500 with reason Forbidden, a webhook's denial": {&apierrors.StatusError{ErrStatus: metav1.Status{Code: http.StatusInternalServerError,
 			Reason: metav1.StatusReasonForbidden, Message: `admission webhook "policy.example" denied the request: not allowed`}}, false},
 		"a webhook's denial as a 500 with no reason": {&apierrors.StatusError{ErrStatus: metav1.Status{Code: http.StatusInternalServerError,
@@ -71,38 +83,77 @@ func TestServerBusyTellsAnOverloadedServerFromARefusal(t *testing.T) {
 
 // Only a launch's requests wait an overloaded server out: the same read on a context no launch
 // made is sent once and fails with the server's answer, for its own caller to try again, and on a
-// launch's context it is sent again until the server answers it.
+// launch's context it is sent again until the server answers it. The server's overloaded answer
+// is etcd's throttle as a 500, or a 408 a proxy in front of the server answered, which client-go
+// reads as a status naming no reason (TestAProxysRequestTimeoutReachesTheRuntimeWithNoReason).
 func TestOnlyALaunchsRequestsAreSentAgainWhileTheServerIsOverloaded(t *testing.T) {
-	for name, tc := range map[string]struct {
-		ctx       func(context.Context) context.Context
-		wantSent  int32
-		wantError bool
-	}{
-		"a request no launch made": {ctx: func(ctx context.Context) context.Context { return ctx }, wantSent: 1, wantError: true},
-		"a launch's request":       {ctx: launching, wantSent: 4},
+	t.Parallel()
+	for answerName, overloaded := range map[string]func(name string) error{
+		"etcd's throttle": func(string) error { return apierrors.NewInternalError(errors.New(etcdThrottle)) },
+		"a proxy's 408": func(name string) error {
+			return apierrors.NewGenericServerResponse(http.StatusRequestTimeout, "get",
+				corev1.Resource("secrets"), name, "<html>408 Request Timeout</html>", 0, true)
+		},
 	} {
-		t.Run(name, func(t *testing.T) {
-			g := newRig(t, nil)
-			loc := g.spawn(workerSpec(t))
-			name := roleSecretName(loc.Sandbox.Name, claim.RoleTester)
-			var sent atomic.Int32
-			g.kube.PrependReactor("get", "secrets", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
-				if a.(k8stesting.GetAction).GetName() != name || sent.Add(1) > 3 {
-					return false, nil, nil
+		for name, tc := range map[string]struct {
+			ctx       func(context.Context) context.Context
+			wantSent  int32
+			wantError bool
+		}{
+			"a request no launch made": {ctx: func(ctx context.Context) context.Context { return ctx }, wantSent: 1, wantError: true},
+			"a launch's request":       {ctx: launching, wantSent: 4},
+		} {
+			t.Run(answerName+", "+name, func(t *testing.T) {
+				g := newRig(t, nil)
+				loc := g.spawn(workerSpec(t))
+				name := roleSecretName(loc.Sandbox.Name, claim.RoleTester)
+				var sent atomic.Int32
+				g.kube.PrependReactor("get", "secrets", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
+					if a.(k8stesting.GetAction).GetName() != name || sent.Add(1) > 3 {
+						return false, nil, nil
+					}
+					return true, nil, overloaded(name)
+				})
+				secret, err := g.r.kube.CoreV1().Secrets(testNamespace).Get(tc.ctx(g.ctx), name, metav1.GetOptions{})
+				if (err != nil) != tc.wantError {
+					t.Fatalf("get %s = %v, want an error: %t", name, err, tc.wantError)
 				}
-				return true, nil, apierrors.NewInternalError(errors.New(etcdThrottle))
+				if err == nil && (secret == nil || secret.Name != name) {
+					t.Fatalf("get %s answered %v", name, secret)
+				}
+				if got := sent.Load(); got != tc.wantSent {
+					t.Fatalf("the read was sent %d times, want %d", got, tc.wantSent)
+				}
 			})
-			secret, err := g.r.kube.CoreV1().Secrets(testNamespace).Get(tc.ctx(g.ctx), name, metav1.GetOptions{})
-			if (err != nil) != tc.wantError {
-				t.Fatalf("get %s = %v, want an error: %t", name, err, tc.wantError)
-			}
-			if err == nil && (secret == nil || secret.Name != name) {
-				t.Fatalf("get %s answered %v", name, secret)
-			}
-			if got := sent.Load(); got != tc.wantSent {
-				t.Fatalf("the read was sent %d times, want %d", got, tc.wantSent)
-			}
-		})
+		}
+	}
+}
+
+// A proxy in front of the API server that answers 408 Request Timeout, with a body that is no
+// Kubernetes status, reaches the runtime as client-go reads such an answer
+// (apierrors.NewGenericServerResponse): code 408 and no reason, since client-go names a reason for
+// each code it knows and has none for 408. The API server itself answers no 408 (its own timeout
+// is a 504). The read here goes through a real client-go clientset to a stand-in proxy, so the row
+// holds client-go to what serverBusy reads, and serverBusy reads that answer as busy.
+func TestAProxysRequestTimeoutReachesTheRuntimeWithNoReason(t *testing.T) {
+	t.Parallel()
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusRequestTimeout)
+		_, _ = w.Write([]byte("<html><body>408 Request Timeout</body></html>"))
+	}))
+	defer proxy.Close()
+	client, err := kubernetes.NewForConfig(&rest.Config{Host: proxy.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.CoreV1().Secrets(testNamespace).Get(context.Background(), "s", metav1.GetOptions{})
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) || status.Status().Code != http.StatusRequestTimeout || status.Status().Reason != metav1.StatusReasonUnknown {
+		t.Fatalf("the read through a proxy answering 408 = %v, want a status of code 408 naming no reason", err)
+	}
+	if !serverBusy(err) {
+		t.Fatalf("serverBusy(%v) = false, want a proxy's 408 read as busy", err)
 	}
 }
 
@@ -112,6 +163,8 @@ func TestOnlyALaunchsRequestsAreSentAgainWhileTheServerIsOverloaded(t *testing.T
 // otherwise the boot timeout from its first send: the bound each wait of a launch has, never a
 // multiple of it.
 func TestALaunchsRequestStopsWaitingAtItsDeadline(t *testing.T) {
+	// Not parallel: it holds a read's wall-clock wait to its deadline plus one recheck interval,
+	// and to 600 ms under a 400 ms boot timeout, bounds other tests' load would move.
 	for name, tc := range map[string]struct {
 		// bootTimeout is the rig's boot timeout, 0 for the rig's own; deadline is the request's
 		// context's, 0 for none.
@@ -169,6 +222,7 @@ func TestALaunchsRequestStopsWaitingAtItsDeadline(t *testing.T) {
 // store's feed is failing while the launches wait for their launchers. The burst converges: every
 // claim is launched, and none is charged a launch failure.
 func TestABurstOfRelaunchesThroughAThrottlingAPIServerConvergesUncharged(t *testing.T) {
+	t.Parallel()
 	for name, refusal := range map[string]error{
 		"the feeds refused with 429":        apierrors.NewTooManyRequests("the request has been limited by the API server's flow control", 1),
 		"the feeds refused with etcd's 500": apierrors.NewInternalError(errors.New(etcdThrottle)),
@@ -285,6 +339,7 @@ func burstOfRelaunches(t *testing.T, feedRefusal error) {
 // A write the server applied and answered timed out (a 504) is sent again and refused as already
 // done: the launch reads what the write left and goes on from it, and is launched, charged nothing.
 func TestAWriteTheServerAppliedButAnsweredTimedOutIsLaunchedUncharged(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	machine, _, _ := supervisedSandboxMachine(t, g, spec)
@@ -342,6 +397,7 @@ func fenceRefused(name string) error {
 // resend, since the resourceVersion it tests has moved: the launch reads the Sandbox again, finds it
 // relabelled, and goes on.
 func TestARelabelTheServerAppliedButAnsweredTimedOutGoesOn(t *testing.T) {
+	t.Parallel()
 	var g *rig
 	g, sent := relabelSandbox(t, func(sent int32, a k8stesting.Action) (bool, k8sruntime.Object, error) {
 		if sent > 1 {
@@ -365,6 +421,7 @@ func TestARelabelTheServerAppliedButAnsweredTimedOutGoesOn(t *testing.T) {
 // change, fails the try after one patch: the Sandbox read again still holds the resourceVersion the
 // refused patch tested.
 func TestALastingRefusalOfTheRelabelFailsTheTryAfterOnePatch(t *testing.T) {
+	t.Parallel()
 	g, sent := relabelSandbox(t, func(int32, k8stesting.Action) (bool, k8sruntime.Object, error) {
 		return true, nil, fenceRefused(SandboxName(workerToken))
 	})
@@ -381,6 +438,8 @@ func TestALastingRefusalOfTheRelabelFailsTheTryAfterOnePatch(t *testing.T) {
 // most of awaitPodGone's budget, then the confirming read of it is answered overloaded, and the wait
 // still ends at its budget rather than a boot timeout after that read began.
 func TestARequestInsideALaunchsWaitEndsWithTheWaitsBudget(t *testing.T) {
+	// Not parallel: it holds awaitPodGone's wall-clock span to 1.3 s of its 1 s budget, a bound
+	// other tests' load would move.
 	const boot = time.Second
 	name := SandboxName(workerToken)
 	labels := map[string]string{labelProject: testProject, labelTree: testTree, labelIssue: testTree}

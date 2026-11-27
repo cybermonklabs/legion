@@ -17,12 +17,14 @@ import (
 )
 
 // midPhaseStart is one supervise start row of an issue, with whether a lane may run it now
-// (record.Store.DueRows, the predicate the outbox claims by).
+// (record.Store.DueRows, the predicate the outbox claims by) and whether it is a news-only start,
+// which brings no work (workflow's startsWork).
 type midPhaseStart struct {
 	role      claim.Role
 	task      string
 	needsSlot bool
 	claimable bool
+	news      bool
 }
 
 // startsOf is every supervise start row issue holds, oldest first.
@@ -40,7 +42,7 @@ func startsOf(t *testing.T, pool *pgxpool.Pool, issue string) []midPhaseStart {
 			runnable[row.ID] = struct{}{}
 		}
 		all, err := tx.Query(ctx, `select id, coalesce(payload->>'role', ''), coalesce(payload->>'task', ''),
-			coalesce(payload->>'needsSlot', '') = 'true'
+			coalesce(payload->>'needsSlot', '') = 'true', coalesce(payload->>'news', '') = 'true'
 			from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start' order by id`, issue)
 		if err != nil {
 			t.Fatalf("list the starts of %s: %v", issue, err)
@@ -49,7 +51,7 @@ func startsOf(t *testing.T, pool *pgxpool.Pool, issue string) []midPhaseStart {
 		for all.Next() {
 			var id int64
 			var row midPhaseStart
-			if err := all.Scan(&id, &row.role, &row.task, &row.needsSlot); err != nil {
+			if err := all.Scan(&id, &row.role, &row.task, &row.needsSlot, &row.news); err != nil {
 				t.Fatalf("scan a start of %s: %v", issue, err)
 			}
 			_, row.claimable = runnable[id]
@@ -114,17 +116,11 @@ func midPhaseChild(t *testing.T, pool *pgxpool.Pool, root, key string, stands ph
 		t.Fatal(err)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
-		ctx := context.Background()
-		if err := record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: role, Claim: token}); err != nil {
+		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: role, Claim: token}); err != nil {
 			t.Fatalf("seed the %s's row of %s: %v", role, key, err)
 		}
-		if _, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
-			serving_generation, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
-			values ($1, $2, $3, $4, $5, 1, 'ses', '/sessions/ses.jsonl', 'suspended', 1, 0, 0, 0, 0, 'daemon')`,
-			string(token), project, root, key, string(role)); err != nil {
-			t.Fatalf("seed the %s of %s: %v", role, key, err)
-		}
 	})
+	putClaimRow(t, pool, root, key, role, 1, "suspended")
 	return token
 }
 
@@ -144,8 +140,8 @@ func midPhaseChild(t *testing.T, pool *pgxpool.Pool, root, key string, stands ph
 //
 // Two assertions of the table in internal/workflow (owed_start_test.go) read differently here,
 // and the rule is the re-admission's. The re-admission cleared the work each role's entry named
-// with the rest of the generation (record.ClearTreeGeneration), so the promotion raises the
-// entry and writes the resume task it hands the role as the work of that entry
+// with the rest of the generation (workflow.Engine.ClearTreeGeneration), so the promotion raises
+// the entry and writes the resume task it hands the role as the work of that entry
 // (workflow.StartPromotedWorker): the row names the entry the start carries, and no completion
 // in flight is refused for an entry nothing ever delivered, since every earlier entry is below
 // it. And the claim this start brings back is the suspended one the tree's close left: the

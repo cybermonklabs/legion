@@ -25,6 +25,15 @@ func WithKeepInterval(interval time.Duration) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.keepInterval = interval })
 }
 
+// withKeeperStepGuard sets the hang guard of each step of the keeper's passes in place of
+// startHangGuard. It is a seam for this package's tests whose own work runs inside a step: a test
+// that holds the keeper's update until its own read of the stream has come back
+// (holdKeeperUpdates) gives the step what is left of its deadline, so the guard does not count the
+// test's hold. No program sets it.
+func withKeeperStepGuard(guard time.Duration) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.keeperStepGuard = guard })
+}
+
 // startKeeper starts the keeper of a client whose start reconciled the stream with cfg
 // (ensureStreamWithConfig), which keeps buckets (WithKeptBuckets) at cfg's copies too: the
 // constructor's start once install has returned, and the first connection's on a client that
@@ -84,7 +93,8 @@ func (c *Client) keep(done chan struct{}, cfg nats.StreamConfig, buckets []strin
 // own. A pass whose connection reports no version until the client stops or
 // natsversion.VersionWait passes keeps nothing of the stream that pass and logs why, since an
 // empty version is no reading of the server; a pass runs only while the client is connected
-// (keep).
+// (keep). Its requests go through the client's JetStream context (Client.JS), so a pass the
+// connection dropped under logs `bus: NATS is reconnecting`, not nats.go's own refusal.
 func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string) {
 	ctx, cancel := c.untilStopped()
 	defer cancel()
@@ -93,18 +103,22 @@ func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string) {
 	// Each step's first read of the stream, and the read after an update that drew no answer, is
 	// sent again while the server leaves it unanswered (readAgain, updateStream), and those reads
 	// end when the client stops or the step's hang guard passes, the one a start's step takes
-	// (startHangGuard). The step's update is one send under the JetStream context's own wait,
-	// which the connection's close at a stop ends too (awaitKeeper); the next pass, 30 s later,
-	// makes the step again either way.
+	// (startHangGuard), or a test's (withKeeperStepGuard). The step's update is one send under the
+	// JetStream context's own wait, which the connection's close at a stop ends too (awaitKeeper);
+	// the next pass, 30 s later, makes the step again either way.
+	guard := startHangGuard
+	if c.keeperStepGuard > 0 {
+		guard = c.keeperStepGuard
+	}
 	step := func(run func(ctx context.Context) error) error {
-		ctx, cancel := hangGuard(ctx, startHangGuard)
+		ctx, cancel := hangGuard(ctx, guard)
 		defer cancel()
 		return run(ctx)
 	}
 	var restored []string
 	if err == nil {
 		err = step(func(ctx context.Context) (err error) {
-			restored, err = keepStream(ctx, js, cfg, defaultsAnUnsetCap)
+			restored, err = keepStream(ctx, c.log(), js, cfg, defaultsAnUnsetCap)
 			return err
 		})
 	}
@@ -112,9 +126,9 @@ func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string) {
 	case err != nil && c.stopped():
 		return
 	case err != nil:
-		slog.Warn("envoy nats keeper could not restore the stream", slog.String("name", c.name), slog.String("stream", Stream), slog.String("error", err.Error()))
+		c.log().Warn("envoy nats keeper could not restore the stream", slog.String("name", c.name), slog.String("stream", Stream), slog.String("error", err.Error()))
 	case len(restored) > 0:
-		slog.Warn("envoy nats keeper restored the stream", slog.String("name", c.name), slog.String("stream", Stream), slog.String("restored", strings.Join(restored, ", ")))
+		c.log().Warn("envoy nats keeper restored the stream", slog.String("name", c.name), slog.String("stream", Stream), slog.String("restored", strings.Join(restored, ", ")))
 	}
 	for _, bucket := range buckets {
 		if c.stopped() {
@@ -122,7 +136,7 @@ func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string) {
 		}
 		var from int
 		err := step(func(ctx context.Context) (err error) {
-			from, err = raiseReplicas(ctx, js, bucket, cfg.Replicas)
+			from, err = raiseReplicas(ctx, c.log(), js, bucket, cfg.Replicas)
 			return err
 		})
 		switch {
@@ -130,9 +144,9 @@ func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string) {
 		case err != nil && c.stopped():
 			return
 		case err != nil:
-			slog.Warn("envoy nats keeper could not raise a bucket", slog.String("name", c.name), slog.String("bucket", bucket), slog.String("error", err.Error()))
+			c.log().Warn("envoy nats keeper could not raise a bucket", slog.String("name", c.name), slog.String("bucket", bucket), slog.String("error", err.Error()))
 		case from > 0:
-			slog.Warn("envoy nats keeper raised a bucket", slog.String("name", c.name), slog.String("bucket", bucket), slog.String("replicas", fmt.Sprintf("%d -> %d", from, cfg.Replicas)))
+			c.log().Warn("envoy nats keeper raised a bucket", slog.String("name", c.name), slog.String("bucket", bucket), slog.String("replicas", fmt.Sprintf("%d -> %d", from, cfg.Replicas)))
 		}
 	}
 }
@@ -185,9 +199,10 @@ func (c *Client) awaitKeeper() {
 // again is kept from the read before it, and none is sent when that read finds the stream a newer
 // build's or carrying the role lanes, the two streams a first read leaves alone; the fields it
 // returns are those of the last update against the read it was made from, so a field another
-// writer set between two sends is not reported as one this pass restored.
-func keepStream(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
-	info, err := readAgain(ctx, Stream+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) })
+// writer set between two sends is not reported as one this pass restored. The lines of its reads
+// sent again go to logger.
+func keepStream(ctx context.Context, logger *slog.Logger, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
+	info, err := readAgain(ctx, logger, Stream+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) })
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +222,7 @@ func keepStream(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamC
 		}
 		return keptStream(current, cfg, defaultsAnUnsetCap), true
 	}
-	update, err := updateStream(ctx, js, info, keep, func(again *nats.StreamInfo) bool {
+	update, err := updateStream(ctx, logger, js, info, keep, func(again *nats.StreamInfo) bool {
 		kept, write := keep(again)
 		return write && reflect.DeepEqual(kept, again.Config)
 	})

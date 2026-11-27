@@ -68,6 +68,7 @@ func backToReviewing(t *testing.T, apply func(string, intake.Fact) intake.Result
 // reviewer's row beside the round's decision (record.PhaseRow.ReviewedHead), and the entry into
 // the next round, which clears the decision (clearHandoff), leaves that commit where it stands.
 func TestADecidingReviewRecordsTheCommitItRead(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -157,6 +158,7 @@ func (u undecidingReview) review(t *testing.T, pool *pgxpool.Pool, id int64, hea
 // review refused for the head its footer names decides nothing, and a review of an issue outside
 // reviewing decides no round.
 func TestAReviewThatDecidesNothingRecordsNoCommit(t *testing.T) {
+	t.Parallel()
 	for _, tc := range reviewsThatDecideNothing(headOne) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -184,6 +186,7 @@ func TestAReviewThatDecidesNothingRecordsNoCommit(t *testing.T) {
 // other than headOne. A path that cleared the commit would read none, and one that moved it would
 // read the head that review names.
 func TestAReviewThatDecidesNothingKeepsTheCommitAnEarlierReviewRecorded(t *testing.T) {
+	t.Parallel()
 	for _, tc := range reviewsThatDecideNothing(headTwo) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -219,6 +222,7 @@ func TestAReviewThatDecidesNothingKeepsTheCommitAnEarlierReviewRecorded(t *testi
 // the round's decision is the person's. The commit the reviewer's next round is told is still the
 // one the reviewer's newest recorded review read: the reviewer never read the person's.
 func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -264,6 +268,7 @@ func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
 // reviewer's headOne. TestAPersonsReviewDoesNotMoveTheReviewersCommit is the person's review with
 // no footer.
 func TestAPersonsReviewThatQuotesTheReviewersFooterDoesNotMoveItsCommit(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -306,6 +311,17 @@ func reviewedPartOf(head string) string {
 	return " " + reviewround.CommitLabel + ": " + head + "."
 }
 
+// handoffPartOf is the sentence, with its leading space, that a task names the handoff record of
+// word at version on issue with, filled in from the one copy of it that handoff_line_extract.txt
+// holds, read as TestTheHandoffLineExtractIsTheSentenceTheTaskWrites reads it (handoffSentence),
+// which holds it equal to what task writes. So a test of a whole task reads the line from that
+// copy and keeps no copy of its own.
+func handoffPartOf(t *testing.T, issue, word string, version int) string {
+	t.Helper()
+	filled := strings.NewReplacer("{word}", word, "{version}", strconv.Itoa(version), "{issue}", issue)
+	return " " + filled.Replace(handoffSentence(t))
+}
+
 // endsNamingNoCommit says whether task ends with the daemon's sentence naming no commit,
 // reviewedPartOf("none"), and then the sentence of entry, and names the commit's label nowhere
 // else: the task of a round whose reviewer's row holds no reviewed commit.
@@ -313,14 +329,14 @@ func endsNamingNoCommit(task string, entry int64) bool {
 	return strings.HasSuffix(task, reviewedPartOf("none")+reviewEntryPartOf(entry)) && strings.Count(task, reviewround.CommitLabel) == 1
 }
 
-// readsReviewingTask fails the test unless task is the reviewing task of the round whose tester
-// handed off version version: an assertion of what a round's task lacks is only worth something
-// once it has read that round's task, since a row a round never reached still holds the task of
-// the round before it.
+// readsReviewingTask fails the test unless task is LEGION-208's reviewing task (reviewerRow's) of
+// the round whose tester handed off version version, the handoff read from its one copy
+// (handoffPartOf): an assertion of what a round's task lacks is only worth something once it has
+// read that round's task, since a row a round never reached still holds the task of the round
+// before it.
 func readsReviewingTask(t *testing.T, round, task string, version int) {
 	t.Helper()
-	handoff := " Handoff: test version " + strconv.Itoa(version) + " ("
-	if !strings.Contains(task, " Phase: reviewing.") || !strings.Contains(task, handoff) {
+	if !strings.Contains(task, " Phase: reviewing.") || !strings.Contains(task, handoffPartOf(t, "LEGION-208", "test", version)) {
 		t.Fatalf("%s's task = %q, want the reviewing task the tester's handoff version %d started", round, task, version)
 	}
 }
@@ -405,6 +421,7 @@ func onlyReviewerStart(t *testing.T, pool *pgxpool.Pool) record.SuperviseRequest
 // first round of a generation has no earlier review, and its task names no commit; nor does a task
 // of any other role.
 func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
+	t.Parallel()
 	pool, _, apply := reviewRoundOne(t)
 	first := reviewerRow(t, pool)
 	readsReviewingTask(t, "round 1", first.EntryTask, 1)
@@ -419,7 +436,7 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 	if second.Entry <= first.Entry {
 		t.Fatalf("round 2's reviewer row is on entry %d, want one above round 1's %d: round 2 started", second.Entry, first.Entry)
 	}
-	want := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 2 (dispatch handoff-read --issue LEGION-208 --phase test --version 2)." +
+	want := "Working copy: branch legion/LEGION-208.\nContinue root. Issue: LEGION-208. Phase: reviewing." + handoffPartOf(t, "LEGION-208", "test", 2) +
 		" Tester's verdict: pass. Pull request: #42." + reviewedPartOf(headOne) + reviewEntryPartOf(second.Entry)
 	if second.EntryTask != want {
 		t.Fatalf("round 2's task = %q, want %q", second.EntryTask, want)
@@ -448,6 +465,7 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 // and not headOne. A review that kept only the first commit it saw would hand round 3 a range
 // that reads round 2's work again.
 func TestALaterRoundNamesTheCommitOfTheReviewersNewestDecidingReview(t *testing.T) {
+	t.Parallel()
 	pool, engine, apply := reviewRoundOne(t)
 	apply("request-changes-1", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
 	if got := issuePhase(t, pool); got != phase.Implementing {
@@ -485,6 +503,7 @@ func TestALaterRoundNamesTheCommitOfTheReviewersNewestDecidingReview(t *testing.
 // while its commit_id already names headTwo. A commit taken from the commit_id would hand round 2 a
 // range from a head the reviewer never read.
 func TestALaterRoundNamesTheHeadTheReviewsFooterNamesAndNotItsCommitID(t *testing.T) {
+	t.Parallel()
 	pool, _, apply := reviewRoundOne(t)
 	review := reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt)
 	review.CommitID = headTwo
@@ -508,7 +527,8 @@ func TestALaterRoundNamesTheHeadTheReviewsFooterNamesAndNotItsCommitID(t *testin
 // task — and the promotion a carried hand-over makes, which keeps its rows (admit's readmit
 // returns before the clear for an orphan) and so keeps the commit.
 func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
-	resumeWant := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work." + reviewedPartOf(headOne)
+	t.Parallel()
+	resumeWant := "Working copy: branch legion/LEGION-208.\nContinue root. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work." + reviewedPartOf(headOne)
 	t.Run("the architect's move back after an approval", func(t *testing.T) {
 		pool, engine, apply := reviewRoundOne(t)
 		apply("approve", reviewAt(t, pool, 1, "approved", headOne, reviewTestedAt))
@@ -607,7 +627,8 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		carried.Generation++
 		seedIssue(t, pool, *carried)
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			return engine.StartPromotedWorker(ctx, tx, *carried, claim.RoleReviewer)
+			_, err := engine.StartPromotedWorker(ctx, tx, *carried, claim.RoleReviewer, false)
+			return err
 		})
 		after := reviewerRow(t, pool)
 		if want := resumeWant + reviewEntryPartOf(before.Entry+1); after.Entry != before.Entry+1 || after.EntryTask != want {
@@ -661,23 +682,24 @@ func testsIntoReviewing(t *testing.T, pool *pgxpool.Pool, apply func(string, int
 }
 
 // A new generation that clears its rows tells its first reviewer no commit: the re-admission of
-// the root (record.Store.ClearTreeGeneration, whose promotion starts the member it finds
-// mid-phase), the rerun of a child (ReenterChild) and an adoption (moveIntoTree) each clear the
-// reviewer's row with the rest of the generation, so the review of that generation reads the
-// whole change.
+// the root (Engine.ClearTreeGeneration, whose promotion starts the member it finds mid-phase),
+// the rerun of a child (ReenterChild) and an adoption (moveIntoTree) each clear the reviewer's
+// row with the rest of the generation, so the review of that generation reads the whole change.
 func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
+	t.Parallel()
 	t.Run("the re-admission of the root", func(t *testing.T) {
 		pool, engine, _ := reviewedChild(t)
 		before := reviewerRow(t, pool)
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			return record.NewStore().ClearTreeGeneration(ctx, tx, "LEGION-207", time.Now().UTC())
+			return engine.ClearTreeGeneration(ctx, tx, "LEGION-207", time.Now().UTC())
 		})
 		member := issueRecord(t, pool, "LEGION-208")
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			return engine.StartPromotedWorker(ctx, tx, *member, claim.RoleReviewer)
+			_, err := engine.StartPromotedWorker(ctx, tx, *member, claim.RoleReviewer, false)
+			return err
 		})
 		after := reviewerRow(t, pool)
-		want := "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(before.Entry+1)
+		want := "Working copy: branch legion/LEGION-208.\nContinue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(before.Entry+1)
 		if after.Entry != before.Entry+1 || after.EntryTask != want {
 			t.Fatalf("the promoted reviewer is on entry %d with the task %q, want entry %d with %q", after.Entry, after.EntryTask, before.Entry+1, want)
 		}
@@ -730,6 +752,7 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 // reviewer's row after round 1's review, round 2's task names none; with it left, the same lines
 // name it, so the control can fail.
 func TestALaterReviewRoundWithItsRecordRemovedIsToldNoCommit(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		removed bool

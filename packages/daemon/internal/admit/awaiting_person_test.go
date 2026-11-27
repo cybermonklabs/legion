@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -101,10 +102,10 @@ func seedDispatchClaim(t *testing.T, pool *pgxpool.Pool, issue, holder string) {
 }
 
 // awaitingRig is a slotted root whose architect handed question ask-q back, with a second root
-// waiting in line behind it, and the admission that decides them on every fact. cap is that
-// admission's cap, which counts the issues the daemon has started rather than the trees: a test
-// about the root alone takes 1, and one whose tree also starts a child of its own takes one row
-// an issue.
+// waiting in line behind it, and the admission that decides them on every pass (the pass rule,
+// Admission.Apply). cap is that admission's cap, which counts the issues the daemon has started
+// rather than the trees: a test about the root alone takes 1, and one whose tree also starts a
+// child of its own takes one row an issue.
 func awaitingRig(t *testing.T, pool *pgxpool.Pool, cap int) *Admission {
 	t.Helper()
 	seedSlotted(t, pool, "LEGION-208", "U")
@@ -129,8 +130,9 @@ func superviseRequests(t *testing.T, pool *pgxpool.Pool, issue string) []record.
 	return got
 }
 
-// awaiting_person: its architect stays live while the root waits, the controller is told, and
-// the root keeps the row it took at its admission, so the root waiting behind it waits on.
+// awaiting_person: its architect stays live while the root waits, the root keeps the row it took
+// at its admission, so the root waiting behind it waits on, and the controller is told nothing:
+// its skill does nothing for the wait, and the state names it (#4065).
 func TestARootWaitingOnAPersonKeepsItsRow(t *testing.T) {
 	pool := migratedPool(t)
 	admission := awaitingRig(t, pool, 1)
@@ -158,22 +160,13 @@ func TestARootWaitingOnAPersonKeepsItsRow(t *testing.T) {
 	if len(requests) != 0 {
 		t.Fatalf("supervise requests = %+v, want no architect suspend", requests)
 	}
-	var notices int
-	for _, e := range effects(t, pool) {
-		if notice, ok := e.payload.(record.ControllerNotice); ok && notice.Kind == record.AwaitingPersonNotice {
-			notices++
-			if !strings.Contains(notice.Reason, "LEGION-208") {
-				t.Fatalf("awaiting-person notice %q, want it to name the root", notice.Reason)
-			}
-		}
-	}
-	if notices != 1 {
-		t.Fatalf("awaiting-person notices = %d, want one", notices)
+	if notices := controllerNotices(t, pool); len(notices) != 0 {
+		t.Fatalf("controller notices = %#v, want none for a root that waits on a person", notices)
 	}
 }
 
 // A person's answer resumes the root in the pass that reads it, with the cap full. The root
-// stands in the line among the issues whose work came back, oldest first, holding the row it
+// stands in the line within its priority, among the issues whose work came back, oldest first, holding the row it
 // took at its admission and kept through the wait, so its promotion takes no second row and
 // the cap holds it back for nothing. The resume is a handout: what it handed back before is
 // cleared, so only its next hand-back starts the next wait.
@@ -213,8 +206,8 @@ func TestAnAnsweredRootResumesAtOnceAndKeepsItsRow(t *testing.T) {
 	if len(requests) != 1 || requests[0].Op != "start" || requests[0].Role != claim.RoleArchitect {
 		t.Fatalf("supervise requests = %+v, want the live architect's resume task", requests)
 	}
-	if !strings.Contains(requests[0].Task, "ask-q") {
-		t.Fatalf("resume task %q, want it to name the ask that was answered", requests[0].Task)
+	if task := startText(t, pool, "LEGION-208", config.DesignGateRootIssues, requests[0]); !strings.Contains(task, "ask-q") {
+		t.Fatalf("resume task %q, want it to name the ask that was answered", task)
 	}
 	if !runQueuedArchitectStarts(t, pool, "LEGION-208") {
 		t.Fatal("the live architect's resume task was not queued")
@@ -378,7 +371,8 @@ func TestAWaitHeldByUntakenWorkStartsAtTheTaskConfirmation(t *testing.T) {
 }
 
 // An awaiting root whose Dispatch claim a person or an outside session took cannot resume in its
-// own session, so the daemon takes it out of the workflow and tells the controller; one the
+// own session, so the daemon takes it out of the workflow, and tells the controller nothing: the
+// controller reads the root from the state, at phase done beside the status it ran with. One the
 // daemon's own session or a session of its tree holds resumes as it is.
 func TestAnAwaitingRootAnOutsiderClaimedLeavesTheWorkflow(t *testing.T) {
 	for _, tc := range []struct {
@@ -410,17 +404,8 @@ func TestAnAwaitingRootAnOutsiderClaimedLeavesTheWorkflow(t *testing.T) {
 			if root.Phase != phase.Done || root.Awaiting != nil {
 				t.Fatalf("root = %+v (awaiting %+v), want it out of the workflow", root, root.Awaiting)
 			}
-			var unslotted int
-			for _, e := range effects(t, pool) {
-				if notice, ok := e.payload.(record.ControllerNotice); ok && notice.Kind == record.UnslottedNotice {
-					unslotted++
-					if !strings.Contains(notice.Reason, "awaits a person") {
-						t.Fatalf("unslotted notice %q, want it to say the root was waiting on a person", notice.Reason)
-					}
-				}
-			}
-			if unslotted != 1 {
-				t.Fatalf("unslotted notices = %d, want one", unslotted)
+			if notices := controllerNotices(t, pool); len(notices) != 0 {
+				t.Fatalf("controller notices = %#v, want none: the root out of the workflow is read from the state", notices)
 			}
 		})
 	}

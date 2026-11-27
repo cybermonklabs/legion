@@ -24,10 +24,12 @@ import { executeDispatchTool } from "../dispatch-execute";
 // `dispatch plans --project <KEY>`: each finished issue of a project, as Dispatch's
 // `GET /api/v1/projects/{key}/plans` answers them, one header line and one line per issue: its
 // plan, each rating its retros gave the plan with the reason, its time and its count of failed
-// steps. The Legion whole-daemon driver parses the line, so each case asserts it whole. The format
-// cases drive `executeDispatchTool` over the shared fake Dispatch (`test/fake-dispatch.ts`) as a
-// fetch, so each reads the text and the details a host is handed; the command-line cases drive
-// the real CLI against that fake on a loopback port, and read its exit code and output.
+// steps, and, where the records of the issue's newest run name an experiment,
+// `variant <experiment>/<variant>` at its end. The Legion whole-daemon driver parses the line, so
+// each case asserts it whole. The format cases drive `executeDispatchTool` over the shared fake
+// Dispatch (`test/fake-dispatch.ts`) as a fetch, so each reads the text and the details a host is
+// handed; the command-line cases drive the real CLI against that fake on a loopback port, and read
+// its exit code and output.
 
 /** The Dispatch bearer each command-line case is handed. */
 const TOKEN = fixtureSecret("dsp");
@@ -45,6 +47,7 @@ function defaultPlan(issue: string, id: string): PlanRecord {
     tasks: [
       {
         id: "default",
+        needs: null,
         steps: ["planner", "implementer", "tester", "reviewer", "acceptance:owner"],
       },
     ],
@@ -70,11 +73,13 @@ const ratedOnce: FinishedIssue = {
   ended_at: "2026-11-16T12:00:00Z",
   duration_seconds: 5400,
   failed_steps: 1,
+  experiment: null,
+  variant: null,
 };
 
-/** INFRA-11's plan: its owner's, in three tasks. The first task is neither the first nor the last
- *  by id, and each task has its own steps, so the line names the first task of the plan and no
- *  other. */
+/** INFRA-11's plan: its owner's, in three tasks, each after the one before it. The first task is
+ *  neither the first nor the last by id, and each task has its own steps, so the line names the
+ *  first task of the plan and no other. */
 const ownerPlan: PlanRecord = {
   id: "3c5e7a9b-4d6f-5a8c-8e0b-2d4f6a8c0e1b",
   issue: "INFRA-11",
@@ -83,9 +88,9 @@ const ownerPlan: PlanRecord = {
   artifact_id: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
   version: 3,
   tasks: [
-    { id: "server", steps: ["implementer", "reviewer"] },
-    { id: "api", steps: ["implementer:api"] },
-    { id: "web", steps: ["implementer:web", "tester"] },
+    { id: "server", steps: ["implementer", "reviewer"], needs: [] },
+    { id: "api", steps: ["implementer:api"], needs: ["server"] },
+    { id: "web", steps: ["implementer:web", "tester"], needs: ["api"] },
   ],
 };
 
@@ -100,6 +105,8 @@ const unrated: FinishedIssue = {
   ended_at: "2026-11-15T07:57:05Z",
   duration_seconds: 3725,
   failed_steps: 0,
+  experiment: null,
+  variant: null,
 };
 
 /** Three retros, so three ratings, in the order the retros ran: neither by score (4, 2, 5) nor by
@@ -148,6 +155,8 @@ const neverRan: FinishedIssue = {
   ended_at: null,
   duration_seconds: null,
   failed_steps: 0,
+  experiment: null,
+  variant: null,
 };
 
 /** A finished issue whose time Dispatch cannot count: a plan and a rating, a start and an end,
@@ -186,7 +195,7 @@ const otherProject: FinishedIssue = {
     source: "owner",
     artifact_id: "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b",
     version: 1,
-    tasks: [{ id: "keys", steps: ["implementer", "tester"] }],
+    tasks: [{ id: "keys", needs: [], steps: ["implementer", "tester"] }],
   },
   ratings: [
     {
@@ -200,6 +209,8 @@ const otherProject: FinishedIssue = {
   ended_at: "2026-11-13T16:40:00Z",
   duration_seconds: 9300,
   failed_steps: 3,
+  experiment: null,
+  variant: null,
 };
 
 const config = {
@@ -255,6 +266,21 @@ describe("dispatch plans", () => {
       ].join("\n")
     );
     expect(result.details).toEqual({ project: "INFRA", issues: [ratedOnce, unrated] });
+  });
+
+  // An issue a draw put in an experiment names the experiment and the variant its newest run's
+  // records name, at the end of its line; an issue that names none prints nothing more.
+  test("an issue in an experiment prints its variant on its line, and another prints none", async () => {
+    const drawn: FinishedIssue = { ...ratedOnce, experiment: "planning", variant: "b" };
+    const answer: ProjectPlans = { project: "INFRA", issues: [drawn, unrated] };
+
+    const { result } = await readPlans({ project: "INFRA" }, answer);
+
+    expect(result.text.split("\n")).toEqual([
+      "INFRA: 2 finished issues",
+      'INFRA-12 closed 2026-11-16T12:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the work; the review sent it back once." time 1h30m failed steps 1 variant planning/b',
+      "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (3 tasks: implementer reviewer) ratings none time 1h2m failed steps 0",
+    ]);
   });
 
   test("an issue with three ratings lists each in the order the retros ran, each reason one JSON string", async () => {

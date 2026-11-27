@@ -275,7 +275,10 @@ git -C "$root" merge-base --is-ancestor "$previous_base" HEAD ||
 if git -C "$root" cat-file -e "$previous_base:packages/daemon/internal/runtime/sandbox/one_container_test.go" 2>/dev/null; then
   fail "LEGION_E2E_PREVIOUS_IMAGE $previous_image was built from $previous_base, which already runs issue pods of one container"
 fi
-previous_contract=$(git -C "$root" show "$previous_base:packages/daemon/internal/api/version.go" | sed -n 's/^const DaemonAPIVersion = \([0-9]*\)$/\1/p')
+# The commit's own contract as scripts/daemon-contract.sh prints it for a commit: a commit of 37 or
+# 38 declares it in version.go's `const DaemonAPIVersion`, which the script reads there.
+previous_contract=$(cd "$root" && bash scripts/daemon-contract.sh "$previous_base") ||
+  fail "scripts/daemon-contract.sh could not read the daemon API contract of $previous_base, which LEGION_E2E_PREVIOUS_IMAGE $previous_image was built from"
 case "$previous_contract" in
 37 | 38) ;;
 *) fail "LEGION_E2E_PREVIOUS_IMAGE $previous_image was built from $previous_base, at daemon API contract ${previous_contract:-unknown}: previous-layout needs a main build at contract 37 or 38, the two whose harness records the claim's session and whose issue pods run six role containers" ;;
@@ -356,14 +359,15 @@ fi
 
 begin plugins
 # The stale-plugin-install checkpoint's own pack of this checkout's two plugins, through
-# lib/pack-plugin.sh as every other proof that installs a branch-built plugin packs: it points
-# each manifest at its dist bundle exactly as the release does (scripts/pi-plugin-prepack.sh
-# refuses to pack the committed manifest's own source-path omp.extensions), runs `bun pm pack`
-# with the prepack's build report on stderr, restores the committed manifest on every exit of its
-# own, and prints the tarball's path alone. The checkpoint's negative control names the published
-# pi-legion@9.6.1 by exact version with no pack of its own: the daemon-rendered install script
-# resolves that version to @sjawhar/pi-legion@9.6.1 and bun fetches it from the registry inside
-# the pod. Failing here fails the run before anything is created in the namespace.
+# lib/pack-plugin.sh as every other proof that installs a branch-built plugin packs: it points a
+# staged copy of each manifest at its dist bundle exactly as the release does
+# (scripts/pi-plugin-prepack.sh refuses to pack the committed manifest's own source-path
+# omp.extensions), runs `bun pm pack` in that copy with the prepack's build report on stderr,
+# writes nothing in the checkout, and prints the tarball's path alone. The checkpoint's negative
+# control names the published pi-legion@9.6.1 by exact version with no pack of its own: the
+# daemon-rendered install script resolves that version to @sjawhar/pi-legion@9.6.1 and bun fetches
+# it from the registry inside the pod. Failing here fails the run before anything is created in
+# the namespace.
 plugins_dir="$work/plugins"
 pi_envoy_version=$(jq -r .version "$root/packages/pi-envoy/package.json") || fail "reading packages/pi-envoy/package.json's version failed"
 pi_legion_version=$(jq -r .version "$root/packages/pi-legion/package.json") || fail "reading packages/pi-legion/package.json's version failed"

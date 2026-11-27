@@ -14,20 +14,31 @@
 # other workspace packages are not plugins. Stdout is one line, the tarball's path; every step's own
 # output goes to stderr. <out dir> is created if missing and must hold no tarball already.
 #
-# The sequence runs in the checkout this script lives in, because a copy of the package cannot
-# build: the prepack copies the repository's skills/, and the bundle resolves @legion/* through the
-# workspace root's node_modules (`bun install --frozen-lockfile` at the root first).
-#   1. save package.json, arm the EXIT trap    release.yaml pi_envoy_build/pi_legion_build "Point extensions at the packed bundle"
-#   2. omp.extensions -> the packed bundle     that step's jq; worker.Dockerfile's `jq '.omp.extensions = …'`
+# The pack runs in a staged copy of the checkout under this run's temp directory, never in the
+# checkout itself: a test of this checkout that reads the committed manifest while a pack runs
+# beside it (`bun test --parallel`, where a skill-scenario rig row builds a profile from this
+# checkout) would otherwise read the rewrite. The stage holds a copy of the package's own files,
+# without dist/ (the prepack builds it) and with node_modules linked; every other top-level entry
+# of the checkout, and every other package, is a symlink to the checkout's. So the prepack's
+# `../../scripts`, its skills/ and the bundle's @legion/* imports (through the workspace root's
+# node_modules, `bun install --frozen-lockfile` at the root first) resolve as they do in the
+# checkout, and the bundle's code is the one a pack in the checkout builds. Only the source-path
+# comments bun writes above each inlined module differ: bun writes them from the stage to the
+# module's real path, so they name the checkout by its absolute path where a pack in place writes
+# `../../node_modules/…`. Nothing reads those comments.
+#   1. stage the package                       this script's own need: the checkout is read, never written
+#   2. omp.extensions -> the packed bundle     release.yaml pi_envoy_build/pi_legion_build "Point extensions at the packed bundle"; worker.Dockerfile's `jq '.omp.extensions = …'`
+#      pi-legion: legion.daemonApiVersion ->   pi_legion_build's "Set release version"; worker.Dockerfile's same jq
+#      the tree's contract (scripts/daemon-contract.sh)
 #   3. bun pm pack; its prepack builds dist/   release.yaml "Pack extension"; the prepack's `bun build`
-#   4. put package.json back                   this script's own need: the checkout is reused (the build job's tree is discarded)
 # Each source is cited by what it runs, never by line number: the lines move with every edit
-# above them. release.yaml's "Set release version" is not a step here: the tarball carries the
-# checkout's own version. The bundle is the committed manifest's one extension entry,
+# above them. Of release.yaml's "Set release version", only pi-legion's contract is written here:
+# the tarball carries the checkout's own version. No committed manifest names the contract; the
+# packed one declares the tree's, the number the daemon built from this tree requires of the
+# installed manifest. The bundle is the committed manifest's one extension entry,
 # extensions/<entry>.ts, as dist/<entry>.js: the list the prepack requires. The bundle inlines
-# package.json, so it is built while the manifest names the packed bundle, as the release builds it.
-# The saved manifest is written under this run's temp directory rather than beside package.json, so
-# an interrupted run strands no tmp.json in the checkout.
+# package.json, so it is built while the staged manifest names the packed bundle and the
+# contract, as the release builds it.
 set -euo pipefail
 
 me=pack-plugin
@@ -53,59 +64,59 @@ if compgen -G "$out/*.tgz" >/dev/null; then
   refuse "<out dir> $out already holds a tarball, so the one this run packs could not be told apart"
 fi
 
-manifest=$root/packages/$package/package.json
+src=$root/packages/$package
+manifest=$src/package.json
 work=$(mktemp -d "${TMPDIR:-/tmp}/$me.XXXXXXXX")
-saved=$work/package.json
-restore=
-# put_back copies the saved bytes over the manifest and checks them. It runs right after the pack,
-# and the EXIT trap runs it on every other way out — a pack that dies halfway, an interrupt — so no
-# jj snapshot taken after the run sees the rewrite. The trap keeps the run's status unless put_back
-# itself failed, and then the saved bytes stay where they are and the status is non-zero.
-put_back() {
-  cp -p "$saved" "$manifest" && cmp -s "$saved" "$manifest" && restore=
-}
-cleanup() {
-  local st=$?
-  if [ -n "$restore" ] && ! put_back; then
-    echo "$me: could not restore $manifest; the bytes it had before this run are in $saved — copy them back before jj snapshots the rewrite" >&2
-    [ "$st" != 0 ] || st=1
-  else
-    rm -rf "$work" || true
-  fi
-  exit "$st"
-}
-trap cleanup EXIT
+trap 'rm -rf "$work"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-# A TERM once whoever reads stderr has gone would otherwise end this script with the manifest still
-# rewritten: bash writes its Terminated notice for the interrupted pack to the dead stderr, and dies
-# of SIGPIPE before the EXIT trap puts the manifest back.
+# bash's `Terminated` notice for an interrupted pack, written to a stderr whose reader has gone,
+# would otherwise kill the script of SIGPIPE before the EXIT trap removes the stage.
 trap '' PIPE
 
-# Runs in one checkout take turns at the manifest: a run that started while another had it
-# rewritten would save that rewrite and put it back. The lock is on the manifest itself, which is
-# rewritten and restored in place (cp keeps the inode), and is held from the save to put_back.
-exec 9<"$manifest"
-if ! flock -n 9; then
-  echo "$me: waiting for another run to finish packing in $root" >&2
-  flock 9
-fi
-cp -p "$manifest" "$saved"
+# The stage: every top-level entry of the checkout but packages/, and every package but this one,
+# as a symlink; this package's own files copied with their modes (the prepack takes group and other
+# write from what it ships, so a copy that kept less would hide what it normalizes), its
+# node_modules linked, its dist/ left out.
+stage=$work/stage
+staged=$stage/packages/$package
+mkdir -p "$staged"
+shopt -s nullglob dotglob
+for path in "$root"/*; do
+  [ "${path##*/}" = packages ] || ln -s "$path" "$stage/"
+done
+for path in "$root"/packages/*; do
+  [ "${path##*/}" = "$package" ] || ln -s "$path" "$stage/packages/"
+done
+for path in "$src"/*; do
+  case "${path##*/}" in
+  dist) ;;
+  node_modules) ln -s "$path" "$staged/" ;;
+  *) cp -a "$path" "$staged/" ;;
+  esac
+done
+shopt -u nullglob dotglob
+
 # The committed manifest names one source entry, extensions/<entry>.ts; the packed one names that
 # entry's bundle alone, ["dist/<entry>.js"], the only list the prepack packs.
-entry=$(jq -r 'if (.omp.extensions | length) == 1 then .omp.extensions[0] else empty end' "$saved")
+entry=$(jq -r 'if (.omp.extensions | length) == 1 then .omp.extensions[0] else empty end' "$manifest")
 case "$entry" in
 extensions/*.ts) entry=${entry#extensions/} && entry=${entry%.ts} ;;
-*) refuse "$manifest names omp.extensions $(jq -c '.omp.extensions' "$saved"); the committed list is one source entry, extensions/<entry>.ts" ;;
+*) refuse "$manifest names omp.extensions $(jq -c '.omp.extensions' "$manifest"); the committed list is one source entry, extensions/<entry>.ts" ;;
 esac
-restore=1
-jq --arg bundle "dist/$entry.js" '.omp.extensions = [$bundle]' "$saved" >"$work/packed.json"
-cp "$work/packed.json" "$manifest"
+# pi-legion's packed manifest declares the tree's daemon API contract, which its bundle inlines and
+# the daemon's boot gate reads off the installed manifest; pi-envoy speaks no contract.
+filter='.omp.extensions = [$bundle]'
+contract=null
+if [ "$package" = pi-legion ]; then
+  contract=$(bash "$root/scripts/daemon-contract.sh")
+  filter="$filter | .legion.daemonApiVersion = \$contract"
+fi
+# Written through the copy's own file, so it keeps the mode the copy took from the checkout's.
+jq --arg bundle "dist/$entry.js" --argjson contract "$contract" "$filter" "$manifest" >"$staged/package.json"
 
-(cd "$root/packages/$package" && bun pm pack --destination "$out") >&2
-put_back
-exec 9<&-
+(cd "$staged" && bun pm pack --destination "$out") >&2
 tarballs=("$out"/*.tgz)
 if [ "${#tarballs[@]}" != 1 ] || [ ! -f "${tarballs[0]}" ]; then
   echo "$me: bun pm pack left ${#tarballs[@]} entries matching $out/*.tgz; expected one tarball" >&2

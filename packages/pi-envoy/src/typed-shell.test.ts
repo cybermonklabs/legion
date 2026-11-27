@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -8,14 +8,20 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isShellCommandReport } from "@legion/contracts";
+import { captureEnvironment } from "@legion/test-fixtures/environment";
+import { turnsUntil } from "@legion/test-fixtures/fake-clock";
+import { processEnded } from "@legion/test-fixtures/process-end";
+import { timeLeft } from "@legion/test-fixtures/wait";
 import { procmgr } from "@oh-my-pi/pi-utils";
 import {
   runShellCommand,
   SHELL_OUTPUT_MAX,
+  type ShellCommandResult,
   shellCommandBusyReport,
   shellCommandFrom,
   shellCommandMessage,
@@ -31,19 +37,6 @@ function scratch(): string {
   return mkdtempSync(join(tmpdir(), "typed-shell-test-"));
 }
 
-/** How long a row waits for something of this machine's own: a file a command wrote, a process
- *  of its group leaving the process table. */
-const DEADLINE_MS = 20_000;
-
-/** Polls `ready` until it holds or the deadline passes, and answers what it last read. The rows
- *  that use it watch a real child process and a real process group, which no fake clock drives,
- *  so they wait on the thing itself rather than on a delay guessed to cover it. */
-async function untilTrue(ready: () => boolean): Promise<boolean> {
-  const until = Date.now() + DEADLINE_MS;
-  while (!ready() && Date.now() < until) await Bun.sleep(10);
-  return ready();
-}
-
 /** Whether `pid` is still in this machine's process table. */
 function alive(pid: number): boolean {
   try {
@@ -53,6 +46,85 @@ function alive(pid: number): boolean {
     return false;
   }
 }
+
+/** One move a row makes while its command runs: once `holds`, `act` runs with the command's stop.
+ *  `what` names the moment, as a failure that comes before it says. */
+interface HeldStep {
+  readonly what: string;
+  readonly holds: () => boolean;
+  readonly act: (stop: () => void) => void;
+}
+
+/**
+ * Runs `command` in `directory` with the module's own timers, its limit and the grace its reads get
+ * after a stop, held on Bun's fake clock, and turns the real event loop until the command's answer
+ * is in: the command, its streams and its kill still run for real
+ * (`@legion/test-fixtures/fake-clock`), and no clock moves unless the row moves it. Each of `steps`
+ * is taken in order, once, before the next turn after its `holds` does: the row's own moves, made
+ * while the module has not answered yet. The wait's one bound is the row's deadline, read before
+ * the clock is held. A command answered before every step was taken fails here, naming the first
+ * step not taken, with its answer; a wait that fails stops the command and fails at once.
+ */
+async function answerOnHeldClock(options: {
+  readonly command: string;
+  readonly directory: string;
+  readonly limitMs: number;
+  readonly steps: readonly HeldStep[];
+}): Promise<ShellCommandResult> {
+  const boundMs = Math.floor(timeLeft());
+  const seen: { answer?: ShellCommandResult; taken: number } = { taken: 0 };
+  let stop = (): void => {};
+  jest.useFakeTimers();
+  const running = runShellCommand(options.command, {
+    cwd: options.directory,
+    limitMs: options.limitMs,
+    started: (kill) => {
+      stop = kill;
+    },
+  }).then((answer) => {
+    seen.answer = answer;
+    return answer;
+  });
+  const next = (): HeldStep | undefined => options.steps[seen.taken];
+  try {
+    await turnsUntil(() => seen.answer !== undefined, "the command's answer", {
+      boundMs,
+      state: () => `waiting for ${next()?.what ?? "the answer after every step"}`,
+      each: () => {
+        const step = next();
+        if (step === undefined || !step.holds()) return;
+        seen.taken += 1;
+        step.act(stop);
+      },
+    });
+  } finally {
+    // A wait that failed leaves the command running: stop it and fire its held limit and its
+    // reads' grace, but wait for no answer. A process the command left holding its pipe ends with
+    // the row's directory, which the row removes once this throws; a module whose reads never end
+    // would otherwise hold the row to bun's timeout, and its cleanup would never run.
+    if (seen.answer === undefined) {
+      stop();
+      jest.runOnlyPendingTimers();
+      void running.catch(() => undefined);
+    }
+    jest.useRealTimers();
+  }
+  const answer = await running;
+  const missed = next();
+  if (missed !== undefined) {
+    throw new Error(`the command was answered before ${missed.what}: ${Bun.inspect(answer)}`);
+  }
+  return answer;
+}
+
+/** Whether the command has written `name` in `directory`, a mark of its own. */
+function wroteIn(directory: string, name: string): () => boolean {
+  return () => existsSync(join(directory, name));
+}
+
+/** The tail of a command that runs until it is killed and answers each `ping` the row writes in
+ *  its directory with a `pong`: a row reads that answer as the command still running then. */
+const ANSWERS_PINGS = "while :; do if [ -f ping ]; then rm -f ping; : > pong; fi; sleep 0.01; done";
 
 describe("the command a person's message says to run", () => {
   test("is the rest of a line whose first character is the mark, trimmed as the CLI trims it", () => {
@@ -357,21 +429,44 @@ describe("running a person's command", () => {
     }
   });
 
+  // The limit is the module's own timer, so the row holds it (`answerOnHeldClock`) and judges it
+  // from both sides: once the command has printed and written its mark, the clock moves to 1 ms
+  // short of the limit and the command must still answer a ping, and only then does the clock
+  // move past the limit. A limit that fires early - at half of it, say - kills the command before
+  // that answer, and the row fails naming it. On the real clock a 1,000 ms limit decided this row:
+  // a shell that starts later than that is stopped before it has printed anything, and the row
+  // read "" where it wanted "early".
   test("stops a command past its limit and keeps what it printed", async () => {
     const directory = scratch();
-    const started = Date.now();
     try {
-      const result = await runShellCommand("printf early; sleep 600", {
-        cwd: directory,
+      const result = await answerOnHeldClock({
+        command: `printf early; : > printed; ${ANSWERS_PINGS}`,
+        directory,
         limitMs: 1_000,
+        steps: [
+          {
+            what: "the command's mark that it printed",
+            holds: wroteIn(directory, "printed"),
+            act: () => {
+              jest.advanceTimersByTime(999);
+              writeFileSync(join(directory, "ping"), "");
+            },
+          },
+          {
+            what: "the command's answer to a ping 1 ms short of its limit",
+            holds: wroteIn(directory, "pong"),
+            act: () => {
+              jest.advanceTimersByTime(1);
+            },
+          },
+        ],
       });
       expect(result.output).toBe("early");
       expect(result.status).toBe("The command was stopped after 1000 ms.");
-      expect(Date.now() - started).toBeLessThan(10_000);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  }, 20_000);
+  });
 
   test("cuts output past the bound and says so in each text", async () => {
     const directory = scratch();
@@ -390,38 +485,57 @@ describe("running a person's command", () => {
     }
   }, 30_000);
 
-  // The module reads back `4 * SHELL_OUTPUT_MAX` bytes and says a command that prints without end
-  // "costs the session this much memory and no more". It costs the session that much memory and
-  // the whole of its disk: nothing bounds what the shell writes into the file those bytes are read
-  // from, so `!yes`, `!cat /dev/urandom` or an ordinary `!grep -r … /` writes until the limit
-  // (120 s by default) or until the filesystem is full. Measured at c974ed1e653a on the issue pod:
-  // 376,043,850 bytes in 1.5 s, which the default limit scales to about 28 GiB. The bound here is
-  // sixteen times the character cut, far above anything a fix that caps the writer would leave.
-  // The watcher samples the real filesystem while a real child process writes to it, so no fake
-  // clock can drive it: the bytes come from the shell, not from a timer this test owns.
+  // An earlier shape of the module pointed both streams at a file under `envoy-shell-*` and read
+  // back `4 * SHELL_OUTPUT_MAX` bytes of it, so nothing bounded what the shell wrote there: `!yes`,
+  // `!cat /dev/urandom` or an ordinary `!grep -r … /` wrote until the limit (120 s by default) or
+  // until the filesystem was full. Measured at c974ed1e653a on the issue pod: 376,043,850 bytes in
+  // 1.5 s, which the default limit scales to about 28 GiB. The bound here is sixteen times the
+  // character cut, far above anything a fix that caps the writer would leave.
+  //
+  // The command prints twice the bound, writes a mark, and then prints without end; the row reads
+  // the disk at that mark, while the command still runs, and then stops it. The module's timers
+  // are held (`answerOnHeldClock`) and never moved, so neither its limit nor the grace its reads
+  // get after the stop decides the verdict: it reads the command's streams to their end. On the
+  // real clock a 400 ms limit decided this row: it came back uncut after 401.87 ms on a loaded CI
+  // runner (job 138403370168), as it does when the shell starts later than the limit. A file
+  // holding what the command printed is read at twice the bound, and the module's temporary
+  // directory is this row's own, so no other process's files are read. The finite part reads
+  // `/dev/zero` rather than cutting `yes` short, which a host prefix that sets `-e -o pipefail`
+  // would end at its SIGPIPE before the mark.
   test("bounds what an endless command writes to disk, not only what it reads back", async () => {
     const directory = scratch();
     const bound = 16 * SHELL_OUTPUT_MAX;
-    let peak = 0;
-    const watch = setInterval(() => {
-      for (const name of readdirSync(tmpdir())) {
-        if (!name.startsWith("envoy-shell-")) continue;
-        try {
-          peak = Math.max(peak, statSync(join(tmpdir(), name, "output")).size);
-        } catch {
-          // The command's directory is removed as soon as it ends.
-        }
-      }
-    }, 20);
+    const restore = captureEnvironment(["TMPDIR"]);
+    let written = 0;
     try {
-      const result = await runShellCommand("yes legion", { cwd: directory, limitMs: 400 });
+      process.env.TMPDIR = directory;
+      const result = await answerOnHeldClock({
+        command: `head -c ${2 * bound} /dev/zero | tr '\\000' l; : > printed; yes legion`,
+        directory,
+        limitMs: 1_000,
+        steps: [
+          {
+            what: "the command's mark that it printed twice the bound",
+            holds: wroteIn(directory, "printed"),
+            act: (stop) => {
+              for (const name of readdirSync(tmpdir())) {
+                if (!name.startsWith("envoy-shell-")) continue;
+                const output = statSync(join(tmpdir(), name, "output"), { throwIfNoEntry: false });
+                written = Math.max(written, output?.size ?? 0);
+              }
+              stop();
+            },
+          },
+        ],
+      });
+      expect(result.status).toBe("The command was stopped.");
       expect(result.cut).toBe(true);
-      expect(peak).toBeLessThanOrEqual(bound);
+      expect(written).toBeLessThanOrEqual(bound);
     } finally {
-      clearInterval(watch);
+      restore();
       rmSync(directory, { recursive: true, force: true });
     }
-  }, 30_000);
+  });
 
   // Dispatch cannot store U+0000 and refuses a whole reply that holds one (400 NUL_CHARACTER),
   // so `!head -c 64 /dev/urandom` or `!find . -print0` would leave the person with no answer at
@@ -441,109 +555,137 @@ describe("running a person's command", () => {
   }, 20_000);
 
   // The session holds the kill of a running command's group, which is what a shutdown stops it
-  // with: nothing it started is left running, and what it printed is still its answer. A real
-  // child process and a real process group are what this row is about, so no fake clock can
-  // drive it; it waits on the command's own marker rather than on a guessed delay.
+  // with: nothing it started is left running, and what it printed is still its answer. The row
+  // stops the command once it has printed and written its mark, with the module's limit held
+  // (`answerOnHeldClock`); a fixed 20 s wait for that mark, after which the row stopped it anyway,
+  // decided this row on a machine that started the shell later than that.
   test("stops a command, and everything it started, when the caller's `stop` is called", async () => {
     const directory = scratch();
-    const ready = join(directory, "ready");
     try {
-      const result = await runShellCommand(`printf early; touch ${ready}; sleep 600`, {
-        cwd: directory,
-        limitMs: 60_000,
-        started: (stop) => {
-          void untilTrue(() => existsSync(ready)).then(stop);
-        },
+      const result = await answerOnHeldClock({
+        command: "printf early; : > printed; sleep 600",
+        directory,
+        limitMs: 1_000,
+        steps: [
+          {
+            what: "the command's mark that it printed",
+            holds: wroteIn(directory, "printed"),
+            act: (stop) => stop(),
+          },
+        ],
       });
       expect(result.output).toBe("early");
       expect(result.status).toBe("The command was stopped.");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  }, 60_000);
+  });
 
   // A `stop` the session hands in after the command has already ended is nothing: a command that
-  // ended well is never reported as stopped, whichever moment a shutdown lands in. The row puts
-  // the stop in that moment: the command leaves a process of its own session holding its pipe,
-  // which the kill of the command's group cannot reach, so the reads run on to the drain grace
-  // after the command's own shell is gone, and the stop is handed in once this machine's process
-  // table no longer holds that shell.
+  // ended well is never reported as stopped, whichever moment a shutdown lands in. And a process
+  // the command left behind holding its pipe holds the answer no longer than the grace the module
+  // gives its reads once the command has ended (`SHELL_DRAIN_GRACE_MS`, 1 s). The row is both. The
+  // command leaves a process of its own session holding its pipe, which the kill of the command's
+  // group cannot reach, so the module is still reading after the command's own shell is gone. The
+  // module's limit and that grace are held (`answerOnHeldClock`): the stop is handed in once this
+  // machine's process table no longer holds the shell, the clock moves through the grace a turn
+  // later, and the answer must then be in while the process holding the pipe still runs. A fixed
+  // 20 s wait for the shell's end once decided the row, and a grace on the real clock can cancel
+  // the reads on a loaded machine before they have taken what the shell printed. The shell leaves
+  // the process table when it is reaped, which is what resolves the module's wait on it, so by the
+  // time the row sees it gone the module has started its grace.
   test("ignores a `stop` that arrives after the command has already ended", async () => {
     const directory = scratch();
     const setsid = Bun.which("setsid");
     if (setsid === null) throw new Error("this machine has no setsid to leave a group with");
-    const pidFile = join(directory, "pid");
-    const escaped = join(directory, "escaped");
-    const shellPid = (): number => {
+    const pidIn = (name: string): number => {
       try {
-        return Number(readFileSync(pidFile, "utf8").trim());
+        return Number(readFileSync(join(directory, name), "utf8").trim());
       } catch {
         return 0;
       }
     };
     try {
-      const result = await runShellCommand(
-        `echo $$ > ${pidFile}; ${setsid} sh -c 'printf gone > ${escaped}; sleep 5' &` +
-          ` while [ ! -f ${escaped} ]; do sleep 0.02; done; printf hi`,
-        {
-          cwd: directory,
-          limitMs: 60_000,
-          started: (stop) => {
-            // The shell leaves the process table when it is reaped, which is what resolves the
-            // wait on it, so by the time a poll of this machine's table can see it gone the
-            // command has ended here too: the stop below lands after that end and inside the
-            // reads that follow it, which is the moment this row is about.
-            void untilTrue(() => {
-              const pid = shellPid();
+      const result = await answerOnHeldClock({
+        // The escaped process holds the pipe until the row's directory is gone with the
+        // `escaped` it wrote, so the row leaves it no loop, whether it passes or fails.
+        command:
+          `echo $$ > pid; ${setsid} sh -c 'echo $$ > holder; printf gone > escaped;` +
+          ` while [ -f escaped ]; do sleep 0.02; done' &` +
+          " while [ ! -f escaped ]; do sleep 0.02; done; printf hi",
+        directory,
+        limitMs: 1_000,
+        steps: [
+          {
+            what: "the command's shell leaving the process table",
+            holds: () => {
+              const pid = pidIn("pid");
               return pid > 0 && !alive(pid);
-            }).then(stop);
+            },
+            act: (stop) => stop(),
           },
-        }
-      );
+          {
+            what: "a turn after the stop",
+            holds: () => true,
+            act: () => {
+              jest.advanceTimersByTime(1_000);
+            },
+          },
+        ],
+      });
       expect(result.output).toBe("hi");
       expect(result.status).toBeUndefined();
+      // Answered by the grace, not by the end of the pipe: what holds it still runs.
+      expect(alive(pidIn("holder"))).toBe(true);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  }, 60_000);
+  });
 
   // The command's group is its own, so nothing but this module's own kill ends it: an `/exit` or
-  // a crash during `!while :; do :; done` must leave no process behind. Proved as the reviewer
-  // proved the defect - a process that ends well before the command's limit, which is the case
-  // the limit cannot cover - and read off this machine's own process table, which again no fake
-  // clock can drive.
-  test("leaves nothing running when the process that started the command exits first", async () => {
-    const directory = scratch();
-    const pidFile = join(directory, "pid");
-    const runner = join(directory, "runner.ts");
-    await Bun.write(
-      runner,
-      [
-        `import { runShellCommand } from ${JSON.stringify(join(import.meta.dir, "typed-shell.ts"))};`,
-        `void runShellCommand(${JSON.stringify(`echo $$ > ${pidFile}; exec sleep 600`)}, {`,
-        `  cwd: ${JSON.stringify(directory)},`,
-        "  limitMs: 600_000,",
-        "});",
-        "// Gone as soon as the command is really running, with six hundred seconds of its limit",
-        "// left and nothing but this process holding a handle on its group.",
-        `while (!(await Bun.file(${JSON.stringify(pidFile)}).text().catch(() => "")).trim()) {`,
-        "  await Bun.sleep(10);",
-        "}",
-        "process.exit(0);",
-      ].join("\n")
-    );
-    try {
-      const runs = Bun.spawn([process.execPath, runner], { stderr: "pipe", stdout: "ignore" });
-      await runs.exited;
-      expect(await new Response(runs.stderr).text()).toBe("");
-      expect(runs.exitCode).toBe(0);
-      const pid = Number(readFileSync(pidFile, "utf8").trim());
-      expect(Number.isInteger(pid)).toBe(true);
-      expect(await untilTrue(() => !alive(pid))).toBe(true);
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
-  }, 60_000);
+  // a crash during `!while :; do :; done` must leave no process behind, and so must a SIGKILL of
+  // the session, which runs nothing as it goes. Proved as the reviewer proved the defect - a
+  // process that ends well before the command's limit, which is the case the limit cannot cover -
+  // and read off this machine's own process table, which again no fake clock can drive.
+  for (const { how, end, code } of [
+    { how: "exits", end: "process.exit(0);", code: 0 },
+    { how: "is killed by SIGKILL", end: 'process.kill(process.pid, "SIGKILL");', code: null },
+  ]) {
+    test(`leaves nothing running when the process that started the command ${how} first`, async () => {
+      const directory = scratch();
+      const pidFile = join(directory, "pid");
+      const runner = join(directory, "runner.ts");
+      await Bun.write(
+        runner,
+        [
+          `import { runShellCommand } from ${JSON.stringify(join(import.meta.dir, "typed-shell.ts"))};`,
+          `void runShellCommand(${JSON.stringify("echo $$ > pid; exec sleep 600")}, {`,
+          `  cwd: ${JSON.stringify(directory)},`,
+          "  limitMs: 600_000,",
+          "});",
+          "// Gone as soon as the command is really running, with six hundred seconds of its limit",
+          "// left and nothing but this process holding a handle on its group.",
+          `while (!(await Bun.file(${JSON.stringify(pidFile)}).text().catch(() => "")).trim()) {`,
+          "  await Bun.sleep(10);",
+          "}",
+          end,
+        ].join("\n")
+      );
+      try {
+        const runs = Bun.spawn([process.execPath, runner], { stderr: "pipe", stdout: "ignore" });
+        await runs.exited;
+        expect(await new Response(runs.stderr).text()).toBe("");
+        if (code === null) expect(runs.signalCode).toBe("SIGKILL");
+        else expect(runs.exitCode).toBe(code);
+        const pid = Number(readFileSync(pidFile, "utf8").trim());
+        // Its end is the event: a zombie the process it was handed to has not reaped yet has
+        // ended, though `kill(pid, 0)` still answers for it. The row's timeout is the only bound.
+        await processEnded(pid);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }, 60_000);
+  }
 });
 
 describe("the texts a command becomes", () => {

@@ -4,7 +4,10 @@
     "dispatch": true,
     "edge-listener": true,
     "listener": true,
-    "measure": false
+    "measure": false,
+    "operator": false,
+    "probe": false,
+    "webhook-listener": true
   },
   "session": false
 }

@@ -61,18 +61,19 @@ describe("the broker's refusals as it writes them", () => {
 
   // A slot holds only what the trade sent: another person, another session, or a token in a slot
   // the trade did not fill is withheld.
-  test.each(
-    corpus.filter((text) => text.includes(sent.person) || text.includes(sent.session))
-  )("%p with a token in its slot is withheld", (description) => {
-    const token = randomBytes(20).toString("hex");
-    const echoed = description
-      .replaceAll(sent.person, `${token}@example.com`)
-      .replaceAll(sent.session, token);
-    expect(isKnownBrokerRefusal(echoed, sent)).toBe(false);
-    expect(
-      Bun.inspect(new BrokerRefusedError(400, "invalid_grant", echoed, "probe", sent))
-    ).not.toContain(token);
-  });
+  test.each(corpus.filter((text) => text.includes(sent.person) || text.includes(sent.session)))(
+    "%p with a token in its slot is withheld",
+    (description) => {
+      const token = randomBytes(20).toString("hex");
+      const echoed = description
+        .replaceAll(sent.person, `${token}@example.com`)
+        .replaceAll(sent.session, token);
+      expect(isKnownBrokerRefusal(echoed, sent)).toBe(false);
+      expect(
+        Bun.inspect(new BrokerRefusedError(400, "invalid_grant", echoed, "probe", sent))
+      ).not.toContain(token);
+    }
+  );
 
   // The policy's refusals are pinned to their own sentences (P-j): a refusal of another wording,
   // which could carry a token cut into pieces too short for the scrub, hex-encoded or reversed,

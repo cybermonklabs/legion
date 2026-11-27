@@ -5,7 +5,7 @@
  *
  * It loads the real `extensions/envoy.ts` from this checkout and hands it the stand-in host the
  * package's own suite is driven against (`createStandInHost` in `test/stand-in-host.ts`, which
- * `extensions/envoy.test.ts` wraps as `createPi`): one session manager whose id and branch the
+ * `test/extension-harness.ts` wraps as `createPi`): one session manager whose id and branch the
  * driver moves, `pi.appendEntry` writing into that branch, and
  * `context.setInterval` keeping the heartbeat callback rather than arming a timer on it, so a
  * pass runs when the smoke asks for one (`{"op":"heartbeat"}`) and no tick of its own interleaves
@@ -127,7 +127,7 @@ host.sendMessage = (message, options) => {
 
 // The stand-in host is a subset of the real `PiApi`: the extension reads only what the suite's
 // host supplies, and the cast is that same narrowing.
-envoyExtension(pi as unknown as PiApi);
+await envoyExtension(pi as unknown as PiApi);
 
 /** Replaces the branch with the transcript a resumed, forked or fresh session carries. */
 function setBranch(roles: readonly (string | null)[] | undefined): void {

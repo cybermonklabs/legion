@@ -408,12 +408,41 @@ function handoffBody(issue: string, version: number, citesPlanVersion: number): 
   };
 }
 
+/** The daemon's copy of the sentence its task names a predecessor's handoff record in (task,
+ *  packages/daemon/internal/workflow/effects.go), with `{word}`, `{version}` and `{issue}` for the
+ *  three values it is written from. A workflow test holds that copy to the task the daemon writes
+ *  (TestTheHandoffLineExtractIsTheSentenceTheTaskWrites), so this file keeps no copy of its own
+ *  that could drift from the daemon's. */
+const handoffLineExtract = path.join(
+  import.meta.dir,
+  "../../packages/daemon/internal/workflow/handoff_line_extract.txt"
+);
+
+/** The `Handoff:` sentence the daemon writes for the record of `word` at `version` on `issue`,
+ *  read from its copy (handoffLineExtract): the copy's `#` header, one blank line, then the
+ *  sentence on one line. */
+function handoffLine(word: string, version: number, issue: string): string {
+  const text = readFileSync(handoffLineExtract, "utf8");
+  const blank = text.indexOf("\n\n");
+  if (blank < 0)
+    fail(`${handoffLineExtract} has no blank line between its # header and the sentence`);
+  const sentence = text.slice(blank + 2).trimEnd();
+  if (sentence === "" || sentence.includes("\n"))
+    fail(`${handoffLineExtract} holds no single line after the blank line under its header`);
+  return sentence
+    .replaceAll("{word}", word)
+    .replaceAll("{version}", String(version))
+    .replaceAll("{issue}", issue);
+}
+
 /** The task line the session is given, written from this file's own constants and its own list of
  *  the staged tasks, so one change cannot make the row print a version the session was never
- *  told. The `Handoff:` sentence is the shape the daemon renders (task,
- *  packages/daemon/internal/workflow/effects.go): the phase's word, the version the daemon
- *  accepted, and the command that reads that version. Nothing else in the task names a plan
- *  version, and nothing in it says the plan can have moved. */
+ *  told. The `Handoff:` sentence is the one the daemon writes (handoffLine): the phase's word, the
+ *  version the daemon accepted, the command that reads that version, and the command that reads
+ *  the record's newest version, with the sentence saying a newer one is its writer's correction.
+ *  Nothing else in the task names a plan version, and nothing in it says the plan document
+ *  `plan.md` can have moved: the line's second command reads the `plan` handoff record, not the
+ *  document. */
 function taskText(runDir: string, issue: string, title: string, tasks: 1 | 2): string {
   const steps =
     tasks === 1
@@ -430,8 +459,7 @@ function taskText(runDir: string, issue: string, title: string, tasks: 1 | 2): s
   const files = steps.length === 2 ? "two" : "three";
   return (
     `Continue ${title}. Issue: ${issue}. Phase: implementing.` +
-    ` Handoff: plan version ${taskHandoffVersion}` +
-    ` (dispatch handoff-read --issue ${issue} --phase plan --version ${taskHandoffVersion}).` +
+    ` ${handoffLine("plan", taskHandoffVersion, issue)}` +
     ` This box carries no workspace, no jj and no GitHub for this issue, so your round is the` +
     ` plan's ${round}: ${steps.join(", then ")}.` +
     ` Record nothing with dispatch and open no pull request: the round ends when the ${files}` +
@@ -512,8 +540,8 @@ The bucket serves the same objects from the new account.
   );
 }
 
-function compose(runDir: string, daemonModule: string, issue: string): void {
-  const pane = workerPane(
+async function compose(runDir: string, daemonModule: string, issue: string): Promise<void> {
+  const pane = await workerPane(
     { port: 1, profile: process.env.OMP_PROFILE ?? "default", rig: path.join(runDir, "pane") },
     process.env,
     { issue, project: projectKey.toLowerCase(), role: "implementer" },
@@ -843,7 +871,7 @@ switch (step) {
   }
   case "compose":
     if (rest.length !== 3) fail("usage: compose <run directory> <daemon module> <issue>");
-    compose(rest[0], rest[1], rest[2]);
+    await compose(rest[0], rest[1], rest[2]);
     break;
   case "advance":
     if (rest.length !== 3) {

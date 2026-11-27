@@ -147,12 +147,12 @@ func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testi
 			cause: endStopped,
 			letGo: func(h *harness) string {
 				h.t.Helper()
-				h.must(RequestStop{Claim: h.token})
+				h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 				h.wantState(StateRetired)
 				if p := h.claim().Pending; p != nil {
 					h.t.Fatalf("the stopped claim holds %+v, want the task its turn confirmed retired", p)
 				}
-				h.must(RequestOperatorRetry{Claim: h.token})
+				h.must(RequestAskedRetry{Claim: h.token, By: SuspendedByOperator})
 				h.must(RequestDeliver{Claim: h.token, Task: next, Generation: 5})
 				h.relaunched()
 				return next
@@ -245,7 +245,7 @@ func TestARelaunchSentenceIsTheWholeOfTheRelaunchDelivery(t *testing.T) {
 	}
 	h.wantEndedTold(false, "", "at the acknowledgement")
 
-	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: p.ID, Error: busyAnswer})
+	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: p.ID, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 	rotated := h.pending()
 	if rotated.ID == p.ID || !relaunchTask(rotated.ID) {
 		t.Fatalf("the busy answer took the delivery back as %s, want a new id that is still the relaunch's", rotated.ID)
@@ -281,7 +281,7 @@ func TestARelaunchSentenceGivesWayToTheAbandonedSession(t *testing.T) {
 	c.EndedWork = EndedWork{At: epoch, Cause: endDisplaced, Generation: 1, Turn: true,
 		Background: true, Kinds: []string{"subagent"}, Reported: true}
 	h := newHarnessOf(t, c)
-	h.must(RequestForgetSession{Claim: testToken, Session: "ses-old"})
+	h.must(RequestForgetSession{Claim: testToken, Session: "ses-old", By: SuspendedByOperator})
 	h.wantEndedTold(true, "", "at the forget")
 	h.reach(StateReady)
 	h.wantPrompts(0)
@@ -360,7 +360,7 @@ func TestARelaunchSentenceIsNotToldToAFreshSession(t *testing.T) {
 			t.Fatalf("the first prompt left %+v, want it acknowledged", p)
 		}
 
-		h.must(StreamLateRefusal{Claim: testToken, DeliveryID: first.DeliveryID, Error: busyAnswer})
+		h.must(StreamLateRefusal{Claim: testToken, DeliveryID: first.DeliveryID, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 		h.wantEndedTold(true, "", "after the busy answer")
 		h.wantAbandonedToldBy("", "after the busy answer")
 
@@ -432,7 +432,7 @@ func TestARelaunchSentenceOfTheFreshProcessFollowsTheAbandonedSentence(t *testin
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateIdle)
-			h.must(RequestStop{Claim: testToken})
+			h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 			h.must(RequestRetry{Claim: testToken, FreshSession: true})
 			h.wantState(StateLaunching)
 			h.registerFresh()
@@ -573,7 +573,7 @@ func TestARelaunchSentenceIsToldOnlyAtConfirmation(t *testing.T) {
 		}
 		h.wantEndedTold(false, "", "at the acknowledgement")
 
-		h.must(StreamLateRefusal{Claim: testToken, DeliveryID: first.DeliveryID, Error: busyAnswer})
+		h.must(StreamLateRefusal{Claim: testToken, DeliveryID: first.DeliveryID, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 		h.wantEndedTold(false, "", "after the busy answer")
 
 		h.mustQuiet(StreamTurnEnd{Claim: testToken})
@@ -675,7 +675,7 @@ func TestARelaunchSentenceIsToldAgainWhenItsConfirmationIsTakenBack(t *testing.T
 				t.Fatal(err)
 			}
 			return id, gated.Conn, func() {
-				gated.RefusePrompt(busyAnswer)
+				gated.FailPrompt(busyRefusal())
 				gated.release <- struct{}{}
 				h.m.Wait()
 				// Every later prompt goes straight through.
@@ -692,7 +692,7 @@ func TestARelaunchSentenceIsToldAgainWhenItsConfirmationIsTakenBack(t *testing.T
 			id := h.wantPrompts(1)[0].DeliveryID
 			h.must(StreamTurnStart{Claim: testToken})
 			return id, h.conn, func() {
-				h.must(StreamLateRefusal{Claim: testToken, DeliveryID: id, Error: busyAnswer})
+				h.must(StreamLateRefusal{Claim: testToken, DeliveryID: id, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 			}
 		}},
 	} {
@@ -753,7 +753,7 @@ func TestARelaunchSentenceToldByAKeptConfirmationMovesWithItsNewID(t *testing.T)
 	h.must(StreamTurnStart{Claim: testToken})
 	h.wantEndedTold(true, second.DeliveryID, "once the first prompt's turn confirmed the task")
 
-	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: second.DeliveryID, Error: busyAnswer})
+	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: second.DeliveryID, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 	moved := h.pending()
 	if moved.ID == second.DeliveryID || moved.ConfirmedAt.IsZero() {
 		t.Fatalf("pending after the busy answer = %+v, want it confirmed still, under a new id", moved)
@@ -909,7 +909,7 @@ func TestARelaunchSentenceIsToldAgainWhenATurnTakenBeforeItsPromptsResultIsCutOf
 			idle: func(t *testing.T, h *harness) { h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator}) },
 			resend: func(t *testing.T, h *harness) {
 				h.wantState(StateSuspended)
-				h.must(RequestResume{Claim: h.token})
+				h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 				h.relaunched()
 			}},
 		{name: "a stale address replaces the turn's process", cause: endRepointed, takesBackFirst: true,
@@ -1035,7 +1035,7 @@ func TestARelaunchSentenceDeliveryGivesWayToANewerTask(t *testing.T) {
 	t.Run("no prompt of it waits on a result", func(t *testing.T) {
 		h := relaunchedHoldingNothing(t)
 		// The relaunched agent is in a turn of its own and answers the delivery busy at the send.
-		h.conn.RefusePrompt(busyAnswer)
+		h.conn.FailPrompt(busyRefusal())
 		h.relaunched()
 		h.conn.FailPrompt(nil)
 		relaunch := h.pending()

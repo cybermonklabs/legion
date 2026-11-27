@@ -1,5 +1,6 @@
-// Package githubrest is the daemon's client for one repository's REST API with an installation
-// token. appauth mints those tokens with its own client.
+// Package githubrest is the daemon's client for GitHub's REST API with an installation token: one
+// repository's, and the installation's own calls under the API root. appauth mints those tokens
+// with its own client.
 package githubrest
 
 import (
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -21,24 +23,92 @@ import (
 // RepositoryAPI is repository's REST base under endpoint, GitHub's API root; empty is
 // https://api.github.com.
 func RepositoryAPI(endpoint string, repository ghrepo.Repository) string {
-	if endpoint == "" {
-		endpoint = "https://api.github.com"
-	}
-	return strings.TrimRight(endpoint, "/") + "/repos/" + repository.String()
+	return APIRoot(endpoint) + "/repos/" + repository.String()
 }
 
-// Client calls GitHub with an installation token. Its API is a repository's REST base
-// (RepositoryAPI), which Get, Post, GetPages and GetListPages take paths under; an empty endpoint
-// is api.github.com.
+// APIRoot is GitHub's REST root endpoint names, its trailing slashes trimmed, the base of a call
+// that names no repository, such as an installation's own repositories or its rate limits: an
+// endpoint that is empty once trimmed is https://api.github.com. The daemon's token manager takes
+// its own base from it too (appauth.New), so the two never read one endpoint two ways.
+func APIRoot(endpoint string) string {
+	if endpoint = strings.TrimRight(endpoint, "/"); endpoint == "" {
+		return "https://api.github.com"
+	}
+	return endpoint
+}
+
+// client is the HTTP client every Client call goes through (SetTransport), nil for
+// http.DefaultClient.
+var client atomic.Pointer[http.Client]
+
+// SetTransport makes every call of every Client go through rt, nil for http.DefaultClient's own,
+// which is what a process that never calls it gets. The daemon's boot sets it to its GitHub rate
+// counter's transport (githubrate.Counter.Transport), so each call a workflow read makes with an
+// installation token counts on that installation's budget. This process-wide transport belongs
+// to the daemon's one workflow; separate workflows cannot count through separate transports in
+// one process. A failed boot resets it, and tests that set it restore it with SetTransport(nil).
+// It is safe to replace while calls run: each call reads the client once, as it starts.
+func SetTransport(rt http.RoundTripper) {
+	if rt == nil {
+		client.Store(nil)
+		return
+	}
+	client.Store(&http.Client{Transport: rt})
+}
+
+// HTTPClient is the client a Client call goes through now: one on the transport SetTransport set,
+// else http.DefaultClient. It is for a daemon reader of GitHub that builds its own requests, such
+// as the leak check's read of a tarball (leakguard.Source), so its calls count as every Client
+// call does. Both clients follow redirects Go's own way, dropping Authorization on the way to
+// another host.
+func HTTPClient() *http.Client {
+	if held := client.Load(); held != nil {
+		return held
+	}
+	return http.DefaultClient
+}
+
+// Client calls GitHub with an installation token. Its API is a REST base, which Get, GetHeaders,
+// Post, GetPages and GetListPages take paths under: a repository's (RepositoryAPI), or GitHub's
+// root (APIRoot) for a call that names no repository. An empty endpoint is api.github.com. A
+// client whose API is GitHub's GraphQL endpoint (GraphQLEndpoint) sends queries (GraphQL) instead.
+//
+// ETags, when set, makes every GET the client sends conditional: it carries the ETag GitHub last
+// answered for the same URL under the same Scope (If-None-Match), and GitHub's 304, which says the
+// answer has not changed and costs none of the token's rate limit, is read as that earlier answer
+// (ETags.keep). Nil sends every GET whole. WithETags sets it for one read. Scope names, with no
+// secret, what the token may read - its App, its installation's owner and its permissions - so
+// that clients of two scopes sharing one ETags never answer each other's reads: a token minted
+// again in the same scope keeps the answers kept before it. A client with no Scope sends every GET
+// whole, ETags or not, since nothing would keep its answers apart from another client's.
 type Client struct {
 	Token string
 	API   string
+	Scope string
+	ETags *ETags
+}
+
+// WithETags is the client with every GET conditional on what etags kept for its Scope
+// (Client.ETags), which a client with no Scope ignores.
+func (c Client) WithETags(etags *ETags) Client {
+	c.ETags = etags
+	return c
 }
 
 // Get reads path under the client's REST base into into. An answer other than 2xx is an *Answer.
 func (c Client) Get(ctx context.Context, path string, into any) error {
 	_, _, err := c.call(ctx, http.MethodGet, c.API+path, nil, into)
 	return err
+}
+
+// GetHeaders is Get, also returning the headers of GitHub's answer, whatever its status: what a
+// caller reads the rate limit an answer names from, as the daemon's rate reading reads the core
+// counter (githubrate.CoreBucket) from an installation's repository listing, whose answer it reads
+// into into, and from its workflows read, which an answer other than 2xx names as well. A call
+// that got no answer returns no headers.
+func (c Client) GetHeaders(ctx context.Context, path string, into any) (http.Header, error) {
+	_, headers, err := c.call(ctx, http.MethodGet, c.API+path, nil, into)
+	return headers, err
 }
 
 // Post sends body, as JSON, to path under the client's API, and reads GitHub's answer into into
@@ -153,11 +223,21 @@ func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, er
 	return all, nil
 }
 
+// restAccept is the media type every REST call asks for.
+const restAccept = "application/vnd.github+json"
+
 // call sends method to target, with body as JSON when it is not nil, reads a 2xx answer into into
 // when into is not nil, and returns the next page's URL its Link header names ("" for none) and
 // GitHub's response headers. An answer other than 2xx is an *Answer; when it is a rate limit, it
-// names the budget spent, the REST API's core budget when GitHub names no other.
+// names the budget spent, the REST API's core budget when GitHub names no other. A GET of a client
+// with ETags is conditional (Client.ETags): GitHub's 304 is read as the answer kept for target, its
+// body and its next page.
 func (c Client) call(ctx context.Context, method, target string, body []byte, into any) (string, http.Header, error) {
+	return c.exchange(ctx, method, target, body, into, restAccept)
+}
+
+// exchange is call with accept as the request's Accept header.
+func (c Client) exchange(ctx context.Context, method, target string, body []byte, into any, accept string) (string, http.Header, error) {
 	var payload io.Reader
 	if body != nil {
 		payload = bytes.NewReader(body)
@@ -167,11 +247,20 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, in
 		return "", nil, err
 	}
 	request.Header.Set("Authorization", "Bearer "+c.Token)
-	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("Accept", accept)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	response, err := http.DefaultClient.Do(request)
+	var kept etagEntry
+	conditional := method == http.MethodGet && c.ETags != nil && c.Scope != ""
+	cacheKey := c.Scope + " " + target
+	if conditional {
+		var found bool
+		if kept, found = c.ETags.lookup(cacheKey); found {
+			request.Header.Set("If-None-Match", kept.etag)
+		}
+	}
+	response, err := HTTPClient().Do(request)
 	if err != nil {
 		return "", nil, err
 	}
@@ -180,13 +269,24 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, in
 	if err != nil {
 		return "", response.Header, err
 	}
+	if response.StatusCode == http.StatusNotModified && kept.etag != "" {
+		// Unchanged since the answer kept for target: that answer is GitHub's answer now.
+		if into == nil {
+			return kept.next, response.Header, nil
+		}
+		return kept.next, response.Header, json.Unmarshal(kept.body, into)
+	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		return "", response.Header, c.refusal(method, request.URL, response, answer)
 	}
-	if into == nil {
-		return nextPage(response.Header.Get("Link")), response.Header, nil
+	next := nextPage(response.Header.Get("Link"))
+	if conditional {
+		c.ETags.keep(cacheKey, response.Header.Get("ETag"), answer, next)
 	}
-	return nextPage(response.Header.Get("Link")), response.Header, json.Unmarshal(answer, into)
+	if into == nil {
+		return next, response.Header, nil
+	}
+	return next, response.Header, json.Unmarshal(answer, into)
 }
 
 // refusal is response, GitHub's answer other than 2xx to method at target, as the *Answer its
@@ -255,9 +355,14 @@ func RateLimited(response *http.Response, body []byte) bool {
 // when it carries one of these, so a caller reading such a status as a verdict of its own
 // (appauth's 422 for a permission set) asks this first.
 func RateLimitSignals(response *http.Response, body []byte) bool {
-	return response.Header.Get("X-RateLimit-Remaining") == "0" ||
-		response.Header.Get("Retry-After") != "" ||
-		NamesSecondaryLimit(string(body))
+	return limitSignals(response.Header, string(body))
+}
+
+// limitSignals says whether headers or text, an answer's body or its errors' messages, carry
+// GitHub's rate limit (RateLimitSignals); GraphQL's 200 answers are read through it too
+// (GraphQLErrors.rateLimited).
+func limitSignals(headers http.Header, text string) bool {
+	return headers.Get("X-RateLimit-Remaining") == "0" || headers.Get("Retry-After") != "" || NamesSecondaryLimit(text)
 }
 
 // Limit is whether response, whose body is body, is GitHub's rate limit (RateLimited), and the
@@ -282,32 +387,37 @@ func NamesSecondaryLimit(text string) bool {
 	return false
 }
 
-// retryAfter is how long GitHub asks a caller its rate limit answered to wait before calling again,
-// as its REST documentation's "Exceeding the rate limit" says: the retry-after header's seconds,
-// else, when x-ratelimit-remaining is 0, until the x-ratelimit-reset epoch second, capped at an
-// hour, GitHub's primary rate limit's window, so a host clock behind GitHub's never stretches the
-// wait past it; else at least a minute, which is what a secondary limit named by its message alone
-// is waited. A reset this host's clock already reads as past is waited the minute too. Zero for an
-// answer that is not a rate limit.
+// timeoutMessage is what GitHub says in the body of its answer, a 502, to a GraphQL query that ran
+// out of the time it gives one query: "We couldn't respond to your request in time. Sorry about
+// that. Please try resubmitting your request and contact us if the problem persists."
+const timeoutMessage = "couldn't respond to your request in time"
+
+// NamesTimeout says whether err carries GitHub's answer that a request ran out of the time it
+// gives one: an *Answer, however the caller wrapped it, whose body says so (timeoutMessage).
+func NamesTimeout(err error) bool {
+	var answer *Answer
+	return errors.As(err, &answer) && strings.Contains(strings.ToLower(answer.Body), timeoutMessage)
+}
+
+// Answered says whether err, the outcome of a call, is an answer GitHub gave: nil, the data it
+// answered; an answer other than 2xx (*Answer); or a 200 whose errors name what GitHub could not
+// answer (GraphQLErrors). Anything else - a connection that failed, a deadline that ended the
+// call, a token that could not be minted for it - reached no answer of GitHub's.
+func Answered(err error) bool {
+	var answer *Answer
+	var graphQLErrors GraphQLErrors
+	return err == nil || errors.As(err, &answer) || errors.As(err, &graphQLErrors)
+}
+
+// retryAfter is how long GitHub asks a caller its rate limit answered to wait before calling
+// again, read from the answer's headers at now (LimitHeaders.WaitAt); zero for an answer that is
+// not a rate limit.
 func retryAfter(response *http.Response, body []byte, now time.Time) time.Duration {
 	if !RateLimited(response, body) {
 		return 0
 	}
-	headers := response.Header
-	if seconds, err := strconv.Atoi(headers.Get("Retry-After")); err == nil && seconds > 0 {
-		return time.Duration(seconds) * time.Second
-	}
-	if headers.Get("X-RateLimit-Remaining") == "0" {
-		if reset, err := strconv.ParseInt(headers.Get("X-RateLimit-Reset"), 10, 64); err == nil {
-			if wait := time.Unix(reset, 0).Sub(now); wait > 0 {
-				if wait > time.Hour {
-					return time.Hour
-				}
-				return wait
-			}
-		}
-	}
-	return time.Minute
+	wait, _ := limitHeaders(response.Header).WaitAt(now)
+	return wait
 }
 
 // nextPage is the URL a Link header names rel="next", "" when it names none.
@@ -340,8 +450,9 @@ type Answer struct {
 // LimitHeaders is the rate-limit headers of a GitHub answer as GitHub sent them, "" for each it did
 // not send: Retry-After, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset (an epoch
 // second) and X-RateLimit-Resource. RetryAfter and Budget are what the client reads from them and
-// decides by; these decide nothing, and are kept as received so that a log of a refusal names the
-// limit that refused it in GitHub's own words, including where they disagree with the body.
+// decides by; the headers are kept as received so that a log of a refusal names the limit that
+// refused it in GitHub's own words, including where they disagree with the body, and so that a
+// caller keeping time on a clock of its own reads GitHub's wait at its own time (WaitAt).
 type LimitHeaders struct {
 	RetryAfter string
 	Limit      string
@@ -349,6 +460,37 @@ type LimitHeaders struct {
 	Reset      string
 	Resource   string
 }
+
+// WaitAt is the wait these headers ask for at now, as GitHub's REST documentation's "Exceeding the
+// rate limit" reads them, and whether they name when the limit ends (named): Retry-After's seconds,
+// at most maxRetryAfter; else, with no call left (X-RateLimit-Remaining 0), until the
+// X-RateLimit-Reset epoch second, at most an hour, GitHub's primary rate limit's window, so a
+// clock behind GitHub's never stretches the wait past it. Else a minute, the least a secondary
+// limit named by its message alone is waited, and named false; a reset already past at now names
+// no time either. An answer's RetryAfter is this at the host's time when the answer arrived, a
+// REST answer's (retryAfter) and a GraphQL rate limit's, which GitHub answers 200 with
+// (Client.GraphQL); internal/daemon's startWaits reads it at the time of its own clock, on which
+// it waits, and waits its own time where named is false.
+func (l LimitHeaders) WaitAt(now time.Time) (wait time.Duration, named bool) {
+	if seconds, err := strconv.ParseInt(l.RetryAfter, 10, 64); err == nil && seconds > 0 {
+		return time.Duration(min(seconds, int64(maxRetryAfter/time.Second))) * time.Second, true
+	}
+	if l.Remaining == "0" {
+		if reset, err := strconv.ParseInt(l.Reset, 10, 64); err == nil {
+			if wait := time.Unix(reset, 0).Sub(now); wait > 0 {
+				return min(wait, time.Hour), true
+			}
+		}
+	}
+	return time.Minute, false
+}
+
+// maxRetryAfter is the longest Retry-After WaitAt reads whole. Seconds are clamped to it before
+// they are multiplied, so a header past what a time.Duration holds (more than 9,223,372,036
+// seconds) never wraps to a negative wait, which a caller would sleep as none and try again at
+// once. A day is far past any wait a caller takes whole: the daemon's start waits at most an hour
+// (rateLimitPolicy.Max).
+const maxRetryAfter = 24 * time.Hour
 
 // limitHeaders is headers' rate-limit headers as GitHub sent them.
 func limitHeaders(headers http.Header) LimitHeaders {

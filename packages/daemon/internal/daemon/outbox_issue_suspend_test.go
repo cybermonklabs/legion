@@ -202,8 +202,8 @@ func issueSandboxRuntime(t *testing.T, api *issueSandboxAPI, st sandbox.Store) *
 
 // sandboxTeardowns is the idle rig's runtime with the issue's two teardowns, the close's
 // (SuspendIssue) and the release's (ReleaseIssue), made by the real Sandbox runtime over the
-// test's API. What else a release asks of the runtime — the bundle, the role stops, and the pod
-// the idle pass reads — stays the rig's.
+// test's API. What else a release asks of the runtime — the workspace read, the role stops, and
+// the pod the idle pass reads — stays the rig's.
 type sandboxTeardowns struct {
 	*releaseRuntime
 	sandboxes *sandbox.Runtime
@@ -213,8 +213,9 @@ func (r *sandboxTeardowns) SuspendIssue(ctx context.Context, issue, tree string,
 	return r.sandboxes.SuspendIssue(ctx, issue, tree, authorize)
 }
 
-func (r *sandboxTeardowns) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
-	return r.sandboxes.ReleaseIssue(ctx, issue, tree, authorize)
+func (r *sandboxTeardowns) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
+	return r.sandboxes.ReleaseIssue(ctx, issue, tree, authorize, writing)
 }
 
 // A release leaves the issue in the workflow, so its teardown row (record.IssueRelease) asks the
@@ -224,6 +225,16 @@ func (r *sandboxTeardowns) ReleaseIssue(ctx context.Context, issue, tree string,
 // release rules do this: the idle release, and the release of a pod no claim of the issue owns. A
 // close takes the issue out of the workflow, and its row (record.IssueSuspend) deletes the kept
 // volume's Sandbox in the foreground too.
+//
+// A teardown whose Sandbox another hand deleted after the release was marked finds none, and the
+// runtime answers that it released none. The release of a pod no claim owns then records no pod
+// release and logs no release line, since it took nothing, and logs that it found no Sandbox to
+// release. The idle release records its release and logs its line all the same, since its stops
+// suspended the roles a wake pairs with that record. Both still do what is owed whoever took the
+// pod: the end of the pod runs, the claims the idle release's stops suspended get their backstop,
+// and the mark is cleared. A kept Sandbox the release of a pod no claim owns has just released is
+// not released again by the pass after it, though the runtime's store has not yet shown the
+// release's record (INFRA-3149).
 func TestAnIdleReleaseKeepsAKeptVolumesSandbox(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -255,12 +266,20 @@ func TestAnIdleReleaseKeepsAKeptVolumesSandbox(t *testing.T) {
 	for _, release := range []struct {
 		name  string
 		queue func(t *testing.T, rig *idleRig)
+		// backstops is how many backstops the release arms: one for the implementer the idle
+		// release's stop suspended, none for the release that suspends no claim.
+		backstops int
+		// line is the release's own line, and recordsGone whether its teardown records the release
+		// when the runtime found no Sandbox to release: the idle release does, the release that
+		// suspends no claim does not.
+		line        string
+		recordsGone bool
 	}{
-		{"the idle release", func(_ *testing.T, rig *idleRig) { rig.w.releaseIdlePod(ctx, rig.issue.Key) }},
+		{"the idle release", func(_ *testing.T, rig *idleRig) { rig.w.releaseIdlePod(ctx, rig.issue.Key) }, 1, idleRigIdleTeardown, true},
 		{"the release of a pod no claim owns", func(t *testing.T, rig *idleRig) {
 			rig.stoppedImplementer(t, false)
 			rig.w.releaseUnownedPods(ctx)
-		}},
+		}, 0, idleRigUnownedTeardown, false},
 	} {
 		t.Run(release.name+" keeps a kept volume's Sandbox", func(t *testing.T) {
 			rig, api, name := overSandbox(t, true)
@@ -299,7 +318,98 @@ func TestAnIdleReleaseKeepsAKeptVolumesSandbox(t *testing.T) {
 			}
 			served(t, api)
 		})
+		t.Run(release.name+" that finds the Sandbox already gone", func(t *testing.T) {
+			rig, api, name := overSandbox(t, false)
+			var logs syncBuffer
+			rig.runner.log = jsonLogger(&logs)
+			rig.runner.backstop = time.Hour
+			var ended []string
+			rig.runner.podEnded = func(_ context.Context, issues []string) { ended = append(ended, issues...) }
+			if queued := rig.queuedBy(t, func() { release.queue(t, rig) }); !slices.Contains(queued, "issue_release") {
+				t.Fatalf("queued rows = %v, want the release's teardown among them", queued)
+			}
+			// The Sandbox goes by another hand between the mark and the teardown, as an operator's
+			// own delete of it would take it.
+			api.mu.Lock()
+			api.deleteLocked("sandboxes", name)
+			api.mu.Unlock()
+
+			rig.drain(t)
+
+			if rig.marked(t) {
+				t.Fatal("the release left its mark behind, so its teardown never finished")
+			}
+			records, lines, found := 1, 1, 0
+			if !release.recordsGone {
+				records, lines, found = 0, 0, 1
+			}
+			if releases := rig.records(t).Releases; len(releases) != records {
+				t.Fatalf("releases recorded = %+v, want %d", releases, records)
+			}
+			if got := loggedMessages(t, logs.String(), release.line); len(got) != lines {
+				t.Fatalf("the teardown logged %d lines %q, want %d", len(got), release.line, lines)
+			}
+			nothing := loggedMessages(t, logs.String(), idleRigUnownedFoundNothing)
+			if len(nothing) != found || (found == 1 && nothing[0]["issue"] != rig.issue.Key) {
+				t.Fatalf("the teardown's lines saying it found no Sandbox to release = %v, want %d for %s", nothing, found, rig.issue.Key)
+			}
+			if options, deleted := api.deleted(name); deleted {
+				t.Fatalf("the runtime sent a delete of the Sandbox another hand took (%+v), want none", options)
+			}
+			if !slices.Equal(ended, []string{rig.issue.Key}) {
+				t.Fatalf("the end of the pod ran for %v, want %s once: the pod is gone whoever took it", ended, rig.issue.Key)
+			}
+			var backstops int
+			if err := rig.pool.QueryRow(ctx, `select count(*) from pod_wake_backstops where issue = $1 and not fired`,
+				rig.issue.Key).Scan(&backstops); err != nil {
+				t.Fatal(err)
+			}
+			if backstops != release.backstops {
+				t.Fatalf("backstops armed = %d, want %d", backstops, release.backstops)
+			}
+			served(t, api)
+		})
 	}
+	t.Run("the release of a pod no claim owns releases a kept volume's Sandbox once", func(t *testing.T) {
+		rig, api, name := overSandbox(t, true)
+		// The daemon's passes read the real runtime's store, as they read the Kubernetes
+		// runtime's in a deployment.
+		pods := rig.sup.deps.Runtime.(*sandboxTeardowns).sandboxes
+		rig.w.idleRuntime = pods
+		idleRigEventually(t, "the runtime's store to hold the running kept Sandbox", func() bool {
+			got, present := pods.IssueSandbox(rig.issue.Key)
+			return present && got == name
+		})
+		// The watch holds the release's record until the daemon's next pass has run: the API
+		// answers the teardown's patch, and the runtime's store still holds the kept Sandbox as
+		// the suspension left it, Suspended with no record.
+		release := make(chan struct{})
+		let := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(let)
+		api.holdWatches(release, heldReleaseRecord)
+		rig.stoppedImplementer(t, false)
+		if queued := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Contains(queued, "issue_release") {
+			t.Fatalf("queued rows = %v, want the release's teardown among them", queued)
+		}
+		rig.drain(t)
+		if got := api.mode(name); got != "Suspended" {
+			t.Fatalf("the kept volume's Sandbox after the release is %s, want it kept, Suspended", got)
+		}
+
+		// The daemon's next pass, while the store does not show the release's record yet.
+		if queued := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); slices.Contains(queued, "issue_release") {
+			t.Fatalf("the pass after the release queued %v, want no second release of the kept Sandbox it released", queued)
+		}
+		let()
+		rig.drain(t)
+		if releases := rig.records(t).Releases; len(releases) != 1 {
+			t.Fatalf("releases recorded = %+v, want the one release of the kept Sandbox", releases)
+		}
+		if rig.marked(t) {
+			t.Fatal("a release's mark is left behind")
+		}
+		served(t, api)
+	})
 	t.Run("a close deletes a kept volume's Sandbox", func(t *testing.T) {
 		rig, api, name := overSandbox(t, true)
 		engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),

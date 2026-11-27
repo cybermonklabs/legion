@@ -5,6 +5,7 @@ import { Link, useLocation } from "react-router-dom";
 import { ApiError } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
+import { DOCUMENT_SCROLL_ATTRIBUTE } from "../../hooks/useFootInset";
 import {
   linkHoverText,
   linkText,
@@ -59,6 +60,8 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   // lands an address on its cards by the page's rule.
   useDrawerPage(issue.data);
 
+  // The title bar holds no markup, so an issue's key and title go in as the characters they
+  // are; the reading list's `issue-outline-page-title` (`DISPATCH_READING_SURFACES`) says why.
   useDocumentTitle(
     issue.data === undefined ? "Dispatch" : `${issue.data.key} · ${issue.data.title} · Dispatch`
   );
@@ -101,6 +104,8 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   // short the stage is; then Details' slot, whose fill the shell draws in its drawer
   // (R14). At 1440 px, beside the rail of 56 px, the page is 1384 px wide:
   // under a view the stage has 1328 px inside its insets, and beside the 260 px pane 1068 px.
+  // The column carries `data-document-scroll`, so the foot's end room for the floats goes here
+  // (`FOOT_LAYERS` in `hooks/useFootInset.ts` says why).
   const props: SlotProps = { issue: issue.data, route };
   return (
     <ProvidersSlot {...props}>
@@ -111,6 +116,7 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
         <div
           className={`flex min-h-dvh min-w-0 flex-1 flex-col pt-2.5 ${PAGE_INSET}`}
           data-testid="issue-column"
+          {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}
         >
           <StageSlot {...props} />
           <FootSlot {...props} />

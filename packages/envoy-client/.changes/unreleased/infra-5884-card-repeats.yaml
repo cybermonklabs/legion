@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  A Dispatch card leaves out three more fields that repeat it: a payload's `actor` each of whose
+  fields is the card's actor's (a review event names its actor twice), a `target` naming this
+  session on a card whose `to:` already names it, and the `owner: unknown` of an event on no
+  issue and no document, such as a direct message to the session.

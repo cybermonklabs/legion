@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -43,6 +44,20 @@ const phaseEntryMigration = 20261111225552
 // beside the phase entry and the upgrade under test applies them.
 const olderReleasesNewestMigration = 20261112180548
 
+// appliedWithTheFixture are the migrations above olderReleasesNewestMigration that preEntryStore
+// applies with the fixture's own rather than withholding them for the upgrade under test: the tree
+// is recorded through this release's PutIssue, so each migration that adds a column PutIssue
+// writes must stand before the tree is seeded. Each adds a column of issues, which no statement of
+// the phase entry reads or writes, so it changes nothing the upgrade under test reads.
+// 20261112215432_delivery_resume adds the four answered-document columns
+// (awaiting_answered_version, awaiting_answered_document_at, awaiting_answered_artifact and
+// awaiting_answered_step), and none of the other columns it adds, which its header names, is one
+// the phase entry reads or writes; 20261124060500_issue_priority adds issues.priority, and
+// 20261125181828_p0_bound adds issues.resolved_known, issues.resolved_priority and
+// issues.priority_from (it also makes the table project_p0_bound_changes, which the phase entry
+// does not read).
+var appliedWithTheFixture = []int{20261112215432, 20261124060500, 20261125181828}
+
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its
 // root. Each shape is a member of that one tree, standing in testing, so the role every shape is
 // read on is the tester (phase.RoleFor).
@@ -63,8 +78,8 @@ const (
 // newest; that is harmless here, since it adds pull_requests.state_read_at and the phase entry
 // touches no pull_requests column. Neither column is one any statement of the phase entry reads
 // or writes. Every version above that release's newest (olderReleasesNewestMigration) is withheld
-// with the phase entry, so Store.Migrate, which decides each migration on its own row, applies
-// the phase entry and those.
+// with the phase entry, but those appliedWithTheFixture names, so Store.Migrate, which decides
+// each migration on its own row, applies the phase entry and those it withheld.
 //
 // It is built this way because the old shape is reachable no other way: the three assignment
 // columns are created by the migrations under this one and dropped by this one, so a record as
@@ -85,7 +100,7 @@ func preEntryStore(t *testing.T) *store.Store {
 	}
 	widened := false
 	for _, migration := range all {
-		if migration.Version == phaseEntryMigration || migration.Version > olderReleasesNewestMigration {
+		if migration.Version == phaseEntryMigration || withheldByFixture(migration.Version) {
 			continue
 		}
 		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
@@ -107,9 +122,17 @@ func preEntryStore(t *testing.T) *store.Store {
 	return st
 }
 
-// migrationsAbove is how many embedded migrations carry a version above version: beside the
-// phase entry, what preEntryStore withheld, and so what the upgrade under test applies.
-func migrationsAbove(t *testing.T, version int) int {
+// withheldByFixture says whether preEntryStore withholds the migration of version beside the
+// phase entry: every one above the older release's newest but those appliedWithTheFixture names,
+// which the fixture applies. The fixture and the count of what the upgrade applies read this one
+// rule, so the two cannot disagree on which migrations the upgrade under test runs.
+func withheldByFixture(version int) bool {
+	return version > olderReleasesNewestMigration && !slices.Contains(appliedWithTheFixture, version)
+}
+
+// migrationsAbove is how many embedded migrations preEntryStore withheld beside the phase entry
+// (withheldByFixture), and so what the upgrade under test applies beside it.
+func migrationsAbove(t *testing.T) int {
 	t.Helper()
 	all, err := migrations.All()
 	if err != nil {
@@ -117,11 +140,28 @@ func migrationsAbove(t *testing.T, version int) int {
 	}
 	withheld := 0
 	for _, migration := range all {
-		if migration.Version > version {
+		if withheldByFixture(migration.Version) {
 			withheld++
 		}
 	}
 	return withheld
+}
+
+// putPreEntryIssue records issue as the release before the phase entry's issue writer did, with
+// the columns of the issues table that release named and these cases set, as literal SQL, so the
+// write names no column a migration above that release's newest adds; every other column takes
+// what that writer gave it for an issue with no hold, no wait on a person, no ancestry, no take-back
+// and no tree it was handed over from, its default.
+func putPreEntryIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	_, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over,
+		last_dispatch_seq, dispatch_status, repo, default_branch, github_repo)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
+		issue.Rank, issue.HandedOver, issue.LastDispatchSeq, issue.DispatchStatus, issue.Repo, issue.DefaultBranch, issue.GitHubRepo)
+	if err != nil {
+		return fmt.Errorf("record issue %s with the release before the phase entry's columns: %w", issue.Key, err)
+	}
+	return nil
 }
 
 // upgradeShape is one member of the tree as the release before the phase entry left it, and what
@@ -316,15 +356,19 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 		tokens[shape.key] = token
 	}
 
+	// The tree is written with that release's own columns as well: this release's issue writer
+	// (record.Store.PutIssue) names columns migrations above that release's newest add —
+	// issues.view_of (20261114064234) and the held start of awaiting_children (20261114232555) —
+	// which the fixture withholds with the phase entry, so the upgrade under test adds them.
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
-		if err := records.PutIssue(ctx, tx, root); err != nil {
+		if err := putPreEntryIssue(ctx, tx, root); err != nil {
 			return err
 		}
 		if err := openTreeTx(ctx, tx, upgradeProject, root.Key); err != nil {
 			return err
 		}
 		for index, shape := range shapes {
-			if err := records.PutIssue(ctx, tx, issues[shape.key]); err != nil {
+			if err := putPreEntryIssue(ctx, tx, issues[shape.key]); err != nil {
 				return err
 			}
 			if err := records.PutSlot(ctx, tx, record.Slot{Issue: shape.key, Index: index, AdmittedAt: time.Now().UTC()}); err != nil {
@@ -421,7 +465,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	// applies is the phase entry and whatever has landed above that release's newest since. The
 	// number is counted from the embedded set rather than written here, so a migration added later
 	// is not read as the fixture having withheld one of its own.
-	if want := 1 + migrationsAbove(t, olderReleasesNewestMigration); applied != want {
+	if want := 1 + migrationsAbove(t); applied != want {
 		t.Fatalf("the upgrade applied %d migrations, want the phase entry and the %d above the older release's newest: every other migration is the fixture's own",
 			applied, want-1)
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -21,6 +22,7 @@ const (
 )
 
 func TestAPIAuth(t *testing.T) {
+	t.Parallel()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -215,6 +217,7 @@ func TestAPIAuth(t *testing.T) {
 }
 
 func TestAPIAuthValidatesV1BodyContentType(t *testing.T) {
+	t.Parallel()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -342,6 +345,7 @@ func assertRejectionLines(t *testing.T, logged, message, wantReason, wantAccount
 }
 
 func TestValidateListenerAPIAuth(t *testing.T) {
+	t.Parallel()
 	issuer := oidctest.New(t)
 	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)
 	google := newGoogleStandIn(t, listenerGoogleAccount)
@@ -412,6 +416,7 @@ func TestValidateListenerAPIAuth(t *testing.T) {
 }
 
 func TestResolveListenerOIDCConfig(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		env          map[string]string
@@ -442,6 +447,12 @@ func TestResolveListenerOIDCConfig(t *testing.T) {
 			env:         map[string]string{"ENVOY_OIDC_AUDIENCE": "envoy"},
 			wantMissing: "ENVOY_OIDC_ISSUER",
 		},
+		{
+			// A made-up user name and password in the issuer: refused naming the setting alone.
+			name:        "an issuer holding a credential is refused by its name",
+			env:         map[string]string{"ENVOY_OIDC_ISSUER": "https://" + "madeUpIssuerUser0123:madeUpIssuerSecret0123" + "@oidc.eks.example/id/CLUSTER", "ENVOY_OIDC_AUDIENCE": "envoy"},
+			wantMissing: "ENVOY_OIDC_ISSUER cannot be read: it holds a user name or a password, which no issuer URL has",
+		},
 	}
 
 	for _, tc := range cases {
@@ -467,6 +478,7 @@ func TestResolveListenerOIDCConfig(t *testing.T) {
 }
 
 func TestDescribeListenerAPIAuth(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		token    string
@@ -503,6 +515,12 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 			want:     "oidc https://oidc.eks.example/id/CLUSTER for system:serviceaccount:dispatch:envoy-broker, system:serviceaccount:dispatch:dispatch",
 		},
 		{
+			// A made-up user name and password in ENVOY_OIDC_ISSUER: the line holds neither.
+			name:   "an issuer with userinfo is not printed",
+			issuer: "https://madeUpIssuerUser0123:" + "madeUpIssuerPassword0123@oidc.eks.example/id/CLUSTER",
+			want:   "oidc " + redact.NotPrinted,
+		},
+		{
 			name:   "Google identities name their audience and accounts",
 			google: &googleIdentities{audience: "https://listener.example", accounts: []string{"example-sink@example-project.iam.gserviceaccount.com"}},
 			want:   "google https://listener.example for example-sink@example-project.iam.gserviceaccount.com",
@@ -514,7 +532,17 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 				AccountTokenFile: "/var/run/secrets/broker/token",
 				Origin:           "https://listener.example",
 			}),
-			want: "broker tokens at https://broker.example as projected token /var/run/secrets/broker/token",
+			want: "broker tokens at https://broker.example as the projected token ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE names",
+		},
+		{
+			// A made-up token pasted where the token file's path goes: the line names the setting.
+			name: "a token pasted as the projected token's path is not printed",
+			brokers: newBrokerTokens(listenerBrokerConfig{
+				BrokerURL:        "https://broker.example",
+				AccountTokenFile: "madeUpPastedAccountToken0123456789",
+				Origin:           "https://listener.example",
+			}),
+			want: "broker tokens at https://broker.example as the projected token ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE names",
 		},
 		{
 			name: "a listener on a VM names the audience it mints its machine identity for",
@@ -526,6 +554,17 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 			want: "broker tokens at https://broker.example as google audience legion-broker-pod",
 		},
 		{
+			// A made-up user name and password in ENVOY_AGENT_SECRETS_URL: the line holds neither,
+			// the URL standing as redact.URL's NotPrinted.
+			name: "a broker URL with userinfo is not printed",
+			brokers: newBrokerTokens(listenerBrokerConfig{
+				BrokerURL:      "https://madeUpBrokerUser0123:" + "madeUpBrokerPassword0123@broker.example",
+				GoogleAudience: "legion-broker-pod",
+				Origin:         "https://listener.example",
+			}),
+			want: "broker tokens at " + redact.NotPrinted + " as google audience legion-broker-pod",
+		},
+		{
 			name:   "all three name all three",
 			token:  "expected-token",
 			issuer: "https://oidc.eks.example/id/CLUSTER",
@@ -534,7 +573,7 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 				AccountTokenFile: "/var/run/secrets/broker/token",
 				Origin:           "https://listener.example",
 			}),
-			want: "shared token and oidc https://oidc.eks.example/id/CLUSTER and broker tokens at https://broker.example as projected token /var/run/secrets/broker/token",
+			want: "shared token and oidc https://oidc.eks.example/id/CLUSTER and broker tokens at https://broker.example as the projected token ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE names",
 		},
 		{
 			name:   "every credential names itself, the bearers first",
@@ -561,6 +600,7 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 }
 
 func TestAPIAuthRefusesHostsAnUnauthenticatedListenerDoesNotServe(t *testing.T) {
+	t.Parallel()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})

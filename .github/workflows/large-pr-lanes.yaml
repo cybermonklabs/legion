@@ -106,7 +106,7 @@ jobs:
     if: needs.lead.outputs.run == 'true'
     # GitHub refuses a run whose calling job grants less than any job of the called workflow
     # declares, whatever that job's `if:`: these are the scopes ci.yaml's jobs declare, together,
-    # which rule 7 of .github/scripts/check-workflow-files.sh holds.
+    # which rule 8 of .github/scripts/check-workflow-files.sh holds.
     permissions:
       contents: read
       actions: write

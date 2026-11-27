@@ -655,7 +655,7 @@ func TestARelaunchRecordsAReportOlderThanABusyAnswersTurnAsNoReport(t *testing.T
 				h.reportActivity(row.kinds...)
 				h.advance(time.Second)
 			}
-			h.conn.RefusePrompt(busyAnswer)
+			h.conn.FailPrompt(busyRefusal())
 			h.must(RequestDeliver{Claim: h.token, Task: "the next task"})
 			h.wantState(StateWorking)
 			answered := h.clock.Now()
@@ -1076,7 +1076,7 @@ func TestARelaunchRecordsNoTurnForAHoldThatLandsAtTheTurnsEnd(t *testing.T) {
 				Background: true, Kinds: []string{"subagent"}, Reported: true})
 			h.wantEndedLine(cause)
 			sent := len(h.prompts())
-			h.must(RequestResume{Claim: h.token})
+			h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 			h.reach(StateReady)
 			told := h.wantPrompts(sent + 1)[sent]
 			if !strings.Contains(told.Message, tc.says) {

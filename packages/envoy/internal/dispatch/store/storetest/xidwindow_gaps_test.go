@@ -9,18 +9,21 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // These tests are of the rig's judgment of gaps, which the race build does not make, so they are
-// out of it: envoy-go's plain step "Test what the race build cannot run at all or at full size"
-// runs them, by name, as ci_job_reads.py derives that step from this file's tag.
+// out of it: envoy-go-alone's plain step "Test the xid window rows, the API's issue-list bound and
+// the auth service's storm, alone" runs them, by name, as ci_job_reads.py derives that step from
+// this file's tag.
 
 // A Linux build does not promise a schedstat file: gVisor exposes neither /proc/self/schedstat
 // nor /proc/thread-self/schedstat. Nor does it promise that a thread, or the process's memory, can
-// be held out of NUMA balancing: a container's seccomp profile may refuse set_mempolicy or mbind.
-// Where the probe cannot do one of these, the rig follows its race build and judges window shape
-// alone, rather than fail every Measure before it starts - unless the run sets XidRequireGapsEnv,
-// as the CI jobs that judge gaps do, where Measure fails and names what the probe could not do.
+// be held out of NUMA balancing: a container's seccomp profile may refuse get_mempolicy,
+// set_mempolicy or mbind. Where the probe cannot do one of these, the rig follows its race build
+// and judges window shape alone, rather than fail every Measure before it starts - unless the run
+// sets XidRequireGapsEnv, as the CI jobs that judge gaps do, where Measure fails and names what
+// the probe could not do.
 //
 // The readable row proves a build whose probe reads the clocks and holds the thread still judges
 // a planted gap. It fakes only the probe and judges a window built here, so it holds on a kernel
@@ -53,7 +56,7 @@ func TestXidGapJudgmentNeedsReadableThreadClocks(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			previous := xidThreadClockAvailability
 			xidThreadClockAvailability = test.probe
-			t.Cleanup(func() { xidThreadClockAvailability = previous })
+			testcleanup.Add(t, func() { xidThreadClockAvailability = previous })
 			required := ""
 			if test.required != "" {
 				required = "1"

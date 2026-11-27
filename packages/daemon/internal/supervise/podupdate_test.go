@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -261,6 +262,48 @@ func TestPodUpdateALaterOpenOfTheSameRoundKeepsTheTermsItOpenedWith(t *testing.T
 	h.wantPrompts(0)
 }
 
+// A round records the repository its pod was built from beside its reasons, as its first post
+// carries it, and keeps it as it keeps them: a later post of the same round that carries another
+// repository, or none, writes nothing. A round that replaces it records only its own, here none,
+// and the end of a round clears it in the claim and in the store. So no round of the claim reads
+// a repository that it was not opened with.
+func TestPodUpdateKeepsTheRepositoryItsRoundOpenedWithUntilTheRoundEnds(t *testing.T) {
+	const second = "pod:1f0b4c8d-7e21-4a55-8c3b-9d2e6f0a4b13"
+	const third = "pod:6a2d9e14-0b57-4c83-b1f6-3e8a5c7d2f90"
+	built := ghrepo.MustParse("acme/widgets")
+	h := updateHarness(t, PodUpdateContract)
+	h.reach(StateReady)
+
+	h.must(PodUpdateOpen{Claim: h.token, Round: testRound, Reasons: testReasons, Repository: built})
+	settled := len(h.store.history())
+	h.must(PodUpdateOpen{Claim: h.token, Round: testRound, Reasons: testReasons, Repository: ghrepo.MustParse("zeta/tools")})
+	h.openUpdate(testRound, testReasons)
+
+	if c := h.wantRound(testRound); c.UpdateRepository != built {
+		t.Errorf("UpdateRepository = %q, want %q, the repository the round opened with", c.UpdateRepository, built)
+	}
+	if stored := h.store.load(h.token); stored.UpdateRepository != built {
+		t.Errorf("stored repository = %q, want %q", stored.UpdateRepository, built)
+	}
+	if got := len(h.store.history()); got != settled {
+		t.Errorf("two later posts of the open round wrote the claim %d times, want none", got-settled)
+	}
+
+	h.openUpdate(second, testReasons)
+	if c := h.wantRound(second); !c.UpdateRepository.IsZero() {
+		t.Errorf("the round that replaced it records the repository %q, want none: its post carried none", c.UpdateRepository)
+	}
+
+	h.must(PodUpdateOpen{Claim: h.token, Round: third, Reasons: testReasons, Repository: built})
+	h.must(PodUpdateEnded{Claim: h.token, Round: third})
+	if c := h.wantRound(""); !c.UpdateRepository.IsZero() {
+		t.Errorf("the claim after the round's end records the repository %q, want none", c.UpdateRepository)
+	}
+	if stored := h.store.load(h.token); !stored.UpdateRepository.IsZero() {
+		t.Errorf("the stored claim after the round's end records the repository %q, want none", stored.UpdateRepository)
+	}
+}
+
 // A claim working a phase task keeps it: the round records itself, and the task in the worker's
 // hands is neither displaced nor joined by a second one.
 func TestPodUpdateLeavesTheTaskAWorkingClaimHolds(t *testing.T) {
@@ -390,6 +433,20 @@ func TestPodUpdatePublishUpdateAskMarksOnlyAnAskThatReachedASession(t *testing.T
 		}
 		if reached.calls != 0 || h.claim().UpdateTaskedAt != nil {
 			t.Fatalf("the ask of another round published %d times and marked %v, want neither", reached.calls, h.claim().UpdateTaskedAt)
+		}
+	})
+
+	t.Run("a claim that has answered its round is published nothing and marked nothing", func(t *testing.T) {
+		h := updateHarness(t, PodUpdateContract)
+		h.reach(StateReady)
+		h.openUpdate(testRound, testReasons)
+		h.signalUpdate("c0ffee")
+		reached := &askPublisher{delivered: true}
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskAnswered {
+			t.Fatalf("the ask to a claim that answered = %v, %v; want UpdateAskAnswered", outcome, err)
+		}
+		if c, stored := h.claim(), h.store.load(h.token); reached.calls != 0 || c.UpdateTaskedAt != nil || stored.UpdateTaskedAt != nil {
+			t.Fatalf("the ask to a claim that answered published %d times and marked %v, stored %v; want neither", reached.calls, c.UpdateTaskedAt, stored.UpdateTaskedAt)
 		}
 	})
 
@@ -645,7 +702,7 @@ func TestPodUpdateAnOperatorsSuspendedClaimDropsTheOlderDaemonsAskAtItsResume(t 
 		t.Fatalf("pending = %+v while the operator's suspension stands, want the older daemon's ask %s held unsent", p, ask.ID)
 	}
 
-	h.must(RequestResume{Claim: h.token})
+	h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 	h.relaunched()
 
 	prompts := h.wantPrompts(sent + 1)
@@ -790,10 +847,14 @@ func TestPodUpdateARestartLeavesTheHeldTaskToNoTurnButItsOwn(t *testing.T) {
 // background job finish or stop it and push what it made, put a scratch file needed as evidence
 // on Dispatch, answer, and end the turn. It says the four things beside the steps: the round does
 // not end early while a role reports background work, a service started with a name is in no
-// report and goes with the pod, the pod goes when the round ends whatever runs in it, and work
-// that finishes after the answer is pushed and answered again with the same round. It says that
-// only the role's own push keeps its work, and that work not pushed before the pod goes is lost;
-// it names no check of the disk and no rescue branch. A role whose tool has no ready_for_update is
+// report and goes with the pod, a pod the daemon replaces goes whatever runs in it, and work that
+// finishes after the answer is pushed and answered again with the same round. It says that only
+// the role's own push keeps its work, and that work not pushed before the pod goes is lost; it
+// names no rescue branch. It says that the daemon reads the workspace before it replaces the pod,
+// and that a read that finds work origin does not hold, or that fails, ends the round with no
+// replacement and keeps the pod (R7 of #5285), also where the pod's disk is a volume
+// that the issue's next pod mounts, so it no longer says that the pod and its disk go when the
+// round ends whatever runs, and names no exception for such a volume. A role whose tool has no ready_for_update is
 // told to do the first three steps, because the round ends at that moment whatever it does: the
 // end of its turn is no answer. It does not say that the round ends early once no role is in a
 // turn, or that only the background jobs of the turn in progress go with the pod.
@@ -811,7 +872,12 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 		"Your plugin sends that report at the end of each turn.",
 		"If a role does not answer, the round still ends at 2026-11-13T12:30:00Z.",
 		"A turn in progress does not delay that moment.",
-		"A subagent or a background job that runs does not delay it either: when the round ends, the pod goes, whatever runs in it.",
+		"A subagent or a background job that runs does not delay it either: when the daemon replaces the pod, the pod goes, whatever runs in it.",
+		"When the round ends, the daemon reads the workspace on the pod's disk before it replaces the pod.",
+		"If the read finds work that no branch or tag on origin holds, or the read fails, the daemon does not replace the pod: the round ends with no replacement, the pod and its disk stay, and every role keeps working in the pod on its old image and settings.",
+		"This is also true when the pod's disk is a volume that the next pod of this issue mounts.",
+		"If the read finds no such work, the daemon replaces the pod. It deletes the pod and the disk, unless the disk is a volume that the next pod of this issue mounts.",
+		"These things go with the pod when the daemon replaces it:",
 		"If a subagent or a background job finishes after you answer, commit and push what it made. Then call `ready_for_update` again with round: \"" + testRound + "\" before you end that turn.",
 		"A service that you started with a name is not in the report. It does not delay the round, and it goes with the pod.",
 		`If your ` + "`legion`" + ` tool has no "ready_for_update" operation, do steps 1, 2 and 3 now. Then end your turn.`,
@@ -822,7 +888,7 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 		"- The pod's test database.",
 		"- The pod's caches.",
 		"Only your own push keeps your work. Work that you do not push before the pod goes is lost.",
-		"The daemon holds your next task until your process runs again.",
+		"The daemon holds your next task until your process runs again, or until the round ends with no replacement.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the ask does not say %q:\n%s", want, text)
@@ -854,9 +920,37 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 		"reads the end of this turn as your answer", "WAITING", "Each commit that the workspace holds and the remote does not have.",
 		"Each file that .gitignore ignores.", "push check", "rescue",
 		"- The background jobs of that turn.", "The round then ends when no role is in a turn.",
+		"When the round ends, the daemon deletes the pod and the disk.", "when the round ends, the pod goes, whatever runs in it",
+		"There is one exception.",
 	} {
 		if strings.Contains(text, gone) {
 			t.Errorf("the ask still says %q, which this round does not do:\n%s", gone, text)
+		}
+	}
+}
+
+// The ask of a round over a drift that breaks the pod (runtime.BreakingDrift at the start of the
+// round's reasons, R7 of #5285, spec v23) does not promise that a read which finds
+// work keeps the pod: no role can keep working in that pod, so the daemon replaces it whatever the
+// read finds, and tells the issue's architect what the read found. Only a volume that the next pod
+// mounts keeps the work on the disk. GPT-6.1 Sol's non-blocking point on #5285 at 0259f8af.
+func TestUpdateTaskOfARoundThatBreaksThePodPromisesNoKeep(t *testing.T) {
+	endsAt := time.Date(2026, 11, 13, 14, 30, 0, 0, time.UTC)
+	text := UpdateTask(claim.RoleImplementer, testRound, runtime.BreakingDrift+"account default, now legion-worker", endsAt)
+	for _, want := range []string{
+		"The round is " + testRound + ".",
+		"This round is over a change that stops each role from working in this pod. So when the round ends, the daemon replaces the pod whatever the workspace holds.",
+		"Before it replaces the pod, the daemon reads the workspace on the pod's disk. If the read finds work that no branch or tag on origin holds, or the read fails, the daemon tells the issue's architect what the read found.",
+		"The daemon deletes the pod and the disk, unless the disk is a volume that the next pod of this issue mounts.",
+		"Only your own push keeps your work. Work that you do not push before the pod goes is lost.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the ask of a round that breaks the pod does not say %q:\n%s", want, text)
+		}
+	}
+	for _, gone := range []string{"the daemon does not replace the pod", "the pod and its disk stay", "or until the round ends with no replacement"} {
+		if strings.Contains(text, gone) {
+			t.Errorf("the ask of a round that breaks the pod says %q, which such a round never does:\n%s", gone, text)
 		}
 	}
 }
@@ -973,7 +1067,7 @@ func TestPodUpdateSignalIsFenced(t *testing.T) {
 func TestPodUpdateARetiredClaimLeavesNoRoundBehind(t *testing.T) {
 	for name, retire := range map[string]func(*harness){
 		"the agent reports its exit": func(h *harness) { h.exit() },
-		"the workflow stops it":      func(h *harness) { h.must(RequestStop{Claim: h.token}) },
+		"the workflow stops it":      func(h *harness) { h.must(RequestStop{Claim: h.token, By: SuspendedByOperator}) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := updateHarness(t, PodUpdateContract)
@@ -1319,7 +1413,7 @@ func TestAPluginRoundAnEarlierDaemonLeftEndsAndReleasesTheTaskItHeld(t *testing.
 				// round or none (sendPending): the resume is what brings its process back and
 				// sends the task the round no longer holds.
 				h.wantPrompts(sent + 1)
-				h.must(RequestResume{Claim: h.token})
+				h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 				h.relaunched()
 			}
 

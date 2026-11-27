@@ -205,7 +205,7 @@ describe("session_byte_len", () => {
     const r = run(`session_byte_len '${key}'`, { [key]: "1234" });
     expect(r.code).toBe(0);
     expect(r.stdout).toBe("1234\n");
-    expect(r.sql).toContain("SELECT byte_len FROM omp_session_files WHERE path = :'path'");
+    expect(r.sql).toContain("SELECT byte_len FROM public.omp_session_files WHERE path = :'path'");
     expect(r.args.at(-1)).toBe(`path=${key}`);
   });
 
@@ -230,6 +230,39 @@ describe("session_byte_len", () => {
       `the session database ${container} could not be read for the session ${key}`
     );
   });
+});
+
+// The run's session database is written by every pod's Oh My Pi, and any login that may create in
+// it can plant a function, or a schema named for the reader, that a name the read leaves
+// unqualified resolves to, a view at a table's own name, whose fixed query no search_path
+// reaches, and a row-security policy the tables' owner attaches runs in each reader's session. So
+// every statement the harness sends goes in one read-only transaction that opens by pinning
+// search_path, turning row_security off and refusing views and foreign tables, as
+// packages/daemon's ompsessions reads, and names each table public.<table>: session_text's and
+// session_byte_len's reads and session_copy's listing and table check alike, each through
+// session_psql.
+describe("every read of the session database", () => {
+  const pin =
+    "BEGIN READ ONLY;\nSET LOCAL search_path = pg_catalog, pg_temp;\nSET LOCAL row_security = off;\n" +
+    "SET LOCAL restrict_nonsystem_relation_kind = 'view, foreign-table';\n";
+  for (const [name, body] of [
+    ["session_text", `session_text '${key}' >/dev/null`],
+    ["session_byte_len", `session_byte_len '${key}' >/dev/null`],
+    ["session_copy", `evidence="$OUT" session_copy '${sessions}/' transcripts pods >/dev/null`],
+  ] as const) {
+    test(`${name} opens with the search_path pin and row_security off, and names the tables public.<table>`, () => {
+      const r = run(body, { [key]: name === "session_byte_len" ? "1234" : transcript });
+      expect(r.code).toBe(0);
+      const statements = r.sql.split(pin);
+      expect(statements[0]).toBe("");
+      expect(statements.length).toBeGreaterThan(1);
+      for (const statement of statements.slice(1)) {
+        expect(statement.trimEnd().endsWith("COMMIT;")).toBe(true);
+        expect(statement).not.toMatch(/\bFROM omp_session_files/);
+      }
+      expect(r.sql).toContain("FROM public.omp_session_files");
+    });
+  }
 });
 
 // derived is the name session_copy gives a key whose part after the prefix is REL: each byte
@@ -353,7 +386,7 @@ describe("session_copy", () => {
     expect(existsSync(r.out)).toBe(false);
     expect(r.sql).toContain("SELECT to_regclass(:'table') IS NOT NULL;");
     expect(r.sql).not.toContain("SELECT encode(");
-    expect(r.args.at(-1)).toBe("table=omp_session_files");
+    expect(r.args.at(-1)).toBe("table=public.omp_session_files");
   });
 
   // Oh My Pi's sql storage makes the table when it starts, so once the daemon has launched role
@@ -583,22 +616,25 @@ describe("session_copy's destination", () => {
     ["a `/` that climbs", "../dest"],
     ["a byte outside [A-Za-z0-9._-]", "dest x"],
     ["a leading `-`, which a later consumer could read as an option", "-rf"],
-  ])("a STEM of %s is refused by name before any key is listed, and nothing is written", (_, bad) => {
-    const c = copyInto(
-      `${stem}/`,
-      () => ({ [`${stem}/ok.jsonl`]: "SESSION-BYTES-ok\n" }),
-      undefined,
-      bad
-    );
-    expect(c.r.code).toBe(1);
-    expect(c.r.stderr).toBe(
-      `the sessions under ${stem}/ are not copied: their directory's name '${bad}' is not a plain name of [A-Za-z0-9._-] other than . and .., and not starting with -, in ${c.base}\n`
-    );
-    // No listing ran, so no name was derived; nothing appeared anywhere.
-    expect(c.r.sql).toBe("");
-    untouched(c);
-    expect(readdirSync(c.dest)).toEqual([]);
-  });
+  ])(
+    "a STEM of %s is refused by name before any key is listed, and nothing is written",
+    (_, bad) => {
+      const c = copyInto(
+        `${stem}/`,
+        () => ({ [`${stem}/ok.jsonl`]: "SESSION-BYTES-ok\n" }),
+        undefined,
+        bad
+      );
+      expect(c.r.code).toBe(1);
+      expect(c.r.stderr).toBe(
+        `the sessions under ${stem}/ are not copied: their directory's name '${bad}' is not a plain name of [A-Za-z0-9._-] other than . and .., and not starting with -, in ${c.base}\n`
+      );
+      // No listing ran, so no name was derived; nothing appeared anywhere.
+      expect(c.r.sql).toBe("");
+      untouched(c);
+      expect(readdirSync(c.dest)).toEqual([]);
+    }
+  );
 
   // The relocation the anchor closes: handed $evidence/review-pair/.. as a path, session_copy
   // canonicalised it to $evidence and every guard held there, so a key deriving to run.json
@@ -749,35 +785,38 @@ if record_pair; then echo recorded; else echo "record_pair failed $?"; fi`,
     ["`..`", `${sessions}/-legion-workspaces-pod/..`, ".."],
     ["`.`", `${sessions}/-legion-workspaces-pod/.`, "."],
     ["a space and a newline", `${sessions}/-legion-workspaces-pod/a b\nc.jsonl`, "a b\nc"],
-  ])("a recorded session file whose basename is %s is recorded, its subagents in review-pair/subagents and its stem as data", (_, pairSession, stem) => {
-    const runJson = '{"source":"the collector run metadata"}\n';
-    const agentBytes = '{"agent":"bytes an agent chose"}\n';
-    const r = recordPair(
-      pairSession,
-      {
-        [pairSession]: transcript,
-        [`${pairSession.replace(/\.jsonl$/, "")}/run.json`]: agentBytes,
-      },
-      `printf '%s' '${runJson}' >"$OUT/run.json"`
-    );
-    expect(r.code).toBe(0);
-    expect(r.stdout).toBe("recorded\n");
-    expect(r.stderr).toBe("");
-    expect(readFileSync(join(r.out, "run.json"), "utf8")).toBe(runJson);
-    expect(readdirSync(r.out).sort()).toEqual(["review-pair", "run.json"]);
-    const pair = join(r.out, "review-pair");
-    expect(readdirSync(pair).sort()).toEqual([
-      "reviewer.jsonl",
-      "session-stem",
-      "subagents",
-      "thermonuclear-code-quality.json",
-      "thermonuclear-deep-review.json",
-    ]);
-    expect(readFileSync(join(pair, "reviewer.jsonl"), "utf8")).toBe(transcript);
-    expect(readdirSync(join(pair, "subagents"))).toEqual(["run.json"]);
-    expect(readFileSync(join(pair, "subagents", "run.json"), "utf8")).toBe(agentBytes);
-    expect(readFileSync(join(pair, "session-stem"), "utf8")).toBe(`${stem}\n`);
-  });
+  ])(
+    "a recorded session file whose basename is %s is recorded, its subagents in review-pair/subagents and its stem as data",
+    (_, pairSession, stem) => {
+      const runJson = '{"source":"the collector run metadata"}\n';
+      const agentBytes = '{"agent":"bytes an agent chose"}\n';
+      const r = recordPair(
+        pairSession,
+        {
+          [pairSession]: transcript,
+          [`${pairSession.replace(/\.jsonl$/, "")}/run.json`]: agentBytes,
+        },
+        `printf '%s' '${runJson}' >"$OUT/run.json"`
+      );
+      expect(r.code).toBe(0);
+      expect(r.stdout).toBe("recorded\n");
+      expect(r.stderr).toBe("");
+      expect(readFileSync(join(r.out, "run.json"), "utf8")).toBe(runJson);
+      expect(readdirSync(r.out).sort()).toEqual(["review-pair", "run.json"]);
+      const pair = join(r.out, "review-pair");
+      expect(readdirSync(pair).sort()).toEqual([
+        "reviewer.jsonl",
+        "session-stem",
+        "subagents",
+        "thermonuclear-code-quality.json",
+        "thermonuclear-deep-review.json",
+      ]);
+      expect(readFileSync(join(pair, "reviewer.jsonl"), "utf8")).toBe(transcript);
+      expect(readdirSync(join(pair, "subagents"))).toEqual(["run.json"]);
+      expect(readFileSync(join(pair, "subagents", "run.json"), "utf8")).toBe(agentBytes);
+      expect(readFileSync(join(pair, "session-stem"), "utf8")).toBe(`${stem}\n`);
+    }
+  );
 });
 
 // collect_transcripts, the teardown's copy of every pod's session out of the session database

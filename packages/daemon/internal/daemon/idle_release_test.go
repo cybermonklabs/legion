@@ -3,17 +3,13 @@ package daemon
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -22,29 +18,26 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// releasedPodUID is the pod the rig's release takes its bundle off: the pod of the issue whose
-// roles are suspended and whose disk goes with it. The store keeps it on the row and answers
-// that pod no restore of its own work (store.TakeWorkspaceBundleForRestore).
+// releasedPodUID is the uid of the pod the rig's release takes down: the pod of the issue whose
+// roles are suspended and whose disk goes with it.
 const releasedPodUID = "pod-being-released"
 
 // releaseRuntime is the fake runtime with the two things an idle release asks of a Kubernetes
-// one: the bundle of the issue workspace's unpushed work, taken from a launcher of the pod, and
-// the issue-level teardown that takes the pod down — the release's (ReleaseIssue), and the
-// close's (SuspendIssue), which a test reaches through the same lane. It also answers what the
-// daemon reads of the pod outside the transaction (issuePods): whether it runs the configured
-// image, and whether the runtime still holds the issue's Sandbox. The rest of issuePods, which pod
-// the Sandbox holds and whether the runtime keeps the issue's volume, is the embedded fake's.
+// one: the read of the issue workspace for work origin does not hold, made through a role's shim
+// (the embedded fake's WorkspaceWork, which ScriptWorkspaceWork and FailWorkspaceWork set and which
+// answers no work for an issue nothing set), and the issue-level teardown that takes the pod down
+// — the release's (ReleaseIssue), and the close's (SuspendIssue), which a test reaches through the
+// same lane. It also answers what the daemon reads of the pod outside the transaction (issuePods):
+// whether it runs the configured image, and whether the runtime still holds the issue's Sandbox.
+// The rest of issuePods, which pod the Sandbox holds and whether the runtime keeps the issue's
+// volume, is the embedded fake's.
 type releaseRuntime struct {
 	*fake.Runtime
 	mu        sync.Mutex
 	onImage   bool
-	bundle    runtime.WorkspaceBundle
-	bundleErr error
-	bundled   []claim.Role
 	suspended int
 	refused   int
 	// teardowns are the issue-level teardowns the daemon asked for, by method and in order,
@@ -54,24 +47,47 @@ type releaseRuntime struct {
 	// sandboxName is the name the runtime answers the issue's Sandbox under, as the rig derives
 	// it from the issue's claim token (sandbox.SandboxName), and sandboxGone makes it answer that
 	// it holds no Sandbox at all — the pod the runtime has already taken down, which a test sets
-	// before the pass it wants to read that answer.
+	// before the pass it wants to read that answer, or before a teardown that should find no
+	// Sandbox to release (ReleaseIssue's false), as the retried teardowns of
+	// TestARetriedTeardownOfAPodNoClaimOwnsRecordsWhatTheReleaseDid do.
 	sandboxName string
 	sandboxGone bool
 	// beforeAuthorize runs inside each teardown, before it asks the store: the pod lock is held
 	// and the teardown's own read has already answered, which is where production's second
 	// answer can differ from its first. A test sets it before the drain.
 	beforeAuthorize func()
+	// failsAfterAuthorize is how many teardowns the store authorized still fail after they took
+	// the pod down, as production's runtime fails when a step after the suspend (the wait for the
+	// pod, the delete of the Secrets, the record on the Sandbox) does not go through.
+	failsAfterAuthorize int
 	// sandboxReached, when set, is sent each issue whose Sandbox a pass reads, and sandboxGate
 	// holds that read until the issue's channel closes: a test holds a pass open between two of
 	// its issues with them.
 	sandboxReached chan string
 	sandboxGate    map[string]chan struct{}
+	// afterPodRead, when set, runs once each read through the pod's launcher has answered and
+	// before its answer reaches the daemon: a test replaces the issue's pod there, as a launch can
+	// while a read is in flight.
+	afterPodRead func()
 }
 
 func (r *releaseRuntime) IssuePodRunsConfiguredImage(string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.onImage
+}
+
+// PodWorkspaceWork is the embedded fake's read through the pod's launcher, with afterPodRead run
+// between the read and its answer.
+func (r *releaseRuntime) PodWorkspaceWork(ctx context.Context, issue string) (runtime.WorkspaceWork, error) {
+	work, err := r.Runtime.PodWorkspaceWork(ctx, issue)
+	r.mu.Lock()
+	hook := r.afterPodRead
+	r.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return work, err
 }
 
 func (r *releaseRuntime) IssueSandbox(issue string) (string, bool) {
@@ -92,24 +108,24 @@ func (r *releaseRuntime) IssueSandbox(issue string) (string, bool) {
 	return r.sandboxName, true
 }
 
-func (r *releaseRuntime) BundleWorkspace(_ context.Context, _ string, role claim.Role) (runtime.WorkspaceBundle, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.bundled = append(r.bundled, role)
-	return r.bundle, r.bundleErr
-}
-
 func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
-	return r.teardown(ctx, "SuspendIssue", authorize)
+	_, err := r.teardown(ctx, "SuspendIssue", authorize, nil)
+	return err
 }
 
-func (r *releaseRuntime) ReleaseIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
-	return r.teardown(ctx, "ReleaseIssue", authorize)
+func (r *releaseRuntime) ReleaseIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
+	return r.teardown(ctx, "ReleaseIssue", authorize, writing)
 }
 
 // teardown is both teardowns, method naming which: it records the call, runs beforeAuthorize,
-// asks the store and counts the pod it took down, or the store's refusal.
-func (r *releaseRuntime) teardown(ctx context.Context, method string, authorize func(context.Context) (bool, error)) error {
+// asks the store and counts the pod it took down, or the store's refusal. It answers whether it
+// took a Sandbox down: an authorized teardown of a runtime that still holds one (sandboxGone
+// false), which calls writing first, as the Kubernetes runtime calls it before its first write.
+// A teardown that fails after it took the pod down (failsAfterAuthorize) has called writing too,
+// and answers its error.
+func (r *releaseRuntime) teardown(ctx context.Context, method string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
 	r.mu.Lock()
 	r.teardowns = append(r.teardowns, method)
 	hook := r.beforeAuthorize
@@ -119,16 +135,30 @@ func (r *releaseRuntime) teardown(ctx context.Context, method string, authorize 
 	}
 	act, err := authorize(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if act {
-		r.suspended++
-	} else {
+	if !act {
 		r.refused++
+		r.mu.Unlock()
+		return false, nil
 	}
-	return nil
+	r.suspended++
+	takes := !r.sandboxGone
+	fails := r.failsAfterAuthorize > 0
+	if fails {
+		r.failsAfterAuthorize--
+	}
+	r.mu.Unlock()
+	if takes && writing != nil {
+		if err := writing(ctx); err != nil {
+			return false, err
+		}
+	}
+	if fails {
+		return false, errors.New("the Secrets of the issue's Sandbox could not be deleted")
+	}
+	return takes, nil
 }
 
 // teardownsAsked is every issue-level teardown the daemon asked for, by method and in order.
@@ -138,10 +168,15 @@ func (r *releaseRuntime) teardownsAsked() []string {
 	return slices.Clone(r.teardowns)
 }
 
-func (r *releaseRuntime) reads() (bundled []claim.Role, suspended int) {
+// reads is the roles each workspace read of the issue was made through, in order, and how many pods
+// the runtime's teardown took down.
+func (r *releaseRuntime) reads() (read []claim.Role, suspended int) {
+	for _, call := range r.CallsOf("WorkspaceWork") {
+		read = append(read, call.Role)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]claim.Role(nil), r.bundled...), r.suspended
+	return read, r.suspended
 }
 
 // refusals is how many times the runtime asked the store under its pod lock and was refused.
@@ -169,12 +204,29 @@ type idleRig struct {
 
 func newIdleRig(t *testing.T) *idleRig {
 	t.Helper()
+	return newIdleRigIn(t, phase.Implementing)
+}
+
+// newIdleRigIn is newIdleRig with the issue standing in at: implementing, as every other test of
+// the rig has it, or awaiting_children, where the admission pass stopped the implementer's phase
+// because a Dispatch child of the issue is open. The pass retired the task the implementer held
+// for the phase it stopped (supervise.Machine.RetireStoppedTask), so its claim there holds none,
+// and the rest of the pod is the same pod: one live implementer in its own session, idle, on the
+// daemon's plugin contract and the configured image.
+func newIdleRigIn(t *testing.T, at phase.Phase) *idleRig {
+	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Implementing, Generation: 1,
+		Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: at, Generation: 1,
 		Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
+	if at == phase.AwaitingChildren {
+		waited := time.Now().UTC().Add(-time.Hour)
+		issue.ChildrenWait = &record.ChildrenWait{Start: phase.Implementing, Task: "implement it",
+			Reason: endedTheImplementersPhase.Reason, Since: waited}
+		issue.ChildrenWaitedAt = &waited
+	}
 	putOutboxIssue(t, pool, records, issue)
 	st := outboxTreeStore(t, pool, issue.Key)
 	// The store of a daemon with a workflow, which an idle release needs: its claim writes queue
@@ -183,14 +235,11 @@ func newIdleRig(t *testing.T) *idleRig {
 	// pass queued with queuedBy.
 	st.PublishRoleHolders(nil)
 
-	rt := &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true,
-		// A bundle names the pod its work came off, as the Kubernetes runtime's own does
-		// (sandbox's Runtime.BundleWorkspace): the store refuses that pod the restore and keeps
-		// the attempt for the pod that replaces it (store.PutWorkspaceBundle).
-		bundle: runtime.WorkspaceBundle{Bundle: []byte("PACK"), Head: "abc", Tips: []string{"abc"},
-			At: time.Now().UTC(), PodUID: releasedPodUID}}
+	// The workspace holds nothing that origin does not hold until a test scripts work into it
+	// (ScriptWorkspaceWork), so the release's check lets it go on.
+	rt := &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true}
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.Runtime, sup.deps.Store, sup.deps.PluginContract = rt, st, api.DaemonAPIVersion
+	sup.deps.Runtime, sup.deps.Store, sup.deps.PluginContract = rt, st, api.DaemonAPIVersion()
 	// The teardown records the release through the supervisor's store, as the daemon's does.
 	sup.store = st
 
@@ -208,8 +257,13 @@ func newIdleRig(t *testing.T) *idleRig {
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
 		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateIdle, Locator: &locator, Session: "ses-implementer",
-		SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion, Pending: &pending}
-	if err := st.PutClaimAndDelivery(ctx, stored, pending); err != nil {
+		SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion(), Pending: &pending}
+	if at == phase.AwaitingChildren {
+		stored.Pending = nil
+		if err := st.PutClaim(ctx, stored); err != nil {
+			t.Fatalf("seed the idle implementer: %v", err)
+		}
+	} else if err := st.PutClaimAndDelivery(ctx, stored, pending); err != nil {
 		t.Fatalf("seed the idle implementer: %v", err)
 	}
 	if _, err := sup.restore(ctx, []supervise.Claim{stored}); err != nil {
@@ -219,8 +273,8 @@ func newIdleRig(t *testing.T) *idleRig {
 	if !ok {
 		t.Fatalf("no machine for %s", token)
 	}
-	if got := machine.Claim(); got.State != supervise.StateIdle || got.Pending == nil {
-		t.Fatalf("the restored claim = %+v, want it idle holding its phase's task", got)
+	if got := machine.Claim(); got.State != supervise.StateIdle || (got.Pending == nil) != (at == phase.AwaitingChildren) {
+		t.Fatalf("the restored claim = %+v, want it idle, holding its phase's task where its phase runs", got)
 	}
 	// The pod last did something half an hour ago, and its session reported five minutes later
 	// that it runs no background work with no reminder armed.
@@ -249,8 +303,16 @@ func newIdleRig(t *testing.T) *idleRig {
 	// spelling, as a deployment's do, and the two passes read the two: the candidate answer of
 	// the rule for a pod no claim owns reads issues.project (dispatchProject), everything else
 	// reads the claims' (projectID).
-	w := &workflowRuntime{pool: pool, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
+	w := &workflowRuntime{pool: pool, records: records, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
 		idleStore: st, idleRuntime: rt, idlePeriod: 10 * time.Minute}
+	// The repository hold reads what the daemon's own attach wires it to read
+	// (attachIdleRelease): the pod through the runtime the supervisor holds, and the record
+	// through the workflow's own read of it. The rig's pod names the repository its record holds,
+	// as a Sandbox pod names the one its fetch cloned (runtime.Runtime.PodRepository), so it is on
+	// that repository until a test says otherwise (idleRig.podBuiltFrom).
+	rt.ScriptPodRepository(token, issue.Repo)
+	s := &supervision{log: quietLogger(), supervisor: sup, plan: plan{recordedRepository: recordedRepositoryOf(w.recordedIssue)}}
+	w.idleRepositoryDrifted = s.podRepositoryDrifted
 	return &idleRig{pool: pool, st: st, issues: records, runner: runner, sup: sup, rt: rt, w: w,
 		issue: issue, token: token, machine: machine}
 }
@@ -369,13 +431,16 @@ func (r *idleRig) marked(t *testing.T) bool {
 	return marked
 }
 
-func (r *idleRig) bundled(t *testing.T) bool {
+// declined is whether the store records a declined release of the issue (idle_release_declines),
+// which only the release's workspace check writes: a release cancelled anywhere else records none.
+func (r *idleRig) declined(t *testing.T) bool {
 	t.Helper()
-	_, held, err := r.st.WorkspaceBundleSize(context.Background(), r.issue.Key)
-	if err != nil {
-		t.Fatalf("read the saved bundle: %v", err)
+	var declined bool
+	if err := r.pool.QueryRow(context.Background(), `select exists (select 1 from idle_release_declines where issue = $1)`,
+		r.issue.Key).Scan(&declined); err != nil {
+		t.Fatalf("read the declined release: %v", err)
 	}
-	return held
+	return declined
 }
 
 // releasedArchitect leaves the pod an architect claim an earlier release suspended and no wake
@@ -388,7 +453,7 @@ func (r *idleRig) releasedArchitect(t *testing.T) *supervise.Machine {
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: r.issue.Tree, Issue: r.issue.Key,
 		Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
-		Session: "ses-architect", SessionFile: "/tmp/architect.jsonl", PluginContract: api.DaemonAPIVersion}
+		Session: "ses-architect", SessionFile: "/tmp/architect.jsonl", PluginContract: api.DaemonAPIVersion()}
 	if err := r.st.PutClaim(ctx, stored); err != nil {
 		t.Fatalf("seed the architect an earlier release left released: %v", err)
 	}
@@ -409,93 +474,70 @@ func (r *idleRig) releasedArchitect(t *testing.T) *supervise.Machine {
 	return machine
 }
 
-// The teardown acts on the answer the runtime took under its pod lock, not on the one this row
-// read before it. The two differ: the release's rows run on the issue's lifecycle lane, and a
-// notice or a hook prompt runs on a lane of its own, so the wake one of those makes can
-// resume a role in between. A teardown that took the first answer and ignored the second
-// recorded a release of a pod that still stands, armed a backstop over it and forgot its wake
-// marks, and left the other roles released in a running pod with nothing to bring them back.
-func TestATeardownTheRuntimeFindsUnauthorizedCancelsTheRelease(t *testing.T) {
+// A release's record tells a held wake the release's words (dispatch://INFRA-3589, R3). A release
+// whose workspace check ran before the project's pause runs to its end. The CI settlement woke the
+// implementer while the project is paused, after the release recorded the claim, so the wake is a
+// held wake of the pause. Where the pause's stop of the role ran before the release's stop, the
+// wake reads the pause as what stopped the role, and its start carries the pause's words, which
+// say that the pod was kept (workflow.WakeTask, StoppedByPause). The test writes that start. The
+// teardown then takes the pod and records the release, and the record is the moment the release's
+// words become true. So the start's task becomes the settlement's text under the release's words
+// (workflow.ReleasedWakeTask, which the teardown hands the store). The wake stays held by its
+// pause, and its resume pairs with no release.
+func TestARecordedReleaseTellsAHeldWakeThatTheReleaseTookItsPod(t *testing.T) {
 	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
-	// Under the pod lock, before the store is asked: a re-admission moved the issue's run on,
-	// which is a close's business and not a release's.
-	rig.rt.beforeAuthorize = func() {
-		if _, err := rig.pool.Exec(ctx, `update issues set generation = 2 where key = $1`, rig.issue.Key); err != nil {
-			t.Errorf("move the issue's generation on: %v", err)
-		}
-	}
-
+	holdTeardownBack(t, rig)
 	rig.drain(t)
+	if got := rig.machine.Claim(); !got.Released() || !rig.marked(t) {
+		t.Fatalf("the claim = %s by %s and the mark stands = %t, want it released under a release still running",
+			got.State, got.SuspendedBy, rig.marked(t))
+	}
+	pause := openLegionPause(t, rig.pool, time.Now().UTC())
 
-	if refused := rig.rt.refusals(); refused != 1 {
-		t.Fatalf("authorizations refused under the pod lock = %d, want the one the teardown asked for", refused)
+	// The settlement's wake, as the workflow takes it while the project is paused (wakeReleased):
+	// a held wake of the pause, and its start in the pause's words.
+	if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, pods.WakeChecks, time.Now().UTC(), 0); err != nil || !taken {
+		t.Fatalf("take the settlement's wake = %t, %v; want it taken", taken, err)
 	}
-	if _, suspended := rig.rt.reads(); suspended != 0 {
-		t.Fatalf("Sandbox teardowns = %d, want none: the store refused the pod", suspended)
+	const detail = "head1 failed build"
+	wake, err := record.NewOutboxRow(rig.issue.Key, record.SuperviseRequest{Op: "start", Tree: rig.issue.Tree,
+		Role: claim.RoleImplementer, Generation: 1, Task: workflow.WakeTask(pods.WakeChecks, detail, workflow.StoppedByPause),
+		WakeKind: pods.WakeChecks, WakeDetail: detail, Pause: pause}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("encode the wake's start: %v", err)
 	}
-	records := rig.records(t)
-	if len(records.Releases) != 0 {
-		t.Fatalf("releases recorded = %+v, want none: the pod still stands", records.Releases)
-	}
-	if len(records.Holds) != 1 || records.Holds[0].Reason != workflow.IdleHoldUnauthorized.String() {
-		t.Fatalf("holds = %+v, want the one %s", records.Holds, workflow.IdleHoldUnauthorized)
-	}
-	var backstops int
-	if err := rig.pool.QueryRow(ctx, `select count(*) from pod_wake_backstops where issue = $1`, rig.issue.Key).Scan(&backstops); err != nil {
-		t.Fatal(err)
-	}
-	if backstops != 0 {
-		t.Fatalf("backstops armed = %d, want none: a backstop belongs to a pod that is gone", backstops)
-	}
-	if rig.marked(t) {
-		t.Fatal("the cancelled release left its mark behind")
-	}
-	if rig.bundled(t) {
-		t.Fatal("the cancelled release left its bundle behind")
-	}
-	if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
-		t.Fatalf("the claim = %s by %s, want the cancelled release to have resumed it into the pod it kept",
-			got.State, got.SuspendedBy)
-	}
-}
-
-// A cancel resumes the claims its own release suspended and no others, and the resume is a row
-// of the issue's lane rather than a relaunch held in memory: a release that did not finish is
-// undone by one transaction that queues those resumes and deletes the mark together.
-//
-// The pod here holds an architect an earlier release left released, which no wake has brought
-// back. Resuming it would put a role into a pod that has no work for it, with no wake and no
-// task saying why it is there.
-func TestACancelResumesOnlyTheRolesItsOwnReleaseSuspended(t *testing.T) {
-	t.Parallel()
-	rig := newIdleRig(t)
-	ctx := context.Background()
-	architect := rig.releasedArchitect(t)
-
-	queued := rig.queuedBy(t, func() { rig.w.releaseIdlePod(ctx, rig.issue.Key) })
-	if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
-		t.Fatalf("queued rows = %v, want the save, the implementer's stop and the teardown: the architect is already released", queued)
-	}
-	rig.rt.beforeAuthorize = func() {
-		if _, err := rig.pool.Exec(ctx, `update issues set generation = 2 where key = $1`, rig.issue.Key); err != nil {
-			t.Errorf("move the issue's generation on: %v", err)
-		}
+	if _, err := rig.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
+		values ($1, $2, $3, 0, now(), '', '')`, string(wake.Kind), rig.issue.Key, string(wake.Payload)); err != nil {
+		t.Fatalf("queue the wake's start: %v", err)
 	}
 
-	rig.drain(t)
+	var teardown record.OutboxRow
+	if err := rig.pool.QueryRow(ctx, `select id, kind, issue, payload from outbox where issue = $1 and kind = 'issue_release'`,
+		rig.issue.Key).Scan(&teardown.ID, &teardown.Kind, &teardown.Issue, &teardown.Payload); err != nil {
+		t.Fatalf("read the teardown row: %v", err)
+	}
+	if err := rig.runner.execute(ctx, teardown); err != nil {
+		t.Fatalf("run the teardown: %v", err)
+	}
+	if records := rig.records(t); rig.marked(t) || len(records.Releases) != 1 {
+		t.Fatalf("the mark stands = %t and the releases = %+v, want the release finished and recorded once", rig.marked(t), records.Releases)
+	}
 
-	if got := architect.Claim(); !got.Released() {
-		t.Fatalf("the architect = %s by %s, want the release that never touched it to have left it released",
-			got.State, got.SuspendedBy)
+	starts := startRequestsOf(t, rig.pool, rig.issue.Key)
+	want := workflow.WakeTask(pods.WakeChecks, detail, workflow.StoppedByRelease)
+	if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Task != want ||
+		starts[0].WakeKind != pods.WakeChecks || starts[0].Pause != pause {
+		t.Fatalf("queued starts = %+v, want the held wake's one start of the implementer, of the %s wake held by pause %d, with the task %q: the release took the pod",
+			starts, pods.WakeChecks, pause, want)
 	}
-	if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
-		t.Fatalf("the implementer = %s by %s, want the claim this release suspended resumed", got.State, got.SuspendedBy)
+	if _, held, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer); err != nil || !open || held != pause {
+		t.Fatalf("the implementer's open resume = pause %d, open %t, %v; want the held wake, held by pause %d", held, open, err, pause)
 	}
-	if rig.marked(t) {
-		t.Fatal("the cancelled release left its mark behind")
+	if resumes := rig.records(t).Resumes; len(resumes) != 1 || resumes[0].Release != 0 || resumes[0].Pause != pause {
+		t.Fatalf("resumes = %+v, want the held wake's one resume, paired with no release and held by pause %d", resumes, pause)
 	}
 }
 
@@ -523,7 +565,7 @@ func TestABoundaryWhoseClaimRunsNothingStillAnswersADeliveryAroundTheMark(t *tes
 	}
 	// The role whose stop is the boundary is retired before that stop runs: it has no process
 	// left to stop, which is what used to take the row out before it read the mark.
-	if err := rig.machine.Handle(ctx, supervise.RequestStop{Claim: rig.token}); err != nil {
+	if err := rig.machine.Handle(ctx, supervise.RequestStop{Claim: rig.token, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("retire the claim the boundary stops: %v", err)
 	}
 
@@ -532,8 +574,8 @@ func TestABoundaryWhoseClaimRunsNothingStillAnswersADeliveryAroundTheMark(t *tes
 	if _, suspended := rig.rt.reads(); suspended != 0 {
 		t.Fatalf("Sandbox teardowns = %d, want none: the pod is the one that answers the queued start", suspended)
 	}
-	if rig.bundled(t) {
-		t.Fatal("the cancelled release left its bundle behind")
+	if rig.declined(t) {
+		t.Fatal("the cancelled release recorded a decline: only its workspace check declines")
 	}
 	if rig.marked(t) {
 		t.Fatal("the cancelled release left its mark behind")
@@ -547,80 +589,62 @@ func TestABoundaryWhoseClaimRunsNothingStillAnswersADeliveryAroundTheMark(t *tes
 	}
 }
 
-// A wake the role's open resume refuses resumes a claim that is still released all the same, and
-// this is the case that makes it necessary: the delivery wake commits its take and then resumes
-// the claim in process, so a resume the store refuses, or a daemon that restarts between the two,
-// leaves the role released with its resume open. Only a release closes an open resume, and a pod
-// that is fully released is never released again, so without this the role's every later wake —
-// a delivery, a CI settlement, a role message, its own backstop — would read that resume as a pod
-// already on its way and resume nothing, for as long as the issue lives.
-//
-// The take is made here without the resume behind it, which is what both shapes leave in the
-// record: a resume that failed after its take committed, and a daemon that came back up between
-// the two and reads the claim released with the resume open. The wake that meets it takes no wake
-// of its own — the resume already recorded is still the role's one open resume — and brings the
-// claim back. No pause held that resume, so the wake says at Warn that it stands open with no
-// process behind it (logRefusedByOpenResume).
-func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
+// A finished release arms the backstop of its open phase's worker, unless a wake of that worker
+// came after the release recorded it: that wake's start already brings the worker back in the
+// new pod, and a backstop for it could never act (armBackstops).
+func TestAReleaseArmsNoBackstopForARoleAWakeIsBringingBack(t *testing.T) {
 	t.Parallel()
-	rig := newIdleRig(t)
-	ctx := context.Background()
-	rig.w.releaseIdlePod(ctx, rig.issue.Key)
-	rig.drain(t)
-	if got := rig.machine.Claim(); !got.Released() {
-		t.Fatalf("the claim after the release = %s by %s, want it released", got.State, got.SuspendedBy)
-	}
-
-	taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, pods.WakeDelivery, time.Now().UTC(), 0)
-	if err != nil || !taken {
-		t.Fatalf("take the wake whose resume never ran = %t, %v; want it taken", taken, err)
-	}
-	resume, pause, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer)
-	if err != nil || !open || pause != 0 {
-		t.Fatalf("the open resume after that take = %d, pause %d, %t, %v; want the one it recorded, which no pause held", resume, pause, open, err)
-	}
-	logs := &testlog.Buffer{}
-	rig.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
-
-	woken, _, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
-	if err != nil || !woken {
-		t.Fatalf("the wake meeting the open resume = %t, %v; want the claim woken", woken, err)
-	}
-	stuck := loggedLines(t, logs.String(), `"msg":"wake: a released pod's resume stands open with no process behind it; this wake resumes it"`)
-	if len(stuck) != 1 || stuck[0]["level"] != "WARN" {
-		t.Fatalf("the stuck resume's lines = %v, want one at WARN; log:\n%s", stuck, logs.String())
-	}
-	if held := loggedLines(t, logs.String(), "its pause's held wake"); len(held) != 0 {
-		t.Fatalf("the wake logged %v, want no line of a pause's held wake: no pause held this resume", held)
-	}
-	if got := rig.machine.Claim(); got.Released() {
-		t.Fatalf("the claim after the wake that met the open resume = %s by %s, want it resumed: no release will ever close that resume",
-			got.State, got.SuspendedBy)
-	}
-	// The heal takes no wake of its own: the resume the first take recorded is still the one
-	// open, so the records hold one resume of this release rather than two.
-	again, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer)
-	if err != nil || !open || again != resume {
-		t.Fatalf("the open resume after the heal = %d, %t, %v; want the first take's %d", again, open, err, resume)
-	}
-	// And a wake that meets the open resume of a role whose process is running resumes nothing:
-	// that pod is back, which is what the refusal means when the claim is no longer released.
-	before := len(rig.rt.CallsOf("Resume"))
-	woken, _, err = rig.runner.wakeForDelivery(ctx, rig.token, "a second notice of "+rig.issue.Key, 0)
-	if err != nil || woken {
-		t.Fatalf("the wake of a running claim = %t, %v; want it to wake nothing", woken, err)
-	}
-	if after := len(rig.rt.CallsOf("Resume")); after != before {
-		t.Fatalf("resumes after the wake of a running claim = %d, want the %d it already had", after, before)
+	for _, tc := range []struct {
+		name      string
+		woken     bool
+		backstops int
+	}{
+		{name: "no wake during the release", backstops: 1},
+		{name: "a wake after the release recorded the role", woken: true, backstops: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIdleRig(t)
+			ctx := context.Background()
+			rig.runner.backstop = time.Hour
+			rig.w.releaseIdlePod(ctx, rig.issue.Key)
+			holdTeardownBack(t, rig)
+			rig.drain(t)
+			if got := rig.machine.Claim(); !got.Released() || !rig.marked(t) {
+				t.Fatalf("the claim = %s by %s and the mark stands = %t, want it released under a release still running",
+					got.State, got.SuspendedBy, rig.marked(t))
+			}
+			if tc.woken {
+				if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token,
+					pods.WakeAgentMessage, time.Now().UTC(), 0); err != nil || !taken {
+					t.Fatalf("take the wake after the record = %t, %v; want it taken", taken, err)
+				}
+			}
+			if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() where issue = $1 and kind = 'issue_release'`,
+				rig.issue.Key); err != nil {
+				t.Fatalf("let the teardown run: %v", err)
+			}
+			rig.drain(t)
+			if records := rig.records(t); rig.marked(t) || len(records.Releases) != 1 {
+				t.Fatalf("the mark stands = %t and the releases = %+v, want the release finished and recorded once", rig.marked(t), records.Releases)
+			}
+			var open int
+			if err := rig.pool.QueryRow(ctx, `select count(*) from pod_wake_backstops where issue = $1 and role = 'implementer' and not fired`,
+				rig.issue.Key).Scan(&open); err != nil {
+				t.Fatalf("count the implementer's open backstops: %v", err)
+			}
+			if open != tc.backstops {
+				t.Fatalf("the implementer's open backstops = %d, want %d", open, tc.backstops)
+			}
+		})
 	}
 }
 
 // A pod that has had no turn in progress and no turn due for the idle period is released while
-// its issue is still in the workflow: the decision writes the save of the workspace's unpushed
-// work, one `release` row per live role behind it, and the teardown last. Each claim goes to
-// suspended with the source `released` keeping its phase and the task it holds, the bundle is
-// saved before any role process is stopped — only a shim can build it — and the Sandbox teardown
-// runs last.
+// its issue is still in the workflow: the decision writes the check of the workspace for work
+// origin does not hold (its row's kind keeps the name issue_bundle), one `release` row per live
+// role behind it, and the teardown last. Each claim goes to suspended with the source `released`
+// keeping its phase and the task it holds, the workspace is read before any role process is
+// stopped — only a shim can read it — and the Sandbox teardown runs last.
 func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testing.T) {
 	t.Parallel()
 	rig := newIdleRig(t)
@@ -628,7 +652,7 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 
 	queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) })
 	if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
-		t.Fatalf("queued rows = %v, want the save, then the role stop, then the teardown", queued)
+		t.Fatalf("queued rows = %v, want the workspace check, then the role stop, then the teardown", queued)
 	}
 	if !rig.marked(t) {
 		t.Fatal("the release left no mark")
@@ -661,9 +685,9 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 		t.Fatalf("stored pending tasks = %d, want the phase's task kept through the release", tasks)
 	}
 
-	bundled, suspended := rig.rt.reads()
-	if len(bundled) != 1 || bundled[0] != claim.RoleImplementer {
-		t.Fatalf("bundle asked of %v, want the pod's one live role", bundled)
+	read, suspended := rig.rt.reads()
+	if len(read) != 1 || read[0] != claim.RoleImplementer {
+		t.Fatalf("the workspace was read through %v, want the pod's one live role", read)
 	}
 	if suspended != 1 {
 		t.Fatalf("Sandbox teardowns = %d, want one", suspended)
@@ -671,8 +695,8 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 	if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue"}) {
 		t.Fatalf("teardowns asked = %v, want the release's alone: the issue stays in the workflow", asked)
 	}
-	if !rig.bundled(t) {
-		t.Fatal("the release deleted the pod with no bundle saved")
+	if rig.declined(t) {
+		t.Fatal("the release of a clean workspace recorded a decline")
 	}
 	if rig.marked(t) {
 		t.Fatal("the finished release left its mark behind")
@@ -686,8 +710,8 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 // process of the pod, and until it has run a delivery for a role of the pod cancels the
 // release: one queued below the release's own rows was in flight when the mark was written,
 // one above them arrived while every role still ran. Either way the roles go on in the same
-// pod, nothing is suspended, no Sandbox is torn down and the bundle the save stored goes with
-// the release, since the pod keeps that work in its own workspace.
+// pod, nothing is suspended, no Sandbox is torn down and no decline is recorded, since the
+// workspace check found nothing to decline for.
 func TestADeliveryThePodIsGivenAroundTheMarkCancelsTheRelease(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -704,7 +728,7 @@ func TestADeliveryThePodIsGivenAroundTheMarkCancelsTheRelease(t *testing.T) {
 			rig.w.releaseIdlePods(ctx)
 			boundary := rig.boundary(t)
 
-			// Below the boundary means below the release's own first row, the save: the
+			// Below the boundary means below the release's own first row, the check: the
 			// delivery's transaction took its id before the release's and committed after. Above
 			// it, an id taken after its last row. Both come from the outbox's own sequence, so no
 			// row of the pod holds them. It is not due yet, so the drain below runs the release's
@@ -731,8 +755,8 @@ func TestADeliveryThePodIsGivenAroundTheMarkCancelsTheRelease(t *testing.T) {
 			if _, suspended := rig.rt.reads(); suspended != 0 {
 				t.Fatalf("Sandbox teardowns = %d, want none: the pod goes on", suspended)
 			}
-			if rig.bundled(t) {
-				t.Fatal("the cancelled release left its bundle behind")
+			if rig.declined(t) {
+				t.Fatal("the cancelled release recorded a decline: only its workspace check declines")
 			}
 			if rig.marked(t) {
 				t.Fatal("the release's mark outlived it")
@@ -756,79 +780,10 @@ func TestADeliveryThePodIsGivenAroundTheMarkCancelsTheRelease(t *testing.T) {
 	}
 }
 
-// bundleDeleteRefused is the daemon's tree store with the bundle delete it once ran on its own
-// before a cancel taken away: a store that answers every DeleteWorkspaceBundle with an error.
-// Nothing of a cancel calls it any more, which is what this stands for.
-type bundleDeleteRefused struct {
-	outboxTrees
-	err error
-}
-
-func (t bundleDeleteRefused) DeleteWorkspaceBundle(context.Context, string) error { return t.err }
-
-// A cancel whose bundle delete fails leaves no bundle for a later pod, because the delete is
-// the cancel's own transaction and no call of its own.
-//
-// The sequence it stops ran like this. A release saved the bundle of pod P and a delivery
-// around the mark cancelled it; the cancel's separate delete failed, it logged a warning and
-// went on, so P stood with its roles resumed and the bundle stayed. P is the pod the work came
-// off, so it is answered nothing and spends nothing, and the row held the issue's pod
-// (workflow.IdleHoldBundleUnrestored) rather than being replaced by another release. P's roles
-// worked and pushed for hours. Then some later pod of the issue — an eviction's, an update
-// round's replacement, a park and unpark's — asked for the bundle, was created after the save,
-// and was sent it: `jj bookmark set --allow-backwards` and `jj edit` over a workspace
-// provisioned from the branch those hours had been pushed to.
-//
-// So this drives that same cancel with the delete refused, and reads what the later pod is
-// answered: nothing, and none of the saved bookmarks a restore would move back.
-func TestACancelWhoseBundleDeleteFailsStillLeavesNoBundleForALaterPod(t *testing.T) {
-	t.Parallel()
-	rig := newIdleRig(t)
-	ctx := context.Background()
-	rig.rt.bundle.Bookmarks = map[string]string{"legion/" + rig.issue.Key: "dffe88ae2f793e13436cef3921adc988433fbd4e"}
-	rig.runner.trees = bundleDeleteRefused{outboxTrees: rig.st, err: errors.New("the pool is gone")}
-
-	rig.w.releaseIdlePods(ctx)
-	boundary := rig.boundary(t)
-	// A start the pod is given above the release's own rows, which cancels at the boundary. It
-	// is not due yet, so the drain runs the release's rows and leaves it queued.
-	if _, err := rig.pool.Exec(ctx, `insert into outbox (id, kind, issue, payload, attempts, next_at, last_error)
-		values ($1, 'supervise', $2, '{"op":"start","tree":"LEGION-208","role":"tester","generation":1}', 0, now() + interval '1 hour', '')`,
-		boundary+10, rig.issue.Key); err != nil {
-		t.Fatal(err)
-	}
-
-	rig.drain(t)
-
-	// The pod stands with its roles back in it, which is the state the bundle must not outlive.
-	if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
-		t.Fatalf("the claim = %s by %s, want the cancelled release to have left it running", got.State, got.SuspendedBy)
-	}
-	if _, suspended := rig.rt.reads(); suspended != 0 {
-		t.Fatalf("Sandbox teardowns = %d, want none: the pod goes on", suspended)
-	}
-	if rig.marked(t) {
-		t.Fatal("the release's mark outlived it, so the cancel did not run")
-	}
-	if rig.bundled(t) {
-		t.Fatal("the cancel left its bundle behind when the store refused a delete of its own")
-	}
-
-	// The pod an eviction or an update round makes hours later, with the resumed roles' work
-	// pushed in between: it is sent nothing at all.
-	later, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", rig.issue.Key, "pod-after-an-eviction", time.Now().UTC().Add(time.Hour))
-	if err != nil || take != runtime.WorkspaceBundleNone {
-		t.Fatalf("a pod created after the cancelled release's save was answered %q (%v, %v), want nothing", later.Bundle, take, err)
-	}
-	if len(later.Bookmarks) != 0 {
-		t.Fatalf("that pod was answered the bookmarks %v, which a restore would move back over everything pushed since the cancel", later.Bookmarks)
-	}
-}
-
 // A turn that began after the release was marked — a direct message, a notice or a person's
 // answer reaching a live session — leaves no outbox row at all: what says it happened is the
-// claim, working rather than idle. The save stored the workspace from before that turn's edits,
-// so the boundary cancels the release and the pod keeps the work in its own workspace.
+// claim, working rather than idle. The check read the workspace from before that turn's edits, so
+// the boundary cancels the release and the pod keeps whatever the turn does in its own workspace.
 func TestATurnStartedAfterTheMarkCancelsTheRelease(t *testing.T) {
 	t.Parallel()
 	rig := newIdleRig(t)
@@ -846,47 +801,67 @@ func TestATurnStartedAfterTheMarkCancelsTheRelease(t *testing.T) {
 	if _, suspended := rig.rt.reads(); suspended != 0 {
 		t.Fatalf("Sandbox teardowns = %d, want none: the pod is in a turn", suspended)
 	}
-	if rig.bundled(t) {
-		t.Fatal("the cancelled release left behind a bundle taken before the turn's edits")
+	if rig.declined(t) {
+		t.Fatal("the cancelled release recorded a decline: only its workspace check declines")
 	}
 	if rig.marked(t) {
 		t.Fatal("the release's mark outlived it")
 	}
 }
 
-// A bundle the release cannot save stops it: the pod stays, every claim the release suspended is
-// resumed into it, and no Sandbox is torn down. The work a role has not pushed is kept at the
-// cost of a pod, never dropped to save one.
-func TestABundleTheReleaseCannotSaveStopsItAndResumesTheClaims(t *testing.T) {
+// A check that cannot show the workspace holds nothing origin lacks stops the release before any
+// role stops: the pod stays, no claim is suspended, no Sandbox is torn down, and the decline is
+// recorded with its reason. A read that found work tells the role it read through, once; a read
+// that failed tells nobody, since there is nothing the role can push on its word. The work a role
+// has not pushed is kept at the cost of a pod, never dropped to save one.
+func TestAWorkspaceCheckThatCannotShowACleanWorkspaceDeclinesTheRelease(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name   string
-		bundle runtime.WorkspaceBundle
-		err    error
+		name     string
+		work     runtime.WorkspaceWork
+		err      error
+		reason   string
+		hold     workflow.IdleHold
+		messages int
 	}{
-		{name: "the bundle could not be built", err: errors.New("the launcher answered nothing")},
-		{name: "the bundle is over the bound", bundle: runtime.WorkspaceBundle{Bundle: make([]byte, runtime.MaxWorkspaceBundleBytes+1)}},
+		{name: "the read failed", err: errors.New("the launcher answered nothing"),
+			reason: pods.DeclineWorkspaceUnread, hold: workflow.IdleHoldWorkspaceUnread},
+		{name: "the working copy holds a change", work: runtime.WorkspaceWork{Head: "abc", Changed: true},
+			reason: pods.DeclineUnpushedWork, hold: workflow.IdleHoldUnpushedWork, messages: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newIdleRig(t)
 			ctx := context.Background()
-			rig.rt.bundle, rig.rt.bundleErr = tc.bundle, tc.err
+			rig.rt.ScriptWorkspaceWork(rig.issue.Key, tc.work)
+			rig.rt.FailWorkspaceWork(rig.issue.Key, tc.err)
 
 			rig.w.releaseIdlePods(ctx)
 			rig.drain(t)
 
-			got := rig.machine.Claim()
-			if got.State == supervise.StateSuspended {
-				t.Fatalf("the claim = %s by %s, want it resumed into the pod the release kept", got.State, got.SuspendedBy)
+			if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
+				t.Fatalf("the claim = %s by %s, want it left running in the pod the release kept", got.State, got.SuspendedBy)
 			}
 			if _, suspended := rig.rt.reads(); suspended != 0 {
 				t.Fatalf("Sandbox teardowns = %d, want none", suspended)
 			}
-			if rig.bundled(t) {
-				t.Fatal("a release that could not save its bundle left one behind")
-			}
 			if rig.marked(t) {
-				t.Fatal("the stopped release left its mark behind")
+				t.Fatal("the declined release left its mark behind")
+			}
+			var reason string
+			if err := rig.pool.QueryRow(ctx, `select reason from idle_release_declines where issue = $1`, rig.issue.Key).Scan(&reason); err != nil || reason != tc.reason {
+				t.Fatalf("the recorded decline = %q, %v; want %q", reason, err, tc.reason)
+			}
+			if holds := rig.records(t).Holds; len(holds) != 1 || holds[0].Reason != tc.hold.String() {
+				t.Fatalf("holds = %+v, want the one %s", holds, tc.hold)
+			}
+			// The drain runs the message's row, so what it told the role is what the publisher
+			// carried to the role's topic.
+			publisher, ok := rig.runner.notices.(*outboxPublisher)
+			if !ok {
+				t.Fatalf("the rig's publisher is a %T, which records no message", rig.runner.notices)
+			}
+			if messages := roleMessages(publisher, string(rig.token)); len(messages) != tc.messages {
+				t.Fatalf("messages to %s = %q, want %d", rig.token, messages, tc.messages)
 			}
 		})
 	}
@@ -914,76 +889,5 @@ func TestTheIdleTickDoesNothingWhenReleaseIsOff(t *testing.T) {
 				t.Fatal("tickIdle kept running with release off")
 			}
 		})
-	}
-}
-
-// A release cancelled because its issue left the workflow queues no resume, and the issue's
-// close then deletes its Sandbox, which is what takes the pod's role Secrets — its launcher
-// tokens and its `gh` credentials — with it.
-//
-// The sequence is the one the lane runs. The release's save and role stop have run, so the
-// implementer is suspended as `released`; the root is parked under the teardown's pod lock, so
-// the linger's own rows — the role suspends and the issue_suspend that deletes the Sandbox —
-// are queued above the release's; the teardown then reads the issue as no longer the workflow's
-// and cancels. A resume queued for the claim the release suspended would land above the close's
-// rows and supersede them: store.IssueSuspension would read a start newer than its own row,
-// finish the close without acting, and leave the roles of a parked issue running in a Sandbox
-// nothing deletes.
-func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *testing.T) {
-	t.Parallel()
-	rig := newIdleRig(t)
-	ctx := context.Background()
-	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
-		Linger: time.Hour}, quietLogger())
-	// The cancel names the roles it queued a resume for, which is the one place that set is
-	// read after the fact: a resume the lane has already run leaves no row behind.
-	logs := &syncBuffer{}
-	rig.runner.log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	rig.runner.handlers = []intake.Handler{engine}
-	rig.w.releaseIdlePod(ctx, rig.issue.Key)
-
-	// Under the teardown's pod lock, before the store is asked: a person parks the root, which
-	// lingers its tree and queues the close's own rows. The close's SuspendIssue runs through
-	// the same hook, and parks nothing a second time.
-	var parked sync.Once
-	rig.rt.beforeAuthorize = func() {
-		parked.Do(func() {
-			if _, err := intake.ApplyFact(ctx, rig.pool, "dispatch", "park", intake.DispatchIssue{
-				Key: rig.issue.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
-				Status: "backlog", Title: rig.issue.Title, Rank: rig.issue.Rank}, engine); err != nil {
-				t.Errorf("park the root: %v", err)
-			}
-		})
-	}
-
-	rig.drain(t)
-
-	if !strings.Contains(logs.String(), "resumed=[]") {
-		t.Fatalf("the cancel queued a resume; want none, since the claims of a parked issue are its close's and a start above the close's rows supersedes them: %s",
-			logs.String())
-	}
-	if _, suspended := rig.rt.reads(); suspended != 1 {
-		t.Fatalf("Sandbox teardowns = %d, want the close's one: its role Secrets go with the Sandbox", suspended)
-	}
-	if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue", "SuspendIssue"}) {
-		t.Fatalf("teardowns asked = %v, want the release's, which the store refused, and then the close's", asked)
-	}
-	if rig.marked(t) {
-		t.Fatal("the cancelled release left its mark behind")
-	}
-	if rig.bundled(t) {
-		t.Fatal("the cancelled release left its bundle behind")
-	}
-	var left int
-	if err := rig.pool.QueryRow(ctx, `select count(*) from outbox where issue = $1
-		and kind in ('supervise', 'issue_suspend', 'issue_release')`, rig.issue.Key).Scan(&left); err != nil {
-		t.Fatal(err)
-	}
-	if left != 0 {
-		t.Fatalf("%d stop rows of the pod remain, want the release's and the close's every one finished", left)
-	}
-	if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByDaemon {
-		t.Fatalf("the implementer = %s by %s, want it suspended by the close that took its pod",
-			got.State, got.SuspendedBy)
 	}
 }

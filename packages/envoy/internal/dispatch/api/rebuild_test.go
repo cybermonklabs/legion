@@ -240,6 +240,8 @@ func TestRebuildArtifactVersionsSuppliedMarkdownButNotTheLatestVersionSource(t *
 // INVALID_MARKDOWN. A version holding an element this build reads but may not create yet rebuilds:
 // the seed only puts back content the document stored.
 func TestARebuildFromTheLatestVersionAnswersForWhatThatVersionHolds(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest).
 	restore, err := pmdoc.UseStagedBlockForTest("staged", false)
 	if err != nil {
 		t.Fatalf("stage a typed block this build reads and may not create: %v", err)
@@ -311,11 +313,9 @@ func TestClosedIssueRebuildRefusesBeforeChangingTheDocument(t *testing.T) {
 	if closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 		t.Fatalf("close issue: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	for deadline := time.Now().Add(10 * time.Second); slices.Contains(documentService.ResidentRooms(), artifact.ID); time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the closed issue's document room stayed resident after the close")
-		}
-	}
+	waitUntil(t, "the closed issue's document room to leave residency after the close", func() bool {
+		return !slices.Contains(documentService.ResidentRooms(), artifact.ID)
+	})
 	broken.failNextLoad(artifact.ID)
 	rebuilt := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifact.ID+"/rebuild", map[string]any{"markdown": "changed\n"}, "alice")
 	if rebuilt.Code != http.StatusConflict || !strings.Contains(rebuilt.Body.String(), `"code":"ISSUE_CLOSED"`) {

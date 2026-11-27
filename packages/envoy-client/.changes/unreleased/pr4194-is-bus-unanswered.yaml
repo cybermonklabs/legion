@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  `isBusUnanswered` tells whether an error is the listener's bus-outage answer: an
+  `EnvoyApiError` with status 503 whose message begins `envoy: the message bus did not answer`.
+  The listener can give that answer after part of the request landed: an unsubscribe gets it
+  after the record was written, when only the update of the consumer's filter met a NATS
+  reconnect.
+time: 2026-11-17T21:15:00Z
+custom:
+    Issue: pr4194

@@ -75,6 +75,7 @@ func onlyReport(t *testing.T, store *Store) capabilities.Report {
 }
 
 func TestACapabilityReportRoundTrips(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")
@@ -93,6 +94,7 @@ func TestACapabilityReportRoundTrips(t *testing.T) {
 // A claim has one report, its latest: the relaunched process's ready replaces what the earlier one
 // measured, so the store never renders a session from a process that no longer runs.
 func TestASecondCapabilityReportReplacesTheClaimsFirst(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")
@@ -121,6 +123,7 @@ func TestASecondCapabilityReportReplacesTheClaimsFirst(t *testing.T) {
 // Reports read back in claim token order, one per claim, so a daemon loading them at boot reads a
 // stable list whatever order the readies arrived in.
 func TestCapabilityReportsReadInClaimTokenOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	for _, token := range []claim.Token{"legion-LEGION-209-tester", "legion-LEGION-209-implementer"} {
@@ -149,6 +152,7 @@ func TestCapabilityReportsReadInClaimTokenOrder(t *testing.T) {
 // A claim's report goes with the claim. The store has no claim delete of its own, so the cascade
 // is driven with the SQL a claim's removal would run.
 func TestADeletedClaimTakesItsCapabilityReportWithIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")
@@ -175,6 +179,7 @@ func TestADeletedClaimTakesItsCapabilityReportWithIt(t *testing.T) {
 // A report belongs to a claim the store holds: one of a claim it does not is refused by the foreign
 // key, naming the claim, rather than kept as a row nothing renders.
 func TestPutCapabilityReportRefusesAClaimTheStoreDoesNotHold(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 
@@ -194,6 +199,7 @@ func TestPutCapabilityReportRefusesAClaimTheStoreDoesNotHold(t *testing.T) {
 // generation is a bigint, as claims.generation is: a value past it is refused before Postgres
 // would, naming the claim.
 func TestPutCapabilityReportRefusesAGenerationPastBigint(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	report := liveReport("legion-LEGION-209-implementer")
 	report.Generation = math.MaxInt64 + 1
@@ -213,6 +219,7 @@ func TestPutCapabilityReportRefusesAGenerationPastBigint(t *testing.T) {
 // daemon could not recognise refuses the read by claim. One naming the claim alone — a ready from a
 // claim whose machine held no process — names no process, and reads back as it was kept.
 func TestCapabilityReportsValidatesAStoredLocatorThatNamesAProcess(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-reviewer")

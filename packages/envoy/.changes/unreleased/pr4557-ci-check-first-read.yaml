@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The first read of `GET /api/v1/issues/{key}/results` answers every check on the pull request heads
+  that read's own read-through learned, for a writer's read and a read-only one alike. Before, a check
+  that CI proves was derived before the read learned the heads, so it answered `no_head` while the
+  same answer named the learned head as another check's basis; and a result at an older commit whose
+  newest head the read learned stood at no basis until the next read. The read now learns the heads,
+  reads every check's bases again where it stored or learned one, and then derives each check CI
+  proves.
+time: 2026-11-20T21:25:05Z
+custom:
+  Issue: pr4557

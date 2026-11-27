@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // senderTestSessions are the live sessions the mention sender's stand-in listener knows, each
@@ -273,16 +275,52 @@ func (l *mentionListener) holdLookups(path string) func() {
 	return sync.OnceFunc(func() { close(gate) })
 }
 
-// awaitSend waits for the next send to arrive and returns the session it is for.
+// listenerLookupPath is the path the mention stand-in answers a lookup of target on: a role's
+// holder for role:<name>, else the session's registry record.
+func listenerLookupPath(target string) string {
+	if role, isRole := strings.CutPrefix(target, "role:"); isRole {
+		return "/v1/roles/" + role
+	}
+	return "/v1/registry/" + strings.TrimPrefix(target, "session:")
+}
+
+// pastAnyRun is a lookup bound or a listener client window no test run reaches: a server built
+// with it leaves the end of each such call to the listener's answer, never to the machine's speed.
+const pastAnyRun = 24 * time.Hour
+
+// lookupBoundPastAnyRun is a comment's lookup bound (testServerOptions.mentionLookupBound) that
+// no run reaches for any target, so every lookup the listener answers counts as answered.
+func lookupBoundPastAnyRun(string) time.Duration { return pastAnyRun }
+
+// postMentionedCommentInBackground posts the comment as postMentionedComment does, on a goroutine
+// of its own, and answers the channel its response arrives on, for a test that waits for that
+// response with testwait.Receive. The request is built here, on the test's goroutine, so the one
+// that serves it calls nothing that can fail the test.
+func postMentionedCommentInBackground(
+	t *testing.T, handler http.Handler, issueKey string, input map[string]any,
+) <-chan *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("encode the comment: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/issues/"+issueKey+"/comments", strings.NewReader(string(body)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Dispatch-User", "alice")
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		answered <- response
+	}()
+	return answered
+}
+
+// awaitSend waits for the next send to arrive and returns the session it is for. Its one bound is
+// the test binary's deadline (testwait.Receive).
 func (l *mentionListener) awaitSend(t *testing.T) string {
 	t.Helper()
-	select {
-	case session := <-l.arrived:
-		return session
-	case <-time.After(10 * time.Second):
-		t.Fatal("no mention send reached the listener")
-		return ""
-	}
+	return testwait.Receive(t, "a mention send to reach the listener", l.arrived)
 }
 
 func (l *mentionListener) sent() []mentionListenerSend {
@@ -356,26 +394,24 @@ func allSent(attempts []model.CommentDelivery) bool {
 
 // The listener calls a mention's send makes - the recheck and the send itself, each up to the
 // listener client's window - run after the comment's response. A comment mentioning three
-// sessions whose sends are all held answers at once, with its attempts pending, and they settle
-// once the sends are released.
+// sessions whose sends are all held answers while they are held, with its attempts pending, and
+// they settle once the sends are released. The client's window here is past any run, so a held
+// send ends only when the test releases it: a comment that waited for its sends would not answer
+// at all, and no clock decides the verdict.
 func TestMentionSendsRunAfterTheCommentHasAnswered(t *testing.T) {
 	t.Parallel()
 	listener, state := newMentionListener(t)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: pastAnyRun})
 	release := state.hold("s1", "s2", "s3")
 	defer release()
 	issue := createInteractionIssue(t, handler, "TEST", "Mentions after the answer", "before")
 
-	started := time.Now()
-	response := postMentionedComment(t, handler, issue.Key, map[string]any{
+	answered := postMentionedCommentInBackground(t, handler, issue.Key, map[string]any{
 		"body":     "All three of you.",
 		"mentions": []map[string]any{{"target": "session:s1"}, {"target": "session:s2"}, {"target": "session:s3"}},
 	})
-	answered := time.Since(started)
-	created := decodeMentionedComment(t, response)
-	if answered >= time.Second {
-		t.Fatalf("the comment answered after %v with its mention sends held, want under 1s", answered)
-	}
+	created := decodeMentionedComment(t, testwait.Receive(t,
+		"the comment's answer while its three mention sends are held at the listener", answered))
 	if len(created.Deliveries) != 3 {
 		t.Fatalf("the create answered deliveries %#v, want the three attempts", created.Deliveries)
 	}
@@ -466,56 +502,63 @@ func TestABlockedMentionRecipientDoesNotHoldBackAnother(t *testing.T) {
 }
 
 // A comment's mention lookups all run at once, so its mentions cost the comment one listener
-// round trip rather than one each: three lookups of 200 ms each, seen from the listener, all
-// finish within 400 ms of the first one starting.
+// round trip rather than one each. The listener holds each session's first lookup until all three
+// have reached it, and the server's lookup bound and client window are past any run, so a comment
+// that looked its mentions up one after another would wait on its first lookup for good: the
+// comment answers only when the three lookups were in flight together, however loaded the machine.
 func TestMentionLookupsOfOneCommentRunAtOnce(t *testing.T) {
 	t.Parallel()
-	const lookup = 200 * time.Millisecond
 	var mu sync.Mutex
 	looked := map[string]bool{}
-	var first, last time.Time
+	together := make(chan struct{})
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/"):
 			session := strings.TrimPrefix(r.URL.Path, "/v1/registry/")
 			mu.Lock()
-			slow := !looked[session]
+			first := !looked[session]
 			looked[session] = true
-			if slow && first.IsZero() {
-				first = time.Now()
+			if first && len(looked) == 3 {
+				close(together)
 			}
 			mu.Unlock()
-			// Only the comment's own lookup of each session is slow; the recheck its send makes
-			// later is not this test's.
-			if slow {
-				time.Sleep(lookup)
+			// Only the comment's own lookup of each session waits for the others; the recheck its
+			// send makes later is not this test's. A test that has ended lets a held lookup go,
+			// so its cleanups do not wait on it.
+			if first {
+				select {
+				case <-together:
+				case <-r.Context().Done():
+					return
+				case <-t.Context().Done():
+					return
+				}
 			}
 			writeSessionRecord(t, w, senderTestSessions, session)
-			if slow {
-				mu.Lock()
-				last = time.Now()
-				mu.Unlock()
-			}
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
-	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// A cleanup, not a defer: it runs once the test's context has ended, which lets a held lookup go.
+	t.Cleanup(listener.Close)
+	handler, database, _ := newTestServer(t, testServerOptions{
+		envoyURL: listener.URL, envoyTimeout: pastAnyRun, mentionLookupBound: lookupBoundPastAnyRun,
+	})
 	issue := createInteractionIssue(t, handler, "TEST", "Concurrent lookups", "before")
 
-	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
+	answered := postMentionedCommentInBackground(t, handler, issue.Key, map[string]any{
 		"body":     "Three lookups.",
 		"mentions": []map[string]any{{"target": "session:s1"}, {"target": "session:s2"}, {"target": "session:s3"}},
-	}))
+	})
+	created := decodeMentionedComment(t, testwait.Receive(t,
+		"the comment to answer, which it does only once its three mention lookups have reached the listener together", answered))
 	settledCommentDeliveries(t, database, created.ID)
 	mu.Lock()
 	defer mu.Unlock()
-	if span := last.Sub(first); len(looked) != 3 || span >= 2*lookup {
-		t.Fatalf("three %v lookups took %v from the first start to the last answer (%d sessions looked up), want under %v",
-			lookup, span, len(looked), 2*lookup)
+	if len(looked) != 3 {
+		t.Fatalf("the listener was asked for %d sessions, want the comment's three mentions", len(looked))
 	}
 }
 
@@ -539,17 +582,32 @@ type unansweredLookup struct {
 }
 
 // commentWithAnUnansweredLookup posts the comment lookup describes. It checks that the comment
-// answers within mentionLookupTimeout's bound with its attempt pending - with the mention
-// unresolved, or pinned to s1 when lookup.pinned - then lets the listener answer, waits for the
+// answers while the listener still holds the lookup of lookup.hungPath - the listener answers it
+// only once letAnswer runs, after the response - with its attempt pending: with the mention
+// unresolved, or pinned to s1 when lookup.pinned. Then it lets the listener answer, waits for the
 // mention sender to send the attempt to s1, and runs the outbox until it has published
 // comment.created. The listener resolves every session of senderTestSessions, and role:reviewer
 // to s1.
+//
+// Only the held lookup runs on production's bound (mentionLookupTimeout), which is what ends it
+// and lets the comment answer. Every other lookup of the comment, and the listener client's
+// window, are past any run: a lookup the listener answers always counts as answered, so whether
+// the mention is pinned is never the machine's speed, and a comment that waited for the held
+// lookup instead of its bound would not answer at all.
 func commentWithAnUnansweredLookup(t *testing.T, lookup unansweredLookup) unansweredLookupComment {
 	t.Helper()
 	listener, state := newMentionListener(t)
 	letAnswer := state.holdLookups(lookup.hungPath)
 	defer letAnswer()
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	handler, database, _ := newTestServer(t, testServerOptions{
+		envoyURL: listener.URL, envoyTimeout: pastAnyRun,
+		mentionLookupBound: func(target string) time.Duration {
+			if listenerLookupPath(target) == lookup.hungPath {
+				return mentionLookupTimeout
+			}
+			return pastAnyRun
+		},
+	})
 	issue := createInteractionIssue(t, handler, "TEST", "An unanswered lookup", "before")
 	if lookup.route != "" {
 		if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
@@ -566,13 +624,9 @@ func commentWithAnUnansweredLookup(t *testing.T, lookup unansweredLookup) unansw
 		input["reply_to"] = decodeMentionedComment(t, root).ID
 	}
 
-	started := time.Now()
-	response := postMentionedComment(t, handler, issue.Key, input)
-	answered := time.Since(started)
-	created := decodeMentionedComment(t, response)
-	if bound := mentionLookupTimeout + 500*time.Millisecond; answered >= bound {
-		t.Fatalf("the comment answered after %v with a lookup unanswered, want under %v", answered, bound)
-	}
+	answered := postMentionedCommentInBackground(t, handler, issue.Key, input)
+	created := decodeMentionedComment(t, testwait.Receive(t,
+		"the comment to answer while the listener holds its lookup of "+lookup.hungPath, answered))
 	pinnedTo := func(sessionID *string) bool {
 		if lookup.pinned {
 			return sessionID != nil && *sessionID == "s1"
@@ -726,19 +780,45 @@ func TestARouteWhoseOwnLookupGoesUnansweredIsSuppressedForTheSessionItNames(t *t
 	}
 }
 
-// A listener that answers no lookup at all delays a mentioned comment by at most
-// mentionLookupTimeout, also on an issue whose route is not one of the comment's mentions: the
-// route's own lookup runs beside the mentions' lookups, not after them, so the two timeouts do not
-// add up.
+// A listener that answers no lookup at all delays a mentioned comment by one lookup bound
+// (mentionLookupTimeout), also on an issue whose route is not one of the comment's mentions: the
+// route's own lookup runs beside the mentions' lookups, not after them, so the two bounds do not
+// add up. A lookup takes its bound as it starts (commentLookupBound), and here that read waits
+// until both the mention's and the route's lookups have started, so both bounds run from the same
+// moment. A comment that looked the route up only after the mention's lookup ended would never
+// start the route's lookup while the mention's waits, and so would never answer, however fast or
+// slow the machine. The listener holds both lookups until after the response, so the comment
+// answered with neither answered.
 func TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost(t *testing.T) {
-	// Not parallel: it holds the answer to under 500 ms of wall clock, and among this package's
-	// parallel tests on CI's runner it answered in 589 ms (job 137359069610).
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	letMentionAnswer := state.holdLookups("/v1/registry/s1")
 	defer letMentionAnswer()
 	letRouteAnswer := state.holdLookups("/v1/registry/s2")
 	defer letRouteAnswer()
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	var mu sync.Mutex
+	started := map[string]bool{}
+	reads := 0
+	together := make(chan struct{})
+	meet := sync.OnceFunc(func() { close(together) })
+	handler, database, _ := newTestServer(t, testServerOptions{
+		envoyURL: listener.URL, envoyTimeout: pastAnyRun,
+		mentionLookupBound: func(target string) time.Duration {
+			mu.Lock()
+			started[target] = true
+			reads++
+			if reads == 2 {
+				meet()
+			}
+			mu.Unlock()
+			// A test that has ended lets the lookup go, so its cleanups do not wait on it.
+			select {
+			case <-together:
+			case <-t.Context().Done():
+			}
+			return mentionLookupTimeout
+		},
+	})
 	issue := createInteractionIssue(t, handler, "TEST", "A silent listener", "before")
 	if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
 		"route": "session:s2",
@@ -746,15 +826,18 @@ func TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost(t *t
 		t.Fatalf("set the route: status=%d body=%s", patched.Code, patched.Body.String())
 	}
 
-	started := time.Now()
-	response := postMentionedComment(t, handler, issue.Key, map[string]any{
+	answered := postMentionedCommentInBackground(t, handler, issue.Key, map[string]any{
 		"body": "Is anyone there?", "mentions": []map[string]any{{"target": "session:s1"}},
 	})
-	answered := time.Since(started)
-	created := decodeMentionedComment(t, response)
-	if answered >= 2*mentionLookupTimeout {
-		t.Fatalf("the comment answered after %v with no lookup answered, want under %v: the route's lookup ran after the mention's",
-			answered, 2*mentionLookupTimeout)
+	created := decodeMentionedComment(t, testwait.Receive(t,
+		"the comment to answer, which it does only once the route's lookup started beside the mention's", answered))
+	mu.Lock()
+	bounds, targets := reads, len(started)
+	mu.Unlock()
+	// Exactly two bounds: a comment that waited a second bound after the first - a second
+	// resolution round, a lookup taken again - fails here, as the old two-bound wall-clock limit did.
+	if bounds != 2 || targets != 2 {
+		t.Fatalf("the comment's lookups read %d bounds for %d targets, want one each for the mention and the route", bounds, targets)
 	}
 
 	letMentionAnswer()
@@ -1093,11 +1176,13 @@ func ageQueuedClaims(t *testing.T, database *store.Store, sender *mentionSender,
 }
 
 // awaitRefreshedClaims waits until every comment's attempt for target is under a claim written in
-// the last 5 s, for at most 10 s: the sender's refresh loop has written the claims it holds again.
+// the last 5 s: the sender's refresh loop has written the claims it holds again. Its one bound is
+// the test binary's deadline (testwait.UntilPolling), and its failure prints how many of the
+// attempts were under a claim written again when it last read them.
 func awaitRefreshedClaims(t *testing.T, database *store.Store, commentIDs []string, target string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	what := fmt.Sprintf("the sender's refresh loop to write the claims of the %d queued attempts again (the attempts under a claim written again)", len(commentIDs))
+	testwait.UntilPolling(t, 10*time.Millisecond, what, func() (int, bool) {
 		var refreshed int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from comment_deliveries
@@ -1106,15 +1191,8 @@ func awaitRefreshedClaims(t *testing.T, database *store.Store, commentIDs []stri
 		`, commentIDs, target).Scan(&refreshed); err != nil {
 			t.Fatalf("read the claims on the queued attempts: %v", err)
 		}
-		if refreshed == len(commentIDs) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d of %d queued attempts are still under the claim they aged to: nothing wrote the sender's claims again",
-				len(commentIDs)-refreshed, len(commentIDs))
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return refreshed, refreshed == len(commentIDs)
+	})
 }
 
 // postMentionOfS1 posts a comment on the issue mentioning s1 and answers its id.
@@ -1130,8 +1208,10 @@ func postMentionOfS1(t *testing.T, handler http.Handler, issueKey, body string) 
 // committed with, and the sender's refresh loop (keepClaims) writes each of those claims again
 // before it lapses, so a lane held longer than a claim lease keeps them: a delivery sweep pass
 // that runs while every attempt is old enough to be owed takes none of them and sends nothing
-// past the send in flight. The claims age to just short of a lease: one a lease old with no
-// refresh committed has lapsed, and the refresh no longer writes it (refreshMentionClaims), which
+// past the send in flight. The claims age to fifteen seconds short of a lease, which leaves the
+// refresh loop, ticking every 20 ms here, fifteen seconds to write them again, so a refresh a
+// loaded machine runs late still lands: one a lease old with no refresh committed has lapsed, and
+// the refresh no longer writes it (refreshMentionClaims), which
 // TestALostRefreshNeverRevivesALapsedClaim covers.
 func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 	t.Parallel()
@@ -1158,10 +1238,10 @@ func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 	}
 	// The lane has now been held longer than a claim lease: every attempt was opened that long
 	// ago, and the claims the sender took on the sends waiting on it were last written all but a
-	// lease ago, so they lapse within seconds unless the refresh writes them again.
+	// lease ago, so they lapse within fifteen seconds unless the refresh writes them again.
 	comments := append([]string{sending}, queued...)
 	ageAttempts(t, database, comments...)
-	ageQueuedClaims(t, database, served.mentions, model.DeliveryClaimLapse-5*time.Second)
+	ageQueuedClaims(t, database, served.mentions, model.DeliveryClaimLapse-15*time.Second)
 	awaitRefreshedClaims(t, database, queued, "session:s1")
 	if err := served.resumeOwedDeliveries(context.Background()); err != nil {
 		t.Fatalf("resume the owed deliveries: %v", err)

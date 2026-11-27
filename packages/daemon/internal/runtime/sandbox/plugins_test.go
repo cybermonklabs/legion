@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
@@ -45,6 +46,7 @@ func testPlugins() *runtime.PluginInstall {
 // branch. The expected wait is built from that derivation over the options this spec configured,
 // not written here as a number.
 func TestAnInstallingLaunchWrapsTheAgentArgvInTheInstallScript(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	r, err := configure(opts)
 	if err != nil {
@@ -102,6 +104,7 @@ func TestAnInstallingLaunchWrapsTheAgentArgvInTheInstallScript(t *testing.T) {
 // agent's own path, naming the image's two extension roots, byte for byte what a fresh planner's
 // argv names today (stage4b-sandbox-tree.sh).
 func TestAPlainLaunchCarriesNoInstallWrapperAndTheImagesRoots(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -126,6 +129,7 @@ func TestAPlainLaunchCarriesNoInstallWrapperAndTheImagesRoots(t *testing.T) {
 // single quote or a space is one word to `sh -c`: run the rendered script through `sh -n` (syntax
 // check only) in this pod, which has /bin/sh.
 func TestInstallScriptQuotesShellUnsafeSources(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no /bin/sh in this environment")
 	}
@@ -171,7 +175,7 @@ func bunInstallArgs(t *testing.T, plugins *runtime.PluginInstall) []string {
 	dir := t.TempDir()
 	recorded := filepath.Join(dir, "bun-args")
 	stub := filepath.Join(dir, "bun")
-	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > "+recorded+"\nexit 1\n"), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > "+recorded+"\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	script := startScript(filepath.Join(dir, "state"), 3, plugins, "", installLockWait(2*time.Second, 3))
@@ -198,6 +202,7 @@ func bunInstallArgs(t *testing.T, plugins *runtime.PluginInstall) []string {
 // `bun add`, which refuses it (`Package "9.7.0" with tag "latest" not found`), and the agent
 // never starts (LEGION-164, the production default source).
 func TestAVersionSourceIsInstalledAsThePackageAtThatVersion(t *testing.T) {
+	t.Parallel()
 	args := bunInstallArgs(t, &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: 24})
 	if !slices.Contains(args, "@sjawhar/pi-legion@9.7.0") || !slices.Contains(args, "@sjawhar/pi-envoy@9.6.1") {
 		t.Fatalf("bun add was asked for %q, want @sjawhar/pi-legion@9.7.0 and @sjawhar/pi-envoy@9.6.1", args)
@@ -210,6 +215,7 @@ func TestAVersionSourceIsInstalledAsThePackageAtThatVersion(t *testing.T) {
 // A tarball path or an http(s) URL source reaches bun as it is: bun resolves those by their own
 // shape, and prefixing a package name would turn them into a version it cannot find.
 func TestATarballOrURLSourceReachesBunVerbatim(t *testing.T) {
+	t.Parallel()
 	legion, envoy := "/tmp/plugins/sjawhar-pi-legion-9.7.0.tgz", "https://registry.example/pi-envoy-9.6.1.tgz"
 	args := bunInstallArgs(t, &runtime.PluginInstall{PiLegion: legion, PiEnvoy: envoy, Contract: 24})
 	if !slices.Contains(args, legion) || !slices.Contains(args, envoy) {
@@ -221,6 +227,7 @@ func TestATarballOrURLSourceReachesBunVerbatim(t *testing.T) {
 // case, but bunSpec's own guard is case-insensitive, so the two never disagree over what counts as
 // a URL.
 func TestAnUppercaseSchemeReachesBunVerbatim(t *testing.T) {
+	t.Parallel()
 	legion := "HTTPS://cache/x.tgz"
 	args := bunInstallArgs(t, &runtime.PluginInstall{PiLegion: legion, PiEnvoy: "9.6.1", Contract: 24})
 	if !slices.Contains(args, legion) {
@@ -231,6 +238,7 @@ func TestAnUppercaseSchemeReachesBunVerbatim(t *testing.T) {
 // startArgv returns agent unchanged with no plugins, no Claude Code directory and no setup
 // command: a plain Oh My Pi launch's argv is never wrapped.
 func TestStartArgvIsAgentUnchangedWithoutPluginsOrSetup(t *testing.T) {
+	t.Parallel()
 	agent := []string{"/opt/omp/bin/omp", "--mode", "rpc"}
 	for name, setup := range map[string][]string{"nil": nil, "empty": {}} {
 		got := startArgv("/home/legion/.local/state/tester", 1, nil, "", setup, agent, installLockWait(2*time.Second, 3))
@@ -252,6 +260,7 @@ func TestStartArgvIsAgentUnchangedWithoutPluginsOrSetup(t *testing.T) {
 // Oh My Pi launch of the same deployment is left unwrapped, so it renders no install of Claude
 // Code at all; what the block does when it runs is TestAClaudeLaunchInstallsThePinnedClaudeCode's.
 func TestAClaudeLaunchsStartScriptMakesItsConfigurationDirectory(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	r, err := configure(opts)
 	if err != nil {
@@ -310,6 +319,7 @@ func claudeCodeFailure(genDir string) string {
 // installing launch's script installs the plugin pair and a setup command's runs it, and neither
 // renders a line of the Claude Code block.
 func TestAnOhMyPiLaunchRendersNoClaudeCodeInstall(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	opts.Setup = testSetup
 	r, err := configure(opts)
@@ -386,7 +396,7 @@ func runClaudeStart(t *testing.T, npmBody string, seedCache ...func(t *testing.T
 	npmLog, agentLog := filepath.Join(dir, "npm.log"), filepath.Join(dir, "agent.log")
 	npm := filepath.Join(dir, "npm")
 	stub := "#!/bin/sh\n{ pwd; printf '%s\\n' \"$@\"; } >" + shellQuote(npmLog) + "\n" + npmBody
-	if err := os.WriteFile(npm, []byte(stub), 0o700); err != nil {
+	if err := execfile.Write(npm, []byte(stub), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	script := startScript(run.stateHome, 3, nil, run.configDir, installLockWait(2*time.Second, 3))
@@ -460,6 +470,7 @@ func pinnedClaudeCode(t *testing.T) string {
 // nothing. Each run is the script the daemon renders, with only npm and the pin's directory
 // replaced (runClaudeStart); each also shows the earlier generation's install removed.
 func TestAClaudeLaunchInstallsThePinnedClaudeCode(t *testing.T) {
+	t.Parallel()
 	pinned := pinnedClaudeCode(t)
 	for name, tc := range map[string]struct {
 		npm string
@@ -533,6 +544,7 @@ func TestAClaudeLaunchInstallsThePinnedClaudeCode(t *testing.T) {
 // if it ever runs with the directory missing, which the recovery removes. Both run the real
 // wrapper against the committed pin, so what is proven is the script a pod runs.
 func TestAClaudeLaunchMakesItsSharedNpmCacheWhateverItFinds(t *testing.T) {
+	t.Parallel()
 	pinned := pinnedClaudeCode(t)
 	for name, seed := range map[string]func(t *testing.T, cache string){
 		"a directory another role made first": func(t *testing.T, cache string) {
@@ -584,7 +596,7 @@ func installLockProbe(t *testing.T, unlock bool) []string {
 		"sleep 0.3\n" +
 		"printf 'end %s\\n' \"$LEGION_TEST_ID\" >> \"$LEGION_TEST_LOG\"\n" +
 		"exit 0\n"
-	if err := os.WriteFile(stub, []byte(body), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
@@ -668,6 +680,8 @@ func overlapped(lines []string) (overlap bool, err error) {
 // a race it must win rather than a certainty, and a control that never interleaves is a broken
 // harness, failed here rather than reported green.
 func TestTwoRenderedInstallsSerialiseOnTheSharedBunCache(t *testing.T) {
+	// Not parallel: its unlocked control needs two shells' 300 ms stand-in installs to overlap, which
+	// other tests' load could keep apart.
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no /bin/sh in this environment")
 	}
@@ -729,8 +743,9 @@ const (
 // since an unserialised cold fill fails the launch anyway — so the property drops those clauses
 // there, conditional on the deadline rather than on the configuration's name.
 func TestTheInstallLockWaitIsABoundInProportionToTheRegistrationDeadline(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "legion.yaml")
-	body := "project: demo\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"
+	body := "project: DEMO\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -793,6 +808,7 @@ var testSetup = []string{"/bin/sh", "-c", "omp plugin marketplace add acme/agent
 // after their count, never quoted into the script, and the agent argv exactly the plain launch's,
 // the image's two extension roots included, since setup installs nothing of Legion's.
 func TestASetupCommandWrapsEveryStartOfEveryRole(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	opts.Setup = testSetup
 	r, err := configure(opts)
@@ -905,6 +921,7 @@ func readLines(t *testing.T, path string) []string {
 // and its stdout on stderr, so the shim's RPC frames reach the agent alone and nothing of the setup
 // enters the frame stream the shim reads; then Oh My Pi starts there with its own argv, and stdin.
 func TestASucceedingSetupCommandRunsBeforeTheAgentInTheStartDirectory(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	start := filepath.Join(dir, "workspace")
 	if err := os.Mkdir(start, 0o700); err != nil {
@@ -937,6 +954,7 @@ func TestASucceedingSetupCommandRunsBeforeTheAgentInTheStartDirectory(t *testing
 // My Pi starts: the agent never runs, the wrapper's exit is the command's, and stderr — the role's
 // log — carries the command's own output and the line saying Oh My Pi was not started.
 func TestAFailingSetupCommandNeverStartsTheAgent(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		setup  []string
 		exit   int
@@ -971,6 +989,7 @@ func TestAFailingSetupCommandNeverStartsTheAgent(t *testing.T) {
 // started in: the install's cd into its generation directory ends with the install. bun and node
 // are stand-ins that record their order and directory.
 func TestAnInstallRunsBeforeTheSetupCommandAndLeavesTheStartDirectory(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	start := filepath.Join(dir, "workspace")
 	if err := os.Mkdir(start, 0o700); err != nil {
@@ -979,7 +998,7 @@ func TestAnInstallRunsBeforeTheSetupCommandAndLeavesTheStartDirectory(t *testing
 	order := filepath.Join(dir, "order")
 	stub := "#!/bin/sh\necho \"$(basename \"$0\") $(pwd)\" >>" + shellQuote(order) + "\n"
 	for _, name := range []string{"bun", "node"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(stub), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(dir, name), []byte(stub), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1015,6 +1034,7 @@ func TestAnInstallRunsBeforeTheSetupCommandAndLeavesTheStartDirectory(t *testing
 // The succeeding case is the control and belongs in the same test: without it the absent setup
 // and agent markers would prove only that the harness ran nothing at all.
 func TestAFailingInstallNeverRunsTheSetupCommandOrTheAgent(t *testing.T) {
+	t.Parallel()
 	plugins := testPlugins()
 	failMsg := fmt.Sprintf("legion plugins: installing %s and %s failed",
 		bunSpec("@sjawhar/pi-legion", plugins.PiLegion), bunSpec("@sjawhar/pi-envoy", plugins.PiEnvoy))
@@ -1029,7 +1049,7 @@ func TestAFailingInstallNeverRunsTheSetupCommandOrTheAgent(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			for file, body := range map[string]string{"bun": tc.bun, "node": "#!/bin/sh\nexit 0\n"} {
-				if err := os.WriteFile(filepath.Join(dir, file), []byte(body), 0o700); err != nil {
+				if err := execfile.Write(filepath.Join(dir, file), []byte(body), 0o700); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1078,6 +1098,7 @@ func TestAFailingInstallNeverRunsTheSetupCommandOrTheAgent(t *testing.T) {
 // it sits, which is how the one-way failure shipped; what runs here is the script the daemon
 // renders, with stand-ins for bun and node, never a retyped copy of it.
 func TestAnInstallRemakesAPoisonedCacheAndSparesARealOne(t *testing.T) {
+	t.Parallel()
 	// cached is what a filled cache holds; every byte of it has to outlive the install.
 	cached := map[string]string{"entry.txt": "cached bytes", "nested.json": "{\"v\":1}"}
 	fill := func(t *testing.T, dir string) string {
@@ -1121,7 +1142,7 @@ func TestAnInstallRemakesAPoisonedCacheAndSparesARealOne(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			for _, file := range []string{"bun", "node"} {
-				if err := os.WriteFile(filepath.Join(dir, file), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+				if err := execfile.Write(filepath.Join(dir, file), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 					t.Fatal(err)
 				}
 			}

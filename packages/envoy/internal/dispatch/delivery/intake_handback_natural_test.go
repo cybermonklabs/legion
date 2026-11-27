@@ -13,19 +13,20 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// A lost hold ends the connection of a pending hand-back even when a read of that connection holds
-// the bus client's lock. The holder's stop holds two messages of a pull request behind the one in its
-// handler. The first hand-back's publish waits behind a held write, and the second's connected read
-// (mayHandBack) waits for nats.go's lock while it holds the client's, and is left running. The
-// holder's renewals are then refused: by the time the standby creates the durable, the connection
-// that carries the pending hand-back must be closed, and no -NAK may reach the server after the
-// creation. A Sever that took the client's lock waited behind that read, and the standby created
-// the durable with the connection still open.
+// A lost hold ends the connection of a pending hand-back even while a read of that connection
+// waits for nats.go's lock. The holder's stop holds two messages of a pull request behind the one in
+// its handler. The first hand-back's publish waits behind a held write, and the second's connected
+// read (mayHandBack) waits for nats.go's lock, and is left running. The holder's renewals are then
+// refused: by the time the standby creates the durable, the connection that carries the pending
+// hand-back must be closed, and no -NAK may reach the server after the creation. A Sever that
+// waited behind that read let the standby create the durable with the connection still open. The
+// read holds no lock of the bus client's while it waits: Connected reads nats.go's status with the
+// client's lock released (bus.Client.Connected).
 func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
+	testnats.RequireSocketQueues(t)
 	shrinkIntakeFlowControl(t)
-	budget := intakeStopBudget
-	intakeStopBudget = stopBudget
-	t.Cleanup(func() { intakeStopBudget = budget })
+	tuning := tuningFor(t)
+	tuning.stopBudget = stopBudget
 	var row heldHandBack
 	pool, ctx := deliveryTestPool(t)
 	row.pool = pool
@@ -51,10 +52,12 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 	})
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
-	awaitAckPending(t, publisher, 3)
+	waitFor(t, 20*time.Second, func() bool { return queuedBehindKeys(subscribedDelivery(holder.intake)) == 2 }, func() string {
+		return fmt.Sprintf("control: %d message(s) wait behind the holder's handler, want the second and third messages: %s", queuedBehindKeys(subscribedDelivery(holder.intake)), consumerState(publisher))
+	})
 
-	wait := callNATSWait.Swap(int64(30 * time.Second))
-	restoreWait := sync.OnceFunc(func() { callNATSWait.Store(wait) })
+	wait := tuning.callWait.Swap(int64(30 * time.Second))
+	restoreWait := sync.OnceFunc(func() { tuning.callWait.Store(wait) })
 	t.Cleanup(restoreWait)
 	var holding sync.Once
 	held := make(chan struct{})
@@ -92,7 +95,7 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 	if !row.handBackPending() {
 		t.Fatal("control: the stop's hand-back reached NATS while the write was held")
 	}
-	if !holdLive(t, row.pool) {
+	if !holdLive(t, row.pool, row.holder.intake.holder) {
 		t.Fatal("control: the stop released its hold with its hand-back pending")
 	}
 	row.holder.leases.cut.Store(true)
@@ -135,11 +138,11 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 // connection and not the order of events: what the frozen relay had already read of the socket
 // before the sever is beyond the client, and reaches the server once the relay thaws.
 func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *testing.T) {
-	logs := captureLogs(t)
+	testnats.RequireSocketQueues(t)
+	logs := captureIntakeLogs(t)
 	shrinkIntakeFlowControl(t)
-	budget := intakeStopBudget
-	intakeStopBudget = stopBudget
-	t.Cleanup(func() { intakeStopBudget = budget })
+	tuning := tuningFor(t)
+	tuning.stopBudget = stopBudget
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -158,12 +161,14 @@ func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *tes
 		return "the holder never started on the first message: " + consumerState(publisher)
 	})
 	publishMergedPullRequest(t, publisher, inFlight)
-	awaitAckPending(t, publisher, 2)
+	waitFor(t, 20*time.Second, func() bool { return queuedBehindKeys(subscribedDelivery(holder.intake)) == 1 }, func() string {
+		return fmt.Sprintf("control: %d message(s) wait behind the holder's handler, want the second message: %s", queuedBehindKeys(subscribedDelivery(holder.intake)), consumerState(publisher))
+	})
 
 	// The stop's hand-backs go out only once its drain has answered; the row gives the stop's calls
 	// a 30 s guard, and puts the wait back as the hand-back's publish begins (stopWithAHeldHandBack).
-	wait := callNATSWait.Swap(int64(30 * time.Second))
-	restoreWait := sync.OnceFunc(func() { callNATSWait.Store(wait) })
+	wait := tuning.callWait.Swap(int64(30 * time.Second))
+	restoreWait := sync.OnceFunc(func() { tuning.callWait.Store(wait) })
 	t.Cleanup(restoreWait)
 	var freezing sync.Once
 	frozen := make(chan struct{})
@@ -201,7 +206,7 @@ func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *tes
 	case <-time.After(30 * time.Second):
 		t.Fatal("control: the hand-back's publish did not land in the frozen link's socket")
 	}
-	if !loggedMessage(logs(), intakeHoldFinalizing) || !holdLive(t, pool) {
+	if !loggedMessage(logs(), intakeHoldFinalizing) || !holdLive(t, pool, holder.intake.holder) {
 		t.Fatalf("control: the stop released its hold although no flush could confirm its hand-back; logged %q", loggedMessages(logs()))
 	}
 	thaw := link.HoldStalledWrite(t, holderConn)

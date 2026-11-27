@@ -41,6 +41,7 @@ const volumeTrimOwnHoldEnv = "LEGION_LAUNCHER_VOLUME_TRIM_OWN_HOLD"
 // directory`; with followingRemoval (Root.RemoveAll) called in place of removeEntryAt, the first
 // trial raced and deleted every bait.
 func TestTheDeletersRemovalFollowsNoLinkWithNoContainment(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	bait := t.TempDir() // a sibling of the entry's directory, which no removal of it may reach
 	at := time.Now().Add(-2 * time.Hour)
@@ -91,6 +92,7 @@ func TestTheDeletersRemovalFollowsNoLinkWithNoContainment(t *testing.T) {
 // O_NOFOLLOW in openElementAt's place), which emptied the bait and answered the last unlinkat's
 // ENOTDIR.
 func TestARemovalUnlinksWhatWasSwappedInBetweenItsUnlinkAndItsOpen(t *testing.T) {
+	// Not parallel: it writes the package variable betweenUnlinkAndOpen, which parallel tests read.
 	for _, swap := range []struct {
 		name string
 		put  func(t *testing.T, path, bait string)
@@ -159,6 +161,8 @@ func TestARemovalUnlinksWhatWasSwappedInBetweenItsUnlinkAndItsOpen(t *testing.T)
 // with no bound on its passes never answers while the writer runs, which the helper fails on.
 // On 2026-11-15 one run of the package in this pod met that nil once (round 23's surface run).
 func TestARemovalOfADirectoryStillBeingWrittenInEnds(t *testing.T) {
+	// Not parallel: it writes the package variable betweenUnlinkAndOpen (removeWhileFilling), which
+	// parallel tests read.
 	const filledTries = 20
 	dir := t.TempDir()
 	held, err := os.Open(dir)
@@ -182,13 +186,14 @@ func TestARemovalOfADirectoryStillBeingWrittenInEnds(t *testing.T) {
 }
 
 // A removal makes two passes over a directory whose names keep appearing, and then answers
-// errStillFilling (empty, volumeRemovalPasses). The case above races a writer, so it holds that
-// the removal answers and not after how many passes: a bound of one pass, or of three, answers as
-// well. Here the writer is the removal's own window between the unlink of a name and its open
-// (betweenUnlinkAndOpen): each subdirectory of the entry the removal reaches has the next made
-// beside it there, so every pass meets one new name, and the passes are counted by the
+// errStillFilling (removeDir, volumeRemovalPasses). The case above races a writer, so it holds
+// that the removal answers and not after how many passes: a bound of one pass, or of three,
+// answers as well. Here the writer is the removal's own window between the unlink of a name and
+// its open (betweenUnlinkAndOpen): each subdirectory of the entry the removal reaches has the next
+// made beside it there, so every pass meets one new name, and the passes are counted by the
 // subdirectories it reached. Two is written out rather than read off the constant.
 func TestARemovalMakesTwoPassesOverADirectoryWhoseNamesKeepAppearing(t *testing.T) {
+	// Not parallel: it writes the package variable betweenUnlinkAndOpen, which parallel tests read.
 	const passes = 2
 	dir := t.TempDir()
 	held, err := os.Open(dir)
@@ -220,14 +225,172 @@ func TestARemovalMakesTwoPassesOverADirectoryWhoseNamesKeepAppearing(t *testing.
 	}
 }
 
+// A name made in a directory after the removal's read found none and before its rmdir appeared
+// while the removal ran, as a writer's name does: the rmdir's ENOTEMPTY sends the removal back to
+// read the directory again, within volumeRemovalPasses, rather than answering it as a failure of
+// the directory's own (removeDir). TestARemovalOfADirectoryStillBeingWrittenInEnds meets that
+// window only when its writer falls behind; here the window is the removal's own
+// (beforeRemoveDir), before each rmdir of the entry, so nothing is raced. A name made before the
+// first rmdir alone is read, removed, and the entry goes; a name made before every rmdir spends
+// the passes, and the removal answers errStillFilling of the entry after volumeRemovalPasses+1
+// rmdirs; and an ENOTEMPTY that the next read finds no name for, which beforeRemoveDir answers in
+// the rmdir's place as a name no read lists, uses up no pass and is answered as it is.
+func TestARemovalOfADirectoryRefilledBeforeItsRmdirReadsItAgain(t *testing.T) {
+	// Not parallel: it writes the package variable beforeRemoveDir, which parallel tests read.
+	for _, tc := range []struct {
+		name string
+		// refill is the window before the entry's rmdir number rmdir.
+		refill     func(t *testing.T, entry string, rmdir int) error
+		wantRmdirs int
+		// wantIs is what the removal's answer is (errors.Is), nil for none; wantText is its whole
+		// text, "" for none.
+		wantIs   error
+		wantText string
+	}{
+		{
+			name: "a name made before the first rmdir alone",
+			refill: func(t *testing.T, entry string, rmdir int) error {
+				if rmdir == 1 {
+					writeLate(t, entry, rmdir)
+				}
+				return nil
+			},
+			wantRmdirs: 2,
+		},
+		{
+			name: "a name made before every rmdir",
+			refill: func(t *testing.T, entry string, rmdir int) error {
+				writeLate(t, entry, rmdir)
+				return nil
+			},
+			wantRmdirs: volumeRemovalPasses + 1,
+			wantIs:     errStillFilling,
+			wantText:   quotedPathText("getdents", "entry", "", errStillFilling),
+		},
+		{
+			name: "an ENOTEMPTY no read finds a name for",
+			// Past the most rmdirs a removal may make, an EIO, which the removal answers as it
+			// is: a removal that read the entry again after every such refusal ends there and
+			// fails this case by its text and its rmdir count, not by go test's timeout.
+			refill: func(_ *testing.T, _ string, rmdir int) error {
+				if rmdir > volumeRemovalPasses+1 {
+					return syscall.EIO
+				}
+				return syscall.ENOTEMPTY
+			},
+			wantRmdirs: 1,
+			wantIs:     syscall.ENOTEMPTY,
+			wantText:   quotedPathText("unlinkat", "entry", "", syscall.ENOTEMPTY),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			held, err := os.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer held.Close()
+			entry := filepath.Join(dir, "entry")
+			mkdirFixture(t, entry)
+			rmdirs := 0
+			beforeRemoveDir = func(name string) error {
+				if name != "entry" {
+					return nil
+				}
+				rmdirs++
+				return tc.refill(t, entry, rmdirs)
+			}
+			t.Cleanup(func() { beforeRemoveDir = nil })
+
+			removal := removeEntryAt(held, "entry", make([]byte, volumeRemovalNamesBytes))
+
+			text := ""
+			if removal != nil {
+				text = removal.Error()
+			}
+			if !errors.Is(removal, tc.wantIs) || text != tc.wantText {
+				t.Errorf("the removal answered %q, want %q (%v)", text, tc.wantText, tc.wantIs)
+			}
+			if rmdirs != tc.wantRmdirs {
+				t.Errorf("the removal made %d rmdirs of the entry, want %d", rmdirs, tc.wantRmdirs)
+			}
+			if _, err := os.Lstat(entry); errors.Is(err, os.ErrNotExist) != (tc.wantIs == nil) {
+				t.Errorf("after the removal the entry's lstat answered %v, want it gone: %t", err, tc.wantIs == nil)
+			}
+		})
+	}
+}
+
+// writeLate makes the file late<n> in entry, a name that appears after the removal's read.
+func writeLate(t *testing.T, entry string, n int) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(entry, fmt.Sprintf("late%d", n)), nil, 0o644); err != nil {
+		t.Error(err)
+	}
+}
+
+// A name the removal cannot remove does not reach an rmdir at all: a pass over a directory that
+// removes none of its names ends removeDir with that name's error, so neither the directory
+// holding the name nor the entry above it is ever rmdir'd, and the answer is the name's own error,
+// not errStillFilling, with no writer to blame. The name is a file in a directory made 0500, whose
+// unlink fails with EACCES on every pass; beforeRemoveDir counts the rmdirs the removal reaches.
+func TestARemovalOfANameItCannotRemoveAnswersThatNamesErrorBeforeAnyRmdir(t *testing.T) {
+	// Not parallel: it writes the package variable beforeRemoveDir, which parallel tests read.
+	if os.Geteuid() == 0 {
+		t.Skip("root unlinks in a directory whatever its mode, so a directory made 0500 is no failure that lasts for it")
+	}
+	dir := t.TempDir()
+	held, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	lockedDirHolding(t, filepath.Join(dir, "entry", "locked"), "kept")
+	var rmdirs []string
+	beforeRemoveDir = func(name string) error {
+		rmdirs = append(rmdirs, name)
+		return nil
+	}
+	t.Cleanup(func() { beforeRemoveDir = nil })
+
+	removal := removeEntryAt(held, "entry", make([]byte, volumeRemovalNamesBytes))
+
+	if !errors.Is(removal, syscall.EACCES) || errors.Is(removal, errStillFilling) {
+		t.Errorf("the removal answered %v, want the %v its unremovable name failed with", removal, syscall.EACCES)
+	}
+	if want := quotedPathText("unlinkat", "entry/.../kept", " (depth 2)", syscall.EACCES); removal == nil || removal.Error() != want {
+		t.Errorf("the removal answered %v, want %q: the name that could not be removed, two levels below the entry", removal, want)
+	}
+	if len(rmdirs) != 0 {
+		t.Errorf("the removal reached the rmdir of %v, want none: the pass that removed nothing ends it in removeDir", rmdirs)
+	}
+}
+
+// lockedDirHolding makes dir, where it is not there yet, with the empty file name in it, and makes
+// dir 0500 until the test ends: a name whose unlink fails with EACCES on every pass, for anyone but
+// root, which each case that holds it skips.
+func lockedDirHolding(t *testing.T, dir, name string) {
+	t.Helper()
+	mkdirFixture(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+}
+
 // A directory still being written in that also holds a name whose removal fails for a reason of
 // its own is answered with that reason, not with errStillFilling: the writer is what made the
 // removal stop at its bound, but the name that failed is what would still stand once the writer
 // stopped, and it is the one an operator reading the sweep's line can act on. The name here is a
 // directory made 0500 holding a file, whose unlink fails with EACCES on every pass. The negative
-// control is empty answering errStillFilling at its bound whatever its passes' names had failed
-// with.
+// control is removeDir answering errStillFilling at its bound whatever its passes' names had
+// failed with.
 func TestARemovalOfADirectoryStillBeingWrittenInNamesTheErrorItMet(t *testing.T) {
+	// Not parallel: it writes the package variable betweenUnlinkAndOpen (removeWhileFilling), which
+	// parallel tests read.
 	if os.Geteuid() == 0 {
 		t.Skip("root unlinks in a directory whatever its mode, so a directory made 0500 is no failure that lasts for it")
 	}
@@ -238,15 +401,7 @@ func TestARemovalOfADirectoryStillBeingWrittenInNamesTheErrorItMet(t *testing.T)
 	}
 	defer held.Close()
 	filling := filepath.Join(dir, "entry", "filling")
-	locked := filepath.Join(filling, "locked")
-	mkdirFixture(t, locked)
-	if err := os.WriteFile(filepath.Join(locked, "kept"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(locked, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	lockedDirHolding(t, filepath.Join(filling, "locked"), "kept")
 
 	removal := removeWhileFilling(t, held, filling)
 	if !errors.Is(removal, syscall.EACCES) {
@@ -263,9 +418,11 @@ func TestARemovalOfADirectoryStillBeingWrittenInNamesTheErrorItMet(t *testing.T)
 // first, so the case runs once with each order. The subdirectory a writer keeps filling answers
 // errStillFilling, and beside it a directory made 0500 holding a file fails its unlink with
 // EACCES. Each order is the negative control of one way to get the choice wrong: with the
-// filling subdirectory listed first, empty keeping the first error its pass met answers
-// errStillFilling, and with it listed last, empty keeping the last error it met does.
+// filling subdirectory listed first, removeDir keeping the first error its pass met answers
+// errStillFilling, and with it listed last, removeDir keeping the last error it met does.
 func TestARemovalNamesASiblingsErrorBeforeASubdirectoryStillFilling(t *testing.T) {
+	// Not parallel: it writes the package variable betweenUnlinkAndOpen (removeWhileFilling), which
+	// parallel tests read.
 	if os.Geteuid() == 0 {
 		t.Skip("root unlinks in a directory whatever its mode, so a directory made 0500 is no failure that lasts for it")
 	}
@@ -286,13 +443,7 @@ func TestARemovalNamesASiblingsErrorBeforeASubdirectoryStillFilling(t *testing.T
 			entry := filepath.Join(dir, "entry")
 			locked := filepath.Join(entry, "locked")
 			filling := stageListedPair(t, entry, locked, order.fillingFirst)
-			if err := os.WriteFile(filepath.Join(locked, "kept"), nil, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Chmod(locked, 0o500); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+			lockedDirHolding(t, locked, "kept")
 			if listed := listedNames(t, entry); (listed[0] == filepath.Base(filling)) != order.fillingFirst {
 				t.Fatalf("%s lists %q, which is not the order %q stages", entry, listed, order.name)
 			}
@@ -490,6 +641,7 @@ func isFillingName(name string) bool {
 // with EACCES. The negative control is under renaming the error to its whole path on the way
 // back up, which answered an error as long as the path of more than 100 KB.
 func TestARemovalThatFailsDeepInATreeAnswersABoundedError(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root unlinks in a directory whatever its mode, so a directory made 0500 is no failure that lasts for it")
 	}
@@ -560,6 +712,7 @@ func TestARemovalThatFailsDeepInATreeAnswersABoundedError(t *testing.T) {
 // removalFailure writing the names as they are, which put the newline in the error, and for the
 // entry itself removeEntryAt answering the fs.PathError of its own removal, which does the same.
 func TestARemovalErrorQuotesTheNamesARoleChose(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root unlinks in a directory whatever its mode, so a directory made 0500 is no failure that lasts for it")
 	}
@@ -584,15 +737,7 @@ func TestARemovalErrorQuotesTheNamesARoleChose(t *testing.T) {
 	}
 	t.Run("a name below the entry", func(t *testing.T) {
 		dir := t.TempDir()
-		locked := filepath.Join(dir, "entry", "locked")
-		mkdirFixture(t, locked)
-		if err := os.WriteFile(filepath.Join(locked, forged), nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(locked, 0o500); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+		lockedDirHolding(t, filepath.Join(dir, "entry", "locked"), forged)
 		answer(t, dir, "entry", strconv.Quote("entry/.../"+forged)+" (depth 2): ")
 	})
 	t.Run("the entry itself", func(t *testing.T) {
@@ -654,6 +799,7 @@ const ownHoldEntries = 2000
 // the child's deadline. refreshMidway forces the used-path refresh independently of the
 // filesystem's speed.
 func TestASweepsOwnDeleterIsNoHoldOnTheRootsItDeletesFrom(t *testing.T) {
+	t.Parallel()
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
 	if err != nil {
@@ -694,6 +840,7 @@ const ownHoldSwept = "the sweep ran as PID"
 // TestASweepsOwnDeleterIsNoHoldHelper is one sweep of that case, as PID 1 of the namespaces it
 // was cloned into.
 func TestASweepsOwnDeleterIsNoHoldHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	sweep := os.Getenv(volumeTrimOwnHoldEnv)
 	if sweep == "" {
 		return
@@ -828,6 +975,8 @@ func holdOpen(t *testing.T, dir string) {
 // deleter has exited and before the remover's close waits on it leaves the exit to that wait,
 // which reads the deleter's own exit status, and the guard forgets the pid once it has.
 func TestTheReaperLeavesTheSweepsDeleterToItsOwnWait(t *testing.T) {
+	// Not parallel: it writes the package variable trimDeleteLaunch (useContainedDeleter), which
+	// parallel tests read.
 	requireRoleNamespaces(t)
 	useContainedDeleter(t)
 	guard := &pidGuard{}
@@ -874,6 +1023,8 @@ func TestTheReaperLeavesTheSweepsDeleterToItsOwnWait(t *testing.T) {
 // each a link to the process's own directory in the machine's /proc, as
 // TestMemoryGuardOnRealRoleNamespaces reads its role's processes.
 func TestTheMemoryGuardSparesTheSweepsRunningDeleter(t *testing.T) {
+	// Not parallel: it writes the package variable trimDeleteLaunch (useContainedDeleter), which
+	// parallel tests read.
 	requireRoleNamespaces(t)
 	useContainedDeleter(t)
 	guard := &pidGuard{}
@@ -908,6 +1059,8 @@ func TestTheMemoryGuardSparesTheSweepsRunningDeleter(t *testing.T) {
 // the child answering `removed` for a removal that failed, which every deleter case before this
 // one left green.
 func TestTheDeleterAnswersARemovalItCannotMakeAsARefusal(t *testing.T) {
+	// Not parallel: it writes the package variable trimDeleteLaunch (useContainedDeleter), which
+	// parallel tests read.
 	requireRoleNamespaces(t)
 	useContainedDeleter(t)
 	dir := t.TempDir()
@@ -955,6 +1108,7 @@ func TestTheDeleterAnswersARemovalItCannotMakeAsARefusal(t *testing.T) {
 // A refusal at -1 is no reach into the deleter's own standard error, the third descriptor, which
 // the number would otherwise name.
 func TestARequestNamingADescriptorBelowTheFirstPassedIsRefused(t *testing.T) {
+	t.Parallel()
 	err := removeOneRequest(map[int]*os.File{}, `-1 "entry"`, make([]byte, volumeRemovalNamesBytes))
 	if err == nil || !strings.Contains(err.Error(), "names the descriptor -1, which the trimmer passed none at") {
 		t.Errorf("the request for descriptor -1 was answered %v, want it refused as naming no descriptor the trimmer passed", err)
@@ -971,6 +1125,7 @@ func TestARequestNamingADescriptorBelowTheFirstPassedIsRefused(t *testing.T) {
 // fails on it and on the signal too, once the sleep's own 300 s are up, or at the hang guard the
 // wait for the close runs under, if that ends sooner.
 func TestADeleterThatIgnoresTheEndOfItsRequestsIsKilledAtTheGrace(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("sleep", "300")
 	requests, err := cmd.StdinPipe()
 	if err != nil {

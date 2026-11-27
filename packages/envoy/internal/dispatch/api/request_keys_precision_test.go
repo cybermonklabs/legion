@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // INFRA-258. A transaction that only locked rows - a claim's SELECT ... FOR UPDATE - is given a
@@ -113,6 +114,7 @@ func TestACommitThatFailsAfterTheMarkLeavesNoMark(t *testing.T) {
 // past IdempotencyKeyTTL and keeps one inside it, so a repeat of a day-old press is still answered
 // from its key and one past the window is a new write.
 func TestTheMaintenanceLoopKeepsAKeyForItsWholeWindow(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	rig := newKeyedRig(t, answerRun)
 	for _, key := range []string{"inside", "past"} {
 		if response := rig.send(t, "a", nil, "alice", key); response.Code != http.StatusCreated {
@@ -133,12 +135,9 @@ func TestTheMaintenanceLoopKeepsAKeyForItsWholeWindow(t *testing.T) {
 		defer close(done)
 		RunMaintenanceSweep(ctx, rig.database.Pool, 50*time.Millisecond, sweepLeases(t, rig.database), nil)
 	}()
-	for deadline := time.Now().Add(30 * time.Second); countLeaseLines(logs, "dispatch duty: leased pass ran", maintenanceLease) == 0; {
-		if time.Now().After(deadline) {
-			t.Fatalf("the loop never made a pass:\n%s", logs.Lines("lease="))
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.UntilPolling(t, 20*time.Millisecond, "the maintenance loop's first leased pass (the lease lines it logged)", func() (string, bool) {
+		return logs.Lines("lease="), countLeaseLines(logs, "dispatch duty: leased pass ran", maintenanceLease) > 0
+	})
 	stop()
 	<-done
 	var keys []string
@@ -199,7 +198,7 @@ func TestARecoveredReplayKeepsNothingOfARefusal(t *testing.T) {
 		t.Fatalf("a success's stored body = %s, want it handed to the replay", body)
 	}
 	response := httptest.NewRecorder()
-	(&server{}).writeRefreshed(response, stored, map[string]any{"id": "m1"})
+	(&server{}).writeRefreshed(response, http.StatusCreated, stored, map[string]any{"id": "m1"})
 	var answer map[string]json.RawMessage
 	if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
 		t.Fatal(err)
@@ -228,10 +227,10 @@ func TestARequestKeysRowIsOneOfItsStates(t *testing.T) {
 	}
 }
 
-// Every route the keyed layer's own tables name - those that replay a recovery point, never keep
-// their answer, take an upload's body, or read a body of their own size (handoffWriteRoute,
-// markdownRoundTripRoute) - is a POST or PATCH route the server registers: a pattern spelled
-// wrong would silently turn its rule off.
+// Every route the keyed layer's own tables name - those that replay a recovery point, read the
+// post a kept answer holds again, never keep their answer, take an upload's body, or read a body
+// of their own size (handoffWriteRoute, markdownRoundTripRoute, fileRoundTripRoute) - is a POST or
+// PATCH route the server registers: a pattern spelled wrong would silently turn its rule off.
 func TestEveryKeyedRouteTableNamesARoute(t *testing.T) {
 	t.Parallel()
 	registered := map[string]bool{}
@@ -247,11 +246,15 @@ func TestEveryKeyedRouteTableNamesARoute(t *testing.T) {
 	for route := range answerHoldsSecret {
 		tables["answerHoldsSecret"] = append(tables["answerHoldsSecret"], route)
 	}
+	for route := range keyedRereads {
+		tables["keyedRereads"] = append(tables["keyedRereads"], route)
+	}
 	for route := range keyedUploads {
 		tables["keyedUploads"] = append(tables["keyedUploads"], route)
 	}
 	tables["handoffWriteRoute"] = []string{handoffWriteRoute}
 	tables["markdownRoundTripRoute"] = []string{markdownRoundTripRoute}
+	tables["fileRoundTripRoute"] = []string{fileRoundTripRoute}
 	for table, routes := range tables {
 		for _, route := range routes {
 			if !registered[route] {

@@ -68,8 +68,9 @@
 //                                          Approve, which is the review
 //   seed.ts capture-spec <file> <run dir>  what the run wrote on the issue, the seeded asks left
 //                                          out: spec.md, spec-versions.json and spec-versions/<n>.md,
-//                                          agent-asks.json, agent-texts.json, documents/<slug>.md and
-//                                          plan.md (the run directory table of judge.ts and score.ts)
+//                                          agent-asks.json, agent-texts.json (no message or comment
+//                                          the run deleted), documents/<slug>.md and plan.md (the run
+//                                          directory table of judge.ts and score.ts)
 //   seed.ts askgate <file>                 one run's own issue, with an empty spec and one comment
 //                                          by the person alice; writes {issue, comment,
 //                                          comment_ref} to <file>
@@ -77,16 +78,17 @@
 //                                          the asks and documents on the issue <file> names, as
 //                                          score.ts's askgateReview reads them (asks.json,
 //                                          artifacts.json in <run dir>)
+//   seed.ts owner-walk <file> <kind> <answer>
+//                                          owner-walk's world under LWEVAL, for an owner of <kind>
+//                                          (root or child), from the run's recorded plans answer
+//                                          <answer> (owner-walk-seed.ts ownerWalkIssues)
+//   seed.ts capture-scored <file> <run dir>
+//                                          the world's Dispatch records after a scored run, as
+//                                          captured.json in <run dir> (owner-walk-seed.ts
+//                                          captureScored)
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type {
-  Actor,
-  ArtifactBlock,
-  Ask,
-  AskOption,
-  Handoff,
-  HandoffSummary,
-} from "@legion/contracts";
+import type { Actor, ArtifactBlock, Ask, AskOption } from "@legion/contracts";
 import { z } from "zod";
 import {
   answerAsk,
@@ -110,7 +112,9 @@ import {
   listIssueMessages,
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
+import { captureScored, ownerWalkIssues } from "./owner-walk-seed";
 import { parseInstant } from "./production-dispatch";
+import { APPROVE, handoffsOf, PERSON } from "./seed-dispatch";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
 
 /** What `ask-on-message` writes and `capture` reads. */
@@ -138,10 +142,6 @@ const TesterFixture = z.object({
 /** The session the tester's predecessor wrote its implement handoff as: the implementer's, never
  * the run's own. */
 export const IMPLEMENTER = { kind: "session", id: "rig-implementer" } as const;
-/** The person who files the run's issue, posts the source's input and answers every ask. */
-const PERSON = "alice";
-/** Dispatch's approval answer (packages/envoy/internal/dispatch/docs/approval_review.go). */
-const APPROVE = "Approve";
 /** How long spec-rewrite waits for Dispatch's settlement to open the old spec's ask blocks as asks
  * (it settles a seeded document 2 s after the issue is created), and how often it looks. */
 const BLOCK_ASKS_WAIT_MS = 30_000;
@@ -510,11 +510,25 @@ export async function captureSpec(file: string, runDir: string): Promise<void> {
   );
 
   // The run's session is the one its transcript's header names; a run with no transcript wrote
-  // nothing.
+  // nothing. A message or comment the run deleted is left out and counted, as
+  // fetch-spec-sources.ts's `standing` leaves a deleted post out: Dispatch reads it with its body
+  // empty, which the judges would take as something the run said (dispatch://INFRA-1523).
   const runSession = sessionId(session(runDir));
   const texts: AgentText[] = [];
-  const add = (id: string, kind: AgentText["kind"], author: Actor, body: string, at: string) => {
+  let deleted = 0;
+  const add = (
+    id: string,
+    kind: AgentText["kind"],
+    author: Actor,
+    body: string,
+    at: string,
+    deletedAt: string | null
+  ) => {
     if (author.kind !== "session" || author.id !== runSession) return;
+    if (deletedAt != null) {
+      deleted += 1;
+      return;
+    }
     texts.push({
       id,
       kind,
@@ -529,15 +543,29 @@ export async function captureSpec(file: string, runDir: string): Promise<void> {
       lines.push(option.label);
       if (option.description) lines.push(option.description);
     }
-    add(ask.id, "ask", ask.author, lines.join("\n"), ask.created_at);
+    add(ask.id, "ask", ask.author, lines.join("\n"), ask.created_at, null);
   }
   for (const thread of await listIssueMessages(fixture.issue, reader)) {
     for (const message of [thread.message, ...(thread.replies ?? [])]) {
-      add(message.id, "message", message.author, message.body, message.created_at);
+      add(
+        message.id,
+        "message",
+        message.author,
+        message.body,
+        message.created_at,
+        message.deleted_at
+      );
     }
   }
   for (const comment of await listComments(fixture.issue, undefined, reader)) {
-    add(comment.id, "comment", comment.author, comment.body, comment.created_at);
+    add(
+      comment.id,
+      "comment",
+      comment.author,
+      comment.body,
+      comment.created_at,
+      comment.deleted_at
+    );
   }
   // Dispatch's times carry microseconds, which Date.parse drops; two texts of one time keep the order
   // the capture read them in.
@@ -562,7 +590,7 @@ export async function captureSpec(file: string, runDir: string): Promise<void> {
     );
   }
   console.log(
-    `captured ${fixture.issue}: ${(spec.versions ?? []).length} spec versions, ${asks.length} asks, ${texts.length} texts, ${documents.length} documents`
+    `captured ${fixture.issue}: ${(spec.versions ?? []).length} spec versions, ${asks.length} asks, ${texts.length} texts (${deleted} deleted posts left out), ${documents.length} documents`
   );
 }
 
@@ -658,16 +686,6 @@ export async function implementHandoff(
   console.log(`seeded ${issue}'s implement handoff, version ${recorded.version} (${recorded.id})`);
 }
 
-/** `GET route` as the agent bearer, its JSON answer; a refusal names the route and Dispatch's answer. */
-async function agentGet<T>(route: string): Promise<T> {
-  const response = await fetch(new URL(route, baseUrl), {
-    headers: { Authorization: `Bearer ${e2eAgentToken}` },
-  });
-  if (!response.ok)
-    throw new Error(`GET ${route} failed: ${response.status} ${await response.text()}`);
-  return (await response.json()) as T;
-}
-
 /** `POST route` as the agent bearer, with `input` as its JSON body; a refusal names the route and
  * Dispatch's answer. */
 async function agentPost(route: string, input: unknown): Promise<void> {
@@ -684,16 +702,10 @@ async function agentPost(route: string, input: unknown): Promise<void> {
 }
 
 /** `capture-handoffs <file> <run dir>`: every handoff record of the run's issue, the seeded
- * implement record among them, newest first as `GET …/handoffs` lists them, each read whole by id
- * (`GET /api/v1/handoffs/{id}`) for its body. */
+ * implement record among them, newest first, each with its body (handoffsOf). */
 export async function captureHandoffs(file: string, runDir: string): Promise<void> {
   const { issue } = TesterFixture.parse(JSON.parse(readFileSync(file, "utf8")));
-  const summaries = await agentGet<HandoffSummary[]>(
-    `/api/v1/issues/${encodeURIComponent(issue)}/handoffs`
-  );
-  const records: Handoff[] = [];
-  for (const summary of summaries)
-    records.push(await agentGet<Handoff>(`/api/v1/handoffs/${encodeURIComponent(summary.id)}`));
+  const records = await handoffsOf(issue);
   writeFileSync(path.join(runDir, "handoffs.json"), `${JSON.stringify(records)}\n`);
   console.log(`captured ${issue}: ${records.length} handoff records`);
 }
@@ -895,7 +907,7 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | owner-walk <file> <kind> <answer> | capture-scored <file> <run dir>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
@@ -938,6 +950,16 @@ async function main(argv: string[]): Promise<boolean> {
     await implementHandoff(file, second, third);
   else if (command === "capture-handoffs" && file !== undefined && second !== undefined && n === 3)
     await captureHandoffs(file, second);
+  else if (
+    command === "owner-walk" &&
+    file !== undefined &&
+    second !== undefined &&
+    third !== undefined &&
+    n === 4
+  )
+    await ownerWalkIssues(file, second, third);
+  else if (command === "capture-scored" && file !== undefined && second !== undefined && n === 3)
+    await captureScored(file, second);
   else return false;
   return true;
 }

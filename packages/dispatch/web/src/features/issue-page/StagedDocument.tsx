@@ -142,11 +142,11 @@ export function StagedDocument({
  * `styles.css`, a diagram's in `lib.css`), so nothing here holds one. A run with no space in it
  * breaks anywhere: the editor's own `break-word` gives it no place to break where its box is
  * sized to its words, as a typed block's header sizes its title, which held a path at its whole
- * width. A reference the editor draws as its issue's title, one line cut at 24em (`lib.css`), is
- * cut at its line's end too where that comes first, as in a bullet on a phone. Both rules carry
- * `!`, since the editor's stylesheets stand outside Tailwind's layers and would win over a
- * utility. A collaborator's caret label near a line's end hangs back toward the line's start
- * rather than past the box's end (`@legion/proof-editor`'s `collab-cursor-plugin.ts`).
+ * width. That rule carries `!`, since the editor's stylesheets stand outside Tailwind's layers
+ * and would win over a utility. A reference the editor draws as its issue's title is one line
+ * cut at 24em or at its line's end, whichever comes first (`lib.css`). A collaborator's caret
+ * label near a line's end hangs back toward the line's start rather than past the box's end
+ * (`@legion/proof-editor`'s `collab-cursor-plugin.ts`).
  *
  * The box carries the page's cue that a block takes typing (`dispatch-edit-cue`, `styles.css`):
  * the text cursor and the page's faint pane under the pointer, and a 1 px rule in the page's ink
@@ -167,7 +167,7 @@ export function EditorBox({
   return (
     <div className="min-w-0 [overflow-anchor:none]">
       <div
-        className="dispatch-edit-cue max-h-[calc(100dvh-var(--issue-identity-height,0px)-var(--issue-composer-height,0px))] overflow-y-auto overscroll-contain [&_.ProseMirror]:[overflow-wrap:anywhere]! [&_.dispatch-reference]:max-w-[min(24em,100%)]!"
+        className="dispatch-edit-cue max-h-[calc(100dvh-var(--issue-identity-height,0px)-var(--issue-composer-height,0px))] overflow-y-auto overscroll-contain [&_.ProseMirror]:[overflow-wrap:anywhere]!"
         ref={ref}
         {...{ [EDITOR_BOX_ATTRIBUTE]: "" }}
       >

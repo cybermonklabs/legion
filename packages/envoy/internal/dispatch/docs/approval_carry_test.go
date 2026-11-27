@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // decisionBlockFixture reads one of the decision-block fixtures the browser's line-based cut and
@@ -59,6 +60,7 @@ func cutDecisionBlocks(t *testing.T, markdown string) string {
 // A re-answered block and a new answered block are the whole difference between the approved
 // fixture and the answered one, so the two cut to the same text; a changed paragraph does not.
 func TestCutDecisionBlocksEqualsAcrossAnswersAndDiffersOnAParagraph(t *testing.T) {
+	t.Parallel()
 	approved := cutDecisionBlocks(t, decisionBlockFixture(t, "approved.md"))
 	answered := cutDecisionBlocks(t, decisionBlockFixture(t, "answered.md"))
 	paragraphChanged := cutDecisionBlocks(t, decisionBlockFixture(t, "paragraph-changed.md"))
@@ -78,6 +80,7 @@ func TestCutDecisionBlocksEqualsAcrossAnswersAndDiffersOnAParagraph(t *testing.T
 // example changes the cut text. The browser's line-based cut (`decision-blocks.test.ts`) reads
 // the same fixture.
 func TestCutDecisionBlocksKeepsADecisionBlockWrittenInsideACodeFence(t *testing.T) {
+	t.Parallel()
 	fenced := decisionBlockFixture(t, "fenced-example.md")
 	cut := cutDecisionBlocks(t, fenced)
 	for _, kept := range []string{"```markdown\n:::ask{urgency=\"high\" multiple=\"false\"}\nWhich region goes first?", "- West: The busy one.\n:::\n```"} {
@@ -99,6 +102,7 @@ func TestCutDecisionBlocksKeepsADecisionBlockWrittenInsideACodeFence(t *testing.
 // The cut leaves out every ask block wherever it stands - at the top level, in a blockquote, in a
 // list item, inside a callout - and keeps the container that held it.
 func TestCutDecisionBlocksLeavesOutEveryAskBlockAndKeepsItsContainer(t *testing.T) {
+	t.Parallel()
 	cut := cutDecisionBlocks(t, decisionBlockFixture(t, "answered.md"))
 	if strings.Contains(cut, ":::ask") || strings.Contains(cut, "ask{") {
 		t.Fatalf("cut holds an ask block:\n%s", cut)
@@ -126,6 +130,7 @@ func TestCutDecisionBlocksLeavesOutEveryAskBlockAndKeepsItsContainer(t *testing.
 // A document with no ask block cuts to its own rendering, and one that is nothing but ask blocks
 // cuts to nothing; a container holding only a block is kept, holding an empty paragraph.
 func TestCutDecisionBlocksOfADocumentWithoutBlocksIsItsRendering(t *testing.T) {
+	t.Parallel()
 	plain := "# Title\n\nA paragraph.\n\n> A quote.\n\n- One.\n- Two.\n"
 	tree, err := pmdoc.Parse(plain)
 	if err != nil {
@@ -151,6 +156,7 @@ func TestCutDecisionBlocksOfADocumentWithoutBlocksIsItsRendering(t *testing.T) {
 // sorted order, from the rows of its blocks: one answerer under two spellings is one, two people
 // are two, and a version whose blocks are all open or resolved names nobody.
 func TestAnswerersNamesEachAnswererOfTheVersionOnce(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC)
 	answeredBy := func(by string, at time.Time) model.Ask {
 		return model.Ask{State: "answered", Answer: &model.AskAnswer{User: by, At: at}}
@@ -229,6 +235,7 @@ func ownAndOpenRows() map[string]model.Ask {
 // that settlement cannot read. A block holding the row's answer, and one without it, as
 // settlement leaves a withheld answer, are both as the row has it. An open row's body is free.
 func TestRowBackedBlocksReadRowsAndRefuseAForgedACopiedAndAnInvalidNode(t *testing.T) {
+	t.Parallel()
 	rows := ownAndOpenRows()
 	own := askNodeOf(t, ownDecided+ownBody)
 	open := askNodeOf(t, openDirective+openBody)
@@ -314,6 +321,7 @@ func TestRowBackedBlocksReadRowsAndRefuseAForgedACopiedAndAnInvalidNode(t *testi
 // on, or shows open where the row has since been answered is not; nor is a block under an id no
 // row of N backs. A version holding no block holds none.
 func TestAnApprovedVersionsBlocksAreHeldAsTheirRows(t *testing.T) {
+	t.Parallel()
 	rows := ownAndOpenRows()
 	held := heldAsItsRow(map[string]*pmdoc.Node{"own": askNodeOf(t, ownDecided+ownBody), "open": askNodeOf(t, openDirective+openBody)}, rows)
 	if want := map[string]bool{"own": true, "open": true}; !reflect.DeepEqual(held, want) {
@@ -345,6 +353,7 @@ func TestAnApprovedVersionsBlocksAreHeldAsTheirRows(t *testing.T) {
 // and the stored tree of the version he approved are both read through it; a tree that repeats a
 // block id, which settlement reads no block under, is not read at all.
 func TestAskNodesOfTheCarriedVersionReadEveryBlockOnceAndRefuseARepeatedID(t *testing.T) {
+	t.Parallel()
 	tree, err := pmdoc.Parse(decisionBlockFixture(t, "answered.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -385,6 +394,7 @@ func TestAskNodesOfTheCarriedVersionReadEveryBlockOnceAndRefuseARepeatedID(t *te
 // other than its row has it is a change of N's whoever made it: it carries when H answered it
 // again since his approval, and nothing carries otherwise.
 func TestCarryVerdictOverTheBlocksOfTheApprovedAndTheNewVersion(t *testing.T) {
+	t.Parallel()
 	approvedAt := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	answered := func(by string, at time.Time) model.Ask {
 		return model.Ask{State: "answered", Answer: &model.AskAnswer{User: by, At: at}}
@@ -481,6 +491,7 @@ func approveStoredVersion(t *testing.T, database *store.Store, artifactID string
 // created_at, its transaction's start, says the opposite. A request that carries a sequence is
 // after an approval that carries none, and the time and id decide only when neither does.
 func TestChangesRequestedSinceFollowsTheOrderTheReviewsCommitted(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Context\n")
 	early := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
@@ -576,10 +587,11 @@ func storedVersionMarkdown(t *testing.T, database *store.Store, artifactID strin
 // approval stays at version 1. A forged block settlement can read is no door: it is indexed as the
 // room's own writer's and its row's `open` is written back over the forgery.
 func TestAForgedAnsweredBlockOnTheSocketCarriesNoApproval(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Context\n")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "Context\n")
 	approveStoredVersion(t, database, artifactID, 1, "alice")
 
@@ -648,19 +660,25 @@ func answerBlockAs(t *testing.T, service *Service, artifactID, blockID, login st
 // a single ask under the block id region.
 const regionSpec = "Context\n\n:::ask{#region urgency=\"low\" multiple=\"false\"}\nWhich region goes first?\n\n- East: The quiet one.\n- West: The busy one.\n:::\n"
 
-// seededRegionDocument creates regionSpec as a document, starts a service that settles a live
-// write after settle, seeds the document's live text with the same markdown, and returns the
-// store, the service and the document's id once settlement has indexed the block as an ask of the
-// document - the row the carry reads.
-func seededRegionDocument(t *testing.T, settle time.Duration) (*store.Store, *Service, string) {
+// regionSettle is the settle window of the service seededRegionDocument starts: a day, longer than
+// any `go test -timeout` a CI job gives this package (60 minutes in envoy-go-race-docs), so no
+// settlement a live write arms runs before the test's cleanup, however slow the machine.
+const regionSettle = 24 * time.Hour
+
+// seededRegionDocument creates regionSpec as a document, starts a service that settles only when
+// the test asks (regionSettle), seeds the document's live text with the same markdown, and returns
+// the store, the service and the document's id once settlement has indexed the block as an ask of
+// the document - the row the carry reads. That settlement runs at once (SettleNow), and it is the
+// last one before the test's cleanup: the test decides when settlement runs, and no clock does.
+func seededRegionDocument(t *testing.T) (*store.Store, *Service, string) {
 	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, regionSpec)
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: settle})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: regionSettle})
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, regionSpec)
 	// Settlement indexes the block as an ask of this document, the row the carry reads.
-	service.ScheduleSettlement(artifactID)
+	service.SettleNow(artifactID)
 	waitFor(t, 3*time.Second, "settlement to index the block", func() bool {
 		var rows int
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) from asks where block_artifact_id = $1 and block_id = 'region'`, artifactID).Scan(&rows); err != nil {
@@ -688,10 +706,14 @@ func appendSecondRegionAsk(t *testing.T) func(*pmdoc.Node) *pmdoc.Node {
 // A version named from the live tree while it holds two ask nodes under one decided block id - a
 // second node a document-socket peer wrote with the id of the block the human answered - carries
 // nothing: one node per id is the first thing the carry holds a version to, before any node is
-// read. The same version without the repeat carries, so the repeat alone is what refuses.
+// read. The same version without the repeat carries, so the repeat alone is what refuses. No
+// settlement runs between the answer and the named version (seededRegionDocument), so the named
+// version is the first version after the answer: a settlement there would version the answer on
+// its own, and the named version would carry the approval a second time, from that version.
 func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
+	t.Parallel()
 	run := func(t *testing.T, repeat bool) (reviews, approvals int) {
-		database, service, artifactID := seededRegionDocument(t, 20*time.Millisecond)
+		database, service, artifactID := seededRegionDocument(t)
 		approveStoredVersion(t, database, artifactID, 1, "alice")
 
 		answerBlockAs(t, service, artifactID, "region", "alice", []string{"East"})
@@ -717,6 +739,7 @@ func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 // restoreReason themselves, so a change to either that the parser no longer reads fails here
 // rather than leaving every carried review to read as a person's own.
 func TestCarriedFromVersionReadsTheVersionEachCarrysReasonNames(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		reason  string
@@ -748,11 +771,12 @@ func TestCarriedFromVersionReadsTheVersionEachCarrysReasonNames(t *testing.T) {
 // the carry for the first version, returning the latest version where the live text has not
 // moved, so the versions are named.
 func TestATransactionCannotCarryOneDocumentsApprovalTwice(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Context\n")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Second})
-	t.Cleanup(func() { _ = service.Shutdown(ctx) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(ctx) })
 	seedServiceText(t, service, artifactID, "Context\n")
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	// The approved version is one this service wrote, so the version named below restores its

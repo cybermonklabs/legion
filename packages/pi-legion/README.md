@@ -16,10 +16,10 @@ version, or when the pre-split package is still installed beside it (`envoyPlugi
 ## Installing both into the daemon's profile
 
 The Legion daemon's boot gate (`packages/daemon/internal/daemon/bootgate.go`) refuses to start
-unless the Oh My Pi a pane will run loads this plugin at the daemon's contract
-(`legion.daemonApiVersion` in this package's `package.json`, equal to `DaemonAPIVersion` in
-`packages/daemon/internal/api/version.go`) and loads `@sjawhar/pi-envoy` with it, so both go into
-the Oh My Pi profile the daemon's panes use:
+unless the Oh My Pi a pane will run loads this plugin at the daemon's contract (the
+`legion.daemonApiVersion` its pack wrote into the installed `package.json`, which must be the
+number on the first line of the daemon's `legion version --contracts`) and loads
+`@sjawhar/pi-envoy` with it, so both go into the Oh My Pi profile the daemon's panes use:
 
 ```sh
 omp plugin install @sjawhar/pi-envoy && omp plugin install @sjawhar/pi-legion
@@ -58,13 +58,16 @@ entry, writes the notices, stages this package's partition of `skills/`, and tak
 write from every path the pack ships (each `files` entry, the manifest and the root's README and
 licence files), so the tarball's modes do not depend on the packer's umask. It refuses to pack
 with the committed manifest, whose `omp.extensions` names `extensions/legion.ts`; the release
-workflow's `pi_legion_build` job (`.github/workflows/release.yaml`), the worker image and the e2e
-pack step rewrite it to `["dist/legion.js"]` before `bun pm pack`. Only the e2e pack step restores it
-afterwards: the build job's tree is discarded, and nothing commits a version — the committed
-manifest's `.version` stays where it last was, and the `pi-legion-v` tag the release makes records
-the release. The manifest's `legion` key carries the daemon
-API contract the plugin was built against; `src/daemon-api-version.test.ts` pins it to the daemon's
-golden fixture.
+workflow's `pi_legion_build` job (`.github/workflows/release.yaml`) and the worker image rewrite it
+to `["dist/legion.js"]` before `bun pm pack`, in a tree they then discard, and the e2e pack step
+(`scripts/e2e/lib/pack-plugin.sh`) rewrites a staged copy of the package and never writes the
+checkout's. Nothing commits a version — the committed manifest's `.version` stays where it last
+was, and the `pi-legion-v` tag the release makes records the release. The same three steps write
+the daemon API contract the plugin was built against into the manifest's `legion` key
+(`daemonContract` in `packages/contracts/src/daemon-contract.ts`: the greatest number of
+`released-contracts.json` plus the checkout's count of entry fixtures), and the
+bundle inlines it. The committed manifest declares none, so a plugin linked from the checkout
+declares no contract and the boot gate refuses it.
 
 ## Development install
 
@@ -91,7 +94,7 @@ From this directory:
 ```sh
 bun run test
 bun test src/tools.test.ts   # one file
-bunx tsc --noEmit
+bun run typecheck   # renders the Dispatch API types from the document first, then tsc --noEmit
 bunx biome check extensions/ src/
 ```
 

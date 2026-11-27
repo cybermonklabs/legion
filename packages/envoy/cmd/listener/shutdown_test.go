@@ -41,13 +41,19 @@ var errorLine = regexp.MustCompile(`"level":"ERROR"|level=ERROR|^\d{4}/\d{2}/\d{
 // window runs on the listener's own wall clock, which a loaded machine spends without the listener
 // running, so that failure says how the machine ran and not what the shutdown did. A drain cannot
 // cause it: a forward meets a connection before its publish only in ensureConnWithContext, which
-// serves a draining connection and refuses a stopped client at once, and in SubscribeSync, which
-// refuses a draining connection with an error of its own, counted here. A drain that holds a
-// forward after its publish fails it on its flush or its acknowledgement, with no mark, and is
-// counted. What this cannot see is a shutdown path that holds a forward before its publish, behind
-// a lock say: that forward would carry the mark. A change to the shutdown path or to
-// bus.Client.StartRequestStoredTo is read against this test for that case.
+// serves a draining connection and refuses a stopped client at once, in SubscribeSync, which
+// refuses a draining connection with an error of its own, counted here, and in publishConfirmed's
+// read of the connection's state, which waits for nats.go's connection lock within the window. A
+// drain takes that lock only for short steps, and never while it waits for the server's answer
+// (nats.go's drainConnection, FlushTimeout and close). A reconnect's handshake holds it through
+// its dial: a forward whose read has not answered when its window ends carries the mark, and its
+// error names bus.ErrReconnecting. A drain that holds a forward after its publish fails it on its
+// flush or its acknowledgement, with no mark, and is counted. What this cannot see is a shutdown
+// path that holds a forward before its publish, behind a lock say: that forward would carry the
+// mark. A change to the shutdown path or to bus.Client.StartRequestStoredTo is read against this
+// test for that case.
 func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
+	t.Parallel()
 	_, uri := testnats.Start(t)
 	testnats.Connect(t, uri).Close()
 
@@ -192,6 +198,7 @@ func outputAroundSignal(output string, signal int) string {
 // (a circuit-breaker rollback, a second deploy) is an ordered shutdown like any other: HTTP drains,
 // NATS drains, nothing on the path is an error, and the durable the old task holds is left alone.
 func TestASIGTERMWhileAnotherTaskHoldsTheDurableIsAnOrderedShutdown(t *testing.T) {
+	t.Parallel()
 	const machineID = "sigterm-during-bind"
 	old, holder := durableHeldElsewhere(t, testnats.URL(t), "listener-"+machineID)
 
@@ -252,6 +259,7 @@ func startListenerProcess(t *testing.T, binary, uri, machineID string, env ...st
 // for it, and says that address in its listening line. Without the socket it would bind
 // 127.0.0.1:9020.
 func TestListenerServesOnTheListenSocketItInheritsWithNoAddressSet(t *testing.T) {
+	t.Parallel()
 	held := cmdtest.HoldPort(t)
 	cmd := exec.Command(cmdtest.Build(t, "envoy-listener"))
 	cmd.Env = []string{
@@ -269,6 +277,7 @@ func TestListenerServesOnTheListenSocketItInheritsWithNoAddressSet(t *testing.T)
 // PORT=0 with no inherited socket still binds a port the kernel chooses, and the listening line
 // names the port it got, so a harness that starts the listener this way reads its port there.
 func TestListenerOnPortZeroLogsThePortTheKernelChose(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command(cmdtest.Build(t, "envoy-listener"))
 	cmd.Env = []string{
 		"PORT=0",
@@ -294,6 +303,7 @@ func TestListenerOnPortZeroLogsThePortTheKernelChose(t *testing.T) {
 // is, though ENVOY_LISTEN_HOST is unset and would mean loopback: with no bearer, no OIDC pair and
 // no ENVOY_API_ALLOW_UNAUTHENTICATED, the listener refuses to start and serves nothing.
 func TestListenerRefusesAnInheritedSocketOnEveryInterfaceWithoutCredentials(t *testing.T) {
+	t.Parallel()
 	wildcard, err := net.Listen("tcp4", "0.0.0.0:0")
 	if err != nil {
 		t.Fatalf("listen on every interface: %v", err)
@@ -321,6 +331,7 @@ func TestListenerRefusesAnInheritedSocketOnEveryInterfaceWithoutCredentials(t *t
 // PORT, when set beside an inherited socket, must name the socket's port, and PORT=0 names none:
 // the listener refuses to start, naming PORT and ENVOY_LISTEN_FD, and serves nothing.
 func TestListenerRefusesAPortThatIsNotItsInheritedSocketsPort(t *testing.T) {
+	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
 	for name, port := range map[string]func(held *cmdtest.HeldPort) string{
 		"another port": func(held *cmdtest.HeldPort) string { return strconv.Itoa(held.Port%65535 + 1) },
@@ -350,6 +361,7 @@ func TestListenerRefusesAPortThatIsNotItsInheritedSocketsPort(t *testing.T) {
 // the variable, and the listener binds nothing in its place: not PORT, which here names a port the
 // test holds, so a bind would fail on it.
 func TestListenerRefusesAListenFDThatIsNotASocketAndBindsNothing(t *testing.T) {
+	t.Parallel()
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("hold the port PORT names: %v", err)
@@ -420,36 +432,34 @@ func postListener(t *testing.T, port int, path, body string) {
 	}
 }
 
-// waitHealthy waits up to 30 s for the listener to log that it listens on its own loopback port,
-// then up to 30 s more for /healthz there to report "healthy", and kills the listener and fails
-// the test when it never does. The socket the listener inherited is not readiness: the kernel
-// queues connections on it from before the process starts, so a request there waits rather than
-// fails until the process serves, and only its listening line says it does. Each request has a
-// timeout, so one that waits on a socket nothing serves cannot outlast the deadline. /healthz
-// answers 200 with "starting" from the moment the listener serves, before NATS connects and
-// before the listener installs its SIGTERM handler, and a SIGTERM in that window kills the
-// process without an ordered shutdown.
+// waitHealthy waits through the shared wait for the listener to log that it listens on its own
+// loopback port, then for /healthz there to report "healthy", and fails the test when it never
+// does. The socket the listener inherited is not readiness: the kernel queues connections on it
+// from before the process starts, so a request there waits rather than fails until the process
+// serves, and only its listening line says it does. Each request carries the shared wait's context
+// (testwait.Context), so one that waits on a process that does not answer ends where the wait
+// does, and no request has a bound of its own. /healthz answers 200 with "starting" from the
+// moment the listener serves, before NATS connects and before the listener installs its SIGTERM
+// handler, and a SIGTERM in that window kills the process without an ordered shutdown.
 //
 // A listener that exits during its start-up fails this wait at once, naming its exit status and
-// its last output line, rather than waiting the whole 30 s out: a process that has exited answers
-// nothing, so every further poll reads the same closed port, and the health timeout the wait
-// would report names neither the exit nor its reason. Either failure also names the last /healthz
-// answer, so a listener still binding ("starting") reads differently from one whose dependency
-// is down ("unhealthy", with the error that endpoint reports).
+// its last output line, rather than being waited for until the test binary's own deadline: a
+// process that has exited answers nothing, so every further poll reads the same closed port, and
+// the wait's own give-up names neither the exit nor its reason. Either failure also names the
+// last /healthz answer, so a listener still binding ("starting") reads differently from one
+// whose dependency is down ("unhealthy", with the error that endpoint reports).
 func (p *listenerProcess) waitHealthy(t *testing.T) {
 	t.Helper()
 	if addr, own := listeningAddr(t, p.Process), "127.0.0.1:"+strconv.Itoa(p.port); addr != own {
 		_ = p.Cmd.Process.Kill()
 		t.Fatalf("the listener logged that it listens on %s, not on its own %s:\n%s", addr, own, p.Output.String())
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+	ctx := testwait.Context(t)
 	url := "http://127.0.0.1:" + strconv.Itoa(p.port) + "/healthz"
-	deadline := time.Now().Add(30 * time.Second)
 	answer := "none: no request to /healthz was answered"
-	// failIfExited ends the wait the moment the process is gone. It is read inside the loop and
-	// once more after it, because a listener that dies in the last sleep, or between the last poll
-	// and the deadline, would otherwise fall out below and be reported as still running, which is
-	// the misreading this helper exists to remove.
+	// failIfExited ends the wait the moment the process is gone, which is the misreading this
+	// helper exists to remove: without it a listener that died would be waited for until the
+	// test binary's deadline and then reported as still running.
 	failIfExited := func() {
 		t.Helper()
 		select {
@@ -461,8 +471,12 @@ func (p *listenerProcess) waitHealthy(t *testing.T) {
 		default:
 		}
 	}
-	for time.Now().Before(deadline) {
-		response, err := client.Get(url)
+	testwait.Until(t, "the listener to answer /healthz healthy", func() (string, bool) {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatalf("build the /healthz request: %v", err)
+		}
+		response, err := http.DefaultClient.Do(request)
 		if err == nil {
 			var health struct {
 				Status string `json:"status"`
@@ -471,7 +485,7 @@ func (p *listenerProcess) waitHealthy(t *testing.T) {
 			decodeErr := json.NewDecoder(response.Body).Decode(&health)
 			_ = response.Body.Close()
 			if decodeErr == nil && health.Status == "healthy" {
-				return
+				return answer, true
 			}
 			if decodeErr == nil {
 				answer = fmt.Sprintf("%d %q", response.StatusCode, health.Status)
@@ -483,11 +497,8 @@ func (p *listenerProcess) waitHealthy(t *testing.T) {
 			}
 		}
 		failIfExited()
-		time.Sleep(200 * time.Millisecond)
-	}
-	failIfExited()
-	_ = p.Cmd.Process.Kill()
-	t.Fatalf("the listener never became healthy within 30s; it was still running, and the last /healthz answer was %s:\n%s", answer, p.Output.String())
+		return fmt.Sprintf("%s; the listener's last line was %q", answer, lastOutputLine(p.Output.String())), false
+	})
 }
 
 // lastOutputLine is the final non-empty line of a process's output, the one a start-up that ended

@@ -1,0 +1,76 @@
+{
+  "nodes": [
+    {
+      "id": "envoy-delivers-messages",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "document": "---\ntype: requirement\nid: envoy-delivers-messages\nkind: behavior\ntext:\n  - Envoy delivers each message that a sender writes.\n"
+        }
+      ]
+    },
+    {
+      "id": "a-sent-message-reaches-a-listener",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "document": "---\ntype: check\nid: a-sent-message-reaches-a-listener\nserves: envoy-delivers-messages\nsubject: code\nprocedure: program\ntest:\n  runner: go\n  selector: github.com/sjawhar/envoy/cmd/listener TestASentMessageReachesAListener\n  job: go-checks\nclaim: A message that a sender writes reaches a listener that is connected.\nprocedure_text:\n  - The program connects one listener and writes one message.\n  - It must find the message at the listener.\nfailing_example:\n  - A sender that drops each message.\n"
+        }
+      ]
+    },
+    {
+      "id": "a-message-reaches-a-late-session",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "document": "---\ntype: requirement\nid: a-message-reaches-a-late-session\nkind: behavior\nparent: envoy-delivers-messages\ntext:\n  - A session that connects after a message was written gets that message.\n"
+        }
+      ]
+    },
+    {
+      "id": "a-late-session-gets-the-message",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "document": "---\ntype: check\nid: a-late-session-gets-the-message\nserves: a-message-reaches-a-late-session\nsubject: code\nprocedure: program\ntest:\n  runner: go\n  selector: github.com/sjawhar/envoy/cmd/listener TestALateSessionGetsTheMessage\n  job: go-checks\nclaim: A session that connects after a write gets the message of that write.\nprocedure_text:\n  - The program writes one message and then connects one session.\n  - It must find the message in the session.\nfailing_example:\n  - A listener that delivers only the messages that arrive after a session connects.\n"
+        }
+      ]
+    },
+    {
+      "id": "a-message-survives-a-restart",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "document": "---\ntype: requirement\nid: a-message-survives-a-restart\nkind: behavior\nparent: envoy-delivers-messages\ntext:\n  - A message that Envoy stored before a restart reaches its session after the restart.\n"
+        }
+      ]
+    },
+    {
+      "id": "a-restart-keeps-the-message",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "document": "---\ntype: check\nid: a-restart-keeps-the-message\nserves: a-message-survives-a-restart\nsubject: code\nprocedure: program\ntest:\n  runner: go\n  selector: github.com/sjawhar/envoy/cmd/listener TestARestartKeepsTheMessage\n  job: go-checks\nclaim: A stored message reaches its session after the listener starts again.\nprocedure_text:\n  - The program stores one message, starts the listener again and reads the session.\n  - It must find the message one time.\nfailing_example:\n  - A listener that deletes its stored messages when it starts.\n"
+        }
+      ]
+    }
+  ]
+}

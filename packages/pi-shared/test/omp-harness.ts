@@ -390,6 +390,9 @@ export interface StandinProvider {
   /** The model ids, in the order the profile lists them; the first of the first provider is what
    * every model role names. */
   readonly models: readonly string[];
+  /** The models also take images, which makes snapcompact a compaction method they can run; text
+   * only by default. */
+  readonly images?: boolean;
 }
 
 /** What `writeStandinProfile` writes when a caller names no providers: the one model every pane
@@ -430,7 +433,7 @@ export async function writeStandinProfile(
     path.join(agent, "models.yml"),
     [
       "providers:",
-      ...providers.flatMap(({ provider, models }) => [
+      ...providers.flatMap(({ provider, models, images }) => [
         `  ${provider}:`,
         `    baseUrl: ${base}/anthropic`,
         "    auth: apiKey",
@@ -441,7 +444,7 @@ export async function writeStandinProfile(
           `      - id: ${id}`,
           `        name: Stand-in ${id}`,
           "        reasoning: false",
-          "        input: [text]",
+          `        input: ${images === true ? "[text, image]" : "[text]"}`,
           "        contextWindow: 200000",
           "        maxTokens: 8000",
           "        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}",
@@ -579,15 +582,24 @@ function ompFlags(options: {
   ];
 }
 
+/** The size of each thread pool of a test's omp: the size CI's 4-CPU runners give it. */
+const OMP_POOL_THREADS = "4";
+
 /** The environment `spawnRpc` and `spawnInteractive` start omp with: `home` as HOME, `bin` first
- * on PATH. */
-function ompEnv(options: { readonly home: string; readonly bin?: string }): {
-  HOME: string;
-  PATH: string;
-} {
+ * on PATH, and each of omp's thread pools at `OMP_POOL_THREADS`. Left to itself, omp sizes each
+ * pool to the machine's CPU count: its natives' Tokio runtime (`TOKIO_WORKER_THREADS`), Rayon's
+ * global pool (`RAYON_NUM_THREADS`), the directory walker's workers (`PI_WALK_WORKERS`) and Bun's
+ * work pool (`UV_THREADPOOL_SIZE`). One omp on a 288-CPU machine held 1,333 threads, so a suite
+ * that runs a few at once passed a 4,096-task limit there at any worker count. With each pool
+ * fixed, the threads a test's omp starts are the same on every machine. */
+function ompEnv(options: { readonly home: string; readonly bin?: string }): Record<string, string> {
   return {
     HOME: options.home,
     PATH: [options.bin, "/usr/local/bin:/usr/bin:/bin"].filter(Boolean).join(":"),
+    TOKIO_WORKER_THREADS: OMP_POOL_THREADS,
+    RAYON_NUM_THREADS: OMP_POOL_THREADS,
+    PI_WALK_WORKERS: OMP_POOL_THREADS,
+    UV_THREADPOOL_SIZE: OMP_POOL_THREADS,
   };
 }
 
@@ -768,18 +780,19 @@ export interface Refusal {
    * error text as `Refusal (<category>): <explanation>`. */
   readonly category?: string;
   readonly explanation?: string;
-  /** Text the model streamed before the refusal, committed by the time it came. The host walks
-   * its own fallback chain for a refusal that follows no output and ends the turn where it is for
-   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1782-1816` and `:3153-3163`
-   * at the pinned tag: committed text is replay-unsafe), so this is the one thing that decides
-   * which of the two walks a case proves. */
+  /** Text the model streamed before the refusal, committed by the time it came. The host sends a
+   * refusal that follows no output to the same model up to two more times and then walks its own
+   * fallback chain, and ends the turn where it is for one that follows text
+   * (`coding-agent/src/session/turn-recovery.ts:2177-2211` and `:3605-3615` at the pinned tag:
+   * committed text is replay-unsafe), so this is the one thing that decides which of the two
+   * walks a case proves. */
   readonly text?: string;
 }
 
 /**
  * The Anthropic Messages stream of one refused turn: a `message_delta` whose `stop_reason` is
  * `refusal` and whose `stop_details` names the category
- * (`packages/ai/src/providers/anthropic.ts:3185-3193` at the pinned tag). The host reads it as an
+ * (`packages/ai/src/providers/anthropic.ts:3240-3248` at the pinned tag). The host reads it as an
  * assistant message with `stopReason: "error"`, `stopDetails.type: "refusal"` and an
  * `errorMessage` of `Refusal (<category>): <explanation>`, which is what
  * `classifyProviderTurn` (`@legion/pi-shared/provider-refusal`) calls a content filter. It

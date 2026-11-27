@@ -8,7 +8,7 @@
         {
           "version": 1,
           "at": "2026-11-10T00:00:00Z",
-          "block": ":::requirement{#acme-keeps-each-order kind=\"behavior\"}\nACME keeps each order that a customer sends.\n:::\n"
+          "document": "---\ntype: requirement\nid: acme-keeps-each-order\nkind: behavior\ntext:\n  - ACME keeps each order that a customer sends.\n"
         }
       ]
     },
@@ -20,12 +20,12 @@
         {
           "version": 1,
           "at": "2026-11-10T00:00:00Z",
-          "block": ":::requirement{#an-order-survives-a-restart kind=\"behavior\" parent=\"acme-keeps-each-order\"}\nACME keeps each stored order after the order service starts again.\n:::\n"
+          "document": "---\ntype: requirement\nid: an-order-survives-a-restart\nkind: behavior\nparent: acme-keeps-each-order\ntext:\n  - ACME keeps each stored order after the order service starts again.\n"
         },
         {
           "version": 2,
           "at": "2026-11-12T00:00:00Z",
-          "block": ":::requirement{#an-order-survives-a-restart kind=\"behavior\" parent=\"acme-keeps-each-order\"}\nACME keeps each stored order and its state after the order service starts again.\n:::\n"
+          "document": "---\ntype: requirement\nid: an-order-survives-a-restart\nkind: behavior\nparent: acme-keeps-each-order\ntext:\n  - ACME keeps each stored order and its state after the order service starts again.\n"
         }
       ]
     },
@@ -37,7 +37,7 @@
         {
           "version": 1,
           "at": "2026-11-10T00:00:00Z",
-          "block": ":::check{#a-restart-keeps-each-order serves=\"an-order-survives-a-restart\" subject=\"code\" procedure=\"program\" runner=\"go\" selector=\"example.com/acme/orders TestARestartKeepsEachOrder\" job=\"go-checks\"}\nClaim: The order service reads each stored order after it starts again.\nProcedure: The program stores one order, starts the order service again and reads the orders.\nIt must find the order one time.\nFailing example: An order service that keeps its orders in memory only.\n:::\n"
+          "document": "---\ntype: check\nid: a-restart-keeps-each-order\nserves: an-order-survives-a-restart\nsubject: code\nprocedure: program\ntest:\n  runner: go\n  selector: example.com/acme/orders TestARestartKeepsEachOrder\n  job: go-checks\nclaim: The order service reads each stored order after it starts again.\nprocedure_text:\n  - The program stores one order, starts the order service again and reads the orders.\n  - It must find the order one time.\nfailing_example:\n  - An order service that keeps its orders in memory only.\n"
         }
       ]
     },
@@ -49,7 +49,7 @@
         {
           "version": 1,
           "at": "2026-11-10T00:00:00Z",
-          "block": ":::requirement{#orders-reach-billing-only-through-the-interface kind=\"structure\" parent=\"acme-keeps-each-order\" about=\"orders-to-billing\"}\nThe order service sends each order to billing only through the interface between them.\n:::\n"
+          "document": "---\ntype: requirement\nid: orders-reach-billing-only-through-the-interface\nkind: structure\nparent: acme-keeps-each-order\nabout:\n  - orders-to-billing\ntext:\n  - The order service sends each order to billing only through the interface between them.\n"
         }
       ]
     },
@@ -61,7 +61,7 @@
         {
           "version": 1,
           "at": "2026-11-10T00:00:00Z",
-          "block": ":::check{#no-order-skips-the-interface serves=\"orders-reach-billing-only-through-the-interface\" subject=\"graph\" procedure=\"query\"}\nClaim: No order goes from the order service to billing outside the interface.\nProcedure: The query returns each order that goes to billing outside the interface.\nIt must return none.\nFailing example: A copy of the graph with one order that goes to billing outside the interface.\n:::\n"
+          "document": "---\ntype: check\nid: no-order-skips-the-interface\nserves: orders-reach-billing-only-through-the-interface\nsubject: graph\nprocedure: query\nclaim: No order goes from the order service to billing outside the interface.\nprocedure_text:\n  - The query returns each order that goes to billing outside the interface.\n  - It must return none.\nfailing_example:\n  - A copy of the graph with one order that goes to billing outside the interface.\n"
         }
       ]
     },
@@ -73,7 +73,7 @@
         {
           "version": 1,
           "at": "2026-11-10T00:00:00Z",
-          "block": ":::component{#billing name=\"Billing\"}\nIt sends a bill for each order.\n:::\n"
+          "document": "---\ntype: component\nid: billing\nname: Billing\nkind: component\npurpose:\n  - It sends a bill for each order.\n"
         }
       ]
     },
@@ -85,7 +85,7 @@
         {
           "version": 1,
           "at": "2026-11-10T00:00:00Z",
-          "block": ":::component{#orders name=\"Orders\"}\nIt keeps the orders that customers send.\n:::\n"
+          "document": "---\ntype: component\nid: orders\nname: Orders\nkind: component\npurpose:\n  - It keeps the orders that customers send.\n"
         }
       ]
     },
@@ -97,7 +97,7 @@
         {
           "version": 1,
           "at": "2026-11-10T00:00:00Z",
-          "block": ":::component{#orders-to-billing name=\"Orders to billing\" kind=\"interface\" joins=\"billing orders\"}\nOrders sends each order to billing through it.\n:::\n"
+          "document": "---\ntype: component\nid: orders-to-billing\nname: Orders to billing\nkind: interface\njoins:\n  - billing\n  - orders\npurpose:\n  - Orders sends each order to billing through it.\n"
         }
       ]
     },
@@ -109,7 +109,7 @@
         {
           "version": 1,
           "at": "2026-11-10T00:00:00Z",
-          "block": ":::component{#shipping name=\"Shipping\"}\nIt sends the products of each paid order.\n:::\n"
+          "document": "---\ntype: component\nid: shipping\nname: Shipping\nkind: component\npurpose:\n  - It sends the products of each paid order.\n"
         }
       ]
     },
@@ -121,7 +121,7 @@
         {
           "version": 1,
           "at": "2026-11-10T00:00:00Z",
-          "block": ":::term{#order name=\"order\"}\nAn order is a request of a customer for one or more products.\n:::\n"
+          "document": "---\ntype: term\nid: order\nname: order\ndefinition:\n  - An order is a request of a customer for one or more products.\n"
         }
       ]
     },
@@ -133,7 +133,7 @@
         {
           "version": 1,
           "at": "2026-11-10T00:00:00Z",
-          "block": ":::requirement{#each-order-gets-one-bill kind=\"behavior\" parent=\"acme-keeps-each-order\"}\nBilling sends one bill for each order that a customer pays.\n:::\n"
+          "document": "---\ntype: requirement\nid: each-order-gets-one-bill\nkind: behavior\nparent: acme-keeps-each-order\ntext:\n  - Billing sends one bill for each order that a customer pays.\n"
         }
       ]
     },
@@ -145,7 +145,7 @@
         {
           "version": 1,
           "at": "2026-11-10T00:00:00Z",
-          "block": ":::check{#billing-sends-one-bill serves=\"each-order-gets-one-bill\" subject=\"production\" procedure=\"agent\"}\nClaim: Billing sends one bill for each order that a customer pays.\nProcedure: An agent pays one order and reads the bills of the customer.\nIt must find one bill.\nFailing example: A billing service that sends a bill for each attempt to pay.\n:::\n"
+          "document": "---\ntype: check\nid: billing-sends-one-bill\nserves: each-order-gets-one-bill\nsubject: production\nprocedure: agent\nclaim: Billing sends one bill for each order that a customer pays.\nprocedure_text:\n  - An agent pays one order and reads the bills of the customer.\n  - It must find one bill.\nfailing_example:\n  - A billing service that sends a bill for each attempt to pay.\n"
         }
       ]
     }

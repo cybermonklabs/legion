@@ -48,9 +48,9 @@ type Server struct {
 	FirstConfirmBound time.Duration
 	// BrokerCallBound bounds each broker-call op (login, enroll-session-key,
 	// unenroll-session-key) as a whole: the op's context ends at the bound, and the helper
-	// answers at the bound plus 1 s whatever the op is doing (brokerCall). Zero, which is what
-	// cmd/cipher-helper leaves it, means DefaultBrokerCallBound; a row that reads the
-	// bound sets one short enough to be quick.
+	// answers at the bound plus DefaultBrokerCallSlack whatever the op is doing (brokerCall).
+	// Zero, which is what cmd/cipher-helper leaves it, means DefaultBrokerCallBound; a row that
+	// reads the bound sets one short enough to be quick.
 	BrokerCallBound time.Duration
 	// calls counts the connections Serve accepted that may still owe a broker call's answer, and
 	// pending is the same count as a number, for the "connections" attribute of the line Serve
@@ -70,6 +70,30 @@ type Server struct {
 	// time.AfterFunc: the seam through which a test sees the bound a drain's timer is armed with
 	// and fires it itself, so no clock decides the row. Atomic for the reason dormantGraceNS is.
 	drainTimer atomic.Pointer[func(bound time.Duration, end func())]
+	// brokerCallSlack is how long after the bound brokerCall's timer answers an op still running
+	// (brokerCallTimerSlack): zero, which every production caller leaves it, means
+	// DefaultBrokerCallSlack. A test that tells the op's own answer at the bound from the timer's
+	// sets a long one, so load cannot move the op's answer past the timer's. Set before the call,
+	// as BrokerCallBound is.
+	brokerCallSlack time.Duration
+	// firstConfirmTimer, when set (setFirstConfirmTimer), arms the end of the first confirming
+	// renew's bound in place of FirstConfirmBound's timeout (confirmInherited): the seam through
+	// which a test sees the bound that renew runs under and ends it itself, once the register it
+	// reads is waiting, so no clock decides the row. Atomic for the reason dormantGraceNS is.
+	firstConfirmTimer atomic.Pointer[func(bound time.Duration, end func())]
+	// testRegisterWaiting, when set, runs in waitForRegister once a register call has taken its
+	// wait and none of the channels it waits on has fired, just before it blocks: the seam through
+	// which a test knows that this Server's own register call is waiting, and no other Server's.
+	// No production caller sets it. Atomic, since a test sets it while the Server serves.
+	testRegisterWaiting atomic.Pointer[func()]
+	// testClock, when set, is renewLoop's clock in place of the wall clock: its Now for
+	// time.Now and its After for time.After, so a test walks the loop through a lease and an
+	// outage in virtual time and no scheduler's lateness moves a renewal. No production caller
+	// sets it, and a test sets it before the loop runs.
+	testClock interface {
+		Now() time.Time
+		After(time.Duration) <-chan time.Time
+	}
 	// revokesInFlight counts every revoke fired off (goRevoke) until it has returned, and
 	// revokesIdle is closed each time that count falls to zero, so a test that must see a revoke
 	// land waits for it (the tests' waitRevokes) rather than polling a fixed span for its effect.
@@ -84,14 +108,19 @@ type Server struct {
 // Serve accepts until ctx ends. Each connection carries one request.
 //
 // It returns only once every broker-call op it accepted has written its answer, so a helper that
-// stops (cmd/cipher-helper exits when Serve returns) never closes a client's connection
-// with no answer while a broker call runs. On a stop ctx has ended, so each op's own context has
-// ended with it, and the wait is at most the bound plus 1 s (brokerCall), in practice the time it
-// takes to write the answers. Each connection is counted before its handler starts, since an Add
-// that moves a WaitGroup's count up from zero must come before the Wait it would hold, and the
-// handler gives the count back as soon as it has read a request that is not a broker call: no
+// stops (cmd/cipher-helper exits when Serve returns) never closes a client's connection with no
+// answer while a broker call runs. On a stop ctx has ended, so each op's own context has ended
+// with it, and the wait is at most the bound plus the timer's slack (brokerCall), in practice the
+// time it takes to write the answers. Each connection is counted before its handler starts, since
+// an Add that moves a WaitGroup's count up from zero must come before the Wait it would hold, and
+// the handler gives the count back as soon as it has read a request that is not a broker call: no
 // other op holds the stop, whatever it waits on (a register's wait_seconds does not watch ctx). A
 // connection whose request is still being read holds it for at most that read's 5 s deadline.
+//
+// It then waits for the revokes it fired off (awaitRevokes), the one piece of work that outlives
+// the answer it belongs to (retire). A helper whose process exits when Serve returns would
+// otherwise cut a revoke off mid-request, and in a test binary such a revoke runs on into the
+// tests that follow: a goroutine of a test that has ended, reading whatever those tests set.
 func (s *Server) Serve(ctx context.Context, ln *net.UnixListener) error {
 	go func() {
 		<-ctx.Done()
@@ -101,6 +130,7 @@ func (s *Server) Serve(ctx context.Context, ln *net.UnixListener) error {
 		conn, err := ln.AcceptUnix()
 		if err != nil {
 			s.awaitCalls()
+			s.awaitRevokes()
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -119,6 +149,22 @@ func (s *Server) awaitCalls() {
 		s.Log.Warn("the helper is stopping; it waits for the connections that may still owe a broker call's answer", "connections", n, "bound", s.brokerCallBound())
 	}
 	s.calls.Wait()
+}
+
+// awaitRevokes waits for the revokes the helper fired off (goRevoke) to return. Each runs under
+// Serve's ctx, so on a stop each ends at its next step rather than running its retry schedule
+// out. It reads the count again after every wait, since a session's own goroutine (watchExit)
+// can fire one off while this waits.
+func (s *Server) awaitRevokes() {
+	for {
+		s.revokesMu.Lock()
+		idle, inFlight := s.revokesIdle, s.revokesInFlight
+		s.revokesMu.Unlock()
+		if inFlight == 0 {
+			return
+		}
+		<-idle
+	}
 }
 
 // doneCall gives back the count Serve took for one connection.
@@ -280,14 +326,24 @@ func (s *Server) brokerCallBound() time.Duration {
 	return DefaultBrokerCallBound
 }
 
+// brokerCallTimerSlack is how long after the bound this Server's brokerCall timer answers:
+// brokerCallSlack when it is set, DefaultBrokerCallSlack otherwise.
+func (s *Server) brokerCallTimerSlack() time.Duration {
+	if s.brokerCallSlack > 0 {
+		return s.brokerCallSlack
+	}
+	return DefaultBrokerCallSlack
+}
+
 // brokerCall runs call, the broker-call op named op, under the bound B (brokerCallBound), and
-// answers by B + 1 s whatever the op is doing. It sets conn's deadline to B + 5 s, the same 5 s
-// every op has for its read and its write, so the connection stays open past the latest answer.
-// call runs on a goroutine of its own, under ctx (Serve's) ended at B, and the answer is the
-// first of its result and a timer at B + 1 s. On the timer the answer is brokerCallOps[op](cause),
-// the op's own refusal for an outcome it does not know, and a WARN names the op and the bound;
-// when the op ends after that, its result is logged too, so an operator can see what the broker
-// did.
+// answers by B + S, S the timer's slack (brokerCallTimerSlack, DefaultBrokerCallSlack unless a test
+// sets another), whatever the op is doing. It sets conn's deadline at B + S + 4 s, which is B + 5 s
+// at the default slack, the 5 s every op has for its read and its write, so the connection stays
+// open past the latest answer. call runs on a goroutine of its own, under ctx (Serve's) ended at
+// B, and the answer is the first of its result and a timer at B + S. On the timer the answer is
+// brokerCallOps[op](cause), the op's own refusal for an outcome it does not know, and a WARN names
+// the op and the bound; when the op ends after that, its result is logged too, so an operator can
+// see what the broker did.
 //
 // What ends the wait, in each state the op can be in while the client waits:
 //
@@ -321,22 +377,22 @@ func (s *Server) brokerCallBound() time.Duration {
 //     returns only after the answer is written.
 //
 // So when the answer is written, no HTTP round trip of the op is in flight and none can start:
-// the op's context ends at B or earlier, the answer comes at the op's result or at B + 1 s, every
+// the op's context ends at B or earlier, the answer comes at the op's result or at B + S, every
 // request the op makes carries that context (Login's device authorization through
 // Broker.contextClient), and net/http's Transport sends nothing on a context that has ended.
 //
 // The timer's answer is unknown and not failed because the timer cannot see which requests the
 // op has made.
 func (s *Server) brokerCall(ctx context.Context, conn net.Conn, op string, call func(context.Context) Response) Response {
-	bound := s.brokerCallBound()
-	_ = conn.SetDeadline(time.Now().Add(bound + 5*time.Second))
+	bound, slack := s.brokerCallBound(), s.brokerCallTimerSlack()
+	_ = conn.SetDeadline(time.Now().Add(bound + slack + 4*time.Second))
 	callCtx, cancel := context.WithTimeout(ctx, bound)
 	result := make(chan Response, 1)
 	go func() {
 		defer cancel()
 		result <- call(callCtx)
 	}()
-	timer := time.NewTimer(bound + time.Second)
+	timer := time.NewTimer(bound + slack)
 	defer timer.Stop()
 	select {
 	case resp := <-result:
@@ -747,13 +803,7 @@ func (s *Server) registerReply(sess *Session, wait time.Duration) Response {
 		settled = sess.confirmationInFlight()
 	}
 	if wait > 0 && (credential || settled != nil) {
-		select {
-		case <-sess.readyCh():
-		case <-sess.refused:
-		case <-settled:
-		case <-time.After(wait):
-		case <-sess.stop:
-		}
+		s.waitForRegister(sess.readyCh(), sess.refused, settled, sess.stop, wait)
 	}
 	if !s.Registry.Holds(sess) {
 		return Response{Code: CodeNotASession, Error: sessionGoneMsg}
@@ -772,6 +822,30 @@ func (s *Server) registerReply(sess *Session, wait time.Duration) Response {
 		resp.Code, resp.Error = CodeNoCredential, s.Broker.noCredentialText()
 	}
 	return resp
+}
+
+// waitForRegister blocks a register call until its session is ready, it is refused, the
+// confirmation it waits on settles, it is stopped, or wait passes; a nil channel never fires.
+// Where a test set testRegisterWaiting, it runs that first if none of the channels has fired,
+// so the test knows the call is about to block on them.
+func (s *Server) waitForRegister(ready, refused, settled, stop <-chan struct{}, wait time.Duration) {
+	if waiting := s.testRegisterWaiting.Load(); waiting != nil {
+		select {
+		case <-ready:
+		case <-refused:
+		case <-settled:
+		case <-stop:
+		default:
+			(*waiting)()
+		}
+	}
+	select {
+	case <-ready:
+	case <-refused:
+	case <-settled:
+	case <-time.After(wait):
+	case <-stop:
+	}
 }
 
 // notEnrolled answers sign or sign-request for a registered session with no enrollment yet: it is
@@ -1056,7 +1130,7 @@ func (s *Server) login(ctx context.Context) Response {
 // or it reached its expiry).
 func (s *Server) loginStatus() Response {
 	ls := s.Broker.LoginStatus()
-	resp := Response{OK: true, Code: ls.Code, LoginState: ls.State, CredentialHeld: ls.CredentialHeld, LoginRefused: ls.Refused, CredentialDropped: ls.Dropped,
+	resp := Response{OK: true, Code: ls.Code, LoginState: ls.State, LoginReason: ls.Reason, CredentialHeld: ls.CredentialHeld, LoginRefused: ls.Refused, CredentialDropped: ls.Dropped,
 		MachineIdentity: s.Broker.Identity != nil, IdentityStopped: s.Broker.identityStopped.Load()}
 	if !ls.CredentialExpiresAt.IsZero() {
 		resp.CredentialExpiresAt = ls.CredentialExpiresAt.UTC().Format(time.RFC3339)
@@ -1587,7 +1661,14 @@ func (s *Server) confirmInherited(ctx context.Context, sess *Session, pass ident
 		renewCtx := ctx
 		if first {
 			first = false
-			bounded, cancel := context.WithTimeout(ctx, s.firstConfirmBound())
+			var bounded context.Context
+			var cancel context.CancelFunc
+			if arm := s.firstConfirmTimer.Load(); arm != nil {
+				bounded, cancel = context.WithCancel(ctx)
+				(*arm)(s.firstConfirmBound(), cancel)
+			} else {
+				bounded, cancel = context.WithTimeout(ctx, s.firstConfirmBound())
+			}
 			defer cancel()
 			renewCtx = bounded
 		}
@@ -1640,10 +1721,14 @@ func enrollmentNotLive(err error) (string, bool) {
 // this change exists to prevent — so a wake counts only while the identity has in fact moved on
 // from the one being renewed.
 func (s *Server) renewLoop(ctx context.Context, sess *Session, lease time.Time, generation uint64) bool {
+	now, after := time.Now, time.After
+	if s.testClock != nil {
+		now, after = s.testClock.Now, s.testClock.After
+	}
 	for {
-		interval := leasetime.HelperRenewAfter(time.Until(lease), s.MinRenew)
+		interval := leasetime.HelperRenewAfter(lease.Sub(now()), s.MinRenew)
 		select {
-		case <-time.After(interval):
+		case <-after(interval):
 		case <-sess.wakeCh():
 			if sess.identity().Generation == generation {
 				continue
@@ -1805,6 +1890,18 @@ func (s *Server) setDrainTimer(arm func(bound time.Duration, end func())) {
 		return
 	}
 	s.drainTimer.Store(&arm)
+}
+
+// setFirstConfirmTimer makes arm what ends the first confirming renew's bound, in place of
+// FirstConfirmBound's timeout (confirmInherited): arm is handed the bound and the func that ends
+// it, and runs that func when it chooses. Nil puts the timeout back. Safe to call while the
+// Server runs.
+func (s *Server) setFirstConfirmTimer(arm func(bound time.Duration, end func())) {
+	if arm == nil {
+		s.firstConfirmTimer.Store(nil)
+		return
+	}
+	s.firstConfirmTimer.Store(&arm)
 }
 
 // retire forgets the session. One with no omp session id has its enrollments revoked at once by

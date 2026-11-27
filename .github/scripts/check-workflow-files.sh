@@ -16,8 +16,9 @@
 #      named, because such a file starts no run whatever this check says;
 #   3. a file that is not valid YAML, which GitHub reads no further than either;
 #   4. two keys of one mapping that are equal after upper-casing. GitHub's parsers refuse both a
-#      repeated key and a key differing only in case (actions/languageservices
-#      workflow-parser/src/templates/template-reader.ts:212 and :359, actions/runner
+#      repeated key and a key differing only in case (actions/languageservices'
+#      `is already defined` errors, https://github.com/actions/languageservices/blob/00d83b8521a6a179cc55ce9c93f5564035de0c5c/workflow-parser/src/templates/template-reader.ts#L212
+#      and #L359, actions/runner
 #      TemplateReader.cs with StringComparer.OrdinalIgnoreCase), while the YAML layer passes them
 #      through on purpose (yaml-object-reader.ts parses with uniqueKeys: false). A load cannot find
 #      it — yaml.safe_load keeps the last of a repeated key and reports nothing — so this walks the
@@ -28,7 +29,8 @@
 #      repository's workflow as one call. ci.yaml calls 45 today, and large-pr-lanes.yaml, which
 #      calls ci.yaml, 46: ci.yaml itself and its whole tree. That is the limit, which keeps four
 #      below GitHub's cap for a surprise and holds ci.yaml to 45, since its caller counts one more;
-#      a job split in two calls the file it was split from
+#      a job split in two calls the file it was split from, and a new job calls the file of a job
+#      like it
 #      (.github/ci-notes/ci.md#two-jobs-that-call-one-file);
 #   6. a job whose `env:`, or one of whose steps' `env:`, sets JOB_TIMEOUT_MINUTES to anything but
 #      the job's timeout-minutes (GitHub's default of 360 where the job sets none), and a step whose
@@ -46,7 +48,17 @@
 #      files aside; COMMAND_PLACE below says what counts as a run), or when its `uses:` is an
 #      action of .github/actions, at the checkout's root or under another checkout (`./base/`),
 #      whose steps' `run:` does. A path named in a comment or echoed is no reach.
-#   7. a job that calls a reusable workflow of this repository and grants less than it declares:
+#   7. a Postgres service (a `services:` entry whose key, or whose `image:`, holds `postgres` or
+#      `pgvector`) whose `command:` is not the line `.github/scripts/postgres-service-settings.sh
+#      --command` prints, the words compared as written, or whose job has no step whose `run:`
+#      runs .github/scripts/postgres-service-settings.sh, in a place COMMAND_PLACE below counts as
+#      a run, with that service's container id (`${{ job.services.<service id>.id }}`) as its
+#      first argument on the same line: the id in a comment or another command reads nothing. The
+#      command line is the server's settings (crash safety off, max_connections,
+#      max_prepared_transactions), and the step reads them back from the running server; that
+#      script's header says what each setting costs or buys. A service the check cannot tell is
+#      Postgres by its key or its image is not its business.
+#   8. a job that calls a reusable workflow of this repository and grants less than it declares:
 #      for each scope that workflow's own `permissions` or any of its jobs' `permissions` names,
 #      the calling job's `permissions` (the caller workflow's where the job sets none) must grant
 #      it at that level or above (`read` below `write`; `write-all` and `read-all` as GitHub reads
@@ -71,15 +83,18 @@ set -euo pipefail
 
 # The repeated-key test is workflow_paths.repeated_keys, the same one the loader every filter
 # check reads the changes job's filters and the workflows with runs, imported from beside this script's own file: a
-# test fixture links only this script in, and the link leads back to the module CI runs. Resolved
-# before the cd, which would leave a relative $0 naming nothing. PYTHONDONTWRITEBYTECODE keeps the
-# import from leaving a __pycache__ in the tree.
+# test fixture links only this script in, and the link leads back to the module CI runs. Rule 7's
+# command line is read the same way, from the postgres-service-settings.sh beside this file.
+# Resolved before the cd, which would leave a relative $0 naming nothing. PYTHONDONTWRITEBYTECODE
+# keeps the import from leaving a __pycache__ in the tree.
 scripts=$(dirname "$(readlink -f "$0")")
 
 cd "$(dirname "$0")/../.."
 
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$scripts" python3 <<'PY'
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$scripts" WORKFLOW_CHECK_SCRIPTS="$scripts" python3 <<'PY'
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -213,7 +228,7 @@ def local_callee(uses: str) -> Path | None:
     return Path(uses[2:])
 
 
-# Rule 7. The scopes GitHub's `permissions` names, and their levels in order.
+# Rule 8. The scopes GitHub's `permissions` names, and their levels in order.
 SCOPES = (
     "actions", "attestations", "checks", "contents", "deployments", "discussions", "id-token",
     "issues", "models", "packages", "pages", "pull-requests", "repository-projects",
@@ -239,7 +254,7 @@ def granted(block: object) -> dict[str, int] | None:
 
 
 def check_call_permissions(path: Path) -> None:
-    """Rule 7: each job of `path` that calls a workflow of this repository grants, scope by scope,
+    """Rule 8: each job of `path` that calls a workflow of this repository grants, scope by scope,
     at least what that workflow's `permissions` and its jobs' `permissions` declare."""
     try:
         document = yaml.safe_load(path.read_text())
@@ -477,7 +492,92 @@ def check_timeout_variables(path: Path, root: object, reachers: tuple[set[str], 
                        f"its timeout-minutes is {scalar(own)} (line {own.start_mark.line + 1})")
 
 
+SETTINGS = "postgres-service-settings.sh"
+POSTGRES_WORDS = ("postgres", "pgvector")
+
+
+def service_command() -> str | None:
+    """The command line every Postgres service starts with, as SETTINGS --command prints it from
+    beside this file, its words joined by one space. None, with a problem saying why, when it
+    cannot be read: rule 7 then holds each job to its read-back step alone."""
+    script = Path(os.environ["WORKFLOW_CHECK_SCRIPTS"]) / SETTINGS
+    try:
+        done = subprocess.run(["bash", str(script), "--command"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        why = one_line(error)
+    else:
+        line = " ".join(done.stdout.split())
+        if done.returncode == 0 and line:
+            return line
+        why = f"it exited {done.returncode} and printed '{one_line(done.stdout + done.stderr)}'"
+    problem(
+        Path(".github/scripts") / SETTINGS,
+        f"`.github/scripts/{SETTINGS} --command` gives no command line ({why}), so no Postgres "
+        f"service's command: line can be held to it.",
+    )
+    return None
+
+
+def reads_back(run: str, container: str) -> bool:
+    """Whether a line of `run` outside a comment runs SETTINGS, in a place runs_any counts, with
+    `${{ <container> }}` as the script's first argument. The container's id elsewhere in the step (a
+    comment, an echo, another command) is no read-back, and neither is the `--command` form."""
+    argument = re.compile(
+        re.escape(SETTINGS) + r"[\"']?\s+[\"']?\$\{\{\s*" + re.escape(container) + r"\s*\}\}[\"']?(?=\s|$)"
+    )
+    return any(runs_any(line, {SETTINGS}) and argument.search(line) for line in run.splitlines())
+
+
+def check_postgres_services(path: Path, root: object, command: str | None) -> None:
+    """Rule 7 of the header: each Postgres service starts on `command`, and its job reads the
+    settings back with SETTINGS and the service's container id."""
+    jobs = mapping_get(root, "jobs")
+    if not isinstance(jobs, yaml.MappingNode):
+        return
+    for job_name, job in jobs.value:
+        services = mapping_get(job, "services")
+        if not isinstance(services, yaml.MappingNode):
+            continue
+        postgres = [
+            (name, service) for name, service in services.value
+            if any(word in (scalar(name) or "").lower() or word in (scalar(mapping_get(service, "image")) or "").lower()
+                   for word in POSTGRES_WORDS)
+        ]
+        if not postgres:
+            continue
+        steps = mapping_get(job, "steps")
+        runs = [scalar(mapping_get(step, "run")) or "" for step in steps.value] if isinstance(steps, yaml.SequenceNode) else []
+        for name, service in postgres:
+            service_id = scalar(name)
+            line = name.start_mark.line + 1
+            where = f"{path}:{line}: job {scalar(job_name)} runs the Postgres service '{service_id}'"
+            given = mapping_get(service, "command")
+            words = None if given is None else " ".join((scalar(given) or "").split())
+            if command is not None and words != command:
+                problem(
+                    path,
+                    f"{where} " + ("with no command: line" if given is None else f"on the command: line '{words}'")
+                    + f", not the one `.github/scripts/{SETTINGS} --command` prints, so its server starts "
+                    f"without the settings the tests here are written for (crash safety off, the "
+                    f"connections and the prepared transactions they open; that script's header says "
+                    f"what each buys). Write `command: {command}`.",
+                    line=line,
+                )
+            container = f"job.services.{service_id}.id"
+            if not any(reads_back(run, container) for run in runs):
+                problem(
+                    path,
+                    f"{where} and no step of it runs .github/scripts/{SETTINGS} with that service's "
+                    f"container id, so nothing reads its settings back from the running server, and a "
+                    f"command: line the runner did not pass would leave the tests on the image's "
+                    f"defaults with nothing that names the cause. Add the step every such job has, "
+                    f"before its tests: `run: .github/scripts/{SETTINGS} \"${{{{ {container} }}}}\" {service_id}`.",
+                    line=line,
+                )
+
+
 REACHERS = helper_reachers()
+COMMAND = service_command()
 
 
 for path in targets:
@@ -519,6 +619,7 @@ for path in targets:
 
     check_folded_keys(path, node)
     check_timeout_variables(path, node, REACHERS)
+    check_postgres_services(path, node, COMMAND)
 
     called = unique_callees(path)
     if len(called) > CALL_LIMIT:
@@ -544,7 +645,8 @@ print(
     f"all {len(targets)} workflow files under {WORKFLOWS} are within {LIMIT:,} bytes and GitHub's "
     f"{GITHUB_CAP:,}-byte cap, parse as YAML, repeat no mapping key after upper-casing, call "
     f"at most {CALL_LIMIT} unique reusable workflows, set JOB_TIMEOUT_MINUTES and "
-    f"STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, and grant each workflow they "
-    f"call every scope it declares"
+    f"STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, start every Postgres service on "
+    f"{SETTINGS}'s command line with a step that reads it back, and grant each workflow they call "
+    f"every scope it declares"
 )
 PY

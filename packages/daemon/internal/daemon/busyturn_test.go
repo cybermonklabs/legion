@@ -62,7 +62,7 @@ func TestABusyRecordedTurnEndReleasesTheIssuesHeldTask(t *testing.T) {
 			// The implementer's agent is in a turn of its own, whose start the daemon never read,
 			// and its phase task is answered busy: the claim is recorded working for that turn.
 			implementerConn.SetStreaming(true)
-			implementerConn.RefusePrompt(keptBusyRefusal)
+			implementerConn.FailPrompt(keptBusy)
 			if err := writing.Handle(rig.ctx, supervise.RequestDeliver{Claim: implementer, Task: "implement the plan", ID: "outbox:1",
 				Phase: phase.Implementing, Generation: 1}); err != nil {
 				t.Fatalf("deliver the implementer's task: %v", err)
@@ -133,7 +133,7 @@ func TestABusyRecordedClaimIsNotBackstopped(t *testing.T) {
 	}
 	conn := fake.NewConn()
 	conn.SetStreaming(true)
-	conn.RefusePrompt(keptBusyRefusal)
+	conn.FailPrompt(keptBusy)
 	rig.sup.deps.Conns.(*fake.Conns).Register(idle.Token, conn)
 
 	if err := m.Handle(context.Background(), supervise.RequestDeliver{Claim: idle.Token, Task: "work the phase", ID: "outbox:3"}); err != nil {
@@ -182,7 +182,7 @@ func TestABusyRecordedClaimIsNotReleasedAsIdle(t *testing.T) {
 		t.Helper()
 		var decision workflow.IdleDecision
 		if _, err := rig.st.ReleaseIdleIssue(ctx, "legion", rig.issue.Key, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-			decision = workflow.IdleRelease(view, time.Now().UTC(), rig.w.idlePeriod, true, api.DaemonAPIVersion)
+			decision = workflow.IdleRelease(view, time.Now().UTC(), rig.w.idlePeriod, true, false, api.DaemonAPIVersion())
 			return store.IdleReleaseMark{}, nil
 		}); err != nil {
 			t.Fatalf("read the pod's idle decision: %v", err)
@@ -198,7 +198,7 @@ func TestABusyRecordedClaimIsNotReleasedAsIdle(t *testing.T) {
 	// the implementer holds its role idle and working alike, so the record changes no role holder,
 	// and the pass holds the pod.
 	conn := fake.NewConn()
-	conn.RefusePrompt(keptBusyRefusal)
+	conn.FailPrompt(keptBusy)
 	rig.sup.deps.Conns.(*fake.Conns).Register(rig.token, conn)
 	queued := rig.queuedBy(t, func() {
 		if err := rig.machine.Handle(ctx, aliveObservation(rig.machine)); err != nil {

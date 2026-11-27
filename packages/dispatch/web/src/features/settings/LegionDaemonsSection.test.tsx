@@ -1,4 +1,4 @@
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the in-the-step row submits and checks in one synchronous step, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -12,8 +12,15 @@ import { ApiError, api, NetworkError } from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { AuthenticatedUser, LegionSetting } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LegionDaemonsSection } from "./LegionDaemonsSection";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** Every spy a test installed, put back when it ends, so one test's identity or answers are
  *  never the next one's. */
@@ -89,6 +96,7 @@ async function renderSection(
       key,
       name: key,
       open_asks: 0,
+      proven_sessions: false,
     }))
   );
   spies.push(whoAmI, getLegionDaemon, listProjects);
@@ -116,6 +124,18 @@ test("a deployment where no project names a daemon says so", async () => {
   const section = await renderSection(legionServer([]));
 
   expect(await section.findByText("No project names a Legion daemon yet.")).toBeDefined();
+});
+
+// The section says when Dispatch reads a daemon's whole state: to start the project's record or to
+// check it, and not on a timer (the Legion state intake, packages/envoy/cmd/dispatch/README.md).
+test("the section says Dispatch reads a daemon whole only to start or check its record", async () => {
+  const section = await renderSection(legionServer([]));
+
+  expect(
+    await section.findByText(
+      /Dispatch reads the daemon's whole state only to start that record or to check what it recorded; it does not poll the daemon on a timer\./
+    )
+  ).toBeDefined();
 });
 
 // No route lists every daemon, so one project's read can fail while the others answer: the

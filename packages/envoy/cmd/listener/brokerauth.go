@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // The variables a listener takes broker access tokens on, beside ENVOY_API_TOKEN and the
@@ -73,7 +74,7 @@ func (c listenerBrokerConfig) configured() bool { return c.BrokerURL != "" }
 // already refused a configuration naming neither or both.
 func (c listenerBrokerConfig) account() ciphertoken.Account {
 	if c.AccountTokenFile != "" {
-		return ciphertoken.NewAccountToken(c.AccountTokenFile)
+		return ciphertoken.NewAccountToken(EnvBrokerAccountTokenFile, c.AccountTokenFile)
 	}
 	return ciphertoken.NewGoogleAccount(c.GoogleAudience)
 }
@@ -169,7 +170,7 @@ func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) 
 	verifier, err := ciphertoken.New(ciphertoken.Options{
 		BrokerURL: b.config.BrokerURL,
 		Account:   b.config.account(),
-		Origin:    strings.TrimSuffix(b.config.Origin, "/"),
+		Origins:   []string{strings.TrimSuffix(b.config.Origin, "/")},
 		Replay:    spentProofs{kv: kv},
 		// The listener trusts a forwarding header for this only where it is the edge behind
 		// Google's load balancer, and only from that balancer's own proxies (edgeCallerAddress,
@@ -211,6 +212,14 @@ func (b *brokerTokens) verify(r *http.Request) (ciphertoken.Caller, error) {
 	return verifier.Verify(r.Context(), r)
 }
 
+// lapsed reports whether caller, one verify answered, is a not-held answer whose deadline has
+// passed by the verifier's own clock (ciphertoken.Verifier.Lapsed), which apiAuth refuses as
+// unavailable.
+func (b *brokerTokens) lapsed(caller ciphertoken.Caller) bool {
+	verifier := b.verifier.Load()
+	return verifier != nil && verifier.Lapsed(caller)
+}
+
 // retryAfter is the wait a rate-limited caller is given, in seconds.
 func (b *brokerTokens) retryAfter() int {
 	if verifier := b.verifier.Load(); verifier != nil {
@@ -219,17 +228,18 @@ func (b *brokerTokens) retryAfter() int {
 	return 1
 }
 
-// describeBrokerTokens names this credential for the boot line: the broker it asks and the
-// identity it asks as, and nothing of either credential's bytes.
+// describeBrokerTokens names this credential for the boot line: the broker it asks, through
+// redact.URL, and the identity it asks as, the token file by the setting that names it, and nothing
+// of either credential's bytes or of the file's path, where a token pasted in its place would be.
 func (b *brokerTokens) describe() string {
 	if b == nil {
 		return ""
 	}
 	identity := "google audience " + b.config.GoogleAudience
 	if b.config.AccountTokenFile != "" {
-		identity = "projected token " + b.config.AccountTokenFile
+		identity = "the projected token " + EnvBrokerAccountTokenFile + " names"
 	}
-	return "broker tokens at " + b.config.BrokerURL + " as " + identity
+	return "broker tokens at " + redact.URL(b.config.BrokerURL) + " as " + identity
 }
 
 // listenerSourceAddress is the address one introspection bucket is keyed on: the address an edge
@@ -300,9 +310,10 @@ func (s spentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _,
 	sum := sha256.Sum256([]byte(jti + "\x00" + htu))
 	key := hex.EncodeToString(sum[:])
 	// Bounded ends the wait with the request, as every other bucket call this listener makes
-	// does; the abandoned create may still land, which is the right way round for a record whose
-	// whole purpose is to be there.
-	revision, _, err := bus.Bounded(ctx, func() (uint64, error) {
+	// does, and waits within it for a connection nats.go is reconnecting; the abandoned create
+	// may still land once sent, which is the right way round for a record whose whole purpose is
+	// to be there.
+	revision, _, err := bus.Bounded(ctx, s.kv.Conn(), func() (uint64, error) {
 		return s.kv.Create(key, nil)
 	})
 	if bus.IsCASConflict(err) {
@@ -353,7 +364,7 @@ func (s *proofSpend) release(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), proofReleaseBudget)
 	defer cancel()
-	_, _, err := bus.Bounded(ctx, func() (struct{}, error) {
+	_, _, err := bus.Bounded(ctx, s.kv.Conn(), func() (struct{}, error) {
 		return struct{}{}, s.kv.Delete(s.key, nats.LastRevision(s.revision))
 	})
 	s.key = ""

@@ -1,6 +1,8 @@
 package natscallout
 
 import (
+	"crypto/rand"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/natscred"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // envoyAccount is the account a private render keeps every client in, and jetStreamAccount the one
@@ -26,20 +29,31 @@ const (
 
 // privateRender is a private render's two accounts as t-c-29 lays them out
 // (cybermonklabs/legion#4851's accounts block in packages/envoy/infra/core, which this module
-// cannot import): JETSTREAM exports, and ENVOY imports, as services the JetStream API, answered as
-// a stream of responses, consumers' acknowledgements, ordered consumers' flow-control replies, KV
-// writes, every subject the notification stream carries (bus.StreamCarriedSubjects) and
-// envoy-measure's publish route (natsgrant.Measure); and as streams the two reply roots a push
-// consumer's deliveries and a stream's republish are published on, nats.go's default _INBOX and
-// the services' _INBOX_envoy (plan E's t-e-74).
+// cannot import), with one route that block lacks. JETSTREAM exports, and ENVOY imports, as
+// services the JetStream API, answered as a stream of responses, consumers' acknowledgements,
+// ordered consumers' flow-control replies, KV writes and every subject the notification stream
+// carries (bus.StreamCarriedSubjects); and as streams the two reply roots a push consumer's
+// deliveries and a stream's republish are published on, nats.go's default _INBOX and the
+// services' _INBOX_envoy (plan E's t-e-74).
+//
+// The route #4851's block lacks is $JS.SNAPSHOT.>, where a backup's chunks are acknowledged and a
+// restore's chunks are sent (natsgrant.Operator's $JS.SNAPSHOT.ACK.<stream>.> and
+// $JS.SNAPSHOT.RESTORE.<stream>.*, held's alone): without it, the held operator's backups and
+// restores from ENVOY reach no subscriber. ENVOY exports it, and JETSTREAM imports it, as a
+// stream, not as a service: a service import adds a Nats-Request-Info header to each request, and
+// nats-server v2.15.1's restore takes each chunk whole, header included, as the archive's bytes
+// (jetstream_api.go:4532-4554, processStreamRestore's processChunk), so it reads the end, an empty
+// chunk, as data and the restore never completes. A backup completes through either.
+// TestAPrivateRenderAdmitsIntoEnvoy fails with the route left out, and with it as a service. The
+// block's envoy-measure.> service is not here: natsgrant.Measure no longer publishes it.
 func privateRender() testnats.CalloutAccounts {
 	services := []string{"$JS.API.>", "$JS.ACK.>", "$JS.FC.>", "$KV.>"}
 	services = append(services, bus.StreamCarriedSubjects()...)
-	services = append(services, "envoy-measure.>")
 	return testnats.CalloutAccounts{
 		JetStream: jetStreamAccount, Clients: envoyAccount,
 		Services: services, Streamed: []string{"$JS.API.>"},
-		Streams: []string{"_INBOX.>", "_INBOX_envoy.>"},
+		Streams:     []string{"_INBOX.>", "_INBOX_envoy.>"},
+		ToJetStream: []string{"$JS.SNAPSHOT.>"},
 	}
 }
 
@@ -65,22 +79,30 @@ func dispatchToken(now time.Time) map[string]platformToken {
 // a client in the account its user JWT's audience names (nats-server server/auth_callout.go,
 // assignAccountAndPermissions), so the account the hub reports is the audience the answer named.
 // Unset, it is $G, where a hub that names no account keeps every user; ENVOY, on a hub that keeps
-// its clients in ENVOY (privateRender), for a session and for a service alike, since every answer
-// passes admit. A value that is neither $G nor one subject token, the JetStream account's name, and
-// an nkey seed each refuse the service's start, naming the setting and never the value, save the
-// JetStream account's name, which the rule itself names.
+// its clients in ENVOY (privateRender), for a session, a service and the operator alike, since
+// every answer passes admit: the operator, whose grant follows the hold row, is placed in the same
+// account as every other client. A value that is neither $G nor one subject token, the JetStream
+// account's name, and an nkey seed each refuse the service's start, naming the setting and never
+// the value, save the JetStream account's name, which the rule itself names.
 //
 // It fails when the answer names $G whatever the setting: run with admit's audience written as
-// "$G", the session and the service under ENVOY each read in $G.
+// "$G", the session and the service under ENVOY each read in $G; and with $G written for the
+// operator's answer alone, the operator under ENVOY reads in $G.
 func TestTheAnswerNamesTheConfiguredAccount(t *testing.T) {
 	now := time.Now()
-	tokens := map[string]platformToken{"daemon-token": {account: daemonAccount, issued: now, expiry: now.Add(time.Hour)}}
+	tokens := map[string]platformToken{
+		"daemon-token":   {account: daemonAccount, issued: now, expiry: now.Add(time.Hour)},
+		"operator-token": {account: operatorAccount, issued: now, expiry: now.Add(time.Hour)},
+	}
 	// The clients each row connects, each by the credential it presents: a session's token and
-	// proof, and a service's platform token.
+	// proof, a service's platform token, and the operator's.
 	clients := map[string]func(t *testing.T, url string, s *session) (*nats.Conn, error){
 		"session": func(t *testing.T, url string, s *session) (*nats.Conn, error) { return connectSession(t, url, s, nil) },
 		"service": func(t *testing.T, url string, _ *session) (*nats.Conn, error) {
 			return connectWithServiceToken(t, url, "daemon-token")
+		},
+		"operator": func(t *testing.T, url string, _ *session) (*nats.Conn, error) {
+			return connectWithServiceToken(t, url, "operator-token")
 		},
 	}
 	for _, row := range []struct {
@@ -104,6 +126,7 @@ func TestTheAnswerNamesTheConfiguredAccount(t *testing.T) {
 			a := newSession(t, "ses_a", 15*time.Minute)
 			settings := serviceSettings(t, url, keys)
 			settings.Account = row.setting
+			settings.Services = holdServices
 			startServiceWith(t, settings, Deps{Introspect: introspector(a), ServiceToken: serviceTokens(tokens)}, Decide)
 			for name, connect := range clients {
 				t.Run(name, func(t *testing.T) {
@@ -140,16 +163,51 @@ func TestTheAnswerNamesTheConfiguredAccount(t *testing.T) {
 }
 
 // TestAPrivateRenderAdmitsIntoEnvoy: on a hub in a private render's two accounts (privateRender),
-// whose bucket a static user of ENVOY made in JETSTREAM through ENVOY's imports, Dispatch's service,
-// admitted by the auth service with BROKER_NATS_ACCOUNT set to ENVOY, is placed in ENVOY, writes a
-// key of the bucket and reads it back, each call crossing to JETSTREAM by an import. The write is
-// the JetStream publish nats.go's KeyValue.Put sends, to $KV.<bucket>.<key>.
+// whose bucket a static user of ENVOY made in JETSTREAM through ENVOY's imports, the auth service,
+// with BROKER_NATS_ACCOUNT set to ENVOY, places Dispatch's service and the operator in ENVOY, and
+// each call below crosses to JETSTREAM by an import. Dispatch's service writes a key of the bucket
+// and reads it back; the write is the JetStream publish nats.go's KeyValue.Put sends, to
+// $KV.<bucket>.<key>. The operator, with the hold row reading held, makes three calls of its held
+// grant (natsgrant.Operator) on the same bucket's stream, a protected bucket's, and no other: it
+// reads the stream's info, which its grant holds only while the row reads prepare or held; it backs
+// the stream up as envoy-infra buckets does (backupStream), the chunks reaching its inbox through
+// the _INBOX_envoy stream ENVOY imports and each acknowledged on $JS.SNAPSHOT.ACK.<stream>.>
+// through the $JS.SNAPSHOT.> stream JETSTREAM imports; and, the stream deleted, it restores the
+// stream from that backup (restoreStream), each chunk sent to $JS.SNAPSHOT.RESTORE.<stream>.<id>
+// through the same stream, with the key's one message. The key's value is three chunks of random
+// bytes, which the snapshot cannot compress, so the backup is more than one chunk, and each chunk
+// after the first waits for the acknowledgement of the one before (snapshotChunk). The static user
+// that makes the bucket writes that value before either subtest runs, so the operator's subtest
+// needs nothing of Dispatch's and runs alone (-run 'TestAPrivateRenderAdmitsIntoEnvoy/ENVOY/operator');
+// Dispatch's write of the same key replaces it, and the bucket keeps one value a key.
 //
-// The control is the setting left at $G, its default: the auth service places the same service in
-// $G, which holds no stream and imports nothing, so the same write gets no responders (nats.go's
-// ErrNoStreamResponse, its name for a JetStream publish no stream answers, js.go:619-622).
+// JETSTREAM holds a second stream on disk, ENVOY_NOTIFICATIONS, as the deployed hub's account holds
+// it beside the buckets, so the delete before the restore leaves the account directory in use.
+// nats-server v2.15.1 answers the delete of an account's last file stream and then removes the
+// account's streams directory and the account directory on goroutines of its own
+// (filestore.go:12246, stream.go:8926-8931). A restore sent at once can run between those removals
+// and its own os.MkdirAll of the stream's directory, whose mkdir of the streams directory then
+// finds no account directory: the restore fails with 10077, "could not create storage directory"
+// (filestore.go:438-440).
+//
+// The control is the setting left at $G, its default: the auth service places the same clients in
+// $G, which holds no stream and imports nothing. So the same write gets no responders (nats.go's
+// ErrNoStreamResponse, its name for a JetStream publish no stream answers, js.go:619-622), and the
+// operator's read is answered by the server's JetStream for $G, refusing it with 10039,
+// "JetStream not enabled for account". With $G written for the operator's answer alone in admit,
+// the operator under ENVOY gets that refusal, and the test fails naming it; with the row reading
+// released, its grant refuses the read, which gets no answer, and the test fails naming it. With
+// $JS.SNAPSHOT.> left out of privateRender, the first chunk's acknowledgement reaches no
+// subscriber, the server ends the snapshot with 408 No Flow Response, and the test fails naming
+// it; with $JS.SNAPSHOT.> a service JETSTREAM exports and ENVOY imports instead, the backup
+// completes, the restore's end is answered as a chunk is, with nothing, and the test fails naming
+// that answer.
 func TestAPrivateRenderAdmitsIntoEnvoy(t *testing.T) {
-	bucket, key, value := bus.WebhookRedeliveryBucket, "probe", []byte("written in ENVOY")
+	bucket, key := bus.WebhookRedeliveryBucket, "probe"
+	value := make([]byte, 3*snapshotChunk)
+	_, _ = rand.Read(value)
+	stream := kvBucket(bucket)
+	heldRead := "$JS.API.STREAM.INFO." + stream
 	for _, row := range []struct {
 		setting  string
 		admitted bool
@@ -161,35 +219,79 @@ func TestAPrivateRenderAdmitsIntoEnvoy(t *testing.T) {
 			keys := testnats.NewCalloutKeys(t)
 			adminSeed, adminKey := testnats.User(t)
 			url := testnats.StartWithCalloutAccounts(t, keys, privateRender(),
-				testnats.StaticUser{NKey: adminKey, Publish: []string{"$JS.API.>"}, Subscribe: []string{"_INBOX.>"}})
+				testnats.StaticUser{NKey: adminKey, Publish: []string{"$JS.API.>", "$KV." + bucket + ".>"}, Subscribe: []string{"_INBOX.>"}})
 			admin, err := testnats.ConnectSeed(t, url, adminSeed)
 			require.NoError(t, err)
 			defer admin.Close()
 			adminJS, err := admin.JetStream()
 			require.NoError(t, err)
-			_, err = adminJS.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket})
+			adminKV, err := adminJS.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket})
 			require.NoError(t, err, "a static user of %s could not make the bucket through its import", envoyAccount)
+			_, err = adminKV.Put(key, value)
+			require.NoError(t, err, "a static user of %s could not write the key through its import", envoyAccount)
+			_, err = adminJS.AddStream(&nats.StreamConfig{Name: bus.Stream, Subjects: []string{"notifications.>"}, Storage: nats.FileStorage})
+			require.NoError(t, err, "a static user of %s could not make %s through its import", envoyAccount, bus.Stream)
 
+			now := time.Now()
+			tokens := dispatchToken(now)
+			tokens["operator-token"] = platformToken{account: operatorAccount, issued: now, expiry: now.Add(time.Hour)}
+			signer, hold := newHoldSigner(t), &holdStub{}
+			hold.set(rowOf(signer.reading(t, 1, natsgrant.OperatorPhaseHeld, "hold-1")))
 			settings := serviceSettings(t, url, keys)
 			settings.Account = row.setting
-			startServiceWith(t, settings, Deps{ServiceToken: serviceTokens(dispatchToken(time.Now()))}, Decide)
-			nc, err := connectWithServiceToken(t, url, "dispatch-token")
-			require.NoError(t, err, "the auth service did not admit Dispatch's service")
-			require.Equal(t, row.setting, testnats.ConnAccount(t, nc), "the hub placed the service in another account")
-			js, err := nc.JetStream(nats.MaxWait(5 * time.Second))
-			require.NoError(t, err)
+			settings.Services = holdServices
+			startServiceWith(t, settings, Deps{ServiceToken: serviceTokens(tokens), Hold: NewHoldView(hold.read, signer.HoldKeys, nil, nil)}, Decide)
 
-			_, err = js.Publish("$KV."+bucket+"."+key, value)
-			if !row.admitted {
-				require.ErrorIs(t, err, nats.ErrNoStreamResponse, "the service placed in %s had its KV write answered", row.setting)
-				return
-			}
-			require.NoError(t, err, "the service placed in %s could not write the key", row.setting)
-			kv, err := js.KeyValue(bucket)
-			require.NoError(t, err)
-			entry, err := kv.Get(key)
-			require.NoError(t, err, "the service placed in %s could not read the key back", row.setting)
-			require.Equal(t, string(value), string(entry.Value()))
+			t.Run("dispatch", func(t *testing.T) {
+				nc, err := connectWithServiceToken(t, url, "dispatch-token")
+				require.NoError(t, err, "the auth service did not admit Dispatch's service")
+				require.Equal(t, row.setting, testnats.ConnAccount(t, nc), "the hub placed the service in another account")
+				js, err := nc.JetStream(nats.MaxWait(5 * time.Second))
+				require.NoError(t, err)
+
+				_, err = js.Publish("$KV."+bucket+"."+key, value)
+				if !row.admitted {
+					require.ErrorIs(t, err, nats.ErrNoStreamResponse, "the service placed in %s had its KV write answered", row.setting)
+					return
+				}
+				require.NoError(t, err, "the service placed in %s could not write the key", row.setting)
+				kv, err := js.KeyValue(bucket)
+				require.NoError(t, err)
+				entry, err := kv.Get(key)
+				require.NoError(t, err, "the service placed in %s could not read the key back", row.setting)
+				require.Equal(t, value, entry.Value(), "the service placed in %s read back another value", row.setting)
+			})
+			t.Run("operator", func(t *testing.T) {
+				// The operator's one subscribe is its own inbox prefix, so its requests' replies are there.
+				nc, err := nats.Connect(url, nats.UserInfo(natscred.ServiceUser, "operator-token"),
+					nats.CustomInboxPrefix(natsgrant.OperatorInbox), nats.Timeout(10*time.Second), nats.NoReconnect())
+				require.NoError(t, err, "the auth service did not admit the operator")
+				t.Cleanup(nc.Close)
+				if row.admitted {
+					var info struct {
+						Config struct {
+							Name string `json:"name"`
+						} `json:"config"`
+					}
+					require.NoError(t, json.Unmarshal(succeeds(t, nc, heldRead, nil).raw, &info))
+					require.Equal(t, stream, info.Config.Name, "the held operator placed in %s read another stream's info", row.setting)
+
+					backup, err := backupStream(nc, stream)
+					require.NoError(t, err, "the held operator placed in %s could not back up %s", row.setting, stream)
+					require.Greater(t, len(backup.data), snapshotChunk, "the backup of %s is one chunk, so it waited for no acknowledgement", stream)
+					require.Equal(t, uint64(1), backup.messages, "the backup of %s holds another count than the key's one message", stream)
+					succeeds(t, nc, "$JS.API.STREAM.DELETE."+stream, nil)
+					restored, err := restoreStream(t.Context(), nc, backup, nil)
+					require.NoError(t, err, "the held operator placed in %s could not restore %s", row.setting, stream)
+					require.Equal(t, backup.messages, restored, "the restore of %s holds another count than its backup", stream)
+				} else {
+					answer := answered(t, nc, heldRead, nil)
+					require.NotNil(t, answer.Error, "the operator placed in %s read %s: %s", row.setting, heldRead, answer.raw)
+					require.Equal(t, int(nats.JSErrCodeJetStreamNotEnabledForAccount), answer.Error.ErrCode,
+						"the operator placed in %s was refused %s for another cause: %s", row.setting, heldRead, answer.raw)
+				}
+				require.Equal(t, row.setting, testnats.ConnAccount(t, nc), "the hub placed the operator in another account")
+			})
 		})
 	}
 }

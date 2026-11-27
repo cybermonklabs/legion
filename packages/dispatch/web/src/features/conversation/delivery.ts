@@ -9,6 +9,7 @@ import {
 } from "@legion/contracts";
 
 import type { AgentPart } from "../refs/AgentName";
+import type { PostDeletion } from "../refs/post-marks";
 
 /**
  * Each delivery mode as a person reads it, the one mapping every surface names a mode with: the
@@ -51,6 +52,26 @@ export function deliveryModesOf(capabilities: readonly string[]): MessageDeliver
   return modes;
 }
 
+/** What joins the titles of the sessions a line of the composer names, as `noDeliveryReasons` and
+ *  the mention composer's delivery notices list them. */
+export const TITLES_JOINER = " and ";
+
+/** The words of `noDeliveryReasons`: the cause of a list that holds nothing (`unlisted`), and the
+ *  cause of a list whose every capability is unknown here (`unknown`), around the sessions it is
+ *  true of, named by their titles, by `it` or by `they`, with its verb in one or many. */
+export const NO_DELIVERY_WORDS = {
+  unknown: {
+    after: {
+      many: " list is a delivery mode this Dispatch knows.",
+      one: " lists is a delivery mode this Dispatch knows.",
+    },
+    before: "None of the capabilities ",
+    it: "it",
+    they: "they",
+  },
+  unlisted: "A session advertises none while its plugin cannot reach its conversation.",
+} as const;
+
 /**
  * Why sessions whose capabilities hold no delivery mode (`deliveryModesOf`) take no message: the
  * sentences that follow a warning naming them. An empty list is not the only list that takes no
@@ -66,17 +87,18 @@ export function noDeliveryReasons(
   const listing = sessions.filter((session) => session.capabilities.length > 0);
   const reasons: string[] = [];
   if (listing.length < sessions.length) {
-    reasons.push("A session advertises none while its plugin cannot reach its conversation.");
+    reasons.push(NO_DELIVERY_WORDS.unlisted);
   }
   if (listing.length > 0) {
+    const { unknown } = NO_DELIVERY_WORDS;
     const subject =
       listing.length < sessions.length
-        ? listing.map((session) => session.title).join(" and ")
+        ? listing.map((session) => session.title).join(TITLES_JOINER)
         : listing.length > 1
-          ? "they"
-          : "it";
+          ? unknown.they
+          : unknown.it;
     reasons.push(
-      `None of the capabilities ${subject} ${listing.length > 1 ? "list" : "lists"} is a delivery mode this Dispatch knows.`
+      `${unknown.before}${subject}${listing.length > 1 ? unknown.after.many : unknown.after.one}`
     );
   }
   return reasons.join(" ");
@@ -222,8 +244,27 @@ export function isSafeRetry(attempt: DeliveryOutcome, now: number = Date.now()):
   );
 }
 
+/**
+ * Whether a surface may offer to send a post again - the same-mode Retry of one of its attempts,
+ * or a send in another mode - given the post's deletion (`postDeletion`): never once its author
+ * deleted it. Dispatch refuses every new delivery of a deleted post, `409 POST_DELETED`, and the
+ * delete ended each of its sends still pending with `DELETED_POST_DELIVERY_ERROR`. So an attempt
+ * of a deleted post offers no Retry and no mode change, and earns none of the guidance that
+ * names them: the one a delete ended reads the delete's words and nothing else. Every surface
+ * that offers either asks this first, and asks `isSafeRetry` and `failureGuidance` only of an
+ * attempt whose post it holds for.
+ */
+export function resendable(deleted: PostDeletion | null | undefined): boolean {
+  return deleted === null || deleted === undefined;
+}
+
 /** What a duplicate attempt reads as: an earlier attempt landed, so this one added nothing. */
 export const duplicateText = `Delivered by an earlier attempt, so not delivered again ${unlessRestarted}`;
+
+/** What an attempt the post's delete ended reads as (`DELETED_POST_DELIVERY_ERROR`): the delete
+ *  ended the send, so it did not fail. The targeted message card and the Conversation tab's
+ *  mention list both say it in these words. */
+export const endedByDeleteText = "Ended by the post's delete";
 
 /** What a queued attempt's session is and when it gets the message, said after the session's
  *  name: the one wording of a queued attempt, which `queuedParts` and the Activity tab's mention

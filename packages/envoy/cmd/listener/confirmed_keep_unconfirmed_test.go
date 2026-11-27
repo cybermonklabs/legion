@@ -18,6 +18,7 @@ import (
 // was never acknowledged (and so may have stored the copy): this change keeps what each role route
 // answers. Both rows are controls of main's answer.
 func TestAPublishWhoseKeepFailedIsAnsweredAsAtMain(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		err  error
@@ -38,7 +39,7 @@ func TestAPublishWhoseKeepFailedIsAnsweredAsAtMain(t *testing.T) {
 			deps := harness.publishDeps(t)
 			deps.delivery = &cfg
 			role := "keep-unconfirmed"
-			recorder, _ := publishThrough(deps, `{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"for whoever holds the role next"}`)
+			recorder, _ := publishThrough(deps, `{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","source_session":"ses_keep_unconfirmed_sender","message":"for whoever holds the role next"}`)
 			if calls == 0 {
 				t.Fatalf("control: the publish made no keep; answered %d %s", recorder.Code, recorder.Body.String())
 			}

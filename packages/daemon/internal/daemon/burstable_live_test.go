@@ -9,27 +9,34 @@
 // Sandbox's controller and the gvisor runtime class (burstable_kind_test.go builds both). What the
 // proof stands in for lies outside the reservation path: the agent is a sleep stub (no model, no
 // Dispatch, no NATS), the store answers as the daemon's does for an issue's first launch, the
-// repository is a public one GitHub clones without a credential, and the roles' gh files hold a
-// placeholder token.
+// repository is a public one GitHub clones without a credential, the roles' gh files hold a
+// placeholder token, the project's providers Secret, which the driver creates as an operator does
+// (putLiveProvidersSecret), holds placeholders, and the shared public leak check is read from a
+// stand-in GitHub in this process (serveLiveLeakCheck).
 package daemon
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/stream"
@@ -39,6 +46,7 @@ import (
 // and holds it to the case's reservation and QoS class, as the API server recorded them. It writes
 // `<case> <namespace>/<pod> <legion.yaml>` per case to LEGION_E2E_RESULT for the script.
 func TestABurstableIssuePodRendersLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	env := map[string]string{}
 	for _, name := range []string{"LEGION_E2E_KUBECONFIG", "LEGION_E2E_KUBE_CONTEXT", "LEGION_E2E_IMAGE", "LEGION_E2E_STREAM_HOST", "LEGION_E2E_WORK", "LEGION_E2E_RESULT"} {
@@ -73,21 +81,30 @@ func TestABurstableIssuePodRendersLive(t *testing.T) {
 			pod.Status.QOSClass, liveString(pod.Spec.RuntimeClassName), pod.Spec.NodeName, liveCondition(pod, corev1.PodScheduled))
 		fmt.Printf("   roles container: requests cpu %s memory %s; limits cpu %s memory %s\n",
 			roles.Resources.Requests.Cpu(), roles.Resources.Requests.Memory(), roles.Resources.Limits.Cpu(), roles.Resources.Limits.Memory())
+		// failed is this case's own errors, so its ok line is printed only for a case that held.
+		failed := false
+		errorf := func(format string, args ...any) {
+			t.Helper()
+			failed = true
+			t.Errorf(format, args...)
+		}
 		if pod.Status.QOSClass != tc.qos {
-			t.Errorf("%s: pod %s is %q, want %s", tc.name, pod.Name, pod.Status.QOSClass, tc.qos)
+			errorf("%s: pod %s is %q, want %s", tc.name, pod.Name, pod.Status.QOSClass, tc.qos)
 		}
 		for _, kind := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory, corev1.ResourceEphemeralStorage} {
 			if got, want := roles.Resources.Requests[kind], tc.issue.Requests[kind]; got.Cmp(want) != 0 {
-				t.Errorf("%s: the roles container requests %s %s, want %s", tc.name, kind, got.String(), want.String())
+				errorf("%s: the roles container requests %s %s, want %s", tc.name, kind, got.String(), want.String())
 			}
 			if got, want := roles.Resources.Limits[kind], tc.issue.Limits[kind]; got.Cmp(want) != 0 {
-				t.Errorf("%s: the roles container is limited to %s %s, want %s", tc.name, kind, got.String(), want.String())
+				errorf("%s: the roles container is limited to %s %s, want %s", tc.name, kind, got.String(), want.String())
 			}
 		}
 		if scheduled := liveCondition(pod, corev1.PodScheduled); scheduled != corev1.ConditionTrue {
-			t.Errorf("%s: pod %s PodScheduled is %q, want True", tc.name, pod.Name, scheduled)
+			errorf("%s: pod %s PodScheduled is %q, want True", tc.name, pod.Name, scheduled)
 		}
-		fmt.Printf("ok %s in %s\n", tc.name, time.Since(started).Round(time.Second))
+		if !failed {
+			fmt.Printf("ok %s in %s\n", tc.name, time.Since(started).Round(time.Second))
+		}
 		results = append(results, fmt.Sprintf("%s %s/%s %s", tc.name, pod.Namespace, pod.Name, path))
 	}
 	if err := os.WriteFile(env["LEGION_E2E_RESULT"], []byte(strings.Join(results, "\n")+"\n"), 0o600); err != nil {
@@ -95,11 +112,43 @@ func TestABurstableIssuePodRendersLive(t *testing.T) {
 	}
 }
 
-// launchBurstableLiveRoot runs the cluster check, builds the Agent Sandbox runtime from cfg
-// (burstableLiveRuntime) on a worker stream at cfg's bind, launches the root architect of an issue
-// of cfg's project through the runtime's Spawn, and returns the issue pod as the API server holds
-// it once the launch returned.
+// launchBurstableLiveRoot runs the cluster check, creates cfg's providers Secret
+// (putLiveProvidersSecret), builds the Agent Sandbox runtime from cfg (burstableLiveRuntime) on a
+// worker stream at cfg's bind, launches the root architect of an issue of cfg's project through
+// the runtime's Spawn, and returns the issue pod as the API server holds it once the launch
+// returned.
 func launchBurstableLiveRoot(ctx context.Context, t *testing.T, cfg config.Config, log *slog.Logger) *corev1.Pod {
+	t.Helper()
+	return launchLiveRoot(ctx, t, cfg, log, burstableLiveRepository, "master")
+}
+
+// launchLiveRoot is launchBurstableLiveRoot on the public repository repo, whose default branch is
+// defaultBranch (liveRootSpec), with repo the runtime's cache set.
+func launchLiveRoot(ctx context.Context, t *testing.T, cfg config.Config, log *slog.Logger, repo ghrepo.Repository, defaultBranch string) *corev1.Pod {
+	t.Helper()
+	return startLiveRoots(ctx, t, cfg, log, repo, defaultBranch).launch(cfg.Project + "-1")
+}
+
+// liveRoots is the Agent Sandbox runtime a kind proof builds from its legion.yaml
+// (burstableLiveRuntime), with the public repository it launches on as its cache set, on a worker
+// stream at the file's bind that admits the boot token of each root it launches.
+type liveRoots struct {
+	ctx           context.Context
+	t             *testing.T
+	namespace     string
+	project       string
+	repo          ghrepo.Repository
+	defaultBranch string
+	rt            *sandbox.Runtime
+	clients       *kubernetes.Clientset
+	prompt        string
+	mu            sync.Mutex
+	boots         map[string]claim.Token
+}
+
+// startLiveRoots runs the cluster check, creates cfg's providers Secret (putLiveProvidersSecret)
+// and builds the runtime of liveRoots from cfg.
+func startLiveRoots(ctx context.Context, t *testing.T, cfg config.Config, log *slog.Logger, repo ghrepo.Repository, defaultBranch string) *liveRoots {
 	t.Helper()
 	k := *cfg.Runtime.Kubernetes
 	project, err := claim.ProjectToken(cfg.Project)
@@ -113,14 +162,18 @@ func launchBurstableLiveRoot(ctx context.Context, t *testing.T, cfg config.Confi
 	if err := sandbox.CheckInstalled(ctx, rc, agentSandbox); err != nil {
 		t.Fatalf("the cluster check: %v", err)
 	}
-	issue := cfg.Project + "-1"
-	token, err := claim.NewToken(project, issue, claim.RoleArchitect)
+	putLiveProvidersSecret(ctx, t, cfg, log)
+	clients, err := kubernetes.NewForConfig(rc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bootToken := "boot-" + string(token)
+	l := &liveRoots{ctx: ctx, t: t, namespace: k.Namespace, project: project, repo: repo, defaultBranch: defaultBranch,
+		clients: clients, boots: map[string]claim.Token{}}
 	resolve := func(presented string) (claim.Token, uint64, bool, bool, error) {
-		if presented != bootToken {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		token, ok := l.boots[presented]
+		if !ok {
 			return "", 0, false, false, nil
 		}
 		return token, 1, false, true, nil
@@ -133,33 +186,99 @@ func launchBurstableLiveRoot(ctx context.Context, t *testing.T, cfg config.Confi
 		for range listener.Events() {
 		}
 	}()
-	rt, _, err := burstableLiveRuntime(ctx, cfg, rc, listener, log)
-	if err != nil {
+	if l.rt, _, err = burstableLiveRuntime(ctx, cfg, rc, listener, serveLiveLeakCheck(t), log, repo); err != nil {
 		t.Fatalf("the Sandbox runtime: %v", err)
 	}
-	prompt := filepath.Join(t.TempDir(), "role.md")
-	if err := os.WriteFile(prompt, []byte("You are the architect.\n"), 0o600); err != nil {
+	l.prompt = filepath.Join(t.TempDir(), "role.md")
+	if err := os.WriteFile(l.prompt, []byte("You are the architect.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	loc, err := rt.Spawn(ctx, burstableLiveSpec(project, issue, token, bootToken, prompt))
+	return l
+}
+
+// launch launches the root architect of issue through the runtime's Spawn and returns the issue
+// pod as the API server holds it once the launch returned.
+func (l *liveRoots) launch(issue string) *corev1.Pod {
+	l.t.Helper()
+	token, err := claim.NewToken(l.project, issue, claim.RoleArchitect)
 	if err != nil {
-		t.Fatalf("Spawn %s: %v", token, err)
+		l.t.Fatal(err)
 	}
-	clients, err := kubernetes.NewForConfig(rc)
+	bootToken := "boot-" + string(token)
+	l.mu.Lock()
+	l.boots[bootToken] = token
+	l.mu.Unlock()
+	loc, err := l.rt.Spawn(l.ctx, liveRootSpec(l.project, issue, token, bootToken, l.prompt, l.repo, l.defaultBranch))
 	if err != nil {
-		t.Fatal(err)
+		l.t.Fatalf("Spawn %s: %v", token, err)
 	}
-	pods, err := clients.CoreV1().Pods(k.Namespace).List(ctx, metav1.ListOptions{})
+	pods, err := l.clients.CoreV1().Pods(l.namespace).List(l.ctx, metav1.ListOptions{})
 	if err != nil {
-		t.Fatal(err)
+		l.t.Fatal(err)
 	}
 	for i := range pods.Items {
 		if string(pods.Items[i].UID) == loc.Sandbox.PodUID {
 			return &pods.Items[i]
 		}
 	}
-	t.Fatalf("no pod in %s has the launched uid %s", k.Namespace, loc.Sandbox.PodUID)
+	l.t.Fatalf("no pod in %s has the launched uid %s", l.namespace, loc.Sandbox.PodUID)
 	return nil
+}
+
+// putLiveProvidersSecret puts cfg's providers Secret (liveProvidersSecret) on cfg's cluster: the
+// operator's step before any pod of the project launches, since every pod mounts it. One already
+// there is an earlier driver's on the same cluster (controller-sweep-kind.sh's negative control
+// runs its driver after the proof's own), and its data is set to this one's.
+func putLiveProvidersSecret(ctx context.Context, t *testing.T, cfg config.Config, log *slog.Logger) {
+	t.Helper()
+	secret, err := liveProvidersSecret(cfg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := kubeClient(*cfg.Runtime.Kubernetes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clients, err := kubernetes.NewForConfig(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets := clients.CoreV1().Secrets(secret.Namespace)
+	verb := "created"
+	_, err = secrets.Create(ctx, secret, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		var held *corev1.Secret
+		if held, err = secrets.Get(ctx, secret.Name, metav1.GetOptions{}); err == nil {
+			held.Data, held.StringData = secret.Data, nil
+			_, err = secrets.Update(ctx, held, metav1.UpdateOptions{})
+			verb = "updated"
+		}
+	}
+	if err != nil {
+		t.Fatalf("put the providers Secret %s/%s: %v", secret.Namespace, secret.Name, err)
+	}
+	fmt.Printf("   providers Secret %s/%s %s: keys %v, each a placeholder\n", secret.Namespace, secret.Name, verb, slices.Sorted(maps.Keys(secret.Data)))
+}
+
+// awaitCache waits, within limit, for the repository cache of the proof's repository to be Ready
+// as the runtime's stores show it, and answers it.
+func (l *liveRoots) awaitCache(limit time.Duration) sandbox.CacheStatus {
+	l.t.Helper()
+	deadline := time.Now().Add(limit)
+	for {
+		status, found := l.rt.RepositoryCache(l.repo)
+		if found && status.Ready {
+			return status
+		}
+		if time.Now().After(deadline) {
+			l.t.Fatalf("the repository cache of %s is not Ready after %s: %+v (found %t)", l.repo, limit, status, found)
+		}
+		select {
+		case <-l.ctx.Done():
+			l.t.Fatalf("waiting for the repository cache of %s: %v", l.repo, l.ctx.Err())
+		case <-time.After(5 * time.Second):
+		}
+	}
 }
 
 func liveContainer(t *testing.T, pod *corev1.Pod, name string) corev1.Container {

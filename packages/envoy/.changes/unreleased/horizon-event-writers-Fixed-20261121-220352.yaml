@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  Dispatch's live views no longer wait on transactions that cannot write its event log. The event
+  horizon, which every live reader reads up to, waited for every transaction holding a
+  transaction id anywhere on the Postgres instance: another service's job on the same Cloud SQL
+  instance, an operator's open psql session, or a database being dropped held every live view
+  back until it ended. The horizon now waits only for the event writes of Dispatch's own
+  database: a transaction there that holds a lock on the event log of a mode an insert takes, or a
+  prepared transaction of that database. A live reader still never reads past an event that an
+  open write of Dispatch's database has appended and not committed. The stall warning names the
+  oldest such event write.
+time: 2026-11-21T22:03:52Z
+custom:
+    Issue: horizon-event-writers

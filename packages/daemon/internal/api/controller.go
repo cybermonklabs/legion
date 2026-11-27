@@ -106,9 +106,9 @@ type ControllerRename struct {
 
 // ControllerRegisterResponse is `POST /legion/v1/claims/register`'s answer to a session that
 // registered as the project's controller: the project's controller role token
-// (claim.ControllerToken), the role claim.RoleController, a generation, and the secret its
-// controller grants authenticate with. It has no tree and no issue; a claim's registration is
-// claim.RegisterResponse.
+// (claim.ControllerToken), the role claim.RoleController, a generation, the secret its
+// controller grants authenticate with, and the session it replaces, if any. It has no tree and
+// no issue; a claim's registration is claim.RegisterResponse.
 type ControllerRegisterResponse struct {
 	ClaimToken claim.Token `json:"claimToken"`
 	Role       claim.Role  `json:"role"`
@@ -117,6 +117,11 @@ type ControllerRegisterResponse struct {
 	// that registered, which its agent names on `claims/ready`.
 	Generation uint64 `json:"generation"`
 	Secret     string `json:"secret"`
+	// Replaces is the session this registration's session replaces, as
+	// claim.RegisterResponse.Replaces says, which the session names as `previous_session_id` in
+	// its Envoy role claim. Only the daemon's own controller has a claim that abandons a session
+	// (replacedSession); the operator's controller registers on no claim and is answered none.
+	Replaces string `json:"replaces,omitempty"`
 }
 
 // controllerSecret is `legion controller start`'s one daemon call: the operator's bearer, compared
@@ -144,16 +149,16 @@ func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 	if !s.readBody(w, r, &req, nil) {
 		return
 	}
-	if req.PluginContract != DaemonAPIVersion {
+	if req.PluginContract != DaemonAPIVersion() {
 		s.log.Warn("api: refused a controller secret: legion controller start holds the plugin to another daemon API contract",
-			"pluginContract", req.PluginContract, "daemonApiVersion", DaemonAPIVersion)
+			"pluginContract", req.PluginContract, "daemonApiVersion", DaemonAPIVersion())
 		named := "names no daemon API contract"
 		if req.PluginContract != 0 {
 			named = fmt.Sprintf("holds the controller's pi-legion to daemon API contract %d", req.PluginContract)
 		}
 		s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
 			"legion controller start %s; this daemon requires %d: run the legion built with this daemon",
-			named, DaemonAPIVersion))
+			named, DaemonAPIVersion()))
 		return
 	}
 	secret := rand.Text()
@@ -307,7 +312,8 @@ func (s *server) controllerCapabilityCurrent(r *http.Request, secret string) (bo
 // checks the operator's Oh My Pi — the daemon gates only the panes it launches — so a controller
 // whose plugin speaks another daemon API contract is refused here, naming both, and nothing is
 // recorded. The registration is issued a secret of its own, persisted by its hash before this
-// answers, which the session's controller grants authenticate with.
+// answers, which the session's controller grants authenticate with. It answers no `replaces`:
+// the operator's controller holds no claim, so no forget records a session it left behind.
 func (s *server) registerController(w http.ResponseWriter, r *http.Request, req claim.RegisterRequest) {
 	ctx := context.WithoutCancel(r.Context())
 	s.controllerMu.Lock()
@@ -322,11 +328,11 @@ func (s *server) registerController(w http.ResponseWriter, r *http.Request, req 
 		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidBootToken.Status, claim.InvalidBootToken)
 		return
 	}
-	if req.PluginContract != DaemonAPIVersion {
+	if req.PluginContract != DaemonAPIVersion() {
 		s.log.Warn("api: refused a controller registration: its plugin speaks another daemon API contract",
-			"session", req.SessionID, "pluginContract", req.PluginContract, "daemonApiVersion", DaemonAPIVersion)
+			"session", req.SessionID, "pluginContract", req.PluginContract, "daemonApiVersion", DaemonAPIVersion())
 		s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
-			"pi-legion speaks daemon API contract %d; this daemon requires %d", req.PluginContract, DaemonAPIVersion))
+			"pi-legion speaks daemon API contract %d; this daemon requires %d", req.PluginContract, DaemonAPIVersion()))
 		return
 	}
 	secret := rand.Text()
@@ -361,7 +367,8 @@ func (s *server) registerController(w http.ResponseWriter, r *http.Request, req 
 // state read — under controller.UnheldCapability, which revokes every earlier controller's grants
 // and keeps the boot token out of the record, whose invariant that function's doc states. The
 // answer is the operator's controller's registration, its generation the launch's, which the
-// agent's ready names.
+// agent's ready names, with the session the controller's claim abandoned as `replaces`
+// (replacedSession), read from the claim the machine's acceptance left.
 func (s *server) registerLaunchedController(w http.ResponseWriter, r *http.Request, req claim.RegisterRequest, launch BootToken, m *supervise.Machine) {
 	ctx, decided := s.decision(r, launch.Claim)
 	defer decided()
@@ -375,6 +382,7 @@ func (s *server) registerLaunchedController(w http.ResponseWriter, r *http.Reque
 		s.claimFailure(w, r, "register", launch.Claim, err)
 		return
 	}
+	replaced := replacedSession(m.Claim(), req.SessionID)
 	generation, err := s.controller.MintControllerThen(ctx, s.project, controller.UnheldCapability(), s.revokeReplacedControllers)
 	if err != nil {
 		s.logFailure("api: record the launched controller's capability", "claim", launch.Claim, "error", err)
@@ -394,6 +402,7 @@ func (s *server) registerLaunchedController(w http.ResponseWriter, r *http.Reque
 		Role:       claim.RoleController,
 		Generation: launch.Generation,
 		Secret:     secret,
+		Replaces:   replaced,
 	})
 }
 
@@ -447,11 +456,11 @@ func controllerSessionRegistered(stored controller.Record, session, secret strin
 // whenever its recorded contract differs at all.
 func (s *server) refuseIfStaleController(w http.ResponseWriter, r *http.Request, stored controller.Record) bool {
 	if !s.controllerLaunched {
-		if stored.PluginContract == DaemonAPIVersion {
+		if stored.PluginContract == DaemonAPIVersion() {
 			return false
 		}
 		s.logStaleRefusal(r, "session", stored.Session, stored.PluginContract)
-		refusal := claim.StaleControllerContract(stored.PluginContract, DaemonAPIVersion)
+		refusal := claim.StaleControllerContract(stored.PluginContract, DaemonAPIVersion())
 		s.writeFailure(w, r, http.StatusConflict, "STALE_PLUGIN_CONTRACT", refusal.Message)
 		return true
 	}
@@ -465,7 +474,7 @@ func (s *server) refuseIfStaleController(w http.ResponseWriter, r *http.Request,
 		return false
 	}
 	s.logStaleRefusal(r, "session", stored.Session, got)
-	refusal := claim.StalePluginContract(got, DaemonAPIVersion)
+	refusal := claim.StalePluginContract(got, DaemonAPIVersion())
 	s.writeFailure(w, r, http.StatusConflict, "STALE_PLUGIN_CONTRACT", refusal.Message)
 	return true
 }

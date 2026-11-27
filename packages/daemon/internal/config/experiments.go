@@ -14,10 +14,11 @@ import (
 )
 
 // ExperimentMode is `projects.<KEY>.experiments.<name>.mode`: what the daemon draws for each unit
-// the experiment covers. ExperimentOff draws for no unit, ExperimentOn gives every new unit the
-// variant `on_variant` names, and ExperimentRandom draws among the variants by their weights. An
-// experiment whose block names no mode is off, so an operator writes the variants first and turns
-// the experiment on in one key, as a `memory` block moves from off to on in one key.
+// the experiment covers. ExperimentOff gives every new unit no arm, ExperimentOn gives every
+// new unit the variant `on_variant` names, and ExperimentRandom draws among the variants by
+// their weights. An experiment whose block names no mode is off, so an operator writes the
+// variants first and turns the experiment on in one key, as a `memory` block moves from off to
+// on in one key.
 type ExperimentMode string
 
 const (
@@ -83,8 +84,8 @@ type Experiment struct {
 	// Name is the mapping key the experiment is declared under, and the name every draw of it
 	// records; it is unique within the project, so a record names one experiment of it.
 	Name string
-	// Mode is `mode`: off draws for no unit, on gives every new unit OnVariant, and random draws
-	// among Variants by their weights. A block that names no mode is ExperimentOff.
+	// Mode is `mode`: off gives every new unit no arm, on gives every new unit OnVariant, and random
+	// draws among Variants by their weights. A block that names no mode is ExperimentOff.
 	Mode ExperimentMode
 	// Unit is `unit`: what one draw covers and is recorded against, a tree or an issue. A block
 	// that names no unit is ExperimentTree.
@@ -311,6 +312,9 @@ func readExperiments(value *yaml.Node, key string) ([]Experiment, error) {
 		keyNode, blockNode := value.Content[index], value.Content[index+1]
 		name := keyNode.Value
 		if keyNode.Kind != yaml.ScalarNode || !experimentNamePattern.MatchString(name) {
+			if !keyShape(name) {
+				return nil, fmt.Errorf("%s: an experiment's name must match %s, since it is recorded with every draw it makes", unknownKeyAt(keyNode, key), experimentNamePattern)
+			}
 			return nil, fmt.Errorf("%s key %q must match %s: an experiment's name is recorded with every draw it makes", key, name, experimentNamePattern)
 		}
 		if slices.ContainsFunc(experiments, func(e Experiment) bool { return e.Name == name }) {

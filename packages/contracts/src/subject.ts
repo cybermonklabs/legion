@@ -39,6 +39,23 @@ export function legionWakeSubject<Token extends string>(token: Token): LegionWak
   return `${LEGION_NOTICE_TOPIC_PREFIX}${token}.wake`;
 }
 
+/** What ends the state lane of every Legion deployment (`legionStateSubject`), so that a reader
+ * of every deployment's state lane names them all with one pattern,
+ * `notifications.legion.*.state`. */
+export const LEGION_STATE_SUFFIX = ".state" as const;
+
+export type LegionStateSubject<Token extends string = string> =
+  `${typeof LEGION_NOTICE_TOPIC_PREFIX}${Token}${typeof LEGION_STATE_SUFFIX}`;
+
+/** The state lane of the Legion deployment whose project token is `token`
+ * (`legionProjectToken`), beside its controller and wake lanes: the daemon publishes its state
+ * events here, one message per committed transaction (`legionStateMessage` in `legion-api.ts`),
+ * and Dispatch's durable reads every deployment's lane at once, on
+ * `notifications.legion.*.state`. */
+export function legionStateSubject<Token extends string>(token: Token): LegionStateSubject<Token> {
+  return `${LEGION_NOTICE_TOPIC_PREFIX}${token}${LEGION_STATE_SUFFIX}`;
+}
+
 export const DISPATCH_TOPIC_PREFIX = "notifications.dispatch." as const;
 export const DISPATCH_ISSUE_TOPIC_PREFIX = `${DISPATCH_TOPIC_PREFIX}issue.` as const;
 export const DISPATCH_DOCUMENT_TOPIC_PREFIX = `${DISPATCH_TOPIC_PREFIX}document.` as const;
@@ -418,6 +435,7 @@ export function whatsappSubject(phone: string, jid: string, kind: string) {
 export type Subject =
   | LegionNoticeSubject
   | LegionWakeSubject
+  | LegionStateSubject
   | AgentSubject
   | LegacyAgentSubject
   | RoleSubject
@@ -450,3 +468,18 @@ export type Subject =
 export function uncapturedTopicRefusal(topic: string, sessionID: string): string {
   return `${topic} was not registered: no stream subject captures it, so nothing would be delivered to ${sessionID} on it; follow a notifications.team.<name> topic instead`;
 }
+
+/**
+ * The start of the error of the `503` the Envoy listener's `POST /v1/messages/send` and
+ * `POST /v1/messages/publish` answer when the message bus refused the message before it sent
+ * anything: the topic is one this build stores, and the deployed stream, as the listener last read
+ * its subjects, does not capture it (`bus.ErrSubjectNotDeployed` in packages/envoy/internal/bus,
+ * during a hub move's quiesce or after an operator's edit of the subjects). Nothing was stored, so
+ * the same message may be sent again once the stream captures the topic. The listener writes it
+ * (`writeBusUnavailable` in packages/envoy/cmd/listener/api.go, through the
+ * `contracts.MessageNotSentPrefix` `scripts/gen-go.ts` emits from this constant), and
+ * `@legion/envoy-client`'s transport reads it to tell this answer from a `5xx` after which the
+ * message may have been stored. One string, so a reword reaches both sides at once.
+ */
+export const MESSAGE_NOT_SENT_PREFIX =
+  "envoy: the message was not sent, and may be sent again later";

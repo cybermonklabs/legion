@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/ghbranch"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -82,6 +85,21 @@ func (r servedRepositories) ResolveRepository(resolved string) (workflow.Resolut
 	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true}, nil
 }
 
+// prepared is fact as the daemon's preparation of a recorded issue's fact leaves it, over these
+// repositories (its prepareRecorded): carrying GitHub's read of the repository it resolves to
+// where both role Apps are installed on it, GitHub's refusal for acme/gadgets, whose review App is
+// not, and neither for a repository GitHub did not answer for. A correction is written from that
+// read and from nothing the daemon keeps (workflow.Engine.ApplyRepositoryChange).
+func (r servedRepositories) prepared(fact intake.DispatchIssue) intake.DispatchIssue {
+	if branch, ok := r[fact.ResolvedRepo]; ok {
+		fact.RepositoryRead = &ghbranch.Repository{Name: ghrepo.MustParse(fact.ResolvedRepo), DefaultBranch: branch}
+	}
+	if fact.ResolvedRepo == "acme/gadgets" {
+		fact.RepositoryRefusal, fact.RepositoryRefusalKind = "the review App is not installed on acme/gadgets", intake.RefusedByGitHub
+	}
+	return fact
+}
+
 func newAdmission(t *testing.T, cap int, log *slog.Logger) *Admission {
 	t.Helper()
 	return newAdmissionWithGate(t, cap, "", log)
@@ -125,12 +143,12 @@ func newAdmissionDrawing(t *testing.T, project string, cap int, steps []record.D
 // architectStart is the task admission queues with the start of a root architect
 // (workflow.ArchitectStartTask), derived from the record exactly as admission derives it: what
 // workflow.ArchitectStartOf reads of the root as it stands now — whether a hand-over carried it in,
-// the design gate rows it holds and the run its architect claim last served — under the gate
-// steps its own admission runs, and what its tree is owed where a person decided something on it
-// while nobody in the tree could hear them (decided). A test about what admission writes names the
-// task through this helper; which shape each root gets, and the whole text of each shape, are
-// pinned in internal/workflow (TestTheArchitectTaskOfEachShape, TestTheArchitectTaskShapeRule)
-// and the delivery to a launched architect in internal/daemon
+// the design gate rows it holds, the run its architect claim last served and the roots that rest
+// on its approval — under the gate steps its own admission runs, and what its tree is owed where a
+// person decided something on it while nobody in the tree could hear them (decided). A test about
+// what admission writes names the task through this helper; which shape each root gets, and the
+// whole text of each shape, are pinned in internal/workflow (TestTheArchitectTaskOfEachShape,
+// TestTheArchitectTaskShapeRule) and the delivery to a launched architect in internal/daemon
 // (TestAFreshAdmissionGivesItsArchitectItsStartTask).
 func architectStart(t *testing.T, pool *pgxpool.Pool, admission *Admission, key, decided string) string {
 	t.Helper()
@@ -153,6 +171,18 @@ func apply(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID strin
 		t.Fatalf("ApplyFact %s: %v", eventID, err)
 	}
 }
+
+// notStateRows is the predicate that leaves the state lane's rows (record.LaneState) out of a read
+// of the whole outbox: a write of an issue, a slot, a claim or the admission block queues one when
+// the store's state events are on, and a test that counts or lists the outbox asserts the rows of
+// the other lanes.
+var notStateRows = func() string {
+	var kinds []string
+	for _, kind := range record.LaneKinds(record.LaneState) {
+		kinds = append(kinds, "'"+string(kind)+"'")
+	}
+	return "kind not in (" + strings.Join(kinds, ", ") + ")"
+}()
 
 type effect struct {
 	kind    record.OutboxKind
@@ -183,9 +213,12 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 // which the transition raised on the role's phases row: the record counts the entries a role has
 // been handed, so two runs of the same events write the same number and a comparison of two runs
 // reads it like any other field.
+//
+// The state lane's rows are left out too (notStateRows): these tests assert the effects of the
+// other lanes, and the state events are asserted where they are written.
 func effects(t *testing.T, pool *pgxpool.Pool) []effect {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select kind, issue, payload from outbox order by id`)
+	rows, err := pool.Query(context.Background(), `select kind, issue, payload from outbox where `+notStateRows+` order by id`)
 	if err != nil {
 		t.Fatalf("list outbox: %v", err)
 	}

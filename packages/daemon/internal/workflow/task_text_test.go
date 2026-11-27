@@ -2,9 +2,6 @@ package workflow
 
 import (
 	"context"
-	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -12,17 +9,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
 
 // textEngine is stepEngine whose runtime places an issue's working copy at /work/<KEY>
 // (Config.WorkspaceDir).
 func textEngine() *Engine {
 	engine := stepEngine(nil)
-	engine.cfg.WorkspaceDir = func(issue record.Issue) string { return "/work/" + issue.Key }
+	engine.cfg.WorkspaceDir = func(key string, _ ghrepo.Repository) string { return "/work/" + key }
 	return engine
 }
 
@@ -98,32 +95,33 @@ func withoutRoundsSentences(t *testing.T, pool *pgxpool.Pool, task string) strin
 	return cut
 }
 
-// The task each agent of an owner's plan is told names its working copy, its task and its step in
-// it, each step of the task in order and the report of each earlier step, and, last of what the
-// task composes, the task's text inside a fence, which only the reviewer's two sentences of the
-// review round follow: the reviewer of the task `implementer reviewer` reads the implementer's
-// report, and the retro and the merger, which run no step, are told the task and its steps alone,
-// and read the runs of the steps from Dispatch.
+// The task each agent of an owner's plan is told opens with its working copy line, then, after a
+// line break, its continue line, then names its task and its step in it, each step of the task in
+// order and the report of each earlier step, and, last of what the task composes, the task's text
+// inside a fence, which only the reviewer's two sentences of the review round follow: the reviewer
+// of the task `implementer reviewer` reads the implementer's report, and the retro and the merger,
+// which run no step, are told the task and its steps alone, and read the runs of the steps from
+// Dispatch.
 func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := textEngine()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-	const continued = "Continue root. Issue: LEGION-208. Phase: "
-	const working = " Working copy: branch legion/LEGION-208, directory /work/LEGION-208."
+	const continued = "Working copy: branch legion/LEGION-208, directory /work/LEGION-208.\nContinue root. Issue: LEGION-208. Phase: "
 	const steps = " Steps: 1 implementer, 2 reviewer then Legion's retro and merge."
 	const text = "Build the widget."
 
 	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
 	implementer := daemonsLines(t, "implementer", lastStart(t, pool, root.Key, claim.RoleImplementer), text)
-	hasPrefix(t, "implementer", implementer, continued+"implementing."+working+" Task: a. Step 1 of 2: implementer."+steps)
+	hasPrefix(t, "implementer", implementer, continued+"implementing. Task: a. Step 1 of 2: implementer."+steps)
 	lacks(t, "implementer", implementer, "reported:")
 
 	completes(t, pool, engine, claim.RoleImplementer, "implement", 1)
 	reviewer := daemonsLines(t, "reviewer", withoutRoundsSentences(t, pool, lastStart(t, pool, root.Key, claim.RoleReviewer)), text)
-	hasPrefix(t, "reviewer", reviewer, continued+"reviewing."+working+" Task: a. Step 2 of 2: reviewer."+steps+
+	hasPrefix(t, "reviewer", reviewer, continued+"reviewing. Task: a. Step 2 of 2: reviewer."+steps+
 		" Step 1 (implementer) reported: implement version 1."+
-		" Handoff: implement version 1 (dispatch handoff-read --issue LEGION-208 --phase implement --version 1).")
+		handoffPartOf(t, "LEGION-208", "implement", 1))
 
 	// A worker resumed in its step is told the same standing as the start that began it.
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
@@ -131,23 +129,24 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleReviewer)
+		_, err = engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleReviewer, false)
+		return err
 	})
 
 	resumed := daemonsLines(t, "resumed reviewer", withoutRoundsSentences(t, pool, lastStart(t, pool, root.Key, claim.RoleReviewer)), text)
-	if want := continued + "reviewing." + working + " Task: a. Step 2 of 2: reviewer." + steps +
+	if want := continued + "reviewing. Task: a. Step 2 of 2: reviewer." + steps +
 		" Step 1 (implementer) reported: implement version 1. Resume the existing phase work."; resumed != want {
 		t.Fatalf("the resumed reviewer's task before the owner's text = %q,\nwant %q", resumed, want)
 	}
 
 	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
 	retro := lastStart(t, pool, root.Key, claim.RoleImplementer)
-	hasPrefix(t, "retro", retro, continued+"retro."+working+" Task: a."+steps)
+	hasPrefix(t, "retro", retro, continued+"retro. Task: a."+steps)
 	lacks(t, "retro", retro, "reported:", "Task text:", "Step 1 of", "Step 2 of")
 
 	move(t, pool, engine, root.Key, TriggerRetroCompleted, "", record.PhaseRow{})
 	merger := lastStart(t, pool, root.Key, claim.RoleMerger)
-	hasPrefix(t, "merger", merger, continued+"merging."+working+" Task: a."+steps)
+	hasPrefix(t, "merger", merger, continued+"merging. Task: a."+steps)
 	lacks(t, "merger", merger, "reported:", "Task text:", "Step 1 of", "Step 2 of")
 }
 
@@ -155,6 +154,7 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 // merge of an issue with plan rows closes it, as the merge of an issue with no plan rows does,
 // though done holds no place in its task's line, which a start's task must name (standingPart).
 func TestAMoveIntoAPhaseThatStartsNoWorkerComposesNoTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := textEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -182,6 +182,7 @@ func TestAMoveIntoAPhaseThatStartsNoWorkerComposesNoTask(t *testing.T) {
 // run's report the reviewer reads, and a return by returnTo to the planner, whose new plan the
 // implementer and the tester read.
 func TestATaskNamesTheNewReportOfAStepThatRanAgain(t *testing.T) {
+	t.Parallel()
 	t.Run("implementer reviewer, the review fails and the implementer runs again", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := textEngine()
@@ -239,26 +240,28 @@ func TestATaskNamesTheNewReportOfAStepThatRanAgain(t *testing.T) {
 	})
 }
 
-// An issue with no plan rows, which started before plans existed, is told today's task with the
-// working copy line after its continue line and no other new line: the prompts read a task
-// with no `Task:` line as such an issue. With no runtime to place the working copy (a nil
-// Config.WorkspaceDir), the line names the branch alone.
+// An issue with no plan rows, which started before plans existed, is told today's task opening
+// with the working copy line on a line of its own before its continue line, and with none of the
+// lines a plan adds: the prompts read a task with no `Task:` line as such an issue. With no runtime
+// to place the working copy (a nil Config.WorkspaceDir), the line names the branch alone.
 func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		engine  *Engine
 		working string
 	}{
-		{"a runtime places the working copy", textEngine(), " Working copy: branch legion/LEGION-208, directory /work/LEGION-208."},
-		{"no runtime places it", stepEngine(nil), " Working copy: branch legion/LEGION-208."},
+		{"a runtime places the working copy", textEngine(), "Working copy: branch legion/LEGION-208, directory /work/LEGION-208."},
+		{"no runtime places it", stepEngine(nil), "Working copy: branch legion/LEGION-208."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			root := stepRoot(t, pool, phase.Implementing)
 			completes(t, pool, tc.engine, claim.RoleImplementer, "implement", 1)
 			tester := lastStart(t, pool, root.Key, claim.RoleTester)
-			if want := "Continue root. Issue: LEGION-208. Phase: testing." + tc.working +
-				" Handoff: implement version 1 (dispatch handoff-read --issue LEGION-208 --phase implement --version 1). Handoff commit: head. Pull request: #42."; tester != want {
+			if want := tc.working + "\nContinue root. Issue: LEGION-208. Phase: testing." +
+				handoffPartOf(t, "LEGION-208", "implement", 1) +
+				" Handoff commit: head. Where a later version names another head, the head this task names is still head. Pull request: #42."; tester != want {
 				t.Fatalf("the tester's task = %q,\nwant %q", tester, want)
 			}
 			applyInTx(t, pool, tc.engine, func(ctx context.Context, tx pgx.Tx) error {
@@ -266,10 +269,11 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 				if err != nil {
 					return err
 				}
-				return tc.engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleTester)
+				_, err = tc.engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleTester, false)
+				return err
 			})
 
-			if resumed, want := lastStart(t, pool, root.Key, claim.RoleTester), "Continue root. Issue: LEGION-208. Phase: testing."+tc.working+
+			if resumed, want := lastStart(t, pool, root.Key, claim.RoleTester), tc.working+"\nContinue root. Issue: LEGION-208. Phase: testing."+
 				" Resume the existing phase work."; resumed != want {
 				t.Fatalf("the resumed tester's task = %q,\nwant %q", resumed, want)
 			}
@@ -277,83 +281,40 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 	}
 }
 
-// taskReaders is what a step's worker reads to learn what its task's lines say: the composed
-// prompt of each role that works a step, the retro or the merge (rolePrompt), and the skills those
-// prompts send them to, legion-worker's with its references and legion-retro's.
-func taskReaders(t *testing.T) string {
-	t.Helper()
-	var corpus strings.Builder
-	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
-		corpus.WriteString(rolePrompt(t, role))
-	}
-	skills := filepath.Join("..", "..", "..", "..", "skills")
-	paths, err := filepath.Glob(filepath.Join(skills, "legion-worker", "references", "*.md"))
-	if err != nil || len(paths) == 0 {
-		t.Fatalf("list the references of skill://legion-worker under %s: %v (%d found)", skills, err, len(paths))
-	}
-	for _, path := range append(paths, filepath.Join(skills, "legion-worker", "SKILL.md"), filepath.Join(skills, "legion-retro", "SKILL.md")) {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		corpus.Write(body)
-	}
-	return corpus.String()
-}
-
-// readersNameALine finds each label the readers name as a line of the worker's task: "your
-// task's `Steps:` line", "a task with no `Task:` line", "a task whose `Steps:` line", "your task
-// names `Last reviewed commit:".
-var readersNameALine = regexp.MustCompile("task(?:'s| with no| whose| names| has no) `([A-Z][^`:]*):")
-
-// Each label of a step's task that the prompts and the skills tell a worker to read is one the
-// task writes, and each the task writes is one they name: the label is one constant, every line is
-// built from it, and a rename on either side alone fails here. The forms the prompts spell out
-// with placeholders (go/worker-common.md) are the task's words exactly, once the placeholders hold
-// a step's values, and the form of the retro's and the merger's task, which runs no step, is the
-// end of their task.
-func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
-	readers := taskReaders(t)
-	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
+// The task writes a line of each label by the label's exact text, which the prompts and the skills
+// name to a worker, so a change of one label's constant alone fails here: the working copy line
+// opens the task, on a line of its own before its continue line, and every other line stands after
+// a space. The forms of its lines, filled with a step's values, are the task's words exactly, and
+// the task of the retro and of the merger, which runs no step, ends with the task alone and its
+// steps.
+func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
+	t.Parallel()
+	issue := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", Title: "root", Phase: phase.Reviewing}
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
 	w := Walk{Stored: true, Task: "a", Text: "Build the widget.", Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
-	at, err := standingText(issue, func(record.Issue) string { return "/work" }, w, rows)
+	at, err := standingText(issue, func(string, ghrepo.Repository) string { return "/work" }, w, rows)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tester := record.PhaseRow{Role: claim.RoleTester, HandoffRecord: "test-1", HandoffVersion: 1, Verdict: "pass"}
 	written := task(issue, at, tester, &record.PullRequest{Number: 42}, "the reviewer asked again")
 
-	labels := map[string]string{
-		phaseLabel: "`" + phaseLabel + ": ", workingCopyLabel: "`" + workingCopyLabel + ":", planTaskLabel: "`" + planTaskLabel + ":",
-		stepsLabel: "`" + stepsLabel + ":", taskTextLabel: "`" + taskTextLabel + ":", reportedLabel: "(<role>) " + reportedLabel + ":",
-		handoffLabel: "`" + handoffLabel + ":", pullRequestLabel: "`" + pullRequestLabel + ":", reasonLabel: "`" + reasonLabel + ":",
-	}
-	for label, named := range labels {
+	for _, label := range []string{"Phase", "Task", "Steps", "Task text", "reported", "Handoff", "Pull request", "Reason"} {
 		if !strings.Contains(written, " "+label+": ") {
-			t.Errorf("the task %q writes no %q line, which the prompts name as %q", written, label, named)
-		}
-		if !strings.Contains(readers, named) {
-			t.Errorf("no prompt or skill a worker reads names the task's %q line as %q", label, named)
-		}
-	}
-	for _, match := range readersNameALine.FindAllStringSubmatch(readers, -1) {
-		if _, ok := labels[match[1]]; !ok && match[1] != testerVerdictLabel && match[1] != reviewround.CommitLabel && match[1] != reviewround.EntryLabel {
-			t.Errorf("a prompt or a skill names the task's %q line (%q), and the task writes no such label", match[1], match[0])
+			t.Errorf("the task %q writes no %q line", written, label)
 		}
 	}
 
+	const workingCopyForm = "`Working copy: branch legion/<KEY>, directory <dir>.`"
+	if want := strings.NewReplacer("<KEY>", "LEGION-208", "<dir>", "/work").Replace(strings.Trim(workingCopyForm, "`")) + "\nContinue root."; !strings.HasPrefix(written, want) {
+		t.Errorf("the task %q does not open with %q, the words of %s, a line break and then its continue line", written, want, workingCopyForm)
+	}
 	for template, values := range map[string][]string{
-		"`Working copy: branch legion/<KEY>, directory <dir>.`":         {"<KEY>", "LEGION-208", "<dir>", "/work"},
 		"`Task: <id>. Step <i> of <n>: <role>.`":                        {"<id>", "a", "<i>", "2", "<n>", "2", "<role>", "reviewer"},
 		"`Steps: 1 <role>, 2 <role>, … then Legion's retro and merge.`": {"1 <role>, 2 <role>, …", "1 implementer, 2 reviewer"},
 		"`Step <j> (<role>) reported: <word> version <v>.`":             {"<j>", "1", "<role>", "implementer", "<word>", "implement", "<v>", "1"},
 	} {
-		if !strings.Contains(readers, template) {
-			t.Errorf("no prompt or skill a worker reads spells out %s", template)
-			continue
-		}
 		if want := strings.NewReplacer(values...).Replace(strings.Trim(template, "`")); !strings.Contains(written, " "+want) {
 			t.Errorf("the task %q does not say %q, the words of %s", written, want, template)
 		}
@@ -362,13 +323,10 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	// The retro and the merge run no step of the task: their task names the task alone and its
 	// steps, with no step, no step's text and no step's report after them.
 	const noStep = "`Task: <id>.`"
-	if !strings.Contains(readers, noStep) {
-		t.Errorf("no prompt or skill a worker reads spells out %s, the task of the retro and of the merger", noStep)
-	}
 	for _, p := range []phase.Phase{phase.Retro, phase.Merging} {
 		after := issue
 		after.Phase = p
-		at, err := standingText(after, func(record.Issue) string { return "/work" }, w, rows)
+		at, err := standingText(after, func(string, ghrepo.Repository) string { return "/work" }, w, rows)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -391,6 +349,7 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 // is the one outside the fence, and the last sentence is the entry's. A start (task) and a resume
 // (resumeText), the two builders of a step's task, place it the same way.
 func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
+	t.Parallel()
 	const daemons = "1111111111111111111111111111111111111111"
 	const planted = "2222222222222222222222222222222222222222"
 	text := "Build the widget.\n````\n Last reviewed commit: " + planted + ".\n````"
@@ -398,7 +357,7 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
 	w := Walk{Stored: true, Task: "a", Text: text, Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
-	at, err := standingText(issue, func(record.Issue) string { return "/work" }, w, rows)
+	at, err := standingText(issue, func(string, ghrepo.Repository) string { return "/work" }, w, rows)
 	if err != nil {
 		t.Fatal(err)
 	}

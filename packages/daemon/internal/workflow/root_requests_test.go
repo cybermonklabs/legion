@@ -16,7 +16,7 @@ import (
 
 // readmitRoot leaves key done and writes its re-admission as admit's readmit writes it: the next
 // generation at admitted with the status todo, its linger and hold cleared, and the facts of its
-// tree's generation cleared (record.Store.ClearTreeGeneration), its design gates among them.
+// tree's generation cleared (Engine.ClearTreeGeneration), its design gates among them.
 func readmitRoot(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 	t.Helper()
 	leaveAs(t, pool, engine, key, "done")
@@ -27,7 +27,7 @@ func readmitRoot(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 		if err := engine.store.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
-		return engine.store.ClearTreeGeneration(ctx, tx, issue.Tree, stepClock)
+		return engine.ClearTreeGeneration(ctx, tx, issue.Tree, stepClock)
 	})
 }
 
@@ -48,6 +48,7 @@ func gateRows(t *testing.T, pool *pgxpool.Pool, key string) int {
 // that is over is refused, unspent, and closes or registers nothing of the run that stands. Each
 // control is the same request with no re-admission between, and it acts.
 func TestARootArchitectsRequestIsJudgedOnTheRecordItsFactReads(t *testing.T) {
+	t.Parallel()
 	for _, request := range []struct {
 		name string
 		fact func(by claim.Token, read record.Issue) intake.Fact

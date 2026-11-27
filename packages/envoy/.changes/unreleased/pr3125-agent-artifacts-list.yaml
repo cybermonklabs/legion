@@ -1,0 +1,5 @@
+kind: Added
+body: '`GET /api/v1/agents/{session_id}/artifacts` lists the newest 100 files and images of an agent''s conversation, newest first, each with its versions as the read by slug answers it, and `[]` for a conversation that holds none; an older file is still read by its slug. The dashboard''s reference picker opens it under a session''s row, so a person can name one of that conversation''s files by its `dispatch://agent/<session id>/artifact/<slug>` address. The route takes the authorization `GET /api/v1/agents/{session_id}/messages` takes, and reads `session` as that route does.'
+time: 2026-11-15T12:00:00Z
+custom:
+    Issue: pr3125

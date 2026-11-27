@@ -12,22 +12,33 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// rulesVersion is the version of the event rules versionRules holds, which the fill writes in the
+// RulesVersion is the version of the event rules versionRules holds, which the fill writes in the
 // cursor row it creates (search_text_versions_fill.rules). Each batch keeps there the lower of the
 // version stored and this one (advanceCursorQuery), so the column holds the lowest rules version
-// that wrote the rows up to the cursor, and a later build that reads more event types knows which
-// events to read again.
-const rulesVersion = 1
+// that wrote the rows up to the cursor. Version 1 read issues, primary documents, the creates,
+// replies and edits of comments, the creates and replies of issue messages, and asks; version 2
+// reads, besides, message.edited, comment.deleted and message.deleted (dispatch://INFRA-1523,
+// rulesAdded), and takes a post's whole body from its body history (bodyFromHistory).
+//
+// A batch of this build that finds a lower version stored reads again what that version's fill
+// passed over before it writes the events above the cursor (filler.rereadBatch): every event of
+// the types added since, up to the cursor, and the rows that version's rules decided otherwise
+// than this one's; and only that pass raises the column, once it has read everything. Only a
+// build with these rules writes an event of the three types, so every one in the log was written
+// by the roll that brought them or later, and a read of them all up to the cursor misses none.
+const RulesVersion = 2
 
 // Where a version's body came from, the values of search_text_versions.body_from this build
-// writes: the event's payload, whole; the item's present row, which shows no later change; and
-// revision 1 of a comment's blocks; or the event's own text, cut short, where no source holds the
-// whole body. 'history', a post's body history, is a later build's.
+// writes: the event's payload, whole, which is also where a deleted post's empty body comes from
+// (deletedPostVersion); the item's present row, which shows no later change; the post's body
+// history, the body its first later edit or delete kept (historyBody); revision 1 of a comment's
+// blocks; or the event's own text, cut short, where no source holds the whole body.
 const (
-	bodyFromEvent  = "event"
-	bodyFromRow    = "row"
-	bodyFromBlocks = "blocks"
-	bodyFromCut    = "cut"
+	bodyFromEvent   = "event"
+	bodyFromRow     = "row"
+	bodyFromHistory = "history"
+	bodyFromBlocks  = "blocks"
+	bodyFromCut     = "cut"
 )
 
 // The kinds of item the keyword table holds, the values of search_text_versions.kind.
@@ -38,7 +49,7 @@ const (
 	kindAsk     = "ask"
 )
 
-// versionRules holds the rule of each event type that can start a version (rules version 1).
+// versionRules holds the rule of each event type that can start a version (rules version 2).
 // Every other type is in unchangingTypes: TestEveryEventTypeIsSortedForTheKeywordFill holds each
 // member of contracts.DispatchEventTypes in exactly one of the two.
 //
@@ -53,11 +64,15 @@ const (
 //
 // A comment's version starts at comment.created and comment.answered (a reply is a new comment)
 // and at a comment.edited whose body differs; an issue message's at message.created and
-// message.answered (a reply is a new message), and a message of no issue starts none, since the
-// keyword table leaves direct messages out. An ask's starts at ask.opened (a reopen is one too),
-// ask.edited and ask.answered (a restored answer included) when its body, its question, a space
-// and ask_search_suffix of its options and answer as readEventsQuery reads it (askBodySQL),
-// differs from its latest version's.
+// message.answered (a reply is a new message) and at a message.edited whose body differs, and a
+// message of no issue starts none, since the keyword table leaves direct messages out. A
+// comment.deleted or message.deleted starts the post's version of the empty body
+// (deletedPostVersion): the delete clears the post's body (api's clearDeletedPostBody), and the
+// post's search trigger makes its search column the vector of the empty body (comments_search and
+// messages_search, migrations 0059 and 0061, as 0087 wrote them), which that version's equals.
+// An ask's starts at ask.opened (a reopen is one too), ask.edited and ask.answered (a restored
+// answer included) when its body, its question, a space and ask_search_suffix of its options and
+// answer as readEventsQuery reads it (askBodySQL), differs from its latest version's.
 var versionRules = map[string]rule{
 	"issue.created":    issueCreated,
 	"issue.updated":    issueRetitled,
@@ -66,8 +81,11 @@ var versionRules = map[string]rule{
 	"comment.created":  postVersion(kindComment, false),
 	"comment.answered": postVersion(kindComment, false),
 	"comment.edited":   postVersion(kindComment, true),
+	"comment.deleted":  deletedPostVersion(kindComment),
 	"message.created":  postVersion(kindMessage, false),
 	"message.answered": postVersion(kindMessage, false),
+	"message.edited":   postVersion(kindMessage, true),
+	"message.deleted":  deletedPostVersion(kindMessage),
 	"ask.opened":       askVersion,
 	"ask.edited":       askVersion,
 	"ask.answered":     askVersion,
@@ -79,6 +97,7 @@ var unchangingTypes = map[string]string{
 	"issue.released":                            "an issue's claim is its state, not its text",
 	"issue.deployed":                            "an issue's deploy is its state, not its text",
 	"issue.pull_request_attribution_changed":    "an issue's pull request is its state, not its text",
+	"issue.role_holders_changed":                "an issue's role holders are its state, not its text",
 	"child.added":                               "a child issue is its parent's state, not its text",
 	"child.removed":                             "a child issue is its parent's state, not its text",
 	"child.status":                              "a child's status is its parent's state, not its text",
@@ -102,12 +121,15 @@ var unchangingTypes = map[string]string{
 	"suggestion.rejected":                       "the comment's body does not change",
 	"message.delivery":                          "a message's delivery carries no text",
 	"message.accepted":                          "a message's acceptance carries no text",
+	"role.undelivered":                          "a role's delivery carries no text",
 	"block.repaired":                            "the document's own version carries the change",
 	"block.invalid":                             "the document's own version carries the change",
 	"result.recorded":                           "a result is not an issue, comment, message or ask",
 	"result.retracted":                          "a result is not an issue, comment, message or ask",
+	"deploy.recorded":                           "a deploy is not an issue, comment, message or ask",
 	"project.created":                           "a project is not an issue, comment, message or ask",
 	"project.updated":                           "a project is not an issue, comment, message or ask",
+	"project.access_changed":                    "a project's access is not an issue, comment, message or ask",
 	"settings.architecture_source.updated":      "a setting is not an issue, comment, message or ask",
 	"settings.project_default_assignee.updated": "a setting is not an issue, comment, message or ask",
 	"settings.repo_project.updated":             "a setting is not an issue, comment, message or ask",
@@ -357,19 +379,9 @@ func primaryDocumentVersion(e event, latest latestVersion) (version, bool, error
 // text, so that id need not be one.
 func postVersion(kind string, onlyWhenChanged bool) rule {
 	return func(e event, latest latestVersion) (version, bool, error) {
-		var p postPayload
-		if err := decodePayload(e, &p); err != nil {
+		p, issueKey, ok, err := decodePost(e, kind)
+		if err != nil || !ok {
 			return version{}, false, err
-		}
-		if p.ID == nil || *p.ID == "" {
-			return version{}, false, missing("id")
-		}
-		issueKey := p.IssueKey
-		if issueKey == nil {
-			issueKey = e.IssueKey
-		}
-		if kind == kindMessage && issueKey == nil {
-			return version{}, false, nil
 		}
 		if p.Body == nil {
 			return version{}, false, missing("body")
@@ -389,6 +401,50 @@ func postVersion(kind string, onlyWhenChanged bool) rule {
 		v.Body, v.BodyTruncated = *p.Body, p.BodyTruncated
 		return v, true, nil
 	}
+}
+
+// deletedPostVersion is the rule of a delete of a comment or a message of kind (comment.deleted,
+// message.deleted): the delete clears the post's body, so the version holds the empty body. The
+// rule reads no body from the payload: what the event says is that the body is gone, which its
+// type says whole, so the version's body_from is bodyFromEvent, as for a body an event carries
+// whole; no other source could say more, the post's row holding the empty body and its history
+// the body the delete replaced. It starts no version where the post's latest version is already
+// empty, as an edit that keeps the body starts none; a post that stands never has an empty body
+// (the create and the edit refuse one), so only an earlier delete's version is. A message of no
+// issue starts none. No statement casts the post's id, which need not be a uuid.
+func deletedPostVersion(kind string) rule {
+	return func(e event, latest latestVersion) (version, bool, error) {
+		p, issueKey, ok, err := decodePost(e, kind)
+		if err != nil || !ok {
+			return version{}, false, err
+		}
+		if prior := latest(kind, *p.ID); prior != nil && prior.Body == "" {
+			return version{}, false, nil
+		}
+		v, err := newVersion(e, kind, *p.ID, issueKey)
+		if err != nil {
+			return version{}, false, err
+		}
+		return v, true, nil
+	}
+}
+
+// decodePost reads e's payload as an event of a post of kind: the payload, with its id, which
+// must be there, and the post's issue, the payload's, else the event's. ok is false for a message
+// of no issue, whose events start no version, since the keyword table leaves direct messages out.
+func decodePost(e event, kind string) (postPayload, *string, bool, error) {
+	var p postPayload
+	if err := decodePayload(e, &p); err != nil {
+		return postPayload{}, nil, false, err
+	}
+	if p.ID == nil || *p.ID == "" {
+		return postPayload{}, nil, false, missing("id")
+	}
+	issueKey := p.IssueKey
+	if issueKey == nil {
+		issueKey = e.IssueKey
+	}
+	return p, issueKey, kind != kindMessage || issueKey != nil, nil
 }
 
 // askVersion is the rule of ask.opened, ask.edited and ask.answered: the version holds the ask's
@@ -440,26 +496,28 @@ type decided struct {
 	Bytes    int64
 }
 
-// decideVersions decides, in the caller's transaction tx, the versions events start: events in
-// ascending id order, as the fill reads the log, of which it decides those that fit in maxBytes.
-// Each event goes through the rule of its type (versionRules) with the item's latest version,
-// which is the latest of the item decided earlier in the same batch, else the item's latest row
-// in the table (latestVersions), so two events of one item in one batch each see the other's
-// change: an issue's title and its primary document version are carried forward from row to
-// row, and an edit is compared with the text before it. An event of a type no rule reads starts
-// no version.
+// decideVersions decides, in the caller's transaction tx, the versions events start under rules:
+// events in ascending id order, as the fill reads the log, of which it decides those that fit in
+// maxBytes. Each event goes through the rule of its type (rules.rules) with the item's latest
+// version, which is the latest of the item decided earlier in the same batch, else the item's
+// latest row in the table (latestVersions), so two events of one item in one batch each see the
+// other's change: an issue's title and its primary document version are carried forward from row
+// to row, and an edit is compared with the text before it. An event of a type no rule reads
+// starts no version.
 //
 // What an event does not hold is read from the item's rows, in the same transaction:
 //
 //   - A post whose event cut its body (body_truncated) takes it whole, in this order: from its
 //     present row where, in the one snapshot that reads the row, no committed event of the post
-//     after the event changes its text (presentBodyReads: a comment's comment.edited, and none
-//     of an issue message's, which no build edits), so the row still holds the text the event
-//     wrote (presentBody, bodyFromRow); for a comment.created, from revision 1 of its blocks when
-//     every block of that revision was inserted by the comment's own transaction
-//     (firstRevisionBody, bodyFromBlocks); else it keeps the event's text (bodyFromCut), with a
-//     warning naming the item and the event, and counts in Cut. An edit whose whole body equals
-//     its latest version's starts no version.
+//     after the event changes its text (postBodyReads: a comment's comment.edited and
+//     comment.deleted, an issue message's message.edited and message.deleted), so the row still
+//     holds the text the event wrote (presentBody, bodyFromRow); else from the post's body
+//     history, the body the first of those later events kept, where each of the post's events
+//     of those types kept one (historyBody, bodyFromHistory); for a comment.created, from
+//     revision 1 of its blocks when every block of that revision was inserted by the comment's
+//     own transaction (firstRevisionBody, bodyFromBlocks); else it keeps the event's text
+//     (bodyFromCut), with a warning naming the item and the event, and counts in Cut. An edit
+//     whose whole body equals its latest version's starts no version.
 //   - An issue.created whose primary document's version 1 was not written at its created_at, by
 //     the create's own transaction, still holds that version, with a warning naming the issue.
 //   - An issue event before any version of its issue, which only a log that lacks the issue's
@@ -481,7 +539,7 @@ type decided struct {
 // the first, it decided, and the error naming an unreadable payload where one ended them; with
 // every event decided, that count is len(events). Any other error, a statement that failed,
 // events out of id order or an ask's event read with no body (askVersion), answers no version.
-func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events []event, maxBytes int64) (decided, int, error) {
+func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, rules *ruleSet, events []event, maxBytes int64) (decided, int, error) {
 	// A first pass runs each event through the rule of its type with no latest version
 	// (noLatest), as though the event were its item's first, and names the item of each version
 	// it starts, so the table's latest rows of all of them are read in one statement. That names
@@ -514,7 +572,7 @@ func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events 
 		if index > 0 && e.ID <= events[index-1].ID {
 			return decided{}, 0, fmt.Errorf("decide the keyword versions: event %d comes after event %d, out of id order", e.ID, events[index-1].ID)
 		}
-		apply, ok := versionRules[e.Type]
+		apply, ok := rules.rules[e.Type]
 		if !ok {
 			continue
 		}
@@ -547,7 +605,7 @@ func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events 
 	if err != nil {
 		return decided{}, 0, err
 	}
-	d := &decider{tx: tx, logger: logger, stored: stored, batch: map[item]*version{}, specs: texts}
+	d := &decider{tx: tx, logger: logger, rules: rules, stored: stored, batch: map[item]*version{}, specs: texts}
 	for index, e := range events {
 		v, starts, err := d.start(ctx, e)
 		if err != nil {
@@ -574,15 +632,24 @@ func eventError(e event, err error) error {
 	return fmt.Errorf("decide the keyword version of event %d (%s): %w", e.ID, e.Type, err)
 }
 
-// decider is one batch's decision as decideVersions makes it: the latest versions the table held
-// of the batch's items, the latest each item has taken in this batch, the primary document
-// versions the batch's rows can name, measured, the versions decided so far, and the warnings of
-// the event being decided, which wait until it is known to be in the batch.
+// decider is one batch's decision as decideVersions makes it: the rules it decides under, the
+// latest versions the table held of the batch's items, the latest each item has taken in this
+// batch and the seq of the first, the primary document versions the batch's rows can name,
+// measured, the versions decided so far, and the warnings of the event being decided, which wait
+// until it is known to be in the batch.
+//
+// A re-read batch (decideReread) gives it, in place of the latest versions, the row each event's
+// item held just before the event's own seq (before, by event id), and the event being decided
+// (event): an event read again comes after rows the table holds of its item's later events.
 type decider struct {
 	tx       pgx.Tx
 	logger   *slog.Logger
+	rules    *ruleSet
 	stored   map[item]*version
+	before   map[int64]*version
+	event    int64
 	batch    map[item]*version
+	firsts   map[item]int32
 	specs    map[specVersion]specText
 	out      decided
 	warnings []warning
@@ -596,10 +663,21 @@ type warning struct {
 }
 
 // latest is the latestVersion the batch's rules read: the item's latest version decided in this
-// batch, else its latest row in the table.
+// batch, else its latest row in the table. In a re-read batch it is the later of the item's
+// version decided earlier in the batch and its row just before the event being decided (before):
+// the batch reads an item's events in seq order, so a version it decided earlier comes before the
+// event too.
 func (d *decider) latest(kind, id string) *version {
-	if v, ok := d.batch[item{kind, id}]; ok {
-		return v
+	decidedHere, inBatch := d.batch[item{kind, id}]
+	if d.before != nil {
+		prior := d.before[d.event]
+		if inBatch && (prior == nil || decidedHere.EventSeq > prior.EventSeq) {
+			return decidedHere
+		}
+		return prior
+	}
+	if inBatch {
+		return decidedHere
 	}
 	return d.stored[item{kind, id}]
 }
@@ -608,10 +686,11 @@ func (d *decider) latest(kind, id string) *version {
 // completes the version it starts from the item's rows (complete): the version, and whether e
 // starts one.
 func (d *decider) start(ctx context.Context, e event) (version, bool, error) {
-	apply, ok := versionRules[e.Type]
+	apply, ok := d.rules.rules[e.Type]
 	if !ok {
 		return version{}, false, nil
 	}
+	d.event = e.ID
 	v, started, err := apply(e, d.latest)
 	if err != nil || !started {
 		return version{}, false, err
@@ -703,7 +782,26 @@ func (d *decider) keep(v version) {
 		d.out.Cut++
 	}
 	d.out.Versions = append(d.out.Versions, v)
-	d.batch[item{v.Kind, v.ID}] = &v
+	key := item{v.Kind, v.ID}
+	d.batch[key] = &v
+	if _, kept := d.firsts[key]; !kept {
+		if d.firsts == nil {
+			d.firsts = map[item]int32{}
+		}
+		d.firsts[key] = v.EventSeq
+	}
+}
+
+// firstSeq is the seq of the first event of post (kind, id) where the keyword table holds no row
+// of it, which the body history's read counts the post's changes from (historyBodyQuery): the
+// seq of its first version decided in this batch, else seq, that of the event being decided,
+// which is then the post's create. The create of a comment or of an issue's message always
+// starts a version, so a post with no row has its create in the batch.
+func (d *decider) firstSeq(kind, id string, seq int32) int32 {
+	if first, kept := d.firsts[item{kind, id}]; kept {
+		return first
+	}
+	return seq
 }
 
 // warn holds a warning of the event being decided until flush logs it, once the event is known
