@@ -310,11 +310,11 @@ func seedTheWait(t *testing.T, store *Store, project string) {
 // suspension, release and workspace check the root's generation, the tree generation the release
 // before reads. Block B leaves the store exactly as the release before migrated it, which is the
 // store that release boots on: each column, constraint, function, index and version recorded. The
-// release before applies every embedded migration but this one, and this one stands above them
-// all, so the check the release before leaves on the outbox is the state events' of
-// 20261126163320, which block B puts back whole. So a difference is what the block leaves of this
-// migration, or
-// what it takes of the release before.
+// release before applies every embedded migration but this one and the merged-new-work one above
+// it, whose way back runs first, as the guide says, and which changes this migration's table of
+// defects. So the check the release before leaves on the outbox is the state events' of
+// 20261126163320, which block B puts back whole, and a difference is what the block leaves of this
+// migration, or what it takes of the release before.
 // Before that, a delivery's copy in the release before's form is read through design_news_credits,
 // and so through design_news_current, and counts as a credit, and step_run_witness answers for an
 // issue: neither fails on the dropped tree_generation.
@@ -332,6 +332,9 @@ func TestTheWayBackOfDoneByChecks(t *testing.T) {
 	seedTheWait(t, store, "ACME")
 	blockA, blockB := doneByChecksWayBack(t)
 	conn := openWayBackConn(t, store)
+	if _, err := conn.run(t, wayBackOf(t, mergedNewWorkVersion, mergedNewWorkRelease), ""); err != nil {
+		t.Fatalf("run the way back of %s, which runs before this one: %v", mergedNewWorkRelease, err)
+	}
 
 	notices, err := conn.run(t, blockA, "ACME")
 	if err != nil {
@@ -374,7 +377,7 @@ func TestTheWayBackOfDoneByChecks(t *testing.T) {
 	}
 
 	before := emptyStore(t)
-	migrateAllBut(t, before, doneByChecksVersion)
+	migrateAllBut(t, before, doneByChecksVersion, mergedNewWorkVersion)
 	if got, want := schemaShape(t, store), schemaShape(t, before); !reflect.DeepEqual(got, want) {
 		extra, missing := shapeDiff(got, want)
 		t.Fatalf("the store after the way back is not the store the release before migrated:\nit holds besides: %q\nit lacks: %q", extra, missing)
@@ -506,10 +509,11 @@ func TestTheDoneByChecksMigrationStandsAboveEveryMigrationMainCarries(t *testing
 
 // A database main migrated, upgraded with this release, ends at the schema a fresh database of
 // this release holds: each column, constraint, function, index and version recorded. This
-// migration is the one version main lacks, and it stands above every migration main carries, so
-// the upgrade applies it last, where a fresh database applies it last as well. Were it below a
-// migration of main that writes one of the same objects, the fresh database would end at main's
-// text and the upgraded one at this migration's, and the two lines are what this test prints.
+// migration and the merged-new-work one above it are the versions main lacks, and both stand above
+// every migration main carries, so the upgrade applies them last, where a fresh database applies
+// them last as well. Were this one below a migration of main that writes one of the same objects,
+// the fresh database would end at main's text and the upgraded one at this migration's, and the
+// two lines are what this test prints.
 func TestADatabaseMainMigratedEndsAtTheSchemaOfAFreshDatabase(t *testing.T) {
 	t.Parallel()
 	fresh := emptyStore(t)
@@ -517,7 +521,7 @@ func TestADatabaseMainMigratedEndsAtTheSchemaOfAFreshDatabase(t *testing.T) {
 		t.Fatalf("migrate a fresh database: %v", err)
 	}
 	upgraded := emptyStore(t)
-	migrateAllBut(t, upgraded, doneByChecksVersion)
+	migrateAllBut(t, upgraded, doneByChecksVersion, mergedNewWorkVersion)
 	if _, err := upgraded.Migrate(t.Context()); err != nil {
 		t.Fatalf("upgrade the database main migrated: %v", err)
 	}
@@ -563,7 +567,7 @@ func TestAKindListWithoutTheKindOfAWaitingRowFailsItsMigration(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := emptyStore(t)
-			migrateAllBut(t, store, doneByChecksVersion)
+			migrateAllBut(t, store, doneByChecksVersion, mergedNewWorkVersion)
 			if tc.waiting {
 				execAll(t, store, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
 					values ('merge_holds_changed', 'LEGION-208', '{}', 0, now(), '')`)

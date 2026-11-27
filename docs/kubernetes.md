@@ -3119,6 +3119,54 @@ Rolling forward does not undo that: such an issue's row still reads `default`, s
 That lasts until the issue's next run, whose first step passes the plan over, or until the issue leaves the workflow, which ends the run.
 Rolling forward again also costs the window the other way: an issue the earlier release drew while it ran reads the empty word afterwards and runs as an issue with no experiment does.
 
+#### Rolling back the release that starts a next change for a request on a merged issue
+
+This release's migration `20261127135256_merged_new_work.up.sql` adds the kind `request` to the table `defects`, the outbox kind `merge_read`, and the column `issues.never_merged_confirmed`.
+A request is a request for new work on a closed issue whose work merged, and a merge read reads whether such an issue's work merged where the record shows no merge that proves it.
+The column says that a person confirmed that the issue's work never merged.
+An earlier release knows none of the three, and it decodes an outbox row strictly (`DisallowUnknownFields` in `record/outbox.go`).
+
+Run the way back below at the rollback, with every project's daemon on that database stopped, before the two blocks of [Rolling back the release that closes an issue when its checks pass](#rolling-back-the-release-that-closes-an-issue-when-its-checks-pass).
+Run it with `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1`.
+It is one transaction.
+It first prints three lists that a person keeps, as three `NOTICE`s: each open request with its issue, id, asker and text, each issue whose merge read was pending with its asker and request, and each issue whose confirmation no `todo` took.
+psql writes a notice to its standard error, so keep that stream, as block A of that section says.
+
+Each issue of the second list is closed, and Dispatch shows it `todo`.
+The earlier release reruns such an issue's whole tree, so set each one to `backlog` before the earlier release starts.
+After the roll forward, a person reads the kept lists and sets each issue to `todo` again where its request still stands.
+
+The block then deletes the `merge_read` rows, the notices and controller notices of the kind `merge-unread`, and the requests, which the earlier release cannot read.
+It puts back the two kind checks as `20261126223725_done_by_checks` wrote them, drops the column, and deletes the migration's version row, so the roll forward's `Migrate` applies the file again.
+
+```sql
+begin;
+do $$ begin
+  raise notice 'open requests: %', (select coalesce(json_agg(listed), '[]') from (select issue, id, role, text from defects where kind = 'request' and merged_at is null and withdrawn_at is null order by issue, id) listed);
+  raise notice 'pending merge reads: %', (select coalesce(json_agg(listed), '[]') from (select issue, payload->>'requester' as requester, payload->>'request' as request from outbox where kind = 'merge_read' order by issue, id) listed);
+  if exists (select 1 from information_schema.columns where table_schema = current_schema() and table_name = 'issues' and column_name = 'never_merged_confirmed') then
+    raise notice 'unconsumed never-merged confirmations: %', (select coalesce(json_agg(key order by key), '[]') from issues where never_merged_confirmed);
+  else
+    raise notice 'unconsumed never-merged confirmations: []';
+  end if;
+end $$;
+delete from outbox where kind = 'merge_read';
+delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' = 'merge-unread';
+delete from defects where kind = 'request';
+alter table defects drop constraint if exists defects_kind_check;
+alter table defects add constraint defects_kind_check check (kind in ('check', 'production', 'defect'));
+alter table outbox drop constraint if exists outbox_kind_check;
+alter table outbox add constraint outbox_kind_check check (kind in ('dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed', 'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake', 'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release', 'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask', 'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record', 'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed', 'merge_holds_changed', 'state_change', 'state_admission', 'state_boot', 'close_read', 'close_wait_publish'));
+alter table issues drop column if exists never_merged_confirmed;
+delete from schema_version where version = 20261127135256;
+commit;
+```
+
+The header of `20261127135256_merged_new_work.up.sql` carries this same block.
+
+What the way back costs is each request that stood: the earlier release runs no next change for it.
+A deleted `merge-unread` notice is a telling that the controller never gets.
+
 #### Rolling back the release that closes an issue when its checks pass
 
 This release's migration `20261126223725_done_by_checks.up.sql` adds the phase `verifying` to `issues_phase_check`: the phase of an issue whose pull request merged and whose close waits for the checks of its goal ([The close](site/src/content/docs/legion/concepts.md#the-close)).
@@ -4419,6 +4467,7 @@ That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scr
 20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261122154643 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
 20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
 20261126223725_done_by_checks adds the phase `verifying`, the merge snapshot and the close wait's columns of `issues`, two columns of `production_checks`, one of `pending_task_deliveries`, the tables `defects` and `close_reads` and two outbox kinds, and writes `step_run_witness` again, which reads `phases.entry`, and it writes none of the six, so the block holds over it; a rollback past it runs the two blocks of its own section first, [Rolling back the release that closes an issue when its checks pass](#rolling-back-the-release-that-closes-an-issue-when-its-checks-pass), which put the function back as 20261117004117_step_starts wrote it, drop what the migration adds and delete its version row, while `phases.entry` stands.
+20261127135256_merged_new_work adds the kind `request` to `defects`, the outbox kind `merge_read` and the column `issues.never_merged_confirmed`, and it writes none of the six, so the block holds over it; a rollback past it runs the block of its own section first, [Rolling back the release that starts a next change for a request on a merged issue](#rolling-back-the-release-that-starts-a-next-change-for-a-request-on-a-merged-issue), before the blocks of the release that closes an issue when its checks pass.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
