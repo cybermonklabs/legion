@@ -62,6 +62,7 @@ func readRecord(t *testing.T, name string) []byte {
 // TestProfileRefusalRecordedOnMain: a secret form given --profile exits 2 and prints, byte for
 // byte, the refusal main printed, which names the variables each store's own tools read.
 func TestProfileRefusalRecordedOnMain(t *testing.T) {
+	// Not parallel: it sets an environment variable of the whole process (t.Setenv at store_words_recorded_test.go:66); it sets a package variable the package's other tests read (main.loadClientConfig through main.run, clientConfig set at config.go:98).
 	t.Setenv("HOME", t.TempDir())
 	t.Cleanup(func() { clientConfig = nil })
 	var stdout, stderr bytes.Buffer
@@ -110,6 +111,7 @@ func usageStoreRows(t *testing.T) string {
 // TestUsageStoreRowsRecordedOnMain: the usage's environment table prints the store rows main
 // printed, byte for byte.
 func TestUsageStoreRowsRecordedOnMain(t *testing.T) {
+	t.Parallel()
 	rows := usageStoreRows(t)
 	if *recordStoreWords {
 		writeRecord(t, "usage-store-rows.txt", []byte(rows))
@@ -148,6 +150,7 @@ var sourceWordsBodies = []struct{ row, body string }{
 // one that prints no field of its answer (a URL that carries a credential), the source a session's
 // lines print (String) and the store the secret forms name (storeName) are main's.
 func TestSourceWordsRecordedOnMain(t *testing.T) {
+	t.Parallel()
 	addresses := map[bool]cipheraddr.Address{
 		true:  cipheraddr.New("https://broker.example"),
 		false: cipheraddr.New(userinfoURL("https", "demouser", "demopass-not-a-secret", "broker.example")),
