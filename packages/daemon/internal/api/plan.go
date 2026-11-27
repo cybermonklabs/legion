@@ -1,10 +1,13 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -12,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // PlanRegisterRequest is register_plan: the owner of an issue, an architect of the issue's tree,
@@ -125,9 +129,11 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 // The fact's id is the issue, the generation the plan is given at, the document and the version.
 // No id decides whether a registration is one already taken (intake.ApplyFact applies every
 // PlanGiven): the workflow decides it against the store. A give of the version that runs, or that
-// the issue's first step will run, is answered as taken, with the plan given and the tasks the
-// workflow's answer names (intake.Result.Added), as its first registration was answered. A version
-// the issue's first step passed over since applies when an architect of the tree gives it again.
+// the issue's first step will run, is answered as taken, with the plan given and the tasks that
+// version recorded it added, which the workflow's answer leaves out (intake.Result.Added nil) and
+// this route reads after the apply (record.Store.PlanVersionHeld), as its first registration was
+// answered. A version the issue's first step passed over since applies when an architect of the
+// tree gives it again.
 // Only an architect of the issue's tree gives a plan (planOwner, and the workflow's judgement of
 // the owner under the fact lock).
 func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
@@ -181,10 +187,25 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return
 	}
-	s.applyFactAnswering(w, r, fmt.Sprintf("plan:%s:%d:%s:%d", req.Issue, generation, artifactID, req.Version),
-		intake.PlanGiven{Issue: req.Issue, Generation: generation, Plan: given, GivenBy: grant.Claim},
-		AnswerPlanRegister, func(result intake.Result) any {
-			return PlanRegisterResponse{Plan: registeredPlan(given, result.Added)}
+	fact := intake.PlanGiven{Issue: req.Issue, Generation: generation, Plan: given, GivenBy: grant.Claim}
+	// A give of the version in force applies nothing and answers no tasks (workflow's planGiven), so
+	// the answer reads what the version's first registration recorded it added. A version the store
+	// no longer holds by this read is answered none.
+	s.applyFactAnswering(w, r, fmt.Sprintf("plan:%s:%d:%s:%d", req.Issue, generation, artifactID, req.Version), fact,
+		AnswerPlanRegister, func(ctx context.Context, result intake.Result) (any, error) {
+			added := result.Added
+			if added == nil {
+				if err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+					recorded, held, err := s.records.PlanVersionHeld(ctx, tx, fact.Issue, fact.Generation, fact.Plan.ArtifactID, fact.Plan.Version)
+					if held {
+						added = recorded
+					}
+					return err
+				}); err != nil {
+					return nil, err
+				}
+			}
+			return PlanRegisterResponse{Plan: registeredPlan(given, added)}, nil
 		})
 }
 

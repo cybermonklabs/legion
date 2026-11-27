@@ -99,10 +99,10 @@ const (
 //
 // Added is the ids of the tasks an owner's version added over the version in force when it was
 // taken, in the plan's order (workflow's addedTasks): what register_plan answered then, which
-// PutPlan records. Every read of a version gives it back (planVersionColumns), nil where the
-// version added none and where it was taken before its write recorded what it added (store
-// migration 20261123200630_plan_added), so a give of a version the store holds is answered what
-// its first give was answered (workflow's planGiven). A default plan records none.
+// PutPlan records and PlanVersionHeld reads back for a registration of a version the store holds.
+// A default plan records none. The plan reads (Plan, PlansOf, PlansInForce, and OwnersNewestPlan,
+// PlansOfEarlierOwners and PlansOfOwners over it) leave it nil, since nothing but that answer
+// reads it.
 type PlanVersion struct {
 	Issue         string
 	Generation    uint64
@@ -553,7 +553,7 @@ func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks 
 }
 
 // planVersionColumns is the columns of one issue_plans row as scanPlanVersion reads them.
-const planVersionColumns = `issue, generation, version, source, artifact_id, given_by, given_at, earlier_givers, added`
+const planVersionColumns = `issue, generation, version, source, artifact_id, given_by, given_at, earlier_givers`
 
 // AddPlanGiver adds giver to the givers of version of the plan of issue at generation
 // (PlanVersion.EarlierGivers): the giver it named moves to the end of the earlier givers, and
@@ -578,6 +578,27 @@ func (s *Postgres) Plan(ctx context.Context, tx pgx.Tx, issue string, generation
 		return nil, fmt.Errorf("read the plan of %s at generation %d: %w", issue, generation, err)
 	}
 	return plans[issue], nil
+}
+
+// PlanVersionHeld says whether the store holds that version of the plan of issue at generation, of
+// the document artifactID: a version the workflow took, which no first step passed over since
+// (workflow's passOverEarlierOwners deletes the rows it passes over), at the generation it was
+// given at or carried to (CarryPlan). Where it does, added is the ids of the tasks the version
+// recorded it added (PlanVersion.Added), in the plan's order: what register_plan answered when it
+// took the version, [] where it added none and where it was taken before its write recorded what
+// it added (store migration 20261123200630_plan_added). register_plan reads it after a give of the
+// version in force applies, which the workflow answers with no tasks (workflow's planGiven).
+func (s *Postgres) PlanVersionHeld(ctx context.Context, tx pgx.Tx, issue string, generation uint64, artifactID string, version int) (added []string, held bool, err error) {
+	added = []string{}
+	err = tx.QueryRow(ctx, `select added from issue_plans where issue = $1 and generation = $2 and version = $3 and artifact_id = $4`,
+		issue, int64(generation), version, artifactID).Scan(&added)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("read whether the store holds version %d of the plan of %s at generation %d: %w", version, issue, generation, err)
+	}
+	return added, true, nil
 }
 
 // PlansOf is the plan of each of issues at the issue's own generation, by key, in the three
@@ -1033,16 +1054,13 @@ func scanPlanVersion(row scanner) (PlanVersion, error) {
 	var version PlanVersion
 	var generation int64
 	var givenBy string
-	var earlier, added []string
-	if err := row.Scan(&version.Issue, &generation, &version.Version, &version.Source, &version.ArtifactID, &givenBy, &version.GivenAt, &earlier, &added); err != nil {
+	var earlier []string
+	if err := row.Scan(&version.Issue, &generation, &version.Version, &version.Source, &version.ArtifactID, &givenBy, &version.GivenAt, &earlier); err != nil {
 		return PlanVersion{}, err
 	}
 	version.Generation, version.GivenBy, version.GivenAt = uint64(generation), claim.Token(givenBy), version.GivenAt.UTC()
 	for _, giver := range earlier {
 		version.EarlierGivers = append(version.EarlierGivers, claim.Token(giver))
-	}
-	if len(added) > 0 {
-		version.Added = added
 	}
 	return version, nil
 }

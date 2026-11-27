@@ -2803,6 +2803,10 @@ type Store interface {
 	// nil where the generation has no plan rows: an issue that ran before plans, and a generation
 	// no plan reached yet.
 	Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*StoredPlan, error)
+	// PlanVersionHeld says whether the generation holds version of artifactID, and the tasks that
+	// version added when it was first taken (PlanVersion.Added): register_plan reads it after a give
+	// of the version in force applies, which the workflow answers with no tasks.
+	PlanVersionHeld(ctx context.Context, tx pgx.Tx, issue string, generation uint64, artifactID string, version int) (added []string, held bool, err error)
 	// PlansOf is the plan of each of issues at the issue's own generation, by key, as Plan reads
 	// one, in as many statements whatever the number of issues; an issue whose generation has no
 	// plan rows has no entry.

@@ -29,8 +29,9 @@ import (
 //
 // A version written answers the tasks it adds over the version in force that versionRefusal read
 // (intake.Result.Added), which the route answers and which the write records on the version
-// (record.PlanVersion.Added). A give of the version in force answers the tasks that version
-// recorded it added, not what it would add over itself.
+// (record.PlanVersion.Added). A give of the version in force answers no tasks: the route reads
+// what that version recorded it added (api's registerPlan, record.Store.PlanVersionHeld), not what
+// it would add over itself.
 //
 // Apply judged the plan already on the record as the fact reads it, since the route read the
 // record, or Dispatch, before the fact lock (requestRefusal): a giver that owns the issue no
@@ -42,7 +43,7 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 		return intake.Result{Refusal: refusal, Unspent: refusal != nil}, err
 	}
 	if given.taken {
-		return intake.Result{Added: given.stored.Version.Added}, e.addGiver(ctx, tx, fact, given.stored.Version)
+		return intake.Result{}, e.addGiver(ctx, tx, fact, given.stored.Version)
 	}
 	if earlier := given.passedOver; earlier != nil {
 		if err := e.store.DeletePlan(ctx, tx, fact.Issue, earlier.Generation); err != nil {
