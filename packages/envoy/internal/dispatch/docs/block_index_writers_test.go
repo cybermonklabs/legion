@@ -818,8 +818,10 @@ var indexPasses = map[string]string{
 	// the blocks and links that release dropped, so the plan also reads what the store still
 	// asserts of the document (heldDocumentBlocks); what it states of those - gone, retracted - is
 	// decided by the render that does not hold them, as the parents' plan reads the parents the
-	// store asserts to state the render's.
-	"refs/blocks.go#Queue":                  "the version's render, each decision's stored decided_by, and where another release indexed the document since the store stated it, what the store still asserts against that render",
+	// store asserts to state the render's. Of each block the render no longer holds, the plan reads
+	// the copied_from its node states (heldCopiedFrom), only to retract it with the block: the
+	// render decides which blocks go, and the relation no row projects goes with them.
+	"refs/blocks.go#Queue":                  "the version's render, each decision's stored decided_by, the copied_from each block the render drops states, and where another release indexed the document since the store stated it, what the store still asserts against that render",
 	"refs/block_nodes.go#queueBlockParents": "the version's render",
 	"refs/block_nodes.go#queueBlockRefs":    "the version's render, and each decision's stored decided_by",
 	// The move of each surviving block_refs row whose pair the version's render hangs on another

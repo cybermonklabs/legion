@@ -492,6 +492,144 @@ func TestTheCensusOwesTheRowsOfADecisionADeferredVersionRemoved(t *testing.T) {
 	}
 }
 
+// A reading in a copy of an ask, on another document of the ask's owner, hangs on the ask's node,
+// while its row names the copy's block as its parent. The census reads that part_of as the copy's
+// block only where the copy's node states a current copied_from to the ask the part_of names
+// (askBlockID), since that row is what the census checks the part_of against. Over the agreeing
+// store, whose document holds the copy a1 of ask a1 and the reading g1 in it, and a document of
+// CORE-1 holding the blocks of the marked asks a1 and a2:
+//   - g1's part_of to a1, which a1's copy names, reads no difference;
+//   - its part_of to a2 reads one in reading_parent and in the block kind, and the census refuses;
+//   - its part_of to a1 once the copy's copied_from is retracted reads one too, until the document
+//     owes a settlement (doc_settlements_pending), the write that claims a copy;
+//   - throughout, a reading g2 in a copy whose address is past the store's bound, which is no node
+//     to state a copied_from, in a third document, reads no difference.
+func TestTheCensusReadsAReadingInACopyAsTheCopysChildOnlyWhereTheCopyNamesItsAsk(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	copied := seeded.document
+	if _, err := database.Pool.Exec(ctx, `
+		update document_block_versions set version = 1 where artifact_id = $1::uuid
+	`, copied.artifactID); err != nil {
+		t.Fatalf("stand the copy's block index at version 1, so its readings owe nothing: %v", err)
+	}
+	document := func(slug string) preStoreDocument {
+		t.Helper()
+		var made preStoreDocument
+		if err := database.Pool.QueryRow(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+			values ('CORE-1', 'CORE', $1, 'notes.md', 'doc', false, '{"kind":"user","id":"alice"}')
+			returning id::text, ref_key
+		`, slug).Scan(&made.artifactID, &made.refKey); err != nil {
+			t.Fatalf("create the document %.20s: %v", slug, err)
+		}
+		return made
+	}
+	source := document("asks")
+	// The long document's ref_key leaves room for g2's address and none for longID's.
+	long := document(strings.Repeat("l", graphstore.MaxAddressBytes-100-len("CORE-1/")))
+	longID := "a" + strings.Repeat("x", 199)
+	asked := map[string]string{}
+	for _, block := range []struct{ id, question string }{{"a1", "Which transport?"}, {"a2", "Which region?"}, {longID, "Which shelf?"}} {
+		var ask string
+		if err := database.Pool.QueryRow(ctx, `
+			insert into asks (issue_key, author, question, block_artifact_id, block_id)
+			values ('CORE-1', '{"kind":"user","id":"alice"}', $1, $2::uuid, $3) returning id::text
+		`, block.question, source.artifactID, block.id).Scan(&ask); err != nil {
+			t.Fatalf("write the ask of block %.20s: %v", block.id, err)
+		}
+		asked[block.id] = ask
+	}
+	if _, err := Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("backfill the asks: %v", err)
+	}
+	copyBlock, reading, longReading := copied.refKey+"#a1", copied.refKey+"#g1", long.refKey+"#g2"
+	if len(long.refKey+"#"+longID) <= graphstore.MaxAddressBytes || len(longReading) > graphstore.MaxAddressBytes {
+		t.Fatalf("the long document's copy is %d bytes and its reading %d against the bound %d, want the copy past it and the reading inside, so this test would prove nothing",
+			len(long.refKey+"#"+longID), len(longReading), graphstore.MaxAddressBytes)
+	}
+	now := time.Now().UTC()
+	node := func(address, supertag string) graphstore.Node {
+		return graphstore.Node{
+			Kind: refs.BlockNodeKind, ID: address, Supertag: supertag, Visibility: graphstore.VisibilityProject,
+			State: graphstore.StateLive, Project: "CORE", MadeAt: now, MadeBy: censusWriter, SourceEvent: graphstore.NoEvent,
+		}
+	}
+	tie := func(from, kind, toKind, toID string, asserted bool) graphstore.Tuple {
+		return graphstore.Tuple{
+			FromKind: refs.BlockNodeKind, FromID: from, Kind: kind, ToKind: toKind, ToID: toID,
+			At: time.Now().UTC(), Who: censusWriter, SourceEvent: graphstore.NoEvent, Asserted: asserted,
+		}
+	}
+	writeTestTuples(t, database, []graphstore.Node{
+		node(copyBlock, refs.BlockSupertag), node(reading, refs.ReadingSupertag), node(longReading, refs.ReadingSupertag),
+	}, []graphstore.Tuple{
+		tie(copyBlock, refs.TupleInDocument, graphstore.KindArtifact, copied.refKey, true),
+		tie(copyBlock, graphstore.TuplePartOf, graphstore.KindArtifact, copied.refKey, true),
+		tie(copyBlock, graphstore.TupleCopiedFrom, graphstore.KindAsk, asked["a1"], true),
+		tie(reading, refs.TupleInDocument, graphstore.KindArtifact, copied.refKey, true),
+		tie(reading, graphstore.TuplePartOf, graphstore.KindAsk, asked["a1"], true),
+		tie(longReading, refs.TupleInDocument, graphstore.KindArtifact, long.refKey, true),
+		tie(longReading, graphstore.TuplePartOf, graphstore.KindAsk, asked[longID], true),
+	})
+	if _, err := database.Pool.Exec(ctx, `
+		insert into document_blocks (artifact_id, block_id, node_id, node_kind, node_address, type, text_sha256, excerpt,
+		                             changed_version, changed_at, parent_block_id)
+		values ($1::uuid, 'a1', $2, 'block', $2, 'ask', '', 'Which transport?', 1, now(), null),
+		       ($1::uuid, 'g1', $3, 'block', $3, 'reading', '', 'The agent reads it.', 1, now(), 'a1'),
+		       ($4::uuid, $5, $6, null, null, 'ask', '', 'Which shelf?', 1, now(), null),
+		       ($4::uuid, 'g2', $7, 'block', $7, 'reading', '', 'The agent reads it.', 1, now(), $5)
+	`, copied.artifactID, copyBlock, reading, long.artifactID, longID, long.refKey+"#"+longID, longReading); err != nil {
+		t.Fatalf("write the rows of the copies and their readings: %v", err)
+	}
+	honest := storeCensusOf(t, database)
+	requireTheCensusAgrees(t, "the census of readings in copies that name their asks", honest)
+	if parents := censusKind(t, honest, "reading_parent"); parents.Rows != 2 || parents.Nodes != 2 {
+		t.Fatalf("reading_parent read %d rows and %d tuples, want g1's and g2's, so its zero differences would prove nothing", parents.Rows, parents.Nodes)
+	}
+
+	// requireDiffers fails unless the census reads g1's row and g1's part_of to ask as differences
+	// of reading_parent and g1's row as one of the block kind, and refuses.
+	requireDiffers := func(what, ask string) {
+		t.Helper()
+		report := storeCensusOf(t, database)
+		parents := censusKind(t, report, "reading_parent")
+		if row := (Difference{Cause: "a row no tuple states", At: "reading " + reading + " part_of -> block " + copyBlock}); !slices.Contains(parents.ReportedRows, row) {
+			t.Errorf("%s: reading_parent reads the rows %+v, want %+v", what, parents.ReportedRows, row)
+		}
+		if tuple := (Difference{Cause: "a tuple no row projects", At: refs.BlockNodeKind + ":" + reading + " part_of -> ask:" + ask}); !slices.Contains(parents.ReportedNodes, tuple) {
+			t.Errorf("%s: reading_parent reads the tuples %+v, want %+v", what, parents.ReportedNodes, tuple)
+		}
+		blocks := censusKind(t, report, "block")
+		if !slices.ContainsFunc(blocks.ReportedRows, func(difference Difference) bool {
+			return difference.At == "block "+reading && strings.HasPrefix(difference.Cause, "the row and its node disagree")
+		}) {
+			t.Errorf("%s: the block kind reads the rows %+v, want g1's row and node apart", what, blocks.ReportedRows)
+		}
+		if !report.Refused() {
+			t.Errorf("%s: the census passes, want a refusal", what)
+		}
+	}
+	writeTestTuples(t, database, nil, []graphstore.Tuple{
+		tie(reading, graphstore.TuplePartOf, graphstore.KindAsk, asked["a1"], false),
+		tie(reading, graphstore.TuplePartOf, graphstore.KindAsk, asked["a2"], true),
+	})
+	requireDiffers("g1's part_of to the ask its parent does not copy", asked["a2"])
+
+	writeTestTuples(t, database, nil, []graphstore.Tuple{
+		tie(reading, graphstore.TuplePartOf, graphstore.KindAsk, asked["a2"], false),
+		tie(reading, graphstore.TuplePartOf, graphstore.KindAsk, asked["a1"], true),
+		tie(copyBlock, graphstore.TupleCopiedFrom, graphstore.KindAsk, asked["a1"], false),
+	})
+	requireDiffers("g1's part_of to a1 once its parent states no copied_from", asked["a1"])
+
+	if _, err := database.Pool.Exec(ctx, `insert into doc_settlements_pending (artifact_id) values ($1::uuid)`, copied.artifactID); err != nil {
+		t.Fatalf("leave the copy owing a settlement: %v", err)
+	}
+	requireTheCensusAgrees(t, "the census of a copy whose document owes the settlement that claims it", storeCensusOf(t, database))
+}
+
 // A decision's tie whose far end is past the store's bound is no relation of the store: its
 // writer leaves its block_refs row unmarked and states no tuple of it (refs' queueBlockRefs), and
 // graph_edges' block_refs arm answers that row alone. Over the agreeing store and a live decision

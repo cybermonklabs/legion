@@ -7,6 +7,7 @@ import type {
   IssueDetails,
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
+import { isPersonDecision } from "../issue/decision-entries";
 import { ownTree, ownWords } from "../issue/decision-text";
 import { postDeletion } from "../refs/post-marks";
 import { parseNodeReference } from "../refs/routes";
@@ -26,7 +27,8 @@ import { storedReading } from "./stored-reading";
  * another's (`decisionread`): the decisions read's entry for it (`DecisionEntry`) names it by that
  * block's address (`DecisionEntry.ref`) and answers its text as that one block, whose own content
  * is what the decision says (`decisionContent`). A person's decision is the answered ask itself,
- * whose address is the ask's: no Change is written on it, and it is on no review list.
+ * whose address is the ask's, or a `decision` block whose `decided_by` names a person
+ * (`isPersonDecision`): no Change is written on it, and it is on no review list.
  *
  * A Change is a comment of the issue anchored to the decision's own words in the document its
  * block stands in (`features/issue/DecisionsPanel.tsx`'s Change composer writes it so);
@@ -66,7 +68,7 @@ type ChangedDecision = Pick<
 
 /** The fields of the issue read a decision's document is found by, where the decisions read names
  *  none (`decisionDocumentId`): its key, its documents and which of them is its spec. */
-type DecisionDocuments = Pick<IssueDetails, "key" | "primary_artifact_id"> & {
+export type DecisionDocuments = Pick<IssueDetails, "key" | "primary_artifact_id"> & {
   readonly artifacts?: readonly Pick<Artifact, "id" | "slug">[] | null;
 };
 
@@ -121,10 +123,11 @@ export function decisionContent(decision: Pick<DecisionEntry, "text" | "text_tre
  * issue read has listed the issue's documents yet. A Change's anchor names the document it is
  * anchored in by that id (`Anchor.artifact_id`). Undefined for an entry that names none and whose
  * address names no block of the issue's documents: an ask on the issue itself, an address of
- * another issue.
+ * another issue. Undefined too for an entry that names none while `issue` is undefined, where the
+ * caller's issue read has not answered.
  */
 export function decisionDocumentId(
-  issue: DecisionDocuments,
+  issue: DecisionDocuments | undefined,
   decision: Pick<DecisionEntry, "document" | "ref">
 ): string | undefined {
   const named = decision.document?.artifact_id;
@@ -133,6 +136,7 @@ export function decisionDocumentId(
   // address is its section's heading block, `artifact/<slug>#b-…` of the issue's document that
   // held it, found among the issue's documents once the issue read lists them.
   // kept for one release: compat-objects
+  if (issue === undefined) return undefined;
   const route = parseNodeReference(decision.ref);
   if (route === undefined || !("key" in route) || route.key !== issue.key) return undefined;
   if (!("block" in route) || route.block === undefined) return undefined;
@@ -146,9 +150,13 @@ export function decisionDocumentId(
 /**
  * Each of the issue's decisions a Change can be asked of, by the document its block stands in
  * (`decisionDocumentId`), replaced ones included: their blocks hold blocks too, and a comment
- * anchored in one changes no other decision. Those are an agent's decisions and the sections of
- * the release before. An ask's entry is none, though the read names the document its block
- * stands in: a person's answer is theirs, and no Change is written on it.
+ * anchored in one changes no other decision. Those are the decisions an agent made: an agent's
+ * `decision` block and an agent's section of the release before. A person's decision
+ * (`isPersonDecision`) is none - an answered ask, though the read names the document its block
+ * stands in, a `decision` block whose `decided_by` names a person, and a section of the release
+ * before that cites an ask - since what a person decided is theirs and every view places it as
+ * its decider's, and no Change is written on it. Nor is an ask that is open or declined, which
+ * decided nothing.
  */
 function changeableByDocument(
   issue: DecisionDocuments,
@@ -156,7 +164,8 @@ function changeableByDocument(
 ): ReadonlyMap<string, readonly ChangedDecision[]> {
   const byDocument = new Map<string, ChangedDecision[]>();
   for (const row of decisions?.entries ?? []) {
-    const document = row.node.kind === "ask" ? undefined : decisionDocumentId(issue, row);
+    const document =
+      row.node.kind === "ask" || isPersonDecision(row) ? undefined : decisionDocumentId(issue, row);
     if (document === undefined) continue;
     const held = byDocument.get(document);
     if (held === undefined) byDocument.set(document, [row]);

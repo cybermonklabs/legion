@@ -79,6 +79,9 @@ type registerGateAnswer struct {
 // TestRegisterGateBasisToolLive drives the proof's steps against one booted daemon and one
 // Dispatch.
 func TestRegisterGateBasisToolLive(t *testing.T) {
+	// Not parallel: a live proof whose daemon and scratch Dispatch run on the one NATS server
+	// LEGION_E2E_NATS_URL names, and which writes the file LEGION_E2E_DAEMON_LOG names and the
+	// dispatch.log beside it, which a proof beside it would share.
 	r := newRegisterGateBasisLive(t)
 	r.step("p-is-approved-with-requirement-blocks-and-r-is-a-view-under-it", r.world)
 	r.step("the-tool-registers-rs-spec-step-on-ps-approval-and-the-daemon-records-the-basis", r.registers)
@@ -236,7 +239,7 @@ func (r *registerGateBasisLive) refusesOverAnOpenBlock() {
 	if !answer.IsError || len(answer.DaemonRequests) != 0 {
 		t.Fatalf("the tool's call over the open block answered %+v, want a refusal that sent the daemon nothing", answer)
 	}
-	for _, want := range []string{"legion register_gate was not called", fmt.Sprintf("(version %d) has 1 open decision block", version), "block wave, ask " + ask} {
+	for _, want := range []string{"legion register_gate was not called", fmt.Sprintf("(version %d) has 1 open ask block", version), "block wave, ask " + ask} {
 		if !strings.Contains(answer.Text, want) {
 			t.Errorf("the tool's refusal does not say %q:\n%s", want, answer.Text)
 		}

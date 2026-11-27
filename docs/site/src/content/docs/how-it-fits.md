@@ -66,10 +66,8 @@ label `legion`. That lets Legion share a project with people and other agents. A
 label from the issue header, or asks Legion's own **controller** agent to set it for them; the
 controller never hands over work on its own. An agent that finds a problem outside its own issue
 files no issue: it fixes a defect with a clear fix itself, in its own pull request or a separate
-pull request of its tree, and writes to another tree's architect, as a Dispatch comment that
-mentions that architect's role, only when the fix would collide with that tree's open pull request
-or its token does not reach the repository. The controller files the defect for Legion only when
-no tree owns that code, and passes no message on. A problem that needs a decision goes to a person
+pull request of its tree. The controller files for Legion a defect in a repository the agent's
+token does not reach, and passes no message on. A problem that needs a decision goes to a person
 in a Dispatch ask.
 
 Each admitted issue gets an **architect**, which owns the issue's tree. It writes the spec, splits
@@ -86,7 +84,8 @@ Two decisions stay with people:
   specific version in Dispatch. A later version of the spec closes the gate again until someone
   approves it. A person's answer to an ask block in the spec writes one version. When the answer
   is that version's whole change, the version changes only the block's `state`, answerer and
-  time, and Dispatch carries the approval across it, so it leaves the gate as it stands. The
+  time, and Dispatch records that version as approved, so the gate stays open, or opens again
+  where the version before it added the ask and closed it. The
   version carries the approval only when the person's answer, resolve or decline is its whole
   change. If text that a person was editing in the browser is settled into the same version, the
   approval does not carry, and the request goes back to its agent. Dispatch carries the approval

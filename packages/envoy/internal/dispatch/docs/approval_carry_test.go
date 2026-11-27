@@ -108,6 +108,7 @@ func ownAndOpenRows() map[string]model.Ask {
 // settlement cannot read. An open row's body is free. A copy of another document's ask agrees with
 // its source the same way, its provenance among what the roll window keeps.
 func TestAnAskAgreesWithItsNodeShowingNoAnswerStateOrTheRowsOwn(t *testing.T) {
+	t.Parallel()
 	rows := ownAndOpenRows()
 	for name, test := range map[string]struct {
 		id     string
@@ -228,6 +229,7 @@ func TestAnAskAgreesWithItsNodeShowingNoAnswerStateOrTheRowsOwn(t *testing.T) {
 // level, in a blockquote - and leaves every other node of the tree its own, so a tree without them
 // is answered as it is, with nothing taken, and the tree it was given is not changed.
 func TestWithoutAskServerAttributesTakesTheEightOffEveryAskBlock(t *testing.T) {
+	t.Parallel()
 	quoted := "> " + strings.ReplaceAll(strings.TrimSuffix(openDirective+openBody, "\n"), "\n", "\n> ") + "\n"
 	tree, err := pmdoc.Parse("Context.\n\n" + ownDecided + ownBody + "\n" + quoted)
 	if err != nil {
@@ -313,6 +315,7 @@ func TestAskNodesOfTheCarriedVersionReadEveryBlockOnceAndRefuseARepeatedID(t *te
 // build's rendering of. That every ask of N agrees with its node is its callers' to hold first
 // (asksAgreeWithTheirNodes).
 func TestCarryVerdictOverTheApprovedAndTheNewVersion(t *testing.T) {
+	t.Parallel()
 	const prose = "# Rollout\n\nThe service ships behind a flag.\n\n"
 	approvedText := prose + ownDecided + ownBody + "\n" + openDirective + openBody
 	parse := func(markdown string) *pmdoc.Node {
@@ -359,9 +362,11 @@ func TestCarryVerdictOverTheApprovedAndTheNewVersion(t *testing.T) {
 // carries the approval of A when it differs from A only in ask blocks whose asks the approver
 // answered after the approval (approverAnswered), a block added since among them - the
 // approver's answer to it is the whole change since the version they approved - and a block A
-// held open under other words. It composes with R10's case, naming both. A block added since that
-// nobody answered, or that someone else answered, an edit outside the blocks and a block of A
-// removed carry nothing.
+// held open under other words. It composes with R10's case, naming both. Such a block that stands
+// alone in its container - a blockquote, a callout, or the document itself - carries as well: its
+// container is left holding an empty paragraph in both versions (withoutBlocks). A block added
+// since that nobody answered, or that someone else answered, an edit outside the blocks and a
+// block of A removed carry nothing.
 // An issue's reopen is carried too: the closed issue's version shows the question the close
 // withdrew resolved, and the reopen's version shows it open again, which differs in the
 // server-owned attributes of its block alone, on a fleet of one build and while two builds serve.
@@ -375,6 +380,22 @@ func TestCarryVerdictCarriesTheApproversAnswersGivenSinceTheApproval(t *testing.
 	waveResolved := `:::ask{#wave urgency="med" multiple="false" state="resolved"}` + "\n" + waveBody
 	waveOpenInStep := `:::ask{#wave urgency="med" multiple="false" state="open"}` + "\n" + waveBody
 	approvers := map[string]bool{"wave": true}
+	// quoted is markdown inside a blockquote, as the renderer writes one; called is markdown as the
+	// one block of a callout.
+	quoted := func(markdown string) string {
+		lines := strings.Split(strings.TrimSuffix(markdown, "\n"), "\n")
+		for index, line := range lines {
+			if line == "" {
+				lines[index] = ">"
+				continue
+			}
+			lines[index] = "> " + line
+		}
+		return strings.Join(lines, "\n") + "\n"
+	}
+	called := func(markdown string) string {
+		return `::::callout{#holder kind="note" title=""}` + "\n" + markdown + "::::\n"
+	}
 	parse := func(markdown string) *pmdoc.Node {
 		t.Helper()
 		tree, err := pmdoc.ParseRendering(markdown)
@@ -393,6 +414,9 @@ func TestCarryVerdictCarriesTheApproversAnswersGivenSinceTheApproval(t *testing.
 	}{
 		{"the approver's answer to a block added since the approval", prose + own, prose + own + "\n" + waveAnswered, approvers, answers},
 		{"the approver's answer to a block the approved version held open under other words", prose + own + "\n" + waveReworded, prose + own + "\n" + waveAnswered, approvers, answers},
+		{"the approver's answer to a block alone in a blockquote, held open under other words", prose + own + "\n" + quoted(waveReworded), prose + own + "\n" + quoted(waveAnswered), approvers, answers},
+		{"the approver's answer to a block alone in a callout, held open under other words", prose + own + "\n" + called(waveReworded), prose + own + "\n" + called(waveAnswered), approvers, answers},
+		{"the approver's answer to the document's one block, held open under other words", waveReworded, waveAnswered, approvers, answers},
 		{"the approver's answer to a block added since, the attributes dropped from another", prose + ownDecided + ownBody, prose + ownBare + ownBody + "\n" + waveAnswered, approvers, answerCase.change + ", and " + attributes},
 		{"a block added since that someone else answered", prose + own, prose + own + "\n" + waveAnswered, nil, ""},
 		{"a block added since and left open", prose + own, prose + own + "\n" + waveOpen, nil, ""},
@@ -816,6 +840,7 @@ func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 // its node, so her approval is carried to it by the case that compares the two without them
 // (attributeRemovalCase, R5).
 func TestOnOneBuildAVersionTakenBeforeSettlementKeepsOnlyTheAsksStateAndCarriesTheApproval(t *testing.T) {
+	t.Parallel()
 	const spec = "Context\n\n:::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	for _, write := range []struct {
@@ -1023,6 +1048,7 @@ func askOpeningLine(markdown, blockID string) string {
 // against the write with the words alone, the block disagreed with its node, and bob's answer
 // superseded her approval.
 func TestAnAnswerLeftOutOfItsBlockForWantOfRoomCarriesTheApproval(t *testing.T) {
+	t.Parallel()
 	const ask = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 	// The prose leaves the document 1,000 bytes short of the cap: room for the block's state,
 	// answerer and time, and none for bob's words.
@@ -1182,6 +1208,7 @@ func namedVersionByTheAgent(t *testing.T, service *Service, artifactID, summary 
 // the next version, which drops the answer's selection, carries her approval naming the version she
 // approved, not the one her words name.
 func TestACarriedReasonAPersonWroteNamesNoVersionTheyDidNotApprove(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, reason string
 		// bob is the version bob approved before alice, 0 for none.
@@ -1221,6 +1248,7 @@ func TestACarriedReasonAPersonWroteNamesNoVersionTheyDidNotApprove(t *testing.T)
 // version names the version alice approved and the version whose text it holds, D, which her
 // approval was carried to; said to hold A's text, the reason was false.
 func TestARestoreOfACarriedVersionNamesTheVersionWhoseTextItHolds(t *testing.T) {
+	t.Parallel()
 	service, artifactID, approved := approvedBeforeOneBuild(t, "")
 	dropped := namedVersionByTheAgent(t, service, artifactID, "The state dropped")
 	if reason := approvedReasonAt(t, service, artifactID, dropped); reason != attributeRemovalReason(approved) {

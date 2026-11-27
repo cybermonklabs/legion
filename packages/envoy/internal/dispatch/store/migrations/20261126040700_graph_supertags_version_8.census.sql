@@ -1,0 +1,13 @@
+-- This migration sets the attributes of the seven block type supertag nodes (callout, ask,
+-- requirement, plan_task, check, decision and reading) to what
+-- 20261125163555_graph_supertags_decision_reading left on them, the version moved from 7 to 8,
+-- sets the attributes of the two attribute nodes check/subject and check/program to what
+-- 20261125125701_graph_supertags_check_subject left on them, `creatable_since` moved from 7 to 9,
+-- and appends the `version` and `creatable_since` tuples that state each. Those rows are type
+-- nodes, and nothing but a migration writes a type node: no route and no command writes one
+-- (cmd/dispatch's requireNoRouteOrCommandWritesAType), no migration between 20261125163555 and
+-- this one writes a supertag node, and none after 20261125125701 writes either attribute node.
+-- So the nine nodes hold what those two left, and the updates rewrite only the version and the
+-- `creatable_since`. It reads no row of another table. The number of existing rows this migration
+-- would refuse or rewrite is therefore 0.
+select 0;

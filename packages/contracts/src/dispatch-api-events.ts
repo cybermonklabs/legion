@@ -34,6 +34,7 @@ import type {
   CheckResultRetractedEventPayload,
   ChildEventPayload,
   ChildStatusEventPayload,
+  DeployRecordedEventPayload,
   IssueClaimEventPayload,
   IssueDeployedEventPayload,
   IssueEventPayload,
@@ -175,6 +176,10 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "issue.deployed";
       readonly payload: IssueDeployedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "deploy.recorded";
+      readonly payload: DeployRecordedEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "handoff.recorded";
@@ -405,6 +410,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "comment.reopened": true,
   "comment.resolved": true,
   "decision.kept": true,
+  "deploy.recorded": true,
   "document.retired": true,
   "handoff.recorded": true,
   "issue.claimed": true,

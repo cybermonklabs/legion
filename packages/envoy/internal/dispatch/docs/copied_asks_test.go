@@ -183,6 +183,7 @@ func TestADocumentCopiedOnItsIssueShowsItsSourcesAsksAndOpensNone(t *testing.T) 
 // names the other document. A source whose row names no node yet, which the boot step's backfill
 // marks, has no part_of to read, and its copy names the document its row does.
 func TestACopysSourceDocumentIsTheSourceAsksPartOf(t *testing.T) {
+	t.Parallel()
 	service, original := newTestService(t)
 	service.settle = time.Hour
 	ctx := context.Background()
@@ -615,6 +616,7 @@ func askEditsOf(t *testing.T, service *Service, ask string) int {
 // resolved ask's block leaves its row as it was decided, appends no ask.edited, and settlement
 // writes the decided wording back into the block beside its decision, logging that it did.
 func TestADocumentEditOfADecidedAsksWordingIsWrittenBackAndLeavesItsRow(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	writes := map[string]func(t *testing.T, service *Service, document string){
@@ -710,6 +712,7 @@ func rewordAsAnEarlierRelease(t *testing.T, service *Service, document string, a
 // on, writes it back into the block, and logs the ask, its document and the restored question;
 // the boot's restoration then finds nothing left to restore.
 func TestASettlementRestoresADecidedAskAnEarlierReleaseReworded(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	for _, closing := range []string{"answered", "resolved"} {
@@ -884,6 +887,7 @@ func TestTheBootsRestorationSettlesTheRestoredAsksOwnDocument(t *testing.T) {
 // (rollWindowAskAttributes); on a fleet of one build a copy keeps its provenance, and its source's
 // state where that is not open, alone (keptAskState).
 func TestASettlementLogsEachBlockItTakesForACopyOnce(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	service, original := newTestService(t)
@@ -1082,6 +1086,86 @@ func TestACopyRetypedToACalloutStatesNoCopiedFrom(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A copy whose block an agent's document edit takes out of the document is no copy any more (R3),
+// and the edit's own write ends the copied_from its block's node held. The edit indexes its version
+// in its own transaction, which deletes the block's row and states its node gone, and no settlement
+// after it reads the block at all (claimCopies reads the rows), so the index pass of that write
+// retracts the relation (refs' heldCopiedFrom), under the version's event. The edit runs as
+// POST /api/v1/artifacts/{id}/edits runs it: the edit, its version, the version's event and what
+// the version's index stated under that event, in one transaction. The block's node holds no
+// copied_from right after the edit, and none once the settlement after it has run.
+func TestACopyAnAgentsEditDropsStatesNoCopiedFrom(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	service, original := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, original, "Context\n\n"+shipBlock)
+	settleCurrentGeneration(t, service, original)
+	source := blockAskOn(t, service, original, "ship")
+	copied := createIssueDocument(t, service.store, 1, "# Copy")
+	seedServiceText(t, service, copied, "Record\n\n"+shipBlock)
+	settleCurrentGeneration(t, service, copied)
+	if blockType, stated := copiedFromStated(t, service, copied, "ship"); blockType != "ask" || stated != source.ID {
+		t.Fatalf("the copy's block ship is a %s block whose node states copied_from %q, want an ask block copied from %s", blockType, stated, source.ID)
+	}
+	var refKey string
+	if err := service.store.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, copied).Scan(&refKey); err != nil {
+		t.Fatalf("read the copy's address: %v", err)
+	}
+	node := refs.BlockAddress(refKey, "ship")
+	requireNoCopiedFrom := func(when string) {
+		t.Helper()
+		stated, err := graphstore.CurrentOut(ctx, service.store.Pool, refs.BlockNodeKind, node, []string{graphstore.TupleCopiedFrom})
+		if err != nil {
+			t.Fatalf("read the copied_from the node of block ship states %s: %v", when, err)
+		}
+		if len(stated) != 0 {
+			t.Errorf("%s the node of the dropped block ship states %+v, want no copied_from", when, stated)
+		}
+	}
+
+	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
+	tx, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the agent's edit: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	joined, ledger := service.Join(ctx, tx)
+	defer ledger.Discard()
+	if edit, err := service.ApplyOps(joined, copied, []model.EditOp{{Op: "delete", Block: "ship"}}, agent, nil); err != nil || !edit.Changed {
+		t.Fatalf("the agent's delete of the copy's block ship changed %v: %v", edit.Changed, err)
+	}
+	written, err := service.SnapshotVersion(joined, copied, agent)
+	if err != nil || !written.Wrote {
+		t.Fatalf("version the agent's delete (wrote %v): %v", written.Wrote, err)
+	}
+	issue := "DOC-1"
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		if err := service.events.QueueAppend(b, model.Event{
+			IssueKey: &issue, Type: "artifact.version", Actor: agent,
+			Payload: map[string]any{"artifact_id": copied, "version": map[string]any{"number": written.Version.Number}},
+		}, func(model.Event) {}); err != nil {
+			return err
+		}
+		graphstore.QueueCaused(b, written.Blocks, graphstore.LatestEvent)
+		return nil
+	}); err != nil {
+		t.Fatalf("queue the version's event: %v", err)
+	}
+	if err := ledger.Commit(ctx); err != nil {
+		t.Fatalf("commit the agent's edit: %v", err)
+	}
+	var rows int
+	if err := service.store.Pool.QueryRow(ctx, `
+		select count(*) from document_blocks where artifact_id = $1 and block_id = 'ship'
+	`, copied).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("the copy's block index holds %d rows of ship after the edit (%v), want none: the edit indexes its own version", rows, err)
+	}
+	requireNoCopiedFrom("after the agent's edit,")
+	settleCurrentGeneration(t, service, copied)
+	requireNoCopiedFrom("after the settlement that follows the edit,")
 }
 
 // copiedFromStated is the type block blockID of document has in the document's block index, and

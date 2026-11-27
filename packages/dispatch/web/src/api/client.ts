@@ -2168,6 +2168,15 @@ export class DispatchApiClient {
     return this.json<AuthenticatedUser>("/auth/whoami");
   }
 
+  /** The scopes the caller's own credential holds, as `GET /api/v1/whoami` names them: for a
+   *  person at a browser, every scope of a person's own credential. `/auth/whoami` names none.
+   *  Settings offers Set P0 only where they name `p0`, which a build before it never does. A
+   *  list the answer leaves null holds none. */
+  async whoAmIScopes(): Promise<string[]> {
+    const whoami = await this.read("/api/v1/whoami", {});
+    return whoami.scopes ?? [];
+  }
+
   /** Ends this browser's session. `/auth/logout` sits outside Dispatch's keyed layer and is the
    *  same however often it is made, so it goes with no key. */
   logout(): Promise<{ ok: true }> {

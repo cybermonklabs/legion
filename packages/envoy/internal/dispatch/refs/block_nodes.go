@@ -208,9 +208,11 @@ type nodelessBlock struct {
 // typed-node pass's own nodes of the version (TypedFacts.indexedFacts) and the nodes the caller
 // writes beside the pass (version.Beside) after them. Where the store's statement of the
 // document is stale it reads that statement (heldDocumentBlocks) and answers it, for the link
-// step to compare the version's pairs with (unheldLinks), and it answers nil elsewhere. It
-// answers the typed-node pass's own tuples of the version too, which PlanBlocks appends after
-// the links. now is the transaction's now(), the time a row the pass inserts is dated by.
+// step to compare the version's pairs with (unheldLinks), and it answers nil elsewhere. Beside the
+// nodes it plans the retraction of the copied_from each block the version no longer holds states
+// (heldCopiedFrom). It answers the typed-node pass's own tuples of the version too, which
+// PlanBlocks appends after the links. now is the transaction's now(), the time a row the pass
+// inserts is dated by.
 func (b *BlockIndexing) planBlockNodes(
 	ctx context.Context,
 	q Queryer,
@@ -281,6 +283,15 @@ func (b *BlockIndexing) planBlockNodes(
 		}
 		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), record, versionAt, graphstore.StateGone, supertag))
 	}
+	// A block the version no longer holds is no copy of an ask either, so the copied_from its node
+	// states (docs' claimCopies) is retracted at this version's time and by its writer, as the
+	// tuple of a link the version drops is (planBlockRefs). The settlement that claims copies reads
+	// which blocks hold one through the document's rows, and this write deletes the dropped block's
+	// row, so no later write would end the relation.
+	copies, err := heldCopiedFrom(ctx, q, refKey, gone)
+	if err != nil {
+		return nil, nil, err
+	}
 	// A row written before this release names no node: migration 20261109022248 added the
 	// columns and filled none of them, and the backfill has not reached the document or has
 	// not been run at all. The parents' projection names this block's node on every row of the
@@ -325,6 +336,14 @@ func (b *BlockIndexing) planBlockNodes(
 			continue
 		}
 		b.stated.Tuples = append(b.stated.Tuples, membership(blockNodeAddress(refKey, id), refKey, now, writer))
+	}
+	for _, id := range gone {
+		for _, ask := range copies[id] {
+			b.stated.Tuples = append(b.stated.Tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+				FromKind: BlockNodeKind, FromID: blockNodeAddress(refKey, id), Kind: graphstore.TupleCopiedFrom,
+				ToKind: graphstore.KindAsk, ToID: ask, At: versionAt, Who: writer, Asserted: false,
+			}})
+		}
 	}
 	return statement, typedTuples, nil
 }
@@ -510,7 +529,9 @@ func (b BlockIndexing) queueBlockParents(batch *store.WriteBatch) {
 // node (rehome): a block retyped between an ask and a decision keeps its id and its tie, and an
 // ask block's shaped hangs on the ask's node where a decision's hangs on the block's own. Its
 // tuple leaves the node the row names and is stated out of the pair's, and the row is renamed to
-// it (queueBlockRefs), so the row and the tuple move together.
+// it (queueBlockRefs), so the row and the tuple move together. A row that names no node because
+// its block's address is past the store's bound, whose pair now hangs on a node of its own inside
+// it, is named with that node in any pass, and its tuple stated, as the insert would (rehome).
 //
 // A scope (BlockIndexing.scope) limits the rows the reconcile drops to those it reaches: every
 // other link the index holds is held as it stands, whatever the pairs hold, so a pass that read
@@ -620,15 +641,30 @@ func (b *BlockIndexing) planBlockRefs(ctx context.Context, q Queryer, index Bloc
 // the same tuple out of pair's node, dated, written and caused as the tuple of a row the insert
 // inserts (assertedLink). The row takes pair's node, or none where that node's address is past the
 // store's bound, as the insert leaves such a row (queueBlockRefs), and its target is moved, since
-// the node that cites it is another. A row that names no node states no tuple to move: the pass
-// that names surviving rows names it (namesSurvivingRows), and every other leaves it to the old
-// block_refs arm.
+// the node that cites it is another.
+//
+// A row that names no node has no tuple to move. It names none because its block's address or its
+// far end was past the store's bound when it was inserted, or because another release or a build
+// before the store wrote it. Where its block's address is past the bound and pair now hangs on a
+// node of its own whose address and far end fit - a decision of a long-named document retyped to
+// an ask block that keeps its id and its shaped, which hangs on the ask's node - the row is named
+// with that node and its tuple is stated, as the insert of the same pair names the row and states
+// it, and its target is moved: otherwise only a pass that names surviving rows
+// (namesSurvivingRows), which few passes are, would name it, and the ask's node would state no tie
+// until then. Every other row that names no node is left to that pass, or to the old block_refs
+// arm.
 func (b *BlockIndexing) rehome(link indexedLink, pair blockPair, writer model.Actor) (indexedLink, []graphstore.UncausedTuple) {
-	if !link.named {
-		return link, nil
-	}
 	heldKind, held := link.from(b.refKey)
 	wantedKind, wanted := pair.from(b.refKey)
+	if !link.named {
+		if graphstore.AddressFits(held) || !graphstore.AddressFits(wanted) || !graphstore.AddressFits(link.target.ID) {
+			return link, nil
+		}
+		link.nodeKind, link.nodeAddress, link.named = pair.nodeKind, pair.nodeAddress, true
+		b.rehomed = append(b.rehomed, link)
+		b.moved = append(b.moved, link.target)
+		return link, []graphstore.UncausedTuple{assertedLink(b.refKey, link, writer)}
+	}
 	if heldKind == wantedKind && held == wanted {
 		return link, nil
 	}

@@ -461,6 +461,7 @@ func backlinkExclusionCases(toKind string) [][]string {
 // must not count, so each position filter the count carries is one the view disagrees with the
 // moment it goes.
 func TestBacklinkCountsReadArmByArmAgreeWithTheView(t *testing.T) {
+	t.Parallel()
 	fixture := newBacklinkFixture(t)
 	ctx := context.Background()
 	pool := fixture.database.Pool
@@ -523,6 +524,7 @@ func TestBacklinkCountsReadArmByArmAgreeWithTheView(t *testing.T) {
 // A node kind with no arms declared is refused rather than counted from its mention arms alone,
 // and every kind this build resolves is declared, so no node a list shows is counted short.
 func TestBacklinkCountsRefuseANodeKindWithNoDeclaredArms(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	if _, err := BacklinkCounts(ctx, database.Pool, model.Actor{}, "pull_request", []string{"x"}, nil); err == nil {
@@ -556,6 +558,7 @@ var planSettings = []string{
 // store does not hold, ANDed beside the key index of an arm over a comment's pointers
 // (scansNoIndexServes, migration 20261122100121).
 func TestBacklinkCountStatementReadsEveryArmThroughAnIndex(t *testing.T) {
+	t.Parallel()
 	fixture := newBacklinkFixture(t)
 	ctx := context.Background()
 	connection, err := fixture.database.Pool.Acquire(ctx)
@@ -793,6 +796,7 @@ var graphViewArms = []graphViewArm{
 // nodeRegistry resolves, which is what makes BacklinkCounts' source filter on the refs arm alone
 // exact.
 func TestTheGraphViewGainsNoArmTheBacklinkCountDoesNotKnow(t *testing.T) {
+	t.Parallel()
 	fixture := newBacklinkFixture(t)
 	var definition string
 	if err := fixture.database.Pool.QueryRow(context.Background(),

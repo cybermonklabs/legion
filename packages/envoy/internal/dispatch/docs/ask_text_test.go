@@ -88,6 +88,7 @@ func requireNoAskServerAttributes(t *testing.T, document, markdown string) {
 // answerer and the time as the live document holds them, and answers the same token, blocks that
 // index its own markdown, and the same asks.
 func TestTheTextAnAgentReadsHoldsNoServerOwnedAskAttributeWhileAnotherBuildServes(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ctx := context.Background()

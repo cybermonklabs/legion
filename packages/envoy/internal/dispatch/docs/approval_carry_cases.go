@@ -326,6 +326,12 @@ func withoutReadings(tree *pmdoc.Node, answered map[string]bool) (*pmdoc.Node, b
 // it took one out. Each container on the way to one is a fresh node; every other node is tree's
 // own, which nothing here changes. The answer case takes the blocks the approver answered out
 // through it (answerCase), and the restore's case the blocks the restore wrote (restoreCase).
+//
+// A container the drop empties - a blockquote, a footnote definition, a typed container or the
+// document, which held only blocks drop names - is left holding one empty paragraph, which is what
+// both parsers read an empty container as, as WithoutAskBlocks leaves one. The renderer refuses a
+// container with no block children (pmdoc.Render), so without it the two trees would not render
+// at all, and the carry would fail where an answered block stood alone in its container.
 func withoutBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool) (*pmdoc.Node, bool) {
 	if tree.Type == "text" || len(tree.Children) == 0 {
 		return tree, false
@@ -351,6 +357,9 @@ func withoutBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool) (*pmdoc.Node, 
 	}
 	if !took {
 		return tree, false
+	}
+	if len(children) == 0 {
+		children = append(children, &pmdoc.Node{Type: "paragraph", Attrs: pmdoc.Attrs{}})
 	}
 	copied := *tree
 	copied.Children = children

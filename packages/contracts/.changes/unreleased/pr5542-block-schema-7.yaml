@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+    The block schema's types follow version 7 of the schema: `BlockTypeSchema.parents` names the typed blocks a block of the type stands in and nowhere else, `BlockAttributeSchema.markdown` is false for an attribute that markdown never carries, and `BlockAttributeKind` gains `ask`, an attribute that names one ask of the block's own issue as `dispatch://<ISSUE>/ask/<id>`. `schemas/block-schema.schema.json` says the same.
+time: 2026-11-26T03:00:07Z
+custom:
+    Issue: pr5542

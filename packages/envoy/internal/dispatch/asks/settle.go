@@ -550,11 +550,12 @@ func AnswerKinds() []string {
 // whose id, as text, the SQL expression id names, a value by its kind and a relation by its far
 // end (graphstore.CurrentTupleRead), as t.kind, t.to_kind, t.to_id and t.asserted, which the
 // caller's `where asserted` cuts to the facts that stand. A fact of a kind a reader does not read
-// is left by it, as Read leaves one. It is the one reading of the node's answer in SQL, which
-// every statement that reads the answer off the node shares: every read of NodeAnswerColumn (api's
-// ask reads among them), docs' text routes and writes (askNodeAnswers), the answers a session was
-// delivered (sessionanswers' nodeAnswer), and the replay's check of the answers it serves,
-// through NodeAnswerTuplesIn (loadtest's servedAnswersQuery).
+// is left by it, as Read leaves one. It is the one reading of the node's answer as a list of facts
+// in SQL, which every statement that reads the answer so shares: every read of NodeAnswerColumn
+// (api's ask reads among them), docs' text routes and writes (askNodeAnswers), and the replay's
+// check of the answers it serves, through NodeAnswerTuplesIn (loadtest's servedAnswersQuery). A
+// statement that reads the answer as values of its own reads it through the Node...Of fragments
+// of node_answer.go instead, as the session answers and the search text read NodeAnswerJSONOf.
 func NodeAnswerTuples(id string) string {
 	return NodeAnswerTuplesIn(`graph_tuples`, id)
 }

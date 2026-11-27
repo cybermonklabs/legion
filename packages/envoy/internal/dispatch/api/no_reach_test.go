@@ -834,6 +834,7 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/asks/open":              url.Values{"waiting_on": {"alice"}}.Encode(),
 		"GET /api/v1/credential-requests":    url.Values{"approver": {"me"}}.Encode(),
 		"GET /api/v1/near-copy-checks":       url.Values{"project": {"TEST"}}.Encode(),
+		"GET /api/v1/deploys":                url.Values{"repo": {owned.deployRepo}}.Encode(),
 		"GET /api/v1/reference-targets":      url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
 		"GET /api/v1/agents/known":           url.Values{"id": {owned.session}}.Encode(),
 		"GET /api/v1/projects/{key}/related": url.Values{"title": {"A project's own issue"}}.Encode(),
@@ -988,18 +989,22 @@ type crossProject struct {
 	// session is a session the store holds a record of: it follows the project's ask, so GET
 	// /api/v1/agents/known, asked about it, answers it rather than no session at all.
 	session string
+	// deployRepo is the repository, owner/repo, of the one deploy seedTwoProjects records: the
+	// repository the read of deploys is sent, so that read answers a row.
+	deployRepo string
 }
 
 // seedTwoProjects writes one project with an issue, a document of the issue (design.md), a
 // comment, an ask a session follows, a message, a run of a step of the issue and a run of its
 // retro, a project document at two versions and a block of each document, an architecture
 // source, and the Legion daemon it names with a read of it; a second project with an issue, which
-// the cross-project probe addresses them under; and one priority, which belongs to neither
-// project and is read at its own id. Under the second project's key the probe sends each route the
-// object of the first its path names (crossProjectPath): design.md to a route of an issue
-// document, the project document to a route of a project document, the message to the message
-// read, the run of a step to the step write, the retro's run to the rating write and the
-// architecture source's repository to the source's removal and its sync.
+// the cross-project probe addresses them under; one priority, which belongs to neither project
+// and is read at its own id; and one deploy of a repository, which belongs to no project and is
+// read by its repository. Under the second project's key the probe sends each route the object of
+// the first its path names (crossProjectPath): design.md to a route of an issue document, the
+// project document to a route of a project document, the message to the message read, the run of
+// a step to the step write, the retro's run to the rating write and the architecture source's
+// repository to the source's removal and its sync.
 func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) crossProject {
 	t.Helper()
 	createDuplicateTestProject(t, handler, "OTH")
@@ -1084,6 +1089,11 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 	// answers a row only for a priority the store holds: at a placeholder id it answers 404, and
 	// its traversal probe would read nothing.
 	owned.priority = createTestPriority(t, handler, map[string]any{"title": "A priority of the deployment"}, "alice").ID
+	// A deploy is written through its route, as a person writes one, because the read of a
+	// repository's deploys answers an empty list for a repository Dispatch holds none of, and its
+	// traversal probe would read nothing.
+	owned.deployRepo = "acme/widgets"
+	postDeploy(t, handler, map[string]any{"repo": owned.deployRepo, "program": "worker", "commit": headCommit}, http.StatusCreated)
 	// Every create records the near-copy gate's answer (issue_create.go, recordNearCopyCheck), so
 	// the project's own creates above left records; one of them is the row the read of a record
 	// by its id answers, which at a placeholder id answers 404 and reads nothing.

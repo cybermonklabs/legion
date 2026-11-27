@@ -332,6 +332,7 @@ func queueSettleSourceOwed(b *store.WriteBatch, fromKind, fromID string, forms b
 			delete from refs_forms_owed where kind = $1 and id = $2::uuid`
 	}
 	b.Queue(fmt.Sprintf("settle the index owed by %s %s", fromKind, fromID), statement, fromKind, id)
+	// kept for one release: decisions-ref-repair
 	if forms {
 		b.Queue(fmt.Sprintf("settle the decisions index owed by %s %s", fromKind, fromID),
 			settleDecisionsFormsStatement, fromKind, id)

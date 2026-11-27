@@ -314,6 +314,15 @@ Each item below names a script, then what it proves.
   this build answers that path narrowed, and answers `GET /api/v1/search` carrying the member the same way, so a page an earlier release served is still answered correctly.
   Commenting out the `GET /api/v1/search/results` row of `routes_table.go` leaves neither build serving the path, which is the negative control
 
+- `hook-prompt-two-builds.sh`
+
+  the daemon that keeps a hook prompt's row waiting while no live session holds its role ships before the listener that refuses to keep a role publish naming no source session, driven through `TestIdleReleaseAndWake/TheHookPromptsOfAReleasedRoleReachItsWokenSessionOnce` (a real daemon, a real listener binary, a `nats-server` container and a loopback PostgreSQL the caller names) from two trees — the tree of the commit `--base-commit` names, taken with `git archive` into the run's own work directory, which for this proof is `legion-v23.21.0`, the daemon release before that change, and this checkout — with the listener of either tree (`LEGION_E2E_REPO_ROOT`):
+  the base tree's test passes with the base tree's listener, which is the negative control;
+  with this checkout's listener the base tree's test fails on the line that says no message reached the released role's woken session, since that daemon ends each prompt's row at the listener's 404;
+  and this checkout's test passes with this checkout's listener, each prompt reaching the woken session once.
+  Run by hand from a full checkout with go, git, tar and docker.
+  Each case reads its subtest's own result: PASS only with the subtest's `--- PASS` line and `go test` exiting 0, FAIL only with its `--- FAIL` line and a non-zero exit, and SKIP or UNKNOWN, which no case takes, for a skip or anything else; [`lib/hook-prompt-two-builds.test.ts`](lib/hook-prompt-two-builds.test.ts) (`bun test scripts/e2e/lib`) drives that reader over a stand-in `go`
+
 - `verification-results.sh`
 
   a recorded check result says where its commit stands against the commits and branches its check compares with, and the head it is compared with moves with the pull-request events Dispatch takes off the bus, driven over HTTP through the real `envoy-dispatch` against a loopback PostgreSQL the caller names, a NATS of the run's own and the e2e harness's fake GitHub:
@@ -2461,8 +2470,10 @@ Tree 1's document leaves one choice (where the smoke file goes) to the human.
 It then fails unless the architect's approval request at the approved version carries a summary after `Approve spec.md (version N)?`, a human answered at least one of the spec's ask blocks, and no approval request on the spec was early by either of two rules ([`lib/design-gate-verdict.jq`](lib/design-gate-verdict.jq), tested by `bun test scripts/e2e/lib`).
 The version rule judges every hand-back:
 the version its event records in `requested_version` must hold none of the spec's blocks open at the hand-back, each block read from the version by the block ids of the spec's block asks.
-A block the version holds is open when its ask held no answer and no resolution at the hand-back (the asks row's `answer.at` and `resolution.at` are each absent or later), since a person's answer is held on the ask alone and a version this release writes records a block's state only once its ask is answered or resolved, and none while it is open;
-a version the release before wrote records it always, and a block that version records `state="open"` is open whatever its ask's times.
+A block the version holds is open when its ask's own events held no answer and no resolution at the hand-back: the last of its `ask.opened`, `ask.answered` and `ask.resolved` at or before the hand-back is an `ask.opened`, or it has none.
+The asks row's `answer.at` and `resolution.at` do not say it, because a later answer, change or reopen replaces them.
+A person's answer is held on the ask alone, and a version this release writes records a block's state only once its ask is answered or resolved, and none while it is open;
+a version the release before wrote records it always, and a block that version records `state="open"` is open whatever its ask's events.
 The ask's own `created_at` is never read, because Dispatch indexes a block as an ask only when it settles the document, after the edit that wrote it.
 An approval row follows versions in place, so `ask.opened` records its first hand-back and each `ask.handed_back` a later one;
 an `ask.edited` only rewords the request.
@@ -5348,7 +5359,7 @@ Bun runs with `PATH` and a home and temporary directory of the run's own, and no
 | :--- | :--- | :--- |
 | `p-is-approved-with-requirement-blocks-and-r-is-a-view-under-it` | a session creates R with the `legion` label, the person sets it todo, and the daemon admits it and launches its architect, whose session the rig registers as the plugin's boot does; a session creates P with the label and a primary document marking `p1` to `p3`, and the person sets P in progress, approves its latest version and sets it as R's parent; R's Verification document gets one check serving `p2` | R recorded with a slot, its spec step `unregistered`, no gate fact |
 | `the-tool-registers-rs-spec-step-on-ps-approval-and-the-daemon-records-the-basis` | the tool's `register_gate` with `issue` R, `artifactId` `spec`, `version` 1, `step` `spec`, `basis` `dispatch://<P>/spec`, `basisVersion` the version the person approved, and a `reason` | a success; the daemon was sent `POST /legion/v1/grants` and `POST /legion/v1/gates/register` and nothing else, and Dispatch a read of P, where the reference is looked up; `GET /legion/v1/state` shows R in `planning` with its spec step `open_on_basis` on P's primary document at that version, approved by `user:smoke`; R's architect has one `design-approved` notice naming P's document as the basis, and R one message starting `Design gate opened on an ancestor's approval.`; R's gate row holds the basis, with the tool's reason and the architect's session; one gate fact |
-| `with-a-decision-block-open-in-rs-spec-the-tool-refuses-before-the-daemon-and-nothing-is-recorded` | a session inserts a decision block (`wave`) into R's spec, Dispatch opens its ask, and the tool makes the same call at the version that holds the block | the tool's refusal, `legion register_gate was not called: spec.md (version <n>) has 1 open decision block`, naming block `wave` and its ask, with no request sent to the daemon; R's record (phase, status, generation, view fact, Dispatch sequence), its gate rows, its gate facts and R's Dispatch issue as they were before the call |
+| `with-a-decision-block-open-in-rs-spec-the-tool-refuses-before-the-daemon-and-nothing-is-recorded` | a session inserts a decision block (`wave`) into R's spec, Dispatch opens its ask, and the tool makes the same call at the version that holds the block | the tool's refusal, `legion register_gate was not called: spec.md (version <n>) has 1 open ask block`, naming block `wave` and its ask, with no request sent to the daemon; R's record (phase, status, generation, view fact, Dispatch sequence), its gate rows, its gate facts and R's Dispatch issue as they were before the call |
 
 What the proof stands in for lies outside the registration:
 GitHub is one REST stand-in (`blockersGitHub`), the Apps' tokens are placeholders, the package's fake runtime launches the architect, and Envoy's listener answers nothing, so every notice stays in the daemon's outbox to be read.
@@ -6393,7 +6404,7 @@ Exit status: 0 every check passed; 1 a check failed (`FAIL <check>: …`); 2 ref
 
 Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's own database, or refuses the DSN in one line.
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
-Twelve call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
+Thirteen call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
 Seven are proofs of their own:
 [`plan-pointer-drive.sh`](#plan-pointer-drivesh), [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
 The eighth is [`lib/two-builds.sh`](#libtwo-buildssh), the harness the two two-builds proofs share, which reads `DATABASE_URL` once for `dispatch-two-builds.sh` and `dispatch-search-two-builds.sh`.
@@ -6408,6 +6419,7 @@ The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prere
 The tenth is [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s negative control, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it builds the base commit's tree, through the copy [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources.
 The eleventh is [`approved-version-news.sh`](#approved-version-newssh)'s `arguments` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it builds or extracts anything, through that same copy.
 The twelfth is the skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`, which reads a batch's `SKILL_SCENARIOS_POSTGRES_URL` with `require_loopback_env` in `services_up`, checks there with `run_database_url_env` that a run's connection string can carry it, and gives each run's Dispatch the string `run_database_url` rebuilds, in `own_dispatch`, through the copy [`lib/rig.sh`](#librigsh) sources.
+The thirteenth is `hook-prompt-two-builds.sh`'s `prerequisites` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it takes the base commit's tree, sourcing [`lib/loopback-dsn.sh`](#libloopback-dsnsh) itself.
 `require_loopback_env` takes the variable's name rather than its value and hands the value to `require_loopback_dsn` with the shell's xtrace off, so a run under `bash -x` traces no DSN, where a caller's own line that passed the DSN would trace it.
 [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) read their DSN with `run_database_url` alone, in the step that names the run's own database, through `run_database_url_env`, which takes the variable's name in the same way.
 They create and drop that database with `psql_env`, which takes the name in the same way too, and hand Dispatch the connection string `run_database_url_env` rebuilt from a subshell that turns xtrace off before it expands that string, so a run of either under `bash -x` traces no part of the DSN.
@@ -6463,11 +6475,12 @@ Two more cases pin a refusal of that mode: a password of bytes libpq reads as no
 The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask libpq.
 Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
 A third helper, `empty_public_schema`, empties the database a run was given, so that a server migrates it from nothing, and a fourth, `psql_env`, runs `psql` on the DSN a variable holds.
-[`lib/rig.sh`](#librigsh) sources this file, which is how eight of the twelve call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts have it: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth (pi-legion's skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`).
+[`lib/rig.sh`](#librigsh) sources this file, which is how eight of the thirteen call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts have it: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth (pi-legion's skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`).
 The sixth, [`envoy-session-delivery.sh`](#envoy-session-deliverysh), sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
 The ninth, [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), sources it on its own too, and calls `require_loopback_env` in `prerequisites` for each proof that makes its run.
 The tenth, [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), has it through that file, and calls `require_loopback_env` itself once more, for its negative control.
 The eleventh, [`approved-version-news.sh`](#approved-version-newssh), has it through that file too, and calls `require_loopback_env` in its own `arguments` check as well, before it builds or extracts anything.
+The thirteenth, `hook-prompt-two-builds.sh`, sources it on its own, and calls `require_loopback_env` in its `prerequisites` check, before it takes the base commit's tree.
 
 ```sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"     # sourced, never run
@@ -7149,7 +7162,7 @@ a file it can open takes both, which still reach the reader, and a file whose di
 A proof's last line, and the mark it rests on: the one rule for every script here whose `EXIT` trap prints PASS.
 Sourced by each of them, never run.
 Every other `EXIT` trap here that prints a verdict prints FAIL only, from a mark of its own, and its script does not source the lib.
-[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) and [`lib/two-builds.sh`](#libtwo-buildssh) source it for the proofs that make their runs, and `burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh`, `shared-clone-kind.sh`, `dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `dispatch-session-settings.sh`, `clean-session-stop-tmux.sh` and `envoy-session-states.sh` source it themselves.
+[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) and [`lib/two-builds.sh`](#libtwo-buildssh) source it for the proofs that make their runs, and `burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh`, `shared-clone-kind.sh`, `dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `dispatch-session-settings.sh`, `clean-session-stop-tmux.sh`, `envoy-session-states.sh` and `hook-prompt-two-builds.sh` source it themselves.
 
 ```sh
 . "$root/scripts/e2e/lib/run-verdict.sh"     # sourced, never run
@@ -7216,10 +7229,11 @@ It also drives the script, both parts and `--control`, from a branch merged forw
 
 The host-side helpers a stage proof sources for its rig: bounded waits, ports, the processes the run starts, and their teardown.
 Stage 1, Stage 3, Stage 4b, the 4b.13b acceptance and the controller, Dispatch user-turn and Claude Code backend proofs source it, as do the docs site's broker and operator-walkthrough recorders and pi-legion's skill-scenario rig.
-Eight of the twelve call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts source it too, for [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s two helpers, which this file sources for them: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth, pi-legion's skill-scenario rig.
+Eight of the thirteen call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts source it too, for [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s two helpers, which this file sources for them: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth, pi-legion's skill-scenario rig.
 `envoy-session-delivery.sh` is the sixth: it sources `lib/loopback-dsn.sh` and [`lib/port-file.sh`](#libport-filesh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
 [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) is the ninth: it sources `lib/loopback-dsn.sh` on its own, and sources no rig.
 `busy-relaunch-delivery.sh` is the tenth and `approved-version-news.sh` the eleventh: each has those helpers through `lib/live-daemon-proof.sh`, which it sources, and sources no rig.
+`hook-prompt-two-builds.sh` is the thirteenth: it sources `lib/loopback-dsn.sh` on its own, and sources no rig.
 
 ```sh
 . "$root/scripts/e2e/lib/rig.sh"     # sourced, never run

@@ -73,12 +73,16 @@ const ASK_QUESTION_CONTRACT =
   '("Ship Friday and risk signing out 1,240 users, or hold to Monday?"), never "How should we ' +
   'proceed?" or "Which option?", because a reader cannot work back from a general question to ' +
   "the case. It carries every fact the reader needs to decide and nothing " +
-  "that does not change the decision. Generalize only after the specifics, if at all. Then give " +
-  "your recommendation and its reason.";
+  "that does not change the decision. Generalize only after the specifics, if at all. A question " +
+  "between two or more real choices gives one recommendation and its reason. A request for one " +
+  "act only the person can do (an approval, a credential, a grant, a setting of their own " +
+  "account) says what the act is, what it changes and how to do it, and gives no recommendation.";
 
 const ASK_OPTIONS_CONTRACT =
-  "Options carry the genuinely different approaches. Each option has a label, and its description " +
-  "says what that approach costs.";
+  "Options carry only the real choices: each is within your rules, and a person could choose " +
+  "it. Add no option that breaks your rules or that no one would choose. Each option has a " +
+  "label, and its description says what that approach costs. A request for one act only the " +
+  "person can do has the two options Done and Can't.";
 
 /** Who an ask is for, written once so every text an agent reads says it the same way: the two
  *  tool descriptions that open or edit one, and `skills/dispatch/SKILL.md`. An agent cannot
@@ -988,6 +992,42 @@ const RESULT_SHAPE_RULE =
   `${RESULT_RETRACT_RULE} A call with retract takes reason and no other argument. A call ` +
   "without retract records a result, and it takes issue, check, role, verdict and commit.";
 
+const DEPLOY_REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const DEPLOY_PROGRAM = /^[a-z0-9-]{1,64}$/;
+const DEPLOY_COMMIT = /^[0-9a-f]{40}$/;
+const DEPLOY_TIME =
+  /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+
+function deployRepoProblem(value: unknown): string | undefined {
+  const input = value as Record<string, unknown>;
+  return typeof input["repo"] !== "string" || !DEPLOY_REPO.test(input["repo"])
+    ? "repo must be owner/repo"
+    : undefined;
+}
+
+function deployProblem(value: unknown): string | undefined {
+  const input = value as Record<string, unknown>;
+  const repo = deployRepoProblem(input);
+  if (repo !== undefined) return repo;
+  if (typeof input["program"] !== "string" || !DEPLOY_PROGRAM.test(input["program"]))
+    return "program must be 1 to 64 lowercase letters, digits or hyphens";
+  if (typeof input["commit"] !== "string" || !DEPLOY_COMMIT.test(input["commit"]))
+    return "commit must be 40 lowercase hexadecimal characters";
+  if (input["deployed_at"] !== undefined) {
+    const value = input["deployed_at"];
+    if (typeof value !== "string") return "deployed_at must be RFC3339";
+    const parts = DEPLOY_TIME.exec(value);
+    const timestamp = Date.parse(value);
+    if (parts === null || !Number.isFinite(timestamp)) return "deployed_at must be RFC3339";
+    const calendar = new Date(`${parts[1]}-${parts[2]}-${parts[3]}T00:00:00Z`);
+    if (calendar.toISOString().slice(0, 10) !== value.slice(0, 10))
+      return "deployed_at must be a valid calendar date";
+    if (timestamp > Date.now() + 5 * 60 * 1000)
+      return "deployed_at must not be more than five minutes in the future";
+  }
+  return undefined;
+}
+
 /** The refusal of the first rule a result call breaks, or undefined when it keeps them. The two
  *  shapes are one command because a retraction answers for one recorded result: the reader of
  *  `dispatch results` sees the result and its retraction together. */
@@ -1269,7 +1309,9 @@ export const dispatchToolSpecs = [
         .optional(),
       priority: z
         .number({ int: true, min: 0, max: 3 })
-        .describe("Optional coarse priority, a number from 0 to 3: 0 is highest and 3 is lowest.")
+        .describe(
+          "Optional coarse priority from 0 (P0, highest) to 3 (P3, lowest). Setting 0 needs the p0 scope."
+        )
         .optional(),
       assignee: z
         .string()
@@ -1399,7 +1441,9 @@ export const dispatchToolSpecs = [
         .number({ int: true, min: 0, max: 3 })
         .nullable()
         .optional()
-        .describe("Coarse priority: 0 is P0 (highest) through 3 is P3 (lowest); null clears it."),
+        .describe(
+          "Coarse priority from 0 (P0, highest) to 3 (P3, lowest), or null to clear it. Setting 0 needs the p0 scope, unless the issue's own priority is 0 already."
+        ),
       assignee: z
         .string()
         .nullable()
@@ -1534,7 +1578,9 @@ export const dispatchToolSpecs = [
     description:
       `${ASK_IS_FOR_A_PERSON} ${ASK_WAITS_ON_THE_ASSIGNEE} ` +
       "Open a to-do or permission only a human can give, or a decision that has no document to " +
-      "live in. A question about the design an issue's document records is not this tool: write " +
+      "live in. Ask for a decision only when two or more choices are real. Where only one is " +
+      "real, make it, and tell the person what you did and why. A question about the design an " +
+      "issue's document records is not this tool: write " +
       "it into that document as an ask block (dispatch doc-edit inserting an ask block at the " +
       "end of the section it concerns), at every phase, approved spec or not; the block reaches " +
       "the Inbox and its answer lands next to its context. Never give an ask an Approve option: a " +
@@ -1544,11 +1590,13 @@ export const dispatchToolSpecs = [
       ASK_QUESTION_CONTRACT +
       " " +
       ASK_OPTIONS_CONTRACT +
-      " For an action only a human can perform, state what it changes and risks as constraints. " +
+      " For an action only a human can perform, state what it changes and risks as constraints, " +
+      "and a safer alternative as a fact, never as an option. " +
       "Anything that requires a human to do, including a credential or grant renewal, is an ask, " +
       "never a message. Measure what you can first, and put the measurement and the size of the " +
       "population it covers in the question; drop an option that cannot fix most of that " +
-      "population, never offer it cut down, and keep an option not to act (Hold). Set urgency high " +
+      "population, and never offer it cut down. Offer an option not to act (Hold) only where not " +
+      "acting is a real choice and the question names its cost. Set urgency high " +
       "when your work halts on the answer, and keep working on everything else. " +
       "Anchor a to-do about a document passage, thread reply_to/reply_to_ask, or cite a dispatch:// " +
       `reference — it must be answerable from its own text and anchor alone, never "see above". ` +
@@ -2462,33 +2510,74 @@ export const dispatchToolSpecs = [
     },
   },
   {
+    name: "dispatch_deploy",
+    example: {
+      repo: "acme/widgets",
+      program: "worker",
+      commit: "1111111111111111111111111111111111111111",
+    },
+    description:
+      "Record a deployed program's build. Dispatch records the credential's writer; the body cannot choose one. A repeat of the current commit changes nothing, including its time. An older time at another commit is DEPLOY_NOT_NEWEST and names the current build. The repository must hold the commit. A project-scoped credential cannot write a deployment-wide fact. --dry-run checks the arguments and sends nothing; --json prints the complete wire answer.",
+    arguments: (z) => ({
+      repo: z.string().describe("The deployed repository, owner/repo."),
+      program: z
+        .string()
+        .describe("The deployed program, 1 to 64 lowercase letters, digits or hyphens."),
+      commit: z.string().describe("The deployed build, 40 lowercase hexadecimal characters."),
+      deployed_at: z
+        .string()
+        .describe(
+          "The deployment time in RFC3339. Omit it for the server's clock; a time over five minutes ahead is refused."
+        )
+        .optional(),
+      url: z.string().describe("The deployment's URL, if it has one.").optional(),
+      json: z.boolean().describe("Print the complete wire answer as JSON.").optional(),
+    }),
+    validation: {
+      check: (value) => deployProblem(value) === undefined,
+      message: "Name repo, program and commit.",
+      refusal: (value) => deployProblem(value) ?? "Name repo, program and commit.",
+    },
+  },
+  {
+    name: "dispatch_deploys",
+    example: { repo: "acme/widgets" },
+    description:
+      "Read the current deploy of each program in a repository, in program order, with its commit, deployment time, source and URL. --json prints the complete wire answer, including the writer and a known workflow attempt or null for an unknown attempt.",
+    arguments: (z) => ({
+      repo: z.string().describe("The deployed repository, owner/repo."),
+      json: z.boolean().describe("Print the complete wire answer as JSON.").optional(),
+    }),
+    validation: {
+      check: (value) => deployRepoProblem(value) === undefined,
+      message: "repo must be owner/repo",
+      refusal: (value) => deployRepoProblem(value) ?? "repo must be owner/repo",
+    },
+  },
+  {
     name: "dispatch_results",
     example: { issue: "DSP-1" },
     description:
       "Print each check of an issue's Verification document with every result recorded against " +
       "it, newest first. " +
       "Each check prints what Dispatch compared its results with. A before_merge check is " +
-      "compared with the head of each pull request Dispatch holds for the check's issue, open " +
-      "or merged. An after_merge check is compared with the branch that issue's pull request " +
-      "merged into and with the repository's default branch, and with the default branch alone " +
-      "where Dispatch holds no merge of the issue. A default_branch check is compared with the " +
-      "repository's default branch alone, whatever branch the pull request merged into. Where " +
-      "a check compared with nothing, it says which of three things happened: the issue has no " +
-      "pull request and no branch to compare with, Dispatch cannot read the repository, or a " +
-      "read Dispatch made did not answer. " +
-      "Each check then prints one line that answers the gate: whether a pass of it stands, and " +
-      "from which roles. A pass stands when its commit is one of the commits the check " +
-      "compared with, the check's words did not move after the result was recorded, and no " +
-      "retraction stands against it. " +
+      "compared with every open pull request head, or the final head of the last to merge when " +
+      "none is open. An after_merge result counts only at a commit that holds the work's merge " +
+      "on the compared branch. A default_branch check names the default branch alone. " +
+      "With no known merge, an after_merge check compares with nothing and says so. " +
+      "A read that failed is not known, never a pass or a fail. The newest branch result decides " +
+      "and names its id and commit. A pass and fail at that commit are not known until retraction. " +
+      "Production and graph checks count only results recorded for the current deploy of the " +
+      "program they read. The output names that deploy and says why an excluded result counts " +
+      "for nothing. The check's words must be unchanged and the result unretracted. " +
       "The check's own words print once, under the check. Each result then prints its verdict, " +
       "its role, its whole 40-character commit, where that commit stands, whether the check's " +
       "words moved after it was recorded, the time, its id, and the reading the role recorded. " +
       "A result nobody gave a reading says so. A retracted result prints as retracted, with " +
       "the reason and the caller that retracted it. A check with no result says so. " +
       `${CHECK_PROVED_BY_CI}: ` +
-      "no role records its result, and Dispatch reads it from GitHub at the head of the " +
-      "issue's open pull request of the highest number, else at the head of its merged one of " +
-      "the highest number. Its one result prints as `- <id> (before_merge): <verdict> at " +
+      "no role records its result. Dispatch reads GitHub at every open head, or the final head " +
+      "of the last pull request to merge when none is open. Its result prints as `- <id> (before_merge): <verdict> at " +
       "<commit> by ci (CI run <name>, <conclusion>), <where that commit stands>. <the check's " +
       "words>`, then the `A pass stands:` line a recorded check prints, then `Pull request line:` " +
       "and the line to write into the pull-request body unchanged, then the reading: the " +
@@ -2510,7 +2599,7 @@ export const dispatchToolSpecs = [
       at: z
         .string()
         .describe(
-          "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with. Dispatch reads GitHub for none of it, except the check runs of a check CI proves, which it reads at the issue's newest pull request head as on every read, so that check's result stands at this commit only where it is that head."
+          "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with. Dispatch reads GitHub for none of it, except the check runs of a check CI proves, which it reads at each open pull request head, or with none open the final head of the newest merged one, as on every read, so that check's result stands at this commit only where it is the head it was read at."
         )
         .optional(),
       brief: z
@@ -2519,6 +2608,7 @@ export const dispatchToolSpecs = [
           "Cut each reading whose result stands at none of the compared commits to its first 200 characters. Every other reading prints whole."
         )
         .optional(),
+      json: z.boolean().describe("Print the complete results wire answer as JSON.").optional(),
     }),
   },
   {

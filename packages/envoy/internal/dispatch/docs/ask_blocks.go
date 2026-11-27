@@ -411,14 +411,19 @@ func partOfItsAsk(tuple graphstore.Tuple) bool {
 // retracted, its wording changed, its own ask opened - retracts the copied_from it held. It reads
 // once which blocks of the document hold a copied_from now (refs.DocumentCopiedFrom), from the
 // block index as it stood before this settlement, and retracts the relation from each block that
-// is no longer an ask block - one a person retyped, or one this settlement's version drops - on
-// the node that read names, so a settlement of a document that holds no ask block now still
-// retracts the copied_from of a block that was a copy (R3). It answers the step that states them
-// under cause, nil where there is none to state. Each is a claim (graphstore.WriteArms), which
-// appends only where the node holds another far end or none, so a settlement that moved no copy
-// appends nothing. It runs once the version's blocks are planned, so a copy pasted in this version
-// has its node, and the caller queues the step under that version's event, right after it
-// (graphstore.LatestEvent), or under graphstore.NoEvent for a settlement that writes no version.
+// stands in the document's rows and is no longer an ask block - one a person retyped - on the node
+// that read names, so a settlement of a document that holds no ask block now still retracts the
+// copied_from of a block that was a copy (R3). A block a version drops has its copied_from
+// retracted by the index pass that deletes its row, in that same write (refs' heldCopiedFrom),
+// whichever write drops it: an agent's document edit or an upload indexes its own version before
+// any settlement runs, after which no read of the rows names the block, and this settlement's own
+// version drops it after the read above, so the claim for it finds the relation retracted already
+// and appends nothing. It answers the step that states them under cause, nil where there is none
+// to state. Each is a claim (graphstore.WriteArms), which appends only where the node holds
+// another far end or none, so a settlement that moved no copy appends nothing. It runs once the
+// version's blocks are planned, so a copy pasted in this version has its node, and the caller
+// queues the step under that version's event, right after it (graphstore.LatestEvent), or under
+// graphstore.NoEvent for a settlement that writes no version.
 // The copy's source document is not stated here: a reader takes it from the source ask's own
 // part_of (graphstore.AskFacts).
 func (r *settlementReconciliation) claimCopies(ctx context.Context, tx pgx.Tx, artifactID string, who model.Actor, at time.Time) (func(b *store.WriteBatch, cause int64) error, error) {

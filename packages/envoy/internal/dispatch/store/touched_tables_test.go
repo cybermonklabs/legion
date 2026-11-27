@@ -30,7 +30,7 @@ var thisChildsMigrations = []string{
 	"20261126040400_message_block_refs_decisions_forms_insert_trigger.up.sql",
 	"20261126040500_ask_block_refs_decisions_forms_insert_trigger.up.sql",
 	"20261126040600_refs_decisions_forms_seed.up.sql",
-	"20261126040700_graph_supertags_version_7.up.sql",
+	"20261126040700_graph_supertags_version_8.up.sql",
 }
 
 // TestTheTablesThisChildsMigrationsTouch prints, once each, the tables this child's migrations
