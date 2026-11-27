@@ -66,7 +66,7 @@ func TestEachUpdateTakesItsOwnWritersSuppressionSlot(t *testing.T) {
 // repair's queued class (finishUpdateClass) only once the repair is stored (storeRepair), so the
 // class is still there for it. Taken by the first slot, the update went by at once, and the worker
 // removed the class the repair's writer had yet to read (errUnclassifiedRepair). The test sees the
-// worker's call parked on a slot before it finishes the repair's slot, so a call that waits for
+// worker's call waiting on a slot before it finishes the repair's slot, so a call that waits for
 // nothing fails it.
 func TestARepairsUpdateWaitsForItsOwnWriterBehindAnotherWritersSlot(t *testing.T) {
 	// Not parallel: it reads every goroutine's stack in the process (goroutinesIn), where another
@@ -76,7 +76,7 @@ func TestARepairsUpdateWaitsForItsOwnWriterBehindAnotherWritersSlot(t *testing.T
 	ahead, own := service.prepareSuppressedPersistence("room"), service.prepareSuppressedPersistence("room")
 	service.finishSuppressedPersistence(ahead, published)
 	service.recordSuppressedCommit(own, repaired)
-	consumed := startParkedConsume(t, service, repaired, "the repair's update")
+	consumed := startWaitingConsume(t, service, repaired, "the repair's update")
 	service.finishSuppressedPersistence(own, repaired)
 	if !testwait.Receive(t, "the repair's update to take its slot once its writer finished it", consumed) {
 		t.Fatal("the repair's update went by as no writer's: it did not take its own writer's slot")
@@ -97,7 +97,7 @@ func TestABrowsersUpdateWaitsOnTheFirstSlotAndTakesNone(t *testing.T) {
 	service := &Service{}
 	firstUpdate, secondUpdate := []byte("the first writer's update"), []byte("the second writer's update")
 	first, second := service.prepareSuppressedPersistence("room"), service.prepareSuppressedPersistence("room")
-	consumed := startParkedConsume(t, service, []byte("a browser's update"), "the browser's update")
+	consumed := startWaitingConsume(t, service, []byte("a browser's update"), "the browser's update")
 	service.finishSuppressedPersistence(second, secondUpdate)
 	// A call that waited on the second slot, or on any slot, goes by once it is finished; one that
 	// waits on the first does not.
@@ -117,23 +117,23 @@ func TestABrowsersUpdateWaitsOnTheFirstSlotAndTakesNone(t *testing.T) {
 	requireSlotsQueued(t, service, "room", 0)
 }
 
-// startParkedConsume hands update to service's persistence for "room" in a call of its own and
-// returns once that call is parked on a slot's ready channel - a goroutine in
+// startWaitingConsume hands update to service's persistence for "room" in a call of its own and
+// returns once that call waits on a slot's ready channel - a goroutine in
 // consumeSuppressedPersistence whose state is [chan receive] - failing the test if the call returns
 // first. Counting any goroutine in the function would count a call on its way to returning. The
 // call's answer arrives on the channel returned.
-func startParkedConsume(t *testing.T, service *Service, update []byte, what string) <-chan bool {
+func startWaitingConsume(t *testing.T, service *Service, update []byte, what string) <-chan bool {
 	t.Helper()
-	parked := goroutinesIn("consumeSuppressedPersistence", "[chan receive]")
+	waiting := goroutinesIn("consumeSuppressedPersistence", "[chan receive]")
 	consumed := make(chan bool, 1)
 	go func() { consumed <- service.consumeSuppressedPersistence("room", update) }()
-	waitFor(t, 10*time.Second, what+" to park on a slot in the room's persistence", func() bool {
+	waitFor(t, 10*time.Second, what+" to wait on a slot in the room's persistence", func() bool {
 		select {
 		case taken := <-consumed:
 			t.Fatalf("%s went by (took a slot: %t) before the writer it waits for finished", what, taken)
 		default:
 		}
-		return goroutinesIn("consumeSuppressedPersistence", "[chan receive]") > parked
+		return goroutinesIn("consumeSuppressedPersistence", "[chan receive]") > waiting
 	})
 	return consumed
 }
