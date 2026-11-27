@@ -42,7 +42,8 @@ func TestRunCheckedSucceedsWhenACommandExitsZeroWithAChildStillHoldingItsOutputO
 	const runBound = 5 * time.Second
 	dir := t.TempDir()
 	fakeGit, mark, exited := filepath.Join(dir, "git"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
-	script := "#!/bin/sh\n" + testexec.MarkStart(shellprefix.Literal(mark)) + "\necho done\n" + heldChild(t, false) + "\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\nexit 0\n"
+	// CONTROL ONLY: the fake git stalls 6 s at its exit, before its exit mark.
+	script := "#!/bin/sh\n" + testexec.MarkStart(shellprefix.Literal(mark)) + "\necho done\n" + heldChild(t, false) + "\nsleep 6\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\nexit 0\n"
 	if err := testexec.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake git: %v", err)
 	}
@@ -97,11 +98,13 @@ func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildInItsGroupHoldsItsO
 	const timeout = procgroup.WaitDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, cutRunMargin)
 	until := time.Now().Add(within)
+	// CONTROL ONLY: the first run's fake git stalls 1 s at its exit, before its exit mark.
+	stalled := filepath.Join(t.TempDir(), "stalled")
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
 		fakeGit, mark, exited := filepath.Join(dir, "git"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
 		child := testkernel.NewChild(t)
-		script := "#!/bin/sh\n" + testexec.MarkStart(shellprefix.Literal(mark)) + "\necho 'fatal: unable to access' >&2\n" + child.Start() + "\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\nexit 128\n"
+		script := "#!/bin/sh\n" + testexec.MarkStart(shellprefix.Literal(mark)) + "\necho 'fatal: unable to access' >&2\n" + child.Start() + "\n[ -e " + shellprefix.Literal(stalled) + " ] || { : >" + shellprefix.Literal(stalled) + "; sleep 1; }\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\nexit 128\n"
 		if err := testexec.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
@@ -162,10 +165,12 @@ func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastT
 	const timeout = procgroup.WaitDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, cutRunMargin)
 	until := time.Now().Add(within)
+	// CONTROL ONLY: the first run's fake git stalls 1 s at its exit, before its exit mark.
+	stalled := filepath.Join(t.TempDir(), "stalled")
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
 		leader, fakeGit, mark, exited := filepath.Join(dir, "leader"), filepath.Join(dir, "git"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
-		script := "#!/bin/sh\n" + testexec.MarkStart(shellprefix.Literal(mark)) + "\necho $$ >" + shellprefix.Literal(leader) + "\necho 'fatal: unable to access' >&2\n" + heldChild(t, true) + "\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\nexit 128\n"
+		script := "#!/bin/sh\n" + testexec.MarkStart(shellprefix.Literal(mark)) + "\necho $$ >" + shellprefix.Literal(leader) + "\necho 'fatal: unable to access' >&2\n" + heldChild(t, true) + "\n[ -e " + shellprefix.Literal(stalled) + " ] || { : >" + shellprefix.Literal(stalled) + "; sleep 1; }\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\nexit 128\n"
 		if err := testexec.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
@@ -262,7 +267,8 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildInItsGroupHoldsItsPipes(t 
 			defer cancel()
 			dir := t.TempDir()
 			mark, exited := filepath.Join(dir, "started"), filepath.Join(dir, "exited")
-			script := testexec.MarkStart(`"$1"`) + "\necho answered; echo refused >&2\n" + heldChild(t, false) + "\n" + testexec.MarkNow(`"$2"`) + "\nexit " + strconv.Itoa(testCase.exit)
+			// CONTROL ONLY: the command stalls 1 s at its exit, before its exit mark.
+			script := testexec.MarkStart(`"$1"`) + "\necho answered; echo refused >&2\n" + heldChild(t, false) + "\nsleep 1\n" + testexec.MarkNow(`"$2"`) + "\nexit " + strconv.Itoa(testCase.exit)
 
 			called := testexec.SinceBoot(t)
 			started := time.Now()
@@ -306,11 +312,13 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *tes
 	const budget = procgroup.WaitDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, cutRunMargin)
 	until := time.Now().Add(within)
+	// CONTROL ONLY: the first run's command stalls 1 s at its exit, before its exit mark.
+	stalled := filepath.Join(t.TempDir(), "stalled")
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
 		leader, mark, exited := filepath.Join(dir, "leader"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
 		reaped := watchReaped(leader, within)
-		script := testexec.MarkStart(`"$2"`) + "\n" + `echo $$ >"$1"; echo answered; echo refused >&2` + "\n" + heldChild(t, true) + "\n" + testexec.MarkNow(`"$3"`) + "\nexit 3"
+		script := testexec.MarkStart(`"$2"`) + "\n" + `echo $$ >"$1"; echo answered; echo refused >&2` + "\n" + heldChild(t, true) + "\n[ -e " + shellprefix.Literal(stalled) + " ] || { : >" + shellprefix.Literal(stalled) + "; sleep 1; }\n" + testexec.MarkNow(`"$3"`) + "\nexit 3"
 
 		calledBoot := testexec.SinceBoot(t)
 		started := time.Now()
@@ -361,11 +369,13 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildInItsGroupHoldsItsPipesPas
 	const budget = procgroup.WaitDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, cutRunMargin)
 	until := time.Now().Add(within)
+	// CONTROL ONLY: the first run's command stalls 1 s at its exit, before its exit mark.
+	stalled := filepath.Join(t.TempDir(), "stalled")
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
 		mark, exited := filepath.Join(dir, "started"), filepath.Join(dir, "exited")
 		child := testkernel.NewChild(t)
-		script := testexec.MarkStart(`"$1"`) + "\necho answered; echo refused >&2\n" + child.Start() + "\n" + testexec.MarkNow(`"$2"`) + "\nexit 3"
+		script := testexec.MarkStart(`"$1"`) + "\necho answered; echo refused >&2\n" + child.Start() + "\n[ -e " + shellprefix.Literal(stalled) + " ] || { : >" + shellprefix.Literal(stalled) + "; sleep 1; }\n" + testexec.MarkNow(`"$2"`) + "\nexit 3"
 
 		called := testexec.SinceBoot(t)
 		started := time.Now()
