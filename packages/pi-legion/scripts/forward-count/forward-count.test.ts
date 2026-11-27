@@ -10,15 +10,15 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
-  addStoreOnly,
   type Answer,
+  addStoreOnly,
   causeRecords,
   classifyMergeBlocked,
   type MergeBlockedRead,
   namesPersonRequest,
   type PersonRequestRead,
-  parseSession,
   type PlantedLine,
+  parseSession,
   plantedFaults,
   plantedForReaders,
   type Reading,
@@ -29,8 +29,8 @@ import {
   requestRead,
   requestReference,
   resolveReturn,
-  statedCauses,
   type StepRecord,
+  statedCauses,
   summaryOf,
   type TranscriptEntry,
   transcriptAnswers,
@@ -1496,7 +1496,11 @@ describe("a read that did not answer", () => {
   });
 
   test("a retro whose results read failed states failed-check from the reason's words, unread", () => {
-    const facts = made({ kind: "retro", reason: "the check of the units has no pass.", checks: null });
+    const facts = made({
+      kind: "retro",
+      reason: "the check of the units has no pass.",
+      checks: null,
+    });
     expect(causeRecords(facts)).toEqual([{ cause: "failed-check", state: "unread", step: null }]);
     const ret = returnOf(facts);
     expect(ret.sources.results).toBe("unread");

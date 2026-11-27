@@ -4916,9 +4916,9 @@ describe("forwardOnly", () => {
       (await rowOf(w4, w4Replying("Reported as defect d-45: the DEBUG line."))).clauses
     ).toMatchObject({ b: false });
     // Control: the id at a sentence's end, beside a full stop, is the id whole.
-    expect(
-      (await rowOf(w4, w4Replying("Reported as defect d-4."))).clauses
-    ).toMatchObject({ b: true });
+    expect((await rowOf(w4, w4Replying("Reported as defect d-4."))).clauses).toMatchObject({
+      b: true,
+    });
   });
 
   // Catches: a control run counted as having noticed the plant when it never named it, which would
