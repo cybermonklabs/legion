@@ -517,27 +517,25 @@ if ! { kc get pods --all-namespaces -o json >"$work/pods.json" 2>"$work/pods.err
 fi
 
 # Each running listener's newest "listener legacy subjects" log line: {ok, text, at}, the metrics
-# text and the second it was read at, or {ok: false, error}.
-: >"$work/pod-reads.jsonl"
-count=$(jq length "$work/listeners.json")
-for ((i = 0; i < count; i++)); do
-  entry=$(jq -c ".[$i]" "$work/listeners.json")
-  ns=$(jq -r .ns <<<"$entry")
-  pod=$(jq -r .pod <<<"$entry")
-  container=$(jq -r .container <<<"$entry")
+# text and the second it was read at, or {ok: false, error}. One jq lists the listeners' fields and
+# one joins every read to its listener, so a reading starts one jq per running listener and not
+# eight: a cluster runs a listener per machine.
+: >"$work/reads.jsonl"
+while IFS=$'\x1f' read -r ns pod container running; do
   read_json='{"ok": false, "error": "not running"}'
-  if [ "$(jq -r .running <<<"$entry")" = true ]; then
-    if kc -n "$ns" logs "$pod" -c "$container" --since="$log_window" >"$work/log" 2>"$work/log.err"; then
-      read_json=$(jq -R -c 'fromjson? | select(type == "object" and .msg == "listener legacy subjects")' "$work/log" |
-        jq -cs --arg window "$log_window" 'if length == 0
+  if [ "$running" = true ]; then
+    if kc -n "$ns" logs "$pod" -c "$container" --since="$log_window" >"$work/log" 2>"$work/log.err" </dev/null; then
+      read_json=$(jq -R -n -c --arg window "$log_window" '[inputs | fromjson? | select(type == "object" and .msg == "listener legacy subjects")]
+        | if length == 0
           then {ok: false, error: "its log holds no \"listener legacy subjects\" line from the last \($window): its build predates that line, or it is not logging it"}
-          else last | {ok: true, text: (.metrics | strings // ""), at: (.at | numbers // null)} end')
+          else last | {ok: true, text: (.metrics | strings // ""), at: (.at | numbers // null)} end' "$work/log")
     else
       read_json=$(jq -cn --arg error "$(first_line "$work/log.err")" '{ok: false, error: "its log could not be read: \($error)"}')
     fi
   fi
-  jq -c --argjson read "$read_json" '. + {read: $read}' <<<"$entry" >>"$work/pod-reads.jsonl"
-done
+  printf '%s\n' "$read_json" >>"$work/reads.jsonl"
+done < <(jq -r '.[] | [.ns, .pod, .container, (.running | tostring)] | join("\u001f")' "$work/listeners.json")
+jq -c --slurpfile reads "$work/reads.jsonl" 'to_entries[] | .value + {read: $reads[.key]}' "$work/listeners.json" >"$work/pod-reads.jsonl"
 
 # --- the listeners outside it ---------------------------------------------------------------------
 : >"$work/outside-reads.jsonl"

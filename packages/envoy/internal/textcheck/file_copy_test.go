@@ -1,5 +1,7 @@
 package textcheck
 
+//ci:reads packages/envoy/** TestEveryCreatedDatabaseIsAFileCopy walks every .go file under packages/envoy (../.., infra included)
+
 import (
 	"go/scanner"
 	"go/token"
@@ -19,6 +21,7 @@ import (
 // so a new helper written without the clause, or an edit that drops it, fails here naming its file
 // and line, with no database needed. storetest's own test measures what one clone writes.
 func TestEveryCreatedDatabaseIsAFileCopy(t *testing.T) {
+	t.Parallel()
 	if offences := creationsWithoutFileCopy(t, "../.."); len(offences) > 0 {
 		t.Fatalf("%d database creations copy their source through the write-ahead log:\n\t%s\n"+
 			"write `strategy file_copy` on the line that opens each one (docs/testing.md, \"A database a Go test creates\")",

@@ -324,9 +324,10 @@ func answeredIn(key string, seq int64) json.RawMessage {
 	return issueEvent(key, seq, "ask.answered", alice, map[string]any{"id": "ask-" + key, "kind": "question"})
 }
 
-// A root Dispatch keeps refusing does not hold the boot: an error Dispatch may stop giving (a 5xx)
-// is read again a bounded number of times, a credential refusal (401, 403) not at all, and the root
-// is then skipped and released, so the next root is caught up and the catch-up finishes.
+// A root Dispatch keeps refusing does not hold the boot: an error Dispatch may stop giving (an
+// outage: a 5xx, a 408 or a 429) is read again a bounded number of times, a credential refusal
+// (401, 403) not at all, and the root is then skipped and released, so the next root is caught up
+// and the catch-up finishes.
 func TestCatchUpSkipsARootDispatchKeepsRefusing(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -335,6 +336,8 @@ func TestCatchUpSkipsARootDispatchKeepsRefusing(t *testing.T) {
 	}{
 		{status: http.StatusBadGateway, reads: catchUpAttempts},
 		{status: http.StatusServiceUnavailable, reads: catchUpAttempts},
+		{status: http.StatusRequestTimeout, reads: catchUpAttempts},
+		{status: http.StatusTooManyRequests, reads: catchUpAttempts},
 		{status: http.StatusUnauthorized, reads: 1},
 		{status: http.StatusForbidden, reads: 1},
 	} {
@@ -453,6 +456,50 @@ func TestCatchUpAwaitingLeavesARootNoPersonAnswered(t *testing.T) {
 			}
 		})
 	}
+}
+
+// deletedReply is the reply askReplied makes, at seq in ask's thread by actor leaving the turn
+// waitingOn, deleted since: Dispatch's event log serves its comment.created with deleted_at and
+// deleted_by in place of its body (Dispatch's attachPostMarks).
+func deletedReply(seq int64, ask, waitingOn string, actor dispatch.Actor) json.RawMessage {
+	return askEvent(seq, "comment.created", actor, map[string]any{"id": "comment-reply", "ask_id": ask, "ask_state": "open",
+		"ask_waiting_on": waitingOn, "deleted_at": "2026-10-23T17:30:00Z", "deleted_by": map[string]any{"kind": actor.Kind, "id": actor.ID}})
+}
+
+// postCorrections are the four corrections an author makes of its posts, by actor at seq and the
+// three sequences after it: the edit and the delete of its reply in ask's thread, which carry the
+// ask's id and no turn, and the edit and the delete of a message of the issue.
+func postCorrections(seq int64, ask string, actor dispatch.Actor) []json.RawMessage {
+	const at = "2026-10-23T17:30:00Z"
+	by := map[string]any{"kind": actor.Kind, "id": actor.ID}
+	return []json.RawMessage{
+		askEvent(seq, "comment.edited", actor, map[string]any{"id": "comment-reply", "ask_id": ask, "body": "Go ahead once the rollback is named.", "edited_at": at}),
+		askEvent(seq+1, "comment.deleted", actor, map[string]any{"id": "comment-reply", "ask_id": ask, "body": "", "deleted_at": at, "deleted_by": by}),
+		askEvent(seq+2, "message.edited", actor, map[string]any{"id": "message-note", "body": "The staging run is green again.", "edited_at": at}),
+		askEvent(seq+3, "message.deleted", actor, map[string]any{"id": "message-note", "body": "", "deleted_at": at, "deleted_by": by}),
+	}
+}
+
+// A person's reply deleted since the daemon went down is read from the event log masked, with no
+// body, and still hands the ask's turn as its live event would have: Dispatch keeps a deleted
+// reply's turn, so the root waiting on that ask is answered. The corrections of a post - the edit
+// and the delete of that reply, which carry the ask's id, and of a message - move no turn, so a
+// window that holds them alone leaves the root waiting on the person.
+func TestCatchUpAppliesADeletedReplysTurnAndPassesOverTheCorrections(t *testing.T) {
+	t.Parallel()
+	t.Run("a deleted reply handing the open ask to the agent", func(t *testing.T) {
+		events := append([]json.RawMessage{deletedReply(9, "ask-root", "agent", alice)}, postCorrections(10, "ask-root", alice)...)
+		got := catchUpAwaitingRoot(t, record.Awaiting{Ask: "ask-root"}, nil, &awaitingDispatch{events: events})
+		if got == nil || !got.Answered() {
+			t.Fatalf("caught-up root = %#v, want it answered by the deleted reply", got)
+		}
+	})
+	t.Run("the corrections alone", func(t *testing.T) {
+		got := catchUpAwaitingRoot(t, record.Awaiting{Ask: "ask-root"}, nil, &awaitingDispatch{events: postCorrections(9, "ask-root", alice)})
+		if got == nil || !got.AwaitingPerson() || got.Answered() {
+			t.Fatalf("root after the catch-up = %#v, want it still waiting on the person", got)
+		}
+	})
 }
 
 type unreachableEvents struct{ awaitingDispatch }
@@ -748,25 +795,33 @@ func TestCatchUpAppliesTheApprovalOfANewerVersion(t *testing.T) {
 	}
 }
 
-// captureArchitectTasks is the task of every architect start the outbox holds for CAPTURE-100.
+// captureArchitectTasks is the task of every architect start the outbox holds for CAPTURE-100: a
+// resume's written from the record as it stands now (startTaskNow), as its send writes it.
 func captureArchitectTasks(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	var tasks []string
-	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, _ *record.Postgres) error {
-		rows, err := tx.Query(ctx, `select coalesce(payload->>'task', '') from outbox where issue = 'CAPTURE-100' and kind = 'supervise'
+	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
+		rows, err := tx.Query(ctx, `select payload from outbox where issue = 'CAPTURE-100' and kind = 'supervise'
 			and payload->>'op' = 'start' and payload->>'role' = 'architect' order by id`)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var task string
-			if err := rows.Scan(&task); err != nil {
+		payloads, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
+		if err != nil {
+			return err
+		}
+		for _, payload := range payloads {
+			var start record.SuperviseRequest
+			if err := json.Unmarshal(payload, &start); err != nil {
+				return err
+			}
+			task, err := startTaskNow(ctx, tx, records, "CAPTURE-100", config.DesignGateRootIssues.Steps(), start)
+			if err != nil {
 				return err
 			}
 			tasks = append(tasks, task)
 		}
-		return rows.Err()
+		return nil
 	})
 	return tasks
 }
@@ -1114,7 +1169,7 @@ func TestADelayedRegistrationDoesNotStrandARootAcrossASeedAndABoot(t *testing.T)
 		return records.PutGate(ctx, tx, record.DesignGate{Issue: "CAPTURE-100", ArtifactID: "artifact-root", LatestVersion: 3})
 	})
 	ctx := context.Background()
-	runner := &outbox{pool: pool, dispatch: client, handlers: w.handlers}
+	runner := &outbox{pool: pool, records: w.records, dispatch: client, handlers: w.handlers}
 	// A version-3 seed queued earlier reads the version-4 review before the registration's own,
 	// older read applies.
 	if err := runner.seedGate(ctx, record.OutboxRow{Issue: "CAPTURE-100"}, record.GateSeed{ArtifactID: "artifact-root", Version: 3, Generation: 1}); err != nil {
@@ -1154,7 +1209,7 @@ func TestAGateSeedAnswersAGateWaitOnlyWhenTheRequestIsWithTheAgent(t *testing.T)
 		}
 		return records.PutGate(ctx, tx, record.DesignGate{Issue: "CAPTURE-100", ArtifactID: "artifact-root", LatestVersion: 4})
 	})
-	runner := &outbox{pool: pool, dispatch: client, handlers: w.handlers}
+	runner := &outbox{pool: pool, records: w.records, dispatch: client, handlers: w.handlers}
 	seed := func() {
 		t.Helper()
 		if err := runner.seedGate(context.Background(), record.OutboxRow{Issue: "CAPTURE-100"}, record.GateSeed{ArtifactID: "artifact-root", Version: 4, Generation: 1}); err != nil {

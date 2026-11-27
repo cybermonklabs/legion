@@ -1,0 +1,3 @@
+jj --ignore-working-copy --color=never config list -T '""'
+Warning: Your config file has been migrated from /legion/scratch/tmp/infra4172-impl/stderr-capture/run-0.46.0.wKTY/migrated-config.dvEc/repo/.jj/repo/config.toml to /legion/scratch/tmp/infra4172-impl/stderr-capture/run-0.46.0.wKTY/migrated-config.dvEc/home/.config/jj/repos/96b33995dce8fd01f348/config.toml. You can edit the new file with `jj config edit`
+--- exit 0

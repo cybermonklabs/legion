@@ -251,24 +251,7 @@ func partEnd(start, count, bound int, size func(index int) (int, error)) (int, e
 // is where a write phase's size is; a value pgx encodes as JSON from a map or a struct counts as
 // one scalar, so a phase of many of those can pass sendBound before Send cuts it.
 func argumentBytes(argument any) int {
-	switch value := argument.(type) {
-	case nil:
-		return 0
-	case string:
-		return len(value)
-	case []byte:
-		return len(value)
-	case []string:
-		bytes := 0
-		for _, element := range value {
-			bytes += elementLengthBytes + len(element)
-		}
-		return bytes
-	case [][]byte:
-		bytes := 0
-		for _, element := range value {
-			bytes += elementLengthBytes + len(element)
-		}
+	if bytes, known := knownArgumentBytes(argument, elementLengthBytes); known {
 		return bytes
 	}
 	return valueBytes(reflect.ValueOf(argument))
@@ -277,7 +260,7 @@ func argumentBytes(argument any) int {
 // elementLengthBytes is the length the wire carries before each element of an array.
 const elementLengthBytes = 4
 
-// valueBytes is argumentBytes of a value of a type its switch does not name.
+// valueBytes is argumentBytes of a value of a kind knownArgumentBytes does not name.
 func valueBytes(value reflect.Value) int {
 	switch value.Kind() {
 	case reflect.Invalid:

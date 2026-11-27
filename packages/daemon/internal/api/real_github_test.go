@@ -1,5 +1,7 @@
 package api
 
+//ci:reads scripts/e2e/lib/github-apps.sh runGitHubAppsLib runs it in bash, and realGitHubApps and TestLiveProofAppsReadTheLib read it
+
 import (
 	"bytes"
 	"encoding/json"

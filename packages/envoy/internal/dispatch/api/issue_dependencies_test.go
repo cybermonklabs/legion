@@ -15,6 +15,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // blocked_by is an issue-to-issue dependency: create and PATCH replace its complete target
@@ -596,12 +598,20 @@ func TestReparentDoesNotDeadlockWithABoardMoveOfTheSameIssue(t *testing.T) {
 	go func() {
 		reparents <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+moving, map[string]string{"parent": before}, "alice")
 	}()
-	select {
-	case response := <-reparents:
-		if response.Code != http.StatusOK {
-			t.Fatalf("reparent beside a waiting board move of the same issue: %d %s", response.Code, response.Body.String())
+	// The reparent answers beside the waiting move, which holds nothing yet. One that waited for
+	// the move would queue on an owner lock behind it, a second owner-lock waiter beside the move's
+	// own wait on the gate.
+	var reparented *httptest.ResponseRecorder
+	testwait.Until(t, "the reparent to answer beside the waiting board move (the owner-lock waiters while it has not)", func() (int, bool) {
+		select {
+		case reparented = <-reparents:
+			return 0, true
+		default:
 		}
-	case <-time.After(2 * time.Second):
+		waiting, _ := storetest.OwnerLockWaiters(t, database)
+		return waiting, waiting >= 2
+	})
+	if reparented == nil {
 		// The reparent is waiting for the move. Open the gate and report how the two writes end.
 		if err := gate.Commit(context.Background()); err != nil {
 			t.Fatal(err)
@@ -609,6 +619,9 @@ func TestReparentDoesNotDeadlockWithABoardMoveOfTheSameIssue(t *testing.T) {
 		reparent, move := awaitResponse(t, reparents), awaitResponse(t, moves)
 		t.Fatalf("reparent waited for a board move of the same issue; once the gate opened the reparent answered %d %s and the move %d %s",
 			reparent.Code, reparent.Body.String(), move.Code, move.Body.String())
+	}
+	if reparented.Code != http.StatusOK {
+		t.Fatalf("reparent beside a waiting board move of the same issue: %d %s", reparented.Code, reparented.Body.String())
 	}
 	if err := gate.Commit(context.Background()); err != nil {
 		t.Fatal(err)

@@ -1,0 +1,15 @@
+{
+  "head": "4f1c0e9a6b2d8e7f3a5c1b9d0e2f4a6c8b1d3e5f",
+  "filesChanged": ["src/importer/csv.ts", "src/importer/csv.test.ts"],
+  "trickyParts": [
+    "A field in double quotes can hold a line break, so one row of the file is not always one line of text."
+  ],
+  "deviations": [
+    "This change does R1 and half of R2: it reads a field in double quotes that holds a comma. The issue closed with the rest not done."
+  ],
+  "openQuestions": [],
+  "discoveredComplexity": [
+    "Left to do: a field in double quotes that holds a line break, two double quotes in a row inside such a field, and the error report of R3.",
+    "My notes on each case that is left, with the test rows that I planned for each, are in my session, rig-implementer-e1."
+  ]
+}

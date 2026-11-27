@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// The tree finds each node by its id, the checks that serve a statement and the statements under
-// it, and answers false for an id it does not hold.
+// The tree finds each node by its id and the checks that serve a statement, and answers false for
+// an id it does not hold.
 func TestTreeFindsNodes(t *testing.T) {
 	t.Parallel()
 	tree := Tree{
@@ -37,12 +37,6 @@ func TestTreeFindsNodes(t *testing.T) {
 	}
 	if got := tree.ChecksOf("top"); len(got) != 0 {
 		t.Errorf("ChecksOf(top) = %+v, want none", got)
-	}
-	if got := ids(tree.Children("top"), func(s Statement) string { return s.ID }); !slices.Equal(got, []string{"child-one", "child-two"}) {
-		t.Errorf("Children(top) = %q", got)
-	}
-	if got := tree.Children("child-one"); len(got) != 0 {
-		t.Errorf("Children(child-one) = %+v, want none", got)
 	}
 }
 

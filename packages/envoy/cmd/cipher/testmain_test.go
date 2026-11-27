@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 )
 
@@ -41,10 +42,12 @@ var inheritedSettings = []string{
 	"GOOGLE_CLOUD_UNIVERSE_DOMAIN",
 }
 
-// TestMain unsets inheritedSettings before the package's tests run, and removes the binaries they
-// built once they end (cmdtest.Main). A test binary this package's tests start again as a helper
-// unsets them too. It unsets nothing that changed no verdict: TMPDIR, the trust bundle variables
-// and the rest of what the code under test reads stay as the caller set them.
+// TestMain unsets inheritedSettings before the package's tests run, then runs them through
+// storetest.Main, which drops the test binary's own database that storetest.URL makes each test's
+// schema in, inside cmdtest.Run, which removes the binaries they built. A test binary this
+// package's tests start again as a helper unsets them too. It unsets nothing that changed no
+// verdict: TMPDIR, the trust bundle variables and the rest of what the code under test reads stay
+// as the caller set them.
 func TestMain(m *testing.M) {
 	for _, name := range inheritedSettings {
 		if err := os.Unsetenv(name); err != nil {
@@ -52,5 +55,5 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 	}
-	os.Exit(cmdtest.Main(m))
+	os.Exit(cmdtest.Run(func() int { return storetest.Main(m) }))
 }

@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  The broker client the extension bundles no longer trades at every call when the broker gives its
+  tokens five minutes or less to live (`BROKER_ACCESS_TOKEN_SECONDS` of 300 or less). It trades
+  again five minutes before a token lapses and never before half of what the token had left when
+  it landed, as the Go client does, so it trades again no sooner than half a token's life after it
+  landed. A token of ten minutes or more is traded again when it was before.
+time: 2026-11-25T21:49:44Z
+custom:
+    Issue: pr5570

@@ -2,6 +2,7 @@ package bus_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestWithNameNamesEveryConnectionTheClientDials: the server lists a client's connection under the
@@ -18,16 +20,17 @@ import (
 // client's lifecycle log lines carry the same name, so a line such as `envoy nats connection
 // closed` says which of a process's clients it came from.
 func TestWithNameNamesEveryConnectionTheClientDials(t *testing.T) {
-	logs := captureBusLogs(t)
+	t.Parallel()
+	logs := captureBusLogs()
 	srv, uri := testnats.Start(t)
 	connections := serverConnections(t, srv)
 
-	named, err := bus.Connect([]string{uri}, bus.WithName("dispatch-intake"))
+	named, err := bus.Connect([]string{uri}, bus.WithName("dispatch-intake"), bus.WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("connect a named client: %v", err)
 	}
 	t.Cleanup(named.Close)
-	unnamed, err := bus.Connect([]string{uri})
+	unnamed, err := bus.Connect([]string{uri}, bus.WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("connect an unnamed client: %v", err)
 	}
@@ -41,26 +44,17 @@ func TestWithNameNamesEveryConnectionTheClientDials(t *testing.T) {
 
 	// Closed underneath it, the client dials a replacement (recover).
 	named.Conn.Close()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		listed = connections()
-		if replaced := listed["dispatch-intake"]; len(replaced) == 1 && replaced[0] != first[0] {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("after the client replaced connection %d the server lists %v, want a new connection named dispatch-intake", first[0], listed)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	testwait.UntilPolling(t, 100*time.Millisecond, fmt.Sprintf("the server to list a new connection named dispatch-intake after the client replaced connection %d (the last read is what it listed)", first[0]), func() (map[string][]uint64, bool) {
+		listed := connections()
+		replaced := listed["dispatch-intake"]
+		return listed, len(replaced) == 1 && replaced[0] != first[0]
+	})
 
 	// One line from a connection callback, one from the recovery.
 	for _, message := range []string{"envoy nats connection closed", "envoy nats recovery successful"} {
-		for !loggedWithName(logs, message, "dispatch-intake") {
-			if time.Now().After(deadline) {
-				t.Fatalf("no %q record with name dispatch-intake among:\n%s", message, logs.String())
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+		testwait.UntilPolling(t, 100*time.Millisecond, fmt.Sprintf("a %q record with name dispatch-intake (the last read is every record)", message), func() (string, bool) {
+			return logs.String(), loggedWithName(logs, message, "dispatch-intake")
+		})
 	}
 }
 

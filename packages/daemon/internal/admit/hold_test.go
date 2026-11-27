@@ -476,15 +476,16 @@ func TestAHeldSummaryOlderThanAnAppliedEventRecordsNothingAtItsRelease(t *testin
 }
 
 // A root held back from a boot's admission pass keeps the place the line's own order gives it —
-// among the issues whose work came back, oldest first, where its work came back, and by its
-// tree's root's Dispatch rank where it never ran, as this one never did —
+// within its priority, among the issues whose work came back, oldest first, where its work came
+// back, and within its priority by its tree's root's Dispatch rank where it never ran, as this one
+// never did —
 // and nothing ranked behind it takes the slot it is waiting for: a hold says the daemon does not
 // yet know enough to decide that root, not that the root has lost its turn. Letting the next root
 // through would hand the cap's only slot to the lower-ranked one and leave the held root waiting
 // behind it for a slot that is no longer free, inverting the order Dispatch's own ranking sets —
-// and nothing later puts it back, since the root that took the slot keeps it until its work is
-// past its review or its tree ends, unless it gives it back for a wait on another issue
-// (record.KeepsSlot, blockers.waitsOf).
+// and nothing later puts it back, since the root that took the slot keeps it while it stands in a
+// phase that keeps one and its tree runs, unless it gives it back for a wait on another issue
+// (record.KeepsSlot, blockers.waitsOf); accepting, retro and merging keep none.
 // Each hold a boot can place is exercised on its own — the one Reconcile places for the Dispatch
 // consumer to reach the stream position it measured, and the one the boot's catch-up places before
 // the pass — and then the two together, where release's own promote bypasses the consumer hold but

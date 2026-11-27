@@ -46,12 +46,15 @@ type runAt struct {
 }
 
 // factRuns is what one fact names of the runs it ends that the record does not hold: the end each
-// move of the table names for the run it leaves, and the trees whose linger it closed. settled says
-// the fact's runs are settled already: an engine and the admission that holds it share one fact.
+// move of the table names for the run it leaves, and the trees whose linger it closed. unrested is
+// each ancestor a root stopped resting on in the fact (restEnded), which writes no record of the
+// ancestor's tree. settled says the fact's runs are settled already: an engine and the admission
+// that holds it share one fact.
 type factRuns struct {
-	ends    map[runAt]StepEnd
-	closed  map[string]bool
-	settled bool
+	ends     map[runAt]StepEnd
+	closed   map[string]bool
+	unrested []string
+	settled  bool
 }
 
 // factRunsKey is the context key of a fact's factRuns.
@@ -91,7 +94,8 @@ func (e *Engine) OpenFact(ctx context.Context) context.Context {
 
 // SettleFact settles the record the fact left, once its last handler has applied it, in its
 // transaction (intake.Settler): first each parent held before its retro whose tree the fact wrote
-// an issue of is released where nothing beneath it is open (releaseHeldParents), and then each run
+// an issue of, or whose tree holds an ancestor a root stopped resting on in the fact (restEnded),
+// has its retro started where nothing holds it any longer (releaseHeldParents), and then each run
 // the fact left over ends (runOver): the runs of each issue the fact touched, the released parents
 // among them, and of each member of a tree whose root the fact wrote and which lingers, or whose
 // linger it closed. A second settle of one fact settles nothing.
@@ -101,7 +105,7 @@ func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 		return nil
 	}
 	runs.settled = true
-	if err := e.releaseHeldParents(ctx, tx, record.IssuesWritten(ctx)); err != nil {
+	if err := e.releaseHeldParents(ctx, tx, slices.Concat(record.IssuesWritten(ctx), runs.unrested)); err != nil {
 		return err
 	}
 	return e.settleRuns(ctx, tx, runs, record.IssuesWritten(ctx), nil)
@@ -141,6 +145,20 @@ func (e *Engine) closeLinger(ctx context.Context, tree string) error {
 	}
 	runs.closed[tree] = true
 	return nil
+}
+
+// restEnded names ancestor as one a root stopped resting on in this fact (dispatch://INFRA-3320
+// R8): the root left the workflow (tellRestingLeft), or its step's wait on ancestor's approval
+// request ended (tellPendingEnded). A parent held before its retro waits for each root still in
+// the workflow that rests on it (StartHeldRetro), and neither end writes a record of the parent's
+// tree, so the fact's settle reads ancestor's tree as it reads a tree the fact wrote
+// (releaseHeldParents). A transaction no fact opened has no settle to read it in, and names
+// nothing: the next admission pass of the held parent's project reads it again (admit's
+// childrenWaits).
+func (e *Engine) restEnded(ctx context.Context, ancestor string) {
+	if runs, ok := ctx.Value(factRunsKey{}).(*factRuns); ok && !slices.Contains(runs.unrested, ancestor) {
+		runs.unrested = append(runs.unrested, ancestor)
+	}
 }
 
 // settleStart ends, before a start of place on issue, each of the issue's runs that is over, the
@@ -365,7 +383,7 @@ func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.
 			return true, err
 		}
 	}
-	gates, err := e.store.GatesOf(ctx, tx, root.Key)
+	lifecycle, gate, err := record.RootFacts(ctx, e.store, tx, *root, e.cfg.Steps)
 	if err != nil {
 		return false, err
 	}
@@ -374,18 +392,20 @@ func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.
 		return false, err
 	}
 	holds := slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == root.Key })
-	return !record.AwaitsPromotion(*root, record.TreeGate{Steps: e.cfg.Steps, Rows: gates}, holds), nil
+	return !record.AwaitsPromotion(*root, lifecycle, gate, holds), nil
 }
 
 // mergeCanLand says whether member's merge, which awaits its landing in the tree root lingers, can
 // still land there: while the linger runs and no fact has closed it, while its pull request is open,
 // or where the close of root's linger handed it over, whose re-admission ends the merge's run
-// instead.
+// instead. The pull request's state is all it reads, so it reads the row alone
+// (record.Store.PullRequestRow), with none of what the pull request remembers of its settled
+// heads.
 func (e *Engine) mergeCanLand(ctx context.Context, tx pgx.Tx, runs *factRuns, member, root record.Issue) (bool, error) {
 	if record.Lingering(root, e.now()) && !runs.closed[root.Tree] {
 		return true, nil
 	}
-	pr, err := e.store.PullRequest(ctx, tx, member.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, member.Key)
 	if err != nil {
 		return false, err
 	}

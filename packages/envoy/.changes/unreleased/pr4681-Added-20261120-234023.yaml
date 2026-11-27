@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  Dispatch logs one JSON github_rate_reading line for each installation of its GitHub App, at
+  start, every 10 minutes and in the last minute before each counter's reset: the installation,
+  its permissions, the REST core and GraphQL counters' used count, limit and reset, and Dispatch's
+  own answered calls on each counter by caller kind (packages/envoy/githubrate).
+time: 2026-11-20T23:40:23Z
+custom:
+    Issue: pr4681

@@ -1,0 +1,23 @@
+-- 20261125023041_idle_release_declines_told_pod.up.sql — the decline of an issue's idle release
+-- records the pod the issue's architect was told of, as a fact of its own.
+--
+-- What this adds: idle_release_declines.told_pod, the pod the architect's workspace-kept notice
+-- named when the daemon queued it (store's recordDecline): null where the row queued no such
+-- notice, '' where it queued one for a pod the runtime could not name. A pod in which no role
+-- process runs and that the daemon keeps for its disk is told to the architect once for each pod
+-- (R6 of #5285): a launcher's decline of the pod the column names, or of a pod that
+-- either side does not name, queues no second notice, whatever work the read found and whatever
+-- role the row names. A read through a role that replaces the row keeps the column, so the
+-- architect told of a pod is not told of it again after a role comes back and stops again. The
+-- rows this finds take null: no notice of theirs is recorded as told, so the next launcher decline
+-- of a kept pod tells the architect once more.
+--
+-- The release before reads no told_pod and writes its rows without it, which the column's null
+-- takes, so a rollback to that release needs nothing of this migration. A rollback to a release
+-- before 20261123050533, whose way back drops idle_release_declines, runs this way back first
+-- (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace"): it drops the
+-- column and deletes this migration's version row, so a roll forward runs this file again.
+--
+-- alter table public.idle_release_declines drop column if exists told_pod;
+-- delete from public.schema_version where version = 20261125023041;
+alter table idle_release_declines add column if not exists told_pod text;

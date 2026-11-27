@@ -12,10 +12,23 @@ import (
 )
 
 // Publisher publishes a webhook's envelopes, each within the context its handler gives it, which
-// carries the request's own end and the route's budget for its caller (*bus.Client.PublishWithin,
-// which also keeps the bus's own five-second bound).
+// carries the request's own end and the route's budget for its caller
+// (*bus.Client.PublishEachWithin, which also keeps the bus's own five-second bound). It calls
+// published, when that is not nil, once for each topic it published the envelope on, with the
+// stream's acknowledgement there (bus.StoredAck): whether the stream already held the envelope
+// under its Nats-Msg-Id, and whether that answer is to the bus's resend after the connection
+// closed under its first send, which may have stored that very copy. It reports the envelope's
+// own topic, and any copy it publishes beside it (ghrename.Publisher's copy under a repository's
+// former name). The GitHub route logs one `github published` line for each.
 type Publisher interface {
-	PublishWithin(context.Context, contracts.Envelope) error
+	PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error
+}
+
+// BodyTooLarge is the text every listener route answers, with 413, to a body past its limit: the
+// limit in bytes and in MiB. Every limit is a whole number of MiB. The webhook routes answer it as
+// text and the /v1 routes as their JSON error, so both name the limit in the same words.
+func BodyTooLarge(limit int64) string {
+	return fmt.Sprintf("body too large: the limit is %d bytes (%d MiB)", limit, limit>>20)
 }
 
 // deliveryFailed answers a delivery whose envelope the listener did not publish, and logs

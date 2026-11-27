@@ -38,6 +38,7 @@ const anchoredMarkTimingLimit = 20
 // release before this change ran - read from there rather than copied a second time: two copies
 // of one statement drift apart, and that oracle is what the package's equality test is held to.
 func TestStatementTimings(t *testing.T) {
+	t.Parallel()
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	document := runner.Subjects().AnchoredDocument
 	markIDs := anchoredMarkIDs(t, runner, document)

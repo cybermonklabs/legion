@@ -15,9 +15,9 @@ import (
 // retro for the issues beneath it (children_before_retro) and a task that was stopped
 // (task_stopped) each stand on an issue that has had its start and stands in held, which the
 // rule reads as stopped before it reads any word (lineHolds.waitsByDesign, its fourth clause),
-// as it reads a parent past its review that waits in accepting for its children. So a quiet tree
-// of either is told. The held parent's child waits on a Dispatch blocker, a wait by design, so
-// the parent alone is what names its tree.
+// as it reads a parent that waits in accepting for its children. So a quiet tree of either is
+// told. The held parent's child waits on a Dispatch blocker, a wait by design, so the parent alone
+// is what names its tree.
 //
 // The control is a tree whose root waits on a person, with a child at admitted that the same
 // Dispatch blocker shape holds: every issue of it waits by design, so it is silent, and a pass

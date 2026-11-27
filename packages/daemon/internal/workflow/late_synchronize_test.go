@@ -2,8 +2,7 @@ package workflow
 
 import (
 	"context"
-	"fmt"
-	"maps"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -14,43 +13,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
-
-// databaseRows is every table's rows, each table's as one sorted JSON text: what a fact changed,
-// and that it sent or queued nothing, read off the whole database.
-func databaseRows(t *testing.T, pool *pgxpool.Pool) map[string]string {
-	t.Helper()
-	ctx := context.Background()
-	tables, err := pool.Query(ctx, `select table_name from information_schema.tables where table_schema = current_schema() and table_type = 'BASE TABLE'`)
-	if err != nil {
-		t.Fatalf("list tables: %v", err)
-	}
-	names, err := pgx.CollectRows(tables, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("list tables: %v", err)
-	}
-	rows := map[string]string{}
-	for _, name := range names {
-		var text string
-		query := fmt.Sprintf(`select coalesce(jsonb_agg(to_jsonb(x) order by to_jsonb(x)::text), '[]'::jsonb)::text from %s x`, pgx.Identifier{name}.Sanitize())
-		if err := pool.QueryRow(ctx, query).Scan(&text); err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		rows[name] = text
-	}
-	return rows
-}
-
-// changedTables is the tables whose rows differ between before and after.
-func changedTables(before, after map[string]string) []string {
-	var changed []string
-	for _, name := range slices.Sorted(maps.Keys(after)) {
-		if before[name] != after[name] {
-			changed = append(changed, name)
-		}
-	}
-	return changed
-}
 
 // namedSync is a synchronize from a listener that sends its before and its sender.
 func namedSync(before, head, sender string, at time.Time) intake.Fact {
@@ -71,6 +35,7 @@ func sentPush(before, after, sender string) intake.Fact {
 // never held - it records the move's push by its sender on the head run and replays the run, which
 // can close it; the head stays where it was.
 func TestALateSynchronizeOnlyNamesTheMoveAWaitingArrivalTook(t *testing.T) {
+	t.Parallel()
 	const dev = "legion-implementer[bot]"
 	skipped, arrived := lateApplied.Add(time.Minute), lateApplied.Add(2*time.Minute)
 	for _, tc := range []struct {
@@ -97,14 +62,14 @@ func TestALateSynchronizeOnlyNamesTheMoveAWaitingArrivalTook(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := appliedEvents(t, record.PullRequestOpen, tc.facts...)
-			before := databaseRows(t, pool)
+			before := testdb.TableRows(t, pool)
 			if _, err := intake.ApplyFact(context.Background(), pool, "github", "late", tc.late, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 				t.Fatalf("apply the late synchronize: %v", err)
 			}
-			after := databaseRows(t, pool)
+			after := testdb.TableRows(t, pool)
 			delete(before, "processed_events")
 			delete(after, "processed_events")
-			changed := changedTables(before, after)
+			changed := testdb.ChangedTables(before, after)
 			if !tc.changes && len(changed) != 0 {
 				t.Fatalf("the late synchronize changed %v, want nothing", changed)
 			}
@@ -134,6 +99,7 @@ func TestALateSynchronizeOnlyNamesTheMoveAWaitingArrivalTook(t *testing.T) {
 // delivered reversed. The pull request is judged from there: at h1, with h1's synchronize naming the
 // move from head the record held, nothing waits.
 func TestTwoMovesInOneSecondDeliveredReversedMoveTheHeadBackAsOnMain(t *testing.T) {
+	t.Parallel()
 	const dev = "legion-implementer[bot]"
 	second := time.Date(2026, 9, 22, 23, 51, 0, 0, time.UTC)
 	pool := migratedPool(t)
@@ -152,6 +118,7 @@ func TestTwoMovesInOneSecondDeliveredReversedMoveTheHeadBackAsOnMain(t *testing.
 // its webhooks missed and a real head..h1 in h2's second. The pull request moves to the head, as on
 // main.
 func TestNoSynchronizeMainWouldApplyIsDroppedInTheWorkflow(t *testing.T) {
+	t.Parallel()
 	const dev = "legion-implementer[bot]"
 	second := time.Date(2026, 9, 22, 23, 51, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -181,6 +148,7 @@ func TestNoSynchronizeMainWouldApplyIsDroppedInTheWorkflow(t *testing.T) {
 // missed too - and moves head..h1 again in the second of h2's synchronize. The pull request is at h1,
 // as on main, not left at h2.
 func TestAMoveAfterAMissedResetInTheSameSecondMovesTheHead(t *testing.T) {
+	t.Parallel()
 	const dev = "legion-implementer[bot]"
 	first, second := time.Date(2026, 9, 22, 23, 50, 0, 0, time.UTC), time.Date(2026, 9, 22, 23, 51, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -209,6 +177,7 @@ func TestAMoveAfterAMissedResetInTheSameSecondMovesTheHead(t *testing.T) {
 // second, and h1's synchronize naming the implementer. The implementer's push is the one the move
 // takes, so the head run closes on it, and neither push is left recorded without its sender.
 func TestASynchronizesSenderPicksItsPushInTheWorkflow(t *testing.T) {
+	t.Parallel()
 	const dev = "legion-implementer[bot]"
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, "head", "red")
@@ -239,4 +208,39 @@ func probePullRequest(t *testing.T, pool *pgxpool.Pool) record.PullRequest {
 		t.Fatal("no pull request")
 	}
 	return *pr
+}
+
+// A synchronize carries the base GitHub named when it was sent, so one older than the newest
+// applied (classify.LateLifecycle) - late, or replayed from a message the intake gave up on, however
+// late - names a base the pull request may have left since. Here the newest synchronize, the
+// arrival of head-d, came after the pull request was retargeted onto release; the late synchronize
+// of the move to head-x, sent while it was still on main, is the move that arrival waits for, so it
+// records its push on the head run (classify.NameMove) and writes the pull request. It writes no
+// base: the record keeps release, and the head the arrival left.
+func TestALateSynchronizeKeepsTheNewerBase(t *testing.T) {
+	t.Parallel()
+	const dev = "legion-implementer[bot]"
+	skipped, arrived := lateApplied.Add(time.Minute), lateApplied.Add(2*time.Minute)
+	retargeted := intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", Base: "release",
+		Before: "head-x", Sender: dev, HeadSHA: "head-d", UpdatedAt: arrived}
+	pool := appliedEvents(t, record.PullRequestOpen, retargeted)
+	newer := probePullRequest(t, pool)
+	if newer.Base != "release" || newer.HeadSHA != "head-d" || newer.Run == nil {
+		t.Fatalf("after the newest synchronize the pull request is on %q at %s with a head run open %v; want release, head-d and a run waiting for its move",
+			newer.Base, newer.HeadSHA, newer.Run != nil)
+	}
+
+	if _, err := intake.ApplyFact(context.Background(), pool, "github", "late", intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,
+		Branch: "legion/LEGION-208", Base: "main", Before: "head-c", Sender: dev, HeadSHA: "head-x", UpdatedAt: skipped},
+		testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		t.Fatalf("apply the late synchronize: %v", err)
+	}
+
+	got := probePullRequest(t, pool)
+	if got.Base != "release" || got.HeadSHA != "head-d" {
+		t.Fatalf("after the late synchronize the pull request is on %q at %s, want release at head-d", got.Base, got.HeadSHA)
+	}
+	if reflect.DeepEqual(got.Run, newer.Run) {
+		t.Fatalf("the late synchronize left the head run as it was, %+v; want it to name the move the arrival waits for", got.Run)
+	}
 }

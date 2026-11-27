@@ -3,6 +3,7 @@ import type { IssueCollaboratorPerson } from "./dispatch-api.generated";
 import { ActorSchema, ExternalLinkSchema } from "./dispatch-api-core";
 import { referenceChangesFields } from "./dispatch-api-refs";
 import { ISSUE_COMPONENTS_MODES, type ISSUE_ROUTE_STATUSES } from "./dispatch-tools";
+import { LEGION_ROLES } from "./legion-roles";
 
 /**
  * The issue: the row, what resolves on each read of it, and the payloads of every `issue.*` and
@@ -206,8 +207,8 @@ export type CollaboratorReason = NonNullable<IssueCollaboratorPerson["reasons"]>
 export const issueEventChangesFields = {
   /** Each field whose value the write moved, of `title`, `status`, `closed_at` (for a close or a
    *  reopen), `rank`, `priority`, `assignee`, `parent`, `labels`, `route`, `repo`, `components`,
-   *  `blocked_by` and `external_links`; for `issue.created`, every field the new issue holds a
-   *  value in. */
+   *  `advances`, `blocked_by` and `external_links`; for `issue.created`, every field the new
+   *  issue holds a value in. */
   changed: z.array(z.string()).optional(),
   /** The issue's parent chain after the write, parent first up to the root; `[]` for a root. */
   ancestors: z.array(z.string()).optional(),
@@ -289,6 +290,37 @@ export const IssueReleasedEventPayloadSchema = z
 
 export type IssueReleasedEventPayload = z.output<typeof IssueReleasedEventPayloadSchema>;
 
+/** One pair of an issue's role holders as Dispatch stores it (`IssueRoleHolderRecord` of the
+ *  route table, which `dispatch-api-owned.ts` holds this schema to): a Legion role, the session
+ *  that holds it, and the time Dispatch first stored the pair. */
+export const IssueRoleHolderRecordSchema = z
+  .strictObject({ role: z.enum(LEGION_ROLES), session: z.string(), recorded_at: z.iso.datetime() })
+  .readonly();
+
+export type IssueRoleHolderRecord = z.output<typeof IssueRoleHolderRecordSchema>;
+
+/**
+ * `issue.role_holders_changed`: the Legion daemon's publication of an issue's role holders
+ * (`PUT /api/v1/issues/{key}/role-holders`) changed the set. `holders` is the set it stored and
+ * `previous_holders` the set it replaced, each in workflow order; the event's actor is the
+ * daemon's session and its `created_at` the time of the write, so the issue's log says which
+ * session held each role at a past time. A publication that stores the set already stored appends
+ * none, and the log holds no change made before the release that writes the event. Quiet: it
+ * wakes nobody. Strict: the Go writer (`issueRoleHoldersChange` in
+ * `packages/envoy/internal/dispatch/api/issue_role_holders.go`) emits exactly these three fields.
+ */
+export const IssueRoleHoldersChangedEventPayloadSchema = z
+  .strictObject({
+    key: z.string(),
+    holders: z.array(IssueRoleHolderRecordSchema),
+    previous_holders: z.array(IssueRoleHolderRecordSchema),
+  })
+  .readonly();
+
+export type IssueRoleHoldersChangedEventPayload = z.output<
+  typeof IssueRoleHoldersChangedEventPayloadSchema
+>;
+
 /**
  * `issue.deployed`: the delivery timeline's word that the issue's pull request reached production,
  * written once per pull request the moment the timeline first knows the production run that
@@ -307,6 +339,16 @@ export const IssueDeployedEventPayloadSchema = z.strictObject({
 });
 
 export type IssueDeployedEventPayload = z.output<typeof IssueDeployedEventPayloadSchema>;
+
+/** A recorded build that wakes an open issue with a stored live-check result in this repository. */
+export const DeployRecordedEventPayloadSchema = z.strictObject({
+  repo: z.string(),
+  program: z.string(),
+  commit: z.string(),
+  deployed_at: z.string(),
+  source: z.enum(["delivery_run", "route"]),
+});
+export type DeployRecordedEventPayload = z.output<typeof DeployRecordedEventPayloadSchema>;
 
 export const childStatusEventPayloadFields = {
   child_key: z.string(),

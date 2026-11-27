@@ -12,7 +12,10 @@ import (
 	"github.com/sjawhar/envoy/internal/verify"
 )
 
-// ghostWisprMaxBody is the largest Ghost Wispr event body the handler reads.
+// ghostWisprMaxBody is the largest Ghost Wispr event body the handler reads: 1 MiB, the limit the
+// route has always had. An event names a session, its times and the links to its documents
+// (ghostWisprPayload), and a current unit sends no title or summary text, so a real body holds some
+// short fields. Only an older unit adds one meeting's summary.
 const ghostWisprMaxBody = 1 << 20
 
 // ghostWisprRoomWait is the most a Ghost Wispr event waits, in all, for room in the listener's
@@ -32,7 +35,7 @@ func ghostWisprSkip(event string) bool {
 // GhostWisprHandler returns the HTTP handler for Ghost Wispr webhook events, which reads its bodies
 // against bodies, the listener's one body budget. Its publish runs under the request's own
 // context, so it ends when the sender gives up on the request, and at the bus's own 5 s bound
-// otherwise (bus.Client.PublishWithin), inside the 10 s the listener's server gives a route to
+// otherwise (bus.Client.PublishEachWithin), inside the 10 s the listener's server gives a route to
 // answer: Ghost Wispr sets no answer deadline of its own. It checks the signature of every event
 // with secret before it parses a byte of the body, and answers 401 to one that does not check, so
 // a handler built with an empty secret refuses every event (verify.GhostWispr).
@@ -94,7 +97,7 @@ func GhostWisprHandler(secret string, publisher Publisher, bodies *BodyBudget) h
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := publisher.PublishWithin(r.Context(), item); err != nil {
+		if err := publisher.PublishEachWithin(r.Context(), item, nil); err != nil {
 			deliveryFailed(w, "ghostwispr publish", err)
 			return
 		}

@@ -102,6 +102,12 @@ func startedAgainGitHub(t *testing.T) string {
 // runtime that provisions each claim's workspace in the claim's own pod), with the board and the
 // GitHub above, a linger no tree of these subtests outlives, and the shipped production check
 // bound.
+//
+// The board refuses the boot catch-up's read of each root it holds, and the catch-up reads a
+// refused root three times before it skips it; at the production two seconds between reads
+// (catchUpRetryDelay) that cost each boot with two roots to catch up 8 s, every run of the
+// promotion subtest. The reads are a millisecond apart here: no subtest is about the catch-up,
+// which skips each root as it did, and holds none.
 func startedAgainDaemon(t *testing.T) (*store.Pool, config.Config, overrides, *fake.Runtime) {
 	t.Helper()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
@@ -109,6 +115,10 @@ func startedAgainDaemon(t *testing.T) (*store.Pool, config.Config, overrides, *f
 	cfg.Linger = time.Hour
 	cfg.ProductionCheckBound = 336 * time.Hour
 	o.githubAPI = startedAgainGitHub(t)
+	o.catchUpRetry = time.Millisecond
+	// A start row that waited for a slot, or for its issue's branch row, runs at the outbox's next
+	// sweep once that slot or row frees, which at outboxLease is up to 30 s of the wall clock.
+	o.outboxSweep = time.Second
 	return pool, cfg, o, rt
 }
 
@@ -152,7 +162,7 @@ func stoppableWorker(cfg config.Config, project string, token claim.Token, tree,
 	now := time.Now().UTC()
 	return supervise.Claim{Token: token, Project: project, Tree: tree, Issue: issue, Role: role, Generation: 1,
 		State: supervise.StateWorking, Session: "ses_" + string(role), SessionFile: filepath.Join(cfg.StateDir, string(role)+".jsonl"),
-		PluginContract: api.DaemonAPIVersion, Locator: workingPane(token),
+		PluginContract: api.DaemonAPIVersion(), Locator: workingPane(token),
 		Budgets: supervise.Budgets{LaunchFailures: 2, Deaths: 1, PromptFailures: 2, PromptRetires: 1},
 		Pending: &supervise.Delivery{ID: "outbox:11", Task: "Carry on.", Generation: 1, Phase: stands,
 			QueuedAt: now, DeliveredAt: now, ConfirmedAt: now}}

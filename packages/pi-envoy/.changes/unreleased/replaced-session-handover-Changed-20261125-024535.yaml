@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+  A Legion role claim through the plugin interface can name the session it replaces, and the claim
+  sends that session to the Envoy listener as `previous_session_id`. The claim stays a hard claim.
+  The listener then hands the unread direct and role messages of the replaced session to the new
+  session. Plugin interface version 6, which pi-envoy reads; install it with the
+  `@sjawhar/pi-legion` released beside it. A soft claim that names the session it supersedes (a
+  fork, a branch or a handoff) and fails, a `503` included, names that session again on the next
+  pass, so the listener still writes the handover record once the claim stands. Every role claim
+  the plugin makes (a pass, a heartbeat, the Legion plugin's claim, `envoy_role_set`) logs at warn
+  level, with the role and the session, each warning the listener answers a claim that landed
+  with, such as that it handed over no message of the replaced session and why. `envoy_role_set`
+  also returns them: one `Listener warning:` line each in its text, and `warnings` in its details.
+time: 2026-11-25T02:45:35Z
+custom:
+    Issue: replaced-session-handover

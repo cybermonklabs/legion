@@ -12,6 +12,7 @@ const dropDefaultBranchCommitsVersion = 20261110004829
 // TestMigrationDropsTheDefaultBranchCommits runs the shipped files: the replaced cache's table is
 // gone after the migration, and branch_commits, the table that took its work, keeps its rows.
 func TestMigrationDropsTheDefaultBranchCommits(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, dropDefaultBranchCommitsVersion-1)
 

@@ -120,6 +120,7 @@ runs:
     # hash), so the build fetches only the modules that changed. actions/cache/restore sets
     # cache-hit to true only for an exact match of the key and not for a restore-keys match, so
     # the save step below runs after such a fallback too.
+    # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
     - id: cache
       name: Restore the command's module and build caches
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

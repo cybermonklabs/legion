@@ -12,6 +12,7 @@ import (
 // daemon wrote takes: no claim that ran before this release reported a turn, and the first report
 // of each fills it.
 func TestTheTurnOutcomesWindowIsAddedAt20261029121100(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 20261029121000)
@@ -33,6 +34,7 @@ func TestTheTurnOutcomesWindowIsAddedAt20261029121100(t *testing.T) {
 // outcome and the provider's message, so a restarted daemon derives the same run of refused turns
 // the one before it did.
 func TestAClaimsTurnOutcomesRoundTrip(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")

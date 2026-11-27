@@ -79,9 +79,9 @@ func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow) error {
 	case issue.Claim == nil:
 		return nil
 	// The id a Dispatch claim carries is the session id the claims table holds, which is why the
-	// store reads below take Claim.ID and the daemon's own session is tested against it
-	// (workflow.Unresumable).
-	case issue.Claim.Kind != "session", issue.Claim.ID == dispatch.DaemonSession(row.Issue):
+	// store reads below take Claim.ID and the daemon's own session, the one of its own Dispatch
+	// project, is tested against it (workflow.Unresumable).
+	case issue.Claim.Kind != "session", issue.Claim.ID == dispatch.DaemonSession(r.dispatchProject):
 		return nil
 	}
 	holder := issue.Claim
@@ -211,10 +211,7 @@ func (w *workflowRuntime) releaseParkedClaims(ctx context.Context, tx pgx.Tx, sc
 	if err != nil {
 		return fmt.Errorf("read the records of the claimed issues of %s before their claim release: %w", w.dispatchProject, err)
 	}
-	recorded := make(map[string]*record.Issue, len(issues))
-	for i := range issues {
-		recorded[issues[i].Key] = &issues[i]
-	}
+	recorded := recordsByKey(issues)
 	for _, key := range keys {
 		issue := recorded[key]
 		if issue == nil || !record.Stopped(*issue) {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,19 +17,21 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// keyedPost posts body to the rig's route on server as alice under key, giving up after timeout as
-// a client does. It answers the status and body, or the client's own failure.
-func keyedPost(server *httptest.Server, path, body, key string, timeout time.Duration) (int, string, http.Header, error) {
-	request, err := http.NewRequest(http.MethodPost, server.URL+path, strings.NewReader(body))
+// keyedPostContext posts body to the rig's route on server as alice under key, under ctx: the
+// request, the answer's head and its body all end when ctx does. It answers the status and body,
+// or the client's own failure.
+func keyedPostContext(ctx context.Context, server *httptest.Server, path, body, key string) (int, string, http.Header, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+path, strings.NewReader(body))
 	if err != nil {
 		return 0, "", nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Dispatch-User", "alice")
 	request.Header.Set(contracts.IdempotencyKeyHeader, key)
-	response, err := (&http.Client{Timeout: timeout}).Do(request)
+	response, err := (&http.Client{}).Do(request)
 	if err != nil {
 		return 0, "", nil, err
 	}
@@ -37,19 +40,52 @@ func keyedPost(server *httptest.Server, path, body, key string, timeout time.Dur
 	return response.StatusCode, string(answer), response.Header, err
 }
 
+// keyedReply is what keyedPostContext answered: the status, body and headers, or the client's
+// failure.
+type keyedReply struct {
+	status int
+	body   string
+	header http.Header
+	err    error
+}
+
+// keyedPostAnswered is keyedPostContext under the test's own context, which carries no deadline and
+// ends only when the test does, its answer taken with testwait.Receive: its one bound is the test
+// binary's deadline less testwait's margin, so a server a loaded machine slows still answers, and
+// one that never answers fails the test by name, with what.
+func keyedPostAnswered(t *testing.T, what string, server *httptest.Server, path, body, key string) keyedReply {
+	t.Helper()
+	ctx := t.Context()
+	answered := make(chan keyedReply, 1)
+	go func() {
+		status, body, header, err := keyedPostContext(ctx, server, path, body, key)
+		answered <- keyedReply{status: status, body: body, header: header, err: err}
+	}()
+	return testwait.Receive(t, what, answered)
+}
+
 // INFRA-258. A write the server takes longer to finish than its client waits still lands, once:
 // the handler runs on past the client's giving up, and the client's repeat under its key is told
 // the first run is still going (409 KEY_IN_FLIGHT), then answered the first run's own stored
 // answer. A handler bound to its client's cancellation rolled back at the client's deadline, and
-// every repeat started again from nothing, so such a write could never land.
+// every repeat started again from nothing, so such a write could never land. The run is held at a
+// gate the test lets go only once the client has given up and a repeat was told the run is still
+// going, so the order is the test's and no clock decides it.
 func TestAKeyedWriteSlowerThanItsClientFinishesAndIsReplayed(t *testing.T) {
 	t.Parallel()
+	running := make(chan struct{})
+	release, releaseOnce := heldUntilReleased(t)
 	rig := newWritingRig(t, func(run int32, w http.ResponseWriter, r *http.Request, write rigWrite) {
-		select {
-		case <-time.After(20 * time.Second):
-		case <-r.Context().Done():
-			writeError(w, "CUT_OFF", http.StatusServiceUnavailable, "the run was cut off with its client")
-			return
+		// Only the first run is held: a later run, which only a key the first run lost makes,
+		// answers at once, so a repeat that ran it fails by its answer rather than waiting.
+		if run == 1 {
+			close(running)
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				writeError(w, "CUT_OFF", http.StatusServiceUnavailable, "the run was cut off with its client")
+				return
+			}
 		}
 		if err := write(r.Context(), nil); err != nil {
 			t.Errorf("run %d's write: %v", run, err)
@@ -59,36 +95,39 @@ func TestAKeyedWriteSlowerThanItsClientFinishesAndIsReplayed(t *testing.T) {
 	server := httptest.NewServer(rig.handler)
 	t.Cleanup(server.Close)
 
-	started := time.Now()
-	if status, body, _, err := keyedPost(server, "/test/a/writes", `{"n":1}`, "slow-press", 15*time.Second); err == nil {
-		t.Fatalf("the first attempt answered %d %s; want the client to give up at 15 s", status, body)
-	}
-	status, body, header, err := keyedPost(server, "/test/a/writes", `{"n":1}`, "slow-press", 5*time.Second)
-	if err != nil || status != http.StatusConflict || !strings.Contains(body, contracts.IdempotencyKeyInFlight) ||
-		header.Get("Retry-After") != "1" {
+	// The first attempt's client gives up while its run is held, at the moment the test cancels it.
+	client, giveUp := context.WithCancel(context.Background())
+	defer giveUp()
+	first := httptest.NewRequestWithContext(client, http.MethodPost, "/test/a/writes", strings.NewReader(`{"n":1}`))
+	first.Header.Set("Content-Type", "application/json")
+	first.Header.Set("X-Dispatch-User", "alice")
+	first.Header.Set(contracts.IdempotencyKeyHeader, "slow-press")
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		rig.handler.ServeHTTP(httptest.NewRecorder(), first)
+	}()
+	testwait.Receive(t, "the first attempt's run to start", running)
+	giveUp()
+	repeat := keyedPostAnswered(t, "the answer to the repeat after the first attempt's client gave up", server, "/test/a/writes", `{"n":1}`, "slow-press")
+	if repeat.err != nil || repeat.status != http.StatusConflict || !strings.Contains(repeat.body, contracts.IdempotencyKeyInFlight) ||
+		repeat.header.Get("Retry-After") != "1" {
 		t.Fatalf("the repeat after the client gave up: %d %s (%v), want 409 %s: the first run is still going",
-			status, body, err, contracts.IdempotencyKeyInFlight)
+			repeat.status, repeat.body, repeat.err, contracts.IdempotencyKeyInFlight)
 	}
-	for {
-		status, body, header, err = keyedPost(server, "/test/a/writes", `{"n":1}`, "slow-press", 5*time.Second)
-		if err != nil {
-			t.Fatalf("a later repeat: %v", err)
+	releaseOnce()
+	answer := testwait.UntilPolling(t, 20*time.Millisecond, "a repeat answered other than 409 once the first run was let go (the last answer)", func() (keyedReply, bool) {
+		later := keyedPostAnswered(t, "the answer to a later repeat", server, "/test/a/writes", `{"n":1}`, "slow-press")
+		if later.err != nil {
+			t.Fatalf("a later repeat: %v", later.err)
 		}
-		if status != http.StatusConflict {
-			break
-		}
-		if time.Since(started) > time.Minute {
-			t.Fatalf("the first run never finished: still %d %s after a minute", status, body)
-		}
-		time.Sleep(time.Second)
-	}
-	if status != http.StatusCreated || header.Get(contracts.IdempotencyReplayedHeader) != "?1" || !strings.Contains(body, `"run":1`) {
+		return later, later.status != http.StatusConflict
+	})
+	if answer.status != http.StatusCreated || answer.header.Get(contracts.IdempotencyReplayedHeader) != "?1" || !strings.Contains(answer.body, `"run":1`) {
 		t.Fatalf("the repeat once the first run finished: %d %s replayed=%q, want the first run's 201 replayed",
-			status, body, header.Get(contracts.IdempotencyReplayedHeader))
+			answer.status, answer.body, answer.header.Get(contracts.IdempotencyReplayedHeader))
 	}
-	if elapsed := time.Since(started); elapsed < 20*time.Second {
-		t.Fatalf("answered after %v, before the first run's 20 s were up", elapsed)
-	}
+	testwait.Receive(t, "the first attempt's request to end", served)
 	if runs, writes := rig.runs.Load(), rig.writes(t); runs != 1 || len(writes) != 1 {
 		t.Fatalf("the handler ran %d times and wrote %v, want once and one row", runs, writes)
 	}
@@ -97,6 +136,9 @@ func TestAKeyedWriteSlowerThanItsClientFinishesAndIsReplayed(t *testing.T) {
 // A run that outlives its key's lease keeps the key: it renews the lease while it runs, so a repeat
 // past the lease is still told the first run is going rather than taking the key over and making
 // the write a second time. Only a run whose renewals stopped - its process died - is taken over.
+// The lease is the deployment's minute and is read against the database's now(), so the test moves
+// a lease back past it rather than waiting one out, and a renewal a loaded machine makes late still
+// keeps the key.
 func TestARunningHandlerRenewsItsKeyPastTheLease(t *testing.T) {
 	t.Parallel()
 	release, releaseOnce := heldUntilReleased(t)
@@ -108,11 +150,23 @@ func TestARunningHandlerRenewsItsKeyPastTheLease(t *testing.T) {
 		}
 		answerRun(run, w, r)
 	})
-	rig.server.requestKeyLease, rig.server.requestKeyRenewal = 2*time.Second, 200*time.Millisecond
+	rig.server.requestKeyRenewal = 200 * time.Millisecond
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "a", nil, "alice", "long-run") }()
 	<-running
-	time.Sleep(3 * time.Second)
+	// A whole lease with no renewal, as the run's lease stands once that long has passed: the wait
+	// is for the running handler's next renewal to make it live again, which a run that does not
+	// renew never does.
+	lapseRequestKeyLease(t, rig, "long-run")
+	testwait.UntilPolling(t, 20*time.Millisecond, "the running handler to renew its key's lease (live)", func() (bool, bool) {
+		var live bool
+		if err := rig.database.Pool.QueryRow(context.Background(), `
+			select coalesce(leased_at >= now() - make_interval(secs => $2), false) from request_keys where idempotency_key = $1
+		`, "long-run", rig.server.keyLease().Seconds()).Scan(&live); err != nil {
+			t.Fatalf("read the lease of the key long-run: %v", err)
+		}
+		return live, live
+	})
 	repeat := rig.send(t, "a", nil, "alice", "long-run")
 	if code, _ := refusalOf(t, repeat); repeat.Code != http.StatusConflict || code != contracts.IdempotencyKeyInFlight {
 		t.Fatalf("a repeat past the lease while the first run renews it: status=%d body=%s, want 409 %s",
@@ -135,29 +189,44 @@ func TestARunningHandlerRenewsItsKeyPastTheLease(t *testing.T) {
 	if inside := rig.send(t, "a", nil, "alice", "dead-run"); inside.Code != http.StatusConflict {
 		t.Fatalf("a repeat inside a dead holder's lease: status=%d body=%s, want 409", inside.Code, inside.Body.String())
 	}
-	time.Sleep(2500 * time.Millisecond)
+	lapseRequestKeyLease(t, rig, "dead-run")
 	if takeover := rig.send(t, "a", nil, "alice", "dead-run"); takeover.Code != http.StatusCreated || replayed(takeover) {
 		t.Fatalf("a repeat once the dead holder's lease lapsed: status=%d body=%s, want the request run", takeover.Code, takeover.Body.String())
 	}
 }
 
+// lapseRequestKeyLease moves key's lease two minutes back, past a whole lease (IdempotencyLease),
+// as that long with no renewal leaves it: the keyed layer reads a lease against the database's
+// now().
+func lapseRequestKeyLease(t *testing.T, rig *keyedRig, key string) {
+	t.Helper()
+	tag, err := rig.database.Pool.Exec(context.Background(),
+		`update request_keys set leased_at = now() - interval '2 minutes' where idempotency_key = $1 and leased_at is not null`, key)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("lapse the lease of the key %s: %v (%d rows)", key, err, tag.RowsAffected())
+	}
+}
+
 // The handler's context is the server's, not the client's: the client's cancellation mid-run does
-// not reach it, and the server's own bound, keyedHandlerLimit, does.
+// not reach it, and the server's own bound, keyedHandlerLimit, does. The bound is read as the
+// deadline the server set: keyedHandlerLimit after a moment between the request's start and the
+// handler's entry, which the server's own start of the run lies between, however long either took.
 func TestAKeyedHandlerRunsUnderTheServersOwnBound(t *testing.T) {
 	t.Parallel()
 	running, proceed := make(chan struct{}), make(chan struct{})
 	type seen struct {
-		err  error
-		left time.Duration
+		err      error
+		entered  time.Time
+		deadline time.Time
+		bounded  bool
 	}
 	saw := make(chan seen, 1)
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
+		entered := time.Now()
 		close(running)
 		<-proceed
-		observed := seen{err: r.Context().Err()}
-		if deadline, ok := r.Context().Deadline(); ok {
-			observed.left = time.Until(deadline)
-		}
+		observed := seen{err: r.Context().Err(), entered: entered}
+		observed.deadline, observed.bounded = r.Context().Deadline()
 		saw <- observed
 		answerRun(run, w, r)
 	})
@@ -168,6 +237,7 @@ func TestAKeyedHandlerRunsUnderTheServersOwnBound(t *testing.T) {
 	request.Header.Set("X-Dispatch-User", "alice")
 	request.Header.Set(contracts.IdempotencyKeyHeader, "bounded")
 	response := httptest.NewRecorder()
+	began := time.Now()
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
@@ -182,8 +252,10 @@ func TestAKeyedHandlerRunsUnderTheServersOwnBound(t *testing.T) {
 		t.Fatalf("a run whose client went away mid-run: context error %v, status %d, want it run to its answer",
 			observed.err, response.Code)
 	}
-	if observed.left < keyedHandlerLimit-time.Minute || observed.left > keyedHandlerLimit {
-		t.Fatalf("the handler's deadline is %v away, want the server's %v bound", observed.left, keyedHandlerLimit)
+	if earliest, latest := began.Add(keyedHandlerLimit), observed.entered.Add(keyedHandlerLimit); !observed.bounded ||
+		observed.deadline.Before(earliest) || observed.deadline.After(latest) {
+		t.Fatalf("the handler's deadline is %v (set: %v), want the server's %v bound from the run's start, between %v and %v",
+			observed.deadline, observed.bounded, keyedHandlerLimit, earliest, latest)
 	}
 }
 
@@ -213,11 +285,7 @@ func TestTheBackgroundWaitWaitsForARunningKeyedHandler(t *testing.T) {
 	}
 	releaseOnce()
 	awaitResponse(t, answered)
-	select {
-	case <-waited:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the background wait never returned once the handler answered")
-	}
+	testwait.Receive(t, "the background wait to return once the handler answered", waited)
 }
 
 // backgroundWork's wait returns only once nothing runs, however work starts and ends around it:
@@ -240,11 +308,7 @@ func TestTheBackgroundWaitWaitsForWorkStartedWhileItWaits(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 	work.done()
-	select {
-	case <-waited:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the wait never returned once the work ended")
-	}
+	testwait.Receive(t, "the wait to return once the work ended", waited)
 }
 
 // The slow-write test hook delays every keyed run of the method and path it was armed for, on the
@@ -273,16 +337,17 @@ func TestTheSlowWriteHookDelaysEveryKeyedRunOfItsPath(t *testing.T) {
 		}
 	}
 	arm(700)
-	// The bounds on the armed runs are lower ones, which a loaded runner cannot break: load can
-	// only lengthen what a run takes, so it cannot bring one in under its arm, and keyedHandlerLimit
-	// is ten minutes, so it cannot turn one into a 503 either.
+	// Each armed run is held to its arm as the hook records the wait it made (slowWriteRunsOn, read
+	// on each side of the run), not by a clock around the request, which a run that skipped its
+	// delay on a slow machine would pass. keyedHandlerLimit is ten minutes, so load cannot turn an
+	// armed run into a 503 either.
 	for _, key := range []string{"slow-1", "slow-2"} {
-		started := time.Now()
+		_, before := served.slowWriteRunsOn(http.MethodPost + " " + path)
 		if created := keyedRequest(t, handler, http.MethodPost, path, map[string]any{"body": key}, "alice", key); created.Code != http.StatusCreated {
 			t.Fatalf("%s: status=%d body=%s", key, created.Code, created.Body.String())
 		}
-		if elapsed := time.Since(started); elapsed < 700*time.Millisecond {
-			t.Fatalf("%s answered after %v, inside the armed delay", key, elapsed)
+		if _, after := served.slowWriteRunsOn(http.MethodPost + " " + path); after-before < 700*time.Millisecond {
+			t.Fatalf("%s's run waited %v in the hook's delay, as the hook records it, inside the armed 700ms", key, after-before)
 		}
 	}
 	// A run whose context ends inside the delay never reaches the handler: answered 503, its key
@@ -353,6 +418,8 @@ func (b *countingBody) Read(p []byte) (int, error) {
 // the first still runs, so it is 409 KEY_IN_FLIGHT. With the temporary directory gone, a spool
 // would answer 500.
 func TestAnInFlightRepeatIsJudgedWithoutSpoolingItsBody(t *testing.T) {
+	// Not parallel: it sets the environment variable TMPDIR of the whole process (t.Setenv in
+	// unspooled).
 	const pattern = "/api/v1/issues/{key}/artifacts"
 	rig := newKeyedRigAt(t, pattern, answerRun)
 	body := `{"name":"big.bin","content":"` + strings.Repeat("a", 2<<20) + `"}`
@@ -420,11 +487,7 @@ func TestAKeyedClaimFinishesWhenItsClientGivesUpDuringIt(t *testing.T) {
 	if err := hold.Rollback(ctx); err != nil {
 		t.Fatalf("release the hold: %v", err)
 	}
-	select {
-	case <-served:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the request never finished once the hold on its key was released")
-	}
+	testwait.Receive(t, "the request to finish once the hold on its key was released", served)
 	if response.Code != http.StatusCreated || rig.runs.Load() != 1 {
 		t.Fatalf("a request whose client gave up mid-claim: status=%d body=%s, ran %d times; want it claimed, run once and answered",
 			response.Code, response.Body.String(), rig.runs.Load())
@@ -459,8 +522,19 @@ func TestARunPastItsLimitStopsRenewingItsLease(t *testing.T) {
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "a", nil, "alice", "overrun") }()
 	<-running
-	// The limit, then a whole lease past the last renewal it allows.
-	time.Sleep(4 * time.Second)
+	// The limit ends the run's renewals, so its lease lapses a lease after the last of them while
+	// the handler still runs; the wait reads the lease as the keyed layer does, against the
+	// database's now(), and a run that renewed on past its limit never lets it lapse.
+	testwait.UntilPolling(t, 20*time.Millisecond, "the overrunning run's lease to lapse while its handler still runs (lapsed)", func() (bool, bool) {
+		var lapsed bool
+		if err := rig.database.Pool.QueryRow(context.Background(), `
+			select coalesce(leased_at < now() - make_interval(secs => $3), false)
+			from request_keys where login = $1 and idempotency_key = $2
+		`, "alice", "overrun", rig.server.keyLease().Seconds()).Scan(&lapsed); err != nil {
+			t.Fatalf("read the lease of the key overrun: %v", err)
+		}
+		return lapsed, lapsed
+	})
 	takeover := rig.send(t, "a", nil, "alice", "overrun")
 	if takeover.Code != http.StatusCreated || replayed(takeover) || !strings.Contains(takeover.Body.String(), `"run":2`) {
 		t.Fatalf("a repeat a lease past the run's limit: status=%d body=%s, want the key taken over and run again",
@@ -506,14 +580,10 @@ func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(
 	go func() {
 		answered <- keyedRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, closing, "alice", "close-held")
 	}()
-	select {
-	case response := <-answered:
-		if response.Code < http.StatusInternalServerError {
-			t.Fatalf("a close held past its run's bound: status=%d body=%s, want a 5xx that releases its key",
-				response.Code, response.Body.String())
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("a keyed close still waited on the held issue owner lock 15 s after its run's 1 s bound")
+	// The owner lock is still held, so a close its run's bound did not end never answers.
+	if response := testwait.Receive(t, "the close held on the issue's owner lock to end at its run's bound", answered); response.Code < http.StatusInternalServerError {
+		t.Fatalf("a close held past its run's bound: status=%d body=%s, want a 5xx that releases its key",
+			response.Code, response.Body.String())
 	}
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release the issue's owner lock: %v", err)
@@ -570,37 +640,32 @@ func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *te
 	// write to join the document service through the hold and its sweep the second.
 	hold := &closeCommitHold{API: served.deps.Docs, committed: make(chan struct{}), release: make(chan struct{})}
 	served.deps.Docs = hold
+	// Registered after the server's cleanups, so it runs before them: a failure below lets the held
+	// sweep go on.
+	releaseHold := sync.OnceFunc(func() { close(hold.release) })
+	t.Cleanup(releaseHold)
 
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		answered <- keyedRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"status": "done"}, "alice", "close-swept")
 	}()
-	select {
-	case <-hold.committed:
-	case <-time.After(15 * time.Second):
-		close(hold.release)
-		t.Fatal("the close did not commit within 15 s")
-	}
+	testwait.Receive(t, "the close to commit", hold.committed)
 	// Another writer takes the issue's owner lock between the close's commit and its sweep.
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
-		close(hold.release)
+		releaseHold()
 		t.Fatalf("begin the holder's transaction: %v", err)
 	}
 	defer func() { _ = holder.Rollback(ctx) }()
 	if err := store.LockOwner(ctx, holder, store.IssueOwner(issue.Key)); err != nil {
-		close(hold.release)
+		releaseHold()
 		t.Fatalf("hold the issue's owner lock: %v", err)
 	}
-	close(hold.release)
-	select {
-	case response := <-answered:
-		if response.Code != http.StatusOK {
-			t.Fatalf("a close whose sweep ended at its run's bound: status=%d body=%s, want the committed close's 200",
-				response.Code, response.Body.String())
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("a keyed close's sweep still waited on the held owner lock 15 s after its run's 1 s bound")
+	releaseHold()
+	// The owner lock is still held, so a sweep its run's bound did not end never lets the close answer.
+	if response := testwait.Receive(t, "the close whose sweep is held on the issue's owner lock to answer at its run's bound", answered); response.Code != http.StatusOK {
+		t.Fatalf("a close whose sweep ended at its run's bound: status=%d body=%s, want the committed close's 200",
+			response.Code, response.Body.String())
 	}
 	var closed bool
 	if err := database.Pool.QueryRow(ctx,

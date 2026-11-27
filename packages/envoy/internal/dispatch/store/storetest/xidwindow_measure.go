@@ -28,7 +28,8 @@ type xidPoll struct {
 // is the pool under test; the poller dials a connection of its own from its configuration,
 // untraced, so it never waits for one of the pool's. operation runs on its caller's goroutine with
 // idle Ps beside it (runWithIdlePs) and the collector held off (runWithoutCollector). Measures run
-// one at a time (xidMeasuring).
+// one at a time (xidMeasuring), each in a test that runs alone in the process: a Measure in a
+// parallel test, or in a subtest of one, fails before it measures (requireMeasuredAlone).
 //
 // A run that sets XidRequireGapsEnv and cannot judge gaps fails here, naming why
 // (xidUnjudgedGapsProblem, as RequireXidGapJudgment fails), instead of judging the window's shape
@@ -36,6 +37,7 @@ type xidPoll struct {
 // rig takes one of its own.
 func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *XidReport {
 	t.Helper()
+	requireMeasuredAlone(t)
 	xidMeasuring.Lock()
 	defer xidMeasuring.Unlock()
 	if problem := xidUnjudgedGapsProblem(); problem != "" {
@@ -112,19 +114,35 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 	// calls alone. Left running, the poller would query a connection Measure's defer closes, the
 	// tracer would go on recording, and the execution tracer would stay on, so the next Measure in
 	// the process could not start its own (TestAStoppedMeasureLeavesTheNextItsOwnTrace). A
-	// transaction the stop left open leaves its thread's clock open too, which the capture's end
-	// drops (xidDropThreadClock). endCapture is deferred after conn.Close, so it runs first; the
-	// execution tracer's stop is deferred after endCapture, so it runs before it on such an exit.
+	// transaction the stop left open leaves its thread's clock open too, which dropOpenClocks
+	// drops (xidDropThreadClock), so that no later thread the kernel gives the same id reads it.
+	// dropOpenClocks is deferred after conn.Close and endCapture after dropOpenClocks, so on such
+	// an exit endCapture runs first and dropOpenClocks next; the execution tracer's stop is
+	// deferred after endCapture, so it runs before both.
 	endCapture := sync.OnceFunc(func() {
 		close(stop)
 		<-polled
 		x.recording.Store(false)
+	})
+	// dropOpenClocks drops the clock of every transaction still open. A stop need not be what left
+	// one open: a goroutine of the operation may still be running it, as a broadcast's delivery
+	// may be, since the route answers without waiting for its deliveries, and reading its clock at
+	// a statement's ends. So the clocks are dropped only once the capture's statements are copied.
+	// The copy holds a statement only once both its ends were read (doneStatements), so no drop
+	// lands on a read of a statement the report judges, and none of those reads is of a file opened
+	// in place of a dropped clock. A read still in flight as the drop lands either holds the
+	// clock's lock, and the close waits for it, or finds the clock dropped and reads nothing off
+	// it (xidHeldClock). Dropped at the capture's end, before the copy, a delivery's clock was
+	// closed as its COMMIT's end read it, and the copy held that COMMIT, unread (envoy-go job
+	// 139692608395).
+	dropOpenClocks := sync.OnceFunc(func() {
 		x.mu.Lock()
+		defer x.mu.Unlock()
 		for _, held := range x.locked {
 			xidDropThreadClock(held.thread)
 		}
-		x.mu.Unlock()
 	})
+	defer dropOpenClocks()
 	defer endCapture()
 
 	var traced *xidTrace
@@ -161,6 +179,7 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 			if traced != nil {
 				trace.Log(context.Background(), "xid", "the rig copied the capture's statements")
 			}
+			dropOpenClocks()
 		})
 	})
 	if traced != nil {
@@ -200,11 +219,43 @@ func (x *XidTracer) doneStatements() []XidStatement {
 var xidCaptureEnded func()
 
 // xidMeasuring makes Measures run one at a time. A Measure changes the whole process's GOMAXPROCS
-// and collector for its operation, so two at once would put each other's settings back early. No
-// test that measures calls t.Parallel, and Go runs a parallel test only beside other parallel
-// ones, so no other test runs beside a Measure and this lock is never waited on; it makes sure
-// no later one interleaves.
+// and collector for its operation, so two at once would put each other's settings back early. A
+// test that measures runs alone in the process (requireMeasuredAlone), and Go runs a parallel test
+// only beside other parallel ones, so no other test runs beside a Measure and this lock is never
+// waited on; it makes sure no later one interleaves.
 var xidMeasuring sync.Mutex
+
+// xidMeasuringEnv is the variable requireMeasuredAlone sets for the rest of a measuring test.
+// Nothing reads it: setting it through testing.T.Setenv is how a Measure claims the process.
+const xidMeasuringEnv = "DISPATCH_XID_MEASURING"
+
+// requireMeasuredAlone fails t before anything is measured when another test of the process may
+// run beside it: when t, or a test it runs under, called t.Parallel. A Measure needs the process
+// to itself. It sets the whole process's GOMAXPROCS and collector for its operation, so another
+// test's goroutines would run under those settings, and a window is judged by its thread's own
+// clocks, where a sleep of the thread that its goroutine did not ask for counts as the code's
+// (XidGap.Made), so a sleep that another test's work beside it causes reads as the code's. With
+// every measuring test of the api package made parallel, the route table's mark-all row read a gap
+// of 9.857 ms, its thread off a CPU for 9.702 ms while its goroutine ran (envoy-go job
+// 137701916089): a sleep the rig cannot place, in a process where other tests were running.
+//
+// The check is testing's own for a test that changes the process: T.Setenv refuses a test that is
+// parallel or under a parallel one, and makes a later t.Parallel in it panic.
+func requireMeasuredAlone(t testing.TB) {
+	t.Helper()
+	if refused := setenvRefusal(t); refused != nil {
+		t.Fatalf("XID RIG PROBLEM (not a finding about the code): Measure needs its test to run alone in the process, and this test or one it runs under called t.Parallel (%v); remove that t.Parallel", refused)
+	}
+}
+
+// setenvRefusal sets xidMeasuringEnv for the rest of t and answers testing's refusal, nil when
+// there was none. The refusal is answered rather than failed here, so the failure is reported at
+// the test's call to Measure and not inside testing's own frames.
+func setenvRefusal(t testing.TB) (refused any) {
+	defer func() { refused = recover() }()
+	t.Setenv(xidMeasuringEnv, "1")
+	return nil
+}
 
 // xidIdlePs is how many Ps Measure adds to GOMAXPROCS for the operation. A goroutine locked to its
 // thread, as a window's is, that comes back from a system call to find every P taken waits
@@ -252,7 +303,7 @@ func runWithIdlePs(operation func()) {
 // their maximum, so nothing it frees is handed back to the system): the window allocates out of
 // what that collection freed, memory the heap has used before, as it does with the collector on.
 // Each marked BEGIN then holds the process's memory still (XidTracer.lockTransaction,
-// xidHoldMemory), mappings the collection or an earlier window made included.
+// xidHoldWindowMemory), mappings the collection or an earlier window made included.
 func runWithoutCollector(operation func()) {
 	limit := debug.SetMemoryLimit(math.MaxInt64)
 	defer debug.SetMemoryLimit(limit)

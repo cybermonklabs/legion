@@ -1,13 +1,15 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { type AddressInfo, connect, createServer, type Server, type Socket } from "node:net";
-import { join } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { isAbsolute, join } from "node:path";
+import { hostGate, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { rowWaits, untilTrue } from "./row-waits";
 
 // held-port.py's real-process tests: the helper hands its socket to the real envoy-listener of
 // this branch, which serves on it through ENVOY_LISTEN_FD. They read /proc, so they run on Linux,
-// and they build the listener with go; a host that is neither skips them, naming what it lacks.
+// and they build the listener with go; a host that is neither skips them outside CI, naming what
+// it lacks, and fails them by name under GITHUB_ACTIONS (hostGate).
 
 const helper = join(import.meta.dir, "held-port.py");
 const envoy = join(import.meta.dir, "..", "..", "..", "packages", "envoy");
@@ -15,6 +17,31 @@ const envoy = join(import.meta.dir, "..", "..", "..", "packages", "envoy");
 const work = temporaryDirectory("held-port");
 const listener = join(work, "envoy-listener");
 const O_CLOEXEC = 0o2000000;
+// Each wait of a row on the helper and the listener (a port file written, /healthz answering, a
+// connection made) ends on its event, 20 s before the row's bound at the latest
+// (lib/row-waits.ts): they are real processes, and how soon they get there is a loaded host's.
+const waits = rowWaits(120_000);
+
+// The interpreter python3 reports as sys.executable, resolved once with the caller's environment
+// and run directly, as claude-backend-guards.test.ts's unreadable-environment row runs it: the
+// first python3 on PATH can be a version manager's shim (mise's), which runs the helper with a
+// PATH of its own, so the --pass row read the shim's PATH back from env(1), not the one it gave,
+// and passed or failed by which python3 the machine put first. Without python3 a row fails naming
+// it (requireHostTools).
+let resolvedPython: string | undefined;
+function python(): string {
+  if (resolvedPython !== undefined) return resolvedPython;
+  requireHostTools("python3");
+  const resolved = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"]);
+  const path = resolved.stdout.toString().trim();
+  if (resolved.exitCode !== 0 || !isAbsolute(path)) {
+    throw new Error(
+      `could not resolve the python3 interpreter (exit ${resolved.exitCode}): ${resolved.stderr.toString() || "no absolute executable path"}`
+    );
+  }
+  resolvedPython = path;
+  return path;
+}
 
 type Running = {
   name: string;
@@ -30,19 +57,18 @@ let nats: Server | undefined;
 const natsClients: Socket[] = [];
 let natsUrl = "";
 
-const onLinux = process.platform === "linux";
-if (!onLinux) {
-  console.warn(
-    `Skipped the tests in ${import.meta.path}. They read /proc, which this host's ` +
-      `${process.platform} does not have; they run on linux.`
-  );
-}
 // Both gates are read, so a host that has neither says so about both.
-const withoutGo = skipWithout("go");
-const skip = !onLinux || withoutGo;
+const host = hostGate({
+  programs: ["go"],
+  reason:
+    process.platform === "linux"
+      ? ""
+      : `They read /proc, which this host's ${process.platform} does not have; they run on linux.`,
+});
+const gated = host.describe;
 
 beforeAll(async () => {
-  if (skip) return;
+  if (host.missing) return;
   const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {
     cwd: envoy,
     stdout: "pipe",
@@ -131,7 +157,7 @@ function start(name: string, argv: string[], stdin: "ignore" | "pipe" = "ignore"
 
 function exec(name: string, portFile: string, command: string[], from?: string): Running {
   return start(name, [
-    "python3",
+    python(),
     helper,
     "exec",
     ...(from ? ["--from", from] : []),
@@ -150,43 +176,46 @@ function describeRun(running: Running): string {
   return `${running.name} (pid ${running.process.pid}, exit ${running.process.exitCode ?? running.process.signalCode ?? "none yet"}):\n${running.output()}`;
 }
 
-// readPort waits up to 10 s for path to hold a port, failing when running exits first. The writer
-// is a real process with no event to await, so this and requireAnswers poll on the real clock.
+// readPort waits for path to hold a port, failing when running exits first. The writer is a real
+// process with no event to await, so this and requireAnswers poll on the real clock.
 async function readPort(path: string, running: Running): Promise<number> {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
+  let port = 0;
+  await untilTrue(`${running.name} to write a port to ${path}`, waits.end(), () => {
     if (existsSync(path)) {
       const text = readFileSync(path, "utf8");
       if (!/^[1-9][0-9]*\n$/.test(text)) throw new Error(`${path} holds ${JSON.stringify(text)}`);
-      return Number(text.trim());
+      port = Number(text.trim());
+      return true;
     }
     if (running.exited())
       throw new Error(`exited before it wrote ${path}: ${describeRun(running)}`);
-    await Bun.sleep(50);
-  }
-  throw new Error(`never wrote ${path}: ${describeRun(running)}`);
+    return `nothing written yet: ${describeRun(running)}`;
+  });
+  return port;
 }
 
-// requireAnswers waits up to 30 s for /healthz on port to answer at all, failing when running
-// exits first.
+// requireAnswers waits for /healthz on port to answer at all, failing when running exits first. A
+// request is bounded by the end of the row's waits alone, so a slow answer is still read.
 async function requireAnswers(port: number, running: Running): Promise<void> {
   const url = `http://127.0.0.1:${port}/healthz`;
-  const deadline = Date.now() + 30_000;
-  let last: unknown;
-  while (Date.now() < deadline) {
+  const end = waits.end();
+  await untilTrue(`/healthz to answer on ${port}`, end, async () => {
+    let failed: unknown;
     try {
-      const response = await fetch(url, { keepalive: false, signal: AbortSignal.timeout(5_000) });
+      const response = await fetch(url, {
+        keepalive: false,
+        signal: AbortSignal.timeout(Math.max(1, Math.ceil(end - performance.now()))),
+      });
       await response.arrayBuffer();
-      return;
+      return true;
     } catch (error) {
-      last = error;
+      failed = error;
     }
     if (running.exited()) {
       throw new Error(`exited before /healthz answered on ${port}: ${describeRun(running)}`);
     }
-    await Bun.sleep(200);
-  }
-  throw new Error(`/healthz never answered on ${port}: ${last}\n${describeRun(running)}`);
+    return `${failed}\n${describeRun(running)}`;
+  });
 }
 
 // bindOutcome binds 127.0.0.1:port and closes it again: "bound", or the error code of the refusal.
@@ -200,19 +229,23 @@ async function bindOutcome(port: number): Promise<string> {
   return await outcome.promise;
 }
 
-// answerWithin connects to port, sends a request and resolves what came back within milliseconds:
-// "no answer" on an accepted connection that stayed silent, "answered", "never connected", or the
-// connection's error. The silence it measures is real time, so it waits on the real clock.
+// answerWithin connects to port, sends a request and resolves what came back within milliseconds
+// of the connection: "no answer" on an accepted connection that stayed silent that long,
+// "answered", the connection's error, or "never connected" when no connection was made by the end
+// of the row's waits. The silence it measures is real time, so it waits on the real clock; the
+// connect is the kernel's and the event loop's, so the silence is timed from it, never from the
+// call.
 async function answerWithin(port: number, milliseconds: number): Promise<string> {
   const outcome = Promise.withResolvers<string>();
-  let connected = false;
   const client = connect(port, "127.0.0.1");
-  const timer = setTimeout(
-    () => outcome.resolve(connected ? "no answer" : "never connected"),
-    milliseconds
+  let silence: Timer | undefined;
+  const connecting = setTimeout(
+    () => outcome.resolve("never connected"),
+    Math.max(0, waits.end() - performance.now())
   );
   client.once("connect", () => {
-    connected = true;
+    clearTimeout(connecting);
+    silence = setTimeout(() => outcome.resolve("no answer"), milliseconds);
     client.write(`GET /healthz HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: close\r\n\r\n`);
   });
   client.once("data", () => outcome.resolve("answered"));
@@ -222,7 +255,8 @@ async function answerWithin(port: number, milliseconds: number): Promise<string>
   try {
     return await outcome.promise;
   } finally {
-    clearTimeout(timer);
+    clearTimeout(connecting);
+    clearTimeout(silence);
     client.destroy();
   }
 }
@@ -264,7 +298,7 @@ function closeOnExec(pid: number, fd: number): boolean {
   return (Number.parseInt(flags[1], 8) & O_CLOEXEC) !== 0;
 }
 
-describe.skipIf(skip)("held-port.py exec", () => {
+gated("held-port.py exec", () => {
   test("the listener serves the handed socket on the port in the port file, in the helper's own process", async () => {
     const portFile = join(work, "serves.port");
     const running = exec("exec of the listener", portFile, [listener]);
@@ -277,14 +311,14 @@ describe.skipIf(skip)("held-port.py exec", () => {
     );
     // The PID Bun.spawn returned, a shell's $!, is the listener's: the helper executed it in place.
     expect(readlinkSync(`/proc/${running.process.pid}/exe`)).toBe(realpathSync(listener));
-  }, 60_000);
+  });
 
   test("from the moment the port file names it until the server runs, the port is held", async () => {
     const portFile = join(work, "held.port");
     const running = start(
       "exec of a shell that waits, then the listener",
       [
-        "python3",
+        python(),
         helper,
         "exec",
         "--port-file",
@@ -309,7 +343,7 @@ describe.skipIf(skip)("held-port.py exec", () => {
     stdin.write("go\n");
     await stdin.flush();
     await requireAnswers(port, running);
-  }, 60_000);
+  });
 
   test("the listener holds the socket only on its own close-on-exec copy, not on descriptor 3", async () => {
     const portFile = join(work, "descendant.port");
@@ -326,7 +360,7 @@ describe.skipIf(skip)("held-port.py exec", () => {
     expect(holders).toHaveLength(1);
     expect(holders[0]).not.toBe(3);
     expect(closeOnExec(pid, holders[0] as number)).toBe(true);
-  }, 60_000);
+  });
 
   test("a command that cannot run exits non-zero, and its port binds again", async () => {
     const portFile = join(work, "missing.port");
@@ -338,15 +372,15 @@ describe.skipIf(skip)("held-port.py exec", () => {
     const port = await readPort(portFile, running);
     expect(listeningInode(port)).toBeUndefined();
     expect(await bindOutcome(port)).toBe("bound");
-  }, 60_000);
+  });
 });
 
-describe.skipIf(skip)("held-port.py keep", () => {
+gated("held-port.py keep", () => {
   test("two listeners started from one keeper serve its port, which stays held between them", async () => {
     const portFile = join(work, "kept.port");
     const socket = join(work, "keeper.sock");
     const keeper = start("the keeper", [
-      "python3",
+      python(),
       helper,
       "keep",
       "--port-file",
@@ -376,7 +410,7 @@ describe.skipIf(skip)("held-port.py keep", () => {
     expect(await keeper.process.exited, describeRun(keeper)).toBe(0);
     expect(existsSync(socket)).toBe(false);
     expect(await bindOutcome(port)).toBe("bound");
-  }, 120_000);
+  });
 });
 
 // --pass needs neither /proc nor the listener: the command is env(1), which prints the environment
@@ -389,7 +423,7 @@ describe("held-port.py exec --pass", () => {
     const portFile = join(work, `${label}.port`);
     const run = Bun.spawnSync(
       [
-        "python3",
+        python(),
         helper,
         "exec",
         "--port-file",

@@ -45,6 +45,7 @@ const natsDownCommit = "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
 // durables, and an agent view relays a session's frame. Before INFRA-555 the boot exited on the
 // first failed connect.
 func TestAProcessStartedWhileNATSIsDownServesAndConnectsLater(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedDeliverySettings(t, database)
 	srv, natsURL := testnats.Start(t)
@@ -108,6 +109,8 @@ func TestAProcessStartedWhileNATSIsDownServesAndConnectsLater(t *testing.T) {
 // 200 throughout, and true again once the traffic moves. The deploy's measuring job counts its
 // limits from the cut; with nats.go's default pings the probe read true for minutes into it.
 func TestAProcessReportsASilentNATSCutWithinSeconds(t *testing.T) {
+	// Not parallel: it holds a step to a wall-clock bound load could break (the 5 s within which
+	// /healthz must report the cut).
 	database := storetest.Open(t)
 	srv, natsURL := testnats.Start(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{NATSURL: natsURL})

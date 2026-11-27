@@ -24,6 +24,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -717,6 +718,7 @@ func coldRegistry(t *testing.T, conn *natsgo.Conn) (*Registry, natsgo.KeyValue) 
 	}
 	r := &Registry{roleKV: roles, now: time.Now, index: newSubjectIndex()}
 	r.cache = newInterestCopy(r)
+	r.chunks = kvchunk.NewChunks(r.now)
 	handle, err := bus.WrapKeyValue(conn, kv)
 	if err != nil {
 		t.Fatalf("wrap the KV bucket: %v", err)
@@ -3548,7 +3550,7 @@ func TestARoleRevisionScanThatEndsEarlyIsAnErrorNotAShortSnapshot(t *testing.T) 
 	} {
 		t.Run(ending.name, func(t *testing.T) {
 			handle := bus.NewKeyValue(rawRoles, earlyEndKV{KeyValue: roles.WatchHandle(), after: 1, ended: ending.ended}, roles.Streams())
-			revisions, err := roleRevisions(handle, idle, slog.Default())
+			revisions, _, err := roleRevisions(t.Context(), handle, idle, slog.Default(), nil)
 			if err == nil {
 				t.Fatalf("a scan that ended after 1 of 4 claims returned %d revisions and no error", len(revisions))
 			}

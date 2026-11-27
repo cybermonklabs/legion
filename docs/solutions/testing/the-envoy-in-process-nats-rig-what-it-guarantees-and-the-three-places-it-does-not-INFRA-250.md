@@ -26,8 +26,9 @@ Three things it does **not** give you. Each is silent.
 
 ## 1. The container guard is a door, not a wall
 
-`TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime` reads `.Imports`, `.TestImports` and
-`.XTestImports` — **direct** imports only — and allowlists the rigs `internal/testpg` and
+`TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime` (in `internal/textcheck`) reads the
+import declarations of each file an untagged build of a package or of its tests compiles — **direct**
+imports only — and allowlists the rigs `internal/testpg` and
 `internal/tests3`. A package that imports an allowlisted rig therefore passes the guard and still
 needs a container runtime: `cmd/listener/dispatch_resolution_test.go` imports `testpg`, and
 `testpg.URL` starts a Postgres container whenever `DISPATCH_TEST_DATABASE_URL` is unset, as it is in

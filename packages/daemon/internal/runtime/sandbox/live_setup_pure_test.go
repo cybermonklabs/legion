@@ -47,7 +47,9 @@ import (
 // of entries after the last reset, and the list is `expected` when it is exactly one entry,
 // `!legion git-credential` under one of those two keys at command scope, where GitConfigEnv
 // puts it. The negative control runs the same ls-remote with every command-scope helper value
-// emptied, GitConfigEnv's GIT_CONFIG_VALUE_1 among them, and liveSetupControlClass reads how
+// emptied, GitConfigEnv's GIT_CONFIG_VALUE_1 among them. A key is lowercased under LC_ALL=C to be
+// read as a helper key, since in a single-byte Turkish locale tr lowercases I to dotless ı, and
+// CREDENTIAL.HELPER would then keep its value. liveSetupControlClass reads how
 // it ended: legion-smoke is private, so it must be refused for want of a credential, and git=ok is
 // then the helper's doing. A control that failed for any other reason (no network, a GitHub
 // error, a timeout) proves nothing, and its record says so.
@@ -68,7 +70,7 @@ probe_git() {
     i=$((i - 1))
     eval "key=\${GIT_CONFIG_KEY_$i-} value=\${GIT_CONFIG_VALUE_$i-}"
     if [ -n "$without_helper" ]; then
-      case $(printf '%s' "$key" | tr '[:upper:]' '[:lower:]') in
+      case $(printf '%s' "$key" | LC_ALL=C tr '[:upper:]' '[:lower:]') in
         credential.*helper) value= ;;
       esac
     fi
@@ -152,11 +154,45 @@ control=$(cd "$away" && probe_git GIT_CEILING_DIRECTORIES="$ceiling" timeout 60 
 // never the first (TestGitRefusalReadsAsRefused holds the local git to all of this). GitHub
 // answers 401 for a repository it hides as well as for a private one, but the ls-remote before the
 // control read this one with the role's helper. Anything else is `failed`: git_without_helper_error
-// is then its exit status and first stderr line, with control characters removed and a GitHub
-// token, a JWT and a URL's user info each replaced by `***`.
+// is then its exit status and first stderr line, with control characters removed, a GitHub token
+// and a URL's user info each replaced by `***`, and each dotted run of base64url characters that
+// holds a JWT replaced by `***` whole. A JWT is found by its header, as setupMarkerLeak finds one:
+// in a run's part that is followed by another part and a dot, a suffix that base64url-decodes to a
+// JSON object naming its alg (RFC 7515 4.1.1). The shell reads that object by its text, a `{` and
+// later `"alg"` and a colon, so it redacts every header setupMarkerLeak finds but one that spells
+// its key with a JSON escape (`"\u0061lg"`), which setupMarkerLeak then reports, and may redact
+// more. Each suffix is decoded from one of four alignments, since one decode from offset k reads
+// every suffix at k+4n: so a header written with whitespace, `{ "alg"` (eyAi), is found as compact
+// JSON's eyJ is, and so is one behind other base64url characters. base64 is coreutils', as timeout
+// and mktemp are. Every command here that matches text (grep, sed, tr) runs with LC_ALL=C, so the
+// role's locale changes no outcome: in a UTF-8 locale GNU grep's [A-Za-z] takes é into a candidate
+// run, whose decode then fails at every offset, and GNU sed's [:space:] holds an em space, which
+// stops the user-info match short of its `@` (TestLiveSetupControlErrorIsRedactedInEveryLocale).
 const liveSetupControlClass = `git_without_helper_error=
 nl='
 '
+jwt_header() {
+  jwt_b64=$(printf '%s' "$1" | LC_ALL=C tr '_-' '/+')
+  case $((${#jwt_b64} % 4)) in
+    1) jwt_b64=${jwt_b64%?} ;;
+    2) jwt_b64=$jwt_b64== ;;
+    3) jwt_b64=$jwt_b64= ;;
+  esac
+  printf '%s' "$jwt_b64" | base64 -d 2>/dev/null | LC_ALL=C tr -d '\000-\037' | LC_ALL=C grep -q -E '[{].*"alg"[[:space:]]*:'
+}
+jwt_in_run() {
+  jwt_rest=$1
+  while :; do
+    case $jwt_rest in *.*.*) ;; *) return 1 ;; esac
+    jwt_part=${jwt_rest%%.*}
+    jwt_rest=${jwt_rest#*.}
+    for jwt_offset in 0 1 2 3; do
+      [ -n "$jwt_part" ] || break
+      if jwt_header "$jwt_part"; then return 0; fi
+      jwt_part=${jwt_part#?}
+    done
+  done
+}
 if [ "$status" -eq 0 ]; then
   git_without_helper=ok
 else
@@ -164,12 +200,17 @@ else
     *"$nl"*) refusal= ;;
     *) refusal=$control ;;
   esac
-  if [ -n "$refusal" ] && printf '%s\n' "$refusal" | grep -q -E '^fatal: could not read (Username|Password) for '"'"'[^'"'"']*'"'"': terminal prompts disabled$'; then
+  if [ -n "$refusal" ] && printf '%s\n' "$refusal" | LC_ALL=C grep -q -E '^fatal: could not read (Username|Password) for '"'"'[^'"'"']*'"'"': terminal prompts disabled$'; then
     git_without_helper=refused
   else
     git_without_helper=failed
-    first=$(printf '%s\n' "$control" | sed -n 1p | tr -d '\000-\037\177' |
-      sed -E 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_.-]+/\1***/g; s/eyJ[A-Za-z0-9_.-]+/***/g; s#(://)[^/@[:space:]]+@#\1***@#g')
+    first=$(printf '%s\n' "$control" | LC_ALL=C sed -n 1p | LC_ALL=C tr -d '\000-\037\177' |
+      LC_ALL=C sed -E 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_.-]+/\1***/g; s#(://)[^/@[:space:]]+@#\1***@#g')
+    for jwt_run in $(printf '%s\n' "$first" | LC_ALL=C grep -o -E '[A-Za-z0-9_-]*[.][A-Za-z0-9_-]*[.][A-Za-z0-9_.-]*' || true); do
+      if jwt_in_run "$jwt_run"; then
+        first=${first%%"$jwt_run"*}'***'${first#*"$jwt_run"}
+      fi
+    done
     git_without_helper_error="exit $status: ${first:-no stderr}"
   fi
 fi

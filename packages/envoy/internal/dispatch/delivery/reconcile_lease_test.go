@@ -16,6 +16,7 @@ import (
 // - the other envoy-dispatch process, inside a pass of its own - this process's pass asks GitHub
 // for nothing and leaves the settings' freshness untouched.
 func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	leases := deliveryTestLeases(t, pool)
 	seedDeliverySettings(t, ctx, pool)
@@ -28,7 +29,7 @@ func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) 
 	taken, release := make(chan struct{}), make(chan struct{})
 	held := make(chan bool, 1)
 	go func() {
-		held <- duty.Exclusive(ctx, leases, deliveryReconcileLease, time.Time{}, 0, func(context.Context) {
+		held <- duty.Exclusive(ctx, nil, leases, deliveryReconcileLease, time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})
@@ -81,6 +82,7 @@ func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) 
 // nothing. With them, the pass's first request is its permission check, the lookup of the deploy
 // repository's installation, which the fake counts here.
 func TestTwoReconcileTicksTheShortestWaitApartBothRun(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	leases := deliveryTestLeases(t, pool)
 	settings := seedDeliverySettings(t, ctx, pool)

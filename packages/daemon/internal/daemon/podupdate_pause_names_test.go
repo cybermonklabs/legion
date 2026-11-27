@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -41,20 +40,17 @@ func holdInRuntime(t *testing.T) (hold func(context.Context) error, reached <-ch
 
 // heldStartUntilHeld runs the held start of role (heldStartRequest) where holdInRuntime's hold
 // stops the launch inside the runtime. The machine's handle of that start does not return while
-// the hold stands, so the start runs on its own goroutine, and its error is not read. It waits up
-// to 10 s for the launch to reach the runtime (reached, holdInRuntime's channel).
+// the hold stands, so the start runs on its own goroutine, and its error is not read. It waits for
+// the launch to reach the runtime (reached, holdInRuntime's channel) until the test binary's
+// deadline (testwait.Receive), so a launch a loaded machine makes slow is no failure.
 func (r *podUpdateRig) heldStartUntilHeld(role claim.Role, reached <-chan struct{}) {
 	r.t.Helper()
 	m, _ := r.sup.Machine(r.tokens[role])
 	start := r.heldStartRequest(role)
 	go func() {
-		_ = m.Handle(r.ctx, start)
+		_ = m.Handle(r.worker(), start)
 	}()
-	select {
-	case <-reached:
-	case <-time.After(10 * time.Second):
-		r.t.Fatalf("the %s's launch did not reach the runtime", role)
-	}
+	testwait.Receive(r.t, fmt.Sprintf("the %s's launch to reach the runtime", role), reached)
 }
 
 // scriptForgottenSession scripts the next launch of role to forget the role's session
@@ -190,23 +186,19 @@ func TestALiveRoundNamesTheLaunchAPauseOwesThatForgotItsSession(t *testing.T) {
 // has not come up. The members are those of forgottenOwedLaunch and a reviewer that the daemon
 // suspended before it answered: the implementer is launching with no session and no process, the
 // tester answered and runs in the pod, and the round passes over the reviewer, which keeps its
-// session. The read of the workspace finds an unpushed commit. Before the bound the implementer
+// session. The read of the workspace finds nothing. Before the bound the implementer
 // holds the replacement (R8). At the bound the pod is replaced once, through the tester's process.
-// R1 reads the workspace once every claim the round asks has answered and no turn runs, and the
-// round asks neither the reviewer nor the implementer. So the read is made: the replacement's
-// line names the work that the read found, and one message on the issue names the reviewer, whose
-// work no role was asked to push. R8 keeps the pod for the implementer before the bound only, so
-// the bound's line names the implementer as unanswered, and the implementer does not stop the
-// read.
-//
-// Where the read waits for each claim that holds the replacement (unansweredClaims) and not only
-// for the claims the round asks (waitingClaims), the implementer stops the read. Then the line
-// says that no read was made, and the issue is not told what the reviewer left on the disk.
+// The replacement reads the workspace before it is made (R7 of #5285), past the
+// bound too, and neither the reviewer the round passed over nor the implementer whose launch the
+// pause owes stops the read: the replacement's line names the read the tester made and the reviewer
+// the round did not wait for. R8 keeps the pod for the implementer before the bound only, so the
+// bound's line names the implementer as unanswered. The read here finds nothing, so nobody is told
+// (a read that finds work keeps the pod: round_unread_disk_test.go).
 func TestALiveRoundReadsTheWorkspaceBesideTheLaunchAPauseOwesThatForgotItsSession(t *testing.T) {
 	t.Parallel()
 	const reviewer = claim.RoleReviewer
 	rig := forgottenOwedLaunch(t, suspendedRole(reviewer, supervise.SuspendedByDaemon))
-	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
 	rig.awaitRound(reviewer, podUpdateRound)
 	for range 3 {
 		rig.tick()
@@ -226,20 +218,12 @@ func TestALiveRoundReadsTheWorkspaceBesideTheLaunchAPauseOwesThatForgotItsSessio
 	if len(lines) != 1 {
 		t.Fatalf("the replacement was logged %d times, want once: %+v", len(lines), lines)
 	}
-	commits, _ := lines[0]["workspaceCommits"].([]any)
-	if lines[0]["workspaceRead"] != "found work" || lines[0]["workspaceReadBy"] != string(claim.RoleTester) || len(commits) != 1 || commits[0] != passedOverCommit {
-		t.Fatalf("the replacement's line names the read %+v, want one made through the tester that found the commit %s", lines[0], passedOverCommit)
+	if lines[0]["workspaceRead"] != "found no work" || lines[0]["workspaceReadBy"] != string(claim.RoleTester) || lines[0]["workspaceHead"] != passedOverHead {
+		t.Fatalf("the replacement's line names the read %+v, want one made through the tester that found nothing at %s", lines[0], passedOverHead)
 	}
 	wantField(t, lines[0], "notWaitedFor", reviewer)
-
-	messages := rig.messages()
-	if len(messages) != 1 {
-		t.Fatalf("the issue was written %d messages, want one: %q", len(messages), messages)
-	}
-	for _, want := range []string{"reviewer (suspended)", passedOverCommit} {
-		if !strings.Contains(messages[0], want) {
-			t.Errorf("the message does not name %q:\n%s", want, messages[0])
-		}
+	if messages := rig.messages(); len(messages) != 0 {
+		t.Fatalf("the issue was written %q, want nothing: the read found nothing", messages)
 	}
 
 	bounded := loggedLines(t, rig.logs.String(), podUpdateBoundLine)

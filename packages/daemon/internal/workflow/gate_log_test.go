@@ -23,6 +23,7 @@ import (
 // and has a line of its own. Each line is written once the fact's transaction commits, so a fact
 // retried after a failed commit writes it once.
 func TestTheDesignGateLogsItsRegistrationAndEachOpenOrClose(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION", Title: "Root", Phase: phase.Admitted,
 		Generation: 1, Status: "in_progress", Rank: "U"})
@@ -82,6 +83,7 @@ func TestTheDesignGateLogsItsRegistrationAndEachOpenOrClose(t *testing.T) {
 
 // A gate fact whose transaction does not commit writes no line: its retry writes it.
 func TestAGateFactThatDoesNotCommitLogsNothing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION", Title: "Root", Phase: phase.Admitted,
 		Generation: 1, Status: "in_progress", Rank: "U"})

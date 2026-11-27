@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  Of the actions on an agent, each naming one agent by its `issue` and `role`, the controller's
+  `legion` tool gets four beside `compact` and `fresh_session`: `stop`, `retry`, `suspend` and
+  `resume_agent`. Each answers the claim's state and who holds a suspension over the agent. The agent's
+  resume is `resume_agent` because `resume` is the project's resume, which ends a pause and names
+  no issue.
+  While the operator's own suspension holds an agent, five of the six (`stop`, `retry`, `suspend`,
+  `resume_agent` and `fresh_session`) are refused to the controller with `SUSPENDED_BY_OPERATOR`,
+  which names the `legion claims resume` command the operator runs. `compact` refuses such an agent
+  as it refuses any agent that does not run or that a suspension is held over: `CLAIM_NOT_RUNNING`,
+  `CLAIM_IN_A_TURN` or `CLAIM_UNSETTLED`.
+  While the project is paused, `retry`, `resume_agent`, `fresh_session` and `compact` are refused
+  to the controller with `PROJECT_PAUSED`, whose sentence names the controller's `resume` as what
+  lifts the pause; `stop` and `suspend` still run.
+time: 2026-11-20T16:00:00.000000000Z
+custom:
+    Issue: pr4065

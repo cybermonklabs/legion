@@ -2,6 +2,7 @@ package plan
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -123,14 +124,15 @@ func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 }
 
 // FromBlocks reads each `plan_task` block as a task, in the document's order, with what each
-// attribute says; each `needs` and `part_of` value is kept whole, as the block writes it. Each
+// attribute says: each `needs` word as the id of the task it names, and a word that names no task
+// of the plan kept whole in Unresolved; each `part_of` value whole, as the block writes it. Each
 // `plan_role` block is a role the plan defines, named by its id. Every other block is the
 // document's prose and no part of the plan.
 func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 	p, err := FromBlocks("plan-md", 3, []Block{
 		{ID: "intro", Type: "paragraph", Text: "Why the issue is split so."},
 		{ID: "d", Type: "plan_task", Attributes: map[string]string{
-			"needs":  "dispatch://ACME-1/artifact/plan-md#b-a dispatch://ACME-1/artifact/plan-md#b-c@v2",
+			"needs":  "dispatch://ACME-1/artifact/plan-md#b-f1 dispatch://ACME-1/artifact/plan-md#b-c@v2",
 			"serves": "dispatch://ACME-1/spec#b-r1",
 			"steps":  "implementer:cd reviewer:r",
 		}, Text: "What task D does."},
@@ -144,7 +146,7 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 		t.Fatalf("FromBlocks: %v", err)
 	}
 	want := Plan{ArtifactID: "plan-md", Version: 3, RoleBlocks: []string{"prober"}, Tasks: []Task{
-		{ID: "d", Needs: []string{"dispatch://ACME-1/artifact/plan-md#b-a", "dispatch://ACME-1/artifact/plan-md#b-c@v2"},
+		{ID: "d", Needs: []string{"f1"}, Unresolved: []string{"dispatch://ACME-1/artifact/plan-md#b-c@v2"},
 			Steps: []Step{{Role: "implementer", Key: "cd"}, {Role: "reviewer", Key: "r"}}, Text: "What task D does."},
 		{ID: "f", Owner: "architect", Text: "What this part must reach."},
 		{ID: "f1", PartOf: "dispatch://ACME-1/artifact/plan-md#b-f", Merges: true,
@@ -182,5 +184,33 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 	// A document with no task block is read, as a plan with no task, which Validate refuses.
 	if p, err := FromBlocks("plan-md", 1, []Block{{ID: "intro", Type: "paragraph", Text: "No task here."}}); err != nil || len(p.Tasks) != 0 {
 		t.Fatalf("FromBlocks(no task block) = %+v, %v, want a plan with no task and no error", p, err)
+	}
+}
+
+// CanMoveBack holds every pair of two different workflow phases but the 14 no line of a task
+// Supported takes makes as a move back, written out here rather than read from the checks: each
+// step phase to retro or to merging, and retro to merging, since the retro and the merge end every
+// line, and implementing to testing, reviewing or accepting, since the steps that read the
+// implementer's pull request come after it. Among the 28: a move back of another order than
+// today's (testing-reviewing, on implementer reviewer tester), a planner's move back to the
+// implementer (planning-implementing, on implementer planner), and the merge's move back to the
+// retro.
+func TestCanMoveBackHoldsTheMovesBackOfEveryLineSupportedTakes(t *testing.T) {
+	never := []string{
+		"planning-retro", "implementing-retro", "testing-retro", "reviewing-retro", "accepting-retro",
+		"planning-merging", "implementing-merging", "testing-merging", "reviewing-merging", "accepting-merging",
+		"retro-merging", "implementing-testing", "implementing-reviewing", "implementing-accepting",
+	}
+	for _, pair := range phase.MovePairs() {
+		from, to, _ := phase.ParsePair(pair)
+		fires := !slices.Contains(never, pair)
+		if can := CanMoveBack(from, to); can != fires {
+			t.Errorf("CanMoveBack(%s, %s) = %t, want %t", from, to, can, fires)
+		}
+	}
+	for _, move := range [][2]phase.Phase{{phase.Testing, phase.Reviewing}, {phase.Planning, phase.Implementing}, {phase.Merging, phase.Retro}} {
+		if !CanMoveBack(move[0], move[1]) {
+			t.Errorf("CanMoveBack(%s, %s) = false, want a move back", move[0], move[1])
+		}
 	}
 }

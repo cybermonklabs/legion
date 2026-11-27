@@ -23,6 +23,7 @@ const leakCheckCauseVersion = 20261112180548
 // then the retry that clears the sentence with the failure record. The migration is read back
 // under it: every row the table already holds takes the empty default.
 func TestALeakCheckRefusedClaimCarriesItsCause(t *testing.T) {
+	t.Parallel()
 	const sentence = "the shared public leak check could not be installed: the pod's launcher did not answer the install of leak-check-v3 within 2m0s"
 
 	t.Run("the cause round-trips beside the failure record", func(t *testing.T) {

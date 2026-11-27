@@ -30,6 +30,7 @@ import (
 // legion-envoy-v32.11.1 beside this build on one database (census: `difference at block_ref ...:
 // the row names no node`).
 func TestALinkThePreviousReleaseAddsBeforeThisBuildsNextVersionReachesTheStore(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 

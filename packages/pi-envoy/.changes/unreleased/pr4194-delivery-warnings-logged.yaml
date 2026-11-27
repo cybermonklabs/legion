@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  The extension's four delivery warnings are lines of the host's logger that begin `envoy:`,
+  where they were console prints that began `[envoy]`. Two are
+  `envoy: failed to deliver envelope <id>`, with the error's message in the line's `error` field,
+  where the print carried the error after the text. The others are
+  `envoy: rejecting malformed Dispatch targeted delivery <id>` and
+  `envoy: dropping malformed Dispatch targeted delivery without a reply address`. Each goes
+  through the extension's tell gate, so a delivery that fails once the session's stop has begun
+  writes no line, and each passes the scrub of held secrets as every other log line does.
+time: 2026-11-24T15:08:29Z
+custom:
+    Issue: pr4194

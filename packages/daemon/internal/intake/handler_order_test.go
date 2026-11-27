@@ -36,6 +36,7 @@ const orderProject = "LEGION"
 // is the whole reason the order is what it is. And the engine alone, over the same event, writes
 // no row at all.
 func TestABlockedByOnlyEditIsMirroredAheadOfTheEngineThatSkipsIt(t *testing.T) {
+	t.Parallel()
 	const issue, blocker = "LEGION-208", "LEGION-300"
 	pool := orderedPool(t)
 	records := record.NewStore()
@@ -93,6 +94,7 @@ func TestABlockedByOnlyEditIsMirroredAheadOfTheEngineThatSkipsIt(t *testing.T) {
 // the event's own transaction. The same event through the engine alone leaves the row's claim
 // unseen.
 func TestAClaimEventIsMirroredAheadOfTheEngine(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-208"
 	claimEvent := intake.DispatchClaim{Key: issue, Seq: 6, ClaimedBy: "user:alice"}
 	seed := func(pool *pgxpool.Pool, records record.Store) {

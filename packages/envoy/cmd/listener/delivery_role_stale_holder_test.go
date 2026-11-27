@@ -127,6 +127,7 @@ func (r staleHolderRig) settled(t *testing.T, role string) (exceptionReason stri
 // message: the state of its record is what separates the two, and nothing else about the two
 // deliveries differs.
 func TestCoreRoleDeliverySkipsAHolderThatStoppedHeartbeating(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "reviewer"
 		holder = "ses_role_heartbeat"
@@ -194,6 +195,7 @@ func TestCoreRoleDeliverySkipsAHolderThatStoppedHeartbeating(t *testing.T) {
 // TestAPublishWithKeepFalseToALapsedClaimIsRefusedAndKeepsNothing covers - nothing is kept and
 // the answer is the 404 naming unclaimed, which the Legion daemon reads as notify.ErrNoHolder.
 func TestAPublishWithKeepFalseToAnUnclaimedRoleIsRefusedAndKeepsNothing(t *testing.T) {
+	t.Parallel()
 	const role = "reviewer"
 	harness := newListenerDeliveryHarness(t)
 

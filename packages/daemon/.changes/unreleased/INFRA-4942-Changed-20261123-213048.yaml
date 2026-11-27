@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+    A phase worker's handoff body is now `head` and, where the role has one, a `note` of at most
+    1,000 characters for the next role, and the role writes it once, when it completes its phase.
+    The prompts no longer ask for `schemaVersion`, `phase`, `issue`, the plan's `requiredSkills`,
+    `gapAnalysis`, `planReview` and `specDepartures`, the implementer's `filesChanged` and its
+    other lists, or the reviewer's decision, counts and findings: each lives in the record that
+    owns it (the diff, the pull request body, the check's result, the GitHub review, `plan.md`).
+    The tester's body keeps `implementerProof`, `failures` and `failed`. Each plan task now names
+    the skills and repository docs its work needs, and the implementer, tester and reviewer read
+    them. A question or a departure about a plan task is a comment on that task's block, which the
+    architect answers in that thread.
+time: 2026-11-23T21:30:48Z
+custom:
+    Issue: INFRA-4942

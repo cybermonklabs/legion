@@ -36,7 +36,7 @@ func TestGitHubHandlerRecordsNoCheckSuiteRequest(t *testing.T) {
 			req.Header.Set("X-GitHub-Event", "check_suite")
 			req.Header.Set("X-Hub-Signature-256", githubSign("s", []byte(body)))
 			rr := httptest.NewRecorder()
-			GitHubHandler("s", "@legion", "", pub, rec, NewBodyBudget(DefaultBodyBudget, nil)).ServeHTTP(rr, req)
+			GitHubHandler("s", "@legion", "", "", pub, rec, NewBodyBudget(DefaultBodyBudget, nil)).ServeHTTP(rr, req)
 			if rr.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
 			}

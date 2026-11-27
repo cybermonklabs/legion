@@ -32,6 +32,10 @@
  * Exit 0 for either; exit 2 only when the request itself cannot be read.
  */
 import { resolve } from "node:path";
+// By path: the root package does not depend on @legion/contracts. It is this checkout's, whatever
+// tree the client comes from: a tree of a commit before daemonContract() has a manifest that
+// declares its contract, which daemonContract() answers first.
+import { daemonContract } from "../../packages/contracts/src/daemon-contract";
 
 interface Request {
   readonly daemon: string;
@@ -52,14 +56,16 @@ const root = resolve(process.env.OWNER_STEPS_CLIENT_ROOT || resolve(import.meta.
 // modules cannot be imported statically.
 const clientModule = await import(resolve(root, "packages/pi-shared/src/daemon-client.ts"));
 const phaseOps = await import(resolve(root, "packages/pi-shared/src/legion-phase-ops.ts"));
-// Each client states the contract its own tree's plugin speaks, read from that tree's manifest, as
-// the plugin passes its own `legion.daemonApiVersion` (`packages/pi-legion/src/claim-session.ts`):
-// the daemon serves each caller the shape of the contract it states.
+// Each client states the contract its own tree's plugin speaks, as the plugin passes its own
+// (`daemonContract(pkg, import.meta.dir)`, `packages/pi-legion/src/claim-session.ts`): that tree's
+// manifest's `legion.daemonApiVersion` where it declares one, else its frozen list's greatest
+// number plus its count of entry fixtures, counted from that tree's own `packages/pi-legion`. The
+// daemon serves each caller the shape of the contract it states.
 const manifest = await import(resolve(root, "packages/pi-legion/package.json"), {
   with: { type: "json" },
 });
 const client = clientModule.createLegionDaemonClient(request.daemon, {
-  pluginContract: manifest.default.legion.daemonApiVersion,
+  pluginContract: daemonContract(manifest.default, resolve(root, "packages/pi-legion")),
 });
 const methods = Object.keys(client).sort();
 const claim = request.claim;

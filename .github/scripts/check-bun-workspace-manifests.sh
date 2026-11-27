@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A Bun frozen install resolves every root workspace from its manifest. Docker's cache-friendly
-# install layer therefore must COPY every root workspace package.json before each
-# `bun install --frozen-lockfile` in the Dockerfile stage that runs it. Missing one fails the
+# install layer therefore must COPY every root workspace package.json before each frozen install
+# of the Dockerfile stage that runs it (`bun install --frozen-lockfile`). Missing one fails the
 # install only after a root workspace is added, so check the Dockerfile contract directly.
 #
 # Run from anywhere: .github/scripts/check-bun-workspace-manifests.sh

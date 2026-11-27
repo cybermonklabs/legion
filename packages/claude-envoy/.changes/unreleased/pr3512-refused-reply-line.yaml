@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A reply or a BTW answer that was not posted is said on stderr as not posted, with the reason,
+  where it was said not to have reached Dispatch even when Dispatch itself refused it. One whose
+  post may have landed - it ended with no definitive answer after an attempt may have reached
+  Dispatch, or on a 5xx - is said to be one that may or may not have been posted, with the reason.
+  A Codex session says its replies the same way.
+time: 2026-11-19T06:40:00.000000000Z
+custom:
+    Issue: pr3512

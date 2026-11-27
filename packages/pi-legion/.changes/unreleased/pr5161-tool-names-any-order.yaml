@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The `legion` tool tells an architect that `register_plan` takes the steps in the order they run,
+  with `implementer` before each `tester`, `reviewer` or `acceptance:owner` step, and that
+  `sign_off` moves the task to its next step, or to retro where the acceptance is the task's last
+  step.
+time: 2026-11-23T09:29:42Z
+custom:
+    Issue: pr5161

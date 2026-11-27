@@ -68,6 +68,11 @@ real_bin_path() {
 # so a healthy wait and a stall read differently to anyone watching a run's output. A poll that
 # never returns would hold the wait past its bound, so a caller's remote calls carry their own
 # timeouts.
+#
+# A caller that sets until_true_deadline (a value of $SECONDS) bounds every wait by the time left
+# until it instead of by SECONDS: a test row of this lib waits on a kernel event (an exit, a zombie)
+# that a loaded host can take longer than a proof's seconds to deliver, and its one bound on a hang
+# is the row's own. No proof sets it.
 until_true() {
   # Its time of entry is `began`, not `started`: a caller's `fail` exits inside this function, so
   # the caller's EXIT trap runs where these locals hide the caller's variables of the same names,
@@ -75,6 +80,7 @@ until_true() {
   # and left every process the failed row had started running.
   local limit=$1 what=$2 polls=0 began=$SECONDS beat=$SECONDS
   shift 2
+  if [ -n "${until_true_deadline:-}" ]; then limit=$((until_true_deadline - SECONDS)); fi
   note "waiting up to ${limit}s for $what"
   while ((SECONDS - began < limit)); do
     [ ! -s "$evidence/pane-endpoint-violation.txt" ] || fail "ABORT: $(cat "$evidence/pane-endpoint-violation.txt")"
@@ -86,6 +92,10 @@ until_true() {
     fi
     sleep 0.5
   done
+  # One poll at the bound itself, so a wait whose condition holds when the time is up, or whose
+  # deadline had passed before it began, still succeeds rather than failing unread.
+  polls=$((polls + 1))
+  if "$@" >/dev/null 2>&1; then return 0; fi
   if [ -n "$timeout_hook" ]; then "$timeout_hook" || true; fi
   fail "timed out after ${limit}s ($polls polls) waiting for $what"
 }
@@ -187,35 +197,50 @@ port_answers() {
 }
 
 # listening_holders PORT prints, one per line in order, the pid of every process holding the one
-# socket that listens on PORT: its inode from the LISTEN row (state 0A) of /proc/net/tcp and
-# /proc/net/tcp6, and each process of `${proc_root:-/proc}` with a descriptor naming
-# socket:[<inode>] (the host's /proc, unless a test points proc_root at a proc root of its own,
-# scripts/e2e/lib/proc-root.ts). It fails with 1 when no socket listens on PORT, or more than one
-# does, and with 2, saying why, when /proc/net/tcp cannot be read, so an unread table is never
-# read as a port nothing listens on, and when the proc root lists no process at all.
+# socket that listens on 127.0.0.1:PORT, where every service of a rig listens (held-port.py's
+# default host, port_answers' address): its inode from the LISTEN row (state 0A) of /proc/net/tcp
+# whose local address is 127.0.0.1:PORT, and each process of `${proc_root:-/proc}` with a
+# descriptor naming socket:[<inode>] (the host's /proc, unless a test points proc_root at a proc
+# root of its own, scripts/e2e/lib/proc-root.ts). A socket on the same port of another address is
+# none of it: the kernel's bind of port 0 on 127.0.0.1 hands out a port another process already
+# listens on at another loopback address, as a Go test of this box does on a random 127.x.y.z, and
+# a count of every row with that port read two sockets and failed. The table writes an address as
+# the hexadecimal of its 32 bits in the host's byte order: 127.0.0.1 is 0100007F on a little-endian
+# host and 7F000001 on a big-endian one, and the other spelling is 1.0.0.127 there, an address a
+# socket can hold too (IP_FREEBIND), so each call reads the order (od of the bytes 01 00 as one
+# 16-bit word) and takes the one spelling. It fails with 1 when no socket listens on
+# 127.0.0.1:PORT, or more than one does, and with 2, saying why, when /proc/net/tcp cannot be read,
+# so an unread table is never read as a port nothing listens on, when od does not tell the byte
+# order, and when the proc root lists no process at all.
 # The shell's glob hands the <pid>/fd entries to find on stdin (-files0-from -), never as its
 # arguments: as arguments, past ARG_MAX (about 80,000 processes), find could not start, and the
 # `|| true` this had turned that E2BIG into no holder at all. An fd directory this user may not read
 # (another user's process) or whose process ended during the walk is none of the answer; any other
 # complaint of the walk's (proc_walk_complaint) prints and fails with 2.
 listening_holders() {
-  local proc=${proc_root:-/proc} inodes err status=0 complaint holder table
-  local -a holders=() tables=() entries=()
-  for table in /proc/net/tcp /proc/net/tcp6; do
-    [ ! -e "$table" ] || tables+=("$table")
-  done
+  local proc=${proc_root:-/proc} inodes err status=0 complaint holder order loopback
+  local -a holders=() entries=()
   [ -r /proc/net/tcp ] || {
-    echo "listening_holders: /proc/net/tcp cannot be read, so the socket listening on port $1 was not looked for" >&2
+    echo "listening_holders: /proc/net/tcp cannot be read, so the socket listening on 127.0.0.1:$1 was not looked for" >&2
     return 2
   }
-  inodes=$(awk -v port=":$(printf '%04X' "$1")" \
-    '$4 == "0A" && substr($2, length($2) - 4) == port { print $10 }' "${tables[@]}") || {
-    echo "listening_holders: awk could not read ${tables[*]}, so the socket listening on port $1 was not looked for" >&2
+  order=$(printf '\1\0' | od -An -tx2)
+  case "$order" in
+    *0001*) loopback=0100007F ;;
+    *0100*) loopback=7F000001 ;;
+    *)
+      echo "listening_holders: od read the bytes 01 00 as '$order', not this host's byte order, so the socket listening on 127.0.0.1:$1 was not looked for" >&2
+      return 2
+      ;;
+  esac
+  inodes=$(awk -v address="$loopback:$(printf '%04X' "$1")" \
+    '$4 == "0A" && $2 == address { print $10 }' /proc/net/tcp) || {
+    echo "listening_holders: awk could not read /proc/net/tcp, so the socket listening on 127.0.0.1:$1 was not looked for" >&2
     return 2
   }
   case "$inodes" in
     '' | *[!0-9]*)
-      echo "listening_holders: $(wc -w <<<"$inodes") sockets listen on port $1, not one" >&2
+      echo "listening_holders: $(wc -w <<<"$inodes") sockets listen on 127.0.0.1:$1, not one" >&2
       return 1
       ;;
   esac
@@ -249,18 +274,18 @@ listening_holders() {
   done | sort -un
 }
 
-# held_only_by PORT PID... succeeds when the processes holding the socket listening on PORT
-# (listening_holders) are exactly the PIDs given, and otherwise prints each holder with its command
-# and fails: a descriptor that leaked into another process (a tmux server, a pane, a CLI call) keeps
-# the port listening after the service stops. A reading listening_holders could not make fails with
-# its status and its reason.
+# held_only_by PORT PID... succeeds when the processes holding the socket listening on
+# 127.0.0.1:PORT (listening_holders) are exactly the PIDs given, and otherwise prints each holder
+# with its command and fails: a descriptor that leaked into another process (a tmux server, a pane,
+# a CLI call) keeps the port listening after the service stops. A reading listening_holders could
+# not make fails with its status and its reason.
 held_only_by() {
   local port=$1 holders want pid
   shift
   holders=$(listening_holders "$port") || return
   want=$(printf '%s\n' "$@" | sort -un)
   [ "$holders" != "$want" ] || return 0
-  echo "the socket listening on port $port is held by:" >&2
+  echo "the socket listening on 127.0.0.1:$port is held by:" >&2
   for pid in $holders; do echo "  $pid $(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)" >&2; done
   echo "and should be held by $(tr '\n' ' ' <<<"$want")alone" >&2
   return 1

@@ -51,7 +51,7 @@ func PutPlan(ctx context.Context, tx pgx.Tx, write PlanWrite, actor model.Actor,
 	}
 	// A default plan states no document, so its version reads 0 (PlanWrite.Document).
 	version := write.Document.Version
-	written, err := putNode(ctx, tx, nodeWrite{
+	written, _, err := putNode(ctx, tx, nodeWrite{
 		kind: KindPlan, id: id, issue: write.Issue, stated: stated, makes: true, actor: actor, at: at,
 		replaces: func(held map[string]json.RawMessage) ([]string, error) {
 			heldVersion := 0
@@ -166,6 +166,16 @@ func (write PlanWrite) attributes() (string, []attribute, error) {
 			}
 			if keyed && !stepKeyForm.MatchString(key) {
 				return "", nil, refusal(ErrPlanInput, "steps of task %s hold %q, whose key %q is not a key: a lowercase letter, then lowercase letters, digits and hyphens", task.ID, step, key)
+			}
+		}
+	}
+	for _, task := range write.Tasks {
+		if task.Needs == nil {
+			continue
+		}
+		for _, need := range *task.Needs {
+			if !named[need] {
+				return "", nil, refusal(ErrPlanInput, "needs of task %s hold %q, which names no task of this plan: each need is the id of a task the plan holds", task.ID, need)
 			}
 		}
 	}
