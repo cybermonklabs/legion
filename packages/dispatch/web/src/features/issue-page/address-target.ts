@@ -119,7 +119,7 @@ export function landingPath(to: string): string {
 
 /**
  * The chain from the issue down to the nearest node the tree `root` holds above `id`, a turn of
- * a thread only agents wrote in (`agentsOnlyItem`), which the outline draws no node for: the
+ * a thread the panel's history holds (`agentsOnlyItem`), which the outline draws no node for: the
  * entry the turn was written under - the comment its write answered (`answers`, else the head of
  * its thread, `reply_to`), the ask it replies under (`ask_id`), the message it answers
  * (`in_reply_to`) - where the tree holds it, else that entry's own, as `tree-read/tree-nodes.ts`
@@ -156,10 +156,10 @@ function agentsOnlyAncestor(
  *  the tree is built from has answered (`useAddressFallback`). */
 export type AddressFallback =
   /**
-   * A turn of a thread only agents wrote in, which the outline leaves out on purpose
+   * A turn of a thread the panel's history holds, which the outline leaves out on purpose
    * (`agents-only.ts`): `ancestor` is the chain down to the turn's nearest node the tree holds
    * (`agentsOnlyAncestor`), the issue alone where it holds none, which the outline lands on and
-   * says at its row that the thread is the agents' alone.
+   * says at its row that the thread is in the history.
    *
    * It is a kind of its own, never `missing`: the turn is there, in the panel's history. Opening
    * Details at that history with the turn `id` marked is the panel's to do, and the part that
@@ -219,7 +219,7 @@ export interface ConversationReads {
 
 /** What the agents-only rule and the walk to a drawn ancestor read of a comment
  *  (`agentsOnlyIds`, `agentsOnlyAncestor`). */
-type ThreadComment = Pick<Comment, "answers" | "ask_id" | "author" | "id" | "reply_to">;
+type ThreadComment = Pick<Comment, "anchor" | "answers" | "ask_id" | "author" | "id" | "reply_to">;
 
 /**
  * The comments of the thread the comment `id` stands in, which tell whether only agents wrote in
@@ -300,8 +300,8 @@ interface Following {
    *  `errorUpdateCount`), from which the following counts its own failures; undefined until the
    *  following reads it. */
   readonly failedBefore: number | undefined;
-  /** Whether the tree has held the address's node, or the nearest drawn ancestor of a turn only
-   *  agents wrote in, at any time during this following. */
+  /** Whether the tree has held the address's node, or the nearest drawn ancestor of a turn of
+   *  the history, at any time during this following. */
   readonly found: boolean;
   /** The following: the location's key with its address (`useFollowing`). */
   readonly key: string;
@@ -319,19 +319,19 @@ interface Following {
  * Where `address` lands where it names a node the tree holds none of (`reveal` undefined), once
  * every read the tree is built from has answered (`readsHeld`): before that the node may not
  * have arrived yet. Undefined while the tree holds the node, while the reads are out before the
- * following has found the node or the ancestor a turn only agents wrote in lands on (`found`),
+ * following has found the node or the ancestor a turn of the history lands on (`found`),
  * settled on a landing or drawn the line that the issue has no children (below), for an address
  * naming no node or opening a document, and while the old page's landing reads the item
  * (`pending`) with no landing settled since the address was followed.
  *
  * Each following of the address (`useFollowing`) is decided on its own, once: a
- * following whose tree has held the address's node, or the nearest drawn ancestor of a turn only
- * agents wrote in, draws no fallback for the rest of it, whatever the tree holds later - a block
+ * following whose tree has held the address's node, or the nearest drawn ancestor of a turn of
+ * the history, draws no fallback for the rest of it, whatever the tree holds later - a block
  * deleted, the last child unlinked, the comment deleted while the reader is on its row leaves
  * the outline drawn, and the reader in it.
  *
  * An ask, a comment or a message of the outline (`outlineItemRoute`) is told from the
- * conversation's reads where it is a turn of a thread only agents wrote in, as the tree leaves
+ * conversation's reads where it is a turn of a thread the history holds, as the tree leaves
  * it out (`agentsOnlyItem`, with the asks the tree draws its nodes from: the issue's open asks
  * and the asks read), and lands on its nearest drawn ancestor (`agents-only`). A comment's thread
  * is read for it then, as its own read and its thread head's (`useCommentThread`), and nothing
@@ -355,7 +355,7 @@ interface Following {
  * the issue, whose blocks are then read - leave that landing drawn, with its failures counted as
  * before: the line, its alert and the focus it holds stay, where the line leaving the page and
  * coming back once the reads answered said its failure again and took the focus again. So do the
- * landing on the nearest drawn ancestor of a turn only agents wrote in - the issue, for every
+ * landing on the nearest drawn ancestor of a turn of the history - the issue, for every
  * such turn the server stores - which the conversation's reads still tell while the blocks are
  * read: dropped then, the tree had no address to land on, and once the reads answered the
  * landing's key came back as a new landing's would, which left a zoom the reader had made after
@@ -392,7 +392,7 @@ export function useAddressFallback({
   const before = followed?.key === following ? followed : undefined;
   // While the reads are out again, a following that has settled on a landing keeps its landing's
   // read, so the landing stays drawn (above); one that has found the address's node or the
-  // ancestor a turn only agents wrote in lands on reads nothing (below), and only checks the item
+  // ancestor a turn of the history lands on reads nothing (below), and only checks the item
   // against the conversation reads the page holds (`agentsOnly`), so a landing on that ancestor
   // stays drawn too.
   const unheld =
