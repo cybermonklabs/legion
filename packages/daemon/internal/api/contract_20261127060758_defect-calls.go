@@ -20,17 +20,18 @@ package api
 // bounds of a message, as a backward move's reason is), `400 DEFECT_HEAD_REQUIRED`,
 // `400 DEFECT_CHECK_INVALID` (a `check` that is no block id of a Dispatch document: over 256 bytes
 // or holding a control character), `409 DEFECT_ISSUE_CLOSED`, `409 TREE_LINGERING`,
-// `400 INVALID_ISSUE` and `404 ISSUE_NOT_FOUND`, and records nothing. The merger's report in
-// verifying needs its completion of the merged generation to be owed, which no code of this
-// release writes (dispatch://INFRA-5580's Tasks 6 and 7), so until they land a merger there is
-// refused `DEFECT_CALLER_NOT_ALLOWED`, and the refusal's own sentence names retro and merging
-// alone.
+// `400 INVALID_ISSUE` and `404 ISSUE_NOT_FOUND`, and records nothing. The merger reports in
+// verifying while its completion of the merged generation is still owed
+// (record.Issue.MergerCompletionOwed, which the merge sets and that completion clears), and is
+// refused `DEFECT_CALLER_NOT_ALLOWED` there once it has landed; the refusal's own sentence names
+// that window.
 // `POST /legion/v1/defects/withdraw` (`api.DefectWithdrawRequest`: `grantId`, `issue`, `defect`,
 // the id, and `reason`) ends a reported defect for the owning architect, by the rule of sign_off,
 // and answers `api.DefectWithdrawResponse`: `defect` and `state`, `withdrawn`. It refuses
 // `403 DEFECT_WITHDRAW_NOT_OWNER`, `404 DEFECT_NOT_FOUND`, `409 DEFECT_IS_A_CHECK` (a failed
 // check's or a production check's reason, which only a new approved version of the Verification
 // document changes), `409 DEFECT_IN_MERGED_CHANGE`, `400 DEFECT_REASON_REQUIRED`,
+// `400 DEFECT_REASON_TOO_LONG` and `400 DEFECT_REASON_DECISION_BLOCK` (the reason held to the
 // bounds the defect's text is), `400 INVALID_ISSUE` and `404 ISSUE_NOT_FOUND`, and changes
 // nothing. A withdrawal is said once in close-wait.md:
 // the stored wait keeps it until a version holding it is uploaded. Each refusal's shape is the one

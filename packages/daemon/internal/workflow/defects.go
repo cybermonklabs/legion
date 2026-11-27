@@ -58,7 +58,7 @@ func (e *Engine) defectReport(ctx context.Context, tx pgx.Tx, fact intake.Defect
 	}
 	if !allowed {
 		return intake.Result{Refusal: &intake.Refusal{Status: http.StatusForbidden, Code: "DEFECT_CALLER_NOT_ALLOWED", Message: fmt.Sprintf(
-			"the %s may not report a defect of %s while it stands in %s: the implementer reports in retro, the merger in merging, and the owning architect from retro on. This report recorded nothing.",
+			"the %s may not report a defect of %s while it stands in %s: the implementer reports in retro, the merger in merging and in verifying until its completion of the merged generation lands, and the owning architect from retro on. This report recorded nothing.",
 			fact.Role, issue.Key, record.StandsAt(issue))}}, nil
 	}
 	open, err := e.store.OpenDefects(ctx, tx, issue.Key)
