@@ -21,8 +21,9 @@ name: CodeQL
 #   * actions - every workflow under .github/workflows and the 11 composite `action.yml` files,
 #     which run with this repository's tokens.
 # The repository's shell scripts (179 .sh) and SQL migrations (403 .sql) have no CodeQL language,
-# so no analysis here covers them. All four are analysed in one job (the job's comment says why
-# and how each language's results still land in a configuration of their own).
+# so no analysis here covers them. The four are analysed in two jobs, go in one and the other three
+# in the other (the jobs' comment says why, and how each language's results still land in a
+# configuration of their own).
 #
 # Every pull request starts an analysis, documentation-only ones included, and that is why this
 # trigger carries no `paths-ignore`. The code-scanning rule on the ruleset of `main` holds a pull
@@ -59,28 +60,34 @@ concurrency:
   group: codeql-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# The analyze job declares every scope it needs in a block of its own; nothing runs under this
-# default.
+# Each job declares every scope it needs in a block of its own; nothing runs under this default.
 permissions: {}
 
 jobs:
-  # One job for all four languages, where there was one job for each. Every CodeQL job pays the
-  # action's own REST requests to this repository's GITHUB_TOKEN budget whatever it analyses:
-  # feature flags, the run and its workflow, repository properties, the Actions caches, the pull
-  # request's diff, and a status report from each step. One job pays them once. Each language's
-  # results still go up as an analysis of their own: analyze writes one SARIF file per language
-  # and uploads none, and an upload-sarif step per language sends that file with the category and
-  # the matrix value the language's own job sent, so main's alerts stay in the four
-  # configurations they are in. A failed step now stops the languages after it, where a failed
-  # language job left the other three uploaded.
-  analyze:
-    name: Analyze
+  # Two jobs, side by side: go in one, and the three languages that build nothing in the other.
+  # Every CodeQL job pays the action's own REST requests to this repository's GITHUB_TOKEN budget
+  # whatever it analyses (feature flags, the run and its workflow, repository properties, the
+  # Actions caches, the pull request's diff, and a status report from each step), so the languages
+  # share as few jobs as give the shortest wall. Two jobs give it, for two reasons:
+  #   * go is the longest analysis by far, and a job of its own starts it with the run;
+  #   * a job that holds go, javascript-typescript or python with no `actions` uses CodeQL's
+  #     overlay analysis, and a job that holds `actions` does not. The action disables overlay
+  #     for a job when any of its languages lacks it (codeql-action src/config-utils.ts,
+  #     checkOverlayAnalysisFeatureEnabled), and `actions` has none. So go's job builds an
+  #     overlay-base database on main and caches it, and a pull request's go analysis restores
+  #     it and extracts only the files the pull request changes. The other job is analysed as
+  #     the one job was: a full database, a TRAP cache for actions and javascript.
+  # Each language's results go up as an analysis of their own: analyze writes one SARIF file per
+  # language and uploads none, and an upload-sarif step per language sends that file with the
+  # category and the matrix value the language's own job sent before the languages shared a job,
+  # so main's alerts stay in the four configurations they are in.
+  analyze-go:
+    name: Analyze (go)
     runs-on: ubuntu-24.04-arm
-    # The four analyses run one after another in this job, where they ran side by side.
     timeout-minutes: 60
     # The starter workflow's least permissions: security-events: write uploads the results,
     # packages: read fetches CodeQL packs, actions: read and contents: read let the action read
-    # this run and the checkout.
+    # this run, the Actions caches and the checkout.
     permissions:
       security-events: write
       packages: read
@@ -92,47 +99,71 @@ jobs:
           persist-credentials: false
       # Before init, as the starter workflow's comment says setup steps go: go.work asks for a Go
       # the runner image does not carry, and the autobuild step builds both modules of the
-      # workspace with whatever `go` is on the PATH. cache: false, as in every other Go job here:
-      # this workflow fills no Actions cache entry (INFRA-490's budget).
+      # workspace with whatever `go` is on the PATH. cache: false, as in every other Go job here.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.work
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
-      # No build-mode: one value would apply to all four languages, and go cannot take the `none`
-      # the three others take. Left unset, the three are extracted from source at analyze time, as
-      # `none` extracts them, and go is built by the autobuild step.
+      # No build-mode, as before go had a job of its own: the autobuild step builds go, and the
+      # action allows overlay analysis for go with any build mode.
       - name: Initialize CodeQL
         uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
-          languages: actions, go, javascript-typescript, python
+          languages: go
       - name: Build the Go modules for CodeQL
         uses: github/codeql-action/autobuild@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
-        # It writes one SARIF file a language to its default output, ../results, and sends none.
+        # It writes go.sarif to its default output, ../results, and sends nothing.
         with:
           upload: never
-      # One upload a language, each with the category and the matrix value its own job sent
-      # (upload-sarif sends `matrix` as the analysis's environment), so each lands in the
-      # configuration main already holds for it. The file names are CodeQL's language names.
       # wait-for-processing: false, because the wait is a poll of the SARIF's status on this
       # repository's token, and the code-scanning rule of main's ruleset already waits for the
       # processed results before a pull request can merge.
-      - name: Upload the actions results
-        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
-        with:
-          sarif_file: ../results/actions.sarif
-          category: /language:actions
-          matrix: ${{ toJSON(fromJSON('{"language":"actions","build-mode":"none"}')) }}
-          wait-for-processing: false
       - name: Upload the go results
         uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: ../results/go.sarif
           category: /language:go
           matrix: ${{ toJSON(fromJSON('{"language":"go","build-mode":"autobuild"}')) }}
+          wait-for-processing: false
+
+  analyze:
+    name: Analyze (actions, javascript-typescript, python)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    # As analyze-go's.
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No build-mode: the three are extracted from source at analyze time, as `none` extracts
+      # them.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: actions, javascript-typescript, python
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        # It writes one SARIF file a language to its default output, ../results, and sends none.
+        with:
+          upload: never
+      # One upload a language, as analyze-go's, with the category and matrix value of that
+      # language. The file names are CodeQL's language names. A failed upload stops the uploads
+      # after it in this job, and leaves go's job unaffected.
+      - name: Upload the actions results
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: ../results/actions.sarif
+          category: /language:actions
+          matrix: ${{ toJSON(fromJSON('{"language":"actions","build-mode":"none"}')) }}
           wait-for-processing: false
       - name: Upload the javascript-typescript results
         uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
@@ -148,3 +179,35 @@ jobs:
           category: /language:python
           matrix: ${{ toJSON(fromJSON('{"language":"python","build-mode":"none"}')) }}
           wait-for-processing: false
+
+  # On main (a push, or the weekly run), analyze-go saves a new overlay-base database to the
+  # Actions cache under a key that names its commit and run, and the action deletes none: a pull
+  # request restores the newest one only. This job deletes every older one but the newest two, so
+  # go's databases hold two cache entries, not one for each analysis of main; the second is kept
+  # for a pull request that started restoring it before the newest was saved.
+  prune-overlay-bases:
+    name: Prune go's older overlay-base databases
+    if: github.event_name != 'pull_request'
+    needs: analyze-go
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    # actions: write deletes Actions cache entries; nothing is checked out.
+    permissions:
+      actions: write
+    steps:
+      - name: Delete all but the newest two overlay-base databases of each key prefix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          # The key is <prefix><commit>-<run id>-<run attempt>; the prefix names the job and the
+          # CodeQL version, so each version keeps its own newest two.
+          gh api "repos/${REPO}/actions/caches?key=codeql-overlay-base-database-&ref=${REF}&sort=created_at&direction=desc&per_page=100" \
+            --jq '[.actions_caches[] | {id, key, created_at, prefix: (.key | sub("[0-9a-f]{40}-[0-9]+-[0-9]+$"; ""))}]
+                  | group_by(.prefix)[] | sort_by(.created_at) | reverse | .[2:][] | "\(.id) \(.key)"' |
+            while read -r id key; do
+              echo "Deleting ${key}"
+              gh api -X DELETE "repos/${REPO}/actions/caches/${id}" --silent
+            done
