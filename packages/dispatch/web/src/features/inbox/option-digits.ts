@@ -30,9 +30,14 @@ export interface OptionDigit {
 
 /** Shows a digit only inside the Inbox row in hand: the row itself focused, or an option of it
  *  (`answerHand` in `useInboxKeymap.ts`). The row is the `group` (`InboxRowShell`). The digit
- *  keeps its space while hidden, so a row taking the focus moves no option's text. */
+ *  keeps its space while hidden, so a row taking the focus moves no option's text. The option's
+ *  half names the digit as its selector's subject (`.group:has(…) &`). Tailwind's
+ *  `group-has-[…]` writes `:is(.group:has(…) *)`, for which Chrome marks every element below
+ *  the changed element as maybe changed (`allDescendantsMightBeInvalid`): with it, each element
+ *  added anywhere restyled 5,176 of the issue page's 5,411 elements at 390 px
+ *  (`issue-page-d.e2e.ts`'s "adding one row to a page of many rows …"). */
 export const ROW_IN_HAND_CLASS =
-  "invisible group-focus:visible group-has-[[data-ask-option]:focus]:visible";
+  "invisible group-focus:visible [.group:has([data-ask-option]:focus)_&]:visible";
 
 /** The key that picks the option at `index`: `1` to `9`, then `0` for the tenth, and none
  *  past it. */
