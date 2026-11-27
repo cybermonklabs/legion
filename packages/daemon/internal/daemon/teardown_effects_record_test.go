@@ -456,17 +456,40 @@ var (
 	teardownEffectsBareID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*$`)
 	// teardownEffectsSlugGap is a run of the characters that a document slug does not keep.
 	teardownEffectsSlugGap = regexp.MustCompile(`[^a-z0-9]+`)
+	// teardownEffectsBlockFragment is a reference to a block of an issue's or a project's spec or
+	// other document, pinned or not, by a fragment (`dispatch://ACME-12/spec#r1`,
+	// `…/artifact/plan-md@v3#b-t1`): the reference up to the `#`, and the fragment. Its key, slug
+	// and id grammars are seed.ts dispatchBlockRefs'.
+	teardownEffectsBlockFragment = regexp.MustCompile(`(dispatch://[A-Z][A-Z0-9]*(?:-\d+)?/(?:spec|artifact/[A-Za-z0-9._-]+)(?:@v\d+)?)#([A-Za-z0-9][A-Za-z0-9-]*)`)
+	// teardownEffectsPinBeforeFragment is a pointer's entry pinned before its fragment
+	// (`…/plan-md@v3#b-step-1`, seed.ts PIN_BEFORE_FRAGMENT), its document in the grammar of a
+	// canonical block reference (parseCanonicalBlockReference in @legion/contracts): the issue of a
+	// spec, or the issue or project and the slug of another document, then the pin and the block id.
+	teardownEffectsPinBeforeFragment = regexp.MustCompile(`^dispatch://(?:([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)/spec|([A-Z][A-Z0-9]{1,9}(?:-[1-9][0-9]*)?)/artifact/([a-z0-9]+(?:-[a-z0-9]+)*))@v([1-9][0-9]*)#(?:b-)?([A-Za-z0-9][A-Za-z0-9-]*)$`)
 )
 
 // teardownEffectsBarePointers is body, the text of the case's document name, as the replay writes
-// it on the issue key: each bare id of a pointer of a check or a plan task (`serves="r1"`,
-// `needs="t1"`) is written as the reference Dispatch writes to that block, as lane R's seed writes
-// it (seed.ts dispatchBlockRefs). Dispatch refuses any other pointer (400 INVALID_MARKDOWN). A
-// `serves` points at a requirement of key's spec (specBlock). A `needs` points only at a block of
-// its own document, under the slug Dispatch gives a new document of name (artifactSlug in
-// packages/envoy/internal/dispatch/api/artifacts.go). Only an opening line outside fenced code is
-// read, and in it only those pointers. Every other entry, attribute and line is left as it is.
+// it on the issue key, which is as lane R's seed writes it (seed.ts dispatchBlockRefs): Dispatch
+// refuses a pointer that is no block reference as Dispatch writes one (400 INVALID_MARKDOWN).
+// First each reference that names a block by its id, anywhere in the text
+// (`dispatch://ACME-12/spec#r1`, the block `:::requirement{#r1}`), takes the `b-` Dispatch writes
+// before the id (`dispatch://ACME-12/spec#b-r1`); a fragment that begins with `b-` is left as it
+// is. Then each bare id of a pointer of a check or a plan task (`serves="r1"`, `needs="t1"`) is
+// written as the reference Dispatch writes to that block, and each of its references pinned
+// before the fragment takes the pin after it (teardownEffectsPinAfterFragment). A `serves` points
+// at a requirement of key's spec (specBlock). A `needs` points only at a block of its own
+// document, under the slug Dispatch gives a new document of name (artifactSlug in
+// packages/envoy/internal/dispatch/api/artifacts.go). For pointers only an opening line outside
+// fenced code is read, and in it only those pointers. Every other entry, attribute and line is
+// left as it is.
 func teardownEffectsBarePointers(key, name, body string) string {
+	body = teardownEffectsBlockFragment.ReplaceAllStringFunc(body, func(reference string) string {
+		parts := teardownEffectsBlockFragment.FindStringSubmatch(reference)
+		if strings.HasPrefix(parts[2], "b-") {
+			return reference
+		}
+		return parts[1] + "#b-" + parts[2]
+	})
 	slug := strings.Trim(teardownEffectsSlugGap.ReplaceAllString(strings.ToLower(name), "-"), "-")
 	if slug == "" {
 		slug = "artifact"
@@ -506,13 +529,41 @@ func teardownEffectsBarePointers(key, name, body string) string {
 			for j, entry := range entries {
 				if teardownEffectsBareID.MatchString(entry) {
 					entries[j] = target(entry)
+					continue
 				}
+				entries[j] = teardownEffectsPinAfterFragment(entry)
 			}
 			return attribute[1] + attribute[2] + `="` + strings.Join(entries, " ") + `"`
 		})
 		lines[i] = opener[1] + attributes + "}"
 	}
 	return strings.Join(lines, "\n")
+}
+
+// teardownEffectsPinAfterFragment is entry, one entry of a pointer, with a pin it holds before its
+// fragment (`dispatch://ACME-12/artifact/plan-md@v3#b-step-1`) written after the fragment
+// (`dispatch://ACME-12/artifact/plan-md#b-step-1@v3`), as seed.ts pointerEntry writes it. Any
+// other entry is left as it is, and so is one that would be no canonical block reference
+// (parseCanonicalBlockReference in @legion/contracts): an issue's spec spelled `artifact/spec`, a
+// block id past MAX_BLOCK_ID_BYTES (256), or a target past MAX_REFERENCE_TARGET_BYTES (2048).
+func teardownEffectsPinAfterFragment(entry string) string {
+	pinned := teardownEffectsPinBeforeFragment.FindStringSubmatch(entry)
+	if pinned == nil {
+		return entry
+	}
+	owner, document, pin, block := pinned[1], "spec", pinned[4], pinned[5]
+	written := owner + "/spec"
+	if owner == "" {
+		owner, document = pinned[2], pinned[3]
+		written = owner + "/artifact/" + document
+		if document == "spec" && strings.Contains(owner, "-") {
+			return entry
+		}
+	}
+	if len(block) > 256 || len(owner)+len(document)+len(block)+2 > 2048 {
+		return entry
+	}
+	return "dispatch://" + written + "#b-" + block + "@v" + pin
 }
 
 // teardownEffectsPull is one pull request of the scratch GitHub, as the case's world gives it
@@ -2232,5 +2283,105 @@ func TestTeardownEffectsBarePointers(t *testing.T) {
 	}
 	if got, want := teardownEffectsBarePointers("ACME-12", "Plan v2.md", `:::plan_task{#t2 needs="t1"}`), `:::plan_task{#t2 needs="dispatch://ACME-12/artifact/plan-v2-md#b-t1"}`; got != want {
 		t.Errorf("a needs of Plan v2.md reads %s, want %s", got, want)
+	}
+}
+
+// Catches: a starting document that names a block by a reference whose fragment is the block's
+// bare id (`serves="dispatch://ACME-52/spec#r1"`, as the verification.md and plan.md of every
+// locked reviewer case do), which the real Dispatch refuses (400 INVALID_MARKDOWN: "is not a
+// block reference as Dispatch writes one"), so lane D's --controls failed all 16 reviewer controls
+// at their seed while lane R's seed wrote `#b-r1`; and a rewrite that reaches a fragment already
+// `b-`, a reference to no block or a bare id in fenced code, or that leaves a pointer's pin before
+// its fragment. Each body is written as lane R's seed writes it: the want is what, in
+// packages/pi-legion, with the body on stdin and the document's slug last,
+//
+//	bun -e 'import { dispatchBlockRefs } from "./scripts/skill-scenarios/seed.ts"; process.stdout.write(dispatchBlockRefs(await Bun.stdin.text(), "ACME-52", process.argv.at(-1)))' plan-md
+//
+// printed. The first two bodies are rev-both's documents as the locked cases hold them.
+func TestTeardownEffectsBlockReferences(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct{ row, name, body, want string }{
+		{
+			row:  "rev-both's verification.md",
+			name: "verification.md",
+			body: strings.Join([]string{
+				"# Verification",
+				"",
+				`:::check{#k1 serves="dispatch://ACME-52/spec#r1" surface="cli" run="go test -run 'TestDeliverRetries' ./internal/deliver/" when="before_merge" negative_control="A delivery that is not tried again fails the test."}`,
+				"A failed delivery is tried again up to the count, and the default count holds.",
+				":::",
+				"",
+			}, "\n"),
+			want: strings.Join([]string{
+				"# Verification",
+				"",
+				`:::check{#k1 serves="dispatch://ACME-52/spec#b-r1" surface="cli" run="go test -run 'TestDeliverRetries' ./internal/deliver/" when="before_merge" negative_control="A delivery that is not tried again fails the test."}`,
+				"A failed delivery is tried again up to the count, and the default count holds.",
+				":::",
+				"",
+			}, "\n"),
+		},
+		{
+			row:  "rev-both's plan.md",
+			name: "plan.md",
+			body: strings.Join([]string{
+				"# Plan of ACME-52",
+				"",
+				`:::plan_task{#t1 serves="dispatch://ACME-52/spec#r1" steps="planner implementer tester reviewer"}`,
+				"Add the `--retries` flag to `acme deliver`. Each failed delivery is tried again, up to the flag's count. The flag's default is 3.",
+				":::",
+				"",
+				"## Tests",
+				"",
+				"`TestDeliverRetries` in `internal/deliver` holds the count and the default.",
+				"",
+			}, "\n"),
+			want: strings.Join([]string{
+				"# Plan of ACME-52",
+				"",
+				`:::plan_task{#t1 serves="dispatch://ACME-52/spec#b-r1" steps="planner implementer tester reviewer"}`,
+				"Add the `--retries` flag to `acme deliver`. Each failed delivery is tried again, up to the flag's count. The flag's default is 3.",
+				":::",
+				"",
+				"## Tests",
+				"",
+				"`TestDeliverRetries` in `internal/deliver` holds the count and the default.",
+				"",
+			}, "\n"),
+		},
+		{
+			row:  "a bare id and a reference already #b-",
+			name: "verification.md",
+			body: `:::check{#k1 serves="r1 dispatch://ACME-52/spec#b-r2" surface="cli"}`,
+			want: `:::check{#k1 serves="dispatch://ACME-52/spec#b-r1 dispatch://ACME-52/spec#b-r2" surface="cli"}`,
+		},
+		{
+			row:  "a pointer pinned before its fragment",
+			name: "plan.md",
+			body: `:::plan_task{#t2 serves="dispatch://ACME-52/artifact/decisions-md@v3#d1" needs="t1 dispatch://ACME-52/artifact/plan-md@v3#b-t0"}`,
+			want: `:::plan_task{#t2 serves="dispatch://ACME-52/artifact/decisions-md#b-d1@v3" needs="dispatch://ACME-52/artifact/plan-md#b-t1 dispatch://ACME-52/artifact/plan-md#b-t0@v3"}`,
+		},
+		{
+			row:  "references in prose and in fenced code",
+			name: "plan.md",
+			body: strings.Join([]string{
+				"Prose names dispatch://ACME-52/spec#r1, dispatch://ACME-52/artifact/plan-md@v2#t1, dispatch://ACME-52/spec#b-r2, dispatch://ACME-52/ask/a1 and dispatch://ACME-52/spec.",
+				"",
+				"```md",
+				`:::check{#k9 serves="r9 dispatch://ACME-52/spec#r9"}`,
+				"```",
+			}, "\n"),
+			want: strings.Join([]string{
+				"Prose names dispatch://ACME-52/spec#b-r1, dispatch://ACME-52/artifact/plan-md@v2#b-t1, dispatch://ACME-52/spec#b-r2, dispatch://ACME-52/ask/a1 and dispatch://ACME-52/spec.",
+				"",
+				"```md",
+				`:::check{#k9 serves="r9 dispatch://ACME-52/spec#b-r9"}`,
+				"```",
+			}, "\n"),
+		},
+	} {
+		if got := teardownEffectsBarePointers("ACME-52", row.name, row.body); got != row.want {
+			t.Errorf("%s as the replay writes it:\n%s\nwant it as lane R's seed writes it:\n%s", row.row, got, row.want)
+		}
 	}
 }
