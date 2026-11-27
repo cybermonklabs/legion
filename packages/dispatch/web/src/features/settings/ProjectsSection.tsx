@@ -63,7 +63,8 @@ import {
  *  Its create form's groups, in this order: Key, Name, Default assignee and New project, four
  *  columns from `sm` and one below it; each field shrinks with its column, and a value longer than
  *  its field ends in an ellipsis with the whole value as its title. A row's Default repository is
- *  one group: its field, Save, and the line that says why a value was refused. */
+ *  one group: its field, Save, Clear (while the project has one), and the line that says why a
+ *  value was refused. */
 export function ProjectsSection(): ReactNode {
   const queryClient = useQueryClient();
   const [projectKey, setProjectKey] = useState("");

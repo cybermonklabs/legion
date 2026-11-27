@@ -138,8 +138,9 @@ const MACHINE = workspaceSessions[0]?.machine_id ?? "";
  *  a Legion lane writes. The first holds the claim, the next five subscribe to the issue, the
  *  seventh replies in the Inbox, and the eighth is the live session the agent pages open. The
  *  first also holds thirteen roles no other session holds, fourteen in all, past the cap of ten
- *  a marked `roles` list holds while closed: the Agents row requires that mark, and main's page
- *  draws the fourteen unmarked (a `group-missing` entry of `e2e/layout-breaches.ts`). */
+ *  a marked `roles` list holds while closed, which the Agents row requires it to mark. The last
+ *  sits in a window whose name, with no space in it, is wider than a phone's strip of picks, so
+ *  the machine page's pick must end it in an ellipsis inside the strip. */
 const stressSessions: FakeSession[] = Array.from({ length: 12 }, (_, index) => ({
   capabilities: ["aside", "btw", "steer"],
   dir: `/workspaces/legion/INFRA-5200-layout-rule-worktree-${index + 1}`,
@@ -164,7 +165,10 @@ const stressSessions: FakeSession[] = Array.from({ length: 12 }, (_, index) => (
     socket: "/tmp/tmux-1000/default",
     window_id: `@${index + 1}`,
     window_index: index + 1,
-    window_name: `infra-${5200 + index}-layout-rule-lane`,
+    window_name:
+      index === 11
+        ? "infra-5211-layout-rule-lane-with-a-window-name-wider-than-a-phone-strip-of-picks"
+        : `infra-${5200 + index}-layout-rule-lane`,
     zoomed: false,
   },
 }));

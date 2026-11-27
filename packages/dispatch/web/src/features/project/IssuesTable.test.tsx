@@ -2809,6 +2809,8 @@ test.each([
     await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
     const pick = screen.getByRole("combobox", { name: "Move to epic" });
     await user.selectOptions(pick, "CORE-9");
+    // The closed picker may end the epic's title in an ellipsis, so its whole title is the title.
+    expect(pick).toHaveAttribute("title", "Platform");
     // The epic closes while it is picked, and the select offers it no more.
     rows[1] = issue("CORE-9", { labels: ["epic"], status: "done", title: "Platform" });
     await act(() => client.invalidateQueries({ queryKey: ["issues"] }));

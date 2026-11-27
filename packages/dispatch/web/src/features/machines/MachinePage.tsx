@@ -227,8 +227,10 @@ function ServerPart({
           const current = entry.window.windowId === drawn?.window.windowId;
           return (
             <li className="min-w-0 max-w-full" key={entry.window.windowId}>
+              {/* `max-w-full` bounds the pick below 1280 px too, where `styles.css` draws every
+                  link as an inline-flex box that `block` does not override. */}
               <Link
-                className={`block truncate rounded-lg border px-2 py-1 text-xs ${
+                className={`block max-w-full truncate rounded-lg border px-2 py-1 text-xs ${
                   current
                     ? `${selectedCardBorder} ${selectedCardBg} ${textPrimaryOnCanvas}`
                     : `${borderDefault} ${textSecondaryOnCanvas}`

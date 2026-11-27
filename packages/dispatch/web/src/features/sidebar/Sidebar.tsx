@@ -167,6 +167,16 @@ function RailRow({
   );
 }
 
+/**
+ * The navigation, in the sidebar or the phone's drawer. Its groups, top to bottom, each a section
+ * of its own: the hide control; Inbox (the Inbox link with its count, then Peek, on one line);
+ * Agents (the Agents link with its new replies, then the fold beside it, on one line, and the
+ * pinned agents under them while the fold is open); Pages (Priorities, Delivery and Pipeline, each
+ * a `RailRow` with its description under its name); Pinned (one `RailRow` per pinned issue, while
+ * any is pinned); Projects (one `RailRow` per project); and Settings. Each line keeps its count
+ * and its control at its right; its name shrinks and wraps inside it, so nothing scrolls sideways
+ * at the sidebar's width.
+ */
 export function Sidebar({
   onHide,
   onNavigate,

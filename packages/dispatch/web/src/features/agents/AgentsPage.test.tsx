@@ -3474,16 +3474,19 @@ test("the broadcast composer shows a selected agent missing from a refilling lis
     );
     expect(chips()[0]).not.toContain("no live session");
     expect(chips()[1]).toBe("Reviewer ✕");
-    expect(within(composer()).getByRole("heading", { level: 2 }).textContent).toBe(
-      "Broadcast to 2 of 2 selected"
-    );
+    const heading = within(composer()).getByRole("heading", { level: 2 });
+    expect(heading.textContent).toBe("Broadcast to 2 of 2 selected");
+    // A narrow screen ends the heading in an ellipsis, so its whole words are its title.
+    expect(heading).toHaveAttribute("title", "Broadcast to 2 of 2 selected");
     expect(within(composer()).queryByText(/Excluded:/)).not.toBeInTheDocument();
     // The Reviewer takes Aside and not BTW, so the selection goes as an Aside, and the notice says
     // why beside the Not confirmed line. The agent's name is an element of its own inside the
     // line, so the line is read whole.
-    expect(within(composer()).getByText(/^Not confirmed:/).textContent).toContain(
-      "Sending as Aside: Reviewer"
-    );
+    const notice = within(composer()).getByText(/^Not confirmed:/);
+    expect(notice.textContent).toContain("Sending as Aside: Reviewer");
+    // Nobody is refused or left out, so the line is context, in the muted tone, not a warning.
+    expect(notice.className).toContain("text-slate-500");
+    expect(notice.className).not.toContain("text-rose-700");
 
     const field = within(composer()).getByRole("textbox", { name: "Broadcast message" });
     await type(user, field, "Status?");

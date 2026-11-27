@@ -66,8 +66,8 @@ export interface ContextRingProps {
 /**
  * How much of its context window a session fills, as a ring with the share beside it, and a
  * panel holding the tokens, the window and what a nearly full window means (INFRA-812, R3). It
- * holds no width of its own beyond its own content, so a row that scrolls sideways at a phone
- * width can keep it at the right edge of the message box.
+ * holds no width of its own beyond its own content, so the live view's row keeps it, in its
+ * Window group, at the right edge of the message box at every width.
  *
  * The host owns `open`, as `MultiSelect`'s does. Escape closes the panel wherever the focus is,
  * and so does a pointer press outside it. A session that reports no window draws no ring, since a

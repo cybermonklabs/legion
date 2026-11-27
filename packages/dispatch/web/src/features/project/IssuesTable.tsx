@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { userStateQuery } from "../../api/queries";
+import { useOpenedGroups } from "../../components/CappedGroup";
 import { Chip } from "../../components/Chip";
 import { DataTable, useDataTable } from "../../components/DataTable";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -24,10 +25,8 @@ import {
   type IssueTableWidths,
   issueTableLayout,
   listingColumns,
-  OpenedLabelsContext,
   ROW_ACTIONS_WIDTH,
   useIssueTableColumns,
-  useOpenedLabels,
 } from "./issues-table-columns";
 import { IssueTableSelection, IssueTableStatus, IssueTableToolbar } from "./issues-table-controls";
 import {
@@ -51,6 +50,7 @@ import {
 } from "./issues-table-model";
 import { GroupRow, IssueRow } from "./issues-table-rows";
 import { useTableView } from "./issues-table-view";
+import { OpenedLabelsContext } from "./LabelsGroup";
 import { issueIsUnread } from "./UnreadDot";
 
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
@@ -171,7 +171,7 @@ export function IssuesTable({
   const userState = useQuery(userStateQuery());
   const [selection, setSelection] = useState<RowSelectionState>({});
   const [openFilter, setOpenFilter] = useState<string>();
-  const openedLabels = useOpenedLabels();
+  const openedLabels = useOpenedGroups();
 
   const statusPicked = (filters.find((filter) => filter.id === "status")?.value ?? []) as string[];
   const wantsDone = !whole && (statusPicked.length === 0 || statusPicked.includes("done"));

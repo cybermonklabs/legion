@@ -337,6 +337,43 @@ test("another writer's save keeps the fields the reader changed and refreshes th
   }
 });
 
+// A list typed with a line break after its last entry is saved without it, so the record the save
+// lands holds the list in another form than the reader typed. The field then follows the record,
+// and a later writer's change to that list shows, rather than the reader's old text staying over
+// it and going back to the server with the next save.
+test("a list saved with a trailing line break follows the record, and shows a later writer's change", async () => {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const form = (initial: DeliverySettings) => (
+    <QueryClientProvider client={queryClient}>
+      <DeliverySettingsForm initial={initial} />
+    </QueryClientProvider>
+  );
+  const view = render(form(record));
+  try {
+    await replace(user, "Population authors", "alice\nbob\n");
+    // The reader's own save lands: the record holds the list as Save sent it.
+    const saved = {
+      ...record,
+      population_authors: ["alice", "bob"],
+      updated_at: "2026-10-08T12:00:00Z",
+    };
+    view.rerender(form(saved));
+    expect(field("Population authors").value).toBe("alice\nbob");
+    // Another writer adds carol.
+    view.rerender(
+      form({
+        ...saved,
+        population_authors: ["alice", "bob", "carol"],
+        updated_at: "2026-10-09T12:00:00Z",
+      })
+    );
+    expect(field("Population authors").value).toBe("alice\nbob\ncarol");
+  } finally {
+    cleanup();
+  }
+});
+
 // A save the reader stopped may have been made: the form says so, and that its button sends what
 // the fields hold then, rather than a failure it cannot know of.
 test("a save the reader stopped says it may have been made, not that it failed", async () => {

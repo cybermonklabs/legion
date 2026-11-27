@@ -1,10 +1,9 @@
 import type { ColumnDef, FilterFn, RowData } from "@tanstack/react-table";
-import { createContext, type ReactNode, useContext, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Link } from "react-router-dom";
-import type { IssueSummary, UserState } from "../../api/types";
+import type { UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
-import { CappedGroup, type CappedGroupOpenState } from "../../components/CappedGroup";
-import { LabelPill, StatusPill } from "../../components/Pill";
+import { StatusPill } from "../../components/Pill";
 import { TruncatedText } from "../../components/TruncatedText";
 import { issueProject } from "../../lib/issue-key";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -40,6 +39,7 @@ import {
   type Item,
   matchesFilters,
 } from "./issues-table-model";
+import { LabelsGroup } from "./LabelsGroup";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 declare module "@tanstack/react-table" {
@@ -64,74 +64,6 @@ declare module "@tanstack/react-table" {
 }
 const inPicks: FilterFn<Item> = (row, id, value: string[]) =>
   matchesFilters(row.original, [{ id, value }]);
-
-/** The issues whose labels the reader opened past their "+N", by issue key. The table or the
- *  board holds it, not the labels: the table draws only the rows in its window, so a row that
- *  scrolls out unmounts its cell, and the board draws a card again when it moves between columns
- *  or lanes; labels a reader opened would fold again either way. */
-export interface OpenedLabels {
-  readonly opened: ReadonlySet<string>;
-  readonly setOpened: (key: string, open: boolean) => void;
-}
-export const OpenedLabelsContext = createContext<OpenedLabels | undefined>(undefined);
-
-/** The opened labels a table or a board holds for its `OpenedLabelsContext`. */
-export function useOpenedLabels(): OpenedLabels {
-  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
-  return useMemo(
-    () => ({
-      opened,
-      setOpened: (key: string, open: boolean) =>
-        setOpened((current) => {
-          const next = new Set(current);
-          if (open) next.add(key);
-          else next.delete(key);
-          return next;
-        }),
-    }),
-    [opened]
-  );
-}
-
-/** An issue's labels, one group: a list as long as the issue's data, so the first ten, then
- *  "+N", wrapping inside the group. A label with no break in it shortens to an ellipsis inside its
- *  own pill, with the whole label as its title. Which issues' labels are open is the
- *  `OpenedLabelsContext` holder's, where there is one. */
-export function IssueLabels({
-  className,
-  issue,
-}: {
-  /** The group's own box: a flex row that wraps, bounded by its host. */
-  className: string;
-  issue: Pick<IssueSummary, "key" | "labels">;
-}): ReactNode {
-  const held = useContext(OpenedLabelsContext);
-  const labels = issue.labels ?? [];
-  if (labels.length === 0) return null;
-  const openState: CappedGroupOpenState =
-    held === undefined
-      ? {}
-      : {
-          onOpenChange: (open) => held.setOpened(issue.key, open),
-          open: held.opened.has(issue.key),
-        };
-  return (
-    <CappedGroup
-      className={`${className} [&>span]:min-w-0 [&>span]:max-w-full`}
-      label="labels"
-      name="labels"
-      {...openState}
-    >
-      {labels.map((label) => (
-        <LabelPill key={label}>
-          <TruncatedText className="min-w-0" title={label}>
-            {label}
-          </TruncatedText>
-        </LabelPill>
-      ))}
-    </CappedGroup>
-  );
-}
 
 /** How each column renders and sorts, for the reader `userState` describes, with each title
  *  in eight lines at most where the table wraps its titles (`wrapTitles`), ending in '…' with the
@@ -308,7 +240,7 @@ const renderings = (
     header: "Labels",
     accessorFn: (item) => (item.issue.labels ?? []).join(", "),
     cell: ({ row }) => (
-      <IssueLabels className="flex min-w-0 flex-wrap gap-1" issue={row.original.issue} />
+      <LabelsGroup className="flex min-w-0 flex-wrap gap-1" issue={row.original.issue} />
     ),
   },
   claim: {

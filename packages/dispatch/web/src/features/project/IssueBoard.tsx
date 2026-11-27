@@ -19,6 +19,7 @@ import { Link } from "react-router-dom";
 import { projectIssuesQuery, userStateQuery } from "../../api/queries";
 import type { IssueSummary, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
+import { useOpenedGroups } from "../../components/CappedGroup";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { Pill, StatusPill } from "../../components/Pill";
@@ -73,7 +74,7 @@ import {
 import { useBoardMoves } from "./board-moves";
 import { CollapsedColumn } from "./CollapsedColumn";
 import { projectIssuesQueryKey, useIssueFilters } from "./issue-filters";
-import { IssueLabels, OpenedLabelsContext, useOpenedLabels } from "./issues-table-columns";
+import { LabelsGroup, OpenedLabelsContext } from "./LabelsGroup";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 const boardCollisionDetection: CollisionDetection = (args) => {
@@ -188,7 +189,7 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
           <ProgressChips progress={issue.progress} />
         </span>
         <UnreachableRouteMarker issue={issue} />
-        <IssueLabels
+        <LabelsGroup
           className="flex min-w-0 max-w-full flex-wrap items-center gap-2"
           issue={issue}
         />
@@ -325,6 +326,16 @@ const BoardLaneRow = memo(function BoardLaneRow({
   );
 });
 
+/**
+ * A project's issues as a board. Its groups, top to bottom: Refusal (a move the server refused,
+ * while there is one), then Board - the status columns side by side, or, with `lanes`, one
+ * `BoardLaneRow` per priority band, each its heading over its columns - or, with no issue, the
+ * empty state. Where a moved card landed is said to screen readers only, and the question a move
+ * asks opens over the page. Board is the layout rule's board exception: the columns stay side by
+ * side at every width and scroll sideways inside their own box (`data-layout-scroll="board"`),
+ * never the page. Each card wraps its own groups (`IssueCard`). Which cards' labels the reader
+ * opened is the board's (`OpenedLabelsContext`), held for as long as the board is mounted.
+ */
 export function IssueBoard({
   project,
   showEdges = false,
@@ -339,7 +350,7 @@ export function IssueBoard({
   lanes?: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const openedLabels = useOpenedLabels();
+  const openedLabels = useOpenedGroups();
   const { labels, matches } = useIssueFilters();
   // The same query-key pair the List keeps: the plain project list, or the server-filtered
   // list while labels are active - shared keys, shared caches.

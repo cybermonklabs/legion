@@ -28,7 +28,7 @@ import type {
   MessageWithTrees,
   UserAgentStates,
 } from "../../api/types";
-import { CappedGroup, LAYOUT_GROUP_MAX } from "../../components/CappedGroup";
+import { CappedGroup, LAYOUT_GROUP_MAX, useOpenedGroups } from "../../components/CappedGroup";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle";
 import { EmptyState } from "../../components/EmptyState";
@@ -85,7 +85,11 @@ import { buildInboxPath, buildIssuePath, buildMachinePath } from "../refs/routes
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { closestMatching, focusOnDocument } from "../shell/roving";
-import { MD_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
+import {
+  MD_VIEWPORT_QUERY,
+  NARROW_OR_SHORT_VIEWPORT_QUERY,
+  useMediaQuery,
+} from "../shell/useDialog";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentMessageComposer, type AgentReply, agentSendKey } from "./AgentMessageComposer";
@@ -121,13 +125,9 @@ import { storeAgentState, unreadRepliesLabel, useMarkRepliesRead, useUnreadAtOpe
  *  keeps its height budget and a touch reader, who has no hover, reads every word of it: Send's
  *  refusal and its remedy among them. It wraps and never scrolls sideways. Every exclusion is
  *  also on the excluded agent's own chip, which says its reason in words. A refusal or an
- *  exclusion reads as a warning; the mode alone does not. */
+ *  exclusion reads as a warning; the Not confirmed line alone, and the mode alone, do not. */
 const composerLineLayout =
   "mt-2 text-sm narrow-or-short:order-2 narrow-or-short:col-start-2 narrow-or-short:mt-0 narrow-or-short:max-h-12 narrow-or-short:min-w-0 narrow-or-short:overflow-y-auto narrow-or-short:text-xs narrow-or-short:[overflow-wrap:anywhere] short:order-3 short:col-span-4 short:col-start-1 short:max-h-4";
-const composerLine = `${composerLineLayout} ${dangerText}`;
-/** Where the composer is its compact grid: styles.css's `narrow-or-short` variant, in its own
- *  pixels, which the two must keep in step. */
-const COMPACT_COMPOSER_QUERY = "(max-width: 767px), (max-height: 500px)";
 const COMPACT_RECIPIENTS_SHOWN = 1;
 
 /**
@@ -1197,8 +1197,14 @@ function BroadcastComposer({
   // and no ceiling there: it registers on every screen.
   const sectionRef = useRef<HTMLElement>(null);
   useFootInset(sectionRef, true, "page");
-  const compact = useMediaQuery(COMPACT_COMPOSER_QUERY);
+  const compact = useMediaQuery(NARROW_OR_SHORT_VIEWPORT_QUERY);
+  // The notice is a warning when it refuses Send or names an excluded agent; a notice that is
+  // only the Not confirmed line is context, as the mode's own line is.
+  const noticeWarns = sendState.refusalOnNotice || excluded.length > 0;
   const chipOnOneLine = compact && !chosenOpen;
+  // On a narrow or short screen the heading shares its line and ends in an ellipsis, so its
+  // whole words are its title too.
+  const heading = `Broadcast to ${recipients.length} of ${selected.size} selected`;
 
   return (
     <section
@@ -1208,8 +1214,9 @@ function BroadcastComposer({
     >
       <h2
         className={`text-sm font-semibold narrow-or-short:col-span-full narrow-or-short:truncate short:col-span-1 ${textPrimaryOnCanvas}`}
+        title={heading}
       >
-        Broadcast to {recipients.length} of {selected.size} selected
+        {heading}
       </h2>
       <CappedGroup
         className="mt-2 flex flex-wrap items-center gap-2 narrow-or-short:col-span-full narrow-or-short:mt-0 short:col-span-3 [&>li]:min-w-0 [&>li]:max-w-full"
@@ -1290,7 +1297,10 @@ function BroadcastComposer({
         writing={dispatchWritingBox("broadcast", "broadcast")}
       />
       {sendState.notice !== null ? (
-        <p className={composerLine} id={noticeId}>
+        <p
+          className={`${composerLineLayout} ${noticeWarns ? dangerText : textMutedOnSurface}`}
+          id={noticeId}
+        >
           <AgentParts parts={sendState.notice} />
           {/* A notice that is only the Not confirmed line leaves room for why the selection goes
               as an Aside; the limit and the Excluded line take the slot themselves. */}
@@ -1521,6 +1531,16 @@ function WindowedList({
   );
 }
 
+/**
+ * The Agents page. Its groups, top to bottom, each on a line of its own: Header (the heading,
+ * then one line of the description, Broadcasts and Machines, which wraps one item at a time), the
+ * list's state (refilling, or a refresh that failed), Filters (`AgentFilterBar`), Selection
+ * (`SelectionHeader`), the list (one `AgentRow` per session, in its groups, drawn in a window),
+ * Foot (the sends, then the composer, `BroadcastComposer`) and the ended agents with replies.
+ * Each lays out its own entries; the Foot sticks to the bottom of the screen. Which rows the
+ * reader opened, and whose roles they opened past "+N", are the page's, since a row the window
+ * stops drawing loses its own state.
+ */
 export function AgentsPage(): ReactNode {
   useDocumentTitle("Agents · Dispatch");
   const { agents, current, error, isError, isPending, refilling } = useAgents(true, true);
@@ -1680,15 +1700,7 @@ export function AgentsPage(): ReactNode {
   // that kept its own answer would have nothing to tell the window.
   const [expandedRows, setExpandedRows] = useState<ReadonlySet<string>>(() => new Set());
   const [openedRows, setOpenedRows] = useState<ReadonlySet<string>>(() => new Set());
-  const [rolesOpenRows, setRolesOpenRows] = useState<ReadonlySet<string>>(() => new Set());
-  const openRoles = (sessionID: string, open: boolean) => {
-    setRolesOpenRows((current) => {
-      const next = new Set(current);
-      if (open) next.add(sessionID);
-      else next.delete(sessionID);
-      return next;
-    });
-  };
+  const openedRoles = useOpenedGroups();
   const expandRow = (sessionID: string, open: boolean) => {
     setExpandedRows((current) => {
       const next = new Set(current);
@@ -1780,9 +1792,9 @@ export function AgentsPage(): ReactNode {
       onPin={() => togglePin(agent.session_id)}
       onSelect={(next) => select(agent.session_id, next)}
       opened={openedRows.has(agent.session_id)}
-      onRolesOpen={(open) => openRoles(agent.session_id, open)}
+      onRolesOpen={openedRoles.stateFor(agent.session_id).onOpenChange}
       pinned={pinned.includes(agent.session_id)}
-      rolesOpen={rolesOpenRows.has(agent.session_id)}
+      rolesOpen={openedRoles.stateFor(agent.session_id).open}
       section={group}
       selected={selected.has(agent.session_id)}
       unreadReplies={agentStates[agent.session_id]?.unread_replies ?? 0}

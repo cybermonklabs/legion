@@ -1949,11 +1949,11 @@ test("outside NoTooltips an explicit component set makes no architecture read", 
   expect(await reads(true, "inside")).toBe(1);
 });
 
-// At its defaults each shared control draws `main`'s classes. Each string below is `main`'s class,
-// its theme's constants written out from `main`'s `theme/classes.ts`, for every class a shared
-// control builds from a template of its own, and `null` where `main` draws the element with no
-// class.
-test("the default shapes keep main's class strings", async () => {
+// At its defaults each shared control draws its recorded classes: `main`'s, or, where INFRA-5200's
+// layout fixes changed a control (each such entry says so), the class that fix draws. Each string
+// below is that class, its theme's constants written out from `theme/classes.ts`, for every class
+// a shared control builds from a template of its own, and `null` where the element has no class.
+test("the default shapes keep their recorded class strings", async () => {
   const want: Record<string, string | null> = {
     "approvalPillClassName approved":
       "inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] border-emerald-700 dark:border-emerald-400 text-emerald-700 dark:text-emerald-400",

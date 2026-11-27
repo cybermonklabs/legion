@@ -94,8 +94,9 @@ test("each session's checkbox is named by its agent, with its live link beside t
   try {
     const checkbox = screen.getByRole("checkbox", { name: "Planner one" });
     const label = checkbox.closest("label");
-    // The name shortens to an ellipsis in a narrow editor, so its whole shown name is the title.
-    expect(label?.getAttribute("title")).toBe("Planner one");
+    // The name shortens to an ellipsis in a narrow editor, so the title is its whole shown name,
+    // and the full session id, which tells apart two sessions whose short ids are the same.
+    expect(label?.getAttribute("title")).toBe("Planner one (s1)");
     const live = screen.getByRole("link", { name: "Open live conversation with Planner one" });
     expect(live).toHaveAttribute("href", "/agents/s1/live");
     expect(label?.contains(live)).toBe(false);
@@ -294,8 +295,8 @@ test("a group shows ten of its sessions and a +N that shows the rest", async () 
 });
 
 // The Layout rule (`web/src/AGENTS.md`), point 6: a group the reader opened past its "+N" stays
-// open when the group changes: a write moves its `updated_at`, and the editor, not the card,
-// keeps the reader's choice.
+// open when the group changes: a write moves its `updated_at`, and the card, kept by its group's
+// id, keeps its `CappedGroup` and the reader's choice in it.
 test("a group's opened sessions stay open after a member past the tenth is removed", async () => {
   const user = userEvent.setup();
   const sessions = Array.from({ length: 12 }, (_, index) => `member-${index + 1}`);

@@ -203,12 +203,13 @@ export function ProjectPage(): ReactNode {
             tabs={hasSource ? [architectureTab, ...tabs] : tabs}
           />
           {/* No source read yet is not no source: the reader sees that the tab strip may still
-              gain Architecture, or why it cannot say. */}
+              gain Architecture, or why it cannot say. A refetch that fails after a read answered
+              keeps that answer, and the tab strip with it, so it says nothing here. */}
           {sources.isPending ? (
             <span className={`text-xs ${textMutedOnCanvas}`} role="status">
               Checking for an architecture…
             </span>
-          ) : sources.isError ? (
+          ) : sources.isError && sources.data === undefined ? (
             <span
               className={`flex flex-wrap items-center gap-2 text-xs ${dangerText}`}
               role="alert"

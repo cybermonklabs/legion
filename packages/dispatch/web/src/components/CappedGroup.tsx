@@ -1,4 +1,4 @@
-import { Children, isValidElement, type ReactNode, useId, useState } from "react";
+import { Children, isValidElement, type ReactNode, useId, useMemo, useState } from "react";
 
 import {
   focusVisibleRing,
@@ -15,6 +15,34 @@ export const LAYOUT_GROUP_MAX = 10;
 export type CappedGroupOpenState =
   | { open: boolean; onOpenChange: (open: boolean) => void }
   | { open?: never; onOpenChange?: never };
+
+/** The open state of many groups, one per key, for a host whose groups can be drawn again from
+ *  nothing (`CappedGroup`'s `open`): a windowed list's rows, a board's cards that move between
+ *  columns. `stateFor` gives a group's `open` and `onOpenChange`. */
+export interface OpenedGroups {
+  readonly stateFor: (key: string) => { open: boolean; onOpenChange: (open: boolean) => void };
+}
+
+/** Holds which groups the reader opened past their "+N", by key, for as long as the host is
+ *  mounted. */
+export function useOpenedGroups(): OpenedGroups {
+  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
+  return useMemo(
+    () => ({
+      stateFor: (key: string) => ({
+        onOpenChange: (open: boolean) =>
+          setOpened((current) => {
+            const next = new Set(current);
+            if (open) next.add(key);
+            else next.delete(key);
+            return next;
+          }),
+        open: opened.has(key),
+      }),
+    }),
+    [opened]
+  );
+}
 
 /**
  * A group whose length comes from data - labels, components, links, checks, subscribers,

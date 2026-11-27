@@ -90,11 +90,33 @@ function recordDraft(record: DeliverySettings | null): Draft {
   };
 }
 
-/** The fields of `next` that differ from `stored`: what the reader has changed. */
-function changedFields(next: Draft, stored: Draft): Partial<Draft> {
+/** A field's text as Save sends it and the record then holds it: lists split and joined one entry
+ *  per line, paths and optional names trimmed, and an empty optional name as no text. */
+function savedForm(field: keyof Draft, text: string): string {
+  switch (field) {
+    case "excluded_repos":
+    case "population_authors":
+      return listEntries(text).join("\n");
+    case "production_job_names":
+      return lineEntries(text).join("\n");
+    case "deploy_repo":
+      return text;
+    default:
+      return text.trim();
+  }
+}
+
+/** The fields of `next` that differ from `stored`: what the reader has changed. `form` reads each
+ *  side before they are compared: as typed while the reader types, and in its saved form once
+ *  the record changes (`DeliverySettingsFields`). */
+function changedFields(
+  next: Draft,
+  stored: Draft,
+  form: (field: keyof Draft, text: string) => string = (_field, text) => text
+): Partial<Draft> {
   const changed: Partial<Draft> = {};
   for (const field of Object.keys(next) as (keyof Draft)[]) {
-    if (next[field] !== stored[field]) changed[field] = next[field];
+    if (form(field, next[field]) !== form(field, stored[field])) changed[field] = next[field];
   }
   return changed;
 }
@@ -169,18 +191,35 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
   return <DeliverySettingsFields record={record} />;
 }
 
+/**
+ * The form itself, over a record `DeliverySettingsForm` has read. Its groups, in this order:
+ * Fields - Deploy repository, Deploy workflow, Production jobs, Production apply step, the three
+ * Pipeline job names, PR checks workflow, Population authors and Excluded repositories, each one
+ * item - then Save, and under them the refusal of a save. Fields are two columns from `sm` and
+ * one below it; Save stays on its own line under them. A one-line value longer than its field
+ * ends in an ellipsis with the whole value as its title; a list wraps inside its own box.
+ */
 function DeliverySettingsFields({ record }: { record: DeliverySettings | null }): ReactNode {
   const queryClient = useQueryClient();
   const id = useId();
   const submitGuard = useSubmitGuard();
   // What the reader has changed, over the record as the server now holds it: a save from anywhere
-  // refreshes the fields the reader has not touched and keeps the ones they have, and a changed
-  // field the record comes to hold as the reader typed it (their own save landing) follows the
-  // record again.
+  // refreshes the fields the reader has not touched and keeps the ones they have. When the record
+  // changes - a save from anywhere, the reader's own among them - a changed field whose saved form
+  // the record now holds follows the record again, so a list typed with a trailing line break or
+  // with commas, which Save rewrites, is not kept over the next writer's change. While the record
+  // stays, the fields compare as typed, so the reader's own line break stays as they type it.
   const stored = recordDraft(record);
+  const version = record?.updated_at ?? "unset";
   const [edited, setEdited] = useState<Partial<Draft>>({});
-  const pending = changedFields({ ...stored, ...edited }, stored);
-  if (Object.keys(pending).length !== Object.keys(edited).length) setEdited(pending);
+  const [seenVersion, setSeenVersion] = useState(version);
+  if (seenVersion !== version) {
+    setSeenVersion(version);
+    setEdited(changedFields({ ...stored, ...edited }, stored, savedForm));
+  } else {
+    const pending = changedFields({ ...stored, ...edited }, stored);
+    if (Object.keys(pending).length !== Object.keys(edited).length) setEdited(pending);
+  }
   const draft: Draft = { ...stored, ...edited };
   const setDraft = (next: Draft) => setEdited(changedFields(next, stored));
   // The form shows its own refusal, under the fields it was refused over.

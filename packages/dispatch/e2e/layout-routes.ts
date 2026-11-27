@@ -68,11 +68,16 @@ export const STRESS_LABELS = [
  *  `aria-expanded="false"` while the group is closed and names the group in `aria-controls`.
  *  Each press waits for its own group to open before the next is read, and a press may draw
  *  groups that were folded inside the one it opened, which the next round finds. `group` keeps
- *  it to the groups of that name. Past `maxPresses` presses it throws, since a group that never
- *  stays open would otherwise be pressed for ever. */
+ *  it to the groups of that name. Fewer presses than `atLeast` throws: a state that opened
+ *  nothing would read the folded page again. Past `maxPresses` presses it throws, since a group
+ *  that never stays open would otherwise be pressed for ever. */
 export async function openCappedGroups(
   scope: Page | Locator,
-  { group, maxPresses = 50 }: { readonly group?: string; readonly maxPresses?: number } = {}
+  {
+    atLeast,
+    group,
+    maxPresses = 50,
+  }: { readonly atLeast: number; readonly group?: string; readonly maxPresses?: number }
 ): Promise<number> {
   const groups =
     group === undefined
@@ -86,7 +91,14 @@ export async function openCappedGroups(
   for (let presses = 0; ; presses += 1) {
     // The caller settled the page, and each press below waits for its own group to open.
     const left = await closed.count();
-    if (left === 0) return presses;
+    if (left === 0) {
+      if (presses < atLeast) {
+        throw new Error(
+          `openCappedGroups: ${presses} "+N" press(es) of ${group ?? "any"} group, fewer than ${atLeast}; the page drew no group past its cap to open`
+        );
+      }
+      return presses;
+    }
     if (presses >= maxPresses) {
       throw new Error(
         `openCappedGroups: ${left} group(s) still closed after ${maxPresses} presses of "+N"`
@@ -105,7 +117,7 @@ export async function openCappedGroups(
 /** What the page draws once the reader has acted on it: a drawer open, rows selected, a group
  *  expanded. `act` runs on the settled page and returns once what it opened is drawn. */
 export interface LayoutState {
-  /** The state's own name, which a breach list entry names it by. */
+  /** The state's own name, which a failing reading names it by. */
   readonly name: string;
   readonly act: (page: Page) => Promise<void>;
   /** The `data-layout-group` names the page must mark in this state beyond its route's own: a
@@ -115,7 +127,7 @@ export interface LayoutState {
 }
 
 export interface LayoutRoute {
-  /** The route's own name, which a row's title and a breach list entry name it by. */
+  /** The route's own name, which a row's title and a failing reading name it by. */
   readonly name: string;
   readonly pattern: WalkRoutePath;
   readonly path: (seed: LayoutSeed) => string;
@@ -181,16 +193,30 @@ const stressRowSearched: LayoutState = {
 };
 
 /** The board with every card's labels opened by its "+N": the stress issue's card holds 13
- *  labels, past the cap, so they wrap inside the card. A state that opened nothing would read
- *  the folded board again, so the card must have had a "+N" to press. */
+ *  labels, past the cap, so they wrap inside the card. */
 const boardLabelsOpened: LayoutState = {
   act: async (page) => {
-    const opened = await openCappedGroups(page, { group: "labels" });
-    if (opened === 0) {
-      throw new Error(`labels-opened opened no labels group; a card needs a "+N" to press`);
-    }
+    await openCappedGroups(page, { atLeast: 1, group: "labels" });
   },
   name: "labels-opened",
+  requiredGroups: ["labels"],
+};
+
+/** A priority's issues table with its Labels column ticked under Columns: the table opens with
+ *  Labels hidden (`priorities/PriorityPage.tsx`), and the stress issue's row then draws its 13
+ *  labels, a list of R3. */
+const priorityLabelsShown: LayoutState = {
+  act: async (page) => {
+    const work = page.getByRole("region", { name: "Priority issues" });
+    await work.getByRole("button", { exact: true, name: "Columns" }).click();
+    await page
+      .getByRole("dialog", { name: "Columns" })
+      .getByRole("checkbox", { exact: true, name: "Labels" })
+      .check();
+    await page.keyboard.press("Escape");
+    await work.locator('[data-layout-group="labels"]').first().waitFor();
+  },
+  name: "labels-shown",
   requiredGroups: ["labels"],
 };
 
@@ -210,19 +236,14 @@ const sessionGroupsEdited: LayoutState = {
   requiredGroups: ["group-sessions"],
 };
 
-/** That editor with every group's sessions opened by its "+N". A state that opened nothing
- *  would read the folded editor again, so a group must have had a "+N" to press. */
+/** That editor with every group's sessions opened by its "+N". */
 const sessionGroupsOpened: LayoutState = {
   act: async (page) => {
     await sessionGroupsEdited.act(page);
-    const opened = await openCappedGroups(page.getByRole("dialog", { name: "Session groups" }), {
+    await openCappedGroups(page.getByRole("dialog", { name: "Session groups" }), {
+      atLeast: 1,
       group: "group-sessions",
     });
-    if (opened === 0) {
-      throw new Error(
-        `session-groups-opened opened no group-sessions group; a group needs a "+N" to press`
-      );
-    }
   },
   name: "session-groups-opened",
   requiredGroups: ["group-sessions"],
@@ -231,19 +252,13 @@ const sessionGroupsOpened: LayoutState = {
 /** Every capped group of the Agents page opened by its "+N": the roles of each drawn row (the
  *  stress layer's first session holds fourteen), then every agent selected and the composer's
  *  chosen agents. The rows are opened before the selection, so the composer that sticks to the
- *  bottom of a narrow screen covers none of their controls. A state that opened nothing would read
- *  the folded page again, so each group must have had a "+N" to press. */
+ *  bottom of a narrow screen covers none of their controls. */
 const groupsExpanded: LayoutState = {
   act: async (page) => {
-    const roles = await openCappedGroups(page, { group: "roles" });
+    await openCappedGroups(page, { atLeast: 1, group: "roles" });
     await page.getByRole("checkbox", { name: "Select all matching agents" }).check();
     await page.getByRole("region", { exact: true, name: "Broadcast" }).waitFor();
-    const chosen = await openCappedGroups(page, { group: "chosen-agents" });
-    if (roles === 0 || chosen === 0) {
-      throw new Error(
-        `groups-expanded opened ${roles} roles group(s) and ${chosen} chosen-agents group(s); each needs a "+N" to press`
-      );
-    }
+    await openCappedGroups(page, { atLeast: 1, group: "chosen-agents" });
   },
   name: "groups-expanded",
   requiredGroups: ["roles", "chosen-agents"],
@@ -329,7 +344,7 @@ const issueDetailsOpen: LayoutState = {
 const issueGroupsExpanded: LayoutState = {
   act: async (page) => {
     await openIssueHeaderDetails(page);
-    await openCappedGroups(page);
+    await openCappedGroups(page, { atLeast: 1 });
   },
   name: "groups-expanded",
   requiredGroups: ISSUE_DETAILS_GROUPS,
@@ -376,8 +391,9 @@ const additions: Readonly<
   machines: { minElements: shortPage(15) },
   "not-found": { minElements: shortPage(4) },
   person: { minElements: shortPage(27) },
-  // No group is required of `priority`: the priority page's table has had no Labels column since
-  // main's c6e674809a21 (#4316), so the page draws no labels list to require.
+  // The priority page's issues table opens with Labels hidden, so the page as it loads draws no
+  // labels list; the reader who ticks Labels under Columns gets one.
+  priority: { states: [priorityLabelsShown] },
   "project-document": { minElements: shortPage(49) },
   "project-documents": { minElements: shortPage(40) },
   // The Labels cell of the stress issue's row, which the searched table draws.

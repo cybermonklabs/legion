@@ -55,26 +55,20 @@ function GroupCard({
   selected,
   pending,
   write,
-  sessionsOpen,
-  onSessionsOpen,
 }: {
   group: DeliverySessionGroup;
   storedTitle: (session: string) => string | undefined;
   selected: readonly string[];
   pending: boolean;
   write: (change: GroupChange) => void;
-  /** Whether the reader opened this group's sessions past their "+N". The editor holds it, by
-   *  group id, as it holds the card itself by group id. */
-  sessionsOpen: boolean;
-  onSessionsOpen: (open: boolean) => void;
 }): ReactNode {
   const id = useId();
   const text = useAgentText();
   // The reader's rename draft, kept while the group changes under it (a member added, a rename
   // from another tab): null while the reader has typed nothing, so the field shows the group's
-  // name as it now stands, and back to null once the group's name is the draft.
+  // name as it now stands, and back to null once the group's name is the draft as Rename sends it.
   const [draft, setDraft] = useState<string | null>(null);
-  if (draft !== null && draft === group.name) setDraft(null);
+  if (draft !== null && draft.trim() === group.name) setDraft(null);
   const name = draft ?? group.name;
   const addable = selected.filter((session) => !(group.sessions ?? []).includes(session));
   return (
@@ -111,8 +105,6 @@ function GroupCard({
         label="sessions"
         list={`Sessions in ${group.name}`}
         name="group-sessions"
-        onOpenChange={onSessionsOpen}
-        open={sessionsOpen}
       >
         {(group.sessions ?? []).map((session) => (
           <span
@@ -192,7 +184,8 @@ function GroupCard({
  *  request count and its group's name); a row too narrow for both moves Membership to a line of
  *  its own, whose text wraps inside it, so a long group name never pushes the session's name
  *  aside. A card is keyed by its group's id, so a change to the group redraws it in place and
- *  keeps the reader's rename draft and opened sessions. */
+ *  keeps the reader's rename draft, and the sessions it opened past their "+N" (`CappedGroup`'s
+ *  own state). */
 export function SessionGroupsEditor({
   onClose,
   groups,
@@ -210,15 +203,6 @@ export function SessionGroupsEditor({
   const dialog = useDialog<HTMLElement>({ initialFocusRef: closeButtonRef, onClose, open: true });
   const [selected, setSelected] = useState<string[]>([]);
   const [name, setName] = useState("");
-  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(() => new Set());
-  const openGroup = (groupId: string, open: boolean) => {
-    setOpenGroups((current) => {
-      const next = new Set(current);
-      if (open) next.add(groupId);
-      else next.delete(groupId);
-      return next;
-    });
-  };
   // The editor shows a refusal itself, as the server wrote it.
   const save = useKeyedWrite({
     inline: true,
@@ -318,7 +302,7 @@ export function SessionGroupsEditor({
                   control={(agentName) => (
                     <label
                       className="flex min-w-0 flex-1 items-center gap-2"
-                      title={text.sessionShown(session, storedTitle(session))}
+                      title={`${text.sessionShown(session, storedTitle(session))} (${session})`}
                     >
                       <input
                         checked={selected.includes(session)}
@@ -389,10 +373,8 @@ export function SessionGroupsEditor({
             <GroupCard
               group={group}
               key={group.id}
-              onSessionsOpen={(open) => openGroup(group.id, open)}
               pending={save.isPending}
               selected={selected}
-              sessionsOpen={openGroups.has(group.id)}
               storedTitle={storedTitle}
               write={(change) => save.mutate(change)}
             />

@@ -424,6 +424,14 @@ export function IssueTableStatus({
   );
 }
 
+/**
+ * The table's search and its view controls. Its groups, in this order on one line: Search (the
+ * search box), Group by, Columns, Flags (Needs you and Unread, `IssueFlagChips`) and, while the
+ * view is narrowed, Clear filters; under that line, while the Claimed by filter cannot tell which
+ * claims have lapsed, the line that says why. Each group is one item of a line that wraps whole:
+ * in a box narrower than the search box with its whole placeholder and the controls after it,
+ * Search takes the first line alone and the controls the next, one group at a time.
+ */
 export function IssueTableToolbar({
   table,
   unclaimedUnchecked,
@@ -652,9 +660,16 @@ export function IssueTableSelection({
           <span className="flex min-w-0 max-w-full items-center gap-2">
             <select
               aria-label="Move to epic"
-              className={`min-w-0 max-w-full rounded-lg border px-2 py-1 ${borderDefault} ${surfaceBg}`}
+              className={`min-w-0 max-w-full rounded-lg border px-2 py-1 text-ellipsis ${borderDefault} ${surfaceBg}`}
               disabled={busy}
               onChange={(event) => setEpic(event.target.value)}
+              // A closed picker shows the chosen epic's title, which it may end in an ellipsis,
+              // so the whole title is its title.
+              title={
+                epic === ""
+                  ? "Move to epic…"
+                  : (epics.find((option) => option.key === epic)?.title ?? "Move to epic…")
+              }
               value={epic}
             >
               <option value="">Move to epic…</option>
