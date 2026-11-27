@@ -1,7 +1,8 @@
 package daemon
 
-// A project release's dry run (`legion project release --dry-run`): what a release would do now, read
-// with no ask, no stop and no record.
+// A project release's dry run (`legion project release --dry-run`): what a release would do from
+// the reads now, without the settle of replacement records, read with no ask, no stop and no
+// record.
 
 import (
 	"context"
@@ -15,11 +16,12 @@ import (
 )
 
 // dryRun is the release's inventory, classification and reads, with no ask, no stop and no
-// record: each Sandbox with the outcome a release would give it now, each pod a release would ask
-// with the roles it would ask, by the release's own decision (asks), a role whose activity report
-// holds the pod included, and each claim a release would stop. A pod in which no role process runs
-// is read through its launcher, as the release reads it before its delete, and asks no one
-// (readAll). The stop set is read from the store as the release's own transaction reads it
+// record: each Sandbox with the outcome a release would give it from the reads now, without the
+// settle of replacement records (settleReplacements), each pod a release would ask with the roles
+// it would ask, by the release's own decision (asks), a role whose activity report holds the pod
+// included, and each claim a release would stop. A pod in which no role process runs is read
+// through its launcher, as the release reads it before its delete, and asks no one (readAll). The
+// stop set is read from the store as the release's own transaction reads it
 // (store.ProjectReleaseStopSet).
 func (r *projectReleaser) dryRun(ctx context.Context, bound time.Duration) (api.ProjectReleaseResponse, error) {
 	startedAt := r.now().UTC()

@@ -130,15 +130,16 @@ type releaseStopped struct {
 // startReleaseStopped is booted's fourth step: it starts again each claim of the project the
 // project release stopped (dispatch://INFRA-3583/spec R8), every role but the controller, whose
 // claim stands on no issue and which the controller keeper resumes, since it resumes every
-// suspension but an operator's (the daemon's controllerKeeper). It reads them by their source, with
-// a read of its own (record.Store.SuspendedClaims): the claims of an issue in the workflow whose
-// tree runs (record.RunningRoots, the rule the resume by rule reads), whose run it reads at the
-// generation the issue holds, which is the run the start it writes serves; and the role that works
-// an open look of a closed issue's production check (record.ProductionCheck.Role), which the
-// release stopped mid-look. Every other such claim is left as it stands — one of an issue taken out
-// of the workflow is a close's, and one of a tree that lingers or waits in the line is its first
-// run's after its re-admission or its promotion, which starts every role of a mid-phase member
-// (admit's returnOwedMembers, through startMidPhaseMembers) — as the resume by rule leaves those.
+// suspension but one that holds (supervise.SuspendSource.Holds; the daemon's controllerKeeper).
+// It reads them by their source, with a read of its own (record.Store.SuspendedClaims): the claims
+// of an issue in the workflow whose tree runs (record.RunningRoots, the rule the resume by rule
+// reads), whose run it reads at the generation the issue holds, which is the run the start it
+// writes serves; and the role that works an open look of a closed issue's production check
+// (record.ProductionCheck.Role), which the release stopped mid-look. Every other such claim is left
+// as it stands — one of an issue taken out of the workflow is a close's, and one of a tree that
+// lingers or waits in the line is its first run's after its re-admission or its promotion, which
+// starts every role of a mid-phase member (admit's returnOwedMembers, through
+// startMidPhaseMembers) — as the resume by rule leaves those.
 //
 // Each claim gets one start, and none when a queued start already covers it (StartFor): the
 // start of a phase owner behind the entry its phases row names that admission's first pass

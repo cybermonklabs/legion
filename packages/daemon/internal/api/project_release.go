@@ -58,7 +58,7 @@ type ProjectRelease interface {
 
 // ProjectReleaseRequest is the body of `POST /legion/v1/operator/project/release`: the bound, a
 // Go duration ("" for the daemon's pod_update_grace_minutes), and whether this is a dry run,
-// which reads and stops nothing.
+// which reads each pod's workspace and asks, stops, deletes and records nothing.
 type ProjectReleaseRequest struct {
 	Bound  string `json:"bound,omitempty"`
 	DryRun bool   `json:"dryRun,omitempty"`
@@ -81,11 +81,11 @@ type ProjectReleaseResponse struct {
 	Result     ProjectReleaseResult      `json:"result"`
 }
 
-// ProjectReleaseResult is what the release did, or on a dry run what it would do now: one line per
-// Sandbox of the project, in name order, followed in name order by any Sandbox the release found
-// only when it listed the project again from the API server, and one per claim of its stop set, in
-// token order. Both are never null. Failure is what stopped the release short of its acts, absent
-// while nothing did.
+// ProjectReleaseResult is what the release did, or on a dry run what it would do from the reads
+// now, without the settle of replacement records: one line per Sandbox of the project, in name
+// order, followed in name order by any Sandbox the release found only when it listed the project
+// again from the API server, and one per claim of its stop set, in token order. Both are never
+// null. Failure is what stopped the release short of its acts, absent while nothing did.
 type ProjectReleaseResult struct {
 	Sandboxes []ReleasedSandbox `json:"sandboxes"`
 	Claims    []ReleasedClaim   `json:"claims"`

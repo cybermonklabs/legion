@@ -272,8 +272,8 @@ func newProjectReleaseCommand(stdout, stderr io.Writer) *cobra.Command {
 	}
 	c := newProjectCall(cmd, stdout, stderr)
 	bound := c.flags.Duration("bound", 0, "how long the release waits for the roles it asks before it deletes every pod still waiting (default the daemon's pod_update_grace_minutes)")
-	wait := c.flags.Duration("wait", 0, "how long the whole command may take before it ends, saying the release goes on (default the release's bound plus 30m)")
-	dryRun := c.flags.Bool("dry-run", false, "print what a release would do now: read each pod's workspace, and ask, stop and delete nothing")
+	wait := c.flags.Duration("wait", 0, "how long the whole command may take before it ends: once the daemon answered, saying the release goes on, and before that, saying it may not have started (default the release's bound plus 30m)")
+	dryRun := c.flags.Bool("dry-run", false, "print what a release would do from the reads now, without the settle of replacement records: read each pod's workspace, and ask, stop and delete nothing")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		return runProjectRelease(ctx, c.operatorCall, *bound, *wait, *dryRun, *c.asJSON)
 	})
@@ -290,22 +290,31 @@ var projectReleasePoll = 5 * time.Second
 // left pod's claims come after it.
 const projectReleaseWaitBeyondBound = 30 * time.Minute
 
-// releaseGoesOn ends every sentence this command's wait makes about a release the daemon runs:
+// releaseGoesOn ends each sentence this command's wait makes about a release the daemon answered:
 // the release is the daemon's, which no bound of this command cancels, and the command run again
 // reads it.
 const releaseGoesOn = "the release goes on in the daemon. Run this command again to read it"
+
+// releaseMayNotHaveStarted ends the sentence this command's wait makes when it ends before the
+// daemon answered the release's POST. A request that ends while the release waits for a sweep, or
+// before its record commits, has the daemon clear the release's mark and run no release
+// (internal/daemon's projectReleaser.Start); a release whose record committed goes on with its
+// answer lost. Either way the command run again starts the release or reads the one that runs.
+const releaseMayNotHaveStarted = "the release may not have started. Run this command again: it starts the release, or reads the one the daemon started"
 
 // runProjectRelease releases every pod of the project (R6): it asks the daemon to start the
 // release, which a daemon that already ran one in this process answers with that release, reads
 // the release every projectReleasePoll until it finished or --wait ends, and prints it — one line
 // for each Sandbox of the project and one for each claim the release stopped. --dry-run asks for
-// the outcome a release would give now, and stops nothing; a daemon that already ran a release in
-// this process answers it with that release, which the command then reads and prints as a release.
+// the outcome a release would give from the reads now, without the settle of replacement records,
+// and stops nothing; a daemon that already ran a release in this process answers it with that
+// release, which the command then reads and prints as a release.
 //
 // It exits 0 once the release finished and left no Sandbox of the project, and for a dry run's
 // answer. It exits 1 when the release names a pod it left or stopped short, when the daemon
-// refuses, and when --wait ends first, saying that the release goes on in the daemon. A pod
-// deleted with work lost changes no exit: the line names that workspace. A usage error is 2.
+// refuses, and when --wait ends first: before the daemon answered the release's POST, saying that
+// the release may not have started, and after, saying that the release goes on in the daemon. A
+// pod deleted with work lost changes no exit: the line names that workspace. A usage error is 2.
 func runProjectRelease(ctx context.Context, c *operatorCall, bound, wait time.Duration, dryRun, asJSON bool) int {
 	if code, ok := c.check("operator-token-file"); !ok {
 		return code
@@ -329,7 +338,7 @@ func runProjectRelease(ctx context.Context, c *operatorCall, bound, wait time.Du
 	release, answer, cut, ok := releaseRequest(ctx, c, op, http.MethodPost, request)
 	// The daemon has answered nothing yet, so which sentence ends the wait follows --dry-run.
 	if cut {
-		ended := releaseGoesOn
+		ended := releaseMayNotHaveStarted
 		if dryRun {
 			ended = "a dry run records and starts nothing"
 		}
@@ -465,7 +474,8 @@ func printProjectRelease(c *operatorCall, release api.ProjectReleaseResponse, an
 // a pod that runs another image than the daemon's own, and each role on the pod's line — until
 // the bound each role the ask was written to, at it the roles the ask reached or that answered —
 // with when it answered or that the bound passed. On a dry run the outcome is the one a release
-// would give now, and the asked roles are the ones it would ask.
+// would give from the reads now, without the settle of replacement records, and the asked roles
+// are the ones it would ask.
 func releasedSandboxLine(line api.ReleasedSandbox, dryRun bool) string {
 	words := []string{"sandbox", line.Name, string(line.Kind), orNone(line.Issue), string(line.Outcome)}
 	var details []string

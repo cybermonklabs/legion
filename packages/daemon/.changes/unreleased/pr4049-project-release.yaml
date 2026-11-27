@@ -57,6 +57,7 @@ body: |-
   finished, a pause is taken.
   The command prints one line for each Sandbox and each stopped claim, and exits 0 once the
   release finished and left no Sandbox of the project. `--dry-run` shows what a release would do
-  now and changes nothing. `POST` and `GET /legion/v1/operator/project/release` start and read the
-  release, and `legion state --json` shows it as `projectRelease`. docs/kubernetes.md, "Releasing
-  a project's pods" and "Moving a project's pods to another cluster", give the steps of a move.
+  from the reads now, without the settle of replacement records, and changes nothing. `POST` and
+  `GET /legion/v1/operator/project/release` start and read the release, and `legion state --json`
+  shows it as `projectRelease`. docs/kubernetes.md, "Releasing a project's pods" and "Moving a
+  project's pods to another cluster", give the steps of a move.

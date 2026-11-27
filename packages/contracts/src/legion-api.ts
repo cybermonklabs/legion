@@ -1470,16 +1470,17 @@ export const LEGION_RELEASED_CLAIM_ENDS = [
 ] as const;
 
 /** `api.ReleasedSandbox` — one Sandbox of the project as a project release ended it, or on a dry
- * run as a release would end it now: an issue pod `deleted_clean`, `deleted_unread` (no role
- * process ran in it at any read, and its launcher did not read it, which its `reason` gives),
- * `deleted_lost` (with the unpushed `commits` and whether the working copy held a change at the
- * last read), `deleted_read_refused` (with the shim's `refusal`, or, when no role process ran at
- * the last read, with what an earlier read found and that as its `reason`) or `left` (with its
- * `reason`, such as an ask to its roles that could not be written by the bound, so no role of it
- * was asked); every other Sandbox `deleted` or `left`; `waiting` until the release ends it. A pod
- * no role process ran in at any read is read through its launcher, which counts only the commits
- * under a working copy or a local bookmark, and its `reason` says so. Several reasons are joined
- * by `; `. `otherImage` marks an issue pod whose pod runs an image other than the daemon's own. */
+ * run as a release would end it from the reads now, without the settle of replacement records: an
+ * issue pod `deleted_clean`, `deleted_unread` (no role process ran in it at any read, and its
+ * launcher did not read it, which its `reason` gives), `deleted_lost` (with the unpushed `commits`
+ * and whether the working copy held a change at the last read), `deleted_read_refused` (with the
+ * shim's `refusal`, or, when no role process ran at the last read, with what an earlier read found
+ * and that as its `reason`) or `left` (with its `reason`, such as an ask to its roles that could
+ * not be written by the bound, so no role of it was asked); every other Sandbox `deleted` or
+ * `left`; `waiting` until the release ends it. A pod no role process ran in at any read is read
+ * through its launcher, which counts only the commits under a working copy or a local bookmark,
+ * and its `reason` says so. Several reasons are joined by `; `. `otherImage` marks an issue pod
+ * whose pod runs an image other than the daemon's own. */
 const legionReleasedSandbox = z.object({
   name: nonEmptyString.optional(),
   kind: z.enum(["issue", "controller", "cache", "probe", "unknown"]).optional(),

@@ -9428,11 +9428,13 @@ The line of a claim stored suspended by `project_release` ends `(the next boot s
 A claim that failed or retired during the release names that state and ends `(the next boot does not start it)`.
 When the release could not read the claims at its end, each claim's line says that how the claim stands is not known, and names the error.
 The command exits 0 once the release finished and left no Sandbox of the project.
-It exits 1 when the release left a Sandbox, stopped short, or was ended by a boot before it finished, when the daemon refused, and when `--wait` (by default the bound plus 30 minutes) ended first, which it says, since the release goes on in the daemon.
-When the wait ends after the daemon answered with the release, between two reads or inside one, the command prints the release as it last read it.
+It exits 1 when the release left a Sandbox, stopped short, or was ended by a boot before it finished, when the daemon refused, and when `--wait` (by default the bound plus 30 minutes) ended first, which it says.
+When the wait ends after the daemon answered with the release, between two reads or inside one, the command prints the release as it last read it and says that the release goes on in the daemon.
+When the wait ends before the daemon answered the `POST`, the command says that the release may not have started: a request that ends while the release waits for the sweep, or before its record commits, makes the daemon clear the mark again and run no release (step 1), and a release whose record committed first goes on with its answer lost.
+Run the command again: it starts the release, or reads the one the daemon started.
 A release that stopped short names why (`result.failure`), such as a list of the project's Sandboxes that it could not read, and still has a line for each claim of the project it was to stop.
 A pod deleted with work lost does not change the exit code.
-`--dry-run` reads the workspaces as the release would, a pod in which no role process runs through its launcher, and prints each Sandbox with the outcome a release would give it now, the roles it would ask (`a release would ask …`), and the claims it would stop, each line ending `(the next boot would start it)`, or `operator (the next boot does not start it)` for a claim of a pod a release would leave.
+`--dry-run` reads the workspaces as the release would, a pod in which no role process runs through its launcher, and prints each Sandbox with the outcome a release would give it from the reads now (without the settle of replacement records, below), the roles it would ask (`a release would ask …`), and the claims it would stop, each line ending `(the next boot would start it)`, or `operator (the next boot does not start it)` for a claim of a pod a release would leave.
 It reads no record of a replacement (`pod_replacements`), so it does not show a pod that a release would leave over such a record (step 4).
 It names the roles a release would ask for each pod whose workspace holds unpushed commits, whose shim refused the read, that has a role in a turn, or that has a role reporting running background work, as step 3 reads them.
 It asks, stops and saves nothing, and exits 0 when the daemon answers with a dry run.
