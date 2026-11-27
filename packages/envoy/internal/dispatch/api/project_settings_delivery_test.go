@@ -436,6 +436,30 @@ func TestANullTargetIsRefused(t *testing.T) {
 	}
 }
 
+// A save naming delivery null is refused, naming the field, and leaves the switch as it stood: null
+// clears a field that may be empty, and the switch is never empty, so a body whose null the decode
+// would read as false must not turn a project's delivery off, which drops its delivery section,
+// its delivery evals and its failure measures (found by INFRA-978's tester at a37567ad, where the
+// save answered 200 and read back delivery off).
+func TestANullDeliverySwitchIsRefused(t *testing.T) {
+	t.Parallel()
+	rig := newDeliverySettingsRig(t, readableRepos())
+	createTestProject(t, rig.handler, "ALPHA")
+	savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": true, "sources": []any{workflowSource("acme/alpha-deploy", ".github/workflows/deploy.yml", "release")},
+		"population_authors": []string{"octocat"},
+	})
+	before := readProjectDelivery(t, rig.handler, "ALPHA")
+	refused := refusedSettings(t, putProjectDelivery(t, rig.handler, "ALPHA", map[string]any{"delivery": nil}),
+		http.StatusBadRequest, delivery.CodeDeliverySettingsInput)
+	if refused.Field != "delivery" {
+		t.Errorf("a null switch is refused naming %q, want delivery", refused.Field)
+	}
+	if after := readProjectDelivery(t, rig.handler, "ALPHA"); string(after) != string(before) {
+		t.Errorf("the refused save left settings %s, want %s", after, before)
+	}
+}
+
 // A save's job names are stored as the singleton's save stores them, since every reader matches a
 // job by its exact name: each production job name trimmed, and each optional job and step name
 // trimmed, a blank one stored as null. A production job name that is blank or named twice once
