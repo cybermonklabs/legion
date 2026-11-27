@@ -50,7 +50,7 @@ func TestTheTarStreamNamesNoRefOfTheClone(t *testing.T) {
 	})
 	t.Run("stream", func(t *testing.T) {
 		c, log := cacheWithBranch(t, branch)
-		w := &failAfter{header: http.Header{}, marker: []byte(echoedProvisioningToken)}
+		w := &failAfter{header: http.Header{}, name: "refs/heads/" + branch}
 		if !serveTarAborted(c, w) {
 			t.Fatal("the stream whose writer failed on the ref's body ended as if it had been sent")
 		}
@@ -90,22 +90,32 @@ func TestTheTarStreamNamesNoRefOfTheClone(t *testing.T) {
 	}
 }
 
-// cacheWithBranch is a cache that has cloned a remote and then fetched branch from it, so the
-// clone holds branch as a loose ref file of its own, as a fetch writes a ref the clone did not
-// have; and the log the cache writes into.
+// cacheWithBranch is a cache of a remote whose HEAD names branch: the cache keeps its default
+// branch alone (narrow), so the one branch the answering party of its fetch names into the clone
+// is the one that party's HEAD names (workspace.Fetch). The cache has filled its clone and then
+// fetched branch moved on, so the clone holds branch as a loose ref file of its own, as a fetch
+// writes a ref it moves; and the log the cache writes into. Its volume is markedVolume, so every
+// path of the clone, a ref's or a pack's, holds it.
 func cacheWithBranch(t *testing.T, branch string) (*cache, *syncLog) {
 	t.Helper()
 	remote := newRemote(t)
+	git(t, remote, "--git-dir="+remote, "branch", branch, "main")
+	git(t, remote, "--git-dir="+remote, "symbolic-ref", "HEAD", "refs/heads/"+branch)
 	opts := testOptions(t, newTestRunner(t, remote))
+	opts.Root = filepath.Join(opts.Root, markedVolume)
+	if err := os.Mkdir(opts.Root, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	log := &syncLog{}
 	opts.Log = log.log
 	c := cacheOn(t, opts)
 	if err := c.refresh(context.Background()); err != nil {
 		t.Fatalf("the first refresh: %v", err)
 	}
-	git(t, remote, "--git-dir="+remote, "branch", branch, "main")
+	advance(t, remote, "moved")
+	git(t, remote, "--git-dir="+remote, "branch", "--force", branch, "main")
 	if err := c.refresh(context.Background()); err != nil {
-		t.Fatalf("the refresh that brings %s: %v", branch, err)
+		t.Fatalf("the refresh that moves %s: %v", branch, err)
 	}
 	if info, err := os.Stat(filepath.Join(c.dir, "refs", "heads", filepath.FromSlash(branch))); err != nil || !info.Mode().IsRegular() {
 		t.Fatalf("the clone holds no loose ref file of %s (%v), so no entry of the stream is named with it", branch, err)
@@ -134,22 +144,30 @@ func asError(r any) error {
 	return err
 }
 
+// markedVolume is the name of the directory a cacheWithBranch cache's volume is. It holds the
+// gate's marker -RDX-, so a line that names a path of the clone, which a pack's name alone does not
+// make the token's, still fails a row at its capture with a marker the gate reads there.
+const markedVolume = "volume-RDX-"
+
 // requireLoggedWithoutToken fails t unless log holds a line that begins with prefix, and reads
-// every line through oauth2calltest.RequireNoPiece under capture.
+// every line through oauth2calltest.RequireNoPiece under capture: no run of the token, and none of
+// markedVolume, which every path of the clone holds.
 func requireLoggedWithoutToken(t *testing.T, capture string, log *syncLog, prefix string) {
 	t.Helper()
 	lines := strings.Join(log.all(), "\n")
 	if !logged(log.all(), prefix) {
 		t.Fatalf("the cache logged %q, want a line beginning %q", lines, prefix)
 	}
-	oauth2calltest.RequireNoPiece(t, capture, lines, echoedProvisioningToken)
+	oauth2calltest.RequireNoPiece(t, capture, lines, echoedProvisioningToken, markedVolume)
 }
 
-// failAfter is a reader's side of a stream that goes away right after the write that held marker:
-// the header the tar writes for the entry named with it, so the entry's own body fails to write.
+// failAfter is a reader's side of a stream that goes away right after the write of the header the
+// tar writes for the entry named name, so that entry's own body fails to write. The tar writes a
+// header as one block that begins with the entry's name, ended by a NUL where the name is shorter
+// than its field; HEAD's body, which names the same ref as HEAD's branch, is no such write.
 type failAfter struct {
 	header http.Header
-	marker []byte
+	name   string
 	armed  bool
 }
 
@@ -161,6 +179,6 @@ func (w *failAfter) Write(p []byte) (int, error) {
 	if w.armed {
 		return 0, errors.New("the reader went away")
 	}
-	w.armed = bytes.Contains(p, w.marker)
+	w.armed = bytes.HasPrefix(p, append([]byte(w.name), 0))
 	return len(p), nil
 }
