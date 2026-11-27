@@ -61,7 +61,7 @@ import (
 	"hash/maphash"
 	"os"
 	"runtime/debug"
-	"strconv"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -252,6 +252,68 @@ type modelTable struct {
 	decide    func(d Done, req modelRequest) error
 	final     func(w Workflow, command string) bool
 	stoppable func(w Workflow, command string) bool
+	decided   *modelDecided // one walk's answers of decide (explore makes it)
+}
+
+// modelDecided is one walk's answers of decide: whether it admitted each request on the record
+// of each journal the walk asked about. A state's steps ask about the state's one journal again
+// and again, so the journal asked about last is kept at hand, with its answers.
+type modelDecided struct {
+	byJournal map[modelJournal]*modelAnswers
+	last      modelJournal
+	answers   *modelAnswers
+}
+
+// modelAnswers is decide's answer to each request on one journal's record, by modelAsk.index:
+// 0 while not asked, then answerAdmitted or answerRefused.
+type modelAnswers [numCmds << 3]uint8
+
+const (
+	answerAdmitted = 1 + iota
+	answerRefused
+)
+
+// index is the request's place in a modelAnswers: its command, and a bit for each of its flags.
+func (a modelAsk) index() int {
+	i := int(a.cmd) << 3
+	if a.disksMoved {
+		i |= 1
+	}
+	if a.rowReleased {
+		i |= 2
+	}
+	if a.plain {
+		i |= 4
+	}
+	return i
+}
+
+// admits reports whether decide admits a on the record j stands for (toDone). decide is a
+// function of the record and the request alone, and the record of a journal (toDone's whole
+// input), so a walk asks decide once for each journal and request it reaches, and every other
+// state with that journal takes the same answer.
+func (t modelTable) admits(sc modelScenario, j modelJournal, a modelAsk) bool {
+	d := t.decided
+	if d.answers == nil || d.last != j {
+		answers, ok := d.byJournal[j]
+		if !ok {
+			answers = new(modelAnswers)
+			d.byJournal[j] = answers
+		}
+		d.last, d.answers = j, answers
+	}
+	switch d.answers[a.index()] {
+	case answerAdmitted:
+		return true
+	case answerRefused:
+		return false
+	}
+	ok := t.decide(toDone(sc, j), a.request()) == nil
+	d.answers[a.index()] = answerRefused
+	if ok {
+		d.answers[a.index()] = answerAdmitted
+	}
+	return ok
 }
 
 func tableOf(r modelRules) modelTable {
@@ -286,114 +348,217 @@ func startLabel(sc modelScenario, s modelState) string {
 	return l
 }
 
-// stateSeeds are the two seeds of the visited set's 128-bit state hash.
-var stateSeeds = [2]maphash.Seed{maphash.MakeSeed(), maphash.MakeSeed()}
+// stateSeed is the seed of the visited set's state hash.
+var stateSeed = maphash.MakeSeed()
+
+// modelVisited is a walk's visited set: each state's node, under a 64-bit hash of the state. A
+// key holds a state only when the node under it holds that very state, so the set never takes two
+// states for one; a state whose hash another state's node holds goes under the next free key.
+type modelVisited struct {
+	node map[uint64]int32
+	hash func(modelState) uint64
+}
+
+// find returns the node that holds s, or false and the key a node of s goes under. stateOf is a
+// node's state.
+func (v modelVisited) find(s modelState, stateOf func(int32) *modelState) (int32, uint64, bool) {
+	for h := v.hash(s); ; h++ {
+		j, ok := v.node[h]
+		if !ok {
+			return -1, h, false
+		}
+		if *stateOf(j) == s {
+			return j, h, true
+		}
+	}
+}
+
+// modelReading is what disagreement reads of a state: its journal and its disks.
+type modelReading struct {
+	journal modelJournal
+	cur     [2]modelDisk
+}
+
+// modelUnsafe is one unsafe step's kind and the node it reaches, each counted once.
+type modelUnsafe struct {
+	kind string
+	to   int32
+}
+
+// nodeChunk is how many nodes a chunk of a walk's nodes holds.
+const nodeChunk = 1 << 14
+
+// nodeList is a walk's nodes, held in chunks of nodeChunk, so a walk that grows to hundreds of
+// megabytes never copies the nodes it holds, and never holds two copies of them, as a slice's
+// growth does. The first chunk grows as a slice does, so a small walk allocates little.
+type nodeList[T any] struct {
+	chunks [][]T
+	n      int32
+}
+
+// add appends v and returns its index.
+func (l *nodeList[T]) add(v T) int32 {
+	last := len(l.chunks) - 1
+	if last < 0 || len(l.chunks[last]) == nodeChunk {
+		var chunk []T
+		if last >= 0 {
+			chunk = make([]T, 0, nodeChunk)
+		}
+		l.chunks = append(l.chunks, chunk)
+		last++
+	}
+	l.chunks[last] = append(l.chunks[last], v)
+	l.n++
+	return l.n - 1
+}
+
+func (l *nodeList[T]) at(i int32) *T { return &l.chunks[i/nodeChunk][i%nodeChunk] }
 
 // explore walks every state of one workflow under the rules and returns how many it reached, every
 // counterexample, and every state at which the package's readings and the model's differ (checked
 // for the current rules alone, whose readings the package's functions are).
 func explore(r modelRules, t modelTable, sc modelScenario, bound int) (int, []modelViolation, []string) {
+	// A node is a state, the node it was first reached from, and that step's label, an index into
+	// labels. It holds no pointer, so the collector never scans the walk's nodes.
 	type node struct {
 		s      modelState
-		parent int
-		label  string
+		parent int32
+		label  int32
 	}
-	var nodes []node
-	// The visited set holds a 128-bit hash of each state, two 64-bit maphash.Comparable sums under
-	// two seeds, not the state itself, so each state is kept once (in nodes). Two states colliding
-	// in all 128 bits is the one way the walk could miss one; at the model's few million states its
-	// odds are below 10^-25.
-	idx := map[[2]uint64]int{}
-	key := func(s modelState) [2]uint64 {
-		return [2]uint64{maphash.Comparable(stateSeeds[0], s), maphash.Comparable(stateSeeds[1], s)}
+	var nodes nodeList[node]
+	var labels []string
+	labelIDs := map[string]int32{}
+	labelOf := func(l string) int32 {
+		id, ok := labelIDs[l]
+		if !ok {
+			id = int32(len(labels))
+			labels = append(labels, l)
+			labelIDs[l] = id
+		}
+		return id
 	}
-	var opEdges [][]int32
-	trace := func(i int) []string {
-		var tr []string
-		for i >= 0 {
-			tr = append([]string{nodes[i].label}, tr...)
-			i = nodes[i].parent
+	visited := modelVisited{node: map[uint64]int32{}, hash: func(s modelState) uint64 { return maphash.Comparable(stateSeed, s) }}
+	stateOf := func(j int32) *modelState { return &nodes.at(j).s }
+	// reach returns the node of s, which it adds, reached from parent by the step label, when s is
+	// new.
+	reach := func(s modelState, parent int32, label string) int32 {
+		j, h, ok := visited.find(s, stateOf)
+		if !ok {
+			j = nodes.add(node{s, parent, labelOf(label)})
+			visited.node[h] = j
+		}
+		return j
+	}
+	// The operator steps, which liveness may use, in one list: node i's lead to the nodes
+	// opTo[opFrom[i]:opFrom[i+1]]. A node's steps are all found while it is expanded, which the
+	// walk does in node order.
+	var opFrom, opTo []int32
+	trace := func(i int32) []string {
+		n := 0
+		for j := i; j >= 0; j = nodes.at(j).parent {
+			n++
+		}
+		tr := make([]string, n)
+		for j := i; j >= 0; j = nodes.at(j).parent {
+			n--
+			tr[n] = labels[nodes.at(j).label]
 		}
 		return tr
 	}
 	for _, s := range sc.Init {
 		s = canon(s)
-		if _, ok := idx[key(s)]; !ok {
-			idx[key(s)] = len(nodes)
-			nodes = append(nodes, node{s, -1, startLabel(sc, s)})
-			opEdges = append(opEdges, nil)
-		}
+		reach(s, -1, startLabel(sc, s))
 	}
 	var viol []modelViolation
 	var differ []string
 	add := func(kind string, s modelState, tr []string) {
 		viol = append(viol, modelViolation{sc.Name, kind, classify(r, sc, kind, s, tr), tr})
 	}
-	seenUnsafe := map[string]bool{}
-	for i := 0; i < len(nodes); i++ {
-		s := nodes[i].s
-		if r == currentModel {
-			if why := disagreement(sc, s); why != "" && len(differ) < 5 {
+	seenUnsafe := map[modelUnsafe]bool{}
+	t.decided = &modelDecided{byJournal: map[modelJournal]*modelAnswers{}}
+	// readings is disagreement's answer for each journal and disks the walk reached: a function of
+	// the two, so each pair is checked once and every state with that pair takes its answer.
+	readings := map[modelReading]string{}
+	current := r == currentModel
+	var edges []modelEdge // next's steps from one state, the buffer reused for every state
+	for i := int32(0); i < nodes.n; i++ {
+		s := nodes.at(i).s
+		opFrom = append(opFrom, int32(len(opTo)))
+		if current {
+			k := modelReading{s.modelJournal, s.Cur}
+			why, seen := readings[k]
+			if !seen {
+				why = disagreement(sc, s.modelJournal, s.Cur)
+				readings[k] = why
+			}
+			if why != "" && len(differ) < 5 {
 				differ = append(differ, why+", after "+strings.Join(trace(i), " -> "))
 			}
 		}
-		if s.Complete && (!t.final(sc.W, s.Last) || len(pendingAtCompletion(s)) > 0) {
+		if s.Complete && (!t.final(sc.W, s.Last.String()) || pendingAtCompletion(s) != 0) {
 			add("no false completion", s, trace(i))
 		}
 		if running(s) >= 2 {
 			add("two commands past their intent at once", s, trace(i))
 		}
-		for _, e := range next(r, t, sc, s, bound) {
+		edges = next(r, t, sc, s, bound, edges[:0])
+		for _, e := range edges {
 			to := canon(e.to)
-			j, ok := idx[key(to)]
-			if !ok {
-				j = len(nodes)
-				idx[key(to)] = j
-				nodes = append(nodes, node{to, i, e.label})
-				opEdges = append(opEdges, nil)
-			}
+			j := reach(to, i, e.label)
 			if e.op {
-				opEdges[i] = append(opEdges[i], int32(j))
+				opTo = append(opTo, j)
 			}
 			if e.unsafe != "" {
-				key := e.unsafe + "|" + strconv.Itoa(j)
-				if !seenUnsafe[key] {
-					seenUnsafe[key] = true
+				if u := (modelUnsafe{e.unsafe, j}); !seenUnsafe[u] {
+					seenUnsafe[u] = true
 					add(e.unsafe, to, append(trace(i), e.label))
 				}
 			}
 		}
 	}
-	rev := make([][]int32, len(nodes))
-	for i, es := range opEdges {
-		for _, j := range es {
-			rev[j] = append(rev[j], int32(i))
+	opFrom = append(opFrom, int32(len(opTo)))
+	n := nodes.n
+	// The operator steps reversed, in one list too: the steps into node j come from the nodes
+	// revFrom[revStart[j]:revStart[j+1]], in node order.
+	revStart := make([]int32, n+1)
+	for _, j := range opTo {
+		revStart[j+1]++
+	}
+	for j := range n {
+		revStart[j+1] += revStart[j]
+	}
+	revFrom := make([]int32, len(opTo))
+	fill := slices.Clone(revStart[:n])
+	for i := range n {
+		for _, j := range opTo[opFrom[i]:opFrom[i+1]] {
+			revFrom[fill[j]] = i
+			fill[j]++
 		}
 	}
-	good := make([]bool, len(nodes))
+	good := make([]bool, n)
 	var q []int32
-	for i, n := range nodes {
-		if n.s.Row == 'R' && n.s.PrepLost != 'O' && n.s.PrepLost != 'N' {
+	for i := range n {
+		if s := &nodes.at(i).s; s.Row == 'R' && s.PrepLost != 'O' && s.PrepLost != 'N' {
 			good[i] = true
-			q = append(q, int32(i))
+			q = append(q, i)
 		}
 	}
 	for len(q) > 0 {
 		j := q[0]
 		q = q[1:]
-		for _, i := range rev[j] {
+		for _, i := range revFrom[revStart[j]:revStart[j+1]] {
 			if !good[i] {
 				good[i] = true
 				q = append(q, i)
 			}
 		}
 	}
-	for i, n := range nodes {
+	for i := range n {
 		if !good[i] {
-			add("liveness", n.s, trace(i))
+			add("liveness", nodes.at(i).s, trace(i))
 		}
 	}
-	return len(nodes), viol, differ
+	return int(n), viol, differ
 }
 
 // modelRun is one rule set's run at one bound: its states and counterexamples in all, by
@@ -516,6 +681,28 @@ var pinnedCurrentBound2 = map[string]int{"cutover": 55800, "rollback": 7197, "se
 // states each at bound 2), to two at once, so the test's peak memory stays inside a CI runner
 // whatever its CPU count.
 var failWalks = make(chan struct{}, 2)
+
+// The visited set keeps states whose hashes collide apart: with one hash for every state, each new
+// state goes under the next free key, and each state already added finds its own node.
+func TestTheVisitedSetKeepsStatesWithOneHashApart(t *testing.T) {
+	var states []modelState
+	v := modelVisited{node: map[uint64]int32{}, hash: func(modelState) uint64 { return 7 }}
+	stateOf := func(j int32) *modelState { return &states[j] }
+	for i := range 3 {
+		s := modelState{Row: 'H', NextID: int8(i)}
+		_, h, ok := v.find(s, stateOf)
+		if ok || h != uint64(7+i) {
+			t.Fatalf("state %d is found %v, under the key %d; want it new, under the key %d", i, ok, h, 7+i)
+		}
+		v.node[h] = int32(len(states))
+		states = append(states, s)
+	}
+	for i, s := range states {
+		if j, h, ok := v.find(s, stateOf); !ok || j != int32(i) {
+			t.Errorf("state %d is found %v as node %d under the key %d; want node %d", i, ok, j, h, i)
+		}
+	}
+}
 
 // The model of the hold's workflows, run on this package's journal and table. The frozen bundle's
 // profiles reproduce its counts: v62 finds no counterexample at two crashes and restores per run

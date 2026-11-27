@@ -1,9 +1,6 @@
 package holdrecord
 
-import (
-	"fmt"
-	"strconv"
-)
+import "fmt"
 
 // ---------------------------------------------------------------- transitions
 
@@ -25,7 +22,7 @@ func released(r modelRules, s modelState, abort bool) string {
 		return ""
 	case r.HubAbortAfterStop && s.Proved:
 		for tg := range targets {
-			if s.Cur[tg].ID != expected(s, tg) {
+			if s.Cur[tg].ID != s.expected(tg) {
 				return "abort released over a disk the done prove did not prove"
 			}
 		}
@@ -38,18 +35,18 @@ func released(r modelRules, s modelState, abort bool) string {
 
 // hold set's steps. It runs past its intent, in held, from its row move on.
 const (
-	setRead    = 1 + iota // step 1's reads and the record's insert
-	setPre                // the preflight
-	setIntent             // its intent, by Admit, with the row prepare (SetCommand)
-	setMove               // the row's move from prepare to held
-	setRestore            // v59 hub-restore: snapshot restore's intent
-	setAge                // v59 hub-restore: the age check, then snapshot restore's done
-	setSteps              // steps 2 to 6 in held, then its done entry (SetCommand)
+	setRead    int8 = 1 + iota // step 1's reads and the record's insert
+	setPre                     // the preflight
+	setIntent                  // its intent, by Admit, with the row prepare (SetCommand)
+	setMove                    // the row's move from prepare to held
+	setRestore                 // v59 hub-restore: snapshot restore's intent
+	setAge                     // v59 hub-restore: the age check, then snapshot restore's done
+	setSteps                   // steps 2 to 6 in held, then its done entry (SetCommand)
 )
 
 func runs(sl modelSlot) bool {
 	switch sl.Cmd {
-	case "", cmdAbortPrepare, cmdAbortNoJournal:
+	case noCmd, cmdAbortPrepare, cmdAbortNoJournal:
 		return false
 	case cmdSet:
 		return sl.Step >= setRestore
@@ -79,15 +76,15 @@ func othersRunning(s modelState, k int) bool {
 
 func idle(s modelState, k int) modelState { s.Slots[k] = modelSlot{}; return s }
 
-func next(r modelRules, t modelTable, sc modelScenario, s modelState, bound int) []modelEdge {
-	var out []modelEdge
+// next appends every step from s to out, a buffer the walk reuses from state to state, and
+// returns it.
+func next(r modelRules, t modelTable, sc modelScenario, s modelState, bound int, out []modelEdge) []modelEdge {
 	for k := range sc.Slots {
 		sl := s.Slots[k]
-		if sl.Cmd == "" {
+		if sl.Cmd == noCmd {
 			switch s.Row {
 			case 'P':
-				if a2(s, cmdSet) && (!r.SetCommand || !s.Rec ||
-					t.decide(toDone(sc, s), modelRequest{Request: Request{Command: cmdSet}}) == nil) {
+				if a2(s, cmdSet) && (!r.SetCommand || !s.Rec || t.admits(sc, s.modelJournal, modelAsk{cmd: cmdSet})) {
 					ns := s
 					ns.Slots[k] = modelSlot{Cmd: cmdSet, Step: setRead}
 					out = append(out, modelEdge{to: ns, label: "hold set: started", op: true})
@@ -114,10 +111,10 @@ func next(r modelRules, t modelTable, sc modelScenario, s modelState, bound int)
 				// while the journal shows prepare (ReleasedPrepareAbort), writes its intent, deletes
 				// the cohort and writes its done entry, which ends the journal.
 				if s.PrepLost == 'O' && a2(s, cmdAbortReleased) &&
-					t.decide(toDone(sc, s), modelRequest{Request: Request{Command: CommandAbort, RowReleased: true}}) == nil {
-					ns := writeIntent(s, CommandAbort)
+					t.admits(sc, s.modelJournal, modelAsk{cmd: cmdAbort, rowReleased: true}) {
+					ns := writeIntent(s, cmdAbort)
 					ns.Slots[k] = modelSlot{Cmd: cmdAbortReleased, Step: 1}
-					out = append(out, modelEdge{to: ns, label: cmdAbortReleased + ": admitted, intent written", op: true})
+					out = append(out, modelEdge{to: ns, label: cmdAbortReleased.String() + ": admitted, intent written", op: true})
 				}
 				// Lost before the journal was written, the hold may have left its cohort and no
 				// journal: hold abort on the released row, which the table admits for the zero Done
@@ -126,13 +123,13 @@ func next(r modelRules, t modelTable, sc modelScenario, s modelState, bound int)
 					t.decide(Done{}, modelRequest{Request: Request{Command: CommandAbort, RowReleased: true}}) == nil {
 					ns := s
 					ns.Slots[k] = modelSlot{Cmd: cmdAbortNoJournal, Step: 1}
-					out = append(out, modelEdge{to: ns, label: cmdAbortNoJournal + ": started", op: true})
+					out = append(out, modelEdge{to: ns, label: cmdAbortNoJournal.String() + ": started", op: true})
 				}
 			}
 			continue
 		}
 		out = append(out, steps(r, t, sc, s, k)...)
-		if s.Crashes < bound {
+		if int(s.Crashes) < bound {
 			cs := idle(s, k)
 			cs.Crashes++
 			out = append(out, modelEdge{to: cs, label: "crash in " + modelOp{sl.Cmd, sl.Set}.label()})
@@ -160,11 +157,11 @@ func next(r modelRules, t modelTable, sc modelScenario, s modelState, bound int)
 		// forbids and no hold can stop.
 		window := false
 		for _, sl := range s.Slots {
-			if (sl.Cmd == CommandAbort && sl.Step >= 2) || (sl.Cmd == CommandRelease && sl.Step == 2) {
+			if (sl.Cmd == cmdAbort && sl.Step >= 2) || (sl.Cmd == cmdRelease && sl.Step == 2) {
 				window = true
 			}
 		}
-		if s.Restores < bound && !window {
+		if int(s.Restores) < bound && !window {
 			for tg, n := range targets {
 				for _, snap := range []byte{'H', 'F'} {
 					ns := s
@@ -184,9 +181,9 @@ func next(r modelRules, t modelTable, sc modelScenario, s modelState, bound int)
 		// gone, abort's stop names it and the operator restores onto another disk (below). The step
 		// is the operator's, so liveness may use it, and A1 holds it out of the window between
 		// abort's or release's disk check and its row move, as it holds a restore.
-		if sc.Fail && s.Doomed != "" && r.HubAbortAfterStop && r.RestoreBack && s.Proved && !window {
+		if sc.Fail && s.Doomed != noCmd && r.HubAbortAfterStop && r.RestoreBack && s.Proved && !window {
 			for tg, n := range targets {
-				if want := expected(s, tg); s.Cur[tg].ID != want && s.Lost&(1<<tg) == 0 {
+				if want := s.expected(tg); s.Cur[tg].ID != want && s.Lost&(1<<tg) == 0 {
 					ns := s
 					ns.Cur[tg] = modelDisk{ID: want, Snap: 'H'}
 					if s.ProvenSet&(1<<tg) == 0 {
@@ -199,7 +196,7 @@ func next(r modelRules, t modelTable, sc modelScenario, s modelState, bound int)
 		// After a re-prove failed for good (rule (1)'s premise), a done prove's disk, detached by a
 		// later restore, may be lost (deleted) once a run, an outside event: the restore back onto it
 		// is then no way out.
-		if sc.Fail && s.Proved && (s.Doomed == CommandProve || s.Doomed == "streams census") && s.Losts < 1 && !window {
+		if sc.Fail && s.Proved && (s.Doomed == cmdProve || s.Doomed == cmdCensus) && s.Losts < 1 && !window {
 			for tg, n := range targets {
 				if s.ProvenSet&(1<<tg) != 0 && s.Lost&(1<<tg) == 0 && s.Cur[tg].ID != s.Proven[tg] {
 					ns := s
@@ -213,9 +210,9 @@ func next(r modelRules, t modelTable, sc modelScenario, s modelState, bound int)
 		// disk per target, anotherDisk, so the cycle of stop and restore stays in a finite space.
 		if r.DiskGoneRestore && s.GoneStop && !window {
 			for tg, n := range targets {
-				if s.Lost&(1<<tg) != 0 && s.Cur[tg].ID != anotherDisk+tg {
+				if s.Lost&(1<<tg) != 0 && s.Cur[tg].ID != anotherDisk+int8(tg) {
 					ns := s
-					ns.Cur[tg] = modelDisk{ID: anotherDisk + tg, Snap: 'F'}
+					ns.Cur[tg] = modelDisk{ID: anotherDisk + int8(tg), Snap: 'F'}
 					ns.GoneStop = false
 					out = append(out, modelEdge{to: ns, label: "operator: restores " + n + " onto another disk", op: true})
 				}
@@ -246,11 +243,11 @@ func admit(r modelRules, sc modelScenario, s modelState, k int, o modelOp) model
 			}
 		}
 	}
-	first := 1
+	first := int8(1)
 	if o.cmd == cmdSet {
 		first = setSteps // its rerun in held: the row move is done, so it runs steps 2 to 6 again
 	}
-	lock := o.cmd != CommandRelease || r.Serialize
+	lock := o.cmd != cmdRelease || r.Serialize
 	switch {
 	case !lock: // v53's hold release writes no entry: its check is its admission
 		ns.Slots[k].Step = first
@@ -263,10 +260,10 @@ func admit(r modelRules, sc modelScenario, s modelState, k int, o modelOp) model
 	return modelEdge{to: ns, label: o.label() + ": admitted", op: true}
 }
 
-func writeIntent(s modelState, c string) modelState {
-	s.Intent = addSet(s.Intent, c)
-	s.StopLatest, s.StopBefore = delSet(s.StopLatest, c), delSet(s.StopBefore, c)
-	if c != CommandRelease {
+func writeIntent(s modelState, c modelCmd) modelState {
+	s.Intent = s.Intent.with(c)
+	s.StopLatest, s.StopBefore = s.StopLatest.without(c), s.StopBefore.without(c)
+	if c != cmdRelease {
 		s.Complete = false
 	}
 	return s
@@ -277,17 +274,15 @@ func writeIntent(s modelState, c string) modelState {
 func finish(t modelTable, sc modelScenario, s modelState, k int) modelState {
 	sl := s.Slots[k]
 	c := sl.Cmd
-	s.Ever, s.Last = addSet(s.Ever, c), c
-	if c == CommandProve {
+	s.Ever, s.Last = s.Ever.with(c), c
+	if c == cmdProve {
 		if sl.Set != 0 { // a plain prove keeps the named set and records the same disks again
 			s.ProvenSet = sl.Set
 		}
-		s.Proved, s.Since = true, ""
-		s.Lost, s.GoneStop = 0, false          // the new done prove's disks are those attached
-		for _, x := range list(s.StopLatest) { // stops written so far now precede the latest done prove
-			s.StopBefore = addSet(s.StopBefore, x)
-		}
-		s.StopLatest = ""
+		s.Proved, s.Since = true, 0
+		s.Lost, s.GoneStop = 0, false // the new done prove's disks are those attached
+		s.StopBefore |= s.StopLatest  // stops written so far now precede the latest done prove
+		s.StopLatest = 0
 		for tg := range targets {
 			s.Proven[tg] = 0
 			if s.ProvenSet&(1<<tg) != 0 {
@@ -295,11 +290,11 @@ func finish(t modelTable, sc modelScenario, s modelState, k int) modelState {
 			}
 		}
 	} else {
-		s.Since = addSet(s.Since, c)
+		s.Since = s.Since.with(c)
 	}
-	s.Intent = delSet(s.Intent, c)
-	s.StopLatest, s.StopBefore = delSet(s.StopLatest, c), delSet(s.StopBefore, c)
-	if t.final(sc.W, c) {
+	s.Intent = s.Intent.without(c)
+	s.StopLatest, s.StopBefore = s.StopLatest.without(c), s.StopBefore.without(c)
+	if t.final(sc.W, c.String()) {
 		s.Complete, s.HoldGen = true, s.RowGen
 	}
 	return idle(s, k)
@@ -320,29 +315,34 @@ func refuse(r modelRules, t modelTable, sc modelScenario, s modelState, k int, w
 func refuseLeft(r modelRules, t modelTable, sc modelScenario, s modelState, k int, why string, rerun bool, left byte) modelEdge {
 	c := s.Slots[k].Cmd
 	ns := idle(s, k)
-	if t.stoppable(sc.W, c) && inSet(s.Intent, c) {
-		ns.Intent = delSet(ns.Intent, c)
+	if t.stoppable(sc.W, c.String()) && s.Intent.has(c) {
+		ns.Intent = ns.Intent.without(c)
 		if stopsRecorded(r) {
-			ns.StopLatest, ns.StopBefore = addSet(ns.StopLatest, c), delSet(ns.StopBefore, c)
+			ns.StopLatest, ns.StopBefore = ns.StopLatest.with(c), ns.StopBefore.without(c)
 		}
-		label := c + ": " + why + ", stop entry"
-		if stopsRecorded(r) && c != cmdSet && c != CommandRelease {
+		label := c.String() + ": " + why + ", stop entry"
+		if stopsRecorded(r) && c != cmdSet && c != cmdRelease {
 			if left == 'C' || ns.Left == 0 {
 				ns.Left = left
 			}
-			label += map[byte]string{'U': " left unchanged", 'C': " left changed"}[left]
+			switch left {
+			case 'U':
+				label += " left unchanged"
+			case 'C':
+				label += " left changed"
+			}
 		}
 		return modelEdge{to: ns, label: label, op: true}
 	}
 	suffix := ""
 	switch {
-	case !inSet(s.Intent, c):
+	case !s.Intent.has(c):
 	case rerun:
 		suffix = ", its intent pending for its rerun"
 	case r.Serialize:
 		suffix = ", its intent left pending"
 	}
-	return modelEdge{to: ns, label: c + ": " + why + suffix, op: true}
+	return modelEdge{to: ns, label: c.String() + ": " + why + suffix, op: true}
 }
 
 // stopsRecorded reports whether the record keeps each command's latest stop, as the code writes
@@ -367,8 +367,8 @@ var transient = map[string]string{
 
 // leftBy is what a command's stop after its change records: 'U' for buckets backup, which writes
 // only its archive, outside the hub, and 'C' for every other command, which changed the hub.
-func leftBy(c string) byte {
-	if c == commandBackup {
+func leftBy(c modelCmd) byte {
+	if c == cmdBackup {
 		return 'U'
 	}
 	return 'C'
@@ -378,8 +378,8 @@ func leftBy(c string) byte {
 // run changed something, and, by LeftUnchanged's rule, when an earlier run of c in this hold did,
 // a run cut after its change among them; nothing changed otherwise. Under OwnRunOnly, the control,
 // it records own alone.
-func leftOf(sc modelScenario, s modelState, c string, own byte) byte {
-	if own == 'C' || (!sc.OwnRunOnly && inSet(s.Wrote, c)) {
+func leftOf(sc modelScenario, s modelState, c modelCmd, own byte) byte {
+	if own == 'C' || (!sc.OwnRunOnly && s.Wrote.has(c)) {
 		return 'C'
 	}
 	return 'U'
@@ -388,7 +388,7 @@ func leftOf(sc modelScenario, s modelState, c string, own byte) byte {
 func setStep(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []modelEdge {
 	sl := s.Slots[k]
 	ns := s
-	to := func(step int, label string) modelEdge {
+	to := func(step int8, label string) modelEdge {
 		n := ns
 		n.Slots[k].Step = step
 		return modelEdge{to: n, label: label, op: true}
@@ -424,7 +424,7 @@ func setStep(r modelRules, t modelTable, sc modelScenario, s modelState, k int) 
 		}
 		return []modelEdge{refuse(r, t, sc, s, k, "the preflight refuses", false), to(nx, "hold set: the preflight passes")}
 	case setIntent:
-		if s.Row != 'P' || t.decide(toDone(sc, s), modelRequest{Request: Request{Command: cmdSet}}) != nil {
+		if s.Row != 'P' || !t.admits(sc, s.modelJournal, modelAsk{cmd: cmdSet}) {
 			return []modelEdge{refuse(r, t, sc, s, k, "Admit refuses", false)}
 		}
 		ns = writeIntent(ns, cmdSet)
@@ -439,15 +439,15 @@ func setStep(r modelRules, t modelTable, sc modelScenario, s modelState, k int) 
 		}
 		return []modelEdge{to(setSteps, "hold set: row moved to held")}
 	case setRestore: // v59: Admit of snapshot restore, by hold set's process
-		if t.decide(toDone(sc, s), modelRequest{Request: Request{Command: cmdSnapRestore}}) != nil {
+		if !t.admits(sc, s.modelJournal, modelAsk{cmd: cmdSnapRestore}) {
 			return []modelEdge{refuse(r, t, sc, s, k, "Admit refuses snapshot restore", false)}
 		}
 		ns = writeIntent(ns, cmdSnapRestore)
-		return []modelEdge{to(setAge, cmdSnapRestore+": admitted, intent written")}
+		return []modelEdge{to(setAge, cmdSnapRestore.String()+": admitted, intent written")}
 	case setAge: // v59: snapshot restore's done, its own write after its intent's
-		ns.Ever, ns.Last, ns.Since = addSet(ns.Ever, cmdSnapRestore), cmdSnapRestore, addSet(ns.Since, cmdSnapRestore)
-		ns.Intent = delSet(ns.Intent, cmdSnapRestore)
-		return []modelEdge{to(setSteps, cmdSnapRestore+": done")}
+		ns.Ever, ns.Last, ns.Since = ns.Ever.with(cmdSnapRestore), cmdSnapRestore, ns.Since.with(cmdSnapRestore)
+		ns.Intent = ns.Intent.without(cmdSnapRestore)
+		return []modelEdge{to(setSteps, cmdSnapRestore.String()+": done")}
 	case setSteps:
 		out := []modelEdge{refuse(r, t, sc, s, k, "a step of 2 to 6 fails", false)}
 		if r.SetCommand {
@@ -455,7 +455,7 @@ func setStep(r modelRules, t modelTable, sc modelScenario, s modelState, k int) 
 		}
 		return append(out, modelEdge{to: idle(ns, k), label: "hold set: steps 2 to 6 pass, the report printed", op: true})
 	}
-	panic("holdmodel: no hold set step " + strconv.Itoa(sl.Step))
+	panic("holdmodel: no hold set step " + itoa(sl.Step))
 }
 
 func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []modelEdge {
@@ -470,7 +470,7 @@ func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []
 		ns = writeIntent(ns, c)
 		if c == cmdSet {
 			ns.Slots[k].Step = setSteps
-			return []modelEdge{{to: ns, label: c + ": intent written", op: true}}
+			return []modelEdge{{to: ns, label: c.String() + ": intent written", op: true}}
 		}
 		return []modelEdge{adv(ns, modelOp{c, sl.Set}.label()+": intent written")}
 	}
@@ -493,16 +493,16 @@ func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []
 		return []modelEdge{{to: m, label: "hold abort from prepare: row released", op: true, unsafe: u}}
 	case cmdAbortReleased:
 		if sl.Step == 1 {
-			return []modelEdge{adv(ns, cmdAbortReleased+": cohort deleted")}
+			return []modelEdge{adv(ns, cmdAbortReleased.String()+": cohort deleted")}
 		}
-		ns.Slots[k].Cmd = CommandAbort
+		ns.Slots[k].Cmd = cmdAbort
 		m := finish(t, sc, ns, k)
 		m.PrepLost = 'E'
-		return []modelEdge{{to: m, label: cmdAbortReleased + ": done, the journal ended", op: true}}
+		return []modelEdge{{to: m, label: cmdAbortReleased.String() + ": done, the journal ended", op: true}}
 	case cmdAbortNoJournal:
 		m := idle(ns, k)
 		m.PrepLost = 'E'
-		return []modelEdge{{to: m, label: cmdAbortNoJournal + ": cohort deleted", op: true}}
+		return []modelEdge{{to: m, label: cmdAbortNoJournal.String() + ": cohort deleted", op: true}}
 	}
 	putRow := func(ns modelState, abort bool) (modelState, string) {
 		ns.Row = 'R'
@@ -524,8 +524,9 @@ func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []
 	lacks := func() bool { // a target the step-1 map lacks, which Step1Whole reads as UNKNOWN
 		return r.Step1Whole && (sl.Base[0].ID == 0 || sl.Base[1].ID == 0)
 	}
+	name := c.String()
 	switch {
-	case c == CommandRelease:
+	case c == cmdRelease:
 		if sl.Step == 1 && !r.CompletionSurvivesRowRestore && s.Complete && s.HoldGen != s.RowGen {
 			return []modelEdge{refuse(r, t, sc, s, k, "refused, hold_gen is not the row's gen", false)}
 		}
@@ -534,54 +535,54 @@ func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []
 				return []modelEdge{refuse(r, t, sc, s, k, "409 gen_mismatch, the row was restored since its read", true)}
 			}
 			m, u := putRow(idle(ns, k), false)
-			m.Intent = delSet(m.Intent, c)
-			if u == "" && !m.Complete && m.Wrote != "" {
+			m.Intent = m.Intent.without(c)
+			if u == "" && !m.Complete && m.Wrote != 0 {
 				// Release on a record that is not complete follows only stops that left nothing
 				// changed, so a run's change outside the journal that still stands is one a stop
 				// failed to record.
 				u = releasedOverAChange
 			}
-			return []modelEdge{{to: m, label: c + ": PUT", op: true, unsafe: u}}
+			return []modelEdge{{to: m, label: name + ": PUT", op: true, unsafe: u}}
 		}
 		if r.Step1Whole && (s.Step1[0].ID == 0 || s.Step1[1].ID == 0) {
 			return []modelEdge{refuse(r, t, sc, s, k, "UNKNOWN, a target the step-1 map lacks", false)}
 		}
 		ok := s.Proved
 		for tg := range targets {
-			ok = ok && s.Cur[tg].ID == expected(s, tg)
+			ok = ok && s.Cur[tg].ID == s.expected(tg)
 		}
 		if !ok {
 			return []modelEdge{refuse(r, t, sc, s, k, "refused, a disk is not the expected one", false)}
 		}
 		ns.Slots[k].Gen = s.RowGen
-		return []modelEdge{adv(ns, c+": disks checked")}
-	case !sc.Hub && c != CommandAbort:
+		return []modelEdge{adv(ns, name+": disks checked")}
+	case !sc.Hub && c != cmdAbort:
 		// Under Fail any command may fail for good, one per run: a doomed command's every later run
 		// fails before any further change, and only while no command is doomed can one become so.
-		doomable := sc.Fail && s.Doomed == ""
+		doomable := sc.Fail && s.Doomed == noCmd
 		if sl.Step == 1 {
 			if sc.Fail && s.Doomed == c {
 				return []modelEdge{refuseLeft(r, t, sc, s, k, "fails again, nothing more changed", false, leftOf(sc, s, c, 'U'))}
 			}
 			switch {
-			case c == "restore --finish" && s.Unresolved:
+			case c == cmdRestoreFinish && s.Unresolved:
 				return []modelEdge{refuse(r, t, sc, s, k, "stops, a name has no start", false)}
-			case c == "restore --prepare" && s.Unresolved && !r.PrepareMarksUnresolved:
+			case c == cmdRestorePrepare && s.Unresolved && !r.PrepareMarksUnresolved:
 				return []modelEdge{refuse(r, t, sc, s, k, "stops, a name has no start", false)}
-			case c == "convert" && s.NoStart:
+			case c == cmdConvert && s.NoStart:
 				return []modelEdge{refuse(r, t, sc, s, k, "stops, no safe start for K", false)}
 			}
 			switch c {
-			case "restore --key":
+			case cmdRestoreKey:
 				ns.Unresolved = false
-			case "replay":
+			case cmdReplay:
 				ns.NoStart = false // replay --key gives K a start
 			}
-			if sc.Fail && c != commandBackup {
-				ns.Wrote = addSet(ns.Wrote, c) // its change outside the journal, which only its stop can record
+			if sc.Fail && c != cmdBackup {
+				ns.Wrote = ns.Wrote.with(c) // its change outside the journal, which only its stop can record
 			}
-			out := []modelEdge{adv(ns, c+": effect")}
-			if why, ok := transient[c]; ok {
+			out := []modelEdge{adv(ns, name+": effect")}
+			if why, ok := transient[name]; ok {
 				out = append(out, refuseLeft(r, t, sc, s, k, why, true, leftOf(sc, s, c, leftBy(c))))
 			}
 			if doomable {
@@ -591,11 +592,11 @@ func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []
 			}
 			return out
 		}
-		if t.final(sc.W, c) && r.PendingBlocksComplete && otherPendingAdmitted(r, t, sc, s, c) {
-			return []modelEdge{{to: idle(ns, k), label: c + ": refuses to complete, another command's intent has no done", op: true}}
+		if t.final(sc.W, name) && r.PendingBlocksComplete && otherPendingAdmitted(r, t, sc, s, c) {
+			return []modelEdge{{to: idle(ns, k), label: name + ": refuses to complete, another command's intent has no done", op: true}}
 		}
-		label := c + ": done"
-		if t.final(sc.W, c) {
+		label := name + ": done"
+		if t.final(sc.W, name) {
 			label += ", complete"
 		}
 		out := []modelEdge{{to: finish(t, sc, ns, k), label: label, op: true}}
@@ -605,7 +606,7 @@ func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []
 			out = append(out, refuseLeft(r, t, sc, ds, k, "fails for good after its change", false, leftBy(c)))
 		}
 		return out
-	case c == CommandProve:
+	case c == cmdProve:
 		if sl.Step == 1 { // restart and check
 			// Under Fail a prove after a done prove may fail for good, as hub-restore's other
 			// command after a prove, the census, may: it changes nothing outside the journal.
@@ -619,7 +620,7 @@ func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []
 			u := ""
 			for tg := range targets {
 				if sl.Set == 0 { // the plain prove: every disk the expected one
-					ok = ok && s.Cur[tg].ID == expected(s, tg)
+					ok = ok && s.Cur[tg].ID == s.expected(tg)
 				} else if sl.Set&(1<<tg) != 0 {
 					ok = ok && s.Cur[tg].ID == sl.Named[tg] && s.Cur[tg].ID != sl.Base[tg].ID
 					if sl.Base[tg].ID == 0 {
@@ -639,27 +640,27 @@ func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []
 				}
 				return []modelEdge{e}
 			}
-			ns.Slots[k].Checked = [2]int{s.Cur[0].ID, s.Cur[1].ID}
-			e := adv(ns, c+": check passes")
+			ns.Slots[k].Checked = [2]int8{s.Cur[0].ID, s.Cur[1].ID}
+			e := adv(ns, name+": check passes")
 			e.unsafe = u
 			out := []modelEdge{e}
-			if sc.Fail && s.Proved && s.Doomed == "" {
+			if sc.Fail && s.Proved && s.Doomed == noCmd {
 				ds := s
 				ds.Doomed, ds.DoomedOn = c, s.Cur
 				out = append(out, refuseLeft(r, t, sc, ds, k, "fails for good before any change", false, 'U'))
 			}
 			return out
 		}
-		return []modelEdge{{to: finish(t, sc, ns, k), label: c + ": done", op: true}}
-	case c == "streams census":
+		return []modelEdge{{to: finish(t, sc, ns, k), label: name + ": done", op: true}}
+	case c == cmdCensus:
 		if sl.Step == 1 { // a run that is not clean is Stoppable here, and the epoch's rerun is the way out
 			// Under Fail the census, which runs only after a done prove, may fail for good, before
 			// its removals or after them, and every later run of it fails again.
 			if sc.Fail && s.Doomed == c {
 				return []modelEdge{refuseLeft(r, t, sc, s, k, "fails again, nothing more changed", false, leftOf(sc, s, c, 'U'))}
 			}
-			out := []modelEdge{adv(ns, c+": read and removals"), refuse(r, t, sc, s, k, "refuses, the run is not clean", true)}
-			if sc.Fail && s.Doomed == "" {
+			out := []modelEdge{adv(ns, name+": read and removals"), refuse(r, t, sc, s, k, "refuses, the run is not clean", true)}
+			if sc.Fail && s.Doomed == noCmd {
 				ds := s
 				ds.Doomed = c
 				out = append(out, refuseLeft(r, t, sc, ds, k, "fails for good before any change", false, leftOf(sc, ds, c, 'U')))
@@ -667,16 +668,16 @@ func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []
 			return out
 		}
 		if r.PendingBlocksComplete && otherPendingAdmitted(r, t, sc, s, c) {
-			return []modelEdge{{to: idle(ns, k), label: c + ": refuses to complete, another command's intent has no done", op: true}}
+			return []modelEdge{{to: idle(ns, k), label: name + ": refuses to complete, another command's intent has no done", op: true}}
 		}
-		out := []modelEdge{{to: finish(t, sc, ns, k), label: c + ": done, complete", op: true}}
-		if sc.Fail && s.Doomed == "" {
+		out := []modelEdge{{to: finish(t, sc, ns, k), label: name + ": done, complete", op: true}}
+		if sc.Fail && s.Doomed == noCmd {
 			ds := s
 			ds.Doomed = c
 			out = append(out, refuseLeft(r, t, sc, ds, k, "fails for good after its change", false, 'C'))
 		}
 		return out
-	case c == CommandAbort:
+	case c == cmdAbort:
 		moveRow := func(ns modelState) ([]modelEdge, bool) {
 			if s.RowGen != sl.Gen {
 				return []modelEdge{refuse(r, t, sc, s, k, "409 gen_mismatch, the row was restored since its read", true)}, true
@@ -686,7 +687,7 @@ func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []
 		switch sl.Step {
 		case 1:
 			if !sc.Hub { // outside hub-restore abort reads no disk: it ends the hold as the record stands
-				return []modelEdge{adv(ns, c+": nothing to check outside hub-restore")}
+				return []modelEdge{adv(ns, name+": nothing to check outside hub-restore")}
 			}
 			if lacks() {
 				return []modelEdge{refuse(r, t, sc, s, k, "UNKNOWN, a target the step-1 map lacks", false)}
@@ -697,7 +698,7 @@ func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []
 			ok := true
 			for tg := range targets {
 				if proved {
-					ok = ok && s.Cur[tg].ID == expected(s, tg)
+					ok = ok && s.Cur[tg].ID == s.expected(tg)
 				} else {
 					ok = ok && s.Cur[tg].ID == sl.Base[tg].ID && s.Cur[tg].Snap != 'H'
 				}
@@ -723,7 +724,7 @@ func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []
 				e.unsafe = reread()
 				return []modelEdge{e}
 			}
-			e := adv(ns, c+": disks checked")
+			e := adv(ns, name+": disks checked")
 			e.unsafe = reread()
 			return []modelEdge{e}
 		case 2:
@@ -733,22 +734,22 @@ func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []
 				}
 				m, u := putRow(ns, true)
 				m.Slots[k].Step = 3
-				return []modelEdge{{to: m, label: c + ": row released", op: true, unsafe: u}}
+				return []modelEdge{{to: m, label: name + ": row released", op: true, unsafe: u}}
 			}
 			d := finish(t, sc, ns, k)
 			d.Slots[k] = sl
 			d.Slots[k].Step = 3
-			return []modelEdge{{to: d, label: c + ": done, complete", op: true}}
+			return []modelEdge{{to: d, label: name + ": done, complete", op: true}}
 		default:
 			if r.AbortMoveBeforeDone {
-				return []modelEdge{{to: finish(t, sc, ns, k), label: c + ": done, complete", op: true}}
+				return []modelEdge{{to: finish(t, sc, ns, k), label: name + ": done, complete", op: true}}
 			}
 			if e, stop := moveRow(ns); stop {
 				return e
 			}
 			m, u := putRow(idle(ns, k), true)
-			return []modelEdge{{to: m, label: c + ": row released", op: true, unsafe: u}}
+			return []modelEdge{{to: m, label: name + ": row released", op: true, unsafe: u}}
 		}
 	}
-	panic("holdmodel: no steps for " + c)
+	panic("holdmodel: no steps for " + name)
 }
