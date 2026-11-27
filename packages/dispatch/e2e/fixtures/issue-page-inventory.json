@@ -1,7 +1,7 @@
 {
-  "commit": "169cfac79e88cb49677f693efa4e4b5997bff0d9",
-  "recordedAtHead": "169cfac79e88cb49677f693efa4e4b5997bff0d9",
-  "recordedAt": "2026-11-26T19:38:49.729Z",
+  "commit": "e40deb104a65d3af649b9fb3cf7e3de336900390",
+  "recordedAtHead": "e40deb104a65d3af649b9fb3cf7e3de336900390",
+  "recordedAt": "2026-11-27T04:45:23.036Z",
   "open-1440": [
     {
       "name": "1 references on block",
@@ -89,6 +89,10 @@
     },
     {
       "name": "Decline to answer",
+      "role": "button"
+    },
+    {
+      "name": "Details",
       "role": "button"
     },
     {
@@ -886,6 +890,10 @@
       "role": "button"
     },
     {
+      "name": "Details",
+      "role": "button"
+    },
+    {
       "name": "Edit components of LAY-2",
       "role": "button"
     },
@@ -1553,6 +1561,10 @@
     },
     {
       "name": "Copy reference dispatch://LAY-2/spec",
+      "role": "button"
+    },
+    {
+      "name": "Details",
       "role": "button"
     },
     {
@@ -2279,6 +2291,10 @@
     },
     {
       "name": "Copy reference dispatch://LAY-2/spec",
+      "role": "button"
+    },
+    {
+      "name": "Details",
       "role": "button"
     },
     {
