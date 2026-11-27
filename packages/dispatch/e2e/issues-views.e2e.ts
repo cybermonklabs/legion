@@ -1314,11 +1314,19 @@ test("each measure header's tooltip gives its method and the sort hint, on hover
       expect(lines[0]).toContain(holder);
       expect(lines.join(" ")).toContain(CLAIM_SENTENCE);
     }
+    // K's holder is cut where a box from its name up to the chip holds more than it shows. The
+    // chip draws the name inside a span that cuts it with the ellipsis, and the name itself is an
+    // inline box, which reads no width of its own and so never reads as cut.
     const chips = await table.locator('[data-testid="issue-claim"]').evaluateAll((all) =>
       all.map((one) => ({
-        cut: [...one.querySelectorAll<HTMLElement>("[data-agent-name]")].some(
-          (name) => name.scrollWidth > name.clientWidth
-        ),
+        cut: [...one.querySelectorAll("[data-agent-name]")].some((name) => {
+          let box: Element | null = name;
+          while (box !== null && box !== one) {
+            if (box.scrollWidth > box.clientWidth) return true;
+            box = box.parentElement;
+          }
+          return false;
+        }),
         titled: one.hasAttribute("title"),
       }))
     );
@@ -1393,11 +1401,21 @@ test("a Board card's Time in Legion phase, Work time, open asks and claim say wh
     expect(headerLines.join(" ")).toContain(CLAIM_SENTENCE);
     expect(await header.getAttribute("title")).toBeNull();
     // The chip was waited for above, and this one read only picks the words of a note that no
-    // check reads.
+    // check reads. The name is cut where a box from it up to the chip holds more than it shows:
+    // the chip may draw it inside a span that cuts it with the ellipsis, and the name itself is an
+    // inline box, which reads no width of its own and so never reads as cut.
     const cut = await header
       .locator("[data-agent-name]")
       .first()
-      .evaluate((name) => name.scrollWidth > name.clientWidth);
+      .evaluate((name) => {
+        const chip = name.closest('[data-testid="issue-claim"]');
+        let box: Element | null = name;
+        while (box !== null && box !== chip) {
+          if (box.scrollWidth > box.clientWidth) return true;
+          box = box.parentElement;
+        }
+        return false;
+      });
     test.info().annotations.push({
       description: `the issue page's chip ${cut ? "cuts" : "draws whole"} the holder's name`,
       type: "claim chip",
