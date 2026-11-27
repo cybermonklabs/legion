@@ -33,7 +33,7 @@ import (
 // root-ready: the root claim spawns, provisions its workspace, and registers at generation 1. The
 // root is the run's first issue pod, so its launch is also where the run's repository gets its
 // cache: there is none before (its Sandbox recorded for the teardown first), the launch makes it,
-// and the root's fetch fills its feed from that cache alone, asking GitHub only for the delta.
+// and workspace-init fills the root's clone from that cache, asking GitHub only for the delta.
 func (r *liveRig) checkRootReady() error {
 	if err := r.startRuntimeOnce(); err != nil {
 		return err
@@ -86,7 +86,7 @@ func (r *liveRig) checkRootReady() error {
 	if err := r.assertCacheFed(root); err != nil {
 		return err
 	}
-	note("runtime", "the root's launch made the repository cache %s, and the root's feed came from it alone", cache)
+	note("runtime", "the root's launch made the repository cache %s, and workspace-init filled the root's clone from it", cache)
 	return nil
 }
 
@@ -479,7 +479,7 @@ func (r *liveRig) checkWorkerSharesIssuePod() error {
 	}) {
 		return fmt.Errorf("starting %s reran issue-pod init containers: before %+v, after %+v", worker.role, init, pod.Status.InitContainerStatuses)
 	}
-	note("runtime", "worker role %s started in root issue pod %s (uid %s), container %s; both init-container identities stayed unchanged", worker.token, pod.Name, pod.UID, worker.loc.Sandbox.Container)
+	note("runtime", "worker role %s started in root issue pod %s (uid %s), container %s; the init container's identity stayed unchanged", worker.token, pod.Name, pod.UID, worker.loc.Sandbox.Container)
 	return nil
 }
 
@@ -1315,10 +1315,10 @@ func (r *liveRig) checkIndependentProvision() error {
 // owner's repository holds a token that writes another owner's. The run's cache set holds both
 // repositories (cacheRepository, here and before the root's launch), so this proves reach across
 // owners and nothing about a repository no live record names.
-// The advertisement is the request a `git push` opens with and writes nothing,
-// where a real push would leave a branch on a repository every run shares and nothing here would
-// delete it. That repository's cache is its own: the issue's launch makes it (its
-// Sandbox recorded for the teardown first), and the issue's feed comes from it alone.
+// The advertisement is the request a `git push` opens with and writes nothing, where a real push
+// would leave a branch on a repository every run shares and nothing here would delete it. That
+// repository's cache is its own: the issue's launch makes it (its Sandbox is recorded for teardown
+// first), and workspace-init fills the issue's clone from it.
 func (r *liveRig) checkSecondOwner() error {
 	c := r.claim("second-owner")
 	cache := CacheSandboxName(r.env.project, c.repo)

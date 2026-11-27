@@ -9,16 +9,20 @@
 // Sandbox's controller and the gvisor runtime class (burstable_kind_test.go builds both). What the
 // proof stands in for lies outside the reservation path: the agent is a sleep stub (no model, no
 // Dispatch, no NATS), the store answers as the daemon's does for an issue's first launch, the
-// repository is a public one GitHub clones without a credential, and the roles' gh files hold a
-// placeholder token.
+// repository is a public one GitHub clones without a credential, the roles' gh files hold a
+// placeholder token, the project's providers Secret, which the driver creates as an operator does
+// (putLiveProvidersSecret), holds placeholders, and the shared public leak check is read from a
+// stand-in GitHub in this process (serveLiveLeakCheck).
 package daemon
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -81,22 +85,31 @@ func TestABurstableIssuePodRendersLive(t *testing.T) {
 			liveSafeToEvictAnnotation, pod.Annotations[liveSafeToEvictAnnotation])
 		fmt.Printf("   roles container: requests cpu %s memory %s; limits cpu %s memory %s\n",
 			roles.Resources.Requests.Cpu(), roles.Resources.Requests.Memory(), roles.Resources.Limits.Cpu(), roles.Resources.Limits.Memory())
+		// failed is this case's own errors, so its ok line is printed only for a case that held.
+		failed := false
+		errorf := func(format string, args ...any) {
+			t.Helper()
+			failed = true
+			t.Errorf(format, args...)
+		}
 		if pod.Status.QOSClass != tc.qos {
-			t.Errorf("%s: pod %s is %q, want %s", tc.name, pod.Name, pod.Status.QOSClass, tc.qos)
+			errorf("%s: pod %s is %q, want %s", tc.name, pod.Name, pod.Status.QOSClass, tc.qos)
 		}
 		checkBurstableLiveStopEviction(t, tc.name, pod, tc.extendedRunTime)
 		for _, kind := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory, corev1.ResourceEphemeralStorage} {
 			if got, want := roles.Resources.Requests[kind], tc.issue.Requests[kind]; got.Cmp(want) != 0 {
-				t.Errorf("%s: the roles container requests %s %s, want %s", tc.name, kind, got.String(), want.String())
+				errorf("%s: the roles container requests %s %s, want %s", tc.name, kind, got.String(), want.String())
 			}
 			if got, want := roles.Resources.Limits[kind], tc.issue.Limits[kind]; got.Cmp(want) != 0 {
-				t.Errorf("%s: the roles container is limited to %s %s, want %s", tc.name, kind, got.String(), want.String())
+				errorf("%s: the roles container is limited to %s %s, want %s", tc.name, kind, got.String(), want.String())
 			}
 		}
 		if scheduled := liveCondition(pod, corev1.PodScheduled); scheduled != corev1.ConditionTrue {
-			t.Errorf("%s: pod %s PodScheduled is %q, want True", tc.name, pod.Name, scheduled)
+			errorf("%s: pod %s PodScheduled is %q, want True", tc.name, pod.Name, scheduled)
 		}
-		fmt.Printf("ok %s in %s\n", tc.name, time.Since(started).Round(time.Second))
+		if !failed {
+			fmt.Printf("ok %s in %s\n", tc.name, time.Since(started).Round(time.Second))
+		}
 		results = append(results, fmt.Sprintf("%s %s/%s %s", tc.name, pod.Namespace, pod.Name, path))
 	}
 	if err := os.WriteFile(env["LEGION_E2E_RESULT"], []byte(strings.Join(results, "\n")+"\n"), 0o600); err != nil {
@@ -104,10 +117,11 @@ func TestABurstableIssuePodRendersLive(t *testing.T) {
 	}
 }
 
-// launchBurstableLiveRoot runs the cluster check, builds the Agent Sandbox runtime from cfg
-// (burstableLiveRuntime) on a worker stream at cfg's bind, launches the root architect of an issue
-// of cfg's project through the runtime's Spawn, and returns the issue pod as the API server holds
-// it once the launch returned.
+// launchBurstableLiveRoot runs the cluster check, creates cfg's providers Secret
+// (putLiveProvidersSecret), builds the Agent Sandbox runtime from cfg (burstableLiveRuntime) on a
+// worker stream at cfg's bind, launches the root architect of an issue of cfg's project through
+// the runtime's Spawn, and returns the issue pod as the API server holds it once the launch
+// returned.
 func launchBurstableLiveRoot(ctx context.Context, t *testing.T, cfg config.Config, log *slog.Logger) *corev1.Pod {
 	t.Helper()
 	return launchLiveRoot(ctx, t, cfg, log, burstableLiveRepository, "master")
@@ -137,7 +151,8 @@ type liveRoots struct {
 	boots         map[string]claim.Token
 }
 
-// startLiveRoots runs the cluster check and builds the runtime of liveRoots from cfg.
+// startLiveRoots runs the cluster check, creates cfg's providers Secret (putLiveProvidersSecret)
+// and builds the runtime of liveRoots from cfg.
 func startLiveRoots(ctx context.Context, t *testing.T, cfg config.Config, log *slog.Logger, repo ghrepo.Repository, defaultBranch string) *liveRoots {
 	t.Helper()
 	k := *cfg.Runtime.Kubernetes
@@ -152,21 +167,10 @@ func startLiveRoots(ctx context.Context, t *testing.T, cfg config.Config, log *s
 	if err := sandbox.CheckInstalled(ctx, rc, agentSandbox); err != nil {
 		t.Fatalf("the cluster check: %v", err)
 	}
+	putLiveProvidersSecret(ctx, t, cfg, log)
 	clients, err := kubernetes.NewForConfig(rc)
 	if err != nil {
 		t.Fatal(err)
-	}
-	// Every pod mounts the providers Secret where the file names any of its keys (sandbox's
-	// providers): here the session database URL key of the postgres session store. An operator
-	// writes that Secret for a deployment; on the proof's throwaway cluster the driver writes it,
-	// with a URL nothing dials, since the agent is a sleep stub. Without it the kubelet mounts no
-	// volume of the pod, and no init container starts.
-	if key := k.SessionStore.DSNSecretKey(); key != "" {
-		providers := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: sandbox.ProvidersSecretName(project), Namespace: k.Namespace},
-			StringData: map[string]string{key: "postgres://legion:legion@127.0.0.1:1/sessions"}}
-		if _, err := clients.CoreV1().Secrets(k.Namespace).Create(ctx, providers, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-			t.Fatalf("write the providers Secret %s: %v", providers.Name, err)
-		}
 	}
 	l := &liveRoots{ctx: ctx, t: t, namespace: k.Namespace, project: project, repo: repo, defaultBranch: defaultBranch,
 		clients: clients, boots: map[string]claim.Token{}}
@@ -187,7 +191,7 @@ func startLiveRoots(ctx context.Context, t *testing.T, cfg config.Config, log *s
 		for range listener.Events() {
 		}
 	}()
-	if l.rt, _, err = burstableLiveRuntime(ctx, cfg, rc, listener, log, repo); err != nil {
+	if l.rt, _, err = burstableLiveRuntime(ctx, cfg, rc, listener, serveLiveLeakCheck(t), log, repo); err != nil {
 		t.Fatalf("the Sandbox runtime: %v", err)
 	}
 	l.prompt = filepath.Join(t.TempDir(), "role.md")
@@ -224,6 +228,41 @@ func (l *liveRoots) launch(issue string) *corev1.Pod {
 	}
 	l.t.Fatalf("no pod in %s has the launched uid %s", l.namespace, loc.Sandbox.PodUID)
 	return nil
+}
+
+// putLiveProvidersSecret puts cfg's providers Secret (liveProvidersSecret) on cfg's cluster: the
+// operator's step before any pod of the project launches, since every pod mounts it. One already
+// there is an earlier driver's on the same cluster (controller-sweep-kind.sh's negative control
+// runs its driver after the proof's own), and its data is set to this one's.
+func putLiveProvidersSecret(ctx context.Context, t *testing.T, cfg config.Config, log *slog.Logger) {
+	t.Helper()
+	secret, err := liveProvidersSecret(cfg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := kubeClient(*cfg.Runtime.Kubernetes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clients, err := kubernetes.NewForConfig(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets := clients.CoreV1().Secrets(secret.Namespace)
+	verb := "created"
+	_, err = secrets.Create(ctx, secret, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		var held *corev1.Secret
+		if held, err = secrets.Get(ctx, secret.Name, metav1.GetOptions{}); err == nil {
+			held.Data, held.StringData = secret.Data, nil
+			_, err = secrets.Update(ctx, held, metav1.UpdateOptions{})
+			verb = "updated"
+		}
+	}
+	if err != nil {
+		t.Fatalf("put the providers Secret %s/%s: %v", secret.Namespace, secret.Name, err)
+	}
+	fmt.Printf("   providers Secret %s/%s %s: keys %v, each a placeholder\n", secret.Namespace, secret.Name, verb, slices.Sorted(maps.Keys(secret.Data)))
 }
 
 // awaitCache waits, within limit, for the repository cache of the proof's repository to be Ready
