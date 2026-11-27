@@ -78,11 +78,11 @@ read of a whole bucket, so the rig stops the listener (`SIGSTOP`) while it delet
 fills the bucket, and continues it once the bucket is full, just after a tick of the listener's
 30 s self-health monitor, so no tick falls while the listener is stopped.
 
-- `reread`: registers 3,000 `old` and 3,000 `both` sessions, then recreates the session bucket
-  holding `both` with changed titles and 3,000 `new`, the interest bucket the same way with changed
-  directories, and the session bucket again with the very records it holds (only its creation time
-  changes). Each new bucket carries 100,000 delete markers among its records, so the read outlasts
-  many list answers. Every `old` and `both` row must be listed until the read's completed
+- `reread`: registers 3,000 `old` and 3,000 `both` sessions, then recreates the interest bucket
+  holding `both` with changed directories and 3,000 `new`, the session bucket the same way with
+  changed titles, and the session bucket again with the very records it holds (only its creation
+  time changes). Each new bucket carries 100,000 delete markers among its records, so the read
+  outlasts many list answers. Every `old` and `both` row must be listed until the read's completed
   `cache warm-up` line, a delivered row never goes back, and the list is exactly the bucket after
   it.
 - `interrupt`: on a 41,000-record session bucket, stops NATS the moment the read of the new bucket
