@@ -353,6 +353,7 @@ func TestCheckLookAndCheckBoundRowsApplyTheirFacts(t *testing.T) {
 // executor to the workflow at the first check's bound: the first check starts its last look, whose
 // start row names it, and the second, whose bound is still ahead, is left as it stands.
 func TestTheBoundRowOfTheFirstOfTwoChecksStartsItsLastLook(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -425,6 +426,7 @@ func twoOpenChecks(t *testing.T, pool *store.Pool, records record.Store, root re
 // check, starts the look: the executor fences the row on the check it names, not on the issue's
 // newest check, and resumes the implementer for it.
 func TestTheStartOfALookOfTheFirstCheckActsWhileASecondIsOpen(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	root := checkRoot()
@@ -450,6 +452,7 @@ func TestTheStartOfALookOfTheFirstCheckActsWhileASecondIsOpen(t *testing.T) {
 // look through the executor and the workflow: the first check's row ends the first's look and
 // leaves the second's open, and the second's row then ends the second's.
 func TestTheLookBoundRowOfEachOfTwoChecksEndsThatChecksLook(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()

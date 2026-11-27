@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	planwords "github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -110,11 +111,12 @@ func observedClaim(t *testing.T, issue, tree string, role claim.Role, state supe
 // awaiting_children), a parent held before its retro for the child at work beneath it
 // (LEGION-195 over LEGION-196, children_before_retro) and a root whose task was stopped in its
 // merge (LEGION-197, task_stopped). Its second part is a running tree, LEGION-300, whose members
-// stand in the phases the first part leaves out — planning, testing, reviewing, accepting, retro
-// and held — and its third the phases rows, pull requests and claims both views of the state
-// read: rows of several roles whose claims stand, a row whose claim is gone, claims no row names,
-// an architect, claims on issues the workflow does not record, and the daemon's own controller's
-// claim.
+// stand in the phases the first part leaves out — planning, testing, reviewing, accepting, retro,
+// held, and step (LEGION-307), whose plan's one task runs at the step of checker, a role the
+// deployment defines, as a task the workflow starts there does — and its third the phases rows,
+// pull requests and claims both views of the state read: rows of several roles whose claims
+// stand, a row whose claim is gone, claims no row names, an architect, claims on issues the
+// workflow does not record, and the daemon's own controller's claim.
 func (r *observedRig) seedObserved(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
@@ -174,6 +176,7 @@ func (r *observedRig) seedObserved(t *testing.T) {
 		observedIssue("LEGION-304", "LEGION-300", "LEGION-300", "needs_review", phase.Accepting),
 		observedIssue("LEGION-305", "LEGION-300", "LEGION-300", "in_progress", phase.Retro),
 		held,
+		observedIssue("LEGION-307", "LEGION-300", "LEGION-300", "in_progress", phase.Step),
 	}
 	approved := 1
 	openGate := func(root string) record.DesignGate {
@@ -203,6 +206,17 @@ func (r *observedRig) seedObserved(t *testing.T) {
 			if err := records.PutIssue(ctx, tx, issue); err != nil {
 				return err
 			}
+		}
+		// LEGION-307's plan, given by its tree's architect: one task a, running at its one step,
+		// the checker's, of the type the deployment would give the checker.
+		if err := records.PutPlan(ctx, tx,
+			record.PlanVersion{Issue: "LEGION-307", Generation: 1, Version: 1, ArtifactID: "artifact-plan-LEGION-307",
+				Source: record.PlanSourceOwner, GivenBy: "legion-legion-legion-300-architect", GivenAt: opened},
+			[]record.PlanTask{{Issue: "LEGION-307", Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Check the widget.",
+				State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}}},
+			[]record.PlanStep{{Issue: "LEGION-307", Generation: 1, Task: "a", Position: 1, Role: "checker",
+				Type: planwords.TypeTesting, Agent: "checker"}}); err != nil {
+			return err
 		}
 		for _, slot := range []record.Slot{
 			{Issue: "LEGION-150", Index: 0, AdmittedAt: observedAt},

@@ -42,9 +42,9 @@ func TestAnIssueThatRunsAtTheReleaseKeepsItsWorkingCopy(t *testing.T) {
 	ctx := context.Background()
 	r.work(claim.RoleTester, "test", testCompletion, phase.Reviewing)
 	text := r.worker(claim.RoleReviewer).takeTask()
-	line := " Working copy: branch " + claim.IssueBranch(r.key) + ", directory "
-	if !strings.Contains(text, line) {
-		t.Errorf("the reviewer's task = %q, want it to name the issue's own working copy, %q", text, line)
+	line := "Working copy: branch " + claim.IssueBranch(r.key) + ", directory "
+	if !strings.HasPrefix(text, line) {
+		t.Errorf("the reviewer's task = %q, want it to open with the issue's own working copy, %q", text, line)
 	}
 	if strings.Contains(text, claim.IssueBranch(r.key)+".") {
 		t.Errorf("the reviewer's task = %q, want it to name no branch of a task of its own", text)

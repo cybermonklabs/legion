@@ -299,6 +299,7 @@ func TestTheArchitectThatOwnsANotice(t *testing.T) {
 // the notice is about. A notice that names none goes to the architect that owns its issue, as
 // every notice did before, in each case of the owner walk.
 func TestANoticeGoesToTheClaimItNames(t *testing.T) {
+	t.Parallel()
 	tree := ownerWalkTree()
 	for _, tc := range ownerWalkCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -543,6 +544,7 @@ func TestANoticeHeldForOneArchitectHoldsNoOtherArchitectsNotice(t *testing.T) {
 // does not, and the released notice goes to the claim it names. The ready route that runs the
 // release is TestANoticeToANamedClaimGoesOutWhenThatClaimIsReady's.
 func TestTheOrderOfNoticesHoldsForEachRecipient(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)

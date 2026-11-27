@@ -240,10 +240,11 @@ func (l *taskCopiesLive) copiesNow(when string) map[string]tasksRow {
 
 // copiesStep is a task the daemon gave one agent of the walk's issue, as the agent reads it: its
 // claimant, in a turn on it, and that claimant's role; its text; the plan's task it names (` Task:
-// <id>.`); the branch and the directory of the working copy it names (` Working copy: branch
-// <branch>, directory <dir>.`); the base its pull request is opened against (` Open the pull
-// request of this task against <base>:`, the default branch where it names none); and its place
-// among the task's steps (` Step <i> of <n>:`), 0 for the retro, which runs no step of the task.
+// <id>.`); the branch and the directory of the working copy it names (the line `Working copy:
+// branch <branch>, directory <dir>.` that opens the task); the base its pull request is opened
+// against (` Open the pull request of this task against <base>:`, the default branch where it
+// names none); and its place among the task's steps (` Step <i> of <n>:`), 0 for the retro, which
+// runs no step of the task.
 type copiesStep struct {
 	c           *stepClaimant
 	role        claim.Role

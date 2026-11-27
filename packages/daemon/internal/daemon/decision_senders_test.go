@@ -60,6 +60,10 @@ var storedTaskReaders = map[string]string{
 	"(*" + senderModule + "workflow.Engine).ranUnreported": "it reads only whether the role's row holds an entry's task, the " +
 		"durable mark that the role started its step in this run (main's #5463), to decide whether a late completion reports " +
 		"that run, and sends no text",
+	"(*" + senderModule + "workflow.Engine).recordStepReview": "it reads only whether the role's row holds an entry's task, which " +
+		"the clear of a generation empties and only a raise writes again, to decide whether a completion of a review step that " +
+		"runs as step is of the entry that stands and so writes the commit it read onto the row (record.PhaseRow.ReviewedHead), " +
+		"and sends no text",
 	senderModule + "workflow.namingTheReviewRound": "it reads only whether the reviewer's row holds an entry's task, to name that " +
 		"entry's number in a reviewer's round sentences; it sends no stored text, and a reviewer's task names no person's review " +
 		"of a design document",
