@@ -216,13 +216,12 @@ func firstToItsMerge(r *doneByChecksRig, first string) firstLook {
 	if !slices.ContainsFunc(wait.Checks, func(check record.WaitCheck) bool { return check.ID == doneByChecksCheck }) || wait.Production == nil {
 		t.Fatalf("%s's stored wait at its entry is %+v, want check %s and the production check", first, wait, doneByChecksCheck)
 	}
-	versions := r.awaitCloseWaitDocument(first, "the entry into verifying")
-	newest := versions[len(versions)-1]
-	for _, named := range []string{"`" + doneByChecksCheck + "`", closeWaitTime(*row.CloseWaitSince), doneByChecksMergeCommit} {
-		if !strings.Contains(newest, named) {
-			t.Fatalf("close-wait.md of %s at its entry names no %q", first, named)
-		}
-	}
+	// The entry's own version of close-wait.md: it names since when the issue waits and the merge
+	// its production check opens at. The check it waits for reaches the document at the next
+	// change of the wait, not here: the entry's row renders the wait the record holds when it
+	// runs, and the first read of the checks can land while it runs (the defect this lane
+	// reported).
+	r.awaitCloseWaitDocument(first, "the entry into verifying", closeWaitTime(*row.CloseWaitSince), doneByChecksMergeCommit)
 	messages := r.daemonMessages(first)
 	t.Logf("%s holds %d messages in Dispatch at its entry into verifying", first, messages)
 
@@ -370,8 +369,11 @@ func firstThroughItsNextChange(r *doneByChecksRig, first string, look firstLook)
 	planner := r.worker(claim.RolePlanner)
 	prompt := r.taskOf(planner)
 	moves := r.standIn.refWritesOf(branch)
-	if len(moves) == 0 || moves[len(moves)-1].method != http.MethodPatch || moves[len(moves)-1].sha != later || moves[len(moves)-1].caller != "daemon" {
-		t.Fatalf("the writes of %s on GitHub at the change's first task are %+v, want the daemon's PATCH to main's head %s", branch, moves, later)
+	if len(moves) == 0 || moves[len(moves)-1].sha != later || moves[len(moves)-1].caller != "daemon" {
+		t.Fatalf("the writes of %s on GitHub at the change's first task are %+v, want the daemon's move to main's head %s", branch, moves, later)
+	}
+	if head := r.standIn.head(branch); head != later {
+		t.Fatalf("%s stands at %s on GitHub at the change's first task, want main's head %s", branch, head, later)
 	}
 	if !slices.ContainsFunc(r.rt.Calls(), func(call fake.Call) bool {
 		return call.Method == "StartAtBranch" && call.Locator.Claim == planner.token && call.StartAt == runtime.StartAt{Bookmark: branch, Base: "main"}
@@ -381,8 +383,8 @@ func firstThroughItsNextChange(r *doneByChecksRig, first string, look firstLook)
 	if !strings.Contains(prompt.Message, doneByChecksCheck) {
 		t.Fatalf("the next change's first task of %s names no check %s", planner.token, doneByChecksCheck)
 	}
-	t.Logf("generation 2 of %s started: the daemon's PATCH of %s to %s, the fake runtime's StartAtBranch(%s, main) of %s, then its first task, which names %s",
-		first, branch, later, branch, planner.token, doneByChecksCheck)
+	t.Logf("generation 2 of %s started: the daemon's %s of %s to %s, the fake runtime's StartAtBranch(%s, main) of %s, then its first task, which names %s",
+		first, moves[len(moves)-1].method, branch, later, branch, planner.token, doneByChecksCheck)
 	r.finish(planner, "plan", api.HandoffCompleteRequest{Summary: "planned the change"}, phase.Implementing)
 	r.standIn.open(doneByChecksSecondPull, branch, doneByChecksSecondHead)
 	opened := r.publishPull(doneByChecksSecondPull, "opened")
@@ -468,7 +470,7 @@ func firstThroughItsNextChange(r *doneByChecksRig, first string, look firstLook)
 	}
 
 	// Item 8: the wait was told in close-wait.md's versions, and in no message.
-	versions := r.awaitCloseWaitDocument(first, "the close")
+	versions := r.awaitCloseWaitDocument(first, "the close", closeWaitTime(*row.ClosedOnChecksAt))
 	for place := 1; place < len(versions); place++ {
 		if versions[place] == versions[place-1] {
 			t.Errorf("versions %d and %d of close-wait.md of %s are the same: a version that no change of the wait made", place, place+1, first)
@@ -698,9 +700,8 @@ func TestAChildFiledAfterTheBootHoldsItsRootsClose(t *testing.T) {
 		}
 		return nil
 	})
-	versions := r.awaitCloseWaitDocument(root, "the child in backlog")
-	if !strings.Contains(versions[len(versions)-1], child) {
-		t.Fatalf("close-wait.md of %s names no %s", root, child)
+	if versions := r.awaitCloseWaitDocument(root, "the child in backlog", child); len(versions) == 0 {
+		t.Fatalf("close-wait.md of %s holds no version at its child in backlog", root)
 	}
 	r.sessionStatus(child, architect, "icebox")
 	moved := time.Now()

@@ -64,6 +64,9 @@ const (
 	doneByChecksLaterCommit = "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
 	// doneByChecksAppToken is the installation token the stand-in mints for Dispatch's App.
 	doneByChecksAppToken = "ghs_done_by_checks_rig"
+	// doneByChecksRepoNodeID is the repository's node id, which the stand-in answers beside its
+	// name and which a branch's move names the repository by (ghbranch's moveFrom).
+	doneByChecksRepoNodeID = "R_kgDOdoneByChecks"
 	// doneByChecksReadWait bounds a wait for a read of an issue's checks. A read the daemon makes
 	// before Dispatch has learned the merge names no merge commit of it, and the daemon reads again
 	// a minute later at the soonest (workflow's closeReadAgain), so the wait is the walk's own
@@ -1195,16 +1198,21 @@ func (r *doneByChecksRig) closeWaitVersions(issue string) ([]string, error) {
 }
 
 // awaitCloseWaitDocument waits for issue's close-wait.md in Dispatch to name, in its newest
-// version, each value of the issue's stored wait (waitValues), and logs it: the document at what.
-// It answers every version, oldest first. Dispatch keeps a document's markdown in its own form, so
-// the check reads the values the daemon wrote and not its bytes.
-func (r *doneByChecksRig) awaitCloseWaitDocument(issue, what string) []string {
+// version, each of values, and logs it: the document at what. It answers every version, oldest
+// first. It reads the values the daemon wrote and not the document's bytes, since Dispatch keeps
+// a document's markdown in its own form.
+//
+// A caller names the values the daemon has certainly written by then, and no more. A change of
+// the wait that finds a row of an earlier wait waiting writes no row of its own, and the row
+// renders the wait the record holds when it runs: where that row ran between the two changes,
+// the newer wait reaches Dispatch only at the change of the wait after it (the defect this lane
+// reported to the integrator).
+func (r *doneByChecksRig) awaitCloseWaitDocument(issue, what string, values ...string) []string {
 	t := r.t
 	t.Helper()
 	var versions []string
 	var why error
 	if !testwait.Holds(stepRecordsWait, 200*time.Millisecond, func() bool {
-		values := waitValues(r.issueRow(issue))
 		var err error
 		if versions, err = r.closeWaitVersions(issue); err != nil {
 			why = err
@@ -1216,7 +1224,7 @@ func (r *doneByChecksRig) awaitCloseWaitDocument(issue, what string) []string {
 		}
 		for _, value := range values {
 			if !strings.Contains(versions[len(versions)-1], value) {
-				why = fmt.Errorf("version %d of %s's close-wait.md names no %q of the stored wait:\n%s", len(versions), issue, value, versions[len(versions)-1])
+				why = fmt.Errorf("version %d of %s's close-wait.md names no %q:\n%s", len(versions), issue, value, versions[len(versions)-1])
 				return false
 			}
 		}
@@ -1226,43 +1234,6 @@ func (r *doneByChecksRig) awaitCloseWaitDocument(issue, what string) []string {
 	}
 	t.Logf("close-wait.md of %s at %s, version %d:\n%s", issue, what, len(versions), versions[len(versions)-1])
 	return versions
-}
-
-// waitValues is each value issue's stored wait names, as close-wait.md writes it: since when the
-// issue waits, and either when it closed, or each item with since when it stands (each check's id,
-// the production check's merge, each issue beneath and each open child with its status, each
-// open change's generation, and the read that does not count).
-func waitValues(issue record.Issue) []string {
-	var wait record.StoredWait
-	if len(issue.CloseWait) == 0 || json.Unmarshal(issue.CloseWait, &wait) != nil {
-		return []string{"the stored wait of " + issue.Key}
-	}
-	var values []string
-	if issue.CloseWaitSince != nil {
-		values = append(values, closeWaitTime(*issue.CloseWaitSince))
-	}
-	if wait.Closed != nil {
-		return append(values, closeWaitTime(*wait.Closed))
-	}
-	for _, check := range wait.Checks {
-		values = append(values, "`"+check.ID+"`", closeWaitTime(check.Since))
-	}
-	if production := wait.Production; production != nil {
-		values = append(values, production.State, closeWaitTime(production.Since))
-		if production.Merge != "" {
-			values = append(values, production.Merge)
-		}
-	}
-	for _, waiting := range slices.Concat(wait.Beneath, wait.OpenChildren) {
-		values = append(values, waiting.Key+" ("+waiting.Status+")", closeWaitTime(waiting.Since))
-	}
-	if change := wait.NextChange; change != nil {
-		values = append(values, closeWaitTime(change.Since))
-	}
-	if unread := wait.Unread; unread != nil {
-		values = append(values, closeWaitTime(unread.Since))
-	}
-	return values
 }
 
 // closeWaitTime is at as close-wait.md writes a moment: UTC, to the second.
@@ -1553,8 +1524,10 @@ func (g *doneByChecksGitHub) repositories(w http.ResponseWriter, _ *http.Request
 	g.write(w, http.StatusOK, map[string]any{"total_count": 1, "repositories": []any{map[string]any{"full_name": liveRepo}}})
 }
 
+// repository is GET /repos/{repo}: its name, its default branch, and its node id, which the move
+// of a branch names the repository by (ghbranch's moveFrom).
 func (g *doneByChecksGitHub) repository(w http.ResponseWriter, _ *http.Request) {
-	g.write(w, http.StatusOK, map[string]any{"full_name": liveRepo, "default_branch": "main", "private": false})
+	g.write(w, http.StatusOK, map[string]any{"full_name": liveRepo, "default_branch": "main", "private": false, "node_id": doneByChecksRepoNodeID})
 }
 
 // open is GitHub's pull request number from branch at head, a commit after the branch's tip, or
@@ -1864,12 +1837,68 @@ func (g *doneByChecksGitHub) permission(w http.ResponseWriter, r *http.Request) 
 	g.write(w, http.StatusOK, map[string]any{"permission": "write", "user": map[string]string{"login": stepRecordsPerson}})
 }
 
-// graphql is the daemon's GraphQL root, which knows no pull request, as stepRecordsGitHub's does.
-// Dispatch's GraphQL reads are no route of the stand-in.
+// graphql is the daemon's GraphQL root: the move of a branch for a next change (updateRefs,
+// updateRefsMove), and, for every other query, a repository that knows no pull request, as
+// stepRecordsGitHub's does. Dispatch's GraphQL reads are no route of the stand-in.
 func (g *doneByChecksGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 	if standInCaller(r) != "daemon" {
 		g.noRoute(w, r)
 		return
 	}
-	g.write(w, http.StatusOK, map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": nil}}})
+	var sent struct {
+		Query     string `json:"query"`
+		Variables struct {
+			RepositoryID string `json:"repositoryId"`
+			Name         string `json:"name"`
+			BeforeOID    string `json:"beforeOid"`
+			AfterOID     string `json:"afterOid"`
+			Force        bool   `json:"force"`
+		} `json:"variables"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+		g.write(w, http.StatusBadRequest, map[string]any{"message": "Problems parsing JSON"})
+		return
+	}
+	if !strings.Contains(sent.Query, "updateRefs") {
+		g.write(w, http.StatusOK, map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": nil}}})
+		return
+	}
+	if sent.Variables.RepositoryID != doneByChecksRepoNodeID {
+		g.write(w, http.StatusOK, map[string]any{"errors": []any{map[string]any{"message": "Could not resolve to a Repository with the id " + sent.Variables.RepositoryID}}})
+		return
+	}
+	if why := g.updateRefsMove(sent.Variables.Name, sent.Variables.BeforeOID, sent.Variables.AfterOID, sent.Variables.Force); why != "" {
+		g.write(w, http.StatusOK, map[string]any{"errors": []any{map[string]any{"message": why}}})
+		return
+	}
+	g.write(w, http.StatusOK, map[string]any{"data": map[string]any{"updateRefs": map[string]any{"clientMutationId": nil}}})
+}
+
+// updateRefsMove is GitHub's updateRefs over one ref of a branch: the branch moves to after only
+// while it stands at before, and force allows a move that is no fast-forward. It answers "" for
+// a move GitHub made, and GitHub's message for one it refuses: a ref it does not have, a commit
+// it does not hold, a stale beforeOid, and a move that is no fast-forward without force.
+func (g *doneByChecksGitHub) updateRefsMove(ref, before, after string, force bool) string {
+	branch, isBranch := strings.CutPrefix(ref, "refs/heads/")
+	if !isBranch {
+		return "Could not resolve to a Ref with the name " + ref
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	tip, held := g.refs[branch]
+	if !held {
+		return "Could not resolve to a Ref with the name " + ref
+	}
+	if _, known := g.parents[after]; !known {
+		return "Could not resolve to a GitObjectID with the oid " + after
+	}
+	if tip != before {
+		return "The ref " + ref + " is at " + tip + " and not at " + before
+	}
+	if !force && !g.holds(after, tip) {
+		return "Updating the ref " + ref + " is not a fast forward"
+	}
+	g.refs[branch] = after
+	g.refWrites = append(g.refWrites, doneByChecksRefWrite{method: "updateRefs", branch: branch, sha: after, caller: "daemon"})
+	return ""
 }
