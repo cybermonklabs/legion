@@ -272,7 +272,7 @@ func newProjectReleaseCommand(stdout, stderr io.Writer) *cobra.Command {
 	}
 	c := newProjectCall(cmd, stdout, stderr)
 	bound := c.flags.Duration("bound", 0, "how long the release waits for the roles it asks before it deletes every pod still waiting (default the daemon's pod_update_grace_minutes)")
-	wait := c.flags.Duration("wait", 0, "how long the whole command may take before it ends: once the daemon answered, saying the release goes on, and before that, saying it may not have started (default the release's bound plus 30m)")
+	wait := c.flags.Duration("wait", 0, "how long the whole command may take before it ends: once the daemon answered, saying the release goes on, and before that, saying it may not have started or, for a dry run, that it records and starts nothing (default the release's bound plus 30m)")
 	dryRun := c.flags.Bool("dry-run", false, "print what a release would do from the reads now, without the settle of replacement records: read each pod's workspace, and ask, stop and delete nothing")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		return runProjectRelease(ctx, c.operatorCall, *bound, *wait, *dryRun, *c.asJSON)
@@ -302,6 +302,10 @@ const releaseGoesOn = "the release goes on in the daemon. Run this command again
 // answer lost. Either way the command run again starts the release or reads the one that runs.
 const releaseMayNotHaveStarted = "the release may not have started. Run this command again: it starts the release, or reads the one the daemon started"
 
+// releaseDryRunStartsNothing ends the sentence this command's wait makes, in place of
+// releaseMayNotHaveStarted, when it ends before the daemon answered a dry run's POST.
+const releaseDryRunStartsNothing = "a dry run records and starts nothing"
+
 // runProjectRelease releases every pod of the project (R6): it asks the daemon to start the
 // release, which a daemon that already ran one in this process answers with that release, reads
 // the release every projectReleasePoll until it finished or --wait ends, and prints it — one line
@@ -313,8 +317,9 @@ const releaseMayNotHaveStarted = "the release may not have started. Run this com
 // It exits 0 once the release finished and left no Sandbox of the project, and for a dry run's
 // answer. It exits 1 when the release names a pod it left or stopped short, when the daemon
 // refuses, and when --wait ends first: before the daemon answered the release's POST, saying that
-// the release may not have started, and after, saying that the release goes on in the daemon. A
-// pod deleted with work lost changes no exit: the line names that workspace. A usage error is 2.
+// the release may not have started (a dry run: that it records and starts nothing), and after,
+// saying that the release goes on in the daemon. A pod deleted with work lost changes no exit: the
+// line names that workspace. A usage error is 2.
 func runProjectRelease(ctx context.Context, c *operatorCall, bound, wait time.Duration, dryRun, asJSON bool) int {
 	if code, ok := c.check("operator-token-file"); !ok {
 		return code
@@ -340,7 +345,7 @@ func runProjectRelease(ctx context.Context, c *operatorCall, bound, wait time.Du
 	if cut {
 		ended := releaseMayNotHaveStarted
 		if dryRun {
-			ended = "a dry run records and starts nothing"
+			ended = releaseDryRunStartsNothing
 		}
 		fmt.Fprintf(c.stderr, "%s: %s %s was not answered before the command's wait of %s ended; %s\n",
 			c.name(), http.MethodPost, redact.URL(op.base+api.ProjectReleaseRoute), c.until.Sub(began).Round(time.Millisecond), ended)

@@ -415,6 +415,13 @@ func releaseView(bound time.Duration, sandboxes []api.ReleasedSandbox, claims []
 		Result: api.ProjectReleaseResult{Sandboxes: sandboxes, Claims: claims}.Listed()}
 }
 
+// waitingRelease is a release of an hour's bound, still running, whose LEGION-208 pod waits, with
+// its architect's claim as its claim line.
+func waitingRelease() api.ProjectReleaseResponse {
+	return releaseView(time.Hour, []api.ReleasedSandbox{{Name: releasedCleanPod.Name, Kind: "issue", Issue: "LEGION-208", Outcome: api.ReleaseWaiting}},
+		[]api.ReleasedClaim{{Token: releasedArchitect.Token, Issue: "LEGION-208", Role: legionclaim.RoleArchitect, Session: "ses_architect"}})
+}
+
 // finishedView is view finished, with its lines as they ended.
 func finishedView(view api.ProjectReleaseResponse, sandboxes []api.ReleasedSandbox, claims []api.ReleasedClaim) api.ProjectReleaseResponse {
 	finished := view.StartedAt.Add(10 * time.Minute)
@@ -596,9 +603,7 @@ func TestProjectReleaseNamesTheReadAPodsCountIsFrom(t *testing.T) {
 // exits 1 and says the release goes on.
 func TestProjectReleaseExitsOneWhenTheWaitEndsFirst(t *testing.T) {
 	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
-	running := releaseView(time.Hour, []api.ReleasedSandbox{{Name: releasedCleanPod.Name, Kind: "issue", Issue: "LEGION-208", Outcome: api.ReleaseWaiting}},
-		[]api.ReleasedClaim{{Token: releasedArchitect.Token, Issue: "LEGION-208", Role: legionclaim.RoleArchitect, Session: "ses_architect"}})
-	d := releaseDaemon(t, &scriptedRelease{views: []api.ProjectReleaseResponse{running}})
+	d := releaseDaemon(t, &scriptedRelease{views: []api.ProjectReleaseResponse{waitingRelease()}})
 	began := time.Now()
 	code, out, errb := d.projectRelease(append(d.reach(), "--wait", "300ms")...)
 	if code != 1 || !strings.Contains(errb, "the release goes on in the daemon") || !strings.Contains(errb, "the command's wait of 300ms ended") {
@@ -619,9 +624,7 @@ func TestProjectReleaseExitsOneWhenTheWaitEndsFirst(t *testing.T) {
 // the same cut only when a read happens to start just before its wait ends.
 func TestProjectReleasePrintsTheReleaseItHoldsWhenTheWaitCutsARead(t *testing.T) {
 	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
-	running := releaseView(time.Hour, []api.ReleasedSandbox{{Name: releasedCleanPod.Name, Kind: "issue", Issue: "LEGION-208", Outcome: api.ReleaseWaiting}},
-		[]api.ReleasedClaim{{Token: releasedArchitect.Token, Issue: "LEGION-208", Role: legionclaim.RoleArchitect, Session: "ses_architect"}})
-	d := releaseDaemon(t, &scriptedRelease{views: []api.ProjectReleaseResponse{running}, readTakes: 3 * time.Second})
+	d := releaseDaemon(t, &scriptedRelease{views: []api.ProjectReleaseResponse{waitingRelease()}, readTakes: 3 * time.Second})
 	code, out, errb := d.projectRelease(append(d.reach(), "--wait", "300ms")...)
 	if code != 1 || !strings.Contains(errb, releaseGoesOn) {
 		t.Fatalf("legion project release --wait 300ms whose read outlasts the wait = %d, stderr %q; want 1 saying %q", code, errb, releaseGoesOn)
@@ -632,12 +635,12 @@ func TestProjectReleasePrintsTheReleaseItHoldsWhenTheWaitCutsARead(t *testing.T)
 }
 
 // A dry run whose request is not answered within --wait exits 1 saying that a dry run records and
-// starts nothing, not that a release goes on in the daemon: nothing was started.
+// starts nothing, not that the release may not have started: nothing was started.
 func TestProjectReleaseDryRunTheWaitEndsSaysNothingStarted(t *testing.T) {
 	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
 	d := releaseDaemon(t, &scriptedRelease{startTakes: 3 * time.Second})
 	code, _, errb := d.projectRelease(append(d.reach(), "--dry-run", "--wait", "300ms")...)
-	if code != 1 || !strings.Contains(errb, "a dry run records and starts nothing") || strings.Contains(errb, "goes on in the daemon") {
+	if code != 1 || !strings.Contains(errb, releaseDryRunStartsNothing) || strings.Contains(errb, releaseMayNotHaveStarted) {
 		t.Fatalf("legion project release --dry-run --wait 300ms = %d, stderr %q; want 1 saying the dry run started nothing", code, errb)
 	}
 }
@@ -647,9 +650,7 @@ func TestProjectReleaseDryRunTheWaitEndsSaysNothingStarted(t *testing.T) {
 // a request that ends before the release records itself has the daemon record and run nothing.
 func TestProjectReleaseTheWaitEndsBeforeTheStartIsAnsweredSaysItMayNotHaveStarted(t *testing.T) {
 	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
-	running := releaseView(time.Hour, []api.ReleasedSandbox{{Name: releasedCleanPod.Name, Kind: "issue", Issue: "LEGION-208", Outcome: api.ReleaseWaiting}},
-		[]api.ReleasedClaim{{Token: releasedArchitect.Token, Issue: "LEGION-208", Role: legionclaim.RoleArchitect, Session: "ses_architect"}})
-	d := releaseDaemon(t, &scriptedRelease{views: []api.ProjectReleaseResponse{running}, startTakes: 3 * time.Second})
+	d := releaseDaemon(t, &scriptedRelease{views: []api.ProjectReleaseResponse{waitingRelease()}, startTakes: 3 * time.Second})
 	code, out, errb := d.projectRelease(append(d.reach(), "--wait", "300ms")...)
 	if code != 1 || !strings.Contains(errb, releaseMayNotHaveStarted) || strings.Contains(errb, "goes on in the daemon") {
 		t.Fatalf("legion project release --wait 300ms whose start outlasts the wait = %d, stderr %q; want 1 saying %q", code, errb, releaseMayNotHaveStarted)
@@ -769,11 +770,9 @@ func TestProjectReleaseDryRunAnsweredWithAReleaseReadsThatRelease(t *testing.T) 
 // no run that reads a release.
 func TestProjectReleaseDryRunAnsweredWithAReleaseSaysThatReleaseGoesOn(t *testing.T) {
 	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
-	running := releaseView(time.Hour, []api.ReleasedSandbox{{Name: releasedCleanPod.Name, Kind: "issue", Issue: "LEGION-208", Outcome: api.ReleaseWaiting}},
-		[]api.ReleasedClaim{{Token: releasedArchitect.Token, Issue: "LEGION-208", Role: legionclaim.RoleArchitect, Session: "ses_architect"}})
-	d := releaseDaemon(t, &scriptedRelease{ran: true, views: []api.ProjectReleaseResponse{running}, readTakes: 3 * time.Second})
+	d := releaseDaemon(t, &scriptedRelease{ran: true, views: []api.ProjectReleaseResponse{waitingRelease()}, readTakes: 3 * time.Second})
 	code, _, errb := d.projectRelease(append(d.reach(), "--dry-run", "--wait", "300ms")...)
-	if code != 1 || !strings.Contains(errb, releaseGoesOn) || strings.Contains(errb, "a dry run records and starts nothing") {
+	if code != 1 || !strings.Contains(errb, releaseGoesOn) || strings.Contains(errb, releaseDryRunStartsNothing) {
 		t.Fatalf("legion project release --dry-run --wait 300ms answered with a release = %d, stderr %q; want 1 saying %q", code, errb, releaseGoesOn)
 	}
 }

@@ -266,20 +266,18 @@ func TestAGrantTheProjectRuleEndsIsLeftOutBesideAHealthyGrant(t *testing.T) {
 // enrollment that records no issuer, which is the first issuer's, the second issuer's pod names no
 // project, and its PRIV grant would be ended for good. The first issuer's pod is the control.
 func TestAPodsOtherGrantIsJudgedUnderTheIssuerItEnrolledUnder(t *testing.T) {
-	first := oidc.NamedIssuer{Name: "dispatch", URL: "https://kubernetes.dispatch.example"}
-	second := oidc.NamedIssuer{Name: "us-central1", URL: "https://container.googleapis.com/v1/projects/example/locations/us-central1/clusters/example"}
 	both := []string{"PRIV_KEY", "PRIV_SECOND"}
 	for _, c := range []struct {
 		name   string
 		issuer oidc.NamedIssuer
 	}{
-		{"the first issuer's pod", first},
-		{"the second issuer's pod", second},
+		{"the first issuer's pod", firstIssuer},
+		{"the second issuer's pod", secondIssuer},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m, _, _, _ := newProjectFixture(t, bound(rule("PRIV_KEY", "example"), rule("PRIV_SECOND", "example")), publicTeam)
 			retag(t, m, taggedSecret("PRIV_SECOND", policy.OwnerShared, policy.TierAgent, privProject, "priv-second-v1"))
-			m.Issuers = []oidc.NamedIssuer{first, second}
+			m.Issuers = []oidc.NamedIssuer{firstIssuer, secondIssuer}
 			set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider, Issuers: []string{c.issuer.Name}}}, nil, nil, nil, "")
 			if err != nil {
 				t.Fatalf("exchange.NewSet: %v", err)

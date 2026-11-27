@@ -108,7 +108,8 @@ func (m *projectMove) checkDelivery(t *testing.T, rd *moveRelease) {
 	// The release put the notice's row back unrun every releaseHoldSpacing (outbox.holdForRelease),
 	// so its first run after the boot comes up to that long after the daemon stopped, and while
 	// its architect is still coming back the row waits on its backoff, whose steps climb to 64
-	// seconds (retryBackoff).
+	// seconds (retryBackoff). The wait sets no span of its own (idleRigWaiting), so it waits
+	// both out.
 	idleRigEventually(t, "the delivery reaching "+m.clean.name+"'s architect", func() bool {
 		return idleRigCount(r.agents.messages(m.clean.key, role), moveDeliveryText) > 0
 	})
@@ -136,7 +137,8 @@ func (m *projectMove) checkRoleMessage(t *testing.T, rd *moveRelease) {
 	r := m.rig
 	role := string(m.clean.role)
 	// The row waits on its backoff while its claim comes back, whose steps climb to 64 seconds
-	// (retryBackoff), so its last run comes up to that long after the claims run again.
+	// (retryBackoff), so its last run comes up to that long after the claims run again. The wait
+	// sets no span of its own (idleRigWaiting), so it waits that out.
 	idleRigEventually(t, "the role message's row leaving the outbox", func() bool {
 		return len(r.outboxRowsOf(m.clean.key, record.OutboxKindRoleMessage)) == 0
 	})

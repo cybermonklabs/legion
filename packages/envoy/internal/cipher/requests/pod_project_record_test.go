@@ -117,6 +117,12 @@ func recordIssuer(t *testing.T, m *Machine, enrollmentID string, issuer *string)
 	}
 }
 
+// firstIssuer and secondIssuer are the two issuers the broker trusts in the tests of a pod's issuer.
+var (
+	firstIssuer  = oidc.NamedIssuer{Name: "dispatch", URL: "https://kubernetes.dispatch.example"}
+	secondIssuer = oidc.NamedIssuer{Name: "us-central1", URL: "https://container.googleapis.com/v1/projects/example/locations/us-central1/clusters/example"}
+)
+
 // TestAServicesPodNamesItsEntrysProjectOnlyForAnIssuerTheEntryNames: a service's pod names the
 // project its account's BROKER_EXCHANGE_ACCOUNTS entry maps only while that entry names the issuer
 // whose token enrolled the pod, which the enrollment records by URL and the broker reads as that
@@ -130,9 +136,7 @@ func recordIssuer(t *testing.T, m *Machine, enrollmentID string, issuer *string)
 // issuer the setting no longer holds is no issuer's.
 func TestAServicesPodNamesItsEntrysProjectOnlyForAnIssuerTheEntryNames(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	first := oidc.NamedIssuer{Name: "dispatch", URL: "https://kubernetes.dispatch.example"}
-	second := oidc.NamedIssuer{Name: "us-central1", URL: "https://container.googleapis.com/v1/projects/example/locations/us-central1/clusters/example"}
-	m.Issuers = []oidc.NamedIssuer{first, second}
+	m.Issuers = []oidc.NamedIssuer{firstIssuer, secondIssuer}
 	for i, c := range []struct {
 		name string
 		// enrolledWith is the URL the pod's enrollment records, nil for none.
@@ -141,11 +145,11 @@ func TestAServicesPodNamesItsEntrysProjectOnlyForAnIssuerTheEntryNames(t *testin
 		issuers []string
 		names   bool
 	}{
-		{"the second issuer's pod, while its entry names both", &second.URL, []string{first.Name, second.Name}, true},
-		{"the second issuer's pod, once its entry names the first alone", &second.URL, []string{first.Name}, false},
-		{"a pod recording no issuer, while its entry names the first", nil, []string{first.Name}, true},
-		{"a pod recording no issuer, while its entry names the second alone", nil, []string{second.Name}, false},
-		{"a pod of an issuer the setting no longer holds", new("https://gone.example"), []string{first.Name, second.Name}, false},
+		{"the second issuer's pod, while its entry names both", &secondIssuer.URL, []string{firstIssuer.Name, secondIssuer.Name}, true},
+		{"the second issuer's pod, once its entry names the first alone", &secondIssuer.URL, []string{firstIssuer.Name}, false},
+		{"a pod recording no issuer, while its entry names the first", nil, []string{firstIssuer.Name}, true},
+		{"a pod recording no issuer, while its entry names the second alone", nil, []string{secondIssuer.Name}, false},
+		{"a pod of an issuer the setting no longer holds", new("https://gone.example"), []string{firstIssuer.Name, secondIssuer.Name}, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider, Issuers: c.issuers}}, nil, nil, nil, "")
