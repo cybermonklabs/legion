@@ -2720,6 +2720,14 @@ type Store interface {
 	// other field: the one write a list read's record calls for (workflow's basePush), which
 	// PutPullRequest refuses.
 	SetPullRequestBaseMoved(ctx context.Context, tx pgx.Tx, repo string, number int, after string) error
+	// MovePullRequest writes to as the repository of the row of the pull request number of repo,
+	// repo compared without case, and no other field: the row keeps its key's number and everything
+	// it holds, and what it remembers of its settled heads follows it through their foreign key (on
+	// update cascade, migration 20261127031536). It is the one write that moves a row from one name of
+	// a configured rename to the other (workflow's putPullRequest keeps a pull request of its issue's
+	// own repository in the spelling of the issue's record); a pull request the record holds no row of
+	// moves nothing.
+	MovePullRequest(ctx context.Context, tx pgx.Tx, repo string, number int, to string) error
 	// DeletePullRequest deletes the row of the pull request number of repo, the table's key, and
 	// what it remembers of its settled heads with it; a pull request the record holds no row of
 	// deletes nothing.
@@ -2736,6 +2744,12 @@ type Store interface {
 	// the order of their repositories, compared without case, and numbers.
 	PullRequestLinksOf(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequestLink, error)
 	PullRequestLinks(ctx context.Context, tx pgx.Tx) ([]PullRequestLink, error)
+	// PullRequestLinkOf is the link of the pull request number of repo, whichever issue holds it,
+	// repo compared without case, nil where no issue links it: the one link a fact of one pull
+	// request reads, the issue it is of among its fields (the workflow's open of a linked pull
+	// request and its read), by the unique index of the lowered repository and the number, so no
+	// fact of a pull request reads the links of every issue.
+	PullRequestLinkOf(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequestLink, error)
 	// SetPullRequestLinkTold writes the told mark of the link of the pull request number of repo, at,
 	// nil clearing it, and SetPullRequestLinkRefused its refusal, "" taking it; a link the record
 	// does not hold writes nothing.

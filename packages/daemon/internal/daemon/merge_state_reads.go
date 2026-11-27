@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // mergeStateLadderReads is how many times one climb of the ladder reads GitHub's merge state for a
@@ -70,8 +73,9 @@ const (
 
 // queueMergeState is what the workflow asks for when a fact of one pull request owes a read of
 // GitHub's merge state for it, the open pull request of task of issue (workflow's askMergeState,
-// the engine's Config.ReadMergeState, which names the task of the pull request the fact is of, ""
-// for an issue with no plan rows): a review round the fact leaves waiting on GitHub's answer for
+// the engine's Config.ReadMergeState, which names the pull request by its repository and number,
+// read here as its issue and its task by queueMergeStateOf): a review round the fact leaves
+// waiting on GitHub's answer for
 // the head, or ended by an approval the fact did not move on (a CI settlement, which moves no
 // issue), and, by the gate classify.MergeStateReadOwed, a fact that moves the head of an issue in
 // implementing through merging, which can turn the head conflicting with its base
@@ -86,6 +90,51 @@ const (
 // itself - queues nothing.
 func (w *workflowRuntime) queueMergeState(issue, task string) {
 	w.queueMergeStateRead(taskRead{issue: issue, task: task}, nil)
+}
+
+// queueMergeStateOf is the engine's Config.ReadMergeState: the read of GitHub's merge state a fact
+// owes one pull request, which the workflow names by its repository and number (workflow's
+// askMergeState), queued on the ladder of the task whose pull request it is (queueMergeState). The
+// ladders are keyed by the issue and the task (taskRead) until they are keyed by pull request, so
+// the issue and the task are read from the pull request's row (taskReadsOf); a pull request the
+// record no longer holds is read for by no ladder, as one whose issue a runtime does not read. A
+// runtime with no reader reads no row and queues nothing.
+func (w *workflowRuntime) queueMergeStateOf(pr workflow.PullRequestKey) {
+	if w.mergeStates == nil {
+		return
+	}
+	for _, read := range w.taskReadsOf([]workflow.PullRequestKey{pr}) {
+		w.queueMergeStateRead(read, nil)
+	}
+}
+
+// taskReadsOf is the ladder (taskRead) of each of prs, pull requests the workflow names by their
+// repository and number, read from each one's row in one read-only transaction bounded by
+// issueRead: its issue and its task (record.PullRequest.Task). A pull request the record holds no
+// row of has none, and a read that fails reads none and is logged: the next fact of the pull
+// request asks again.
+func (w *workflowRuntime) taskReadsOf(prs []workflow.PullRequestKey) []taskRead {
+	ctx, cancel := context.WithTimeout(context.Background(), issueRead)
+	defer cancel()
+	reads, err := store.ReadOnly(ctx, w.pool, "read the issues and tasks of the pull requests owed a merge-state read",
+		func(ctx context.Context, tx pgx.Tx) ([]taskRead, error) {
+			reads := make([]taskRead, 0, len(prs))
+			for _, key := range prs {
+				pr, err := w.records.PullRequestRowByNumber(ctx, tx, key.Repo, key.Number)
+				if err != nil {
+					return nil, err
+				}
+				if pr != nil {
+					reads = append(reads, taskRead{issue: pr.Issue, task: pr.Task})
+				}
+			}
+			return reads, nil
+		})
+	if err != nil {
+		w.log.Warn("github: the pull requests owed a merge-state read could not be read; their next fact asks again", "pullRequests", prs, "error", err)
+		return nil
+	}
+	return reads
 }
 
 // queueMergeStateFollow hands follow, the pull request of one task of issue as the read that hands

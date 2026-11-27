@@ -408,7 +408,7 @@ func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 	}
 	if len(removed) > 0 {
 		if given.recorded {
-			if err := e.closeRemovedPullRequests(ctx, tx, fact, removed); err != nil {
+			if err := e.closeRemovedPullRequests(ctx, tx, fact, *given.issue, removed); err != nil {
 				return writtenVersion{}, err
 			}
 			if err := e.removeTaskCopies(ctx, tx, fact, given.stored, removed); err != nil {
@@ -437,21 +437,26 @@ func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 // leaves alone, which holds that branch before its start as the one task of a plan of one
 // (record.StoredPlan.TasksOfBranch), and as the issue's merge; so a closed or merged row goes too.
 // A task a later version adds back starts on a branch of its own (record.Store.AssignTaskBranch),
-// and no fact of the closed pull request finds a row. It runs for a version of the issue's own
-// generation alone (givenVersion.recorded): a row's task is read at that generation, and a plan
-// waiting at generation 0 has no task that started.
-func (e *Engine) closeRemovedPullRequests(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, removed []string) error {
+// and no fact of the closed pull request finds a row. Each pull request of a removed task's branch
+// is its own row, closed and deleted by its repository and number, so two of one branch both go
+// (dispatch://INFRA-5910 decision 20, b5), and each close names the issue's repository
+// (record.TaskPullRequestsClose.Repo), the one a task's branch is of. A pull request the issue
+// links is none of them, whatever its branch: it stays in the issue's set as its link, and the
+// stack never closes it (decision 11). It runs for a version of the issue's own generation alone
+// (givenVersion.recorded): a row's task is read at that generation, and a plan waiting at
+// generation 0 has no task that started.
+func (e *Engine) closeRemovedPullRequests(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, issue record.Issue, removed []string) error {
 	prs, err := e.store.TaskPullRequestRows(ctx, tx, fact.Issue)
 	if err != nil {
 		return err
 	}
 	for _, pr := range prs {
-		if !slices.Contains(removed, pr.Task) {
+		if !slices.Contains(removed, pr.Task) || pr.Linked {
 			continue
 		}
 		if pr.State == record.PullRequestOpen {
-			if err := e.enqueue(ctx, tx, fact.Issue, record.TaskPullRequestsClose{Generation: fact.Generation, Numbers: []int{pr.Number},
-				Comment: fmt.Sprintf("Task %s was removed from the plan.", pr.Task)}); err != nil {
+			if err := e.enqueue(ctx, tx, fact.Issue, record.TaskPullRequestsClose{Generation: fact.Generation, Repo: issue.GitHubRepo,
+				Numbers: []int{pr.Number}, Comment: fmt.Sprintf("Task %s was removed from the plan.", pr.Task)}); err != nil {
 				return err
 			}
 		}

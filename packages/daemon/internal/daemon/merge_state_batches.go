@@ -67,24 +67,31 @@ func baseReadKey(repo ghrepo.Repository, base string) string {
 
 // queueBaseMergeStates is what the workflow asks for on the commit of a push to base of repo
 // (workflow's basePush, the engine's Config.ReadBaseMergeStates): a read of GitHub's merge state
-// for each of pulls, the pull requests on that base the push owes a read, each named by its issue
-// and its task, which a push onto the base can turn behind or conflicting with it while GitHub
-// sends no event of the pull request itself (dispatch://INFRA-4374 R0, R4). Two tasks of one
-// issue with pull requests on the base are two reads. They are read in one batch, a climb of the
-// base's reads (queueBaseRead): GraphQL queries of baseReadChunk pull requests each, asked for by
-// number, rather than one GET /pulls/{number} of each. It only records the pull requests and
-// wakes the reader, so the push's own transaction waits for no GitHub call, and a runtime with no
-// reader queues nothing.
-func (w *workflowRuntime) queueBaseMergeStates(repo, base string, pulls []workflow.TaskPullRequest) {
+// for each of pulls, the pull requests on that base the push owes a read, each named by its
+// repository and number and read here as its issue and its task (taskReadsOf), which a push onto
+// the base can turn behind or conflicting with it while GitHub sends no event of the pull request
+// itself (dispatch://INFRA-4374 R0, R4). Two tasks of one issue with pull requests on the base are
+// two reads. They are read in one batch, a climb of the base's reads (queueBaseRead): GraphQL
+// queries of baseReadChunk pull requests each, asked for by number, rather than one GET
+// /pulls/{number} of each. It only records the pull requests and wakes the reader, so the push's
+// own transaction waits for no GitHub call, and a runtime with no reader queues nothing.
+func (w *workflowRuntime) queueBaseMergeStates(repo, base string, pulls []workflow.PullRequestKey) {
 	repository, err := ghrepo.Parse("the pushed repository", repo)
 	if err != nil {
 		w.log.Warn("github: a push to a base names no repository the daemon can read; its pull requests are read at their next event",
 			"repo", repo, "base", base, "pullRequests", pulls, "error", err)
 		return
 	}
-	owed := make(map[taskRead]string, len(pulls))
-	for _, pull := range pulls {
-		owed[taskRead{issue: pull.Issue, task: pull.Task}] = ""
+	if w.baseWake == nil {
+		return
+	}
+	reads := w.taskReadsOf(pulls)
+	if len(reads) == 0 {
+		return
+	}
+	owed := make(map[taskRead]string, len(reads))
+	for _, read := range reads {
+		owed[read] = ""
 	}
 	w.queueBaseRead(w.repositories.serving(repository), base, owed, true)
 }

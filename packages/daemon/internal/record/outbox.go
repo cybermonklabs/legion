@@ -3665,8 +3665,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // Three kinds are of an issue with several pull requests, its tasks' and the ones it links in
 // Dispatch (dispatch://INFRA-5910): `pr-closed-others-open`, `pr-holds-close` and
 // `pr-link-refused`, each told to the issue's architect, and each naming a pull request as
-// `owner/name#number`. Nothing writes them yet: this release decodes them, and the workflow's close
-// of such an issue and its reads of its links come later.
+// `owner/name#number`. The workflow writes `pr-link-refused`; the other two are decoded by this
+// release and written by the workflow's close of such an issue, which comes later.
 //
 // `pr-closed-others-open` is a pull request of the issue closed without a merge while another of
 // its set is still open (D5): the close moves nothing, and the reason names each pull request of
@@ -3682,8 +3682,11 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 //
 // `pr-link-refused` is a link of the issue that the daemon took into no set (LinkRefusal): a
 // pull request whose head is in a fork, or that the record holds for another issue. It is told once
-// for each link, as `pr-holds-close` is. The workflow's fact of an issue's links (dispatchIssue)
-// and the fact of a linked pull request's read will write it.
+// for each link, as `pr-holds-close` is. The workflow writes it where it refuses such a link
+// (refuseLink): at the fact of an issue's links (dispatchIssue's takeLinks) for a link to a pull
+// request another issue holds, at the open of a task's pull request another issue links
+// (pullRequestOpened), and at the read of a linked pull request (pullRequestLinkRead) for a fork's
+// or another issue's.
 //
 // No earlier release decodes any of the three, so the way back of migration 20261127031536 deletes
 // their unsent rows.

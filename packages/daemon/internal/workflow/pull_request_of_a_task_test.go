@@ -99,7 +99,7 @@ func TestAPullRequestOnABranchNoTaskWasGivenIsNotTheIssues(t *testing.T) {
 
 		mustSpend(t, "the merge of #2", applyFacts(t, pool, engine)("merged-2",
 			intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 2, MergeSHA: "merge-2", HeadSHA: "head-legion/LEGION-208.impl"}))
-		want := []record.TaskPullRequestsClose{{Generation: root.Generation, Numbers: []int{1}, Comment: "Issue LEGION-208 is done; its last merge is #2."}}
+		want := []record.TaskPullRequestsClose{{Generation: root.Generation, Repo: "sjawhar/legion", Numbers: []int{1}, Comment: "Issue LEGION-208 is done; its last merge is #2."}}
 		if got := closesOf(t, pool, root.Key); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the closes of pull requests after the merge of #2 = %+v, want %+v: #9 is on a branch no task holds", got, want)
 		}

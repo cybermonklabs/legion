@@ -72,6 +72,15 @@ func (s *Postgres) PullRequestLinks(ctx context.Context, tx pgx.Tx) ([]PullReque
 		"select "+pullRequestLinkColumns+" from pull_request_links order by lower(repo), number")
 }
 
+func (s *Postgres) PullRequestLinkOf(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequestLink, error) {
+	links, err := readPullRequestLinks(ctx, tx, fmt.Sprintf("read the link of %s#%d", repo, number),
+		"select "+pullRequestLinkColumns+" from pull_request_links where lower(repo) = lower($1) and number = $2", repo, number)
+	if err != nil || len(links) == 0 {
+		return nil, err
+	}
+	return &links[0], nil
+}
+
 // readPullRequestLinks is each link query selects, naming the read in any failure as describe.
 func readPullRequestLinks(ctx context.Context, tx pgx.Tx, describe, query string, args ...any) ([]PullRequestLink, error) {
 	rows, err := tx.Query(ctx, query, args...)

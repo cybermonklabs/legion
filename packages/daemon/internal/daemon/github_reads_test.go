@@ -95,7 +95,7 @@ func readRuntime(pool *store.Pool, api string, log *slog.Logger) *workflowRuntim
 // facts w's reads make with it (workflowRuntime.handlers).
 func (w *workflowRuntime) engineOver(records record.Store) {
 	w.engine = workflow.New(records, workflow.Config{Project: "CAPTURE", Repositories: testRepositories,
-		ReadMergeState: w.queueMergeState, ReadBaseMergeStates: w.queueBaseMergeStates}, w.log)
+		ReadMergeState: w.queueMergeStateOf, ReadBaseMergeStates: w.queueBaseMergeStates}, w.log)
 	w.handlers = []intake.Handler{w.engine}
 }
 

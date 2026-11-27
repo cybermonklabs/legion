@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -74,8 +73,7 @@ func assertRowsGone(t *testing.T, pool *pgxpool.Pool, after string, numbers ...i
 //     branch records it.
 //   - b3, the merge-state reads a fact asks for (askMergeState): a synchronize of #42 asks the read
 //     of #42 alone, and a push of the branch asks one read for each open pull request on it. The
-//     read names its pull request by its issue and its task here (Config.ReadMergeState), which two
-//     pull requests of one task share, so this row counts the reads asked.
+//     read names its pull request by its repository and its number (Config.ReadMergeState).
 //   - b4, a push onto a base (basePush): it reaches the open pull request onto that base and no
 //     other pull request of the branch, whichever spelling of the repository the push names.
 //   - b5, the closes of the pull requests of a task the plan removed (closeRemovedPullRequests) and
@@ -121,7 +119,7 @@ func TestEachReadByBranchTakesEveryOpenPullRequestOnIt(t *testing.T) {
 		// its checks: a round that waits on GitHub's answer for each pull request
 		// (reviewRound), whatever fact of the branch arrives, so each fact here owes a read of each
 		// pull request it reaches. It answers the reads the engine asks for, each named by its
-		// issue and its task.
+		// repository and its number.
 		rig := func(t *testing.T) (*pgxpool.Pool, *Engine, *[]string) {
 			t.Helper()
 			pool := migratedPool(t)
@@ -133,21 +131,21 @@ func TestEachReadByBranchTakesEveryOpenPullRequestOnIt(t *testing.T) {
 				Decision: &record.ReviewDecision{State: "approved", Head: headOne}})
 			var asked []string
 			engine := testEngine(config.DesignGateRootIssues, nil)
-			engine.cfg.ReadMergeState = func(issue, task string) { asked = append(asked, fmt.Sprintf("%s task %q", issue, task)) }
+			engine.cfg.ReadMergeState = func(pr PullRequestKey) { asked = append(asked, prName(pr.Repo, pr.Number)) }
 			return pool, engine, &asked
 		}
 
 		pool, engine, asked := rig(t)
 		mustSpend(t, "the synchronize of #42", applyFacts(t, pool, engine)("synchronize-42", intake.PullRequestSynchronized{
 			Repo: "sjawhar/legion", Number: 42, Branch: sharedBranch, Before: headEarlier, HeadSHA: headOne, Sender: "a-writer"}))
-		if want := []string{`LEGION-208 task ""`}; !slices.Equal(*asked, want) {
+		if want := []string{"sjawhar/legion#42"}; !slices.Equal(*asked, want) {
 			t.Errorf("the synchronize of #42 asked the merge-state reads %v; want %v, the read of #42 alone: the fact names its pull request's number", *asked, want)
 		}
 
 		pool, engine, asked = rig(t)
 		mustSpend(t, "the push of the branch", applyFacts(t, pool, engine)("push", intake.Push{
 			Repo: "sjawhar/legion", Branch: sharedBranch, Before: headEarlier, After: headOne, Pusher: "a-writer", Sender: "a-writer"}))
-		if want := []string{`LEGION-208 task ""`, `LEGION-208 task ""`}; !slices.Equal(*asked, want) {
+		if want := []string{"sjawhar/legion#42", "sjawhar/legion#43"}; !slices.Equal(*asked, want) {
 			t.Errorf("the push of %s asked the merge-state reads %v; want %v, one for each of its two open pull requests, #42 and #43: a push names a branch and no number",
 				sharedBranch, *asked, want)
 		}

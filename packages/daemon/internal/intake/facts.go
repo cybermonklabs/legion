@@ -1201,10 +1201,11 @@ func (f ConflictConfirmDone) namedIssue() (string, bool) { return f.Issue, true 
 // answered 404 (record.LinkRefusedUnreadable). Unserved is why the daemon read nothing: Repo fails
 // the checks the daemon makes of a recorded repository (record.LinkRefusedUnserved), and it names
 // the App that is not installed on it, as the architect is told. Each of the two leaves GitHub's
-// fields empty. No executor applies the fact yet, and no handler acts on it: the read's executor
-// and the workflow's handler come with the daemon's reads of each linked pull request (steps 8 and
-// 5 of the plan of dispatch://INFRA-5910). Like every fact, it applies under the one fact lock
-// (ApplyFact, SerializeFacts).
+// fields empty. The workflow's handler applies it (workflow's pullRequestLinkRead): it records the
+// linked pull request, or holds the link refused, and moves no phase of its own. No executor
+// applies the fact yet: the read's executor comes with the daemon's reads of each linked pull
+// request (step 8 of the plan of dispatch://INFRA-5910). Like every fact, it applies under the one
+// fact lock (ApplyFact, SerializeFacts).
 type PullRequestLinkReadDone struct {
 	Issue     string
 	Repo      string

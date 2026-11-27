@@ -126,7 +126,7 @@ func TestARunNotCarriedTakesNoEarlierNameAndClosesTheEarlierPullRequests(t *test
 			t.Fatalf("design at generation 2 is %s on %q, want running on legion/LEGION-208.design: generation 1 gave legion/LEGION-208 to impl",
 				design.State, design.Branch)
 		}
-		want := []record.TaskPullRequestsClose{{Generation: root.Generation, Numbers: []int{1}, Comment: runAgainComment}}
+		want := []record.TaskPullRequestsClose{{Generation: root.Generation, Repo: "sjawhar/legion", Numbers: []int{1}, Comment: runAgainComment}}
 		if got := closesOf(t, pool, root.Key); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the closes of pull requests of %s = %+v, want %+v", root.Key, got, want)
 		}
@@ -170,7 +170,7 @@ func TestARunNotCarriedTakesNoEarlierNameAndClosesTheEarlierPullRequests(t *test
 		if design := tasksOf(t, pool, engine, root.Key)["design"]; design.Branch != "legion/LEGION-208.design" {
 			t.Fatalf("design took %q, want legion/LEGION-208.design: the run before plans holds #1 on legion/LEGION-208", design.Branch)
 		}
-		want := []record.TaskPullRequestsClose{{Generation: root.Generation, Numbers: []int{1}, Comment: runAgainComment}}
+		want := []record.TaskPullRequestsClose{{Generation: root.Generation, Repo: "sjawhar/legion", Numbers: []int{1}, Comment: runAgainComment}}
 		if got := closesOf(t, pool, root.Key); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the closes of pull requests of %s = %+v, want %+v", root.Key, got, want)
 		}
@@ -207,7 +207,7 @@ func TestARunNotCarriedTakesNoEarlierNameAndClosesTheEarlierPullRequests(t *test
 		if pr := pullRequestOfTask(t, pool, root.Key, "a"); pr.Number != 1 || pr.State != record.PullRequestOpen {
 			t.Fatalf("the pull request of a = #%d %s, want #1 open: the issue goes on on its branch", pr.Number, pr.State)
 		}
-		want := []record.TaskPullRequestsClose{{Generation: root.Generation, Numbers: []int{2}, Comment: runAgainComment}}
+		want := []record.TaskPullRequestsClose{{Generation: root.Generation, Repo: "sjawhar/legion", Numbers: []int{2}, Comment: runAgainComment}}
 		if got := closesOf(t, pool, root.Key); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the closes of pull requests of %s = %+v, want %+v", root.Key, got, want)
 		}

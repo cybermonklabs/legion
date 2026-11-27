@@ -381,7 +381,16 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 
 	t.Run("a read queued before the record holds another pull request for the issue reads nothing", func(t *testing.T) {
 		rig.queuedBeforeItLeft(t, renumbered, func(t *testing.T, issue dequeueIssue) {
-			rig.recordPullRequest(t, issue, func(pr *record.PullRequest) { pr.Number += 1000 })
+			// Each pull request is a row of its own (dispatch://INFRA-5910 D1), so the record holds
+			// another pull request for the issue once the earlier row is gone beside the new one.
+			var repo string
+			var number int
+			rig.recordPullRequest(t, issue, func(pr *record.PullRequest) { repo, number, pr.Number = pr.Repo, pr.Number, pr.Number+1000 })
+			if err := store.Transact(context.Background(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+				return rig.records.DeletePullRequest(ctx, tx, repo, number)
+			}); err != nil {
+				t.Fatalf("delete %s's earlier pull request %s#%d: %v", issue.key, repo, number, err)
+			}
 		}, "the record holds pull request")
 	})
 

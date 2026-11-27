@@ -622,13 +622,14 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 }
 
 // checksSteps is the steps whose workers tellChecks tells of a settlement of pr's checks: the steps
-// of issue that take work of each task whose branch pr is on (openStepsOfPullRequest), the steps a
-// settlement wakes. A held issue takes none of them, so for it they are its running steps at the
-// phase its hold is from (record.StandsAt, record.Issue.RunningAt) of each such task: a hold of
-// the issue keeps that phase's work where it stood, so its worker still needs the CI result. A
-// stopped task's step and a step that waits are never among them, and a held task's step only
-// where it stands at the phase its issue's own hold is from. Every step of a run with no plan rows
-// is pr's.
+// of issue that take work of each task pr is of (openStepsOfPullRequest: the task whose branch it
+// is on, or for a linked pull request that no task's branch holds the task whose scope works it,
+// tasksOfPullRequest), the steps a settlement wakes. A held issue takes none of them, so for it
+// they are its running steps at the phase its hold is from (record.StandsAt,
+// record.Issue.RunningAt) of each such task: a hold of the issue keeps that phase's work where it
+// stood, so its worker still needs the CI result, a linked pull request's among them. A stopped
+// task's step and a step that waits are never among them, and a held task's step only where it
+// stands at the phase its issue's own hold is from. Every step of a run with no plan rows is pr's.
 func (e *Engine) checksSteps(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest) ([]record.RunningStep, error) {
 	at := record.StandsAt(issue)
 	if at == issue.Phase {
@@ -639,7 +640,7 @@ func (e *Engine) checksSteps(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err != nil || stored == nil {
 		return held, err
 	}
-	tasks := stored.TasksOfBranch(issue, pr.Repo, pr.Branch)
+	tasks := tasksOfPullRequest(issue, stored, pr)
 	return slices.DeleteFunc(held, func(step record.RunningStep) bool { return !slices.Contains(tasks, step.Task) }), nil
 }
 
@@ -1506,28 +1507,32 @@ func toldFinding(r round) record.StuckTold {
 // inside that walk (basePush, Config.ReadBaseMergeStates), since the record it overwrites as it
 // goes is what tells a redelivered push from a first delivery.
 //
-// It reads the pull request's row alone (pullRequestRow, pullRequestRowByBranch): it writes
-// nothing of the record and reads none of what it remembers of its settled heads.
+// It reads each pull request's row alone (pullRequestRow, pullRequestRowsOnBranch): it writes
+// nothing of the record and reads none of what it remembers of its settled heads. A fact that names
+// a number is read by its repository and number, the pull request it is of alone; a push names a
+// branch and no number, so it is read for each open pull request on its branch, and each that owes
+// a read is asked one of its own (dispatch://INFRA-5910 decision 20, b3).
 func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact) error {
 	if e.cfg.ReadMergeState == nil {
 		return nil
 	}
+	var prs []record.PullRequest
 	var pr *record.PullRequest
 	var err error
 	kind := classify.MergeStateFactOther
 	switch fact := fact.(type) {
 	case intake.PullRequestOpened:
-		pr, err = e.pullRequestRowByBranch(ctx, tx, fact.Repo, fact.Branch)
+		pr, err = e.pullRequestRow(ctx, tx, fact.Repo, fact.Number)
 		kind = classify.MergeStateFactHeadMove
 	case intake.PullRequestSynchronized:
-		pr, err = e.pullRequestRowByBranch(ctx, tx, fact.Repo, fact.Branch)
+		pr, err = e.pullRequestRow(ctx, tx, fact.Repo, fact.Number)
 		kind = classify.MergeStateFactHeadMove
 	case intake.Push:
 		// The push moves no head of the record: its synchronize, from GitHub or from the per-issue
 		// read (daemon's followHead), is the fact that moves the head, and the one a head move is
 		// read for. So the push asks only as a review or a settlement does, for a round it leaves
 		// waiting on GitHub, and one push to a branch asks for no ladder beside its synchronize's.
-		pr, err = e.pullRequestRowByBranch(ctx, tx, fact.Repo, fact.Branch)
+		prs, err = e.pullRequestRowsOnBranch(ctx, tx, fact.Repo, fact.Branch)
 	case intake.PullRequestChecks:
 		pr, err = e.pullRequestRow(ctx, tx, fact.Repo, fact.Number)
 	case intake.PullRequestReview:
@@ -1543,17 +1548,24 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 	default:
 		return nil
 	}
-	if err != nil || pr == nil {
+	if err != nil {
 		return err
 	}
-	owed, err := e.mergeStateOwed(ctx, tx, pr, kind)
-	if err != nil || !owed {
-		return err
+	if pr != nil {
+		prs = append(prs, *pr)
 	}
-	// The task names which of the issue's pull requests the read is of: each task of a plan has
-	// one of its own, and the fact is of this one.
-	key, task := pr.Issue, pr.Task
-	store.OnCommit(ctx, func() { e.cfg.ReadMergeState(key, task) })
+	for at := range prs {
+		owed, err := e.mergeStateOwed(ctx, tx, &prs[at], kind)
+		if err != nil {
+			return err
+		}
+		if owed {
+			// The read names the pull request by its repository and number: an issue can hold
+			// several, and the fact is of this one.
+			read := keyOf(prs[at])
+			store.OnCommit(ctx, func() { e.cfg.ReadMergeState(read) })
+		}
+	}
 	return nil
 }
 

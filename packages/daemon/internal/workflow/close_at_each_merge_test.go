@@ -58,7 +58,7 @@ func TestEachMergeClosesThePullRequestsWhoseWorkItHolds(t *testing.T) {
 			taskAt{id: "c", state: record.TaskRunning, place: atMerge, number: 3})
 		apply := applyFacts(t, pool, engine)
 		mustSpend(t, "the merge of b's #2", apply("merged-b", mergedFact(2, "b")))
-		byB := record.TaskPullRequestsClose{Generation: root.Generation, Numbers: []int{1}, Comment: "Merged in #2."}
+		byB := record.TaskPullRequestsClose{Generation: root.Generation, Repo: "sjawhar/legion", Numbers: []int{1}, Comment: "Merged in #2."}
 		// The steps after b's merge do not stand on its row, so a missing row is reported and the
 		// test goes on to c's merge, whose row then shows what a merge that holds no work closes.
 		if got := closesOf(t, pool, root.Key); !reflect.DeepEqual(got, []record.TaskPullRequestsClose{byB}) {
@@ -74,7 +74,7 @@ func TestEachMergeClosesThePullRequestsWhoseWorkItHolds(t *testing.T) {
 		}
 		mustSpend(t, "the merge of c's #3", apply("merged-c", mergedFact(3, "c")))
 		closesAre(t, pool, root.Key, "c's merge, which ends the issue", byB,
-			record.TaskPullRequestsClose{Generation: root.Generation, Numbers: []int{1}, Comment: "Issue LEGION-208 is done; its last merge is #3."})
+			record.TaskPullRequestsClose{Generation: root.Generation, Repo: "sjawhar/legion", Numbers: []int{1}, Comment: "Issue LEGION-208 is done; its last merge is #3."})
 	})
 
 	t.Run("a task two merges hold", func(t *testing.T) {
@@ -87,7 +87,7 @@ func TestEachMergeClosesThePullRequestsWhoseWorkItHolds(t *testing.T) {
 			taskAt{id: "c", needs: []string{"a"}, state: record.TaskRunning, place: atMerge, number: 3})
 		apply := applyFacts(t, pool, engine)
 		mustSpend(t, "the merge of b's #2", apply("merged-b", mergedFact(2, "b")))
-		byB := record.TaskPullRequestsClose{Generation: root.Generation, Numbers: []int{1}, Comment: "Merged in #2."}
+		byB := record.TaskPullRequestsClose{Generation: root.Generation, Repo: "sjawhar/legion", Numbers: []int{1}, Comment: "Merged in #2."}
 		closesAre(t, pool, root.Key, "b's merge", byB)
 		mustSpend(t, "the close of #1", apply("closed-1", closeOfA))
 		mustSpend(t, "the merge of c's #3", apply("merged-c", mergedFact(3, "c")))
@@ -129,7 +129,7 @@ func TestAMergeBeforeMergingQueuesItsCloseRowWhenItsTaskReachesMerging(t *testin
 			taskMoves(t, pool, engine, root.Key, "c", TriggerRetroCompleted, "")
 			assertTask(t, tasksOf(t, pool, engine, root.Key), "c", record.TaskDone, atMerge)
 			closesAre(t, pool, root.Key, "c's arrival at its merge on its merged pull request",
-				record.TaskPullRequestsClose{Generation: root.Generation, Numbers: []int{1}, Comment: tc.comment})
+				record.TaskPullRequestsClose{Generation: root.Generation, Repo: "sjawhar/legion", Numbers: []int{1}, Comment: tc.comment})
 		})
 	}
 }

@@ -173,8 +173,13 @@ const notCarriedComment = "The issue's run started its plan again; the work of t
 // issue takes it, with its commits, again. Before its first task starts a plan of several holds
 // none of them, so each closes; the one task of a plan of one holds the issue's own branch
 // (record.StoredPlan.TasksOfBranch), so the pull request open there is kept, and the issue goes on
-// on it as it always did. An issue no earlier run of which ran a step holds no pull request of an
-// earlier run (record.Store.EarlierRunOf), and nothing of it closes.
+// on it as it always did. Each pull request of the earlier run is its own row, closed and deleted
+// by its repository and number, so two of one branch both close (dispatch://INFRA-5910 decision
+// 20, b5); a pull request the issue links is none of them, whatever its branch: it is the issue's
+// link, which the stack never closes (decision 11). The row names the issue's repository
+// (record.TaskPullRequestsClose.Repo), the one every such pull request is of. An issue no earlier
+// run of which ran a step holds no pull request of an earlier run (record.Store.EarlierRunOf), and
+// nothing of it closes.
 func (e *Engine) closeEarlierPullRequests(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	ran, err := e.store.EarlierRunOf(ctx, tx, issue)
 	if err != nil || !ran {
@@ -186,7 +191,7 @@ func (e *Engine) closeEarlierPullRequests(ctx context.Context, tx pgx.Tx, issue 
 	}
 	var closed []int
 	for _, pr := range prs {
-		if pr.State != record.PullRequestOpen || pr.Task != "" {
+		if pr.State != record.PullRequestOpen || pr.Task != "" || pr.Linked {
 			continue
 		}
 		if err := e.store.RecordBranchGiven(ctx, tx, issue.Key, issue.Generation, pr.Branch); err != nil {
@@ -200,7 +205,8 @@ func (e *Engine) closeEarlierPullRequests(ctx context.Context, tx pgx.Tx, issue 
 	if len(closed) == 0 {
 		return nil
 	}
-	return e.enqueue(ctx, tx, issue.Key, record.TaskPullRequestsClose{Generation: issue.Generation, Numbers: closed, Comment: notCarriedComment})
+	return e.enqueue(ctx, tx, issue.Key, record.TaskPullRequestsClose{Generation: issue.Generation, Repo: issue.GitHubRepo, Numbers: closed,
+		Comment: notCarriedComment})
 }
 
 // takeFirstPlan writes stored, the plan the first step of issue's run walks, at the run's

@@ -871,25 +871,25 @@ func askedBeforeTheMerger(at phase.Phase) record.PullRequest {
 }
 
 // readingEngine is the engine of these tests (mergingEngineAt, at the first conflicting read) with
-// a reader of GitHub's merge state, which appends the issue of each read the engine asks for to
-// asked once the fact's transaction commits: a read of one pull request (Config.ReadMergeState),
-// and each issue of a base push's batch (Config.ReadBaseMergeStates); the task each read names is
-// not what these tests read.
+// a reader of GitHub's merge state, which appends the pull request of each read the engine asks
+// for to asked, as owner/name#number, once the fact's transaction commits: a read of one pull
+// request (Config.ReadMergeState), and each pull request of a base push's batch
+// (Config.ReadBaseMergeStates).
 func readingEngine(asked *[]string) *Engine {
 	engine := mergingEngineAt(firstConflictRead)
-	engine.cfg.ReadMergeState = func(issue, _ string) { *asked = append(*asked, issue) }
-	engine.cfg.ReadBaseMergeStates = func(_, _ string, owed []TaskPullRequest) { *asked = append(*asked, issuesOf(owed)...) }
+	engine.cfg.ReadMergeState = func(pr PullRequestKey) { *asked = append(*asked, prName(pr.Repo, pr.Number)) }
+	engine.cfg.ReadBaseMergeStates = func(_, _ string, owed []PullRequestKey) { *asked = append(*asked, namesOf(owed)...) }
 	return engine
 }
 
-// issuesOf is the issue of each pull request of owed, in order: what a test that reads which
-// issues a base push asked reads of its batch (Config.ReadBaseMergeStates).
-func issuesOf(owed []TaskPullRequest) []string {
-	issues := make([]string, len(owed))
+// namesOf is each pull request of owed as owner/name#number, in order: what a test that reads which
+// pull requests a base push asked reads of its batch (Config.ReadBaseMergeStates).
+func namesOf(owed []PullRequestKey) []string {
+	names := make([]string, len(owed))
 	for i, pull := range owed {
-		issues[i] = pull.Issue
+		names[i] = prName(pull.Repo, pull.Number)
 	}
-	return issues
+	return names
 }
 
 // basePushOntoMain is a push onto main, the base #42 sits on.
@@ -1151,9 +1151,9 @@ func TestAConflictKeepsPhaseWhenABasePushReadsAnIssueAfterImplementing(t *testin
 		status string
 		want   []string
 	}{
-		{phase.Testing, "testing", []string{"LEGION-208"}},
-		{phase.Reviewing, "needs_review", []string{"LEGION-208"}},
-		{phase.Accepting, "needs_review", []string{"LEGION-208"}},
+		{phase.Testing, "testing", []string{"sjawhar/legion#42"}},
+		{phase.Reviewing, "needs_review", []string{"sjawhar/legion#42"}},
+		{phase.Accepting, "needs_review", []string{"sjawhar/legion#42"}},
 		{phase.Implementing, "in_progress", []string{}},
 	} {
 		t.Run(string(tc.at), func(t *testing.T) {
@@ -1183,7 +1183,7 @@ func TestAConflictKeepsPhaseWhenAHeadPushInImplementingAsksARead(t *testing.T) {
 		status string
 		want   []string
 	}{
-		{phase.Implementing, "in_progress", []string{"LEGION-208"}},
+		{phase.Implementing, "in_progress", []string{"sjawhar/legion#42"}},
 		{phase.Planning, "in_progress", []string{}},
 	} {
 		t.Run(string(tc.at), func(t *testing.T) {
@@ -1220,8 +1220,8 @@ func TestTheMergeStateFollowsGitHubWhenABasePushReadsAnIssueInReview(t *testing.
 		pool := seedConflictIssue(t, phase.Reviewing, "needs_review", blocked)
 		asked := []string{}
 		applyRefusingNothing(t, pool, readingEngine(&asked), basePushOntoMain)
-		if !reflect.DeepEqual(asked, []string{"LEGION-208"}) {
-			t.Fatalf("the base push asked reads of %v, want one of LEGION-208", asked)
+		if !reflect.DeepEqual(asked, []string{"sjawhar/legion#42"}) {
+			t.Fatalf("the base push asked reads of %v, want one of LEGION-208's sjawhar/legion#42", asked)
 		}
 
 		applyRefusingNothing(t, pool, readsAfter(0), conflictingRead(&record.BaseRules{Required: []string{"ci"}}))

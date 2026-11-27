@@ -293,9 +293,11 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 // R4; dispatch://INFRA-945 R3 item 2 wakes on a settlement the daemon records for the head of the
 // issue's pull request).
 //
-// Only the workers of the open steps of each task whose branch the pull request is on are woken
-// (openStepsOfPullRequest): the settlement is their business and no one else's, and an architect
-// reads it from its own notices. Each such worker is the claim of the agent that works its step
+// Only the workers of the open steps of each task the pull request is of are woken
+// (openStepsOfPullRequest): each task whose branch it is on, or, for a pull request the issue links
+// that no task's branch holds, the task whose scope works it (dispatch://INFRA-5910 decision 6).
+// The settlement is their business and no one else's, and an architect reads it from its own
+// notices. Each such worker is the claim of the agent that works its step
 // (Engine.workerClaim), and it is woken only where it stands released: another released claim of
 // the same role, an earlier version's agent, does not work the step. A head that settles again as
 // each of its checks finishes wakes the pod no second time, because the role's resume is still

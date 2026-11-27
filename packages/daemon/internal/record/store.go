@@ -1147,7 +1147,7 @@ func (s *Postgres) MergePullRequest(ctx context.Context, tx pgx.Tx, issue string
 	if err != nil {
 		return nil, fmt.Errorf("read the merge pull request of %s: %w", issue, err)
 	}
-	task, ok := issueMergeTask(plans[issue])
+	task, ok := IssueMergeTask(plans[issue])
 	if !ok {
 		return nil, nil
 	}
@@ -1231,21 +1231,23 @@ func (s *Postgres) MergePullRequestRow(ctx context.Context, tx pgx.Tx, issue str
 	if err != nil {
 		return nil, fmt.Errorf("read the merge pull request row of %s: %w", issue, err)
 	}
-	task, ok := issueMergeTask(plans[issue])
+	task, ok := IssueMergeTask(plans[issue])
 	if !ok {
 		return nil, nil
 	}
 	return ownOfTask(ctx, tx, issue, task, "MergePullRequestRow")
 }
 
-// issueMergeTask is the task whose pull request is the merge of an issue whose plan at its
-// generation is stored: the one rule MergePullRequest and PullRequestsOf read by. An issue with no
-// plan rows (stored nil) has the task "", whose row is the issue's own. For a plan it is the first
-// task that has a merge, done or to come (StoredPlan.TasksThatMerge), and is not done, in task id
-// order: the merge still to come. Where each of them is done it is the last of them, whose merge
-// was the issue's last. Where no task of the plan has a merge, as where each task left the
-// workflow before it was done, there is none (false).
-func issueMergeTask(stored *StoredPlan) (string, bool) {
+// IssueMergeTask is the task whose pull request is the merge of an issue whose plan at its
+// generation is stored: the one rule MergePullRequest and PullRequestsOf read by, and the one the
+// workflow puts a linked pull request that is no task's own in the scope of (dispatch://INFRA-5910
+// decision 6). An issue with no plan rows (stored nil) has the task "", whose row is the issue's
+// own. For a plan it is the first task that has a merge, done or to come
+// (StoredPlan.TasksThatMerge), and is not done, in task id order: the merge still to come. Where
+// each of them is done it is the last of them, whose merge was the issue's last. Where no task of
+// the plan has a merge, as where each task left the workflow before it was done, there is none
+// (false).
+func IssueMergeTask(stored *StoredPlan) (string, bool) {
 	if stored == nil {
 		return "", true
 	}
@@ -1263,7 +1265,7 @@ func issueMergeTask(stored *StoredPlan) (string, bool) {
 
 // mergePlans is the plan of each of issues at the issue's generation, by key, as the rows of its
 // tasks give it (StoredPlan.Tasks alone), read for all of them in one query: what the merges of an
-// issue are read from (issueMergeTask, StoredPlan.TasksThatMerge). An issue with no plan rows at
+// issue are read from (IssueMergeTask, StoredPlan.TasksThatMerge). An issue with no plan rows at
 // its generation has no entry.
 func mergePlans(ctx context.Context, tx pgx.Tx, issues []string) (map[string]*StoredPlan, error) {
 	rows, err := tx.Query(ctx, `select `+planTaskColumns+` from plan_tasks
@@ -1468,7 +1470,7 @@ func collectPullRequestRows(rows pgx.Rows, describe, readBy string) ([]pullReque
 // PullRequestsOf is the pull request of each of issues' merge, by issue key, in two reads whatever
 // the number of issues: a caller that must name the merge of every issue of a tree makes no read
 // per issue. The pull request of an issue's merge is the own pull request (ownPullRequest) of the
-// task issueMergeTask names, the rule MergePullRequest reads by, so an issue whose tasks each hold
+// task IssueMergeTask names, the rule MergePullRequest reads by, so an issue whose tasks each hold
 // a pull request is named by the one of its merge, and a pull request the issue links that is no
 // task's own is never its merge (dispatch://INFRA-5910 decision 13). An issue the record holds no
 // such pull request for has no entry, nor does one whose plan holds no task that has a merge, and
@@ -1498,7 +1500,7 @@ func (s *Postgres) PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []strin
 	}
 	requests := make(map[string]PullRequest, len(issues))
 	for issue, rows := range byIssue {
-		task, ok := issueMergeTask(plans[issue])
+		task, ok := IssueMergeTask(plans[issue])
 		if !ok {
 			continue
 		}
@@ -1662,6 +1664,14 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 func (s *Postgres) SetPullRequestBaseMoved(ctx context.Context, tx pgx.Tx, repo string, number int, after string) error {
 	return writePullRequestOf(ctx, tx, fmt.Sprintf("record that the base of pull request %s#%d moved to %s", repo, number, after),
 		`update pull_requests set base_moved = $3 where lower(repo) = lower($1) and number = $2 returning issue`, repo, number, after)
+}
+
+// MovePullRequest writes to as the repository of the pull request number of repo, repo compared
+// without case. It names the pull request's issue among the writes of ctx only where a row matched
+// (fact_writes.go): a pull request the record holds no row of moves nothing, and keeps no mark.
+func (s *Postgres) MovePullRequest(ctx context.Context, tx pgx.Tx, repo string, number int, to string) error {
+	return writePullRequestOf(ctx, tx, fmt.Sprintf("move pull request %s#%d to %s", repo, number, to),
+		`update pull_requests set repo = $3 where lower(repo) = lower($1) and number = $2 returning issue`, repo, number, to)
 }
 
 // DeletePullRequest deletes the pull request number of repo, repo compared without case. It names

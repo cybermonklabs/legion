@@ -28,15 +28,16 @@ func seedAAtItsMerge(t *testing.T, pool *pgxpool.Pool, root record.Issue) {
 		Branch: "legion/" + root.Key + ".a", HeadSHA: "h7", Failing: []string{}})
 }
 
-// mergingAtNow is MergingAt of pull request number of key at head, read in one transaction: the
-// pull request it answers, and why the workflow no longer works that merge, "" while it does.
+// mergingAtNow is MergingAt of pull request number of key's own repository ("") at head, read in one
+// transaction: the pull request it answers, and why the workflow no longer works that merge, "" while
+// it does.
 func mergingAtNow(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, number int, head string) (*record.PullRequest, string) {
 	t.Helper()
 	var pr *record.PullRequest
 	var why string
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		_, pr, why, err = MergingAt(ctx, engine.store, tx, key, number, head)
+		_, pr, why, err = MergingAt(ctx, engine.store, tx, key, "", number, head)
 		return err
 	})
 	return pr, why

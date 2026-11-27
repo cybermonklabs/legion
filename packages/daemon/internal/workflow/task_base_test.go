@@ -38,6 +38,12 @@ func dNeedsAC(t *testing.T, withE bool) (*pgxpool.Pool, *Engine, record.Issue, f
 		return engine.startReadyNow(ctx, tx, issue.Key)
 	})
 	joinsEnd(t, pool, engine, root.Key)
+	// stepRoot's #42 stands on the issue's own branch, which d holds. Under the key of the issue and
+	// the branch d's #45 took its place; each pull request is a row of its own now, so the rig
+	// deletes #42, and d's branch holds #45 alone.
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return record.NewStore().DeletePullRequest(t.Context(), tx, "sjawhar/legion", 42)
+	})
 	seedTaskPR(t, pool, engine, root.Key, "d", 45)
 	blocks := func(extra ...plan.Task) []plan.Task {
 		return append([]plan.Task{keyed(t, "a", "", []string{"implementer:a"}), keyed(t, "c", "", []string{"implementer:c"}),

@@ -285,7 +285,7 @@ func TestABasePushDuringAClimbsFirstReadKeepsItsRead(t *testing.T) {
 						}
 					}
 					// The push to main commits while the climb's first read runs.
-					w.queueBaseMergeStates("acme/widgets", "main", []workflow.TaskPullRequest{{Issue: "CAPTURE-1"}})
+					w.queueBaseMergeStates("acme/widgets", "main", []workflow.PullRequestKey{{Repo: "acme/widgets", Number: 86}})
 					return cleanPull
 				case read < push:
 					return cleanPull

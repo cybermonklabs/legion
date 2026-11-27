@@ -545,17 +545,22 @@ func mergedForwardOf(asked *record.MergeForward, commit string) (record.LandedMe
 // that holds no first read of that head and time - a later read already confirmed or released
 // it, the head moved and a read of the new head made one of its own, or a MERGEABLE read released
 // it and a later CONFLICTING read of the same head made a newer one, whose own row reads it - is
-// left as it is. It acts on nothing and moves nothing.
+// left as it is. It acts on nothing and moves nothing. The pull request is the one the fact names
+// by its repository and number (intake.ConflictConfirmDone.Repo), "" naming the issue's own
+// repository, as a row of the release before names none, and it is the fact's issue's.
 func (e *Engine) conflictConfirmDone(ctx context.Context, tx pgx.Tx, fact intake.ConflictConfirmDone) (intake.Result, error) {
-	prs, err := e.store.TaskPullRequests(ctx, tx, fact.Issue)
-	if err != nil {
+	repo := fact.Repo
+	if repo == "" {
+		issue, err := e.store.Issue(ctx, tx, fact.Issue)
+		if err != nil || issue == nil {
+			return intake.Result{}, err
+		}
+		repo = issue.GitHubRepo
+	}
+	pr, err := e.pullRequest(ctx, tx, repo, fact.Number)
+	if err != nil || pr == nil || pr.Issue != fact.Issue {
 		return intake.Result{}, err
 	}
-	at := slices.IndexFunc(prs, func(pr record.PullRequest) bool { return pr.Number == fact.Number })
-	if at < 0 {
-		return intake.Result{}, nil
-	}
-	pr := &prs[at]
 	if pr.ConflictRead == nil || pr.ConflictRead.Head != fact.Head || !pr.ConflictRead.At.Equal(fact.FirstReadAt) {
 		return intake.Result{}, nil
 	}

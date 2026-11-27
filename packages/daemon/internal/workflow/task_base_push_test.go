@@ -57,33 +57,31 @@ func assertPushRecorded(t *testing.T, pool *pgxpool.Pool, key, task, after strin
 // legion/LEGION-208.c, is based on b's branch, legion/LEGION-208.b. b is done and keeps its pull
 // request #44 open against main; c stands at its tester's step. A push on b's branch records the
 // commit it left that branch at on #45 (record.PullRequest.BaseMoved), asks once for GitHub's merge
-// state of c's pull request, named by its issue and its task c, since c stands in testing, and is
-// recorded on b's own pull request, as each push on a pull request's branch is. A push on c's
-// branch, on which no pull request is based, marks no base and asks for no read. No task moves and
-// nothing is queued.
+// state of c's pull request, named by its repository and number, sjawhar/legion#45, since c stands
+// in testing, and is recorded on b's own pull request, as each push on a pull request's branch is.
+// A push on c's branch, on which no pull request is based, marks no base and asks for no read. No
+// task moves and nothing is queued.
 //
 // A base push asks its reads as one batch of the base it moved (basePush,
 // Config.ReadBaseMergeStates), and a fact of one pull request asks its read apiece
 // (Config.ReadMergeState), so the test hears both: a read of either is a read asked, and the
 // batch must be of b's branch, the base that moved. A test that hears ReadMergeState alone hears
-// none of a base push's reads. Each read names the task of its pull request, since the issue's
-// tasks each have a pull request of their own and the daemon reads the one named.
+// none of a base push's reads. Each read names its pull request by its repository and number,
+// since the issue's tasks each have a pull request of their own and the daemon reads the one named.
 //
 // The fault it catches is a pull request whose base moved and whose merge state the daemon still
 // reads as clean: a push on a task's branch decodes as the push of that branch's own pull request
 // (intake's decodePush: the branch is an issue's), never as a base push. Its control: the push's
 // handling without the base push, where #45's base stays unmarked and no read is asked. It also
-// catches a read asked by the issue alone, which the daemon reads as the task the record judges
-// rather than c (its control: basePush appending TaskPullRequest{Issue: own.Issue} with no task).
+// catches a read asked of another pull request than c's, which the daemon would read in its place
+// (its control: basePush appending the key of b's #44).
 func TestAPushOnTheBranchOfANeedMovesTheBaseOfItsDependent(t *testing.T) {
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	var asked, bases []string
-	engine.cfg.ReadMergeState = func(issue, task string) { asked = append(asked, issue+" "+task) }
-	engine.cfg.ReadBaseMergeStates = func(repo, base string, owed []TaskPullRequest) {
-		for _, pull := range owed {
-			asked = append(asked, pull.Issue+" "+pull.Task)
-		}
+	engine.cfg.ReadMergeState = func(pr PullRequestKey) { asked = append(asked, prName(pr.Repo, pr.Number)) }
+	engine.cfg.ReadBaseMergeStates = func(repo, base string, owed []PullRequestKey) {
+		asked = append(asked, namesOf(owed)...)
 		bases = append(bases, repo+" "+base)
 	}
 	root := seedNeedAndDependent(t, pool)
@@ -93,7 +91,7 @@ func TestAPushOnTheBranchOfANeedMovesTheBaseOfItsDependent(t *testing.T) {
 		Before: "head-b", After: "b-moved", Pusher: "a-writer", Sender: "a-writer"}))
 	assertBasesMovedByNumber(t, pool, map[int]string{42: "", 44: "", 45: "b-moved"})
 	assertPushRecorded(t, pool, root.Key, "b", "b-moved")
-	if want := []string{root.Key + " c"}; !slices.Equal(asked, want) {
+	if want := []string{"sjawhar/legion#45"}; !slices.Equal(asked, want) {
 		t.Fatalf("the merge state reads asked = %v after the push on b's branch, want %v", asked, want)
 	}
 	if want := []string{"sjawhar/legion legion/LEGION-208.b"}; !slices.Equal(bases, want) {
@@ -104,7 +102,7 @@ func TestAPushOnTheBranchOfANeedMovesTheBaseOfItsDependent(t *testing.T) {
 		Before: "head-c", After: "c-moved", Pusher: "a-writer", Sender: "a-writer"}))
 	assertBasesMovedByNumber(t, pool, map[int]string{42: "", 44: "", 45: "b-moved"})
 	assertPushRecorded(t, pool, root.Key, "c", "c-moved")
-	if want := []string{root.Key + " c"}; !slices.Equal(asked, want) {
+	if want := []string{"sjawhar/legion#45"}; !slices.Equal(asked, want) {
 		t.Fatalf("the merge state reads asked = %v after the push on c's branch, want %v", asked, want)
 	}
 	if want := []string{"sjawhar/legion legion/LEGION-208.b"}; !slices.Equal(bases, want) {
@@ -143,23 +141,23 @@ func seedNeedAndDependent(t *testing.T, pool *pgxpool.Pool) record.Issue {
 }
 
 // A fact of one task's pull request asks for a read of that pull request's merge state by its
-// issue and its task (askMergeState, Config.ReadMergeState): the issue's tasks each have a pull
+// repository and number (askMergeState, Config.ReadMergeState): the issue's tasks each have a pull
 // request of their own, and the daemon reads the one named. c's #45 moving its head, with c in
 // testing, owes a read by the gate (classify.MergeStateReadOwed), and the read asked names
-// LEGION-208 and c.
+// sjawhar/legion#45.
 //
-// The fault it catches is a read asked by the issue alone, which the daemon reads as the task the
-// record judges rather than c, so c's head is not read (its control: askMergeState calling
-// ReadMergeState(key, "")).
+// The fault it catches is a read asked of another pull request of the issue than the one the fact
+// is of, so c's head is not read (its control: askMergeState asking the read of the issue's merge
+// pull request).
 func TestAFactOfATasksPullRequestAsksTheReadOfThatTasksPullRequest(t *testing.T) {
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	var asked []string
-	engine.cfg.ReadMergeState = func(issue, task string) { asked = append(asked, issue+" "+task) }
-	root := seedNeedAndDependent(t, pool)
+	engine.cfg.ReadMergeState = func(pr PullRequestKey) { asked = append(asked, prName(pr.Repo, pr.Number)) }
+	seedNeedAndDependent(t, pool)
 	moved := intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 45, Branch: "legion/LEGION-208.c", HeadSHA: "head-c", Before: "head-b"}
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error { return engine.askMergeState(ctx, tx, moved) })
-	if want := []string{root.Key + " c"}; !slices.Equal(asked, want) {
+	if want := []string{"sjawhar/legion#45"}; !slices.Equal(asked, want) {
 		t.Fatalf("the merge state reads asked = %v after c's pull request moved its head, want %v", asked, want)
 	}
 }

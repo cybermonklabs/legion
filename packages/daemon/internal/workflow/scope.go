@@ -294,31 +294,69 @@ func factClaim(issue record.Issue, role claim.Role, token claim.Token) claim.Tok
 	return own
 }
 
-// scopeOfPullRequest is the scope of the task whose branch pr is on (record.StoredPlan.TaskOfBranch,
-// the rule every read of a pull request's task reads by, record.PullRequest.Task): the one reading
-// of a fact of a pull request that reaches its task, so a fact of one task's pull request moves that
-// task and no other, and one of a done task's moves none, its copy standing in done. ok is false
-// where the branch is no one task's: a pull request whose facts move nothing, which is logged. A
-// run with no plan rows is its issue, whatever branch the pull request is on.
+// scopeOfPullRequest is the scope of the task pr is of (tasksOfPullRequest): the task whose branch
+// pr is on (record.StoredPlan.TaskOfBranch, the rule every read of a pull request's task reads by,
+// record.PullRequest.Task), or, for a pull request the issue links that no task's branch holds, the
+// task whose scope works it (linkedScopeTask, dispatch://INFRA-5910 decision 6). It is the one
+// reading of a fact of a pull request that reaches its task, so a fact of one task's pull request
+// moves that task and no other, and one of a done task's moves none, its copy standing in done. ok
+// is false where pr is no one task's: a pull request whose facts move nothing, which is logged. A
+// run with no plan rows is its issue, whatever branch and repository the pull request is of.
 func (e *Engine) scopeOfPullRequest(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest) (TaskScope, bool, error) {
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
 		return noPlanScope(issue), err == nil, err
 	}
-	task, ok := stored.TaskOfBranch(issue, pr.Repo, pr.Branch)
-	if !ok {
-		e.logOnCommit(ctx, "workflow: a fact of a pull request on a branch that no one task of its issue holds moves no task",
-			"issue", issue.Key, "pullRequest", pr.Number, "branch", pr.Branch, "tasks", stored.TasksOfBranch(issue, pr.Repo, pr.Branch))
+	tasks := tasksOfPullRequest(issue, stored, pr)
+	if len(tasks) != 1 {
+		e.logOnCommit(ctx, "workflow: a fact of a pull request that no one task of its issue holds moves no task",
+			"issue", issue.Key, "repo", pr.Repo, "pullRequest", pr.Number, "branch", pr.Branch, "linked", pr.Linked, "tasks", tasks)
 		return TaskScope{}, false, nil
 	}
-	s, ok := scopeOn(issue, stored, task)
+	s, ok := scopeOn(issue, stored, tasks[0])
 	return s, ok, nil
 }
 
-// issueOfPullRequest is the scope of the issue pr is recorded for, read for the task whose branch
-// pr is on (scopeOfPullRequest): what each handler of a fact of the pull request acts on. It is nil
-// where the record holds no such issue, and where the branch is no one task's, so the fact records
-// the pull request and moves nothing.
+// tasksOfPullRequest is each task of stored, the plan of issue's run, that pr is of: each task
+// whose branch pr is on in the issue's repository (record.StoredPlan.TasksOfBranch), whether the
+// issue links pr or not, so a linked pull request on a task's branch is that task's, its own or
+// another of it (dispatch://INFRA-5910 decision 5); and, for a pull request the issue links that
+// no task's branch holds (record.PullRequest.Linked), in another repository or on a branch no task
+// was given, the task whose scope works it (linkedScopeTask, decision 6). None for any other pull
+// request: one of an earlier run, or of a task a later version removed, that the issue does not
+// link.
+func tasksOfPullRequest(issue record.Issue, stored *record.StoredPlan, pr record.PullRequest) []string {
+	if tasks := stored.TasksOfBranch(issue, pr.Repo, pr.Branch); len(tasks) > 0 || !pr.Linked {
+		return tasks
+	}
+	if task, ok := linkedScopeTask(stored); ok {
+		return []string{task}
+	}
+	return nil
+}
+
+// linkedScopeTask is the task of stored whose scope works a linked pull request that no task's
+// branch holds (dispatch://INFRA-5910 decision 6): the task of the issue's merge, by the rule the
+// record reads the issue's merge by (record.IssueMergeTask: the first task with a merge that is not
+// done, else the last of them), so the reviewer of that task reviews it and its merger merges it,
+// and it passes to the next task that merges as each merge moves its task on; where no task of the
+// plan merges, the first task, by task id, that no other task needs. False for a plan of no task.
+func linkedScopeTask(stored *record.StoredPlan) (string, bool) {
+	if task, ok := record.IssueMergeTask(stored); ok {
+		return task, true
+	}
+	for _, row := range stored.Tasks {
+		if !slices.ContainsFunc(stored.Tasks, func(other record.PlanTask) bool { return slices.Contains(other.Needs, row.Task) }) {
+			return row.Task, true
+		}
+	}
+	return "", false
+}
+
+// issueOfPullRequest is the scope of the issue pr is recorded for, read by the issue column of its
+// row (record.PullRequest.Issue) for the task pr is of (scopeOfPullRequest): what each handler of a
+// fact of the pull request acts on. It is nil where the record holds no such issue, and where pr is
+// no one task's, so the fact records the pull request and moves nothing.
 func (e *Engine) issueOfPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRequest) (*TaskScope, error) {
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil {
@@ -331,17 +369,17 @@ func (e *Engine) issueOfPullRequest(ctx context.Context, tx pgx.Tx, pr record.Pu
 	return &s, nil
 }
 
-// openStepsOfPullRequest is the steps of issue that take work (OpenStepsOf) of each task whose
-// branch pr is on (record.StoredPlan.TasksOfBranch): the steps a settlement of the pull request's
-// checks is the business of, and no step of a task on another branch. Every step of a run with no
-// plan rows is.
+// openStepsOfPullRequest is the steps of issue that take work (OpenStepsOf) of each task pr is of
+// (tasksOfPullRequest: each task whose branch pr is on, or the task whose scope works a linked pull
+// request no task's branch holds): the steps a settlement of the pull request's checks is the
+// business of, and no step of a task on another branch. Every step of a run with no plan rows is.
 func (e *Engine) openStepsOfPullRequest(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest) ([]record.RunningStep, error) {
 	open := OpenStepsOf(issue)
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
 		return open, err
 	}
-	tasks := stored.TasksOfBranch(issue, pr.Repo, pr.Branch)
+	tasks := tasksOfPullRequest(issue, stored, pr)
 	return slices.DeleteFunc(open, func(step record.RunningStep) bool { return !slices.Contains(tasks, step.Task) }), nil
 }
 

@@ -446,7 +446,7 @@ func TestAPlannerAfterTheImplementerIsReadForAConflictAndAskedTheMerge(t *testin
 		steps []string
 		want  []string
 	}{
-		{name: "a planner after the implementer", steps: []string{"implementer", "planner", "reviewer"}, want: []string{"LEGION-208"}},
+		{name: "a planner after the implementer", steps: []string{"implementer", "planner", "reviewer"}, want: []string{"sjawhar/legion#42"}},
 		{name: "control: a planner before the implementer", steps: []string{"planner", "implementer", "reviewer"}, want: []string{}},
 	} {
 		t.Run(tc.name+", a head push", func(t *testing.T) {

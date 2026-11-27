@@ -58,7 +58,7 @@ func pullRequestRows(t *testing.T, pool *pgxpool.Pool, number int) int {
 // The fault it catches is a removed task's pull request left open on GitHub with its row in the
 // record (its control: planGiven without the close and the delete, so no row closes #2 and #2's
 // row stands). A fact of #2 reaches b added back only where b also took #2's branch again, since a
-// row is keyed by its branch and its task is read from that branch (record.PullRequest.Task); the
+// row's task is read from its branch (record.PullRequest.Task); the
 // generation gives a branch name once (record.Store.AssignTaskBranch). The row that reaches
 // another task without that is the one on the issue's branch
 // (TestARemovedTasksPullRequestOnTheIssuesBranchIsNoWaitingTasks).
@@ -86,7 +86,7 @@ func TestARemovedTaskClosesItsPullRequest(t *testing.T) {
 
 	mustTake(t, "version 2", apply("version-2", laterVersion(t, root.Key, root.Generation, 2,
 		aBlock, keyed(t, "z", "", []string{"reviewer:z"}, "a"))))
-	want := record.TaskPullRequestsClose{Generation: root.Generation, Numbers: []int{2}, Comment: "Task b was removed from the plan."}
+	want := record.TaskPullRequestsClose{Generation: root.Generation, Repo: "sjawhar/legion", Numbers: []int{2}, Comment: "Task b was removed from the plan."}
 	if closes := pullRequestCloses(t, pool); !reflect.DeepEqual(closes, []record.TaskPullRequestsClose{want}) {
 		t.Fatalf("the rows that close pull requests after version 2 removed b = %+v, want the one %+v", closes, want)
 	}
@@ -149,7 +149,7 @@ func TestARemovedTasksPullRequestOnTheIssuesBranchIsNoWaitingTasks(t *testing.T)
 		state  record.PullRequestState
 		closes []record.TaskPullRequestsClose
 	}{
-		{record.PullRequestOpen, []record.TaskPullRequestsClose{{Generation: 1, Numbers: []int{42}, Comment: "Task a was removed from the plan."}}},
+		{record.PullRequestOpen, []record.TaskPullRequestsClose{{Generation: 1, Repo: "sjawhar/legion", Numbers: []int{42}, Comment: "Task a was removed from the plan."}}},
 		{record.PullRequestClosed, []record.TaskPullRequestsClose{}},
 	} {
 		t.Run(string(tc.state), func(t *testing.T) {

@@ -7,15 +7,24 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
-// TaskPullRequest names the pull request of one task of an issue, as the engine asks the daemon to
-// read it (Config.ReadBaseMergeStates): the issue's key and the task (record.PullRequest.Task), ""
-// for an issue with no plan rows. Each task of a plan has a pull request of its own, so the issue
-// alone does not say which pull request a read is of.
-type TaskPullRequest struct {
-	Issue, Task string
+// PullRequestKey names one pull request by its repository, as the record's row spells it, and its
+// number: GitHub's own name of a pull request and the record's key (record.PullRequest.Repo and
+// Number), as the engine asks the daemon to read one (Config.ReadMergeState, ReadBaseMergeStates).
+// An issue can hold several pull requests, on one task's branch and in other repositories, so
+// neither the issue nor its task says which pull request a read is of (dispatch://INFRA-5910
+// decision 16).
+type PullRequestKey struct {
+	Repo   string
+	Number int
+}
+
+// keyOf is pr's PullRequestKey.
+func keyOf(pr record.PullRequest) PullRequestKey {
+	return PullRequestKey{Repo: pr.Repo, Number: pr.Number}
 }
 
 // basePush records that a pull request's base branch moved. Two facts are such a push: the push
@@ -61,7 +70,7 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 	if err != nil {
 		return intake.Result{}, err
 	}
-	var owed []TaskPullRequest
+	var owed []PullRequestKey
 	for _, pr := range open {
 		if pr.BaseMoved == fact.After {
 			// The same push redelivered, or a push that returned the base to the commit the
@@ -69,8 +78,11 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 			// calls for was asked for by the delivery that recorded it.
 			continue
 		}
-		// A GitHub fact applies to an issue only when it names the issue's repository
-		// (ownPullRequest), which a record written in a clone's spelling can differ from.
+		// A GitHub fact applies to a pull request only when it names the pull request's own
+		// repository and the pull request is its issue's by it (ownPullRequest): the issue's own
+		// repository, which a record written in a clone's spelling can differ from in case, or one
+		// the issue links the pull request in. Each pull request on the base is written by its own
+		// repository and number, the record's key, so the push reaches each and no other.
 		own, err := e.ownPullRequest(ctx, tx, &pr, fact.Repo)
 		if err != nil {
 			return intake.Result{}, err
@@ -99,7 +111,7 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 			return intake.Result{}, err
 		}
 		if read {
-			owed = append(owed, TaskPullRequest{Issue: own.Issue, Task: own.Task})
+			owed = append(owed, keyOf(*own))
 		}
 	}
 	if len(owed) > 0 {

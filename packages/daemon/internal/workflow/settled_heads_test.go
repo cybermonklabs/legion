@@ -84,23 +84,26 @@ func TestAReopenKeepsBothKindsOfStoredFences(t *testing.T) {
 	}
 }
 
-// An opened of another pull request number on the branch replaces the record: the row is the new
-// pull request's, which remembers no settled head and has no head run, so the rows the earlier one
-// remembered go with it. A settlement of the earlier number then finds no record, and changes
-// nothing.
-func TestAnOpenedOfAnotherNumberReplacesTheRowAndItsFences(t *testing.T) {
+// An opened of another pull request number on the branch is a pull request of its own, which
+// replaces none (dispatch://INFRA-5910 D1): its row remembers no settled head and has no head run,
+// and the earlier pull request's row keeps what it remembers, its settled heads and its open head
+// run, with the store's rows of both kinds as they stood. Under the record keyed by the issue and
+// the branch the opened replaced the earlier row, and the rows it remembered went with it.
+func TestAnOpenedOfAnotherNumberKeepsTheEarlierRowAndItsFences(t *testing.T) {
 	t.Parallel()
 	pool, apply := twoHeadsSettledAndARunOpen(t)
+	before := settledHeadKinds(t, pool)
 	// The opened names its head's repository, as GitHub's does: one that names none is not recorded
-	// (pullRequestOpened, as a fork's is), and would leave #42's row in place.
+	// (pullRequestOpened, as a fork's is).
 	apply("opened-43", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-208", HeadSHA: "head-43", HeadRepo: "sjawhar/legion",
 		URL: "https://github.com/sjawhar/legion/pull/43", UpdatedAt: lateApplied.Add(3 * time.Minute)})
-	if pr := latePullRequest(t, pool); pr.Number != 43 || pr.HeadSHA != "head-43" || pr.SettledHeads != nil || pr.Run != nil {
-		t.Fatalf("after #43 opened the record is #%d at %s remembering %+v with the run %+v; want #43 at head-43 remembering nothing, no run",
-			pr.Number, pr.HeadSHA, pr.SettledHeads, pr.Run)
+	if pr := pullRequestOf(t, pool, "sjawhar/legion", 43); pr == nil || pr.HeadSHA != "head-43" || len(pr.SettledHeads) != 0 || pr.Run != nil {
+		t.Fatalf("after #43 opened its row is %+v; want #43 at head-43 remembering nothing, no run", pr)
 	}
-	if kinds := settledHeadKinds(t, pool); len(kinds) != 0 {
-		t.Fatalf("after #43 opened the store holds the settled heads %v, want none", kinds)
+	if pr := pullRequestOf(t, pool, "sjawhar/legion", 42); pr == nil || pr.HeadSHA != "head-3" || len(pr.SettledHeads) != 2 || pr.Run == nil {
+		t.Fatalf("after #43 opened #42's row is %+v; want #42 at head-3 remembering its two settled heads, its run open", pr)
 	}
-	lateChangesNothing(t, pool, apply, "head-3-settled", headSettled("head-3", 9, 3))
+	if after := settledHeadKinds(t, pool); fmt.Sprint(after) != fmt.Sprint(before) {
+		t.Fatalf("after #43 opened the store holds the settled heads %v, want %v, #42's as they stood", after, before)
+	}
 }
