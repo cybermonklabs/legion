@@ -591,8 +591,9 @@ The dashboard's tsc program compiles @legion/envoy-client's sources, and its e2e
 helpers' test/fake-dispatch with them, through the workspace's "bun" export
 condition, so check-ts-filters.sh holds this filter to both. The two suites of
 `e2e/__tests__` that import it, `packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts#startFakeDispatch` and
-`packages/dispatch/e2e/__tests__/local-instance-support.test.ts#startFakeDispatch`, run in this job's test step and in no other,
-so that read is this gate's (ci_job_reads.py's dispatch_ui).
+`packages/dispatch/e2e/__tests__/local-instance-support.test.ts#startFakeDispatch`, run in the
+step "Test dispatch harness" of .github/workflows/ci-job-dispatch-ui.yaml's dispatch-ui-harness
+job and in no other, so that read is this gate's (ci_job_reads.py's dispatch_ui).
 
 ## dispatch_browser: The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
 
