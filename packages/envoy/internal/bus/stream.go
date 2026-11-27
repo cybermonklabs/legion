@@ -71,6 +71,19 @@ const (
 	// WebhookRedeliveryBucket holds the cursor and records of Dispatch's sweep of the GitHub App
 	// webhook's failed deliveries (internal/dispatch/redeliver).
 	WebhookRedeliveryBucket = "envoy_webhook_redelivery"
+	// ListenerStateBucket holds the state every listener pod of a machine shares: the machine's
+	// delivery lease (ListenerLeaseKey), the clean-hand-back marks of its stopping pods
+	// (ListenerHandBackPrefix) and its delivery ledger (ListenerLedgerPrefix). Like LastSeenBucket
+	// it is in no ListenerBuckets list: its grant is narrower than KVWrite
+	// (natsgrant.ListenerState).
+	ListenerStateBucket = "envoy_listener"
+	// LastSeenBucket holds every session's last-seen record (LastSeenPrefix), the one answer every
+	// listener pod of the fleet gives for a lapsed session's last_seen. It is a bucket of its own
+	// because its records must outlive the session's last-seen window, 4 hours at the default
+	// session settings, while the lease records beside them expire much sooner. Like
+	// ListenerStateBucket it is in no ListenerBuckets list: its grant is narrower than KVWrite
+	// (natsgrant.LastSeen).
+	LastSeenBucket = "envoy_last_seen"
 	// PrivateProjectsBucket holds one key per private project, its value the repositories
 	// Dispatch names for it, and a key exists exactly while its project is private: Dispatch writes
 	// it and the listeners read it to hold each session to its token's projects
@@ -94,6 +107,80 @@ const (
 // Each call returns a fresh slice, so no caller changes another's list.
 func ListenerBuckets() []string {
 	return []string{InterestBucket, RoleClaimBucket, SessionBucket, KnownSessionBucket, LegionAgentBucket, CIStateBucket, DPoPProofBucket}
+}
+
+// LastSeenPrefix begins each session's last-seen record in LastSeenBucket. The listener's grant
+// writes these keys for every session, whichever machine registered it: a role claim
+// (RoleClaimBucket, one bucket for the whole fleet) names its holder session and no machine, so
+// GET /v1/roles/<role> on any listener answers a lapsed holder's last_seen out of that session's
+// record whichever machine the holder registered through. A key scoped to the writing machine
+// would leave every such read with no record to find.
+const LastSeenPrefix = "seen."
+
+// ListenerLeaseKey is the key of machine machineID's delivery lease in ListenerStateBucket. The
+// listener's grant writes this key and no other machine's. The machine's token in it is its
+// durable's name in the bucket's spelling (listenerStateToken).
+func ListenerLeaseKey(machineID string) string {
+	return "lease." + listenerStateToken(ListenerDurable(machineID))
+}
+
+// ListenerLedgerPrefix begins each key of the delivery ledger in ListenerStateBucket of the
+// listeners that bind durable (ListenerDurable), durable spelled as one token of the bucket's keys
+// (listenerStateToken). The listener's grant writes its own machine's ledger and no other.
+func ListenerLedgerPrefix(durable string) string {
+	return "delivery." + listenerStateToken(durable) + "."
+}
+
+// ListenerHandBackPrefix begins each clean-hand-back mark in ListenerStateBucket of the listeners
+// that bind durable (ListenerDurable): a pod that stopped gracefully writes
+// `handback.<durable>.<revision>` to vouch for the lease record it released at that revision, and
+// the pod that takes that record reads the mark before it shortens its settle hold. The listener's
+// grant writes its own machine's marks and no other's, and the bucket's MaxAge removes a mark
+// nobody reads. A mark is keyed by the revision it vouches for, not by the machine alone, so a
+// stopping pod writes nothing about the lease record once another pod has taken it. durable is
+// spelled in the key as listenerStateToken spells it.
+func ListenerHandBackPrefix(durable string) string {
+	return "handback." + listenerStateToken(durable) + "."
+}
+
+// listenerStateToken is durable, a listener's durable name (ListenerDurable), as one token of a
+// key of ListenerStateBucket. nats.go takes a key only in its alphabet, `-`, `/`, `_`, `=`, `.`, a
+// letter or a digit (nats.go@v1.55.0 kv.go validKeyRe), and a `.` there separates two tokens of the
+// key, so every byte outside that alphabet, and a `.`, is written as `/` and its two upper-case hex
+// digits: the `%` that starts each escape in a dotted machine id's durable
+// (listener-host%2Eexample%2Einternal) is `/25`, so that machine's lease key is
+// `lease.listener-host/252Eexample/252Einternal`. Every other byte stays as it is, so the key of a
+// machine whose durable is already spelled in the alphabet - every id that holds none of the
+// characters listenerName escapes - is the key it has always been. A durable never holds a `/`,
+// which listenerName escapes, so no two durables give one token, and each machine's grant
+// (natsgrant.ListenerState) names its own keys alone.
+func listenerStateToken(durable string) string {
+	keySafe := func(c byte) bool {
+		return c == '-' || c == '/' || c == '_' || c == '=' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+	}
+	escape := false
+	for i := range len(durable) {
+		if !keySafe(durable[i]) {
+			escape = true
+			break
+		}
+	}
+	if !escape {
+		return durable
+	}
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	b.Grow(3 * len(durable))
+	for i := range len(durable) {
+		if c := durable[i]; keySafe(c) {
+			b.WriteByte(c)
+		} else {
+			b.WriteByte('/')
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&0x0f])
+		}
+	}
+	return b.String()
 }
 
 // NotificationTopicPrefix begins every notification topic: the subjects the stream carries, the

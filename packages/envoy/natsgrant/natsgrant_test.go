@@ -58,10 +58,22 @@ func requireSet(t *testing.T, want set, got natsgrant.Permissions, name string) 
 	require.Equal(t, want.Subscribe, got.Subscribe, "%s subscribe", name)
 }
 
-// knownSessionPurge is the one entry every set built on listenerGrant has gained since the merge
-// base the fixture records: the known-session store's purge of its replaced chunks' markers
-// (internal/kvchunk, session.KnownSessions.purgeChunkMarkers), right after the interest bucket's
-// purge.
+// withStateBuckets is want with the listener state bucket's subjects for machineID
+// (natsgrant.ListenerState) and the last-seen bucket's (natsgrant.LastSeen) where listenerGrant
+// puts them, just before the interest bucket's purge. The fixture was written before those
+// buckets joined the grant, and is never regenerated.
+func withStateBuckets(t *testing.T, want set, machineID string) set {
+	t.Helper()
+	at := slices.Index(want.Publish, interestPurge)
+	require.NotEqual(t, -1, at, "the fixture's publish list holds no %s", interestPurge)
+	want.Publish = slices.Concat(want.Publish[:at], natsgrant.ListenerState(machineID), natsgrant.LastSeen(), want.Publish[at:])
+	return want
+}
+
+// knownSessionPurge is the other entry every set built on listenerGrant has gained since the merge
+// base the fixture records, beside the state buckets' subjects (withStateBuckets): the
+// known-session store's purge of its replaced chunks' markers (internal/kvchunk,
+// session.KnownSessions.purgeChunkMarkers), right after the interest bucket's purge.
 const (
 	interestPurge     = "$JS.API.STREAM.PURGE.KV_envoy_interests"
 	knownSessionPurge = "$JS.API.STREAM.PURGE.KV_envoy_known_sessions"
@@ -80,8 +92,11 @@ func sinceMergeBase(t *testing.T, base set, name string) set {
 }
 
 // Every set this package builds is, element for element and in order, the set infra/core built at
-// the merge base, so moving them here rewrites no hub's rendered authorization, with the entries
-// added since (sinceMergeBase) and the one grant Dispatch gained since (withLegionStateDurable).
+// the merge base, so moving them here rewrites no hub's rendered authorization; the changes since
+// are the listener state and last-seen buckets' subjects (withStateBuckets) and the
+// known-session bucket's purge (sinceMergeBase), each added to every set built on listenerGrant,
+// and the one grant Dispatch gained (withLegionStateDurable), added to the Dispatch set alone, so
+// every row compares the full list.
 func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 	var base mergeBase
 	readJSON(t, "testdata/merge-base-grants.json", &base)
@@ -91,10 +106,10 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 			want set
 			got  natsgrant.Permissions
 		}{
-			"Listener":     {base.Listener[id], natsgrant.Listener(id)},
-			"ListenerHost": {base.ListenerHost[id], natsgrant.ListenerHost(id)},
-			"Dispatch":     {withLegionStateDurable(t, base.Dispatch[id]), natsgrant.Dispatch(id)},
-			"Host":         {base.Host[id], natsgrant.Host(id)},
+			"Listener":     {withStateBuckets(t, base.Listener[id], id), natsgrant.Listener(id)},
+			"ListenerHost": {withStateBuckets(t, base.ListenerHost[id], id), natsgrant.ListenerHost(id)},
+			"Dispatch":     {withLegionStateDurable(t, withStateBuckets(t, base.Dispatch[id], id)), natsgrant.Dispatch(id)},
+			"Host":         {withStateBuckets(t, base.Host[id], id), natsgrant.Host(id)},
 		} {
 			name := name + "(" + strconv.Quote(id) + ")"
 			requireSet(t, sinceMergeBase(t, pair.want, name), pair.got, name)
@@ -109,7 +124,9 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 // withLegionStateDurable is dispatch, a Dispatch set of the merge-base fixture, with the grant
 // Dispatch gained after the merge base: the Legion state intake's durable legion-state-events
 // (dispatch://INFRA-3931), which DispatchDurables names after the two the fixture holds, so its
-// four calls follow delivery-jobs' in the publish list. Nothing else of any set has moved.
+// four calls follow delivery-jobs' in the publish list. Nothing else of the set moves here: the
+// listener state and last-seen buckets' subjects and the known-session purge are
+// withStateBuckets's and sinceMergeBase's.
 func withLegionStateDurable(t *testing.T, dispatch set) set {
 	t.Helper()
 	after := slices.Index(dispatch.Publish, "$JS.ACK.ENVOY_NOTIFICATIONS.delivery-jobs.>")
@@ -159,6 +176,12 @@ func subscribes(t *testing.T, grant natsgrant.Permissions, subject string) bool 
 		return false
 	}
 	return slices.ContainsFunc(grant.Subscribe, func(allow string) bool { return natsserver.SubjectMatchesFilter(subject, allow) })
+}
+
+// admits reports whether an entry of entries, a grant's allow list, covers subject
+// (bus.SubjectContains).
+func admits(entries []string, subject string) bool {
+	return slices.ContainsFunc(entries, func(entry string) bool { return bus.SubjectContains(entry, subject) })
 }
 
 // While the measurement job's inbox moves under the reply root, its grant admits it under both:
@@ -322,10 +345,12 @@ func TestTheEdgeGrantIsTheGolden(t *testing.T) {
 // notification topic, the finite list of the edge's own subjects - the agent subjects, each
 // project's role subjects, the relay subjects, every edge machine's relay receipts, the resume
 // lane, and the exception lanes of the agent subjects and of each project's role subjects - and no
-// create or update of the stream or of any bucket's stream, and no direct get of any bucket. In
-// subscribe: its own machine's inbox prefix in place of every
-// reply inbox, every session's relay subject and its own machine's relay receipts, and neither
-// role-lane queue group. Its publish deny is Listener's. So a change to Listener reaches Edge, and
+// create or update of the stream or of any bucket's stream, no direct get of any bucket, and none
+// of the calls of the listener state bucket (ListenerState) or of the last-seen bucket
+// (LastSeen), which the edge's grant never holds. In subscribe: its own machine's inbox prefix in
+// place of every reply inbox, every session's relay subject and its own machine's relay receipts,
+// and neither role-lane queue group. Its publish deny is Listener's. So a change to Listener
+// reaches Edge, and
 // the golden above says that it did.
 func TestTheEdgeGrantIsTheListenersWithTheEdgesChanges(t *testing.T) {
 	for _, id := range []string{"m", "example-hub"} {
@@ -333,11 +358,12 @@ func TestTheEdgeGrantIsTheListenersWithTheEdgesChanges(t *testing.T) {
 		require.Equal(t, "notifications.envoy.relayreply."+id, natsgrant.EdgeRelayReplyPrefix(id), "EdgeRelayReplyPrefix(%q)", id)
 		for _, projects := range [][]string{{"PRIV"}, {"OTHER", "PRIV"}} {
 			listener, edge := natsgrant.Listener(id), edge(t, id, projects...)
+			state := slices.Concat(natsgrant.ListenerState(id), natsgrant.LastSeen())
 			require.Equal(t, "notifications.>", listener.Publish[0])
 			kept := slices.DeleteFunc(slices.Clone(listener.Publish[1:]), func(entry string) bool {
-				return strings.HasPrefix(entry, "$JS.API.STREAM.CREATE.") || strings.HasPrefix(entry, "$JS.API.STREAM.UPDATE.") || strings.HasPrefix(entry, "$JS.API.DIRECT.GET.")
+				return strings.HasPrefix(entry, "$JS.API.STREAM.CREATE.") || strings.HasPrefix(entry, "$JS.API.STREAM.UPDATE.") || strings.HasPrefix(entry, "$JS.API.DIRECT.GET.") || slices.Contains(state, entry)
 			})
-			require.Len(t, kept, len(listener.Publish)-1-2*(1+len(bus.ListenerBuckets()))-len(bus.ListenerBuckets()), "Listener(%q) holds every notification topic, the create and update of the stream and of each bucket's stream, and each bucket's direct get", id)
+			require.Len(t, kept, len(listener.Publish)-1-2*(1+len(bus.ListenerBuckets()))-len(bus.ListenerBuckets())-len(state), "Listener(%q) holds every notification topic, the create and update of the stream and of each bucket's stream, each bucket's direct get, and the listener state and last-seen buckets' calls", id)
 			own := []string{"notifications.agent.>"}
 			for _, project := range projects {
 				own = append(own, "notifications.role."+project+".>")
@@ -385,9 +411,6 @@ func TestEachEdgeMachineHoldsItsOwnInboxesAndReceipts(t *testing.T) {
 		a, b := edge(t, pair[0], "PRIV"), edge(t, pair[1], "PRIV")
 		inboxOfB := natsgrant.EdgeInboxPrefix(pair[1]) + ".nuid"
 		receiptOfB := natsgrant.EdgeRelayReplyPrefix(pair[1]) + ".nuid"
-		admits := func(entries []string, subject string) bool {
-			return slices.ContainsFunc(entries, func(entry string) bool { return bus.SubjectContains(entry, subject) })
-		}
 		require.True(t, admits(b.Subscribe, inboxOfB), "%s does not subscribe its own inbox %s", pair[1], inboxOfB)
 		require.False(t, admits(a.Subscribe, inboxOfB), "%s subscribes %s's inbox %s", pair[0], pair[1], inboxOfB)
 		require.True(t, admits(b.Subscribe, receiptOfB), "%s does not subscribe its own receipt %s", pair[1], receiptOfB)
@@ -430,9 +453,6 @@ func TestTheEdgeGrantRefusesAMachineOrProjectsItCannotName(t *testing.T) {
 // find one.
 func TestTheEdgeGrantPublishesNothingOutsideItsLanes(t *testing.T) {
 	edge, listener := edge(t, "m", "PRIV"), natsgrant.Listener("m")
-	admits := func(entries []string, subject string) bool {
-		return slices.ContainsFunc(entries, func(pattern string) bool { return bus.SubjectContains(pattern, subject) })
-	}
 	for _, subject := range []string{
 		"notifications.dispatch.issue.PRIV.PRIV-1.comment.created",
 		"notifications.github.acme.pub.pr.1.opened",
@@ -452,6 +472,14 @@ func TestTheEdgeGrantPublishesNothingOutsideItsLanes(t *testing.T) {
 		"$JS.API.STREAM.UPDATE.KV_envoy_dpop_proofs",
 		"$JS.API.DIRECT.GET.KV_envoy_interests.$KV.envoy_interests.k",
 		"$JS.API.DIRECT.GET.KV_envoy_dpop_proofs.$KV.envoy_dpop_proofs.k",
+		"$JS.API.STREAM.INFO.KV_envoy_listener",
+		"$JS.API.STREAM.UPDATE.KV_envoy_listener",
+		"$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.lease.listener-m",
+		"$KV.envoy_listener.lease.listener-m",
+		"$JS.API.STREAM.INFO.KV_envoy_last_seen",
+		"$JS.API.STREAM.UPDATE.KV_envoy_last_seen",
+		"$JS.API.DIRECT.GET.KV_envoy_last_seen.$KV.envoy_last_seen.seen.ses_a",
+		"$KV.envoy_last_seen.seen.ses_a",
 	} {
 		require.False(t, admits(edge.Publish, subject), "Edge publishes %s", subject)
 		require.True(t, admits(listener.Publish, subject), "Listener does not publish %s, so the matcher finds nothing", subject)
@@ -475,6 +503,43 @@ func TestTheEdgeGrantPublishesNothingOutsideItsLanes(t *testing.T) {
 	}
 	for _, entry := range edge.Publish {
 		require.False(t, strings.HasPrefix(entry, "_INBOX"), "Edge publishes to the reply inboxes %q", entry)
+	}
+}
+
+// Every session's last-seen record is in a bucket of its own, and every set built on
+// listenerGrant holds the same rights on it: its stream's info, create and update, and a direct
+// get and a write of `seen.*`, every session's whichever machine registered it (LastSeen). It
+// holds no other call of that bucket, and no `seen.` key of the listener state bucket, whose calls
+// (ListenerState) are the machine's own lease, hand-back marks and ledger alone.
+func TestTheLastSeenRecordsAreGrantedInTheirOwnBucketAlone(t *testing.T) {
+	require.Len(t, natsgrant.LastSeen(), 5)
+	for _, id := range []string{"m", "example-hub"} {
+		require.Len(t, natsgrant.ListenerState(id), 9, "ListenerState(%q)", id)
+		for name, grant := range map[string]natsgrant.Permissions{
+			"Listener": natsgrant.Listener(id), "ListenerHost": natsgrant.ListenerHost(id), "Dispatch": natsgrant.Dispatch(id), "Host": natsgrant.Host(id),
+		} {
+			for _, subject := range []string{
+				"$JS.API.STREAM.INFO.KV_envoy_last_seen",
+				"$JS.API.STREAM.CREATE.KV_envoy_last_seen",
+				"$JS.API.STREAM.UPDATE.KV_envoy_last_seen",
+				"$JS.API.DIRECT.GET.KV_envoy_last_seen.$KV.envoy_last_seen.seen.ses_a",
+				"$KV.envoy_last_seen.seen.ses_a",
+				"$KV.envoy_last_seen.seen.=0123456789abcdef0123456789abcdef",
+			} {
+				require.True(t, admits(grant.Publish, subject), "%s(%q) does not publish %s", name, id, subject)
+			}
+			for _, subject := range []string{
+				"$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.seen.ses_a",
+				"$KV.envoy_listener.seen.ses_a",
+				"$KV.envoy_last_seen.lease." + bus.ListenerDurable(id),
+				"$JS.API.DIRECT.GET.KV_envoy_last_seen.$KV.envoy_last_seen.lease." + bus.ListenerDurable(id),
+				"$JS.API.STREAM.MSG.GET.KV_envoy_last_seen",
+				"$JS.API.CONSUMER.CREATE.KV_envoy_last_seen.watch",
+				"$JS.API.STREAM.PURGE.KV_envoy_last_seen",
+			} {
+				require.False(t, admits(grant.Publish, subject), "%s(%q) publishes %s", name, id, subject)
+			}
+		}
 	}
 }
 

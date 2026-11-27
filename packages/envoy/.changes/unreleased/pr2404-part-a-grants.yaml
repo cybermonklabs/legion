@@ -1,0 +1,23 @@
+kind: Changed
+body: |-
+  The grant every user that runs a listener holds (`natsgrant.Listener`, and so the hub's listener,
+  host and Dispatch users and the sets the auth service answers a listener or Dispatch with) gains
+  the calls on two KV buckets that no program of this release opens yet, so a hub carries them
+  before a listener uses them. `envoy_listener` (`bus.ListenerStateBucket`) holds the state the
+  listeners of one machine share. Its grant is the bucket's stream info, create and update and, for
+  each of the machine's own keys alone, a direct get and a write: `lease.listener-<machine id>`,
+  `handback.listener-<machine id>.*` and `delivery.listener-<machine id>.*.*`
+  (`natsgrant.ListenerState`), so one machine's user cannot write another machine's keys by a key
+  write, nor request a read of them by a direct get. `envoy_last_seen` (`bus.LastSeenBucket`) holds
+  every session's last-seen record. Its grant is the bucket's stream info, create and update and a
+  direct get and a write of `seen.*`, the same for every machine (`natsgrant.LastSeen`), since a
+  record is read across machines. Neither bucket is in `bus.ListenerBuckets`, so the grant holds
+  none of the stream message get, consumer or flow-control calls that `natsgrant.KVWrite` grants
+  for those. The edge listener's grant (`natsgrant.Edge`) holds neither bucket. A grant cannot
+  narrow what every listener user of the fleet can still do to a bucket whose key it may write:
+  purge it with a rollup header, change its stream's configuration through the update the raises
+  need, and read every reply through `_INBOX.>`. The infra README's "Permission sets" says so.
+  A hub's users gain the grants when envoy-infra renders them again, which replaces the hub's VM.
+time: 2026-11-27T19:52:00Z
+custom:
+    Issue: pr2404

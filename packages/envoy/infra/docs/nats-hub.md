@@ -456,6 +456,24 @@ secret and writes the seed with `envoy-infra seed generate`, whose printed key i
 `NATS_NKEY_SEED` through `docker run --env-file`, which Docker reads as root, since the listener's
 image runs as an unprivileged user.
 
+The listener's user grants the `envoy_listener` bucket,
+which holds the delivery lease and the delivery state that the listeners of one machine share
+(`ListenerPermissions`).
+Each user may write only its own machine's keys there:
+`lease.listener-<machine id>` (the lease),
+`handback.listener-<machine id>.*` (the lease's hand-back marks)
+and `delivery.listener-<machine id>.*.*` (the delivery ledger)
+(`natsgrant.ListenerState`).
+A hub's users gain this grant only when envoy-infra renders them again,
+and a change to the hub's users rewrites its user data, which replaces the VM.
+
+The listener's user also grants the `envoy_last_seen` bucket,
+which holds every session's last-seen record, `seen.*`.
+Each user writes and reads every session's record there (`natsgrant.LastSeen`),
+because a role claim names its holder session and no machine,
+so a record is read across machines.
+A hub's users gain this bucket only when envoy-infra renders them again.
+
 ### The listener's broker check
 
 `listener.agentSecretsUrl`, `listener.agentSecretsAudience` and `listener.publicUrl` are what
