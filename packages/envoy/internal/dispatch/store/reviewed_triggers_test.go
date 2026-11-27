@@ -38,7 +38,7 @@ var reviewedTriggerFunctions = map[string]string{
 // payload, which Postgres folds into one per transaction, and no table read.
 const reviewedBlockSchemaChanged = "\nbegin\n  perform pg_notify('dispatch_block_schema', '');\n  return null;\nend "
 
-// reviewedIssueHeadMarksDrop is issue_head_marks_drop's source as 20261123180100_issue_tree_head
+// reviewedIssueHeadMarksDrop is issue_head_marks_drop's source as 20261127120803_issue_tree_head
 // created it, the body graph_nodes_head_marks runs (and graph_tuples' and document_blocks' head
 // mark triggers): for each row, the nodes whose head rows the row's write moves - a node row's
 // node, inserted, updated or deleted (OLD on delete) - a probe of issue_head_nodes_node for each,

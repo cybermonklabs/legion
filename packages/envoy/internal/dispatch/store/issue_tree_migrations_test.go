@@ -447,7 +447,7 @@ func readTypeStatements(migration pgmigrate.Migration) (typeMigration bool, find
 	for _, statement := range statements {
 		// A create trigger writes no row of its table, and runs only on later writes, never on the
 		// rows already there (pgmigrate's catalogOnlyStatements): the head projection's trigger on
-		// graph_tuples and graph_nodes (20261123180100_issue_tree_head) makes no type migration.
+		// graph_tuples and graph_nodes (20261127120803_issue_tree_head) makes no type migration.
 		if statement.node == "CreateTrigStmt" {
 			continue
 		}

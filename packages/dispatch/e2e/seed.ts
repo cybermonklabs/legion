@@ -84,7 +84,7 @@ const tables = [
   "search_text_versions",
   "search_text_versions_fill",
   // The head projection of each issue's tree and the marks of the issues whose rows the head read
-  // reads (migration 20261123180100_issue_tree_head). No foreign key reaches either table, so the
+  // reads (migration 20261127120803_issue_tree_head). No foreign key reaches either table, so the
   // closure below does not find them: a node's rows would otherwise stand under the issue key the
   // next row's issue takes again, and a head write deletes the stale rows of only the nodes it
   // writes (graphstore's headWriteStatement), so the tree read of that issue would answer the
@@ -220,7 +220,7 @@ export const BLOCK_INDEX_PASS_MS = 30_000;
 // tables it names, and every table whose foreign keys reach them, which a cascading delete empties
 // too. It never waits while it holds one of those locks: not for a table, and not for an issue's
 // head fill lock, which the head mark triggers of those tables take in share mode (migration
-// 20261123180100) and which a fill of that issue holds exclusive while it reads and writes them,
+// 20261127120803) and which a fill of that issue holds exclusive while it reads and writes them,
 // since the reset keeps those triggers from firing (dispatch.head_rows, below). Each try takes
 // them all with NOWAIT; when one is held, the try lets go of every lock it took, and the next try
 // first waits for that one table while it holds none, so the wait cannot close a cycle. Once it
@@ -325,7 +325,7 @@ async function resetDatabaseOnce(): Promise<void> {
         -- The head rows stay kept through the reset, which empties issue_head_nodes and
         -- issue_head_marks itself: the head mark triggers of graph_tuples, graph_nodes,
         -- document_blocks, comments, comment_blocks and comment_block_texts (migration
-        -- 20261123180100), which take away the mark of each issue a write leaves behind the head
+        -- 20261127120803), which take away the mark of each issue a write leaves behind the head
         -- rows, would find no mark to take. So the reset makes the claim every writer of this build
         -- makes (graphstore's KeptHeadRows), for the rest of its transaction, and none of them
         -- fires: each would take an issue's head fill lock in share mode while the reset holds
