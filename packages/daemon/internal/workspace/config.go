@@ -346,7 +346,18 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	var stdout, stderr bytes.Buffer
 	child.Stdout = &stdout
 	child.Stderr = &stderr
-	err = child.Run()
+	// PLANT (control commit, never for merge): execRunner.Run waits this long between starting the
+	// command and waiting for it, on the first call of the process alone, so the command's reap
+	// comes that much after its own exit. Everything else is what child.Run does.
+	if delay := plantReapDelayOnce("run-reap-delay"); delay > 0 {
+		fmt.Fprintf(os.Stderr, "PLANT run-reap-delay fired: %s between %s's start and its wait\n", delay, strings.Join(command.Argv, " "))
+		if err = child.Start(); err == nil {
+			time.Sleep(delay)
+			err = child.Wait()
+		}
+	} else {
+		err = child.Run()
+	}
 	if hook := exitedHook.Load(); hook != nil && child.ProcessState != nil {
 		(*hook)(command, child.ProcessState)
 	}
