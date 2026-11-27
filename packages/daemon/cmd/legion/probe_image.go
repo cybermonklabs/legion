@@ -170,20 +170,16 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		fmt.Fprintln(stderr, "legion probe-image: --claude-root and --claude-code-pin each name a directory: the claude-envoy plugin and the Claude Code pin a worker on the `claude` backend needs, which the image build's Claude lane and the `claude-code` row check")
 		return 2
 	}
-	// LEGION_IMAGE_PROBE_RUN says which run this is. It is read from this process's own env, here
-	// with the other usage checks and before --pod-safety and --provider-env-dir change the env the
-	// probes run under. No value is the image build's run, which makes every launch probe and
-	// prints session-storage=probed. boot is the daemon's boot run, which its probe Sandbox sets:
-	// it makes no pi.agents probe, no session-storage probe and no Claude lane, and prints
-	// session-storage=skipped. Any other value comes from a daemon or a test this command does not
-	// know, so it is refused as a bad flag is, exit 2, before any check runs. The value is compared
-	// exactly: no case folding and no trim.
-	bootRun, sessionStorage := false, bootprobe.SessionStorageProbed
+	// LEGION_IMAGE_PROBE_RUN is read from this process's own env, here with the other usage checks
+	// and before --pod-safety and --provider-env-dir change the env the probes run under.
+	// newProbeImageCommand's comment says what each value means. The value is compared exactly: no
+	// case folding and no trim.
+	bootRun := false
 	switch run := os.Getenv(bootprobe.ImageProbeRunVariable); run {
 	case "":
 		// The image build's run.
 	case bootprobe.ImageProbeRunBoot:
-		bootRun, sessionStorage = true, bootprobe.SessionStorageSkipped
+		bootRun = true
 	default:
 		fmt.Fprintf(stderr, "legion probe-image: %s is %q: it takes only %s, which the daemon's probe Sandbox sets, or no value\n",
 			bootprobe.ImageProbeRunVariable, run, bootprobe.ImageProbeRunBoot)
@@ -380,6 +376,10 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	checked := bootprobe.CapabilitiesAll
 	if f.skipBrowser {
 		checked = bootprobe.CapabilitiesBrowserSkipped
+	}
+	sessionStorage := bootprobe.SessionStorageProbed
+	if bootRun {
+		sessionStorage = bootprobe.SessionStorageSkipped
 	}
 	if natsUser != "" {
 		fmt.Fprintln(stdout, bootprobe.NATSUserLine(natsUser))

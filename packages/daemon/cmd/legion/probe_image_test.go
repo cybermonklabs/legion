@@ -213,6 +213,11 @@ const ompMarks = " omp-version=omp/18.18.6 omp-session-id=taken"
 // says model fallback is off, with ompMarks after them.
 const capabilityMarks = " capabilities=checked model-fallback=off" + ompMarks + " daemon-api-version="
 
+// okLineOf is the OK line of a run that passes over the stubbed image, session-storage in state.
+func okLineOf(omp, state string) string {
+	return "probe-image: OK (" + omp + ") session-storage=" + state + " extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract + "\n"
+}
+
 // probeImage runs `legion probe-image` with args and answers its exit code, stdout and stderr.
 func probeImage(args ...string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
@@ -1298,11 +1303,7 @@ func TestProbeImageMakesEveryCheckButTheThreeLaunchProbesInTheBootRun(t *testing
 	if err := os.WriteFile(malformed, []byte("retry:\n  modelFallback: true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// okLine is the OK line of a run that passes over the stubbed image, with the session-storage
-	// state; probed and skipped begin it in each state, after the line before it.
-	okLine := func(state string) string {
-		return "probe-image: OK (" + omp + ") session-storage=" + state + " extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract + "\n"
-	}
+	// probed and skipped begin the OK line in each session-storage state, after the line before it.
 	probed, skipped := "\nprobe-image: OK ("+omp+") session-storage=probed ", "\nprobe-image: OK ("+omp+") session-storage=skipped "
 	// outcome is what one run of a row answers: its exit code, and texts its stdout or stderr
 	// holds; where after is set, stdout is the whole capability table, then after, and nothing else.
@@ -1324,22 +1325,24 @@ func TestProbeImageMakesEveryCheckButTheThreeLaunchProbesInTheBootRun(t *testing
 		cut string
 		// unset and boot are what the run with the variable unset and the run with boot answer.
 		unset, boot outcome
+		// same: the boot run answers as the unset run, and the row sets no boot.
+		same bool
 		// once marks the row that runs once, with the variable unset, and holds that its run made
 		// the pi.agents and the session storage probes (its LEGION_TEST_CALLS file).
 		once bool
 	}{
 		{name: "an argument", setup: func(t *testing.T, img image) []string { return img.flags("extra") },
-			unset: exits(2, "unexpected argument"), boot: exits(2, "unexpected argument")},
+			unset: exits(2, "unexpected argument"), same: true},
 		{name: "no --plugin-root", setup: func(t *testing.T, img image) []string {
 			return []string{"--envoy-plugin-root", img.envoy, "--claude-root", img.claude, "--claude-code-pin", img.pin}
-		}, unset: exits(2, "--plugin-root is required"), boot: exits(2, "--plugin-root is required")},
+		}, unset: exits(2, "--plugin-root is required"), same: true},
 		{name: "no --envoy-plugin-root", setup: func(t *testing.T, img image) []string {
 			return []string{"--plugin-root", img.legion, "--claude-root", img.claude, "--claude-code-pin", img.pin}
-		}, unset: exits(2, "--envoy-plugin-root is required"), boot: exits(2, "--envoy-plugin-root is required")},
+		}, unset: exits(2, "--envoy-plugin-root is required"), same: true},
 		{name: "an empty --claude-root", setup: func(t *testing.T, img image) []string { return img.flags("--claude-root", "") },
-			unset: exits(2, "each name a directory"), boot: exits(2, "each name a directory")},
+			unset: exits(2, "each name a directory"), same: true},
 		{name: "a negative --probe-budget", setup: func(t *testing.T, img image) []string { return img.flags("--probe-budget", "-1s") },
-			unset: exits(1, "--probe-budget must not be negative"), boot: exits(1, "--probe-budget must not be negative")},
+			unset: exits(1, "--probe-budget must not be negative"), same: true},
 		{name: "the role namespaces", setup: func(t *testing.T, img image) []string {
 			// The layout cannot be made where a file stands (TestProbeImageRefusesWhenTheRoleNamespaceCheckFails).
 			file := filepath.Join(t.TempDir(), "not-a-directory")
@@ -1347,29 +1350,29 @@ func TestProbeImageMakesEveryCheckButTheThreeLaunchProbesInTheBootRun(t *testing
 				t.Fatal(err)
 			}
 			return img.flags("--role-namespaces", file)
-		}, unset: exits(1, "role namespaces"), boot: exits(1, "role namespaces")},
+		}, unset: exits(1, "role namespaces"), same: true},
 		{name: "the pod's own test database", setup: func(t *testing.T, img image) []string {
 			// The image's PATH, its stubbed bin alone, holds no legion-testpg.
 			return img.flags("--test-postgres", t.TempDir())
-		}, unset: exits(1, "the pod's own test database"), boot: exits(1, "the pod's own test database")},
+		}, unset: exits(1, "the pod's own test database"), same: true},
 		{name: "--role-references it cannot decode", setup: func(t *testing.T, img image) []string {
 			return img.flags("--role-references", `{"LEGION_PROMPT_AGENTS":{},"LEGION_PROMPT_SKILLS":{},"LEGION_PROMPT_AGENTS":{}}`)
-		}, unset: exits(1, "--role-references"), boot: exits(1, "--role-references")},
+		}, unset: exits(1, "--role-references"), same: true},
 		{name: "no Oh My Pi", setup: func(t *testing.T, img image) []string {
 			t.Setenv("LEGION_OMP_PATH", "")
 			return img.flags()
-		}, unset: exits(1, "set LEGION_OMP_PATH"), boot: exits(1, "set LEGION_OMP_PATH")},
+		}, unset: exits(1, "set LEGION_OMP_PATH"), same: true},
 		{name: "a --daemon-api-version that is no number", setup: func(t *testing.T, img image) []string { return img.flags("--daemon-api-version", "x") },
-			unset: exits(1, "must be a positive integer"), boot: exits(1, "must be a positive integer")},
+			unset: exits(1, "must be a positive integer"), same: true},
 		{name: "a NATS seed that is not a user's", setup: func(t *testing.T, img image) []string {
 			t.Setenv("NATS_NKEY_SEED_FILE", testnkeys.SeedFile(t, account))
 			return img.flags()
-		}, unset: exits(1, "holds an nkey seed that is not a user's"), boot: exits(1, "holds an nkey seed that is not a user's")},
+		}, unset: exits(1, "holds an nkey seed that is not a user's"), same: true},
 		{name: "the NATS user line", setup: func(t *testing.T, img image) []string {
 			t.Setenv("NATS_NKEY_SEED_FILE", testnkeys.SeedFile(t, seed+"\n"))
 			return img.flags()
-		}, unset: outcome{code: 0, after: "probe-image: nats-nkey-user=" + public + "\n" + okLine("probed")},
-			boot: outcome{code: 0, after: "probe-image: nats-nkey-user=" + public + "\n" + okLine("skipped")}},
+		}, unset: outcome{code: 0, after: "probe-image: nats-nkey-user=" + public + "\n" + okLineOf(omp, "probed")},
+			boot: outcome{code: 0, after: "probe-image: nats-nkey-user=" + public + "\n" + okLineOf(omp, "skipped")}},
 		{name: "a provider key the environment already sets", setup: func(t *testing.T, img image) []string {
 			providers := t.TempDir()
 			if err := os.WriteFile(filepath.Join(providers, "TEST_PROVIDER_KEY"), []byte("from-the-secret"), 0o600); err != nil {
@@ -1377,7 +1380,7 @@ func TestProbeImageMakesEveryCheckButTheThreeLaunchProbesInTheBootRun(t *testing
 			}
 			t.Setenv("TEST_PROVIDER_KEY", "already-set")
 			return img.flags("--provider-env-dir", providers)
-		}, unset: exits(1, "TEST_PROVIDER_KEY"), boot: exits(1, "TEST_PROVIDER_KEY")},
+		}, unset: exits(1, "TEST_PROVIDER_KEY"), same: true},
 		{name: "the pi.agents probe", setup: func(t *testing.T, img image) []string {
 			t.Setenv("LEGION_TEST_AGENTS_MISSING", "1")
 			return img.flags()
@@ -1385,11 +1388,11 @@ func TestProbeImageMakesEveryCheckButTheThreeLaunchProbesInTheBootRun(t *testing
 		{name: "the contract probe", setup: func(t *testing.T, img image) []string {
 			rewrite(t, filepath.Join(img.legion, "package.json"), `"daemonApiVersion":`+thisBinarysContract, `"daemonApiVersion":2`)
 			return img.flags("--daemon-api-version", "4")
-		}, unset: exits(1, "speaks daemon API contract 2; this daemon requires 4"), boot: exits(1, "speaks daemon API contract 2; this daemon requires 4")},
+		}, unset: exits(1, "speaks daemon API contract 2; this daemon requires 4"), same: true},
 		{name: "the load probe", setup: func(t *testing.T, img image) []string {
 			t.Setenv("LEGION_TEST_LOAD_NO", "1")
 			return img.flags()
-		}, unset: exits(1, "did not load with"), boot: exits(1, "did not load with")},
+		}, unset: exits(1, "did not load with"), same: true},
 		{name: "the session storage probe", setup: func(t *testing.T, img image) []string {
 			t.Setenv("LEGION_TEST_SESSION_ACCEPTS", "1")
 			return img.flags()
@@ -1402,32 +1405,30 @@ func TestProbeImageMakesEveryCheckButTheThreeLaunchProbesInTheBootRun(t *testing
 		{name: "a capability row", setup: func(t *testing.T, img image) []string {
 			t.Setenv("LEGION_TEST_NO_PYTHON", "1")
 			return img.flags()
-		}, unset: exits(1, "capability eval-python is missing: "), boot: exits(1, "capability eval-python is missing: ")},
+		}, unset: exits(1, "capability eval-python is missing: "), same: true},
 		{name: "the model-fallback read", setup: func(t *testing.T, img image) []string {
 			t.Setenv("LEGION_TEST_FALLBACK_FAIL", "1")
 			return img.flags()
-		}, unset: exits(0, "model-fallback=unread"), boot: exits(0, "model-fallback=unread")},
+		}, unset: exits(0, "model-fallback=unread"), same: true},
 		{name: "the version read", setup: func(t *testing.T, img image) []string {
 			t.Setenv("LEGION_TEST_VERSION_FAIL", "1")
 			return img.flags()
-		}, unset: exits(0, "omp-version=unread"), boot: exits(0, "omp-version=unread")},
+		}, unset: exits(0, "omp-version=unread"), same: true},
 		{name: "the help read", setup: func(t *testing.T, img image) []string {
 			t.Setenv("LEGION_TEST_HELP_FAIL", "1")
 			return img.flags()
-		}, unset: exits(0, "omp-session-id=unread"), boot: exits(0, "omp-session-id=unread")},
+		}, unset: exits(0, "omp-session-id=unread"), same: true},
 		{name: "a role's overlays", setup: func(t *testing.T, img image) []string {
 			// No PI_CONFIG_FILES of the caller's ahead of the merger's own file.
 			t.Setenv("PI_CONFIG_FILES", "")
 			return img.flags("--role-config-files", "merger="+malformed)
-		}, unset: exits(1, bootprobe.RoleOverlaysRefusedLine("merger", "Oh My Pi refuses "+malformed+": error: Failed to parse config overlay "+malformed+": SyntaxError: YAML Parse error")+"\n"),
-			boot: exits(1, bootprobe.RoleOverlaysRefusedLine("merger", "Oh My Pi refuses "+malformed+": error: Failed to parse config overlay "+malformed+": SyntaxError: YAML Parse error")+"\n")},
+		}, unset: exits(1, bootprobe.RoleOverlaysRefusedLine("merger", "Oh My Pi refuses "+malformed+": error: Failed to parse config overlay "+malformed+": SyntaxError: YAML Parse error")+"\n"), same: true},
 		{name: "a check the deadline cuts", setup: func(t *testing.T, img image) []string {
 			t.Setenv("LEGION_TEST_VERSION_SLOW", "1")
 			return img.flags("--probe-budget", unreachedProbeBudget)
-		}, cut: "omp --version", unset: exits(bootprobe.NoVerdictExit, bootprobe.NoVerdictPrefix, "omp-version: "),
-			boot: exits(bootprobe.NoVerdictExit, bootprobe.NoVerdictPrefix, "omp-version: ")},
+		}, cut: "omp --version", unset: exits(bootprobe.NoVerdictExit, bootprobe.NoVerdictPrefix, "omp-version: "), same: true},
 		{name: "nothing broken", setup: func(t *testing.T, img image) []string { return img.flags() },
-			unset: outcome{code: 0, after: okLine("probed")}, boot: outcome{code: 0, after: okLine("skipped")}},
+			unset: outcome{code: 0, after: okLineOf(omp, "probed")}, boot: outcome{code: 0, after: okLineOf(omp, "skipped")}},
 		{name: "nothing broken, with --pod-safety", setup: func(t *testing.T, img image) []string { return img.flags("--pod-safety") },
 			unset: exits(0, probed), boot: exits(0, skipped)},
 		{name: "the variable as a provider file", setup: func(t *testing.T, img image) []string {
@@ -1442,10 +1443,14 @@ func TestProbeImageMakesEveryCheckButTheThreeLaunchProbesInTheBootRun(t *testing
 			// Not parallel: it sets environment variables of the whole process (fixtureenv.Unset, t.Setenv, inImage); it changes the whole process's working directory (inImage).
 			img := inImage(t, thisBinarysContract, omp)
 			args := tc.setup(t, img)
+			boot := tc.boot
+			if tc.same {
+				boot = tc.unset
+			}
 			values := []struct {
 				run, value string
 				want       outcome
-			}{{"unset", "", tc.unset}, {"boot", bootprobe.ImageProbeRunBoot, tc.boot}}
+			}{{"unset", "", tc.unset}, {"boot", bootprobe.ImageProbeRunBoot, boot}}
 			if tc.once {
 				values = values[:1]
 			}
@@ -1496,7 +1501,7 @@ func TestProbeImageMakesEveryCheckButTheThreeLaunchProbesInTheBootRun(t *testing
 					}
 				}
 			}
-			if !tc.once && tc.unset.code == tc.boot.code {
+			if !tc.once && tc.unset.code == boot.code {
 				if unset, boot := withoutState.Replace(stdouts["unset"]), withoutState.Replace(stdouts["boot"]); unset != boot {
 					t.Errorf("the two runs' stdouts differ with the session-storage mark taken out:\nunset %q\nboot  %q", unset, boot)
 				}
@@ -1582,7 +1587,7 @@ func TestProbeImageWithNoBootRunValueMakesTheThreeLaunchProbes(t *testing.T) {
 
 			code, stdout, stderr := probeImage(img.flags()...)
 
-			if want := "\nprobe-image: OK (" + omp + ") session-storage=" + tc.state + " extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract + "\n"; code != 0 || !strings.HasSuffix(stdout, want) {
+			if want := "\n" + okLineOf(omp, tc.state); code != 0 || !strings.HasSuffix(stdout, want) {
 				t.Errorf("probe-image = %d, stdout %q, stderr %q; want exit 0 and the OK line %q", code, stdout, stderr, want)
 			}
 			raw, err := os.ReadFile(calls)

@@ -582,9 +582,7 @@ func TestADaemonPassesTheBootRunLinesOfAnImageBuiltBeforeTheBootSignal(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	pod := &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodSucceeded, ContainerStatuses: []corev1.ContainerStatus{{
-		Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}},
-	}}}}
+	pod := &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodSucceeded, ContainerStatuses: []corev1.ContainerStatus{terminated(probeContainer, 0, "Completed")}}}
 
 	outcome := r.judge("legion-probe", "sha256:00", pod, string(fixture), nil, 256)
 

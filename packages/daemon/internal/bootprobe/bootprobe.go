@@ -177,7 +177,7 @@ func abandoned(name string, err error) error {
 	return fmt.Errorf("the %s probe was abandoned: it was stopped while it ran or waited to run again: %w", name, err)
 }
 
-// The session-storage mark's states: SessionStorageProbed once the session storage probe passed,
+// The session-storage mark's states: SessionStorageProbed once the session-storage probe passed,
 // as it does in the image build's run, and SessionStorageSkipped in the daemon's boot run
 // (ImageProbeRunBoot), which does not make that probe.
 const (
@@ -186,7 +186,7 @@ const (
 )
 
 // sessionStorageMark carries one of those states on the OK line (SESSION_STORAGE_PROBE_MARK,
-// boot-probes.ts:398-403): a CLI that predates the session storage probe prints no such token,
+// boot-probes.ts:398-403): a CLI that predates the session-storage probe prints no such token,
 // having checked nothing about the setting. The daemon reads neither state: its probe Sandbox
 // passes the line of either run.
 const sessionStorageMark = "session-storage="
@@ -268,7 +268,7 @@ const (
 )
 
 // OKLine is the line OKPrefix begins: the OMP invocation probed, the session-storage mark
-// (SessionStorageProbed once the session storage probe passed, or SessionStorageSkipped in the
+// (SessionStorageProbed once the session-storage probe passed, or SessionStorageSkipped in the
 // daemon's boot run, which does not make it), the extensions mark, the agent-models mark
 // (AgentModelsResolved or AgentModelsSkipped), the capabilities mark (CapabilitiesAll or
 // CapabilitiesBrowserSkipped), the model-fallback mark (ModelFallbackOn, ModelFallbackOff, or

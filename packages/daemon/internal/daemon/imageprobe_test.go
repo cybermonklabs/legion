@@ -636,10 +636,11 @@ func TestTheImageProbesBootRunMakesOnlyThePluginLoadProbe(t *testing.T) {
 			}
 			if testCase.promptAgents != "" {
 				env := f.read(t, "load.env.1")
-				if !slices.Contains(strings.Split(env, "\n"), "LEGION_PROMPT_AGENTS="+testCase.promptAgents) {
+				vars := envlisting.Vars(env)
+				if vars["LEGION_PROMPT_AGENTS"] != testCase.promptAgents {
 					t.Errorf("the load probe's environment has no LEGION_PROMPT_AGENTS=%s:\n%s", testCase.promptAgents, env)
 				}
-				if _, set := envlisting.Vars(env)["LEGION_SKIP_AGENT_MODELS"]; set {
+				if _, set := vars["LEGION_SKIP_AGENT_MODELS"]; set {
 					t.Errorf("the load probe ran with LEGION_SKIP_AGENT_MODELS, so it did not resolve the agents' models:\n%s", env)
 				}
 			}
