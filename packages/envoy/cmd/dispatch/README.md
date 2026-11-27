@@ -1243,7 +1243,7 @@ What the two processes share, and what each keeps to itself:
 
 - A send waits out a listener take-over.
   While the active Envoy listener pod is replaced, its successor refuses connections, answers 502, 503 or 504, or does not hold the session yet;
-  a send that meets one of those (or a receipt timeout, or a 503 coded `maybe_stored`, whose publish the stream never acknowledged) is tried again under the attempt it holds and the same idempotency key, renewing its claim before each try, for up to 12 seconds from its first try, and only then settles `failed` (`api/envoy_resolve.go`, `listenerTakeoverWindow`).
+  a send that meets one of those (or a receipt timeout, a 503 coded `maybe_stored`, whose publish the stream never acknowledged, or any other outage status: a 408 from a proxy in front of the listener, a 429, a 5xx but the listener's own 500, which it answers for a record it cannot decode) is tried again under the attempt it holds and the same idempotency key, renewing its claim before each try, for up to 12 seconds from its first try, and only then settles `failed` (`api/envoy_resolve.go`, `listenerTakeoverWindow`).
   A request that sends during a take-over answers up to 12 seconds later, and a mention of a session that is really gone reads `failed: no live session` about 12 seconds after it was made.
   A targeted message to such a session is queued instead at that moment:
   when neither the listener's registry nor its known-session store holds the session, Dispatch publishes the message on the session's own subject, `notifications.agent.<session>`, under the dedupe key the listener's send would have used, and records the attempt `queued` (`api/message_queue_publish.go`).
@@ -6254,7 +6254,7 @@ Each item below names a path with its method and identity, then its purpose.
   - **When the daemon publishes.**
     The daemon publishes the set when a claim readies, at each boot, and at each claim write that changes the session that holds a role: the agent registers, the claim takes another session or forgets its session, or the claim retires, fails, or is suspended by any source but the idle release.
     A claim whose idle pod the daemon released keeps its role, and so does a claim that a project pause's stop suspended: each keeps its session, its phase and its task, and the next wake resumes the same session, so the release, the wake and the launch that resumes the session change nothing in the set.
-    A claim launched again over the session it kept holds its role through the launch.
+    A claim launched again over the session it kept holds its role through the launch, and after a suspension by any source but the idle release the resume's first write over that session, `queued` or `launching`, queues a publication that names the session again, before the agent registers.
     The claim write queues the publication in its own transaction in the daemon's store, so the change and its publication commit together or not at all.
     An end whose claim write failed with an error that the daemon owes, such as a lost connection, is published when the daemon makes that write again at the claim's next decision, and not before: until then the store still holds the claim live.
     The session of an ended claim keeps its role until the next publication lands, and in that time a process whose stop failed can still write with the pane's Dispatch bearer.

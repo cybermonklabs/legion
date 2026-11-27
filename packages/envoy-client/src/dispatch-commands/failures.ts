@@ -1,4 +1,5 @@
 import { ISSUE_UPDATE_PATCH_FIELDS } from "@legion/contracts";
+import { mayHaveReachedServer } from "@legion/contracts/http-status";
 import { commandLine } from "../dispatch-command";
 import {
   DispatchGatewayError,
@@ -262,16 +263,17 @@ export function refuseMissingPost(
 
 /**
  * Whether a write that failed with `error` may have taken effect anyway. Only an answer sent
- * before the write could apply proves it did not: Dispatch's own refusal (a 4xx), or a gateway's
- * answer that never reached Dispatch (`mayHaveReachedDispatch`), which the client throws as such
- * only when no earlier attempt of the write may have reached Dispatch either. Dispatch's own 5xx
- * can come after it committed, so the client throws it as a `DispatchWriteUnsettledError`, as it
- * does a transport failure and a deadline after an attempt may have reached Dispatch; that error,
- * and a timeout or a transport error thrown as it came, says nothing either way.
+ * before the write could apply proves it did not: Dispatch's own refusal (a 4xx but a 408), or a
+ * gateway's answer that never reached Dispatch (`mayHaveReachedDispatch`), which the client throws
+ * as such only when no earlier attempt of the write may have reached Dispatch either. Dispatch's
+ * own answer after which the request may have reached it (`mayHaveReachedServer`: a 5xx, which it
+ * can send after it committed, or a 408) the client throws as a `DispatchWriteUnsettledError`, as
+ * it does a transport failure and a deadline after an attempt may have reached Dispatch; that
+ * error, and a timeout or a transport error thrown as it came, says nothing either way.
  */
 export function writeMayHaveLanded(error: unknown): boolean {
   if (error instanceof DispatchGatewayError) return error.mayHaveReachedDispatch;
-  return !(error instanceof DispatchServiceError) || error.status >= 500;
+  return !(error instanceof DispatchServiceError) || mayHaveReachedServer(error.status);
 }
 
 /** The reason a call posted before its close: the message's id and its `dispatch://` reference. */

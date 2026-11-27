@@ -341,7 +341,7 @@ func (s *server) v2CredentialRows() []routeRow {
 				"person its enrollment acts for: every other grant they may see is refused them with that same 403, " +
 				"saying why. While Dispatch does not " +
 				"answer the broker what kind of member the caller is (a timeout, a failed connection, a gateway's 502, " +
-				"503 or 504, Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE, or a 500 naming no code " +
+				"503 or 504, a 408 or a 429 whatever its body names, Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE, or a 500 naming no code " +
 				"or INTERNAL, which Dispatch answers while its database fails), only the person the grant names as its " +
 				"approver ends it as an approver: every revoke through a group or as anyone then, whatever session " +
 				"holds the grant, and every revoke while Dispatch answers anything else the broker cannot read (a " +

@@ -63,6 +63,11 @@
       "types": "./src/daemon-api-records.ts",
       "bun": "./src/daemon-api-records.ts",
       "default": "./dist/daemon-api-records.js"
+    },
+    "./http-status": {
+      "types": "./src/http-status.ts",
+      "bun": "./src/http-status.ts",
+      "default": "./dist/http-status.js"
     }
   },
   "main": "dist/index.js",
@@ -71,8 +76,8 @@
     "gen:go": "bun run scripts/gen-go.ts",
     "check:go": "bun run scripts/gen-go.ts --check",
     "gen:api": "bun run scripts/gen-api.ts",
-    "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-api-v2.ts src/dispatch-tools.ts src/go-blank.ts src/legion-api.ts src/trailing-slash.ts src/log-text.ts src/held-secrets.ts src/daemon-contract.ts src/daemon-api-records.ts --root src --outdir dist --target bun --format esm",
-    "build:dispatch": "bun build src/index.ts src/dispatch-snippet.ts src/dispatch-tools.ts --root src --outdir dist --target bun --format esm",
+    "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-api-v2.ts src/dispatch-tools.ts src/go-blank.ts src/legion-api.ts src/trailing-slash.ts src/log-text.ts src/held-secrets.ts src/daemon-contract.ts src/daemon-api-records.ts src/http-status.ts --root src --outdir dist --target bun --format esm",
+    "build:dispatch": "bun build src/index.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/http-status.ts --root src --outdir dist --target bun --format esm",
     "typecheck": "bun scripts/gen-api.ts && bunx tsc --noEmit",
     "test": "bun test",
     "lint": "bunx biome check src/ schemas/"

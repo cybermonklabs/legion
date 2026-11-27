@@ -470,23 +470,22 @@ describe("executeDispatchTool", () => {
   });
 
   // Whether a write a gateway answered may have reached Dispatch decides what the agent does next.
-  // A 5xx can come back after Dispatch applied it, so the write ends unsettled and the agent checks
-  // before posting again; a 408 or 429 is the gateway's own timeout or rate limit, sent before it
+  // A 5xx can come back after Dispatch applied it, and so can a 408, which a gateway sends when its
+  // own timeout runs out, possibly after it forwarded the request: the write ends unsettled and the
+  // agent checks before posting again. A 429 is the gateway's own rate limit, sent before it
   // forwards the request, so the message was not posted and a retry may succeed. The gateway
   // answers every attempt the same, so the last attempt's answer is the one the agent reads.
   test("tells dispatch_message whether a gateway's answer may have reached Dispatch", async () => {
     const gateway = ", which looks like a proxy or gateway page rather than Dispatch's own answer";
+    const unsettled =
+      " (the last of 5 attempts), and an attempt of the write may have reached Dispatch, so it " +
+      "may or may not have taken effect. Dispatch finishes an attempt it received whatever " +
+      "this command does, so read the write back before you send it again: a new command sends " +
+      "it under a new key.";
     for (const [status, statusText, advice] of [
-      [408, "Request Timeout", ", so the write did not reach Dispatch, and a retry may succeed."],
+      [408, "Request Timeout", unsettled],
       [429, "Too Many Requests", ", so the write did not reach Dispatch, and a retry may succeed."],
-      [
-        502,
-        "Bad Gateway",
-        " (the last of 5 attempts), and an attempt of the write may have reached Dispatch, so it " +
-          "may or may not have taken effect. Dispatch finishes an attempt it received whatever " +
-          "this command does, so read the write back before you send it again: a new command sends " +
-          "it under a new key.",
-      ],
+      [502, "Bad Gateway", unsettled],
     ] as const) {
       const fetchImpl = async () =>
         new Response(`<html><body><h1>${status} ${statusText}</h1></body></html>`, {
@@ -6075,15 +6074,15 @@ describe("executeDispatchTool", () => {
 
   // Whether the reason was posted follows one rule with the close's PATCH: only an answer sent
   // before the reason could be stored proves it was not. That is Dispatch's own 4xx, or a
-  // gateway's answer that never reached Dispatch: a 408 or 429 (its own timeout or rate limit,
-  // where the client's advice that a retry may succeed stands) or a status that cannot clear. A
-  // 5xx, Dispatch's own included (it can fail after it committed), a timeout or a transport error
-  // leaves the reason possibly posted. Where it leaves the post unsettled (write-outcome.ts), that
-  // account replaces the client's words on the write, joined to what the post got as a clause;
-  // after any other error's own message it joins a clause, or starts a sentence where the message
-  // ended one. Every failure but a timeout and a refusal that cannot clear is asked again until the
-  // write's five attempts run out, each failing the same way, so the last attempt's account is the
-  // agent's.
+  // gateway's answer that never reached Dispatch: a 429 (its own rate limit, where the client's
+  // advice that a retry may succeed stands) or a status that cannot clear. A 5xx, Dispatch's own
+  // included (it can fail after it committed), a gateway's 408 (its timeout can run out after it
+  // forwarded the post), a timeout or a transport error leaves the reason possibly posted. Where it
+  // leaves the post unsettled (write-outcome.ts), that account replaces the client's words on the
+  // write, joined to what the post got as a clause; after any other error's own message it joins a
+  // clause, or starts a sentence where the message ended one. Every failure but a timeout and a
+  // refusal that cannot clear is asked again until the write's five attempts run out, each failing
+  // the same way, so the last attempt's account is the agent's.
   test("dispatch_issue_update says whether a failed post of the reason leaves it posted", async () => {
     const page = (status: string, text: string) =>
       `POST http://dispatch.test/api/v1/issues/ACME-175/messages answered ${status} with a body ` +
@@ -6107,8 +6106,13 @@ describe("executeDispatchTool", () => {
       "The socket connection was closed unexpectedly. For more information, pass `verbose: true` " +
       "in the second argument to fetch()";
     for (const [message, expected, attempts] of [
-      // A 5xx can come after Dispatch committed the reason, so with no ask left the post ends
-      // unsettled (write-outcome.ts), and what it got leads the reason's account.
+      // A 5xx or a gateway's 408 can come after Dispatch committed the reason, so with no ask left
+      // the post ends unsettled (write-outcome.ts), and what it got leads the reason's account.
+      [
+        () => gatewayPage(408, "Request Timeout"),
+        `${page("408 Request Timeout", "408 Request Timeout")}${unknown}`,
+        5,
+      ],
       [
         () => gatewayPage(502, "Bad Gateway"),
         `${page("502 Bad Gateway", "502 Bad Gateway")}${unknown}`,
@@ -6137,11 +6141,6 @@ describe("executeDispatchTool", () => {
           throw new Error(reset);
         },
         `${post} failed on its last attempt (${reset})${unknown}`,
-        5,
-      ],
-      [
-        () => gatewayPage(408, "Request Timeout"),
-        `${answered("408 Request Timeout", "408 Request Timeout")}${retry}${notPosted}`,
         5,
       ],
       [
@@ -6205,15 +6204,12 @@ describe("executeDispatchTool", () => {
     );
   });
 
-  // A gateway's 408 or 429 on the close is its own timeout or rate limit, sent before it forwards
-  // the PATCH, so the issue did not close, as after the reason's post. Nothing refused the close,
-  // so the agent is not told to fix anything: the client's advice that a retry may succeed stands,
-  // and the account says how to retry without posting the reason a second time.
-  test("dispatch_issue_update says a gateway's 408 or 429 on the close left the issue open", async () => {
-    for (const [status, statusText] of [
-      [408, "Request Timeout"],
-      [429, "Too Many Requests"],
-    ] as const) {
+  // A gateway's 429 on the close is its own rate limit, sent before it forwards the PATCH, so the
+  // issue did not close, as after the reason's post. Nothing refused the close, so the agent is not
+  // told to fix anything: the client's advice that a retry may succeed stands, and the account says
+  // how to retry without posting the reason a second time.
+  test("dispatch_issue_update says a gateway's 429 on the close left the issue open", async () => {
+    for (const [status, statusText] of [[429, "Too Many Requests"]] as const) {
       const server = closingServer({
         message: () => response({ id: "message-7", issue_key: "ACME-175" }),
         patch: () => gatewayPage(status, statusText),
@@ -6241,12 +6237,12 @@ describe("executeDispatchTool", () => {
     }
   });
 
-  // A timeout, a transport error, or a 5xx gives no proof the issue stayed open, so the error
-  // must not say it did: an agent that believed it would retry and post its reason twice. A
-  // gateway's 5xx page is the same case, and its account replaces the client's retry advice
-  // rather than following it, so the message never says both that a retry may succeed and that
-  // retrying posts the reason again.
-  test("dispatch_issue_update says the close is unknown when the PATCH times out or 5xxes after the post", async () => {
+  // A timeout, a transport error, a 5xx or a gateway's 408 gives no proof the issue stayed open, so
+  // the error must not say it did: an agent that believed it would retry and post its reason twice.
+  // A gateway's 5xx or 408 page is the same case, and its account replaces the client's retry
+  // advice rather than following it, so the message never says both that a retry may succeed and
+  // that retrying posts the reason again.
+  test("dispatch_issue_update says the close is unknown when the PATCH times out, 5xxes or 408s after the post", async () => {
     const unknown =
       "; the reason already landed as message message-7 (dispatch://ACME-175/message/message-7), " +
       "and the close may or may not have taken effect. Read the issue's status before retrying: " +
@@ -6266,14 +6262,21 @@ describe("executeDispatchTool", () => {
             tries,
           ] as const
       ),
-      // A 5xx can come after Dispatch committed the close, so with no ask left the PATCH ends
-      // unsettled (write-outcome.ts), and what it got leads the close's account.
+      // A 5xx or a gateway's 408 can come after Dispatch committed the close, so with no ask left
+      // the PATCH ends unsettled (write-outcome.ts), and what it got leads the close's account.
       [() => errorAnswer(502, "HTTP_502", "Bad Gateway"), `HTTP_502: Bad Gateway${unknown}`, 5],
       [
         () => gatewayPage(502, "Bad Gateway"),
         "PATCH http://dispatch.test/api/v1/issues/ACME-175 answered 502 Bad Gateway " +
           'with a body that is not Dispatch\'s error JSON ("502 Bad Gateway"), which looks like a ' +
           `proxy or gateway page rather than Dispatch's own answer${unknown}`,
+        5,
+      ],
+      [
+        () => gatewayPage(408, "Request Timeout"),
+        "PATCH http://dispatch.test/api/v1/issues/ACME-175 answered 408 Request Timeout " +
+          'with a body that is not Dispatch\'s error JSON ("408 Request Timeout"), which looks like ' +
+          `a proxy or gateway page rather than Dispatch's own answer${unknown}`,
         5,
       ],
     ] as const) {
