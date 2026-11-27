@@ -5,16 +5,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // closeWaitBoard is outboxDispatch holding the issue's close-wait.md as Dispatch holds a
@@ -25,7 +30,8 @@ import (
 // counted in unguarded, as Dispatch counts each unguarded replacement. editsAfterRead is how many
 // of the next token reads are each followed by a person's edit of the document, which moves its
 // token before the upload that read meant to name it. tokenErr and uploadErr are what a read of
-// the token and an upload answer in place of all that.
+// the token and an upload answer in place of all that. onUpload, where set, runs after each version
+// the board writes, as a change of the record made while that upload ran.
 type closeWaitBoard struct {
 	*outboxDispatch
 	mu             sync.Mutex
@@ -35,6 +41,7 @@ type closeWaitBoard struct {
 	editsAfterRead int
 	tokenErr       error
 	uploadErr      error
+	onUpload       func()
 }
 
 // closeWaitUpload is one upload of close-wait.md: the token it named, "" for none, and the
@@ -89,6 +96,9 @@ func (d *closeWaitBoard) UploadArtifactOver(_ context.Context, key, name, conten
 			Err: &dispatch.Error{Status: http.StatusConflict, Code: "PRECONDITION_FAILED", Message: "document upload precondition failed"}}
 	}
 	d.versions = append(d.versions, content)
+	if d.onUpload != nil {
+		d.onUpload()
+	}
 	return record.CloseWaitDocumentSlug, nil
 }
 
@@ -211,5 +221,86 @@ func TestTheCloseWaitDocumentIsWrittenOverItsToken(t *testing.T) {
 	}
 	if board.unguarded != 0 {
 		t.Fatalf("%d uploads replaced the document unguarded, want none: each later write names the token it read", board.unguarded)
+	}
+}
+
+// A withdrawal is said in the version of close-wait.md the row uploads with it: once that upload
+// succeeds the stored wait holds the withdrawal no more (record.Store.ClearWaitWithdrawals), so the
+// next version does not say it again. A withdrawal made while the row uploads is not in the version
+// it uploads, so the stored wait keeps it for the next one, and a version Dispatch refuses clears
+// nothing.
+func TestAVersionThatShowsAWithdrawalClearsIt(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	since := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	entered := since.Add(time.Minute)
+	first := record.WaitWithdrawal{ID: 3, Text: "the retry never stops", Reason: "same as defect 5", At: entered.Add(time.Hour)}
+	second := record.WaitWithdrawal{ID: 4, Text: "the log names no issue", Reason: "fixed by the retro", At: entered.Add(2 * time.Hour)}
+	wait := func(withdrawn ...record.WaitWithdrawal) record.StoredWait {
+		return record.StoredWait{Entered: entered, Withdrawn: withdrawn,
+			Defects: []record.WaitReason{{ID: 5, Kind: record.DefectKindDefect, Text: "the cache never expires", Since: entered}}}
+	}
+	withdrawnNow := func() []int64 {
+		t.Helper()
+		var ids []int64
+		if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+			issue, err := records.Issue(ctx, tx, "LEGION-208")
+			if err != nil {
+				return err
+			}
+			var stored record.StoredWait
+			if err := json.Unmarshal(issue.CloseWait, &stored); err != nil {
+				return err
+			}
+			for _, withdrawn := range stored.Withdrawn {
+				ids = append(ids, withdrawn.ID)
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("read the stored wait: %v", err)
+		}
+		return ids
+	}
+	putOutboxIssue(t, pool, records, waitingIssue(t, since, wait(first)))
+	board := &closeWaitBoard{outboxDispatch: &outboxDispatch{}}
+	runner := &outbox{log: slog.New(slog.NewTextHandler(io.Discard, nil)), pool: pool, records: records, dispatch: board}
+	run := func(id int64) error {
+		t.Helper()
+		row := mustOutboxRow(t, "LEGION-208", record.CloseWaitPublish{Generation: 3}, time.Now())
+		row.ID = id
+		return runner.execute(context.Background(), row)
+	}
+
+	// The second withdrawal lands while the version holding the first uploads.
+	board.onUpload = func() { putOutboxIssue(t, pool, records, waitingIssue(t, since, wait(first, second))) }
+	if err := run(81); err != nil {
+		t.Fatalf("the first write: %v", err)
+	}
+	board.onUpload = nil
+	if got := board.versions[len(board.versions)-1]; !strings.Contains(got, first.Reason) || strings.Contains(got, second.Reason) {
+		t.Fatalf("the first version = %q, want the first withdrawal alone", got)
+	}
+	if got := withdrawnNow(); !slices.Equal(got, []int64{second.ID}) {
+		t.Fatalf("withdrawals in the stored wait after the first write = %v, want only %d, which no version showed yet", got, second.ID)
+	}
+
+	board.uploadErr = &dispatch.Error{Status: http.StatusRequestEntityTooLarge, Code: "CAP_EXCEEDED", Message: "a markdown document is at most 1 MiB"}
+	if err := run(82); err != nil {
+		t.Fatalf("a refused write = %v, want the row finished", err)
+	}
+	board.uploadErr = nil
+	if got := withdrawnNow(); !slices.Equal(got, []int64{second.ID}) {
+		t.Fatalf("withdrawals after a refused write = %v, want %d kept", got, second.ID)
+	}
+
+	if err := run(83); err != nil {
+		t.Fatalf("the second write: %v", err)
+	}
+	if got := board.versions[len(board.versions)-1]; !strings.Contains(got, second.Reason) || strings.Contains(got, first.Reason) {
+		t.Fatalf("the second version = %q, want the second withdrawal alone", got)
+	}
+	if got := withdrawnNow(); len(got) != 0 {
+		t.Fatalf("withdrawals after the second write = %v, want none", got)
 	}
 }

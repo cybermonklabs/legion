@@ -185,10 +185,10 @@ func TestAKeptRoleMessageToAReleasedRoleWaitsPastItsHourOnlyWhileAWakeCanCome(t 
 				t.Parallel()
 				publisher := &holderPublisher{}
 				logs := &syncBuffer{}
-				runner, sup, pool := runnerIn(t, message.at, tc.status, publisher, slog.New(slog.NewJSONHandler(logs, nil)))
+				runner, _, pool := runnerIn(t, message.at, tc.status, publisher, slog.New(slog.NewJSONHandler(logs, nil)))
 				holdSlot(t, pool, "LEGION-208")
 				publisher.setAbsent(notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", message.role)))
-				machine := releasedClaim(t, sup, message.role)
+				machine := recordedReleasedClaim(t, runner, message.role)
 				message.enqueue(t, runner, pool, time.Now().Add(-2*time.Hour))
 
 				drainAt(t, runner, 0, "the row's first attempt, past its hour")

@@ -128,10 +128,13 @@ describe("the dispatch entry", () => {
     ["a picture, with no host", PICTURE_VERSION, {}],
     ["a file stored as JSON, with a host", DATA_VERSION, OMP],
     ["a file stored as JSON, with no host", DATA_VERSION, {}],
-  ] as const)("writes stored content to a pipe as its bytes, unchanged: %s", async (_, path, host) => {
-    const { code, stdout, stderr } = await runEntry(["api", "--path", path], host);
-    expect(stderr).toBe("");
-    expect(code).toBe(0);
-    expect(stdout).toEqual(FILES[path]?.bytes);
-  });
+  ] as const)(
+    "writes stored content to a pipe as its bytes, unchanged: %s",
+    async (_, path, host) => {
+      const { code, stdout, stderr } = await runEntry(["api", "--path", path], host);
+      expect(stderr).toBe("");
+      expect(code).toBe(0);
+      expect(stdout).toEqual(FILES[path]?.bytes);
+    }
+  );
 });

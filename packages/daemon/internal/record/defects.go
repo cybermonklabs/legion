@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -135,6 +136,44 @@ func (s *Postgres) Defect(ctx context.Context, tx pgx.Tx, issue string, id int64
 		return nil, fmt.Errorf("read defect %d of %s: %w", id, issue, err)
 	}
 	return &defect, nil
+}
+
+func (s *Postgres) ClearWaitWithdrawals(ctx context.Context, tx pgx.Tx, issue string, shown []WaitWithdrawal) error {
+	if len(shown) == 0 {
+		return nil
+	}
+	var encoded []byte
+	if err := tx.QueryRow(ctx, "select close_wait from issues where key = $1 for update", issue).Scan(&encoded); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("read the stored wait of %s: %w", issue, err)
+	}
+	if len(encoded) == 0 {
+		return nil
+	}
+	var wait StoredWait
+	if err := json.Unmarshal(encoded, &wait); err != nil {
+		return fmt.Errorf("read the stored wait of %s: %w", issue, err)
+	}
+	var kept []WaitWithdrawal
+	for _, withdrawn := range wait.Withdrawn {
+		if !slices.ContainsFunc(shown, func(said WaitWithdrawal) bool { return said.ID == withdrawn.ID && said.At.Equal(withdrawn.At) }) {
+			kept = append(kept, withdrawn)
+		}
+	}
+	if len(kept) == len(wait.Withdrawn) {
+		return nil
+	}
+	wait.Withdrawn = kept
+	cleared, err := json.Marshal(wait)
+	if err != nil {
+		return fmt.Errorf("write the stored wait of %s: %w", issue, err)
+	}
+	if _, err := tx.Exec(ctx, "update issues set close_wait = $2 where key = $1", issue, cleared); err != nil {
+		return fmt.Errorf("write the stored wait of %s: %w", issue, err)
+	}
+	return nil
 }
 
 func (s *Postgres) WithdrawDefect(ctx context.Context, tx pgx.Tx, issue string, id int64, reason string, at time.Time) (bool, error) {

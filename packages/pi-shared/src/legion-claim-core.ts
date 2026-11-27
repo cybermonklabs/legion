@@ -63,12 +63,18 @@ export interface LegionClaimHost {
    * doubled at each retry up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`. Unset, `ROLE_CLAIM_RETRY_FIRST_DELAY_MS`;
    * a test sets it short. */
   readonly roleClaimRetryFirstDelayMs?: number;
-  /** Aborts when the host stops: a claim the listener answered 503 is not made again after it. */
+  /** Aborts when the host stops: the deferred claim's bound is cleared and no claim is made
+   *  from then on, a claim the listener answered 503 is not made again after it, a refused
+   *  `claims/register` is not said, and a failed `claims/ready` at the boot is neither said nor
+   *  sent again (`callReadyWithRetry`). A role regain from then on writes nothing: a regain that
+   *  starts after the abort sends no `claims/ready`, and a regain whose `claims/ready` answers
+   *  after it writes no line, whether that ready passed or failed. */
   readonly signal?: AbortSignal;
   /** Sets the one hook the Envoy heartbeat runs after it re-establishes this session as a role's
    * holder, with why it did (`reclaimed`, `reregistered`). */
   readonly onRoleRegained: (listener: (role: string, reason: string) => Promise<void>) => void;
-  /** Writes one line to the agent's log. */
+  /** Writes one line to the agent's log: every line of the boot's, the `claims/ready` retries'
+   *  included. */
   readonly log: (line: string) => void;
   /** What `stop` does, as a log line names it: `exiting so the daemon launches it again`. */
   readonly stopping: string;
@@ -118,7 +124,10 @@ export interface LegionClaimBoot {
  * rejects, as a request that never reached the daemon does unlogged: both leave the agent to the
  * daemon's registration deadline. A claim the listener refuses is logged and stops the agent in
  * exactly the same words, now after the daemon may have delivered a task: the relaunch re-sends a
- * delivery that is pending and unconfirmed, the path a death inside a turn already takes.
+ * delivery that is pending and unconfirmed, the path a death inside a turn already takes. A
+ * refusal of the registration, and a failure after a registration, once the host's `signal`
+ * aborted - the host stopping - is not logged, and a failure after a registration is not stopped
+ * on either: the host's stop ends the agent itself.
  */
 export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClaimBoot> {
   const { daemon } = host;
@@ -127,7 +136,10 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
     claim = await daemon.register(host.registration);
   } catch (error) {
     if (!(error instanceof LegionDaemonApiError)) throw error;
-    host.log(`claims/register registration failed (${error.status}): ${error.detail}`);
+    // A refusal the host's stop overtook says nothing: the stop ends the agent itself.
+    if (host.signal?.aborted !== true) {
+      host.log(`claims/register registration failed (${error.status}): ${error.detail}`);
+    }
     if (error.status < 400 || outage(error.status)) throw error;
     host.stop();
     return { claimed: Promise.resolve() };
@@ -155,20 +167,26 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
       secret: claim.secret,
       generation: claim.generation,
     };
-    await callReadyWithRetry("claims/ready", () => daemon.ready(ready));
+    await callReadyWithRetry("claims/ready", () => daemon.ready(ready), host);
     host.onRoleRegained(async (role, reason) => {
       if (role !== claim.claimToken) return;
+      // Once the host's stop began, a regain asks the daemon nothing and says nothing: the stop
+      // ends the agent itself. The stop is read again after the ready, which can answer after it.
+      const stopped = (): boolean => host.signal?.aborted === true;
+      if (stopped()) return;
       try {
-        await callReadyWithRetry("claims/ready after role regain", () => daemon.ready(ready));
+        await callReadyWithRetry("claims/ready after role regain", () => daemon.ready(ready), host);
+        if (stopped()) return;
         host.log(`re-ran claims/ready after role ${role} was ${reason}`);
       } catch (error) {
+        if (stopped()) return;
         host.log(
           `claims/ready after role ${role} was ${reason} failed; the daemon's queued task stays undelivered until the next regain or boot: ${messageFor(error)}`
         );
       }
     });
   } catch (error) {
-    stopAfterRegistration(host, claim.claimToken, error);
+    if (host.signal?.aborted !== true) stopAfterRegistration(host, claim.claimToken, error);
     return { claimed: Promise.resolve() };
   }
   return { claimed: claimRoleAtFirstTurn(host, claim.claimToken, claim.replaces, firstTurn) };
@@ -231,6 +249,10 @@ function listenForFirstTurn(host: LegionClaimHost): (claim: () => void) => void 
  * meanwhile: the role's messages wait for it, with the holder the claim would have replaced or on
  * the role's kept lane, or reach it already where the claim stands. The promise answers when the
  * step has run, either way, and never rejects.
+ *
+ * A host whose `signal` aborts - the host stopping - claims nothing from then on (R24 of
+ * dispatch://INFRA-3589): the abort clears the bound, and a first turn the host reports after it
+ * runs no claim. The promise answers at the abort, as a step that ran.
  */
 function claimRoleAtFirstTurn(
   host: LegionClaimHost,
@@ -240,10 +262,18 @@ function claimRoleAtFirstTurn(
 ): Promise<void> {
   const done = Promise.withResolvers<void>();
   let ran = false;
+  // The host's stop: the bound goes, and no claim runs after it.
+  const stop = (): void => {
+    if (ran) return;
+    ran = true;
+    clearTimeout(bound);
+    done.resolve();
+  };
   const claim = (): void => {
     if (ran) return;
     ran = true;
     clearTimeout(bound);
+    host.signal?.removeEventListener("abort", stop);
     void (async () => {
       try {
         await claimRoleAgainOnBusy(() => host.claimRole(role, replaces), role, {
@@ -259,6 +289,8 @@ function claimRoleAtFirstTurn(
   };
   const bound = setTimeout(claim, host.firstTurnBoundMs);
   bound.unref?.();
+  if (host.signal?.aborted === true) stop();
+  else host.signal?.addEventListener("abort", stop, { once: true });
   firstTurn(claim);
   return done.promise;
 }

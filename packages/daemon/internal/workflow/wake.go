@@ -26,12 +26,12 @@ import (
 // with the source `released` and deleted the pod, its disk and its Sandbox, or, where the Sandbox
 // owns a kept volume, kept that Sandbox Suspended with its volume. A wake resumes one of those
 // claims, which relaunches its session in a fresh pod that provisions the workspace from the
-// issue's pushed branch, or mounts the kept volume as the roles left it. Five things wake a pod,
-// and this file holds four of them: the CI settlement, the role message and the agent message the
-// Envoy listener reports, and the stored backstop. The fifth — a delivery the daemon already had
-// for a role of the pod — needs nothing here, because a delivery to a suspended claim already
-// resumes it (supervise's deliverResuming) and the delivery is its own account of why the pod came
-// back.
+// issue's pushed branch (WorkspaceAfterRelease), or mounts the kept volume as the roles left it.
+// Five things wake a pod, and this file holds four of them: the CI settlement, the role message
+// and the agent message the Envoy listener reports, and the stored backstop. The fifth — a
+// delivery the daemon already had for a role of the pod — needs nothing here, because a delivery
+// to a suspended claim already resumes it (supervise's deliverResuming) and the delivery is its
+// own account of why the pod came back.
 //
 // Every wake acts only on a claim that is still `released`, of an issue still in the workflow
 // whose tree is live, and a role comes back once while its pod is on its way: the role's one open
@@ -64,6 +64,18 @@ type Pods interface {
 	// daemon reads the report and only the one holding a claim of that name acts.
 	ClaimByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, bool, error)
 	ClaimBySession(ctx context.Context, tx pgx.Tx, session string) (supervise.Claim, bool, error)
+	// ClaimInReleaseBySession and ClaimInReleaseByToken are the live claim a listener's report
+	// names while a release of its pod has not ended: a claim neither suspended, failed nor
+	// retired, whose issue's release mark still stands. They answer the claim, when the release
+	// was marked, and whether there is one. A wake that finds such a claim comes before the
+	// release records the claim as released, and is applied again (listenerWake).
+	ClaimInReleaseBySession(ctx context.Context, tx pgx.Tx, session string) (supervise.Claim, time.Time, bool, error)
+	ClaimInReleaseByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, time.Time, bool, error)
+	// StartQueued is whether the outbox holds a start of issue's role at generation that names
+	// no phase and waits for no slot, such as the start a cancelled release queues for each claim
+	// it suspended or the start a wake queues. The outbox resumes the role when that row runs, so
+	// the role is already coming back (store.PodRecords.StartQueued).
+	StartQueued(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, generation uint64) (bool, error)
 	// MarkMessage marks the claim token for an Envoy message that has waited since at, and
 	// answers the mark it wrote, or else the mark that stands once it has: the earliest of the
 	// marks the role has taken no turn since, and the zero time for a claim that takes none. A mark
@@ -71,20 +83,23 @@ type Pods interface {
 	// (the store's MarkClaimMessageTx).
 	MarkMessage(ctx context.Context, tx pgx.Tx, token claim.Token, at time.Time) (time.Time, error)
 	// TakePodWake takes one wake of issue's role and answers whether this call took it; false is
-	// a wake another pass already took, which is already bringing the pod back. pause is the
-	// project pause that holds the wake, 0 for none: a held wake records its pause and pairs with
-	// no release (decision 15 of dispatch://INFRA-3759).
+	// a wake another pass already took, which is already bringing the pod back. at is the time of
+	// the take, which the resume records as the wake's time (wakeReleased). pause is the project
+	// pause that holds the wake, 0 for none: a held wake records its pause and pairs with no
+	// release (decision 15 of dispatch://INFRA-3759).
 	TakePodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time, pause int64) (bool, error)
 	// PauseOfWake is which pause holds a wake of the claim token, issue's role, by the store's one
 	// rule of it (store's PodRecords.PauseOfWake), and which pause stopped the claim. mark is the
 	// pause that held the outbox row the wake is taken for, which a wake of this package, taken
 	// for no row, passes as 0. The wake is a held wake of held (decision 15), and the session it
-	// brings back is one stopping stopped in a pod it kept (decision 16).
+	// brings back is one stopping stopped in a pod it kept (decision 16). It reads the issue's
+	// newest release, so it locks the issue's release mark first, as the take does.
 	PauseOfWake(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, mark int64) (held, stopping int64, err error)
 	// ClosePodGoneResume closes the open resume of issue's role when the pod it was waiting for
-	// has gone away: a release of the issue recorded since that wake was taken. It answers the
-	// issue's newest release where it closed a row, and 0 where it closed none.
-	ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (int64, error)
+	// has gone away: a release of the issue recorded since that wake was taken, or one whose
+	// teardown gave up on its record after it. It answers whether it closed a row and, where it
+	// did, the issue's newest recorded release, which is 0 where it closed none.
+	ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (newest int64, closed bool, err error)
 	// FirePodBackstop marks the backstop fired and answers whether this call fired it.
 	FirePodBackstop(ctx context.Context, tx pgx.Tx, id int64) (bool, error)
 	// VolumeNoticeCounts and RecordVolumeNotice are the bounds on what an issue's architect is
@@ -118,22 +133,26 @@ type Pods interface {
 // that role serves (record.Issue.GenerationOf: the tree's run for a root's architect, the issue's
 // own generation for every other role), naming no phase, carrying the task that says why the pod
 // came back. It is the same row a phase start writes, which is the point — the outbox's start
-// executor already resumes a suspended claim by rule (RequestRuleResume), already records the
-// start that cancels a release still in flight (StartedBy, read by store.IssueReleaseStop), and
-// already delivers the row's task once the relaunched agent is ready. Naming no phase keeps the
-// row out of every phase fence: the issue's phase may move between the wake and the relaunch, and
-// the wake's task is never the phase's work. It is queued as every worker's task is (queuedRow),
-// so a woken reviewer of an issue in reviewing is told the entry of its round too (WakeTask says
-// why).
+// executor already resumes a suspended claim by rule (RequestRuleResume) and already delivers the
+// row's task once the relaunched agent is ready. A wake taken while a release of the pod still
+// runs, after that release recorded the role's claim as `released`, does not cancel the release:
+// its row waits for the release's teardown (record's outboxInOrder), so the role starts once, in
+// the pod that comes back (store.IssueRelease). Naming no phase keeps the row out of every phase
+// fence: the issue's phase may move between the wake and the relaunch, and the wake's task is
+// never the phase's work. It is queued as every worker's task is (queuedRow), so a woken reviewer
+// of an issue in reviewing is told the entry of its round too (WakeTask says why).
 //
 // The row is marked with the wake's kind, so the start finishes without acting once a park, a
 // close or a moved phase has taken the role over while the row waited (decision 10 of
 // dispatch://INFRA-3759), and with the pause that held the wake, 0 for none (decision 15), which
 // the outbox's lines of the start name. The outbox holds every start of a paused project, marked
-// or not (record's outboxPauseFree).
-func wakeRow(issue record.Issue, role claim.Role, kind string, pause int64, task string) record.SuperviseRequest {
+// or not (record's outboxPauseFree). It carries the wake's detail beside its kind
+// (record.SuperviseRequest.WakeDetail): task is WakeTask of that kind and detail, so a cancel or a
+// release's record that tells the same wake in other words renders the task again from the two
+// (retellWakeTask).
+func wakeRow(issue record.Issue, role claim.Role, kind, detail string, pause int64, task string) record.SuperviseRequest {
 	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Generation: issue.GenerationOf("start", role), Task: task,
-		WakeKind: kind, Pause: pause}
+		WakeKind: kind, WakeDetail: detail, Pause: pause}
 }
 
 // PauseWakeRow is the start a project's pause owes a role it stopped with a launch owed: the row
@@ -141,10 +160,50 @@ func wakeRow(issue record.Issue, role claim.Role, kind string, pause int64, task
 // dispatch://INFRA-3759), in wakeRow's shape, marked with the wake's kind and the pause, so it
 // finishes without acting once a park, a close or a moved phase has taken the role over (decision
 // 10). The outbox holds it while a pause stands, as it holds every start of a paused project. It
-// carries no task: the task the role holds pending, if any, is what its launch delivers.
+// carries no task and no detail: the task the role holds pending, if any, is what its launch
+// delivers.
 func PauseWakeRow(issue record.Issue, role claim.Role, pause int64) record.SuperviseRequest {
-	return wakeRow(issue, role, pods.WakePause, pause, "")
+	return wakeRow(issue, role, pods.WakePause, "", pause, "")
 }
+
+// A wake report that finds its claim in a release that has not ended is applied again every
+// wakeRetryInRelease, until WakeHeldForRelease after the report's own time. That limit is longer
+// than INFRA's 610-second bound on a stop (runtime/sandbox), so a release that ends records the
+// claim inside it. A release that has not ended by then has a fault of its own, and the wake is
+// dropped with one warning (listenerWakeInRelease). WakeHeldForRelease is R3's bound on the
+// release too (dispatch://INFRA-3589): a teardown whose record of the release cannot be written
+// runs again until its first attempt at or past WakeHeldForRelease after the release's mark,
+// which finishes without that record and clears the mark in the transaction that settles the
+// wakes taken under it (internal/daemon's recordGivenUp and settleGivenUp).
+const (
+	wakeRetryInRelease = 30 * time.Second
+	WakeHeldForRelease = 15 * time.Minute
+)
+
+// wakePreamble is the first sentences of the task of a wake whose session an idle release stopped
+// (WakeTask, StoppedByRelease): the pod was released and this wake brought it back, with what the
+// role finds of its workspace (WorkspaceAfterRelease). It is a var because that text is read from
+// an embedded file.
+var wakePreamble = "Your issue's pod had been released while it was idle, and this wake brought it back. " +
+	WorkspaceAfterRelease + " Your session is as you left it. "
+
+// pauseWakePreamble is the first sentences of the task of a wake whose session a project's pause
+// stopped (WakeTask, StoppedByPause): the pause stopped the session and kept its pod.
+const pauseWakePreamble = "Your project was paused, and its pause stopped your session. This wake started it again. " +
+	"Your pod, your workspace and any work you had not pushed are as you left them. "
+
+// The words of WakeTask for the time the woken role was away and for its backstop, by what
+// stopped its session: an idle release, which took the pod, or a project's pause, which kept it.
+const (
+	releaseAway, pauseAway         = "while your pod was gone", "while your session was stopped"
+	releaseBackstop, pauseBackstop = "the release's backstop", "your backstop"
+)
+
+// cancelledWakePreamble is the first two sentences of the task a cancelled release's resume
+// carries in place of a wake it dropped (CancelledWakeTask): the release did not finish, so the
+// pod never went away.
+const cancelledWakePreamble = "An idle release of your issue's pod stopped your role, and that release did not finish, " +
+	"so your role goes on in the same pod. Your session, your workspace and any work you had not pushed are as you left them. "
 
 // WakeStop is what stopped the session a wake brings back, which the wake's task names first.
 type WakeStop int
@@ -158,6 +217,10 @@ const (
 	// StoppedByPause: a project's pause stopped the session and kept its pod, its workspace and
 	// its unpushed work as they were (decision 16 of dispatch://INFRA-3759).
 	StoppedByPause
+	// stoppedByCancelledRelease: an idle release stopped the session and was cancelled, so the pod
+	// never went away (TakenOverWakeTask). No wake is taken so: a wake's task names this stop only
+	// when a cancel retells it.
+	stoppedByCancelledRelease
 )
 
 // WorkspaceAfterRelease is what a role woken after an idle release is told of its workspace, in
@@ -191,6 +254,10 @@ var workspaceAfterReleaseFile string
 // The first sentences name what stopped the session: an idle release, which took the pod, or a
 // project's pause, which kept it (stop, decision 16 of dispatch://INFRA-3759).
 //
+// The texts of the two message wakes hold whether or not Envoy stored the message. The wake
+// report does not say whether it did, so each text says what happens to a message Envoy stored
+// and to one it did not.
+//
 // The wake's task is never the phase's work, and for the reviewer it still ends with the daemon's
 // two sentences of the review round (reviewround.Sentences), which the queue appends to it as to
 // every task of the reviewer (queuedRow, namingTheReviewRound): in reviewing, while the row holds
@@ -199,28 +266,23 @@ var workspaceAfterReleaseFile string
 // settlement, so the wake is its newest task, and the review it then submits moves the commit it
 // read only when its footer names the entry that stands. The text here names no entry itself.
 func WakeTask(kind, detail string, stop WakeStop) string {
-	preamble := "Your issue's pod had been released while it was idle, and this wake brought it back. " +
-		WorkspaceAfterRelease + " Your session is as you left it. "
-	away, backstop := "while your pod was gone", "the release's backstop"
-	if stop == StoppedByPause {
-		preamble = "Your project was paused, and its pause stopped your session. This wake started it again. " +
-			"Your pod, your workspace and any work you had not pushed are as you left them. "
-		away, backstop = "while your session was stopped", "your backstop"
-	}
+	preamble, away, backstop := wakeWords(stop)
 	switch kind {
 	case pods.WakeChecks:
 		return preamble + "The wake is a CI settlement on your pull request's head: " + detail +
 			". Read the checks before you decide anything."
 	case pods.WakeRoleMessage:
 		return preamble + "The wake is a message somebody published to your role topic (" + detail +
-			") " + away + ". Envoy keeps a role message for one hour: a message kept for your role " +
-			"reaches this session as an Envoy card that shows kept_at, possibly before this task, unless its " +
-			"hour ended before you came back, and Envoy tells its sender when it drops one. " +
-			"A message sent with keep: false is not kept, and its sender sends it again."
+			") " + away + ". A message that Envoy kept for your role reaches this session, " +
+			"for one hour after Envoy kept it. It comes as an Envoy card that shows kept_at, possibly " +
+			"before this task. When that hour ends before a session takes the message, Envoy drops it " +
+			"and tells its sender. A message that Envoy did not keep, such as one sent with keep: false, " +
+			"does not reach you, and its sender must send it again."
 	case pods.WakeAgentMessage:
 		return preamble + "The wake is a message somebody sent to your session (" + detail +
-			") " + away + ". A message that Envoy or Dispatch stored for your session reaches you in this session. " +
-			"A direct Envoy message that Envoy refused reaches you when its sender sends it again."
+			") " + away + ". A message that Envoy or Dispatch stored for your session reaches this " +
+			"session, for 72 hours after it was stored. A message that neither stored, such as a direct send " +
+			"that Envoy refused, does not reach you, and its sender must send it again."
 	case pods.WakeBackstop:
 		return preamble + "The wake is " + backstop + " running out: " + detail +
 			". Nothing else asked for you, so take up your phase where you left it."
@@ -229,17 +291,139 @@ func WakeTask(kind, detail string, stop WakeStop) string {
 	}
 }
 
+// wakeWords are the words of WakeTask that name what stopped the session: the preamble, the
+// words for the time the woken role was away, and the words for its backstop. A release that was
+// cancelled stopped the session and kept the pod, so its time away is the pause's words, which
+// say that the session was stopped, and its backstop is the release's, which armed it.
+func wakeWords(stop WakeStop) (preamble, away, backstop string) {
+	switch stop {
+	case StoppedByPause:
+		return pauseWakePreamble, pauseAway, pauseBackstop
+	case stoppedByCancelledRelease:
+		return cancelledWakePreamble, pauseAway, releaseBackstop
+	}
+	return wakePreamble, releaseAway, releaseBackstop
+}
+
+// CancelledWakeTask is the task a cancelled release's resume of a role carries in place of the
+// wake the cancel dropped (store.CancelIssueRelease): kind and detail are the dropped wake's, as
+// its start records them (record.SuperviseRequest.WakeKind and WakeDetail), and task is the task
+// of the start it dropped. A wake taken after the release recorded the role does not cancel the
+// release, but a cancel for another cause can still follow it, and then the pod never went away.
+//
+// Two wakes reach the role only through that task: a CI settlement, whose woken role is told no
+// message of its own (tellChecks), and the backstop. For those the answer depends on what stopped
+// the session the task was written for. A task that begins with WakeTask of the wake for a
+// session an idle release stopped (StoppedByRelease) says that the pod was released, which the
+// cancel makes false. Its answer is WakeTask of the same wake for a release that did not finish
+// (stoppedByCancelledRelease), and then the rest of the task, so the review round's sentences the
+// queue appended stay: the retell TakenOverWakeTask makes (retellWakeTask). A task that begins
+// with WakeTask of the wake for a session a project's pause stopped (StoppedByPause) was taken
+// while the release stood (store.PodRecords.PauseOfWake). It says that the pod was kept. The
+// cancel kept the pod, so those words stay true, and the answer is that task as it is: the role
+// must still read the settlement or the backstop. A task that begins with neither is no task this
+// daemon wrote for that wake, and answers "".
+//
+// Every other wake answers "": a message wake's message reaches the session anyway, so the
+// resume needs none of its text. The text of a message wake for a session a release stopped also
+// says that the message came "while your pod was gone", which the cancel makes false.
+func CancelledWakeTask(kind, detail, task string) string {
+	if kind != pods.WakeChecks && kind != pods.WakeBackstop {
+		return ""
+	}
+	if strings.HasPrefix(task, WakeTask(kind, detail, StoppedByPause)) {
+		return task
+	}
+	if told, ok := retellWakeTask(kind, detail, task, StoppedByRelease, stoppedByCancelledRelease); ok {
+		return told
+	}
+	return ""
+}
+
+// PausedWakeTask is the task of a wake that a cancel of an idle release keeps while the project
+// is paused (store.CancelIssueRelease, store.ReleaseCancelPause.WakeTask, decision 12 of
+// dispatch://INFRA-3759): kind and detail are the wake's, as its start records them, and task is
+// the task its start carries, which WakeTask wrote for a session an idle release stopped
+// (StoppedByRelease). That release did not finish, so it took no pod. The cancel records the role
+// as stopped by the pause, and the pause's resume starts the role in the pod it was in. So the
+// answer is the task WakeTask writes for a session the pause stopped (StoppedByPause): the same
+// wake and detail, under the pause's words. The review round's sentences that the queue appended
+// stay. A task that does not begin with WakeTask of the wake for a session a release stopped is
+// answered as it is. ReleasedWakeTask is its inverse.
+func PausedWakeTask(kind, detail, task string) string {
+	told, _ := retellWakeTask(kind, detail, task, StoppedByRelease, StoppedByPause)
+	return told
+}
+
+// ReleasedWakeTask is the task of a wake that a release's record retells (store.RecordPodRelease,
+// store.PodRelease.WakeTask): kind and detail are the wake's, as its start records them, and task
+// is the task its start carries. A wake of a role that a project's pause stopped, taken while a
+// release that recorded the role still stood, is told the pause's words (WakeTask,
+// StoppedByPause), which say that the pod was kept. The release's record is the moment that
+// release takes the pod: the role comes back in a new pod, with a workspace made again from what
+// was pushed (WorkspaceAfterRelease).
+// So the answer is the task WakeTask writes for a session an idle release stopped
+// (StoppedByRelease): the same wake and detail, under the release's words. The review round's
+// sentences that the queue appended stay. A task that does not begin with WakeTask of the wake for
+// a session the pause stopped is answered as it is. It is the inverse of PausedWakeTask.
+func ReleasedWakeTask(kind, detail, task string) string {
+	told, _ := retellWakeTask(kind, detail, task, StoppedByPause, StoppedByRelease)
+	return told
+}
+
+// TakenOverWakeTask is the task of a wake's start that a cancel of an idle release keeps, paused
+// or not, for a role that release stopped and no cancel resumes (store.CancelIssueRelease,
+// store.ReleaseCancelPause.TakenOverWakeTask): a role whose claim a close, a linger or an operator
+// took over after the wake, and a role whose stop suspended its claim as `released` without the
+// record of that on the release's mark. kind and detail are the wake's, as its start records them,
+// and task is the task the start carries. That start brings the role back: it finishes without
+// acting under a close or a linger, it runs when an operator resumes the claim, and it resumes a
+// claim that is still `released` in the pod that stayed. WakeTask wrote its task for a session an
+// idle release stopped (StoppedByRelease), and it says that the pod was released. The cancel made
+// that false: the release did not finish, and the pod never went away. So the answer is the same
+// wake and detail in the words of a release that did not finish (stoppedByCancelledRelease). The
+// wake's own sentences stay, a message wake's among them, because the role reads this start's task
+// when it comes back. The review round's sentences that the queue appended stay too. A task that
+// does not begin with WakeTask of the wake for a session a release stopped is answered as it is.
+func TakenOverWakeTask(kind, detail, task string) string {
+	told, _ := retellWakeTask(kind, detail, task, StoppedByRelease, stoppedByCancelledRelease)
+	return told
+}
+
+// retellWakeTask is task, which WakeTask wrote for a wake of kind and detail whose session from
+// stopped, as WakeTask writes the same wake for a session that to stopped, and whether task begins
+// with WakeTask(kind, detail, from). It renders WakeTask both ways and cuts no words out of a
+// sentence: WakeTask(kind, detail, from) is cut from the start of task as one prefix,
+// WakeTask(kind, detail, to) takes its place, and what follows the wake's own text, such as the
+// review round's sentences, stays. A task that does not begin with WakeTask(kind, detail, from) is
+// answered as it is, with false, so a new wake kind or new words of WakeTask need nothing here.
+func retellWakeTask(kind, detail, task string, from, to WakeStop) (string, bool) {
+	rest, ok := strings.CutPrefix(task, WakeTask(kind, detail, from))
+	if !ok {
+		return task, false
+	}
+	return WakeTask(kind, detail, to) + rest, true
+}
+
 // listenerWake applies one wake report of the Envoy listener (intake.ListenerWake). A
 // `listener_ready` report is the positive liveness signal R7's gate reads and wakes nothing. A
-// role or agent report names a role token or a session, and this daemon acts only when one of its
-// own claims has that name: every daemon consumes the subject, because the listener does not know
-// which daemon owns a session and must not learn.
+// role or agent report names a role token or a session, and this daemon acts only on one of its
+// own claims under that name: every daemon consumes the subject, because the listener does not
+// know which daemon owns a session and must not learn.
 //
-// The report marks that claim for the message it carried, in this transaction and whatever the
-// claim's state (Pods.MarkMessage, dispatch://INFRA-5682 R1), and once the fact commits the
-// claim's machine is told the mark the store holds (Config.MessageMarked), so a wake of the claim
-// that already waits in the pacing moves to the message queue. A claim that is released is woken
-// as well, and the start that wake queues finds the claim marked.
+// A live claim whose pod a release is still taking makes the report wait for the release to end
+// (listenerWakeInRelease). Any other claim of that name the report marks for the message it
+// carried, in this transaction and whatever the claim's state (markMessage, dispatch://INFRA-5682
+// R1), so a wake of the claim that already waits in the pacing moves to the message queue. A
+// claim that is released is woken as well (listenerWakeReleased), and the start that wake queues
+// finds the claim marked.
+//
+// The claim in a release is read first, and the claim of that name in any state only when there
+// is none. The two reads are two statements of one READ COMMITTED transaction, so a release can
+// record the claim as released between them. A claim moves only from live to released, so in
+// this order the first read finds it live or the second finds it released. In the other order,
+// the first read could find it live and the second, once the release recorded it, miss it, and
+// the report would wake nothing.
 func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.ListenerWake) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
@@ -247,30 +431,75 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 	if fact.Kind == intake.ListenerWakeReady {
 		return intake.Result{}, e.cfg.Pods.RecordListenerReady(ctx, tx, fact.At)
 	}
-	var named supervise.Claim
-	var found bool
-	var err error
 	kind, detail := pods.WakeRoleMessage, fact.Role
+	readInRelease, readNamed := e.cfg.Pods.ClaimInReleaseByToken, e.cfg.Pods.ClaimByToken
 	if fact.Kind == intake.ListenerWakeAgent {
 		kind, detail = pods.WakeAgentMessage, fact.Session
-		named, found, err = e.cfg.Pods.ClaimBySession(ctx, tx, fact.Session)
-	} else {
-		named, found, err = e.cfg.Pods.ClaimByToken(ctx, tx, fact.Role)
+		readInRelease, readNamed = e.cfg.Pods.ClaimInReleaseBySession, e.cfg.Pods.ClaimBySession
 	}
-	if err != nil || !found {
-		return intake.Result{}, err
-	}
-	mark, err := e.cfg.Pods.MarkMessage(ctx, tx, named.Token, fact.At)
+	held, marked, found, err := readInRelease(ctx, tx, detail)
 	if err != nil {
 		return intake.Result{}, err
 	}
+	if found {
+		return intake.Result{}, e.listenerWakeInRelease(ctx, tx, held, marked, kind, detail, fact)
+	}
+	named, found, err := readNamed(ctx, tx, detail)
+	if err != nil || !found {
+		return intake.Result{}, err
+	}
+	if err := e.markMessage(ctx, tx, named.Token, fact.At); err != nil || !named.Released() {
+		return intake.Result{}, err
+	}
+	return intake.Result{}, e.listenerWakeReleased(ctx, tx, named, kind, detail)
+}
+
+// markMessage marks the claim token for the message a listener's report carried, which has
+// waited since at (Pods.MarkMessage), and once the fact commits tells the claim's machine the mark
+// the store holds (Config.MessageMarked).
+func (e *Engine) markMessage(ctx context.Context, tx pgx.Tx, token claim.Token, at time.Time) error {
+	mark, err := e.cfg.Pods.MarkMessage(ctx, tx, token, at)
+	if err != nil {
+		return err
+	}
 	if notify := e.cfg.MessageMarked; notify != nil && !mark.IsZero() {
-		store.OnCommit(ctx, func() { notify(named.Token, mark) })
+		store.OnCommit(ctx, func() { notify(token, mark) })
 	}
-	if named.Released() {
-		_, err = e.wakeReleased(ctx, tx, named, kind, detail, fact.At)
+	return nil
+}
+
+// listenerWakeReleased wakes the released claim a listener's report names. It reads the issue and
+// hands it to wakeReleased, so the wake reads the issue once, and wakeReleased reads every gate,
+// the start the outbox already holds for the role among them (Pods.StartQueued). The report's own
+// time (fact.At) is not the resume's time: wakeReleased records the take's.
+func (e *Engine) listenerWakeReleased(ctx context.Context, tx pgx.Tx, released supervise.Claim, kind, detail string) error {
+	issue, err := e.store.Issue(ctx, tx, released.Issue)
+	if err != nil || issue == nil {
+		return err
 	}
-	return intake.Result{}, err
+	_, err = e.wakeReleased(ctx, tx, issue, released, kind, detail)
+	return err
+}
+
+// listenerWakeInRelease is a report that found held, a live claim whose issue's release mark,
+// marked then, still stands (Pods.ClaimInReleaseBySession, Pods.ClaimInReleaseByToken). A release
+// stops a role's process before it records the claim as released, and that record waits for the
+// stop to end. The report is then applied again after wakeRetryInRelease (intake.RetryLater,
+// Waiting): once the release records the claim, the report marks and wakes it, and once a cancel
+// ends the release, the report finds the claim live or its start queued, and marks it. A report
+// still in that gap WakeHeldForRelease after its own time drops its wake with one warning, once
+// the fact that drops it commits, and marks the claim as every other report marks the claim it
+// names (markMessage): the message still waits for the role, whatever wake brings it back.
+func (e *Engine) listenerWakeInRelease(ctx context.Context, tx pgx.Tx, held supervise.Claim, marked time.Time, kind, detail string, fact intake.ListenerWake) error {
+	deadline := fact.At.Add(WakeHeldForRelease)
+	if !e.now().Before(deadline) {
+		e.warnOnCommit(ctx, "wake: a wake that came during a release was dropped: the release did not end within 15 minutes of the report",
+			"issue", held.Issue, "role", held.Role, "kind", kind, "detail", detail, "report", fact.Report, "at", fact.At)
+		return e.markMessage(ctx, tx, held.Token, fact.At)
+	}
+	return &intake.RetryLater{After: wakeRetryInRelease, Waiting: true, Err: fmt.Errorf(
+		"the %s wake for %s finds %s's %s in a release marked at %s; it is applied again until the release ends, at the latest until %s",
+		kind, detail, held.Issue, held.Role, marked.UTC().Format(time.RFC3339), deadline.UTC().Format(time.RFC3339))}
 }
 
 // wakeOnSettlement wakes a released pod on a CI settlement the daemon records for the head of its
@@ -337,7 +566,7 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	if fact.StatusesUnread {
 		fact.Statuses = keptStatuses(*pr, fact.HeadSHA)
 	}
-	woken, err := e.wakeReleased(ctx, tx, released, pods.WakeChecks, settlementDetail(fact), e.now())
+	woken, err := e.wakeReleased(ctx, tx, issue, released, pods.WakeChecks, settlementDetail(fact))
 	if err != nil || !woken {
 		return "", err
 	}
@@ -457,16 +686,37 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 			"issue", fact.Issue, "role", fact.Role)
 		return intake.Result{}, nil
 	}
+	issue, err := e.store.Issue(ctx, tx, released.Issue)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
 	detail := fmt.Sprintf("the backstop armed for %s's %s came due", fact.Issue, fact.Role)
-	_, err = e.wakeReleased(ctx, tx, released, pods.WakeBackstop, detail, e.now())
+	_, err = e.wakeReleased(ctx, tx, issue, released, pods.WakeBackstop, detail)
 	return intake.Result{}, err
 }
 
-// wakeReleased is the one act every wake of this file performs, and the one place the gates are
-// read: the claim is still released, its issue is one this daemon records, and its tree is live —
-// neither the issue nor its root has left the workflow and neither lingers
-// (pods.InWorkflowNotLingering). A pod in any other state is a close's to stop or an operator's to
-// resume, never a wake's.
+// wakeReleased is the one act every wake of this file performs. issue is the issue of released,
+// which the caller read and hands in. It reads every gate of a wake, on that one issue: the claim
+// the caller read is released, its issue is one this daemon records (the caller reads no record of
+// another project's issue, and then does not call this), its tree is live — neither the issue nor
+// its root has left the workflow and neither lingers (pods.InWorkflowNotLingering) — and the role
+// is not already coming back on a start the outbox holds (Pods.StartQueued). A pod in any other
+// state is a close's to stop or an operator's to resume, never a wake's.
+//
+// The start the outbox holds is read for every kind of wake: a listener's report, a CI settlement
+// and a backstop. A cancelled release queues a start for each claim it suspended, and the claim
+// reads `released` until that start runs (store.CancelIssueRelease). The pod never went away, so a
+// wake taken then would record a resume of a pod no release took and queue a second start for a
+// role that needs neither. A start a wake already queued is such a start too, and so is an
+// architect's start, but not an architect's start queued for news alone, which can finish without
+// acting (Pods.StartQueued). Such a wake takes nothing and answers false, and what each kind owes
+// the role still reaches it. A listener's report is of a message Envoy keeps or stores for the
+// role, which reaches the session the start brings back. A CI settlement that woke no role is told
+// to the phase's worker by a role message, as it is told to any live role (tellChecks, which tells
+// every role a settlement did not wake). A backstop owes the role only its return, which the start
+// brings. The start is read after the release mark's lock (PauseOfWake), as the delivery wake
+// reads it (store.Store.TakeDeliveryWake): a cancel that held the mark has committed its start
+// before this read begins.
 //
 // A claim of another project's issue, which the operator's spawn makes under this daemon's token
 // and a project's pause stops as released, finds no record here, even where the database it shares
@@ -487,27 +737,38 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // committed without one is what wedges a role, which is why the outbox's own delivery wake, which
 // resumes a claim in process instead, heals a refused wake (wakeForDelivery).
 //
+// The resume's time is the take's: the engine's clock now (e.now()). The stuck warning
+// (internal/daemon's warnStuckResumes) and the stranded report (Stranded, StrandedReleaseWake)
+// count from it, and the pod starts to come back at the take. A wake taken while its release
+// stands is dated again: one taken after a release recorded the role as `released` and before
+// that release's teardown recorded it. Its start waits for the teardown, so its pod starts to come
+// back only when the release takes the old pod. The release's record therefore moves the resume's
+// time and its stuck clock to the release's own time where they are earlier
+// (store.Store.RecordPodRelease). A listener's report has a time of its own
+// (intake.ListenerWake.At). That time stays the report's: it bounds how long the report waits for
+// a release (listenerWakeInRelease), and that wait's warning names it. It is never the resume's
+// time, because a report can wait up to WakeHeldForRelease before the take, and a stuck rule that
+// counted that wait would report a pod that is still being built.
+//
 // Which pause holds the wake is the store's one rule of it (Pods.PauseOfWake, decision 15 of
 // dispatch://INFRA-3759), read on this fact's own transaction. A wake of this file is taken for no
 // outbox row, so it passes no row's mark. A held wake is recorded on the resume, which pairs with
 // no release, and on the start row, which the outbox holds while a pause stands: what kept the
 // role down was the pause, not a release. The pause that stopped the role is also what the task
 // names as what stopped the session (WakeTask, decision 16): the pause where one stopped it, and
-// the release otherwise.
+// the release otherwise. PauseOfWake reads the issue's newest release, so it locks the issue's
+// release mark first, and the close and the take below run under that lock.
 //
 // One row would refuse a wake wrongly, and it is closed before the take rather than read out of a
 // refusal: the resume of a pod that has gone away. A release of a pod no claim of the issue can
 // use ends no wake and so closes no resume, and it still takes the pod, leaving a row that would
 // otherwise refuse every later wake of that role — a CI settlement queueing nothing, and R5's
 // backstop spent on a refusal, since podBackstopDue fires the row before it calls this. So each
-// wake first closes a resume of this role written before the issue's newest release
-// (Pods.ClosePodGoneResume), which matches nothing while a pod is on its way back, since such a
-// resume was itself written after every release there is.
-func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise.Claim, kind, detail string, at time.Time) (bool, error) {
-	issue, err := e.store.Issue(ctx, tx, released.Issue)
-	if err != nil || issue == nil {
-		return false, err
-	}
+// wake first closes a resume of this role written before the issue's newest release, recorded or
+// given up on (Pods.ClosePodGoneResume), which matches nothing while a pod is on its way back,
+// since such a resume was itself written after every release there is, or dated to the give-up of
+// the release it was taken under.
+func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, issue *record.Issue, released supervise.Claim, kind, detail string) (bool, error) {
 	root, err := e.store.Issue(ctx, tx, issue.Tree)
 	if err != nil || root == nil {
 		return false, err
@@ -519,15 +780,24 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	if err != nil {
 		return false, err
 	}
-	newest, err := e.cfg.Pods.ClosePodGoneResume(ctx, tx, issue.Key, released.Role)
+	queued, err := e.cfg.Pods.StartQueued(ctx, tx, issue.Key, released.Role, issue.GenerationOf("start", released.Role))
 	if err != nil {
 		return false, err
 	}
-	if newest > 0 {
+	if queued {
+		e.logOnCommit(ctx, "wake: the role is coming back on a start already queued; this wake takes nothing",
+			"issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail)
+		return false, nil
+	}
+	newest, closed, err := e.cfg.Pods.ClosePodGoneResume(ctx, tx, issue.Key, released.Role)
+	if err != nil {
+		return false, err
+	}
+	if closed {
 		e.warnOnCommit(ctx, "wake: a pod went away under an open resume of a released role; this wake closes that resume and takes its own",
 			"issue", issue.Key, "role", released.Role, "newest_release", newest, "kind", kind, "detail", detail)
 	}
-	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, kind, at, pause)
+	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, kind, e.now(), pause)
 	if err != nil || !taken {
 		return false, err
 	}
@@ -537,7 +807,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	}
 	e.logOnCommit(ctx, "wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail,
 		"pause", pause, "stopped_by_pause", stopping)
-	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, kind, pause, WakeTask(kind, detail, stop)))
+	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, kind, detail, pause, WakeTask(kind, detail, stop)))
 }
 
 // OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role

@@ -18,15 +18,23 @@ import (
 
 // settingState is a state projection that reads, through the route's own transaction, the
 // statement bound that transaction runs under and the backend it runs on, and answers an empty
-// state.
+// state; its observed view reads the same two and answers an empty view.
 type settingState struct {
 	bound   string
 	backend int
 }
 
 func (s *settingState) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
-	err := tx.QueryRow(ctx, "select current_setting('statement_timeout'), pg_backend_pid()").Scan(&s.bound, &s.backend)
-	return api.State{}, nil, err
+	return api.State{}, nil, s.read(ctx, tx)
+}
+
+func (s *settingState) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
+	return api.State{}, nil, s.read(ctx, tx)
+}
+
+// read reads the statement bound tx runs under and the backend it runs on.
+func (s *settingState) read(ctx context.Context, tx pgx.Tx) error {
+	return tx.QueryRow(ctx, "select current_setting('statement_timeout'), pg_backend_pid()").Scan(&s.bound, &s.backend)
 }
 
 // The state route's statement bound holds for the route's own transaction and for nothing else
@@ -35,7 +43,8 @@ func (s *settingState) State(ctx context.Context, tx pgx.Tx) (api.State, []super
 // route gave back, runs under the server's default, which is no statement bound at all. A bound
 // that outlived the route's transaction would stay on the pooled connection and cut whatever ran
 // on it next, a migration's long DDL among them (internal/store's apply), which is why the route
-// sets it for its transaction and the pool carries the idle bound instead.
+// sets it for its transaction and the pool carries the idle bound instead. The observed view is
+// read under the same bound, and leaves the connection as the whole state does.
 func TestTheStateRoutesStatementBoundEndsWithItsTransaction(t *testing.T) {
 	t.Parallel()
 	const bound = 2 * time.Second
@@ -52,29 +61,32 @@ func TestTheStateRoutesStatementBoundEndsWithItsTransaction(t *testing.T) {
 		State: state, StateTransactions: st.Pool(), StateReadBound: bound, Log: quietLogger(),
 	}).Handler)
 	t.Cleanup(server.Close)
-	response, err := (&http.Client{Timeout: 20 * time.Second}).Get(server.URL + "/legion/v1/state")
-	if err != nil {
-		t.Fatalf("GET the state: %v", err)
-	}
-	body, _ := io.ReadAll(response.Body)
-	response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("GET the state = %d %s, want 200", response.StatusCode, strings.TrimSpace(string(body)))
-	}
-	if state.bound != "2s" {
-		t.Fatalf("the route's own transaction runs under statement_timeout %q, want the route's bound, 2s", state.bound)
-	}
+	for _, target := range stateTargets {
+		state.bound, state.backend = "", 0
+		response, err := (&http.Client{Timeout: 20 * time.Second}).Get(server.URL + target)
+		if err != nil {
+			t.Fatalf("GET %s: %v", target, err)
+		}
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s = %d %s, want 200", target, response.StatusCode, strings.TrimSpace(string(body)))
+		}
+		if state.bound != "2s" {
+			t.Fatalf("the route's own transaction for %s runs under statement_timeout %q, want the route's bound, 2s", target, state.bound)
+		}
 
-	// The pool has one connection, so this read runs on the connection the route gave back.
-	var after string
-	var backend int
-	if err := st.Pool().QueryRow(context.Background(), "select current_setting('statement_timeout'), pg_backend_pid()").Scan(&after, &backend); err != nil {
-		t.Fatalf("read the statement bound after the route: %v", err)
-	}
-	if backend != state.backend {
-		t.Fatalf("the read after the route ran on backend %d, the route on %d: the test needs the same connection", backend, state.backend)
-	}
-	if after != "0" {
-		t.Fatalf("the connection the route gave back runs under statement_timeout %q, want the server's default 0: the route's bound outlived its transaction", after)
+		// The pool has one connection, so this read runs on the connection the route gave back.
+		var after string
+		var backend int
+		if err := st.Pool().QueryRow(context.Background(), "select current_setting('statement_timeout'), pg_backend_pid()").Scan(&after, &backend); err != nil {
+			t.Fatalf("read the statement bound after the route's read of %s: %v", target, err)
+		}
+		if backend != state.backend {
+			t.Fatalf("the read after the route's read of %s ran on backend %d, the route on %d: the test needs the same connection", target, backend, state.backend)
+		}
+		if after != "0" {
+			t.Fatalf("the connection the route gave back after %s runs under statement_timeout %q, want the server's default 0: the route's bound outlived its transaction", target, after)
+		}
 	}
 }

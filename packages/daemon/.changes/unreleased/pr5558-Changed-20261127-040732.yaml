@@ -1,5 +1,5 @@
 kind: Changed
-body: 'The look a production check''s bound starts is told how long it has been since the check opened. The check opens when the issue leaves its run, which a merge can come before, so the old wording counted from the merge named a longer time than the bound.'
+body: 'The look a production check''s bound starts is told how long it has been since the check opened. The check opens at a fresh read in `verifying` with nothing in its way, or at a merged issue''s close with no check of its merge. Both come after the merge, so the old wording, counted from the merge, named a longer time than the bound.'
 time: 2026-11-27T04:07:32Z
 custom:
     Issue: pr5558
