@@ -264,4 +264,19 @@ describe("check.state_changed as Dispatch writes it", () => {
       CheckStateChangedEventPayloadSchema.safeParse({ ...checkForm, state: "pass" }).success
     ).toBe(false);
   });
+
+  test("the schema reads each CI case Dispatch publishes, and refuses any other", () => {
+    const checkForm = fixture.check_form as Record<string, unknown>;
+    for (const ciCase of ["", "success", "failure", "job_recorded", "not_completed", "absent"]) {
+      expect(
+        CheckStateChangedEventPayloadSchema.safeParse({ ...checkForm, ci_case: ciCase }).success
+      ).toBe(true);
+    }
+    expect(
+      CheckStateChangedEventPayloadSchema.safeParse({
+        ...checkForm,
+        ci_case: "a_case_no_dispatch_writes",
+      }).success
+    ).toBe(false);
+  });
 });

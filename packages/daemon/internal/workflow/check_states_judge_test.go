@@ -69,6 +69,22 @@ func TestJudgeStates(t *testing.T) {
 			testingJudgement{}, &testingJudgement{Failing: []record.FailingCheck{failingOf("k3", "no", "fail")}}},
 		{"no for no_result with a CI run going on", held([]string{"k1", "k3"}, state("k1", "yes", "", "", "tester"), state("k3", "no", "no_result", "not_completed")),
 			testingJudgement{}, &testingJudgement{Waiting: []string{"k3"}}},
+		// Reading every check, a check a CI job runs whose job has not ended at the head, or whose
+		// end Dispatch could not read, waits as one whose run goes on does, while its state names no
+		// result: no run of its name on the head, no head Dispatch holds, GitHub not answering, a
+		// result of the job that names no repository Dispatch could resolve, and a read that had
+		// not started when its batch's bound ended. None of these says the job ended there without
+		// a pass, so none sends the work back.
+		{"no for no_result with no run of its name on the head", held([]string{"k1", "k3"}, state("k1", "yes", "", "", "tester"), state("k3", "no", "no_result", "absent")),
+			testingJudgement{}, &testingJudgement{Waiting: []string{"k3"}}},
+		{"no for no_result with no head Dispatch holds", held([]string{"k1", "k3"}, state("k1", "yes", "", "", "tester"), state("k3", "no", "no_result", "no_head")),
+			testingJudgement{}, &testingJudgement{Waiting: []string{"k3"}}},
+		{"unknown for read_failed where GitHub did not answer", held([]string{"k1", "k3"}, state("k1", "yes", "", "", "tester"), state("k3", "unknown", "read_failed", "github_unreadable")),
+			testingJudgement{}, &testingJudgement{Waiting: []string{"k3"}}},
+		{"unknown for read_failed where the job's result named no repository Dispatch resolved", held([]string{"k1", "k3"}, state("k1", "yes", "", "", "tester"), state("k3", "unknown", "read_failed", "read_failed")),
+			testingJudgement{}, &testingJudgement{Waiting: []string{"k3"}}},
+		{"no for no_result where the read had not started", held([]string{"k1", "k3"}, state("k1", "yes", "", "", "tester"), state("k3", "no", "no_result", "not_started")),
+			testingJudgement{}, &testingJudgement{Waiting: []string{"k3"}}},
 		{"unknown for pass_and_fail with a CI run going on", held([]string{"k1", "k3"}, state("k1", "yes", "", "", "tester"), state("k3", "unknown", "pass_and_fail", "not_completed", "ci")),
 			testingJudgement{}, &testingJudgement{Failing: []record.FailingCheck{failingOf("k3", "unknown", "pass_and_fail")}}},
 		{"no for fail with a CI run going on", held([]string{"k1", "k3"}, state("k1", "yes", "", "", "tester"), state("k3", "no", "fail", "not_completed")),
@@ -184,6 +200,24 @@ func TestTheTestingMoveStateTable(t *testing.T) {
 			name: "testing, tester completed, k1 no for no_result, ci_case not_completed | the completion | waits", at: phase.Testing,
 			given: func(r *statesRig) {
 				r.states(headOne, 1, inCI(stateOf("k1", "no", "no_result"), "not_completed"), passOf("k2", "tester"))
+			},
+			event:   func(r *statesRig) { r.complete(headOne, 2) },
+			then:    func(r *statesRig) { r.waitsFor(headOne, "checks", "k1") },
+			leaving: reviewing,
+		},
+		{
+			name: "testing, tester completed, k1 no for no_result, ci_case absent | the completion | waits", at: phase.Testing,
+			given: func(r *statesRig) {
+				r.states(headOne, 1, inCI(stateOf("k1", "no", "no_result"), "absent"), passOf("k2", "tester"))
+			},
+			event:   func(r *statesRig) { r.complete(headOne, 2) },
+			then:    func(r *statesRig) { r.waitsFor(headOne, "checks", "k1") },
+			leaving: reviewing,
+		},
+		{
+			name: "testing, tester completed, k1 unknown for read_failed, ci_case github_unreadable | the completion | waits", at: phase.Testing,
+			given: func(r *statesRig) {
+				r.states(headOne, 1, inCI(stateOf("k1", "unknown", "read_failed"), "github_unreadable"), passOf("k2", "tester"))
 			},
 			event:   func(r *statesRig) { r.complete(headOne, 2) },
 			then:    func(r *statesRig) { r.waitsFor(headOne, "checks", "k1") },

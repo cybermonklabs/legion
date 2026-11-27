@@ -143,6 +143,9 @@ func TestTheIntakeDecodesACheckStateChangedEvent(t *testing.T) {
 		{"a state of no check", withPayloadField(t, fixture.SetForm, "state", "yes"), "state"},
 		{"another issue's payload", withPayloadField(t, fixture.CheckForm, "issue", "ACME-9"), "ACME-9"},
 		{"no serial", withPayloadField(t, fixture.CheckForm, "serial", 0), "serial"},
+		// The case is one of contracts' closed list (github.com/sjawhar/envoy/cicase), which the
+		// workflow waits on or judges by; a case outside it says nothing the workflow can read.
+		{"a CI case Dispatch does not publish", withPayloadField(t, fixture.CheckForm, "ci_case", "a_case_no_dispatch_writes"), "ci_case"},
 	} {
 		t.Run(poison.shape, func(t *testing.T) {
 			event := checkStateEvent(t, fixture, "ACME-1", 43, poison.payload)
