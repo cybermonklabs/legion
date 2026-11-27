@@ -2198,6 +2198,11 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "live.text",
   },
   {
+    file: `${FEATURES}/evals/EvalsHeader.tsx`,
+    holds: "the page's own line on the project's newest Legion daemon read",
+    written: "row.text",
+  },
+  {
     file: `${FEATURES}/ask-body/AskHandOn.tsx`,
     holds: "the waiting-on badge's text colour, a class of the theme's badge tone",
     written: "tone.text",
