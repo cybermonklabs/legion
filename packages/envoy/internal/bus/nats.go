@@ -52,11 +52,16 @@ type connectOpts struct {
 	beforeCoreSendFlush         func()
 	afterCoreSendFlush          func()
 	requestExpiry               func(deadline time.Time) (expired <-chan time.Time, flushSettled func())
-	background                  bool
-	silentCutDetection          bool
-	promptReconnect             bool
-	inboxPrefix                 string
-	streamMessageReads          bool
+	// beforeBackgroundInstall, when not nil, runs in a background start between the dial and the
+	// install of the connection it returned (startClient). It is nil outside tests: a test sets it
+	// (WithBeforeBackgroundInstall, export_test.go) to have a reconnect attempt hold nats.go's
+	// connection lock while the install runs.
+	beforeBackgroundInstall func(*nats.Conn)
+	background              bool
+	silentCutDetection      bool
+	promptReconnect         bool
+	inboxPrefix             string
+	streamMessageReads      bool
 	// logger is where the client and its connections write their lines (WithLogger):
 	// followsDefault, which writes where slog.Default() points at each line, when no option names
 	// one.
@@ -877,8 +882,17 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 		// connectFirstInBackground closes the connection, as the foreground path does below. At
 		// nats.go v1.55.0 it cannot fail: JetStream with these options returns no error, and
 		// there is no stream to ensure here. The stop guards a nats.go whose JetStream can.
+		//
+		// The install leaves the size checks' bound unknown (0), which refuses nothing: a read of
+		// nats.Conn.MaxPayload takes nats.go's connection lock, which the reconnect nats.go may
+		// already be making in the background holds across its dial and handshake (with more than
+		// one server it starts one at once after the first attempt fails), and the start would wait
+		// on it. onConnect reads the bound once the connection has connected, after this install.
 		install := func(nc *nats.Conn) error {
-			if err := c.install(nc, false); err != nil {
+			if hook := opts.beforeBackgroundInstall; hook != nil {
+				hook(nc)
+			}
+			if err := c.install(nc, false, false); err != nil {
 				c.stop()
 				return err
 			}
@@ -894,7 +908,7 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 	if err != nil {
 		return nil, stepDial, err
 	}
-	if err := c.install(nc, ownsStream); err != nil {
+	if err := c.install(nc, ownsStream, true); err != nil {
 		// The constructor returns no client, so no caller can Close it: the client is stopped
 		// before nc closes, so the recovery nc's close begins (onClosed) finds it stopped and dials
 		// nothing. Running, that recovery would dial and install a connection held by no one, which
@@ -933,7 +947,12 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 // clients (registerClient), the constructor's own step: install runs only from the constructor and
 // only a client it returns gets this far, so a caller holding a connection can find the client
 // that owns it (clientOwning) for as long as that client is a caller's to use.
-func (c *Client) install(nc *nats.Conn, ensure bool) error {
+//
+// connected says nc has connected, as the foreground start's has: install then reads the size
+// checks' bound from it (Client.maxPayload). The background start's connection may not have, and
+// nats.go may be reconnecting it under its connection lock, which that read takes, so install
+// leaves the bound unknown and onConnect reads it once nc has connected.
+func (c *Client) install(nc *nats.Conn, ensure, connected bool) error {
 	js, err := nc.JetStream(nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
 	if err != nil {
 		return err
@@ -954,7 +973,10 @@ func (c *Client) install(nc *nats.Conn, ensure bool) error {
 			return err
 		}
 	}
-	maxPayload := nc.MaxPayload()
+	var maxPayload int64
+	if connected {
+		maxPayload = nc.MaxPayload()
+	}
 	c.mu.Lock()
 	c.Conn, c.js = nc, c.readsOwnRefusals(nc, js)
 	c.maxPayload.Store(maxPayload)

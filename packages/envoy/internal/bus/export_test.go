@@ -1,6 +1,10 @@
 package bus
 
-import "time"
+import (
+	"time"
+
+	"github.com/nats-io/nats.go"
+)
 
 // WithReconnectWaitTick runs tick at each pass of the client's wait for a reconnect
 // (ensureConnWithContext), before the pass blocks, and reads a connection event tick causes before
@@ -64,4 +68,12 @@ func WithClosedHook(hook func()) ConnectOption {
 // package's tests only; no production connect can set it.
 func WithCloseSettleBound(bound time.Duration) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.closeSettleBound = bound })
+}
+
+// WithBeforeBackgroundInstall runs hook in a background start (WithConnectInBackground) between the
+// dial and the install of the connection it returned, so a test can have a reconnect attempt hold
+// nats.go's connection lock while the install runs. It is compiled into the package's tests only;
+// no production connect can set it.
+func WithBeforeBackgroundInstall(hook func(*nats.Conn)) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.beforeBackgroundInstall = hook })
 }

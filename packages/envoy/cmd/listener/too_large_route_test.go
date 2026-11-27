@@ -27,31 +27,49 @@ import (
 // publish of a message, a probe of its target, a read of its target's session record and a wake
 // report for it each land on a subject a row names, and nothing the listener's connection sends
 // for its own sake (its caches' reads of their buckets) does. through marks the end of what a
-// route sent: the server hands one connection's messages on in the order it took them, so once a
-// control message the listener's connection published after the route answered has arrived,
-// everything that connection published before it has arrived too.
+// route sent with a control message the listener's connection publishes after the route answered.
+//
+// The watch takes every subject of the test's account through one subscription and picks out the
+// watched ones and the control itself here. nats.go runs each subscription's handler on a
+// goroutine of its own (nats.go v1.55.0 waitForMsgs), so a subscription per subject ordered
+// nothing: the control's handler could record it before an earlier session read or wake was
+// recorded, and a row then missed what its route sent, which the next row was charged with. One
+// subscription has one queue and one goroutine, in the order the server delivered, and the server
+// hands one connection's messages on in the order it took them, so the control comes after
+// everything that connection published before it. The subscription keeps every message it is
+// handed (no pending limit), and through fails, naming the count, if nats.go dropped any: a watch
+// that lost a message cannot say nothing reached its subjects.
 type subjectWatch struct {
-	control string
-	mu      sync.Mutex
-	seen    []string
+	control  string
+	patterns []string
+	sub      *natsgo.Subscription
+	mu       sync.Mutex
+	seen     []string
 }
 
-// watchSubjects starts a subjectWatch of subjects over a connection of its own to url, ready: its
-// subscriptions are flushed, so everything published on them from now on is the watch's to see.
+// watchSubjects starts a subjectWatch of subjects, NATS subject patterns the package's own matcher
+// reads (subjectMatches), over a connection of its own to url, ready: its subscription is flushed,
+// so everything published from now on is the watch's to see.
 func watchSubjects(t *testing.T, url string, subjects ...string) *subjectWatch {
 	t.Helper()
-	w := &subjectWatch{control: "test.too-large.control." + id.New()}
+	w := &subjectWatch{control: "test.too-large.control." + id.New(), patterns: subjects}
 	watcher := testnats.Connect(t, url)
 	t.Cleanup(watcher.Close)
-	for _, subject := range append(subjects, w.control) {
-		if _, err := watcher.Subscribe(subject, func(msg *natsgo.Msg) {
-			w.mu.Lock()
-			w.seen = append(w.seen, msg.Subject)
-			w.mu.Unlock()
-		}); err != nil {
-			t.Fatalf("watch %s: %v", subject, err)
+	sub, err := watcher.Subscribe(">", func(msg *natsgo.Msg) {
+		if msg.Subject != w.control && !slices.ContainsFunc(w.patterns, func(pattern string) bool { return subjectMatches(pattern, msg.Subject) }) {
+			return
 		}
+		w.mu.Lock()
+		w.seen = append(w.seen, msg.Subject)
+		w.mu.Unlock()
+	})
+	if err != nil {
+		t.Fatalf("watch the test's account: %v", err)
 	}
+	if err := sub.SetPendingLimits(-1, -1); err != nil {
+		t.Fatalf("lift the watch's pending limits: %v", err)
+	}
+	w.sub = sub
 	if err := watcher.Flush(); err != nil {
 		t.Fatalf("flush the subject watch: %v", err)
 	}
@@ -59,7 +77,7 @@ func watchSubjects(t *testing.T, url string, subjects ...string) *subjectWatch {
 }
 
 // through publishes a control message on conn and waits for the watch to see it, and returns every
-// subject the watch saw before it since the last call, which it forgets.
+// watched subject the watch saw before it since the last call, which it forgets.
 func (w *subjectWatch) through(t *testing.T, conn *natsgo.Conn) []string {
 	t.Helper()
 	if err := conn.Publish(w.control, nil); err != nil {
@@ -80,6 +98,9 @@ func (w *subjectWatch) through(t *testing.T, conn *natsgo.Conn) []string {
 		w.seen = slices.Clone(w.seen[index+1:])
 		return true
 	})
+	if dropped, err := w.sub.Dropped(); err != nil || dropped != 0 {
+		t.Fatalf("UNKNOWN: the watch's subscription dropped %d messages (%v), so it cannot say what reached its subjects", dropped, err)
+	}
 	return before
 }
 
@@ -121,16 +142,21 @@ func bandText(t *testing.T, size func(text string) int, want int) string {
 // The rows: a topic publish; a send to a live session in consumer delivery, which the route probes;
 // a send to a stopped session only its known-session record names, whose entry the route reads
 // from the bucket and for which it reports a wake; a send to a session neither store knows, which
-// the route answered 404 after that read and a wake; a publish whose envelope is within the bound
-// and whose Nats-Msg-Id header takes it past, which only a check that counts the header refuses
-// before the publish; and a publish from a sender whose count under the sender limit is empty,
-// which the route answered 429. Every row must be 413 with no Retry-After, nothing may reach the
-// row's subjects (its own publish, its target's relay subject, the reads of its target's session
-// record) while the route runs, and no wake report may be raised: none in flight once the route
-// answers, and none published. The controls are the first three with a message within the bound
-// and a live deadline, each published, which the same watch sees, so a watch that could not see
-// a send cannot pass the refusals; and a small publish from the limited sender after the refusal,
-// which is the 429, so the limited row's count was empty when its 413 came.
+// the route answered 404 after that read and a wake; and a publish from a sender whose count under
+// the sender limit is empty, which the route answered 429. Every row must be 413 with no
+// Retry-After, nothing may reach the row's subjects (its own publish, its target's relay subject,
+// the reads of its target's session record) while the route runs, and no wake report may be
+// raised: none in flight once the route answers, and none published. The controls are the first
+// three with a message within the bound and a live deadline, each published, which the same watch
+// sees, so a watch that could not see a send cannot pass the refusals; and a small publish from
+// the limited sender after the refusals, which is the 429, so the limited rows' count was empty
+// when their 413s came.
+//
+// The header band is a publish whose envelope is within the bound and whose Nats-Msg-Id header
+// takes it past, sent by that limited sender under each deadline. Only the route's early check,
+// counting the header, answers it 413: a check that left the header out would let it through to
+// the sender limit, whose 429 comes before the publish could refuse it, so the row tells the
+// early refusal from the publish's own by its status.
 //
 // The band the route's check leaves is a message within the bound until the route adds its sender
 // stamp (senderStamp). A publish of one is 413 whatever is left of its deadline, refused by the
@@ -214,10 +240,11 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 	defer cancel()
 	oversized := strings.Repeat("m", 2<<20)
 	// The header band: an envelope within the bound by itself and one byte past it with the
-	// Nats-Msg-Id header its publish carries, under the key the request sends.
+	// Nats-Msg-Id header its publish carries, from the limited sender under the key the request
+	// sends.
 	headerKey := id.New()
 	headerEnvelope := func(text string) contracts.Envelope {
-		return contracts.MessageEnvelope(listenerMessage(listenerwire.MessageBody{Source: "agent", Message: text}, contracts.ExpectsReplyUnset), topic, publishDedupePrefix+headerKey)
+		return contracts.MessageEnvelope(listenerMessage(listenerwire.MessageBody{Source: "agent", SourceSession: limited, Message: text}, contracts.ExpectsReplyUnset), topic, publishDedupePrefix+headerKey)
 	}
 	band := bandText(t, func(text string) int { return storedSize(t, headerEnvelope(text)) }, maxPayload+1)
 	if encoded, err := json.Marshal(headerEnvelope(band)); err != nil || len(encoded) > maxPayload {
@@ -236,7 +263,6 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 			{"a send to a live session", "/v1/messages/send", map[string]string{"target_session": live, "message": oversized}},
 			{"a send to a stopped session", "/v1/messages/send", map[string]string{"target_session": stopped, "message": oversized}},
 			{"a send to a session neither store knows", "/v1/messages/send", map[string]string{"target_session": unknown, "message": oversized}},
-			{"a publish within the bound but for its header", "/v1/messages/publish", map[string]string{"topic": topic, "message": band, "idempotency_key": headerKey}},
 		} {
 			refused(row.name+", "+deadline.name, request(deadline.ctx, row.path, row.body))
 		}
@@ -248,6 +274,14 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 	}
 	watch.through(t, conn)
 	refused("a publish from a sender at its limit", request(context.Background(), "/v1/messages/publish", map[string]string{"topic": topic, "message": oversized, "source_session": limited}))
+	for _, deadline := range []struct {
+		name string
+		ctx  context.Context
+	}{{"its deadline spent", spent}, {"its deadline live", context.Background()}} {
+		refused("a publish within the bound but for its header, from a sender at its limit, "+deadline.name, request(deadline.ctx, "/v1/messages/publish", map[string]string{
+			"topic": topic, "message": band, "source_session": limited, "idempotency_key": headerKey,
+		}))
+	}
 	if after := request(context.Background(), "/v1/messages/publish", map[string]string{"topic": topic, "message": "within the bound", "source_session": limited}); after.Code != http.StatusTooManyRequests {
 		t.Errorf("control: the limited sender's small publish after the refusal: status = %d, want 429, so its count was empty; body = %.300s", after.Code, after.Body.String())
 	}
