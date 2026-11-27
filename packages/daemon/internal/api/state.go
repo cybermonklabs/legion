@@ -2185,7 +2185,7 @@ type ObservedWorker struct {
 // view serves it, and the full view's daemon block, settings and admission block. It is the one
 // reading of which members of the full view the observed view carries: the route serves the
 // observed view through it (shaping.go's observedFor), and the observed view's golden is written
-// through it (TestStateGolden).
+// through it (TestObservedStateGolden).
 func observedOf(state State) ObservedState {
 	observed := ObservedState{Daemon: state.Daemon, Settings: state.Settings, Admission: state.Admission,
 		Issues: make(map[string]ObservedIssue, len(state.Issues))}

@@ -206,6 +206,15 @@ func (a *Admission) UseWorkerSilence(silence, background time.Duration) {
 	a.workerBackground = background
 }
 
+// UseClock registers the daemon's one clock, which every moment this admission stamps and every
+// bound it reads is measured on, as the workflow engine's own (workflow.Config.Clock) and the
+// state's read (internal/daemon's source.State) are: the architect-stalled arms the state serves
+// are then judged at the instant the rest of the state is read at. Without it the admission reads
+// the wall clock, as every test that builds one by hand leaves it.
+func (a *Admission) UseClock(now func() time.Time) {
+	a.now = now
+}
+
 // UseP0Bound registers legion.yaml's P0 bound (`admission_p0_bound`, config.Config.AdmissionP0Bound),
 // nil where the file gives none: the bound every pass admits under while no value set while the
 // daemon runs stands (p0BoundAt). It is a setter rather than a parameter of New for the reason

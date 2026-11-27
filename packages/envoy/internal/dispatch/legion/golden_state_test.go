@@ -1,7 +1,7 @@
 package legion
 
-//ci:reads packages/contracts/fixtures/daemon-api/state.json os.ReadFile (daemonAPIFixture, ../../../../contracts/fixtures/daemon-api): the state document the daemon's own internal/api/state_golden_test.go writes, which a whole read's decode must read
-//ci:reads packages/contracts/fixtures/daemon-api/observed-state.json os.ReadFile (daemonAPIFixture, ../../../../contracts/fixtures/daemon-api): the observed view the daemon's own internal/api/state_golden_test.go writes, which a whole read's decode must read
+//ci:reads packages/contracts/fixtures/daemon-api/state.json os.ReadFile (daemonAPIFixture, ../../../../contracts/fixtures/daemon-api): the state document the daemon's own internal/daemon/state_fixtures_test.go writes, which a whole read's decode must read
+//ci:reads packages/contracts/fixtures/daemon-api/observed-state.json os.ReadFile (daemonAPIFixture, ../../../../contracts/fixtures/daemon-api): the observed view the daemon's own internal/api/state_golden_test.go writes from state.json, which a whole read's decode must read
 //ci:reads packages/contracts/fixtures/daemon-api/state-narrowed-repositories.json TestTheDecodeOfADaemonBelowTheEntryHasNoP0Holders os.ReadFile (narrowedStatePath, ../../../../contracts/fixtures/daemon-api): the state the daemon's own internal/api/state_golden_test.go writes for a caller below the P0 start's entry, which a whole read's decode must read to no number of P0 holders
 
 import (
@@ -14,8 +14,13 @@ import (
 )
 
 // daemonAPIFixture is the path of name in packages/contracts/fixtures/daemon-api, which the Legion
-// daemon's own tests write through packages/daemon/internal/testgolden, so its bytes are the
-// daemon's wire shape rather than a reading of it.
+// daemon's own tests write: internal/daemon's state_fixtures_test.go builds the daemon's state
+// source over a seeded database and writes state.json from what the state route serves from it
+// (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds), and internal/api's goldens write
+// their views of it, so its bytes are the daemon's wire shape rather than a reading of it.
+// dispatch://INFRA-1077's acceptance A4 asks for a test on this side that reads such a document,
+// because a Dispatch-side decoder held only to hand-written literals cannot tell when the
+// daemon's own shape moves.
 func daemonAPIFixture(name string) string {
 	return filepath.Join("..", "..", "..", "..", "contracts", "fixtures", "daemon-api", name)
 }

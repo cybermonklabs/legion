@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"flag"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -26,8 +26,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testgolden"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
-
-var updateGolden = flag.Bool("update", false, "rewrite the golden fixture this package pins")
 
 // stateEventsGoldenName is the state lane's daemon API fixture, the cross-language pin of the lane:
 // Go writes it (`-update`), `packages/contracts/src/legion-api.test.ts` parses every message of it
@@ -484,5 +482,5 @@ func TestStateEventsGolden(t *testing.T) {
 		golden.Steps = append(golden.Steps, r.record(t, step.name))
 	}
 
-	testgolden.Check(t, stateEventsGoldenName, golden, *updateGolden, "go test ./internal/daemon/ -run '^TestStateEventsGolden$' -update")
+	testgolden.Check(t, apifixture.Path(stateEventsGoldenName), golden, *updateStateFixtures, "go test ./internal/daemon/ -run '^TestStateEventsGolden$' -update")
 }

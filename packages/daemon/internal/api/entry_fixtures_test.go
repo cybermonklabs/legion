@@ -18,7 +18,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/testgolden"
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 )
 
 // updateEntry names the one entry whose fixture `-update-entry=<id>` writes again, as `-update`
@@ -719,7 +719,7 @@ func enumeratedRowsOf(before, at []EnumeratedField, number int) ([]entryEnumerat
 // registers, `contracts/` beside the records. It holds entry fixtures and nothing else; a test
 // registry's entries read theirs from a directory of test data (pairEntryFixtures), so no count of
 // entries includes them.
-var packageEntryFixtures = testgolden.Path("contracts")
+var packageEntryFixtures = apifixture.Path("contracts")
 
 // entryFixturePath is the fixture of entry in dir, `<id>_<slug>.json`.
 func entryFixturePath(dir string, entry NumberedEntry) string {

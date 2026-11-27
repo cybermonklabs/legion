@@ -1,7 +1,5 @@
 package api
 
-//ci:reads packages/contracts/fixtures/daemon-api/request-shapes.json sortedRequestShapes (path from testgolden.Path)
-
 import (
 	"encoding/json"
 	"fmt"
@@ -13,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/testgolden"
 )
 
 // requestShapesFixture records the field paths of every request body a plugin sends, one record
@@ -202,7 +200,7 @@ func sortedRequestShapes(records []requestShape) []requestShape {
 // readRequestShapes is the frozen fixture as it stands, and false where no file is there.
 func readRequestShapes(t *testing.T) ([]requestShape, bool) {
 	t.Helper()
-	encoded, err := os.ReadFile(testgolden.Path(requestShapesFixture))
+	encoded, err := os.ReadFile(apifixture.Path(requestShapesFixture))
 	if os.IsNotExist(err) {
 		return nil, false
 	}

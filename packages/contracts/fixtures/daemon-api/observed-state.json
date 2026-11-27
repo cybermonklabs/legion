@@ -1,13 +1,13 @@
 {
   "daemon": {
-    "project": "legion",
-    "schemaVersion": 1,
+    "project": "LEGION",
+    "schemaVersion": 0,
     "boots": 4,
-    "firstBootAt": "2026-09-18T14:03:27Z",
-    "startedAt": "2026-09-22T09:15:02Z",
+    "firstBootAt": "2126-09-18T14:03:27Z",
+    "startedAt": "2126-09-22T09:15:02Z",
     "stateSeq": 43,
     "stateId": "7c1e9a4d-3b52-4f08-a6d1-2e9b0c5f8a37",
-    "stateRun": "2d8f4b6a-9c1e-4e73-b5a0-7f3c1d9e6b28"
+    "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
   },
   "settings": {
     "project": "LEGION",
@@ -122,7 +122,7 @@
         }
       }
     },
-    "admission_cap": 4,
+    "admission_cap": 6,
     "admission_p0_bound": 4,
     "daemon_url": "http://legion-daemon.internal.example:13370",
     "worker_stream_port": 13371,
@@ -152,6 +152,7 @@
       "nats://nats-2.internal.example:4222"
     ],
     "dispatch_url": "https://dispatch.internal.example",
+    "dispatch_token_broker": true,
     "projects": {
       "LEGION": {
         "slack_channels": [
@@ -231,6 +232,10 @@
       {
         "from": "acme/widgets-legacy",
         "to": "acme/widgets"
+      },
+      {
+        "from": "sjawhar/legion",
+        "to": "cybermonklabs/legion"
       }
     ],
     "hooks": [
@@ -250,7 +255,7 @@
     ]
   },
   "admission": {
-    "cap": 5,
+    "cap": 6,
     "p0Holders": 1,
     "p0Bound": {
       "bound": 3,
@@ -261,7 +266,7 @@
           "kind": "controller",
           "session": "ses_controller"
         },
-        "setAt": "2026-09-22T09:10:00Z",
+        "setAt": "2126-09-22T09:10:00Z",
         "reason": "the P0 issues outran the gateway"
       }
     },
@@ -270,17 +275,21 @@
       "LEGION-210",
       "LEGION-212",
       "LEGION-218",
-      "LEGION-219"
+      "LEGION-219",
+      "LEGION-220"
     ],
     "waiting": [
       "LEGION-212",
-      "LEGION-211"
+      "LEGION-211",
+      "LEGION-216"
     ],
     "trees": [
       "LEGION-208",
       "LEGION-210",
       "LEGION-211",
       "LEGION-212",
+      "LEGION-215",
+      "LEGION-216",
       "LEGION-218",
       "LEGION-219"
     ],
@@ -293,7 +302,7 @@
         ]
       },
       {
-        "issue": "LEGION-211",
+        "issue": "LEGION-216",
         "blockedBy": [
           "LEGION-210"
         ]
@@ -311,6 +320,13 @@
       {
         "issue": "LEGION-214",
         "reason": "label_off"
+      },
+      {
+        "issue": "LEGION-215",
+        "reason": "ancestry",
+        "heldBy": [
+          "LEGION-208"
+        ]
       }
     ]
   },
@@ -352,12 +368,16 @@
     },
     "LEGION-209": {
       "key": "LEGION-209",
-      "phase": "admitted"
+      "phase": "admitted",
+      "tree": "LEGION-208"
     },
     "LEGION-210": {
       "key": "LEGION-210",
       "phase": "held",
       "tree": "LEGION-210",
+      "slot": {
+        "index": 1
+      },
       "workers": {
         "implementer": {
           "claim": {
@@ -388,9 +408,16 @@
       "waitingOn": {
         "kind": "ask",
         "ask": "9a8fd348-55d5-4d72-a793-3cd037f75f13",
-        "since": "2026-09-22T08:05:00Z",
-        "answeredAt": "2026-09-22T09:21:00Z",
+        "since": "2126-09-22T08:05:00Z",
+        "answeredAt": "2126-09-22T09:12:00Z",
         "answeredBy": "ask"
+      },
+      "workers": {
+        "tester": {
+          "claim": {
+            "state": "retired"
+          }
+        }
       }
     },
     "LEGION-214": {
@@ -398,10 +425,26 @@
       "phase": "admitted",
       "tree": "LEGION-214"
     },
+    "LEGION-215": {
+      "key": "LEGION-215",
+      "phase": "admitted",
+      "tree": "LEGION-215"
+    },
+    "LEGION-216": {
+      "key": "LEGION-216",
+      "phase": "admitted",
+      "tree": "LEGION-216"
+    },
     "LEGION-218": {
       "key": "LEGION-218",
       "phase": "reviewing",
       "tree": "LEGION-218",
+      "slot": {
+        "index": 3
+      },
+      "architect": {
+        "state": "suspended"
+      },
       "workers": {
         "implementer": {
           "claim": {
@@ -419,6 +462,12 @@
       "key": "LEGION-219",
       "phase": "reviewing",
       "tree": "LEGION-219",
+      "slot": {
+        "index": 4
+      },
+      "architect": {
+        "state": "retired"
+      },
       "workers": {
         "implementer": {
           "claim": {
@@ -428,6 +477,24 @@
         "reviewer": {
           "claim": {
             "state": "idle"
+          }
+        }
+      }
+    },
+    "LEGION-220": {
+      "key": "LEGION-220",
+      "phase": "implementing",
+      "tree": "LEGION-208",
+      "slot": {
+        "index": 5
+      },
+      "architect": {
+        "state": "failed"
+      },
+      "workers": {
+        "implementer": {
+          "claim": {
+            "state": "working"
           }
         }
       }

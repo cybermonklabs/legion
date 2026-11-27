@@ -1,7 +1,15 @@
 package config
 
+// This row and two of the envoy rows below it - internal/dispatch/outbox/
+// expects_reply_never_false_test.go and internal/dispatch/api/live_events_test.go - declare a
+// read every filter gating a job that compiles them already matches. They are here so that a
+// later narrowing of one of those filters is refused by rule 1 rather than dropping the read
+// with nobody noticing (dispatch://INFRA-1413).
+//ci:reads packages/contracts/fixtures/daemon-api/* golden (the write is under -update, which CI never passes)
+
 import (
 	"flag"
+	"path/filepath"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -40,11 +48,18 @@ func TestStallDefaultsGolden(t *testing.T) {
 	for _, role := range RoleConfigRoles {
 		byRole[role] = StallCallBoundFor(role).Milliseconds()
 	}
-	testgolden.Check(t, "stall-defaults.json", stallDefaults{
+	golden(t, "stall-defaults.json", stallDefaults{
 		CallGraceMs:            StallCallGrace.Milliseconds(),
 		CallBoundMs:            StallCallBound.Milliseconds(),
 		StepMs:                 StallStep.Milliseconds(),
 		DeclaredDeadlineMostMs: StallDeclaredDeadlineCap.Milliseconds(),
 		CallBoundMsByRole:      byRole,
-	}, *updateGolden, "go test ./internal/config/ -update")
+	})
+}
+
+// golden pins what this package writes for the plugin to read (testgolden.Check).
+func golden(t *testing.T, name string, value any) {
+	t.Helper()
+	testgolden.Check(t, filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", name), value, *updateGolden,
+		"go test ./internal/config/ -update")
 }

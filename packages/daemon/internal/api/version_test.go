@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testgolden"
 )
 
 // The numbers of the numbered entries are written where every reader with no Go toolchain reads
@@ -25,7 +25,7 @@ func TestReleasedContractsGolden(t *testing.T) {
 		t.Errorf("the frozen list ends at %d, want L (%d)", greatest, LastNumberedContract)
 	}
 	if !*updateGolden {
-		path := testgolden.Path("released-contracts.json")
+		path := apifixture.Path("released-contracts.json")
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s (run `go test ./internal/api/ -update`): %v", path, err)

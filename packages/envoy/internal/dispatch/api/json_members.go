@@ -27,14 +27,15 @@ func membersDeclaredBy(t reflect.Type) map[string]struct{} {
 		return cached.(map[string]struct{})
 	}
 	names := make(map[string]struct{})
-	collectDeclaredMembers(t, names)
+	collectDeclaredMembers(t, func(name string, _ reflect.Type) { names[name] = struct{}{} })
 	cached, _ := declaredMembers.LoadOrStore(t, names)
 	return cached.(map[string]struct{})
 }
 
-// collectDeclaredMembers adds to names each member encoding/json decodes into t: an exported
-// field by its tag's name or else its own, and the members of an embedded struct with no tag name.
-func collectDeclaredMembers(t reflect.Type, names map[string]struct{}) {
+// collectDeclaredMembers calls visit with each member encoding/json decodes into t and the type
+// of the field it decodes into: an exported field by its tag's name or else its own, and the
+// members of an embedded struct with no tag name.
+func collectDeclaredMembers(t reflect.Type, visit func(name string, field reflect.Type)) {
 	for i := range t.NumField() {
 		field := t.Field(i)
 		tag := field.Tag.Get("json")
@@ -48,7 +49,7 @@ func collectDeclaredMembers(t reflect.Type, names map[string]struct{}) {
 				embedded = embedded.Elem()
 			}
 			if embedded.Kind() == reflect.Struct {
-				collectDeclaredMembers(embedded, names)
+				collectDeclaredMembers(embedded, visit)
 				continue
 			}
 		}
@@ -58,7 +59,7 @@ func collectDeclaredMembers(t reflect.Type, names map[string]struct{}) {
 		if name == "" {
 			name = field.Name
 		}
-		names[name] = struct{}{}
+		visit(name, field.Type)
 	}
 }
 
