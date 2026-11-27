@@ -499,9 +499,10 @@ func (c *cache) setListed(set *listedSet) {
 // first sync has not ended, or has failed, or a narrowing or a fresh fill dropped the set listed
 // before it), and when an address cannot be signed, writing no part of a manifest. So no answer
 // carries a set made before the clone's last narrowing. It takes the read side of packsGate for
-// that last check and the write of its body, and no lock /tar or a refresh takes, so a repack
-// leaves it answering 503 rather than waiting on it; and it is no /tar stream: neither streams nor
-// inFlight counts it. Its log names no address, token or ref.
+// that last check and the write of its body, which a refresh takes the write side of; it takes
+// neither c.lock, which /tar and the clone's own work take, nor maint, so a repack leaves it
+// answering 503 rather than waiting on it; and it is no /tar stream: neither streams nor inFlight
+// counts it. Its log names no address, token or ref.
 func (c *cache) servePacks(w http.ResponseWriter, r *http.Request) {
 	if !c.narrowedAndReady() {
 		http.Error(w, "the repository cache is not ready with its clone narrowed to its default branch", http.StatusServiceUnavailable)
