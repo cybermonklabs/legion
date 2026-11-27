@@ -322,11 +322,11 @@ func TestTheResultsReadOfEachState(t *testing.T) {
 	}
 }
 
-// fixtureUUID and fixtureTime are the ids and the times a server makes, which a fixture writes as a
+// fixtureUUID and fixtureTimestamp are the ids and the times a server makes, which a fixture writes as a
 // placeholder.
 var (
-	fixtureUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-	fixtureTime = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$`)
+	fixtureUUID      = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	fixtureTimestamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$`)
 )
 
 // holdResultsFixture compares answer, with its ids and times written as placeholders, with the
@@ -379,7 +379,7 @@ func collectFixtureTimes(value any, times *[]time.Time) {
 			collectFixtureTimes(element, times)
 		}
 	case string:
-		if fixtureTime.MatchString(value) {
+		if fixtureTimestamp.MatchString(value) {
 			if at, err := time.Parse(time.RFC3339Nano, value); err == nil {
 				*times = append(*times, at)
 			}
@@ -415,7 +415,7 @@ func placeFixtureValues(value any, ids map[string]string, times []time.Time) any
 			}
 			return ids[value]
 		}
-		if fixtureTime.MatchString(value) {
+		if fixtureTimestamp.MatchString(value) {
 			if at, err := time.Parse(time.RFC3339Nano, value); err == nil {
 				rank := slices.IndexFunc(times, func(other time.Time) bool { return other.Equal(at) })
 				return time.Date(2026, 1, 1, 0, 0, rank, 0, time.UTC).Format(time.RFC3339)

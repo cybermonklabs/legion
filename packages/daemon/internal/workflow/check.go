@@ -240,9 +240,9 @@ func resultCommit(block dispatch.CheckBlock, merge string) string {
 
 // wokenBy is the check task's wording of a look's wake, from the cause and its detail: the merge
 // that opened the check (wakeMerge, the merge commit as its detail), its bound (wakeBound, the
-// check's own bound and the issue's close it is counted from, and nothing of why the looks before
-// it were pending), a check_wake row (wakeNamed), whose reason is either the summary the pending
-// report gave (checkReported) or the retry of a look nobody reported (endLook), or a result
+// check's own bound and the check's opening it is counted from, and nothing of why the looks
+// before it were pending), a check_wake row (wakeNamed), whose reason is either the summary the
+// pending report gave (checkReported) or the retry of a look nobody reported (endLook), or a result
 // recorded after the check closed as not run (wakeResult, lookAfterNotRun). The named wake reads
 // as one sentence after the dash, so the lead names who named the wake rather than what it says.
 func wokenBy(cause, detail string) string {
@@ -783,11 +783,13 @@ func (e *Engine) checkWakeDue(ctx context.Context, tx pgx.Tx, fact intake.CheckW
 // reopened inside its linger — closes the check as not run, since no look can run while its
 // implementer works the new run, and the run's own merge opens its own. Otherwise the last look
 // starts, told that it is the last and the check's own bound (BoundAt less OpenedAt, which a later
-// change of the project's bound leaves alone) counted from the issue's close, which opened the
-// check (openCheck) and comes after the merge for a merge that waited on the issues beneath it
-// (closeMerged), and nothing of why the looks before it were pending, which the daemon does not
-// know: production not carrying the merge yet, or a merge it carries with a requirement only the
-// deploy can show still unobserved.
+// change of the project's bound leaves alone) counted from the check's own opening (openCheck):
+// the fresh read in verifying that leaves nothing in the way of the close (openCheckAtRead), or
+// the merged issue's leave of the workflow (leave, openCheckIfMerged). Both come after the merge,
+// and later still where the merge waited on the issues beneath it. The look is told nothing of
+// why the looks before it were pending, which the daemon does not know: production not carrying
+// the merge yet, or a merge it carries with a requirement only the deploy can show still
+// unobserved.
 func (e *Engine) checkBound(ctx context.Context, tx pgx.Tx, fact intake.CheckBound) (intake.Result, error) {
 	check, err := e.store.ProductionCheck(ctx, tx, fact.Issue)
 	if err != nil || check == nil || !check.Open() || check.Last {
@@ -811,5 +813,5 @@ func (e *Engine) checkBound(ctx context.Context, tx pgx.Tx, fact intake.CheckBou
 		return intake.Result{}, e.closeCheck(ctx, tx, check, record.CheckNotRun)
 	}
 	return intake.Result{}, e.startLook(ctx, tx, issue, check, wakeBound,
-		fmt.Sprintf("%s since the merge", boundText(check.BoundAt.Sub(check.OpenedAt))), true)
+		fmt.Sprintf("%s since the check opened", boundText(check.BoundAt.Sub(check.OpenedAt))), true)
 }

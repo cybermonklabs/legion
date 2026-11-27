@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -161,4 +162,72 @@ func readsQueued(t *testing.T, rig *waitRig, want int) {
 	if got := rig.rows(waitRoot, "close_read"); got != want {
 		t.Fatalf("the root's close_read rows = %d, want %d", got, want)
 	}
+}
+
+// A read the backoff of a read that did not decide left waiting holds back every event that asks
+// for one: the ask queues no second row, and the row it finds can be due an hour out. An event
+// asks for a read now (askCloseRead), so the waiting row is made due now, and the issue still
+// holds one read at a time. The control is the backoff's own ask, which is for a later read and
+// moves no nearer row out.
+func TestAnEventMakesAWaitingBackoffReadDueNow(t *testing.T) {
+	t.Parallel()
+	unplaced := func() record.CheckReadAnswer {
+		return answerOf(waitRoot, nil, check("c-after", waitRootMerge, dispatch.PassStandsUnknown, dispatch.PassStandsReasonNotPlaced))
+	}
+
+	t.Run("an event pulls the waiting row to now", func(t *testing.T) {
+		rig := newWaitRig(t, "")
+		rig.seedRoot(phase.Merging, "retro")
+		rig.mergeRoot()
+		rig.ranOut(waitRoot, "close_read")
+		rig.read(waitRoot, unplaced())
+		backoff := issueOutboxOf(t, rig.pool, waitRoot, "close_read")
+		if len(backoff) != 1 || !backoff[0].nextAt.After(rig.now) {
+			t.Fatalf("close_read rows after a check Dispatch could not place = %+v, want the one the backoff queued, due after %s", backoff, rig.now)
+		}
+		out := rig.dueAt(backoff[0].id, rig.now.Add(time.Hour))
+
+		rig.fact(intake.DispatchResultChanged{Key: waitRoot, Seq: 11})
+
+		rows := issueOutboxOf(t, rig.pool, waitRoot, "close_read")
+		if len(rows) != 1 || rows[0].id != backoff[0].id {
+			t.Fatalf("close_read rows after the result changed = %+v, want the backoff's own row %d alone", rows, backoff[0].id)
+		}
+		if !rows[0].nextAt.Equal(rig.now) {
+			t.Fatalf("the read of %s is due %s, want %s: the event asks for a read now, and the backoff had left the row at %s",
+				waitRoot, rows[0].nextAt, rig.now, out)
+		}
+	})
+
+	// The control: the ask of the backoff is for a later read, over the row the entry queued, which
+	// is due sooner. The row stands where it is.
+	t.Run("a backoff ask leaves a nearer row where it is", func(t *testing.T) {
+		rig := newWaitRig(t, "")
+		rig.seedRoot(phase.Merging, "retro")
+		rig.mergeRoot()
+		queued := issueOutboxOf(t, rig.pool, waitRoot, "close_read")
+		if len(queued) != 1 {
+			t.Fatalf("close_read rows after the entry into verifying = %+v, want the one it queued", queued)
+		}
+
+		rig.read(waitRoot, unplaced())
+
+		rows := issueOutboxOf(t, rig.pool, waitRoot, "close_read")
+		if len(rows) != 1 || rows[0].id != queued[0].id || !rows[0].nextAt.Equal(queued[0].nextAt) {
+			t.Fatalf("close_read rows after the backoff's ask = %+v, want row %d still due at %s", rows, queued[0].id, queued[0].nextAt)
+		}
+	})
+}
+
+// dueAt stands outbox row id at at, as a backoff that reached its cap leaves it, and answers at.
+func (r *waitRig) dueAt(id int64, at time.Time) time.Time {
+	r.t.Helper()
+	tag, err := r.pool.Exec(r.t.Context(), "update outbox set next_at = $2 where id = $1", id, at)
+	if err != nil {
+		r.t.Fatalf("stand outbox row %d at %s: %v", id, at, err)
+	}
+	if tag.RowsAffected() != 1 {
+		r.t.Fatalf("stood %d outbox rows at %s, want the one row %d", tag.RowsAffected(), at, id)
+	}
+	return at
 }

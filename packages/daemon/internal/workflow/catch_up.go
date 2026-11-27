@@ -42,9 +42,11 @@ import (
 // issue the daemon has not recorded — an operator's spawn of an issue no record of the project
 // holds, the project's own or another project's, whose record the daemon's records do not read
 // (internal/daemon's projectRecords), so its ready drops and queues no catch-up keyed by that
-// issue — or of a child that has left the workflow or is done. A phase worker's ready is answered
-// differently: it is given its phase's task again when it holds that phase with nothing pending
-// (readyWorkerTask).
+// or of a child that has left the workflow or is done. A phase worker's ready is answered
+// differently: a merge forward still owed to its role is asked again at a launch later than the one
+// a row of the ask was last delivered at (askAgainAtLaunch), the worker another role's open merge
+// holds is held again (holdSentWorker), and it is given its phase's task again when it holds that
+// phase with nothing pending (readyWorkerTask).
 //
 // The catch-up a start writes in place of a launch (intake.ClaimReady.Paced) is a wake of the
 // architect — it reads its whole context when the catch-up arrives, which is what the per-minute
@@ -63,12 +65,18 @@ import (
 // machine sends tells the same record and is what marks it told, so a catch-up that is held,
 // superseded or never queued here costs nothing (dispatch://INFRA-3276 R3).
 func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) (intake.Result, error) {
-	if fact.Role != claim.RoleArchitect {
-		return intake.Result{}, e.readyWorkerTask(ctx, tx, fact)
-	}
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
+	}
+	if fact.Role != claim.RoleArchitect {
+		if err := e.askAgainAtLaunch(ctx, tx, *issue, fact); err != nil {
+			return intake.Result{}, err
+		}
+		if err := e.holdSentWorker(ctx, tx, *issue, fact.Role); err != nil {
+			return intake.Result{}, err
+		}
+		return intake.Result{}, e.readyWorkerTask(ctx, tx, *issue, fact)
 	}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		if issue.Lingers() || record.OutOfWorkflow(issue.Status) {
@@ -238,7 +246,8 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // owedEntryRoles): the whole row, below the skips above, so a ready this function passes over
 // costs no query and the row the rule is weighed against is the row whose work is sent. A claim
 // behind that entry — the entry it was given is under the row's and no queued start carries that
-// entry (OwedEntry) — is sent the work of that entry at that entry (SendOwedEntry), which is the
+// entry (OwedEntry) — is sent the work of that entry at that entry (sendOwedEntry, unmarked as
+// SendOwedEntry sends it; claimReady holds the worker itself), which is the
 // task the transition wrote when it raised the number. It is sent that rather than the phase's
 // resume task because the resume says to carry the existing phase work on, and the work of an
 // entry this claim was never given is work it does not have; the resume would also spend the turn
@@ -260,10 +269,9 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // is work the claim does not have, and its start waits until the issue holds a slot again, as the
 // slot repair's does (admit's resumeSlottedWorkers). The rule is "Admission and the `legion`
 // label" in docs/site/src/content/docs/legion/concepts.md.
-func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) error {
-	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil || record.OutOfWorkflow(issue.Status) {
-		return err
+func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.ClaimReady) error {
+	if record.OutOfWorkflow(issue.Status) {
+		return nil
 	}
 	role := RoleFor(issue.Phase)
 	if role == "" || role == claim.RoleArchitect || role != fact.Role {
@@ -273,7 +281,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil || root == nil || root.Lingers() {
 		return err
 	}
-	finished, err := e.phaseFinished(ctx, tx, *issue)
+	finished, err := e.phaseFinished(ctx, tx, issue)
 	if err != nil || finished {
 		return err
 	}
@@ -285,7 +293,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil {
 		return err
 	}
-	run, err := e.store.RoleRun(ctx, tx, token, *issue, role)
+	run, err := e.store.RoleRun(ctx, tx, token, issue, role)
 	if err != nil {
 		return err
 	}
@@ -302,14 +310,14 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 		return err
 	}
 	if OwedEntry(run, *root, row.Entry) {
-		if err := e.SendOwedEntry(ctx, tx, *issue, role, row); err != nil {
+		if err := e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{}); err != nil {
 			return err
 		}
 		e.logOnCommit(ctx, "workflow: a ready worker behind the entry its phases row names is sent that entry's work",
 			"issue", issue.Key, "role", role, "phase", issue.Phase, "entry", row.Entry, "launch", fact.Launch)
 		return nil
 	}
-	resume, err := e.ResumeTask(ctx, tx, *issue)
+	resume, err := e.ResumeTask(ctx, tx, issue)
 	if err != nil {
 		return err
 	}

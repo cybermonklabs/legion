@@ -31,18 +31,21 @@ func PlanID(issue string, generation uint64) string {
 // the run's one id (PlanID). Its source is the version in force's (record.PlanVersion.Source):
 // owner, with the document and the version of it Legion took, or default, the project's default
 // steps, with neither. Its task is the run's one task, with its steps in order, each a role or
-// `role:key` (plan.Step.String). The node is written at the start of the work and again, whole, at
-// each later version Legion takes (planGiven): Dispatch replaces all four fields for a version
-// above the one it holds. Both read w with its plan rows: the start's first step writes them
-// (planFirstStep), and a version taken is one. A run with no plan rows walks today's line, so its
-// node is the task default of todaysSteps: a hand-over's carry of an orphan that ran before plans
+// `role:key` (plan.Step.String), and the tasks it needs, each by the id register_plan resolved
+// (record.PlanTask.Needs), [] where it needs none: the one record of the needs that Dispatch
+// serves. The node is written at the start of the work and again, whole, at each later version
+// Legion takes (planGiven): Dispatch replaces all four fields for a version above the one it
+// holds. Both read w with its plan rows: the start's first step writes them (planFirstStep), and a
+// version taken is one. A run with no plan rows walks today's line, so its node is the task
+// default of todaysSteps, which needs none: a hand-over's carry of an orphan that ran before plans
 // (WritePlan).
 func planNode(issue record.Issue, w Walk) record.PlanRecord {
 	node := record.PlanRecord{ID: PlanID(issue.Key, issue.Generation), Generation: issue.Generation, Source: record.PlanSourceDefault}
+	needs := append([]string{}, w.Needs...)
 	if w.Version.Source == record.PlanSourceOwner {
 		node.Source, node.PlanDocument = record.PlanSourceOwner, &record.PlanDocument{ArtifactID: w.Version.ArtifactID, Version: w.Version.Version}
 	}
-	node.Tasks = []record.PlanRecordTask{{ID: w.Task, Steps: plan.Words(namedSteps(w.Steps))}}
+	node.Tasks = []record.PlanRecordTask{{ID: w.Task, Steps: plan.Words(namedSteps(w.Steps)), Needs: &needs}}
 	return node
 }
 
@@ -302,22 +305,23 @@ func giversOf(version record.PlanVersion) string {
 	return namedGivers(version.Givers())
 }
 
-// namedGivers names givers by their claims, as a sentence lists them (listedWords).
+// namedGivers names givers by their claims, as a sentence lists them (listed).
 func namedGivers(givers []claim.Token) string {
 	names := make([]string, len(givers))
 	for i, giver := range givers {
 		names[i] = string(giver)
 	}
-	return listedWords(names)
+	return listed(names, "and")
 }
 
-// listedWords joins words as a sentence lists them: one alone, two joined by "and", more by commas
-// and a last "and".
-func listedWords(words []string) string {
+// listed joins words as a sentence lists them, with conjunction before the last: one alone, two
+// joined by it, more by commas and a last conjunction ("a", "a or b", "a, b and c").
+func listed(words []string, conjunction string) string {
 	if len(words) < 2 {
 		return strings.Join(words, "")
 	}
-	return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
+	last := len(words) - 1
+	return strings.Join(words[:last], ", ") + " " + conjunction + " " + words[last]
 }
 
 // WritePlan queues the plan node of issue's run (planNode), the plan it carries out, read from its

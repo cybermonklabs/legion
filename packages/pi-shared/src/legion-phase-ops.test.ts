@@ -1,11 +1,8 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import {
-  LEGION_PHASE_BACKWARD_TARGETS,
-  LEGION_PLAN_RATING_LEAST,
-  LEGION_PLAN_RATING_MOST,
-} from "@legion/contracts/legion-api";
+import { LEGION_PHASE_BACKWARD_TARGETS, type LegionPhase } from "@legion/contracts/legion-api";
+import { namesMissing, namesWhole } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
 import { PlanRatingCases } from "../../contracts/src/plan-rating-cases";
 import { stateAtPhase } from "../test/daemon-state";
@@ -19,6 +16,7 @@ import {
   PHASE_OP_SENTENCES,
   PHASE_OPS,
   PhaseOpArguments,
+  type PhaseOpField,
   type PhaseOpRuntime,
   phaseOpParameters,
   STALE_ENTRY_INSTRUCTION,
@@ -279,45 +277,62 @@ test("the phase ops' fields, as a host declares them, are every field of every o
   expect(Object.keys(phaseOpParameters(z)).sort()).toEqual([...fields].sort());
 });
 
-test("the description sets the host's sentences before and after handoff_complete's contract, and ends on the host's Envoy publish tool", () => {
-  const bare = legionToolDescription({ envoyPublish: "envoy_publish" });
-  const placed = legionToolDescription({
-    envoyPublish: "mcp__legion__envoy_publish",
-    before: PHASE_OP_SENTENCES.readRecord,
-    after: `${PHASE_OP_SENTENCES.requestBackwardMove}The controller's read_state returns the daemon's whole state. `,
-  });
-  expect(bare).not.toContain("read_record");
-  expect(bare).not.toContain("request_backward_move");
-  expect(bare.endsWith("role topic with envoy_publish.")).toBe(true);
-  expect(placed).toContain(
-    `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}handoff_complete (phase workers`
-  );
-  // Every host states `ready_for_update`, so its sentences are the template's own, between
-  // handoff_complete's contract and the host's `after`.
-  expect(placed).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. A kept volume stays with its Sandbox through the round, but a reset or a change of its disk shape still deletes it, so push first there too. If the daemon finds work that origin does not hold, it keeps the pod and says so; push that work. A round over a drift that breaks the pod replaces the pod anyway. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. That move counts no review round: only a review that requests changes counts one. The controller's read_state returns the daemon's whole state. What a later phase needs"
-  );
-  expect(placed.endsWith("role topic with mcp__legion__envoy_publish.")).toBe(true);
+// A host's own texts stand where the template puts them, and nothing else of the description
+// moves: `before` right before handoff_complete's contract, `after` after that contract and after
+// ready_for_update's part, which every host states, and the host's Envoy publish tool last. The
+// texts and the tool's name are planted, so the case holds no word of the description.
+test("the description sets the host's texts before and after handoff_complete's contract, and ends on the host's Envoy publish tool", () => {
+  const before = "planted-before-7d31. ";
+  const after = "planted-after-7d31. ";
+  const publish = "planted_publish_7d31";
+  const bare = legionToolDescription({ envoyPublish: publish });
+  const placed = legionToolDescription({ envoyPublish: publish, before, after });
+  expect(bare).not.toContain(before);
+  expect(bare).not.toContain(after);
+  // read_record and request_backward_move are operations only some hosts carry, so the template
+  // names neither: a host that carries one names it in its own `before` or `after`.
+  for (const op of ["read_record", "request_backward_move"]) {
+    expect(namesWhole(bare, op), `the bare description names ${op}`).toBe(false);
+  }
+  const at = placed.indexOf(before);
+  const later = placed.indexOf(after);
+  expect(at, "the description holds no `before`").toBeGreaterThan(-1);
+  expect(later, "the description holds no `after` after `before`").toBeGreaterThan(at);
+  const without = placed.replace(before, "").replace(after, "");
+  expect(without, "without the host's two texts it is not the bare description").toBe(bare);
+  const contract = at + before.length;
+  const op = placed.indexOf("handoff_complete", at);
+  expect(op, "handoff_complete's contract does not follow `before`").toBe(contract);
+  const update = placed.indexOf("ready_for_update", contract);
+  expect(update, "ready_for_update's part is not after the contract").toBeGreaterThan(contract);
+  expect(update, "ready_for_update's part is not before `after`").toBeLessThan(later);
+  const updatePart = placed.slice(update, later);
+  expect(namesWhole(updatePart, "`round`"), "ready_for_update's part names no `round`").toBe(true);
+  const tool = placed.lastIndexOf(publish);
+  expect(tool, "the Envoy publish tool is not named after `after`").toBeGreaterThan(later);
+  expect(placed.slice(tool + publish.length)).toMatch(/^\W*$/);
 });
 
-// The daemon ends its HANDOFF_STALE_ENTRY refusal with the words that tell the worker what to do,
-// and the description must give the code those same words, so a worker reads one instruction in
-// its tool and in the refusal. The daemon's golden test
-// (`packages/daemon/internal/api`, TestStaleEntryInstructionGolden) writes its code and its
-// constant to `stale-entry.json`; this case holds the description's sentence for that code to the
-// file, so a word changed on either side alone fails one test or the other.
-test("the description gives HANDOFF_STALE_ENTRY the instruction the daemon's refusal ends with, word for word", () => {
+// The daemon refuses a completion behind its phase entry HANDOFF_STALE_ENTRY and ends that refusal
+// with an instruction of its own (`staleEntryInstruction` in
+// packages/daemon/internal/api/handoff.go), and the tool composes the same instruction into its
+// description, so a worker reads one instruction in its tool and in the refusal. The daemon's
+// golden test (`packages/daemon/internal/api`, TestStaleEntryInstructionGolden) writes its code and
+// its constant to `stale-entry.json`: this case holds the tool's constant to the daemon's, and the
+// description to ending that code's clause, `HANDOFF_STALE_ENTRY (` up to its `), `, with the
+// constant. It holds no word of the description.
+test("the description ends HANDOFF_STALE_ENTRY's clause with the instruction the daemon's refusal ends with", () => {
   const { code, instruction } = daemonFixture("stale-entry.json") as {
     readonly code: string;
     readonly instruction: string;
   };
   expect(code).toBe("HANDOFF_STALE_ENTRY");
+  expect(STALE_ENTRY_INSTRUCTION).toBe(instruction);
   const description = legionToolDescription({ envoyPublish: "envoy_publish" });
   const opens = description.indexOf(`${code} (`);
   expect(opens, `the description names no ${code} (`).toBeGreaterThan(-1);
-  const sentence = description.slice(opens, description.indexOf("), ", opens));
-  expect(sentence).toEndWith(`nothing was recorded. ${instruction}`);
-  expect(STALE_ENTRY_INSTRUCTION).toBe(instruction);
+  const clause = description.slice(opens, description.indexOf("), ", opens));
+  expect(clause).toEndWith(STALE_ENTRY_INSTRUCTION);
 });
 
 test("each op refuses its arguments whole before any daemon request, naming every problem", async () => {
@@ -347,9 +362,10 @@ test("each op refuses its arguments whole before any daemon request, naming ever
       { op: "handoff_complete", summary: "x", verdict: "pending", wake_at: "2026-11-06T10:00Z" },
       "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is",
     ],
-    // The rating of the plan is a whole number from 1 to 5 with a reason the contract takes: not
-    // blank, and at most 2,000 characters counted as the daemon counts them. Each is refused by its
-    // field's name, before the client's own parse of the request would refuse it unnamed.
+    // The rating of the plan is a whole number from 1 to 5 with a reason the contract takes: a
+    // string, not blank, and at most 2,000 characters counted as the daemon counts them. Each is
+    // refused by its field's name, before the client's own parse of the request would refuse it
+    // unnamed.
     [
       { op: "handoff_complete", summary: "x", plan_rating: 0, plan_reason: "r" },
       "handoff_complete's plan_rating is a whole number from 1 to 5",
@@ -368,6 +384,10 @@ test("each op refuses its arguments whole before any daemon request, naming ever
     ],
     [
       { op: "handoff_complete", summary: "x", plan_rating: 4, plan_reason: " \t\n" },
+      "handoff_complete requires plan_reason",
+    ],
+    [
+      { op: "handoff_complete", summary: "x", plan_rating: 4, plan_reason: 5 },
       "handoff_complete requires plan_reason",
     ],
     [
@@ -631,21 +651,21 @@ test("the tool takes exactly the ratings the daemon takes, and sends a refused o
 });
 
 // The description is where every host's agent reads what the completion that ends the retro
-// carries: the two fields, the scale, the skill that states the rule, and the daemon's refusals of
-// a rating.
-test("the description names the retro's rating fields, its scale, its skill and the daemon's refusals of a rating", () => {
+// carries: the two fields, the skill that states the rule, and the daemon's refusals of a rating,
+// each by name. The scale's two numbers stand elsewhere in the description as well, so a check of
+// them here could not fail by its cause; the refusals of 0 and 6 and the daemon's golden cases
+// above hold the scale.
+test("the description names the retro's rating fields, its skill and the daemon's refusals of a rating", () => {
   const description = legionToolDescription({ envoyPublish: "envoy_publish" });
-  for (const words of [
+  const missing = namesMissing(description, [
     "`plan_rating`",
-    `(${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST})`,
     "`plan_reason`",
     "skill://legion-retro",
     "PLAN_RATING_UNEXPECTED",
     "PLAN_RATING_INPUT",
     "PLAN_RATING_REQUIRED",
-  ]) {
-    expect(description).toContain(words);
-  }
+  ]);
+  expect(missing).toEqual([]);
 });
 
 // Contract 219: a tester's fail names the step its task returns to, `return_to`, which goes on the
@@ -676,6 +696,35 @@ test("a tester's fail sends return_to as returnTo", async () => {
   });
   await executePhaseOp(ops, { op: "handoff_complete", summary: "Red.", verdict: "fail" });
   expect(posted.at(-1)).not.toHaveProperty("returnTo");
+});
+
+// The description is where the tester reads what its fail may carry and what the daemon refuses:
+// the field and the daemon's three codes, each by name.
+test("the description names return_to and the daemon's three refusals of it", () => {
+  const description = legionToolDescription({ envoyPublish: "envoy_publish" });
+  const missing = namesMissing(description, [
+    "`return_to`",
+    "RETURN_TO_NEEDS_FAIL",
+    "INVALID_RETURN_TO",
+    "RETURN_REFUSED",
+  ]);
+  expect(missing).toEqual([]);
+});
+
+// A host that carries request_backward_move or read_build states it in its own text with the
+// sentence `PHASE_OP_SENTENCES` gives it. The move's sentence names the move's fields, each
+// backticked, and accepting, the phase an architect moves its issue back from; the build's names
+// null, the contract read_build answers where the daemon states none. Each name is held in its
+// own sentence: a host's whole description names `issue` and accepting in other sentences too
+// (read_record's and sign_off's), where a check of them could not fail.
+test("request_backward_move's sentence names its fields and the phase an architect moves from, and read_build's names null", () => {
+  const fields: readonly PhaseOpField[] = ["to", "reason", "issue"];
+  const accepting: LegionPhase = "accepting";
+  const move = [...fields.map((field) => `\`${field}\``), accepting];
+  expect({
+    move: namesMissing(PHASE_OP_SENTENCES.requestBackwardMove, move),
+    build: namesMissing(PHASE_OP_SENTENCES.readBuild, ["null"]),
+  }).toEqual({ move: [], build: [] });
 });
 
 // Workers named their own issue on handoff_complete and left it off read_record, and both were
@@ -1313,8 +1362,8 @@ test("read_record hands on what a reviewing issue's round waits on from GitHub",
   expect(stuck.record.mergeWait).toEqual({
     waitsOn: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
     mergeState: "behind",
-    stateReadAt: "2026-09-22T09:16:12Z",
-    headUpdatedAt: "2026-09-20T14:05:33Z",
+    stateReadAt: "2126-09-22T09:16:12Z",
+    headUpdatedAt: "2126-09-20T14:05:33Z",
     checkRuns: 2,
     toldHead: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
     toldState: "behind",
@@ -1325,7 +1374,7 @@ test("read_record hands on what a reviewing issue's round waits on from GitHub",
   };
   expect(first.record.mergeWait).toEqual({
     waitsOn: "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
-    headUpdatedAt: "2026-09-22T08:58:40Z",
+    headUpdatedAt: "2126-09-22T08:58:40Z",
     checkRuns: 0,
   });
   // An issue whose round waits on nothing from GitHub has no such wait at all.
@@ -1347,7 +1396,7 @@ test("a failed claim carries its cause", async () => {
   const failure = {
     cause: "died" as const,
     detail: "launch failures ran out",
-    at: "2026-09-22T08:47:03Z",
+    at: "2126-09-22T08:47:03Z",
     attempts: { launchFailures: 4, deaths: 1, promptFailures: 0, promptRetires: 0 },
   };
 

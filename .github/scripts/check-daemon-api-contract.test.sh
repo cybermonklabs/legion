@@ -273,7 +273,7 @@ commit "$root"
 run_check "$root"
 refused "state.json's contract mark"
 check "names the golden and the command that writes it" \
-  "$(contains "$out" "^::error file=$fixtures/state.json::$fixtures/state.json holds a .contract. mark.*TestStateGolden")"
+  "$(contains "$out" "^::error file=$fixtures/state.json::$fixtures/state.json holds a .contract. mark.*TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds")"
 
 root=$(repository number-narrowed)
 put "$root" "$fixtures/state-narrowed-repositories.json" '{"contract": {"caller": 1, "daemon": 3}}'

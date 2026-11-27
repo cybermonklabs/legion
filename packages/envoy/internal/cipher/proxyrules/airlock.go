@@ -752,6 +752,24 @@ func Rewrite(rules Rules, g Grant, value string, r *Request) *Request {
 	if k == nil {
 		return nil
 	}
+	return swap(k, g.Placeholder, value, r)
+}
+
+// SwapForScan returns a copy of r with the placeholder replaced by a space in the headers kind
+// names, and with every Cipher-Repository header removed. It takes no decision: the caller has
+// already decided with Rewrite or Decide. The proxy port's leftover scan calls it to read the
+// request as the command wrote it with only the swapped placeholder separated by a space, so text
+// on either side of it is never joined into a false prefix match. No value parameter is exposed:
+// every caller outside proxyrules that needs a value goes through Rewrite, which decides first.
+func SwapForScan(kind *Kind, placeholder string, r *Request) *Request {
+	return swap(kind, placeholder, " ", r)
+}
+
+// swap is the body Rewrite and SwapForScan share: placeholder swapped for value in the headers
+// kind names, and every Cipher-Repository header removed. Rewrite is check and then swap, as the
+// Lean model's rewriteReq is check and then the same filter and map over the headers (keepHeader,
+// swapHeader), so the contract with that model is the contract of check and Rewrite as before.
+func swap(k *Kind, placeholder, value string, r *Request) *Request {
 	names := k.HeaderNames()
 	out := *r
 	out.Headers = make([][2]string, 0, len(r.Headers))
@@ -761,7 +779,7 @@ func Rewrite(rules Rules, g Grant, value string, r *Request) *Request {
 		}
 		for _, n := range names {
 			if fold.ASCII(h[0]) == fold.ASCII(n) {
-				h[1] = substitute(g.Placeholder, value, h[1])
+				h[1] = substitute(placeholder, value, h[1])
 				break
 			}
 		}

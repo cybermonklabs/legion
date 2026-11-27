@@ -3179,6 +3179,18 @@ func (s *Postgres) RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchPro
 	return issues, nil
 }
 
+// QueuedMergeForwardAsk is Store.QueuedMergeForwardAsk: a delivered or ended row has left the
+// outbox, so any merge-forward row of the ask's step, role and head still there is queued.
+func (s *Postgres) QueuedMergeForwardAsk(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, head string) (bool, error) {
+	var queued bool
+	if err := tx.QueryRow(ctx, `select exists(select 1 from outbox where kind = $1 and issue = $2
+		and payload->>'step' = $3 and payload->>'role' = $4 and payload->>'head' = $5)`,
+		string(OutboxKindMergeForward), issue, string(MergeForwardAsk), string(role), head).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read the queued merge-forward asks of %s: %w", issue, err)
+	}
+	return queued, nil
+}
+
 // outboxColumns is an outbox row as scanOutbox reads it. held_by_pause is read as 0 for the null
 // of a row no pause held (OutboxRow.HeldByPause).
 const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until,
@@ -3702,20 +3714,26 @@ func (s *Postgres) OutboxQueued(ctx context.Context, tx pgx.Tx, issue string, ki
 	return queued, nil
 }
 
-// OutboxWaiting says whether the outbox holds a row of kind for issue that no live lease holds:
+// OutboxWaiting is the row of kind for issue that no live lease holds, and whether it found one:
 // one due or backing off, which reads the record when it runs. A live lease is the one the store
 // reads everywhere (RoleRuns' QueuedSupervise.Running): a token that is set and a lease_until
 // after now(). So a row a lane runs now is not waiting, and a row whose lane died mid-run, whose
 // lease lapsed, is: the lane runs it again from the start. The read of the checks (CloseRead) and
-// the publish of the stored wait (CloseWaitPublish) are queued only where this answers false. The
+// the publish of the stored wait (CloseWaitPublish) are queued only where this finds none. The
 // close read applies its fact while its own row is leased, and that fact can owe the next read.
-func (s *Postgres) OutboxWaiting(ctx context.Context, tx pgx.Tx, issue string, kind OutboxKind) (bool, error) {
-	var waiting bool
-	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = $2
-		and not coalesce(lease_token <> '' and lease_until > now(), false))`, issue, string(kind)).Scan(&waiting); err != nil {
-		return false, fmt.Errorf("read whether a %s row of %s waits to run: %w", kind, issue, err)
+// The earliest waiting row is the one answered, so a caller that makes the read it asks for due
+// (ExpediteOutbox) moves the row that runs first.
+func (s *Postgres) OutboxWaiting(ctx context.Context, tx pgx.Tx, issue string, kind OutboxKind) (OutboxRow, bool, error) {
+	row, err := scanOutbox(tx.QueryRow(ctx, `select `+outboxColumns+` from outbox
+		where issue = $1 and kind = $2 and not coalesce(lease_token <> '' and lease_until > now(), false)
+		order by next_at, id limit 1`, issue, string(kind)))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return OutboxRow{}, false, nil
 	}
-	return waiting, nil
+	if err != nil {
+		return OutboxRow{}, false, fmt.Errorf("read the %s row of %s that waits to run: %w", kind, issue, err)
+	}
+	return row, true, nil
 }
 
 // UnfinishedLanes is every lane of project's issues with a row still in the outbox — due, running,

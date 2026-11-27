@@ -15,12 +15,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// inInit is the tester's issue pod still in its init containers, its spec naming both of them:
-// workspace-fetch ended 0 and workspace-init's status is init.
+// inInit is the tester's issue pod while workspace-init has the status init.
 func inInit(init corev1.ContainerStatus) *corev1.Pod {
 	pod := runningPod(workerToken, recorded, claim.RoleTester)
-	pod.Spec.InitContainers = []corev1.Container{{Name: fetchContainer}, {Name: initContainer}}
-	pod.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{terminated(fetchContainer, 0, "Completed"), init}}
+	pod.Spec.InitContainers = []corev1.Container{{Name: initContainer}}
+	pod.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{init}}
 	return pod
 }
 

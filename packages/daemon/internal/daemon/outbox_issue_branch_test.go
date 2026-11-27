@@ -219,8 +219,8 @@ func TestAMissingBranchIsMadeAtTheBase(t *testing.T) {
 }
 
 // A branch that holds commits after the merge is someone's work: the row leaves it where it
-// stands, writes nothing, and tells the owning architect, naming the branch's tip, to merge the
-// base forward before the next change's first task.
+// stands, writes nothing, and tells the owning architect, naming the branch's tip, that the next
+// change's first task is told to merge the base forward.
 func TestABranchWithCommitsAfterTheMergeIsLeftAndTold(t *testing.T) {
 	t.Parallel()
 	r := newNextBranchRig(t, map[string]string{"main": nextBaseHead, nextBranch: nextLater},
@@ -239,7 +239,7 @@ func TestABranchWithCommitsAfterTheMergeIsLeftAndTold(t *testing.T) {
 // A push that lands on the branch between the row's read of its tip and its move is someone's work,
 // as a commit after the merge is: the move is made only while the branch still points at the merged
 // head, so the push stays on the branch, and the owning architect is told, naming the pushed tip,
-// to merge the base forward before the next change's first task.
+// that the next change's first task is told to merge the base forward.
 func TestAPushBetweenTheReadAndTheMoveStaysOnTheBranch(t *testing.T) {
 	t.Parallel()
 	r := newNextBranchRig(t, map[string]string{"main": nextBaseHead, nextBranch: nextMergedHead},

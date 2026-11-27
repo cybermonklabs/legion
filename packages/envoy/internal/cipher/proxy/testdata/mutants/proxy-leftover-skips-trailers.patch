@@ -1,0 +1,13 @@
+# proxy-leftover-skips-trailers: the scan before the forward reads the headers and not the trailers,
+# so a placeholder in a trailer of a call whose body the proxy has already read - an AWS call it
+# hashes, a Limited name's post it reads - goes to the service with the request.
+# must fail: TestAPlaceholderInATrailerIsRefusedWhereTheBodyIsRead
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxy/leftover.go
++++ b/packages/envoy/internal/cipher/proxy/leftover.go
+@@ -50,2 +50,3 @@ func leftoverPlaceholder(prefixes []placeholderPrefix, header, trailer http.Head
+-	for _, fields := range [...]http.Header{header, trailer} {
++	// MUTANT: the trailers are not scanned, so a placeholder in one goes upstream.
++	for _, fields := range [...]http.Header{header} {
+ 		if placeholder, carried := fieldsPlaceholder(prefixes, fields); carried {

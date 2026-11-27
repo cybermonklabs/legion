@@ -207,6 +207,12 @@ type outbox struct {
 	// controllerLaunched is `controller: daemon`: the daemon launches the project's controller, so
 	// its claim holds the controller topic back (heldTopic). False is `controller: operator`.
 	controllerLaunched bool
+	// beforeUndeliveredEnd, where a test sets it, runs on a held message's row between the read
+	// that ends the row undelivered - the workflow's rule of a merge-forward message
+	// (mergeForwardMessage), or a claim that failed or retired (deliverHeld) - and the end
+	// (endUndelivered), so the test can make something come in between. nil runs nothing, and no
+	// production path sets it.
+	beforeUndeliveredEnd func(record.OutboxRow)
 	// The lane registry (outbox_lanes.go). mu guards running, laneCtx and lanes; running is true
 	// between Run's start and its stop, laneCtx is Run's context, which every lane runs under, and
 	// lanes is each live lane by its key. wg counts the lane goroutines, so Run returns only once
@@ -316,8 +322,16 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 // withhold the role from it, so the daemon withholds its own messages. A topic of no claim this
 // daemon supervises, and every other topic, is published as made.
 func (r *outbox) publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
+	_, err := r.publishTo(ctx, topic, message, payload, dedupeKey)
+	return err
+}
+
+// publishTo is publish answering the session the listener stored the message for, "" where its
+// answer names none (notify.Publisher.Publish): the one evidence of who was told at the write, which
+// a held message bound to its role's launch reads (deliverHeld).
+func (r *outbox) publishTo(ctx context.Context, topic, message string, payload any, dedupeKey string) (string, error) {
 	if err := r.heldBack(ctx, topic, dedupeKey); err != nil {
-		return err
+		return "", err
 	}
 	return r.notices.Publish(ctx, topic, message, payload, dedupeKey)
 }
@@ -4808,7 +4822,8 @@ func (r *outbox) startBranchAtBase(ctx context.Context, row record.OutboxRow, is
 }
 
 // branchLeftNotice is the owning architect's notice of a next change's branch left where it
-// stands (startBranchAtBase): where its tip is, why Legion did not move it, and what to do first.
+// stands (startBranchAtBase): where its tip is, why Legion did not move it, and that the next
+// change's first task is told to merge the base forward.
 // A merge snapshot that names only its pull request gives no merged head (record.BranchFrom), and
 // then the notice says Legion does not know it rather than print an empty commit.
 func branchLeftNotice(issue string, from record.BranchFrom, result ghbranch.Result) record.Notice {

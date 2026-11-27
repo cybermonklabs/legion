@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { IDEMPOTENCY_KEY_COMMITTED, IDEMPOTENCY_KEY_IN_FLIGHT } from "@legion/contracts";
 import type { Page, Route } from "@playwright/test";
 
 import { MESSAGE_REFUSED, refusePosts, WRITE_REFUSED } from "../sends";
@@ -20,24 +21,45 @@ function routedPage(): {
   return { page, patterns, handlers };
 }
 
-// Every write the page makes tries a 5xx, a 429 or a lost answer again under its key, so a row
-// that refused any route with one would wait on it for good. The helper refuses the row instead,
-// naming the refusal that does end a write: Dispatch's own verdict.
-test("refusePosts refuses a 5xx or a 429 for every write route, naming WRITE_REFUSED", async () => {
+// Every write the page makes tries an outage (a 5xx, a 408 or a 429), a `409 KEY_IN_FLIGHT` or a
+// lost answer again under its key (`retriesUnderKey`), so a row that refused any route with one
+// would wait on it for good. The helper refuses the row instead, naming the refusal that does end
+// a write: Dispatch's own verdict.
+test("refusePosts refuses an outage or a 409 KEY_IN_FLIGHT for every write route, naming WRITE_REFUSED", async () => {
   for (const pattern of [
     "**/api/v1/agents/*/messages",
     "**/api/v1/agents/01a0e0c1-0000-7000-8000-00000000a002/messages",
     "**/api/v1/issues/CORE-1/comments",
     "**/api/v1/issues/*/asks",
   ]) {
-    for (const status of [503, 500, 429]) {
+    for (const refusal of [
+      ...[408, 429, 500, 501, 503].map((status) => ({
+        code: "UNAVAILABLE",
+        error: "down",
+        status,
+      })),
+      {
+        code: IDEMPOTENCY_KEY_IN_FLIGHT,
+        error: "an earlier request is still running",
+        status: 409,
+      },
+    ]) {
       const { page, patterns } = routedPage();
-      await expect(
-        refusePosts(page, pattern, { code: "UNAVAILABLE", error: "down", status })
-      ).rejects.toThrow(/WRITE_REFUSED/);
+      await expect(refusePosts(page, pattern, refusal)).rejects.toThrow(/WRITE_REFUSED/);
       expect(patterns).toEqual([]);
     }
   }
+});
+
+// A 409 under any other code is Dispatch's verdict on the key, which the page does not try again.
+test("refusePosts routes a 409 that is not KEY_IN_FLIGHT", async () => {
+  const { page, patterns } = routedPage();
+  await refusePosts(page, "**/api/v1/issues/*/comments", {
+    code: IDEMPOTENCY_KEY_COMMITTED,
+    error: "the write already landed",
+    status: 409,
+  });
+  expect(patterns).toEqual(["**/api/v1/issues/*/comments"]);
 });
 
 test("refusePosts routes Dispatch's verdict, a 400 unless a row names its own", async () => {
