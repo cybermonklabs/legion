@@ -172,8 +172,8 @@ reflection (reflect.Value.MethodByName(...).Call), which no census lists and rev
 ways an answer's words leave it that no census reads from the types alone - the bytes StreamTo
 or StreamAnswer hands out, printed; a test given to Holds that keeps the bytes; what
 redact.Unmarshal fills from the bytes (a json.RawMessage handed on, a map of them a proxy
-forwards), printed; a member decoded into a plain string, printed; a member a type's own
-UnmarshalJSON keeps as it came (for example githubText.Name,
+forwards), printed; a member decoded into a plain string, printed;
+a member a type's own UnmarshalJSON keeps as it came (for example githubText.Name,
 packages/daemon/internal/daemon/base_rules.go:75-86), printed; a response's header, trailer,
 Location or cookies (Cookies, Set-Cookie), printed; the URL of a response's
 request (Request.URL), printed, which after a followed redirect is the Location another party
