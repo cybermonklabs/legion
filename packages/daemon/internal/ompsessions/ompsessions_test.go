@@ -287,11 +287,12 @@ func TestImportRefusesContentNoTextValueHolds(t *testing.T) {
 	}
 }
 
-// Connect's refusals name the URL file or the database's address, never the URL's password.
+// Connect's refusals name why the URL file cannot be read, never its path (ReadDSN), or the
+// database's address, never the URL's password.
 func TestConnectNamesTheFileOrTheAddressAndNeverThePassword(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := Connect(context.Background(), filepath.Join(dir, "absent")); err == nil || !strings.Contains(err.Error(), filepath.Join(dir, "absent")) {
-		t.Errorf("Connect of a missing file = %v, want it named", err)
+	if _, err := Connect(context.Background(), filepath.Join(dir, "absent")); err == nil || err.Error() != "read the database URL file: it does not exist" {
+		t.Errorf("Connect of a missing file = %v, want it refused by why alone", err)
 	}
 	empty := filepath.Join(dir, "empty")
 	if err := os.WriteFile(empty, []byte("\n"), 0o600); err != nil {

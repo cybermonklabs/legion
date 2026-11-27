@@ -32,10 +32,12 @@ related_issues:
   credentials"), `readPluginSource` stores an http(s) tarball URL whole — userinfo, query and
   fragment — and `readAgentSecrets` refuses all four shapes on `agent_secrets.url`. Three validators
   for three URL-shaped keys, three different answers; the disagreement is the audit list.
-- Mask a URL by composing from its parsed parts — scheme, `xxxxx@` when it carries userinfo, host,
-  and the path when the setting's reader needs one — never by editing the raw string, so a query
-  or a fragment cannot survive either. Fail safe: an input that yields no scheme and host is
-  `xxxxx` whole, never the raw value.
+- Mask a URL by composing from its parsed parts — scheme, host, and the path when the setting's
+  reader needs one — never by editing the raw string, so a query or a fragment cannot survive
+  either. A URL whose authority holds any `@` prints its scheme and `[a URL with credentials]` in
+  place of the authority (#4796): a password holding an unencoded `@` leaves its tail after the
+  last `@`, which reads as a host. Fail safe: an input that yields no scheme and host is `xxxxx`
+  whole, never the raw value.
 - Before writing a sanitizer, grep for one that already handles the same value. This tree had
   `internal/runtime/sandbox/addresses.go`'s `namedURL`, with a test that already pinned userinfo
   and a `?token=` query; its existence was the finding. Reuse it, or diverge in writing: a comment
@@ -74,3 +76,4 @@ the same file as the negative control (it served the passwords). Applying the fo
 the diff after the fact finds both leaks in one pass and nothing else; the reviewer's recorded
 remainders are the operator-authored argv and text keys (`omp_launch_prefix`,
 `runtime.kubernetes.setup`, `capabilities.decided`, `merge.by_hand`), accepted and named.
+`omp_launch_prefix` is now shown as its program and how many arguments follow (#4796).

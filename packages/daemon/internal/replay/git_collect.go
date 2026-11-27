@@ -27,8 +27,14 @@ const (
 	GitPhaseGit    = "git"
 )
 
-// gitFetchBatch is how many commits one fetch asks the remote for at most.
-const gitFetchBatch = 40
+// gitFetchBatch is how many commits, or pull requests' head refs, one fetch asks the remote for at
+// most, gitListBatch how many head refs one git ls-remote asks it for, and gitMergeBatch how many
+// base commits one git merge-tree --stdin merges a head with.
+const (
+	gitFetchBatch = 40
+	gitListBatch  = 200
+	gitMergeBatch = 200
+)
 
 // GitConfig is one collection of git's reading of a repository's pull requests into a window
 // (CollectGit).
@@ -121,15 +127,19 @@ type GitCollected struct {
 // that names no commit among them, a timeline-unread one; any other refusal fails the run.
 //
 // The git phase reads no GitHub API. It clones the repository once, where cfg.Clones holds no
-// clone of it, as git clone --filter=blob:none --no-checkout --bare of cfg.Branch alone, from
-// https://github.com/<owner>/<name>.git with the credential the environment's git credential
-// helper gives, which it reads, prints and stores none of; it fetches each commit it needs that
-// the clone lacks (GIT_NO_LAZY_FETCH=1 git cat-file --batch-check), in batches of up to
-// gitFetchBatch, then each still lacking alone. It writes, for each commit of cfg.Branch the
-// merges file holds and each base commit a read names, the paths it changes, and for each head its
-// tip, merge base, paths and verdicts (GitHead). Every git command runs alone under the memory
-// guard (gitGuard, cfg.MemoryCap) and its time; a command git fails, or the guard kills, is a
-// missing input, and the run goes on.
+// clone of it, as git clone --no-checkout --bare --single-branch of cfg.Branch alone, every blob
+// with it, from https://github.com/<owner>/<name>.git with the credential the environment's git
+// credential helper gives, which it reads, prints and stores none of. It fetches each commit it
+// needs that the clone lacks (GIT_NO_LAZY_FETCH=1 git cat-file --batch-check), its blobs with it:
+// first the head ref of each pull request whose heads the clone lacks, where the remote holds one,
+// then each commit still lacking, each into a ref of the clone's so a later fetch sends nothing
+// twice (ensure). Each command that reads the clone runs with lazy fetching off, so none fetches.
+// It writes, for each commit of cfg.Branch the merges file holds and each base commit a read names,
+// the paths it changes, and for each head its tip, merge base, paths and verdicts (GitHead), each
+// read once in the run however many pull requests hold the head, its verdicts from one git
+// merge-tree --stdin of up to gitMergeBatch base commits (readVerdicts). Every git command runs
+// alone under the memory guard (gitGuard, cfg.MemoryCap) and its time; a command git fails, or the
+// guard kills, is a missing input, and the run goes on.
 //
 // A run on a window whose git file of cfg.Repo exists asks for nothing the file holds. The GitHub
 // phase keeps each pull request the file holds a pull line of and no missing input of GitHub's.
@@ -315,7 +325,8 @@ type gitCollector struct {
 
 	cur, old  GitInput
 	holdsFile bool
-	// The old file's readings by what each rests on, and each head a missing input of git's names.
+	// The readings the old file holds and those the run read, by what each rests on, and each head a
+	// missing input of git's names.
 	mergeBases map[commitPair]string
 	headPaths  map[commitPair][]string
 	verdicts   map[commitPair]GitVerdict
@@ -667,6 +678,7 @@ func (c *gitCollector) git(ctx context.Context, clones string) error {
 			objects = append(objects, sha)
 		}
 	}
+	heads := make(map[int][]string)
 	for _, pull := range c.cur.Pulls {
 		if _, known := tips[pull.Number]; !known {
 			objects = append(objects, pull.Merge)
@@ -674,6 +686,7 @@ func (c *gitCollector) git(ctx context.Context, clones string) error {
 		for _, h := range pull.Heads {
 			if _, held := whole(pull.Number, h.SHA); !held {
 				objects = append(objects, h.SHA)
+				heads[pull.Number] = append(heads[pull.Number], h.SHA)
 			}
 		}
 	}
@@ -686,7 +699,7 @@ func (c *gitCollector) git(ctx context.Context, clones string) error {
 		if clone, err = c.openClone(ctx, clones); err != nil {
 			return err
 		}
-		if unreachable, err = clone.ensure(ctx, objects); err != nil {
+		if unreachable, err = clone.ensure(ctx, objects, heads); err != nil {
 			return fmt.Errorf("replay: collect-git: %w", err)
 		}
 	}
@@ -701,7 +714,7 @@ func (c *gitCollector) git(ctx context.Context, clones string) error {
 				missing = append(missing, c.missingOf(failure, 0, "", sha, GitBaseUnreachable))
 				continue
 			}
-			run := clone.git(ctx, gitOtherTime, nil, false, "diff-tree", "-r", "--no-commit-id", "--name-only", "-z", sha+"^1", sha)
+			run := clone.git(ctx, gitOtherTime, nil, true, "diff-tree", "-r", "--no-commit-id", "--name-only", "-z", sha+"^1", sha)
 			if paths, held = gitPaths(run); !held {
 				missing = append(missing, c.missingOf(gitFailure{run, gitOtherTime, "git diff-tree of the commit and its first parent"}, 0, "", sha, GitError))
 				continue
@@ -733,7 +746,7 @@ func (c *gitCollector) git(ctx context.Context, clones string) error {
 				}
 				known = false
 			} else {
-				run := clone.git(ctx, gitOtherTime, nil, false, "rev-parse", "--verify", pull.Merge+"^1")
+				run := clone.git(ctx, gitOtherTime, nil, true, "rev-parse", "--verify", pull.Merge+"^1")
 				tip = strings.TrimSpace(string(run.stdout))
 				if known = run.ok() && commitSHA.MatchString(tip); !known {
 					for _, h := range pull.Heads {
@@ -774,51 +787,92 @@ func (c *gitCollector) git(ctx context.Context, clones string) error {
 
 // readHead reads h, a head of the pull request pr, against tip with git: its merge base, the paths
 // it changes since, and its verdict at each commit of the merges file on its tip's first-parent
-// chain after its merge base whose paths (commitPaths) share one of its own, each the file holds
-// rather than read again. A merge base, paths or chain git does not give leave h unread; a verdict
-// git does not give ends its verdicts. It is the missing inputs of what git did not give.
+// chain after its merge base whose paths (commitPaths) share one of its own, each the file holds or
+// the run read already rather than read again, and each it reads kept for the run's other heads
+// (readVerdicts). A merge base, paths or chain git does not give leave h unread; a verdict git does
+// not give ends its verdicts. It is the missing inputs of what git did not give.
 func (c *gitCollector) readHead(ctx context.Context, clone *gitClone, pr int, h *GitHead, tip string, commitPaths map[string][]string) []GitMissing {
 	failed := func(run guardedRun, timeout time.Duration, base, what string) []GitMissing {
 		return []GitMissing{c.missingOf(gitFailure{run, timeout, what}, pr, h.SHA, base, GitError)}
 	}
 	mergeBase, held := c.mergeBases[commitPair{h.SHA, tip}]
 	if !held {
-		run := clone.git(ctx, gitOtherTime, nil, false, "merge-base", h.SHA, tip)
+		run := clone.git(ctx, gitOtherTime, nil, true, "merge-base", h.SHA, tip)
 		if mergeBase = strings.TrimSpace(string(run.stdout)); !run.ok() || !commitSHA.MatchString(mergeBase) {
 			return failed(run, gitOtherTime, tip, "git merge-base of the head and its tip")
 		}
+		c.mergeBases[commitPair{h.SHA, tip}] = mergeBase
 	}
 	paths, held := c.headPaths[commitPair{mergeBase, h.SHA}]
 	if !held {
-		run := clone.git(ctx, gitOtherTime, nil, false, "diff", "--no-renames", "--name-only", "-z", mergeBase, h.SHA)
+		run := clone.git(ctx, gitOtherTime, nil, true, "diff", "--no-renames", "--name-only", "-z", mergeBase, h.SHA)
 		if paths, held = gitPaths(run); !held {
 			return failed(run, gitOtherTime, mergeBase, "git diff of the head since its merge base")
 		}
+		c.headPaths[commitPair{mergeBase, h.SHA}] = paths
 	}
-	run := clone.git(ctx, gitOtherTime, nil, false, "rev-list", "--first-parent", "--reverse", tip, "^"+h.SHA)
+	run := clone.git(ctx, gitOtherTime, nil, true, "rev-list", "--first-parent", "--reverse", tip, "^"+h.SHA)
 	chain := strings.Fields(string(run.stdout))
 	if !run.ok() || slices.ContainsFunc(chain, func(sha string) bool { return !commitSHA.MatchString(sha) }) {
 		return failed(run, gitOtherTime, tip, "git rev-list of the tip's first parents since the head")
 	}
-	verdicts := []GitVerdict{}
-	var missing []GitMissing
+	// The base commits the head has a verdict at, in the chain's order, and those of them whose
+	// verdict neither the file nor the run holds.
+	var bases, unread []string
 	for _, base := range chain {
 		touched, known := commitPaths[base]
 		if !c.mergeSet[base] || !known || !sharePath(touched, paths) {
 			continue
 		}
+		bases = append(bases, base)
+		if _, held := c.verdicts[commitPair{h.SHA, base}]; !held {
+			unread = append(unread, base)
+		}
+	}
+	missing := c.readVerdicts(ctx, clone, pr, h.SHA, unread)
+	verdicts := []GitVerdict{}
+	for _, base := range bases {
 		verdict, held := c.verdicts[commitPair{h.SHA, base}]
 		if !held {
-			run := clone.git(ctx, gitMergeTime, nil, false, "merge-tree", "--write-tree", "--no-messages", "--name-only", "-z", base, h.SHA)
-			if verdict, held = gitVerdict(run, base); !held {
-				missing = failed(run, gitMergeTime, base, "git merge-tree of the base and the head")
-				break
-			}
+			break
 		}
 		verdicts = append(verdicts, verdict)
 	}
 	h.Tip, h.MergeBase, h.Paths, h.Verdicts = tip, mergeBase, paths, verdicts
 	return missing
+}
+
+// readVerdicts reads git's verdict of merging head with each base commit of bases, in order, into
+// the run's verdicts: up to gitMergeBatch of them at a time from one git merge-tree --stdin, a line
+// of its stdin for each (gitVerdicts). From the first base that command gives no verdict at, as
+// where git cannot merge it or the guard kills git, it merges each alone (gitVerdict), up to the
+// first git does not give, whose missing input it is.
+func (c *gitCollector) readVerdicts(ctx context.Context, clone *gitClone, pr int, head string, bases []string) []GitMissing {
+	for len(bases) > 0 {
+		batch := bases[:min(gitMergeBatch, len(bases))]
+		var stdin []byte
+		for _, base := range batch {
+			stdin = fmt.Appendf(stdin, "%s %s\n", base, head)
+		}
+		run := clone.git(ctx, gitMergeTime, stdin, true, "merge-tree", "--stdin", "--write-tree", "--no-messages", "--name-only", "-z")
+		given := gitVerdicts(run.stdout, batch)
+		for _, verdict := range given {
+			c.verdicts[commitPair{head, verdict.Base}] = verdict
+		}
+		bases = bases[len(given):]
+		if len(given) < len(batch) {
+			break
+		}
+	}
+	for _, base := range bases {
+		run := clone.git(ctx, gitMergeTime, nil, true, "merge-tree", "--write-tree", "--no-messages", "--name-only", "-z", base, head)
+		verdict, given := gitVerdict(run, base)
+		if !given {
+			return []GitMissing{c.missingOf(gitFailure{run, gitMergeTime, "git merge-tree of the base and the head"}, pr, head, base, GitError)}
+		}
+		c.verdicts[commitPair{head, base}] = verdict
+	}
+	return nil
 }
 
 // sharePath says whether the sorted lists a and b hold a path in common.
@@ -865,6 +919,30 @@ func gitVerdict(run guardedRun, base string) (GitVerdict, bool) {
 	}
 	slices.Sort(paths)
 	return GitVerdict{Base: base, Conflict: run.code == 1, Paths: append([]string{}, slices.Compact(paths)...)}, true
+}
+
+// gitVerdicts is git's verdict at each base commit of bases, in order, that stdout, what a
+// merge-tree --stdin --write-tree --no-messages --name-only -z of a line of each with the head
+// wrote, gives whole, however the command ended: a record of each merge, its status, 1 clean or 0 a
+// conflict, its merged tree and the paths of its conflict, each ended by a NUL, and the record by
+// one more. The first record that is not whole or not so, as where git stopped at a merge it could
+// not make or the guard killed it, ends them.
+func gitVerdicts(stdout []byte, bases []string) []GitVerdict {
+	// Each field ended by a NUL; what follows the last NUL is no whole field.
+	fields := strings.Split(string(stdout), "\x00")
+	fields = fields[:len(fields)-1]
+	var verdicts []GitVerdict
+	for _, base := range bases {
+		end := slices.Index(fields, "")
+		if end < 2 || (fields[0] != "0" && fields[0] != "1") || !commitSHA.MatchString(fields[1]) || (fields[0] == "1" && end > 2) {
+			break
+		}
+		paths := append([]string{}, fields[2:end]...)
+		slices.Sort(paths)
+		verdicts = append(verdicts, GitVerdict{Base: base, Conflict: fields[0] == "0", Paths: slices.Compact(paths)})
+		fields = fields[end+1:]
+	}
+	return verdicts
 }
 
 // gitFailure is a git command that did not give what it was run for: the run, its time, and what it
@@ -992,9 +1070,9 @@ type gitClone struct {
 }
 
 // openClone is the clone of the repository in clones, which it clones first where clones holds
-// none: git clone --filter=blob:none --no-checkout --bare of the branch alone, into a temporary
-// directory renamed into place once the clone is whole, so a clone the guard or the pod's release
-// killed is never taken for one. A clone that fails fails the run.
+// none: git clone --no-checkout --bare --single-branch of the branch alone, every blob with it,
+// into a temporary directory renamed into place once the clone is whole, so a clone the guard or
+// the pod's release killed is never taken for one. A clone that fails fails the run.
 func (c *gitCollector) openClone(ctx context.Context, clones string) (*gitClone, error) {
 	dir := filepath.Join(clones, c.owner+"__"+c.name)
 	clone := &gitClone{dir: dir, guard: c.guard, onGit: c.cfg.onGit}
@@ -1012,11 +1090,11 @@ func (c *gitCollector) openClone(ctx context.Context, clones string) (*gitClone,
 		return nil, fmt.Errorf("replay: collect-git: %w", err)
 	}
 	remote := cmp.Or(c.cfg.remote, "https://github.com/"+c.owner+"/"+c.name+".git")
-	run := clone.run(ctx, "", gitBranchTime, nil, false, "clone", "--quiet", "--filter=blob:none", "--no-checkout", "--bare", "--single-branch",
-		"--no-tags", "--branch", c.cfg.Branch, remote, temp)
+	run := clone.run(ctx, "", gitCloneTime, nil, false, "clone", "--quiet", "--no-checkout", "--bare", "--single-branch", "--no-tags", "--branch",
+		c.cfg.Branch, remote, temp)
 	if !run.ok() {
 		os.RemoveAll(temp)
-		failure := c.missingOf(gitFailure{run, gitBranchTime, "git clone of " + c.cfg.Branch}, 0, "", "", GitError)
+		failure := c.missingOf(gitFailure{run, gitCloneTime, "git clone of " + c.cfg.Branch}, 0, "", "", GitError)
 		return nil, fmt.Errorf("replay: collect-git: %s (%s)", failure.Detail, failure.Reason)
 	}
 	if err := os.Rename(temp, dir); err != nil {
@@ -1053,38 +1131,120 @@ func (r *gitClone) run(ctx context.Context, dir string, timeout time.Duration, s
 	return r.guard.run(ctx, cmd, timeout)
 }
 
-// ensure has the clone hold each commit of shas, fetching each it lacks (present) in batches of up
-// to gitFetchBatch, then each still lacking alone, and is each commit it still lacks, with the
-// fetch of it alone that failed. A check of what the clone holds that fails fails the run.
-func (r *gitClone) ensure(ctx context.Context, shas []string) (map[string]gitFailure, error) {
+// ensure has the clone hold each commit of shas, fetching each it lacks (present): first the head
+// ref of each pull request of heads, each pull request's heads by its number, that holds a head
+// the clone lacks (fetchPulls); then each commit still lacking, in batches of up to gitFetchBatch
+// (fetchCommits). Each fetch writes a ref of what it fetched, so each later fetch tells the remote
+// the clone holds it, and the remote sends no commit or tree twice. It is each commit the clone
+// still lacks, with the fetch of it alone that failed. A check of what the clone holds that fails
+// fails the run.
+func (r *gitClone) ensure(ctx context.Context, shas []string, heads map[int][]string) (map[string]gitFailure, error) {
 	held, err := r.present(ctx, shas)
 	if err != nil {
 		return nil, err
 	}
 	lacking := slices.DeleteFunc(slices.Clone(shas), func(sha string) bool { return held[sha] })
-	failures := make(map[string]gitFailure)
-	fetch := []string{"fetch", "--quiet", "--no-tags", "--filter=blob:none", "origin"}
-	for start := 0; start < len(lacking); start += gitFetchBatch {
-		batch := lacking[start:min(start+gitFetchBatch, len(lacking))]
-		r.git(ctx, gitBranchTime, nil, false, append(slices.Clone(fetch), batch...)...)
-		if held, err = r.present(ctx, batch); err != nil {
+	var numbers []int
+	for number, its := range heads {
+		if slices.ContainsFunc(its, func(sha string) bool { return !held[sha] }) {
+			numbers = append(numbers, number)
+		}
+	}
+	slices.Sort(numbers)
+	if r.fetchPulls(ctx, numbers) {
+		if held, err = r.present(ctx, lacking); err != nil {
 			return nil, err
 		}
-		for _, sha := range batch {
-			if held[sha] {
-				continue
-			}
-			run := r.git(ctx, gitFetchTime, nil, false, append(slices.Clone(fetch), sha)...)
-			alone, err := r.present(ctx, []string{sha})
-			if err != nil {
-				return nil, err
-			}
-			if !alone[sha] {
-				failures[sha] = gitFailure{run, gitFetchTime, "git fetch of the commit alone"}
-			}
+		lacking = slices.DeleteFunc(lacking, func(sha string) bool { return held[sha] })
+	}
+	failures := make(map[string]gitFailure)
+	for start := 0; start < len(lacking); start += gitFetchBatch {
+		if err := r.fetchCommits(ctx, lacking[start:min(start+gitFetchBatch, len(lacking))], failures); err != nil {
+			return nil, err
 		}
 	}
 	return failures, nil
+}
+
+// fetchPulls fetches the head ref of each pull request of numbers the remote holds one of,
+// refs/pull/<n>/head, into refs/pulls/<n>, moved wherever it stood, in batches of up to
+// gitFetchBatch, and says whether it fetched any. It asks the remote first which of those refs it
+// holds (git ls-remote, gitListBatch at a time), so a pull request whose ref the remote does not
+// hold, as on a remote that holds no pull request's ref, fails no fetch. A list or a fetch that
+// fails leaves the commits to fetchCommits.
+func (r *gitClone) fetchPulls(ctx context.Context, numbers []int) bool {
+	ref := func(number int) string { return "refs/pull/" + strconv.Itoa(number) + "/head" }
+	var held []int
+	for start := 0; start < len(numbers); start += gitListBatch {
+		batch := numbers[start:min(start+gitListBatch, len(numbers))]
+		args := []string{"ls-remote", "origin"}
+		for _, number := range batch {
+			args = append(args, ref(number))
+		}
+		run := r.git(ctx, gitOtherTime, nil, false, args...)
+		if !run.ok() {
+			continue
+		}
+		listed := make(map[string]bool)
+		for line := range strings.Lines(string(run.stdout)) {
+			if sha, name, ok := strings.Cut(strings.TrimSpace(line), "\t"); ok && commitSHA.MatchString(sha) {
+				listed[name] = true
+			}
+		}
+		for _, number := range batch {
+			if listed[ref(number)] {
+				held = append(held, number)
+			}
+		}
+	}
+	for start := 0; start < len(held); start += gitFetchBatch {
+		var refspecs []string
+		for _, number := range held[start:min(start+gitFetchBatch, len(held))] {
+			refspecs = append(refspecs, "+"+ref(number)+":refs/pulls/"+strconv.Itoa(number))
+		}
+		r.fetch(ctx, gitBranchTime, refspecs)
+	}
+	return len(held) > 0
+}
+
+// fetchCommits fetches each commit of batch into a ref of its own, refs/fetched/<sha>, and, where
+// the clone still lacks some of them, the two halves of those it lacks in turn, down to a commit
+// alone, since a fetch that names one commit the remote does not hold fetches nothing. Each commit
+// the clone still lacks once fetched alone is a failure of failures, with that fetch.
+func (r *gitClone) fetchCommits(ctx context.Context, batch []string, failures map[string]gitFailure) error {
+	timeout := gitBranchTime
+	if len(batch) == 1 {
+		timeout = gitFetchTime
+	}
+	refspecs := make([]string, len(batch))
+	for i, sha := range batch {
+		refspecs[i] = sha + ":refs/fetched/" + sha
+	}
+	run := r.fetch(ctx, timeout, refspecs)
+	held, err := r.present(ctx, batch)
+	if err != nil {
+		return err
+	}
+	lacking := slices.DeleteFunc(slices.Clone(batch), func(sha string) bool { return held[sha] })
+	if len(lacking) > 0 && len(batch) == 1 {
+		failures[batch[0]] = gitFailure{run, gitFetchTime, "git fetch of the commit alone"}
+		return nil
+	}
+	for _, half := range [][]string{lacking[:len(lacking)/2], lacking[len(lacking)/2:]} {
+		if len(half) == 0 {
+			continue
+		}
+		if err := r.fetchCommits(ctx, half, failures); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// fetch runs git fetch of refspecs from the remote, with no tags, the blobs of what it fetches with
+// it, under the guard and its time timeout.
+func (r *gitClone) fetch(ctx context.Context, timeout time.Duration, refspecs []string) guardedRun {
+	return r.git(ctx, timeout, nil, false, append([]string{"fetch", "--quiet", "--no-tags", "origin"}, refspecs...)...)
 }
 
 // present is each commit of shas the clone holds, asked with lazy fetching off, so asking fetches

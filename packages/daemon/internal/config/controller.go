@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/yamlerr"
 )
 
 // ControllerConfigExample is the example every refusal of the operator-side file points at.
@@ -80,9 +81,10 @@ func LoadController(path, daemonURL string) (ControllerConfig, error) {
 	if err != nil {
 		return ControllerConfig{}, fmt.Errorf("controller configuration %s could not be read: %w", path, err)
 	}
+	// yamlerr: the file's URLs can carry userinfo, and yaml.v3's text quotes the document.
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
-		return ControllerConfig{}, fmt.Errorf("Invalid controller configuration: %w", err)
+		return ControllerConfig{}, fmt.Errorf("Invalid controller configuration: %s", yamlerr.Reason(err))
 	}
 	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
 		return ControllerConfig{}, errors.New("controller.yaml must be a mapping")
@@ -93,8 +95,12 @@ func LoadController(path, daemonURL string) (ControllerConfig, error) {
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		key := root.Content[i].Value
 		if !slices.Contains(controllerKeys, key) {
-			unknown = append(unknown, fmt.Sprintf("unknown key %q in the controller configuration; legion controller start reads only %s — see %s",
-				key, strings.Join(controllerKeys, ", "), ControllerConfigExample))
+			shown := fmt.Sprintf("unknown key %q", key)
+			if !keyShape(key) {
+				shown = unknownKeyAt(root.Content[i], "")
+			}
+			unknown = append(unknown, fmt.Sprintf("%s in the controller configuration; legion controller start reads only %s — see %s",
+				shown, strings.Join(controllerKeys, ", "), ControllerConfigExample))
 			continue
 		}
 		values[key] = root.Content[i+1]

@@ -55,6 +55,7 @@ func behindForSession(t *testing.T, observer *listenerDeps, sessionID string) {
 // nowhere until it subscribed again. Control: the interest of a session the bucket has no record
 // of is reaped through the same copy.
 func TestTheInterestReaperKeepsTheInterestOfASessionACopyBehindAnswersAbsent(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		registered bool
@@ -111,6 +112,7 @@ func TestTheInterestReaperKeepsTheInterestOfASessionACopyBehindAnswersAbsent(t *
 // that keeps it. Control: the claim of a holder whose session the bucket has no record of is
 // released through the same copy.
 func TestTheRoleReaperKeepsTheClaimOfAHolderACopyBehindAnswersAbsent(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		registered bool

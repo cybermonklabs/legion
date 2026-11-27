@@ -333,12 +333,16 @@ test("retry and next batch", async () => {
   expect(batches()).toHaveLength(sent.length);
 });
 
+// The failure is the daemon's own 500, in its refusal shape: the shared restart retry
+// (`retryWhileDaemonRestarts`) asks again only an outage whose body is not the daemon's, such as a
+// proxy's page (`daemonUnreachable`), so this one comes back to the reporter, whose own wait is
+// what this case reads.
 test("a failed batch waits before retrying and the earliest deadline goes next", async () => {
   const { reporter, batches, advance, now } = rig({
     credential: (session) => (session === ROLE_SESSION ? implementer : controller),
     answer: (body, attempt) =>
       attempt <= 2
-        ? new Response("unavailable", { status: 500 })
+        ? Response.json({ error: "the store is unavailable" }, { status: 500 })
         : Response.json({ kept: (body.requests as { id: string }[]).map(({ id }) => id) }),
   });
   reporter.messageEnded(role, answered(now() - 1));
