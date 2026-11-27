@@ -729,6 +729,59 @@ echo "key after $(stat -c '%i %s %Y' -- "$key")"`
     expect(readFileSync(join(tokenDir, "review", "key.pem"), "utf8")).toBe(reviewKey);
   });
 
+  // A stop can land while a round's mint is in flight: between the mint's mktemp and its rename.
+  // The broker's read blocks here (the store's entry is a FIFO nothing writes yet), so the
+  // refresher's first mint holds its temporary file until the row writes the FIFO, and the TERM
+  // that stop_app_token_refresher sends reaches the refresher in that window, by construction: the
+  // row sends it once the stand-in agent-secrets of that mint has started (its line in ARGV_LOG),
+  // which is after the mint's mktemp and before its read of the FIFO returns. The mint's command
+  // then finishes, and the stop must leave no temporary file and the last releases as they were,
+  // not the release the abandoned mint read.
+  test("a stop that lands while the refresher's mint is in flight leaves no temporary file and the last releases", async () => {
+    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const refreshStore = mkdtempSync(join(dir, "store."));
+    const argvLog = join(mkdtempSync(join(dir, "argv.")), "log");
+    // The two profiles a round asks for, the implement App's and its read profile; the FIFO below
+    // takes the place of the first, which a round's first mint (_all.json) reads.
+    copyFileSync(join(store, "IMPLEMENT_APP"), join(refreshStore, "IMPLEMENT_APP"));
+    copyFileSync(join(store, "IMPLEMENT_APP_READ"), join(refreshStore, "IMPLEMENT_APP_READ"));
+    const { code, stdout, stderr } = await githubApps(
+      { ...appInputs, TOKEN_DIR: tokenDir, STORE: refreshStore, ARGV_LOG: argvLog },
+      `end=$((SECONDS + ${waits.secondsLeft()}))
+require_app_inputs implement review
+mint_app_tokens "$TOKEN_DIR" sjawhar
+before=$(cat "$TOKEN_DIR/implement/_all.json")
+minted=$(wc -l <"$ARGV_LOG")
+rm -- "$STORE/IMPLEMENT_APP"
+mkfifo -- "$STORE/IMPLEMENT_APP"
+app_token_refresh_seconds=1
+start_app_token_refresher "$TOKEN_DIR"
+until [ "$(wc -l <"$ARGV_LOG")" -gt "$minted" ]; do
+  # A write through 1<> frees only a reader already blocked on the FIFO; a file in its place frees
+  # a mint that starts later too, so the stop below ends.
+  [ "$SECONDS" -lt "$end" ] || { printf '%s' x 1<>"$STORE/IMPLEMENT_APP"; rm -f -- "$STORE/IMPLEMENT_APP"; printf '%s' x >"$STORE/IMPLEMENT_APP"; stop_app_token_refresher; fail "the refresher started no mint by the end of the row's waits"; }
+  sleep 0.05
+done
+pid=$app_token_refresher
+echo "in flight" $(cd "$TOKEN_DIR/implement" && compgen -G '.mint.*' | wc -l)
+# stop_app_token_refresher's own TERM, sent while the mint's command waits on the FIFO; the FIFO
+# is then written, so that command ends, and the stop waits for the refresher.
+kill -TERM "$pid"
+printf '%s' '${release({ sjawhar: "ghs_rotated" })}' >"$STORE/IMPLEMENT_APP"
+stop_app_token_refresher
+kill -0 "$pid" 2>/dev/null && echo "still running" || echo "stopped"
+echo "left" $(ls -A "$TOKEN_DIR/implement")
+[ "$(cat "$TOKEN_DIR/implement/_all.json")" = "$before" ] && echo "_all kept" || echo "_all changed"`
+    );
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    // The TERM landed while the mint held its temporary file.
+    expect(line(stdout, "in flight ")).toBe("1");
+    expect(stdout).toContain("stopped");
+    expect(line(stdout, "left ")).toBe("_all.json sjawhar.json sjawhar.read.json");
+    expect(stdout).toContain("_all kept");
+  });
+
   test("write_github_apps --token-dir writes commands that read the file of the owner and flag asked, and the key file, in busybox sh", async () => {
     const tokenDir = mkdtempSync(join(dir, "tokens."));
     mkdirSync(join(tokenDir, "implement"));

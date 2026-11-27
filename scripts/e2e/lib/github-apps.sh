@@ -514,6 +514,10 @@ app_token_stderr_bound() {
 # those bytes are replaced rather than trusted to be absent, and the stage is unbuffered for the
 # reason the cut before it is.
 app_token_release_limit=1048576
+# app_token_mint_tmp names the temporary file of the mint in flight, from its mktemp until it is
+# renamed or removed, so the refresher's TERM trap can remove it (start_app_token_refresher). It is
+# set by the mktemp's own assignment, one command, so no trap runs between the file and its name.
+app_token_mint_tmp=
 app_token_mint_command() {
   # COMMAND is the review App's key command in key mode, which may be a key itself, so a run under
   # `bash -x` traces none of this function (`local -`).
@@ -521,7 +525,8 @@ app_token_mint_command() {
   set +x
   local file=$1 command=$2 mode=${3-} tmp overflow status=0 relay=app_token_redact
   [ "$mode" != key ] || relay=app_token_redact_key
-  tmp=$(umask 077 && mktemp "$(dirname -- "$file")/.mint.XXXXXXXX") || return 1
+  app_token_mint_tmp=$(umask 077 && mktemp "$(dirname -- "$file")/.mint.XXXXXXXX") || { app_token_mint_tmp=; return 1; }
+  tmp=$app_token_mint_tmp
   overflow=$tmp.stderr-overflow
   (
     umask 077
@@ -543,16 +548,20 @@ app_token_mint_command() {
   rm -f -- "$overflow"
   if [ "$status" != 0 ]; then
     rm -f -- "$tmp"
+    app_token_mint_tmp=
     return "$status"
   fi
   if ! LC_ALL=C grep -q '[^[:space:]]' -- "$tmp"; then
     rm -f -- "$tmp"
+    app_token_mint_tmp=
     return 125
   fi
   if ! mv -f -- "$tmp" "$file"; then
     rm -f -- "$tmp"
+    app_token_mint_tmp=
     return 1
   fi
+  app_token_mint_tmp=
 }
 # app_token_mint_file FILE OWNER READ_ONLY SECRET writes one release of the secrets broker's
 # profile SECRET, or of its read profile when READ_ONLY is set, for the installation of OWNER
@@ -631,7 +640,10 @@ mint_app_tokens() {
 # App's key file: a private key does not expire, and that App has no broker secret to ask for. A
 # failed mint prints one line naming the App and keeps the last good files; the next round tries
 # again. Run mint_app_tokens first, so the first releases and their failures are the
-# prerequisites'. stop_app_token_refresher kills it.
+# prerequisites'. stop_app_token_refresher kills it. A stop that lands while a mint is in flight
+# lets that mint's command finish (bash runs the TERM trap once the foreground command ends) and
+# the trap then removes its temporary file (app_token_mint_tmp) unrenamed: the round's last good
+# releases stay as they were, and no `.mint.*` file is left in the token directory.
 app_token_refresh_seconds=900
 app_token_refresher=
 start_app_token_refresher() {
@@ -641,7 +653,7 @@ start_app_token_refresher() {
   [ -n "$app_token_implement" ] || return 0
   (
     sleeper=
-    trap '[ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null; exit 0' TERM
+    trap '[ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null; [ -z "$app_token_mint_tmp" ] || rm -f -- "$app_token_mint_tmp" "$app_token_mint_tmp.stderr-overflow"; exit 0' TERM
     while :; do
       sleep "$app_token_refresh_seconds" &
       sleeper=$!
