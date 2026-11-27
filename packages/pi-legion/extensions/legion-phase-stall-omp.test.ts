@@ -409,9 +409,9 @@ test.skipIf(skip)(
     // of the deployment, which gives a verdict as the tester does. The tester itself is not held:
     // the text names the tester in other sentences too, so a check of it could not fail.
     const offered = legionToolDescription(turns[0] as Request);
-    expect(
-      namesMissing(offered, ["`verdict`", "pass|fail", "a role of the deployment"])
-    ).toEqual([]);
+    expect(namesMissing(offered, ["`verdict`", "pass|fail", "a role of the deployment"])).toEqual(
+      []
+    );
     expect(userText(turns[0] as Request)).not.toContain("handoff_complete");
     // The sentence the settling message earned still leads the reminder it earned.
     expect(userText(turns[1] as Request)).toContain("written as text");

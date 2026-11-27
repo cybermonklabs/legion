@@ -4898,8 +4898,8 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 // round asks each role to push and replaces the pod, and nothing is told; a later try that finds
 // that process ended before its round opened tells it then. A try that fails for another cause
 // between two waits replaces the last error, and the next wait that finds no process tells it
-// again. Where the release is on, main's rule ends the wait, and its pass tells an operator's
-// suspension that holds the pod (releaseUnownedPod).
+// again. Where the release is on, main's rule ends the wait, and its pass tells of a suspension
+// that holds the pod, the operator's or the controller's own (releaseUnownedPod).
 func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, issue record.Issue, slot, role claim.Role) error {
 	podRoles, ok := r.supervisor.deps.Runtime.(runtime.IssuePodRoles)
 	if !ok {

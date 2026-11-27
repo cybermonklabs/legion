@@ -16,7 +16,7 @@
 #   controls  ctl-d, the tree of controls/owner-walk-D.txt, and ctl-e, of controls/owner-walk-E.txt
 #             (rig.sh label-tree): forms D and E. ctl-d's tree must differ from its commit in the
 #             lines of D's patch alone (rig.sh unpatch-holds), or the Job stops before any run.
-#             ctl-e is the control of form E only at a label that carries #5564's skills trim
+#             ctl-e is the control of form E only at a label that carries #5169's keyed steps
 #             (controls/owner-walk-E.txt)
 #   strict    ctl-d-strict, the tree of controls/owner-walk-D-strict.txt: form D
 # A Job builds the trees and profiles of its cases' labels alone: a Job of form E's cases builds no

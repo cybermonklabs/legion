@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -160,6 +161,13 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 	requireAnUnknownKindIsSkipped(t, ctx, pool, file)
 }
 
+// btreeGinVersion is 20261125125703_btree_gin, the one `create extension` of the set. A pending
+// `create extension` takes the bounded-write admission from every pending migration after it,
+// because the census cannot read whether the extension's script creates an event trigger
+// (pgmigrate's takesLaterExemptions), so no type migration numbered above it is admitted while it
+// is pending over a store above the census's table limit.
+const btreeGinVersion = 20261125125703
+
 // TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema runs every type migration
 // a deployment of the releases that carry the backfill meets after it, as that deployment meets
 // it. The store is at backfillVersion (openAtTheBackfill); it holds an issue and comments written
@@ -169,12 +177,24 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 // release holds (unreleasedVersionsBelowTheBackfill), which such a deployment meets as pending
 // over the store its backfill filled, and the migration census of this binary's pending
 // migrations runs with its table limit at one byte (censusLimit), the store census tests' size
-// fixture, under which every table that holds a row is above the limit, so an admission here holds
-// at any size: it must admit each pending migration that writes graph_nodes, for bounded writes of
-// graph_nodes and graph_tuples, with no refusal. The forgotten rows are put back, the runner
-// applies the rest, and the store is held to the file as
-// TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt holds a fresh one, and to leaving every
-// node and tuple the backfill wrote as it was.
+// fixture, under which every table that holds a row is above the limit, so what it decides here
+// decides at 1 GiB, the census's own limit (pgmigrate's CensusTableLimit), too.
+//
+// Such a deployment takes two images, and this runs both:
+//
+//   - The first image's census, with btreeGinVersion pending, admits every type migration
+//     numbered below it and refuses each one above it, naming btreeGinVersion
+//     (requireTheCensusRefusesATypeMigrationAboveBtreeGin). That refusal is the condition, and no
+//     statement of a later migration avoids it.
+//   - That image's boot applies the migrations through btreeGinVersion, which is the cure the
+//     btree_gin migration's release note gives: deploy btree_gin first.
+//   - This image's census then admits each pending migration that writes graph_nodes, for bounded
+//     writes of graph_nodes and graph_tuples, with no refusal at all
+//     (requireTheCensusAdmitsEachTypeMigrationAboveTheLimit).
+//
+// The forgotten rows are put back for each run, the runner applies the rest, and the store is
+// held to the file as TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt holds a fresh one,
+// and to leaving every node and tuple the backfill wrote as it was.
 func TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema(t *testing.T) {
 	t.Parallel()
 	requireTheUnreleasedBelowTheBackfillAreTheFiles(t)
@@ -185,11 +205,19 @@ func TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema(t *test
 	writeRowsBeforeTheStore(t, ctx, pool)
 	runTheBackfill(t, ctx, database)
 	backfilled := backfilledRows(t, ctx, pool)
+
 	held := forgetVersions(t, ctx, pool, unreleasedVersionsBelowTheBackfill)
+	requireTheCensusRefusesATypeMigrationAboveBtreeGin(t, ctx, pool)
+	putVersionsBack(t, ctx, pool, held)
+	if err := database.MigrateThrough(ctx, btreeGinVersion); err != nil {
+		t.Fatalf("apply the migrations through %d over the backfilled store, the image that carries btree_gin: %v", btreeGinVersion, err)
+	}
+
+	held = forgetVersions(t, ctx, pool, unreleasedVersionsBelowTheBackfill)
 	requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t, ctx, pool)
 	putVersionsBack(t, ctx, pool, held)
 	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("apply the migrations after %d over the backfilled store: %v", backfillVersion, err)
+		t.Fatalf("apply the migrations after %d over the backfilled store: %v", btreeGinVersion, err)
 	}
 
 	file := readBlockSchemaFile(t)
@@ -397,18 +425,19 @@ func pendingCensus(t *testing.T, ctx context.Context, pool *store.Pool, over str
 }
 
 // requireTheCensusAdmitsEachTypeMigrationAboveTheLimit takes the migration census of this binary's
-// migrations over the backfilled store (pendingCensus), and holds each type migration pending there
-// to being admitted for bounded writes of graph_nodes and of graph_tuples, which the census read
-// above the limit, with no refusal at all. The type migrations are each pending migration that
-// writes rows of graph_nodes (writesGraphNodes), whatever its number: those numbered above
-// backfillVersion, written after the backfill, and those of unreleasedVersionsBelowTheBackfill,
-// which a store of the v34.11.x releases meets after its backfill too. Any other pending migration
-// is not judged here: its refusal at one byte says nothing about a type migration. A census that
-// judged no type migration fails, since it proved nothing.
+// migrations over the backfilled store that the image carrying btreeGinVersion has migrated
+// (pendingCensus), and holds each type migration pending there to being admitted for bounded
+// writes of graph_nodes and of graph_tuples, which the census read above the limit, with no
+// refusal at all. The type migrations are each pending migration that writes rows of graph_nodes
+// (writesGraphNodes), whatever its number: those numbered above backfillVersion, written after
+// the backfill, and those of unreleasedVersionsBelowTheBackfill, which a store of the v34.11.x
+// releases meets after its backfill too. Any other pending migration is not judged here: its
+// refusal at one byte says nothing about a type migration. A census that judged no type migration
+// fails, since it proved nothing.
 func requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	judged := 0
-	for _, entry := range pendingCensus(t, ctx, pool, "the backfilled store").Pending {
+	for _, entry := range pendingCensus(t, ctx, pool, "the backfilled store, btree_gin applied").Pending {
 		admitted := map[string]bool{}
 		for _, table := range entry.Tables {
 			if table.Name != "graph_nodes" && table.Name != "graph_tuples" {
@@ -436,6 +465,65 @@ func requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t *testing.T, ctx cont
 	if judged == 0 {
 		t.Fatalf("no pending migration writes graph_nodes, so the census judged no type migration over the backfilled store")
 	}
+}
+
+// requireTheCensusRefusesATypeMigrationAboveBtreeGin takes the migration census over the
+// backfilled store before any pending migration applies, which is the census the image carrying
+// btreeGinVersion takes, and holds it to the condition the btree_gin release note states: with
+// that `create extension` pending and a table above the limit, every type migration numbered
+// above it is refused for bounded writes, and the refusal names it, while every type migration
+// numbered below it is admitted. The first is why a deployment above the limit takes two images;
+// the second is why the type migrations of the releases through btreeGinVersion need none. Both
+// counts must be above zero, since a census that judged neither proved nothing.
+func requireTheCensusRefusesATypeMigrationAboveBtreeGin(t *testing.T, ctx context.Context, pool *store.Pool) {
+	t.Helper()
+	above, below := 0, 0
+	for _, entry := range pendingCensus(t, ctx, pool, "the backfilled store, btree_gin pending").Pending {
+		if !writesGraphNodes(entry) {
+			continue
+		}
+		name := entry.Migration.Name
+		admitted := map[string]bool{}
+		for _, table := range entry.Tables {
+			if table.Name == "graph_nodes" || table.Name == "graph_tuples" {
+				admitted[table.Name] = table.BoundedWrites > 0
+			}
+		}
+		if entry.Migration.Version < btreeGinVersion {
+			below++
+			for _, table := range []string{"graph_nodes", "graph_tuples"} {
+				if !admitted[table] {
+					t.Errorf("%s, which is numbered below %d, is not admitted for bounded writes of %s with that `create extension` pending: a pending `create extension` takes the admission from the migrations after it alone",
+						name, btreeGinVersion, table)
+				}
+			}
+			continue
+		}
+		above++
+		for _, table := range []string{"graph_nodes", "graph_tuples"} {
+			if admitted[table] {
+				t.Errorf("%s, which is numbered above %d, is admitted for bounded writes of %s while that `create extension` is pending; the census refuses such a write, which is why the deployment applies %d first",
+					name, btreeGinVersion, table, btreeGinVersion)
+			}
+		}
+		named := slices.ContainsFunc(entry.Refusals, func(refusal string) bool { return strings.Contains(refusal, strconv.Itoa(btreeGinVersion)) })
+		if !named {
+			t.Errorf("the census refuses %s over the backfilled store with %s, and none of them names %d, the pending `create extension` an operator applies first",
+				name, refusalsOf(entry), btreeGinVersion)
+		}
+	}
+	if above == 0 || below == 0 {
+		t.Fatalf("the census judged %d type migration(s) numbered above %d and %d below it, and this holds the refusal of the ones above and the admission of the ones below, so each count must be above zero",
+			above, btreeGinVersion, below, btreeGinVersion)
+	}
+}
+
+// refusalsOf writes an entry's refusals for a message: each in turn, or "no refusal".
+func refusalsOf(entry pgmigrate.MigrationCensus) string {
+	if len(entry.Refusals) == 0 {
+		return "no refusal"
+	}
+	return "the refusals " + strings.Join(entry.Refusals, "; ")
 }
 
 // requireClosedSupertagList holds the store to one supertag node per name of the closed list and

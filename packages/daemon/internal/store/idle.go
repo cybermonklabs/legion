@@ -114,15 +114,19 @@ const startWaitsForPodRow = `(kind = 'supervise' and payload->>'op' = 'start' an
 // reaches one of them: the claim the row names (record.HookPrompt.Claim), else the claim the
 // record gives the worker on the row's role's step (phases.claim of a row that holds a step),
 // else, for a row of a role whose step the record gives no claim and for one the release before
-// wrote, the claim of that role. So a prompt whose named claim has failed holds no pod, though
-// another claim of its role runs.
+// wrote, the role's own claim, whose token names the role's own agent (claim.NewToken,
+// `legion-<project>-<issue, lower case>-<role>`), whatever role that claim is on now. A claim
+// takes the role of each step its agent runs, so a claim on the row's role is not the claim the
+// row reaches. So a prompt whose named claim has failed holds no pod, though another claim of its
+// role runs; and neither does a row whose role's own claim has failed, though a keyed agent's
+// claim on that role runs.
 const heldMessageForNoClaimThisPodAnswers = `kind in ('hook_prompt', 'phase_ended') and not exists (select 1 from claims c
 	where c.issue = outbox.issue
 		and case when coalesce(outbox.payload->>'claim', '') <> '' then c.token = outbox.payload->>'claim'
 			when exists (select 1 from phases p where p.issue = outbox.issue and p.role = outbox.payload->>'role'
 				and p.step_task <> '' and p.claim <> '')
 				then c.token = (select p.claim from phases p where p.issue = outbox.issue and p.role = outbox.payload->>'role')
-			else c.role = outbox.payload->>'role' end
+			else c.token = 'legion-' || c.project || '-' || lower(outbox.issue) || '-' || (outbox.payload->>'role') end
 		and (c.state not in ('suspended', 'failed', 'retired') or (c.state = 'suspended' and c.suspended_by = 'released')))`
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),

@@ -43,14 +43,13 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 
 // finishedBy is PhaseFinished's rule over one merge issue awaits, its pull request as its caller
 // read it, nil for none: the issue stands in merging and that pull request merged. PhaseFinished
-// asks it of each merge the issue awaits (mergesAwaited). A caller that read the pull requests of
-// many issues in one query (record.Store.PullRequestsOf, the merge holds' mergeHoldsChanged) asks
-// it of each issue's merge pull request alone (record.Store.MergePullRequest: the first task with
-// a merge that is not done), with no read of its own. For an issue with no plan rows that is the
-// one merge it awaits. For a plan the two answers agree where the merge of every task but the
-// last to finish made that task done (lastToFinish), and differ where two tasks stand running at
-// their merges and only the first one's pull request merged: the merge pull request reads
-// finished, and PhaseFinished does not.
+// asks it of each merge the issue awaits (mergesAwaited). The merge holds' rule (tasksLeftPhase),
+// which the fact that weighs every issue at once (mergeHoldsChanged) and the executor of its row
+// (MergingNow) both decide by, asks it of the copy of the issue read for each task, with that
+// task's own pull request as its caller read it (scopePullRequest): a task waits at its merge
+// while the issue stands in another phase, and the merged pull request of one task does not
+// finish the merge of another. For an issue with no plan rows that copy is the issue and that pull
+// request the one merge it awaits.
 func finishedBy(issue record.Issue, pr *record.PullRequest) bool {
 	return issue.Phase == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 }

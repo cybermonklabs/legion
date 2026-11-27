@@ -24,9 +24,11 @@ import (
 // (mergeQueueRemoval): it is delivered as deliverHeld delivers a held message, so a released
 // merger is woken, and the row waits until a session holds the merger's role.
 //
-// Each attempt first reads whether the issue still works merging (mergingNow), and the row
-// finishes undelivered, with one log line naming why, once it does not: the issue stands in
-// another phase, it is out of the workflow, its tree lingers, or its pull request has merged. What
+// Each attempt first reads whether a task of the issue still works merging (mergingNow), and the
+// row finishes undelivered, with one log line naming why, once none does: each task of it stands
+// at another place, it is out of the workflow, its tree lingers, or the pull request of each task
+// at its merge has merged. The issue's own phase is its least finished task's, so a task waits at
+// its merge while the issue stands in another phase, and the row is delivered there. What
 // follows - a claim that failed or retired, the design gate, the wake and the publish - is
 // deliverHeld's, as it is a merge-queue removal's: it ends on a failed or retired merger, and holds
 // a released merger under mergerWaitsForTheDesignGate, while the root's design gate is closed or
@@ -58,7 +60,7 @@ func (r *outbox) mergeHoldsChanged(ctx context.Context, row record.OutboxRow, pa
 }
 
 // mergingNow reads, in one transaction, the issue a merge holds change row is for and why the
-// workflow no longer works its merging phase, "" while it does (workflow.MergingNow), the rule the
+// workflow works no merge of its tasks, "" while it works one (workflow.MergingNow), the rule the
 // fact that wrote the row judged the issue by. An issue the record does not hold has left merging
 // too.
 func (r *outbox) mergingNow(ctx context.Context, key string) (record.Issue, string, error) {

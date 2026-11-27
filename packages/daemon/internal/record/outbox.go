@@ -1146,13 +1146,14 @@ func (n ControllerNotice) MarshalJSON() ([]byte, error) {
 //
 // A pod-wait-held notice names an issue whose pod lacks the slot of a start's claim or the role
 // of its step, built before the deployment defined that name, where the start waits for it (the
-// outbox's roleWaitsForItsPod), and nothing ends that wait until
-// an operator acts: the idle rule keeps the pod because an operator's suspension holds a claim of
-// it (the daemon's releaseUnownedPod, told once per streak of that hold), or the deployment's idle
-// release is off and no claim records a process in the pod, so no update round opens over it
-// (told once per wait that finds no process there). Its Role is the waiting role, and its Reason
-// what the controller is told, in words built from structured fields alone. It tells nobody to
-// delete the pod: the pod's disk can hold work a role did not push.
+// outbox's roleWaitsForItsPod), and nothing ends that wait until someone acts: the idle rule keeps
+// the pod because a suspension that the operator or the controller holds is over a claim of it
+// (the daemon's releaseUnownedPod, told once per streak of that hold, naming each holder with the
+// claims it suspended), or the deployment's idle release is off and no claim records a process in
+// the pod, so no update round opens over it and only an operator ends the wait (told once per wait
+// that finds no process there). Its Role is the waiting role, and its Reason what the controller
+// is told, in words built from structured fields alone. It tells nobody to delete the pod: the
+// pod's disk can hold work a role did not push.
 //
 // A memory-guard-kill notice names one of the controller's own programs that the memory guard of
 // the controller's pod ended with SIGKILL because the pod was near its memory limit. Its issue is
@@ -2453,11 +2454,13 @@ func MergeHoldsChangedReason(project string) string {
 		project, project, MergeHoldsDocument)
 }
 
-// MergeHoldsChanged tells the merger of an issue in merging, on the topic of the claim of the
-// worker on the merger's step, that the merge holds document of Project changed
+// MergeHoldsChanged tells the merger of an issue with a task at its merge, on the topic of the
+// claim of the worker on the merger's step, that the merge holds document of Project changed
 // (MergeHoldsDocument). The fact of an event of that document writes it (intake.MergeHoldsChanged),
-// and the same fact writes a merge-holds-changed notice to the architect of each issue in
-// accepting. A held merger ends its turn with a WAITING line and subscribes to nothing, so this row
+// and the same fact writes a merge-holds-changed notice to the architect of each issue with a task
+// at its owner's acceptance. An issue with plan rows stands in its least finished task's phase, so
+// a task waits at its merge while the issue stands in another phase, and a row is written there.
+// A held merger ends its turn with a WAITING line and subscribes to nothing, so this row
 // is what wakes it when a hold changes, whether its pod was released or not. The row names no role
 // and no claim: the merger is the one role it is ever for, and the row reaches the claim of the
 // worker on the merger's step when it runs, as a merge-queue removal does.
@@ -2466,9 +2469,9 @@ func MergeHoldsChangedReason(project string) string {
 // and waits until the merger's session holds its role, and while the rule that holds the merger's
 // start holds it (the daemon's mergerWaitsForTheDesignGate: the root's design gate is closed, or
 // the news of the approved design the merger is owed is not yet recorded) it neither wakes nor
-// tells a released merger. It ends undelivered when the issue has left
-// merging (its phase is not merging, it is out of the workflow, its tree lingers, or its pull
-// request has merged), and when the merger's claim is failed or retired.
+// tells a released merger. It ends undelivered when no task of the issue works its merge (each
+// task stands at another place, it is out of the workflow, its tree lingers, or the pull request
+// of each task at its merge has merged), and when the merger's claim is failed or retired.
 type MergeHoldsChanged struct {
 	Project string `json:"project"`
 }

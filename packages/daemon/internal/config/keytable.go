@@ -108,11 +108,12 @@ func reads[T any](read func(*yaml.Node, string) (T, error), keep func(*fileConfi
 	}
 }
 
-// readsRoleKeyed is reads for a setting keyed by roles that checkDeploymentRoleKeys holds to a
-// role of the deployment once every key is read (worker_backends, role_config_files,
-// worker_stall_backstop_hours): beside the reader's answer, the file keeps the key's mapping
-// (fileConfig.RoleKeyed), from which that check takes the line of a name it refuses.
-func readsRoleKeyed[V any](read func(*yaml.Node, string) (map[claim.Role]V, error), keep func(*fileConfig, map[claim.Role]V)) func(*yaml.Node, string, *fileConfig) error {
+// readsRoleKeyed is reads for a setting keyed by roles: `roles`, and each setting that
+// checkDeploymentRoleKeys holds to a role of the deployment once every key is read
+// (worker_backends, role_config_files, worker_stall_backstop_hours). Beside the reader's answer,
+// the file keeps the key's mapping (fileConfig.RoleKeyed), from which a check made once the key is
+// read takes the line of a name it refuses (namedRoles, resolveRoles).
+func readsRoleKeyed[T any](read func(*yaml.Node, string) (T, error), keep func(*fileConfig, T)) func(*yaml.Node, string, *fileConfig) error {
 	readValue := reads(read, keep)
 	return func(value *yaml.Node, key string, file *fileConfig) error {
 		if err := readValue(value, key, file); err != nil {
@@ -326,7 +327,7 @@ var topLevelKeys = func() []keyDescriptor {
 		{
 			Name: rolesKey, Default: "the deployment defines no role: a plan's steps name Legion's own roles alone", RequiredBy: "no",
 			Description: "The roles the deployment defines of its own, which a step of a plan names as it names Legion's: each key a role's name, a word of `a-z`, `0-9` and `-` that starts with a letter, at most 32 characters, none of Legion's own names (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`, `controller`, `acceptance`, `sub-owner`) and no name that starts with `sub-owner-` (the agent of a task's sub-owner), each value the role's `type`, `prompt_file`, `model` and `github_app`.",
-			Read:        reads(readRoles, func(f *fileConfig, v []Role) { f.Roles = v }),
+			Read:        readsRoleKeyed(readRoles, func(f *fileConfig, v []Role) { f.Roles = v }),
 		},
 		{
 			Name: roleTypesKey, Default: "a role's type is one of Legion's five: `design`, `planning`, `implementation`, `testing`, `review`", RequiredBy: "no",

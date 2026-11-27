@@ -71,10 +71,12 @@ func legionName(name string) bool {
 // outside the grammar, longer than Dispatch's step record takes, a name of Legion's own, the name
 // of a task's sub-owner's agent (plan.IsSubOwnerAgent) or a name named twice is refused naming
 // it; a name outside the grammar or too long whose name has no key's shape (keyShape) is named by
-// its line alone (unknownKeyAt), since it can be a credential pasted where a name goes. A step of
-// a role takes the role's name as its agent's (record.NameAgents), so a role named `sub-owner-f`
-// would take the claim token of the sub-owner of task f. The block's type is judged in
-// resolveRoles, once `role_types` is read too, wherever the file names it.
+// its line alone (unknownKeyAt), since it can be a credential pasted where a name goes, and so is
+// a name of the grammar with no key's shape in every other refusal of its entry (shownRoleName),
+// its block's among them; a name of Legion's own is one of Legion's words, and is named as
+// written. A step of a role takes the role's name as its agent's (record.NameAgents), so a role
+// named `sub-owner-f` would take the claim token of the sub-owner of task f. The block's type is
+// judged in resolveRoles, once `role_types` is read too, wherever the file names it.
 func readRoles(value *yaml.Node, key string) ([]Role, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -89,7 +91,7 @@ func readRoles(value *yaml.Node, key string) ([]Role, error) {
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		nameNode, block := value.Content[i], value.Content[i+1]
 		name := nameNode.Value
-		field := key + "." + name
+		field := key + "." + shownRoleName(nameNode)
 		switch {
 		case nameNode.Kind != yaml.ScalarNode || !roleWord.MatchString(name):
 			if nameNode.Kind != yaml.ScalarNode || !keyShape(name) {
@@ -102,11 +104,11 @@ func readRoles(value *yaml.Node, key string) ([]Role, error) {
 			}
 			return nil, fmt.Errorf("%s is %d characters, and a role's name has at most %d: Dispatch's step record takes no longer one", field, len(name), maxRoleWord)
 		case legionName(name):
-			return nil, fmt.Errorf("%s names a role of Legion's own: a deployment defines roles of its own names", field)
+			return nil, fmt.Errorf("%s.%s names a role of Legion's own: a deployment defines roles of its own names", key, name)
 		case plan.IsSubOwnerAgent(claim.Agent(name)):
 			return nil, fmt.Errorf("%s starts with %s-, as the agent of a task's sub-owner is named: a step of the role would take that agent's claim", field, claim.RoleSubOwner)
 		case slices.ContainsFunc(roles, func(r Role) bool { return string(r.Name) == name }):
-			return nil, fmt.Errorf("%s names %s twice", key, name)
+			return nil, fmt.Errorf("%s names %s twice", key, shownRoleName(nameNode))
 		}
 		role, err := readRole(block, field)
 		if err != nil {
@@ -179,7 +181,8 @@ func readRoleTypes(value *yaml.Node, key string) ([]plan.Type, error) {
 
 // resolveRoles settles `roles` and `role_types` onto cfg: each role's type must be one of Legion's
 // five or of `role_types`, and its prompt_file is resolved against the directory of the file that
-// set it, as a hook's is (underConfig), and kept as a path.
+// set it, as a hook's is (underConfig), and kept as a path. A refusal names the role as each
+// refusal of its entry does (shownRoleName), from the mapping the file kept (fileConfig.RoleKeyed).
 func resolveRoles(file fileConfig, configDir string, cfg *Config) error {
 	cfg.RoleTypes = file.RoleTypes
 	if len(file.Roles) == 0 {
@@ -188,7 +191,8 @@ func resolveRoles(file fileConfig, configDir string, cfg *Config) error {
 	roles := slices.Clone(file.Roles)
 	for i, role := range roles {
 		if !slices.Contains(builtinTypes, role.Type) && !slices.Contains(cfg.RoleTypes, role.Type) {
-			return fmt.Errorf("%s.%s.type is %s, which is none of %s and %s", rolesKey, role.Name, role.Type, typeList(builtinTypes), roleTypesKey)
+			return fmt.Errorf("%s.%s.type is %s, which is none of %s and %s",
+				rolesKey, shownRoleName(roleKeyNode(file.RoleKeyed[rolesKey], role.Name)), role.Type, typeList(builtinTypes), roleTypesKey)
 		}
 		roles[i].PromptFile = underConfig(role.PromptFile, configDir)
 	}
@@ -198,10 +202,16 @@ func resolveRoles(file fileConfig, configDir string, cfg *Config) error {
 
 // CheckRolePrompts refuses a role whose prompt file the daemon cannot read. Load runs it, the
 // daemon's own load, and so does `legion config check` over what LoadForValidation answered,
-// which reads no such file itself and keeps each path as resolved.
+// which reads no such file itself and keeps each path as resolved. A role whose name has no key's
+// shape (keyShape) is named by its prompt file alone, which the refusal names in any case, as
+// every other refusal of its entry names it by its line (shownRoleName): the settled roles keep
+// no line.
 func CheckRolePrompts(roles []Role) error {
 	for _, role := range roles {
 		if _, err := os.ReadFile(role.PromptFile); err != nil {
+			if !keyShape(string(role.Name)) {
+				return fmt.Errorf("%s: the prompt_file %s of a role whose name has no key's shape (%s) cannot be read: %w", rolesKey, role.PromptFile, keyShapeWords, err)
+			}
 			return fmt.Errorf("%s.%s.prompt_file %s cannot be read: %w", rolesKey, role.Name, role.PromptFile, err)
 		}
 	}
@@ -237,8 +247,10 @@ func (c Config) withRoles(legion []claim.Role) []claim.Role {
 // neither one of Legion's roles for that key nor a role of `roles`, with the reader's text whose
 // list names both (namedRoles; keyed is the mapping each key was read from, fileConfig.RoleKeyed).
 // Its keys: `worker_backends`, `role_config_files`, `worker_stall_backstop_hours` and each hook's
-// `roles`. Then it judges each project's `default_steps`, which readDefaultSteps only parses, in
-// the order of the projects' keys (checkDefaultSteps).
+// `roles`, whose name with no key's shape (keyShape) is named by its place in the list, as a key's
+// is by its line: a credential pasted where a role goes can fit the role grammar. Then it judges
+// each project's `default_steps`, which readDefaultSteps only parses, in the order of the
+// projects' keys (checkDefaultSteps).
 func checkDeploymentRoleKeys(cfg Config, keyed map[string]*yaml.Node) error {
 	issueRoles := cfg.issueRoles()
 	if err := namedRoles(cfg.WorkerBackends, keyed["worker_backends"], "worker_backends", "an issue role", issueRoles); err != nil {
@@ -251,8 +263,12 @@ func checkDeploymentRoleKeys(cfg Config, keyed map[string]*yaml.Node) error {
 		return err
 	}
 	for index, hook := range cfg.Hooks {
-		for _, role := range hook.Roles {
-			if !slices.Contains(issueRoles, role) {
+		for at, role := range hook.Roles {
+			switch {
+			case slices.Contains(issueRoles, role):
+			case !keyShape(string(role)):
+				return fmt.Errorf("%s[%d].roles[%d] has no key's shape (%s): it must be a Legion role (%s)", hooksKey, index, at, keyShapeWords, runtime.JoinRoles(issueRoles))
+			default:
 				return fmt.Errorf("%s[%d].roles names %q, which is not a Legion role (%s)", hooksKey, index, role, runtime.JoinRoles(issueRoles))
 			}
 		}
@@ -264,13 +280,20 @@ func checkDeploymentRoleKeys(cfg Config, keyed map[string]*yaml.Node) error {
 // `default` with those steps passes (plan.Supported, then plan.Validate against the deployment's
 // roles, Legion's and those of `roles`), so the steps a task with none runs are steps this release
 // carries out. The projects are judged in the order of their keys, and a refusal names the key,
-// then gives every reason of both checks.
+// then gives every reason of both checks. A step whose role neither Legion nor `roles` defines and
+// whose name has no key's shape (keyShape) is refused first, by its place alone, since the plan's
+// own reason quotes the role, and a credential pasted where a role goes can fit the grammar.
 func checkDefaultSteps(cfg Config) error {
 	deployment := cfg.Deployment()
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		steps := cfg.Projects[key].DefaultSteps
 		if steps == nil {
 			continue
+		}
+		for at, step := range steps {
+			if _, defined := deployment.Roles[step.Role]; !defined && !keyShape(step.Role) {
+				return fmt.Errorf("projects.%s.default_steps: step %d names a role with no key's shape (%s), which neither the deployment nor the plan defines.", key, at+1, keyShapeWords)
+			}
 		}
 		task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
 		// The loader serves no request whose end could stop the check, and a plan of one task with
@@ -321,6 +344,23 @@ func roleKeyNode(mapping *yaml.Node, role claim.Role) *yaml.Node {
 		}
 	}
 	return nil
+}
+
+// shownRoleName is the name of an entry of a mapping keyed by roles (`roles`, `worker_backends`,
+// `role_config_files` and `worker_stall_backstop_hours`) as every refusal of the entry names it,
+// its value's and a name given twice among them: as written where it has a key's shape
+// (keyShape), and else by its line alone, `<the name at line N>`, which stands where the name
+// would in the field a refusal names (`roles.<the name at line 9>.type`). Each reader of such a
+// mapping takes every name of the role grammar, which a credential pasted where a role goes can
+// fit (a lower-case hex API key of 32 digits that starts with a letter does), and no refusal of
+// the entry knows the name is a role, so every one builds the name here. A name outside the
+// grammar, and one no role holds, is the reader's own refusal or namedRoles', which names its
+// line the same way (unknownKeyAt).
+func shownRoleName(node *yaml.Node) string {
+	if node.Kind == yaml.ScalarNode && keyShape(node.Value) {
+		return node.Value
+	}
+	return fmt.Sprintf("<the name at line %d>", node.Line)
 }
 
 // typeList is types as a refusal lists them: comma-separated, in order.

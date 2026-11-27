@@ -44,7 +44,8 @@ const MostQuotedBytes = 128
 // because a cut made first can end inside a URL's userinfo, before its "@", where the rule then
 // finds no userinfo and the start of a user name or a password stays in the reason, which the
 // route writes into `reasons` as it came and into `error` through the same rule (api's
-// writeRefusal).
+// writeRefusal). A pinned `dispatch://` reference keeps its `@v<N>`: the rule reads it as the pin
+// it is, so the owner reads which reference of a block was refused.
 func quoted(word string) string {
 	kept, cut := redact.Bytes(word, MostQuotedBytes)
 	if !cut {

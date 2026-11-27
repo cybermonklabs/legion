@@ -38,7 +38,8 @@ func configFileWith(t *testing.T, body string, prompts ...string) string {
 // role of Legion's, and a type of `role_types` is a type a role may have. No role takes a name of
 // Legion's own, the claim role `sub-owner` among them, or the name of a task's sub-owner's agent,
 // whose claim token a step of that role would take. A name outside the grammar or too long is
-// named as written where it has a key's shape (keyShape), and by its line alone where it has none.
+// named as written where it has a key's shape (keyShape), and by its line alone where it has none,
+// in every refusal of its entry (shownRoleName): the name of a sub-owner's agent holds a "-".
 func TestTheDeploymentsRolesAreReadAndRefused(t *testing.T) {
 	path := rolesFile(t, "roles: {checker: {type: testing, prompt_file: checker.md, model: checker-model}}\n", "checker.md")
 	cfg, err := Load(path, noEnv)
@@ -166,7 +167,7 @@ func TestTheDeploymentsRolesAreReadAndRefused(t *testing.T) {
 	}
 	refusals = append(refusals, struct{ name, body, want string }{"the name of the agent of a task's sub-owner",
 		"roles: {" + subOwnerOfF + ": {type: testing, prompt_file: checker.md}}\n",
-		"roles." + subOwnerOfF + " starts with sub-owner-, as the agent of a task's sub-owner is named: a step of the role would take that agent's claim"})
+		fmt.Sprintf("roles.<the name at line %d> starts with sub-owner-, as the agent of a task's sub-owner is named: a step of the role would take that agent's claim", nameLine)})
 	for _, tc := range refusals {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Load(rolesFile(t, tc.body, "checker.md"), noEnv)
@@ -192,6 +193,121 @@ func TestTheDeploymentsRolesAreReadAndRefused(t *testing.T) {
 		}
 		if got := cfg.Roles[0].PromptFile; got != missing {
 			t.Errorf("LoadForValidation's prompt_file = %q, want %q", got, missing)
+		}
+	})
+}
+
+// A name of the role grammar with no key's shape (keyShape), written as the name of an entry of a
+// mapping keyed by roles, is named by its line alone in every refusal of that entry, its value's
+// and a name given twice among them, and a hook's role and a step of default_steps that no role
+// holds by its place: a made-up lower-case hex token of 32 characters fits the grammar, as an API
+// key pasted where a role goes can, and each reader takes it as a name `roles` may define. The
+// name's own refusal, where no role holds it, is TestARoleKeyOfNoKeyShapeNoRoleHoldsIsNamedByItsLine's.
+// Each case holds the refusal's whole text and that it holds no part of the token. The fault is a
+// refusal that writes the name as the file wrote it, as each of these did while only the name's
+// own refusal named its line; the control is shownRoleName answering the name as written, under
+// which every case of the table but the hook's and default_steps' quotes the token, and those two
+// fail with the check of a hook's roles or of default_steps writing the name.
+func TestNoRefusalOfARoleKeyedEntryEchoesANameOfNoKeyShape(t *testing.T) {
+	const head = "deadbeefcafe0123"
+	const token = head + "456789abcdef0123"
+	if !roleWord.MatchString(token) || len(token) > maxRoleWord || keyShape(token) {
+		t.Fatalf("%q is no name of the role grammar without a key's shape: the cases test nothing", token)
+	}
+	subOwner := string(plan.SubOwnerAgent(head))
+	if !plan.IsSubOwnerAgent(claim.Agent(subOwner)) || !roleWord.MatchString(subOwner) || len(subOwner) > maxRoleWord || !strings.Contains(subOwner, head) {
+		t.Fatalf("%q is no name of a sub-owner's agent of the role grammar that holds %s: its case tests nothing", subOwner, head)
+	}
+	at := fmt.Sprintf("<the name at line %d>", strings.Count(minimalFile, "\n")+1)
+	atMost := maxTimerSeconds / 3600
+	steps := strings.Replace(minimalFile, "projects:\n  DEMO: {}\n", "projects:\n  DEMO: {default_steps: [implementer, TOKEN]}\n", 1)
+	if steps == minimalFile {
+		t.Fatal("minimalFile holds no `projects:\\n  DEMO: {}`: the default_steps case would name no step")
+	}
+	const legionAndChecker = "architect, planner, implementer, tester, reviewer, merger, checker"
+	for _, tc := range []struct {
+		name string
+		file string // the whole file, TOKEN and SUBOWNER standing for the two names
+		want string
+	}{
+		{"a role's block that is not a mapping", minimalFile + "roles: {TOKEN: testing}\n",
+			"roles." + at + " must be a mapping"},
+		{"a role named twice", minimalFile + "roles: {TOKEN: {type: testing, prompt_file: checker.md}, TOKEN: {type: review, prompt_file: checker.md}}\n",
+			"roles names " + at + " twice"},
+		{"a key a role's block does not take", minimalFile + "roles: {TOKEN: {type: testing, prompt_file: checker.md, phase: step}}\n",
+			"unknown key roles." + at + ".phase"},
+		{"a role with no type", minimalFile + "roles: {TOKEN: {prompt_file: checker.md}}\n",
+			"roles." + at + ".type is required: a role of the deployment has the type of its steps"},
+		{"a role's type that is none of the five", minimalFile + "roles: {TOKEN: {type: security, prompt_file: checker.md}}\n",
+			"roles." + at + ".type is security, which is none of design, planning, implementation, testing, review and role_types"},
+		{"a role with no prompt_file", minimalFile + "roles: {TOKEN: {type: testing, model: checker-model}}\n",
+			"roles." + at + ".prompt_file is required: a role of the deployment starts with its own prompt"},
+		{"a role's empty model", minimalFile + "roles: {TOKEN: {type: testing, prompt_file: checker.md, model: \"\"}}\n",
+			"roles." + at + ".model must not be empty"},
+		{"a role's github_app of neither App", minimalFile + "roles: {TOKEN: {type: testing, prompt_file: checker.md, github_app: merge}}\n",
+			"roles." + at + ".github_app is merge, which is neither implement nor review"},
+		{"a role named as a sub-owner's agent", minimalFile + "roles: {SUBOWNER: {type: testing, prompt_file: checker.md}}\n",
+			"roles." + at + " starts with sub-owner-, as the agent of a task's sub-owner is named: a step of the role would take that agent's claim"},
+		{"a backend named twice", minimalFile + "worker_backends: {TOKEN: omp, TOKEN: claude}\n",
+			"worker_backends names " + at + " twice"},
+		{"a backend that is no word", minimalFile + "worker_backends: {TOKEN: [omp]}\n",
+			"worker_backends." + at + " must be one of claude, omp"},
+		{"a backend there is no entry for", minimalFile + "worker_backends: {TOKEN: codex}\n",
+			"worker_backends." + at + ` must be one of claude, omp (got "codex")`},
+		{"overlays named twice", minimalFile + "role_config_files: {TOKEN: [/etc/x.yml], TOKEN: [/etc/y.yml]}\n",
+			"role_config_files names " + at + " twice"},
+		{"overlays that are no list", minimalFile + "role_config_files: {TOKEN: /etc/x.yml}\n",
+			"role_config_files." + at + " must be an array of non-empty strings"},
+		{"no overlay", minimalFile + "role_config_files: {TOKEN: []}\n",
+			"role_config_files." + at + " names no overlay: give the role at least one path, or leave it out"},
+		{"a relative overlay", minimalFile + "role_config_files: {TOKEN: [etc/x.yml]}\n",
+			"role_config_files." + at + ` entry "etc/x.yml" must be a clean absolute path: the role's Oh My Pi reads it from wherever it starts`},
+		{"an overlay holding the separator", minimalFile + "role_config_files: {TOKEN: [\"/etc/a:b.yml\"]}\n",
+			"role_config_files." + at + ` entry "/etc/a:b.yml" holds ` + "`:`, which separates the overlays PI_CONFIG_FILES names"},
+		{"an overlay named twice", minimalFile + "role_config_files: {TOKEN: [/etc/x.yml, /etc/x.yml]}\n",
+			"role_config_files." + at + " names /etc/x.yml twice"},
+		{"a backstop named twice", minimalFile + "worker_stall_backstop_hours: {TOKEN: 2, TOKEN: 3}\n",
+			"worker_stall_backstop_hours names " + at + " twice"},
+		{"a backstop that is no number", minimalFile + "worker_stall_backstop_hours: {TOKEN: soon}\n",
+			"worker_stall_backstop_hours." + at + " must be a number of hours, or 0 to switch the backstop off for that role"},
+		{"a negative backstop", minimalFile + "worker_stall_backstop_hours: {TOKEN: -1}\n",
+			"worker_stall_backstop_hours." + at + " must be 0 (the backstop off for that role) or a positive number of hours"},
+		{"a backstop past the timer's bound", minimalFile + fmt.Sprintf("worker_stall_backstop_hours: {TOKEN: %d}\n", atMost+1),
+			fmt.Sprintf("worker_stall_backstop_hours.%s must be at most %d", at, atMost)},
+		{"a backstop that rounds to no time", minimalFile + "worker_stall_backstop_hours: {TOKEN: 1e-14}\n",
+			"worker_stall_backstop_hours." + at + " must be 0 (the backstop off for that role) or a positive number of hours"},
+		{"a hook's role no role holds", minimalFile + checkerRole + "hooks: [{name: nudge, on: work_back, every: 1, roles: [implementer, TOKEN], prompt: Look again.}]\n",
+			"hooks[0].roles[1] has no key's shape (" + keyShapeWords + "): it must be a Legion role (" + legionAndChecker + ")"},
+		{"a step of default_steps no role holds", steps,
+			"projects.DEMO.default_steps: step 2 names a role with no key's shape (" + keyShapeWords + "), which neither the deployment nor the plan defines."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := strings.NewReplacer("TOKEN", token, "SUBOWNER", subOwner).Replace(tc.file)
+			_, err := Load(configFileWith(t, file, "checker.md"), noEnv)
+			if err == nil {
+				t.Fatalf("Load = nil, want %q", tc.want)
+			}
+			if strings.Contains(err.Error(), head) {
+				t.Errorf("the refusal %q writes the name", err)
+			}
+			if err.Error() != tc.want {
+				t.Errorf("Load = %q, want %q", err, tc.want)
+			}
+		})
+	}
+
+	// A role whose prompt the daemon cannot read is named by its prompt file alone: the roles the
+	// loader settles keep no line.
+	t.Run("a role's prompt_file the daemon cannot read", func(t *testing.T) {
+		path := rolesFile(t, "roles: {"+token+": {type: testing, prompt_file: missing.md}}\n")
+		missing := filepath.Join(filepath.Dir(path), "missing.md")
+		_, err := Load(path, noEnv)
+		want := "roles: the prompt_file " + missing + " of a role whose name has no key's shape (" + keyShapeWords + ") cannot be read: "
+		if err == nil || !strings.HasPrefix(err.Error(), want) || !strings.Contains(err.Error(), "no such file or directory") {
+			t.Fatalf("Load = %v, want %q and the read's error", err, want)
+		}
+		if strings.Contains(err.Error(), head) {
+			t.Errorf("the refusal %q writes the name", err)
 		}
 	})
 }

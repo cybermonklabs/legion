@@ -744,6 +744,81 @@ func TestAKeptRoleMessageHoldsThePodOnlyWhileItsRoleHasAClaimThisPodAnswers(t *t
 	}
 }
 
+// A hook prompt or a phase-ended message whose role's step the record gives no claim reaches the
+// role's own agent: the claim whose token is the role's own (record.WorkerClaim's last rung,
+// claim.NewToken), whatever role that claim is on now, and not a claim that holds the role now.
+// Two claims of one role can stand — a keyed agent on a step of that role beside the role's own
+// claim from an earlier version of the plan — and a claim takes the role of each step its agent
+// runs. So the row holds the pod, and cancels a release at its boundary, while the role's own
+// claim is one this pod answers, and holds nothing while that claim has failed, though a keyed
+// agent's claim on the role runs. A phases row a new generation cleared (its step_task empty, its
+// claim kept) gives no claim, as WorkerClaim reads it.
+//
+// The cases are each other's control: a predicate that matches the claims on the row's role holds
+// the pod where the role's own claim failed, and holds nothing where that claim runs on another
+// role's step.
+func TestAKeptRoleMessageWithNoStepClaimHoldsThePodByTheRolesOwnClaim(t *testing.T) {
+	t.Parallel()
+	for _, message := range keptRoleMessageRows {
+		own := claim.Token("legion-legion-legion-208-" + string(message.role))
+		keyed := claim.Token("legion-legion-legion-208-" + string(message.role) + "-2")
+		for _, tc := range []struct {
+			name     string
+			ownRole  claim.Role
+			ownState supervise.ClaimState
+			keyed    supervise.ClaimState
+			cleared  bool
+			holds    bool
+		}{
+			{name: "the role's own claim failed and a keyed agent's claim on the role is idle",
+				ownRole: message.role, ownState: supervise.StateFailed, keyed: supervise.StateIdle},
+			{name: "the same, with the phases row a new generation cleared naming the keyed agent",
+				ownRole: message.role, ownState: supervise.StateFailed, keyed: supervise.StateIdle, cleared: true},
+			{name: "the role's own claim is idle on a reviewer's step and the keyed agent's claim on the role failed",
+				ownRole: claim.RoleReviewer, ownState: supervise.StateIdle, keyed: supervise.StateFailed, holds: true},
+		} {
+			t.Run(message.kind+": "+tc.name, func(t *testing.T) {
+				st := migratedStore(t)
+				ctx := context.Background()
+				openRunningTree(t, st)
+				for _, c := range []supervise.Claim{
+					{Token: claim.Token("legion-legion-legion-208-architect"), Role: claim.RoleArchitect, State: supervise.StateIdle},
+					{Token: own, Role: tc.ownRole, State: tc.ownState},
+					{Token: keyed, Role: message.role, State: tc.keyed},
+				} {
+					c.Project, c.Tree, c.Issue, c.TreeEpoch, c.Generation, c.ServingGeneration = "legion", rootIssue, rootIssue, 1, 1, 1
+					if err := st.PutClaim(ctx, c); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if tc.cleared {
+					if _, err := st.Pool().Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, step_task)
+						values ($1, $2, $3, '', 0, '', '')`, rootIssue, string(message.role), string(keyed)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				queueWaitingKeptRow(t, st, message.payload)
+
+				if view := idleViewOf(t, st, rootIssue); view.Waiting != tc.holds {
+					t.Fatalf("the view reads a row waiting for a role of the pod = %t, with %s to a %s where %s, want %t", view.Waiting, message.kind, message.role, tc.name, tc.holds)
+				}
+				_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
+				decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
+				if err != nil {
+					t.Fatalf("IssueReleaseStop: %v", err)
+				}
+				want := ReleaseActs
+				if tc.holds {
+					want = ReleaseCancel
+				}
+				if decision.Act != want {
+					t.Fatalf("the boundary = %s for %s, with %s to a %s where %s queued before the mark, want %s", decision.Act, decision.Cause, message.kind, message.role, tc.name, want)
+				}
+			})
+		}
+	}
+}
+
 // The idle rule's two exemptions meet on one role: a tester owed a start of its phase that waits for
 // its issue's admission slot (slotWaitingStart), and a phase-ended message to that tester waiting
 // for a session to hold its role (heldMessageForNoClaimThisPodAnswers). Each term decides its own

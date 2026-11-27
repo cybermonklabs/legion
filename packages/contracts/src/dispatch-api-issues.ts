@@ -3,7 +3,7 @@ import type { IssueCollaboratorPerson } from "./dispatch-api.generated";
 import { ActorSchema, ExternalLinkSchema } from "./dispatch-api-core";
 import { referenceChangesFields } from "./dispatch-api-refs";
 import { ISSUE_COMPONENTS_MODES, type ISSUE_ROUTE_STATUSES } from "./dispatch-tools";
-import { LEGION_ROLES } from "./legion-roles";
+import { legionStepRole } from "./legion-claim-recovery";
 
 /**
  * The issue: the row, what resolves on each read of it, and the payloads of every `issue.*` and
@@ -291,10 +291,14 @@ export const IssueReleasedEventPayloadSchema = z
 export type IssueReleasedEventPayload = z.output<typeof IssueReleasedEventPayloadSchema>;
 
 /** One pair of an issue's role holders as Dispatch stores it (`IssueRoleHolderRecord` of the
- *  route table, which `dispatch-api-owned.ts` holds this schema to): a Legion role, the session
- *  that holds it, and the time Dispatch first stored the pair. */
+ *  route table, which `dispatch-api-owned.ts` holds this schema to): a role of the issue, the
+ *  session that holds it, and the time Dispatch first stored the pair. The role is one of Legion's
+ *  six or a role the deployment defines, any name of the role grammar but the controller's: the
+ *  daemon publishes every live claim of the issue, and Dispatch stores the names
+ *  `legionclaim.IsRole` takes. `legionStepRole` is the same rule, and reads a string, the type the
+ *  document's `pattern` gives the field. */
 export const IssueRoleHolderRecordSchema = z
-  .strictObject({ role: z.enum(LEGION_ROLES), session: z.string(), recorded_at: z.iso.datetime() })
+  .strictObject({ role: legionStepRole, session: z.string(), recorded_at: z.iso.datetime() })
   .readonly();
 
 export type IssueRoleHolderRecord = z.output<typeof IssueRoleHolderRecordSchema>;

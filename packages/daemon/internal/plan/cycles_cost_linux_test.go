@@ -36,9 +36,11 @@ func threadCPU(t *testing.T) time.Duration {
 // takes time near-linear in the plan: one pass finds the sets of tasks that need each other, and
 // one breadth-first search inside each such set that holds a cycle names it. A
 // ring of 10,000 tasks, each needing the next, is one such set, and its check stays within
-// cycleCheckBound of the thread's CPU time, with the ring's one cycle as its one refusal. The
-// fault is a breadth-first search from every need, quadratic on a ring; the control is that
-// check, the cycles of the release before, which spent over a minute of CPU on this ring.
+// cycleCheckBound of the thread's CPU time, with the ring's one cycle as its one refusal, its chain
+// cut as every chain is (chainOf): the first MostReasons - 1 needs from t00000, a count of the needs
+// between, and the need that closes the ring. The fault is a breadth-first search from every need,
+// quadratic on a ring; the control is that check, the cycles of the release before, which spent
+// over a minute of CPU on this ring.
 func TestARingOfTenThousandTasksIsRefusedInNearLinearTime(t *testing.T) {
 	const size = 10_000
 	ring := ringOf(size)
@@ -50,13 +52,14 @@ func TestARingOfTenThousandTasksIsRefusedInNearLinearTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Validate(a ring of %d tasks): %v", size, err)
 	}
-	chain := make([]string, size)
-	for i := range chain {
-		chain[i] = fmt.Sprintf("t%05d needs t%05d", i, (i+1)%size)
+	chain := make([]string, 0, MostReasons+1)
+	for i := range MostReasons - 1 {
+		chain = append(chain, fmt.Sprintf("t%05d needs t%05d", i, i+1))
 	}
+	chain = append(chain, fmt.Sprintf("%d more needs", size-MostReasons), fmt.Sprintf("t%05d needs t00000", size-1))
 	want := []Refusal{{Task: "t00000", Reason: "task t00000 needs itself: " + strings.Join(chain, ", ") + "."}}
 	if !reflect.DeepEqual(refusals, want) {
-		t.Fatalf("Validate(a ring of %d tasks) gave %d refusals, want the one that names the ring from t00000", size, len(refusals))
+		t.Fatalf("Validate(a ring of %d tasks) gave %s", size, firstDifference(refusals, want))
 	}
 	if spent > cycleCheckBound {
 		t.Fatalf("Validate(a ring of %d tasks) spent %v of CPU, want at most %v", size, spent, cycleCheckBound)
@@ -72,8 +75,10 @@ const costOfShapeSize = 10_000
 // blocks each: a00000 and b00000 are parts of r, and each a<i> and b<i> after them a part of the
 // one before, each naming a sub-owner. Each b<i> needs a<i>, the part of the other nesting at its
 // depth. Each such need but b00000's, a need of its sibling, is a need of a part of another task:
-// b<i> stands outside a00000, the outermost task above a<i> that does not hold it, so want is one
-// reason for each, naming a00000, in id order.
+// b<i> stands outside a00000, the outermost task above a<i> that does not hold it. The check finds
+// a reason for each, naming a00000, in id order, and the refusal names the first MostReasons of
+// them and counts the rest in one reason of the whole plan, as it bounds every kind of cause
+// (reasons), so want is those reasons.
 func nestingBlocks(size int) (blocks []Block, want []Refusal) {
 	depth := (size - 1) / 2
 	blocks = append(blocks, partBlock("r", "", "owner", "architect"))
@@ -90,9 +95,14 @@ func nestingBlocks(size int) (blocks []Block, want []Refusal) {
 			blocks = append(blocks, partBlock(id, parent, attributes...))
 		}
 	}
-	for i := 1; i < depth; i++ {
+	refused := depth - 1
+	for i := 1; i <= min(refused, MostReasons); i++ {
 		want = append(want, Refusal{Task: fmt.Sprintf("b%05d", i), Reason: fmt.Sprintf(
 			"task b%05d needs a%05d, a part of task a00000: a task outside a00000 needs the whole task a00000, and no part of it.", i, i)})
+	}
+	if left := refused - MostReasons; left > 0 {
+		want = append(want, Refusal{Reason: fmt.Sprintf(
+			"Legion leaves out %d more of the needs that the rules of parts refuse: this answer names the first %d.", left, MostReasons)})
 	}
 	return blocks, want
 }

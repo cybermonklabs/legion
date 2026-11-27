@@ -539,9 +539,10 @@ type fileConfig struct {
 	WorkerStallBackstops     map[claim.Role]time.Duration
 	RepositoryRenames        []ghrepo.Rename
 	LeakCheck                *fileLeakCheck
-	// RoleKeyed is the mapping each role-keyed setting (worker_backends, role_config_files,
-	// worker_stall_backstop_hours) was read from, by key (readsRoleKeyed): it gives
-	// checkDeploymentRoleKeys the line of a name it refuses whose name has no key's shape.
+	// RoleKeyed is the mapping each setting keyed by roles (roles, worker_backends,
+	// role_config_files, worker_stall_backstop_hours) was read from, by key (readsRoleKeyed): it
+	// gives a check made once the key is read the line of a name it refuses whose name has no
+	// key's shape (checkDeploymentRoleKeys, resolveRoles).
 	RoleKeyed map[string]*yaml.Node
 	// GitHubGraphQLShare is `github_graphql_share` (readShare).
 	GitHubGraphQLShare *float64

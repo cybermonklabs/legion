@@ -64,8 +64,8 @@ export function isPhaseOp(op: string): op is PhaseOp {
   return (PHASE_OPS as readonly string[]).includes(op);
 }
 
-function namesCheck(args: Readonly<Record<string, unknown>>): boolean {
-  return args["check_opened_at"] !== undefined;
+function namesCheck(args: { readonly check_opened_at?: unknown }): boolean {
+  return args.check_opened_at !== undefined;
 }
 
 /** The input gate effect of a successful call. A look's report leaves phase input open. */

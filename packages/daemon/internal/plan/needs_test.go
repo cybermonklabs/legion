@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // needWord is a need written as Dispatch writes a reference to the block id of the plan document.
@@ -90,12 +92,17 @@ func TestANeedThatNamesNoTaskIsRefused(t *testing.T) {
 // blocked_by link between the two, so a need written as a reference into another issue (an issue
 // key after `dispatch://` that is not the plan's) is kept out of the task's needs, whatever task of
 // this plan its block id would name, and Validate refuses it for good, once for each such word,
-// with a reason of its own that names the word and that issue. Every other word is read as before:
-// a reference into the plan's own issue by its block id, so a block of another document of that
-// issue that is no task gets the refusal of a need of no task, and a word with no `dispatch://` as
-// a block of the plan's own document. The fault is a reference into another issue read as the task
-// of this plan its block id names, which Validate takes (d needs a); the control is the read
-// without the check of the issue, under which the first four cases fail.
+// with a reason of its own that names the word and that issue: a pinned word whole, since the URL
+// rule reads the pin's "@" as the pin it is (redact.URLCredentials), and a word whose "@" starts no
+// pin as a URL with credentials, since what follows that "@" can be a host. Every other word is
+// read as before: a reference into the plan's own issue by its block id, so a block of another
+// document of that issue that is no task gets the refusal of a need of no task, and a word with no
+// `dispatch://` as a block of the plan's own document. The fault is a reference into another issue
+// read as the task of this plan its block id names, which Validate takes (d needs a); the control
+// is the read without the check of the issue, under which the first four cases and the last fail.
+// The fault of the quote is a pin read as a host, as the URL rule read one before, under which the
+// second case quotes `dispatch://[a URL with credentials]`; and a rule that keeps every "@" of a
+// `dispatch://` reference, under which the last quotes the word whole.
 func TestANeedIntoAnotherIssueIsRefused(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
 	into := func(word string) Refusal {
@@ -118,6 +125,8 @@ func TestANeedIntoAnotherIssueIsRefused(t *testing.T) {
 		{name: "a block of another document of the plan's issue that is no task", block: taskNeeding("d", "dispatch://ACME-1/spec#b-r1"),
 			want: []Refusal{{Task: "d", Reason: "task d needs dispatch://ACME-1/spec#b-r1, which names no task of this plan."}}},
 		{name: "a reference with no dispatch://, to the plan's own document", block: taskNeeding("d", "plan-md#b-a"), needs: []string{"a"}},
+		{name: "a reference whose @ starts no pin, quoted as a URL with credentials", block: taskNeeding("d", other+"@h.example"),
+			want: []Refusal{into("dispatch://" + redact.URLWithCredentials)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := planOf(t, 1, taskNeeding("a"), tc.block)
@@ -139,7 +148,9 @@ func TestANeedIntoAnotherIssueIsRefused(t *testing.T) {
 // reference into another issue, with a reason of its own that names the word. The fault is such a
 // reference read as the task of this plan its block id names, which Validate takes (d needs a);
 // the control is the read that keeps out only a reference that starts with another issue's key,
-// under which every case fails.
+// under which every case fails. The pinned word is quoted whole (redact.URLCredentials); the fault
+// of the quote is a pin read as a host, under which the last case quotes
+// `dispatch://[a URL with credentials]`.
 func TestANeedOfNoIssueIsRefused(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
 	ofNoIssue := func(word string) Refusal {
