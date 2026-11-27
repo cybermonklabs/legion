@@ -2058,10 +2058,10 @@ that output on where its paths matched: `daemon_go_tests`, `dispatch_browser`,
 `dispatch_memory`, `dispatch_multiprocess`, `dispatch_two_builds`, `envoy_go`,
 `envoy_go_checks`, `envoy_go_claim_model`, `envoy_go_race`, `envoy_go_race_api`,
 `envoy_go_race_docs`, `envoy_infra_go`, `envoy_smoke`, `pi_legion` and `test`. It is for a pull
-request that reaches one slow suite only through what the suite's packages import or read, and
-needs the suite's result at its head - a `ci_check` naming that job, a change to a helper a test
-of that suite reads - without running the others. A change to a suite's own package needs no
-label (.github/ci-notes/ci.md#a-change-to-a-slow-suites-own-package-runs-it-on-its-pull-request).
+request that needs one slow suite's result at its head - a `ci_check` naming that job, a test only
+that suite runs - without running the others. A merge group needs no label: it runs every suite
+its paths select, and every one whose own package it changes
+(.github/ci-notes/ci.md#a-merge-group-runs-every-slow-suite-whose-own-package-the-change-touches).
 Each term names its own label, so the label that turns a job on is written beside it and nowhere
 else, and the paths term stays: a lane label never runs a suite its filter did not select.
 
@@ -2072,15 +2072,19 @@ a pull request held back with the label that would run it, so a misspelt label s
 job not run. Failing the run on such a label would fail every check of it for a typo and need a
 step of its own that reads the labels. GitHub compares the label without regard to case.
 
-A lane label is read as `full-ci` is, from the pull request the run's own event carries: it
-takes effect at the pull request's next run, not when it is added, since this workflow takes no
-`labeled` trigger. A push, a reopen or a ready-for-review starts that run only while GitHub can
-build the pull request's merge commit: a pull request that conflicts with its base gets no run on
-any event until the conflict is resolved (.github/workflows/heads-without-runs.yaml names such
-heads). On a head with no new commit to push, close the pull request and reopen it; or dispatch
-the branch with every job, `gh workflow run ci.yaml --ref <branch> -f every-job=true`, whose
-verdict is `ci-ok (dispatch)` and counts for no pull request. Take the label off once the run it
-was added for passes, as `full-ci`.
+A lane label is read as `full-ci` is, from the pull request the run's own event carries: it takes
+effect at the pull request's next push, not when it is added, since this workflow takes no
+`labeled` trigger. Two routes that look like they would start a run do not. A reopen starts no run
+of this workflow: measured 2026-11-27 on two pull requests, where the close and reopen started
+tests-closed.yaml alone (run 45934388839, concluded skipped) and no run of this file. And a pull
+request opened with `gh pr create --label` carries no label on its `opened` event, since the
+labels are attached after it: #5782's first run (45932112437) read it as unlabelled while it
+carried three lane labels. A pull request that conflicts with its base gets no run on any event
+until the conflict is resolved (.github/workflows/heads-without-runs.yaml names such heads). So at
+a head with no new commit, dispatch the branch with every job,
+`gh workflow run ci.yaml --ref <branch> -f every-job=true`, whose verdict is `ci-ok (dispatch)`
+and counts for no pull request. Take the label off once the run it was added for passes, as
+`full-ci`.
 .github/scripts/ci-router-outputs.test.sh evaluates ci.yaml's own outputs
 (.github/scripts/ci_router_outputs.py) and holds them to this: each lane label turns on its
 own output and leaves every other one as an unlabelled pull request has it, `full-ci` still
