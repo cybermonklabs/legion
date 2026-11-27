@@ -4,12 +4,12 @@
  * already draws - an ask row of the ask, a thread row of a Reply or an Agent row - and the list's
  * merge, its narrowing and its row shape stay the ones it has. An entry the page draws no row for
  * (a mention of the reader, a write of theirs nobody answered) is no row here either. A row of an
- * issue carries its entry's approval gate (`approvalGateOf`).
+ * issue carries its entry's approval gate (`InboxRowGate`).
  *
  * Nothing here is a hook, so the refresh rules read it too (`api/event-refresh.ts`).
  */
 
-import { type ApprovalGateLine, type InboxRowGate, inboxEntryRow } from "@legion/contracts";
+import { type ApprovalGateLine, inboxEntryRow } from "@legion/contracts";
 
 import type {
   MeInboxAgentRow,
@@ -17,7 +17,6 @@ import type {
   MeInboxResponse,
   MessageRead,
   MyReplyRow,
-  OpenAskRow,
 } from "../../api/types";
 import type { InboxListRow } from "./list-row";
 
@@ -57,16 +56,9 @@ export function agentConversation(thread: MyReplyRow): MessageRead | undefined {
   return "conversation" in thread ? (thread as MeInboxAgentRow).conversation : undefined;
 }
 
-/** The approval gate of the issue a row of the one read belongs to (`InboxRowGate`), which the
- *  row's mark and its reading pane draw; undefined for a row of no issue, for one a server older
- *  than the field answered, and for a row of another read. */
-export function approvalGateOf(
-  row: (OpenAskRow | MyReplyRow) & InboxRowGate
-): readonly ApprovalGateLine[] | undefined {
-  return row.approval_gate;
-}
-
-/** `approvalGateOf` the ask or the thread a list row is. */
+/** The approval gate of the issue a list row belongs to, which the row's mark draws: the
+ *  `approval_gate` its ask or its thread carries (`InboxRowGate`), undefined where it carries
+ *  none. */
 export function rowApprovalGate(row: InboxListRow): readonly ApprovalGateLine[] | undefined {
-  return approvalGateOf(row.kind === "ask" ? row.ask : row.thread);
+  return (row.kind === "ask" ? row.ask : row.thread).approval_gate;
 }

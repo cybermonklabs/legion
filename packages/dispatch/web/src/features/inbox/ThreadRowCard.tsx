@@ -1,4 +1,4 @@
-import { inboxThreadRow } from "@legion/contracts";
+import { type InboxRowGate, inboxThreadRow } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -21,7 +21,6 @@ import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { ThreadOwnerLine } from "./AskOwnerLink";
 import { DismissControl } from "./DismissControl";
 import { rowPriority, rowType } from "./list-row";
-import { approvalGateOf } from "./one-read-rows";
 import { RowApprovalMark, RowKindIcon, RowPriorityTag } from "./RowMarks";
 import { ThreadBody } from "./ThreadBody";
 import { ThreadTitle } from "./ThreadTitle";
@@ -40,7 +39,7 @@ import { ThreadTitle } from "./ThreadTitle";
  * the text it is anchored to rather than the document: a card is no place to open one. Mark read
  * is held while its write is out (`heldPress`).
  */
-export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
+export function ThreadRowCard({ thread }: { thread: MyReplyRow & InboxRowGate }): ReactNode {
   const queryClient = useQueryClient();
   // The press carries the row as it stood when Mark read was pressed: its newest reply and its
   // unread ids move as replies arrive, and the Retry of a press the reader stopped marks what
@@ -79,7 +78,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
         </span>
       </div>
       <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-2">
-        <RowApprovalMark gate={approvalGateOf(thread)} />
+        <RowApprovalMark gate={thread.approval_gate} />
         <RowPriorityTag priority={rowPriority(row)} />
         <ThreadOwnerLine className={`truncate text-sm ${textMutedOnCanvas}`} thread={thread} />
       </div>

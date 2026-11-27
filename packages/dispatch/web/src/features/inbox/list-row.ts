@@ -25,7 +25,7 @@ import { isDecisionAsk } from "./ask-decision";
 import { askUrgency } from "./ask-urgency";
 
 /** One row of the Inbox list: an open ask, or a thread of the reader's own, each with the approval
- *  gate of its issue where the one read carried one (`InboxRowGate`, `approvalGateOf`). */
+ *  gate of its issue where the one read carried one (`InboxRowGate`, `rowApprovalGate`). */
 export type InboxListRow =
   | { kind: "ask"; ask: OpenAskRow & InboxRowGate }
   | { kind: "thread"; thread: MyReplyRow & InboxRowGate };

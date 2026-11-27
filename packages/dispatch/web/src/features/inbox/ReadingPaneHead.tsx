@@ -1,4 +1,4 @@
-import type { ApprovalGateLine } from "@legion/contracts";
+import type { ApprovalGateLine, InboxRowGate } from "@legion/contracts";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
@@ -23,7 +23,6 @@ import { askIssueKey } from "./ask-name";
 import { DismissControl } from "./DismissControl";
 import { EarlierApproval } from "./EarlierApproval";
 import { threadReferenceRoute } from "./list-row";
-import { approvalGateOf } from "./one-read-rows";
 import { gateLineState, gateLineWords, gateStepWord } from "./RowMarks";
 import { SnoozeControl } from "./SnoozeControl";
 import { isUnassigned } from "./sections";
@@ -31,11 +30,12 @@ import { isSnoozed } from "./snooze";
 import { useControlName } from "./useControlName";
 
 /**
- * The approval gate of the row's issue (`approvalGateOf`): one line for each line of the gate, in
- * its order, each the step's word as the issue page names it (`gateStepWord`) and the state of
- * that step's document in the issue page's words (`gateLineWords`), drawn in the pill the issue
- * page draws a step's state in. A line with no step - every issue but a gated root - and one
- * whose step word this build does not know draws its state alone.
+ * The approval gate of the row's issue, the `approval_gate` the row carries (`InboxRowGate`): one
+ * line for each line of the gate, in its order, each the step's word as the issue page names it
+ * (`gateStepWord`) and the state of that step's document in the issue page's words
+ * (`gateLineWords`), drawn in the pill the issue page draws a step's state in. A line with no
+ * step - every issue but a gated root - and one whose step word this build does not know draws
+ * its state alone.
  *
  * `area` is the head's own approval area, the document's `ApprovalChip` with its Approve and
  * Request changes, and `areaDocument` the document it is for. The line of that document is that
@@ -171,7 +171,7 @@ export interface ReadingPaneHeadProps {
   /** The document the column shows, once it is read; undefined for a question in no document and
    *  while the read is out. The approval actions are this document's. */
   artifact: Artifact | undefined;
-  ask: OpenAskRow;
+  ask: OpenAskRow & InboxRowGate;
   /** The reader's own answer or review landed. */
   onAnswered: (askId: string) => void;
   /** Moves the column to the next block marked as changed; undefined when nothing is marked. */
@@ -229,7 +229,7 @@ export function ReadingPaneHead({
         {approveDrawn ? null : <EarlierApproval approval={approval} />}
       </>
     );
-  const gate = approvalGateOf(ask);
+  const gate = ask.approval_gate;
   // The document the area is for is drawn in its gate line where the gate names it, and beside
   // the gate otherwise: a request on a document no gated step reviews.
   const areaDocument =
@@ -314,10 +314,10 @@ export function ThreadPaneHead({
   /** The heading of the section the column is opened at, where the column shows a document:
    *  the page opens there rather than at the document's top. */
   sectionBlockId?: string | undefined;
-  thread: MyReplyRow;
+  thread: MyReplyRow & InboxRowGate;
 }): ReactNode {
   const reference = threadReferenceRoute(thread);
-  const gate = approvalGateOf(thread);
+  const gate = thread.approval_gate;
   const page =
     questionDocument === undefined
       ? atBlock(thread.ref, sectionBlockId)

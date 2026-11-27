@@ -298,7 +298,7 @@ function inboxThreadRowsOf(key: string): RefreshTarget {
 /**
  * The one read's Inbox answer and the pages of what the reader dismissed, each where it holds a
  * row `belongs` takes. Every row of an issue carries that issue's approval gate
- * (`approvalGateOf`), which its mark and its reading pane draw, so a write that moves the gate
+ * (`InboxRowGate`), which its mark and its reading pane draw, so a write that moves the gate
  * reads again each of the two that holds a row of it, whoever holds a reply in the thread. Each
  * key is named, since neither is a prefix of the other.
  */
