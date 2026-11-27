@@ -90,6 +90,13 @@ func (s countingSender) PublishAsync(item contracts.Envelope) <-chan error {
 // connected to url, until the test ends or stop is called.
 func startProcess(t *testing.T, name string, database *store.Store, url string, counter *sendCounter) *process {
 	t.Helper()
+	return startProcessWith(t, name, database, url, counter, nil)
+}
+
+// startProcessWith is startProcess whose outbox is given the Deps that with sets on top of
+// startProcess's, from the process's own NATS client; a nil with sets nothing.
+func startProcessWith(t *testing.T, name string, database *store.Store, url string, counter *sendCounter, with func(client *bus.Client, deps *Deps)) *process {
+	t.Helper()
 	client, err := bus.ConnectOwningStream([]string{url})
 	if err != nil {
 		t.Fatalf("connect %s's NATS client: %v", name, err)
@@ -100,12 +107,16 @@ func startProcess(t *testing.T, name string, database *store.Store, url string, 
 		t.Fatalf("open %s's outbox pool: %v", name, err)
 	}
 	p := &process{name: name, store: database, broker: events.NewBroker(), sending: counter}
-	p.outbox = New(Deps{
+	deps := Deps{
 		Store:     &store.Store{Pool: pool},
 		Publisher: countingClient{Client: client, counter: counter},
 		Broker:    p.broker,
 		Listen:    database.Pool.Listener,
-	})
+	}
+	if with != nil {
+		with(client, &deps)
+	}
+	p.outbox = New(deps)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { p.outbox.Run(ctx); close(done) }()
