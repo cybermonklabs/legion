@@ -168,9 +168,13 @@ export interface MarkedList {
  * second press on a control its write holds - is no such act (`pressIsArmedOwn`), and neither is
  * a modifier key alone, which only changes the key pressed with it (`LONE_MODIFIERS`): the Tab of
  * Shift+Tab is the act, and it starts from the parked mark. Where the act left the focus is read
- * once the act has been answered (`afterAnswer`): a task after a press or a wheel, and a task
- * after a key's own keyup, by which the page's keymap has moved the focus and Space has ticked
- * the mark. Nothing lands between the act and that read: the act takes back the table's landing
+ * once the act has been answered (`afterAnswer`): a task after a wheel; a task after a press's
+ * own `pointerup` or `pointercancel`, by which its click has run and the page has named the row
+ * that click takes away, as an Inbox row's own Dismiss names its row; a task after a key's own
+ * keyup, by which the page's keymap has moved the focus and Space has ticked the mark; and a task
+ * after the keydown of a key pressed with Meta, as ⌘C is, since Chromium and WebKit on macOS send
+ * no keyup for a key released while Meta is held.
+ * Nothing lands between the act and that read: the act takes back the table's landing
  * on a row it is drawing too. Where the read finds the focus in a row the list names as leaving -
  * the parked mark, or another leaving row the reader's key moved it into - or on the body because
  * the control that held it went with its row, the landing stays owed, as in Owed, and is made
@@ -180,7 +184,8 @@ export interface MarkedList {
  * the focus still in it, that row did not go: the act's end stands, nothing lands, and that row's
  * later going owes nothing. Otherwise nothing of this follows the reader after that. A settle
  * before the read - a new landing owed, or the hook's unmount - ends it unmade. A window `blur`
- * ends the key's wait without a read and removes its listeners, even if the keyup never comes.
+ * ends the wait for a keyup or a pointerup without a read and removes its listeners, even if that
+ * keyup or pointerup never comes.
  *
  * **Handed on.** The page's own hand-off, or any move of the focus to a control that stays that
  * the hand-off did not make, ends what is owed, and the hand-off never takes the focus back from
@@ -321,8 +326,9 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
           { capture: true, passive: true, signal: moves.signal }
         );
         // Read once the act has been answered: a key the page's keymap answers moves the focus
-        // itself, and Space ticks the mark at its keyup. Settling again or losing the window's
-        // focus before a key's read clears the wait without reading.
+        // itself, Space ticks the mark at its keyup, and a press's click, at its release, names
+        // the row it takes away. Settling again, or losing the window's focus before a key's or a
+        // press's read, clears the wait without reading.
         pending.current = afterAnswer(event, moves, (answered) => {
           pending.current = null;
           if (answered) answerAct.current(last, from, pressedOutsideRows);
@@ -599,10 +605,16 @@ function readerActed(event: Event): boolean {
 }
 
 /** Ends the wait for the reader's act and calls `finish` with whether to read the focus.
- *  A press or wheel is read in the next task. A key is read in a task after the keyup with
- *  the same `code`, so Space can tick its mark and a modifier's keyup cannot run the read
- *  early. Window `blur` and the returned cancel function end the wait without a read.
- *  Every end removes the listeners, including the one tracking focus while the act is answered. */
+ *  A wheel is read in the next task. A press is read in a task after its own `pointerup` or
+ *  `pointercancel` (the same `pointerId`), so the click its release makes has run: that click is
+ *  what names a row the press takes away, as an Inbox row's own Dismiss does. Both are heard on
+ *  the document's capture, so the release of a press whose control has left the page is still
+ *  heard. A key is read in a task after the keyup with the same `code`, so Space can tick its
+ *  mark and a modifier's keyup cannot run the read early. A key pressed with Meta is read in the
+ *  next task: on macOS, Chromium and WebKit send no keyup for a key released while Meta is held.
+ *  Window `blur` ends a wait for a keyup or a pointerup without a read, and the returned cancel
+ *  function ends any wait without one. Every end removes the listeners, including the one
+ *  tracking focus while the act is answered. */
 function afterAnswer(
   event: Event,
   moves: AbortController,
@@ -618,16 +630,25 @@ function afterAnswer(
   const queueRead = () => {
     if (timer === undefined) timer = window.setTimeout(() => end(true), 0);
   };
-  if (event instanceof globalThis.KeyboardEvent) {
+  const options = { passive: true, signal: moves.signal };
+  const heard = { ...options, capture: true };
+  if (event instanceof globalThis.KeyboardEvent && !event.metaKey) {
     const { code } = event;
-    const options = { passive: true, signal: moves.signal };
     document.addEventListener(
       "keyup",
       (up) => {
         if (up.code === code) queueRead();
       },
-      { ...options, capture: true }
+      heard
     );
+    window.addEventListener("blur", () => end(false), options);
+  } else if (event instanceof globalThis.PointerEvent) {
+    const { pointerId } = event;
+    const released = (up: PointerEvent) => {
+      if (up.pointerId === pointerId) queueRead();
+    };
+    document.addEventListener("pointerup", released, heard);
+    document.addEventListener("pointercancel", released, heard);
     window.addEventListener("blur", () => end(false), options);
   } else {
     queueRead();
