@@ -71,6 +71,9 @@ trap 'rm -rf "$work"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+# bash's `Terminated` notice for an interrupted pack, written to a stderr whose reader has gone,
+# would otherwise kill the script of SIGPIPE before the EXIT trap removes the stage.
+trap '' PIPE
 
 # The stage: every top-level entry of the checkout but packages/, and every package but this one,
 # as a symlink; this package's own files copied with their modes (the prepack takes group and other
