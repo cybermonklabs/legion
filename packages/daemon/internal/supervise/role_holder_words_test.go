@@ -27,14 +27,14 @@ func forgetAgainst(t *testing.T, status int, body string) error {
 	t.Cleanup(listener.Close)
 	h := newHarness(t)
 	h.reach(StateIdle)
-	h.must(RequestStop{Claim: h.token})
+	h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 	h.wantState(StateRetired)
 	for _, name := range RecordedHolds(session, sessionFile) {
 		h.store.setHold(name, "legion-legion-LEGION-209-tester")
 	}
 	h.deps.RoleHolder = notify.New(listener.URL, roleLookupBearer).RoleHolder
 	h.restart()
-	return h.handle(RequestForgetSession{Claim: h.token, Session: session})
+	return h.handle(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByOperator})
 }
 
 // TestAForgetRefusalPrintsTheListenersHolderStateAsTheRuleReadsIt: the listener, or whatever

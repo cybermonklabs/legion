@@ -1445,6 +1445,7 @@ func (r *killedClone) Run(ctx context.Context, command Command) (Result, error) 
 // access` line naming the URL with its credential does, returns that line with the token scrubbed:
 // what a killed run printed goes under its error only in checkedResult, after the transfer has
 // scrubbed the Result's stderr, never inside the runner, whose error Fetch does not scrub. The
+// URL's authority, which held the token, prints as the mark of a URL with credentials. The
 // stand-in git prints the token it was handed and kills itself on a transfer from GitHub (the one
 // command that names the credential's file), and runs the real git for every other command.
 func TestFetchScrubsTheTokenFromATransferASignalEnded(t *testing.T) {
@@ -1469,7 +1470,7 @@ func TestFetchScrubsTheTokenFromATransferASignalEnded(t *testing.T) {
 	if strings.Contains(err.Error(), testInstallationToken) {
 		t.Errorf("Fetch's error carries the provisioning token: %v", err)
 	}
-	if !strings.Contains(err.Error(), ": signal: killed\nfatal: unable to access 'https://github.com/acme/widgets/'") {
+	if !strings.Contains(err.Error(), ": signal: killed\nfatal: unable to access 'https://[a URL with credentials]/acme/widgets/'") {
 		t.Errorf("Fetch = %v, want the transfer's signal and its line with the token scrubbed", err)
 	}
 }

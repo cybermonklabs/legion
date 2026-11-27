@@ -620,7 +620,7 @@ func TestTheSinksOfAMintRefusalLogNoCredential(t *testing.T) {
 				h.Must(supervise.RequestSuspend{Claim: c.Token, By: supervise.SuspendedByOperator})
 				unanswered := errors.Join(supervise.ErrHoldUnanswered, refused)
 				h.Runtime().ScriptResume(fake.SpawnResult{Err: unanswered})
-				if err := h.Handle(supervise.RequestResume{Claim: c.Token}); !errors.Is(err, supervise.ErrHoldUnanswered) || !errors.Is(err, refused) {
+				if err := h.Handle(supervise.RequestResume{Claim: c.Token, By: supervise.SuspendedByOperator}); !errors.Is(err, supervise.ErrHoldUnanswered) || !errors.Is(err, refused) {
 					t.Fatalf("the resume returned %v, want the unanswered hold and the runtime's refusal", err)
 				}
 				if got := h.Machine().Claim(); got.State != supervise.StateLaunching || got.Budgets.LaunchFailures != 0 {
@@ -670,7 +670,7 @@ func TestTheSinksOfAMintRefusalLogNoCredential(t *testing.T) {
 				if held.Session == "" {
 					t.Fatalf("the failed claim holds no session to forget: %+v", held)
 				}
-				h.Must(supervise.RequestForgetSession{Claim: c.Token, Session: held.Session})
+				h.Must(supervise.RequestForgetSession{Claim: c.Token, Session: held.Session, By: supervise.SuspendedByOperator})
 				if ended := h.Machine().Claim().EndedWork; !ended.Told || ended.ToldBy != "" || ended.Cause != held.EndedWork.Cause {
 					t.Fatalf("the forget left the record %+v, want it told by no delivery under %q", ended, held.EndedWork.Cause)
 				}

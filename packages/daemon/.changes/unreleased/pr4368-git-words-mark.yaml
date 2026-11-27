@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  The workspace's errors and retry log lines print git's words about a URL with credentials again.
+  git names the URL it was given whole (`fatal: unable to access
+  'https://x-access-token:<token>@github.com/acme/widgets/'`), and a redirect's Location or a ref's
+  name can hold user information too. The URL rule writes the authority of such a URL as
+  `[a URL with credentials]`, which the fail-closed rule that reads those errors and lines could not
+  read as a host, so each one printed only `(not printed: the answer's words hold a URL the rule
+  cannot read as clean)`. Now they print git's words with the mark in place of the authority
+  (`fatal: unable to access 'https://[a URL with credentials]/acme/widgets/'`), and the fail-closed
+  rule still reads the rest of them.
+time: 2026-11-27T06:29:35Z
+custom:
+    Issue: pr4368

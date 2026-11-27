@@ -133,7 +133,7 @@ func TestWhatGitSaysOfGitHubsOrTheCachesWordsPrintsThroughTheFetchsFilter(t *tes
 		return ""
 	}
 	for _, tc := range []struct{ name, url, says string }{
-		{"fsck-userinfo", userinfo, "packed refname is dangerous: refs/heads/https://example.com/x"},
+		{"fsck-userinfo", userinfo, "packed refname is dangerous: refs/heads/https://[a URL with credentials]/x"},
 		{"fsck-userinfo-encoded", userinfoEncoded, oauth2calltest.Said(userinfoEncoded).String()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -177,8 +177,8 @@ func TestWhatGitSaysOfGitHubsOrTheCachesWordsPrintsThroughTheFetchsFilter(t *tes
 		}
 		said := strings.Join(logged, "\n")
 		requireNoFetchEcho(t, "workspace.git-words/log-userinfo", said)
-		if !strings.Contains(said, "GitHub's default branch of acme/widgets is now https://example.com/x, which this fetch did not bring") {
-			t.Errorf("Fetch logged %q, want the branch GitHub's HEAD names with its user information taken out", logged)
+		if !strings.Contains(said, "GitHub's default branch of acme/widgets is now https://[a URL with credentials]/x, which this fetch did not bring") {
+			t.Errorf("Fetch logged %q, want the branch GitHub's HEAD names with its authority, which holds its user information, as the mark of a URL with credentials", logged)
 		}
 	})
 	t.Run("delta-refspec", func(t *testing.T) {

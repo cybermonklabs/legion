@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -19,7 +20,9 @@ import (
 // name and its query (no-answer). The refusal of one of the two settings without the other names
 // each as shownSetting names it, where it quoted both as set: a URL (setting) and one url.Parse
 // refuses (setting-unparsed). The URL as written holds the credentials (twin). The control: each
-// error still names the route asked, or the setting. Captures testnats.monitor-url/<case>.
+// error still names the route asked, or the setting, with the URL's authority, which holds its
+// user information, written as the mark of a URL with credentials. Captures
+// testnats.monitor-url/<case>.
 func TestAMonitoringReadPrintsNoCredentialItsURLCarries(t *testing.T) {
 	const (
 		user     = "not-a-secret-user"
@@ -43,14 +46,15 @@ func TestAMonitoringReadPrintsNoCredentialItsURLCarries(t *testing.T) {
 			}
 		}
 	})
-	read := func(t *testing.T, answer func(w http.ResponseWriter)) (string, string) {
+	// marked is the joined route as AskedURL names it: its authority holds user information.
+	const marked = "http://[a URL with credentials]/prefix/connz"
+	read := func(t *testing.T, answer func(w http.ResponseWriter)) string {
 		t.Helper()
-		base := serve(t, answer)
-		_, err := connectionsAt(credentialed(base))
+		_, err := connectionsAt(credentialed(serve(t, answer)))
 		if err == nil {
 			t.Fatalf("connectionsAt took the stand-in's answer; want it refused")
 		}
-		return err.Error(), base + "/prefix/connz"
+		return err.Error()
 	}
 	for _, c := range []struct {
 		name, prefix string
@@ -69,9 +73,9 @@ func TestAMonitoringReadPrintsNoCredentialItsURLCarries(t *testing.T) {
 		{"decode", "decode %s: ", func(w http.ResponseWriter) { fmt.Fprint(w, "not JSON") }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			said, asked := read(t, c.answer)
+			said := read(t, c.answer)
 			oauth2calltest.RequireNoPiece(t, "testnats.monitor-url/"+c.name, said, user, password, token)
-			if want := fmt.Sprintf(c.prefix, asked); !strings.HasPrefix(said, want) {
+			if want := fmt.Sprintf(c.prefix, marked); !strings.HasPrefix(said, want) {
 				t.Errorf("connectionsAt = %q; want it to begin %q", said, want)
 			}
 		})
@@ -84,12 +88,12 @@ func TestAMonitoringReadPrintsNoCredentialItsURLCarries(t *testing.T) {
 			t.Fatal("connectionsAt of a monitoring endpoint that is gone succeeded")
 		}
 		oauth2calltest.RequireNoPiece(t, "testnats.monitor-url/no-answer", err.Error(), user, password, token)
-		if want := strings.TrimPrefix(dead.URL, "http://") + "/prefix/connz"; !strings.Contains(err.Error(), want) {
+		if want := strconv.Quote(marked); !strings.Contains(err.Error(), want) {
 			t.Errorf("connectionsAt = %q; want it to name %s, the route asked", err, want)
 		}
 	})
 	for _, c := range []struct{ name, monitoring, want string }{
-		{"setting", credentialed("http://127.0.0.1:1"), externalURLEnv + ` is "", ` + externalMonitorEnv + " is http://127.0.0.1:1/prefix)"},
+		{"setting", credentialed("http://127.0.0.1:1"), externalURLEnv + ` is "", ` + externalMonitorEnv + " is http://[a URL with credentials]/prefix)"},
 		{"setting-unparsed", "http://" + user + ":" + password + "@127.0.0.1:1/%zz?access_token=" + token, externalURLEnv + ` is "", ` + externalMonitorEnv + " is (not printed"},
 	} {
 		t.Run(c.name, func(t *testing.T) {

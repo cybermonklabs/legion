@@ -13,18 +13,21 @@ import (
 // TestAProbeLogsTheListenersWordsAsTheRuleReadsThem: the Envoy listener, or whatever answers in
 // its place, answers the controller role lookup with words that quote a credential's URL: a 404
 // whose reason does for a holder that is unresponsive (unresponsive), one whose holder state does
-// (gone), and a 200 whose holder does (another-holder). The line the probe logs names each as the
-// rule reads it, with the credentials the lookup carried redacted (listenerwire.RoleRefusalAs and
+// (gone), and a 200 whose holder does (another-holder). Each 404 is the listener's role refusal, a
+// JSON object with a non-empty error as the listener writes it (roleHolderRefusal), which is the
+// one 404 the probe reads as the role's answer. The line the probe logs names each as the rule
+// reads it, with the credentials the lookup carried redacted (listenerwire.RoleRefusalAs and
 // RoleHolderAs, read with their words as oauth2call.RemoteText), and none of what the listener's
 // stand-in wrote. Captures controller.answer-words/<case>.
 func TestAProbeLogsTheListenersWordsAsTheRuleReadsThem(t *testing.T) {
+	const refused = `{"error":"role legion-demo-controller holder ses_ctl lapsed; claim retained",`
 	for _, c := range []struct {
 		name, body, want string
 		status           int
 		probed           Liveness
 	}{
-		{"unresponsive", `{"reason":"holder_lapsed ` + oauth2calltest.Reason + `","holder":"ses_ctl","holder_state":"unresponsive"}`, "issuer.example/code", http.StatusNotFound, Unknown},
-		{"gone", `{"reason":"holder_lapsed","holder":"ses_ctl","holder_state":"` + oauth2calltest.Reason + `"}`, "issuer.example/code", http.StatusNotFound, Gone},
+		{"unresponsive", refused + `"reason":"holder_lapsed ` + oauth2calltest.Reason + `","holder":"ses_ctl","holder_state":"unresponsive"}`, "issuer.example/code", http.StatusNotFound, Unknown},
+		{"gone", refused + `"reason":"holder_lapsed","holder":"ses_ctl","holder_state":"` + oauth2calltest.Reason + `"}`, "issuer.example/code", http.StatusNotFound, Gone},
 		{"another-holder", `{"holder":"` + oauth2calltest.Reason + `","holder_state":"live","last_seen":1}`, "issuer.example/code", http.StatusOK, Gone},
 	} {
 		t.Run(c.name, func(t *testing.T) {
