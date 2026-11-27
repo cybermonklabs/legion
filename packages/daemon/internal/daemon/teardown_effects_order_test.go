@@ -454,10 +454,12 @@ func teardownEffectsOrder(dir string, calls []teardownEffectsCall, clock, launch
 			plan.Seed = append(plan.Seed, c)
 			continue
 		}
-		if e.Actor.Kind == "system" {
-			// Dispatch's own write: the replayed write that called for it makes it again. outcome.json
-			// holds it too, among the other actors' writes (or, in a record written before it kept
-			// them apart, among the actions), so it is taken here.
+		if e.Actor.Kind == "system" || teardownEffectsDaemonWrite(e) {
+			// Dispatch's own write, or the daemon's own (a release's or a rerun's status write,
+			// which lane R's daemon stand-in makes as the project's daemon session): the replayed
+			// write or call that called for it makes it again. outcome.json holds it too, among
+			// the other actors' writes (or, in a record written before it kept them apart, among
+			// the actions), so it is taken here.
 			if _, ok := take("dispatch", e.CreatedAt); !ok {
 				return plan, fmt.Errorf("%s (%s) has no action in outcome.json: the records disagree", c.Source, e.Type)
 			}
@@ -795,6 +797,13 @@ func teardownEffectsCommentBody(e teardownEffectsEvent, b *teardownEffectsReadba
 	return body, nil
 }
 
+// teardownEffectsDaemonWrite says whether e is a write by the session of a project's Legion daemon
+// (dispatch.DaemonSession, `legion-daemon:<PROJECT>`): an effect of a legion call, which the
+// replay's real daemon makes again, and no write the replay makes before a call.
+func teardownEffectsDaemonWrite(e teardownEffectsEvent) bool {
+	return e.Actor.Kind == "session" && strings.HasPrefix(e.Actor.ID, "legion-daemon:")
+}
+
 // teardownEffectsGitHubAction is the change a gh call made to the GitHub lane R kept, as gh-standin
 // recorded it (`pull`: `open`, `edit`, `review`, `merge`, `close` and the rest it names), and ""
 // for a call that changed nothing: a read, or a write the stand-in refused. Nothing reads the call's
@@ -1027,6 +1036,15 @@ func (s teardownEffectsScratch) change(p teardownEffectsPullMutation) error {
 		return fmt.Errorf("the REST write %s %s is a change the replay's GitHub has no rule for, so the replay does not make it", p.Method, p.Path)
 	default:
 		return fmt.Errorf("gh pr %s is a change the replay's GitHub has no rule for, so the replay does not make it", p.Action)
+	}
+	// A change that names its pull request by node id alone (the merge queue's GraphQL mutations)
+	// names the one whose world states that node id (teardownEffectsPull.NodeID).
+	if p.Number == 0 && p.ID != "" {
+		for number, held := range s.pulls {
+			if held.NodeID == p.ID {
+				p.Number = number
+			}
+		}
 	}
 	pull, err := s.held(p.Action, p.Number)
 	if err != nil {

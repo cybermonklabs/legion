@@ -59,23 +59,28 @@
  * (RETURN_REFUSED, from the world's `daemon.step`); the implementer's completion of implementing
  * needs an open pull request on `legion/<issue>` (HANDOFF_NO_PULL_REQUEST: one the world holds, or
  * one gh-standin recorded opening on the branch, `open` in a line's `pull` in `--gh-calls`, and no
- * recorded close or merge of it since). The daemon's other refusals depend on state this
- * stand-in does not hold (the claim's serving run and entry, Dispatch's records, GitHub): a
- * recorded answer (`--answers`) stands for each. `request_backward_move` of another issue than a
- * phase worker's own is refused 400 ISSUE_NOT_GRANTS, `register_gate` of a child 403
- * GATE_ROOT_ONLY, and `set_status` without a controller grant 403 CONTROLLER_REQUIRED. The stand-in
+ * recorded close or merge of it since). A case's completion is also held to the claim's phase entry
+ * (`daemon.entry`, api's entryFence, below). The daemon's other refusals depend on state this
+ * stand-in does not hold (the claim's serving run, Dispatch's records, GitHub): a recorded answer
+ * (`--answers`) stands for each. `request_backward_move` of another issue than a phase worker's
+ * own is refused 400 ISSUE_NOT_GRANTS, `register_gate` of a child 403 GATE_ROOT_ONLY, and
+ * `set_status` without a controller grant 403 CONTROLLER_REQUIRED. The stand-in
  * reads no handoff record from Dispatch: the `legion` tool found the newest record of the phase on
  * Dispatch before posting, and the rig's scorer reads that record back from Dispatch and holds it
  * to the run's session (score.ts testerProof).
  *
- * `claims/owed` is answered from the record this stand-in holds, as the daemon's `owedBy`
- * (`packages/daemon/internal/api/owed.go`) reads its own: the architect and the controller owe
- * nothing and name no architect; a phase worker owes the production check while the record holds
- * the check's look open for its role, else the phase the record holds its issue in while its role
- * works that phase and no completion of it has been accepted since the phase was set, by the
- * built-in answer or a recorded one; a merger owes nothing once the world holds its pull request
- * merged. Each phase worker's answer names the tree root's architect. An accepted completion moves
- * no phase of the record, which the daemon's workflow would move on.
+ * `claims/owed` is answered as the daemon's `owedBy` (`packages/daemon/internal/api/owed.go`)
+ * answers it, from the record of the claim's issue this stand-in holds, as `read_record` answers
+ * it: the architect and the controller owe nothing and name no architect, and neither does a
+ * phase worker whose issue a case's records do not name. A phase worker owes the production check
+ * while the record holds the check's look open for its role. Else it owes nothing while its tree
+ * lingers (its root's record holds a linger), while its role works no phase the record holds its
+ * issue in, or once the world holds a merger's pull request merged. Else it owes that phase: while
+ * it is behind the phase entry its row names (`daemon.entry`), whatever completion is recorded,
+ * and otherwise until a completion of the phase is accepted, by the built-in answer or a recorded
+ * one, and again once a move sets the phase anew. Each phase worker's answer names the architect
+ * the daemon's owner walk ends at over the records. An accepted completion moves no phase of the
+ * record, which the daemon's workflow would move on.
  *
  * A start with a case's world (`--world`) replays the case. Any other start is the stand-in of a
  * scored run, an owner's (rig.sh scored_session), or of rig.sh's tester-proof run, and differs in
@@ -98,8 +103,8 @@
  *   none), and a stand-in started without `--label` or `--dispatch`: it never answers a plan on
  *   its own. A read of the run's Dispatch that fails, and a version whose blocks cannot be read,
  *   are answered 502.
- * - `release_children`: a case's is answered with the issues it released, each once; a scored
- *   run's with `{}`.
+ * - `release_children`: a case's is answered as the daemon answers it (below); a scored run's
+ *   with `{}`.
  * - The log line. Every request appends one JSON line to the log file. A case's is `{at, method,
  *   path, status, body, answer, grantId?, sessionId?, handoffId?, handoffVersion?}`: `body` is the
  *   request JSON (null for a GET or a body that is no JSON) and `answer` the response JSON (null
@@ -112,8 +117,8 @@
  *
  * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role>
  * <repository> <default branch> [<phase>] [--tree <root>] [--world <file>] [--clock-real <file>]
- * [--answers <file>] [--case-answers <file>] [--gh-calls <file>] [--issues <file>]
- * [--label <checkout>] [--dispatch <url> <token file>]`
+ * [--answers <file>] [--case-answers <file>] [--gh-calls <file>] [--case-dispatch <file>]
+ * [--issues <file>] [--label <checkout>] [--dispatch <url> <token file>]`
  *
  * - `<role>` is a Legion role or `controller`. The claim is `<role>` of `<issue>` in the tree of
  *   `<root>`, `<issue>` itself without `--tree` (the issue is a root).
@@ -130,6 +135,33 @@
  *   bound and its merge commit; the tester works it). `daemon.task` is the text of the worker's
  *   task, which the daemon sends and its state does not carry, so the rig writes it into the
  *   prompt. `--gh-calls` is the run's `calls.jsonl`, which gh-standin.ts writes.
+ * - A case's typed daemon parts (daemon-standin-world.ts, which names the daemon code each rule
+ *   follows) are its daemon's records, and every read and check answers from them:
+ *   - `daemon.claim` is the claim, which the command line must name (`<issue>` and `--tree`);
+ *     absent, the claim is the case's issue in the tree `--tree` names.
+ *   - `read_record` and `read_state` answer each record: the case's own (`daemon.issue` over the
+ *     default, its tree, generation and linger; `daemon.architect`, its architect claim's state;
+ *     `daemon.entry`, its `phaseEntry` and `givenEntry`), and each of `daemon.records`. An issue
+ *     no record names is 404 RECORD_NOT_FOUND, the claim's own included.
+ *   - `daemon.gate` is the gate of the claim's tree, on its root's record (`designGate` and
+ *     `gatedSteps`), each document by the id the run's Dispatch gives it (`--case-dispatch`);
+ *     `register_gate` moves its step's newest version.
+ *   - `daemon.admission` is `read_state`'s admission, each blocked issue with the Dispatch links
+ *     `dispatch.issues` gives it.
+ *   - An architect's `sign_off`, `request_backward_move`, `register_gate`, `register_plan`,
+ *     `rerun_child`, `stop_task` and `release_children` are held to the ownership rules of
+ *     api/architect.go and api/plan.go over those records, and `release_children` and
+ *     `register_plan` read each issue from the run's Dispatch (`--dispatch`, 500
+ *     DISPATCH_UNAVAILABLE without it), as the daemon reads them. A release adopts, starts and
+ *     holds children as api's waveRelease does, and moves their records; it and a rerun write
+ *     each child they move todo in the run's Dispatch as the daemon's own session does
+ *     (`PATCH /api/v1/issues/{key}` as `legion-daemon:<PROJECT>`, api's setDispatchStatus).
+ *   - A completion of the claim's issue is of the entry `daemon.entry.turn`, held to the row's
+ *     `daemon.entry.phase` (HANDOFF_STALE_ENTRY, HANDOFF_NOT_CURRENT_PHASE), and of no record at
+ *     all where no record names the claim's issue (404 ISSUE_NOT_FOUND).
+ *   A part the stand-in cannot serve (an architect state no claim has, a gate step the daemon
+ *   gates none of, a gate document the run's Dispatch holds no id for, a claim the command line
+ *   does not name) refuses the start, naming the part.
  * - `--clock-real` names the file of the launch's wall-clock instant, the case's clock-real.txt,
  *   which rig.sh writes after the stand-in starts and before the role launches. The case's now is
  *   then the world's clock moved on by the time since that instant, as outcome.ts and lane D's
@@ -145,13 +177,17 @@
  * - `--label` is the run's label checkout: the `Legion-Daemon-Contract` header states the contract
  *   that label's plugin speaks, and `register_plan` runs its entry. Without it the header states
  *   this checkout's own.
- * - `--dispatch` is the run's Dispatch and the file of its bearer token, which `register_plan`
- *   reads the plan from.
- * - `--issues`, `--label` and `--dispatch` are a scored run's, and are refused beside `--world`.
+ * - `--dispatch` is the run's Dispatch and the file of its bearer token, which a scored run's
+ *   `register_plan` reads the plan from, and a case's architect reads issues from.
+ * - `--case-dispatch` is a case's dispatch-fixture.json (seed.ts case-world), whose `gate` gives
+ *   the id of each gate step's document.
+ * - `--issues` and `--label` are a scored run's, and are refused beside `--world`;
+ *   `--case-dispatch` is a case's, and is refused without it.
  *
  * The document is the world as the run starts: a backward move sets its phase, `set_status` its
- * status, and each look report its check, as the daemon's workflow does (`checkReport` below);
- * nothing else moves it. A command line it cannot serve exits 2, naming what is wrong. Prints
+ * status, each look report its check, as the daemon's workflow does (`checkReport` below), and a
+ * case's release, rerun or gate registration the records and the gate they move; nothing else
+ * moves it. A command line it cannot serve exits 2, naming what is wrong. Prints
  * `listening on http://127.0.0.1:<port>` once the socket is open (port 0: the kernel's pick).
  */
 import { randomUUID } from "node:crypto";
@@ -165,7 +201,13 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { controllerToken, isLegionRole, type LegionRole, roleToken } from "@legion/contracts";
+import {
+  controllerToken,
+  GATED_STEPS,
+  isLegionRole,
+  type LegionRole,
+  roleToken,
+} from "@legion/contracts";
 import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   LEGION_PHASES,
@@ -194,6 +236,22 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { type ZodSafeParseResult, z } from "zod";
 import pkg from "../../package.json";
 import { DAEMON_MODULE, runDaemonPane } from "./daemon-pane";
+import {
+  ARCHITECT_REQUIRED,
+  architectsRecord,
+  type CaseClaim,
+  type CaseRecord,
+  caseGate,
+  caseRecords,
+  entryFence,
+  type IssueRead,
+  notOwned,
+  planOwner,
+  type Refusal,
+  releaseChildren,
+  rerunChild,
+  worldFaults,
+} from "./daemon-standin-world";
 import { World } from "./heldout-case";
 import { parseInstant } from "./production-dispatch";
 import {
@@ -364,8 +422,8 @@ type HandoffComplete = z.output<typeof HandoffCompleteBody>;
 
 /** The role that works each phase, the daemon's `phase.RoleFor`
  * (`packages/daemon/internal/phase/phase.go`): a phase no role works (awaiting_person,
- * awaiting_children, done, held, unrecorded) has no row. A completion is held to it, and
- * `claims/owed` reads it. */
+ * awaiting_children, done, held, unrecorded) has no row. A completion is held to it, a record
+ * shows the claim's phase entry on a phase it names, and `claims/owed` reads it. */
 const ROLE_FOR_PHASE: Readonly<Record<string, LegionRole>> = {
   admitted: "architect",
   planning: "planner",
@@ -416,6 +474,12 @@ export interface StandinOptions {
   readonly ghCalls?: string;
   /** The contract the `Legion-Daemon-Contract` header states: this plugin build's own when unset. */
   readonly contract?: string;
+  /** A case's: the id the run's Dispatch gives the document of each step of `world.daemon.gate`,
+   * by step (`--case-dispatch`, seed.ts case-world's dispatch-fixture.json `gate`). */
+  readonly gateIds?: Readonly<Record<string, string>>;
+  /** A case's: the run's Dispatch, which an architect's release_children, register_plan and
+   * rerun_child read issues from as the daemon reads them (`--dispatch` beside `--world`). */
+  readonly caseDispatch?: RunDispatch;
   /** The stand-in of a scored run or of rig.sh's tester-proof run (the header): the world's issues
    * of `--issues`, and the label checkout (`--label`) and run's Dispatch (`--dispatch`) its
    * `register_plan` asks. Unset, the stand-in replays a case. */
@@ -503,6 +567,14 @@ const DispatchVersion = z.object({
       })
     )
     .nullish(),
+});
+
+/** What Dispatch's issue read answers (`GET /api/v1/issues/{key}`), as far as an architect's
+ * operation reads it (dispatch.Issue): its status, its parent and its `blocked_by` links. */
+const DispatchIssueRead = z.object({
+  status: z.string(),
+  parent: z.string().nullish(),
+  blocked_by: z.array(z.string()).nullish(),
 });
 
 /** One read of the run's Dispatch with its bearer, parsed with `schema`, or the 502 naming what
@@ -741,9 +813,9 @@ export function startDaemonStandin(options: StandinOptions): Standin {
 
   const daemonWorld = world?.daemon ?? null;
   /** What moves while the run goes on: the phase a backward move sets, the status `set_status`
-   * writes, the phase the claim's accepted completion was of (until the phase is set again),
-   * whether the production check is still open, whether its look is, when its next look is due,
-   * and the looks reported on it. */
+   * writes, the phase the claim's accepted completion was of (until a move sets the phase again,
+   * `movePhase`), whether the production check is still open, whether its look is, when its next
+   * look is due, and the looks reported on it. */
   const held = {
     phase: options.phase,
     status: world?.dispatch.issue.status ?? claimInWorld?.status ?? "in_progress",
@@ -752,6 +824,140 @@ export function startDaemonStandin(options: StandinOptions): Standin {
     lookOpen: true,
     nextWakeAt: daemonWorld?.productionCheck?.boundAt ?? "",
     reported: new Set<string>(),
+  };
+
+  /** A case's typed daemon parts (daemon-standin-world.ts): the claim, the daemon's record of each
+   * issue the world names, the claim tree's design gate and the claim's phase entry. The case's
+   * own record takes its phase and status from `held`, which the run moves. A start with no case
+   * world, or with a world whose daemon is null, holds none of them and answers as before. */
+  const typed = world !== undefined && daemonWorld !== null ? world : undefined;
+  const caseKey = typed?.dispatch.issue.key;
+  const claim: CaseClaim = {
+    issue,
+    tree,
+    ...(typed?.daemon?.claim?.session === undefined ? {} : { session: typed.daemon.claim.session }),
+  };
+  const records = typed === undefined ? new Map<string, CaseRecord>() : caseRecords(typed);
+  const gate = typed === undefined ? [] : caseGate(typed, options.gateIds ?? {});
+  if (typed !== undefined) {
+    const stated = typed.daemon?.claim;
+    const faults = worldFaults(typed, options.gateIds ?? {});
+    if (stated !== undefined && (stated.issue !== issue || stated.tree !== tree))
+      faults.unshift(
+        `world.daemon.claim is ${stated.issue} in the tree of ${stated.tree}, and the stand-in was started for ${issue} in the tree of ${tree}`
+      );
+    if (faults.length > 0)
+      throw new Error(`the stand-in cannot serve this case's world: ${faults.join("; ")}`);
+  }
+  /** The record of `key` the daemon holds, the case's own with the phase and status the run left. */
+  const recordOf = (key: string): CaseRecord | undefined => {
+    const found = records.get(key);
+    if (found === undefined || key !== caseKey) return found;
+    found.phase = held.phase;
+    found.status = held.status;
+    return found;
+  };
+  /** Every record the daemon holds, each as recordOf answers it. */
+  const allRecords = (): Map<string, CaseRecord> => {
+    for (const key of records.keys()) recordOf(key);
+    return records;
+  };
+  /** The phase of the daemon's record of the claim's issue, which a completion is of and
+   * `claims/owed` reads: a case's record of it (none where no record names the issue), else the
+   * phase `held` keeps. */
+  const claimPhase = (): string | undefined =>
+    typed === undefined ? held.phase : recordOf(issue)?.phase;
+  /** Sets the phase of the record of `key`: the case's own, or the claim's without a case world,
+   * through `held`. A move of the claim's issue ends the claim's completion of the phase it left
+   * (`held.completed`), so the phase it sets is owed again, as the entry the daemon's move raises
+   * records no completion. */
+  const movePhase = (key: string, to: string) => {
+    if (key === (caseKey ?? issue)) held.phase = to;
+    if (key === issue) held.completed = undefined;
+    const found = records.get(key);
+    if (found !== undefined) found.phase = to;
+  };
+  /** Takes into `held` the phase and status of the case's own record, once an operation made it
+   * anew (a release, a rerun). */
+  const keepCaseRecord = () => {
+    const own = caseKey === undefined ? undefined : records.get(caseKey);
+    if (own === undefined) return;
+    held.phase = own.phase;
+    held.status = own.status;
+  };
+  /** A refusal of daemon-standin-world.ts as the daemon writes it (`writeFailure`). */
+  const refuseWith = (refusal: Refusal): Reply =>
+    failure(refusal.status, refusal.code, refusal.message);
+  /** The record a case's architect request on `key` reads, or the reply that refuses it: a grant
+   * that is no architect's (ARCHITECT_REQUIRED), then architectsRecord's refusals. */
+  const architectRecord = (
+    key: string
+  ): { readonly record: CaseRecord } | { readonly reply: Reply } => {
+    if (role !== "architect") return { reply: refuseWith(ARCHITECT_REQUIRED) };
+    const read = architectsRecord(claim, key, allRecords());
+    return "record" in read ? read : { reply: refuseWith(read.refusal) };
+  };
+  /** The case's now as nanoseconds, for a linger: the world's clock where the launch instant is
+   * unknown yet. */
+  const caseNowNs = (): bigint => {
+    const now = caseNow();
+    return typeof now === "bigint" ? now : clockAt;
+  };
+  /** One Dispatch issue as an architect's operation reads it (dispatch.Client.GetIssue), from the
+   * run's Dispatch: undefined where it holds none, a 502 where the read failed. */
+  const readIssue: IssueRead = async (key) => {
+    if (options.caseDispatch === undefined)
+      return { status: 500, code: "DISPATCH_UNAVAILABLE", message: "Dispatch is unavailable" };
+    const read = await dispatchRead(
+      options.caseDispatch,
+      `/api/v1/issues/${encodeURIComponent(key)}`,
+      DispatchIssueRead
+    );
+    if ("data" in read)
+      return {
+        key,
+        status: read.data.status,
+        parent: read.data.parent ?? null,
+        blockedBy: read.data.blocked_by ?? [],
+      };
+    if (read.missing) return undefined;
+    const body = read.refusal.body as { code?: string; error?: string };
+    return {
+      status: read.refusal.status,
+      code: body.code ?? "DISPATCH_FAILED",
+      message: body.error ?? "",
+    };
+  };
+  /** The daemon's own status write of `key` in the run's Dispatch (api's setDispatchStatus,
+   * dispatch.HTTPClient.SetStatus): `PATCH /api/v1/issues/{key}` as the session of the issue's
+   * project's daemon, `legion-daemon:<PROJECT>`; a refusal is answered 502 with Dispatch's code, a
+   * failed request 502 DISPATCH_FAILED. */
+  const writeStatus = async (key: string, status: string): Promise<Reply | undefined> => {
+    if (options.caseDispatch === undefined)
+      return failure(500, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable");
+    const { url, token } = options.caseDispatch;
+    try {
+      const response = await fetch(`${url}/api/v1/issues/${encodeURIComponent(key)}`, {
+        method: "PATCH",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          status,
+          actor: { kind: "session", id: `legion-daemon:${key.split("-")[0]}` },
+        }),
+      });
+      if (response.ok) return undefined;
+      const refused = z
+        .object({ code: z.string().optional(), error: z.string().optional() })
+        .catch({})
+        .parse(await response.json().catch(() => ({})));
+      return failure(502, refused.code ?? "DISPATCH_FAILED", refused.error ?? "");
+    } catch {
+      return failure(502, "DISPATCH_FAILED", "Dispatch status update failed");
+    }
   };
 
   /** The open production check as `GET .../record` shows it (`api.CheckView`): the look the role
@@ -807,21 +1013,141 @@ export function startDaemonStandin(options: StandinOptions): Standin {
     };
   };
 
-  /** The issues the daemon records: the claim's (`issueRecord`), then each issue of the world in a
-   * phase, in its tree, on the repository and default branch the rig names. */
-  const recorded = () => [
-    issueRecord(),
-    ...worldIssues.map((each) => ({
-      key: each.key,
-      generation: 1,
-      phase: each.phase,
-      status: each.status,
-      tree: each.tree,
+  /** The pull request the daemon's record of `key` holds: the world's on `legion/<key>`. */
+  const pullOf = (key: string) => {
+    const pull = world?.github?.pullRequests.find((pr) => pr.head.ref === `legion/${key}`);
+    return pull === undefined
+      ? {}
+      : {
+          pullRequest: {
+            repo: repository,
+            number: pull.number,
+            head: pull.head.sha,
+            state: pull.state,
+          },
+        };
+  };
+
+  /** The design gate of the claim's tree on the record of its root (projection.Project): the spec
+   * step's row as `designGate`, and, where the record is its tree's own root, every step's as
+   * `gatedSteps`, in the order the daemon names the steps (GATED_STEPS), each approved where a
+   * person approved its newest version and waiting otherwise. */
+  const gateOf = (record: CaseRecord) => {
+    if (record.key !== tree || gate.length === 0) return {};
+    const spec = gate.find((row) => row.step === "spec");
+    const steps = GATED_STEPS.flatMap((step) => gate.filter((row) => row.step === step));
+    return {
+      ...(spec === undefined
+        ? {}
+        : {
+            designGate: {
+              artifactId: spec.artifactId,
+              currentVersion: spec.current,
+              approvedVersion: spec.approved,
+            },
+          }),
+      ...(record.key !== record.tree
+        ? {}
+        : {
+            gatedSteps: steps.map((row) => ({
+              step: row.step,
+              artifactId: row.artifactId,
+              currentVersion: row.current,
+              approvedVersion: row.approved,
+              status: row.approved === row.current ? "approved" : "waiting",
+            })),
+          }),
+    };
+  };
+
+  /** The phase entry on the claim's record (`daemon.entry`, api.Issue's phaseEntry and
+   * givenEntry): the entry the role's phases row names, and the entry the role was last given a
+   * task of, the row's where the daemon queued its owed task and the turn's where it did not; none
+   * for a phase no role works. */
+  const entryOf = (record: CaseRecord) => {
+    const entry = daemonWorld?.entry;
+    if (entry === undefined || record.key !== issue || ROLE_FOR_PHASE[record.phase] === undefined)
+      return {};
+    return {
+      phaseEntry: entry.phase,
+      givenEntry: entry.owedTask === null ? entry.turn : entry.phase,
+    };
+  };
+
+  /** The daemon's record of one issue of a case's world as `read_record` and `read_state` answer
+   * it (api.Issue, projection.Project): its key, generation, phase, status and tree, the repository
+   * and default branch the rig names, its linger, its architect claim's state, the pull request
+   * the world holds on its branch, the production check of the case's own issue while done, the
+   * claim's phase entry and the gate of the claim tree's root. */
+  const recordView = (record: CaseRecord) => {
+    const check = record.key === caseKey && record.phase === "done" ? checkView() : undefined;
+    return {
+      key: record.key,
+      generation: record.generation,
+      phase: record.phase,
+      status: record.status,
+      tree: record.tree,
       repo: repository,
       defaultBranch,
       workers: {},
-    })),
-  ];
+      ...(record.lingerUntil === null ? {} : { lingerUntil: record.lingerUntil }),
+      ...(record.architect === null ? {} : { architect: { state: record.architect.state } }),
+      ...pullOf(record.key),
+      ...(check === undefined ? {} : { check }),
+      ...entryOf(record),
+      ...gateOf(record),
+    };
+  };
+
+  /** The issues the daemon records. A case's: each record of its world (recordView). Otherwise the
+   * claim's (`issueRecord`), then each issue of the world in a phase, in its tree, on the
+   * repository and default branch the rig names. */
+  const recorded = () =>
+    typed !== undefined
+      ? [...allRecords().values()].map(recordView)
+      : [
+          issueRecord(),
+          ...worldIssues.map((each) => ({
+            key: each.key,
+            generation: 1,
+            phase: each.phase,
+            status: each.status,
+            tree: each.tree,
+            repo: repository,
+            defaultBranch,
+            workers: {},
+          })),
+        ];
+
+  /** `read_state`'s admission: the case's `daemon.admission` where its world states one, each
+   * blocked issue with the Dispatch links the world gives it; otherwise every record live unless
+   * it stands in a phase no worker holds a slot in, under a cap of their number. */
+  const admissionOf = (issues: readonly { key: string; phase: string; tree: string }[]) => {
+    const trees = [
+      ...new Set(issues.filter((each) => each.phase !== "done").map((each) => each.tree)),
+    ];
+    const stated = daemonWorld?.admission;
+    if (stated !== undefined) {
+      return {
+        cap: stated.cap,
+        active: [...stated.active],
+        waiting: [...stated.waiting],
+        trees,
+        blocked: stated.blocked.map((key) => {
+          const blockedBy = typed?.dispatch.issues?.find((each) => each.key === key)?.blockedBy;
+          return { issue: key, ...(blockedBy === undefined ? {} : { blockedBy: [...blockedBy] }) };
+        }),
+      };
+    }
+    const live = issues.filter((each) => !["done", "held", "awaiting_person"].includes(each.phase));
+    return {
+      cap: issues.length,
+      active: live.map((each) => each.key),
+      waiting: [],
+      trees,
+      blocked: [],
+    };
+  };
 
   /** `GET /legion/v1/state`: the issues the daemon records (`recorded`), each live unless it
    * stands in a phase no worker holds a slot in. `capabilities` is the deployment's capability
@@ -836,18 +1162,9 @@ export function startDaemonStandin(options: StandinOptions): Standin {
    * rig has no file, so it carries the two keys the reader types at the daemon's defaults. */
   const stateDocument = () => {
     const issues = recorded();
-    const live = issues.filter((each) => !["done", "held", "awaiting_person"].includes(each.phase));
     return {
       daemon: { project, schemaVersion: 1, boots: 1, firstBootAt: startedAt, startedAt },
-      admission: {
-        cap: issues.length,
-        active: live.map((each) => each.key),
-        waiting: [],
-        trees: [
-          ...new Set(issues.filter((each) => each.phase !== "done").map((each) => each.tree)),
-        ],
-        blocked: [],
-      },
+      admission: admissionOf(issues),
       issues: Object.fromEntries(issues.map((each) => [each.key, each])),
       pendingStatusWrites: [],
       heldOutboxRows: [],
@@ -1044,11 +1361,15 @@ export function startDaemonStandin(options: StandinOptions): Standin {
   };
 
   /** `handoff/complete`: the daemon's refusals in the order its route makes them (the header
-   * lists them), then `{}`. */
+   * lists them, api's answerCompletion), then `{}`. A case's completion is of the claim's issue as
+   * the world records it: 404 ISSUE_NOT_FOUND where no record names it, and held to the claim's
+   * phase entry (`daemon.entry`, entryFence) before its plan rating and its handoff record. */
   const complete = (request: HandoffComplete, grant: Grant | undefined): Reply => {
     if (grant?.controller) return failure(403, "GRANT_INVALID", "grant is unavailable");
+    const phase = claimPhase();
+    if (phase === undefined) return failure(404, "ISSUE_NOT_FOUND", "issue is not recorded");
     if (request.checkOpenedAt !== undefined) return checkReport(request);
-    if (held.phase === "done") {
+    if (phase === "done") {
       const whose = held.checkOpen
         ? "its production check is the tester's; that role reports pass, pending or fail with checkOpenedAt, the check_opened_at time in its look task or check.openedAt from read_record"
         : "it has no open production check, so there is nothing here for any role to report";
@@ -1071,21 +1392,35 @@ export function startDaemonStandin(options: StandinOptions): Standin {
       return failure(
         400,
         "RETURN_TO_NEEDS_FAIL",
-        `this completion of phase ${held.phase} of ${issue} names returnTo, and only the completion of a step that failed, with the verdict fail, names the step its task returns to: send it again without returnTo; nothing was recorded`
-      );
-    }
-    if ((request.planRating === undefined) !== (request.planReason === undefined)) {
-      return failure(
-        400,
-        "PLAN_RATING_INPUT",
-        "planRating and planReason appear together: send the rating of the plan with its reason, or neither; nothing was recorded"
+        `this completion of phase ${phase} of ${issue} names returnTo, and only the completion of a step that failed, with the verdict fail, names the step its task returns to: send it again without returnTo; nothing was recorded`
       );
     }
     if (request.wakeAt !== undefined) {
       return failure(
         400,
         "CHECK_WAKE_UNEXPECTED",
-        `this completion of phase ${held.phase} of ${issue} names wakeAt, which belongs to the pending report of a production check's look and to nothing else; send it again without a time, and nothing was recorded`
+        `this completion of phase ${phase} of ${issue} names wakeAt, which belongs to the pending report of a production check's look and to nothing else; send it again without a time, and nothing was recorded`
+      );
+    }
+    const entry = daemonWorld?.entry;
+    const word = options.handoffWords[phase] ?? "";
+    if (entry !== undefined && role !== "controller") {
+      const fenced = entryFence(entry, {
+        issue,
+        role,
+        phase,
+        worksPhase: ROLE_FOR_PHASE[phase] === role,
+        recordBacked: word !== "",
+        commit: request.commit,
+        head: world?.github?.pullRequests.find((pr) => pr.head.ref === `legion/${issue}`)?.head.sha,
+      });
+      if (fenced !== undefined) return failure(fenced.status, fenced.code, fenced.message);
+    }
+    if ((request.planRating === undefined) !== (request.planReason === undefined)) {
+      return failure(
+        400,
+        "PLAN_RATING_INPUT",
+        "planRating and planReason appear together: send the rating of the plan with its reason, or neither; nothing was recorded"
       );
     }
     if (role === "architect") {
@@ -1095,28 +1430,27 @@ export function startDaemonStandin(options: StandinOptions): Standin {
         `the architect accepts ${issue} with sign_off, not handoff_complete; this completion changed nothing`
       );
     }
-    if (ROLE_FOR_PHASE[held.phase] !== role) {
+    if (ROLE_FOR_PHASE[phase] !== role) {
       return failure(
         409,
         "HANDOFF_NOT_CURRENT_PHASE",
-        `the ${role} does not run phase ${held.phase} of ${issue}; this completion changed nothing`
+        `the ${role} does not run phase ${phase} of ${issue}; this completion changed nothing`
       );
     }
-    const word = options.handoffWords[held.phase] ?? "";
     const { handoffId, handoffVersion } = request;
     if (word !== "" && (handoffId === undefined || handoffVersion === undefined)) {
       const write = `\`dispatch handoff-write --issue ${issue} --phase ${word} --body-file <file>\``;
       return failure(
         400,
         "HANDOFF_RECORD_REQUIRED",
-        `phase ${held.phase} of ${issue} ends with its ${word} handoff recorded on the Dispatch issue, and this completion names no record (handoffId and a positive handoffVersion): write it with ${write}, then complete again; this completion changed nothing`
+        `phase ${phase} of ${issue} ends with its ${word} handoff recorded on the Dispatch issue, and this completion names no record (handoffId and a positive handoffVersion): write it with ${write}, then complete again; this completion changed nothing`
       );
     }
     if (word === "" && (handoffId !== undefined || handoffVersion !== undefined)) {
       return failure(
         409,
         "HANDOFF_RECORD_MISMATCH",
-        `phase ${held.phase} of ${issue} ends with no handoff record, and this completion names one: complete without handoffId and handoffVersion; this completion changed nothing`
+        `phase ${phase} of ${issue} ends with no handoff record, and this completion names one: complete without handoffId and handoffVersion; this completion changed nothing`
       );
     }
     const step = daemonWorld?.step;
@@ -1131,7 +1465,7 @@ export function startDaemonStandin(options: StandinOptions): Standin {
     }
     if (
       role === "implementer" &&
-      held.phase === "implementing" &&
+      phase === "implementing" &&
       !openPullRequest(issue, world, options.ghCalls)
     ) {
       return failure(
@@ -1143,35 +1477,58 @@ export function startDaemonStandin(options: StandinOptions): Standin {
     return answered();
   };
 
-  /** `POST /legion/v1/claims/owed`: the daemon's `owedBy` (`api/owed.go`), read from the record
-   * this stand-in holds (`issueRecord`). The architect and the controller owe nothing and name no
-   * architect. A phase worker owes the production check's look while the record holds the check
-   * and its look open for the worker's role; else it owes the phase the record holds its issue in
-   * while its role works that phase (`ROLE_FOR_PHASE`) and the stand-in has accepted no completion
-   * of it since the phase was set (`held.completed`), and a merger whose pull request the world
-   * holds merged owes nothing, since that merge finishes merging. Each phase worker's answer names
-   * the architect that owns the claim, the end of the daemon's owner walk: no issue the stand-in
-   * records holds an architect claim, so the walk ends at the tree root's architect. */
+  /** The architect claim that owns the claim, where the daemon's owner walk from the claim's
+   * record `own` ends (api's owningArchitect, record.OwningIssue): the nearest record from `own`
+   * up through the parents the records hold in its tree, short of the tree's root, whose
+   * architect claim holds its role, else the claim tree's root. An architect claim holds its role
+   * in each state the world can give it but failed, retired and suspended (supervise.HoldsRole:
+   * only a suspension that released the claim's pod holds it, and no record says one did). */
+  const owningArchitect = (own: CaseRecord | undefined): string => {
+    const seen = new Set<string>();
+    for (let at = own; at !== undefined && at.key !== at.tree && !seen.has(at.key); ) {
+      if (at.architect !== null && !["failed", "retired", "suspended"].includes(at.architect.state))
+        return roleToken(project, at.key, "architect");
+      seen.add(at.key);
+      const parent = at.parent === null ? undefined : records.get(at.parent);
+      at = parent?.tree === at.tree ? parent : undefined;
+    }
+    return roleToken(project, tree, "architect");
+  };
+
+  /** `POST /legion/v1/claims/owed`: the daemon's `owedBy` (`api/owed.go`), read from the record of
+   * the claim's issue as `read_record` answers it (`issueRecord`, a case's `recordView`). The
+   * architect and the controller owe nothing and name no architect, and neither does a phase
+   * worker whose issue a case's records do not name (the daemon's position with no issue). A phase
+   * worker owes the production check's look while the record holds the check and its look open
+   * for the worker's role. Else it owes nothing while its tree lingers (a linger on its root's
+   * record, `completionPosition.lingers`), while its role works no phase the record holds its
+   * issue in (`ROLE_FOR_PHASE`), or while its issue is in merging and the world holds its pull
+   * request merged, since that merge finishes merging. Else it owes the phase: a claim behind the
+   * entry its row names (`givenEntry` below `phaseEntry`, `daemon.entry`) owes that entry's work
+   * whatever completion is recorded, since the daemon is sending it, and a claim level with its row
+   * owes the phase until the stand-in accepts a completion of it (`held.completed`), which a move
+   * of the phase ends. Each answer of a recorded issue names the architect that owns the claim
+   * (`owningArchitect`). */
   const owedAnswer = (): LegionOwed => {
-    if (role === "architect" || role === "controller") {
-      return LegionOwedResponse.parse({ owes: false, work: "" });
-    }
-    const record = issueRecord();
-    let work = "";
+    const nothing = LegionOwedResponse.parse({ owes: false, work: "" });
+    if (role === "architect" || role === "controller") return nothing;
+    const own = typed === undefined ? undefined : recordOf(issue);
+    if (typed !== undefined && own === undefined) return nothing;
+    const record = LegionIssueRecordResponse.parse(
+      own === undefined ? issueRecord() : recordView(own)
+    );
+    const answer = (work: string) =>
+      LegionOwedResponse.parse({ owes: work !== "", work, architect: owningArchitect(own) });
     if (record.check?.lookOpen === true && record.check.role === role) {
-      work = `the production check of ${issue}`;
-    } else if (
-      ROLE_FOR_PHASE[held.phase] === role &&
-      held.completed !== held.phase &&
-      !(held.phase === "merging" && record.pullRequest?.state === "merged")
-    ) {
-      work = `the ${held.phase} phase of ${issue}`;
+      return answer(`the production check of ${issue}`);
     }
-    return LegionOwedResponse.parse({
-      owes: work !== "",
-      work,
-      architect: roleToken(project, tree, "architect"),
-    });
+    const lingers = own !== undefined && records.get(own.tree)?.lingerUntil != null;
+    const merged = record.phase === "merging" && record.pullRequest?.state === "merged";
+    if (lingers || ROLE_FOR_PHASE[record.phase] !== role || merged) return answer("");
+    const { phaseEntry, givenEntry } = record;
+    const behind = phaseEntry !== undefined && givenEntry !== undefined && givenEntry < phaseEntry;
+    const completed = !behind && held.completed === record.phase;
+    return answer(completed ? "" : `the ${record.phase} phase of ${issue}`);
   };
 
   const routes: Record<string, Route> = {
@@ -1251,7 +1608,8 @@ export function startDaemonStandin(options: StandinOptions): Standin {
     // A look report is answered from the check this stand-in holds, whose state each report
     // moves: an answer recorded against one state of a check is no answer to another. A step's
     // completion that is accepted, by `complete` or by a recorded answer, is the claim's completion
-    // of the phase its issue stands in, which `claims/owed` then answers it owes nothing of.
+    // of the phase its issue's record stands in, which `claims/owed` then answers a claim level
+    // with its phase entry owes nothing of.
     "POST /legion/v1/handoff/complete": route(
       "LegionHandoffCompleteRequest",
       HandoffCompleteBody,
@@ -1261,7 +1619,7 @@ export function startDaemonStandin(options: StandinOptions): Standin {
         own: (request) => request.checkOpenedAt !== undefined,
         took: (request, reply) => {
           if (request.checkOpenedAt === undefined && reply.status >= 200 && reply.status < 300) {
-            held.completed = held.phase;
+            held.completed = claimPhase();
           }
         },
       }
@@ -1270,6 +1628,16 @@ export function startDaemonStandin(options: StandinOptions): Standin {
       "LegionPhaseBackwardRequest",
       LegionPhaseBackwardRequest,
       (request) => {
+        if (typed !== undefined && role === "architect") {
+          if (request.issue === undefined)
+            return failure(400, "MISSING_FIELD", "issue is required");
+          const read = architectRecord(request.issue);
+          if ("reply" in read) return read.reply;
+          const unowned = notOwned(claim, read.record, allRecords(), "request_backward_move");
+          if (unowned !== undefined) return refuseWith(unowned);
+          movePhase(request.issue, request.to);
+          return answered();
+        }
         if (role !== "architect" && request.issue !== undefined && request.issue !== issue) {
           return failure(
             400,
@@ -1277,25 +1645,55 @@ export function startDaemonStandin(options: StandinOptions): Standin {
             `a phase worker moves only its own issue ${issue}, not ${request.issue}`
           );
         }
-        if (request.issue === undefined || request.issue === issue) {
-          held.phase = request.to;
-          held.completed = undefined;
-        }
+        if (request.issue === undefined || request.issue === issue) movePhase(issue, request.to);
         return answered();
       },
       owner
     ),
+    // A case's gate is the claim tree root's own (api's gateRegister, rootArchitectOf): the
+    // registration moves the step's newest version, which read_record then answers.
     "POST /legion/v1/gates/register": route(
       "LegionGateRegisterRequest",
       LegionGateRegisterRequest,
-      () =>
-        isRoot
-          ? answered()
-          : failure(
-              403,
-              "GATE_ROOT_ONLY",
-              `the design gate belongs to the tree root ${tree}; register it there`
-            ),
+      (request) => {
+        if (typed === undefined)
+          return isRoot
+            ? answered()
+            : failure(
+                403,
+                "GATE_ROOT_ONLY",
+                `the design gate belongs to the tree root ${tree}; register it there`
+              );
+        const read = architectRecord(request.issue);
+        if ("reply" in read) return read.reply;
+        if (request.issue !== tree)
+          return failure(
+            403,
+            "GATE_ROOT_ONLY",
+            `the design gate belongs to the tree root ${tree}; register it there`
+          );
+        if (notOwned(claim, read.record, allRecords(), "register_gate") !== undefined)
+          return failure(
+            403,
+            "GATE_ROOT_ONLY",
+            `the design gate belongs to the tree root ${tree}; its root architect registers it`
+          );
+        const step = request.step ?? "spec";
+        const row = gate.find((each) => each.step === step);
+        if (row === undefined)
+          gate.push({
+            step,
+            document: "",
+            current: request.version,
+            approved: null,
+            artifactId: request.artifactId,
+          });
+        else {
+          row.current = request.version;
+          row.artifactId = request.artifactId;
+        }
+        return answered();
+      },
       owner
     ),
     // A scored run's register_plan is the label's own route, in its order: the grant (route), the
@@ -1303,7 +1701,12 @@ export function startDaemonStandin(options: StandinOptions): Standin {
     "POST /legion/v1/plans/register": route(
       "LegionPlanRegisterRequest",
       LegionPlanRegisterRequest,
-      (request) => {
+      async (request) => {
+        if (typed !== undefined) {
+          if (role !== "architect") return refuseWith(ARCHITECT_REQUIRED);
+          const refused = await planOwner(claim, request.issue, allRecords(), readIssue);
+          if (refused !== undefined) return refuseWith(refused);
+        }
         if (scored === undefined) return answered({ plan: { version: request.version } });
         if (!treeIssues.has(request.issue)) {
           return failure(
@@ -1319,25 +1722,70 @@ export function startDaemonStandin(options: StandinOptions): Standin {
     "POST /legion/v1/signoff": route(
       "LegionSignOffRequest",
       LegionSignOffRequest,
-      () => answered(),
+      (request) => {
+        if (typed === undefined) return answered();
+        const read = architectRecord(request.issue);
+        if ("reply" in read) return read.reply;
+        const unowned = notOwned(claim, read.record, allRecords(), "sign_off");
+        return unowned === undefined ? answered() : refuseWith(unowned);
+      },
       owner
     ),
     "POST /legion/v1/waves/release": route(
       "LegionWaveReleaseRequest",
       LegionWaveReleaseRequest,
-      (request) => answered(scored === undefined ? { released: [...new Set(request.issues)] } : {}),
+      async (request) => {
+        if (typed === undefined)
+          return answered(scored === undefined ? { released: [...new Set(request.issues)] } : {});
+        if (role !== "architect") return refuseWith(ARCHITECT_REQUIRED);
+        if (options.caseDispatch === undefined)
+          return failure(500, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable");
+        const release = await releaseChildren(claim, request.issues, allRecords(), readIssue, {
+          now: caseNowNs(),
+          slotted: daemonWorld?.admission?.active ?? [],
+        });
+        if ("refusal" in release) return refuseWith(release.refusal);
+        for (const key of release.written) {
+          const refused = await writeStatus(key, "todo");
+          if (refused !== undefined) return refused;
+        }
+        release.apply();
+        keepCaseRecord();
+        return answered(release.answer);
+      },
       owner
     ),
     "POST /legion/v1/children/rerun": route(
       "LegionChildRequest",
       LegionChildRequest,
-      () => answered(),
+      async (request) => {
+        if (typed === undefined) return answered();
+        if (role !== "architect") return refuseWith(ARCHITECT_REQUIRED);
+        // Only the refusal of a running child reads Dispatch (api's childRunning).
+        const child = allRecords().get(request.issue);
+        let shown: string | undefined;
+        if (child !== undefined && child.phase !== "done") {
+          const read = await readIssue(request.issue);
+          if (read !== undefined && !("code" in read)) shown = read.status;
+        }
+        const rerun = rerunChild(claim, request.issue, allRecords(), shown);
+        if ("refusal" in rerun) return refuseWith(rerun.refusal);
+        const refused = await writeStatus(request.issue, "todo");
+        if (refused !== undefined) return refused;
+        rerun.apply();
+        keepCaseRecord();
+        return answered();
+      },
       owner
     ),
     "POST /legion/v1/tasks/stop": route(
       "LegionTaskStopRequest",
       LegionTaskStopRequest,
-      () => answered(),
+      (request) => {
+        if (typed === undefined) return answered();
+        const read = architectRecord(request.issue);
+        return "reply" in read ? read.reply : answered();
+      },
       owner
     ),
     "POST /legion/v1/issues/status": route(
@@ -1347,7 +1795,9 @@ export function startDaemonStandin(options: StandinOptions): Standin {
         if (!grant?.controller) {
           return failure(403, "CONTROLLER_REQUIRED", "issue status requires a controller grant");
         }
-        if (request.issue === issue) held.status = request.status;
+        if (request.issue === (caseKey ?? issue)) held.status = request.status;
+        const found = records.get(request.issue);
+        if (found !== undefined) found.status = request.status;
         return answered();
       },
       { grantOf: grantId }
@@ -1472,7 +1922,21 @@ export function startDaemonStandin(options: StandinOptions): Standin {
 }
 
 const USAGE =
-  "usage: bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role> <repository> <default branch> [<phase>] [--tree <root>] [--world <file>] [--clock-real <file>] [--answers <file>] [--case-answers <file>] [--gh-calls <file>] [--issues <file>] [--label <checkout>] [--dispatch <url> <token file>]";
+  "usage: bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role> <repository> <default branch> [<phase>] [--tree <root>] [--world <file>] [--clock-real <file>] [--answers <file>] [--case-answers <file>] [--gh-calls <file>] [--case-dispatch <file>] [--issues <file>] [--label <checkout>] [--dispatch <url> <token file>]";
+
+/** What seed.ts case-world leaves of a case's Dispatch that the stand-in reads
+ * (dispatch-fixture.json): the id the run's Dispatch gives the document of each step of the
+ * world's design gate, by step. */
+const CaseDispatchFixture = z.looseObject({ gate: z.record(z.string(), z.string()).optional() });
+
+/** The gate's document ids of `--case-dispatch`. */
+function gateIdsOf(file: string): Record<string, string> {
+  try {
+    return CaseDispatchFixture.parse(JSON.parse(readFileSync(file, "utf8"))).gate ?? {};
+  } catch (error) {
+    refuse(`--case-dispatch ${file}: ${error}`);
+  }
+}
 
 function refuse(message: string): never {
   console.error(message);
@@ -1538,6 +2002,7 @@ if (import.meta.main) {
     answers?: string;
     caseAnswers?: string;
     ghCalls?: string;
+    caseDispatch?: string;
     issues?: string;
     label?: string;
     dispatchUrl?: string;
@@ -1570,6 +2035,9 @@ if (import.meta.main) {
       case "--gh-calls":
         values.ghCalls = take(option);
         break;
+      case "--case-dispatch":
+        values.caseDispatch = take(option);
+        break;
       case "--issues":
         values.issues = take(option);
         break;
@@ -1588,12 +2056,11 @@ if (import.meta.main) {
   if (phaseArg !== undefined && !LEGION_PHASES.some((phase) => phase === phaseArg)) {
     refuse(`${phaseArg} is not a phase of the daemon's (${LEGION_PHASES.join(", ")})`);
   }
-  if (
-    values.world !== undefined &&
-    (values.issues !== undefined || values.label !== undefined || values.dispatchUrl !== undefined)
-  ) {
-    refuse(`--issues, --label and --dispatch are a scored run's, and --world a case's; ${USAGE}`);
+  if (values.world !== undefined && (values.issues !== undefined || values.label !== undefined)) {
+    refuse(`--issues and --label are a scored run's, and --world a case's; ${USAGE}`);
   }
+  if (values.world === undefined && values.caseDispatch !== undefined)
+    refuse(`--case-dispatch is a case's, beside --world; ${USAGE}`);
   const bootToken = (await Bun.file(bootTokenFile).text()).trim();
   if (bootToken.length === 0) refuse(`boot token file ${bootTokenFile} is empty`);
   const world =
@@ -1619,6 +2086,10 @@ if (import.meta.main) {
       `--issues ${values.issues} gives the claim's issue ${issue} the tree ${claimInWorld.tree} and the phase ${claimInWorld.phase}, and the command line gives it the tree ${tree} and the phase ${phase}`
     );
   }
+  const dispatch =
+    values.dispatchUrl === undefined
+      ? undefined
+      : dispatchOf(values.dispatchUrl, values.dispatchTokenFile ?? "");
   let standin: Standin;
   try {
     standin = startDaemonStandin({
@@ -1641,17 +2112,9 @@ if (import.meta.main) {
       ],
       ghCalls: values.ghCalls,
       contract: values.label === undefined ? undefined : String(labelContract(values.label)),
-      scored:
-        world === undefined
-          ? {
-              issues,
-              label: values.label,
-              dispatch:
-                values.dispatchUrl === undefined
-                  ? undefined
-                  : dispatchOf(values.dispatchUrl, values.dispatchTokenFile ?? ""),
-            }
-          : undefined,
+      gateIds: values.caseDispatch === undefined ? undefined : gateIdsOf(values.caseDispatch),
+      caseDispatch: world === undefined ? undefined : dispatch,
+      scored: world === undefined ? { issues, label: values.label, dispatch } : undefined,
     });
   } catch (error) {
     refuse(error instanceof Error ? error.message : String(error));

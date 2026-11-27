@@ -7,7 +7,8 @@ A child's architect runs no gate.
 
 1. Name the check run of the job that runs the proof, never a roll-up.
    On cybermonklabs/legion, never name `ci-ok`: it passes when the jobs it did not select were skipped (`.github/scripts/ci-ok.sh`).
-2. A held-back job needs its label on the pull request while a check names it (on cybermonklabs/legion, `full-ci`, or the job's `lane:` label that `.github/workflows/ci.yaml` names beside it); without it the check reads `absent` or `skipped`.
+2. Name a held-back job only when a test that job alone runs is the proof: the merge queue runs it anyway.
+   While a check names it, its own `lane:<output>` label (never `full-ci`; `.github/workflows/ci.yaml` names each beside its job) reruns it on every push; without the label the check reads `absent` or `skipped`.
 3. Write in `negative_control` the case inside that job that fails when the property breaks.
    A step with `continue-on-error` keeps its job green.
 

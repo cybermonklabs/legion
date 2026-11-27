@@ -24,8 +24,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -95,17 +97,23 @@ type teardownEffectsRun struct {
 	proxy                                                           *teardownEffectsProxy
 	model                                                           *teardownEffectsModel
 	key, branch, repo, base, workspace, remote, remoteName, session string
-	role                                                            claim.Role
-	token                                                           claim.Token
-	git                                                             fixturegit.Runner
-	commits                                                         map[string]string
-	handoffs                                                        map[string]teardownEffectsHandoff
-	documents                                                       map[string]string // name to replay artifact id
-	comments                                                        map[string]string // recorded comment id to replay comment id
-	worldReviews                                                    map[int]int       // pull request number to the number of reviews the case's world gives it
-	engine                                                          *workflow.Engine  // judges a review as the daemon's workflow does (phaseAfter)
-	before                                                          phase.Phase
-	fail                                                            func(error)
+	// claimIssue and tree are the role's claim, on claimIssue in tree (teardownEffectsClaimOf).
+	claimIssue, tree string
+	role             claim.Role
+	token            claim.Token
+	git              fixturegit.Runner
+	commits          map[string]string
+	handoffs         map[string]teardownEffectsHandoff
+	// gateIDs is the id the replay's Dispatch gives each gate step's document, by step, and
+	// artifacts the id the replay's Dispatch gives each document a case's records or a run name by
+	// an id of their own (the world's gate artifactId, lane R's scratch id), by that id.
+	gateIDs, artifacts map[string]string
+	documents          map[string]string // name to replay artifact id
+	comments           map[string]string // recorded comment id to replay comment id
+	worldReviews       map[int]int       // pull request number to the number of reviews the case's world gives it
+	engine             *workflow.Engine  // judges a review as the daemon's workflow does (phaseAfter)
+	before             phase.Phase
+	fail               func(error)
 }
 
 func TestTeardownEffectsLive(t *testing.T) {
@@ -133,14 +141,29 @@ func TestTeardownEffectsLive(t *testing.T) {
 }
 
 // start boots the whole daemon on the case's starting state: world's Git, its pull requests and its
-// Dispatch records. A replay (plan, from runDir) seeds Dispatch from the run's own record of that
-// state and builds its Git with lane R's builder; harness, given, ends the run on a setup failure.
+// Dispatch records, and each typed part of it (teardown_effects_world_test.go). A replay (plan, from
+// runDir) seeds Dispatch from the run's own record of that state and builds its Git with lane R's
+// builder; harness, given, ends the run on a setup failure. A typed part the replay has no seeding
+// for, or holds a fact it cannot seed (teardownEffectsSeedFaults: the refusals lane R's daemon
+// stand-in makes of the same facts among them), is that setup failure, naming the part, before
+// anything is booted.
 func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, role, task string, plan *teardownEffectsPlan, runDir string, harness func(error)) *teardownEffectsRun {
 	t.Helper()
 	if world.Daemon == nil {
 		t.Fatal("world has no daemon record")
 	}
+	failed := harness
+	if failed == nil {
+		failed = func(err error) { t.Helper(); t.Fatal(err) }
+	}
+	if len(world.unserved) > 0 {
+		failed(fmt.Errorf("the case's world states %s, which lane D seeds nothing of, so the replay cannot start from it", strings.Join(world.unserved, ", ")))
+	}
+	if faults := teardownEffectsSeedFaults(world); len(faults) > 0 {
+		failed(fmt.Errorf("the replay cannot seed the case's world: %s", strings.Join(faults, "; ")))
+	}
 	key := world.Dispatch.Issue.Key
+	claimIssue, claimTree, _ := teardownEffectsClaimOf(world)
 	project, _, ok := strings.Cut(key, "-")
 	if !ok {
 		t.Fatalf("invalid fixture issue %q", key)
@@ -179,13 +202,26 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 		projectConfig.ProductionCheck = roleOfClaim
 	}
 	cfg.Projects = map[string]config.Project{project: projectConfig}
+	// The deployment the world's admission and gate stand under: its cap, and the steps its design
+	// gate holds, in the order the daemon gates them.
+	if admission := world.Daemon.Admission; admission != nil {
+		cfg.AdmissionCap = admission.Cap
+	}
+	if rows := world.Daemon.Gate; len(rows) > 0 {
+		cfg.Gates.Design = []record.DesignStep{}
+		for _, step := range teardownEffectsGateSteps {
+			if slices.ContainsFunc(rows, func(row teardownEffectsGateRow) bool { return row.Step == string(step) }) {
+				cfg.Gates.Design = append(cfg.Gates.Design, step)
+			}
+		}
+	}
 	projectToken, err := claim.ProjectToken(project)
 	if err != nil {
 		t.Fatal(err)
 	}
 	token := claim.ControllerToken(projectToken)
 	if roleOfClaim != claim.RoleController {
-		if token, err = claim.NewToken(projectToken, key, roleOfClaim); err != nil {
+		if token, err = claim.NewToken(projectToken, claimIssue, roleOfClaim); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -196,11 +232,9 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 	t.Cleanup(st.Close)
 	proof := liveProof{t: t, cfg: cfg, st: st, records: record.NewStore(), project: projectToken}
 	r := &teardownEffectsRun{liveAgentProof: liveAgentProof{liveProof: proof, legion: h.legion}, harness: h, dispatch: dispatch, key: key, branch: "legion/" + key, role: roleOfClaim, token: token,
-		clock: &teardownEffectsClock{now: world.Clock}, git: fixturegit.Isolated(t, h.home), commits: map[string]string{}, handoffs: map[string]teardownEffectsHandoff{}, repo: liveRepo, base: "main", remoteName: "origin", fail: harness}
+		clock: &teardownEffectsClock{now: world.Clock}, git: fixturegit.Isolated(t, h.home), commits: map[string]string{}, handoffs: map[string]teardownEffectsHandoff{}, repo: liveRepo, base: "main", remoteName: "origin", fail: failed,
+		claimIssue: claimIssue, tree: claimTree, gateIDs: map[string]string{}, artifacts: map[string]string{}}
 	r.documents, r.comments, r.worldReviews = map[string]string{}, map[string]string{}, map[int]int{}
-	if harness == nil {
-		r.fail = func(err error) { t.Helper(); t.Fatal(err) }
-	}
 	if world.Git != nil && world.Git.Remote.Name != "" {
 		r.remoteName = world.Git.Remote.Name
 	}
@@ -223,6 +257,15 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 	r.setupGit(world, runDir)
 	r.github = &teardownEffectsGitHub{t: t, repo: r.repo, base: r.base, pulls: map[int]teardownEffectsPull{}}
 	if world.GitHub != nil {
+		r.github.settings = world.GitHub.Settings
+		if rules := world.GitHub.BranchRules; rules != nil {
+			r.github.rules = map[string][]json.RawMessage{}
+			for _, branch := range *rules {
+				r.github.rules[branch.Branch] = branch.Rules
+			}
+		}
+	}
+	if world.GitHub != nil {
 		for _, pull := range world.GitHub.PullRequests {
 			pull.Head.SHA, pull.MergeCommit = r.sha(pull.Head.SHA), r.sha(pull.MergeCommit)
 			for i := range pull.Reviews {
@@ -234,10 +277,18 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 	}
 	githubURL := githubtest.Server(t, githubtest.Spec{Handle: r.github.serve})
 	r.setupIssue(world)
+	// A record whose writer is the role's own session (daemon.claim.session) is written as the
+	// replay's own session, once the pane has registered one, after the others.
+	var ownSeed []teardownEffectsChange
+	var ownHandoffs []int
 	if plan != nil {
 		// The seeded records go in before the issue takes its status: Dispatch refuses a handoff on a
 		// closed issue (ISSUE_CLOSED).
 		for _, c := range plan.Seed {
+			if c.event.Actor.Kind == "session" && teardownEffectsOwnWrite(world, c.event.Actor.ID) {
+				ownSeed = append(ownSeed, c)
+				continue
+			}
 			if err := r.applyDispatch(*c.event, "", &plan.Readback); err != nil {
 				r.fail(fmt.Errorf("seed %s (%s) of the case's starting state: %w", c.Source, c.What, err))
 			}
@@ -246,24 +297,39 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 		for _, doc := range world.Dispatch.Documents {
 			r.document(doc.Name, teardownEffectsBarePointers(key, doc.Name, doc.Body))
 		}
-		for _, handoff := range world.Dispatch.Handoffs {
+		for i, handoff := range world.Dispatch.Handoffs {
+			if teardownEffectsOwnWrite(world, handoff.Author) {
+				ownHandoffs = append(ownHandoffs, i)
+				continue
+			}
 			r.handoff(handoff.Phase, handoff.Author, r.mapBody(handoff.Body))
 		}
 	}
+	// The case's issue carries the labels its world states, else Legion's, as lane R's seed leaves
+	// it; the parent carries Legion's label too, as the root handed over that seed records it as,
+	// unless the world states it among its other issues, whose labels it then carries.
+	labels := []string{"legion"}
+	if stated := world.Dispatch.Issue.Labels; stated != nil {
+		labels = *stated
+	}
 	if world.Dispatch.Issue.Parent == "" {
-		r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+r.key, map[string]any{"status": world.Dispatch.Issue.Status, "labels": []string{"legion"}}, http.StatusOK, nil)
+		r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+r.key, map[string]any{"status": world.Dispatch.Issue.Status, "labels": labels}, http.StatusOK, nil)
 	} else {
 		// As lane R's seed sets a child's status (seed.ts seedCaseDispatch): each ancestor not in
 		// work moves to in_progress with it, as Dispatch keeps a parent in line with its children.
 		if world.Dispatch.Issue.Status != "triage" {
 			r.dispatch.user(http.MethodPost, "/api/v1/issues/"+r.key+"/status-change", map[string]any{"status": world.Dispatch.Issue.Status, "include_parent": true}, http.StatusOK, nil)
 		}
-		// The parent carries Legion's label too, as the root handed over that seed records it as.
-		for _, labelled := range []string{world.Dispatch.Issue.Parent, r.key} {
-			r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+labelled, map[string]any{"labels": []string{"legion"}}, http.StatusOK, nil)
+		if !slices.ContainsFunc(world.Dispatch.Issues, func(other teardownEffectsDispatchIssue) bool { return other.Key == world.Dispatch.Issue.Parent }) {
+			r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+world.Dispatch.Issue.Parent, map[string]any{"labels": []string{"legion"}}, http.StatusOK, nil)
 		}
+		r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+r.key, map[string]any{"labels": labels}, http.StatusOK, nil)
 	}
+	r.seedDispatchParts(world)
 	r.seed(world, task)
+	if plan != nil {
+		r.mapRunArtifacts(runDir)
+	}
 	o := r.rt.daemonOverrides(r.rt)
 	tokens := &workflowTokenRecorder{}
 	o.clock, o.githubAPI, o.workflowTokens = r.clock, githubURL, tokens
@@ -285,32 +351,205 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 		t.Fatal("the pane did not register a session")
 	}
 	t.Cleanup(r.model.finish)
-	// A child stands in its parent's tree, as it does in Dispatch, and that tree runs.
-	if parent := world.Dispatch.Issue.Parent; parent != "" {
+	_, _, own := teardownEffectsClaimOf(world)
+	for _, c := range ownSeed {
+		if err := r.applyDispatch(*c.event, own, &plan.Readback); err != nil {
+			r.fail(fmt.Errorf("seed %s (%s) of the case's starting state as the replay's own session: %w", c.Source, c.What, err))
+		}
+	}
+	for _, i := range ownHandoffs {
+		handoff := world.Dispatch.Handoffs[i]
+		r.handoff(handoff.Phase, r.session, r.mapBody(handoff.Body))
+	}
+	// A child stands in the tree the world records it in: daemon.issue's, else its Dispatch
+	// parent's, which runs.
+	if stated := world.Daemon.Issue; stated != nil {
+		if s := r.state(); s.Tree != stated.Tree {
+			r.fail(fmt.Errorf("the replay holds %s in tree %q, and the case's world records it in %s (daemon.issue)", key, s.Tree, stated.Tree))
+		}
+	} else if parent := world.Dispatch.Issue.Parent; parent != "" {
 		if s := r.state(); s.Tree != parent || s.Parent != parent || !s.TreeRuns {
 			r.fail(fmt.Errorf("the replay holds %s in tree %q (running: %t) under the Dispatch parent %q, and the case's world names the parent %s", key, s.Tree, s.TreeRuns, s.Parent, parent))
 		}
 	}
+	r.readBackDaemon(world)
 	return r
 }
 
 // setupIssue files the case's issue in the scratch Dispatch under its own key and, where the world
 // names one, under its parent, as lane R's seed files them (seed.ts seedCaseDispatch): the parent
 // first, titled as lane R titles it, then the issue naming it as its parent, so a child is no root
-// here either. A parent in another project, or one that follows its child, is not set up.
+// here either. Each other issue of the world (world.dispatch.issues) is filed in its place among
+// them, in key order, with its title (the world's, else lane R's: `Parent of <child>` for the case's
+// parent, else the key), its labels and its parent. A parent in another project, or one that
+// follows its child, is not set up, and neither is another issue in another project.
 func (r *teardownEffectsRun) setupIssue(world teardownEffectsWorld) {
 	project := r.cfg.Project
 	r.dispatch.user(http.MethodPost, "/api/v1/projects", map[string]string{"key": project, "name": "Teardown effects"}, 201, nil)
 	r.dispatch.user(http.MethodPut, "/api/v1/projects/"+project+"/default-repository", map[string]string{"repo": r.repo}, 200, nil)
-	fields := map[string]any{"title": world.Dispatch.Issue.Title, "spec": world.Dispatch.Issue.Spec}
-	if parent := world.Dispatch.Issue.Parent; parent != "" {
+	parent := world.Dispatch.Issue.Parent
+	fields := map[string]map[string]any{r.key: {"title": world.Dispatch.Issue.Title, "spec": world.Dispatch.Issue.Spec}}
+	if stated := world.Dispatch.Issue.Labels; stated != nil {
+		fields[r.key]["labels"] = *stated
+	}
+	if parent != "" {
 		if !strings.HasPrefix(parent, project+"-") || r.issueNumber(parent) >= r.issueNumber(r.key) {
 			r.fail(fmt.Errorf("the case's issue %s has the parent %s, which is in another project or follows it, and which the replay does not set up", r.key, parent))
 		}
-		r.fileIssue(parent, map[string]any{"title": "Parent of " + r.key})
-		fields["parent"] = parent
+		fields[parent] = map[string]any{"title": "Parent of " + r.key}
+		fields[r.key]["parent"] = parent
 	}
-	r.fileIssue(r.key, fields)
+	for i, other := range world.Dispatch.Issues {
+		if !strings.HasPrefix(other.Key, project+"-") {
+			r.fail(fmt.Errorf("world.dispatch.issues[%d] %s is in another project than %s, which the replay does not set up", i, other.Key, project))
+		}
+		title := other.Title
+		if title == "" {
+			title = other.Key
+			if other.Key == parent {
+				title = "Parent of " + r.key
+			}
+		}
+		filed := map[string]any{"title": title, "labels": other.Labels}
+		if other.Parent != nil {
+			if !strings.HasPrefix(*other.Parent, project+"-") || r.issueNumber(*other.Parent) >= r.issueNumber(other.Key) {
+				r.fail(fmt.Errorf("world.dispatch.issues[%d].parent %s is in another project or follows %s, which the replay does not set up", i, *other.Parent, other.Key))
+			}
+			filed["parent"] = *other.Parent
+		}
+		fields[other.Key] = filed
+	}
+	keys := slices.Collect(maps.Keys(fields))
+	slices.SortFunc(keys, func(a, b string) int { return r.issueNumber(a) - r.issueNumber(b) })
+	for _, key := range keys {
+		r.fileIssue(key, fields[key])
+	}
+}
+
+// teardownEffectsSeededRun names the fields of a step record a world's step run does not name,
+// each one fixed value for every run lane D writes, as lane R's seed writes them (seed.ts
+// SEEDED_RUN): the agent and the model, and no type of work. Dispatch gives each run its attempt.
+var teardownEffectsSeededRun = struct{ Agent, Model string }{Agent: "rig-seed", Model: "rig-seed"}
+
+// seedDispatchParts writes the world's Dispatch parts beside the case's issue, as lane R's seed
+// writes them (seed.ts seedCaseDispatch), after the case's status, so each takes the world's own:
+// each other issue's status, `blocked_by` links and claim (its session's), the board's order (rank
+// 1 before every other issue of the project, each next rank right after the one before), and each
+// step run as the project's daemon writes it (`PUT /api/v1/issues/{key}/steps/{id}` and the
+// retro's rating, as the session `legion-daemon:<PROJECT>`). Then it reads each back through
+// Dispatch's own reads (teardownEffectsDispatchFaults), a fact Dispatch does not answer as the
+// world states it failing the setup by its part.
+func (r *teardownEffectsRun) seedDispatchParts(world teardownEffectsWorld) {
+	others := world.Dispatch.Issues
+	for _, other := range others {
+		path := "/api/v1/issues/" + other.Key
+		if other.Status != "triage" {
+			r.dispatch.user(http.MethodPost, path+"/status-change", map[string]any{"status": other.Status}, http.StatusOK, nil)
+		}
+		if len(other.BlockedBy) > 0 {
+			r.dispatch.user(http.MethodPatch, path, map[string]any{"blocked_by": other.BlockedBy}, http.StatusOK, nil)
+		}
+		if other.ClaimedBy != nil {
+			r.agentSend(http.MethodPost, path+"/claim", map[string]any{"actor": map[string]string{"kind": "session", "id": *other.ClaimedBy}})
+		}
+	}
+	ranked := slices.DeleteFunc(slices.Clone(others), func(other teardownEffectsDispatchIssue) bool { return other.Rank == nil })
+	slices.SortFunc(ranked, func(a, b teardownEffectsDispatchIssue) int { return *a.Rank - *b.Rank })
+	for i, other := range ranked {
+		rank := map[string]string{}
+		if i > 0 {
+			rank["after"] = ranked[i-1].Key
+		} else {
+			ranks := r.projectRanks()
+			head := ""
+			for key, at := range ranks {
+				if key != other.Key && (head == "" || at < ranks[head]) {
+					head = key
+				}
+			}
+			if head == "" {
+				continue
+			}
+			rank["before"] = head
+		}
+		r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+other.Key, map[string]any{"rank": rank}, http.StatusOK, nil)
+	}
+	generation := uint64(1)
+	if world.Daemon != nil && world.Daemon.Issue != nil {
+		generation = world.Daemon.Issue.Generation
+	}
+	for _, run := range world.Dispatch.Steps {
+		path := "/api/v1/issues/" + r.key + "/steps/" + uuid.NewString()
+		write := map[string]any{"actor": map[string]string{"kind": "session", "id": "legion-daemon:" + r.cfg.Project}, "task": run.Task, "step": run.Step, "kind": run.Kind, "role": *run.Role,
+			"agent": teardownEffectsSeededRun.Agent, "model": teardownEffectsSeededRun.Model, "generation": generation, "started_at": run.StartedAt}
+		if run.EndedAt != nil {
+			write["ended_at"], write["result"] = *run.EndedAt, *run.Result
+		}
+		r.agentSend(http.MethodPut, path, write)
+		if run.PlanRating != nil {
+			rating := maps.Clone(write)
+			rating["rating"], rating["rating_reason"] = *run.PlanRating, ""
+			if run.PlanReason != nil {
+				rating["rating_reason"] = *run.PlanReason
+			}
+			r.agentSend(http.MethodPut, path+"/rating", rating)
+		}
+	}
+	issues := map[string]teardownEffectsIssueRead{}
+	read := func(key string) {
+		var answer teardownEffectsIssueRead
+		r.dispatch.agentGet("/api/v1/issues/"+key, &answer)
+		issues[key] = answer
+	}
+	read(r.key)
+	for _, other := range others {
+		read(other.Key)
+	}
+	var runs []teardownEffectsStepRead
+	if world.Dispatch.Steps != nil {
+		var listed struct {
+			Tasks []struct{ Steps []teardownEffectsStepRead }
+		}
+		r.dispatch.agentGet("/api/v1/issues/"+r.key+"/steps", &listed)
+		for _, task := range listed.Tasks {
+			runs = append(runs, task.Steps...)
+		}
+	}
+	if faults := teardownEffectsDispatchFaults(world, issues, r.projectRanks(), runs); len(faults) > 0 {
+		r.fail(fmt.Errorf("the replay's Dispatch does not hold the case's world: %s", strings.Join(faults, "; ")))
+	}
+}
+
+// projectRanks is the rank of every issue of the run's project, as Dispatch's listing answers it.
+func (r *teardownEffectsRun) projectRanks() map[string]string {
+	var listed []struct{ Key, Rank string }
+	r.dispatch.agentGet("/api/v1/issues?project="+r.cfg.Project, &listed)
+	ranks := make(map[string]string, len(listed))
+	for _, issue := range listed {
+		ranks[issue.Key] = issue.Rank
+	}
+	return ranks
+}
+
+// agentSend sends body to path with the agent's bearer token and requires Dispatch to take it, the
+// harness's failure (r.fail) naming Dispatch's answer otherwise.
+func (r *teardownEffectsRun) agentSend(method, path string, body any) []byte {
+	r.t.Helper()
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	request, err := http.NewRequest(method, r.dispatch.base+path, bytes.NewReader(encoded))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+r.dispatch.token)
+	status, answer := r.dispatch.do(request)
+	if status < 200 || status > 299 {
+		r.fail(fmt.Errorf("Dispatch %s %s = %d %s", method, path, status, answer))
+	}
+	return answer
 }
 
 // issueNumber is the number of key, an issue of the run's project.
@@ -347,22 +586,39 @@ func (r *teardownEffectsRun) fileIssue(key string, fields map[string]any) {
 // seed records the case's daemon state. A child (the world names its parent) stands in its parent's
 // tree, as lane R's daemon stand-in holds it (`--tree`, the parent): its record, its claim and its
 // production check name that tree, it was not handed over itself, and the tree's lifecycle stands
-// open under the workflow. The world holds nothing of the parent's own daemon state, so the parent
-// is recorded with the least that makes its tree run, without which admission takes the child's
-// tree for one that finished and releases its slot (admit's releaseSlots): a root handed over,
-// in Dispatch's status, at admitted, with no slot, no claim and no phases row, so no worker of it is
-// owed a start (admit's owedOf) and it lingers nowhere. A controller case's issue that is a child
-// is not seeded: the daemon knows that issue and has not admitted it, and under a running tree a
-// child the daemon has not admitted would be admitted into it.
+// open under the workflow. Where the world holds nothing of the parent's own daemon state, the
+// parent is recorded with the least that makes its tree run, without which admission takes the
+// child's tree for one that finished and releases its slot (admit's releaseSlots): a root handed
+// over, in Dispatch's status, at admitted, with no slot, no claim and no phases row, so no worker of
+// it is owed a start (admit's owedOf) and it lingers nowhere. A controller case's issue that is a
+// child is not seeded: the daemon knows that issue and has not admitted it, and under a running
+// tree a child the daemon has not admitted would be admitted into it.
+//
+// The typed daemon parts go in as the daemon's store holds them: the role's claim on claim.issue
+// in claim.tree, admitted, at the generation of its issue's record; the case's record as
+// daemon.issue states it; each of daemon.records, the parent's among them where the world records
+// it, a root that stands in a phase of its own tree with that tree's lifecycle open; each architect
+// claim, the case's and the records', in its state, but the role's own, which is the replay's claim;
+// the role's phases row on daemon.entry's entry, with whether a move back raised it and the owed
+// task as the entry's own task, and the claim's task at the turn's entry (delivery.Entry), so the
+// daemon itself queues the owed task as the claim's next delivery (workflow's SendOwedEntry); an
+// admission slot for each issue daemon.admission names active, its waiting line and blocked issues
+// being what the daemon makes of those records and Dispatch's links; and each gate row of
+// daemon.gate on the claim's tree root, naming the document the replay's Dispatch gives that file
+// name (gateDocuments). readBackDaemon then holds the booted daemon's own reads to them.
 func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 	t := r.t
 	t.Helper()
+	parts := world.Daemon.teardownEffectsDaemonParts
 	if task == "" {
 		task = "Continue " + world.Dispatch.Issue.Title + ". Issue: " + r.key + ". Phase: " + string(world.Daemon.Phase) + "."
 	}
 	listed := r.dispatch.issue(r.key)
 	now := r.clock.Now()
 	delivery := supervise.Delivery{ID: "teardown-" + randomSuffix(t), Task: teardownEffectsTaskMarker + "\n" + task, Generation: 1, Phase: world.Daemon.Phase, QueuedAt: now}
+	if parts.Entry != nil {
+		delivery.Entry = parts.Entry.Turn
+	}
 	// The controller's claim holds no issue, no step and no tree: its case's issue is one the
 	// daemon knows and has not admitted, and its wake is a delivery to the controller's claim,
 	// which the daemon's keeper launches at boot and hands its start message after this one.
@@ -371,34 +627,71 @@ func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 		delivery.Phase = ""
 	}
 	tree, parent := r.key, world.Dispatch.Issue.Parent
+	var issueParent *string
 	if parent != "" {
 		if controller {
 			r.fail(fmt.Errorf("the controller case's issue %s is a child of %s, which the replay does not seed", r.key, parent))
 		}
-		tree = parent
+		tree, issueParent = parent, &parent
 	}
-	var root struct {
-		Title, Rank, Status string
-		LastSeq             int64 `json:"last_seq"`
+	generation := uint64(1)
+	var linger *time.Time
+	if stated := parts.Issue; stated != nil {
+		tree, issueParent, generation, linger = stated.Tree, stated.Parent, stated.Generation, stated.LingerUntil
 	}
-	if parent != "" {
-		r.dispatch.agentGet("/api/v1/issues/"+parent, &root)
+	stated := map[string]teardownEffectsDaemonRecord{}
+	for _, each := range parts.Records {
+		stated[each.Key] = each
 	}
+	_, parentRecorded := stated[parent]
+	// The trees whose lifecycle stands open under the workflow: the claim's, the case's where the
+	// world states no record of it, and each whose root stands in a phase of its own.
+	trees := map[string]bool{r.tree: true}
+	if parts.Issue == nil {
+		trees[tree] = true
+	}
+	runs := func(p phase.Phase) bool { return p != phase.Admitted && p != phase.Done }
+	if tree == r.key && runs(world.Daemon.Phase) {
+		trees[tree] = true
+	}
+	for _, each := range parts.Records {
+		if each.Key == each.Tree && runs(each.Phase) {
+			trees[each.Key] = true
+		}
+	}
+	r.gateDocuments(world)
 	ctx := t.Context()
 	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		if parent != "" {
+		if parent != "" && !parentRecorded {
+			root := r.dispatch.issue(parent)
+			var status struct{ Status string }
+			r.dispatch.agentGet("/api/v1/issues/"+parent, &status)
 			if err := r.records.PutIssue(ctx, tx, record.Issue{Key: parent, Title: root.Title, Project: r.cfg.Project, Tree: parent, Repo: r.repo, GitHubRepo: r.repo, DefaultBranch: r.base, Phase: phase.Admitted,
-				Generation: 1, Status: root.Status, DispatchStatus: root.Status, Rank: root.Rank, LastDispatchSeq: root.LastSeq, HandedOver: true}); err != nil {
+				Generation: 1, Status: status.Status, DispatchStatus: status.Status, Rank: root.Rank, LastDispatchSeq: root.LastSeq, HandedOver: true}); err != nil {
 				return err
 			}
 		}
-		issue := record.Issue{Key: r.key, Title: listed.Title, Project: r.cfg.Project, Tree: tree, Repo: r.repo, GitHubRepo: r.repo, DefaultBranch: r.base, Phase: world.Daemon.Phase, Generation: 1,
-			Status: world.Dispatch.Issue.Status, DispatchStatus: world.Dispatch.Issue.Status, Rank: listed.Rank, LastDispatchSeq: listed.LastSeq, HandedOver: parent == ""}
-		if parent != "" {
-			issue.Parent = &parent
+		for _, each := range parts.Records {
+			held, dispatchStatus := r.dispatchIssue(each.Key)
+			if dispatchStatus == "" {
+				dispatchStatus = each.Status
+			}
+			title := held.Title
+			if title == "" {
+				title = each.Key
+			}
+			if err := r.records.PutIssue(ctx, tx, record.Issue{Key: each.Key, Title: title, Project: r.cfg.Project, Tree: each.Tree, Parent: each.Parent, Repo: r.repo, GitHubRepo: r.repo, DefaultBranch: r.base, Phase: each.Phase,
+				Generation: each.Generation, Status: each.Status, DispatchStatus: dispatchStatus, Rank: held.Rank, LastDispatchSeq: held.LastSeq, HandedOver: each.Key == each.Tree}); err != nil {
+				return err
+			}
 		}
-		// A tree lingers after its root closes: the linger is the root's, never a child's.
-		if issue.Phase == phase.Done && parent == "" {
+		issue := record.Issue{Key: r.key, Title: listed.Title, Project: r.cfg.Project, Tree: tree, Parent: issueParent, Repo: r.repo, GitHubRepo: r.repo, DefaultBranch: r.base, Phase: world.Daemon.Phase, Generation: generation,
+			Status: world.Dispatch.Issue.Status, DispatchStatus: world.Dispatch.Issue.Status, Rank: listed.Rank, LastDispatchSeq: listed.LastSeq, HandedOver: tree == r.key}
+		// A tree lingers after its root closes: the linger is the root's, never a child's. The
+		// world's record of the issue, where it states one, says whether it lingers.
+		if parts.Issue != nil {
+			issue.LingerUntil = linger
+		} else if issue.Phase == phase.Done && parent == "" {
 			linger := now.Add(48 * time.Hour)
 			if wall := time.Now().Add(time.Hour); linger.Before(wall) {
 				linger = wall
@@ -408,15 +701,26 @@ func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 		if err := r.records.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
-		if step := world.Daemon.Step; step != nil && !controller {
-			if err := r.records.PutPhase(ctx, tx, record.PhaseRow{Issue: r.key, Role: r.role, Claim: r.token, StepPlace: step.Place, StepTask: step.Name}); err != nil {
+		if step, entry := world.Daemon.Step, parts.Entry; (step != nil || entry != nil) && !controller {
+			row := record.PhaseRow{Issue: r.key, Role: r.role, Claim: r.token}
+			if step != nil {
+				row.StepPlace, row.StepTask = step.Place, step.Name
+			}
+			if entry != nil {
+				row.Entry, row.EntryMovedBack = entry.Phase, entry.MovedBack
+				if entry.OwedTask != nil {
+					row.EntryTask = *entry.OwedTask
+				}
+				row.Given = record.GivenTask{Task: delivery.Task, Entry: entry.Turn, Generation: generation}
+			}
+			if err := r.records.PutPhase(ctx, tx, row); err != nil {
 				return err
 			}
 		}
 		number := 0
 		if pull, ok := r.github.forBranch(r.branch); ok {
 			number = pull.Number
-			if err := r.records.PutPullRequest(ctx, tx, record.PullRequest{Issue: r.key, Repo: r.repo, Number: number, Branch: r.branch, Base: pull.Base, HeadSHA: pull.Head.SHA, State: record.PullRequestState(pull.State), MergeSHA: pull.MergeCommit, Failing: []string{}, Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateClean}); err != nil {
+			if err := r.records.PutPullRequest(ctx, tx, record.PullRequest{Issue: r.key, Repo: r.repo, Number: number, Branch: r.branch, Base: pull.Base, HeadSHA: pull.Head.SHA, State: record.PullRequestState(pull.State), MergeSHA: pull.MergeCommit, Failing: []string{}, Mergeability: record.MergeabilityMergeable, MergeState: teardownEffectsMergeState(pull)}); err != nil {
 				return err
 			}
 		}
@@ -431,6 +735,14 @@ func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 				return err
 			}
 		}
+		for _, row := range parts.Gate {
+			if err := r.records.PutGate(ctx, tx, record.DesignGate{Issue: r.tree, Step: record.DesignStep(row.Step), ArtifactID: r.gateIDs[row.Step], LatestVersion: row.Current, ApprovedVersion: row.Approved, EverOpened: row.Approved != nil}); err != nil {
+				return err
+			}
+		}
+		if admission := parts.Admission; admission != nil {
+			return r.admit(ctx, tx, admission.Active...)
+		}
 		if issue.Phase != phase.Done && !controller {
 			return r.admit(ctx, tx, r.key)
 		}
@@ -438,9 +750,17 @@ func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 	}); err != nil {
 		t.Fatalf("seed daemon state: %v", err)
 	}
-	c := supervise.Claim{Token: r.token, Project: r.project, Tree: tree, Issue: r.key, Role: r.role, Generation: 1, State: supervise.StateLaunching, BootTokenHash: supervise.HashBootToken("seed-" + randomSuffix(t))}
+	// The claim serves the run of its issue's record (HANDOFF_STALE_GENERATION otherwise).
+	claimed := generation
+	if each, ok := stated[r.claimIssue]; ok {
+		claimed = each.Generation
+	} else if r.claimIssue != r.key {
+		claimed = 1
+	}
+	delivery.Generation = claimed
+	c := supervise.Claim{Token: r.token, Project: r.project, Tree: r.tree, Issue: r.claimIssue, Role: r.role, Generation: claimed, State: supervise.StateLaunching, BootTokenHash: supervise.HashBootToken("seed-" + randomSuffix(t))}
 	if delivery.CheckLook.Look == 0 {
-		c.ServingGeneration = 1
+		c.ServingGeneration = claimed
 	}
 	if controller {
 		c.Tree, c.Issue = "", ""
@@ -448,17 +768,159 @@ func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 			t.Fatal(err)
 		}
 	} else {
-		if _, err := r.st.OpenTreeLifecycle(ctx, r.project, tree, treelifecycle.AuthorityWorkflow); err != nil {
-			t.Fatal(err)
+		for open := range trees {
+			if _, err := r.st.OpenTreeLifecycle(ctx, r.project, open, treelifecycle.AuthorityWorkflow); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if _, err := r.st.AdmitClaim(ctx, c); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// Each architect claim the world states, in its state, but the role's own, which is the
+	// replay's claim, whose state its pane moves.
+	architect := func(key, inTree string, at uint64, held *teardownEffectsArchitect) {
+		if held == nil || r.role == claim.RoleArchitect && key == r.claimIssue {
+			return
+		}
+		token, err := claim.NewToken(r.project, key, claim.RoleArchitect)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.st.PutClaim(ctx, supervise.Claim{Token: token, Project: r.project, Tree: inTree, Issue: key, Role: claim.RoleArchitect, Generation: at, State: supervise.ClaimState(held.State),
+			BootTokenHash: supervise.HashBootToken("seed-" + randomSuffix(t))}); err != nil {
+			r.fail(fmt.Errorf("seed the architect claim of %s in state %s: %w", key, held.State, err))
+		}
+	}
+	architect(r.key, tree, generation, parts.Architect)
+	for _, each := range parts.Records {
+		architect(each.Key, each.Tree, each.Generation, each.Architect)
+	}
 	if err := r.st.PutDelivery(ctx, r.token, delivery); err != nil {
 		t.Fatal(err)
 	}
 	writePrompt(t, r.cfg, r.token)
+}
+
+// dispatchIssue is the replay's Dispatch's read of key, as the seed copies it into the daemon's
+// record, and its status; both empty where Dispatch holds no such issue.
+func (r *teardownEffectsRun) dispatchIssue(key string) (handoffDispatchIssue, string) {
+	request, err := http.NewRequest(http.MethodGet, r.dispatch.base+"/api/v1/issues/"+key, nil)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+r.dispatch.token)
+	status, answer := r.dispatch.do(request)
+	if status != http.StatusOK {
+		return handoffDispatchIssue{}, ""
+	}
+	var held handoffDispatchIssue
+	var state struct{ Status string }
+	if err := json.Unmarshal(answer, &held); err != nil {
+		r.t.Fatal(err)
+	}
+	if err := json.Unmarshal(answer, &state); err != nil {
+		r.t.Fatal(err)
+	}
+	return held, state.Status
+}
+
+// gateDocuments finds the document of each step of the world's design gate (daemon.gate) among the
+// documents the replay's Dispatch holds of the claim's tree root, by its file name, as lane R's
+// seed finds it (seed.ts seedCaseDispatch): its id goes in gateIDs, by step, and in artifacts under
+// the id the case names the document by. A document the root does not hold fails the setup, naming
+// the part.
+func (r *teardownEffectsRun) gateDocuments(world teardownEffectsWorld) {
+	rows := world.Daemon.Gate
+	if len(rows) == 0 {
+		return
+	}
+	request, err := http.NewRequest(http.MethodGet, r.dispatch.base+"/api/v1/issues/"+r.tree, nil)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+r.dispatch.token)
+	status, answer := r.dispatch.do(request)
+	var root teardownEffectsIssueRead
+	if status != http.StatusOK || json.Unmarshal(answer, &root) != nil {
+		r.fail(fmt.Errorf("world.daemon.gate: the replay's Dispatch holds no issue %s, the claim tree's root whose documents the gate names (%d %s)", r.tree, status, answer))
+		return
+	}
+	for i, row := range rows {
+		at := slices.IndexFunc(root.Artifacts, func(document struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}) bool {
+			return document.Name == row.Document
+		})
+		if at < 0 {
+			r.fail(fmt.Errorf("world.daemon.gate[%d].document %s: the replay's Dispatch holds no document of %s by that name", i, row.Document, r.tree))
+			return
+		}
+		r.gateIDs[row.Step] = root.Artifacts[at].ID
+		if row.ArtifactID != "" {
+			r.artifacts[row.ArtifactID] = root.Artifacts[at].ID
+		}
+	}
+}
+
+// mapRunArtifacts takes into artifacts the id lane R's scratch Dispatch gave each gate step's
+// document, which the run's calls name it by (seed.ts's dispatch-fixture.json `gate`): the replay's
+// call names the replay's own.
+func (r *teardownEffectsRun) mapRunArtifacts(runDir string) {
+	file := filepath.Join(runDir, "dispatch-fixture.json")
+	if _, err := os.Stat(file); err != nil {
+		return
+	}
+	var fixture struct{ Gate map[string]string }
+	teardownEffectsReadJSON(r.t, file, &fixture)
+	for step, id := range fixture.Gate {
+		if given := r.gateIDs[step]; given != "" {
+			r.artifacts[id] = given
+		}
+	}
+}
+
+// teardownEffectsMergeState is the merge state the daemon's record of pull holds at the seed: the
+// world's (mergeStateStatus, in the record's lower case) where it states one the record names, else
+// clean.
+func teardownEffectsMergeState(pull teardownEffectsPull) record.MergeState {
+	state := record.MergeState(strings.ToLower(pull.MergeStateStatus))
+	switch state {
+	case record.MergeStateClean, record.MergeStateUnstable, record.MergeStateBlocked, record.MergeStateDirty, record.MergeStateBehind, record.MergeStateDraft, record.MergeStateUnknown:
+		return state
+	}
+	return record.MergeStateClean
+}
+
+// readBackDaemon holds the booted daemon's own reads (`read_record` of each issue, `read_state`'s
+// admission) to the world's typed daemon parts (teardownEffectsDaemonFaults) for as long as the
+// daemon's boot and first admission passes take to settle, and fails the setup, naming each part
+// the daemon still answers otherwise, after thirty seconds.
+func (r *teardownEffectsRun) readBackDaemon(world teardownEffectsWorld) {
+	read := func(key string) *api.Issue {
+		status, body := r.d.request(http.MethodGet, "/legion/v1/issues/"+key+"/record", nil, false)
+		if status == http.StatusNotFound {
+			return nil
+		}
+		var issue api.Issue
+		if status != http.StatusOK || json.Unmarshal(body, &issue) != nil {
+			r.fail(fmt.Errorf("read_record of %s answered %d %s", key, status, body))
+		}
+		return &issue
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		faults := teardownEffectsDaemonFaults(world, r.role, read, r.d.state().Admission, r.gateIDs)
+		if len(faults) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			r.fail(fmt.Errorf("the real daemon does not answer the case's world: %s", strings.Join(faults, "; ")))
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 func (r *teardownEffectsRun) sha(id string) string {
@@ -845,9 +1307,16 @@ func (s *teardownEffectsModel) ServeHTTP(w http.ResponseWriter, req *http.Reques
 	}
 }
 
+// call makes one legion call through the real pane at the case time at, with args, the call's op and
+// its arguments. A document the call names by the case's id or lane R's (a register_gate's
+// artifactId) is named by the id the replay's Dispatch gave it (artifacts).
 func (r *teardownEffectsRun) call(seq int, at time.Time, args map[string]any) ([]teardownEffectsAnswer, []teardownEffectsHTTP, []teardownEffectsHandoff, toolResult) {
 	t := r.t
 	t.Helper()
+	if id, ok := args["artifactId"].(string); ok && r.artifacts[id] != "" {
+		args = maps.Clone(args)
+		args["artifactId"] = r.artifacts[id]
+	}
 	r.clock.advance(at)
 	from := r.proxy.mark()
 	// A pane that does not take or answer the call is the harness's fault: a replay writes its
@@ -1932,11 +2401,16 @@ func (r *teardownEffectsRun) state() teardownEffectsState {
 	return s
 }
 
+// teardownEffectsGitHub is the replay's GitHub as the daemon reads it: the pull requests, the
+// repository's settings (the world's, laid over the fixture's own members) and each branch's rules
+// (rules, nil where the world states none, which GitHub's 404 then answers).
 type teardownEffectsGitHub struct {
 	t          *testing.T
 	mu         sync.Mutex
 	repo, base string
 	pulls      map[int]teardownEffectsPull
+	settings   map[string]json.RawMessage
+	rules      map[string][]json.RawMessage
 }
 
 func (g *teardownEffectsGitHub) forBranch(branch string) (teardownEffectsPull, bool) {
@@ -1962,8 +2436,18 @@ func (g *teardownEffectsGitHub) serve(w http.ResponseWriter, req *http.Request) 
 		numbers, _ := liveBatchQuery(req)
 		nodes := map[int]map[string]any{}
 		for n, pull := range g.pulls {
-			node := liveBatchNode(n, pull.Head.SHA, pull.Head.Ref, pull.Base, true, "clean")
+			state := "clean"
+			if pull.MergeStateStatus != "" {
+				state = pull.MergeStateStatus
+			}
+			node := liveBatchNode(n, pull.Head.SHA, pull.Head.Ref, pull.Base, true, state)
 			node["state"] = strings.ToUpper(pull.State)
+			if pull.NodeID != "" {
+				node["id"] = pull.NodeID
+			}
+			if pull.AutoMergeRequest != nil {
+				node["autoMergeRequest"] = pull.AutoMergeRequest
+			}
 			if pull.State == "merged" {
 				node["mergedAt"] = "2026-01-01T00:00:00Z"
 				node["mergeCommit"] = map[string]string{"oid": pull.MergeCommit}
@@ -1976,7 +2460,19 @@ func (g *teardownEffectsGitHub) serve(w http.ResponseWriter, req *http.Request) 
 	if req.Method == http.MethodGet {
 		prefix := "/repos/" + g.repo
 		if req.URL.Path == prefix {
-			send(map[string]any{"full_name": g.repo, "default_branch": g.base})
+			repository := map[string]any{"full_name": g.repo, "default_branch": g.base}
+			for name, value := range g.settings {
+				repository[name] = value
+			}
+			send(repository)
+			return
+		}
+		if branch, ok := strings.CutPrefix(req.URL.Path, prefix+"/rules/branches/"); ok && g.rules != nil {
+			rules := g.rules[branch]
+			if rules == nil {
+				rules = []json.RawMessage{}
+			}
+			send(rules)
 			return
 		}
 		if req.URL.Path == prefix+"/pulls" {
@@ -2013,13 +2509,21 @@ func (g *teardownEffectsGitHub) serve(w http.ResponseWriter, req *http.Request) 
 	send(map[string]string{"message": "Not Found"})
 }
 
-// rest is the pull request as GitHub's REST API answers it. Its auto-merge and its place in the
-// merge queue are not served: the daemon reads neither.
+// rest is the pull request as GitHub's REST API answers it: its node id, its merge state and its
+// auto-merge request the world's where it states them. Its place in the merge queue is not served:
+// the daemon reads none.
 func (p teardownEffectsPull) rest() map[string]any {
 	state := p.State
 	if state == "merged" {
 		state = "closed"
 	}
-	return map[string]any{"number": p.Number, "state": state, "draft": p.Draft, "title": p.Title, "body": p.Body, "head": map[string]string{"ref": p.Head.Ref, "sha": p.Head.SHA},
-		"base": map[string]string{"ref": p.Base}, "merged": p.State == "merged", "merge_commit_sha": p.MergeCommit, "mergeable": true, "mergeable_state": "clean"}
+	rest := map[string]any{"number": p.Number, "state": state, "draft": p.Draft, "title": p.Title, "body": p.Body, "head": map[string]string{"ref": p.Head.Ref, "sha": p.Head.SHA},
+		"base": map[string]string{"ref": p.Base}, "merged": p.State == "merged", "merge_commit_sha": p.MergeCommit, "mergeable": true, "mergeable_state": string(teardownEffectsMergeState(p))}
+	if p.NodeID != "" {
+		rest["node_id"] = p.NodeID
+	}
+	if p.AutoMergeRequest != nil {
+		rest["auto_merge"] = p.AutoMergeRequest
+	}
+	return rest
 }

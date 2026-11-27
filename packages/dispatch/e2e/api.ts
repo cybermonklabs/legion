@@ -1268,23 +1268,6 @@ export function putStep(
   );
 }
 
-/** The rating a retro gave the plan, written onto the retro's run `id` of `issue` as the Legion
- *  daemon writes it (PutStepRating in packages/daemon/internal/dispatch/client.go): through the
- *  run's rating route, with the step write's fields and the rating with its reason, under the
- *  agent bearer as the session of the daemon of the issue's project, as putStep writes the step. */
-export function putStepRating(
-  issue: string,
-  id: string,
-  input: Body<"/api/v1/issues/{key}/steps/{id}/rating", "put">
-) {
-  const project = issue.slice(0, issue.indexOf("-"));
-  return put(
-    "/api/v1/issues/{key}/steps/{id}/rating",
-    { body: input, params: { id, key: issue } },
-    { actor: { kind: "session", id: `legion-daemon:${project}` }, as: "agent" }
-  );
-}
-
 /** The signed-in human's own per-agent conversation state, as another of their devices sets it. */
 export function putAgentState(
   sessionID: string,

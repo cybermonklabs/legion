@@ -709,6 +709,17 @@ describe("the typed world parts", () => {
     expect(plain?.github).not.toHaveProperty("settings");
   });
 
+  test("runsHoldRecords parses as true and as false, and a world that states none holds none", () => {
+    for (const holds of [true, false]) {
+      const world = parsedWorld((w) => {
+        w.dispatch.steps = [run({})];
+        w.dispatch.runsHoldRecords = holds;
+      });
+      expect(world?.dispatch.runsHoldRecords).toBe(holds);
+    }
+    expect(parsedWorld(() => {})?.dispatch).not.toHaveProperty("runsHoldRecords");
+  });
+
   const refusals: [string, (w: WorldJson) => void, string][] = [
     [
       "a step run at place 0",
@@ -811,6 +822,31 @@ describe("the typed world parts", () => {
           { branch: "main", rules: [] },
         ]),
       "github.branchRules[1].branch",
+    ],
+    [
+      "runsHoldRecords in a world that states no step run",
+      (w) => (w.dispatch.runsHoldRecords = true),
+      "case P05: world.dispatch.runsHoldRecords: the world's records are written in its step runs, and the world states no step run",
+    ],
+    [
+      "runsHoldRecords in a world whose step runs are none",
+      (w) => {
+        w.dispatch.runsHoldRecords = true;
+        w.dispatch.steps = [];
+      },
+      "case P05: world.dispatch.runsHoldRecords: the world's records are written in its step runs, and the world states no step run",
+    ],
+    [
+      "runsHoldRecords in a world with no handoff, comment, ask or result",
+      (w) => {
+        w.dispatch.runsHoldRecords = true;
+        w.dispatch.steps = [run({})];
+        w.dispatch.handoffs = [];
+        w.dispatch.comments = [];
+        w.dispatch.asks = [];
+        w.dispatch.results = [];
+      },
+      "case P05: world.dispatch.runsHoldRecords: a step run's times are placed among the stamps of the world's records, and the world holds no handoff, comment, ask or result",
     ],
     [
       "a part the schema does not name",

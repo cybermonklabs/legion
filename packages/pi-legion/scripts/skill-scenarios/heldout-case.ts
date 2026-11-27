@@ -11,9 +11,10 @@
 //
 // A case's world is the starting state of each part a run reaches. Its Dispatch part holds the
 // issue with its documents, handoffs, comments, asks and results and, where the world states them,
-// the project's other issues and the issue's step runs as `dispatch steps` lists them. A comment
-// may be on words of one of the world's documents (`anchor`), or be a reply in the thread of an
-// earlier comment of the world (`replyTo`), not both.
+// the project's other issues and the issue's step runs as `dispatch steps` lists them, and whether
+// each run holds the records of its time (`runsHoldRecords`). A comment may be on words of one of
+// the world's documents (`anchor`), or be a reply in the thread of an earlier comment of the world
+// (`replyTo`), not both.
 //
 //   heldout-case.ts gaps <heldout or devcase file> [<skilluse file>]
 //       each file's gaps (caseFileGaps): its number of gaps alone on stdout (`<file>: <n> gaps`),
@@ -293,6 +294,16 @@ const DispatchWorld = z
     ),
     issues: z.array(DispatchIssue).optional(),
     steps: z.array(StepRun).optional(),
+    /** Whether each record of the world (a handoff, a comment, an ask, a result) whose `at` lies
+     * inside a step run's window, from its start up to and not including its end (a run that has
+     * not ended has no end), was written in that run; absent is false. Dispatch stamps a record
+     * when the seed writes it, and the seed cannot set that stamp. So where this is true lane R's
+     * seed writes each run's start and end among its stamps of the records, in the world's order
+     * of times (seed.ts placeStepTimes), in place of the world's instants, and holds the runs
+     * Dispatch lists to the instants it wrote. Lane D takes the field and writes each run at the
+     * world's own instants, since its replay reads no step run's time. A world where it is true
+     * states a step run and holds a handoff, a comment, an ask or a result. */
+    runsHoldRecords: z.boolean().optional(),
   })
   .superRefine((dispatch, context) => {
     const keys = (dispatch.issues ?? []).map((other) => other.key);
@@ -332,6 +343,21 @@ const DispatchWorld = z
       if (parent === undefined || !seededBefore(parent, parentIndex, comment, index))
         refuse(context, [...at, "replyTo"], `${replyTo} is no earlier comment of the world`);
     });
+    if (dispatch.runsHoldRecords === true) {
+      if ((dispatch.steps ?? []).length === 0)
+        refuse(
+          context,
+          ["runsHoldRecords"],
+          "the world's records are written in its step runs, and the world states no step run"
+        );
+      const records = [dispatch.handoffs, dispatch.comments, dispatch.asks, dispatch.results];
+      if (records.every((kind) => kind.length === 0))
+        refuse(
+          context,
+          ["runsHoldRecords"],
+          "a step run's times are placed among the stamps of the world's records, and the world holds no handoff, comment, ask or result"
+        );
+    }
   });
 
 /** The git remote and the role's jj workspace. `commits` holds every commit either names;

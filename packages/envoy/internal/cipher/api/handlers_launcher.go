@@ -20,8 +20,8 @@ func launcherLoginKey(obj record.RequestObject) string {
 
 // tokenLoginBody is POST /v1/launcher-credentials/token's exact shape.
 type tokenLoginBody struct {
-	// The service's projected Kubernetes ServiceAccount token, whose audience is the broker's
-	// (BROKER_K8S_OIDC_AUDIENCE) and whose account BROKER_SERVICE_LOGINS names.
+	// The service's projected Kubernetes ServiceAccount token, whose audience is one the broker
+	// takes (BROKER_K8S_OIDC_AUDIENCE lists it) and whose account BROKER_SERVICE_LOGINS names.
 	Token string `json:"token"`
 	// A machine request object signed by the key the credential is bound to: a compact ES256 JWS
 	// carrying that public key, with one launcher_credential detail naming the account's service.

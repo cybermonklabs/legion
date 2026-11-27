@@ -95,40 +95,40 @@ interface Call {
   body: Record<string, unknown> | undefined;
 }
 
-/** One run of a step as `GET /api/v1/issues/{key}/steps` answers it (testdata/steps-answer.json's
- * shape): a field no write stated is empty, or null where that answer holds null. */
-interface FakeStep {
-  id: string;
-  issue: string;
-  task: string;
-  step: number;
-  kind: string;
-  role: string;
-  type: string;
-  agent: string;
-  session: string;
-  model: string;
-  generation: number;
-  attempt: number;
-  started_at: string | null;
-  ended_at: string | null;
-  result: string;
-  returned_to: number | null;
-  report: string | null;
-  rating: number | null;
-  rating_reason: string | null;
+/** A place on the fake's board as Dispatch answers a rank: a text whose order is the board's. */
+function rankText(place: number): string {
+  return place.toFixed(4).padStart(16, "0");
 }
-/** A uuid, which Dispatch requires of a step run's id and of the handoff id its report names
- * (packages/envoy/internal/dispatch/workflowstore/write.go). */
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** The scratch Dispatch seed.ts talks to, held in memory: just the routes seed.ts calls. */
 class FakeDispatch {
   calls: Call[] = [];
   issues = new Map<
     string,
-    { key: string; title: string; spec_artifact: string; parent: string | null; status: string }
+    {
+      key: string;
+      title: string;
+      spec_artifact: string;
+      parent: string | null;
+      status: string;
+      labels: string[];
+      blocked_by: string[];
+      claim: { actor: Actor } | null;
+      /** The issue's place on the board, a number here: the read answers it as a rank text. */
+      rank: number;
+    }
   >();
+  /** Each step run written, in the order written, with the rating written on it. */
+  runs: Record<string, unknown>[] = [];
+  /** What the issue read answers of an issue, after the fake's own answer: a Dispatch that holds
+   * a fact otherwise than it was written. */
+  misread: (key: string, answer: Record<string, unknown>) => Record<string, unknown> = (
+    _key,
+    answer
+  ) => answer;
+  /** What the steps read answers of each run, after the fake's own answer: a Dispatch that lists
+   * a run otherwise than it was written. */
+  misreadRun: (run: Record<string, unknown>) => Record<string, unknown> = (run) => run;
   asks: FakeAsk[] = [];
   messages: { message: Record<string, unknown>; replies: Record<string, unknown>[] }[] = [];
   comments: Record<string, unknown>[] = [];
@@ -144,7 +144,6 @@ class FakeDispatch {
   }[] = [];
   results: Record<string, unknown>[] = [];
   events: { seq: number; type: string; created_at: string }[] = [];
-  steps: FakeStep[] = [];
   /** The fake's clock, in microseconds since the epoch, which Dispatch's stamps are written in.
    * Each record it stamps takes the next millisecond, and `sleep` moves it on by the time slept,
    * so a row reads the gaps the seed keeps without waiting for them. */
@@ -173,9 +172,24 @@ class FakeDispatch {
   uuid(): string {
     return `00000000-0000-4000-8000-${String(++this.#ids).padStart(12, "0")}`;
   }
-  issue(key: string, title = "A title", parent: string | null = null): string {
+  issue(
+    key: string,
+    title = "A title",
+    parent: string | null = null,
+    labels: string[] = []
+  ): string {
     const spec = this.id("art");
-    this.issues.set(key, { key, title, spec_artifact: spec, parent, status: "triage" });
+    this.issues.set(key, {
+      key,
+      title,
+      spec_artifact: spec,
+      parent,
+      status: "triage",
+      labels,
+      blocked_by: [],
+      claim: null,
+      rank: 1000 + this.issues.size,
+    });
     this.artifacts.push({
       id: spec,
       issue_key: key,
@@ -212,68 +226,59 @@ class FakeDispatch {
     const actor = (): Actor =>
       who === "agent" ? (body?.actor as Actor) : { kind: "user", id: `${who}@example.invalid` };
     const strip = <T extends { markdown: string }>({ markdown: _markdown, ...rest }: T) => rest;
-    /** A step write of `fields` onto run `id` of `issue`, as Dispatch takes one: from the daemon
-     * of the issue's project alone, under a uuid, with a report that is a handoff's id, and, where
-     * it makes the run, naming its task, kind, step, role and generation (workflowstore/write.go).
-     * A stated field is set: the seed states each field of a run once, or again with the value it
-     * stated first. The run as it stands, or the refusal. */
-    const writeStep = (
-      issue: string,
-      id: string,
-      fields: Record<string, unknown>
-    ): FakeStep | Response => {
-      const writer = actor();
-      if (writer.kind !== "session" || writer.id !== `legion-daemon:${issue.split("-")[0]}`)
-        return json({ code: "STEP_WRITER" }, 403);
-      if (!UUID.test(id))
-        return json({ code: "STEP_INPUT", error: `id "${id}" is not a uuid` }, 400);
-      if (typeof fields.report === "string" && !UUID.test(fields.report))
-        return json({ code: "STEP_INPUT", error: `report "${fields.report}" is not a uuid` }, 400);
-      let run = this.steps.find((each) => each.id === id);
-      if (run === undefined) {
-        const missing = ["task", "kind", "step", "role", "generation"].filter(
-          (field) => fields[field] === undefined || fields[field] === null || fields[field] === ""
-        );
-        if (missing.length > 0)
-          return json(
-            { code: "STEP_INPUT", error: `step ${id} holds no node yet: ${missing.join(", ")}` },
-            400
-          );
-        run = {
-          id,
-          issue,
-          task: "",
-          step: 0,
-          kind: "",
-          role: "",
-          type: "",
-          agent: "",
-          session: "",
-          model: "",
-          generation: 0,
-          attempt: 1,
-          started_at: null,
-          ended_at: null,
-          result: "",
-          returned_to: null,
-          report: null,
-          rating: null,
-          rating_reason: null,
-        };
-        this.steps.push(run);
-      }
-      for (const [field, value] of Object.entries(fields)) {
-        if (field === "actor" || value === null || value === "") continue;
-        if (!Object.hasOwn(run, field))
-          return json({ code: "STEP_INPUT", error: `${field} is no field of a step` }, 400);
-        Object.assign(run, { [field]: value });
-      }
-      return run;
-    };
     // Each route: its method and path pattern, and what it answers for the path's captures.
     const routes: [RegExp, (id: string, second: string) => Response][] = [
       [/^POST \/api\/v1\/projects$/, () => json(body, 201)],
-      [/^POST \/api\/v1\/issues\/([^/]+)\/status-change$/, () => json({ changed: [] })],
+      [
+        /^POST \/api\/v1\/issues\/([^/]+)\/status-change$/,
+        (key) => {
+          const issue = this.issues.get(key);
+          if (issue !== undefined && typeof body?.status === "string") issue.status = body.status;
+          return json({ changed: [] });
+        },
+      ],
+      [
+        /^POST \/api\/v1\/issues\/([^/]+)\/claim$/,
+        (key) => {
+          const issue = this.issues.get(key);
+          if (issue === undefined) return json({ code: "ISSUE_NOT_FOUND" }, 404);
+          issue.claim = { actor: actor() };
+          return json({ ...issue, legion_managed_status: false });
+        },
+      ],
+      [
+        /^PUT \/api\/v1\/issues\/([^/]+)\/steps\/([^/]+)\/rating$/,
+        (_key, id) => {
+          const run = this.runs.find((each) => each.id === id);
+          if (run === undefined) return json({ code: "STEP_INPUT" }, 400);
+          run.rating = body?.rating;
+          run.rating_reason = body?.rating_reason;
+          return json(run);
+        },
+      ],
+      [
+        /^PUT \/api\/v1\/issues\/([^/]+)\/steps\/([^/]+)$/,
+        (key, id) => {
+          const run = { ...body, id, issue: key, rating: null, rating_reason: null };
+          this.runs.push(run);
+          return json(run);
+        },
+      ],
+      [
+        /^GET \/api\/v1\/issues\/([^/]+)\/steps$/,
+        (key) => {
+          const tasks: { task: string; needs: null; steps: Record<string, unknown>[] }[] = [];
+          for (const run of this.runs.filter((each) => each.issue === key)) {
+            let task = tasks.find((each) => each.task === run.task);
+            if (task === undefined) {
+              task = { task: String(run.task), needs: null, steps: [] };
+              tasks.push(task);
+            }
+            task.steps.push(this.misreadRun({ result: "", ended_at: null, ...run }));
+          }
+          return json({ issue: key, tasks });
+        },
+      ],
       [
         /^POST \/api\/v1\/issues\/([^/]+)\/comments$/,
         (issue) => {
@@ -345,7 +350,7 @@ class FakeDispatch {
           const project = String(body?.project);
           const count = [...this.issues].filter(([key]) => key.startsWith(`${project}-`)).length;
           const key = `${project}-${count + (project === "LWEVAL" ? 2 : 1)}`;
-          const spec = this.issue(key, body?.title, body?.parent ?? null);
+          const spec = this.issue(key, body?.title, body?.parent ?? null, body?.labels ?? []);
           const artifact = this.artifacts.find((a) => a.id === spec);
           if (artifact !== undefined && typeof body?.spec === "string") {
             artifact.markdown = body.spec;
@@ -371,8 +376,26 @@ class FakeDispatch {
           const issue = this.issues.get(key);
           if (issue === undefined) return json({ code: "ISSUE_NOT_FOUND" }, 404);
           if (typeof body?.status === "string") issue.status = body.status;
+          if (Array.isArray(body?.labels)) issue.labels = body.labels;
+          if (Array.isArray(body?.blocked_by)) issue.blocked_by = body.blocked_by;
+          const neighbour = (other: unknown) => this.issues.get(String(other))?.rank ?? 0;
+          if (body?.rank?.before !== undefined) issue.rank = neighbour(body.rank.before) - 0.5;
+          if (body?.rank?.after !== undefined) issue.rank = neighbour(body.rank.after) + 0.25;
           return json(issue);
         },
+      ],
+      [
+        /^GET \/api\/v1\/issues$/,
+        () =>
+          json(
+            [...this.issues.values()]
+              .filter(({ key }) => key.startsWith(`${url.searchParams.get("project")}-`))
+              .map((issue) => ({
+                key: issue.key,
+                status: issue.status,
+                rank: rankText(issue.rank),
+              }))
+          ),
       ],
       [
         /^POST \/api\/v1\/artifacts\/([^/]+)\/approval-requests$/,
@@ -507,13 +530,19 @@ class FakeDispatch {
         /^GET \/api\/v1\/issues\/([^/]+)$/,
         (issue) => {
           const held = this.issues.get(issue);
-          return json({
-            key: issue,
-            title: held?.title ?? "A title",
-            status: held?.status ?? "triage",
-            parent: held?.parent ?? null,
-            artifacts: this.artifacts.filter((a) => a.issue_key === issue).map(strip),
-          });
+          return json(
+            this.misread(issue, {
+              key: issue,
+              title: held?.title ?? "A title",
+              status: held?.status ?? "triage",
+              parent: held?.parent ?? null,
+              labels: held?.labels ?? [],
+              blocked_by: held?.blocked_by ?? [],
+              claim: held?.claim ?? null,
+              rank: rankText(held?.rank ?? 0),
+              artifacts: this.artifacts.filter((a) => a.issue_key === issue).map(strip),
+            })
+          );
         },
       ],
       [
@@ -608,58 +637,6 @@ class FakeDispatch {
             { result, line: `- Check ${body?.check} (before_merge): ${body?.verdict}` },
             201
           );
-        },
-      ],
-      [
-        /^PUT \/api\/v1\/issues\/([^/]+)\/steps\/([^/]+)$/,
-        (issue, id) => {
-          // Dispatch ignores a member the step route does not declare, so a rating sent here is
-          // answered and lost (api/steps.go).
-          const { rating: _rating, rating_reason: _reason, ...fields } = body ?? {};
-          const run = writeStep(issue, id, fields);
-          return run instanceof Response ? run : json(run);
-        },
-      ],
-      [
-        /^PUT \/api\/v1\/issues\/([^/]+)\/steps\/([^/]+)\/rating$/,
-        (issue, id) => {
-          // The rating a retro gave the plan, 1 to 5, with its reason, both required, onto a run
-          // of kind retro alone (workflowstore/write.go ratingOfKind); the rest of the body is a
-          // step write, which makes the run where its start and end have not landed.
-          const { rating, rating_reason, ...fields } = body ?? {};
-          if (
-            !Number.isInteger(rating) ||
-            rating < 1 ||
-            rating > 5 ||
-            typeof rating_reason !== "string" ||
-            rating_reason.trim() === ""
-          )
-            return json({ code: "STEP_INPUT", error: "a rating is 1 to 5, with its reason" }, 400);
-          const held = this.steps.find((each) => each.id === id)?.kind;
-          for (const kind of [fields.kind, held])
-            if (kind !== undefined && kind !== "retro")
-              return json(
-                {
-                  code: "STEP_INPUT",
-                  error: `rating is the rating a retro gives its plan, and step ${id} is a run of kind ${kind}`,
-                },
-                400
-              );
-          const run = writeStep(issue, id, fields);
-          if (run instanceof Response) return run;
-          if (run.rating === null) Object.assign(run, { rating, rating_reason });
-          return json(run);
-        },
-      ],
-      [
-        /^GET \/api\/v1\/issues\/([^/]+)\/steps$/,
-        (issue) => {
-          const runs = this.steps.filter((run) => run.issue === issue);
-          const tasks = [...new Set(runs.map(({ task }) => task))];
-          return json({
-            issue,
-            tasks: tasks.map((task) => ({ task, steps: runs.filter((run) => run.task === task) })),
-          });
         },
       ],
     ];
@@ -1683,9 +1660,10 @@ describe("case-world Dispatch", () => {
   const at = (time: string) => `2030-01-07T${time}Z`;
   /** P05's world with the runs of its task's steps around its records, as a reviewer's world
    * holds them: the planner's, the implementer's and the tester's runs ended and the reviewer's
-   * running. The implementer's comment is on words of plan.md and the architect's a reply in its
-   * thread; the tester wrote two versions of its handoff 20 s apart; and the implementer asks at
-   * the very moment its run starts, when the planner's ends. */
+   * running, each holding the records of its time (`runsHoldRecords`). The implementer's comment
+   * is on words of plan.md and the architect's a reply in its thread; the tester wrote two versions
+   * of its handoff 20 s apart; and the implementer asks at the very moment its run starts, when the
+   * planner's ends. */
   function steppedWorld(): World {
     const world = p05World();
     const handoff = (phase: "implement" | "test", version: number, role: string, time: string) => ({
@@ -1760,43 +1738,8 @@ describe("case-world Dispatch", () => {
         endedAt: null,
       },
     ];
+    world.dispatch.runsHoldRecords = true;
     return World.parse(world);
-  }
-  /** steppedWorld's runs after the review: the reviewer's run ended at 14:30, the retro's from then
-   * to 14:40 with `retro`'s fields over its own (a rating of 4 and its reason), and the merger's
-   * running since. */
-  function retroWorld(retro: Partial<StepRun> = {}): World {
-    const world = steppedWorld();
-    const [plan, implement, test, review] = world.dispatch.steps ?? [];
-    if (!plan || !implement || !test || !review) throw new Error("steppedWorld lost a run");
-    world.dispatch.steps = [
-      plan,
-      implement,
-      test,
-      { ...review, result: "passed", endedAt: at("14:30:00") },
-      {
-        task: "t1",
-        step: 0,
-        kind: "retro",
-        role: "implementer",
-        result: "passed",
-        startedAt: at("14:30:00"),
-        endedAt: at("14:40:00"),
-        planRating: 4,
-        planReason: "The plan fit the work: the tester's round caught the default.",
-        ...retro,
-      },
-      {
-        task: "t1",
-        step: 0,
-        kind: "merge",
-        role: "merger",
-        result: null,
-        startedAt: at("14:40:00"),
-        endedAt: null,
-      },
-    ];
-    return world;
   }
   /** A run directory whose launch-world.json is `world`, seeded on the fake's clock. */
   async function seeded(world: World): Promise<string> {
@@ -1805,8 +1748,6 @@ describe("case-world Dispatch", () => {
     await seed.seedCaseDispatch(dir, dispatch.sleep);
     return dir;
   }
-  const stepWrites = () =>
-    dispatch.calls.filter(({ method, path }) => method === "PUT" && path.includes("/steps/"));
   const handoffId = (phase: string, version: number) =>
     dispatch.handoffs.find((record) => record.phase === phase && record.version === version)?.id;
 
@@ -1820,14 +1761,8 @@ describe("case-world Dispatch", () => {
     const readback = JSON.parse(readFileSync(path.join(dir, "dispatch-readback.json"), "utf8"));
     expect(readback.steps.issue).toBe("ACME-12");
     expect(readback.steps.tasks.map(({ task }: { task: string }) => task)).toEqual(["t1"]);
-    const runs: FakeStep[] = readback.steps.tasks[0].steps;
-    // Each run read back holds the fields production Dispatch's steps route answers a run with, in
-    // its order: those of the first run of testdata/steps-answer.json.
-    const answered = JSON.parse(
-      readFileSync(path.join(import.meta.dir, "testdata", "steps-answer.json"), "utf8")
-    );
-    const fields = Object.keys(answered.tasks[0].steps[0]);
-    expect(runs.map((run) => Object.keys(run))).toEqual(runs.map(() => fields));
+    const runs: { role: string; started_at: string | null; ended_at: string | null }[] =
+      readback.steps.tasks[0].steps;
 
     const ids = JSON.parse(readFileSync(path.join(dir, "dispatch-ids.json"), "utf8"));
     const stampOf = (rows: { id: string; created_at: string }[], id: string) =>
@@ -1898,6 +1833,49 @@ describe("case-world Dispatch", () => {
     expect(seededHeld).toEqual(byCase);
   });
 
+  // Catches: a read-back that holds the times Dispatch lists to the world's instants, which a seed
+  // that placed them among its records' stamps never wrote, so that every world whose runs hold
+  // its records fails its seed; and a seed that writes the world's instants under the field.
+  test("with runsHoldRecords, the read-back holds each run's listed times to the instants the seed placed", async () => {
+    const world = steppedWorld();
+    await seeded(world);
+    const runs = world.dispatch.steps ?? [];
+    expect(dispatch.runs).toHaveLength(runs.length);
+    runs.forEach(({ startedAt, endedAt }, index) => {
+      const written = dispatch.runs[index];
+      expect(parseInstant(String(written?.started_at))).not.toBe(parseInstant(startedAt));
+      if (endedAt !== null)
+        expect(parseInstant(String(written?.ended_at))).not.toBe(parseInstant(endedAt));
+    });
+  });
+
+  // Catches: a read-back that takes any time Dispatch lists once the seed placed the times, so a
+  // run Dispatch holds at the world's own instant, where the records of its time do not lie inside
+  // it, goes unseen.
+  test("with runsHoldRecords, a run Dispatch lists at another instant than the seed wrote fails the seed, naming it", async () => {
+    const world = steppedWorld();
+    const implementer = world.dispatch.steps?.[1];
+    if (implementer === undefined) throw new Error("steppedWorld lost the implementer's run");
+    dispatch.misreadRun = (run) =>
+      run.role === "implementer" ? { ...run, started_at: implementer.startedAt } : run;
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(world));
+    const error = await seed.seedCaseDispatch(dir, dispatch.sleep).then(
+      () => undefined,
+      (thrown: Error) => thrown
+    );
+    const placed = dispatch.runs[1]?.started_at;
+    expect(placed).toBeString();
+    expect(error?.message).toContain(
+      `world.dispatch.steps[1]: Dispatch lists {"task":"t1","step":2,"kind":"step","role":"implementer","result":"passed","rating":null,"reason":null,"startedAt":"${implementer.startedAt}"`
+    );
+    expect(error?.message).toContain(`, and the seed wrote {"task":"t1","step":2,`);
+    expect(error?.message).toContain(`"startedAt":"${placed}"`);
+    expect(error?.message).toContain("world.dispatch.runsHoldRecords");
+    expect(error?.message).not.toContain("world.dispatch.steps[0]");
+    expect(existsSync(path.join(dir, "dispatch-fixture.json"))).toBe(false);
+  });
+
   // Catches: a seed that writes two versions of a handoff a moment apart where the case holds
   // them 20 s apart, so the reviewer reads no double write; and one that keeps every gap of the
   // case, which would take a run hours.
@@ -1931,157 +1909,6 @@ describe("case-world Dispatch", () => {
       .slice(1)
       .map((stamp, index) => (stamp - (stamps[index] ?? 0n)) / 1_000_000_000n);
     expect(seconds).toEqual([20n, 60n, 0n, 0n]);
-  });
-
-  // Catches: a write that names a session or a report the world does not hold, so the run's
-  // Dispatch lists runs other than the world's; and a running step written with an end.
-  test("writes each step run as the daemon does, with no session and no report, and a running step with no end", async () => {
-    await seeded(steppedWorld());
-    const bodies = stepWrites().map(({ body }) => body);
-    const ended = (step: number, role: string, type: string) =>
-      expect.objectContaining({
-        task: "t1",
-        step,
-        kind: "step",
-        role,
-        type,
-        agent: `legion-acme-acme-12-${role}`,
-        generation: 1,
-        result: "passed",
-      });
-    expect(bodies).toEqual([
-      ended(1, "planner", "planning"),
-      ended(2, "implementer", "implementation"),
-      ended(3, "tester", "testing"),
-      expect.objectContaining({
-        task: "t1",
-        step: 4,
-        kind: "step",
-        role: "reviewer",
-        type: "review",
-        agent: "legion-acme-acme-12-reviewer",
-        generation: 1,
-      }),
-    ]);
-    for (const body of bodies) {
-      expect(body).not.toHaveProperty("session");
-      expect(body).not.toHaveProperty("report");
-    }
-    for (const field of ["result", "ended_at"]) expect(bodies[3]).not.toHaveProperty(field);
-    expect(dispatch.steps.find(({ role }) => role === "reviewer")).toMatchObject({
-      session: "",
-      result: "",
-      report: null,
-      ended_at: null,
-    });
-  });
-
-  // Catches: a step run written under an id of the seed's own making, which names another record
-  // than the daemon's StepID would, and a second run of one place written over the first.
-  test("writes each step run under the id the daemon's StepID gives it, the second run of a place under its second start", async () => {
-    const world = retroWorld();
-    const [plan, implement, test, ...rest] = world.dispatch.steps ?? [];
-    if (!plan || !implement || !test) throw new Error("retroWorld lost a run");
-    // The tester's first run fails and returns the work to the implementer, so the implementer's
-    // step and the tester's each run twice.
-    world.dispatch.steps = [
-      plan,
-      implement,
-      { ...test, result: "failed", endedAt: at("14:00:00") },
-      { ...implement, startedAt: at("14:00:00"), endedAt: at("14:10:00") },
-      { ...test, startedAt: at("14:10:00") },
-      ...rest,
-    ];
-    await seeded(world);
-    // uuid.uuid5(uuid.uuid5(uuid.NAMESPACE_OID, "legion-step-record"), name), by Python's uuid,
-    // of each name `<issue>/<generation>/<task>/<kind>/<step>/<starts>`.
-    const ids = [
-      "88daba1f-8979-5062-b193-af1a19cb7175", // ACME-12/1/t1/step/1/1
-      "eb3cd313-d860-5c1e-bdd2-8c918fc2ca6a", // ACME-12/1/t1/step/2/1
-      "3c978d36-9b1e-5406-bea8-682d934e6dfb", // ACME-12/1/t1/step/3/1
-      "754fb28e-3876-5385-98da-776ce87a6429", // ACME-12/1/t1/step/2/2
-      "11e6c6ce-32df-5c82-8081-0106ccf1139c", // ACME-12/1/t1/step/3/2
-      "86c34adf-52e5-5153-975b-64392a98ee61", // ACME-12/1/t1/step/4/1
-      "ec84ec14-9642-51a2-92da-8f728a70666b", // ACME-12/1/t1/retro/0/1
-      "6a7f7a84-e44c-527a-9b22-b2cda66bfbb5", // ACME-12/1/t1/merge/0/1
-    ];
-    expect(
-      stepWrites()
-        .filter(({ path }) => !path.endsWith("/rating"))
-        .map(({ path }) => path)
-    ).toEqual(ids.map((id) => `/api/v1/issues/ACME-12/steps/${id}`));
-    expect(dispatch.steps.map(({ id }) => id)).toEqual(ids);
-    expect(dispatch.steps.map(({ role, result }) => [role, result])).toEqual([
-      ["planner", "passed"],
-      ["implementer", "passed"],
-      ["tester", "failed"],
-      ["implementer", "passed"],
-      ["tester", "passed"],
-      ["reviewer", "passed"],
-      ["implementer", "passed"],
-      ["merger", ""],
-    ]);
-  });
-
-  // Catches: a retro's rating sent as a member of the step write, which Dispatch answers and
-  // drops, or not sent at all, so the run's Dispatch lists the retro with no rating.
-  test("writes a retro's rating through the rating route after its run, as the issue's daemon", async () => {
-    await seeded(retroWorld());
-    const retro = "ec84ec14-9642-51a2-92da-8f728a70666b";
-    const writes = stepWrites().map(({ path }) =>
-      path.replace("/api/v1/issues/ACME-12/steps/", "")
-    );
-    expect(writes.slice(4)).toEqual([
-      retro,
-      `${retro}/rating`,
-      "6a7f7a84-e44c-527a-9b22-b2cda66bfbb5",
-    ]);
-    const rating = stepWrites().find(({ path }) => path.endsWith("/rating"));
-    expect(rating?.body).toEqual(
-      expect.objectContaining({
-        actor: { kind: "session", id: "legion-daemon:ACME" },
-        task: "t1",
-        step: 0,
-        kind: "retro",
-        role: "implementer",
-        agent: "legion-acme-acme-12-implementer",
-        generation: 1,
-        result: "passed",
-        rating: 4,
-        rating_reason: "The plan fit the work: the tester's round caught the default.",
-      })
-    );
-    for (const { body } of stepWrites().filter(({ path }) => !path.endsWith("/rating")))
-      expect(body).not.toHaveProperty("rating");
-    expect(
-      dispatch.steps.map(({ kind, rating, rating_reason }) => [kind, rating, rating_reason])
-    ).toEqual([
-      ["step", null, null],
-      ["step", null, null],
-      ["step", null, null],
-      ["step", null, null],
-      ["retro", 4, "The plan fit the work: the tester's round caught the default."],
-      ["merge", null, null],
-    ]);
-  });
-
-  // Catches: a world whose runs the run's Dispatch cannot list as the world holds them seeded in
-  // part, or with the part Dispatch cannot take dropped: a run with no role, which Dispatch makes
-  // no record from, and half a rating, which its rating route takes only whole.
-  test("refuses, before it writes anything, a step run with no role and a rating without its reason or a reason without its rating", async () => {
-    const noRole = retroWorld();
-    const merge = noRole.dispatch.steps?.[5];
-    if (merge) merge.role = null;
-    await expect(seeded(noRole)).rejects.toThrow(
-      "ACME-12 steps[5]: a run with no role is no run the seed can write: Dispatch makes a run's record only from a write that names its task, kind, step, role and generation"
-    );
-    await expect(seeded(retroWorld({ planReason: undefined }))).rejects.toThrow(
-      "ACME-12 steps[4]: the world holds a planRating with no planReason, and Dispatch takes a retro's rating only with its reason (PUT /api/v1/issues/{key}/steps/{id}/rating requires both)"
-    );
-    await expect(seeded(retroWorld({ planRating: undefined }))).rejects.toThrow(
-      "ACME-12 steps[4]: the world holds a planReason with no planRating"
-    );
-    expect(dispatch.calls).toEqual([]);
   });
 
   // Catches: the departure posted as a plain comment on the issue and the decision as another,
@@ -2120,6 +1947,190 @@ describe("case-world Dispatch", () => {
       ),
       "cmt-acme-12-decision": comment("Take it."),
     });
+  });
+
+  /** P05's world with its Dispatch parts: the issue's labels, two other issues (ACME-13 under the
+   * case's parent, waiting on ACME-14, claimed and second on the board, and ACME-14, first), and
+   * three step runs (a passed step, a rated retro, a merge that runs). */
+  const partsWorld = () => {
+    const p05 = parseHeldoutFile(example("heldout")).cases.find(({ id }) => id === "P05");
+    if (!p05) throw new Error("missing P05");
+    const world = structuredClone(p05.world);
+    world.dispatch.issue.labels = ["legion"];
+    world.dispatch.issues = [
+      {
+        key: "ACME-13",
+        title: "A sibling",
+        status: "todo",
+        parent: "ACME-10",
+        rank: 2,
+        labels: ["ux"],
+        blockedBy: ["ACME-14"],
+        claimedBy: "ses-acme-13",
+      },
+      {
+        key: "ACME-14",
+        status: "in_progress",
+        parent: null,
+        rank: 1,
+        labels: [],
+        blockedBy: [],
+        claimedBy: null,
+      },
+    ];
+    const at = (minute: number) => `2030-01-07T14:${String(minute).padStart(2, "0")}:00Z`;
+    world.dispatch.steps = [
+      {
+        task: "default",
+        step: 1,
+        kind: "step",
+        role: "planner",
+        result: "passed",
+        startedAt: at(0),
+        endedAt: at(10),
+      },
+      {
+        task: "default",
+        step: 0,
+        kind: "retro",
+        role: "implementer",
+        result: "passed",
+        startedAt: at(20),
+        endedAt: at(25),
+        planRating: 4,
+        planReason: "The plan fit.",
+      },
+      {
+        task: "default",
+        step: 0,
+        kind: "merge",
+        role: "merger",
+        result: null,
+        startedAt: at(30),
+        endedAt: null,
+      },
+    ];
+    return world;
+  };
+
+  test("files the world's other issues and step runs as the daemon writes them, and reads each back", async () => {
+    const world = partsWorld();
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(world));
+    await seed.seedCaseDispatch(dir);
+    const created = (key: string) =>
+      dispatch.calls.filter(({ method, path }) => method === "POST" && path === "/api/v1/issues")[
+        Number(key.split("-")[1]) - 1
+      ]?.body;
+    expect(created("ACME-12")).toMatchObject({ labels: ["legion"], parent: "ACME-10" });
+    expect(created("ACME-13")).toMatchObject({
+      title: "A sibling",
+      labels: ["ux"],
+      parent: "ACME-10",
+    });
+    expect(created("ACME-14")).toMatchObject({ title: "ACME-14", labels: [] });
+    expect(dispatch.issues.get("ACME-13")).toMatchObject({
+      status: "todo",
+      blocked_by: ["ACME-14"],
+      claim: { actor: { kind: "session", id: "ses-acme-13" } },
+    });
+    const rank = (key: string) => dispatch.issues.get(key)?.rank ?? 0;
+    expect(rank("ACME-14")).toBeLessThan(
+      Math.min(...[...dispatch.issues.keys()].filter((key) => key !== "ACME-14").map(rank))
+    );
+    expect(rank("ACME-13")).toBeGreaterThan(rank("ACME-14"));
+    const daemon = { kind: "session", id: "legion-daemon:ACME" };
+    expect(dispatch.runs).toEqual([
+      expect.objectContaining({
+        actor: daemon,
+        task: "default",
+        step: 1,
+        kind: "step",
+        role: "planner",
+        agent: "rig-seed",
+        model: "rig-seed",
+        generation: 1,
+        result: "passed",
+        ended_at: "2030-01-07T14:10:00Z",
+      }),
+      expect.objectContaining({
+        kind: "retro",
+        step: 0,
+        rating: 4,
+        rating_reason: "The plan fit.",
+      }),
+      expect.objectContaining({
+        kind: "merge",
+        role: "merger",
+        started_at: "2030-01-07T14:30:00Z",
+      }),
+    ]);
+    expect(dispatch.runs[2]).not.toHaveProperty("result");
+    expect(JSON.parse(readFileSync(path.join(dir, "dispatch-fixture.json"), "utf8"))).toEqual({
+      issue: "ACME-12",
+      seedThrough: 0,
+    });
+  });
+
+  // Catches: a seed that files a world Dispatch then holds otherwise, which the run would read as
+  // the world, where it is a setup failure that names the part.
+  test("a world Dispatch does not answer as it states fails the seed, naming each part", async () => {
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(partsWorld()));
+    dispatch.misread = (key, answer) =>
+      key === "ACME-13" ? { ...answer, labels: [], status: "backlog" } : answer;
+    const seeded = seed.seedCaseDispatch(dir);
+    await expect(seeded).rejects.toThrow(
+      "world.dispatch.issues[0].status: Dispatch answers backlog, and the world states todo"
+    );
+    await expect(seeded).rejects.toThrow(
+      "world.dispatch.issues[0].labels: Dispatch answers [], and the world states [ux]"
+    );
+    expect(existsSync(path.join(dir, "dispatch-fixture.json"))).toBe(false);
+
+    const nameless = partsWorld();
+    const merge = nameless.dispatch.steps?.[2];
+    if (merge === undefined) throw new Error("the world lost its merge");
+    merge.role = null;
+    const other = runDir();
+    writeFileSync(path.join(other, "launch-world.json"), JSON.stringify(nameless));
+    await expect(seed.seedCaseDispatch(other)).rejects.toThrow(
+      "world.dispatch.steps[2].role is null"
+    );
+  });
+
+  test("names each gate step's document by the id the scratch Dispatch gives it, in the fixture and the prompt", async () => {
+    const p05 = parseHeldoutFile(example("heldout")).cases.find(({ id }) => id === "P05");
+    if (!p05?.world.daemon) throw new Error("missing P05's daemon");
+    const world = structuredClone(p05.world);
+    const stated = "6c174565-c501-58c9-b35a-149c49ff8ffa";
+    if (world.daemon === null) throw new Error("missing P05's daemon");
+    world.daemon.gate = [
+      { step: "spec", document: "spec.md", current: 1, approved: 1, artifactId: stated },
+    ];
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(world));
+    writeFileSync(path.join(dir, "prompt.txt"), `The spec is ${stated}.\n`);
+    await seed.seedCaseDispatch(dir);
+    // The gate is the claim's tree root's, ACME-10 (P05's parent), whose spec Dispatch names spec.md.
+    const given = dispatch.issues.get("ACME-10")?.spec_artifact;
+    expect(JSON.parse(readFileSync(path.join(dir, "dispatch-fixture.json"), "utf8")).gate).toEqual({
+      spec: given,
+    });
+    expect(readFileSync(path.join(dir, "prompt.txt"), "utf8")).toBe(`The spec is ${given}.\n`);
+  });
+
+  test("a gate step whose document the claim tree's root does not hold fails the seed, naming it", async () => {
+    const p05 = parseHeldoutFile(example("heldout")).cases.find(({ id }) => id === "P05");
+    const world = structuredClone(p05?.world);
+    if (world?.daemon === null || world?.daemon === undefined)
+      throw new Error("missing P05's daemon");
+    world.daemon.gate = [{ step: "criteria", document: "criteria.md", current: 1, approved: null }];
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(world));
+    await expect(seed.seedCaseDispatch(dir)).rejects.toThrow(
+      "world.daemon.gate[0].document criteria.md: the scratch Dispatch holds no document of ACME-10"
+    );
   });
 });
 
