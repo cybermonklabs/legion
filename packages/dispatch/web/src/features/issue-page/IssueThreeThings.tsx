@@ -25,6 +25,7 @@ import {
   GLYPH_TOKENS,
   NODE_STATE_WORDS,
   type NodeState,
+  type Preset,
   VERIFICATION_WORDS,
 } from "./page-words";
 import { filterSignals, type PresetSignal, presetView } from "./presets";
