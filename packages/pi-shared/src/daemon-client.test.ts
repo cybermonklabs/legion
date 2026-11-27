@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
   cpSync,
   mkdirSync,
@@ -171,6 +171,76 @@ test("ready and exit post the claim wire's requests and accept only the empty 20
     fetch: daemon(() => Response.json({})).fetch,
   });
   await expect(talkative.ready(ready)).rejects.toBeInstanceOf(LegionDaemonContractError);
+});
+
+// The Legion boot's `claims/ready` retries say each failure on the host's own writer, and stop
+// with the host (R24 of dispatch://INFRA-3589): once its signal aborts, nothing more is said and
+// no attempt is sent again.
+test("a ready retried on a 5xx says its failures on the host's writer, and once the host's signal aborts it says nothing and sends no retry", async () => {
+  const busy = new LegionDaemonApiError(
+    "POST",
+    "/legion/v1/claims/ready",
+    503,
+    undefined,
+    "x",
+    true,
+    0
+  );
+  const consoleLines: unknown[][] = [];
+  const consoleError = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    consoleLines.push(args);
+  });
+  try {
+    // The stop begins while the first attempt is on the wire.
+    const stoppedDuring = new AbortController();
+    const during: string[] = [];
+    let duringCalls = 0;
+    const refused = await callReadyWithRetry(
+      "claims/ready",
+      async () => {
+        duringCalls += 1;
+        stoppedDuring.abort();
+        throw busy;
+      },
+      { log: (line) => during.push(line), signal: stoppedDuring.signal }
+    ).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(refused).toBeInstanceOf(LegionDaemonApiError);
+    expect(duringCalls).toBe(1);
+    expect(during).toEqual([]);
+
+    // The stop begins while the boot waits to try again, just after the line that says so.
+    const stoppedWaiting = new AbortController();
+    const waiting: string[] = [];
+    let waitingCalls = 0;
+    const ended = await callReadyWithRetry(
+      "claims/ready",
+      async () => {
+        waitingCalls += 1;
+        throw busy;
+      },
+      {
+        log: (line) => {
+          waiting.push(line);
+          queueMicrotask(() => stoppedWaiting.abort());
+        },
+        signal: stoppedWaiting.signal,
+      }
+    ).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(ended).toBe(busy);
+    expect(waitingCalls).toBe(1);
+    expect(waiting).toEqual([
+      "claims/ready failed (attempt 1/3), retrying in 1 s: POST /legion/v1/claims/ready failed with 503: x",
+    ]);
+    expect(consoleLines).toEqual([]);
+  } finally {
+    consoleError.mockRestore();
+  }
 });
 
 test("activity posts the claim wire's report and accepts only the empty 204", async () => {
@@ -1251,6 +1321,7 @@ test.each([
   await callReadyWithRetry(
     "claims/ready",
     () => client.ready(readyInput),
+    { log: () => undefined },
     async (ms) => {
       waits.push(ms);
     }

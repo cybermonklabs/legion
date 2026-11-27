@@ -187,8 +187,8 @@ state, again and again with waits of one, two, four and eight minutes and then t
 answers a state, the head moves or the pull request is no longer open, each
 read logged with its wait; a minute after a read found the head conflicting with its base, to
 read it once more before it acts on the conflict; and once after GitHub reports the pull request
-out of the merge queue. Nothing else runs on a timer, and it reads one issue's own pull request
-rather than a listing of every open one. A read that finds the head
+out of the merge queue. Nothing else runs on a timer but the rate reading below, and it reads one
+issue's own pull request rather than a listing of every open one. A read that finds the head
 conflicting also reads the base branch's rules, its rulesets and its classic branch protection,
 for the checks the base requires and whether it requires a current branch, since that decides
 whether the conflict needs a merge forward now. It reads no check run and no
@@ -237,6 +237,79 @@ rate-limit answer ends the start's reads there, and each issue's next handoff re
 implementer's completion of implementing reads its branch's open pull request with the implement
 App too, and is refused `HANDOFF_NO_PULL_REQUEST` when there is none and the record holds none
 merged.
+
+The daemon also logs a rate reading: one `github_rate_reading` line for each installation GitHub
+lists for each App the daemon holds a key for (`GET /app/installations`), whichever owners the
+project serves. Two roles of one App read it once, using whichever role holds a key. A pass runs
+as the workflow runtime starts, and each next one ten minutes after the last, or earlier, 45
+seconds before the earliest counter reset the reading knows of that no pass has read in its last
+minute. A reset already in its last minute when a pass ends, because the pass began outside it,
+makes the next pass due at once. So each installation is read once in each counter's last minute
+whenever the reading holds that counter's reset, which any reading of the installation in that
+hour names, a failed one's where it read the counter before it failed; an installation no reading
+has read since the counter last reset has no reset held, and no pass is due for that minute. A
+pass due in a last minute that reaches the installation only after the reset has passed gives that
+hour no line from its last minute. Each line names its writer
+(`program`, `daemon` here; `process`, the host's name; `project`, the daemon's project key), the
+App (`app_id`, and `app_slug`, the slug GitHub lists the installations with at that pass), the
+installation (`owner`, `installation_id`), the permissions GitHub lists that installation granted
+(`permissions`, as `GET /app/installations` answers them to the App's JWT, on an error line too),
+how many installations the list held (`installations`), whether that installation was read in the
+last minute before one of its known counters' resets, the ones that reading read or, where it read
+none, the ones the reading holds from before (`before_reset`), GitHub's used count, limit
+and reset of the installation's REST core counter (`core_used`, `core_limit`, `core_reset`) and of
+its GraphQL counter (`graphql_used`, `graphql_limit`, `graphql_reset`), and the daemon's own calls
+on each counter since its reset, by the code path that made them (`core_own`, `graphql_own`:
+`pull_request_reads`, `merge_state_reads`, `outbox`, `review_body`, `review_permission`,
+`default_branch`, `handoff_pull_request`, `token_identity`, `leak_check`, `rate_reading`, and
+`other` for every other call). An App on `token_command` is not read (below), so `token_identity`,
+the kind of the checks a released token is held to, shows on no line today.
+
+The own counts are the calls GitHub answered, by caller kind, not quota: GitHub's GraphQL used
+count is points, which one call can spend several of, and its core used count holds a request
+answered 304 only where GitHub charges it, so the used count less the own counts measures nobody's
+use. The reading mints a read token of each installation and reads the core counter from the
+headers of `GET /repos/OWNER/REPO/actions/workflows?per_page=1` on the first repository the
+installation lists, even when that call is refused; where the listing of its repositories names
+no repository to read though GitHub answered it (a refusal, no repository, a name that is no
+repository's, a body that is no JSON), it reads the counter from the listing's answer instead. It
+reads the GraphQL counter from `GET /rate_limit`, which costs nothing. So each pass costs each
+installation one core call, the workflows read, and two where the first repository is listed
+first: on the installation's first pass, and on the pass after its repository answered 404; an
+installation whose listing names no repository costs one, the listing, on every pass. The first
+mint of each App also reads its bot user once under that installation's token. A reading whose
+counter resets between the counter read and the read of the own counts is an error ("the reading
+spans two rate windows"), since the two would be of different hours.
+
+Each App's list has thirty seconds to finish, and each installation's mint and reads share a
+separate thirty-second bound, so one stalled installation does not stop every later reading. An
+installation whose token or read fails, or that GitHub lists as suspended, still has its line,
+carrying `error` and no counter; its `before_reset` is true where the failed try was in the last
+minute of a reset the reading knows of the installation, so that minute shows as tried and read
+nothing rather than as a minute no line came from. A suspended installation that GitHub lists
+with no account has its line with no `owner`; one listed with no id has no line, since no line
+could name it, and is not counted in `installations`; neither fails the list. A permission GitHub
+lists with a value that is not text is left out of `permissions`. An App whose list GitHub
+refuses has one line with `error` for each installation the reading holds of it, with the
+`owner`, the `permissions` and the count its last list gave, and `before_reset` as above, so an
+owner whose list fails in a last minute still has that minute's line; with none held, and for a
+list that names no installation (`GET /app/installations listed no installation of the App`), it
+has one line with `error` and no installation, so no pass is silent for an App. A failed reading
+or a refused list keeps the resets the installation's last readings read, a failed reading's own
+where it read the core counter before it failed, so the pass before them still runs; an
+installation the list no longer holds is forgotten with them. A reading that fails in a counter's
+last minute still counts as that minute's reading, so a failing installation is read once there
+rather than pass after pass. An installation that a secondary limit holds, because GitHub
+answered one of the daemon's calls with that installation's token with one, is sent nothing until
+the end GitHub asked for (its `Retry-After`, else a minute, at most an hour), and its line carries
+the hold as its `error`; a primary limit holds no reading, since its refusal still names the spent
+counter. A line's `error` holds at most 1,024 bytes: a longer one, such as a refusal carrying
+GitHub's whole body, is cut at a whole character and ends with the length it was cut from. Each
+pass lists every App before it reads any installation, then reads the installations of every App
+in a counter's last minute first, the soonest reset first, then the rest. When the daemon holds an
+App's key, it says once as the reading starts that it reads each installation of those Apps,
+naming their ids and the interval. An App on `token_command` holds no key to list its
+installations with, so it is not read, and the daemon says so once as the reading starts.
 
 `scripts/github-apps/create.ts` registers all three from the manifests beside it:
 `scripts/github-apps/implement.json` and `review.json` hold the permissions above and carry no
