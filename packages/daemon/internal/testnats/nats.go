@@ -294,7 +294,8 @@ func external() (string, string, error) {
 
 // shownSetting is the value of a URL setting as an error names it: "" for one not set, else the
 // URL as oauth2call.AskedURL names a URL a request asks (its scheme, host and path, never its user
-// information, query or fragment), which is redact.NotPrinted where the URL rule refuses the rest,
+// information, query or fragment, and the authority of a URL that holds user information as the
+// mark of a URL with credentials), which is redact.NotPrinted where the URL rule refuses the rest,
 // a nats:// client URL among them, or where the value does not parse.
 func shownSetting(value string) string {
 	if value == "" {
