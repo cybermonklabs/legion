@@ -262,7 +262,6 @@ describe("envoy OMP extension", () => {
     const stopSink = rowLogSink((entry) => {
       if (entry.level === "info") infos.push(entry.message);
     });
-    const start = Date.now();
     try {
       const notifications: string[] = [];
       const intervals: (() => void)[] = [];
@@ -291,9 +290,9 @@ describe("envoy OMP extension", () => {
         []
       );
 
-      // Past the bound, the background retry's pass finds NATS still closed, and the session is
-      // told that it receives nothing.
-      setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
+      // Past the bound, read from `Date.now()` after `session_start` so a slow import or start
+      // cannot leave `setSystemTime` frozen inside the session's `INBOUND_FIRST_OPEN_BOUND_MS`.
+      setSystemTime(new Date(Date.now() + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
       await until(
         "the outage notice",
         rowProbe(() => {
@@ -954,7 +953,6 @@ describe("envoy OMP extension", () => {
       const stopSink = rowLogSink((entry) => {
         if (entry.level === "warn") warnings.push(entry.message);
       });
-      const start = Date.now();
       try {
         const notifications: string[] = [];
         const intervals: (() => void)[] = [];
@@ -970,9 +968,10 @@ describe("envoy OMP extension", () => {
         const fixture = createPi();
         await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, context);
-        // The start race is held for its bound (`INBOUND_FIRST_OPEN_BOUND_MS`). Past it, the
-        // background retry's pass, whose dial fails too, tells the session.
-        setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
+        // The start race is held for its bound (`INBOUND_FIRST_OPEN_BOUND_MS`). Advance from
+        // `Date.now()` after `session_start` so a slow import or start never leaves the clock
+        // frozen inside the bound; the background retry's pass then tells the session.
+        setSystemTime(new Date(Date.now() + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
         await until(
           "the outage notice",
           rowProbe(() => {

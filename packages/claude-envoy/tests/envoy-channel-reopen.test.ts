@@ -273,6 +273,13 @@ test("a reopen refused for good under an nkey seed is dialed again at the next h
   const { broker, stderr } = run
   const { mod, notices } = await sessionMod(run)
   const gaveUp = "envoy-channel: gave up opening a new NATS connection"
+  const awaitServing = (what: string, condition: () => boolean): Promise<true> =>
+    until(what, whileServing(run, condition)).catch((error: unknown) => {
+      throw new Error(
+        `${String(error)}; unavailable=${notices("Envoy inbound unavailable").length} restored=${notices("Envoy inbound restored").length}; ${run.state()}`,
+        { cause: error },
+      )
+    })
   try {
     await run.checkConnects(
       broker.connects[0]?.["nkey"] === user.getPublicKey(),
@@ -283,12 +290,9 @@ test("a reopen refused for good under an nkey seed is dialed again at the next h
     // no redial inside a dial cures it, and only a later dial can.
     broker.refuseConnects = true
     await settled("the refused NATS clients to close", broker.closeClients())
-    await until(
+    await awaitServing(
       "a reopen refused for good, and another at a later heartbeat",
-      whileServing(
-        run,
-        () => count(stderr(), gaveUp) >= 2 && notices("Envoy inbound unavailable").length > 0,
-      ),
+      () => count(stderr(), gaveUp) >= 2 && notices("Envoy inbound unavailable").length > 0,
     )
     expect(stderr()).toContain(
       `${gaveUp} (could not connect to NATS at the server ENVOY_NATS_URL names presenting an nkey seed: Authorization Violation); dialing again at the next heartbeat`,
@@ -315,17 +319,14 @@ test("a reopen refused for good under an nkey seed is dialed again at the next h
     // relay reopens on it at a new epoch.
     const refusedUntil = run.deliveries.length
     broker.refuseConnects = false
-    await until(
+    await awaitServing(
       "the relay on a heartbeat's new connection, and the restored notice, in the session and on stderr",
-      whileServing(
-        run,
-        () =>
-          run.relaySubscriptions() === 2 &&
-          broker.liveConnections === 1 &&
-          run.deliveries.slice(refusedUntil).some((asked) => asked.epoch !== firstEpoch) &&
-          notices("Envoy inbound restored").length > 0 &&
-          stderr().includes("envoy-channel: this session receives again"),
-      ),
+      () =>
+        run.relaySubscriptions() === 2 &&
+        broker.liveConnections === 1 &&
+        run.deliveries.slice(refusedUntil).some((asked) => asked.epoch !== firstEpoch) &&
+        notices("Envoy inbound restored").length > 0 &&
+        stderr().includes("envoy-channel: this session receives again"),
     )
     await run.checkConnects(
       broker.connects.at(-1)?.["nkey"] === user.getPublicKey(),
