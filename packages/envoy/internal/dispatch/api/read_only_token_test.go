@@ -464,6 +464,8 @@ func registerRefusal(t *testing.T) (refusal string) {
 // refusal names every one of them. It replaces the package's readClasses for its length, so it is
 // not parallel.
 func TestRegisterRefusesAGETRowWithNoReadClass(t *testing.T) {
+	// Not parallel: it writes the package variable readClasses, the table every server of the package
+	// reads at Register.
 	kept := readClasses
 	t.Cleanup(func() { readClasses = kept })
 	if refusal := registerRefusal(t); refusal != "" {

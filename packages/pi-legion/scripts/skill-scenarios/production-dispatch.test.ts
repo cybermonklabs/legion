@@ -163,6 +163,22 @@ test("a 429 or a 5xx is read again, and another status fails naming the read", a
   );
 });
 
+// An outage (`@legion/contracts/http-status`: a 5xx, a 408 or a 429) is no answer about the read:
+// Dispatch, or a hop in front of it, may answer the same read the next time.
+test.each([408, 429, 500, 501, 503])("a read answered %i is read again", async (status) => {
+  let reads = 0;
+  const { fetch, sent } = fakeFetch(() =>
+    ++reads === 1 ? new Response("busy", { status }) : json({ markdown: "x", version: 1 })
+  );
+  const waits: number[] = [];
+  const dispatch = new ProductionDispatch(credentials, fetch, async (ms) => {
+    waits.push(ms);
+  });
+  expect((await dispatch.artifactText("art-1")).markdown).toBe("x");
+  expect(sent).toHaveLength(2);
+  expect(waits).toEqual([1000]);
+});
+
 /** A 200 whose body fails while it arrives: the connection closes after the headers. */
 function brokenBody(): Response {
   return new Response(

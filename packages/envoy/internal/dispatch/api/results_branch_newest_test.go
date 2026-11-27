@@ -1,13 +1,14 @@
-// results_branch_newest_test.go holds GET /api/v1/issues/{key}/results to R5: an `after_merge`
-// or `default_branch` check takes the newest result that counts at a branch, or that Dispatch could
-// not place on one. A pass stands only when that result is a pass that counts, and a result Dispatch
-// could not place makes the answer not known. The test reads the route's answer as JSON into the
-// types of this file, so it builds at a commit before the rule and fails there on its own assertion.
+// results_branch_newest_test.go holds GET /api/v1/issues/{key}/results to R19 for a check compared
+// with a branch, an `after_merge` or a `default_branch` check: the newest result that counts
+// decides, at a commit that holds the merge of the work. A pass and a fail that count at one
+// commit make the answer not known, in either order, and a later pass there does not end it;
+// across commits the newest result decides by its verdict; a newest result Dispatch could not
+// place makes the answer not known. The answer names the results that decide it and their commit.
+// The test reads the route's answer as JSON into the types of results_after_merge_rig_test.go, so
+// it builds at a commit before the rule and fails there on its own assertion.
 package api
 
 import (
-	"encoding/json"
-	"net/http"
 	"slices"
 	"testing"
 )
@@ -21,11 +22,12 @@ const branchNewestChecks = ":::check{#c9 when=\"after_merge\"}\n" +
 	"The trunk builds at the merged commit.\n" +
 	":::\n"
 
-// The commits of these tests. branchNewestC is the head the issue's pull request merged at, and
-// X, Y and Z three more commits that main holds. branchNewestW is a commit whose compare read
-// fails.
+// The commits of these tests. branchNewestC is the commit the issue's pull request merged into
+// main as, and branchNewestH that pull request's final head. X, Y and Z are three later commits of
+// main, each of whose history holds C. branchNewestW is a commit whose compare read fails.
 const (
 	branchNewestC = "1d0adea3bdada61b2c393bfd3bff5888093cbe8d"
+	branchNewestH = "1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e"
 	branchNewestX = "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a"
 	branchNewestY = "7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b"
 	branchNewestZ = "7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c"
@@ -33,144 +35,109 @@ const (
 )
 
 // branchNewestStands is a check's pass_stands, with only the members this test reads.
-type branchNewestStands struct {
-	Answer  string   `json:"answer"`
-	Reason  string   `json:"reason"`
-	Roles   []string `json:"roles"`
-	Results []string `json:"results"`
-}
+type branchNewestStands = afterMergeStands
 
-// branchNewestRig is a Dispatch whose issue's pull request merged into main at branchNewestC, and
-// whose GitHub says main holds each commit but branchNewestW, whose compare read answers 502.
+// branchNewestRig is a Dispatch whose issue's pull request #31 merged into main as branchNewestC,
+// and whose GitHub says main carries C, X, Y and Z, that the history of X, Y and Z holds C, and
+// answers 502 for each compare read of branchNewestW.
 type branchNewestRig struct {
-	handler http.Handler
-	issue   string
+	rig   *afterMergeRig
+	issue string
 }
 
 func newBranchNewestRig(t *testing.T) branchNewestRig {
 	t.Helper()
-	handler, database := resultsGitHubAnswering(t, map[string]bool{"acme/widgets": true}, nil, "main",
-		func(_, head string) (int, string) {
-			if head == branchNewestW {
-				return http.StatusBadGateway, ""
-			}
-			return http.StatusOK, "behind"
-		})
-	issue := issueInRepository(t, handler, "RESNW", "acme/widgets", "A check of the deploy")
-	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", branchNewestChecks)
-	writeHeadOnBase(t, database, "acme/widgets", 31, branchNewestC, "merged", issue.Key, "main")
-	return branchNewestRig{handler: handler, issue: issue.Key}
+	rig := newAfterMergeRig(t)
+	issue := rig.issue(t, "A check of the deploy", branchNewestChecks)
+	rig.github.carry("main", branchNewestC, branchNewestX, branchNewestY, branchNewestZ)
+	rig.github.hold(branchNewestC, branchNewestX, branchNewestY, branchNewestZ)
+	rig.github.fail(branchNewestW)
+	rig.github.setPull(31, afterMergePull(issue, 31, branchNewestH, "legion/"+issue, "main", branchNewestC, "2026-11-20T12:00:00Z"), 0)
+	writeHeadOnBase(t, rig.database, "acme/widgets", 31, branchNewestH, "merged", issue, "main")
+	return branchNewestRig{rig: rig, issue: issue}
 }
 
 // record records role's verdict of check at commit, and answers the stored result's id.
 func (r branchNewestRig) record(t *testing.T, check, role, verdict, commit string) string {
 	t.Helper()
-	fields := map[string]any{"role": role}
-	if verdict == "fail" {
-		fields["failed"] = 1
-	}
-	response := recordResult(t, r.handler, r.issue, resultBody(check, verdict, commit, fields))
-	if response.Code != http.StatusCreated {
-		t.Fatalf("record %s's %s of %s at %s: status=%d body=%s", role, verdict, check, commit, response.Code, response.Body.String())
-	}
-	var recorded struct {
-		Result struct {
-			ID string `json:"id"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &recorded); err != nil || recorded.Result.ID == "" {
-		t.Fatalf("decode the recorded %s: %v (body %s)", verdict, err, response.Body.String())
-	}
-	return recorded.Result.ID
+	return r.rig.record(t, r.issue, check, role, verdict, commit)
 }
 
 // stands is check's pass_stands as the results read answers it.
 func (r branchNewestRig) stands(t *testing.T, check string) branchNewestStands {
 	t.Helper()
-	response := dispatchRequest(t, r.handler, http.MethodGet, "/api/v1/issues/"+r.issue+"/results", nil, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("read the results of %s: status=%d body=%s", r.issue, response.Code, response.Body.String())
+	read, held := r.rig.read(t, r.issue)[check]
+	if !held {
+		t.Fatalf("the read of %s holds no check %s", r.issue, check)
 	}
-	var read struct {
-		Checks []struct {
-			BlockID    string             `json:"block_id"`
-			PassStands branchNewestStands `json:"pass_stands"`
-		} `json:"checks"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &read); err != nil {
-		t.Fatalf("decode the results of %s: %v", r.issue, err)
-	}
-	for _, block := range read.Checks {
-		if block.BlockID == check {
-			return block.PassStands
-		}
-	}
-	t.Fatalf("the read of %s holds no check %s: %s", r.issue, check, response.Body.String())
-	return branchNewestStands{}
+	return read.PassStands
 }
 
-// TestTheNewestResultDecidesACheckComparedWithABranch: R5. The newest result that counts at a
-// branch, or that Dispatch could not place, decides the check, and a later fail cancels an earlier
-// pass.
+// TestTheNewestResultDecidesACheckComparedWithABranch: R19 and R30. The newest result that counts
+// decides a check compared with a branch, and the answer names the results that decide it and
+// their commit.
 func TestTheNewestResultDecidesACheckComparedWithABranch(t *testing.T) {
 	t.Parallel()
 	// The case production printed as a pass from tester: the tester's pass at the merged commit,
-	// then two fails at the same commit after a deploy moved back.
+	// then two fails at the same commit. A commit holds one answer, so a pass and a fail there make
+	// it not known, named by the pass and the newer fail.
 	t.Run("a pass then two fails", func(t *testing.T) {
+		t.Parallel()
 		rig := newBranchNewestRig(t)
-		rig.record(t, "c9", "tester", "pass", branchNewestC)
+		pass := rig.record(t, "c9", "tester", "pass", branchNewestC)
 		rig.record(t, "c9", "tester", "fail", branchNewestC)
 		newer := rig.record(t, "c9", "tester", "fail", branchNewestC)
-		if got := rig.stands(t, "c9"); got.Answer != "no" || !slices.Equal(got.Results, []string{newer}) {
-			t.Fatalf("c9 answers %+v, want no, decided by the newer fail %s", got, newer)
+		if got := rig.stands(t, "c9"); got.Answer != "unknown" || got.Reason != "pass_and_fail" ||
+			!slices.Equal(got.Results, []string{pass, newer}) || got.Commit != branchNewestC {
+			t.Fatalf("c9 answers %+v, want unknown for pass_and_fail, named by the pass %s and the newer fail %s at %s", got, pass, newer, branchNewestC)
 		}
 	})
+	// The other order reads the same, and a later pass at that commit does not end it.
 	t.Run("a fail then a pass", func(t *testing.T) {
+		t.Parallel()
 		rig := newBranchNewestRig(t)
-		rig.record(t, "c9", "tester", "fail", branchNewestC)
+		fail := rig.record(t, "c9", "tester", "fail", branchNewestC)
 		pass := rig.record(t, "c9", "tester", "pass", branchNewestC)
-		if got := rig.stands(t, "c9"); got.Answer != "yes" || !slices.Equal(got.Roles, []string{"tester"}) || !slices.Equal(got.Results, []string{pass}) {
-			t.Fatalf("c9 answers %+v, want yes from tester, decided by %s", got, pass)
+		if got := rig.stands(t, "c9"); got.Answer != "unknown" || got.Reason != "pass_and_fail" ||
+			!slices.Equal(got.Results, []string{pass, fail}) || got.Commit != branchNewestC {
+			t.Fatalf("c9 answers %+v, want unknown for pass_and_fail, named by the pass %s and the fail %s at %s", got, pass, fail, branchNewestC)
+		}
+		later := rig.record(t, "c9", "tester", "pass", branchNewestC)
+		if got := rig.stands(t, "c9"); got.Answer != "unknown" || got.Reason != "pass_and_fail" ||
+			!slices.Equal(got.Results, []string{later, fail}) || got.Commit != branchNewestC {
+			t.Fatalf("after a later pass c9 answers %+v, want unknown for pass_and_fail, named by the later pass %s and the fail %s at %s", got, later, fail, branchNewestC)
 		}
 	})
+	// Over three commits of main that hold the merge, the newest result decides.
 	t.Run("three commits", func(t *testing.T) {
+		t.Parallel()
 		rig := newBranchNewestRig(t)
 		rig.record(t, "c9", "tester", "pass", branchNewestX)
 		rig.record(t, "c9", "tester", "fail", branchNewestY)
 		atZ := rig.record(t, "c9", "tester", "pass", branchNewestZ)
-		if got := rig.stands(t, "c9"); got.Answer != "yes" || !slices.Equal(got.Results, []string{atZ}) {
-			t.Fatalf("c9 answers %+v, want yes, decided by the pass at Z %s", got, atZ)
-		}
-	})
-	// The roles are those of the passes after the newest fail, of two: the reviewer's pass came
-	// between the two fails, so a walk that crosses the newest fail names the reviewer too, and a
-	// walk of the deciding pass alone names the tester alone.
-	t.Run("roles after the newest fail", func(t *testing.T) {
-		rig := newBranchNewestRig(t)
-		rig.record(t, "c9", "tester", "fail", branchNewestC)
-		rig.record(t, "c9", "reviewer", "pass", branchNewestC)
-		rig.record(t, "c9", "tester", "fail", branchNewestC)
-		rig.record(t, "c9", "implementer", "pass", branchNewestC)
-		pass := rig.record(t, "c9", "tester", "pass", branchNewestC)
-		got := rig.stands(t, "c9")
-		if roles := slices.Sorted(slices.Values(got.Roles)); got.Answer != "yes" || !slices.Equal(roles, []string{"implementer", "tester"}) || !slices.Equal(got.Results, []string{pass}) {
-			t.Fatalf("c9 answers %+v, want yes from the implementer and the tester alone, whose passes came after the newest fail, decided by %s: the reviewer's pass came before that fail", got, pass)
+		if got := rig.stands(t, "c9"); got.Answer != "yes" || got.Reason != "" || !slices.Equal(got.Roles, []string{"tester"}) ||
+			!slices.Equal(got.Results, []string{atZ}) || got.Commit != branchNewestZ {
+			t.Fatalf("c9 answers %+v, want yes from tester, decided by the pass at Z %s", got, atZ)
 		}
 	})
 	t.Run("default_branch", func(t *testing.T) {
+		t.Parallel()
 		rig := newBranchNewestRig(t)
-		rig.record(t, "d9", "tester", "pass", branchNewestC)
-		fail := rig.record(t, "d9", "tester", "fail", branchNewestC)
-		if got := rig.stands(t, "d9"); got.Answer != "no" || !slices.Equal(got.Results, []string{fail}) {
-			t.Fatalf("d9 answers %+v, want no, decided by the fail %s", got, fail)
+		rig.record(t, "d9", "tester", "pass", branchNewestX)
+		atY := rig.record(t, "d9", "tester", "fail", branchNewestY)
+		if got := rig.stands(t, "d9"); got.Answer != "no" || got.Reason != "fail" ||
+			!slices.Equal(got.Results, []string{atY}) || got.Commit != branchNewestY {
+			t.Fatalf("d9 answers %+v, want no for fail, decided by the fail at Y %s", got, atY)
 		}
 	})
 	t.Run("newest not placed", func(t *testing.T) {
+		t.Parallel()
 		rig := newBranchNewestRig(t)
 		rig.record(t, "c9", "tester", "pass", branchNewestC)
 		atW := rig.record(t, "c9", "tester", "fail", branchNewestW)
-		if got := rig.stands(t, "c9"); got.Answer != "unknown" || !slices.Equal(got.Results, []string{atW}) {
-			t.Fatalf("c9 answers %+v, want unknown, as Dispatch could not place the newest result %s", got, atW)
+		if got := rig.stands(t, "c9"); got.Answer != "unknown" || got.Reason != "not_placed" ||
+			!slices.Equal(got.Results, []string{atW}) || got.Commit != branchNewestW {
+			t.Fatalf("c9 answers %+v, want unknown for not_placed, as Dispatch could not place the newest result %s", got, atW)
 		}
 	})
 }

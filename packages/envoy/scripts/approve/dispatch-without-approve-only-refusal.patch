@@ -1,11 +1,11 @@
---- a/packages/envoy/internal/dispatch/api/server.go
-+++ b/packages/envoy/internal/dispatch/api/server.go
-@@ -1731,7 +1731,7 @@
+--- a/packages/envoy/internal/dispatch/api/server.go	2026-11-26 21:30:00.000000000 +0000
++++ b/packages/envoy/internal/dispatch/api/server.go	2026-11-26 21:30:00.000000000 +0000
+@@ -1724,7 +1724,7 @@
  			writeError(w, codeResultsOnlyToken, http.StatusForbidden, resultsOnlyRefusal)
  			return
  		}
 -		if !approveListed && approveOnlyRequest(r) {
-+		if false { // approve-check's control build: the approve-only refusal is removed
++		if false && !approveListed && approveOnlyRequest(r) { // approve-check's control build: the approve-only refusal is removed
  			writeError(w, contracts.DispatchApproveOnlyToken, http.StatusForbidden, approveOnlyRefusal)
  			return
  		}

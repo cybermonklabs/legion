@@ -23,13 +23,16 @@ func ciEvidenceAt(recorded, conclusion string) (model.CheckBlock, comparison) {
 		&ciRun{id: 71, name: "go-checks", status: ciRunCompleted, conclusion: conclusion}, false, lineWordsFor(nil, ""))
 	project := "ACME"
 	actor := model.Actor{Kind: "session", ID: "github-actions:run-1:attempt-1:check-71", Project: &project}
-	run := oauthwire.CIRun{Repository: "example/repo", Ref: "refs/heads/legion/ACME-1", SHA: sha, CheckRunID: "71", RunID: "1", EventName: "push"}
+	run := oauthwire.Run{
+		CIRun: oauthwire.CIRun{Repository: "example/repo", Ref: "refs/heads/legion/ACME-1", SHA: sha, CheckRunID: "71", RunID: "1", RunAttempt: "1", EventName: "push"},
+		ID:    1, Attempt: 1, CheckRun: 71,
+	}
 	resolved := resolvedCheck{
 		checkBlockRef:   checkBlockRef{IssueKey: "ACME-1", BlockID: "c1", Ref: "dispatch://ACME-1/artifact/verification-md#b-c1"},
 		checkResolution: checkResolution{indexedCheck: indexedCheck{SHA256: check.SHA256}, Attributes: docs.CheckAttributesOfBlock(check)},
 	}
 	job := ciJobCheckResult(checkResultInput{Check: "c1", Commit: sha, Verdict: recorded}, resolved, actor,
-		githubapp.CheckRun{ID: 71, Name: "go-checks", HeadSHA: sha}, run, 1, "github:example/repo:run:1:attempt:1:check:71", "ACME-1")
+		githubapp.CheckRun{ID: 71, Name: "go-checks", HeadSHA: sha}, run, "ACME-1")
 	moved := false
 	for _, result := range []*model.CheckResult{&job, derived} {
 		result.CheckWordsMoved = &moved

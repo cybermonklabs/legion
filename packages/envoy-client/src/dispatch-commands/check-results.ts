@@ -26,9 +26,8 @@ import { printableStrings } from "../runner-log";
  *  that stands at none of the compared commits, and the whole of every other one. */
 const BRIEF_READING_CHARACTERS = 200;
 
-/** The three reasons a check compared its results with nothing, and the two a result's commit
- *  cannot be placed, in words a reader acts on. A check takes all three and a result all but
- *  no_pull_request_or_branch, so the check's set types this map and answers both. Each takes the
+/** The reasons a check compared its results with nothing or a result's commit cannot be placed,
+ *  in words a reader acts on. The check's set types this map and answers both. Each takes the
  *  repository the answer is about where the server names one (`repo`): a result whose commit is
  *  taken to be of a repository the issue links a pull request in is decided by that repository,
  *  and "the repository" would read as the issue's own. Keyed by `compared_nothing`'s reasons, so a
@@ -44,6 +43,7 @@ const COMPARISON_REASONS: Readonly<
     repo === undefined
       ? "a read Dispatch made did not answer"
       : `a read Dispatch made of ${repo} did not answer`,
+  not_merged: () => "the work has no merge that Dispatch knows",
 };
 
 /** Whether a reason the server sent is one this build words. The server gives the reasons its
@@ -91,7 +91,13 @@ function basisText(basis: CheckBasis): string {
         : `${pullRequestName(basis, basis.pull_request)} `;
     return `the head of ${pullRequest}at ${basis.commit ?? "an unnamed commit"}${learned}`;
   }
-  if (basis.kind === "branch") return `branch ${branchName(basis)}${learned}`;
+  if (basis.kind === "branch") {
+    // A branch an after_merge check reads at its work's merge names that merge, and the repository
+    // it was read in where the server names one.
+    if (basis.merge_commit === undefined) return `branch ${branchName(basis)}${learned}`;
+    const repository = basis.repo === undefined ? "" : `in ${basis.repo} `;
+    return `${repository}branch ${basis.branch ?? "unnamed"}, merged at ${basis.merge_commit}${learned}`;
+  }
   if (basis.kind === "branch_head") {
     return `the head of branch ${basis.branch ?? "unnamed"} at ${basis.commit ?? "an unnamed commit"}`;
   }
@@ -167,13 +173,85 @@ function headsReadYes(subjects: readonly PassStandsSubject[]): string {
   return `${yes} of ${heads.size} heads read yes`;
 }
 
+/** Whether `check` is compared with a branch: an after_merge or default_branch check read with no
+ *  commit named (`at`), whose answer names the fact that decides it (`branchPassStandsText`). */
+function comparedWithBranch(check: CheckBlock): boolean {
+  return (
+    (check.when === "after_merge" || check.when === "default_branch") &&
+    !(check.compared_with ?? []).some((basis) => basis.kind === "named")
+  );
+}
+
+/** R5 for a check compared with a branch, by the reason Dispatch gives: the newest result that
+ *  counts at a commit holding the work's merge decides, and the words name it and its commit, or
+ *  the pass and the fail that both count there, the result Dispatch could not place, the failed
+ *  read, or, for a check of a running program, the deploy it reads. `repository` is the check
+ *  owner's repository, which a basis omits. Undefined where the answer gives no reason this build
+ *  words, or names no result the reason needs, so `passStandsText` words it as it words any other
+ *  check. */
+function branchPassStandsText(
+  check: CheckBlock,
+  pass: CheckPassStands,
+  yes: string,
+  repository: string | undefined
+): string | undefined {
+  const results = check.results ?? [];
+  const deciding = pass.results ?? [];
+  const passed = results.find(
+    (result) => result.verdict === "pass" && deciding.includes(result.id)
+  );
+  const failed = results.find(
+    (result) => result.verdict === "fail" && deciding.includes(result.id)
+  );
+  const result = results.find((result) => deciding.includes(result.id));
+  const repo = repository ?? check.compared_with?.[0]?.repo ?? "the repository";
+  const deploy = pass.deploy;
+  const program = deploy?.program ?? check.program ?? "the program";
+  if (pass.answer === "yes" && passed !== undefined) {
+    return `${yes}, as the newest result is pass ${passed.id} at ${pass.commit ?? passed.commit_sha}`;
+  }
+  switch (pass.reason) {
+    case "fail":
+      return failed === undefined
+        ? undefined
+        : `A pass stands: no, as the newest result is fail ${failed.id} at ${pass.commit ?? failed.commit_sha}`;
+    case "no_result":
+      return "A pass stands: no, as no result counts at a commit that holds the merge";
+    case "pass_and_fail":
+      return passed === undefined || failed === undefined
+        ? undefined
+        : `A pass stands: not known, as pass ${passed.id} and fail ${failed.id} both count at ${pass.commit ?? passed.commit_sha}. A retraction of the wrong one ends it`;
+    case "not_placed":
+      return result === undefined
+        ? undefined
+        : `A pass stands: not known, as Dispatch could not place ${result.verdict} ${result.id} at ${pass.commit ?? result.commit_sha}`;
+    case "read_failed":
+      return "A pass stands: not known, as a read Dispatch made did not answer";
+    case "program_not_named":
+      return `A pass stands: not known, as ${repo} runs more than one program and this check names none`;
+    case "no_deploy":
+      return `A pass stands: not known, as Dispatch holds no deploy of ${program} in ${repo}`;
+    case "deploy_not_merged":
+      return deploy === undefined
+        ? undefined
+        : `A pass stands: not known, as ${program} runs ${deploy.commit} since ${deploy.deployed_at}, which does not hold the merge`;
+    case "no_result_from_deploy":
+      return deploy === undefined
+        ? undefined
+        : `A pass stands: not known, as no result counts for ${program} at ${deploy.commit}, deployed ${deploy.deployed_at}`;
+    default:
+      return undefined;
+  }
+}
+
 /** R5 and R12 for one check: whether a pass of it stands, and from which roles. A check with
  *  subjects, the heads a pass must stand at, says how many of the heads read yes where the answer
  *  is not yes (`headsReadYes`); each subject's own line follows (`subjectLines`). A check compared
- *  with a branch names the newest result that decided it, or the one Dispatch could not place on a
- *  branch, whose commit comes from that result among the check's results. A check whose answer
- *  names no `pass_stands` gets no such words at all (`checkLines`). */
-function passStandsText(check: CheckBlock, pass: CheckPassStands): string {
+ *  with a branch names the fact that decides it (`branchPassStandsText`). Any other answer that
+ *  names the result that decided it, such as a branch check read at a commit you named, names that
+ *  result, or the one Dispatch could not place, at its commit. A check whose answer names no
+ *  `pass_stands` gets no such words at all (`checkLines`). */
+function passStandsText(check: CheckBlock, pass: CheckPassStands, repository?: string): string {
   const roles = pass.roles ?? [];
   const yes =
     roles.length === 0 ? "A pass stands: yes" : `A pass stands: yes, from ${roles.join(", ")}`;
@@ -185,12 +263,16 @@ function passStandsText(check: CheckBlock, pass: CheckPassStands): string {
       ? `A pass stands: no, as ${read}`
       : `A pass stands: not known, as ${read}`;
   }
+  if (comparedWithBranch(check)) {
+    const branch = branchPassStandsText(check, pass, yes, repository);
+    if (branch !== undefined) return branch;
+  }
   const decidedID = pass.results?.[0];
   const decided = (check.results ?? []).find((result) => result.id === decidedID);
-  if (decided !== undefined) {
-    const named = `${decided.verdict} ${decided.id} at ${decided.commit_sha}`;
+  if (decided !== undefined && pass.reason !== "pass_and_fail") {
+    const named = `${decided.verdict} ${decided.id} at ${pass.commit ?? decided.commit_sha}`;
     if (pass.answer === "unknown") {
-      return `A pass stands: not known, as Dispatch could not place ${named} on a branch`;
+      return `A pass stands: not known, as Dispatch could not place ${named}`;
     }
     return `${pass.answer === "yes" ? yes : "A pass stands: no"}, as the newest result is ${named}`;
   }
@@ -326,10 +408,12 @@ function ciCheckLines(
 }
 
 /** One check: a head line naming what it compared with and whether a pass of it stands, the line
- *  of each head a pass must stand at (`subjectLines`), the check's own words once, then every
- *  result recorded against it. Where an open pull request's head is a subject, the head line
- *  counts the open pull requests in place of naming each basis, since each head has its own
- *  line and the merged ones have a line of count.
+ *  of the deploy a check of a running program reads, which a pass must come from, the line of each
+ *  head a pass must stand at (`subjectLines`), the check's own words once, then every result
+ *  recorded against it. Where an open pull request's head is a subject, the head line counts the
+ *  open pull requests in place of naming each basis, since each head has its own line and the
+ *  merged ones have a line of count. `repository` is the check owner's repository, which the
+ *  answer about a branch check's program names (`branchPassStandsText`).
  *
  *  An answer that names no `pass_stands` says nothing of whether a pass stands, and this prints
  *  nothing of it either: no state on the head line, no line for each head, and no line of a CI
@@ -337,7 +421,7 @@ function ciCheckLines(
  *  counting the open pull requests among its bases, and the words and every result follow, so a
  *  reader judges the results themselves. A run's Dispatch server answers so while its state is
  *  hidden (`DISPATCH_TEST_HIDE_STATE_FILE`), and so does a server that predates the answer. */
-function checkLines(check: CheckBlock, brief: boolean): string[] {
+function checkLines(check: CheckBlock, brief: boolean, repository?: string): string[] {
   const pass = check.pass_stands;
   if (pass !== undefined && check.ci !== undefined) {
     return ciCheckLines(check, check.ci, pass, brief);
@@ -356,10 +440,16 @@ function checkLines(check: CheckBlock, brief: boolean): string[] {
           ? "Compared with nothing, and this Dispatch server does not say why"
           : `Compared with nothing: ${reasonText(reason)}`;
   const results = check.results ?? [];
+  const deploy = pass?.deploy;
   return [
     pass === undefined
       ? `- ${check.block_id} (${check.when}). ${compared}.`
-      : `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check, pass)}.`,
+      : `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check, pass, repository)}.`,
+    ...(deploy === undefined
+      ? []
+      : [
+          `  Program ${deploy.program} runs ${deploy.commit} since ${deploy.deployed_at}; a pass of this check must come from this deploy.`,
+        ]),
     ...subjectLines(check),
     `  The check's words: ${check.text}`,
     ...(results.length === 0
@@ -375,6 +465,8 @@ function checkLines(check: CheckBlock, brief: boolean): string[] {
  *  its CI job recorded (`ciCheckLines`). A check with no result says so, and an issue with no
  *  Verification document says that instead of printing an empty list: Dispatch answers
  *  `verification_artifact_id` "" for such an issue, never null, so that is what is compared.
+ *  `repositories` names each check owner's repository, by issue key, where a check's answer names
+ *  it and its bases do not (`resultsCommand`, issues.ts).
  *
  *  Every string of the answer is text this command did not write: a CI job's log, a role's
  *  reading, a check's words, a reason. Each is read as runnerlog.Printable writes it
@@ -382,7 +474,11 @@ function checkLines(check: CheckBlock, brief: boolean): string[] {
  *  line breaks as `\n`, and no line it prints holds a "##[": no text from outside starts a line,
  *  and none reads as a line this command wrote, such as a check's head line or its
  *  `A pass stands:` line. */
-export function formatCheckResults(answer: IssueCheckResults, brief = false): string {
+export function formatCheckResults(
+  answer: IssueCheckResults,
+  brief = false,
+  repositories?: Readonly<Record<string, string>>
+): string {
   const results = printableStrings(answer);
   if (results.verification_artifact_id === "") {
     return `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`;
@@ -391,6 +487,8 @@ export function formatCheckResults(answer: IssueCheckResults, brief = false): st
   if (checks.length === 0) {
     return `${results.issue}'s Verification document holds no check blocks.`;
   }
-  const blocks = checks.map((check) => checkLines(checkWithNewerFields(check), brief).join("\n"));
+  const blocks = checks.map((check) =>
+    checkLines(checkWithNewerFields(check), brief, repositories?.[check.issue_key]).join("\n")
+  );
   return [`Checks of ${results.issue}:`, ...blocks].join("\n\n");
 }

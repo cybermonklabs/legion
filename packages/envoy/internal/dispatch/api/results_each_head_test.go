@@ -134,7 +134,7 @@ func eachHeadSame(got, want []string) bool {
 // fail at H2 then makes H2 no for its fail, and H1 stays yes.
 func TestEachOpenHeadHoldsTheStateOfItsOwnResults(t *testing.T) {
 	t.Parallel()
-	rig := newCIJobRig(t)
+	rig := newHeadRuleRig(t)
 	writeHead(t, rig.database, ciJobRepository, 70, eachHeadH1, "open", rig.issue)
 	writeHead(t, rig.database, ciJobRepository, 71, eachHeadH2, "open", rig.issue)
 
@@ -157,7 +157,7 @@ func TestEachOpenHeadHoldsTheStateOfItsOwnResults(t *testing.T) {
 // and the old commit keeps its own, which a read at that commit still gives.
 func TestTheStateAtAHeadComesOnlyFromItsCommit(t *testing.T) {
 	t.Parallel()
-	rig := newCIJobRig(t)
+	rig := newHeadRuleRig(t)
 	writeHead(t, rig.database, ciJobRepository, 70, eachHeadH1, "open", rig.issue)
 	writeHead(t, rig.database, ciJobRepository, 71, eachHeadH2, "open", rig.issue)
 
@@ -203,9 +203,9 @@ func TestTheStateAtAHeadComesOnlyFromItsCommit(t *testing.T) {
 func TestAPassStandsForTheCheckOnlyWhenEachOpenHeadReadsYes(t *testing.T) {
 	t.Parallel()
 	open := []string{eachHeadH1, eachHeadH2, eachHeadH3}
-	newRig := func(t *testing.T) *ciJobRig {
+	newRig := func(t *testing.T) headRuleRig {
 		t.Helper()
-		rig := newCIJobRig(t)
+		rig := newHeadRuleRig(t)
 		for index, head := range open {
 			writeHead(t, rig.database, ciJobRepository, 70+index, head, "open", rig.issue)
 		}
@@ -214,6 +214,7 @@ func TestAPassStandsForTheCheckOnlyWhenEachOpenHeadReadsYes(t *testing.T) {
 	}
 
 	t.Run("a pass at each open head in turn", func(t *testing.T) {
+		t.Parallel()
 		rig := newRig(t)
 		for index, head := range open {
 			eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", head)
@@ -232,7 +233,8 @@ func TestAPassStandsForTheCheckOnlyWhenEachOpenHeadReadsYes(t *testing.T) {
 		}
 	})
 	t.Run("the head with no pass is last", func(t *testing.T) {
-		rig := newCIJobRig(t)
+		t.Parallel()
+		rig := newHeadRuleRig(t)
 		writeHead(t, rig.database, ciJobRepository, 70, eachHeadH1, "open", rig.issue)
 		writeHead(t, rig.database, ciJobRepository, 71, eachHeadH2, "open", rig.issue)
 		writeHead(t, rig.database, ciJobRepository, 72, eachHeadH3, "open", rig.issue)
@@ -249,6 +251,7 @@ func TestAPassStandsForTheCheckOnlyWhenEachOpenHeadReadsYes(t *testing.T) {
 	})
 
 	t.Run("a pass at the merged head alone", func(t *testing.T) {
+		t.Parallel()
 		rig := newRig(t)
 		eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadMerged)
 		if check := eachHeadRead(t, rig.handler, rig.issue, "k1", ""); check.PassStands.Answer != "no" {
@@ -263,7 +266,7 @@ func TestAPassStandsForTheCheckOnlyWhenEachOpenHeadReadsYes(t *testing.T) {
 // the check's answer name the tester, and H1's results then hold both passes.
 func TestTheRolesOfAHeadAreThePassesAtThatHead(t *testing.T) {
 	t.Parallel()
-	rig := newCIJobRig(t)
+	rig := newHeadRuleRig(t)
 	writeHead(t, rig.database, ciJobRepository, 70, eachHeadH1, "open", rig.issue)
 	writeHead(t, rig.database, ciJobRepository, 71, eachHeadH2, "open", rig.issue)
 

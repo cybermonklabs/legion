@@ -2,7 +2,7 @@ import type { RequestCredential } from "./bearer";
 
 /**
  * The variable that holds a CI job's results capability as the job sees it: the secrets broker's
- * airlock placeholder of the run's result grant, which `agent-secrets result-grant -- <command>`
+ * proxy placeholder of the run's result grant, which `agent-secrets result-grant -- <command>`
  * gives the command it runs, beside the airlock proxy's settings. The job holds nothing else of
  * Dispatch's: the broker holds the run's results token and the key it is bound to.
  */

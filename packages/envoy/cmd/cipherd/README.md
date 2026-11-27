@@ -44,12 +44,15 @@ it reads the same configuration, binds no listener and applies no migration.
 `envoy-broker profiles check <file> [--against <old file>] [--secrets-json <file>] [--private-upstream '<host>=<url> ...' [--cluster-ranges <CIDR prefixes>]]`
 reads a profiles file with the broker's own code and exits 1, naming the kind or the profile and
 the field, or the parse position, when the broker would not serve that file, or when its start
-check of the results profile `DISPATCH_RESULTS_TOKEN`, of kind `dpop`, refuses it. In a file that
-declares a kind, a `proxy` block of any kind but `dpop` is refused, naming `kinds`, which replaced
-it. A file that declares no kind is read as the broker before the kinds read it, until every
-deployment's file declares kinds: each block of no kind, `aws` or `azure` serves its profile's
-name behind the block's hosts, headers and `allow`, under a kind of its own that no `proxy` tag
-names, and a block's `judge` or `guidance` is refused, naming the source's tag that holds it now.
+check of the results profile `DISPATCH_RESULTS_TOKEN`, of kind `dpop`, refuses it.
+In a file that declares a kind, a `proxy` block of any kind but `dpop` is refused, naming `kinds`,
+which replaced it. A file that declares no kind is read as the broker before the kinds read it,
+until every deployment's file declares kinds: each block of no kind, `aws` or `azure` serves its
+profile's name behind the block's hosts, headers and `allow`, under a kind of its own that no
+`proxy` tag names, and a block's `judge` or `guidance` is refused, naming the source's tag that
+holds it now. The results profile `DISPATCH_RESULTS_TOKEN` is outside that older reading: its
+block is held to kind `dpop` in every file, since the broker mints and holds that credential and
+releases it to nobody.
 `--private-upstream` takes the value `BROKER_PROXY_PRIVATE_UPSTREAM` gives the broker, and holds
 each destination's address to the start's rule: an address no broker takes as a destination
 (loopback, link-local, a metadata server, an IPv6 form that carries an IPv4 address and the rest of

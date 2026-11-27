@@ -3,10 +3,10 @@
 // ones a read token, a result entry's token, a Legion daemon's token and an approve-only token
 // hold (ScopeApprove), the names the token exchange knows a subject token by, the header of a
 // read trade's holder proof, the fields the broker adds to a token answer, the run a result
-// entry's token carries and how that run's workflow and principal are read from it, the session
-// prefix a Legion daemon's own entry fixes, and the one grammar of a token's list of projects. It
-// imports nothing of the broker — only the standard library and the project-key rule
-// internal/contracts generates — so the agent-secrets helper reads it without the broker's
+// entry's token carries and the one reading of it every reader holds it to (ParseCIRun), the
+// session prefix a Legion daemon's own entry fixes, and the one grammar of a token's list of
+// projects. It imports nothing of the broker — only the standard library and the project-key
+// rule internal/contracts generates — so the agent-secrets helper reads it without the broker's
 // storage.
 package oauthwire
 
@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -336,12 +337,11 @@ var AccountSubject = regexp.MustCompile(`^` + AccountSubjectPrefix + `[a-z0-9]([
 
 // CIRun is the GitHub Actions run a result entry's token was minted for, as the run's own GitHub
 // token named it: the claims of that token, copied onto the token the exchange mints and answered
-// back by introspection (Introspection.CI). The exchange mints such a token only when every field
-// is set, the workflow_ref one WorkflowPath reads under the repository and the ref, the commit in
-// the form IsCommit holds and the run, the attempt and the check run in the form IsPositiveDecimal
-// holds (exchange.Set.Workflow), and a resource server admits it only so (brokertoken). The check
-// run is the job's identity: GitHub names the check run of each job, and a resource server reads
-// its name and its commit from GitHub by this id.
+// back by introspection (Introspection.CI), each a string as the claim spells it. Every reader
+// holds it to one rule, ParseCIRun: the exchange mints a token only for a run that reads
+// (exchange.Set.Workflow), a resource server admits one only so (ciphertoken), and Dispatch stores
+// a result from the Run it reads to. The check run is the job's identity: GitHub names the check
+// run of each job, and a resource server reads its name and its commit from GitHub by this id.
 type CIRun struct {
 	// Repository is <owner>/<name>, the repository the run belongs to.
 	Repository string `json:"repository"`
@@ -390,8 +390,61 @@ func CIRunOf(claim any) (*CIRun, error) {
 	return &run, nil
 }
 
-// IsCommit reports whether text is a commit as a run names it: 40 lowercase hex digits.
-func IsCommit(text string) bool {
+// Run is a CIRun read whole by ParseCIRun: each field in the form the broker mints it in, the
+// workflow's path read out of its workflow_ref, and its three numbers read as numbers. It is the
+// one validated form of a run, which every reader takes its numbers and its workflow from rather
+// than parsing the strings again.
+type Run struct {
+	// CIRun is the run as its token's claims spell it.
+	CIRun
+	// Workflow is the path, inside the repository, of the run's workflow file (WorkflowPath).
+	Workflow string
+	// ID, Attempt and CheckRun are RunID, RunAttempt and CheckRunID read as numbers: each
+	// positive, and no larger than a resource server's bigint.
+	ID, Attempt, CheckRun int64
+}
+
+// ParseCIRun reads run whole, or refuses it naming the claim of the run's GitHub token whose
+// field is not in its form, as "<claim> claim is not <form>": the repository, the ref, the event
+// and the runner environment set; the workflow_ref one WorkflowPath reads under the repository
+// and the ref; the commit 40 lowercase hex digits; and the run, the attempt and the check run each
+// a positive decimal number that a signed 64-bit integer holds, written as GitHub writes them: no
+// sign and no leading zero, so one number has one spelling.
+func ParseCIRun(run CIRun) (Run, error) {
+	for _, field := range []struct{ claim, value string }{
+		{"repository", run.Repository}, {"ref", run.Ref}, {"event_name", run.EventName},
+		{"runner_environment", run.RunnerEnvironment},
+	} {
+		if field.value == "" {
+			return Run{}, fmt.Errorf("%s claim is not a non-empty string", field.claim)
+		}
+	}
+	workflow, ok := WorkflowPath(run.WorkflowRef, run.Repository, run.Ref)
+	if !ok {
+		return Run{}, fmt.Errorf("workflow_ref claim %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref", run.WorkflowRef, run.Repository, run.Ref)
+	}
+	if !isCommit(run.SHA) {
+		return Run{}, fmt.Errorf("sha claim is not 40 lowercase hex digits")
+	}
+	read := Run{CIRun: run, Workflow: workflow}
+	for _, field := range []struct {
+		claim, value string
+		into         *int64
+	}{
+		{"run_id", run.RunID, &read.ID}, {"run_attempt", run.RunAttempt, &read.Attempt},
+		{"check_run_id", run.CheckRunID, &read.CheckRun},
+	} {
+		number, ok := positiveDecimal(field.value)
+		if !ok {
+			return Run{}, fmt.Errorf("%s claim is not a positive decimal number a signed 64-bit integer holds", field.claim)
+		}
+		*field.into = number
+	}
+	return read, nil
+}
+
+// isCommit reports whether text is a commit as a run names it: 40 lowercase hex digits.
+func isCommit(text string) bool {
 	if len(text) != 40 {
 		return false
 	}
@@ -403,20 +456,19 @@ func IsCommit(text string) bool {
 	return true
 }
 
-// IsPositiveDecimal reports whether text is a positive decimal number that a signed 64-bit integer
-// holds, written as GitHub writes a run's id, its attempt and a check run's id: no sign and no
-// leading zero, so one number has one spelling, and no larger than a resource server's bigint.
-func IsPositiveDecimal(text string) bool {
-	const largest = "9223372036854775807"
-	if text == "" || text[0] == '0' || len(text) > len(largest) {
-		return false
+// positiveDecimal is text read as a positive decimal number with no sign and no leading zero,
+// and whether it is one that a signed 64-bit integer holds.
+func positiveDecimal(text string) (int64, bool) {
+	if text == "" || text[0] < '1' || text[0] > '9' {
+		return 0, false
 	}
 	for i := range len(text) {
 		if text[i] < '0' || text[i] > '9' {
-			return false
+			return 0, false
 		}
 	}
-	return len(text) < len(largest) || text <= largest
+	number, err := strconv.ParseInt(text, 10, 64)
+	return number, err == nil
 }
 
 // WorkflowPath is the path, inside repository, of the workflow file that a run's workflow_ref
@@ -425,9 +477,9 @@ func IsPositiveDecimal(text string) bool {
 // reads the path: it is what is left once the prefix "<repository>/" and the suffix "@<ref>" are
 // removed. It answers false for a workflow_ref that does not start with that prefix, does not end
 // with that suffix, or holds no path between them. The broker reads a run's workflow with it
-// (exchange.Set.Workflow), a resource server admits a results token's run only where it reads
-// (brokertoken), and Dispatch reads the principal it stores on a result with it, so the identity
-// on a result is the one the broker authenticated.
+// (exchange.Set.Workflow), and every reader of a results token's run reads it through ParseCIRun
+// (Run.Workflow), Dispatch the principal it stores on a result among them, so the identity on a
+// result is the one the broker authenticated.
 func WorkflowPath(workflowRef, repository, ref string) (string, bool) {
 	prefix, suffix := repository+"/", "@"+ref
 	if len(workflowRef) <= len(prefix)+len(suffix) ||
@@ -604,8 +656,8 @@ type Introspection struct {
 	// projects its trade asked for, each one its person could see then, and none for a token that
 	// names a service; for a ProjectScopePublic token, the 0 to MaxProjects private projects its
 	// job entry lists, the whole list whatever the trade named; for a ProjectScopeResults token,
-	// the one project whose results it may write; for a ProjectScopeNone token, none. Sorted, each
-	// once; absent for none.
+	// the one project whose results it may write; for a ProjectScopeNone token, none. Sorted,
+	// each once; absent for none.
 	Projects []string `json:"projects,omitempty"`
 	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it. An
 	// exchanged token holds ScopeRead when a read entry minted it or its trade asked for it, and

@@ -44,11 +44,11 @@ import (
 // `as_of` only for a cut. So a claim a new scope or a new decision adds is a claim this fails until
 // the list names it. The OAuth scope a decision grants is a claim too, though decide grants it on
 // the request rather than writing it into the extras: `scope`, which an introspection answers from
-// the granted scopes and a read entry's token, a narrowed one and a result entry's token carry
-// (writeProjectScope), joins the union when any decision granted one. The one claim no decision
-// writes, the launcher credential a machine's exchange mints (machineCredential, which runs after
-// decide because the credential does not exist until the request's key is bound), is added to that
-// union by name; what proves it is written is the live exchange in cmd/cipherd.
+// the granted scopes and a read entry's token, a narrowed one, a result entry's token and a Legion
+// daemon's token carry (writeProjectScope), joins the union when any decision granted one. The one
+// claim no decision writes, the launcher credential a machine's exchange mints (machineCredential,
+// which runs after decide because the credential does not exist until the request's key is bound),
+// is added to that union by name; what proves it is written is the live exchange in cmd/cipherd.
 //
 // What this cannot do: it compares two sets of names, and nothing more. It does not read a bullet's
 // meaning, so a claim whose description is stale, wrong, or swapped with its neighbour's passes
@@ -118,26 +118,29 @@ func TestTheDocumentedClaimsAreTheClaimsAnExchangedTokenCarries(t *testing.T) {
 }
 
 // claimsSubject is one kind of subject token decide decides on, with its actor token where the kind
-// takes one. session is the session name the request names, which is claimsSessionName where it is
-// empty, and the result entry's own where that entry fixes the session it writes under and refuses
-// another. requested is the token type the request asks for, which is none, an access token, where
-// it is empty, and the proxy placeholder for a result entry's run, whose grant carries the claims a
-// results token minted from it carries.
+// takes one.
 type claimsSubject struct {
 	tokenType    string
 	token, actor map[string]any
-	session      string
-	requested    string
+	// session is the session name the request names: claimsSessionName where it is empty, but for
+	// the run of the result entry's workflow, whose entry fixes the session it writes under and
+	// refuses another.
+	session string
+	// requested is the token type the request asks for: none, which is an access token, but for
+	// that run, which is granted the proxy placeholder alone; its grant carries the claims a
+	// results token minted from it carries.
+	requested string
 	// cut, when set, makes the trade one that asks for read with that cut.
 	cut string
 }
 
 // claimsDecider is a provider whose exchange decides each kind of subject token, and one subject
 // token of each kind it accepts: a pod's, whose entry gives the named project scope, a read
-// account's pod, whose read entry gives the none scope, a run of a result entry's workflow, whose
-// project scope is results and which carries its run, a machine access token's, whose scope is
-// the person's, the same token traded for read at a cut, a machine's Google identity token, whose
-// entry names a service, and a person's own, with the machine's as the actor.
+// account's pod, whose read entry gives the none scope, the run of a result entry's workflow,
+// whose entry gives the results scope and which asks for the proxy placeholder, a machine access
+// token's, whose scope is the person's, the same token traded for read at a cut, a machine's
+// Google identity token, whose entry names a service, and a person's own, with the machine's as
+// the actor.
 func claimsDecider(t *testing.T) (*Provider, []claimsSubject) {
 	t.Helper()
 	policy, err := exchange.NewSet([]exchange.AccountEntry{{

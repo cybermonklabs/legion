@@ -963,12 +963,13 @@ func TestAPrivateUpstreamEntryIsRefusedUnlessItIsOne(t *testing.T) {
 	}
 }
 
-// TestTheCheckOfADestinationsAddressIsTheStartsRule: PrivateUpstreamAddressRules, the address
-// check `profiles check --private-upstream` makes, is the start's own. Given the cluster ranges
-// (`--cluster-ranges`, read by ParseAirlockClusterRanges), it answers what Load answers for that
-// destination and those ranges, in the same words, and no unjudged address, for each ranges below:
+// TestTheCheckOfADestinationsAddressIsTheStartsRule: the address checks `profiles check
+// --private-upstream` makes are the start's own. Given the cluster ranges (`--cluster-ranges`, read
+// by ParseAirlockClusterRanges), it calls PrivateUpstreamDialable with them, which answers what
+// Load answers for that destination and those ranges, in the same words, for each ranges below:
 // none, the Service range, an IPv6 range that holds the NAT64 forms, and every address. Without
-// them it is the start's rule for every cluster ranges a broker can have: where it refuses, the
+// them, PrivateUpstreamRefusedOnEveryBroker is the start's rule for every cluster ranges a broker
+// can have: where it refuses, the
 // start refuses in the same words with no ranges and with ranges that hold every address; where it
 // takes a destination and judges it, the start takes it with both; and where it answers the
 // address unjudged, the start refuses that address with no ranges and takes it with ranges that
@@ -991,7 +992,7 @@ func TestTheCheckOfADestinationsAddressIsTheStartsRule(t *testing.T) {
 			t.Fatalf("ParsePrivateUpstreams(%s) = %v, %v; want one entry", url, upstreams, err)
 		}
 		upstream := upstreams[0]
-		unjudged, checked := PrivateUpstreamAddressRules(upstream, nil, false)
+		unjudged, checked := PrivateUpstreamRefusedOnEveryBroker(upstream)
 		bare, wide := PrivateUpstreamDialable(upstream, nil, nil), PrivateUpstreamDialable(upstream, nil, everything)
 		switch {
 		case checked != nil:
@@ -1012,13 +1013,13 @@ func TestTheCheckOfADestinationsAddressIsTheStartsRule(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseAirlockClusterRanges(%q): %v", text, err)
 			}
-			unjudged, checked := PrivateUpstreamAddressRules(upstream, ranges, true)
+			checked := PrivateUpstreamDialable(upstream, nil, ranges)
 			e := airlockEnv()
 			e[setting] = "dispatch.test=" + url
 			e["BROKER_AIRLOCK_CLUSTER_RANGES"] = text
 			_, started := Load(env(e))
-			if unjudged.IsValid() || (checked == nil) != (started == nil) || checked != nil && checked.Error() != started.Error() {
-				t.Errorf("%s with the ranges %q: the check answers %v (unjudged %v); Load answers %v; want Load's answer and no unjudged address", url, text, checked, unjudged, started)
+			if (checked == nil) != (started == nil) || checked != nil && checked.Error() != started.Error() {
+				t.Errorf("%s with the ranges %q: the check answers %v; Load answers %v; want Load's answer", url, text, checked, started)
 			}
 		}
 	}
@@ -3242,13 +3243,48 @@ func TestLoadRefusesThePlainSignInSecret(t *testing.T) {
 
 // TestLoadRefusesASignInIssuerThatIsNotHTTPS pins that the issuer, which a sign-in's code
 // exchange sends the client secret to, is an absolute https URL, with http allowed only to a
-// loopback host.
+// loopback host. The refusal names the setting and never the value.
 func TestLoadRefusesASignInIssuerThatIsNotHTTPS(t *testing.T) {
 	for _, bad := range []string{"http://accounts.example.com", "http://10.0.0.1:5556", "http://127.0.0.1.example.com", "accounts.example.com", "ftp://accounts.example.com", "https://"} {
 		e := validEnv()
 		e["BROKER_SIGNIN_ISSUER"] = bad
-		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_SIGNIN_ISSUER") || strings.Contains(err.Error(), signInSecret) {
-			t.Errorf("BROKER_SIGNIN_ISSUER = %q: err = %v, want a refusal naming it", bad, err)
+		_, err := Load(env(e))
+		if want := "BROKER_SIGNIN_ISSUER must be an absolute https URL, or http to a loopback host"; err == nil || err.Error() != want {
+			t.Errorf("BROKER_SIGNIN_ISSUER = %q: err = %v, want %q", bad, err, want)
+		}
+	}
+}
+
+// Every issuer setting the broker reads refuses a value holding a credential, naming the setting
+// alone (oidc.IssuerRefusal): a made-up user name and password, a made-up token holding a "/"
+// written as the user, its "@" past the host, and a made-up token in the query or the fragment.
+// No issuer identifier holds any of them, and each is printed in the broker's boot lines,
+// discovery errors and sign-in page.
+func TestLoadRefusesAnIssuerHoldingACredential(t *testing.T) {
+	const user, secret = "madeUpIssuerUser0123", "madeUpIssuerSecret0123"
+	userinfo := user + ":" + secret + "@"
+	pairs := map[string]string{
+		"BROKER_K8S_OIDC_ISSUER":        "BROKER_K8S_OIDC_AUDIENCE",
+		"BROKER_EXCHANGE_GITHUB_ISSUER": "BROKER_EXCHANGE_GITHUB_AUDIENCE",
+	}
+	for _, setting := range []string{"BROKER_SIGNIN_ISSUER", "BROKER_GOOGLE_OIDC_ISSUER", "BROKER_K8S_OIDC_ISSUER", "BROKER_EXCHANGE_GITHUB_ISSUER"} {
+		for shape, value := range map[string]string{
+			"userinfo":                "https://" + userinfo + "issuer.example",
+			"an @ past the host":      "https://" + user + "/" + secret + "@issuer.example",
+			"a token in the query":    "https://issuer.example/?token=" + secret,
+			"a token in the fragment": "https://issuer.example/#" + secret,
+		} {
+			t.Run(setting+"/"+shape, func(t *testing.T) {
+				e := validEnv()
+				e[setting] = value
+				if audience, paired := pairs[setting]; paired {
+					e[audience] = "agent-secrets"
+				}
+				_, err := Load(env(e))
+				if err == nil || !strings.HasPrefix(err.Error(), setting+" cannot be read: ") || strings.Contains(err.Error(), user[:10]) || strings.Contains(err.Error(), secret[:10]) {
+					t.Fatalf("Load = %v, want a refusal naming %s and no part of the credential", err, setting)
+				}
+			})
 		}
 	}
 }

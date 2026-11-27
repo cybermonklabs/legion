@@ -82,18 +82,21 @@ import (
 // facts gets rule 0, so that arm reads it again (LinksChanged). 5 is 4 with no citation of a
 // number that is a pull request Dispatch holds (citedPullRequest), so a pull request a mention of
 // another pull request credited to that pull request's issue goes back to the issue it is for. 6
-// is 5 with each merged row's merge time stored (pull_request_heads.merged_at): the reconcile's
-// merged arm reads each merged row stored before once more, and that refresh stores the time from
+// is the rule of 2 with each merged row's merge commit and merge time stored
+// (pull_request_heads.merge_commit_sha, merged_at), as cybermonklabs/legion#5416 shipped it:
+// raising it offered each merged row stored before once more, and that refresh stored both from
 // GitHub's answer (RefreshPullRequestHead, headRow); the results read asks GitHub itself only for
-// a merged row the reconcile has not reached yet (api's fillMergeTimes).
+// a merged row the reconcile has not reached yet (api's fillMergeTimes). 7 is 5 and 6 together: a
+// merged row that 6 stamped was judged by the rule of 2, so it is offered once more, to be judged
+// by 3 to 5 and to store its inputs.
 //
-// Raising this by one is how a later change to the attribution reaches the merged rows already
-// stored. Nothing else revisits one — an open row comes round at every reconcile pass of one
-// process, each starting at most five minutes after the one before it ended
-// (PullRequestHeadStaleAfter), but a merged row is read again only by that arm — so a change made
-// without raising it leaves every pull request merged before it judged by the rule of its day for
-// good.
-const AttributionRuleVersion = 6
+// Raising this is how a later change to the attribution, or to what a merged row stores, reaches
+// the merged rows already stored. Nothing else revisits one — an open row comes round at every
+// reconcile pass of one process, each starting at most five minutes after the one before it
+// ended (PullRequestHeadStaleAfter), but a merged row is read again only by that arm — so a
+// change made without raising it leaves every pull request merged before it judged by the rule
+// of its day for good.
+const AttributionRuleVersion = 7
 
 // attributionSource names the source a pull request's issue came from.
 type attributionSource string
@@ -520,27 +523,27 @@ func attributionBatchQuery(renames refs.Renames) string {
 // the same pairs (api.NewDeps). No package variable holds the pairs, so a test builds an
 // Attributor from pairs of its own.
 type Attributor struct {
-	renames         refs.Renames
-	candidatesQuery string
-	batchQuery      string
-	linkedQuery     string
-	headsRead       headsStatement
-	mergedForRead   headsStatement
-	mergedInRead    headsStatement
-	upsertQuery     string
+	renames          refs.Renames
+	candidatesQuery  string
+	batchQuery       string
+	linkedQuery      string
+	headsRead        headsStatement
+	mergeOfIssueRead headsStatement
+	mergeInRead      headsStatement
+	upsertQuery      string
 }
 
 // NewAttributor is the Attributor of renames.
 func NewAttributor(renames refs.Renames) *Attributor {
 	return &Attributor{
-		renames:         renames,
-		candidatesQuery: attributionCandidatesQuery(renames),
-		batchQuery:      attributionBatchQuery(renames),
-		linkedQuery:     linkedPullRequestsQuery(renames),
-		headsRead:       headsAttributedRead(renames),
-		mergedForRead:   baseBranchMergedForRead(renames),
-		mergedInRead:    baseBranchMergedInRead(renames),
-		upsertQuery:     upsertHeadQuery(renames),
+		renames:          renames,
+		candidatesQuery:  attributionCandidatesQuery(renames),
+		batchQuery:       attributionBatchQuery(renames),
+		linkedQuery:      linkedPullRequestsQuery(renames),
+		headsRead:        headsAttributedRead(renames),
+		mergeOfIssueRead: mergeOfIssueRead(renames),
+		mergeInRead:      mergeInRead(renames),
+		upsertQuery:      upsertHeadQuery(renames),
 	}
 }
 

@@ -283,11 +283,11 @@ func TestOnlyAJobsResultCarriesAStatementOfItsRun(t *testing.T) {
 	}
 }
 
-// TestAJobsMatrixLegIsItsLegOnTheIssueRoute: a job whose check run is one leg of a matrix,
-// "go-checks (linux)", records the check whose ci_check names that check run. Its statement reads
-// the job and the leg from the check run's name as the project's route reads them, and names the
-// check's ci_check whole as its test's job.
-func TestAJobsMatrixLegIsItsLegOnTheIssueRoute(t *testing.T) {
+// TestAJobsMatrixCheckRunNamesNoLegOnTheIssueRoute: a job whose check run is named as one leg of a
+// matrix, "go-checks (linux)", records the check whose ci_check names that check run. Its
+// statement names the check run's whole name as its job and no leg, since this route reads no
+// workflow file, and names the check's ci_check whole as its test's job.
+func TestAJobsMatrixCheckRunNamesNoLegOnTheIssueRoute(t *testing.T) {
 	t.Parallel()
 	rig := newCIJobRig(t)
 	filed := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": ciJobProject, "title": "A matrix job proves it", "spec": "A spec\n"})
@@ -310,8 +310,9 @@ func TestAJobsMatrixLegIsItsLegOnTheIssueRoute(t *testing.T) {
 		t.Fatalf("the job's result for m1 carries no attestation: %s", response.Body.String())
 	}
 	predicate := result.Attestation.Predicate
-	if predicate.Job != "go-checks" || predicate.Leg != "linux" || predicate.Test.Job != "go-checks (linux)" || predicate.Run.CheckRunID != "98" {
-		t.Fatalf("the statement names job %q, leg %q, test job %q and check run %q; want go-checks, linux, %q and 98",
-			predicate.Job, predicate.Leg, predicate.Test.Job, predicate.Run.CheckRunID, "go-checks (linux)")
+	// A "(…)" suffix alone proves no leg; only the run's workflow file does (#4184's 8044330a38).
+	if predicate.Job != "go-checks (linux)" || predicate.Leg != "" || predicate.Test.Job != "go-checks (linux)" || predicate.Run.CheckRunID != "98" {
+		t.Fatalf("the statement names job %q, leg %q, test job %q and check run %q; want %q, no leg, %q and 98",
+			predicate.Job, predicate.Leg, predicate.Test.Job, predicate.Run.CheckRunID, "go-checks (linux)", "go-checks (linux)")
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
@@ -87,14 +88,16 @@ func TestAResultsTokenIsRefusedWhereNotServed(t *testing.T) {
 // TestAResultsTokenIsServedAsResultsOnly: a verifier whose service asked for results tokens
 // (Options.ServesResults) answers one as a Caller marked results-only, naming the session, the
 // person, the one project whose results it writes, the project scope results and the run it was
-// minted for, and never marked read-only.
+// minted for, read whole: its workflow's path and its three numbers read out, and never marked
+// read-only.
 func TestAResultsTokenIsServedAsResultsOnly(t *testing.T) {
 	rig := newRig(t, func(options *ciphertoken.Options) { options.ServesResults = true })
 	caller := newSigner(t)
 	const token = "a-results-token-where-one-is-served"
 	rig.broker.Says(token, resultsToken(caller.jkt, time.Hour))
 	decided, err := decides(t, rig, caller, token)
-	want := ciphertoken.Caller{Session: resultsSession, Person: "ada@example.com", Projects: []string{"ACME"}, ProjectScope: ciphertoken.ProjectScopeResults, ResultsOnly: true, CI: resultsRun()}
+	run := &oauthwire.Run{CIRun: *resultsRun(), Workflow: ".github/workflows/ci-results.yaml", ID: 7, Attempt: 1, CheckRun: 97}
+	want := ciphertoken.Caller{Session: resultsSession, Person: "ada@example.com", Projects: []string{"ACME"}, ProjectScope: ciphertoken.ProjectScopeResults, ResultsOnly: true, CI: run}
 	if err != nil || !sameCaller(decided, want) {
 		t.Fatalf("Verify = %+v (run %+v), %v; want %+v (run %+v)", decided, decided.CI, err, want, want.CI)
 	}

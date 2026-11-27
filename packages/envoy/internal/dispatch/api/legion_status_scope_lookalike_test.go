@@ -36,6 +36,7 @@ import (
 // status. The shared token, a project's broker token and a personal token that holds no scope
 // each make the three calls, in a subtest of their own.
 func TestALabelTheDatabaseLowersToLegionFreesNoLegionIssue(t *testing.T) {
+	t.Parallel()
 	rig := newLegionStatusRig(t, true)
 	ctx := t.Context()
 	if _, err := rig.database.Pool.Exec(ctx, `alter table issues alter column labels type text[] collate "C.utf8"`); err != nil {
@@ -97,6 +98,7 @@ func TestALabelTheDatabaseLowersToLegionFreesNoLegionIssue(t *testing.T) {
 //     issue carries Ä alone.
 //   - A person's PATCH writes the labels legion and LEGİON. The issue keeps both, in that order.
 func TestLegionAndALookAlikeLabelAreTwoLabels(t *testing.T) {
+	t.Parallel()
 	rig := newLegionStatusRig(t, true)
 	t.Run("the daemon adds legion to an issue that carries LEG\u0130ON", func(t *testing.T) {
 		issue := rig.issue(t, []string{"LEG\u0130ON"}, "", "in_progress")
@@ -147,6 +149,7 @@ func TestLegionAndALookAlikeLabelAreTwoLabels(t *testing.T) {
 // with U+017F (long s). lower() in "C" does not change either rune, so the walk would read no
 // legion label where holdsLegionLabel reads one.
 func TestEachLetterOfTheLegionLabelFoldsOnlyBetweenItsASCIICases(t *testing.T) {
+	t.Parallel()
 	for _, letter := range legionLabel {
 		if letter > unicode.MaxASCII || !unicode.IsLetter(letter) {
 			t.Errorf("the legion label %q holds %q, which is not an ASCII letter", legionLabel, letter)

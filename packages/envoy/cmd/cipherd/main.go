@@ -264,7 +264,7 @@ func main() {
 	// profile DISPATCH_RESULTS_TOKEN is of kind dpop, and result entries need it; each dpop block
 	// binds one exact host, a private destination's, with an allow list, in Authorization alone,
 	// and no kind binds that host; each destination needs a dpop block to bind its host.
-	fatal(config.ResultsEntryRules(fileRules, profiles.LegacyProxy(oauthwire.AirlockResultsName) != nil, len(cfg.ExchangeResultWorkflows) > 0))
+	fatal(config.ResultsEntryRules(fileRules, len(cfg.ExchangeResultWorkflows) > 0))
 	fatal(config.ProxyMintedRules(fileRules, cfg.ProxyPrivateUpstreams))
 	// And the results entry this broker grants and serves result grants under (resultEntryDigest):
 	// the profile and the destination the checks above passed, hashed once, which the token
@@ -346,7 +346,7 @@ func main() {
 	if cfg.SignInOff {
 		slog.Info("approval sign-in off", "detail", "BROKER_SIGNIN=off: no approval page is served, and a request a person would approve is denied at once")
 	} else {
-		slog.Info("approval sign-in on", "issuer", cfg.SignIn.Issuer, "client_id", cfg.SignIn.ClientID, "domain", cfg.SignIn.Domain)
+		slog.Info("approval sign-in on", "issuer", redact.URL(cfg.SignIn.Issuer), "client_id", cfg.SignIn.ClientID, "domain", cfg.SignIn.Domain)
 	}
 	// The database, and with it the AWS config loaded once when anything needs it: an IAM-form
 	// BROKER_DATABASE_URL, whose connections sign in with RDS IAM tokens minted from it, and the
@@ -535,8 +535,7 @@ func main() {
 		slog.Info("airlock proxy listening", "addr", started.AirlockListener.Addr().String())
 	}
 	if started.EdgeListener != nil {
-		slog.Info("broker edge listening", "addr", started.EdgeListener.Addr().String(), "url", cfg.EdgeURL,
-			"verification_uri", cfg.EdgeMachineLoginURL, "workspace_domains", cfg.WorkspaceDomains())
+		logEdgeListening(started.EdgeListener.Addr().String(), &cfg)
 	}
 	// Logged as the API's line is, once its bind has succeeded, so a rig that starts many brokers
 	// on port 0 reads each one's own metrics address from its own log.
@@ -626,7 +625,7 @@ func main() {
 		// (store.SignInTrade.EndUnrecorded); unset, such a sign-in goes on as before.
 		exchangeConfig.PersonAudience = cfg.SignInDeviceAudience
 		exchangeConfig.PersonSignIns = enroll.PersonSignIns(endUnrecordedSignIns(projectAccess))
-		slog.Info("google person sign-in", "issuer", cfg.GoogleOIDCIssuer, "audience", cfg.SignInDeviceAudience, "domain", cfg.SignIn.Domain)
+		slog.Info("google person sign-in", "issuer", redact.URL(cfg.GoogleOIDCIssuer), "audience", cfg.SignInDeviceAudience, "domain", cfg.SignIn.Domain)
 	}
 	if cfg.ExchangeGitHubIssuer != "" {
 		// The GitHub issuer has no second reader, so it keeps a key source of its own, read here
@@ -694,12 +693,12 @@ func main() {
 		RefreshLifetime: credentialLifetime, VerificationURL: cfg.MachineLoginURL,
 		ProofSkew: time.Duration(cfg.ProofSkewSeconds) * time.Second,
 		Exchange:  exchangeConfig,
-		Airlock:   resultAirlock(cfg, fileRules, entryDigest, airlockCA.ReleaseRoots),
+		Airlock:   resultAirlock(cfg, fileRules, entryDigest, airlockCA),
 		Approve:   approveSettings,
 	}, oauthStore)
 	fatal(err)
 	if provider.DeviceGrant() {
-		slog.Info("machine login device grant", "state", "on", "verification_uri", cfg.MachineLoginURL)
+		slog.Info("machine login device grant", "state", "on", "verification_uri", redact.URL(cfg.MachineLoginURL))
 	} else {
 		slog.Info("machine login device grant", "state", "off", "detail", "BROKER_MACHINE_LOGIN_URL is unset, so no person types a code and POST /v1/oauth/device_authorization is not served")
 	}
@@ -725,7 +724,7 @@ func main() {
 
 	var waker func(context.Context, string, string, string)
 	if cfg.EnvoyURL != "" {
-		w := wake.Envoy{URL: cfg.EnvoyURL, Account: ciphertoken.NewAccountToken(cfg.EnvoyAccountTokenFile), HTTP: &http.Client{Timeout: 10 * time.Second}}
+		w := wake.Envoy{URL: cfg.EnvoyURL, Account: ciphertoken.NewAccountToken("BROKER_ENVOY_ACCOUNT_TOKEN_FILE", cfg.EnvoyAccountTokenFile), HTTP: &http.Client{Timeout: 10 * time.Second}}
 		waker = func(ctx context.Context, enrollmentID, requestID, state string) {
 			sid, _ := reqMachine.SessionID(ctx, requestID) // requests.session_id, else the enrollment's
 			if sid == "" {
@@ -1196,10 +1195,10 @@ func publicURLPortZero(publicURL string) bool {
 }
 
 // refuseAirlockTestSettingsInProduction refuses every setting of the airlock's local stand-ins:
-// the ten BROKER_AIRLOCK_TEST_* ones, the proxy chain's three, the result grant's one and the
+// the ten BROKER_AIRLOCK_TEST_* ones, the result grant's one, the proxy chain's three and the
 // judge's one, unless BROKER_FAKE_SECRETS_FILE makes this a local run, as the port-0 refusal above
 // does and for the same reason: each points the broker at a stand-in, lets it dial an address no
-// production proxy may dial, moves its clock, shortens a grant below what production gives it, or
+// production proxy may dial, shortens a grant below what production gives it, moves its clock, or
 // turns off a check the proxy or the judge is made of. One reaching a real deployment must fail
 // loudly at boot rather than quietly serve a broker that is not the one the operator configured.
 // The refusal names the variable it found, since an operator reads which of its settings it has to
@@ -1223,10 +1222,10 @@ func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile st
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", cfg.AirlockTestKeepValues},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", cfg.AirlockTestNoKind},
 		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", cfg.AirlockTestAzureAuthority != ""},
+		{"BROKER_RESULT_GRANT_TEST_SECONDS", cfg.ResultGrantTestSeconds != 0},
 		{"BROKER_PROXY_TEST_CA_URL", cfg.ProxyTestCAURL != ""},
 		{"BROKER_PROXY_TEST_CLOCK_OFFSET_FILE", cfg.ProxyTestClockOffsetFile != ""},
 		{"BROKER_PROXY_TEST_RENEWAL_MARGIN", cfg.ProxyTestRenewalMargin != nil},
-		{"BROKER_RESULT_GRANT_TEST_SECONDS", cfg.ResultGrantTestSeconds != 0},
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", cfg.JudgeTestSkipChecks},
 	} {
 		if setting.set {
@@ -1238,19 +1237,19 @@ func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile st
 
 // resultAirlock is what the token endpoint hands a result entry's run beside its placeholder
 // (oauth.AirlockSettings): the proxy's URL, the authority's roots as they are at each trade
-// (proxy.Authority.ReleaseRoots, as the approve capability's settings take them), the hosts the
-// proxy block of the profile DISPATCH_RESULTS_TOKEN binds, the local stack's
+// (proxy.Authority.ReleaseRoots, which a pod on a pool learns from its first intermediate), the
+// hosts the proxy block of the profile DISPATCH_RESULTS_TOKEN binds, the local stack's
 // BROKER_RESULT_GRANT_TEST_SECONDS, and the results entry each grant records (resultEntryDigest).
-// nil when no profile of that name has a proxy block, so the provider grants no run a
-// placeholder. Every proxy block binds at least one host (proxyrules.Validate), so Lookup answers
-// the bound entry.
-func resultAirlock(cfg config.Config, rules proxyrules.Rules, entryDigest string, proxyRoots func() string) *oauth.AirlockSettings {
+// nil when no profile of that name has a proxy block, so the provider grants no run a placeholder.
+// Every proxy block binds at least one host (proxyrules.Validate), so Lookup answers the bound
+// entry.
+func resultAirlock(cfg config.Config, rules proxyrules.Rules, entryDigest string, ca *proxy.Authority) *oauth.AirlockSettings {
 	entry := rules.Lookup(oauthwire.AirlockResultsName)
 	if entry == nil {
 		return nil
 	}
 	return &oauth.AirlockSettings{
-		ProxyURL: cfg.AirlockProxyURL, ProxyRoots: proxyRoots,
+		ProxyURL: cfg.AirlockProxyURL, ProxyRoots: ca.ReleaseRoots,
 		ResultHosts:   slices.Clone(entry.Inline.Hosts),
 		EntryDigest:   entryDigest,
 		GrantLifetime: time.Duration(cfg.ResultGrantTestSeconds) * time.Second,
@@ -1653,7 +1652,7 @@ func projectAccessClients(baseURL, tokenFile string) (*projectaccess.Client, api
 	if baseURL == "" {
 		return nil, nil
 	}
-	account := ciphertoken.NewAccountToken(tokenFile)
+	account := ciphertoken.NewAccountToken("BROKER_PROJECT_ACCESS_TOKEN_FILE", tokenFile)
 	return projectaccess.New(baseURL, account, projectAccessHTTPClient()), projectrepos.New(baseURL, account, nil)
 }
 
@@ -1747,7 +1746,7 @@ func judgeDispatch(cfg config.Config) *judge.Dispatch {
 	}
 	return &judge.Dispatch{
 		BaseURL: cfg.JudgeDispatchURL,
-		Account: ciphertoken.NewAccountToken(cfg.JudgeDispatchTokenFile),
+		Account: ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", cfg.JudgeDispatchTokenFile),
 		HTTP:    &http.Client{Timeout: judgeDispatchTimeout},
 	}
 }
@@ -1812,7 +1811,7 @@ func wireJudge(ctx context.Context, cfg config.Config, m *requests.Machine, disp
 	m.Judge = runner.Consider
 	identity := cmp.Or(account.ServiceAccount, "metadata")
 	slog.Info("model judge", "state", "on", "model", cfg.JudgeModel, "protocol", cfg.JudgeModelProtocol,
-		"dispatch", cfg.JudgeDispatchURL, "identity", identity, "skip_checks", cfg.JudgeTestSkipChecks)
+		"dispatch", redact.URL(cfg.JudgeDispatchURL), "identity", identity, "skip_checks", cfg.JudgeTestSkipChecks)
 }
 
 // logPodRegistrars logs, once at boot, what POST /v1/oauth/exchange/pod-sessions admits: how
@@ -1911,7 +1910,7 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 		return verifiers{}, err
 	}
 	services := slices.Sorted(maps.Values(cfg.VMServicesByAccount))
-	slog.Info("google machine identity", "issuer", cfg.GoogleOIDCIssuer, "audience", cfg.GoogleOIDCAudience,
+	slog.Info("google machine identity", "issuer", redact.URL(cfg.GoogleOIDCIssuer), "audience", cfg.GoogleOIDCAudience,
 		"services", strings.Join(slices.Compact(services), ","), "fleets", len(cfg.ExchangeGoogleAccounts))
 	found.GoogleKeys = googleKeys
 	// One verifier on that key set, for a listed caller that holds a Google identity rather
@@ -2026,10 +2025,10 @@ func checkSignInClient(ctx context.Context, signIn approval.SignIn, st *store.St
 	}
 	switch {
 	case check == oidc.ClientCheckReady && logged.notReady != "":
-		slog.Info(clientCheckReadyMessage, "issuer", signIn.Issuer, "was", logged.notReady)
+		slog.Info(clientCheckReadyMessage, "issuer", redact.URL(signIn.Issuer), "was", logged.notReady)
 		logged.notReady = ""
 	case check != oidc.ClientCheckReady && check != logged.notReady:
-		slog.Warn(clientCheckFailedMessage, "state", check, "issuer", signIn.Issuer, "error", err)
+		slog.Warn(clientCheckFailedMessage, "state", check, "issuer", redact.URL(signIn.Issuer), "error", redact.Error(err, signIn.Issuer))
 		logged.notReady = check
 	}
 	err = st.RecordClientCheck(ctx, string(check), time.Now())
@@ -2084,6 +2083,14 @@ func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login>, %s and %s, and broker with no argument serves\n",
 		args[0], endSessionsCommand, versionsCommand, profilesCheckForm)
 	return 2
+}
+
+// logEdgeListening logs the edge's bind, BROKER_EDGE_URL and BROKER_EDGE_MACHINE_LOGIN_URL, each URL
+// through redact.URL, as the machine login line prints BROKER_MACHINE_LOGIN_URL: neither loader
+// refuses a user name, a password or a query, so a credential written into either is not printed.
+func logEdgeListening(addr string, cfg *config.Config) {
+	slog.Info("broker edge listening", "addr", addr, "url", redact.URL(cfg.EdgeURL),
+		"verification_uri", redact.URL(cfg.EdgeMachineLoginURL), "workspace_domains", cfg.WorkspaceDomains())
 }
 
 // versions prints what broker_schema_migrations records of each version against the migrations

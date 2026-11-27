@@ -17,12 +17,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
 
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"gopkg.in/yaml.v3"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/bytelru"
@@ -38,7 +40,7 @@ const specDir = ".dispatch/spec"
 // The codes of this route's own refusals, and of the gate that holds a results token to it.
 const (
 	// codeResultsOnlyToken refuses a results token on every route the results list does not
-	// name (refuseResultsToken).
+	// name (refuseLimitedToken).
 	codeResultsOnlyToken = "RESULTS_ONLY_TOKEN"
 	// codeResultsScopeRequired refuses every other credential on the route: only a CI job's
 	// results token writes a result of a spec check.
@@ -52,6 +54,10 @@ const (
 	codeRepositoryNotTheProjects = "REPOSITORY_NOT_THE_PROJECTS"
 	// codeCheckRunNotTheRuns refuses a token whose check run GitHub names for another commit.
 	codeCheckRunNotTheRuns = "CHECK_RUN_NOT_THE_RUNS"
+	// codeCheckRunNotShown refuses a token whose check run GitHub refuses Dispatch for good, with
+	// its 403 or 404 (githubapp.ErrRepositoryUnreadable): the App cannot see the run, or no such
+	// run exists, so the run is not proven, and a write again is answered the same.
+	codeCheckRunNotShown = "CHECK_RUN_NOT_SHOWN"
 	// codeSpecFilesRefused refuses a result at a commit whose spec files the graph logic refuses
 	// (specgraph.Judge): such files hold no check to write a result for.
 	codeSpecFilesRefused = "SPEC_FILES_REFUSED"
@@ -59,10 +65,16 @@ const (
 	codeCheckNotInFiles = "CHECK_NOT_IN_FILES"
 	// codeCheckNotThisJobs refuses a check whose test part names another job than the run's.
 	codeCheckNotThisJobs = "CHECK_NOT_THIS_JOBS"
-	// codeCheckRunUnreadable and codeFilesUnreadable are GitHub not answering, a 503: the
-	// result was not judged, and the job writes it again.
+	// codeWorkflowNotShown refuses a check run that is a leg of the check's job only if the run's
+	// workflow file says so, where GitHub refuses Dispatch that file for good, with its 403 or 404:
+	// the commit does not hold the file, or the App cannot see it, and a write again is answered
+	// the same.
+	codeWorkflowNotShown = "WORKFLOW_NOT_SHOWN"
+	// codeCheckRunUnreadable, codeFilesUnreadable and codeWorkflowUnreadable are GitHub not
+	// answering, a 503: the result was not judged, and the job writes it again.
 	codeCheckRunUnreadable = "CHECK_RUN_UNREADABLE"
 	codeFilesUnreadable    = "FILES_UNREADABLE"
+	codeWorkflowUnreadable = "WORKFLOW_UNREADABLE"
 )
 
 // specCheckResultInput is the body POST /api/v1/projects/{key}/results takes: what the job ran
@@ -112,27 +124,48 @@ type specFiles struct {
 	Checks   map[string]specCheckFacts `json:"checks,omitempty"`
 }
 
-// specResultReads keeps what the route reads of GitHub for the life of the process, since
-// neither changes: a check run's name and commit, by repository and id, and what the spec files
-// hold, by repository and commit. Each is held as JSON in a byte-bounded cache, so many runs and
-// commits cannot grow it without bound (bytelru).
+// workflowJobs is what the route reads of a workflow file at a commit: the name GitHub gives the
+// check runs of each of its jobs, the job's `name:` where it sets one and else its id, among the
+// names of the jobs with a matrix or among those of the jobs with none. A job whose name holds an
+// expression (`${{`) is in neither, since the names of its check runs are known only once a run
+// evaluates it. Problem, when set, is why the file says nothing of its jobs: it is over
+// notes.MaxFileSize, or it does not read as a workflow file.
+type workflowJobs struct {
+	Problem string   `json:"problem,omitempty"`
+	Matrix  []string `json:"matrix,omitempty"`
+	Plain   []string `json:"plain,omitempty"`
+	// Expressions is whether a job of the file is named by something a run evaluates: its name
+	// holds an expression, or is no scalar. The name of a check run such a job makes is known only
+	// to that run, so no name of the file's own says which job made a given check run.
+	Expressions bool `json:"expressions,omitempty"`
+}
+
+// specResultReads keeps what the route reads of GitHub for the life of the process, since none
+// of it changes: a check run's name and commit, by repository and id, what the spec files hold,
+// by repository and commit, and the jobs of a workflow file, by repository, commit and path. Each
+// is held as JSON in a byte-bounded cache, so many runs and commits cannot grow it without bound
+// (bytelru).
 type specResultReads struct {
 	once      sync.Once
 	checkRuns *bytelru.Cache[string, []byte]
 	checks    *bytelru.Cache[string, []byte]
+	workflows *bytelru.Cache[string, []byte]
 }
 
-// The bounds of the two caches: a check run is a hundred bytes, and a commit's checks a few
-// hundred bytes each.
+// The bounds of the three caches: a check run is a hundred bytes, a commit's checks a few hundred
+// bytes each, and a workflow file's jobs a name each. The names are a part of a file of at most
+// notes.MaxFileSize, so the jobs of every file within that bound fit the workflow cache.
 const (
 	specCheckRunCacheBytes = 1 << 20
 	specChecksCacheBytes   = 16 << 20
+	specWorkflowCacheBytes = 4 << 20
 )
 
 func (c *specResultReads) init() {
 	c.once.Do(func() {
 		c.checkRuns = bytelru.New[string, []byte](specCheckRunCacheBytes)
 		c.checks = bytelru.New[string, []byte](specChecksCacheBytes)
+		c.workflows = bytelru.New[string, []byte](specWorkflowCacheBytes)
 	})
 }
 
@@ -141,8 +174,12 @@ func (c *specResultReads) init() {
 // token; the body names the four fields alone, well formed; its commit is the run's; the run's
 // repository is the project's default repository; GitHub names the run's check run at that
 // commit; the graph logic takes the files at that commit; the files hold the check; and the
-// check's job is the check run's. The project check of the path is withinProjectScope's, which
-// register puts in front of this handler.
+// check's job is the check run's. A check run is the job's when its name is the job's name, with
+// no leg; or when its name is the job's name and a leg in parentheses, and the run's workflow file
+// at the commit makes the job a matrix job (workflowJobs.whyNotALeg). GitHub's 403 or 404 for the
+// check run or the workflow file is a final refusal, and any other failure of GitHub's a 503 that
+// asks for the write again. The project check of the path is withinProjectScope's, which register
+// puts in front of this handler.
 func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
@@ -169,16 +206,8 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, commitNotTheRuns(input.Commit, run.SHA))
 		return
 	}
-	numbers, err := runNumbersOf(run)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	principal, err := resultPrincipal(run)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
+	// The run was read whole once, by the verifier (ciphertoken.Caller.CI, oauthwire.ParseCIRun):
+	// its numbers and its workflow's path are read off it, never parsed again here.
 	project := r.PathValue("key")
 	ctx := r.Context()
 	isDefault, err := s.isProjectsDefaultRepository(ctx, project, run.Repository)
@@ -194,17 +223,22 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 
 	owner, name, _ := strings.Cut(run.Repository, "/")
 	reader := &repositoryReader{s: s, owner: owner, name: name}
-	checkRun, err := s.specCheckRun(ctx, reader, run.Repository, numbers.checkRun)
-	if err != nil {
+	checkRun, err := s.specCheckRun(ctx, reader, run.Repository, run.CheckRun)
+	switch {
+	case errors.Is(err, githubapp.ErrRepositoryUnreadable):
+		writeError(w, codeCheckRunNotShown, http.StatusForbidden, fmt.Sprintf(
+			"GitHub refuses Dispatch the read of check run %d of %s, as it refuses a check run the App cannot see or that does not exist, so this token's run is not proven: the result is refused, and a write again is refused the same: %v",
+			run.CheckRun, run.Repository, err))
+		return
+	case err != nil:
 		writeError(w, codeCheckRunUnreadable, http.StatusServiceUnavailable, fmt.Sprintf(
-			"GitHub did not answer the read of check run %d of %s, so the result was not judged; write it again: %v", numbers.checkRun, run.Repository, err))
+			"GitHub did not answer the read of check run %d of %s, so the result was not judged; write it again: %v", run.CheckRun, run.Repository, err))
 		return
 	}
 	if checkRun.HeadSHA != run.SHA {
-		s.writeHandlerError(w, checkRunNotTheRuns(checkRun.HeadSHA, numbers.checkRun, run.SHA))
+		s.writeHandlerError(w, checkRunNotTheRuns(checkRun.HeadSHA, run.CheckRun, run.SHA))
 		return
 	}
-	job, _ := jobAndLeg(checkRun.Name)
 	files, err := s.specFilesAt(ctx, reader, run.Repository, run.SHA)
 	if err != nil {
 		writeError(w, codeFilesUnreadable, http.StatusServiceUnavailable, fmt.Sprintf(
@@ -227,14 +261,49 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 			"the spec files of %s at %s hold no check with the id %q, and a result is for a check that the files hold", run.Repository, run.SHA, input.Check))
 		return
 	}
-	if check.Job != job {
-		named := "names no job"
-		if check.Job != "" {
-			named = fmt.Sprintf("names the job %q", check.Job)
+	job, leg := checkRun.Name, ""
+	candidate, isLeg := "", false
+	if checkRun.Name != check.Job {
+		candidate, isLeg = legOf(checkRun.Name, check.Job)
+		if !isLeg {
+			named := "names no job"
+			if check.Job != "" {
+				named = fmt.Sprintf("names the job %q", check.Job)
+			}
+			writeError(w, codeCheckNotThisJobs, http.StatusConflict, fmt.Sprintf(
+				"check %s %s, and this token's job is %q (check run %d, %q): a job writes results only for the checks that name it",
+				input.Check, named, checkRun.Name, run.CheckRun, checkRun.Name))
+			return
 		}
+	}
+	// Either way the run's workflow file at the commit says which job made this check run: a name
+	// the file gives two jobs, or a name a run evaluates, says nothing, and a leg is a leg only
+	// where the file makes its job a matrix job.
+	jobs, err := s.specWorkflowAt(ctx, reader, run.Repository, run.SHA, run.Workflow)
+	switch {
+	case errors.Is(err, githubapp.ErrRepositoryUnreadable):
+		writeError(w, codeWorkflowNotShown, http.StatusConflict, fmt.Sprintf(
+			"GitHub refuses Dispatch the read of %s of %s at %s, the run's workflow file, which says which job makes the check run %d, %q: the result is refused, and a write again is refused the same: %v",
+			run.Workflow, run.Repository, run.SHA, run.CheckRun, checkRun.Name, err))
+		return
+	case err != nil:
+		writeError(w, codeWorkflowUnreadable, http.StatusServiceUnavailable, fmt.Sprintf(
+			"GitHub did not answer the read of %s of %s at %s, the run's workflow file, so the result was not judged; write it again: %v", run.Workflow, run.Repository, run.SHA, err))
+		return
+	}
+	where := run.Workflow + " at " + run.SHA
+	if isLeg {
+		if why := jobs.whyNotALeg(checkRun.Name, check.Job, where); why != "" {
+			writeError(w, codeCheckNotThisJobs, http.StatusConflict, fmt.Sprintf(
+				"check %s names the job %q, and this token's check run %d is named %q, a leg of %q only where the run's workflow file makes %q a matrix job, and %s: a job writes results only for the checks that name it",
+				input.Check, check.Job, run.CheckRun, checkRun.Name, check.Job, check.Job, why))
+			return
+		}
+		job, leg = check.Job, candidate
+	} else if why := jobs.whyNotTheJob(checkRun.Name, where); why != "" {
 		writeError(w, codeCheckNotThisJobs, http.StatusConflict, fmt.Sprintf(
-			"check %s %s, and this token's job is %q (check run %d, %q): a job writes results only for the checks that name it",
-			input.Check, named, job, numbers.checkRun, checkRun.Name))
+			"check %s names the job %q, and this token's check run %d is named %q, that job's check run only where the run's workflow file says so, and %s: a job writes results only for the checks that name it",
+			input.Check, check.Job, run.CheckRun, checkRun.Name, why))
 		return
 	}
 
@@ -243,10 +312,9 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 			predicateType: specCheckResultPredicateType, project: project, check: input.Check,
 			procedureDigest: check.Digest,
 			test:            model.ResultTest{Runner: check.Runner, Selector: check.Selector, Job: check.Job},
-			verdict:         input.Verdict, observed: cutObserved(input.Observed), checkRunName: checkRun.Name,
-			run: run, attempt: numbers.attempt, session: actor.Credential.Session, principal: principal,
+			verdict:         input.Verdict, observed: cutObserved(input.Observed), job: job, leg: leg,
+			run: run, session: actor.Credential.Session,
 		},
-		checkRunID: numbers.checkRun, runID: numbers.run,
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -305,32 +373,6 @@ func checkRunNotTheRuns(named string, checkRun int64, tested string) *apiError {
 	return errorf(http.StatusForbidden, codeCheckRunNotTheRuns,
 		"GitHub names commit %s for check run %d, and this token's run tested commit %s: the check run is no job of this run",
 		named, checkRun, tested)
-}
-
-// runNumbers is the three numbers of a run, read from its token: its check run, its workflow run
-// and its attempt.
-type runNumbers struct {
-	checkRun, run int64
-	attempt       int
-}
-
-// runNumbersOf reads the run's numbers. The broker mints a results token only for a run whose
-// numbers are positive decimals and the verifier admits no other (ciphertoken.shapeOf), so a
-// number that does not read is Dispatch's own fault, a 500.
-func runNumbersOf(run oauthwire.CIRun) (runNumbers, error) {
-	checkRun, err := strconv.ParseInt(run.CheckRunID, 10, 64)
-	if err != nil {
-		return runNumbers{}, fmt.Errorf("read the check run of a results token: %w", err)
-	}
-	workflowRun, err := strconv.ParseInt(run.RunID, 10, 64)
-	if err != nil {
-		return runNumbers{}, fmt.Errorf("read the run of a results token: %w", err)
-	}
-	attempt, err := strconv.Atoi(run.RunAttempt)
-	if err != nil {
-		return runNumbers{}, fmt.Errorf("read the attempt of a results token: %w", err)
-	}
-	return runNumbers{checkRun: checkRun, run: workflowRun, attempt: attempt}, nil
 }
 
 // isProjectsDefaultRepository answers whether repository, the repository GitHub names a run by,
@@ -486,27 +528,153 @@ func judgeSpecFiles(read map[string][]byte) specFiles {
 	return files
 }
 
-// jobAndLeg reads a check run's name as GitHub names a job's check run: the job's name, then its
-// matrix values in parentheses. A name ending in ")" splits at its last " (" into the job and
-// its leg; any other name is the job with no leg.
-func jobAndLeg(name string) (job, leg string) {
-	if i := strings.LastIndex(name, " ("); i > 0 && strings.HasSuffix(name, ")") {
-		return name[:i], name[i+2 : len(name)-1]
+// legOf reads name, a check run's name, as GitHub names the check run of one leg of a matrix job
+// called job: the job's name, " (", the leg's matrix values, ")". The leg is all that the
+// parentheses hold, a matrix value that holds parentheses of its own included; ok is false for any
+// other name, and for a job of no name. GitHub writes that shape for a job that is no leg too, one
+// whose own name ends in parentheses, so the shape alone makes no check run a leg: the route
+// takes the leg only where the run's workflow file says so (workflowJobs.whyNotALeg).
+func legOf(name, job string) (leg string, ok bool) {
+	if job == "" {
+		return "", false
 	}
-	return name, ""
+	rest, ok := strings.CutPrefix(name, job+" (")
+	if !ok {
+		return "", false
+	}
+	leg, ok = strings.CutSuffix(rest, ")")
+	return leg, ok && leg != ""
 }
 
-// resultPrincipal is the broker's principal of a result entry's run, read by the broker's own
-// rule from what the broker authenticated (oauthwire.WorkflowPath, oauthwire.ResultPrincipal):
-// workflow-results:, the repository and the path of the workflow file, which its workflow_ref
-// names before "@" and the run's ref. The verifier admits a results token only where the path
-// reads (ciphertoken.wholeRun), so a run whose path does not read is Dispatch's own fault, a 500.
-func resultPrincipal(run oauthwire.CIRun) (string, error) {
-	workflow, ok := oauthwire.WorkflowPath(run.WorkflowRef, run.Repository, run.Ref)
-	if !ok {
-		return "", fmt.Errorf("read the workflow of a results token: %s is not %s/<path>@%s", run.WorkflowRef, run.Repository, run.Ref)
+// whyNotTheJob is why jobs, the jobs of the run's workflow file (where names that file at its
+// commit), do not show the check run called name to be the job of that very name, or "" where they
+// show it. They show it where exactly one job with no matrix is named name and no job's name holds
+// an expression: a matrix job named name makes no check run of that name, since every leg's name
+// carries its values, while a second job of the name, or a name a run evaluates, makes a check run
+// of that name whose job the name does not say.
+func (jobs workflowJobs) whyNotTheJob(name, where string) string {
+	switch {
+	case jobs.Problem != "":
+		return fmt.Sprintf("%s does not say which jobs make a check run of that name: %s", where, jobs.Problem)
+	case jobs.Expressions:
+		return fmt.Sprintf("a job in %s is named by an expression, so the name of a check run its run makes is known only to that run, and this name does not say which job ran", where)
+	case jobs.named(name) > 1:
+		return fmt.Sprintf("%d jobs in %s are named %q, so the name does not say which job ran", jobs.named(name), where, name)
+	case !slices.Contains(jobs.Plain, name):
+		return fmt.Sprintf("no job with no matrix in %s is named %q, and a matrix job of that name makes no check run of it", where, name)
 	}
-	return oauthwire.ResultPrincipal(run.Repository, workflow), nil
+	return ""
+}
+
+// whyNotALeg is why jobs, the jobs of the run's workflow file (where names that file at its
+// commit), do not show the check run called name, which legOf reads as a leg of job, to be a leg
+// of job, or "" where they show it. They show it where some job named job has a matrix, no job
+// with no matrix is named name, and no job's name holds an expression: such a job, or a name a run
+// evaluates, makes a check run of that very name, so the name would not say which job ran. A file
+// that says nothing of its jobs shows nothing.
+func (jobs workflowJobs) whyNotALeg(name, job, where string) string {
+	switch {
+	case jobs.Problem != "":
+		return fmt.Sprintf("%s does not say which jobs have a matrix: %s", where, jobs.Problem)
+	case jobs.Expressions:
+		return fmt.Sprintf("a job in %s is named by an expression, so the name of a check run its run makes is known only to that run, and this name does not say which job ran", where)
+	case !slices.Contains(jobs.Matrix, job):
+		return fmt.Sprintf("no job named %q in %s has a matrix", job, where)
+	case slices.Contains(jobs.Plain, name):
+		return fmt.Sprintf("the job named %q in %s has no matrix, so its check run has that name too, and the name does not say which job ran", name, where)
+	}
+	return ""
+}
+
+// named is how many of the file's jobs, with a matrix or without, are named name.
+func (jobs workflowJobs) named(name string) int {
+	count := 0
+	for _, held := range [][]string{jobs.Matrix, jobs.Plain} {
+		for _, job := range held {
+			if job == name {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+// specWorkflowAt is what the workflow file at path in repository at commit says of its jobs: the
+// process's cached answer, or the file GitHub serves read with readWorkflowJobs. A file over
+// notes.MaxFileSize, or one whose answer is over the response limit Dispatch reads a file within,
+// is a problem of the file and not a GitHub that did not answer: a commit's file never changes, so
+// every read of it answers the same.
+func (s *server) specWorkflowAt(ctx context.Context, reader *repositoryReader, repository, commit, path string) (workflowJobs, error) {
+	s.specReads.init()
+	return readCached(s.specReads.workflows, repository+"@"+commit+":"+path, func() (workflowJobs, error) {
+		token, err := reader.installationToken(ctx)
+		if err != nil {
+			return workflowJobs{}, err
+		}
+		content, err := s.deps.GitHub.File(ctx, token, reader.owner, reader.name, commit, path)
+		var tooLarge *githubapp.ResponseTooLargeError
+		switch {
+		case errors.Is(err, notes.ErrFileTooLarge):
+			return workflowJobs{Problem: err.Error()}, nil
+		case errors.As(err, &tooLarge):
+			return workflowJobs{Problem: fmt.Sprintf("GitHub's answer for it is over %d bytes, the most Dispatch reads of one file", tooLarge.Limit)}, nil
+		case err != nil:
+			return workflowJobs{}, err
+		}
+		return readWorkflowJobs(content), nil
+	})
+}
+
+// readWorkflowJobs reads the jobs of a workflow file (workflowJobs). A job's name is its `name:`
+// where that is set, else its id, as GitHub names the job's check runs. A job has a matrix where
+// its `strategy.matrix` is a mapping with a key, or an expression, which GitHub expands into legs
+// when the run starts. A file that YAML cannot read into jobs is a problem of the file.
+func readWorkflowJobs(content []byte) workflowJobs {
+	var workflow struct {
+		Jobs map[string]struct {
+			Name     yaml.Node `yaml:"name"`
+			Strategy struct {
+				Matrix yaml.Node `yaml:"matrix"`
+			} `yaml:"strategy"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(content, &workflow); err != nil {
+		return workflowJobs{Problem: fmt.Sprintf("it does not read as a workflow file: %v", err)}
+	}
+	var jobs workflowJobs
+	for id, job := range workflow.Jobs {
+		name := id
+		if node := yamlValue(&job.Name); node.Kind != 0 && node.Tag != "!!null" {
+			if node.Kind != yaml.ScalarNode {
+				jobs.Expressions = true
+				continue
+			}
+			name = node.Value
+		}
+		if strings.Contains(name, "${{") {
+			jobs.Expressions = true
+			continue
+		}
+		matrix := yamlValue(&job.Strategy.Matrix)
+		if matrix.Kind == yaml.MappingNode && len(matrix.Content) > 0 ||
+			matrix.Kind == yaml.ScalarNode && matrix.Tag != "!!null" && matrix.Value != "" {
+			jobs.Matrix = append(jobs.Matrix, name)
+		} else {
+			jobs.Plain = append(jobs.Plain, name)
+		}
+	}
+	// Sorted, so one file is held as one encoding whatever order the map gives its jobs in.
+	slices.Sort(jobs.Matrix)
+	slices.Sort(jobs.Plain)
+	return jobs
+}
+
+// yamlValue is the node an alias names, followed to the end, or node itself where it is no alias.
+func yamlValue(node *yaml.Node) *yaml.Node {
+	for node.Kind == yaml.AliasNode && node.Alias != nil {
+		node = node.Alias
+	}
+	return node
 }
 
 // cutObserved is what a result keeps of what a job observed, on both results routes: the text
@@ -538,12 +706,12 @@ func runeOffset(text string, n int) int {
 }
 
 // specCheckRow is one row of spec_check_results before it is written: the result whose statement
-// it stores (attestedResult.statement), which every column but the run's two numbers is read
-// from, so no column can say another thing than the statement, and the check run and the
-// workflow run as runNumbersOf reads them.
+// it stores (attestedResult.statement), built from what the request and the spec files gave and
+// from its token's run read whole (oauthwire.Run). Every column is read from that statement but
+// the check run and the workflow run, the run's own numbers (oauthwire.Run.CheckRun, ID), so no
+// column can say another thing than the statement.
 type specCheckRow struct {
-	result            attestedResult
-	checkRunID, runID int64
+	result attestedResult
 }
 
 // insertSpecCheckResult is the one writer of spec_check_results: it appends row with its
@@ -566,8 +734,8 @@ func insertSpecCheckResult(ctx context.Context, q queryer, row specCheckRow) (mo
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, `+stampedAttestation("$12")+`, $13)
 		returning id::text, seq, attestation`,
 		predicate.Project, predicate.Run.Repository, predicate.Check, statement.Subject[0].Digest["gitCommit"],
-		predicate.ProcedureDigest, predicate.Job, predicate.Leg, row.checkRunID, row.runID, predicate.Run.Attempt,
-		predicate.Verdict, encoded, predicate.Recorder.Session,
+		predicate.ProcedureDigest, predicate.Job, predicate.Leg, row.result.run.CheckRun, row.result.run.ID,
+		predicate.Run.Attempt, predicate.Verdict, encoded, predicate.Recorder.Session,
 	).Scan(&result.ID, &result.Seq, &stored); err != nil {
 		return model.SpecCheckResult{}, fmt.Errorf("insert a spec check result: %w", err)
 	}
@@ -580,7 +748,7 @@ func insertSpecCheckResult(ctx context.Context, q queryer, row specCheckRow) (mo
 
 // listSpecCheckResults is GET /api/v1/projects/{key}/results: every stored result of the project
 // at ?commit=, of ?check= alone when it is given, newest first by record number. A results token
-// never reaches it (refuseResultsToken): it writes results and reads nothing.
+// never reaches it (refuseLimitedToken): it writes results and reads nothing.
 func (s *server) listSpecCheckResults(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

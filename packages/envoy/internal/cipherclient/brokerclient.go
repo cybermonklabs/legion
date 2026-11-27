@@ -779,9 +779,9 @@ func (c *Client) send(ctx context.Context, form url.Values) ([]byte, string, err
 	return body, shown, nil
 }
 
-// AirlockGrant is a CI run's result grant as the token endpoint answers it: the airlock
-// placeholder the run's command holds in place of a Dispatch credential, the grant's id, when it
-// ends, and the airlock release the command runs with.
+// AirlockGrant is a CI run's result grant as the token endpoint answers it: the proxy placeholder
+// the run's command holds in place of a Dispatch credential, the grant's id, when it ends, and the
+// airlock release the command runs with.
 type AirlockGrant struct {
 	Placeholder, GrantID string
 	ExpiresAt            time.Time

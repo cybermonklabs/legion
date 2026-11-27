@@ -24,7 +24,7 @@ import (
 )
 
 // cmdResultGrant proves a GitHub workflow run at the broker's token endpoint and runs COMMAND
-// with the airlock placeholder of the run's result grant (cipherclient.Client.AirlockPlaceholder),
+// with the proxy placeholder of the run's result grant (cipherclient.Client.AirlockPlaceholder),
 // so the command's result writes reach Dispatch only through the broker's airlock proxy, which
 // holds the run's results token and the key it is bound to. This process holds neither: the DPoP
 // key it proves the trade with is made here, in memory, never written, and dies with the exec.

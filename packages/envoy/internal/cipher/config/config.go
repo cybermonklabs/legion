@@ -30,6 +30,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/fileerr"
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
@@ -77,7 +78,8 @@ type Config struct {
 	// refused too, since the system trust store holds no RDS CA. Any other URL, one carrying its own
 	// password or a passwordless one to a local Postgres that trusts its clients, connects as given.
 	// Nothing is substituted into it: a URL naming the removed ${BROKER_DATABASE_PASSWORD}
-	// placeholder is refused, as BROKER_DATABASE_PASSWORD itself is.
+	// placeholder is refused, as BROKER_DATABASE_PASSWORD itself is. A URL holding an "@" after its
+	// user name and password is refused by the store, naming this variable alone (store.Open).
 	DatabaseURL string
 	// DatabaseIAM is whether the broker signs in to DatabaseURL with RDS IAM auth tokens: the URL
 	// names a user and an RDS endpoint host, pgx finds no password for it, and it verifies that
@@ -1081,18 +1083,19 @@ type Config struct {
 	// connection its configuration lists no static user for, and which answers each with a NATS
 	// user of that connection's own, and the NATS writer hold it decides by. BROKER_NATS_URLS is
 	// the hub's servers, comma separated, each refused at start, by its place in the list and
-	// never its text, when it carries user info or is no URL: the service connects as its seed's
-	// user, and the URLs are written to its log; BROKER_NATS_SEED_FILE the service's own NATS user
-	// seed, a user the hub lists as an auth user; BROKER_NATS_ISSUER_SEED_FILE the account seed the
-	// hub names as its auth_callout issuer, which signs every user the service admits;
-	// BROKER_NATS_XKEY_SEED_FILE the curve seed the hub seals each request to. Each file is read at
-	// start and refused unless it holds a seed of its kind (a user, an account, a curve key),
-	// naming the variable and never the value. BROKER_NATS_SERVICES lists the services admitted by
-	// platform identity, as whitespace-separated <kind>/<machine id or ->/<* or ->=<account>
-	// entries (dispatch, listener, edge-listener, daemon or measure; operator, the deployment's one
-	// operator identity, whose grant is the writer hold's phase's and whose token alone writes the
-	// hold through /v1/nats-hold; or probe, the hold's one probe; * for the kind's whole grant, -
-	// for the projects the account's exchange entry lists, which operator and probe refuse, as they
+	// never its text, when it carries user info, an "@" after its host, a query or a fragment, or
+	// is no URL: the service connects as its seed's user, and the URLs are written to its log;
+	// BROKER_NATS_SEED_FILE the service's own NATS user seed, a user the hub lists as an auth
+	// user; BROKER_NATS_ISSUER_SEED_FILE the account seed the hub names as its auth_callout
+	// issuer, which signs every user the service admits; BROKER_NATS_XKEY_SEED_FILE the curve
+	// seed the hub seals each request to. Each file is read at start and refused unless it holds
+	// a seed of its kind (a user, an account, a curve key), naming the variable and never the
+	// value. BROKER_NATS_SERVICES lists the services admitted by platform identity, as
+	// whitespace-separated <kind>/<machine id or ->/<* or ->=<account> entries (dispatch,
+	// listener, edge-listener, daemon or measure; operator, the deployment's one operator
+	// identity, whose grant is the writer hold's phase's and whose token alone writes the hold
+	// through /v1/nats-hold; or probe, the hold's one probe; * for the kind's whole grant, - for
+	// the projects the account's exchange entry lists, which operator and probe refuse, as they
 	// refuse a machine id and a second entry of their kind), each account written as
 	// BROKER_API_ACCOUNTS writes one, every entry read once at load (ParseNATSServices). An edge
 	// listener's entry, edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>, lists in place of * or
@@ -2552,7 +2555,7 @@ func portInRange(port string) bool {
 // stand-in on loopback, which a production start refuses. A name that resolves elsewhere is the
 // dial's to check, since it can resolve differently at each dial. Load runs it for each entry with
 // the broker's dial allow and cluster ranges, and `profiles check --private-upstream` through
-// PrivateUpstreamAddressRules.
+// it directly with the ranges it is given, or PrivateUpstreamRefusedOnEveryBroker without them.
 func PrivateUpstreamDialable(upstream PrivateUpstream, dialAllow []string, clusterRanges []netip.Prefix) error {
 	if upstream.URL == nil {
 		return nil
@@ -2577,24 +2580,17 @@ func PrivateUpstreamDialable(upstream PrivateUpstream, dialAllow []string, clust
 	return nil
 }
 
-// PrivateUpstreamAddressRules is the start's check of a private destination's address
-// (PrivateUpstreamDialable) as `profiles check --private-upstream` makes it: the same rule,
-// netaddr.DestinationRefusal. Given the broker's cluster ranges (rangesGiven, clusterRanges as
-// ParseAirlockClusterRanges reads BROKER_AIRLOCK_CLUSTER_RANGES, none for a blank value), it is the
-// start's whole check with those ranges, its refusals in the start's words, and it answers no
-// unjudged address. Without them it reads the part every broker holds whatever its ranges: it
+// PrivateUpstreamRefusedOnEveryBroker is the part of the start's check of a private destination's
+// address (PrivateUpstreamDialable) that every broker holds whatever its cluster ranges, which
+// `profiles check --private-upstream` makes when it is given no ranges; given them, it makes the
+// start's whole check, PrivateUpstreamDialable, with those ranges and no dial exception. It
 // refuses, in the start's words and naming the setting, a URL whose host is localhost or a name
-// under .localhost, and one whose host is an address netaddr.DestinationNever names; an address
+// under .localhost, and one whose host is an address netaddr.DestinationNever names. An address
 // outside the ranges every broker takes (netaddr.DestinationPrivate) is a destination's only on a
 // broker whose BROKER_AIRLOCK_CLUSTER_RANGES hold it, so it answers that address as unjudged, and
 // no error, for the caller to say it did not judge the ranges. A host that is a name is the dial's
-// to check at each dial, as at the start, and answers nothing. The start's one exception,
-// BROKER_AIRLOCK_TEST_DIAL_ALLOW, is the local stack's and a production start refuses it, so it is
-// no exception here.
-func PrivateUpstreamAddressRules(upstream PrivateUpstream, clusterRanges []netip.Prefix, rangesGiven bool) (unjudged netip.Addr, err error) {
-	if rangesGiven {
-		return netip.Addr{}, PrivateUpstreamDialable(upstream, nil, clusterRanges)
-	}
+// to check at each dial, as at the start, and answers nothing.
+func PrivateUpstreamRefusedOnEveryBroker(upstream PrivateUpstream) (unjudged netip.Addr, err error) {
 	addr, err := privateUpstreamAddress(upstream)
 	if err != nil || !addr.IsValid() {
 		return netip.Addr{}, err
@@ -2716,32 +2712,17 @@ func ProxyMintedRules(rules proxyrules.Rules, upstreams []PrivateUpstream) error
 
 // ResultsEntryRules is the results capability's own part of the start check, beside
 // ProxyMintedRules, which holds its block as it holds every dpop block (one exact host, a private
-// destination's, an allow list, Authorization alone, no kind on its host). Where
-// the profile oauthwire.AirlockResultsName has a proxy block, the block is of kind dpop: the broker
-// mints the results token for a CI run's result grant and holds it (requests.MintedKind), and a
-// block of another kind would carry a stored secret of that name. Result entries
-// (BROKER_EXCHANGE_RESULT_WORKFLOWS, resultWorkflows) need that profile, since each result entry's
-// run is granted a placeholder its block carries. With neither, any rules pass. Each refusal names
-// BROKER_PROFILES_FILE and the profile, and BROKER_EXCHANGE_RESULT_WORKFLOWS only when it is set.
-// cmd/cipherd runs it on every broker before ProxyMintedRules, and `profiles check` runs it with no
-// result entries.
-//
-// readsAsBlock is whether the file reads that profile's proxy block as the broker before the kinds
-// read it (policy.Profiles.LegacyProxy of the name, which answers a block of no kind, aws or
-// azure): a file that declares no kind serves such a block behind a kind of its own, so the block
-// is no binding of the rules and rules.Lookup answers nothing for it. The results profile is
-// refused there as it is in a file that declares kinds, since the broker mints and holds that
-// name whatever else the file's blocks do.
-func ResultsEntryRules(rules proxyrules.Rules, readsAsBlock, resultWorkflows bool) error {
+// destination's, an allow list, Authorization alone, no kind on its host): result entries
+// (BROKER_EXCHANGE_RESULT_WORKFLOWS, resultWorkflows) need the profile oauthwire.AirlockResultsName,
+// since each result entry's run is granted a placeholder its block carries. The refusal names
+// BROKER_PROFILES_FILE, the profile and BROKER_EXCHANGE_RESULT_WORKFLOWS. The profile's shape, a
+// name and a proxy block of kind dpop, is the profiles parser's one rule (policy.ParseProfiles),
+// which refuses any other shape before a rule is built, so no check here repeats it. cmd/cipherd
+// runs it before ProxyMintedRules.
+func ResultsEntryRules(rules proxyrules.Rules, resultWorkflows bool) error {
 	name := oauthwire.AirlockResultsName
-	entry := rules.Lookup(name)
-	switch {
-	case readsAsBlock:
-		return fmt.Errorf("the profile %s of %s must be of kind %s, a capability the broker mints and holds, and its proxy block is one this file reads as the broker before the kinds did", name, profilesFileSetting, proxyrules.WayDPoP)
-	case entry == nil && resultWorkflows:
+	if resultWorkflows && rules.Lookup(name) == nil {
 		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the profile %s, and %s holds no profile of that name", name, profilesFileSetting)
-	case entry != nil && (entry.Inline == nil || entry.Way != proxyrules.WayDPoP):
-		return fmt.Errorf("the profile %s of %s must be of kind %s, a capability the broker mints and holds, and its way is %q", name, profilesFileSetting, proxyrules.WayDPoP, entry.Way)
 	}
 	return nil
 }
@@ -3457,6 +3438,10 @@ func Load(getenv func(string) string) (Config, error) {
 	if len(cfg.ServiceLogins) > 0 && cfg.K8sOIDCIssuer == "" {
 		return Config{}, fmt.Errorf("BROKER_SERVICE_LOGINS needs BROKER_K8S_OIDC_ISSUER and BROKER_K8S_OIDC_AUDIENCE, whose tokens its accounts log in with")
 	}
+	// BROKER_GOOGLE_OIDC_ISSUER is Google's unless a dev stack names its own.
+	if err := oidc.IssuerRefusal("BROKER_GOOGLE_OIDC_ISSUER", cfg.GoogleOIDCIssuer); err != nil {
+		return Config{}, err
+	}
 	callers, err := parseAPIAccounts("BROKER_API_ACCOUNTS", getenv("BROKER_API_ACCOUNTS"))
 	if err != nil {
 		return Config{}, err
@@ -3534,7 +3519,7 @@ func Load(getenv func(string) string) (Config, error) {
 	// profiles file would grant placeholders no proxy honours. The profile itself is checked where
 	// the file is read (ResultsEntryRules), since Load reads no file.
 	if len(cfg.ExchangeResultWorkflows) > 0 && cfg.ProfilesFile == "" {
-		return Config{}, fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs BROKER_PROFILES_FILE: a result entry's run is granted an airlock placeholder, which the proxy block of the profile %s, of kind %s, makes a write to Dispatch", oauthwire.AirlockResultsName, proxyrules.WayDPoP)
+		return Config{}, fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs BROKER_PROFILES_FILE: a result entry's run is granted a proxy placeholder, which the proxy block of the profile %s, of kind %s, makes a write to Dispatch", oauthwire.AirlockResultsName, proxyrules.WayDPoP)
 	}
 
 	if cfg.ExchangeJobWorkflows, err = parseExchangeJobWorkflows("BROKER_EXCHANGE_JOB_WORKFLOWS", getenv("BROKER_EXCHANGE_JOB_WORKFLOWS")); err != nil {
@@ -3786,8 +3771,12 @@ func parseSignIn(getenv func(string) string, sessionLifetime time.Duration) (app
 	if len(missing) > 0 {
 		return approval.SignIn{}, fmt.Errorf("the broker's approval page needs %s; missing %s", strings.Join(SignInSettings, ", "), strings.Join(missing, ", "))
 	}
+	if err := oidc.IssuerRefusal(signInIssuerSetting, signIn.Issuer); err != nil {
+		return approval.SignIn{}, err
+	}
+	// The value is not quoted: a token or a URL with a password pasted here would print.
 	if !signInIssuerOK(signIn.Issuer) {
-		return approval.SignIn{}, fmt.Errorf("%s must be an absolute https URL, or http to a loopback host, got %q", signInIssuerSetting, signIn.Issuer)
+		return approval.SignIn{}, fmt.Errorf("%s must be an absolute https URL, or http to a loopback host", signInIssuerSetting)
 	}
 	var err error
 	if signIn.ClientSecret, err = secretFile(signInClientSecretSetting, secretPath); err != nil {
@@ -3825,15 +3814,16 @@ func secretValue(getenv func(string) string, name string) (string, error) {
 }
 
 // secretFile reads the trimmed contents of path, the file the variable setting names; an
-// unreadable or blank file is an error naming setting and path, never what the file holds.
+// unreadable or blank file is an error naming setting and why (fileerr.Class), never the path,
+// which can be a credential pasted where it goes, nor what the file holds.
 func secretFile(setting, path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("%s names %s, which could not be read: %w", setting, path, err)
+		return "", fmt.Errorf("%s names a file that cannot be read: %s", setting, fileerr.Class(err))
 	}
 	value := strings.TrimSpace(string(data))
 	if value == "" {
-		return "", fmt.Errorf("%s names %s, which is empty", setting, path)
+		return "", fmt.Errorf("%s names a file that is empty", setting)
 	}
 	return value, nil
 }

@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/cipher/config"
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -51,9 +50,10 @@ const removedAirlockCheckCommand = "airlock-check"
 
 // runProfilesCheck reads the profiles file args names and says whether the broker would serve it,
 // with the broker's own reader and no second reader of the format: policy.ParseProfiles, which the
-// boot runs too, and then the boot's own checks of the dpop blocks - the results profile's
-// (config.ResultsEntryRules) and every rule of a dpop block the file alone decides
-// (config.MintedEntryRules) - and the policy load's own rules for each name behind Cipher's proxy,
+// boot runs too and which holds the results profile to its shape, a name and a proxy block of kind
+// dpop, and then the boot's own check of the dpop blocks - every rule of a dpop block the file
+// alone decides (config.MintedEntryRules) - and the policy load's own rules for each name behind
+// Cipher's proxy,
 // so there is no second reader or copy of its rules. What this agrees to is exactly what the boot
 // agrees to but for the reads it has no setting for: each requester service against the deployment's
 // registered services (readProfiles), each dpop block's host against the private destinations
@@ -69,7 +69,7 @@ const removedAirlockCheckCommand = "airlock-check"
 // and holds the file to config.ProxyMintedRules with those destinations, the check the boot of a
 // broker with them makes: each dpop block binds a destination's host, and each destination needs a
 // dpop block. It holds each destination to the boot's address rule too
-// (config.PrivateUpstreamAddressRules, netaddr.DestinationRefusal): localhost and an address a
+// (config.PrivateUpstreamDialable, netaddr.DestinationRefusal): localhost and an address a
 // destination is on no broker - loopback, link-local, the metadata servers, an IPv6 form that
 // carries an IPv4 address and the rest of netaddr.DestinationNever - are refused as the boot
 // refuses them. --cluster-ranges takes the value BROKER_AIRLOCK_CLUSTER_RANGES gives the broker,
@@ -95,8 +95,9 @@ const removedAirlockCheckCommand = "airlock-check"
 //
 // On a file it would not serve it exits 1 with one line on stderr per fault naming the file and
 // what the refusal says: a file ParseProfiles refuses (naming the kind or the profile and the field,
-// or the parse position for a file that is not JSON); a dpop block the boot refuses for its shape
-// (config.ResultsEntryRules, config.MintedEntryRules); and each fault for which the policy load
+// or the parse position for a file that is not JSON, the results profile in any shape but its own
+// among them); a dpop block the boot refuses for its shape (config.MintedEntryRules); and each fault
+// for which the policy load
 // refuses a name behind the proxy, in the load's words (proxyFaults). The file gives a profile's
 // proxy string; a source's tags are in the store, which --secrets-json reads, the output of `gcloud
 // secrets list --format='json(name,annotations)'` for the agent secrets. Without it a profile with
@@ -200,7 +201,15 @@ func runProfilesCheck(args []string, stdout, stderr io.Writer) int {
 	// a usage error, as the parser's is.
 	var unjudged []netip.Addr
 	for _, upstream := range upstreams {
-		addr, err := config.PrivateUpstreamAddressRules(upstream, ranges, rangesGiven)
+		var (
+			addr netip.Addr
+			err  error
+		)
+		if rangesGiven {
+			err = config.PrivateUpstreamDialable(upstream, nil, ranges)
+		} else {
+			addr, err = config.PrivateUpstreamRefusedOnEveryBroker(upstream)
+		}
 		if err != nil {
 			fmt.Fprintf(stderr, "%s: --%s: %v\n", profilesCheckName, privateUpstreamFlag, err)
 			flags.Usage()
@@ -215,15 +224,12 @@ func runProfilesCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%s: %v\n", profilesCheckName, err)
 		return 1
 	}
-	// The dpop blocks, held as the boot holds them: the results profile's own rules
-	// (config.ResultsEntryRules, with no result entries) and every rule the file alone decides
+	// The dpop blocks, held as the boot holds them: every rule the file alone decides
 	// (config.MintedEntryRules), and, given the destinations, the boot's whole check of the blocks
-	// against them (config.ProxyMintedRules), of which those rules are the first part.
+	// against them (config.ProxyMintedRules), of which those rules are the first part. The results
+	// profile's shape is the parser's above; the boot's one rule of its own for that profile, that
+	// result entries need it (config.ResultsEntryRules), reads a setting this command has none of.
 	rules := now.FileRules()
-	if err := config.ResultsEntryRules(rules, now.LegacyProxy(oauthwire.AirlockResultsName) != nil, false); err != nil {
-		fmt.Fprintf(stderr, "%s: %s: %v\n", profilesCheckName, path, err)
-		return 1
-	}
 	if upstreamGiven {
 		err = config.ProxyMintedRules(rules, upstreams)
 	} else {

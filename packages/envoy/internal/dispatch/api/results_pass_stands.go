@@ -10,9 +10,8 @@ import (
 
 // results_pass_stands.go answers the gate's question for each check of a results read: whether a
 // pass of it stands (passStandsOf), the state of each head a pass must stand at (eachSubjectStands,
-// subjectState), the commits at which a pass and a fail of a `before_merge` check count
-// (passAndFailCommits), and the newest result of a check compared with a branch
-// (newestResultStands). It is a calculation over what comparisonReader.answer has already placed,
+// subjectState), and the commits at which a pass and a fail of a `before_merge` check count
+// (passAndFailCommits). It is a calculation over what comparisonReader.answer has already placed,
 // and reads no database and no GitHub.
 
 // standingCommit is where a result's commit stands while the check's words have not moved
@@ -34,11 +33,6 @@ func standingCommit(result model.CheckResult) string {
 // with heads asks that of each head, its subjects (headBases), and a pass stands only where one
 // stands at each (eachSubjectStands): one head's fail is never hidden by a pass at another.
 //
-// R5: an `after_merge` or `default_branch` check, compared with a branch, takes its newest result
-// that counts at a branch, or that Dispatch could not place on one (newestResultStands): a pass
-// stands only when that result is a pass, and a result Dispatch could not place makes the answer
-// unknown. A deploy after the newest result changes no state here.
-//
 // R4: a commit cannot change, so it holds one answer. Where a `before_merge` check holds a pass
 // and a fail that count at one commit, in either order and from any role, no pass stands there,
 // and the state is unknown for model.PassStandsReasonPassAndFail (passAndFailCommits). A later
@@ -57,14 +51,17 @@ func standingCommit(result model.CheckResult) string {
 // branch answers no: there is nothing for a pass to stand at, and that is a fact about the work
 // rather than a failed read.
 func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassStands {
+	if compared.live {
+		return liveResultStands(check, compared)
+	}
+	if check.When == checkWhenAfterMerge || check.When == checkWhenDefaultBranch {
+		return newestResultStands(check, compared)
+	}
 	if compared.reason == model.ReasonRepositoryUnreadable {
 		return model.CheckPassStands{Answer: model.PassStandsUnknown}
 	}
 	if (len(compared.subjects) == 0 && check.CI != nil && check.CI.State == model.CIStateUnread) || compared.unordered {
 		return model.CheckPassStands{Answer: model.PassStandsUnknown, Reason: model.PassStandsReasonReadFailed}
-	}
-	if check.When == checkWhenAfterMerge || check.When == checkWhenDefaultBranch {
-		return newestResultStands(check)
 	}
 	conflicted := passAndFailCommits(check)
 	if check.When == docs.CheckWhenBeforeMerge && len(compared.subjects) > 0 {
@@ -100,42 +97,6 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 	return model.CheckPassStands{Answer: model.PassStandsNo}
 }
 
-// newestResultStands is passStandsOf for a check compared with a branch, an `after_merge` or a
-// `default_branch` check (R5): the newest result decides, with and without `?at=`. It walks the
-// results newest first, as the read lists them, and stops at the first that decides: one at a
-// basis decides by its verdict, a pass with the roles of each pass at a basis newer than the
-// newest fail at a basis; one Dispatch could not place decides unknown, since Dispatch cannot say
-// whether it counts; one at another commit, retracted, counted for nothing or under words that
-// moved since decides nothing. Results names the result that decided. No result that decides
-// answers no. A later fail so cancels an earlier pass, and a later read of production reads a
-// deploy that is at least as new; a deploy after the newest result changes no state here.
-func newestResultStands(check model.CheckBlock) model.CheckPassStands {
-	for index, result := range check.Results {
-		switch standingCommit(result) {
-		case model.CommitUnknown:
-			return model.CheckPassStands{Answer: model.PassStandsUnknown, Results: []string{result.ID}}
-		case model.CommitAtBasis:
-			if result.Verdict != "pass" {
-				return model.CheckPassStands{Answer: model.PassStandsNo, Results: []string{result.ID}}
-			}
-			var roles []string
-			for _, later := range check.Results[index:] {
-				if standingCommit(later) != model.CommitAtBasis {
-					continue
-				}
-				if later.Verdict != "pass" {
-					break
-				}
-				if !slices.Contains(roles, later.Role) {
-					roles = append(roles, later.Role)
-				}
-			}
-			return model.CheckPassStands{Answer: model.PassStandsYes, Roles: roles, Results: []string{result.ID}}
-		}
-	}
-	return model.CheckPassStands{Answer: model.PassStandsNo}
-}
-
 // eachSubjectStands is passStandsOf for a `before_merge` check compared with heads: yes only
 // where a pass stands at each subject; no where one subject holds only a fail or nothing; unknown
 // where none is no and one is unknown (R7), or where a branch head could not be read, or where a
@@ -148,7 +109,7 @@ func newestResultStands(check model.CheckBlock) model.CheckPassStands {
 func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted map[string]bool) model.CheckPassStands {
 	stands := model.CheckPassStands{Answer: model.PassStandsYes, Subjects: make([]model.PassStandsSubject, 0, len(compared.subjects))}
 	for _, head := range compared.subjects {
-		subject := subjectState(check, head.basis, conflicted, compared.ci[ciHeadKey{repo: head.repo, commit: head.basis.Commit}])
+		subject := subjectState(check, head.basis, conflicted, compared.ci[ciHeadKeyOf(head.repo, head.basis.Commit)])
 		stands.Subjects = append(stands.Subjects, subject)
 		switch {
 		case subject.Answer == model.PassStandsNo:
@@ -291,4 +252,93 @@ func passAndFailCommits(check model.CheckBlock) map[string]bool {
 		}
 	}
 	return conflicted
+}
+
+// newestResultStands reads branch results newest first. The first result that counts decides,
+// unless a result Dispatch could not place precedes it, or both verdicts count at its commit.
+func newestResultStands(check model.CheckBlock, compared comparison) model.CheckPassStands {
+	switch compared.reason {
+	case model.ReasonRepositoryUnreadable, model.ReasonReadFailed:
+		return model.CheckPassStands{Answer: model.PassStandsUnknown, Reason: "read_failed"}
+	case model.ReasonNotMerged, model.ReasonNoPullRequestOrBranch:
+		return model.CheckPassStands{Answer: model.PassStandsNo, Reason: "no_result"}
+	}
+	for _, result := range check.Results {
+		switch standingCommit(result) {
+		case model.CommitUnknown:
+			return model.CheckPassStands{Answer: model.PassStandsUnknown, Reason: "not_placed", Results: []string{result.ID}, Commit: result.CommitSHA}
+		case model.CommitAtBasis:
+			var pass, fail string
+			var roles []string
+			for _, at := range check.Results {
+				if at.CommitSHA != result.CommitSHA || standingCommit(at) != model.CommitAtBasis {
+					continue
+				}
+				if at.Verdict == "pass" {
+					if pass == "" {
+						pass = at.ID
+					}
+					if !slices.Contains(roles, at.Role) {
+						roles = append(roles, at.Role)
+					}
+				} else if fail == "" {
+					fail = at.ID
+				}
+			}
+			switch {
+			case pass != "" && fail != "":
+				return model.CheckPassStands{Answer: model.PassStandsUnknown, Reason: "pass_and_fail", Results: []string{pass, fail}, Commit: result.CommitSHA}
+			case fail != "":
+				return model.CheckPassStands{Answer: model.PassStandsNo, Reason: "fail", Results: []string{fail}, Commit: result.CommitSHA}
+			default:
+				return model.CheckPassStands{Answer: model.PassStandsYes, Roles: roles, Results: []string{pass}, Commit: result.CommitSHA}
+			}
+		}
+	}
+	return model.CheckPassStands{Answer: model.PassStandsNo, Reason: "no_result"}
+}
+
+// liveResultStands reads only the current deploy's interval. Unlike a code check, a live
+// check's newest verdict decides even when both verdicts were recorded at that build.
+func liveResultStands(check model.CheckBlock, compared comparison) model.CheckPassStands {
+	answer := model.CheckPassStands{Answer: model.PassStandsUnknown, Deploy: compared.deploy}
+	switch compared.reason {
+	case model.ReasonRepositoryUnreadable, model.ReasonReadFailed:
+		answer.Reason = "read_failed"
+		return answer
+	case model.ReasonNotMerged, model.ReasonNoPullRequestOrBranch:
+		answer.Answer, answer.Reason = model.PassStandsNo, "no_result"
+		return answer
+	}
+	if compared.deployReason != "" {
+		answer.Reason = compared.deployReason
+		return answer
+	}
+	if compared.deployHolds.Answer == model.CommitUnknown {
+		answer.Reason = "read_failed"
+		return answer
+	}
+	if compared.deployHolds.Answer != model.CommitAtBasis {
+		answer.Reason = "deploy_not_merged"
+		return answer
+	}
+	for _, result := range check.Results {
+		if standingCommit(result) != model.CommitAtBasis {
+			continue
+		}
+		answer.Results, answer.Commit = []string{result.ID}, result.CommitSHA
+		if result.Verdict == "fail" {
+			answer.Answer, answer.Reason = model.PassStandsNo, "fail"
+			return answer
+		}
+		answer.Answer = model.PassStandsYes
+		for _, pass := range check.Results {
+			if pass.Verdict == "pass" && standingCommit(pass) == model.CommitAtBasis && !slices.Contains(answer.Roles, pass.Role) {
+				answer.Roles = append(answer.Roles, pass.Role)
+			}
+		}
+		return answer
+	}
+	answer.Reason = "no_result_from_deploy"
+	return answer
 }

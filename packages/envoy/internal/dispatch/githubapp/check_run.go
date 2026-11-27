@@ -8,8 +8,9 @@ import (
 )
 
 // CheckRun is one check run as GitHub names it: its id, its name and the commit it was made for.
-// GitHub names the check run of each job of a workflow run after the job, with the job's matrix
-// values in parentheses, so a run's name is the job's identity a result is held to.
+// GitHub names the check run of a job after the job's name, and the check run of each leg of a
+// matrix job after the job's name with the leg's matrix values in parentheses. A name that ends in
+// parentheses can be either, so the name alone does not say which job ran or whether it is a leg.
 type CheckRun struct {
 	ID      int64
 	Name    string

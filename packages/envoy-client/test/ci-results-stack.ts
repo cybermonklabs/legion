@@ -40,7 +40,7 @@ import {
 // packages/envoy/scripts/dev-airlock.sh runs two: each behind one `dev-proxy-stands front` for the
 // API ports and another for the proxy ports, a byte relay that hands each new connection to the
 // next broker in turn and carries a CONNECT tunnel as it carries anything else. A job reaches
-// Dispatch the way a job in production does: it holds the airlock placeholder of its run's result
+// Dispatch the way a job in production does: it holds the proxy placeholder of its run's result
 // grant, which `agent-secrets result-grant` gives the command it runs, and writes to Dispatch's
 // public URL, https://dispatch.ci-results.test, through the proxy front. Whichever broker takes
 // the tunnel reads the grant from the database, mints the run's results token bound to its own

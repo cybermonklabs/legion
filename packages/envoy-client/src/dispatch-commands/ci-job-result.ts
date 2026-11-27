@@ -35,7 +35,7 @@ const CI_JOB_RESULT_REQUIRED = ["check", "verdict", "commit"] as const;
 /** What the job's form takes, written once: each refusal of a call that breaks it gives it. The
  *  call is the job's under `agent-secrets result-grant`, with the CI job's DISPATCH_RESULTS_TOKEN
  *  (`AIRLOCK_RESULTS_VAR`), which holds the airlock's placeholder of its run and which only
- *  `result-grant` gives (`isJobResult` in dispatch-cli.ts). */
+ *  `result-grant` gives (`isJobResult` in job-result.ts). */
 const CI_JOB_RESULT_RULE =
   "Under agent-secrets result-grant, with the CI job's DISPATCH_RESULTS_TOKEN, the airlock's " +
   "placeholder of its run, dispatch result --issue records the job's result of the check that " +

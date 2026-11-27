@@ -934,15 +934,32 @@ export async function resultsCommand(context: CommandContext): Promise<DispatchT
   const brief = optionalBoolean(args, "brief") === true;
   const results = await client.issueResults(issue, at);
   const checks = results.checks ?? [];
-  return {
-    text:
-      optionalBoolean(args, "json") === true
-        ? printableJson(JSON.stringify(results, null, 2))
-        : formatCheckResults(results, brief),
-    details: {
-      issue,
-      checks: checks.length,
-      results: checks.reduce((total, check) => total + (check.results ?? []).length, 0),
-    },
+  const details = {
+    issue,
+    checks: checks.length,
+    results: checks.reduce((total, check) => total + (check.results ?? []).length, 0),
   };
+  // `--json` prints the route's answer whole, which names no repository it does not hold.
+  if (optionalBoolean(args, "json") === true) {
+    return { text: printableJson(JSON.stringify(results, null, 2)), details };
+  }
+  // A basis omits the issue's own repository. Resolve it only for the two answers that name
+  // that repository, once per check owner, including a check inherited from an ancestor.
+  const repositories: Record<string, string> = {};
+  const owners = new Set(
+    checks
+      .filter(
+        (check) =>
+          check.pass_stands?.reason === "program_not_named" ||
+          check.pass_stands?.reason === "no_deploy"
+      )
+      .map((check) => check.issue_key)
+  );
+  await Promise.all(
+    [...owners].map(async (owner) => {
+      const issue = await client.getIssue(owner);
+      if (issue.resolved_repo != null) repositories[owner] = issue.resolved_repo;
+    })
+  );
+  return { text: formatCheckResults(results, brief, repositories), details };
 }

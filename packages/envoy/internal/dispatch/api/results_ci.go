@@ -97,10 +97,13 @@ const (
 	// recorded a result of its own for the check (jobResultHeads): no_result, since the run's
 	// conclusion is the whole job's.
 	ciCaseJobRecorded = "job_recorded"
-	// ciCaseReadFailed is a head at whose commit the check's CI job recorded a result that names
-	// no repository, where Dispatch's own read of the repository the issue resolves to did not
-	// answer (jobResultHeads): unread, since whether that result or the run decides the head
-	// turns on the repository the read would have named.
+	// ciCaseReadFailed is a check whose run Dispatch did not read because a read of its own did
+	// not answer: unread. Where the issue has no open pull request and Dispatch cannot tell which
+	// of its merged ones merged last (ciHeadsOf), it reads no head, since the head it would read
+	// may be an older merge's. At a head at whose commit the check's CI job recorded a result that
+	// names no repository, where Dispatch's own read of the repository the issue resolves to did
+	// not answer (jobResultHeads), whether that result or the run decides the head turns on the
+	// repository the read would have named.
 	ciCaseReadFailed = model.ReasonReadFailed
 )
 
@@ -170,7 +173,7 @@ func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, 
 	// the request's answers it passes as every other read of the heads does. A reader that named a
 	// commit learns nothing, so its answers are empty and it reads the stored rows alone, whoever
 	// reads.
-	heads, ordered, err := s.ciHeadsOf(ctx, reader, issueKey)
+	heads, ordered, err := s.ciHeadsOf(ctx, issueKey, reader)
 	if err != nil {
 		return nil, err
 	}
@@ -194,26 +197,26 @@ func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, 
 	for _, p := range proved {
 		atHead := make(map[ciHeadKey]*model.CheckCI, len(heads))
 		for index, head := range heads {
-			job := jobs[p.check.BlockID][ciHeadKeyOf(head)]
+			job := jobs[p.check.BlockID][ciHeadKeyOf(head.Repo, head.HeadSHA)]
 			switch {
 			case reads[index].err != nil:
-				atHead[ciHeadKeyOf(head)] = ciUnconcluded(*p.check, p.name, &head, model.CIStateUnread, ciCaseUnreadable,
+				atHead[ciHeadKeyOf(head.Repo, head.HeadSHA)] = ciUnconcluded(*p.check, p.name, &head, model.CIStateUnread, ciCaseUnreadable,
 					ciUnreadDetail(head, reads[index].err), words)
 				continue
 			case job == jobAtHeadUnresolved:
-				atHead[ciHeadKeyOf(head)] = ciUnconcluded(*p.check, p.name, &head, model.CIStateUnread, ciCaseReadFailed,
+				atHead[ciHeadKeyOf(head.Repo, head.HeadSHA)] = ciUnconcluded(*p.check, p.name, &head, model.CIStateUnread, ciCaseReadFailed,
 					fmt.Sprintf("Dispatch could not read the repository %s resolves to, so whether the result the check's CI job recorded at %s is of %s, and decides that head in place of the run, is not known.",
 						issueKey, head.HeadSHA, head.Repo), words)
 				continue
 			}
 			answer, result := ciAnswerOf(*p.check, p.name, head, reads[index].runs[p.name], job == jobAtHeadRecorded, words)
-			atHead[ciHeadKeyOf(head)] = answer
+			atHead[ciHeadKeyOf(head.Repo, head.HeadSHA)] = answer
 			if result != nil {
 				p.check.Results = append(p.check.Results, *result)
 			}
 		}
 		p.check.Results = newestResultsFirst(p.check.Results)
-		p.check.CI = atHead[ciHeadKeyOf(heads[0])]
+		p.check.CI = atHead[ciHeadKeyOf(heads[0].Repo, heads[0].HeadSHA)]
 		answers[p.check.BlockID] = atHead
 	}
 	return answers, nil
@@ -228,9 +231,9 @@ type ciHeadKey struct {
 	commit string
 }
 
-// ciHeadKeyOf is the key of head.
-func ciHeadKeyOf(head delivery.NewestHead) ciHeadKey {
-	return ciHeadKey{repo: head.Repo, commit: head.HeadSHA}
+// ciHeadKeyOf is the one key constructor for inserting and looking up a repository's head.
+func ciHeadKeyOf(repo, commit string) ciHeadKey {
+	return ciHeadKey{repo: repo, commit: commit}
 }
 
 // jobAtHead is what jobResultHeads reads of a check's CI job at one head, in rising order: of two
@@ -267,7 +270,7 @@ func (s *server) jobResultHeads(ctx context.Context, issueKey string, proved []p
 		if at[block] == nil {
 			at[block] = map[ciHeadKey]jobAtHead{}
 		}
-		at[block][ciHeadKeyOf(head)] = max(at[block][ciHeadKeyOf(head)], job)
+		at[block][ciHeadKeyOf(head.Repo, head.HeadSHA)] = max(at[block][ciHeadKeyOf(head.Repo, head.HeadSHA)], job)
 	}
 	for _, p := range proved {
 		for _, result := range p.check.Results {
@@ -308,39 +311,48 @@ func (s *server) jobResultHeads(ctx context.Context, issueKey string, proved []p
 // Where none is open, the merged pull requests are taken in the order they merged only once the
 // fill over the reader's memo (fillMergeTimes, comparisonReader.fills) says they can be: where it
 // says they cannot, ordered is false and no head is read, since the head of the highest number, or
-// of a merge with no time ordered last, may be an older merge's than the newest. Each read of the
-// heads takes the reader's answers (comparisonReader.answers), as every read of the heads on the
-// results path does.
-func (s *server) ciHeadsOf(ctx context.Context, reader *comparisonReader, issueKey string) ([]delivery.NewestHead, bool, error) {
-	attributed, err := s.deps.Attributor.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey, reader.answers)
-	if err != nil {
-		return nil, false, err
-	}
-	var heads []delivery.NewestHead
-	for _, head := range attributed {
-		read := delivery.NewestHead{Repo: head.Repo, Number: head.Number, HeadSHA: head.HeadSHA}
-		if head.Open && !slices.ContainsFunc(heads, func(held delivery.NewestHead) bool {
-			return held.Repo == read.Repo && held.HeadSHA == read.HeadSHA
-		}) {
-			heads = append(heads, read)
+// of a merge with no time ordered last, may be an older merge's than the newest. A fill that
+// refreshed a row moves the memo's generation, and a refresh may move the row's attribution too,
+// so the heads are read again until a pass refreshes nothing. Each read of the heads takes the
+// reader's answers (comparisonReader.answers), as every read of the heads on the results path
+// does.
+func (s *server) ciHeadsOf(ctx context.Context, issueKey string, reader *comparisonReader) ([]delivery.NewestHead, bool, error) {
+	for {
+		generation := reader.fills.generation
+		attributed, err := s.deps.Attributor.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey, reader.answers)
+		if err != nil {
+			return nil, false, err
 		}
+		var heads []delivery.NewestHead
+		for _, head := range attributed {
+			read := delivery.NewestHead{Repo: head.Repo, Number: head.Number, HeadSHA: head.HeadSHA}
+			if head.Open && !slices.ContainsFunc(heads, func(held delivery.NewestHead) bool {
+				return held.Repo == read.Repo && held.HeadSHA == read.HeadSHA
+			}) {
+				heads = append(heads, read)
+			}
+		}
+		if len(heads) > 0 {
+			slices.SortStableFunc(heads, func(a, b delivery.NewestHead) int { return b.Number - a.Number })
+			return heads, true, nil
+		}
+		merged := make([]delivery.MergeTime, len(attributed))
+		for index, head := range attributed {
+			merged[index] = head.MergeTime()
+		}
+		ordered := s.fillMergeTimes(ctx, reader.fills, merged)
+		if generation != reader.fills.generation {
+			continue
+		}
+		if !ordered {
+			return nil, false, nil
+		}
+		head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey, reader.answers)
+		if err != nil || !found {
+			return nil, true, err
+		}
+		return []delivery.NewestHead{head}, true, nil
 	}
-	if len(heads) > 0 {
-		slices.SortStableFunc(heads, func(a, b delivery.NewestHead) int { return b.Number - a.Number })
-		return heads, true, nil
-	}
-	merged := make([]delivery.MergeTime, len(attributed))
-	for index, head := range attributed {
-		merged[index] = head.MergeTime()
-	}
-	if !s.fillMergeTimes(ctx, &reader.fills, merged) {
-		return nil, false, nil
-	}
-	head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey, reader.answers)
-	if err != nil || !found {
-		return nil, true, err
-	}
-	return []delivery.NewestHead{head}, true, nil
 }
 
 // ciHeadRead is GitHub's answer for the check runs at one head: the run of each name, or the
@@ -647,7 +659,7 @@ func ciAnswerOf(check model.CheckBlock, name string, head delivery.NewestHead, r
 }
 
 // ciUnconcluded is the `ci` member of a check its run, the one named name, did not decide, for
-// the case given, at head, nil where Dispatch holds no head to read at.
+// the case given, at head, nil where Dispatch read no head.
 func ciUnconcluded(check model.CheckBlock, name string, head *delivery.NewestHead, state, ciCase, detail string, words lineWords) *model.CheckCI {
 	ci := &model.CheckCI{
 		Run: name, State: state, Case: ciCase, Detail: detail,

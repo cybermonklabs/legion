@@ -540,7 +540,7 @@ func resultsProfileOf(name, hosts, headers, allow, kind string) string {
 
 // TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile: `profiles check` holds the
 // results profile, DISPATCH_RESULTS_TOKEN, to the boot's own check of it. Every shape the file
-// alone decides (config.ResultsEntryRules, then config.MintedEntryRules, the rules of every dpop
+// alone decides (policy.ParseProfiles' rule of the results profile, then config.MintedEntryRules, the rules of every dpop
 // block) is refused, with --private-upstream and without it, exit 1 with one line on stderr naming
 // the file, the profile and the fault, and no report: a "*." host, two hosts, no kind, kind aws, no
 // allow list, an empty one, a header other than Authorization, another profile, not of kind dpop,
@@ -697,7 +697,7 @@ func TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile(t *testing.T)
 }
 
 // TestProfilesCheckHoldsTheDestinationsAddressToTheBootsRule: --private-upstream holds each
-// destination to the address rule the boot holds it to (config.PrivateUpstreamAddressRules,
+// destination to the address rule the boot holds it to (config.PrivateUpstreamRefusedOnEveryBroker,
 // netaddr.DestinationRefusal), and --cluster-ranges, the value BROKER_AIRLOCK_CLUSTER_RANGES gives
 // the broker, makes it the boot's whole rule. A destination the boot refuses is no value
 // BROKER_PROXY_PRIVATE_UPSTREAM takes, so its refusal is a usage error, as the setting's parser's

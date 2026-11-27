@@ -275,22 +275,16 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// A CI job's check run, read once and before the transaction opens for the reason the check
 	// is resolved there: it is a GitHub round trip, though the process keeps its answer, since a
 	// check run never changes its name or its commit (specCheckRun). Both refusals below read
-	// it, and the job's statement takes its name, the run's attempt and its principal. Every
-	// other credential reads none.
+	// it, and the job's statement takes its name. The run's attempt and its principal are the
+	// token's run's own, read whole by the verifier (model.Credential.CI, oauthwire.ParseCIRun).
+	// Every other credential reads none.
 	recorder := resultRecorder{credential: credential}
 	if credential != nil && credential.ResultsOnly {
 		read, err := s.ciJobCheckRun(r.Context(), *credential.CI)
 		if err != nil {
 			return refused(err)
 		}
-		numbers, err := runNumbersOf(*credential.CI)
-		if err != nil {
-			return refused(err)
-		}
-		if recorder.principal, err = resultPrincipal(*credential.CI); err != nil {
-			return refused(err)
-		}
-		recorder.run, recorder.attempt = &read, numbers.attempt
+		recorder.run = &read
 	}
 	// Refused here, before refuseUnknownCommit: a role's result for a check CI proves spends no
 	// GitHub read at all.
@@ -371,13 +365,11 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 
 // resultRecorder is who records a result, as the route read it before its transaction opened:
 // the request's credential, and for a CI job's results token the check run its token names
-// (ciJobCheckRun), that run's attempt and the principal the job's statement takes
-// (resultPrincipal). run is nil for every other credential, a role's.
+// (ciJobCheckRun). The run's attempt and principal are the credential's run's own
+// (model.Credential.CI). run is nil for every other credential, a role's.
 type resultRecorder struct {
 	credential *model.Credential
 	run        *githubapp.CheckRun
-	attempt    int
-	principal  string
 }
 
 // refuseUncoveredCheck asks, for a result on a check of the issue checkIssue, whether the
@@ -510,7 +502,7 @@ func (s *server) recordResultUnderOwnerLocks(
 			// token names one project, so this is Dispatch's own fault.
 			return recordedCheckResult{}, errors.New("a results token's actor names no project")
 		}
-		result = ciJobCheckResult(input, check, actor, *recorder.run, *recorder.credential.CI, recorder.attempt, recorder.principal, issueKey)
+		result = ciJobCheckResult(input, check, actor, *recorder.run, *recorder.credential.CI, issueKey)
 		insert = insertCIJobCheckResult
 	} else {
 		result = roleCheckResult(input, check, actor, issueKey)
@@ -550,11 +542,12 @@ type issueCheckResults struct {
 // check's words moved since. An issue with no Verification document has no checks and no
 // error.
 //
-// A check CI proves carries `ci` too, read from GitHub at each open pull request head, and a
-// role's result of it counts for nothing (not_counted). Its results are the one derived from the
-// run its `ci_check` names (deriveCIResults), which is judged as a recorded result is, beside each
-// result a run of its CI job recorded (role ci, branch set), newest first. A reader of one result
-// of such a check finds the derived one by its id (ci-run:<check run id>), not as the first.
+// A check CI proves carries `ci` too, read from GitHub at each open pull request head, or where
+// none is open at the final head of the merged one that merged last, and a role's result of it
+// counts for nothing (not_counted). Its results are the one derived from the run its `ci_check`
+// names at each head (deriveCIResults), each judged as a recorded result is, beside each result a
+// run of its CI job recorded (role ci, branch set), newest first. A reader of one result of such
+// a check finds the derived one by its id (ci-run:<check run id>), not as the first.
 //
 // ?at=<commit> replaces what every check is compared with by the one commit the reader names.
 // The only read of GitHub it leaves is the check runs of a check CI proves, read at each open pull

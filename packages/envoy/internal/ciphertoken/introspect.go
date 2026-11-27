@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/fold"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // IntrospectPath is the broker's RFC 7662 introspection route, which answers what the broker
@@ -140,19 +141,20 @@ func cutOf(answer Introspection) (time.Time, error) {
 // base word's do; a results answer names its one project. The service is carried as the broker
 // answered it, which is set exactly where the person is not (sessionCaller refuses an answer
 // naming neither). ReadOnly, ResultsOnly and ApproveOnly are shapeOf's verdict on the answer,
-// which sessionCaller reached and hands over as shape, and cut is the answer's cut, which
-// sessionCaller read (cutOf): callerOf runs only on an answer sessionCaller accepted, and
-// sessionCaller lets a read-only, a results or an approve-only answer through only with its switch
-// set, which only a verifier that serves one sets, so a Caller marked any of those ways is one
-// such a verifier accepted. The run of a results answer is copied, so a reader of the Caller
-// shares nothing with the answer the cache keeps for the next request. A held answer is still live
-// and is kept in the cache for AffirmativeCacheTTL; the Envoy listener refuses a held Caller after
-// its own checks, while Dispatch does not read Held yet. A not-held answer's not_held_until is
-// kept no later than its deadline (answerCache.remember); the Envoy listener refuses a Caller past
-// it (Verifier.Lapsed), while Dispatch does not read it yet. LegionStatus is whether Scope holds
-// the word ScopeLegionStatus, read one word at a time as shapeOf reads it and with no slice built,
-// since this too runs on every request a verifier decides.
-func callerOf(answer Introspection, shape tokenShape, cut time.Time) Caller {
+// which sessionCaller reached and hands over as shape, beside run, the Run shapeOf read a results
+// answer's run to, which is the Caller's own, so a reader of the Caller shares nothing with the
+// answer the cache keeps for the next request; cut is the answer's cut, which sessionCaller read
+// (cutOf). callerOf runs only on an answer sessionCaller accepted, and sessionCaller lets a
+// read-only, a results or an approve-only answer through only with its switch set, which only a
+// verifier that serves one sets, so a Caller marked any of those ways is one such a verifier
+// accepted. A held answer is still live and is kept in the cache for AffirmativeCacheTTL; the
+// Envoy listener refuses a held Caller after its own checks, while Dispatch does not read Held yet.
+// A not-held answer's not_held_until is kept no later than its deadline (answerCache.remember);
+// the Envoy listener refuses a Caller past it (Verifier.Lapsed), while Dispatch does not read it
+// yet. LegionStatus is whether Scope holds the word ScopeLegionStatus, read one word at a time as
+// shapeOf reads it and with no slice built, since this too runs on every request a verifier
+// decides.
+func callerOf(answer Introspection, shape tokenShape, run *oauthwire.Run, cut time.Time) Caller {
 	caller := Caller{
 		Session:      answer.Session,
 		Person:       answer.Person,
@@ -162,15 +164,12 @@ func callerOf(answer Introspection, shape tokenShape, cut time.Time) Caller {
 		ReadOnly:     shape == shapeReadOnly,
 		ResultsOnly:  shape == shapeResults,
 		ApproveOnly:  shape == shapeApproveOnly,
+		CI:           run,
 		Cut:          cut,
 		Held:         answer.Held,
 	}
 	if answer.NotHeldUntil > 0 {
 		caller.NotHeldUntil = time.Unix(answer.NotHeldUntil, 0).UTC()
-	}
-	if shape == shapeResults {
-		run := *answer.CI
-		caller.CI = &run
 	}
 	for word := range strings.FieldsSeq(answer.Scope) {
 		if word == ScopeLegionStatus {
@@ -204,15 +203,18 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 	form := url.Values{"token": []string{token}}.Encode()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, v.brokerURL+IntrospectPath, strings.NewReader(form))
 	if err != nil {
-		return Introspection{}, fmt.Errorf("%w: build the introspection request: %w", ErrBrokerUnreachable, err)
+		return Introspection{}, fmt.Errorf("%w: build the introspection request: %w", ErrBrokerUnreachable, redact.Error(err, v.brokerURL))
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Authorization", "Bearer "+account)
 	response, err := v.http.Do(request)
 	if err != nil {
 		// The error carries the request's URL, which is the broker's and never the token: the
-		// token is in the body, which http.Client puts in no error.
-		return Introspection{}, fmt.Errorf("%w: %w", ErrBrokerUnreachable, err)
+		// token is in the body, which http.Client puts in no error. The URL is printed through
+		// redact.Error, which prints the failure's class alone when the URL carries a credential
+		// (net/http masks a password, not a user name or a query), though boot refuses such a
+		// DISPATCH_AGENT_SECRETS_URL.
+		return Introspection{}, fmt.Errorf("%w: %w", ErrBrokerUnreachable, redact.Error(err, v.brokerURL))
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxIntrospectionBytes))

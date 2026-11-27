@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -232,31 +233,34 @@ func MachineIdentity(getenv func(string) string) (Source, error) {
 // IdentityKubernetes and KeyDirVar names the role's own agent-secrets directory, proves the key
 // in that directory's RoleKeyFile, because the broker refuses a pod session's exchange whose DPoP
 // key is not the one its registration names, which is that key. A file there that cannot be read,
-// or is no PKCS#8 P-256 key, is an error naming its path: a fresh key in its place would be
-// refused at the broker in words that name neither the file nor the key. Every other machine
-// proves a fresh key of this process's own, as each always has. The TypeScript client keeps the
-// same rule (packages/cipher-client/src/environment.ts, brokerTokenClient).
+// or is no PKCS#8 P-256 key, is an error: a fresh key in its place would be refused at the broker
+// in words that name neither the file nor the key. The error names the directory by KeyDirVar and
+// a read's failure by the system's reason alone (redact.File), never the directory's path, as
+// SignInFlow names its file and `agent-secrets` names this directory (cmd/cipher, keyDirName); a
+// key that does not parse is refused in fixed words, with none of the parser's. It reaches the
+// daemon's boot refusal (daemon.go). Every other machine proves a fresh key of this process's own,
+// as each always has. The TypeScript client keeps the same key rule
+// (packages/cipher-client/src/environment.ts, brokerTokenClient).
 func MachineKey(getenv func(string) string) (*ecdsa.PrivateKey, error) {
 	dir := strings.TrimSpace(getenv(KeyDirVar))
 	if strings.TrimSpace(getenv(IdentityVar)) != IdentityKubernetes || dir == "" {
 		return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	}
-	path := filepath.Join(dir, RoleKeyFile)
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Join(dir, RoleKeyFile))
 	if err != nil {
-		return nil, fmt.Errorf("read this role's agent-secrets key: %w", err)
+		return nil, fmt.Errorf("read this role's agent-secrets key in the directory %s names: %w", KeyDirVar, redact.File(err))
 	}
 	block, _ := pem.Decode(data)
 	if block == nil {
-		return nil, fmt.Errorf("this role's agent-secrets key %s holds no PEM block", path)
+		return nil, fmt.Errorf("this role's agent-secrets key in the directory %s names holds no PEM block", KeyDirVar)
 	}
 	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("read this role's agent-secrets key %s: %w", path, err)
+		return nil, fmt.Errorf("this role's agent-secrets key in the directory %s names is no PKCS#8 private key", KeyDirVar)
 	}
 	key, ok := parsed.(*ecdsa.PrivateKey)
 	if !ok || key.Curve != elliptic.P256() {
-		return nil, fmt.Errorf("this role's agent-secrets key %s is not a P-256 key, and a DPoP proof is signed ES256", path)
+		return nil, fmt.Errorf("this role's agent-secrets key in the directory %s names is not a P-256 key, and a DPoP proof is signed ES256", KeyDirVar)
 	}
 	return key, nil
 }
@@ -283,6 +287,9 @@ func SignInFlow(getenv func(string) string) (*DeviceFlow, error) {
 	issuer := strings.TrimSpace(getenv(SignInIssuerVar))
 	if issuer == "" {
 		issuer = DefaultSignInIssuer
+	}
+	if err := oidc.IssuerRefusal(SignInIssuerVar, issuer); err != nil {
+		return nil, err
 	}
 	return &DeviceFlow{
 		Issuer: strings.TrimSuffix(issuer, "/"), ClientID: clientID,

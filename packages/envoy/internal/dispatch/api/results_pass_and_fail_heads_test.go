@@ -53,8 +53,9 @@ func TestTheCheckReasonIsTheSameWhateverTheOrderOfItsHeads(t *testing.T) {
 		{"beside a head that holds a pass", "pass", "unknown", "pass_and_fail"},
 	} {
 		t.Run(each.name, func(t *testing.T) {
+			t.Parallel()
 			for _, order := range [][2]int{{70, 71}, {71, 70}} {
-				rig := passAndFailRig{newCIJobRig(t)}
+				rig := passAndFailRig{newHeadRuleRig(t)}
 				writeHead(t, rig.database, ciJobRepository, 70, reasonOrderBoth, "open", rig.issue)
 				writeHead(t, rig.database, ciJobRepository, 71, reasonOrderOther, "open", rig.issue)
 				learnedInOrder(t, rig.database, ciJobRepository, order[0], order[1])

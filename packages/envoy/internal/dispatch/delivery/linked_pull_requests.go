@@ -2,7 +2,6 @@ package delivery
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -32,7 +31,7 @@ import (
 // may open at any commit (headAttribution), and only once its row is judged by that rule, which a
 // change of the links does at once from the facts stored on the row (Attributor.LinksChanged). The
 // terms name the repository of such a head (AttributedHead.LinkedRepo) and the merge
-// Attributor.BaseBranchMergedIn walks, which is why they are read beside the attribution there. A
+// Attributor.MergeIn walks, which is why they are read beside the attribution there. A
 // link to a pull request of the repository the issue resolves to names nothing here, since that
 // repository is asked about the commit before any link is read. The terms hold the issue to a
 // repository by the attribution's own rule, over the same rename pairs, so the two cannot disagree
@@ -331,50 +330,23 @@ func (a *Attributor) judgeChangedLinkRow(
 	return nil, none, AttributionRuleVersion, nil
 }
 
-// baseBranchMergedInQuery is BaseBranchMergedIn's statement after its WITH list: the merged rows
-// attributed to the issue that its links name in a repository it does not resolve to, held to one
-// repository, in BaseBranchMergedFor's order.
-var baseBranchMergedInQuery = `
-	select h.base_ref from linked_pulls l
-	` + linkedHeadJoin + `
-	where h.issue_key = $1 and lower(l.repo) = lower($2) and h.state = 'merged'
-	order by h.merged_at desc nulls last, h.number desc
-	limit 1`
-
-// baseBranchMergedInRead is baseBranchMergedInQuery whole, for both callers, its linked pull
-// requests read over renames (linkedPullRequestTerms). NewAttributor builds it once from its
-// rename pairs.
-func baseBranchMergedInRead(renames refs.Renames) headsStatement {
-	return newHeadsStatement(linkedPullRequestTerms(renames), baseBranchMergedInQuery, 2, "")
+// mergeInRead is mergeInQuery whole, for both callers, its linked pull requests read over renames
+// (linkedPullRequestTerms): the stored heads, or the request's own answers laid on them.
+// NewAttributor builds it once from its rename pairs.
+func mergeInRead(renames refs.Renames) headsStatement {
+	return newHeadsStatement(linkedPullRequestTerms(renames), mergeInQuery, 2, "")
 }
 
-// BaseBranchMergedIn is BaseBranchMergedFor for a repository issueKey does not resolve to: the
-// branch the merged pull request that the issue links by its URL in repoFull merged into, and ""
-// where Dispatch holds no merge of such a pull request that the attribution gives the issue. An
-// issue whose work spans two repositories links the pull request it has in the second one, and
-// the attribution gives it that pull request (attributionHeldFor), unless its head is in a fork
-// (headAttribution). The results read measures an `after_merge` result whose commit the second
-// repository holds against the branch answered here, in that repository (api/results_linked.go,
-// linkedBranchBases), and BaseBranchMergedFor answers the repository the issue resolves to.
-//
-// The rows are ordered as BaseBranchMergedFor orders them, and the empty answer means what its
-// empty answer means: no branch to measure against. A link to a pull request of the
-// repository the issue resolves to names nothing here, so a repoFull the issue resolves to
-// answers "". repoFull is compared without case with the canonical name each link is read under,
-// as every other comparison of a repository here is.
-//
-// The linked rows are read through pull_request_heads_repo_head's leading column, one
-// repository's rows for each linked pull request, as HeadsAttributedTo's are. answers is the
-// caller's request's, as HeadsAttributedTo takes them.
-func (a *Attributor) BaseBranchMergedIn(ctx context.Context, q refs.Queryer, issueKey, repoFull string, answers HeadAnswers) (string, error) {
-	query, args := a.mergedInRead.query(answers, issueKey, repoFull)
-	var branch string
-	err := q.QueryRow(ctx, query, args...).Scan(&branch)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("read the merged linked pull request base branch of %s in %s: %w", issueKey, repoFull, err)
-	}
-	return branch, nil
-}
+// mergeInQuery is MergeIn's statement after its WITH list: the merged rows attributed to the issue
+// that its links name in a repository it does not resolve to, held to one repository. The
+// attribution gives the issue such a pull request (attributionHeldFor), unless its head is in a
+// fork (headAttribution), so a link alone names no merge, as it names no head (HeadsAttributedTo).
+var mergeInQuery = `
+	select ` + mergedColumns + ` from (
+		select distinct h.repo, h.number, h.base_ref, h.head_sha, h.merge_commit_sha,
+			h.merged_at, h.attribution_rule
+		from linked_pulls l
+		` + linkedHeadJoin + `
+		where h.issue_key = $1 and lower(l.repo) = lower($2) and h.state = 'merged'
+	) merged
+	order by ` + newestMergeFirst

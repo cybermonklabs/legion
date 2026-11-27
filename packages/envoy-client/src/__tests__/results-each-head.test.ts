@@ -290,7 +290,7 @@ describe("dispatch results: the state at each head", () => {
       )
     );
     expect(checkBlock(lines, "c9")[0]).toBe(
-      "- c9 (after_merge). Compared with branch main. A pass stands: not known, as Dispatch could not place fail f1c12f1a-0383-4788-9a5e-5772dc06126d at 1d0adea3bdada61b2c393bfd3bff5888093cbe8d on a branch."
+      "- c9 (after_merge). Compared with branch main. A pass stands: not known, as Dispatch could not place fail f1c12f1a-0383-4788-9a5e-5772dc06126d at 1d0adea3bdada61b2c393bfd3bff5888093cbe8d."
     );
   });
 

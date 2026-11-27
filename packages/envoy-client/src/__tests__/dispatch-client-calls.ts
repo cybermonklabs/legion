@@ -23,7 +23,8 @@ const actor = { kind: "session" as const, id: "session-1" };
 const file = { name: "notes.md", file: new Blob(["# Notes"], { type: "text/markdown" }), actor };
 const inline = { name: "notes.md", content: "# Notes", actor };
 
-/** One call of each method, with arguments of the shapes it takes; what it answers is not read. */
+/** One call of each method, with arguments of the shapes it takes; what it answers is not read,
+ *  except by the census, which reads each write's answer and not a read's. */
 export const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> = {
   issue: (client) => client.issue({ project: "DSP", title: "A title", actor }),
   resolveIssue: (client) => client.resolveIssue("owner/repo#1"),
@@ -100,6 +101,9 @@ export const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unk
   issueResults: (client) => client.issueResults("DSP-1"),
   retractResult: (client) =>
     client.retractResult("result-1", { reason: "The run read a stale build.", actor }),
+  recordDeploy: (client) =>
+    client.recordDeploy({ repo: "acme/widgets", program: "worker", commit: "1".repeat(40) }),
+  deploys: (client) => client.deploys("acme/widgets"),
   issueCoverage: (client) => client.issueCoverage("DSP-1"),
   editAsk: (client) => client.editAsk("ask-1", { question: "Which one?", actor } as never),
   comment: (client) => client.comment("DSP-1", { body: "Shipped.", actor }),

@@ -496,6 +496,22 @@ describe("EnvoyClient", () => {
     }
   });
 
+  // A 408, a 429 and any 5xx are an outage (`@legion/contracts/http-status`), and a listener call
+  // sends each once more but the 429: the listener's 429 is `sender_rate_limited`, whose sentence
+  // the agent reads to decide when to send again.
+  test("a listener call answered with an outage is sent once more, but a 429 is one request", async () => {
+    const sent: Record<number, number> = {};
+    for (const status of [408, 429, 500, 501, 503]) {
+      const recorded = recordFetch(
+        Array.from({ length: 2 }, () => Response.json({ error: `answered ${status}` }, { status }))
+      );
+      const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+      await expect(client.getInterest("ses_sender")).rejects.toThrow(`answered ${status}`);
+      sent[status] = recorded.requests.length;
+    }
+    expect(sent).toEqual({ 408: 2, 429: 1, 500: 2, 501: 2, 503: 2 });
+  });
+
   test("sends a direct message and parses the listener envelope", async () => {
     const recorded = recordFetch([
       jsonResponse({
@@ -1642,6 +1658,42 @@ describe("EnvoyClient", () => {
       envelope: { event_id: "event-retried" },
     });
   });
+
+  // The listener writes no 408, so one is a hop's timeout on the send, which may come after the
+  // hop forwarded it: the send goes again under the same key, and the second attempt's answer is
+  // the send's.
+  test("retries a send answered 408 under the same key, and the second attempt delivers it", async () => {
+    const recorded = recordFetch([
+      new Response("<html>408 Request Timeout</html>", { status: 408 }),
+      jsonResponse({
+        event_id: "event-retried",
+        source: "agent",
+        source_event_id: "agent.sender.event-retried",
+        source_session: "01a00000-0000-7000-0000-000000000001",
+        topic: "notifications.agent.01a01111-2222-7333-4444-555555555555",
+        dedupe_key: "event-retried",
+        issued_at: 1,
+        payload_summary: "hello",
+        trace_id: "trace-retried",
+        recipient: "01a01111-2222-7333-4444-555555555555",
+      }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const result = await client.send({
+      sourceSessionID: "01a00000-0000-7000-0000-000000000001",
+      targetSessionID: "01a01111-2222-7333-4444-555555555555",
+      message: "hello",
+    });
+
+    expect(recorded.requests).toHaveLength(2);
+    const keys = await Promise.all(
+      recorded.requests.map(async (request) => (await request.json()).idempotency_key)
+    );
+    expect(keys[0]).toBeString();
+    expect(keys[1]).toBe(keys[0]);
+    expect(result).toMatchObject({ envelope: { event_id: "event-retried" } });
+  });
   test("retries a delivered direct message with one generated idempotency key", async () => {
     const idempotencyKeys: string[] = [];
     const client = createEnvoyClient({
@@ -2094,9 +2146,51 @@ describe("EnvoyClient", () => {
     expect(error).toBeInstanceOf(EnvoyApiError);
     expect(error).toMatchObject({ notSent: false, details: { status: 503 } });
     expect((error as Error).message).toBe(
-      `${NOT_SENT_ERROR} An earlier attempt got no answer or a 5xx, so that attempt may have ` +
+      `${NOT_SENT_ERROR} An earlier attempt got no answer, a 5xx or a 408, so that attempt may have ` +
         "stored the message."
     );
+  });
+
+  // The two rules meet here. A 408 is in the resend set (`mayHaveReachedServer`), so the send is
+  // made again under its key, and the 408 may have reached the listener, so the send stays
+  // unconfirmed even though the second attempt was the listener's word that it sent nothing.
+  test("a send not sent after a 408 is sent again and stays unconfirmed: the 408 may have stored it", async () => {
+    const recorded = recordFetch([
+      Response.json({ error: "upstream request timeout" }, { status: 408 }),
+      notSent(),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const error = await client
+      .send({ sourceSessionID: "ses_sender", targetSessionID: "ses_target", message: "hello" })
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+
+    expect(recorded.requests).toHaveLength(2);
+    expect(error).toBeInstanceOf(EnvoySendUnconfirmedError);
+  });
+
+  // And the other order: the listener's not-sent 503 is sent again and counts for nothing, so the
+  // 408 after it is what makes the send unconfirmed; a 408 outside the resend set would end the
+  // send at once as the listener's refusal.
+  test("a 408 after the listener's not-sent answer makes the send unconfirmed", async () => {
+    const recorded = recordFetch([
+      notSent(),
+      Response.json({ error: "upstream request timeout" }, { status: 408 }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const error = await client
+      .send({ sourceSessionID: "ses_sender", targetSessionID: "ses_target", message: "hello" })
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+
+    expect(recorded.requests).toHaveLength(2);
+    expect(error).toBeInstanceOf(EnvoySendUnconfirmedError);
   });
 
   test("a send the listener refused with a 4xx is that refusal, sent once", async () => {
@@ -2116,6 +2210,33 @@ describe("EnvoyClient", () => {
     expect(error).toBeInstanceOf(EnvoyApiError);
     expect(error).not.toBeInstanceOf(EnvoySendUnconfirmedError);
     expect((error as Error).message).toBe("no live session ses_target");
+  });
+
+  // Each outage on every attempt of a send: a 5xx may have been stored, and so may a 408 (the
+  // listener writes none, and a hop can answer 408 after it forwarded the send), so the send is not
+  // confirmed; a 429 is the listener's word and is not sent again.
+  test("a send answered with an outage on every attempt: a 408 or a 5xx is unconfirmed, a 429 is one request", async () => {
+    const outcomes: Record<number, readonly [number, string]> = {};
+    for (const status of [408, 429, 500, 501, 503]) {
+      const recorded = recordFetch(
+        Array.from({ length: 2 }, () => Response.json({ error: `answered ${status}` }, { status }))
+      );
+      const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+      const error = await client
+        .send({ sourceSessionID: "ses_sender", targetSessionID: "ses_target", message: "hello" })
+        .then(
+          () => undefined,
+          (thrown: unknown) => thrown
+        );
+      outcomes[status] = [recorded.requests.length, (error as Error).name];
+    }
+    expect(outcomes).toEqual({
+      408: [2, "EnvoySendUnconfirmedError"],
+      429: [1, "EnvoyApiError"],
+      500: [2, "EnvoySendUnconfirmedError"],
+      501: [2, "EnvoySendUnconfirmedError"],
+      503: [2, "EnvoySendUnconfirmedError"],
+    });
   });
 
   // The listener's 429 for a sender past its limit (`senderRateLimitedAnswer`,

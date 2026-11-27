@@ -25,7 +25,7 @@ import { dispatchStackEnabled } from "../../test/dispatch-stack";
 
 // The v-recorder path over its whole length: a CI job's own GitHub token, traded by the real
 // `agent-secrets result-grant` at the real secrets broker (./cmd/cipherd) under a real result
-// entry for the airlock placeholder of a result grant, which the real `dispatch` CLI of this
+// entry for the proxy placeholder of a result grant, which the real `dispatch` CLI of this
 // checkout, run as its child process, presents through the broker's airlock proxy to the real
 // Dispatch server (./cmd/dispatch); the proxy puts the run's results token, which the broker
 // minted bound to its own key, in its place. Dispatch reads the job's check run and the spec files
@@ -99,7 +99,7 @@ interface Ran {
   readonly stderr: string;
 }
 
-/** The prefix of every result grant's airlock placeholder (placeholder.MintedPrefix("result")). */
+/** The prefix of every result grant's proxy placeholder (placeholder.MintedPrefix("result")). */
 const RESULT_PLACEHOLDER_PREFIX = "agent-secrets-placeholder-result-";
 /** The line the proxy logs for each call to a bound host it carried (proxy's callMessage). */
 const CALL_LINE = "airlock proxy: a call to a bound host";
@@ -490,7 +490,7 @@ describe.skipIf(!dispatchStackEnabled)(
       const at = commit("9");
       const project = running().project;
 
-      // A separate real child receives only the airlock placeholder and uses it on four other
+      // A separate real child receives only the proxy placeholder and uses it on four other
       // routes. The rule allows POST under /api/v1/projects/ and under /api/v1/issues/ alone, so
       // the proxy refuses the first three itself, before it dials, and says so
       // (Cipher-Proxy-Forwarded: false and its Cipher-Proxy-Code): a POST to /api/v1/issues is

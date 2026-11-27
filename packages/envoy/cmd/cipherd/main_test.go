@@ -206,7 +206,7 @@ func TestTheWaitLimitEndsInsideTheRequestDeadline(t *testing.T) {
 }
 
 // airlockTestSettings is the fifteen test-only settings of the broker's local stack: the
-// airlock's ten, the proxy chain's three, the result grant's one and the judge's one, each as a
+// airlock's ten, the result grant's one, the proxy chain's three and the judge's one, each as a
 // Config the refusal below reads and as the environment a real broker is started with, with what
 // else that environment needs for the setting to load at all (with). One row per setting: the
 // refusal has to name whichever one it found, since an operator reads from it which setting to
@@ -237,17 +237,18 @@ func airlockTestSettings() []struct {
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", func(c *config.Config) { c.AirlockTestKeepValues = true }, "true", nil},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", func(c *config.Config) { c.AirlockTestNoKind = true }, "true", nil},
 		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", func(c *config.Config) { c.AirlockTestAzureAuthority = "microsoft.airlock.test" }, "microsoft.airlock.test", nil},
+		{"BROKER_RESULT_GRANT_TEST_SECONDS", func(c *config.Config) { c.ResultGrantTestSeconds = 2 }, "2", nil},
 		{"BROKER_PROXY_TEST_CA_URL", func(c *config.Config) { c.ProxyTestCAURL = "http://127.0.0.1:18082" }, "http://127.0.0.1:18082", pool},
 		{"BROKER_PROXY_TEST_CLOCK_OFFSET_FILE", func(c *config.Config) { c.ProxyTestClockOffsetFile = "/run/stack/clock-offset" }, "/run/stack/clock-offset", nil},
 		{"BROKER_PROXY_TEST_RENEWAL_MARGIN", func(c *config.Config) { c.ProxyTestRenewalMargin = &margin }, "0s", pool},
-		{"BROKER_RESULT_GRANT_TEST_SECONDS", func(c *config.Config) { c.ResultGrantTestSeconds = 2 }, "2", nil},
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", func(c *config.Config) { c.JudgeTestSkipChecks = true }, "true", nil},
 	}
 }
 
 // TestEachAirlockTestSettingIsRefusedInProduction: every one of the fifteen points the broker at
-// a stand-in, lets it dial what no production proxy may, moves its clock, shortens a grant, or
-// turns a check off, so each on its own refuses a start that is not a local run, naming itself.
+// a stand-in, lets it dial what no production proxy may, shortens a grant below what production
+// gives it, moves its clock, or turns a check off, so each on its own refuses a start that is not
+// a local run, naming itself.
 func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
 	for _, setting := range airlockTestSettings() {
 		var cfg config.Config

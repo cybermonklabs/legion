@@ -32,7 +32,8 @@ const (
 )
 
 // attestedResult is what the statement of one CI job's result is built from: the check and its
-// procedure as the route read them, what the job observed, and the run its results token proved.
+// procedure as the route read them, what the job observed, the job and its leg as the route
+// decided them, and the run its results token proved.
 type attestedResult struct {
 	predicateType   string
 	project         string
@@ -41,24 +42,23 @@ type attestedResult struct {
 	test            model.ResultTest
 	verdict         string
 	observed        string
-	// checkRunName is the name of the run's check run, which jobAndLeg reads as the job and its
-	// leg.
-	checkRunName string
-	run          oauthwire.CIRun
-	// attempt is the run's attempt as runNumbersOf reads it.
-	attempt int
+	// job is the job that made the run's check run, and leg its matrix leg, or "" for none, as
+	// the route decided them: the project's results route from the run's workflow file (legOf,
+	// workflowJobs), since a check run's name alone shows no leg.
+	job, leg string
+	// run is the run the results token proved, read whole by the verifier (ciphertoken.Caller.CI,
+	// oauthwire.ParseCIRun): its numbers and its workflow's path are read off it.
+	run oauthwire.Run
 	// session is the session the results token proved.
 	session string
-	// principal is the broker's principal of the run, as resultPrincipal reads it.
-	principal string
 }
 
 // statement is the in-toto Statement v1 of a: its subject the run's repository at the run's
 // commit, and its predicate the check, its procedure, the verdict and what was observed, the job
-// and its leg, the run and its recorder, which names the run and no person. RecordedAt stays
-// zero: the insert writes it (stampedAttestation).
+// and its leg, the run and its recorder, which names the run and no person: the broker's own
+// spelling of the run's workflow (oauthwire.ResultPrincipal), so the identity on a result is the
+// one the broker authenticated. RecordedAt stays zero: the insert writes it (stampedAttestation).
 func (a attestedResult) statement() model.ResultAttestation {
-	job, leg := jobAndLeg(a.checkRunName)
 	return model.ResultAttestation{
 		Type: inTotoStatementType,
 		Subject: []model.AttestationSubject{{
@@ -67,12 +67,12 @@ func (a attestedResult) statement() model.ResultAttestation {
 		PredicateType: a.predicateType,
 		Predicate: model.ResultPredicate{
 			Project: a.project, Check: a.check, ProcedureDigest: a.procedureDigest, Test: a.test,
-			Verdict: a.verdict, Observed: a.observed, Job: job, Leg: leg,
+			Verdict: a.verdict, Observed: a.observed, Job: a.job, Leg: a.leg,
 			Run: model.ResultRun{
 				Repository: a.run.Repository, WorkflowRef: a.run.WorkflowRef, Ref: a.run.Ref, EventName: a.run.EventName,
-				RunID: a.run.RunID, Attempt: a.attempt, CheckRunID: a.run.CheckRunID, RunnerEnvironment: a.run.RunnerEnvironment,
+				RunID: a.run.RunID, Attempt: int(a.run.Attempt), CheckRunID: a.run.CheckRunID, RunnerEnvironment: a.run.RunnerEnvironment,
 			},
-			Recorder: model.ResultRecorder{Session: a.session, Principal: a.principal},
+			Recorder: model.ResultRecorder{Session: a.session, Principal: oauthwire.ResultPrincipal(a.run.Repository, a.run.Workflow)},
 		},
 	}
 }

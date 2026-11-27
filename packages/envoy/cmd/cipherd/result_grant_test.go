@@ -1,5 +1,5 @@
 // result_grant_test.go drives the REAL compiled broker's result grants: a CI run's token traded
-// at the token endpoint for an airlock placeholder, on a fresh schema, with the results profile
+// at the token endpoint for a proxy placeholder, on a fresh schema, with the results profile
 // DISPATCH_RESULTS_TOKEN, a proxy block of kind dpop, in BROKER_PROFILES_FILE. The helpers are
 // token_exchange_test.go's and main_test.go's.
 package main
@@ -48,7 +48,7 @@ func resultsExchangeEnv(t *testing.T, databaseURL string, cluster, github *oidct
 		"BROKER_PROFILES_FILE="+profilesFile(t, resultsProfiles), resultsUpstream)
 }
 
-// askedForThePlaceholder is form asking for the airlock placeholder.
+// askedForThePlaceholder is form asking for the proxy placeholder.
 func askedForThePlaceholder(form url.Values) url.Values {
 	return with(form, "requested_token_type", oauthwire.TokenTypeProxyPlaceholder)
 }

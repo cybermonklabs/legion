@@ -51,7 +51,10 @@ package api
 //
 // A credential that names one project writes every project's objects that a credential naming
 // none may write. The one exception is a private project that the credential does not name.
-// access.CredentialCovers holds that test. Each resolver reads the visibility of the target's
+// access.CredentialCovers holds that test. A results token is held narrower than both, by this
+// check rather than by that test: the broker minted it for one CI run of one project, so it
+// writes that project's results and nothing of any other project, private or not
+// (callerCovers, resultsScopeRoutes). Each resolver reads the visibility of the target's
 // project in the statement that reads that project, and the check passes it to the test. A
 // target of a private project that the credential does not name gets the refusal of a target
 // that resolves to nothing: an object that the caller cannot see answers as one that does not
@@ -369,9 +372,10 @@ func unaddressed(err error) bool {
 // For a caller whose credential names no project, a covered route costs one header read and
 // calls the handler. For one that names a project, the check resolves the target's project and
 // that project's visibility. A target of a project that access.CredentialCovers covers reaches
-// the handler, whichever project the credential names. A target that resolves to no project or
-// to nothing is refused, so the check fails closed, and an object of a private project that the
-// credential does not name gets that same refusal.
+// the handler, whichever project the credential names, but for a results token, whose one
+// project narrows every project it reaches: it writes the results of that project alone. A
+// target that resolves to no project or to nothing is refused, so the check fails closed, and an
+// object of a private project that the credential does not name gets that same refusal.
 func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	switch route.Scope {
 	case scopeProject:
@@ -454,7 +458,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 // alone, whatever a project's visibility is. The results routes' own checks of the run's
 // repository refuse most of the rest, and this is the rule that does not rest on them.
 func callerCovers(r *http.Request, covers, project string, private bool) bool {
-	if credential := resolvedCredential(r.Context()); credential != nil && credential.ResultsOnly {
+	if resultsOnlyRequest(r) {
 		return project == covers
 	}
 	return access.CredentialCovers(access.Credential{Listed: []string{covers}}, project, private)

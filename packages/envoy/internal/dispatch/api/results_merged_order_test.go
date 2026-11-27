@@ -2,10 +2,12 @@
 // merged pull requests where none of them is open: the newest is the one that merged last, by the
 // time GitHub gives each merge, and not the one of the highest number. A `before_merge` check's
 // one subject is that pull request's final head, and a check CI proves is read at that head alone.
-// Where Dispatch cannot learn when one of them merged, it cannot tell which is the newest: the
-// check names no subject, reads no head, and its answer is not known. The tests read the route's
-// answer as JSON into the types of this file, so they build at a commit before the rule and fail
-// there on their own assertions.
+// A check compared with a branch compares with that pull request's merge commit on the branch it
+// merged into. Where Dispatch cannot learn when one of them merged, it cannot tell which is the
+// newest: the `before_merge` check names no subject, reads no head, and its answer is not known,
+// and the branch names no merge, so a result it carries is not known. The tests read the route's
+// answer as JSON into the types of this file and of results_after_merge_rig_test.go, so they build
+// at a commit before the rule and fail there on their own assertions.
 package api
 
 import (
@@ -15,6 +17,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -264,4 +267,119 @@ func TestAMergedSubjectThatCannotBeOrderedReadsNotKnown(t *testing.T) {
 				k1.PassStands.Answer, k1.PassStands.Reason)
 		}
 	})
+}
+
+// The commits of the order tests of a check compared with a branch. #5 merged into main as
+// mergeOrderM5 at mergedOrderT2, from its final head mergeOrderF5, and #6 as mergeOrderM6 at
+// mergedOrderT1, before it, from mergeOrderF6, though #6's number is the higher. mergeOrderP is a
+// commit of main whose history holds M6 and not M5.
+const (
+	mergeOrderF5 = "f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5"
+	mergeOrderF6 = "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6"
+	mergeOrderM5 = "a005a005a005a005a005a005a005a005a005a005"
+	mergeOrderM6 = "a006a006a006a006a006a006a006a006a006a006"
+	mergeOrderP  = "9090909090909090909090909090909090909090"
+)
+
+// mergeOrderBranchChecks is a1, a check compared with the branch the work merged into.
+const mergeOrderBranchChecks = ":::check{#a1 when=\"after_merge\"}\n" +
+	"The branch the work merged into answers at the merged commit.\n" +
+	":::\n"
+
+// newMergeOrderBranchRig is an afterMergeRig and its issue, which holds mergeOrderBranchChecks,
+// whose GitHub answers #5 and #6 as merged into main at their merge commits and times, and says
+// that main carries mergeOrderP, whose history holds M6 alone. Each test writes the two rows.
+func newMergeOrderBranchRig(t *testing.T) (*afterMergeRig, string) {
+	t.Helper()
+	rig := newAfterMergeRig(t)
+	issue := rig.issue(t, "Two merges into main", mergeOrderBranchChecks)
+	rig.github.setPull(5, afterMergePull(issue, 5, mergeOrderF5, "legion/"+issue, "main", mergeOrderM5, mergedOrderT2), 0)
+	rig.github.setPull(6, afterMergePull(issue, 6, mergeOrderF6, "legion/"+issue, "main", mergeOrderM6, mergedOrderT1), 0)
+	rig.github.carry("main", mergeOrderP)
+	rig.github.hold(mergeOrderM6, mergeOrderP)
+	return rig, issue
+}
+
+// wantMergeNotKnown fails t unless a1 names main with no merge, the pass at mergeOrderP is not
+// known for read_failed, and a1 answers not known for not_placed: the order of the two merges is
+// not known, and a1 never answers from M6.
+func wantMergeNotKnown(t *testing.T, what string, a1 afterMergeCheck, pass string) {
+	t.Helper()
+	wantBases(t, what, a1, branchBasis("main", ""))
+	if stands := a1.result(t, pass).CommitStands; stands.Answer != "unknown" || stands.Reason != "read_failed" {
+		t.Fatalf("%s: the pass at a commit that holds M6 alone stands %+v, want unknown for read_failed", what, stands)
+	}
+	wantStands(t, what, a1.PassStands, "unknown", "not_placed", []string{pass}, mergeOrderP)
+}
+
+// TestTwoMergesWithNoTimeAreReadInTheOrderTheyMerged: #5 and #6 are stored with no time of merge.
+// The read learns both times, so the merge on main is #5's, the one that merged last, and a pass at
+// a commit that holds #6's merge alone is at another commit.
+func TestTwoMergesWithNoTimeAreReadInTheOrderTheyMerged(t *testing.T) {
+	t.Parallel()
+	rig, issue := newMergeOrderBranchRig(t)
+	writeMergeWithNoTime(t, rig.database, 5, mergeOrderF5, issue)
+	writeMergeWithNoTime(t, rig.database, 6, mergeOrderF6, issue)
+	pass := rig.record(t, issue, "a1", "tester", "pass", mergeOrderP)
+	a1 := rig.read(t, issue)["a1"]
+	wantBases(t, "two merges with no time", a1, branchBasis("main", mergeOrderM5))
+	if stands := a1.result(t, pass).CommitStands; stands.Answer != "other_commit" {
+		t.Fatalf("the pass at a commit that holds M6 and not M5 stands %+v, want other_commit", stands)
+	}
+}
+
+// TestAFilledMergeAndAnUnfilledOneAreReadInTheOrderTheyMerged: #6's row holds the time it merged,
+// and #5's, which merged after it, holds none. The read learns #5's, so the merge on main is #5's,
+// and not #6's, which a row with no time ordered last would make it.
+func TestAFilledMergeAndAnUnfilledOneAreReadInTheOrderTheyMerged(t *testing.T) {
+	t.Parallel()
+	rig, issue := newMergeOrderBranchRig(t)
+	writeMergeWithNoTime(t, rig.database, 5, mergeOrderF5, issue)
+	sixMerged, err := time.Parse(time.RFC3339, mergedOrderT1)
+	if err != nil {
+		t.Fatalf("read #6's time of merge: %v", err)
+	}
+	attributed := issue
+	if err := delivery.NewAttributor(refs.Renames{}).UpsertPullRequestHead(context.Background(), rig.database.Pool, nil, delivery.PullRequestHead{
+		Repo: "acme/widgets", Number: 6, HeadSHA: mergeOrderF6, HeadRef: "legion/" + issue, BaseRef: "main",
+		State: "merged", IssueKey: &attributed, AttributionSource: "title", AttributionComplete: true,
+		Title: issue + ": the work", URL: "https://github.com/acme/widgets/pull/6",
+		MergeCommitSHA: mergeOrderM6, MergedAt: &sixMerged,
+	}); err != nil {
+		t.Fatalf("store the merge of acme/widgets#6: %v", err)
+	}
+	wantBases(t, "a filled merge and an unfilled one", rig.read(t, issue)["a1"], branchBasis("main", mergeOrderM5))
+}
+
+// TestAMergeTimeThatCannotBeReadLeavesTheMergeNotKnown: #5 and #6 are stored with no time of
+// merge, and GitHub's read of #5 fails. Dispatch cannot tell which merged last, so main names no
+// merge, a result main carries is not known, and the check never answers from #6's merge.
+func TestAMergeTimeThatCannotBeReadLeavesTheMergeNotKnown(t *testing.T) {
+	t.Parallel()
+	rig, issue := newMergeOrderBranchRig(t)
+	rig.github.setPull(5, nil, http.StatusBadGateway)
+	writeMergeWithNoTime(t, rig.database, 5, mergeOrderF5, issue)
+	writeMergeWithNoTime(t, rig.database, 6, mergeOrderF6, issue)
+	pass := rig.record(t, issue, "a1", "tester", "pass", mergeOrderP)
+	wantMergeNotKnown(t, "#5's time cannot be read", rig.read(t, issue)["a1"], pass)
+}
+
+// TestAMergeGitHubNoLongerAnswersLeavesTheOrderNotKnown: #5 and #6 are stored with no time of
+// merge, and #5's row is stamped at this build's rule, as the reconcile stamps a pull request
+// GitHub answers 404 for (delivery.MarkPullRequestHeadChecked). The read does not ask GitHub for
+// #5 again, and the order stays not known: main names no merge, and the check never answers from
+// #6's merge.
+func TestAMergeGitHubNoLongerAnswersLeavesTheOrderNotKnown(t *testing.T) {
+	t.Parallel()
+	rig, issue := newMergeOrderBranchRig(t)
+	writeMergeWithNoTime(t, rig.database, 5, mergeOrderF5, issue)
+	writeMergeWithNoTime(t, rig.database, 6, mergeOrderF6, issue)
+	if err := delivery.MarkPullRequestHeadChecked(context.Background(), rig.database.Pool, "acme/widgets", 5, time.Now()); err != nil {
+		t.Fatalf("stamp #5 at this build's rule: %v", err)
+	}
+	pass := rig.record(t, issue, "a1", "tester", "pass", mergeOrderP)
+	wantMergeNotKnown(t, "#5 stamped with no time", rig.read(t, issue)["a1"], pass)
+	if reads := rig.github.pullReadsOf(5); reads != 0 {
+		t.Fatalf("the read asked GitHub for #5 %d times, want none: the current rule already offered it", reads)
+	}
 }
