@@ -79,17 +79,25 @@ The rules the legs keep:
   name as internal/daemon is in three race legs, one group of its tests in each of several legs
   of one job ([below](#why-internaldaemons-tests-run-in-three-legs)), every test in one group.
   `.github/scripts/go_legs.py`, which each leg's go test step runs for its packages, compares the
-  file with `go list ./...` first and fails the step, naming each, when a package is in no place,
-  in two, or when a place names no package. It also
-  takes how many legs the job's matrix runs (`strategy.job-total`) and fails when the file's legs
-  are not exactly those, since a leg the file has and the matrix does not launch runs in no job,
-  and when a leg lists no package, since xargs would then run go test on the module's root. So a
-  new package fails every leg until the file names it; `.github/scripts/go-legs.test.sh`, in the
-  test job, holds those failures. A leg sees only its own job's legs, so a package filed under a
-  job key no matrix job runs would pass every leg and run in none:
+  file with `go list ./...` first and fails the step, naming each, when a package is in two
+  places, or when a place names no package. It also takes how many legs the job's matrix runs
+  (`strategy.job-total`) and fails when the file's legs are not exactly those, since a leg the
+  file has and the matrix does not launch runs in no job, and when a leg lists no package, since
+  xargs would then run go test on the module's root. A package the file names in no place runs in
+  the last leg of the job the module's `unlisted` names (daemon-go), and every leg warns, naming
+  it: daemon-go runs in the merge queue and not on a pull request without its label, so a pull
+  request that added a package and no line would otherwise pass its own run and fail every leg of
+  the group, and the queue would rebuild every group behind it. An entry without `unlisted`, or
+  one naming no job whose last leg runs whole packages, fails every leg. The gate's Run for the
+  plain legs names the module's packages as `go list ./...` prints them, not as the file lists them
+  (`.github/scripts/ci_job_reads.py#leg_run_packages`), so a change to only an unlisted package's
+  test files starts daemon-go too.
+  `.github/scripts/go-legs.test.sh`, in the test job, holds those readings, and one case adds a
+  package and finds it in exactly one leg. A leg sees only its own job's legs, so a package filed
+  under a job key no matrix job runs would pass every leg and run in none:
   `.github/scripts/ci_job_reads.py#hold_daemon_legs`, which the changes and ci-filters jobs import,
-  refuses any key but daemon-go, daemon-go-race and `elsewhere`, and check-ci-filters.test.sh
-  holds that.
+  refuses any key but daemon-go, daemon-go-race, `elsewhere` and `unlisted`, and an `unlisted` that
+  is not daemon-go, and check-ci-filters.test.sh holds that.
 - **Each leg runs in its step's mode.** A kind's legs are one matrix job with one step text, so
   -race, -skip and -timeout are the step's and no leg's own.
 - **The old check-run names stay.** The jobs daemon-go and daemon-go-race wait for their kind's
@@ -138,9 +146,10 @@ this job's Postgres service, its images and its command, and the merge group's p
   iowait 6.5%, steal 0 — with the 5-second intervals at a median of 66.8% and a 90th percentile
   of 82.2%, and 3 of 122 above 90%.
 - **Part of the wait was the service's disk.** The same commit and command with the service's
-  crash safety off (job 139190707452, `.github/scripts/pg-crash-safety-off.sh`) took **458.7 s**,
-  and iowait fell from 6.5% to 0.5%. That is #5515's change, now on main, and the 537 s this
-  package takes in go-legs.yaml is a median with it.
+  crash safety off (`fsync`, `full_page_writes` and `synchronous_commit`; job 139190707452) took
+  **458.7 s**, and iowait fell from 6.5% to 0.5%. That is #5515's change, which every Postgres
+  service now starts with on its `command:` line (.github/scripts/postgres-service-settings.sh),
+  and the 537 s this package takes in go-legs.yaml is a median with it.
 - **The rest is test slots.** The tests' own times sum to 2,189 s over a 612 s package, a mean
   3.58 of the four slots `TestMain`'s `-parallel 4` gives, and the 65 tests that run alone sum
   69 s. More slots on the one runner did not help: at `-parallel 8` the package took 628.3 s
@@ -185,7 +194,11 @@ tests its leg runs, and the rules they keep are the legs' rules above, with two 
 Rebalance with `.github/scripts/go_legs_groups.py <module> <package> <groups> <parallel> <list>
 <source> <run>...`: it weighs each test by its measured time, or its time over the package's own
 `-parallel` where it runs beside others, and deals the tests longest first into the groups. It
-reads a `go test -json` stream, or the verbose lines of one where a wrapper printed them.
+reads a `go test -json` stream, or the verbose lines of one where a wrapper printed them. A test's
+measured time is its own `Elapsed`, or its longest subtest's where that is longer: Go stops a
+test's clock when its function returns, before the parallel subtests it started run, so a test
+whose work is in parallel subtests reads close to 0 s by its own clock while it holds its leg for
+as long as they take.
 
 No leg's own run can feed it: this step runs `go test` without `-json`, and prints a package's
 one `ok` line, not each test's time. A rebalance therefore needs a run made for it — a throwaway

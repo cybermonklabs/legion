@@ -542,6 +542,7 @@ func keptAcrossARendererChange(t *testing.T, stamp *int) (decisionsFixture, mode
 // build reads that text as the decision's: the decision stays kept, waiting for no review, and the
 // spec block it links stays up to date (keptAcrossARendererChange).
 func TestADecisionKeptBeforeARendererChangeStaysKept(t *testing.T) {
+	t.Parallel()
 	another := pmdoc.RendererVersion - 1
 	for _, test := range []struct {
 		name  string
@@ -560,6 +561,7 @@ func TestADecisionKeptBeforeARendererChangeStaysKept(t *testing.T) {
 // and the spec block it links is out of date: the kept text its keep's version holds reads as
 // another text than the decision's now.
 func TestADecisionKeptBeforeARendererChangeWaitsOnceItsContentChanges(t *testing.T) {
+	t.Parallel()
 	another := pmdoc.RendererVersion - 1
 	fixture, kept := keptAcrossARendererChange(t, &another)
 	handler, key := fixture.handler, fixture.issue.Key
@@ -583,6 +585,7 @@ func TestADecisionKeptBeforeARendererChangeWaitsOnceItsContentChanges(t *testing
 // the version its keep names holds no decision of that heading, so it holds no kept text of this
 // decision to compare.
 func TestADecisionKeptBeforeARendererChangeWaitsOnceItsKeepsVersionHoldsNoSuchHeading(t *testing.T) {
+	t.Parallel()
 	another := pmdoc.RendererVersion - 1
 	fixture, kept := keptAcrossARendererChange(t, &another)
 	handler, key := fixture.handler, fixture.issue.Key
@@ -611,6 +614,7 @@ const footnotedDecision = "Count the notices by footnote"
 // decision is compared by its text's sum (pmdoc.FragmentReadsAs): it waits for review, and the
 // spec block it links is out of date.
 func TestADecisionKeptAsFootnoteShapedTextWaitsOnceItCitesTheFootnote(t *testing.T) {
+	t.Parallel()
 	fixture := newDecisionsFixture(t)
 	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
 	const reference, literal = "See [^1] here.", `See \[^1] here.`
@@ -712,6 +716,7 @@ func keptAsAnotherRendererStoredIt(t *testing.T, fixture decisionsFixture, now, 
 // as one, so the renderer's spelling is all that changed the decision's sum: the decision stays
 // kept, waiting for no review, and the spec block it links is not out of date.
 func TestADecisionKeptInsideOrOutsideATypedBlockStaysKeptAcrossARendererChange(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name                  string
 		keptInside, nowInside bool
@@ -758,6 +763,7 @@ func TestADecisionKeptInsideOrOutsideATypedBlockStaysKeptAcrossARendererChange(t
 // read alone would open code, and the parser places the callout and the decision inside it as
 // they stand.
 func TestADecisionKeptRunningPastItsCalloutsClosingLineWaitsAcrossARendererChange(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		// prefix stands before the callout and inside it before the decision.
@@ -800,6 +806,7 @@ func TestADecisionKeptRunningPastItsCalloutsClosingLineWaitsAcrossARendererChang
 // own indented fence, which leaves the callout, whose fence the renderer writes longer, holding
 // the decision after it, whose text ends before the callout's closing fence.
 func TestDecisionCutsReadCodeFencesAsTheParserDoes(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, markdown, heading, text string
 		alone                         bool
@@ -879,6 +886,7 @@ func TestDecisionCutsReadCodeFencesAsTheParserDoes(t *testing.T) {
 // and runs past its closing line to a paragraph in the outer one, each hold a callout's closing
 // line without its opening line, and none of them stands alone.
 func TestADecisionCutStandsAloneUnlessItHoldsOneFenceOfATypedBlock(t *testing.T) {
+	t.Parallel()
 	const (
 		aside  = ":::callout{#aside kind=\"note\" title=\"\"}\n"
 		second = ":::callout{#second kind=\"note\" title=\"\"}\n"
@@ -1256,6 +1264,7 @@ var decisionCutCorpusLeftOut = map[string]string{
 // standing for its items, which record no range of their own. The corpus documents an upload
 // refuses are left out (decisionCutCorpusLeftOut), each refused as that list says.
 func TestAStoredVersionCutsEachDecisionAsTheViewShowsIt(t *testing.T) {
+	t.Parallel()
 	fixture := newDecisionsFixture(t)
 	ctx, id := context.Background(), fixture.decisions.ID
 	documents := slices.Clone(decisionCutShapes)
@@ -1440,6 +1449,7 @@ func itemOpening(line string) (string, byte, bool) {
 // past: its text holds its callout's closing line without the opening line, so it does not stand
 // alone, and it waits for review.
 func TestEachDecisionAroundOrInsideATypedBlockStaysKeptAcrossARendererChangeUnlessItRunsPastIt(t *testing.T) {
+	t.Parallel()
 	fixture, version, written := typedBlockDecisionsWritten(t)
 	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
 	for _, heading := range typedBlockHeadings {
@@ -1514,6 +1524,7 @@ func afterAQuotedHeading(t *testing.T) (decisionsFixture, model.Version, model.D
 // another renderer version stored the version her keep names, its loose list spelled otherwise:
 // the decision stays kept, and the spec block it links is not out of date.
 func TestADecisionAfterAQuotedHeadingOfItsNameStaysKeptAcrossARendererChange(t *testing.T) {
+	t.Parallel()
 	fixture, version, written := afterAQuotedHeading(t)
 	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
 	keepBlock(t, handler, id, written.BlockID, written.TextSHA256)
@@ -1539,6 +1550,7 @@ func TestADecisionAfterAQuotedHeadingOfItsNameStaysKeptAcrossARendererChange(t *
 // A decision at the document's level after a quoted decision of its heading is read by its own
 // cut for its links too: once its content changes, the spec block it links is out of date.
 func TestADecisionAfterAQuotedHeadingOfItsNameMarksItsLinkOnceItsContentChanges(t *testing.T) {
+	t.Parallel()
 	fixture, _, written := afterAQuotedHeading(t)
 	handler, key := fixture.handler, fixture.issue.Key
 	editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{
@@ -1559,6 +1571,7 @@ func TestADecisionAfterAQuotedHeadingOfItsNameMarksItsLinkOnceItsContentChanges(
 // renderer version stored the version that wrote the decision, its loose list spelled otherwise,
 // and once the decision's content changes, the spec block it links is out of date.
 func TestADecisionAfterAListItemOpeningWithCodeMarksItsLinkOnceItsContentChanges(t *testing.T) {
+	t.Parallel()
 	fixture := newDecisionsFixture(t)
 	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
 	section := listSection(listDecision, key)
@@ -1591,6 +1604,7 @@ func TestADecisionAfterAListItemOpeningWithCodeMarksItsLinkOnceItsContentChanges
 // decision's text unchanged and a link reference definition ahead of it, which pmdoc refuses
 // (refusals.go): neither link is out of date.
 func TestALinkWhoseVersionTheParserRefusesStaysAsItIs(t *testing.T) {
+	t.Parallel()
 	fixture := newDecisionsFixture(t)
 	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
 	table := decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision)
@@ -1634,6 +1648,8 @@ func TestALinkWhoseVersionTheParserRefusesStaysAsItIs(t *testing.T) {
 // after the keeps, the first parses each of the two versions once, and the second parses neither.
 // Both read the decisions alike.
 func TestADecisionsViewParsesEachStoredVersionOnce(t *testing.T) {
+	// Not parallel: it writes the package variable decisionCutsObserver, the hook every decision cut
+	// calls.
 	fixture := newDecisionsFixture(t)
 	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
 	version := editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{{
@@ -1718,6 +1734,7 @@ func TestADecisionsViewParsesEachStoredVersionOnce(t *testing.T) {
 // line of a decision inside one does. The decision waits for review, since it moved into the list
 // item, and the first cut of its heading now is the other decision's, which says nothing of it.
 func TestADecisionKeptBeforeItMovedIntoAListItemWaitsBesideADecisionOfItsName(t *testing.T) {
+	t.Parallel()
 	fixture := newDecisionsFixture(t)
 	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
 	heading, other := "## "+sharedHeading, "## "+sharedHeading+"\n\nOther."

@@ -493,6 +493,18 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			file:    "dispatch/issue-released.json",
 			want:    DispatchClaim{Key: "CAPTURE-4", Seq: 12},
 		},
+		// The update Dispatch appends on an issue whose resolved priority a write to an issue
+		// above it changed, which wakes no session (J3 of dispatch://INFRA-5793): built by hand in
+		// the shape testdata/dispatch-resolved/README quotes, since no Dispatch release sends it
+		// yet. The consumer reads it as an update of the resolved priority alone.
+		{
+			name:    "Dispatch issue updated in its resolved priority alone (hand-built)",
+			subject: "notifications.dispatch.issue.CAPTURE-12.issue.updated",
+			file:    "dispatch/issue-updated-resolved-only.json",
+			want: DispatchIssue{Key: "CAPTURE-12", Seq: 3, Type: "issue.updated", Status: "todo", Title: "Captured child issue", Parent: "CAPTURE-7", Rank: "UUUk",
+				Resolved: record.Resolved{Priority: record.P0, From: "OTHER-5", Known: true}, ResolvedOnly: true, Labels: []string{}, ResolvedRepo: "sjawhar/legion",
+				Blockers: []string{}, ClaimKnown: true},
+		},
 		{
 			name:    "pull request opened",
 			subject: "notifications.github.sjawhar.legion.pr.42",
@@ -889,6 +901,7 @@ func TestTheBootNarrowsTheDispatchConsumerToTheIssueEvents(t *testing.T) {
 // The negative control is artifact.renamed and artifact.removed back in mergeHoldsChangeTypes:
 // their two rows then decode to a MergeHoldsChanged.
 func TestAMergeHoldsDocumentEventIsTheProjectsMergeHoldsChange(t *testing.T) {
+	t.Parallel()
 	change := MergeHoldsChanged{Project: "CAPTURE", Event: "dispatch-71"}
 	for _, tc := range []struct {
 		name, project, slug, eventType string
@@ -944,6 +957,7 @@ func TestAMergeHoldsDocumentEventIsTheProjectsMergeHoldsChange(t *testing.T) {
 // and keeps the consumer's position: the backlog the consumer had stays pending, and the
 // document's event published after the boot is pending beside it.
 func TestTheDispatchConsumerHearsTheProjectsMergeHoldsDocument(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
@@ -980,6 +994,7 @@ func TestTheDispatchConsumerHearsTheProjectsMergeHoldsDocument(t *testing.T) {
 // A merge holds change is a workflow fact: the consumer applies it through ApplyFact under the
 // Dispatch event's id, so the same event delivered again applies nothing a second time.
 func TestConsumeAppliesAMergeHoldsChangeOnce(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)

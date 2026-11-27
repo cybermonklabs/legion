@@ -51,6 +51,9 @@ func seedSettledDocument(t *testing.T, service *Service, artifactID, markdown st
 // A text read of a document whose room still holds the state its latest version was written from
 // renders the document storedTextReadRenders times, and answers the version's stored markdown.
 func TestStoredTextReadCountsTheRendersOfAReadOfAVersionedDocument(t *testing.T) {
+	// Not parallel: it records every document render the process makes in the package variable
+	// documentRenders (countRenders), which refuses a second recorder and would count the renders of
+	// the tests beside it.
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	const written = "The quick brown fox.\n"
@@ -88,6 +91,9 @@ func TestStoredTextReadCountsTheRendersOfAReadOfAVersionedDocument(t *testing.T)
 // A room that has applied a browser's update and not yet stored it holds text no version does, so
 // the read renders the room rather than serving the version's markdown.
 func TestStoredTextReadRendersARoomHoldingAnUnstoredUpdate(t *testing.T) {
+	// Not parallel: it records every document render the process makes in the package variable
+	// documentRenders (countRenders), which refuses a second recorder and would count the renders of
+	// the tests beside it.
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedSettledDocument(t, service, artifactID, "The quick brown fox.\n")
@@ -116,6 +122,9 @@ func TestStoredTextReadRendersARoomHoldingAnUnstoredUpdate(t *testing.T) {
 // An anchor write appends an update and writes no version, so the document's stamp moves past the
 // one its latest version holds and the read renders the document.
 func TestStoredTextReadRendersAfterAnAnchorWriteMovedTheStamp(t *testing.T) {
+	// Not parallel: it records every document render the process makes in the package variable
+	// documentRenders (countRenders), which refuses a second recorder and would count the renders of
+	// the tests beside it.
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	const written = "The quick brown fox.\n"
@@ -146,6 +155,9 @@ func TestStoredTextReadRendersAfterAnAnchorWriteMovedTheStamp(t *testing.T) {
 // A version another renderer wrote is not this build's to serve: its markdown and its token are
 // what that renderer made of the tree, so the read renders the document itself.
 func TestStoredTextReadRendersAVersionOfAnotherRendererVersion(t *testing.T) {
+	// Not parallel: it records every document render the process makes in the package variable
+	// documentRenders (countRenders), which refuses a second recorder and would count the renders of
+	// the tests beside it.
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	const written = "The quick brown fox.\n"

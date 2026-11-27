@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A document's mentions are owed an excerpt until one is recorded at its latest version; once
@@ -21,6 +22,7 @@ import (
 // predating the excerpts wrote leaves its mentions' excerpts behind, and MarkStaleExcerpts makes
 // them owed again without dropping the excerpt the route still serves.
 func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -155,6 +157,7 @@ func backoffOf(t *testing.T, database *store.Store, document string) (version, a
 // precision. The earliest due time is the reconciliation's next retry. A deferral at a version
 // the document has since replaced holds nothing back, and the next failure counts from one.
 func TestADeferredDocumentWaitsOutAGrowingBackoffKeyedByItsVersion(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	document := owedDocument(t, database, "design")
@@ -226,6 +229,7 @@ func TestADeferredDocumentWaitsOutAGrowingBackoffKeyedByItsVersion(t *testing.T)
 // A backoff row outlives its failure when a later version write cuts the document's excerpts
 // itself; reading the next retry drops it, and a document that owes nothing sets no retry.
 func TestTheNextRetryDropsTheBackoffOfADocumentThatOwesNothing(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	settled, owed := owedDocument(t, database, "settled"), owedDocument(t, database, "owed")
@@ -268,11 +272,22 @@ func TestTheNextRetryDropsTheBackoffOfADocumentThatOwesNothing(t *testing.T) {
 	}
 }
 
+// owedChannel is the channel a mention left owed an excerpt announces itself on, written out here
+// rather than read from internal/dispatch/docs's ExcerptsOwedChannel: the name is the contract
+// between migration 0153's trigger and every reader of it, and a test that took it from one reader
+// would still pass if the trigger and that reader moved together. probeChannel is this test's own,
+// which no migration and no production reader knows.
+const (
+	owedChannel  = "dispatch_excerpts_owed"
+	probeChannel = "refs_excerpt_probe"
+)
+
 // Every artifact mention left owed an excerpt announces itself on dispatch_excerpts_owed at
 // commit, however it got there - inserted with none, or cleared by ClearExcerpts or a direct
 // update as the previous release's code does - and nothing else does: recording an excerpt, or a
 // mention another kind of node writes, which holds no excerpt.
 func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	listener, err := database.Pool.Listener(ctx)
@@ -280,35 +295,47 @@ func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
 		t.Fatalf("open a listener: %v", err)
 	}
 	t.Cleanup(func() { _ = listener.Close(context.Background()) })
-	if _, err := listener.Exec(ctx, `listen dispatch_excerpts_owed`); err != nil {
-		t.Fatalf("listen: %v", err)
+	for _, channel := range []string{owedChannel, probeChannel} {
+		if _, err := listener.Exec(ctx, "listen "+channel); err != nil {
+			t.Fatalf("listen on %s: %v", channel, err)
+		}
 	}
-	notified := func() bool {
+	// next is the channel of the next notification this session is sent. Postgres hands a
+	// listening session its notifications in the order the transactions that queued them
+	// committed, so a write that must announce nothing is proved by the probe committed after it
+	// arriving next (silent): the test waits for an event rather than for a stretch of clock in
+	// which no event came, which a loaded machine stretches past any bound.
+	waited := testwait.Context(t)
+	next := func() string {
 		t.Helper()
-		waitCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
-		defer cancel()
-		_, err := listener.WaitForNotification(waitCtx)
-		return err == nil
+		notification, err := listener.WaitForNotification(waited)
+		if err != nil {
+			t.Fatalf("wait for the next notification: %v", err)
+		}
+		return notification.Channel
 	}
-
-	document := owedDocument(t, database, "design")
-	if !notified() {
-		t.Fatal("an inserted mention owed an excerpt sent no notification")
-	}
-	for name, write := range map[string]func() error{
-		"recording its excerpt": func() error { _, err := RecordExcerpts(ctx, database.Pool, document, 1, nil); return err },
-		"a comment's mention": func() error {
-			_, err := database.Pool.Exec(ctx, `insert into refs (from_kind, from_id, to_kind, to_id) values ('comment', gen_random_uuid()::text, 'issue', 'CORE-1')`)
-			return err
-		},
-	} {
+	silent := func(name string, write func() error) {
+		t.Helper()
 		if err := write(); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if notified() {
-			t.Fatalf("%s sent a notification; want none", name)
+		if _, err := database.Pool.Exec(ctx, `select pg_notify($1, '')`, probeChannel); err != nil {
+			t.Fatalf("send the probe after %s: %v", name, err)
+		}
+		if channel := next(); channel != probeChannel {
+			t.Fatalf("%s announced itself on %s; want nothing before the probe", name, channel)
 		}
 	}
+	document := owedDocument(t, database, "design")
+	record := func() error { _, err := RecordExcerpts(ctx, database.Pool, document, 1, nil); return err }
+	if channel := next(); channel != owedChannel {
+		t.Fatalf("an inserted mention owed an excerpt announced itself on %s, want %s", channel, owedChannel)
+	}
+	silent("recording its excerpt", record)
+	silent("a comment's mention", func() error {
+		_, err := database.Pool.Exec(ctx, `insert into refs (from_kind, from_id, to_kind, to_id) values ('comment', gen_random_uuid()::text, 'issue', 'CORE-1')`)
+		return err
+	})
 	for name, clear := range map[string]func() error{
 		"ClearExcerpts": func() error { return clearExcerptsOnPool(ctx, database.Pool, document) },
 		"a direct update": func() error {
@@ -316,14 +343,12 @@ func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
 			return err
 		},
 	} {
-		if _, err := RecordExcerpts(ctx, database.Pool, document, 1, nil); err != nil {
-			t.Fatalf("record before %s: %v", name, err)
-		}
+		silent("recording its excerpt before "+name, record)
 		if err := clear(); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if !notified() {
-			t.Fatalf("%s left a mention owed and sent no notification", name)
+		if channel := next(); channel != owedChannel {
+			t.Fatalf("%s left a mention owed and announced itself on %s, want %s", name, channel, owedChannel)
 		}
 	}
 }
@@ -332,6 +357,7 @@ func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
 // that rewrites the block a kept mention sits in moves that mention's excerpt and no other's, and
 // one that writes the same excerpts again moves nothing.
 func TestRecordExcerptsReportsTheMentionsWhoseExcerptMoved(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -388,6 +414,7 @@ func TestRecordExcerptsReportsTheMentionsWhoseExcerptMoved(t *testing.T) {
 // excerpt that version's write stored was cut as the block's own row was, so a cut that moved
 // since never rewrites the mention's excerpt and leaves the block's as it was.
 func TestRecordExcerptsKeepsAnExcerptOfTheSameVersion(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -438,6 +465,7 @@ func TestRecordExcerptsKeepsAnExcerptOfTheSameVersion(t *testing.T) {
 // mention and the older one, and the update QueueRecordExcerpts queues writes those two and keeps
 // the one already holding this version's excerpt.
 func TestQueuedExcerptsKeepAnExcerptOfTheSameVersion(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
