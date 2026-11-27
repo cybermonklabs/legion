@@ -382,7 +382,7 @@ func TestTheBulkReadsAnswerEachIssueWhatItsOwnReadAnswers(t *testing.T) {
 				t.Errorf("%s: AllPhases answers %#v, Phases answers %#v", key, bulk, own)
 			}
 
-			pr, err := r.scoped.PullRequest(ctx, tx, key)
+			pr, err := r.scoped.MergePullRequest(ctx, tx, key)
 			if err != nil {
 				t.Fatalf("read the pull request of %s: %v", key, err)
 			}

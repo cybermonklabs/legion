@@ -256,7 +256,7 @@ func TestTheIdleReleaseTakesNoClaimOfARunningStep(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			view := view
 			view.Claims = tc.claims
-			decision := IdleRelease(view, now, time.Hour, true, 1)
+			decision := IdleRelease(view, now, time.Hour, true, false, 1)
 			if decision.Hold != tc.hold || decision.Release != (tc.hold == IdleHoldNone) {
 				t.Fatalf("the idle release = %+v, want the hold %s (a release where none)", decision, tc.hold)
 			}

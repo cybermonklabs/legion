@@ -2498,7 +2498,7 @@ func (w *workflowRuntime) recordWithPullRequest(ctx context.Context, key string,
 		if !withPull || issue.RepoCorrection == nil {
 			return nil
 		}
-		pull, err = w.records.PullRequest(ctx, tx, key)
+		pull, err = w.records.MergePullRequest(ctx, tx, key)
 		return err
 	}); err != nil {
 		return nil, nil, fmt.Errorf("read the record of %s: %w", key, err)

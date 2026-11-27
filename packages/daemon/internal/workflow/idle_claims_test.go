@@ -25,7 +25,7 @@ func TestAReleaseSuspendsEachLiveClaimByItsToken(t *testing.T) {
 	view.Claims[2].Token, view.Claims[2].State = "legion-legion-legion-209-reviewer", supervise.StateSuspended
 	view.Claims[2].Role, view.Claims[2].UpdatedAt = claim.RoleReviewer, idleNow.Add(-40*time.Minute)
 
-	decision := IdleRelease(view, idleNow, idlePeriod, true, idleContract)
+	decision := IdleRelease(view, idleNow, idlePeriod, true, false, idleContract)
 	if !decision.Release {
 		t.Fatalf("the pod of two idle claims = %+v, want it released", decision)
 	}
