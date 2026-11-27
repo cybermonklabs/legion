@@ -997,9 +997,10 @@ as in the missing-file text. The session's start notice (`sessionSettings`) says
 Dispatch. `DISPATCH_TOKEN` alone keeps the file's notice, since it also goes with a server an
 envoy.json names. `DISPATCH_PUBLIC_URL`, when set, is Dispatch's dashboard as people open it, for
 a session that reaches Dispatch at an address they cannot (a Legion pod's in-cluster one): the
-settings carry it as `publicUrl`, less a trailing slash; every link the executor prints resolves
-against it rather than the API's URL, which every call still goes to; a dashboard URL given as a
-`ref` resolves on either address; and a value that is not an http or https URL disables Dispatch,
+settings carry it as `publicUrl`, less a trailing slash; every link the executor prints joins its
+page onto that URL's path (`http://host/prefix` links `http://host/prefix/issues/<key>`) rather
+than the API's URL, which every call still goes to; a dashboard URL given as a `ref` reads as its
+page under either address's path; and a value that is not an http or https URL disables Dispatch,
 naming it in `error`.
 
 With no bearer configured at all, the session's credential is traded at the secrets broker
