@@ -1428,15 +1428,18 @@ func TestRunRelaunchesAStaleAddressChargingNothing(t *testing.T) {
 
 // Every architect is told, in its addressing, the roles a step of its plan may name with the type
 // of each: Legion's five, then each role the deployment defines in the file's order, with the
-// model its agent starts with where the settings give one. A root architect's addressing still
-// ends with its design gate's line, then the project's production check (ProductionCheckFragment),
-// which every architect is told last; no other launch is told the roles.
+// model its agent starts with where the settings give one. An architect under another deployment
+// is told that deployment's roles and none of these, and one under a deployment that defines no
+// role is told Legion's five alone. A root architect's addressing still ends with its design
+// gate's line, then the project's production check (ProductionCheckFragment), which every
+// architect is told last; no other launch is told the roles.
 func TestTheOwnersPromptListsTheDeploymentsRoles(t *testing.T) {
 	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
+	const legion = "The roles of this deployment, each with the type of its step: planner (planning), implementer (implementation), tester (testing), reviewer (review), acceptance (review)"
 	deployed := []config.Role{
 		{Name: "checker", Type: "testing", PromptFile: "/etc/legion/checker.md", Model: "checker-model"},
 		{Name: "audit", Type: "security", PromptFile: "/etc/legion/audit.md"},
@@ -1471,10 +1474,37 @@ func TestTheOwnersPromptListsTheDeploymentsRoles(t *testing.T) {
 	if sub := addressing(deployed, "S1-2", claim.RoleArchitect); !strings.Contains(sub, want) {
 		t.Errorf("a sub-architect's addressing = %q, want it to hold %q", sub, want)
 	}
-	if check := " " + gate + " " + ProductionCheckFragment(""); !strings.HasSuffix(root, check) {
-		t.Errorf("the root architect's addressing = %q, want it to end with %q", root, check)
+	if none := addressing(nil, "S1-2", claim.RoleArchitect); !strings.Contains(none, legion+".") {
+		t.Errorf("an architect's addressing under a deployment that defines no role = %q, want it to hold %q", none, legion+".")
+	}
+	for _, tc := range []struct {
+		name  string
+		roles []config.Role
+		issue string
+	}{
+		{"the root architect", deployed, "S1-1"},
+		{"a sub-architect", deployed, "S1-2"},
+		{"a sub-architect under another deployment", other, "S1-2"},
+		{"a sub-architect under a deployment that defines no role", nil, "S1-2"},
+	} {
+		got := addressing(tc.roles, tc.issue, claim.RoleArchitect)
+		for _, role := range every {
+			defined := slices.ContainsFunc(tc.roles, func(r config.Role) bool { return r.Name == role.Name })
+			if named := strings.Contains(got, pair(role)); named != defined {
+				t.Errorf("%s's addressing = %q: names %q %v, want %v", tc.name, got, pair(role), named, defined)
+			}
+			if role.Model == "" {
+				continue
+			}
+			if named := strings.Contains(got, role.Model); named != defined {
+				t.Errorf("%s's addressing = %q: names the model %q %v, want %v", tc.name, got, role.Model, named, defined)
+			}
+		}
 	}
 	tester := addressing(deployed, "S1-2", claim.RoleTester)
+	if strings.Contains(tester, "The roles of this deployment") {
+		t.Errorf("a tester's addressing = %q, want no list of the deployment's roles", tester)
+	}
 	for _, role := range deployed {
 		if strings.Contains(tester, pair(role)) {
 			t.Errorf("a tester's addressing = %q, want no role of the deployment named, %q among them", tester, pair(role))
