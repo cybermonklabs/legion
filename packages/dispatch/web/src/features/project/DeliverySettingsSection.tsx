@@ -74,6 +74,13 @@ const MAX_SOURCES = 50;
 /** A switch's or a checkbox's label: the box beside its words, on one line. */
 const checkboxLabel = `flex items-center gap-2 text-sm font-medium ${textSecondaryOnCanvas}`;
 
+/** A one-line box whose text is the reader's or the record's: a repository, a workflow's path, a
+ *  job's or a step's name. On a phone, at the 1rem type `styles.css` gives every field, such text
+ *  (`.github/workflows/pr-checks.yml`) is wider than its box, so the box ends what it cuts with an
+ *  ellipsis while it is not focused (`web/src/AGENTS.md`, "Layout", point 4); focused, it scrolls
+ *  its text as any field does. */
+const oneLineInput = `text-ellipsis ${settingsMonoInput}`;
+
 type SourceKind = ProjectDeploySource["kind"];
 
 /** The seven evals whose targets the settings name (the spec's Design), each a number in its
@@ -608,7 +615,7 @@ function DeliverySettingsFields({
               Default repository
               <input
                 aria-describedby={`${id}-default-repo-hint`}
-                className={settingsMonoInput}
+                className={oneLineInput}
                 id={`${id}-default-repo`}
                 placeholder="None"
                 readOnly
@@ -908,7 +915,7 @@ function GitHubWorkflowFields({
             aria-describedby={`${id}-repo-hint`}
             aria-invalid={repoRefused || undefined}
             autoComplete="off"
-            className={settingsMonoInput}
+            className={oneLineInput}
             id={`${id}-repo`}
             onChange={(event) => onChange({ repo: event.target.value })}
             placeholder={defaultRepo ?? "owner/name"}
@@ -925,7 +932,7 @@ function GitHubWorkflowFields({
       <label className={settingsFieldLabel} htmlFor={`${id}-deploy-workflow`}>
         Deploy workflow
         <input
-          className={settingsMonoInput}
+          className={oneLineInput}
           id={`${id}-deploy-workflow`}
           onChange={(event) => onChange({ deploy_workflow_path: textOrEmpty(event.target.value) })}
           placeholder=".github/workflows/<deploy>.yml"
@@ -936,7 +943,7 @@ function GitHubWorkflowFields({
       <label className={settingsFieldLabel} htmlFor={`${id}-pr-checks-workflow`}>
         PR checks workflow
         <input
-          className={settingsMonoInput}
+          className={oneLineInput}
           id={`${id}-pr-checks-workflow`}
           onChange={(event) =>
             onChange({ pr_checks_workflow_path: textOrEmpty(event.target.value) })
@@ -976,7 +983,7 @@ function GitHubWorkflowFields({
           Production apply step
           <input
             aria-describedby={`${id}-production-apply-step-hint`}
-            className={settingsMonoInput}
+            className={oneLineInput}
             id={`${id}-production-apply-step`}
             onChange={(event) => onChange({ production_apply_step_name: event.target.value })}
             placeholder="The step whose success means the job applied (optional)"
@@ -993,7 +1000,7 @@ function GitHubWorkflowFields({
           {label}
           <input
             aria-describedby={`${id}-pipeline-jobs-hint`}
-            className={settingsMonoInput}
+            className={oneLineInput}
             id={`${id}-${key}`}
             onChange={(event) => onChange({ [key]: event.target.value })}
             placeholder={placeholder}
