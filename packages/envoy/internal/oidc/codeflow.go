@@ -404,8 +404,9 @@ func (f *CodeFlow) OnlineExchange(ctx context.Context, redirectURL, code string,
 // with the OAuth error invalid_grant (oauthrefusal.EndsGrant): the refresh token has expired, been
 // revoked, or is not this client's, so the sign-in is over. Every other failure matches
 // ErrIssuerUnavailable and says nothing about the sign-in: the issuer not discovered, no answer or
-// a timeout, a 5xx or a 429, any other status or OAuth error (invalid_client among them: the
-// client's own configuration, not the person), or an answer without an ID token that verifies.
+// a timeout, an outage (oauthrefusal.Outage: a 5xx, a 408 or a 429), any other status or OAuth
+// error (invalid_client among them: the client's own configuration, not the person), or an answer
+// without an ID token that verifies.
 func (f *CodeFlow) Refresh(ctx context.Context, refreshToken string) (Session, error) {
 	issuer, err := f.discovery.discover(ctx)
 	if err != nil {

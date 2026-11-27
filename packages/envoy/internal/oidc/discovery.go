@@ -16,8 +16,9 @@ import (
 
 // ErrIssuerUnavailable means the issuer could not be asked: its discovery document has not been
 // read yet, or a call to it failed in a way that says nothing about the token or the grant it
-// carried (no answer, a timeout, a 5xx, a 429, a refusal of the client itself, an answer without a
-// verifiable ID token). A caller answers it as a service that is down, and ends nothing on it.
+// carried (no answer, a timeout, a 5xx, a 408, a 429, a refusal of the client itself, an answer
+// without a verifiable ID token). A caller answers it as a service that is down, and ends nothing
+// on it.
 var ErrIssuerUnavailable = errors.New("oidc: the issuer cannot be reached")
 
 // IssuerUnavailableCode and IssuerUnavailableMessage are the error code and the sentence of the

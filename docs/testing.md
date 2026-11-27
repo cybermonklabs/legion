@@ -353,15 +353,41 @@ itself, whose tests import its sources by relative path.
   third argument to `test` or `beforeAll` nor a `setDefaultTimeout`, because the shared wait reads
   the command's guard and not a row's. The exceptions are a row of `packages/dispatch/e2e/__tests__`
   that states its limit through `bounded-subprocess.ts`'s `rowLimit` or through
-  `outside-path-reach-fixtures.ts`'s `row` and `probingRow`, and a hook or a row whose work is one
-  measured download or one measured process run with no shared wait in it: such a hook or row
-  takes a guard of its own, at least twice its slowest reading on a machine that runs the suite
-  (CI's, or a dev box's), and the `"//"` note of its package's `package.json`, where the command's
-  guards are written, gives that number with the readings and their runs. A file whose rows need a
-  much larger guard than the rest runs in a second `bun test` command of the same script, with its
-  own `--timeout` and the same preload. Tests written before this rule still set guards of their
-  own (`git grep -n setDefaultTimeout -- '*.ts'` lists the files); each moves to its command's
-  guard as it is carried to the shared wait.
+  `outside-path-reach-fixtures.ts`'s `row` and `probingRow`; a row that needs more than the command's
+  guard by design, such as one that starts a cold role pane (5-6 s, more than Bun's 5000 ms default),
+  which calls `@legion/test-fixtures/deadline`'s `useRowGuard(ms)` for the shared wait's deadline and
+  passes the same value as `test`'s third argument, which Bun honours as the row's kill under
+  `bun test`, `--parallel` and `bun run test` alike, so the two agree in every mode (the guard is
+  forgotten at the next mark, so it belongs to that one row); and if that row's own cleanup runs past
+  the command's guard in raw awaits (no shared wait), its `afterEach` passes the same value as its
+  own hook timeout, which Bun arms a clock of its own for; and a hook or a row whose work is one
+  measured download or one measured process run with no shared wait in it. Such a row takes a guard
+  of its own, at least twice its slowest reading on a machine that runs the suite (CI's, or a dev
+  box's), and the `"//"` note of its package's `package.json`, where the command's guards are
+  written, gives that number with the readings and their runs. A file whose rows need a much larger
+  guard than the rest runs in a second `bun test` command of the same script, with its own
+  `--timeout` and the same preload. Tests written before this rule still set guards of their own
+  (`git grep -n setDefaultTimeout -- '*.ts'` lists the files); each moves to its command's guard as
+  it is carried to the shared wait.
+
+- The guard belongs on the command line, because Bun 1.4.4 gives no other way to raise it across a
+  whole non-parallel run. It reads no `[test] timeout` from `bunfig.toml`, and a `setDefaultTimeout`
+  from a preload holds only for the first file of a non-parallel (shared-process) `bun test`: a
+  two-file run with `setDefaultTimeout(20000)` in a preload passed the first file's 8 s row and
+  timed the second file's out at 5000 ms, and a `setDefaultTimeout` inside a `beforeEach` changes
+  nothing, because a row's guard is fixed when the row is registered. Under `--parallel` each file is
+  its own process and reloads the preload, so a preload's `setDefaultTimeout` does hold there. So
+  `packages/test-fixtures` and `packages/pi-envoy`, which run non-parallel, keep `--timeout` in their
+  `test` scripts, and a plain `bun test` in them (no `--timeout`) gives each row Bun's 5000 ms
+  default, not the script's guard. `packages/pi-legion` runs `--parallel=4`, so its `test` script
+  sets the guard through a preload instead (`test-timeout-preload.ts`): inside a `--test-worker` it
+  calls `setDefaultTimeout` beside `@legion/test-fixtures/deadline`'s `declareGuard`, so Bun's kill
+  and the shared wait's deadline are one length for every worker. It sets neither outside a worker,
+  because a non-parallel `bun test` would raise the deadline for the first file alone, so `bun test`
+  (and a `--parallel` run of a single file, which takes no worker) keeps Bun's 5000 ms, as on main;
+  only the `--parallel=4` `bun run test` gets the 300000 ms guard. The declared guard wins over the
+  command line, so the worker `--timeout=5000` that `--parallel` injects does not lower it; a package
+  that declares none takes the command line's `--timeout`, unchanged.
 
 ## A test that looks for a process it started
 
@@ -737,6 +763,11 @@ redeliver, routes, sessionanswers, startup and pglisten) run 4 at once: each `Te
 `storetest.SetDefaultParallel` before `storetest.Main` or `storetest.Run`, and
 `storetest.DefaultParallel` says why it is 4. Each test has a database of its own
 (`storetest.Open`), a NATS account of its own (`testnats`, in redeliver), or nothing it shares.
+
+`internal/dispatch/refs` follows the same rule and runs 4 at once through the same
+`storetest.SetDefaultParallel`. Five of its tests stay serial, each with its comment: the grammar
+re-index's xid window (`Measure` needs the process to itself), the statement timings, and three
+resolver tests that replace the default logger.
 
 A test stays serial when it, or a helper it calls, changes something the whole test process
 shares: the environment (`t.Setenv`, and the S3 helpers `filestest.ServeS3` and `tests3.Start`

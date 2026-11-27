@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -140,5 +141,46 @@ func TestASendTheListenerCouldNotConfirmStoredIsRecordedAsPossiblyDelivered(t *t
 	plain := send(`{"error":"envoy: the message bus did not answer: no responders"}`)
 	if plain.failure == storeUnconfirmedText || !strings.HasPrefix(plain.failure, listenerUnreachablePrefix) {
 		t.Fatalf("control: a 503 with no code = %+v, want an ordinary %q failure", plain, listenerUnreachablePrefix)
+	}
+}
+
+// A send the listener answers with an outage - a 408 or a 429 from something in front of it (the
+// listener answers no 408, and its own 429s reach no Bearer caller such as Dispatch), a 502, or a
+// 501 or 505 from whatever sits in front of it - is a failure a later try can outlast: the
+// attempt records it under listenerUnreachablePrefix, and the take-over retry asks again
+// (retryableDeliveryFailure). The listener's own 500 (listenerwire.FaultStatus) and its 400 are
+// its answers, which settle the attempt at once.
+func TestASendTheListenerAnsweredWithAnOutageIsTriedAgain(t *testing.T) {
+	session := "s1"
+	live := ResolvedMention{Target: "session:s1", Delivery: "steer", SessionID: &session}
+	for _, tc := range []struct {
+		status  int
+		body    string
+		retried bool
+	}{
+		{http.StatusRequestTimeout, `<html>408 Request Timeout</html>`, true},
+		{http.StatusTooManyRequests, `<html>429 Too Many Requests</html>`, true},
+		{http.StatusBadGateway, `{"error":"upstream connect error"}`, true},
+		{http.StatusNotImplemented, ``, true},
+		{http.StatusHTTPVersionNotSupported, `{"error":"HTTP version not supported"}`, true},
+		{http.StatusInternalServerError, `{"error":"envoy: the claim record of role legion-planner is unreadable: …"}`, false},
+		{http.StatusBadRequest, `{"error":"message is required"}`, false},
+	} {
+		t.Run(fmt.Sprint(tc.status), func(t *testing.T) {
+			listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer listener.Close()
+			s := &server{deps: Deps{Envoy: envoy.New(listener.URL)}}
+			outcome := s.sendResolvedDelivery(
+				context.Background(), live, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+			if outcome.failure == "" || outcome.envelopeID != nil {
+				t.Fatalf("a send the listener answered %d = %+v, want a failure and no envelope", tc.status, outcome)
+			}
+			if got := retryableDeliveryFailure(outcome.failure); got != tc.retried {
+				t.Fatalf("a send the listener answered %d recorded %q, retried %t; want retried %t", tc.status, outcome.failure, got, tc.retried)
+			}
+		})
 	}
 }
