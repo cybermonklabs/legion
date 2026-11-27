@@ -996,7 +996,7 @@ func TestClaimsFindsTheDaemonFromTheConfiguration(t *testing.T) {
 	d := newOperatorDaemon(t)
 	dir := t.TempDir()
 	config := filepath.Join(dir, "legion.yaml")
-	body := fmt.Sprintf("project: demo\nbind: 127.0.0.1\nport: %d\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nstate_dir: %s\n", d.port, dir)
+	body := fmt.Sprintf("project: DEMO\nbind: 127.0.0.1\nport: %d\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nstate_dir: %s\n", d.port, dir)
 	if err := os.WriteFile(config, []byte(body), 0o600); err != nil {
 		t.Fatalf("write the config: %v", err)
 	}

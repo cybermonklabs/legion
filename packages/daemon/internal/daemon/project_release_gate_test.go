@@ -338,7 +338,11 @@ func TestProjectReleaseHoldsThePeriodicWork(t *testing.T) {
 // ask but the release's own does. The reconcile of a tree's news (design_changes) and the two
 // reads of Dispatch for a root's design-gate basis and for a re-parented root
 // (pending_basis_seed, reparent_seed) run: each tells a role only through a start or a notice,
-// which waits.
+// which waits. The project's three state events run too (state_change, state_admission and
+// state_boot, dispatch://INFRA-3931): they publish to Dispatch what it observes of the daemon and
+// start or prompt no role, and the release's own stops write state_change rows, each claim it
+// stops a change of that claim's state, which a held row would keep from Dispatch, holding every
+// later state event of the project behind it on the project's one state lane.
 func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T) {
 	t.Parallel()
 	const ownRound = "release:7"
@@ -404,6 +408,9 @@ func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T
 		record.OutboxKindReparentSeed:       {{"a re-parented root's seed", record.ReparentSeed{}, false}},
 		record.OutboxKindIssueBranch:        {{"an issue's branch", record.IssueBranch{}, false}},
 		record.OutboxKindDesignChanges:      {{"a tree's reconcile of its news of the approved design", record.DesignNewsReconcile{}, false}},
+		record.OutboxKindStateChange:        {{"a state change's event", record.StateChange{}, false}},
+		record.OutboxKindStateAdmission:     {{"an admission block's event", record.StateAdmission{}, false}},
+		record.OutboxKindStateBoot:          {{"a boot's event", record.StateBoot{}, false}},
 	}
 	for _, lane := range record.OutboxLanes() {
 		for _, kind := range record.LaneKinds(lane) {

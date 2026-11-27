@@ -260,6 +260,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// `priority` (priorityContract), the contract that added both, so a pod at it is served
 		// the keys and every pod below it is not.
 		priority bool
+		// seq is whether the caller is served `daemon.stateSeq`, the sequence of the newest state
+		// event the body's snapshot holds (stateSeqContract's entry, which added it), so a pod
+		// below the entry's number is not served the key.
+		seq bool
 		// caches is whether the caller is served the repository-cache-room row's `source`,
 		// `caches` (cachesSourceContract), the contract that added the word. The word is a value,
 		// held back from every caller whose pod's lowest contract is below that contract
@@ -372,9 +376,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// pausedState, by TestTheStateRouteServesAPodItsPluginContractsPause.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, contract: pauseContract},
 		{name: "a pod just below shapedAnswersContract", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, contract: shapedAnswersContract - 1},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion()), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, release: true, contract: DaemonAPIVersion(), basis: true, credential: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, release: true, contract: DaemonAPIVersion(), basis: true, credential: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, release: true, contract: DaemonAPIVersion(), basis: true, credential: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion()), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, plans: true, priority: true, seq: true, caches: true, giveUps: true, release: true, contract: DaemonAPIVersion(), basis: true, credential: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, plans: true, priority: true, seq: true, caches: true, giveUps: true, release: true, contract: DaemonAPIVersion(), basis: true, credential: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, plans: true, priority: true, seq: true, caches: true, giveUps: true, release: true, contract: DaemonAPIVersion(), basis: true, credential: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, withGoldenProjectRelease(populatedState(t)), tc.remote, tc.claims)
@@ -496,6 +500,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if carries := strings.Contains(string(body), `"projectRelease"`); carries != tc.release {
 				t.Errorf("the state %s carries the project's release = %v, want %v", body, carries, tc.release)
 			}
+			if _, carried := stateSeqServed(t, body); carried != tc.seq {
+				t.Errorf("the state %s carries daemon.stateSeq = %v, want %v; the reader before entryNumber(stateSeqContract) refuses it", body, carried, tc.seq)
+			}
 
 			// Nothing else of the body differs: it is the full state with the stripped keys gone,
 			// `wakesWaiting` among them where the caller is below contract 53, since the reader
@@ -574,6 +581,14 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			// added (api's withoutHeld), which is every pod of every band below heldContract's.
 			if !tc.held {
 				delete(want["admission"].(map[string]any), "held")
+			}
+			// A pod below entryNumber(stateSeqContract) is served the daemon block without
+			// `stateSeq`, `stateId` and `stateRun`, the three keys that entry added (api's
+			// withoutStateSeq).
+			if !tc.seq {
+				delete(want["daemon"].(map[string]any), "stateSeq")
+				delete(want["daemon"].(map[string]any), "stateId")
+				delete(want["daemon"].(map[string]any), "stateRun")
 			}
 			for _, issue := range want["issues"].(map[string]any) {
 				issue := issue.(map[string]any)

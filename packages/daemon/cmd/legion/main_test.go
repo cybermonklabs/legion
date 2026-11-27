@@ -786,7 +786,7 @@ func TestStateAddressDialsLoopbackForAWildcardBind(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "legion.yaml")
-	body := "project: demo\nbind: 0.0.0.0\nport: 13370\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nstate_dir: " + dir + "\n"
+	body := "project: DEMO\nbind: 0.0.0.0\nport: 13370\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nstate_dir: " + dir + "\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write the config: %v", err)
 	}

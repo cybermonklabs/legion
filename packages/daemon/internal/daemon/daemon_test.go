@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -119,7 +120,10 @@ func testConfig(t *testing.T) config.Config {
 	// is pinned by TestPrepareDerivesTheWorkerStreamAddressFromWorkerStreamPort.
 	port := holdPortOn(t, "127.0.0.1")
 	return config.Config{
-		Project:                                 "TEST" + randomSuffix(t),
+		// A key Dispatch can hold (projects.key, `^[A-Z][A-Z0-9]{1,9}$`), which a workflow daemon
+		// refuses to boot without (claim.IsProjectKey, its boot event): nine of randomSuffix's hex
+		// digits, 36 random bits, keep each test's project its own.
+		Project:                                 "T" + randomSuffix(t)[:9],
 		Port:                                    port,
 		Bind:                                    "127.0.0.1",
 		PostgresDSN:                             testDSN(t),
@@ -1575,10 +1579,16 @@ func liveTreeBoard(t *testing.T, project string) string {
 // Apps or its read error): the boot itself reads GitHub for no repository here, since the record
 // carries its repository columns and no `repository_renames` pair is configured (so neither the
 // backfill nor the rename pass reads one), and the preparation runs once the API serves
-// (prepareAtStart, INFRA-4401 D4).
+// (prepareAtStart, INFRA-4401 D4). The daemon's Envoy listener is a notice listener that takes
+// every publish (newNoticeListener): a workflow daemon publishes its state events through it, its
+// boot event first, and a publish nothing answers is an ERROR line of the outbox's own, which a
+// caller reading the log for ERROR lines would read whenever the state lane ran before its read.
 func bootOverALiveTree(t *testing.T, repo string, tokens appauth.Source, githubAPI string, log *slog.Logger) (string, *daemon, api.LiveRepositoryView) {
 	t.Helper()
 	cfg := workflowConfigOn(t, workflowNATS(t), liveTreeBoard)
+	listener := httptest.NewServer(newNoticeListener())
+	t.Cleanup(listener.Close)
+	cfg.EnvoyURL = listener.URL
 	root := seedLiveTreeOn(t, cfg, repo)
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.workflowTokens, o.githubAPI = tokens, githubAPI

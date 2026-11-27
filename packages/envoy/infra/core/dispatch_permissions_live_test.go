@@ -70,6 +70,7 @@ func TestDispatchPermissionsOnRealServers(t *testing.T) {
 
 				requireConsumerPushBound(t, live.js, bus.DispatchDeliveryDurable)
 				requireConsumerPushBound(t, live.js, bus.DispatchJobDurable)
+				requireConsumerPushBound(t, live.js, bus.DispatchLegionStateDurable)
 				requireDurablesAcknowledge(t, live.js)
 				requireIssueEventPublished(t, live.process, live.conn, live.port)
 				requireCommentQuietPublished(t, live.process, live.conn, live.port)
@@ -131,6 +132,7 @@ func TestDispatchPermissionsOnRealServers(t *testing.T) {
 
 				requireConsumerMissing(t, live.js, bus.DispatchDeliveryDurable)
 				requireConsumerPushBound(t, live.js, bus.DispatchJobDurable)
+				requireConsumerPushBound(t, live.js, bus.DispatchLegionStateDurable)
 				want := strings.TrimSuffix(deliveryCreate, ">") + "notifications.github.>"
 				for _, violation := range violationsOnceLogged(t, live.server, want) {
 					require.Equal(t, []string{"Publish", want}, violation[1:], "the server refused something else: %s", violation[0])
@@ -234,6 +236,7 @@ func testClientPermissions() core.Permissions {
 	client.Publish.Allow = append(client.Publish.Allow,
 		"$JS.API.CONSUMER.INFO."+bus.Stream+"."+bus.DispatchDeliveryDurable,
 		"$JS.API.CONSUMER.INFO."+bus.Stream+"."+bus.DispatchJobDurable,
+		"$JS.API.CONSUMER.INFO."+bus.Stream+"."+bus.DispatchLegionStateDurable,
 		"$JS.API.STREAM.INFO."+redelivery,
 		"$JS.API.DIRECT.GET."+redelivery+".>",
 		"$JS.API.STREAM.MSG.GET."+redelivery,
@@ -318,20 +321,28 @@ func requireConsumerMissing(t *testing.T, js natsgo.JetStreamContext, durable st
 		"consumer %s was created despite its missing permission, or its read failed", durable)
 }
 
-// requireDurablesAcknowledge publishes one message that both Dispatch durables' filters match and
-// waits until each has acknowledged it: an envelope that does not decode, which the delivery
-// intake acknowledges without calling GitHub and the job intake acknowledges on receipt. So each
-// durable's $JS.ACK grant is exercised, and a missing one leaves the message pending.
+// requireDurablesAcknowledge publishes one message that both delivery durables' filters match,
+// and one on a Legion daemon's state lane that the Legion state durable's filter matches, and
+// waits until each durable has acknowledged the message it takes: envelopes that do not decode,
+// which the delivery intake acknowledges without calling GitHub, the job intake acknowledges on
+// receipt, and the Legion state intake acknowledges once it has logged that it could not decode
+// it. So each durable's $JS.ACK grant is exercised, and a missing one leaves its message pending.
 func requireDurablesAcknowledge(t *testing.T, js natsgo.JetStreamContext) {
 	t.Helper()
-	ack, err := js.Publish("notifications.github.acme.widgets.job.1.completed", []byte("not an envelope"))
+	jobAck, err := js.Publish("notifications.github.acme.widgets.job.1.completed", []byte("not an envelope"))
 	require.NoError(t, err)
-	for _, durable := range []string{bus.DispatchDeliveryDurable, bus.DispatchJobDurable} {
+	stateAck, err := js.Publish(contracts.LegionStateSubject("example"), []byte("not an envelope"))
+	require.NoError(t, err)
+	for durable, sequence := range map[string]uint64{
+		bus.DispatchDeliveryDurable:    jobAck.Sequence,
+		bus.DispatchJobDurable:         jobAck.Sequence,
+		bus.DispatchLegionStateDurable: stateAck.Sequence,
+	} {
 		require.Eventuallyf(t, func() bool {
 			info, err := js.ConsumerInfo(bus.Stream, durable)
-			return err == nil && info.AckFloor.Stream >= ack.Sequence && info.NumAckPending == 0
+			return err == nil && info.AckFloor.Stream >= sequence && info.NumAckPending == 0
 		}, 20*time.Second, 100*time.Millisecond,
-			"consumer %s did not acknowledge stream sequence %d", durable, ack.Sequence)
+			"consumer %s did not acknowledge stream sequence %d", durable, sequence)
 	}
 }
 
