@@ -49,6 +49,7 @@ import {
   ONE_READ_AS_OF,
   oneReadAnswer,
   oneReadDismissedPages,
+  oneReadEntry,
 } from "./inbox-fixture";
 import { askWaitingOnPerson } from "./list-row";
 import {
@@ -409,7 +410,7 @@ test("a refused dismissal over a count below its unread rows gives back only wha
  *  moment there. */
 function dismissedEntry(id: string, at: string): MeInboxEntry {
   const thread = replyRow(id, { dismissed_at: at, unread: false, unread_count: 0 });
-  return { moment: at, node: { id, kind: thread.kind }, relations: [], thread };
+  return { ...oneReadEntry(thread), moment: at };
 }
 
 // The Dismissed view draws its pages in the order they are cached, which is the server's: newest

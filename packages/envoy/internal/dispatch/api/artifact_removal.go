@@ -405,7 +405,7 @@ type artifactClear struct {
 // is refused outright. A delete written for them would take a person's comment, ask or review
 // the day a gap in that test let one through, where the foreign key refuses the removal instead,
 // and it would make "nothing deletes an ask" false where two `for no key update` levels rest on
-// it (lockAskForTransition, docs' loadAskBlocks).
+// it (ask transitions and docs' lockAskBlocksForWrite).
 func artifactRemovalClears(artifact model.Artifact) []artifactClear {
 	id := []any{artifact.ID}
 	return []artifactClear{

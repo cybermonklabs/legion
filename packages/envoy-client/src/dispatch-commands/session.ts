@@ -385,9 +385,9 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
  * plus every credential request still waiting on a decision, which is the viewer's by
  * construction because the list is read as `?approver=me`. The one read's `inbox` state and the
  * fallback (`inboxReadOfTheReleaseBefore`) both hold only the asks that wait on the caller.
- * The heading counts those asks and the pending credential requests. The requests appear under
- * `Credential requests`, not under `Needs you`. Expired requests do not wait on a decision
- * (`awaitsDecision`) and appear only under `Credential requests` until dismissed.
+ * The heading counts the caller's unsnoozed asks waiting on a person and pending credential
+ * requests. The requests appear under `Credential requests`, not under `Needs you`. Expired
+ * requests do not count toward `Needs you` and stay under `Credential requests` until dismissed.
  *
  * `Unread threads` is the page's thread list (the one read's `unread` state, or the read of the
  * release before): the threads the person is reading that somebody else has written in since, and

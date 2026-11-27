@@ -223,6 +223,7 @@ export function patchMeInboxThreads(
     const written = replaceQueryData(queryClient, queryKey, (data: unknown) =>
       editRead(data, entryEdit, (count) => Math.max(0, count - unread))
     );
+    if (written === before) continue;
     if (typeof before === "number" && typeof written === "number") {
       counted = before - written;
       continue;
@@ -280,8 +281,8 @@ function entryKey(entry: MeInboxEntry): string {
 }
 
 /** What `dropMeInboxThreads` took out of one page of a view - the Inbox answer is one page, the
- *  Dismissed view one for each **Show more** - each entry with its place in the page as it stood,
- *  and the key of each entry the page held then, in its order. */
+ *  Dismissed view one for each **Show more**. The Inbox answer also keeps its entry keys in order
+ *  to restore each row to its former position. */
 interface MeInboxDroppedPage {
   readonly order: readonly string[];
   readonly taken: readonly { readonly at: number; readonly entry: MeInboxEntry }[];
@@ -323,7 +324,7 @@ export function dropMeInboxThreads(
   const pages = before.map((page): MeInboxDroppedPage => {
     const entries = page.entries ?? [];
     return {
-      order: entries.map(entryKey),
+      order: dismissed ? [] : entries.map(entryKey),
       taken: entries.flatMap((entry, at) => {
         const thread = inboxEntryThread(entry);
         return thread !== undefined && taken.has(thread) ? [{ at, entry }] : [];

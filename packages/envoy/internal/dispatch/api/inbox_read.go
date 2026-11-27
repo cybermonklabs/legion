@@ -554,8 +554,8 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // writes, and reads who each ask waits on, and whom its delivery stands to, in the statement after
 // that lock, so a move it waited for is read as it committed. Every write locking several asks
 // rows takes them in that ascending id order: the close's withdrawal and the reopen's restore
-// (readOpenIssueAsks, prepareRestoration), a settlement's (docs' loadAskBlocks) and the move. A
-// snooze's foreign key takes its ask `for key share`, which no move waits on.
+// (readOpenIssueAsks, prepareRestoration), a settlement's (docs' lockAskBlocksForWrite), and the
+// move. A snooze's foreign key takes its ask `for key share`, which no move waits on.
 //
 // The node and tuple store (internal/dispatch/graphstore) adds five invariants rather than a
 // sequence of its own. Its writers do not all run their steps in one order - one learns its

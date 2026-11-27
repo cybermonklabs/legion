@@ -164,11 +164,14 @@ export function useMarkAllRead({
       // shares lowered by the rows it marks in the Inbox, clamped at zero, so an unfiltered press
       // reads zero and a filtered one takes away only its own rows rather than counting the rest
       // of the Inbox away. What it wrote is what a refusal takes back.
-      const marked = meInboxThreadRows(queryClient).filter((thread) => marksThread(thread, input));
+      let unread = 0;
+      for (const thread of meInboxThreadRows(queryClient)) {
+        if (marksThread(thread, input)) unread += 1;
+      }
       return patchMeInboxThreads(
         queryClient,
         (thread) => (marksThread(thread, input) ? readRow(thread, through) : thread),
-        marked.length
+        unread
       );
     },
     onSuccess: readAgain,

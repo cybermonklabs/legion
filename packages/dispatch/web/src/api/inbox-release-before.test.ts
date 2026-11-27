@@ -331,33 +331,17 @@ test.each([
   expect(asked).toEqual(["/api/v1/me/inbox?state=inbox"]);
 });
 
-// A read the page does not make - one with no state, which the one read answers with every node
-// tied to the reader - is one no read of the release before answers, so it is asked again over a
-// roll's waits, as every other read is, and the reads of that release are never made.
-test("a read of the route that is none of the page's is asked again over a roll's waits, and reads nothing of the release before", async () => {
+// A plain read retries even when its query matches a page read. Only `getMeInboxPage` falls back.
+test.each([
+  { query: { limit: 50 }, sent: "/api/v1/me/inbox?limit=50" },
+  { query: { state: "inbox" as const }, sent: "/api/v1/me/inbox?state=inbox" },
+])("a plain Inbox read retries without falling back: %j", async ({ query, sent }) => {
   const asked = serveTheReleaseBefore(() => repliesAnswer([]));
   const client = createApiClient(undefined, undefined, async () => {});
 
-  const thrown = await client.getMeInbox({ limit: 50 }).catch((failure: unknown) => failure);
+  const thrown = await client.getMeInbox(query).catch((failure: unknown) => failure);
 
   expect(thrown).toBeInstanceOf(ApiError);
   expect(thrown).toMatchObject({ message: NO_ROUTE_ROLLING_RELEASE_MESSAGE, status: 404 });
-  expect(asked).toEqual(
-    Array.from({ length: NO_ROUTE_RETRY_DELAYS_MS.length + 1 }, () => "/api/v1/me/inbox?limit=50")
-  );
-});
-
-// Only the page's own reads, each of which names itself as the read it is (`getMeInboxPage`), fall
-// back: a read through `getMeInbox` is asked as every read is whatever its query, one in the shape
-// of the page's own rows included.
-test("a read through getMeInbox in the shape of the page's own rows is asked again over a roll's waits, and reads nothing of the release before", async () => {
-  const asked = serveTheReleaseBefore(() => repliesAnswer([]));
-  const client = createApiClient(undefined, undefined, async () => {});
-
-  const thrown = await client.getMeInbox({ state: "inbox" }).catch((failure: unknown) => failure);
-
-  expect(thrown).toBeInstanceOf(ApiError);
-  expect(thrown).toMatchObject({ message: NO_ROUTE_ROLLING_RELEASE_MESSAGE, status: 404 });
-  const sent = "/api/v1/me/inbox?state=inbox";
   expect(asked).toEqual(Array.from({ length: NO_ROUTE_RETRY_DELAYS_MS.length + 1 }, () => sent));
 });
