@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    A write that owes a tree news of its approved design now makes a waiting reconcile of that
+    news due at once. Before, a reconcile waiting on the backoff of a failed run carried the new
+    news only when the backoff ran out. The write also holds that reconcile until it commits.
+    Before, a lane could start it in between, find nothing owed, and finish, so the news waited
+    for the sweep.
+time: 2026-11-27T21:29:49Z
+custom:
+    Issue: pr5558
