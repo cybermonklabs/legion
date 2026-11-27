@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { memo, type ReactNode, useMemo, useRef } from "react";
 
+import { referenceTargetsQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { pageMutedText, pageQuietText } from "../../theme/classes";
 import { drawsEdge } from "../refs/ReferencedBy";
@@ -9,7 +10,7 @@ import { referencesQuery, standsFailed, useNewIssuePageFreshness } from "../refs
 import { buildDispatchReference, documentRoute } from "../refs/routes";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import { ReferenceList, useIssueItemWords } from "./node-references/NodeReferences";
-import { referenceRows } from "./node-references/references-list";
+import { citingBlockRefs, referenceRows } from "./node-references/references-list";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
@@ -19,9 +20,11 @@ import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
  * (`ReferenceList`), 20 at a time with the control under them that says how many are left and
  * draws the next 20 (`useListPages`, root R40). Each citing node is named in the page's words as
  * Details' 'What references this row' names it: a question, a comment or a message of the
- * document's own issue by its words, which the outline's reads hold (`useIssueItemWords`), and
- * every other node by the word of its tie or of its kind, with its issue and its time. The read's
- * excerpt is the markup its author typed, and is drawn nowhere.
+ * document's own issue by its words, which the outline's reads hold (`useIssueItemWords`); any
+ * other block by the first line of its own content, from the batched names read of the citing
+ * blocks (`citingBlockRefs`); and every other node, and a block that read has not answered for,
+ * by the word of its tie or of its kind, with its issue and its time. The read's excerpt is the
+ * markup its author typed, and is drawn nowhere.
  *
  * Unlike the new page's Referenced by panel, whose edges `ReferencedBy`'s `listedEdges` reads,
  * this list keeps what the issue's own questions, comments and messages cite of the document: no
@@ -29,7 +32,9 @@ import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
  *
  * The read is `referencesQuery` of the document's address, under the key every Referenced-by panel
  * reads, kept fresh by events as the new page's reads are (`useNewIssuePageFreshness`), and its
- * edges are those every list of a node's references draws (`drawsEdge`). The list is drawn on
+ * edges are those every list of a node's references draws (`drawsEdge`). Once it has answered,
+ * the citing blocks' own addresses are one names read, `referenceTargetsQuery` under its own key
+ * and kept fresh the same way, so a set the page has read costs nothing. The list is drawn on
  * load, so it says nothing while its read is out. It is drawn again only when its document or
  * what it reads changes, not at each toolbar the document's editor publishes as the reader types
  * (`ArtifactRoutePanel.tsx`).
@@ -51,15 +56,16 @@ export const DocumentReferences = memo(function DocumentReferences({
   // The names the page's one batched read gave what a citing item's words cite, and which of them
   // name a post its author edited: a context the page publishes, so no request.
   const { edited, names } = useKnownReferences();
+  // An edge a newer build answers with, of a kind or to a node this page does not know, is left
+  // out, as every list of a node's references leaves it (`drawsEdge`).
+  const edges = useMemo(() => (query.data?.edges ?? []).filter(drawsEdge), [query.data]);
+  // The citing blocks' own words: one batched names read of their addresses once the references
+  // have answered, which reads nothing while no citing node is a block.
+  const lineRefs = useMemo(() => citingBlockRefs(edges), [edges]);
+  const targets = useQuery({ ...referenceTargetsQuery(lineRefs), ...freshness });
   const rows = useMemo(
-    () =>
-      referenceRows(
-        itemWords,
-        (query.data?.edges ?? []).filter(drawsEdge),
-        { edited, names },
-        issueKey
-      ),
-    [edited, issueKey, itemWords, names, query.data]
+    () => referenceRows(itemWords, edges, targets.data?.targets ?? [], { edited, names }, issueKey),
+    [edges, edited, issueKey, itemWords, names, targets.data]
   );
   // Retry goes with its line once the read it sent lands, and the focus it held goes to the
   // heading rather than fall to the page (`useRetryHandOff`).

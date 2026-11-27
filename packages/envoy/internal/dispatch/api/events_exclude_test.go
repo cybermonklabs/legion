@@ -215,7 +215,7 @@ func TestADocumentsEventFeedLeavesOutTheExcludedTypes(t *testing.T) {
 }
 
 // Both feeds refuse an exclude_types that names a type Dispatch does not write, holds an empty
-// value or names more than 50, with 400 INVALID_QUERY; 50 known types are read.
+// item in the list or names more than 50, with 400 INVALID_QUERY; 50 known types are read.
 func TestBothEventFeedsRefuseABadExcludeTypes(t *testing.T) {
 	t.Parallel()
 	// parseEventExcludeTypes finds a type by binary search, which needs the list sorted.

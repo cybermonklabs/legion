@@ -127,12 +127,14 @@ afterEach(() => {
 });
 
 /** `edges` drawn as the opened document `NOTES` draws its list, with the issue's own comments read
- *  as the outline has read them. */
+ *  as the outline has read them. The page's batched names read of the citing blocks answers none
+ *  of them, so each is named by the word of its tie. */
 function draw(edges: readonly GraphEdge[], comments: readonly CommentWithTrees[] = COMMENTS) {
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [...edges],
     node: graphNode({ id: "artifact-notes", kind: "artifact", ref: NOTES_REFERENCE }),
   } satisfies GraphReferences);
+  const getReferenceTargets = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["comments", KEY], comments);
   const view = render(
@@ -144,10 +146,11 @@ function draw(edges: readonly GraphEdge[], comments: readonly CommentWithTrees[]
   );
   restore = () => {
     getReferences.mockRestore();
+    getReferenceTargets.mockRestore();
     view.unmount();
     client.clear();
   };
-  return { getReferences };
+  return { getReferenceTargets, getReferences };
 }
 
 test("an opened document's Referenced by keeps the issue's own comment", async () => {
@@ -183,7 +186,7 @@ test("an opened document's list of what references it names each row as Details'
   // An edge of a kind this page does not know, which a newer Dispatch can answer with, is left
   // out, as every list of a node's references leaves it.
   const unknown = { ...checkEdge(2), kind: "verifies" } as unknown as GraphEdge;
-  draw([OWN_EDGE, check, elsewhere, unknown]);
+  const { getReferenceTargets } = draw([OWN_EDGE, check, elsewhere, unknown]);
   const list = screen.getByRole("region", { name: "Referenced by" });
   await within(list).findByRole("link", { name: OWN_WORDS });
   const items = within(list).getAllByRole("listitem");
@@ -220,6 +223,14 @@ test("an opened document's list of what references it names each row as Details'
   for (const stored of ["**", "dispatch://", "It cites"]) {
     expect(text(items[2]), `the row draws "${stored}" of the stored excerpt`).not.toContain(stored);
   }
+  // The check's own words are one batched names read of its address: the comments are no blocks,
+  // and the edge of a kind this page does not know is no row.
+  await waitFor(() =>
+    expect(
+      getReferenceTargets.mock.calls,
+      "the citing block was not named by one names read of its address"
+    ).toEqual([[[`dispatch://${KEY}/artifact/verification-md#b-c1`]]])
+  );
 });
 
 test("the list draws 20 rows and a control that names how many are left", async () => {

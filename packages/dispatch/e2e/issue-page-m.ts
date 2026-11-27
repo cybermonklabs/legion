@@ -1,7 +1,8 @@
-import type { StepExperimentInput } from "@legion/contracts";
+import type { PlanRecordInput, PlanTaskInput, StepExperimentInput } from "@legion/contracts";
 import { expect, type Locator, type Page, type Request, type Response } from "@playwright/test";
 
 import { routeUrl } from "../web/src/api/paths";
+import type { GraphReferences } from "../web/src/api/types";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { PAGE_SIZE } from "../web/src/features/issue-page/show-more-fixture";
 import { issueProject } from "../web/src/lib/issue-key";
@@ -14,8 +15,9 @@ import { settledState } from "./settled";
 /**
  * What the rows of `e2e/issue-page-m.e2e.ts` read of Details on the new issue page: the
  * history, the steps under it, the facts of the focused row, and the way to them;
- * `putStepExperiment`, the one write of their seed that `e2e/api.ts` has no wrapper for; and
- * `daemonOf`, the Legion daemon of a project as their seed's writes name it.
+ * `putStepExperiment` and `putPlan`, the two writes of their seeds that `e2e/api.ts` has no
+ * wrapper for, and `referencesTo`, the read of what references a node that a seed waits on;
+ * and `daemonOf`, the Legion daemon of a project as their seed's writes name it.
  *
  * This file is those rows' own, and the reading list's drivers of Details' history
  * (`e2e/reading-conversation.e2e.ts`) take its `historyItem`, `historyPanel` and `daemonOf`: it
@@ -43,8 +45,11 @@ import { settledState } from "./settled";
  *   `[data-details-row="collaborators"]` (`details-more.tsx`).
  * - **The steps** `[data-testid="issue-steps"]`, a `section` named "Steps" under the history
  *   (`DetailsSteps.tsx`): its heading "Steps (<runs>)", under it the line `[data-step-variant]`
- *   where the newest run names an experiment, each task a `section` "Task <task>" with its `h3`,
- *   each run `[data-step-run="<record id>"]`, and each of a run's labelled values
+ *   where the newest run names an experiment, each task a `section` "Task <task>"
+ *   `[data-step-task="<task>"]` with its `h3`, then the line of the tasks it needs
+ *   `[data-step-needs]`, the list of the steps the plan gives it `[data-step-planned]`, and its
+ *   runs, or the line `[data-step-no-run]` where none of its steps has run; each run
+ *   `[data-step-run="<record id>"]`, and each of a run's labelled values
  *   `[data-step-field="<field>"]`, its label the `dt` and its value the `dd`.
  */
 
@@ -122,6 +127,19 @@ export function historyShowMoreState(
  *  too few of. */
 export function isOlderPageRead(url: URL, key: string): boolean {
   return url.pathname === `/api/v1/issues/${key}/events` && url.searchParams.has("before");
+}
+
+/** Whether `url` is the read mark's read of issue `key`'s log (`IssueReadMark.tsx`, part L, on
+ *  `main`): the issue's newest event, `limit=1&order=desc` and nothing else, which the new page
+ *  sends to mark the issue read once the reader reaches the outline's end. It is no read of
+ *  Details, so a row that counts Details' reads leaves it out. */
+export function isReadMarkRead(url: URL, key: string): boolean {
+  return (
+    url.pathname === `/api/v1/issues/${key}/events` &&
+    [...url.searchParams.keys()].sort().join(",") === "limit,order" &&
+    url.searchParams.get("limit") === "1" &&
+    url.searchParams.get("order") === "desc"
+  );
 }
 
 /** The answer to the history's read of a page of issue `key`'s log older than the first, the
@@ -266,6 +284,11 @@ export function stepRun(page: Page, id: string): Locator {
   return stepsSection(page).locator(`[data-step-run="${id}"]`);
 }
 
+/** The group of one task of the steps, by the task. */
+export function stepTask(page: Page, task: string): Locator {
+  return stepsSection(page).locator(`[data-step-task="${task}"]`);
+}
+
 /** The page's reads of one issue's steps, as `watchStepsReads` sees them, counted from 0 in the
  *  order the page sent them since the watch began. */
 export interface StepsReads {
@@ -372,11 +395,31 @@ export function daemonOf(project: string) {
 }
 
 /**
+ * Sends `input` to the route `route` of issue `key` (`params` holding the rest of its path) as the
+ * Legion daemon of the issue's project writes there: a PUT under the agent bearer, `input`
+ * naming the session of `daemonOf`, the one writer the steps' routes admit for that project's
+ * issues. It throws, naming `what`, the status and the body, where the answer is not ok.
+ */
+async function putAsDaemon(
+  route: string,
+  params: { readonly id: string; readonly key: string },
+  input: object,
+  what: string
+): Promise<void> {
+  const response = await fetch(new URL(routeUrl(route, params), baseUrl), {
+    body: JSON.stringify(input),
+    headers: { Authorization: `Bearer ${e2eAgentToken}`, "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  if (!response.ok) {
+    throw new Error(`${what} failed: ${response.status} ${await response.text()}`);
+  }
+}
+
+/**
  * Writes the experiment and the variant of run `id` of issue `key`, as the Legion daemon of the
  * issue's project writes them after it has written the run
- * (`PUT /api/v1/issues/{key}/steps/{id}/experiment`): under the agent bearer, naming the session
- * of `daemonOf`, the one writer the route admits for that project's issues. It throws, naming the
- * status and the body, where the answer is not ok.
+ * (`PUT /api/v1/issues/{key}/steps/{id}/experiment`, `putAsDaemon`).
  */
 export async function putStepExperiment(
   key: string,
@@ -387,17 +430,57 @@ export async function putStepExperiment(
     actor: daemonOf(issueProject(key)).actor,
     ...drawn,
   };
+  await putAsDaemon(
+    "/api/v1/issues/{key}/steps/{id}/experiment",
+    { id, key },
+    input,
+    `write the experiment of run ${id} of ${key}`
+  );
+}
+
+/**
+ * Writes the plan the first run of issue `key` ran from, with its tasks `tasks` in their order,
+ * as the Legion daemon of the issue's project writes it when the run's work starts
+ * (`PUT /api/v1/issues/{key}/plans/{id}`, `putAsDaemon`): an owner's plan at version 1 of its
+ * document. The read of the steps takes each task's steps and needs from the plan alone and opens
+ * no document, so the plan names a document id no artifact holds, as the server's own tests of
+ * that read do. A task written with no `needs` has them not recorded, as a daemon of the release
+ * before writes it.
+ */
+export async function putPlan(key: string, tasks: PlanTaskInput[]): Promise<void> {
+  const input: PlanRecordInput = {
+    actor: daemonOf(issueProject(key)).actor,
+    artifact_id: crypto.randomUUID(),
+    generation: 1,
+    source: "owner",
+    tasks,
+    version: 1,
+  };
+  await putAsDaemon(
+    "/api/v1/issues/{key}/plans/{id}",
+    { id: crypto.randomUUID(), key },
+    input,
+    `write the plan of ${key}`
+  );
+}
+
+/**
+ * What references `reference`, as the references read answers it under the agent bearer
+ * (`GET /api/v1/references?to=`), which the list of what references a row reads. A document's
+ * mention reaches it once the document's index has placed the mention in its block, after the
+ * version that holds it is written, and the list reads it once, when the reader opens it, so a
+ * seed waits on this for such a mention before the page loads. It throws, naming the reference,
+ * the status and the body, where the answer is not ok.
+ */
+export async function referencesTo(reference: string): Promise<GraphReferences> {
   const response = await fetch(
-    new URL(routeUrl("/api/v1/issues/{key}/steps/{id}/experiment", { id, key }), baseUrl),
-    {
-      body: JSON.stringify(input),
-      headers: { Authorization: `Bearer ${e2eAgentToken}`, "Content-Type": "application/json" },
-      method: "PUT",
-    }
+    new URL(routeUrl("/api/v1/references", {}, { to: reference }), baseUrl),
+    { headers: { Authorization: `Bearer ${e2eAgentToken}` } }
   );
   if (!response.ok) {
     throw new Error(
-      `write the experiment of run ${id} of ${key} failed: ${response.status} ${await response.text()}`
+      `read what references ${reference} failed: ${response.status} ${await response.text()}`
     );
   }
+  return (await response.json()) as GraphReferences;
 }

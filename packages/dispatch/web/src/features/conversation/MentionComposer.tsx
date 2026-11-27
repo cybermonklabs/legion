@@ -1650,6 +1650,9 @@ export function MentionComposer({
         ));
   // The colours the send's own lines are drawn in: the page's on the issue page's box, whose
   // whole look is the page's own, and the dashboard's on every other surface.
+  // Here `textMutedOnSurfaceMuted` is the palette's (its shadow above, `TONES[palette].foot`), so
+  // on `palette` `page` (Dashboard's thread item on the new page) `quietTone` is the page's quiet
+  // grey.
   const mutedTone = outlined ? pageMutedText : textMutedOnSurface;
   const quietTone = outlined ? pageMutedText : textMutedOnSurfaceMuted;
   const failedTone = outlined ? pageFailedText : dangerText;

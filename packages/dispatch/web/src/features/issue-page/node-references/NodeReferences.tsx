@@ -3,7 +3,10 @@ import { type ReactNode, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../../api/client";
+import { referenceTargetsQuery } from "../../../api/queries";
+import type { GraphReferences, ReferenceTarget } from "../../../api/types";
 import { pageHeaderControl, pageInkText, pageQuietText } from "../../../theme/classes";
+import { markdownClassName } from "../../refs/markdown-engine";
 import { drawsEdge } from "../../refs/ReferencedBy";
 import { useKnownReferences } from "../../refs/reference-names";
 import { referencesQuery, standsFailed } from "../../refs/reference-target";
@@ -16,7 +19,12 @@ import { shortDay } from "../node-time";
 import { authorText, pageChrome } from "../page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, NODE_REFERENCES_WORDS } from "../page-words";
 import { ROW_LINK } from "../row-references";
-import { issueItemWords, type ReferenceRow, referenceRows } from "./references-list";
+import {
+  citingBlockRefs,
+  issueItemWords,
+  type ReferenceRow,
+  referenceRows,
+} from "./references-list";
 
 const EDGE_WORDS: Readonly<Record<string, string>> = NODE_REFERENCES_WORDS.edges;
 const KIND_WORDS: Readonly<Record<string, string>> = NODE_REFERENCES_WORDS.kinds;
@@ -26,6 +34,12 @@ const NO_ITEM_WORDS: ReadonlyMap<string, string> = new Map();
 
 /** The rows of no list, while the list is shut. */
 const NO_ROWS: readonly ReferenceRow[] = [];
+
+/** The edges of no list, and the addresses and members of no names read: while the list is shut,
+ *  or the read has not answered. */
+const NO_EDGES: Readonly<NonNullable<GraphReferences["edges"]>> = [];
+const NO_REFS: readonly string[] = [];
+const NO_TARGETS: readonly ReferenceTarget[] = [];
 
 /**
  * The words of the comments, messages and questions of the focused row's own issue, by their
@@ -74,13 +88,20 @@ function useIssueItemWords(
  * spine and what needs it is a chip - and nothing on the page points back from a node to what
  * mentions it, so this is where a reader reads that.
  *
- * Each row names the citing node by words the page already holds for it: a comment, a message
- * or a question of this issue by all of its words, drawn whole with no cut and no clamp, beside
- * its word, each reference in them named from the page's one batched read of what references
- * point at (`useKnownReferences`), as the outline's row names it; and any other node by the
- * word of its tie or of its kind alone, with its issue and its time. The read's excerpt is the
- * node's stored text, the markdown its author typed with every address it cites, and is drawn
- * nowhere. The rows are drawn 20 at a time, with Show more under them (`ReferenceList`).
+ * Each row names the citing node by words the page holds for it: a comment, a message
+ * or a question of this issue by all of its words, drawn whole with no cut and no clamp; any
+ * other block - a task, a statement, a check, the block of an item of another issue - by the
+ * first line of its own content, read and cut as the outline reads and cuts a row's one line,
+ * from the names read of the citing blocks, which answers a block with the server's reading of
+ * its content and never its opening line (decisions 560 and 565), so two tasks of one plan that
+ * serve the row read apart; and a code block by the first line of its code, drawn as code. Each
+ * is beside its word, and each reference in its words, a code block's apart, is named from the
+ * page's one batched read of what references point at (`useKnownReferences`), as the outline's
+ * row names it. A node with no words, and a block the names read has not answered for or
+ * answered gone, is named by the word of its tie or of its kind alone, with its issue and its
+ * time. The read's excerpt is the node's stored text, the markdown its author typed with every
+ * address it cites, and is drawn nowhere. The rows are drawn 20 at a time, with Show more under
+ * them (`ReferenceList`).
  *
  * It costs no request on the first load and none per node. Two gates hold that: the
  * reader opens the list, and Details is open around it, which on the issue page it is not when
@@ -88,8 +109,10 @@ function useIssueItemWords(
  * walking the outline with Details open reads one node's references and not every node's. The
  * read is `referencesQuery`, under the key every other Referenced-by panel reads
  * (`["references", "to", <address>]`), so a node read here and opened elsewhere is read once
- * and an event that changes it refreshes both (`api/event-refresh.ts`). The items' words are
- * the outline's reads, which this list never asks for (`useIssueItemWords`).
+ * and an event that changes it refreshes both (`api/event-refresh.ts`). Once it has answered, the
+ * citing blocks' own addresses (`citingBlockRefs`) are one batched names read behind the same two
+ * gates, `referenceTargetsQuery` under its own key, so a set the page has read costs nothing. The
+ * items' words are the outline's reads, which this list never asks for (`useIssueItemWords`).
  */
 export function NodeReferences({
   node,
@@ -129,17 +152,29 @@ export function NodeReferences({
   // out, as every list of a node's references leaves it (`drawsEdge`): its kind's word would be
   // the node kind's, which says it was only named. Built while the list is open, and again only
   // when what they are read from changes, not on every move of the focus.
+  const edges = useMemo(
+    () => (open ? (query.data?.edges ?? NO_EDGES).filter(drawsEdge) : NO_EDGES),
+    [open, query.data]
+  );
+  // The citing blocks' own words: one batched names read of their addresses once the references
+  // have answered, behind the references read's own gates.
+  const lineRefs = useMemo(() => (open ? citingBlockRefs(edges) : NO_REFS), [edges, open]);
+  const targets = useQuery({
+    ...referenceTargetsQuery(lineRefs),
+    enabled: reading && lineRefs.length > 0,
+  });
   const rows = useMemo(
     () =>
       open
         ? referenceRows(
             itemWords,
-            (query.data?.edges ?? []).filter(drawsEdge),
+            edges,
+            targets.data?.targets ?? NO_TARGETS,
             { edited, names },
             issueKey
           )
         : NO_ROWS,
-    [edited, issueKey, itemWords, names, open, query.data]
+    [edges, edited, issueKey, itemWords, names, open, targets.data]
   );
   const toggle = useRef<HTMLButtonElement>(null);
   // Retry goes with its line once the read it sent lands, under the reader's own press, and the
@@ -226,13 +261,25 @@ function ReferenceList({
           // The edge's own word where the model gives the tuple one, and the kind of node where
           // it does not, which is every mention: the old panel's own rule.
           const word = EDGE_WORDS[row.kind] ?? KIND_WORDS[row.nodeKind];
-          // A comment, a message or a question of this issue is named by its words, whole, which
-          // wrap within the row; every other node, and an item whose read has not answered, by
-          // its word alone, which is then the link: its stored text is markup, and an address, a
-          // slug or an id is no name.
+          // A citing node is named by its words - a comment, a message or a question of this
+          // issue by all of them, which wrap within the row, any other node by its first line,
+          // a code block by its code's - beside its word; a node with no words, an item whose
+          // read has not answered, and a block the names read has not named, by its word alone,
+          // which is then the link: its stored text is markup, and an address, a slug or an id
+          // is no name.
           const named = row.words !== "";
           const elsewhere = row.source !== undefined && row.source !== issueKey;
           const text = named ? row.words : (word ?? "");
+          // A code block's line is drawn as code, in the look the renderer gives a code span in
+          // a node's words (`MarkdownBody`'s inline variant: a `code` in `markdownClassName`),
+          // its characters as typed: no address in it is named or linked.
+          const drawn = row.code ? (
+            <span className={markdownClassName}>
+              <code>{text}</code>
+            </span>
+          ) : (
+            text
+          );
           return (
             <li className="flex min-w-0 items-baseline gap-2 text-sm" key={row.key}>
               {word === undefined || !named ? null : (
@@ -245,7 +292,7 @@ function ReferenceList({
                   className="min-w-0 [overflow-wrap:anywhere]"
                   {...(named ? authorText : pageChrome)}
                 >
-                  {text}
+                  {drawn}
                 </span>
               ) : (
                 <Link
@@ -253,7 +300,7 @@ function ReferenceList({
                   to={href}
                   {...(named ? authorText : pageChrome)}
                 >
-                  {text}
+                  {drawn}
                 </Link>
               )}
               {/* Where the citing node is of another issue or of a project, which one; and when

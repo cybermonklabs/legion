@@ -263,7 +263,7 @@ type eventListQuery struct {
 	Limit int `query:"limit"`
 	// ExcludeTypes leaves these event types out of the page, comma-separated: at most 50 of the
 	// types Dispatch writes, before limit counts the page. Blank leaves out none; an unknown type
-	// or an empty value is 400 INVALID_QUERY.
+	// or an empty item in the list is 400 INVALID_QUERY.
 	ExcludeTypes string `query:"exclude_types"`
 }
 
