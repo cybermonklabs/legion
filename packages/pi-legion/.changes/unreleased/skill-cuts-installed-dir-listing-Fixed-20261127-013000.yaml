@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  The `skill-cuts` behaviour replay answers a written case's `bash` call that lists the directory
+  its skill's reads show the skill in (the cut's own copy its session read by path, else the
+  installed directory its `skill://` reads show): `ls`, `find`, `tree`, `cat`, and a `cd` there
+  followed by such commands. Before, each such call went unanswered as outside the checkout, so
+  every run that made one was made again. The call's sandbox now shows the arm's copy of the skill
+  there, read-only, in the hidden tree that holds that directory, and under the session's home
+  where `~` leads, the pin's sandbox too where the pin answers the call: the arm with the skill
+  lists its copy, and the arm with none gets the shell's own error for a path it lacks. The copy
+  is the arm's directory copied for the run, its links that lead out of it removed, its times the
+  checkout copy's making, so a listing reads the same in every arm and run. A call that also names
+  another path outside the checkout stays unanswered as before, as do a path that leaves that
+  directory, a relative path between it and the checkout, and git or jj run there.
+time: 2026-11-27T01:30:00Z
+custom:
+    Issue: skill-cuts-installed-dir-listing

@@ -91,10 +91,15 @@
  * tool run headless in the sandbox, its footer `[raw output: artifact://<N>]` numbered one past
  * the highest artifact the case's history (`CheckoutCopy.history`) and this run's earlier answers
  * name (`RunArtifacts`: one per run, passed to `answerCall`, so the number is the same in every
- * arm and run of a case), and a later `read` of that artifact in the run; and a `read` of one of
+ * arm and run of a case), and a later `read` of that artifact in the run; a `bash` call that
+ * names a path under the directory the case's reads show its skill in (`arm.pathCopy`), answered
+ * with the arm's own copy of the skill there (checkout.ts's `CheckoutCopy.installed`, from
+ * `arm.skillDir`; nothing there in the arm with no skill, so the shell gives its error for a path
+ * it lacks); and a `read` of one of
  * the pin's internal URLs (`history://`, `local://`, `xd://<device>`, …), answered by the pin's
  * read tool as a fresh session answers it. A reply one of whose read-only calls the copy answers
- * in no form (a selector of a form not rebuilt, a path outside the checkout, a git command where
+ * in no form (a selector of a form not rebuilt, a path outside the checkout and outside that
+ * directory, a git command where
  * the copy holds no history, a rewritten output or an internal-URL read where the pin's binary is
  * absent or the session's history made the item, a form not rebuilt) gets no verdict, never judged
  * on that call: the replay rejects with UnansweredRead
@@ -1130,10 +1135,12 @@ function knivesRead(
 /** The answers to a reply's `content` from the checkout copy `checkout` when every tool call of it
  *  is read-only (checkout.ts's `readOnlyCall`): each read of a skill file as `skillRead` answers
  *  it (with knives' blocks where they go there, `knivesRead`), each other call from the copy
- *  (`answerCall`, the pinned Oh My Pi's artifacts numbered as the run's `artifacts` hold them),
- *  or, where `checkout` is why the case has none, with no answer; undefined when it holds no tool
- *  call or one that is not read-only; `why` a call of it is answered in no form, when one is (see
- *  the file's header). */
+ *  (`answerCall`, the pinned Oh My Pi's artifacts numbered as the run's `artifacts` hold them, a
+ *  `bash` call's sandbox showing the arm's copy of the skill where the case's reads show it,
+ *  `arm.pathCopy`: checkout.ts's `CheckoutCopy.installed`, from `arm.skillDir`, none in the arm
+ *  with no skill), or, where `checkout` is why the case has none, with no answer; undefined when it
+ *  holds no tool call or one that is not read-only; `why` a call of it is answered in no form, when
+ *  one is (see the file's header). */
 async function checkoutRound(
   content: readonly ContentBlock[],
   arm: Arm,
@@ -1148,6 +1155,16 @@ async function checkoutRound(
     if (id === undefined || !readOnlyCall(name, input)) return undefined;
   }
   const rows = newReadRows(arm);
+  const copy: CheckoutCopy | Unanswered =
+    "why" in checkout || arm.pathCopy === undefined
+      ? checkout
+      : {
+          ...checkout,
+          installed: {
+            dir: arm.pathCopy.dir,
+            ...(arm.skillDir === undefined ? {} : { source: arm.skillDir }),
+          },
+        };
   const answers: AnsweredCall[] = [];
   for (const { id = "", name, input } of calls) {
     const target = name === "read" && isObject(input) ? input.path : undefined;
@@ -1158,8 +1175,7 @@ async function checkoutRound(
       answers.push(given);
       continue;
     }
-    const answer =
-      "why" in checkout ? checkout : await answerCall(checkout, name, input, rows, artifacts);
+    const answer = "why" in copy ? copy : await answerCall(copy, name, input, rows, artifacts);
     if ("why" in answer) return { why: `${name} ${JSON.stringify(input)}: ${answer.why}` };
     const { text, isError, added } = answer;
     if (added !== undefined && responses) {

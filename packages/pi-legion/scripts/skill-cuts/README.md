@@ -934,8 +934,9 @@ checkout (it follows a variable the command assigned, `$PWD`, `$(pwd)`, `$(git r
 (git dies at a directory the checkout lays out as a bare repository, and prints nothing) and, in a
 colocated copy, `$(jj root)`; not one assigned only in a branch of `||` or `&&`, or from another
 substitution), a word naming `.git`, an absolute path off the checkout's root (one under `/proc`
-among them), a relative one that leaves the root from any directory the shell may be in there, an
-option's value that does (after a long option's `=`, or any rest of a short one's word after one of
+among them) and off the directory of the case's skill (below), a relative one that leaves the
+root from any directory the shell may be in there, an option's value that does (after a long
+option's `=`, or any rest of a short one's word after one of
 its letters, so `grep -f..` and `git ls-files -X..` too: an option that reads one file, as grep's
 `-f` and `--exclude-from`, rg's `-f` and `--ignore-file`, git's `grep -f`, `ls-files -X` and `blame
 --contents`, has its value read as a path), or a path that leaves the copy as the kernel walks it
@@ -984,11 +985,33 @@ that prints the working directory's own path (`pwd`, `$PWD`, `env`, `export`, `g
 --show-prefix`, `--show-cdup` or `--show-toplevel`, `jj root`): bash, git and jj give it from the
 real directory (`…/e/f`), where the session showed the path as written (`…/a/l`).
 
+A written case's `bash` call may also name paths under the directory its skill's reads show the skill in:
+the copy a read by path reads (`arms.ts`'s `Arm.pathCopy`), the cut's own copy the session read by path,
+else the installed directory its `skill://` reads show.
+Such calls are `ls`, `find` or `tree` of `<installed>/references`, or a `cd` there followed by such commands.
+Such a path is read as a path of the checkout is:
+from each directory the shell may be in, through the arm's copy of the skill, its links followed and its `..` walked as the kernel walks them.
+The call is answered from the arm:
+the arm with the skill (`old`, `new`, `minus`, `twin` or `ours`) lists its copy,
+and the arm with none gets the shell's own error for a path it lacks (`ls: cannot access '<path>': No such file or directory`, exit 2), as a real shell gives it.
+A call that names another path outside the checkout is not answered, as before (`<path> is outside the session's checkout <root>`).
+Nor is one with a path that leaves that directory,
+a relative path from the checkout into it or from it into the checkout (the sandbox holds the checkout at `/mnt/checkout`, not at its root),
+or git or jj run there or naming a path there (each reads the repository around the directory on the session's machine, which no sandbox holds).
+A call that may name such a path runs in a sandbox that also shows the arm's copy of the skill at that directory, read-only,
+in the hidden tree that holds it (`/home` for a dev box's path; a directory no hidden tree holds is not answered, since the sandbox would show this machine's files there),
+and at its place under the session's home where the command's `HOME` shows that home, so `~` and `$HOME` lead there too.
+Where the pin answers the call, its sandbox shows the same.
+The copy is the arm's directory copied for that run alone, each link that resolves outside it or nowhere removed.
+Its entries' times, and those of the directory that holds it, are the time the checkout's copy was made (a copy that records none answers no such call),
+so its `ls -l` reads the same in every arm and run; its files show as root's, as the checkout's do.
+
 The read-only rule decides which calls are answered; it does not make running them safe. So each
 answered `bash` command, and each jj command of a checkout's colocation, runs in a sandbox
 (`checkout.ts`'s `runSandboxed`): new user, mount, network, process and host-name namespaces
 (`unshare -rmnpfu --mount-proc`); only the checkout copy of the machine's disk, read-only, at
-`/mnt/checkout`; an empty, read-only file system over `/run`, `/var/run`, `/home`, `/root`,
+`/mnt/checkout` (and, for a call that names a path under the directory of the case's skill, the
+arm's copy of the skill there, above); an empty, read-only file system over `/run`, `/var/run`, `/home`, `/root`,
 `/legion`, `/tmp`, `/var/tmp`, `/dev/shm`, the operator's configuration, `/opt` (the pod's
 installed tools, which no read-only program needs, with lock files any user may write; the
 runner's jj is bound at `/mnt/jj` first), the runner's home, and
@@ -1213,7 +1236,7 @@ An expired call remains unanswered, so the replay receives no verdict and retrie
 The same queue holds the commands that make a colocated jj checkout, with a 30-minute setup and command deadline.
 
 A reply one of whose read-only calls the copy answers in no form (a read with a selector of a form not rebuilt, a
-path outside the checkout, or under `~` where the case records no home, a `bash` option that
+path outside the checkout and outside the directory of the case's skill, or under `~` where the case records no home, a `bash` option that
 asks for a terminal, a job or a service, a git or jj command where the copy is the tarball, a jj
 command where its colocation failed or whose checkout tracks a `.jj` at its root, a command whose
 sandbox cannot be made or one of whose programs the sandbox lacks, an output past 50 KB or with a
@@ -2938,6 +2961,7 @@ read, its hashline line showing the file under the directory a recorded read of 
 shows, else the absolute one; `none` with `Path '<path>' not found`; the arm of ours with our file
 at that path. A read of a directory under it is no skill read. Such a copy names no working or home
 directory, so a read of it by a relative or `~` path is not answered either.
+A written case's `bash` call that names a path under that directory (or under the cut's own copy) is answered from each arm's copy of the skill there too, `none` with the shell's error for a path it lacks ("A written case's `bash` call may also name paths …", above).
 
 A skill can reach a session other than by its listing line and a read, and each arm then gives the
 session its own text of it there too (`arms.ts`). The Envoy plugin puts dispatch-first into every

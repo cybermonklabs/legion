@@ -2266,6 +2266,37 @@ test("in a case that read its skill by skill:// only, a read of a directory unde
   expect(failed.replayed.checkoutRounds).toBe(0);
 });
 
+// Catches: a written case's bash listing of the directory its skill's reads show it installed in
+// left with no verdict, as unanswered-read (the defect: 30 runs of ce-simplify-code's written
+// cases), or that listing given one text in every arm.
+test("in a written case that read its skill by skill:// only, a reply's bash listing of the installed directory is answered from the arm, old listing its copy and none getting the shell's error for a path it lacks, and the act after it is judged", async () => {
+  const c = urlOnlyCase("written");
+  const listing = toolCall("toolu_ls", "bash", { command: `ls ${INSTALLED}/references/` });
+  const answers = {
+    old: toolResult("toolu_ls", "x.md\n", false),
+    none: toolResult(
+      "toolu_ls",
+      `ls: cannot access '${INSTALLED}/references/': No such file or directory\n\n\nCommand exited with code 2`,
+      true
+    ),
+  };
+  for (const name of ["old", "none"] as const) {
+    const arm = urlOnlyArm(c, name);
+    const copy = { ...checkoutCopy(), madeAt: Date.UTC(2025, 0, 15, 12) };
+    const { gateway, bodies } = scripted([[listing], [WRITE_ACT]]);
+    const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway, {
+      checkout: copy,
+    });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]?.messages.at(-1)).toEqual({ role: "user", content: [answers[name]] });
+    expect(replayed.reads).toEqual([
+      [{ from: "checkout", tool: "bash", input: listing.input, isError: name === "none" }],
+    ]);
+    expect(replayed.step.message.content).toEqual([listing, WRITE_ACT]);
+    expect(JSON.stringify(bodies)).not.toContain(arm.skillDir ?? "no directory");
+  }
+});
+
 // The mixed-reply rule (the runner's architect, 2026-11-26T06:16:45Z and 06:20:08Z): a reply that
 // reads a skill file beside other calls is sorted with no model call, by the case's act (its two
 // steps' calls and their argument tokens) or by the load test's read-only rule. Catches: a batch

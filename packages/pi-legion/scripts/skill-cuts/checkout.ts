@@ -85,7 +85,8 @@
  * that follows links. Beside that, a `read`, `grep` or `glob` whose target resolves outside the
  * copy is not answered (`leavesCopy`), and a `bash` command is not answered when a word of it may
  * lead outside (`escapes`: a word whose expansion the runner cannot place inside the checkout,
- * `.git`, an absolute path off the root (one under `/proc` among them), a relative one that
+ * `.git`, an absolute path off the root (one under `/proc` among them) that is under no installed
+ * directory of the case's skill (below), a relative one that
  * leaves the root from any directory the shell may be in there, an option's value that does
  * (after a long option's `=`, or any rest of a short one's word after one of its letters, so
  * `grep -f..` too: `optionPaths`), a path that the kernel's walk of it in the copy takes out of
@@ -126,12 +127,40 @@
  * --show-prefix`, `--show-cdup` and `--show-toplevel`, `jj root`), which bash, git and jj give
  * from the real directory, where the session showed the path as written.
  *
+ * **The case's skill's installed directory** (`CheckoutCopy.installed`, `placeOf`): replay.ts gives
+ * the copy, for each arm's calls, the directory the case's reads show its skill in (arms.ts's
+ * `Arm.pathCopy`: the cut's own copy the session read by path, else the installed directory its
+ * `skill://` reads show) and the arm's own copy of the skill (`Arm.skillDir`; none in the arm with
+ * no skill). A `bash` call's path there, outside the checkout, is read as a path of the checkout
+ * is, from each directory the shell may be in, a link of the arm's copy followed and a `..` walked
+ * by the same rules (`kernelWalk`, `cdLanding`, `globOptionFault`), so `ls`, `find`, `tree`, `cat`
+ * and a `cd` into it followed by such commands are answered; a call another path of which is
+ * outside the checkout is refused as outside it, as before. Refused too: a path that leaves that
+ * directory; a relative path from the checkout into it or from it into the checkout (the sandbox
+ * holds the checkout at CHECKOUT_MOUNT, not at its root, so such a path leads elsewhere there);
+ * and git or jj run there or naming a path there (each reads the repository around it, on the
+ * session's machine, which the sandbox does not hold). A call a word of which may name a path there
+ * runs in a sandbox that shows the arm's copy of the skill there, read-only (`runShowingSkill`):
+ * the arm's directory copied for that run alone, each link that resolves outside it or nowhere
+ * removed, and the times of its entries, and of the directory that holds it in the sandbox, the
+ * time the checkout's copy was made (`CheckoutCopy.madeAt`; not answered where the copy records
+ * none), so its listing reads the same in every arm and run, its files' owner shown as root as the
+ * checkout's are. It is shown at the directory itself, in the tree of `hiddenPaths` that holds it,
+ * which stays empty but for it (where no hidden tree holds it, the call is not answered: the
+ * sandbox would show this machine's files there), and under SESSION_HOME_MOUNT where the
+ * command's HOME shows the session's home there, so `~` and `$HOME` lead to it too. In the arm with
+ * no skill nothing is there, and the shell gives its own error for a path it lacks (`ls: cannot
+ * access '<path>': No such file or directory`, exit 2). Where the pin answers such a call (below),
+ * its sandbox shows the same.
+ *
  * **The sandbox.** The rule decides which calls are answered; it does not make running them safe.
  * So each answered `bash` command, and each jj command of a copy's colocation, runs in a sandbox
  * of the copy (`runSandboxed`): new user, mount, network, process and host-name namespaces
  * (`unshare`); only the copy of the machine's disk, read-only, at CHECKOUT_MOUNT (`/mnt/checkout`),
  * the command's working directory the session's mapped into it, and the session's checkout root
- * mapped to that path in the command and back in its output (`sandboxedBash`); an empty, read-only
+ * mapped to that path in the command and back in its output (`sandboxedBash`); where a word of the
+ * command may name a path under the case's skill's installed directory, the arm's copy of the skill
+ * there (above); an empty, read-only
  * file system over each tree that holds the pod's credentials or tools (`hiddenPaths`: `/run`,
  * `/var/run`, `/home`, `/root`, `/legion`, `/tmp`, `/var/tmp`, `/dev/shm`, the operator's
  * configuration, `/opt`, the runner's home, and each directory a variable of the runner's
@@ -152,7 +181,8 @@
  * started is ended, and an output cap. The sandbox's fresh `/proc` still
  * lists, in `/proc/self/mountinfo`, the mount points of the pod it was made from (the hidden ones
  * among them, each under its empty file system); no answered call reads it, as no answered path
- * is outside the root. An answer whose sandbox cannot be made is not given, nor one of a command
+ * is outside the root but under the case's skill's installed directory. An answer whose sandbox
+ * cannot be made is not given, nor one of a command
  * one of whose programs (each but bash's builtins) is on no directory of the sandbox's PATH,
  * whose answer would be bash's `command not found`, which the session did not see. The programs
  * the sandbox runs are the machine's own (on this pod GNU coreutils 9.7, GNU grep 3.11, GNU
@@ -171,7 +201,9 @@
  * pin's loader finds it under `PI_NATIVES_DIR=/mnt/pin/natives`), and a per-call directory holding
  * the stub hook (pin-hook.ts), its `call.json` and, in a shell with Oh My Pi's own interceptor,
  * the `config.yml` of its setting (below); the checkout copy stays read-only at
- * CHECKOUT_MOUNT. An empty 64 MiB tmpfs at `/mnt/pin/home` is the pin's `HOME` and holds its fresh
+ * CHECKOUT_MOUNT, and the arm's copy of the case's skill is shown at its installed directory as
+ * in the runner's own run of the command (above). An empty 64 MiB tmpfs at `/mnt/pin/home` is the
+ * pin's `HOME` and holds its fresh
  * session directory: the sandbox's one writable file system. The pin runs `omp -p --hook
  * /mnt/pin/call/hook.ts --model stub/call --session-dir /mnt/pin/home/sessions --no-title
  * --no-extensions --no-skills --no-rules --no-context-files x` in SANDBOX_ENV plus those two
@@ -527,8 +559,10 @@
  *   (above; its working directory the session's mapped into the copy; the checkout's root in the
  *   command mapped to CHECKOUT_MOUNT, and that path and the copy's own, as given and as its real
  *   path, back to the root in the output; its HOME the session's home as the sandbox shows it,
- *   `sandboxHome`, where the copy names one), by `bash -c` with its standard error joined to its
- *   output, within BASH_TIME_LIMIT_MS of when its sandbox is made (the queue, above); its text
+ *   `sandboxHome`, where the copy names one; the arm's copy of the case's skill at its installed
+ *   directory where a word may name a path there, above), by `bash -c` with its standard error
+ *   joined to its output, within BASH_TIME_LIMIT_MS of when its sandbox is made (the queue,
+ *   above); its text
  *   as Oh My Pi's bash tool gives it (bash.ts lines
  *   765-922): the output as printed, `(no output, exit code 0)` or `(no output)` for none, `Wall
  *   time: <s> seconds` after it (`<s>` to two places) when the command took 1,000 ms or more
@@ -554,7 +588,8 @@
  *   reads in a way the runner does not rebuild (`bashOptionFault`); a git or jj command where
  *   the copy is GitHub's tarball instead (the fetch failed: `CheckoutCopy.git` false), a jj
  *   command where the copy could not be made a jj repository (`CheckoutCopy.jj` a why) or the
- *   runner has no jj, a command a word of which may lead outside the copy (`escapes`), a jj
+ *   runner has no jj, a command a word of which may lead outside the copy (`escapes`; a path under
+ *   the case's skill's installed directory, above, is none), a jj
  *   command whose repository may be one the checkout tracks below its root, a jj command of a
  *   copy whose root holds a `.jj` no colocation of the runner's made, a command one of
  *   whose programs is on no directory of the sandbox's PATH (this pod's has no `rg`: bash would
@@ -601,9 +636,11 @@
 import { isUtf8 } from "node:buffer";
 import {
   closeSync,
+  cpSync,
   existsSync,
   fstatSync,
   lstatSync,
+  lutimesSync,
   mkdtempSync,
   openSync,
   readdirSync,
@@ -613,6 +650,7 @@ import {
   rmSync,
   type Stats,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -2015,7 +2053,10 @@ export function readOnlyCall(name: string | undefined, input: unknown): boolean 
  *  then no `bash` call is answered; absent (a copy no case names, as checkout.test.ts's own), no
  *  shell prefix; `knives`, the blocks knives' plugin gave the case's context session for the
  *  checkout's repository (`KnivesRepository`, cli.ts's `caseKnives`), absent where a run adds
- *  none. */
+ *  none; `installed`, the arm's copy of the case's skill, which a `bash` call's sandbox shows at
+ *  the directory the session's reads show the skill in (`InstalledSkill`), set for each arm's
+ *  calls by replay.ts's `checkoutRound`; absent (or a directory that is the root, inside it or
+ *  above it), none, and a path there is outside the checkout as any other. */
 export interface CheckoutCopy {
   readonly dir: string;
   readonly root: string;
@@ -2028,6 +2069,18 @@ export interface CheckoutCopy {
   readonly history?: string;
   readonly shell?: ShellSetup | Unanswered;
   readonly knives?: KnivesRepository;
+  readonly installed?: InstalledSkill;
+}
+
+/** The arm's copy of a written case's skill as a `bash` call of its run reaches it
+ *  (`CheckoutCopy.installed`; replay.ts's `checkoutRound`, from arms.ts's `Arm.pathCopy` and
+ *  `Arm.skillDir`): `dir`, the directory the session's reads show the skill in (the cut's own copy
+ *  it read by path, else the installed directory its `skill://` reads show), absolute; `source`,
+ *  the arm's directory of the skill on this machine, absent in the arm that installs none
+ *  (`none`), whose sandbox holds nothing at `dir`. */
+export interface InstalledSkill {
+  readonly dir: string;
+  readonly source?: string;
 }
 
 /** How a written case's context session's Oh My Pi ran a `bash` call, as its dev box's dotfiles
@@ -2466,6 +2519,10 @@ const SANDBOX_HOME = "/mnt/home";
  *  the copy bound again at the checkout's root's place under it, which the command gets as its
  *  HOME and its output maps back to the session's home. */
 const SESSION_HOME_MOUNT = "/mnt/session-home";
+/** Where a sandbox binds the arm's copy of the case's skill (`SandboxSkill`) before it hides the
+ *  trees that hold the copy's own directory: from here it binds it again, read-only, at the
+ *  skill's installed directory (and at its place under SESSION_HOME_MOUNT). */
+const SKILL_MOUNT = "/mnt/skill";
 /** The files of a home directory git reads as the user's configuration where a command unsets
  *  GIT_CONFIG_GLOBAL (with XDG_CONFIG_HOME unset): no sandbox's HOME may show the copy's file at
  *  one of them (`sandboxHome`), which could name a program for git to run. */
@@ -2645,11 +2702,18 @@ const PIN_HOME_BYTES = 64 * 1024 * 1024;
  *  read-only at /mnt/jj, where the command runs the pinned Oh My Pi (`pinbin`), its binary's
  *  directory, its native addon's (`pinnatives`), the call's own (`pincall`) and, where given, the
  *  experiments extension's (`pinext`) bound read-only under PIN_MOUNT and an empty tmpfs at
- *  PIN_HOME, its one writable file system, and an empty, read-only file system over each hidden
- *  directory and
+ *  PIN_HOME, its one writable file system, where the sandbox shows a copy of the case's skill
+ *  (`SandboxSkill`), that copy (`skillfs`) bound read-only at SKILL_MOUNT, and an empty, read-only
+ *  file system over each hidden directory and
  *  /dev/null over each hidden file (`hiddenPaths`, each with its name in the table; one the
  *  sandbox's user can neither enter nor read, as `/root`, needs none, since no command of it can
- *  either); the runner's home made again, empty, in the one that holds it, made read-only after;
+ *  either, but the one that holds the skill's installed directory, `skilltree`, which gets one
+ *  whatever its user may enter, writable until the steps below are done); then, where a copy of
+ *  the skill is given, its installed directory (`skilldir`) and, where the command's HOME shows
+ *  the session's home, its place under SESSION_HOME_MOUNT (`skillhome`) each made, the times of
+ *  the directory that holds each set to the copy's own (`skilltime`, `@<seconds>`), and
+ *  SKILL_MOUNT bound again at each, read-only; the runner's home made again, empty, in the one
+ *  that holds it, that one and `skilltree` made read-only after;
  *  the jj wrapper at /mnt/bin/jj, SANDBOX_HOME and SANDBOX_JJ_CONFIG, then /mnt made read-only; a
  *  host name of its own; the working directory in the copy entered; each of the programs it is
  *  given (`programs`, blank-separated) looked for on PATH, the first it finds none of named on
@@ -2665,8 +2729,8 @@ const PIN_HOME_BYTES = 64 * 1024 * 1024;
  *  util-linux 2.39.3 (EINVAL): libmount takes its options from the mount table, where a tmpfs
  *  made in this user namespace names its owner by an id the namespace does not map (measured in
  *  a grade Job on Linux 6.8, util-linux 2.39.3; gVisor with util-linux 2.41.5 takes it). */
-const SANDBOX_SETUP = `copyfs=$1 mode=$2 cwd=$3 jjfs=$4 wrapper=$5 jjconfig=$6 home=$7 hometree=$8 command=$9 programs=\${10} sessionhome=\${11} homedir=\${12} homebind=\${13} homebindname=\${14} pinbin=\${15} pinnatives=\${16} pincall=\${17} pinext=\${18}
-shift 18
+const SANDBOX_SETUP = `copyfs=$1 mode=$2 cwd=$3 jjfs=$4 wrapper=$5 jjconfig=$6 home=$7 hometree=$8 command=$9 programs=\${10} sessionhome=\${11} homedir=\${12} homebind=\${13} homebindname=\${14} pinbin=\${15} pinnatives=\${16} pincall=\${17} pinext=\${18} skillfs=\${19} skilldir=\${20} skilltree=\${21} skillhome=\${22} skilltime=\${23}
+shift 23
 fail() { printf '%s\\n' "$1" >&2; exit 125; }
 command -v setpriv >/dev/null || fail "find setpriv"
 mount -t tmpfs -o mode=0755 checkout-sandbox /mnt || fail "mount a file system of its own at /mnt"
@@ -2675,8 +2739,10 @@ if [ -n "$pinbin" ]; then
   mkdir -p ${PIN_MOUNT}/bin ${PIN_MOUNT}/natives/${NATIVES_VERSION} ${PIN_MOUNT}/call ${PIN_HOME} || fail "make the pin's directories"
 fi
 if [ -n "$pinext" ]; then mkdir -p ${PIN_MOUNT}/ext || fail "make the extension's directory"; fi
+if [ -n "$skillfs" ]; then mkdir ${SKILL_MOUNT} || fail "make the skill's directory"; fi
 if [ -n "$homedir" ]; then mkdir -p "$homedir" || fail "make the session's home"; fi
 homemounted=
+skillmounted=
 {
   if [ "$mode" = ro ]; then
     printf '%s ${CHECKOUT_MOUNT} none bind,ro 0 0\\n' "$copyfs"
@@ -2692,10 +2758,17 @@ homemounted=
     printf 'checkout-sandbox-pin ${PIN_HOME} tmpfs mode=0755,size=${PIN_HOME_BYTES} 0 0\\n'
   fi
   if [ -n "$pinext" ]; then printf '%s ${PIN_MOUNT}/ext none bind,ro 0 0\\n' "$pinext"; fi
+  if [ -n "$skillfs" ]; then printf '%s ${SKILL_MOUNT} none bind,ro 0 0\\n' "$skillfs"; fi
   while [ $# -gt 1 ]; do
     each=$1 target=$2
     shift 2
     if [ -d "$each" ]; then
+      if [ "$each" = "$skilltree" ]; then
+        skillmounted=1
+        if [ "$each" = "$hometree" ]; then homemounted=1; fi
+        printf 'checkout-sandbox-hidden %s tmpfs mode=0755 0 0\\n' "$target"
+        continue
+      fi
       [ -x "$each" ] || continue
       if [ "$each" = "$hometree" ]; then
         homemounted=1
@@ -2710,8 +2783,17 @@ homemounted=
 } > /mnt/fstab || fail "write its mount table"
 mount -a -T /mnt/fstab || fail "mount the copy and hide the directories that hold the pod's credentials"
 : > /mnt/fstab
+if [ -n "$skillfs" ]; then
+  for at in "$skilldir" "$skillhome"; do
+    [ -n "$at" ] || continue
+    { mkdir -p "$at" && touch -d "$skilltime" "\${at%/*}" && mount -n -T /mnt/fstab -o bind,ro ${SKILL_MOUNT} "$at"; } || fail "show the arm's copy of the skill at $at"
+  done
+fi
 if [ -n "$homemounted" ]; then
   { mkdir -p "$home" && mount -n -T /mnt/fstab -o remount,bind,ro "$hometree"; } || fail "make the runner's home again, empty"
+fi
+if [ -n "$skillmounted" ] && [ "$skilltree" != "$hometree" ]; then
+  mount -n -T /mnt/fstab -o remount,bind,ro "$skilltree" || fail "make the directory that holds the skill's installed directory read-only"
 fi
 if [ -n "$jjfs" ]; then
   { printf '%s' "$wrapper" > /mnt/bin/jj && chmod 0755 /mnt/bin/jj; } || fail "write jj's wrapper"
@@ -2808,7 +2890,10 @@ const checkoutQueue = new Limiter(1);
  * the command's HOME is `home.env`, the directory `home.dir` is made first, and the copy is bound
  * again at `home.bind`, where those are given. With `pin` (`pinAnswer`), the pinned Oh My Pi's
  * binary's directory, its native addon's and the call's own are bound read-only under PIN_MOUNT,
- * and PIN_HOME is an empty, writable tmpfs.
+ * and PIN_HOME is an empty, writable tmpfs. With `skill` (`runShowingSkill`), the hidden tree that
+ * holds the case's skill's installed directory shows that directory alone: the arm's copy of the
+ * skill there, read-only, where the arm installs one, else nothing; not run where no hidden tree
+ * holds it, since the sandbox would show what this machine has there.
  */
 async function runSandboxed(
   dir: string,
@@ -2820,6 +2905,7 @@ async function runSandboxed(
     programs,
     home,
     pin,
+    skill,
   }: {
     command: string;
     cwd: string;
@@ -2828,6 +2914,7 @@ async function runSandboxed(
     programs: readonly string[];
     home?: SandboxHomeView;
     pin?: SandboxPin;
+    skill?: SandboxSkill;
   }
 ): Promise<SandboxRun | Unanswered> {
   const unshare = Bun.which("unshare");
@@ -2839,6 +2926,21 @@ async function runSandboxed(
       ? ""
       : `#!/bin/sh\nexec /mnt/jj/${path.basename(jj)}${writable ? "" : " --ignore-working-copy"} --config-file ${SANDBOX_JJ_CONFIG} "$@"\n`;
   const hidden = hiddenPaths(process.env);
+  // The hidden tree that holds the skill's installed directory, which shows that directory alone.
+  const tree =
+    skill === undefined
+      ? ""
+      : hidden.paths.find(
+          (each) =>
+            (insideRoot(each, skill.dir) ?? "") !== "" &&
+            statSync(each, { throwIfNoEntry: false })?.isDirectory() === true
+        );
+  if (tree === undefined) {
+    return {
+      why: `the case's skill's installed directory ${skill?.dir} is in no directory the sandbox hides, so the sandbox cannot show the arm's copy of the skill there and nothing of this machine's`,
+    };
+  }
+  const staged = skill?.staged;
   const argv = [
     unshare,
     "--user",
@@ -2875,6 +2977,11 @@ async function runSandboxed(
     pin === undefined ? "" : mountName(pin.natives),
     pin === undefined ? "" : mountName(pin.call),
     pin?.ext === undefined ? "" : mountName(pin.ext),
+    staged === undefined ? "" : mountName(realpathSync(staged.dir)),
+    staged === undefined ? "" : (skill?.dir ?? ""),
+    tree,
+    staged?.home ?? "",
+    staged === undefined ? "" : `@${(staged.time / 1000).toFixed(3)}`,
     ...hidden.paths.flatMap((each) => [each, mountName(each)]),
   ];
   const outputBytes = pin === undefined ? OUTPUT_BYTES : PIN_OUTPUT_BYTES;
@@ -2890,6 +2997,17 @@ interface SandboxPin {
   readonly natives: string;
   readonly call: string;
   readonly ext?: string;
+}
+
+/** The case's skill as a sandbox shows it (`runSandboxed`'s `skill`, `runShowingSkill`): `dir`, its
+ *  installed directory (`InstalledSkill.dir`), in the hidden tree that holds it, which shows that
+ *  directory alone; `staged`, where the arm installs the skill, its copy for the run, a real
+ *  directory of this machine (`dir`), bound read-only at the installed directory and, where given,
+ *  at `home` too (its place under SESSION_HOME_MOUNT), the directory that holds each given its
+ *  times, `time` (milliseconds since the epoch). */
+interface SandboxSkill {
+  readonly dir: string;
+  readonly staged?: { readonly dir: string; readonly home?: string; readonly time: number };
 }
 
 /** The sandbox `runSandboxed` made `argv` for, spawned and bounded once it holds its place in the
@@ -2991,20 +3109,22 @@ function sandboxHome(copy: CheckoutCopy): SandboxHomeView | Unanswered | undefin
  *  working directory `cwd`: the session's checkout root in it mapped to CHECKOUT_MOUNT, its HOME
  *  the session's home as the sandbox shows it (`sandboxHome`; SANDBOX_HOME where the copy names
  *  none, or where that home may not be shown), and in its output that path, the copy's own (as
- *  given and as its real path) and SESSION_HOME_MOUNT mapped back to the root and the home; not
- *  run where one of `programs` (those the command runs that are no builtin of bash's) is on no
- *  directory of the sandbox's PATH. Its output, exit code and wall time, or why none. Exported for
- *  checkout.test.ts's negative control, which runs through it commands that the read-only rule
- *  refuses. */
+ *  given and as its real path) and SESSION_HOME_MOUNT mapped back to the root and the home; with
+ *  `installed`, the sandbox showing the arm's copy of the case's skill at its installed directory
+ *  (`runShowingSkill`); not run where one of `programs` (those the command runs that are no
+ *  builtin of bash's) is on no directory of the sandbox's PATH. Its output, exit code and wall
+ *  time, or why none. Exported for checkout.test.ts's negative control, which runs through it
+ *  commands that the read-only rule refuses. */
 export async function sandboxedBash(
   copy: CheckoutCopy,
   command: string,
   cwd = copy.cwd,
-  programs: readonly string[] = []
+  programs: readonly string[] = [],
+  installed = false
 ): Promise<{ output: string; exitCode: number; wallTimeMs: number } | Unanswered> {
   const view = sandboxHome(copy);
   const home = view === undefined || "why" in view ? undefined : view;
-  const ran = await runSandboxed(copy.dir, {
+  const ran = await runShowingSkill(copy, installed, {
     command: command.split(copy.root).join(CHECKOUT_MOUNT),
     cwd: insideRoot(copy.root, cwd) ?? "",
     writable: false,
@@ -3031,6 +3151,92 @@ function rootPaths(copy: CheckoutCopy, text: string): string {
     (each, own) => each.split(own).join(copy.root),
     text
   );
+}
+
+/** The case's skill's installed directory a `bash` call's sandbox shows the arm's copy of
+ *  (`CheckoutCopy.installed`), or undefined where the copy names none, or a directory that is no
+ *  absolute path as written whole (`path.posix.normalize`'s, with no `/` at its end), or is the
+ *  checkout's root, inside it or above it, whose files the checkout's copy shows itself. */
+function installedSkill(copy: CheckoutCopy): InstalledSkill | undefined {
+  const skill = copy.installed;
+  if (skill === undefined) return undefined;
+  const { dir } = skill;
+  if (!dir.startsWith("/") || dir.endsWith("/") || path.posix.normalize(dir) !== dir) {
+    return undefined;
+  }
+  const nested =
+    insideRoot(copy.root, dir) !== undefined || insideRoot(dir, copy.root) !== undefined;
+  return nested ? undefined : skill;
+}
+
+/**
+ * `runSandboxed` of `copy` with `options`, the sandbox showing the arm's copy of the case's skill
+ * (`installedSkill`) where `installed` (a word of the command may name a path under its installed
+ * directory, `escapes`): that copy at that directory, in the hidden tree that holds it, which shows
+ * nothing else (SANDBOX_SETUP), and, where the command's HOME is SESSION_HOME_MOUNT (`options.home`)
+ * and the directory is under the session's home, at its place there too, where `~` and `$HOME`
+ * lead; in the arm that installs none, nothing there, so a shell gives its own error for a path
+ * it lacks. The copy is the arm's directory copied for this run alone into a directory of its own,
+ * removed after the run: each symbolic link that resolves outside it or nowhere removed
+ * (`removeOutsideLinks`, as cli.ts removes the checkout's), so no command follows one out, and the
+ * times of each entry, and of the directory that holds it in the sandbox, the time the checkout's
+ * copy was made (`CheckoutCopy.madeAt`), so its listing (`ls -l`, `find -newer`) reads the same in
+ * every arm and every run, as the checkout's own files' does; its files are the runner's user's,
+ * which the sandbox shows as root, as it shows the checkout's. Why not where the arm installs a
+ * copy and the checkout's copy records no time it was made, or the arm's directory cannot be
+ * copied.
+ */
+async function runShowingSkill(
+  copy: CheckoutCopy,
+  installed: boolean,
+  options: Parameters<typeof runSandboxed>[1]
+): Promise<SandboxRun | Unanswered> {
+  const skill = installed ? installedSkill(copy) : undefined;
+  if (skill === undefined) return runSandboxed(copy.dir, options);
+  if (skill.source === undefined) {
+    return runSandboxed(copy.dir, { ...options, skill: { dir: skill.dir } });
+  }
+  const time = copy.madeAt;
+  if (time === undefined) {
+    return {
+      why: `the copy records no time it was made, which the arm's copy of the case's skill takes for its files' times, so that a listing of ${skill.dir} reads the same in every run`,
+    };
+  }
+  const under = copy.home === undefined ? "" : (insideRoot(copy.home, skill.dir) ?? "");
+  const home =
+    options.home?.env === SESSION_HOME_MOUNT && under !== ""
+      ? { home: `${SESSION_HOME_MOUNT}/${under}` }
+      : {};
+  const own = mkdtempSync(path.join(os.tmpdir(), "skill-cuts-skill-"));
+  try {
+    const staged = path.join(own, "skill");
+    try {
+      cpSync(realpathSync(skill.source), staged, { recursive: true, verbatimSymlinks: true });
+      removeOutsideLinks(staged);
+      stampTimes(staged, new Date(time));
+    } catch (error) {
+      return {
+        why: `the arm's copy of the case's skill could not be copied for the sandbox: ${messageFor(error)}`,
+      };
+    }
+    return await runSandboxed(copy.dir, {
+      ...options,
+      skill: { dir: skill.dir, staged: { dir: staged, time, ...home } },
+    });
+  } finally {
+    rmSync(own, { recursive: true, force: true });
+  }
+}
+
+/** Sets the times of `dir` and of each entry under it (a symbolic link's own) to `at`. */
+function stampTimes(dir: string, at: Date): void {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) stampTimes(full, at);
+    else if (entry.isSymbolicLink()) lutimesSync(full, at, at);
+    else utimesSync(full, at, at);
+  }
+  utimesSync(dir, at, at);
 }
 
 /** The name of the hook in a pin call's own directory (`pinAnswer`), and the hook's source. */
@@ -3110,28 +3316,33 @@ function featuresOff(gate: BashGate): string[] | Unanswered {
  * (the extension did not load), is not answered. The run counts in the sandbox's
  * BASH_TIME_LIMIT_MS from its ready marker, as a command's does, and is not answered past it;
  * nor where `programs` (the call's programs that are no builtin of bash's) are on no directory of
- * the sandbox's PATH. The tool's result and the artifacts it made (pin-hook.ts's PinResult), the
- * sandbox's paths in them as the session's (`rootPaths`); or why none.
+ * the sandbox's PATH. With `installed`, the sandbox shows the arm's copy of the case's skill at
+ * its installed directory, as the runner's own run of the command does (`runShowingSkill`). The
+ * tool's result and the artifacts it made (pin-hook.ts's PinResult), the sandbox's paths in them
+ * as the session's (`rootPaths`); or why none.
  */
 async function pinAnswer(
   copy: CheckoutCopy,
   call: PinCall,
   programs: readonly string[],
-  shell: ShellSetup = {}
+  shell: ShellSetup = {},
+  installed = false
 ): Promise<PinResult | Unanswered> {
   const off = shell.gate === undefined ? [] : featuresOff(shell.gate);
   if ("why" in off) return off;
-  return pinRun(copy, call, programs, shell, off);
+  return pinRun(copy, call, programs, shell, off, installed);
 }
 
 /** `pinAnswer`'s run, `off` the features of the experiments extension it turns off
- *  (`featuresOff`). Exported for checkout.test.ts, whose control runs it with none turned off. */
+ *  (`featuresOff`), its sandbox showing the arm's copy of the case's skill where `installed`.
+ *  Exported for checkout.test.ts, whose control runs it with none turned off. */
 export async function pinRun(
   copy: CheckoutCopy,
   call: PinCall,
   programs: readonly string[],
   shell: ShellSetup,
-  off: readonly string[]
+  off: readonly string[],
+  installed = false
 ): Promise<PinResult | Unanswered> {
   const omp = pinnedOmp();
   if ("why" in omp) return { why: `the runner has no pinned Oh My Pi binary: ${omp.why}` };
@@ -3172,7 +3383,7 @@ export async function pinRun(
       "--no-title --no-extensions --no-skills --no-rules --no-context-files",
       `x 2>${PIN_HOME}/stderr || { cat ${PIN_HOME}/stderr; exit 1; }`,
     ].join(" ");
-    const ran = await runSandboxed(copy.dir, {
+    const ran = await runShowingSkill(copy, installed, {
       command,
       cwd: insideRoot(copy.root, copy.cwd) ?? "",
       writable: false,
@@ -5132,21 +5343,50 @@ function optionPaths(word: string): string[] {
   return Array.from({ length: Math.max(0, word.length - 2) }, (_, n) => word.slice(n + 2));
 }
 
-/** Where the path `rest` (relative, as written), taken from the session's directory `from` (inside
- *  the root), leads as the kernel walks it in the copy: from the copy's own directory at `from`,
- *  each part that is there has its symbolic links followed (realpath, one part at a time), `..` is
- *  the parent of where that got, and the first part that is not there ends the walk (the kernel
- *  goes no further, so the rest is read as written). `at`, where it got (a real path where each
- *  part is there, `there`); undefined where a step of it leaves the copy. So `l/../x`, through a
- *  link `l` of the checkout to its root, goes to the copy's parent, which the path read as written,
- *  `x`, does not show. */
+/** A tree of the session's paths that a `bash` call's sandbox shows (`placeOf`): `root`, its top
+ *  (the checkout's root, or the case's skill's installed directory, `installedSkill`); `local`,
+ *  its copy on this machine as a real directory (the checkout's copy, or the arm's directory of
+ *  the skill, which the sandbox shows a copy of: `runShowingSkill`), absent in the installed
+ *  directory of an arm that installs no copy, where the sandbox holds nothing; `skill`, whether it
+ *  is the installed directory. */
+interface Place {
+  readonly root: string;
+  readonly local?: string;
+  readonly skill: boolean;
+}
+
+/** The tree the session's path `full` is in (Place), or undefined for a path outside the checkout
+ *  that is under no installed directory of the case's skill the copy names. */
+function placeOf(copy: CheckoutCopy, full: string): Place | undefined {
+  if (insideRoot(copy.root, full) !== undefined) {
+    return { root: copy.root, local: realpathSync(copy.dir), skill: false };
+  }
+  const skill = installedSkill(copy);
+  if (skill === undefined || insideRoot(skill.dir, full) === undefined) return undefined;
+  const local = skill.source === undefined ? {} : { local: realpathSync(skill.source) };
+  return { root: skill.dir, ...local, skill: true };
+}
+
+/** Where the path `rest` (relative, as written), taken from the session's directory `from` (in the
+ *  checkout's root, or in the case's skill's installed directory: `placeOf`), leads as the kernel
+ *  walks it in that tree's copy: from the copy's own directory at `from`, each part that is there
+ *  has its symbolic links followed (realpath, one part at a time), `..` is the parent of where that
+ *  got, and the first part that is not there ends the walk (the kernel goes no further, so the
+ *  rest is read as written). `at`, where it got (a real path where each part is there, `there`);
+ *  undefined where a step of it leaves the copy, or `from` is in neither tree. In the installed
+ *  directory of an arm that installs no copy, which holds nothing, the walk ends at once. So
+ *  `l/../x`, through a link `l` of the checkout to its root, goes to the copy's parent, which the
+ *  path read as written, `x`, does not show. */
 function kernelWalk(
   copy: CheckoutCopy,
   from: string,
   rest: string
 ): { readonly at: string; readonly there: boolean } | undefined {
-  const real = realpathSync(copy.dir);
-  const parts = [...(insideRoot(copy.root, from) ?? "").split("/"), ...rest.split("/")];
+  const place = placeOf(copy, from);
+  if (place === undefined) return undefined;
+  const real = place.local;
+  if (real === undefined) return { at: from, there: false };
+  const parts = [...(insideRoot(place.root, from) ?? "").split("/"), ...rest.split("/")];
   let at = real;
   for (const [n, part] of parts.entries()) {
     if (part === "" || part === ".") continue;
@@ -5165,13 +5405,14 @@ function kernelWalk(
 }
 
 /** Whether the path `rest` (relative, as written), taken from the session's directory `from`,
- *  stays in the copy as the kernel walks it there (`kernelWalk`). */
+ *  stays in its tree's copy as the kernel walks it there (`kernelWalk`). */
 function walksInCopy(copy: CheckoutCopy, from: string, rest: string): boolean {
   return kernelWalk(copy, from, rest) !== undefined;
 }
 
 /** What a `cd` from the session's directory `from` to `to` (a value of its word) does in the copy
- *  (`Walk.cd`). bash's own cd (`-L`, its default) first makes the path logical from `from` (`..`
+ *  of the tree it leads in (`Walk.cd`, `placeOf`: the checkout, or the case's skill's installed
+ *  directory). bash's own cd (`-L`, its default) first makes the path logical from `from` (`..`
  *  the parent of the part before it) and goes there where each part before a `..`, and the whole,
  *  is a directory of the copy (links followed): then it surely succeeds (`enters`), at
  *  `path.posix.resolve(from, to)`. Else it goes, as `cd -P` always does, to the path as written,
@@ -5179,20 +5420,25 @@ function walksInCopy(copy: CheckoutCopy, from: string, rest: string): boolean {
  *  `elsewhere` is that directory's session path. `linked`: whether the directory it may end at, as
  *  the kernel holds it (the logical one's real path, or `elsewhere`), is not its path as written,
  *  through a symbolic link in it, so that the kernel walks a later `..` from elsewhere than the
- *  walk does; true too where it may leave the copy. */
+ *  walk does; true too where it may leave the copy. In the installed directory of an arm that
+ *  installs no copy, which holds nothing, it fails, and the shell stays where it was. */
 function cdLanding(
   copy: CheckoutCopy,
   from: string,
   to: string
 ): { enters: boolean; linked: boolean; elsewhere?: string } {
-  const [base, rest] = to.startsWith("/") ? [copy.root, insideRoot(copy.root, to)] : [from, to];
-  const start = insideRoot(copy.root, base);
-  const logical = insideRoot(copy.root, path.posix.resolve(from, to));
+  const absolute = to.startsWith("/");
+  const place = placeOf(copy, absolute ? to : from);
+  if (place === undefined) return { enters: false, linked: true };
+  const [base, rest] = absolute ? [place.root, insideRoot(place.root, to)] : [from, to];
+  const start = insideRoot(place.root, base);
+  const logical = insideRoot(place.root, path.posix.resolve(from, to));
   const walked = rest === undefined ? undefined : kernelWalk(copy, base, rest);
   if (rest === undefined || start === undefined || logical === undefined || walked === undefined) {
     return { enters: false, linked: true };
   }
-  const real = realpathSync(copy.dir);
+  const real = place.local;
+  if (real === undefined) return { enters: false, linked: false };
   const local = (inside: string) => path.join(real, inside);
   const directory = (at: string) => statSync(at, { throwIfNoEntry: false })?.isDirectory() === true;
   const parts = start === "" ? [] : start.split("/");
@@ -5209,7 +5455,11 @@ function cdLanding(
   const there = directory(local(logical));
   const landed = walked.there && directory(walked.at) ? insideRoot(real, walked.at) : undefined;
   const elsewhere =
-    landed === undefined || landed === logical ? undefined : sessionPath(copy, landed);
+    landed === undefined || landed === logical
+      ? undefined
+      : landed === ""
+        ? place.root
+        : `${place.root}/${landed}`;
   const linked =
     elsewhere !== undefined || (there && realpathSync(local(logical)) !== local(logical));
   return { enters: canonical && there, linked, ...(elsewhere === undefined ? {} : { elsewhere }) };
@@ -5229,29 +5479,36 @@ function globLeadsOut(value: string): boolean {
 }
 
 /** Why the glob word `text`, of the values `values`, run from the session's directories `cwds` in
- *  the copy (which is fixed, so its names are the session's), may make a word starting with `-`,
- *  read with no matcher, or undefined: a value that starts with `-` (as it stays where nothing
- *  matches, `nullglob` off); a value whose first part holds a glob character, which bash expands
- *  in the directory the shell is in, where one of those holds any name starting with `-` (no
- *  pattern is matched against it, so no bracket expression is misread and no matcher runs in the
- *  runner's thread), or is no directory the copy holds, whose names the runner cannot read. */
+ *  the copy of the tree each is in (`placeOf`; each copy is fixed, so its names are the
+ *  session's), may make a word starting with `-`, read with no matcher, or undefined: a value that
+ *  starts with `-` (as it stays where nothing matches, `nullglob` off); a value whose first part
+ *  holds a glob character, which bash expands in the directory the shell is in, where one of those
+ *  holds any name starting with `-` (no pattern is matched against it, so no bracket expression is
+ *  misread and no matcher runs in the runner's thread), or is no directory the copy holds, whose
+ *  names the runner cannot read (the installed directory of an arm that installs no copy holds
+ *  no name). */
 function globOptionFault(
   copy: CheckoutCopy,
   text: string,
   values: Iterable<string>,
   cwds: readonly string[]
 ): string | undefined {
-  const real = realpathSync(copy.dir);
   for (const value of values) {
     if (value.startsWith("-")) {
       return `${text} may make the word ${value}, which the program reads as an option`;
     }
     if (!/[*?[]/.test(value.split("/")[0] ?? "")) continue;
     for (const cwd of cwds) {
-      const inside = insideRoot(copy.root, cwd);
+      const place = placeOf(copy, cwd);
+      const inside = place === undefined ? undefined : insideRoot(place.root, cwd);
       let names: string[] | undefined;
       try {
-        names = inside === undefined ? undefined : readdirSync(path.join(real, inside));
+        names =
+          place === undefined || inside === undefined
+            ? undefined
+            : place.local === undefined
+              ? []
+              : readdirSync(path.join(place.local, inside));
       } catch {
         names = undefined;
       }
@@ -5290,12 +5547,15 @@ function nestedUnder(copy: CheckoutCopy, dir: string, name: string, withRoot = f
 }
 
 /** Why the simple command `command` at `state` may reach a file outside the session's checkout or
- *  show a value of the runner's in place of the session's, or undefined (see `escapes`). */
+ *  show a value of the runner's in place of the session's, or undefined (see `escapes`); where a
+ *  word of it may name a path under the case's skill's installed directory (`placeOf`), that
+ *  noted in `reached`. */
 function escapeFault(
   copy: CheckoutCopy,
   command: SimpleCommand,
   state: ShellState,
-  walk: Walk
+  walk: Walk,
+  reached: { installed: boolean }
 ): string | undefined {
   const [first, ...args] = command.words;
   const words = commandWords(command);
@@ -5320,6 +5580,12 @@ function escapeFault(
       ? "its cd names no directory, so it goes to $HOME, which is the runner's"
       : `its cd names no directory, so it goes to $HOME, the session's home ${copy.home}, and the runner follows no such cd`;
   }
+  // git and jj read the repository around the directory they start from or name: the one around
+  // the skill's installed directory is the session's machine's, which the sandbox does not hold.
+  const vcs = program === "git" || program === "jj";
+  if (vcs && state.cwds.some((cwd) => placeOf(copy, cwd)?.skill === true)) {
+    return `its ${program} command may run in the case's skill's installed directory, whose repository, on the session's machine, the sandbox does not hold`;
+  }
   const reaches = program !== undefined && !Object.hasOwn(NO_PATH_PROGRAMS, program);
   for (const word of [...(reaches ? args : []), ...command.redirects.map((each) => each.target)]) {
     const text = wordText(word);
@@ -5343,17 +5609,35 @@ function escapeFault(
         return `${text} holds a glob that may match a name starting with . (., .., .git), or one before .., and the runner does not walk what it matches`;
       }
       if (value.split("/").includes(".git")) return `${text} names .git`;
-      const fulls = value.startsWith("/")
-        ? [path.posix.normalize(value)]
-        : state.cwds.map((at) => path.posix.resolve(at, value));
-      if (fulls.some((full) => insideRoot(copy.root, full) === undefined)) {
-        return `${text} is outside the session's checkout ${copy.root}`;
+      // Each path the value may name, from each directory the shell may be in, is in the tree of
+      // one of the checkout and the skill's installed directory (`placeOf`), a relative one in the
+      // tree it is read from: the sandbox holds the checkout at CHECKOUT_MOUNT, not at its root, so
+      // a relative path from one of them to the other leads elsewhere there.
+      const absolute = value.startsWith("/");
+      const walked: { from: string; rest: string | undefined; skill: boolean }[] = [];
+      for (const from of absolute ? [undefined] : state.cwds) {
+        const full =
+          from === undefined ? path.posix.normalize(value) : path.posix.resolve(from, value);
+        const place = placeOf(copy, full);
+        if (place === undefined) return `${text} is outside the session's checkout ${copy.root}`;
+        if (from !== undefined && insideRoot(place.root, from) === undefined) {
+          return `${text} leads from ${from} to ${full}, across the checkout and the case's skill's installed directory, which the sandbox holds apart`;
+        }
+        if (place.skill && vcs) {
+          return `its ${program} command names ${text}, in the case's skill's installed directory, whose repository, on the session's machine, the sandbox does not hold`;
+        }
+        if (place.skill) reached.installed = true;
+        walked.push(
+          from === undefined
+            ? { from: place.root, rest: insideRoot(place.root, value), skill: place.skill }
+            : { from, rest: value, skill: place.skill }
+        );
       }
-      const walked = value.startsWith("/")
-        ? [{ from: copy.root, rest: insideRoot(copy.root, value) }]
-        : state.cwds.map((from) => ({ from, rest: value }));
-      if (walked.some(({ from, rest }) => rest === undefined || !walksInCopy(copy, from, rest))) {
-        return `${text} leads, through a symbolic link of the checkout and .. after it, outside the checkout`;
+      for (const { from, rest, skill } of walked) {
+        if (rest !== undefined && walksInCopy(copy, from, rest)) continue;
+        return skill
+          ? `${text} leads, through a symbolic link of the arm's copy of the case's skill and .. after it, outside it`
+          : `${text} leads, through a symbolic link of the checkout and .. after it, outside the checkout`;
       }
     }
   }
@@ -5537,22 +5821,24 @@ function expandsHome(script: Script): boolean {
 }
 
 /** Why `script`, run from the session's working directory `cwd` (`local`, its path in the copy on
- *  this machine), may reach a file outside the session's checkout or show a value of the runner's,
- *  or undefined (see the file's header, **Confinement**). Each word a program may open (every word
- *  after the program but those of NO_PATH_PROGRAMS, and every redirection's target) is read at
- *  each value it may take (`walkScript`: a variable the command assigned, `$PWD` and `$(pwd)` as
- *  each directory the shell may be in, `$(git rev-parse --show-toplevel)` where git meets no
- *  repository of the checkout's own below the root first, and, in a colocated copy, `$(jj root)`;
- *  where the copy names the session's home, `$HOME` and each `~` bash expands, `homeTildes`, as
- *  that home). */
+ *  this machine), may reach a file outside the session's checkout or show a value of the runner's
+ *  (see the file's header, **Confinement**); else whether a word of it may name a path under the
+ *  case's skill's installed directory (`installed`), which the call's sandbox then shows the arm's
+ *  copy of the skill at (`runShowingSkill`). Each word a program may open (every word after the
+ *  program but those of NO_PATH_PROGRAMS, and every redirection's target) is read at each value it
+ *  may take (`walkScript`: a variable the command assigned, `$PWD` and `$(pwd)` as each directory
+ *  the shell may be in, `$(git rev-parse --show-toplevel)` where git meets no repository of the
+ *  checkout's own below the root first, and, in a colocated copy, `$(jj root)`; where the copy
+ *  names the session's home, `$HOME` and each `~` bash expands, `homeTildes`, as that home). */
 function escapes(
   copy: CheckoutCopy,
   cwd: string,
   local: string,
   script: Script
-): string | undefined {
+): Unanswered | { readonly installed: boolean } {
+  const reached = { installed: false };
   const walk: Walk = {
-    check: (command, state) => escapeFault(copy, command, state, walk),
+    check: (command, state) => escapeFault(copy, command, state, walk, reached),
     subValues: (sub, state) => {
       const [pipelines, ...more] = sub;
       const [pipeline, ...others] = pipelines ?? [];
@@ -5592,13 +5878,14 @@ function escapes(
   let walked = script;
   if (copy.home !== undefined) {
     const read = homeScript(script);
-    if ("why" in read) return read.why;
+    if ("why" in read) return read;
     const view = sandboxHome(copy);
-    if (view !== undefined && "why" in view && expandsHome(read.script)) return view.why;
+    if (view !== undefined && "why" in view && expandsHome(read.script)) return view;
     walked = read.script;
     vars.set("HOME", new Set([copy.home]));
   }
-  return walkScript(walked, { vars, cwds: [cwd], linked }, false, walk);
+  const why = walkScript(walked, { vars, cwds: [cwd], linked }, false, walk);
+  return why === undefined ? reached : { why };
 }
 
 /** The command the pin's bash tool runs, and its minimizer reads, for a call `command` that gives
@@ -5811,10 +6098,11 @@ const MINIMIZED = "Oh My Pi's minimizer may rewrite its output";
 /**
  * The `bash` call `input` (parsed as `script`, run from the session's directory `cwd`) whose
  * output Oh My Pi's minimizer may rewrite (`minimizerRewrites`), answered by the pin's own bash
- * tool (`pinAnswer`, with the session's `shell`), its text and whether it is an error as the pin
- * gives them: where the pin rewrote the output, it ends with `[raw output: artifact://<n>]` and
- * the pin's notices after it, `<n>` the run's next artifact (`RunArtifacts`, one past the highest
- * it has seen), whose raw output `run` keeps for a later read of it (`internalRead`). Not
+ * tool (`pinAnswer`, with the session's `shell`, its sandbox showing the arm's copy of the case's
+ * skill where `installed`, as the runner's own run's does), its text and whether it is an error as
+ * the pin gives them: where the pin rewrote the output, it ends with `[raw output: artifact://<n>]`
+ * and the pin's notices after it, `<n>` the run's next artifact (`RunArtifacts`, one past the
+ * highest it has seen), whose raw output `run` keeps for a later read of it (`internalRead`). Not
  * answered: where the pin's answer names an artifact other than that one (a spill of its own
  * output), is not one text, or the pin gives none (`pinAnswer`); nor a command that expands `~`
  * or `$HOME`, which the pin runs with a HOME of its own.
@@ -5828,12 +6116,14 @@ async function minimizedAnswer(
     cwd,
     programs,
     shell,
+    installed,
   }: {
     command: string;
     script: Script;
     cwd: string;
     programs: readonly string[];
     shell: ShellSetup;
+    installed: boolean;
   },
   run: RunArtifacts
 ): Promise<CheckoutAnswer | Unanswered> {
@@ -5861,7 +6151,8 @@ async function minimizedAnswer(
       seed: id >= 2 ? { [`${id - 2}.seed.log`]: "" } : {},
     },
     programs,
-    shell
+    shell,
+    installed
   );
   if ("why" in pin) return { why: `${MINIMIZED}, so the pinned Oh My Pi answers it: ${pin.why}` };
   const [part, ...more] = pin.content;
@@ -6054,7 +6345,8 @@ async function bashAnswer(
   }
   const localCwd = path.join(realpathSync(copy.dir), insideRoot(copy.root, cwd) ?? "");
   const leads = escapes(copy, cwd, localCwd, script);
-  if (leads !== undefined) return { why: leads };
+  if ("why" in leads) return leads;
+  const { installed } = leads;
   if (
     !statSync(localCwd, { throwIfNoEntry: false })?.isDirectory() ||
     !walksInCopy(copy, cwd, "")
@@ -6062,7 +6354,7 @@ async function bashAnswer(
     return { why: `its working directory ${cwd} is no directory of the checkout` };
   }
   const lookedFor = programs.filter((each) => each !== "" && !Object.hasOwn(SHELL_BUILTINS, each));
-  const ran = await sandboxedBash(copy, command, cwd, [...new Set(lookedFor)]);
+  const ran = await sandboxedBash(copy, command, cwd, [...new Set(lookedFor)], installed);
   if ("why" in ran) return ran;
   const { output, exitCode, wallTimeMs } = ran;
   if (output.split("\n").some((line) => Buffer.byteLength(line) > BASH_COLUMNS)) {
@@ -6075,7 +6367,12 @@ async function bashAnswer(
     return knivesAnswer(
       copy,
       input,
-      await minimizedAnswer(copy, input, { command, script, cwd, programs: looked, shell }, run),
+      await minimizedAnswer(
+        copy,
+        input,
+        { command, script, cwd, programs: looked, shell, installed },
+        run
+      ),
       run
     );
   }

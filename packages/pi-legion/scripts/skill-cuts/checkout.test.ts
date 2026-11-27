@@ -2412,7 +2412,8 @@ pinned.test(
     expect(await answerCall(copy, "bash", PRE_GATE_RUN_CALL, "hashline")).toEqual(
       await answerCall({ ...copy, shell: {} }, "bash", PRE_GATE_RUN_CALL, "hashline")
     );
-  }
+  },
+  60_000
 );
 
 // Catches: a call of a session whose dotfiles predate the bash gate answered by the runner's own
@@ -2987,6 +2988,165 @@ test("where the copy names the session's home, a read's header of a file under i
     });
   }
 }, 60_000);
+
+/** The made-up directory the case's skill alpha is installed in, as its session's reads show it:
+ *  under `/home`, as a dev box's is, which every sandbox hides. */
+const SKILL_DIR = "/home/agent/.omp/agent/skills/alpha";
+/** The files of the arm's copy of alpha. */
+const SKILL_FILES = {
+  "SKILL.md": "# Alpha\n",
+  "references/x.md": "# X\n",
+  "references/personas/first.md": "# First\n",
+  "references/personas/second.md": "# Second\n",
+};
+
+/** A copy of a made-up checkout under `name`, made at MADE_AT, whose arm's copy of alpha at
+ *  SKILL_DIR holds SKILL_FILES (`old`) or is none (`none`). */
+function skillCopy(name: string, arm: "old" | "none"): CheckoutCopy {
+  const copy = filesCopy(name, { "docs/guide.md": GUIDE });
+  const source = path.join(scratch, `${name}-alpha`);
+  if (arm === "old") writeTree(source, SKILL_FILES);
+  const installed = { dir: SKILL_DIR, ...(arm === "old" ? { source } : {}) };
+  return { ...copy, madeAt: MADE_AT, installed };
+}
+
+// Catches: a written case's bash listing of its own skill's installed directory left unanswered as
+// outside the checkout (R4: 30 runs of ce-simplify-code's written cases, 26 `ls`, 2 `cd`, a `find`
+// and an `ls` beside git), answered from what this machine holds there, or listed with times that
+// differ from one run to the next.
+test("in the arm with the skill, a bash call whose paths outside the checkout are under the skill's installed directory lists the arm's copy there: ls, find, cd into it and ~ under the session's home, its entries' times the copy's making in every run", async () => {
+  const copy = skillCopy("skill-listing", "old");
+  for (const [command, text] of [
+    [`ls ${SKILL_DIR}/references/`, "personas\nx.md\n"],
+    [
+      `ls ${SKILL_DIR}/references ${SKILL_DIR}/references/personas`,
+      `${SKILL_DIR}/references:\npersonas\nx.md\n\n${SKILL_DIR}/references/personas:\nfirst.md\nsecond.md\n`,
+    ],
+    [
+      `cd ${SKILL_DIR}/references && ls personas && pwd`,
+      `first.md\nsecond.md\n${SKILL_DIR}/references\n`,
+    ],
+    [`cat ${SKILL_DIR}/references/x.md docs/guide.md`, `# X\n${GUIDE}`],
+  ] as const) {
+    expect({ command, answer: await bashText(copy, command) }).toEqual({ command, answer: text });
+  }
+  // find prints the files in the order the directory's entries come in, which the file system
+  // sets.
+  const found = await bashText(copy, `find ${SKILL_DIR} -type f`);
+  expect(typeof found === "string" ? found.split("\n").sort() : found).toEqual(
+    ["", ...Object.keys(SKILL_FILES).map((file) => `${SKILL_DIR}/${file}`)].sort()
+  );
+  // Each entry, and the directory that holds the installed one (`..`), carries the copy's time,
+  // and its files show the sandbox's owner, as the checkout's do; two runs list the same.
+  const listed = [];
+  for (const _run of ["first", "second"]) {
+    listed.push(await bashText(copy, `ls -l --time-style=+%s ${SKILL_DIR}/references/personas`));
+  }
+  const seconds = MADE_AT / 1000;
+  expect(
+    listed.map((each) => (typeof each === "string" ? each.split("\n").slice(1) : each))
+  ).toEqual(
+    Array(2).fill([
+      `-rw-r--r-- 1 root root 8 ${seconds} first.md`,
+      `-rw-r--r-- 1 root root 9 ${seconds} second.md`,
+      "",
+    ])
+  );
+  const long = await bashText(copy, `ls -la --time-style=+%s ${SKILL_DIR}`);
+  const rows = typeof long === "string" ? long.split("\n").slice(1, -1) : [];
+  expect(rows.map((row) => row.split(/ +/).slice(5))).toEqual(
+    [".", "..", "SKILL.md", "references"].map((entry) => [`${seconds}`, entry])
+  );
+
+  // The session's home holds the checkout and the skill: `~` leads to the skill too.
+  const homed = {
+    ...skillCopy("skill-listing-home", "old"),
+    root: "/home/agent/src/proj",
+    cwd: "/home/agent/src/proj",
+    home: "/home/agent",
+  };
+  for (const [command, text] of [
+    ["ls ~/.omp/agent/skills/alpha/references/", "personas\nx.md\n"],
+    ["find ~/.omp/agent/skills/alpha -name x.md", `${SKILL_DIR}/references/x.md\n`],
+    [
+      "cd ~/.omp/agent/skills/alpha && pwd && cat ~/src/proj/docs/guide.md",
+      `${SKILL_DIR}\n${GUIDE}`,
+    ],
+    [`ls ${SKILL_DIR}/references/personas`, "first.md\nsecond.md\n"],
+  ] as const) {
+    expect({ command, answer: await bashText(homed, command) }).toEqual({ command, answer: text });
+  }
+}, 60_000);
+
+// Catches: the arm that installs no skill shown a copy of it, or what this machine holds at its
+// installed directory, where the session's shell would find nothing there.
+test("in the arm with no skill, a bash listing of the skill's installed directory gets the shell's own error for a path it lacks and its exit status", async () => {
+  const copy = skillCopy("skill-none", "none");
+  expect(
+    sansWallTime(
+      await answerCall(copy, "bash", { command: `ls ${SKILL_DIR}/references/` }, "hashline")
+    )
+  ).toEqual({
+    text: `ls: cannot access '${SKILL_DIR}/references/': No such file or directory\n\n\nCommand exited with code 2`,
+    isError: true,
+  });
+  // A cd there fails, so the shell stays in the working directory.
+  expect(await bashText(copy, `cd ${SKILL_DIR}; ls`)).toBe(
+    `bash: line 1: cd: ${SKILL_DIR}: No such file or directory\ndocs\n`
+  );
+}, 60_000);
+
+// Catches: a call that names the skill's installed directory beside another path outside the
+// checkout, or one that leaves the installed directory, answered because a path of it is the
+// skill's; or git run there, whose repository the sandbox does not hold.
+test("a bash call that also names another path outside the checkout stays unanswered as outside it, as do a path that leaves the skill's installed directory, a relative one from the checkout into it, git there, and any path there where the copy names no skill", async () => {
+  const outside = "is outside the session's checkout";
+  for (const arm of ["old", "none"] as const) {
+    // A copy that holds the commit's history, so that git's rows meet the rule they test.
+    const copy = { ...skillCopy(`skill-mixed-${arm}`, arm), git: true };
+    for (const [command, why] of [
+      [
+        `ls ${SKILL_DIR}/references/ /home/agent/.omp/agent/agents`,
+        `/home/agent/.omp/agent/agents ${outside} ${ROOT}`,
+      ],
+      [`ls ${SKILL_DIR}/references/; ls ~/.omp/agent/agents`, "is under ~"],
+      [`ls ${SKILL_DIR}/..`, `${SKILL_DIR}/.. ${outside}`],
+      [`ls ${SKILL_DIR}-beta`, `${SKILL_DIR}-beta ${outside}`],
+      [`cd ${SKILL_DIR} && ls ../beta`, `../beta ${outside}`],
+      ["ls ../../../home/agent/.omp/agent/skills/alpha", "across the checkout"],
+      [`cd ${SKILL_DIR} && git log`, "the sandbox does not hold"],
+      [`git -C ${SKILL_DIR} log`, "the sandbox does not hold"],
+    ] as const) {
+      expect({ arm, command, answer: await bashText(copy, command) }).toEqual({
+        arm,
+        command,
+        answer: { why: expect.stringContaining(why) },
+      });
+    }
+  }
+  const { installed: _, ...plain } = skillCopy("skill-mixed-plain", "old");
+  expect(await bashText(plain, `ls ${SKILL_DIR}/references/`)).toEqual({
+    why: `${SKILL_DIR}/references/ ${outside} ${ROOT}`,
+  });
+}, 60_000);
+
+// Catches: a listing of the skill's installed directory that the pin's minimizer rewrites answered
+// by a pin whose sandbox does not show the arm's copy there.
+pinned.test(
+  "a listing of the skill's installed directory that the pin's minimizer rewrites is the pin's own bash tool's answer from the arm's copy there",
+  async () => {
+    const copy = filesCopy("skill-pin", { "docs/guide.md": GUIDE });
+    const source = path.join(scratch, "skill-pin-alpha");
+    writeTree(source, Object.fromEntries(PIN_NAMES.map((each) => [`references/${each}`, ""])));
+    const shown = { ...copy, madeAt: MADE_AT, installed: { dir: SKILL_DIR, source } };
+    const command = `ls -la ${SKILL_DIR}/references && ls ${SKILL_DIR}/references`;
+    expect(sansWallTime(await answerCall(shown, "bash", { command }, "hashline"))).toEqual({
+      text: `${PIN_CHAIN_TEXT}[raw output: artifact://1]\n`,
+      isError: false,
+    });
+  },
+  60_000
+);
 
 // Catches: a bash call that gives `pty`, `async`, `name` or `ready` as a placeholder (R4's
 // sessions give `pty: false, async: false, name: null` or `"null"`, `ready: null`, or a `ready` of
