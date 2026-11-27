@@ -59,11 +59,9 @@ func (e *Engine) retroHold(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 			return endHold{reason: record.HoldForFix, waits: []string{fix.Check, fix.Head}}, nil
 		}
 	}
-	_, waits, err := e.ciWaits(ctx, tx, issue.Key)
-	if err != nil || len(waits) == 0 {
-		return endHold{}, err
-	}
-	return endHold{reason: record.HoldForCI, waits: waits}, nil
+	// CONTROL (fb8-vfixend): the done rule reads no check that a CI job runs, so a task whose job
+	// still runs, or failed, moves into its retro.
+	return endHold{}, nil
 }
 
 // ciWaits is the head of the task of the issue key (taskHead) and what of its CI there has not
