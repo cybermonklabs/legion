@@ -9,5 +9,7 @@
 // internal/testpg/testdb, which imports no package of this module except internal/testwait, which
 // imports none, and so is open to every package, internal/store among them. Its package comment
 // says what it holds; every clone of this package's template, and the template itself, is dropped
-// through its Drop.
+// through its Drop. ClonePool keeps the pool_max_conns its cloned DSN names; a pool a test builds
+// itself takes Envoy's public testpool, whose one rule keeps a pool_max_conns the DSN names and
+// gives testpool.PoolConns where it names none, and which both Go modules import.
 package testpg

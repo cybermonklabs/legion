@@ -70,7 +70,7 @@ import { ONE_PIXEL_PNG } from "./one-pixel-png";
  * bearer for a session's, with two exceptions that are not Dispatch's own state: the component
  * model and the pull request come from the fake GitHub (`e2e/fake-github-helpers.ts`), and a
  * subscriber is a fake Envoy interest (`e2e/agents.ts`), because Dispatch stores none and its one
- * subscriber write is a DELETE (`packages/envoy/internal/dispatch/api/routes_table.go:364-365`).
+ * subscriber write is a DELETE (`packages/envoy/internal/dispatch/api/route_api_v1_issues_{key}_subscribers_{session_id}+delete.go`).
  * The suite's `test` resets both fakes before every row (`freshFakes`, e2e/test.ts). Each seed
  * returns the issue key with a name for every block id its tests read, so no test derives an id
  * from rendered text.

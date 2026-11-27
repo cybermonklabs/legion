@@ -112,7 +112,7 @@ Each is in `packages/contracts/src/dispatch-api.ts` or the modules it re-exports
 - **The Going SSE frames** of `GET /api/v1/going/requests/{id}/stream`
   (`packages/contracts/src/going.ts`). Not a JSON response: that route answers a
   `text/event-stream` of `id:`/`event:`/`data:` lines, for whose items OpenAPI 3.1 has no schema,
-  so its row is `Opaque` in `routeShapes` and `going.ts` types each frame's `data:`.
+  so its route's `Shape` is `Opaque` and `going.ts` types each frame's `data:`.
 - **`DispatchEvent` and the event payloads.** Not a response shape: Go's `model.Event.Payload`
   is bytes, so the generated `Event` an event read answers says `payload: unknown`, and
   `DispatchEvent` is the reading of those bytes per event type, which travel the message bus

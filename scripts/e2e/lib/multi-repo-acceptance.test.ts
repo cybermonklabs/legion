@@ -696,7 +696,7 @@ esac`;
     const kubectl = `
 case "$*" in
   "get pod the-pod -o jsonpath={.metadata.labels.legion\\.dev/issue}") printf 'ACME-2' ;;
-  "logs the-pod -c workspace-fetch") printf 'workspace-init fetch: the repository cache failed; fell back to GitHub for everything\\n' ;;
+  "logs the-pod -c workspace-init") printf 'workspace-init: the repository cache failed; fell back to GitHub for everything\\n' ;;
   *) echo "kubectl: unexpected call: $*" >&2; exit 1 ;;
 esac`;
     const { status, stderr } = await run(["cache", "ACME-2", "the-pod"], env, { kubectl });
@@ -714,7 +714,7 @@ esac`;
     const kubectl = `
 case "$*" in
   "get pod the-pod -o jsonpath={.metadata.labels.legion\\.dev/issue}") printf 'ACME-2' ;;
-  "logs the-pod -c workspace-fetch") printf 'workspace-init fetch: 6,612,345,678 bytes from the repository cache http://cache:8418 in 3s, its history verified in 1s; 128 bytes from GitHub for the delta (2 refs)\\n' ;;
+  "logs the-pod -c workspace-init") printf 'workspace-init: 6,612,345,678 bytes from the repository cache http://cache:8418 in 3s, its history verified in 1s; 128 bytes from GitHub for the delta (2 refs)\\n' ;;
   *) echo "kubectl: unexpected call: $*" >&2; exit 1 ;;
 esac`;
     const { status, stdout, evidence } = await run(["cache", "ACME-2", "the-pod"], env, {
@@ -723,7 +723,7 @@ esac`;
     expect(status).toBe(0);
     expect(stdout).toContain("CHECK cache: PASS");
     expect(readFileSync(join(evidence, "cache-logs-ACME-2.raw"), "utf8")).toContain(
-      "workspace-init fetch:"
+      "workspace-init:"
     );
   });
 
@@ -739,7 +739,7 @@ esac`;
     const kubectl = `
 case "$*" in
   "get pod the-pod -o jsonpath={.metadata.labels.legion\\.dev/issue}") printf 'ACME-2' ;;
-  "logs the-pod -c workspace-fetch") printf 'workspace-init fetch: 6,612,345,678 bytes from the repository cache http://cache:8418 in 1m2.345s, its history verified in 1m0.1s; 128 bytes from GitHub for the delta (2 refs)\\n' ;;
+  "logs the-pod -c workspace-init") printf 'workspace-init: 6,612,345,678 bytes from the repository cache http://cache:8418 in 1m2.345s, its history verified in 1m0.1s; 128 bytes from GitHub for the delta (2 refs)\\n' ;;
   *) echo "kubectl: unexpected call: $*" >&2; exit 1 ;;
 esac`;
     const { status, stdout } = await run(["cache", "ACME-2", "the-pod"], env, { kubectl });

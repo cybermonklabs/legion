@@ -171,7 +171,18 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 			}
 		}
 	}
-	hooks := openAPIHookRoutes()
+	// The hooks are read as the rows a server with its test hooks mounts and one without does not,
+	// rather than off the declarations' TestHook, which is what the emitter marks by.
+	served := map[string]bool{}
+	for _, route := range (&server{}).routes() {
+		served[route.Method+" "+route.Pattern] = true
+	}
+	hooks := map[string]bool{}
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		if name := route.Method + " " + route.Pattern; !served[name] {
+			hooks[name] = true
+		}
+	}
 	if len(hooks) != 15 {
 		t.Fatalf("the table mounts %d test hooks with Deps.TestHooksEnabled, want 15", len(hooks))
 	}
@@ -198,8 +209,8 @@ func TestARefusalStatusAlsoAnswersThePlainErrorBody(t *testing.T) {
 	paths, _ := tree.(map[string]any)["paths"].(map[string]any)
 	plain := openAPISchemaPrefix + "ErrorBody"
 	checked := 0
-	for name, shape := range routeShapes {
-		method, pattern, _ := strings.Cut(name, " ")
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		name, method, pattern, shape := route.Method+" "+route.Pattern, route.Method, route.Pattern, route.Shape
 		for _, refusal := range shape.Refusals {
 			status := fmt.Sprint(refusal.Status)
 			operation, _ := paths[pattern].(map[string]any)[strings.ToLower(method)].(map[string]any)
@@ -389,7 +400,8 @@ func TestNoSchemaRequiresOneNameTwice(t *testing.T) {
 // the two reads that resolve an id written short in a query value, so no handler's own shape
 // would name it. The document names it all the same, at 409, on every route that can answer it
 // and on no other: a client generated from the document then reads that refusal as the type
-// the Go one is reflected into, and a route idRoutes adds answers it there unasked.
+// the Go one is reflected into, and a route whose declared ID resolves an id answers it there
+// unasked.
 func TestEveryRouteThatCanAnswerIDAmbiguousNamesItsBody(t *testing.T) {
 	tree, _ := readOpenAPITree(t)
 	want := map[string]bool{
@@ -397,9 +409,9 @@ func TestEveryRouteThatCanAnswerIDAmbiguousNamesItsBody(t *testing.T) {
 		"GET /api/v1/references":           true,
 		"GET /api/v1/references/questions": true,
 	}
-	for name, entry := range idRoutes {
-		if entry.resolves() {
-			want[name] = true
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		if route.ID != nil && route.ID.resolves() {
+			want[route.Method+" "+route.Pattern] = true
 		}
 	}
 	named := map[string]bool{}
