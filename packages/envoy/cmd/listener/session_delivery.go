@@ -359,7 +359,7 @@ func (d *sessionDelivery) resumeHeld(r *http.Request, sessionID string) {
 // (sessionDelivery.stream); no consumer filter is judged on it (sessionConsumerFilter). options
 // are the connection's own beside its name: in edge mode, the listener's inbox prefix
 // (edgeGrant.connectOptions), and, from main's start, the start's credential wait
-// (startSessionDelivery, natsStart.option).
+// (startSessionDelivery, natsStart.options).
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
 // the whole start's: main ends the process with it, as it does for the live topics lane. main

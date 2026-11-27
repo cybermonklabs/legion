@@ -39,7 +39,8 @@ func (e endsStart) Error() string { return e.err.Error() }
 func (e endsStart) Unwrap() error { return e.err }
 
 // startClock is the clock a start that waits out refusals reads and waits on: wallStartClock, or a
-// test's own, which only the start and its tries move.
+// test's own (WithStartClock, and this package's fakeStartClock), which moves only as the test
+// moves it.
 type startClock struct {
 	now   func() time.Time
 	sleep func(time.Duration)

@@ -278,7 +278,7 @@ type roleLane struct {
 // It is a connect of the listener's start (natsStart): behind a hub whose servers reload a new
 // nkey one at a time, the main client can get in through the one server that has reloaded while
 // the lane's connect meets one that has not, so it waits out a refusal of the credential under
-// the start's bound (natsStart.option), which /healthz reports while it lasts and forgets once the
+// the start's bound (natsStart.options), which /healthz reports while it lasts and forgets once the
 // lane's connect gets in (natsStart.admitted), before its subscribe and flush. A failure still ends
 // the start, as main ends it, and names the credential only when the connect did not get in.
 //
@@ -291,7 +291,7 @@ func startRoleLane(cfg config.Service, edge *edgeGrant, handler nats.MsgHandler,
 		logger.Info("role lane not subscribed: an edge listener takes no role message; a shared listener forwards each to its holder's agent subject")
 		return roleLane{forwards: forwards}, nil
 	}
-	client, queue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, handler, start.option())
+	client, queue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, handler, start.options()...)
 	if err != nil {
 		return roleLane{}, err
 	}

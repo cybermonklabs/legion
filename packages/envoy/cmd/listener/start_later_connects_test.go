@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -133,51 +132,38 @@ func TestALaterConnectBegunNearTheCredentialBoundKeepsMainsTenTries(t *testing.T
 // machine's), and the step fails after its connect got in. /healthz then answers as on main, and
 // the line main ends the start with (natsStart.stepFailed) names the step's error and no
 // nats_credential: the credential is not what failed. Forgetting the refusal at the step's end
-// would leave /healthz reporting it and the line naming the credential.
+// would leave /healthz reporting it and the line naming the credential. The start runs on a held
+// clock (heldStart), and the server reloads while the lane's connect waits.
 func TestALaterStepThatFailsAfterItsConnectGotInNamesNoCredential(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv of
-	// bus.NkeySeedEnvVar).
+	t.Parallel()
 	seed, public := testnats.User(t)
 	_, fallback := testnats.User(t)
 	server, uri := testnats.StartConfig(t, nkeyAuthorization(fallback), []string{"-js"}, true)
-	t.Setenv(bus.NkeySeedEnvVar, seed)
 	cfg := config.Service{MachineID: "start-later-step", NATSURLs: []string{uri}, NATSReplicas: 1}
-	start := newNATSStart(listenerCredentialWait)
+	start, clock := heldStart(t, seed)
 	base := serveStartRoutes(t, start)
 	type outcome struct {
 		lane roleLane
 		err  error
 	}
-	began := time.Now()
 	returned := make(chan outcome, 1)
 	go func() {
 		lane, err := startRoleLane(cfg, nil, func(*nats.Msg) {}, nil, metrics.New(), logging.NewWithWriter("test", io.Discard), start)
 		returned <- outcome{lane, err}
 	}()
-	for {
-		status, _ := probe(t, base, "/healthz")
-		if status == http.StatusServiceUnavailable {
-			break
-		}
-		if time.Since(began) > laterStepWatchdog {
-			t.Fatalf("watchdog: /healthz did not report the refusal of the role lane's connect within %s", laterStepWatchdog)
-		}
-		select {
-		case got := <-returned:
-			t.Fatalf("the role lane's step returned before the server admitted its nkey: %v", got.err)
-		case <-time.After(100 * time.Millisecond):
-		}
+	w, early, first := heldNext(t, clock, returned, "the role lane's step")
+	if first {
+		t.Fatalf("the role lane's step returned before the server admitted its nkey: %v", early.err)
+	}
+	if status, fields := probe(t, base, "/healthz"); status != http.StatusServiceUnavailable {
+		t.Fatalf("/healthz answered %d %v while the role lane's connect waited out a refusal of its nkey, want 503", status, fields)
 	}
 	refusesRoleLane := fmt.Sprintf("{nkey: %q, permissions: {subscribe: {deny: [%q]}}}", public, contracts.RoleTopicPrefix+">")
 	if err := server.Reload(t, nkeyAuthorization(fallback, refusesRoleLane)); err != nil {
 		t.Fatalf("reload the server with the nkey admitted and its role-lane subscription refused: %v", err)
 	}
-	var got outcome
-	select {
-	case got = <-returned:
-	case <-time.After(laterStepWatchdog):
-		t.Fatalf("watchdog: the role lane's step had not returned %s after the server admitted its nkey", laterStepWatchdog)
-	}
+	w.end()
+	got, _ := heldFinish(t, clock, returned, "the role lane's step")
 	if got.err == nil {
 		got.lane.stopWatch()
 		got.lane.client.Close()
@@ -190,7 +176,7 @@ func TestALaterStepThatFailsAfterItsConnectGotInNamesNoCredential(t *testing.T) 
 		t.Errorf("/healthz after the role lane's connect got in and its subscription failed = %d %v, want main's 200 starting", status, fields)
 	}
 	var line bytes.Buffer
-	start.stepFailed(logging.NewWithWriter("test", &line), "core role subscription failed", got.err, os.LookupEnv)
+	start.stepFailed(logging.NewWithWriter("test", &line), "core role subscription failed", got.err, testnats.SeedOnly(seed))
 	if !strings.Contains(line.String(), "core role subscription failed") {
 		t.Fatalf("the line that ends the start is %q, want it to name the step", line.String())
 	}
@@ -200,9 +186,9 @@ func TestALaterStepThatFailsAfterItsConnectGotInNamesNoCredential(t *testing.T) 
 }
 
 // laterConnectRefusedFor is how long TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects
-// has the server refuse the nkey while a later connect of the start runs: past the ten tries a
-// second apart that a connect without the wait makes, about ten seconds, so such a connect has
-// ended with the refusal by then.
+// has the server refuse the nkey while a later connect of the start runs, on the start's clock
+// (heldStart): past the ten tries a second apart that a connect without the wait makes, about ten
+// seconds, so such a connect has ended with the refusal by then.
 const laterConnectRefusedFor = 15 * time.Second
 
 // TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects: the listener's start does not
@@ -211,16 +197,15 @@ const laterConnectRefusedFor = 15 * time.Second
 // of its own, and each ends the start when it fails. Behind a hub whose servers reload a new nkey
 // one at a time, the main client can get in through the one server that has reloaded while a later
 // connect meets one that has not. So each later connect waits out a refusal of the credential as
-// the main client does, under the start's own bound (natsStart.option), and /healthz answers 503
+// the main client does, under the start's own bound (natsStart.options), and /healthz answers 503
 // naming the refusal while it does. The server here admits the nkey for the main client, then
 // refuses it for laterConnectRefusedFor while a later connect runs, then admits it again: the
 // connect has not returned by the time the server admits the nkey again, and then it connects, and
 // /healthz answers as on main. A later connect without the wait ends with the refusal after its ten
-// tries, before the server admits the nkey again.
+// tries, before the server admits the nkey again. The start runs on a held clock (heldStart), and
+// the server admits the nkey again while the connect waits across laterConnectRefusedFor on it.
 func TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv of
-	// bus.NkeySeedEnvVar in each row's subtest).
-	const watchdog = 60 * time.Second
+	t.Parallel()
 	logger := logging.NewWithWriter("test", io.Discard)
 	for _, row := range []struct {
 		name string
@@ -249,12 +234,12 @@ func TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects(t *testing
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			seed, public := testnats.User(t)
 			_, fallback := testnats.User(t)
 			server, uri := testnats.StartConfig(t, nkeyAuthorization(fallback, nkeyUser(public)), []string{"-js"}, true)
-			t.Setenv(bus.NkeySeedEnvVar, seed)
 			cfg := config.Service{MachineID: "start-later-connects", NATSURLs: []string{uri}, NATSReplicas: 1}
-			start := newNATSStart(listenerCredentialWait)
+			start, clock := heldStart(t, seed)
 			base := serveStartRoutes(t, start)
 			client, err := connectListenerBus(cfg, nil, start)
 			if err != nil {
@@ -268,40 +253,42 @@ func TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects(t *testing
 			type outcome struct {
 				closer func()
 				err    error
-				at     time.Time
 			}
-			began := time.Now()
+			began := clock.since()
 			returned := make(chan outcome, 1)
 			go func() {
 				closer, err := row.connect(cfg, client, start)
-				returned <- outcome{closer, err, time.Now()}
+				returned <- outcome{closer, err}
 			}()
-			select {
-			case got := <-returned:
-				if got.closer != nil {
-					got.closer()
+			what := row.name + "'s connect"
+			for {
+				w, got, first := heldNext(t, clock, returned, what)
+				if first {
+					if got.closer != nil {
+						got.closer()
+					}
+					t.Fatalf("%s returned %s after it began on the start's clock, while the server refused the nkey and before it admitted it again: %v", what, clock.since()-began, got.err)
 				}
-				t.Fatalf("%s's connect returned %s after it began, while the server refused the nkey and before it admitted it again: %v", row.name, got.at.Sub(began), got.err)
-			case <-time.After(laterConnectRefusedFor):
+				if !w.endsPast(began + laterConnectRefusedFor) {
+					w.end()
+					continue
+				}
+				if status, fields := probe(t, base, "/healthz"); status != http.StatusServiceUnavailable || !strings.Contains(fmt.Sprint(fields["error"]), authorizationViolation) {
+					t.Fatalf("/healthz answered %d %v while %s waited out a refusal, want 503 naming %q", status, fields, what, authorizationViolation)
+				}
+				if err := server.Reload(t, nkeyAuthorization(fallback, nkeyUser(public))); err != nil {
+					t.Fatalf("reload the server with the listener's nkey: %v", err)
+				}
+				w.end()
+				break
 			}
-			if status, fields := probe(t, base, "/healthz"); status != http.StatusServiceUnavailable || !strings.Contains(fmt.Sprint(fields["error"]), authorizationViolation) {
-				t.Fatalf("/healthz answered %d %v while %s's connect waited out a refusal, want 503 naming %q", status, fields, row.name, authorizationViolation)
-			}
-			if err := server.Reload(t, nkeyAuthorization(fallback, nkeyUser(public))); err != nil {
-				t.Fatalf("reload the server with the listener's nkey: %v", err)
-			}
-			var got outcome
-			select {
-			case got = <-returned:
-			case <-time.After(watchdog):
-				t.Fatalf("watchdog: %s's connect had not returned %s after the server admitted the nkey again", row.name, watchdog)
-			}
+			got, _ := heldFinish(t, clock, returned, what)
 			if got.err != nil {
-				t.Fatalf("%s's connect returned %v %s after it began, want it to connect once the server admits the nkey again", row.name, got.err, got.at.Sub(began))
+				t.Fatalf("%s returned %v %s after it began on the start's clock, want it to connect once the server admits the nkey again", what, got.err, clock.since()-began)
 			}
 			t.Cleanup(got.closer)
 			if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
-				t.Fatalf("/healthz after %s's connect = %d %v, want main's 200 starting", row.name, status, fields)
+				t.Fatalf("/healthz after %s = %d %v, want main's 200 starting", what, status, fields)
 			}
 		})
 	}
