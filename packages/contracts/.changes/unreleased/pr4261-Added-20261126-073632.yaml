@@ -1,0 +1,5 @@
+kind: Added
+body: '`DISPATCH_READING_SURFACES` gains the rows of the new issue page''s lens lines, each drawn through the plain-text projection and proved by a unit test: `lens-fact-line`, a risk''s, a standard''s or a measurement''s fact line under its row; `lens-chain-line`, the words a lens''s chain names each entry by; and `lens-chip`, a chip of a lens line, which names a lens, a check, a constraint or a node a fact line cites.'
+time: 2026-11-26T07:36:32.000000000Z
+custom:
+    Issue: pr4261
