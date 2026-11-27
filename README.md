@@ -163,8 +163,9 @@ bun run dispatch:local                                       # Dispatch, seeded 
 ```
 
 In a Legion issue pod, the issue's roles share one memory limit, and a whole run can fill it for
-every role. `skills/legion-worker/references/tools.md` keeps one named test or file in the pod,
-such as `go -C packages/daemon test ./internal/api -run '^TestName$'`,
+every role. `skills/legion-worker/references/tools.md` keeps in the pod the tests and files a role
+added or changed, run by name, such as
+`go -C packages/daemon test ./internal/api -run '^TestName$'`,
 `(cd packages/<package> && bun test <file> -t '<test name>')` and `bun test scripts/<file>`. It
 also lets a role compile what it touched there, as one package's `bun run typecheck` does, and
 run `go -C packages/daemon vet -tags e2e ./...`. It sends a whole module's test run, such as
