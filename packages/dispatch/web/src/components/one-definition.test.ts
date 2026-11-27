@@ -3,7 +3,6 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { stripComments } from "../__tests__/strip-comments";
-import { CONTROL } from "./control-names";
 
 /**
  * One definition per control, and one owner for the page address (INFRA-3135).
