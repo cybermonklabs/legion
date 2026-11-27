@@ -1551,6 +1551,7 @@ test("a named look's report leaves the phase open and a step's completion closes
       completed++;
     },
     onUpdateAnswered: () => undefined,
+    env: PANE_ENV,
     handoffReport: async () => ({ commit: TIP, handoffId: RECORD.id, handoffVersion: 2 }),
     branchHead: noBranchHead,
     dispatch: noDispatch,
@@ -2781,6 +2782,7 @@ test("an architect's agent action is refused as unavailable before any grant", a
       controllerGrant: noControllerGrant,
       onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
+      env: PANE_ENV,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       dispatch: noDispatch,
