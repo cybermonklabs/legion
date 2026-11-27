@@ -960,8 +960,11 @@ type messageReplyInput struct {
 	Attempt int          `json:"attempt" required:"true"`
 	Body    *string      `json:"body"`
 	Error   *string      `json:"error"`
-	// InReplyToBlock is the id of the block of message {id} the reply answers ("b2").
+	// InReplyToBlock is the id of the block of message {id} the reply answers ("b2"), and Quote
+	// and Occurrence the words of that block the reply quotes, as createMessageInput's.
 	InReplyToBlock *string `json:"in_reply_to_block"`
+	Quote          *string `json:"quote"`
+	Occurrence     *int    `json:"occurrence"`
 }
 
 // messageReplyPlan is everything a session's reply to a message delivery is decided on, read
@@ -983,8 +986,9 @@ type messageReplyPlan struct {
 }
 
 // planMessageReply plans one session reply above every row lock the route takes: the block the
-// reply names with the index its message owes, and the reply's own index and references, for an
-// id and a created_at reserved here. Nothing it plans is written here.
+// reply names, with the words of it the reply quotes (quote, occurrence), and the index its
+// message owes, and the reply's own index and references, for an id and a created_at reserved
+// here. Nothing it plans is written here.
 //
 // The reply row is not inserted yet, so the document its `#id`s resolve against is handed over,
 // named by the fields that row will hold (planPendingItem, refs.PendingSource), as
@@ -993,11 +997,11 @@ type messageReplyPlan struct {
 // A direct message writes no mention, so its blocks hold none and it moves nothing. who is the
 // session replying, which a block it may not see is refused to.
 func (s *server) planMessageReply(
-	ctx context.Context, tx pgx.Tx, who model.Actor, message model.Message, body string, inReplyToBlock *string,
+	ctx context.Context, tx pgx.Tx, who model.Actor, message model.Message, body string, inReplyToBlock, quote *string, occurrence *int,
 ) (messageReplyPlan, error) {
 	plan := messageReplyPlan{body: body}
 	if inReplyToBlock != nil {
-		repair, block, err := s.planReplyBlock(ctx, tx, who, refs.ItemMessage, message.ID, *inReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE")
+		repair, block, err := s.planReplyBlock(ctx, tx, who, refs.ItemMessage, message.ID, *inReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE", quote, occurrence)
 		if err != nil {
 			plan.refusal, err = deferredRefusal(err)
 			return plan, err
@@ -1054,6 +1058,10 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_MESSAGE", http.StatusBadRequest, "in_reply_to_block names the block a reply's body answers; an error report has none")
 		return
 	}
+	if err := replyQuoteRefusal("INVALID_MESSAGE", "in_reply_to_block", input.InReplyToBlock, input.Quote, input.Occurrence); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 
 	followUp, err := followUpRequested(r)
 	if err != nil {
@@ -1061,15 +1069,16 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The message's target and the session its attempt names are read before the transaction,
-	// so a reply from a session the attempt does not name, to a message sent for a route to a
-	// role, asks the listener whether that session holds the role now with nothing held
-	// (lookUpRoleHolderReply). A read that finds nothing asks nothing: the transaction below
-	// answers that message or attempt as it always has. A read that fails is the route's 500. An
-	// attempt past message_deliveries.attempt's range names no delivery, so no read is made with
-	// it: the bound below (fitsIntegerColumn) answers it, where it always has.
+	// so a reply from a session the attempt does not name asks the listener, with nothing held,
+	// whether that session holds the role now, for a message sent for a route to a role, or
+	// replaced the attempt's session, for one sent to a session (lookUpRoleHolderReply). A read
+	// that finds nothing asks nothing: the transaction below answers that message or attempt as it
+	// always has. A read that fails is the route's 500. An attempt past
+	// message_deliveries.attempt's range names no delivery, so no read is made with it: the bound
+	// below (fitsIntegerColumn) answers it, where it always has.
 	var roleReply roleHolderReply
 	if fitsIntegerColumn(input.Attempt) {
-		roleReply, err = s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
+		roleReply, err = s.roleHolderReplyOf(r, actor, r.PathValue("id"), `
 		select coalesce(m.target, ''), d.session_id
 		from messages m left join message_deliveries d on d.message_id = m.id and d.attempt = $2
 		where m.id = $1
@@ -1121,7 +1130,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	// with a write phase.
 	var plan messageReplyPlan
 	if input.Body != nil {
-		if plan, err = s.planMessageReply(r.Context(), tx, actor, message, *input.Body, input.InReplyToBlock); err != nil {
+		if plan, err = s.planMessageReply(r.Context(), tx, actor, message, *input.Body, input.InReplyToBlock, input.Quote, input.Occurrence); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1149,10 +1158,11 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The session the attempt names answers it, and so does the session that holds the role the
-	// message went to now, while it is live: a different session that took the role from the one
-	// the attempt names is handed what that session had not read (lookUpRoleHolderReply).
+	// message went to now, while it is live, and a session that replaced the one the attempt
+	// names: a different session that took the role, or that replaced the session, is handed what
+	// that session had not read (lookUpRoleHolderReply).
 	if attempt.SessionID != actor.ID && !roleReply.allows(messageTarget(message.Target)) {
-		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "session may reply only to its own delivery, or to one sent for a role it holds while it is live")
+		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, replyForbiddenSession)
 		return
 	}
 	// Each outcome is a response, its status, and the event it appended, if any; they share one
@@ -1338,11 +1348,12 @@ func followUpRequested(r *http.Request) (bool, error) {
 // naming a block of parent stores it and previews that block's text in place of the parent's.
 //
 // plan carries the row: its id and created_at, written explicitly because its index and its
-// references were planned for them before this insert ran, the body, the block it names, the
-// step that writes its index and the write of its node (planMessageReply). A follow-up names no
-// block, and its thread and issue are the first reply's, so the plan's serves both rows the route
-// can insert. Nothing of the body and nothing of the reply's own row is read here, so this write
-// holds the transaction id for its own statements alone (INFRA-636).
+// references were planned for them before this insert ran, the body, the block it names with the
+// words of it the reply quotes (replyQuote), the step that writes its index and the write of its
+// node (planMessageReply). A follow-up names no block, and its thread and issue are the first
+// reply's, so the plan's serves both rows the route can insert. Nothing of the body and nothing
+// of the reply's own row is read here, so this write holds the transaction id for its own
+// statements alone (INFRA-636).
 func (s *server) insertSessionReply(
 	ctx context.Context, tx pgx.Tx, parent model.Message, actor model.Actor, plan messageReplyPlan,
 ) (model.Message, model.Event, error) {
@@ -1355,14 +1366,15 @@ func (s *server) insertSessionReply(
 	// a message's node and row: the node write adds no round trip while the reply holds its
 	// transaction id. What that write states is appended in the batch that appends the
 	// message.answered event below (appendCausingEvent).
+	quote, occurrence := replyQuote(plan.replyBlock)
 	var reply model.Message
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, plan.node)
 		b.Queue("", `
-			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8)
+			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, replies_to_quote, replies_to_occurrence, created_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 			returning `+messageColumns+`
-		`, plan.id, parent.IssueKey, author, plan.body, parent.Target, parent.ID, plan.block.nodeID(), plan.createdAt).QueryRow(func(row pgx.Row) error {
+		`, plan.id, parent.IssueKey, author, plan.body, parent.Target, parent.ID, plan.block.nodeID(), quote, occurrence, plan.createdAt).QueryRow(func(row pgx.Row) error {
 			var err error
 			reply, err = scanMessage(row)
 			return err

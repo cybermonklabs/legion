@@ -943,6 +943,7 @@ func (c *HTTPClient) call(ctx context.Context, method, path string, body any) ([
 	// A request that got no answer is named through redact.RequestError, before transportFailure
 	// reads its class: dispatch_url can carry a user name and a password, and a dial's or a
 	// resolver's error names the host, which is a password's tail when it holds an unencoded "@".
+	// The error unwraps to the request's own, so TransportRefusal and TransientError read it.
 	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("call Dispatch %s %s: %w", method, path, transportFailure(redact.RequestError(dispatchServer, route, err)))

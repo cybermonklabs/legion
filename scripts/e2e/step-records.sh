@@ -20,11 +20,12 @@
 #     lease, and the read of the issue's checks then closes it, done, since the project runs no
 #     production check and the issue has no check to wait for;
 #   - walk-to-done-with-one-failed-review: `dispatch steps --issue <KEY>` prints the header
-#     `<KEY>: 10 steps in 1 tasks` and one line for each run (steps 1 to 5, the review and the
-#     implementing and testing before it twice, the retro and the merge), each ended with its
-#     result, each with an agent, each of kind step with the model that answered; control: the
-#     failed review's record deleted from Dispatch's database (its node and its tuples), the same
-#     parse reports `4 step reviewer review attempt 1 … failed` missing;
+#     `<KEY>: 10 steps in 1 tasks`, the line `task default needs …` of the default plan, and one
+#     line for each run (steps 1 to 5, the review and the implementing and testing before it twice,
+#     the retro and the merge), each ended with its result, each with an agent, each of kind step
+#     with the model that answered; the task line is no run, and the parse passes over it; control:
+#     the failed review's record deleted from Dispatch's database (its node and its tuples), the
+#     same parse reports `4 step reviewer review attempt 1 … failed` missing;
 #   - a-write-that-names-another-session-is-refused: a step write sent with the agent's bearer
 #     and the actor ses_step_agent is refused 403 STEP_WRITER and leaves no record; control: the
 #     same body with the daemon's own credential and the actor legion-daemon:<PROJECT> is taken.

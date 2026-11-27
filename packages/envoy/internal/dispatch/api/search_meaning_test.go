@@ -334,13 +334,13 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 	return id
 }
 
-// TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live
-// query embedding priority over background work: cmd/dispatch wires embedqueue's own Embedder
-// behind embed.RateLimitedEmbedder and never wraps the one api.Deps holds, so a live search
-// request's own query embedding is never paced or blocked by that limiter, however deep into
-// backoff it currently is. This drives that exact scenario with one shared fake embedder whose
-// errFor discriminates by InputType, matching how the two callers actually differ in production
-// (embedqueue always calls with InputDocument, search's embedQuery always calls with
+// TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live query embedding priority over
+// background work: cmd/dispatch paces every call embedqueue makes (embedqueue.Deps.Paced keeps an
+// embed.RateLimitedEmbedder as the queue's pace) and never wraps the client api.Deps holds, so a
+// live search request's own query embedding is never paced or blocked by that limiter, however
+// deep into backoff it currently is. This drives that exact scenario with one shared fake embedder
+// whose errFor discriminates by InputType, matching how the two callers actually differ in
+// production (embedqueue always calls with InputDocument, search's embedQuery always calls with
 // InputQuery): a background goroutine keeps embedqueue's own ProcessBatch throttled and backing
 // off for the whole test, simulating a backlog saturating the model service's quota for bulk
 // document traffic, while concurrent live search requests keep succeeding non-degraded, because
@@ -376,9 +376,8 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 
 	bgCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	backgroundEmbedder := embed.NewRateLimitedEmbedder(embedder)
-	floor := backgroundEmbedder.Interval()
-	backgroundDeps := embedqueue.Deps{Store: database, Embedder: backgroundEmbedder}
+	backgroundDeps := embedqueue.Deps{Store: database, Embedder: embedder}.Paced()
+	floor := backgroundDeps.PaceIntervalForTest()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -399,7 +398,7 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 			t.Fatal("the background drain stopped before any call of it was throttled")
 		default:
 		}
-		interval := backgroundEmbedder.Interval()
+		interval := backgroundDeps.PaceIntervalForTest()
 		return interval, interval > floor
 	})
 
@@ -1278,7 +1277,7 @@ func TestProjectScopedSearchFindsItsCommentsPastThatCrowdWhileTheFillIsStillLabe
 
 // TestAFilteredMeaningSearchFindsTheCommentItsFiltersKeep is the defect at the other boundary:
 // not the project's, but q's own three filters (searchRowFilters). The route says ?status=,
-// ?author= and ?updated_since= narrow every leg of the search (routes_table.go, GET
+// ?author= and ?updated_since= narrow every leg of the search (the route files of GET
 // /api/v1/search), and main applies all three inside the comment arm's ordered, limited
 // candidate select. The arm this change buys takes the nearest searchWindowCandidates comment
 // windows first and applies them above that limit, so one crowd of windows the filter would

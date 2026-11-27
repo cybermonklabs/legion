@@ -17,7 +17,7 @@
 // shows by failing at that step.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
+// own whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration, the
 // real store and its migrations, the real HTTP API, the real intake consumers, the real review
 // round and its stuck notice, the real merge-state ladder (daemon's readMergeStates) and the real
 // state build. Facts enter only as production's do: GitHub envelopes on the ENVOY_NOTIFICATIONS
@@ -175,7 +175,7 @@ func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 	o := fakeRuntime(r.rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, o, r.log())
 	return r
 }
 

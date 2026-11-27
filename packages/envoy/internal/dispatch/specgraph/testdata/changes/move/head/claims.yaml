@@ -1,0 +1,6 @@
+---
+type: requirement
+id: legion-keeps-each-claim-in-dispatch
+kind: behavior
+text:
+  - Legion keeps the claim of each issue in Dispatch.

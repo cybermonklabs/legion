@@ -1,0 +1,21 @@
+# proxy-one-grant-per-request: a request is handled for the grant the connection's password proves
+# and for no other live grant of its enrollment, so the placeholder of another grant of the session
+# reaches the service unswapped.
+# must fail: TestARequestIsHandledForTheLiveGrantOfTheEnrollmentWhosePlaceholderItCarries
+# must fail: TestAConnectToAHostOnlyAnotherGrantOfTheEnrollmentBindsIsRead
+# must fail: TestARequestOfTheConnectionsOwnGrantReadsNoOtherGrant
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxy/enrollment.go
++++ b/packages/envoy/internal/cipher/proxy/enrollment.go
+@@ -70,6 +70,10 @@ func (s *Server) handledFor(ctx context.Context, rules proxyrules.Rules, own req
+ 	if found && (fallback.holdsPlaceholder || !headersHoldPlaceholder(prefixes, request.Headers)) {
+ 		return fallback, true, nil
+ 	}
++	// MUTANT: a request is handled for the connection's own grant alone.
++	if true {
++		return fallback, found, nil
++	}
+ 	others, err := s.otherGrantsBinding(ctx, rules, own, host, port)
+ 	if err != nil {
+ 		return handling{}, false, err
