@@ -359,9 +359,11 @@ func TestCarryVerdictOverTheApprovedAndTheNewVersion(t *testing.T) {
 // carries the approval of A when it differs from A only in ask blocks whose asks the approver
 // answered after the approval (approverAnswered), a block added since among them - the
 // approver's answer to it is the whole change since the version they approved - and a block A
-// held open under other words. It composes with R10's case, naming both. A block added since that
-// nobody answered, or that someone else answered, an edit outside the blocks and a block of A
-// removed carry nothing.
+// held open under other words. It composes with R10's case, naming both. Such a block that stands
+// alone in its container - a blockquote, a callout, or the document itself - carries as well: its
+// container is left holding an empty paragraph in both versions (withoutBlocks). A block added
+// since that nobody answered, or that someone else answered, an edit outside the blocks and a
+// block of A removed carry nothing.
 // An issue's reopen is carried too: the closed issue's version shows the question the close
 // withdrew resolved, and the reopen's version shows it open again, which differs in the
 // server-owned attributes of its block alone, on a fleet of one build and while two builds serve.
@@ -375,6 +377,22 @@ func TestCarryVerdictCarriesTheApproversAnswersGivenSinceTheApproval(t *testing.
 	waveResolved := `:::ask{#wave urgency="med" multiple="false" state="resolved"}` + "\n" + waveBody
 	waveOpenInStep := `:::ask{#wave urgency="med" multiple="false" state="open"}` + "\n" + waveBody
 	approvers := map[string]bool{"wave": true}
+	// quoted is markdown inside a blockquote, as the renderer writes one; called is markdown as the
+	// one block of a callout.
+	quoted := func(markdown string) string {
+		lines := strings.Split(strings.TrimSuffix(markdown, "\n"), "\n")
+		for index, line := range lines {
+			if line == "" {
+				lines[index] = ">"
+				continue
+			}
+			lines[index] = "> " + line
+		}
+		return strings.Join(lines, "\n") + "\n"
+	}
+	called := func(markdown string) string {
+		return `::::callout{#holder kind="note" title=""}` + "\n" + markdown + "::::\n"
+	}
 	parse := func(markdown string) *pmdoc.Node {
 		t.Helper()
 		tree, err := pmdoc.ParseRendering(markdown)
@@ -393,6 +411,9 @@ func TestCarryVerdictCarriesTheApproversAnswersGivenSinceTheApproval(t *testing.
 	}{
 		{"the approver's answer to a block added since the approval", prose + own, prose + own + "\n" + waveAnswered, approvers, answers},
 		{"the approver's answer to a block the approved version held open under other words", prose + own + "\n" + waveReworded, prose + own + "\n" + waveAnswered, approvers, answers},
+		{"the approver's answer to a block alone in a blockquote, held open under other words", prose + own + "\n" + quoted(waveReworded), prose + own + "\n" + quoted(waveAnswered), approvers, answers},
+		{"the approver's answer to a block alone in a callout, held open under other words", prose + own + "\n" + called(waveReworded), prose + own + "\n" + called(waveAnswered), approvers, answers},
+		{"the approver's answer to the document's one block, held open under other words", waveReworded, waveAnswered, approvers, answers},
 		{"the approver's answer to a block added since, the attributes dropped from another", prose + ownDecided + ownBody, prose + ownBare + ownBody + "\n" + waveAnswered, approvers, answerCase.change + ", and " + attributes},
 		{"a block added since that someone else answered", prose + own, prose + own + "\n" + waveAnswered, nil, ""},
 		{"a block added since and left open", prose + own, prose + own + "\n" + waveOpen, nil, ""},

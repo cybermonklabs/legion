@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -553,6 +554,61 @@ func TestARetypeBetweenAnAskAndADecisionMovesItsShapedTie(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A decision of a document whose ref_key fits the store's bound, but whose blocks' addresses
+// (ref_key#id) do not, has no node, and its shaped row is written naming none, with no tuple
+// (queueBlockRefs). A person retypes it to an ask block that keeps its id and its shaped, which
+// now hangs on the ask's node (TypedFacts.pairs), whose address fits: the index names the row with
+// that node and states the tie out of it, as an insert of the same pair would (rehome), so the
+// ask's node states the shaped tie the Decisions read takes, in the version of the retype and not
+// only once a pass that names surviving rows runs. The tie's far end is a block of a short-named
+// document of the same issue, inside the bound: a tie naming another issue is no pair.
+func TestARetypeOfADecisionPastTheBoundToAnAskNamesItsShapedRowOnTheAsksNode(t *testing.T) {
+	database := parentDatabase(t)
+	// The ref_key is the issue's key, '/' and the slug, one byte short of the bound.
+	const name = "PAST"
+	issue := parentProject(name) + "-1"
+	document := newParentDocument(t, database, name, strings.Repeat("l", MaxBlockNodeBytes-1-len(issue+"/")))
+	if len(document.refKey) > MaxBlockNodeBytes || blockIDFits(document.refKey, "a1") {
+		t.Fatalf("the document's ref_key is %d bytes against the bound %d, want it inside and block a1's address past it, so this test would prove nothing",
+			len(document.refKey), MaxBlockNodeBytes)
+	}
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	spec := "dispatch://" + issue + "/artifact/notes#b-r1"
+	specRef, _ := text.ParseRef(spec, "")
+	specTarget, _ := TargetOf(specRef)
+	decided := renderTypedVersion(t, ":::decision{#a1 shaped=\""+spec+"\"}\nWe chose REST.\n:::\n")
+	asked := renderTypedVersion(t, ":::ask{#a1 shaped=\""+spec+"\"}\nWhich transport?\n:::\n")
+	shapedRows := func() []string {
+		var shaped []string
+		for _, row := range typedRows(t, database.Pool, document.artifact) {
+			if row.kind == TupleShaped {
+				shaped = append(shaped, row.block+" -> "+row.toKind+" "+row.toID+" on "+row.node)
+			}
+		}
+		return shaped
+	}
+	to := specTarget.Kind + " " + specTarget.ID
+
+	first := document.writeVersion(t, 1, decided.markdown, alice)
+	ask := answeredAsk(t, document, "a1", first.at)
+	indexWhole(t, database, document, 1, decided, first)
+	if got, want := shapedRows(), []string{"a1 -> " + to + " on :"}; !slices.Equal(got, want) {
+		t.Fatalf("the decision's version wrote the shaped rows %v, want %v: a row naming no node", got, want)
+	}
+	if ties := currentTies(t, database.Pool, graphstore.KindAsk, ask, TupleShaped); len(ties) != 0 {
+		t.Fatalf("the ask's node states %v while its block is a decision, want no shaped tie", ties)
+	}
+
+	second := document.writeVersion(t, 2, asked.markdown, alice)
+	indexWhole(t, database, document, 2, asked, second)
+	if got, want := shapedRows(), []string{"a1 -> " + to + " on " + graphstore.KindAsk + ":" + ask}; !slices.Equal(got, want) {
+		t.Errorf("the retype's version left the shaped rows %v, want %v: the row named with the ask's node", got, want)
+	}
+	if ties, want := currentTies(t, database.Pool, graphstore.KindAsk, ask, TupleShaped), []string{TupleShaped + " -> " + to}; !slices.Equal(ties, want) {
+		t.Errorf("the ask's node states %v after the retype, want %v, as its row now names it", ties, want)
 	}
 }
 

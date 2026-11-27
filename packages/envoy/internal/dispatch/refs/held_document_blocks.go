@@ -97,9 +97,47 @@ func heldBlockParentDifferences(
 // heldLink is one link a block node states beside its membership of its document and its
 // placement: a mention's or a pointer's, under the kind its pair names, to its far end.
 // A reading's authored_by (PlanDecisionNodes) and an ask block copy's copied_from (docs'
-// claimCopies) are no link: no block_refs row projects either, so no pair of a version
-// writes them and no pass that drops a row retracts them.
+// claimCopies) are no link: no block_refs row projects either, so no pair of a version writes
+// them and the reconcile of the links retracts neither. A copy's copied_from is retracted where
+// its block goes instead, by the pass that states the block gone (heldCopiedFrom).
 type heldLink struct{ kind, toKind, toID string }
+
+// heldCopiedFrom is, for each of ids, blocks of the document refKey names that a version no longer
+// holds, the asks its node states it was copied from now (graphstore.TupleCopiedFrom, read the way
+// the store reads a current relation, graphstore.CurrentTupleRead), by block id, in far-end order.
+// A block whose node states none, or that is no node of the store, is absent. The index pass reads
+// it for the blocks it states gone (planBlockNodes), so the write that drops a copy - an agent's
+// edit, an upload, a settlement's version - ends the relation in the same write and under the same
+// event: no later write reads that block's row, which the drop deletes, to end it then. One probe a
+// block, through graph_tuples_current, whose predicate the kind written into the text proves.
+func heldCopiedFrom(ctx context.Context, q Queryer, refKey string, ids []string) (map[string][]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `
+		select gone.id, copied.to_id
+		from unnest($2::text[]) as gone (id)
+		cross join lateral (`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_id, t.asserted`,
+		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = $1 || '#' || gone.id
+			  and t.kind = '`+graphstore.TupleCopiedFrom+`' and t.to_kind = '`+graphstore.KindAsk+`'`)+`
+		) copied
+		where copied.asserted
+		order by gone.id, copied.to_id
+	`, refKey, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the copies the blocks of %s a version drops hold: %w", refKey, err)
+	}
+	defer rows.Close()
+	held := map[string][]string{}
+	for rows.Next() {
+		var id, ask string
+		if err := rows.Scan(&id, &ask); err != nil {
+			return nil, fmt.Errorf("scan a copy a block of %s a version drops holds: %w", refKey, err)
+		}
+		held[id] = append(held[id], ask)
+	}
+	return held, rows.Err()
+}
 
 // heldDocumentBlocks is what the store states now of the blocks of the document refKey names, by
 // block id: each block node that states itself a member of the document (an in_document tuple

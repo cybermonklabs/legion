@@ -30,24 +30,42 @@ func heldTuples(kinds string, holders ...string) string {
 // an SQL expression) is read as, null where no marked asks row names that ask's node or its row
 // names no block. In the document the ask's row names (asks.block_artifact_id), it is the ask's
 // own block, the id that row names (asks.block_id). In any other document of its owner it is the
-// block node's own parent (document_blocks.parent_block_id), a copy of the ask: a reading in a
-// copy hangs on the source's node (refs.TypedSources.Shown), and the copy keeps the block id it
-// was copied under while the source can take a fresh one (docs' restore, R6's collision rule).
+// block node's own parent (document_blocks.parent_block_id) where that parent is a copy of the
+// ask: a reading in a copy hangs on the source's node (refs.TypedSources.Shown), and the copy
+// keeps the block id it was copied under while the source can take a fresh one (docs' restore,
+// R6's collision rule). The parent is a copy of the ask where its node states a current
+// copied_from to that ask (docs' claimCopies). The parent's id alone proves nothing, since it is
+// the row this census checks the part_of against: a reading whose part_of names another marked
+// ask than the one its parent copies reads null here, so the ask's address stays the link and
+// reads as a difference. Two states take the parent without that tuple: a document that owes a
+// settlement (doc_settlements_pending), since a version's typed-node pass hangs a copy's reading on
+// its source before the settlement after it claims the copy, in the write that deletes that row;
+// and a parent whose address is past the store's bound, which is no node to state one.
 func askBlockID(node, address string) string {
+	parent := `split_part(` + node + `, '#', 1) || '#' || d.parent_block_id`
 	return `(select case when own.ref_key = split_part(` + node + `, '#', 1) then k.block_id
-		             else (select d.parent_block_id from document_blocks d where d.node_id = ` + node + `) end
+		             else (select d.parent_block_id from document_blocks d
+		                   where d.node_id = ` + node + ` and (
+		                       exists (select 1 from (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.asserted`,
+		`t.from_kind = '`+refs.BlockNodeKind+`' and t.from_id = `+parent+`
+		                           and t.kind = '`+graphstore.TupleCopiedFrom+`' and t.to_kind = '`+graphstore.KindAsk+`'
+		                           and t.to_id = `+address) + `
+		                       ) copied where copied.asserted)
+		                       or exists (select 1 from doc_settlements_pending owed where owed.artifact_id = d.artifact_id)
+		                       or octet_length(` + parent + `) > ` + addressBound + `)) end
 		from asks k join artifacts own on own.id = k.block_artifact_id
 		where k.node_kind = '` + graphstore.KindAsk + `' and k.node_address = ` + address + ` and k.block_id is not null)`
 }
 
 // placedLinks is currentLinks of a block node n under kinds, but a part_of whose far end is an
 // ask's node is written as the block of n's own document that holds that ask (askBlockID): the
-// ask's own block in the document its row names, and a copy's block, the one n stands in, in any
-// other document of its owner. A reading in an answered ask hangs on the ask's node, while its
-// row's parent_block_id keeps the id of the ask block holding it, which is that tuple's projection
-// (refs' reconcileBlockParents), so both read as one link to that block. An ask no marked row
-// names, or whose row names no block, keeps its own address, which no row states. A ref_key holds
-// no '#', so n's document is the part of its id before the first one.
+// ask's own block in the document its row names, and in any other document of its owner the block
+// n stands in where that block is a copy of the ask. A reading in an answered ask hangs on the
+// ask's node, while its row's parent_block_id keeps the id of the ask block holding it, which is
+// that tuple's projection (refs' reconcileBlockParents), so both read as one link to that block.
+// An ask no marked row names, or whose row names no block, or a part_of to an ask the block n
+// stands in is no copy of, keeps the ask's own address, which no row states. A ref_key holds no
+// '#', so n's document is the part of its id before the first one.
 func placedLinks(kinds string) string {
 	return `(select coalesce(string_agg(placed.link, ',' order by placed.link), '')
 	 from (
