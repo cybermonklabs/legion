@@ -9,39 +9,54 @@ import (
 
 // A block has one parent, so the plan_task block's parent attribute holds at most one reference,
 // wherever it is read: markdown parsed for a write, a stored version's markdown, and a tree's
-// value. The manifest here is this one at the version after it, which creates parent, so each
-// refusal is the limit's own and not the release order's. needs, another block[] attribute of the
-// same block, holds two, so the limit is parent's alone. A manifest whose parent is not a block[]
-// attribute is refused: parent places a block, and only a block[] attribute points at one.
+// value. The values and the refusal are the shared table's rows of parent and of needs
+// (sharedPointerRows), so the rule is held to the words @legion/contracts' parentProblem gives.
+// The manifest here is this one at the version after it, which creates parent, so each refusal is
+// the limit's own and not the release order's. needs, another block[] attribute of the same block,
+// holds two, so the limit is parent's alone. A manifest whose parent is not a block[] attribute is
+// refused: parent places a block, and only a block[] attribute points at one.
 func TestAParentHoldsAtMostOneReference(t *testing.T) {
-	const (
-		first   = "dispatch://ACME-1/artifact/plan-md#b-t1"
-		second  = "dispatch://ACME-1/artifact/plan-md#b-t3"
-		refusal = "holds 2 references; a block has one parent, so it holds at most one"
-	)
+	var one, two, needsTwo sharedPointerRow
+	for _, row := range sharedPointerRows(t) {
+		switch {
+		case row.Attribute == ParentAttribute && row.OK && row.Value != "":
+			one = row
+		case row.Attribute == ParentAttribute && !row.OK:
+			two = row
+		case row.Attribute == "needs" && strings.Contains(row.Value, " "):
+			needsTwo = row
+		}
+	}
+	if one.Value == "" || two.Problem == "" || needsTwo.Value == "" {
+		t.Fatalf("the shared table holds no row of one parent (%+v), of two parents with a problem (%+v), or of a needs of two (%+v)", one, two, needsTwo)
+	}
 	restore, err := UseManifestForTest(manifestAheadForTest(t, func(*BlockSchema, int) {}))
 	if err != nil {
 		t.Fatalf("install the manifest of the version after this one: %v", err)
 	}
 	t.Cleanup(restore)
 
-	tree, err := ParseForWrite(":::plan_task{#t2 parent=\""+first+"\"}\nBody.\n:::\n", nil)
+	tree, err := ParseForWrite(":::plan_task{#t2 parent=\""+one.Value+"\"}\nBody.\n:::\n", nil)
 	if err != nil {
 		t.Fatalf("a plan task under one block = %v, want it written", err)
 	}
-	two := ":::plan_task{#t2 parent=\"" + first + " " + second + "\"}\nBody.\n:::\n"
-	if _, err := ParseForWrite(two, nil); err == nil || !strings.Contains(err.Error(), refusal) {
-		t.Errorf("a write of a plan task under two blocks = %v, want it refused: %s", err, refusal)
+	twice := ":::plan_task{#t2 parent=\"" + two.Value + "\"}\nBody.\n:::\n"
+	if _, err := ParseForWrite(twice, nil); err == nil || !strings.Contains(err.Error(), two.Problem) {
+		t.Errorf("a write of a plan task under two blocks = %v, want it refused: %s", err, two.Problem)
 	}
-	if _, err := Parse(two); err == nil || !strings.Contains(err.Error(), refusal) {
-		t.Errorf("a stored plan task under two blocks = %v, want it refused: %s", err, refusal)
+	if _, err := Parse(twice); err == nil || !strings.Contains(err.Error(), two.Problem) {
+		t.Errorf("a stored plan task under two blocks = %v, want it refused: %s", err, two.Problem)
 	}
 	// A tree holds the value as the array Yjs gives back.
-	tree.Children[0].Attrs["parent"] = []any{first, second}
-	if err := tree.Validate(); err == nil || !strings.Contains(err.Error(), refusal) {
-		t.Errorf("a tree's plan task under two blocks = %v, want it refused: %s", err, refusal)
+	items := []any{}
+	for _, item := range strings.Split(two.Value, " ") {
+		items = append(items, item)
 	}
-	if _, err := ParseForWrite(":::plan_task{#t2 needs=\""+first+" "+second+"\"}\nBody.\n:::\n", nil); err != nil {
+	tree.Children[0].Attrs["parent"] = items
+	if err := tree.Validate(); err == nil || !strings.Contains(err.Error(), two.Problem) {
+		t.Errorf("a tree's plan task under two blocks = %v, want it refused: %s", err, two.Problem)
+	}
+	if _, err := ParseForWrite(":::plan_task{#t2 needs=\""+needsTwo.Value+"\"}\nBody.\n:::\n", nil); err != nil {
 		t.Errorf("a plan task that needs two blocks = %v, want it written", err)
 	}
 

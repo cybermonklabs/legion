@@ -1,8 +1,8 @@
-import { blockPointersProblem } from '@legion/contracts';
+import { blockPointersProblem, parentProblem } from '@legion/contracts';
 import type { Node as ProseMirrorNode, NodeType } from '@milkdown/kit/prose/model';
 import type { EditorState, Transaction } from '@milkdown/kit/prose/state';
 
-import { blockPointerRefusal, findBlock, parentProblem } from './block-pointers.js';
+import { blockPointerRefusal, findBlock } from './block-pointers.js';
 import { creatable, creatableValue, type BlockAttributeSchema, type BlockSchema, type BlockTypeSchema } from './block-schema.js';
 import { BLOCK_ID_ATTR, blockIdOf } from './editor/schema/block-ids.js';
 

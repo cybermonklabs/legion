@@ -9,6 +9,7 @@ import {
   encodeBlockId,
   formatBlockReference,
   MAX_BLOCK_ID_BYTES,
+  parentProblem,
   parseBlockFragment,
   parseBlockPointerValue,
   parseCanonicalBlockReference,
@@ -103,6 +104,18 @@ test("the Go encoder's table is the same table", async () => {
 });
 
 test.each([...DISPATCH_BLOCK_POINTER_VALUES])("decides block[] value %p", (row) => {
+  if (row.attribute !== undefined) {
+    // A row of an attribute's own rule holds a well-formed value, which that attribute takes or
+    // refuses with the row's problem.
+    const pointers = parseBlockPointerValue(row.value);
+    expect(pointers).toBeDefined();
+    const problem = parentProblem(row.attribute, pointers ?? []);
+    expect(problem === undefined).toBe(row.ok);
+    if (row.problem !== undefined) {
+      expect(problem).toContain(row.problem);
+    }
+    return;
+  }
   expect(parseBlockPointerValue(row.value) !== undefined).toBe(row.ok);
   // A refused value has a reason, and an accepted one none.
   expect(blockPointerValueProblem(row.value) === undefined).toBe(row.ok);

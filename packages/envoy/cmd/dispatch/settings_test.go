@@ -2338,7 +2338,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			refusedWith(t, map[string]string{"DISPATCH_TEST_CREATE_STAGED": "1"}, "DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_CREATE_STAGED")
 			// Its reader: a process started with it takes a plan that puts parent, which its
 			// manifest stages for the next version, into a document that holds none. The same
-			// process started without it refuses that plan.
+			// process started without it refuses that plan. A subprocess runs the shipped manifest
+			// alone, so this case writes the element that manifest stages now, and moves to the next
+			// staged element at each version that makes parent creatable; pmdoc's
+			// TestATestProcessCreatesAStagedElementOnlyWhenTold holds the hook on a made-up element.
 			t.Run("process", func(t *testing.T) {
 				plan, err := json.Marshal(map[string]string{
 					"name":    "plan.md",

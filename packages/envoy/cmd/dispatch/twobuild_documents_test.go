@@ -94,10 +94,28 @@ func (b *twoBuilds) documentSides(t *testing.T) []documentSide {
 }
 
 // elementVersions are the two numbers the manifest may give an element: the schema version that
-// first reads it and the one that first creates it, each 1 where it names none.
+// first reads it and the one that first creates it, each 1 where it names none (numbers).
 type elementVersions struct {
 	Since          *int `json:"since"`
 	CreatableSince *int `json:"creatable_since"`
+}
+
+// numbers is the element's since and creatable_since, each 1 where the manifest names none.
+func (e elementVersions) numbers() (since, creatableSince int) {
+	since, creatableSince = 1, 1
+	if e.Since != nil {
+		since = *e.Since
+	}
+	if e.CreatableSince != nil {
+		creatableSince = *e.CreatableSince
+	}
+	return since, creatableSince
+}
+
+// manifestElement is a node or a mark of the manifest: its name and its two numbers.
+type manifestElement struct {
+	elementVersions
+	Name string `json:"name"`
 }
 
 type manifestAttribute struct {
@@ -119,8 +137,8 @@ type manifestType struct {
 // blockManifest is a build's pmdoc/schema/blocks.json.
 type blockManifest struct {
 	Version int               `json:"version"`
-	Nodes   []elementVersions `json:"nodes"`
-	Marks   []elementVersions `json:"marks"`
+	Nodes   []manifestElement `json:"nodes"`
+	Marks   []manifestElement `json:"marks"`
 	Types   []manifestType    `json:"types"`
 }
 
@@ -137,33 +155,37 @@ func readManifest(t *testing.T, path string) blockManifest {
 	return manifest
 }
 
+// declared is every element the manifest declares, by name: a node or a mark by its own name
+// after "node " or "mark ", a typed block by its name, an attribute as <block>.<attribute>, and an
+// enum choice as <block>.<attribute>=<choice>.
+func (m blockManifest) declared() map[string]elementVersions {
+	declared := map[string]elementVersions{}
+	for _, node := range m.Nodes {
+		declared["node "+node.Name] = node.elementVersions
+	}
+	for _, mark := range m.Marks {
+		declared["mark "+mark.Name] = mark.elementVersions
+	}
+	for _, typed := range m.Types {
+		declared[typed.Name] = typed.elementVersions
+		for name, attribute := range typed.Attributes {
+			declared[typed.Name+"."+name] = attribute.elementVersions
+			for _, choice := range attribute.Choices {
+				declared[typed.Name+"."+name+"="+choice] = attribute.ChoiceVersions[choice]
+			}
+		}
+	}
+	return declared
+}
+
 // creatable is R for the manifest: the highest since among the elements an editor of its version
 // may create, by the rule the page states (schemaCreatable in
 // packages/dispatch/web/src/features/doc/schema-creatable.ts) and pmdoc.SchemaCreatable computes.
 func (m blockManifest) creatable() int {
 	creatable := 0
-	count := func(element elementVersions) {
-		since, creatableSince := 1, 1
-		if element.Since != nil {
-			since = *element.Since
-		}
-		if element.CreatableSince != nil {
-			creatableSince = *element.CreatableSince
-		}
-		if creatableSince <= m.Version {
+	for _, element := range m.declared() {
+		if since, creatableSince := element.numbers(); creatableSince <= m.Version {
 			creatable = max(creatable, since)
-		}
-	}
-	for _, element := range slices.Concat(m.Nodes, m.Marks) {
-		count(element)
-	}
-	for _, typed := range m.Types {
-		count(typed.elementVersions)
-		for _, attribute := range typed.Attributes {
-			count(attribute.elementVersions)
-			for _, choice := range attribute.Choices {
-				count(attribute.ChoiceVersions[choice])
-			}
 		}
 	}
 	return creatable

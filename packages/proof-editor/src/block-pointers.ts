@@ -14,7 +14,7 @@
 
 import {
   blockPointerValueProblem,
-  PARENT_ATTRIBUTE,
+  parentProblem,
   parseBlockPointerValue,
   parseCanonicalBlockReference,
 } from "@legion/contracts";
@@ -48,7 +48,7 @@ export function findBlock(
  * The pointers the typed block `typeName`'s `block[]` attribute `name` holds when markdown or a
  * pasted block writes it as `value`: none for the empty string, else canonical block references
  * joined by exactly one space. Any other value is refused, never normalised, and so is a parent
- * holding more than one (`parentProblem`).
+ * holding more than one (`@legion/contracts`' `parentProblem`).
  */
 export function parseBlockPointers(typeName: string, name: string, value: string): string[] {
   const pointers = parseBlockPointerValue(value);
@@ -60,18 +60,6 @@ export function parseBlockPointers(typeName: string, name: string, value: string
     );
   }
   return pointers;
-}
-
-/**
- * Why `pointers`, the references attribute `name` holds, are no value of it, in the document
- * service's wording (pmdoc `parentCount`): the parent (PARENT_ATTRIBUTE) holds at most one,
- * because a block has one parent. Undefined for every other attribute and for one parent.
- */
-export function parentProblem(name: string, pointers: readonly string[]): string | undefined {
-  if (name !== PARENT_ATTRIBUTE || pointers.length <= 1) {
-    return undefined;
-  }
-  return `holds ${pointers.length} references; a block has one parent, so it holds at most one`;
 }
 
 /**

@@ -1,12 +1,13 @@
 package api
 
+//ci:reads packages/contracts/fixtures/dispatch-version-blocks/* TestAVersionsBlocksCarryTheParentOfATaskBlock
+
 import (
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"flag"
 	"maps"
 	"net/http"
 	"os"
@@ -217,25 +218,24 @@ func assertPlanTask(t *testing.T, answer versionBlocksAnswer, id, steps, body st
 	t.Fatalf("no block %s among %+v (markdown %q)", id, *answer.Blocks, answer.Markdown)
 }
 
-// updateVersionBlocksFixture rewrites the two answers TestAVersionsBlocksCarryTheParentOfATaskBlock
-// holds in packages/contracts/fixtures/dispatch-version-blocks, which the daemon's plan client
-// reads: a version read that lists each task block's parent, and an older build's refusal of it.
-var updateVersionBlocksFixture = flag.Bool("update-version-blocks-fixture", false,
-	"rewrite packages/contracts/fixtures/dispatch-version-blocks from TestAVersionsBlocksCarryTheParentOfATaskBlock")
-
-// versionBlocksFixtures is where those two answers are committed, from this package's directory.
+// versionBlocksFixtures holds, from this package's directory, the two answers
+// TestAVersionsBlocksCarryTheParentOfATaskBlock commits, which -update (updateFixtures) rewrites:
+// a version read that lists each task block's parent, and an older build's refusal of it. Nothing
+// reads them yet; the daemon's Dispatch client of cybermonklabs/legion#5204 is to read them.
 var versionBlocksFixtures = filepath.Join("..", "..", "..", "..", "contracts", "fixtures", "dispatch-version-blocks")
 
-// A plan's task blocks stand under their task by parent, which this release reads and the next
-// one creates. Three Dispatch processes share one database here, one after another, each with a
-// document service of its own, so no service runs while another manifest is installed: pmdoc's
-// readers do not lock the manifest. The newer build, this manifest at the version after it, writes
-// plan.md of ACME-1, default and t1, t2 and t3 under it. This build reads that version and lists
-// each task block with its parent. It writes a later version of the plan, a fourth block under
-// default included, since the plan holds parent already. It refuses a version that puts parent
-// into a plan that holds none, and writes no version of that plan. A build of the release before,
-// whose manifest declares no parent, answers the plan's version 409 DOC_NEWER_CONTENT. The test
-// changes the manifest, a package variable, so it stays serial.
+// A plan's task blocks stand under their task by parent, which one release reads and the next one
+// creates. N is the version that first reads parent, read off the manifest, and each build here is
+// the embedded manifest as of its version (pmdoc.ManifestAsOfForTest), so the test holds whether
+// this build is N or later. Three Dispatch processes share one database, one after another, each
+// with a document service of its own, so no service runs while another manifest is installed:
+// pmdoc's readers do not lock the manifest. The build at N+1 writes plan.md of ACME-1, default and
+// t1, t2 and t3 under it. The build at N reads that version and lists each task block with its
+// parent. It writes a later version of the plan, a fourth block under default included, since the
+// plan holds parent already. It refuses a version that puts parent into a plan that holds none,
+// and writes no version of that plan. The build at N-1, whose manifest declares no parent, answers
+// the plan's version 409 DOC_NEWER_CONTENT. The test changes the manifest, a package variable, so
+// it stays serial.
 func TestAVersionsBlocksCarryTheParentOfATaskBlock(t *testing.T) {
 	database := storetest.Open(t)
 	seedPeople(t, database, "alice")
@@ -246,10 +246,23 @@ func TestAVersionsBlocksCarryTheParentOfATaskBlock(t *testing.T) {
 	planText := ":::plan_task{#default}\nShip the parser.\n:::\n\n" + under("t1", "Read the grammar.") + "\n" +
 		under("t2", "Write the parser.") + "\n" + under("t3", "Test the parser.")
 	placed := map[string]string{"default": "", "t1": parent, "t2": parent, "t3": parent}
+	versions, declared := pmdoc.Element{Kind: pmdoc.AttributeElement, Block: "plan_task", Name: "parent"}.Versions()
+	if !declared || versions.CreatableSince != versions.Since+1 {
+		t.Fatalf("plan_task.parent = %+v, %t; want it declared, created one version after it is read", versions, declared)
+	}
+	n := versions.Since
+	asOf := func(version int) []byte {
+		t.Helper()
+		manifest, err := pmdoc.ManifestAsOfForTest(version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return manifest
+	}
 
-	restoreNewer, err := pmdoc.UseManifestForTest(manifestAtVersion(t, pmdoc.BuiltSchemaVersion()+1))
+	restoreNewer, err := pmdoc.UseManifestForTest(asOf(n + 1))
 	if err != nil {
-		t.Fatalf("install the manifest of the newer build: %v", err)
+		t.Fatalf("install the manifest of the build at version %d: %v", n+1, err)
 	}
 	t.Cleanup(restoreNewer)
 	newer, stopNewer := versionBlocksProcess(t, database)
@@ -268,6 +281,11 @@ func TestAVersionsBlocksCarryTheParentOfATaskBlock(t *testing.T) {
 	stopNewer()
 	restoreNewer()
 
+	restoreCurrent, err := pmdoc.UseManifestForTest(asOf(n))
+	if err != nil {
+		t.Fatalf("install the manifest of the build at version %d: %v", n, err)
+	}
+	t.Cleanup(restoreCurrent)
 	current, stopCurrent := versionBlocksProcess(t, database)
 	read := dispatchRequest(t, current, http.MethodGet, "/api/v1/artifacts/"+plan.ID+"/versions/1?blocks=true", nil, "alice")
 	if read.Code != http.StatusOK {
@@ -292,10 +310,11 @@ func TestAVersionsBlocksCarryTheParentOfATaskBlock(t *testing.T) {
 		t.Fatalf("the refused write left version 2 of the plan that holds no parent: status=%d body=%s", second.Code, second.Body.String())
 	}
 	stopCurrent()
+	restoreCurrent()
 
-	restoreOlder, err := pmdoc.UseManifestForTest([]byte(manifestBeforeParent))
+	restoreOlder, err := pmdoc.UseManifestForTest(asOf(n - 1))
 	if err != nil {
-		t.Fatalf("install the manifest of the release before: %v", err)
+		t.Fatalf("install the manifest of the build at version %d: %v", n-1, err)
 	}
 	t.Cleanup(restoreOlder)
 	older, _ := versionBlocksProcess(t, database)
@@ -349,22 +368,6 @@ func versionBlocksProcess(t *testing.T, database *store.Store) (http.Handler, fu
 	return mux, stop
 }
 
-// manifestAtVersion is the installed manifest with its version set to version and nothing else
-// changed: at the version after this build's, every element this build stages is creatable.
-func manifestAtVersion(t *testing.T, version int) []byte {
-	t.Helper()
-	var manifest map[string]any
-	if err := json.Unmarshal(pmdoc.SchemaJSON(), &manifest); err != nil {
-		t.Fatalf("decode the manifest: %v", err)
-	}
-	manifest["version"] = version
-	encoded, err := json.Marshal(manifest)
-	if err != nil {
-		t.Fatalf("encode the manifest at version %d: %v", version, err)
-	}
-	return encoded
-}
-
 // requireParents requires answer to list exactly the task blocks want names, each with the parent
 // want gives it as a block[] attribute, and with none where want gives "".
 func requireParents(t *testing.T, what string, answer versionBlocksAnswer, want map[string]string) {
@@ -401,12 +404,12 @@ func blocksBesideTheirTokens(blocks []model.ArtifactBlock) []model.ArtifactBlock
 	return stripped
 }
 
-// requireVersionBlocksFixture writes answer to the fixture name under -update-version-blocks-fixture,
+// requireVersionBlocksFixture writes answer to the fixture name under -update (updateFixtures),
 // indented, and otherwise requires the committed fixture and answer to be the same answer by same.
 func requireVersionBlocksFixture(t *testing.T, name string, answer []byte, same func(fixture, answer []byte) bool) {
 	t.Helper()
 	path := filepath.Join(versionBlocksFixtures, name)
-	if *updateVersionBlocksFixture {
+	if *updateFixtures {
 		var indented bytes.Buffer
 		if err := json.Indent(&indented, answer, "", "  "); err != nil {
 			t.Fatalf("indent the answer for %s: %v", name, err)
@@ -423,184 +426,9 @@ func requireVersionBlocksFixture(t *testing.T, name string, answer []byte, same 
 	}
 	fixture, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read %s, which -update-version-blocks-fixture writes: %v", path, err)
+		t.Fatalf("read %s, which -update writes: %v", path, err)
 	}
 	if !same(fixture, answer) {
-		t.Fatalf("%s is not what this build answers. Write it again with -update-version-blocks-fixture.\nfixture: %s\nanswer:  %s", path, fixture, answer)
+		t.Fatalf("%s is not what this build answers. Write it again with -update.\nfixture: %s\nanswer:  %s", path, fixture, answer)
 	}
 }
-
-// manifestBeforeParent is the block manifest of the release before the one that reads parent:
-// pmdoc/schema/blocks.json at version 5, as main held it at 5dfd9cdbb0a.
-const manifestBeforeParent = `{
-  "version": 5,
-  "nodes": [
-    { "name": "doc" },
-    { "name": "paragraph" },
-    { "name": "heading" },
-    { "name": "blockquote" },
-    { "name": "bullet_list" },
-    { "name": "ordered_list" },
-    { "name": "list_item" },
-    { "name": "code_block" },
-    { "name": "hr" },
-    { "name": "hardbreak" },
-    { "name": "image" },
-    { "name": "html" },
-    { "name": "table" },
-    { "name": "table_header_row" },
-    { "name": "table_row" },
-    { "name": "table_cell" },
-    { "name": "table_header" },
-    { "name": "footnote_definition" },
-    { "name": "footnote_reference" },
-    { "name": "frontmatter" },
-    { "name": "text" }
-  ],
-  "marks": [
-    { "name": "strong" },
-    { "name": "emphasis" },
-    { "name": "inlineCode" },
-    { "name": "link" },
-    { "name": "strike_through" },
-    { "name": "proofSuggestion" },
-    { "name": "proofComment" },
-    { "name": "proofFlagged" },
-    { "name": "proofApproved" },
-    { "name": "proofAuthored" },
-    { "name": "dispatchAsk" }
-  ],
-  "types": [
-    {
-      "name": "callout",
-      "content": "block+",
-      "render": "host",
-      "attributes": {
-        "kind": {
-          "kind": "enum",
-          "choices": ["note", "warning"],
-          "default": "note"
-        },
-        "title": {
-          "kind": "string",
-          "default": ""
-        }
-      }
-    },
-    {
-      "name": "ask",
-      "content": "paragraph+ bullet_list?",
-      "render": "host",
-      "attributes": {
-        "urgency": {
-          "kind": "enum",
-          "choices": ["low", "med", "high", "blocking"],
-          "default": "med"
-        },
-        "multiple": {
-          "kind": "bool",
-          "default": false
-        },
-        "state": {
-          "kind": "enum",
-          "choices": ["open", "answered", "resolved"],
-          "default": "open",
-          "server": true
-        },
-        "answered_by": {
-          "kind": "actor",
-          "server": true
-        },
-        "answered_at": {
-          "kind": "timestamp",
-          "server": true
-        },
-        "selected": {
-          "kind": "string[]",
-          "server": true
-        },
-        "answer": {
-          "kind": "string",
-          "server": true
-        },
-        "invalid": {
-          "kind": "string",
-          "server": true
-        },
-        "copied_from": {
-          "kind": "string",
-          "server": true
-        },
-        "copied_from_document": {
-          "kind": "string",
-          "server": true
-        }
-      }
-    },
-    {
-      "name": "requirement",
-      "content": "paragraph+",
-      "render": "host",
-      "attributes": {},
-      "since": 3,
-      "creatable_since": 3
-    },
-    {
-      "name": "plan_task",
-      "content": "paragraph+",
-      "render": "host",
-      "attributes": {
-        "serves": {
-          "kind": "block[]",
-          "targets": ["requirement"]
-        },
-        "needs": {
-          "kind": "block[]",
-          "targets": ["plan_task"],
-          "scope": "document"
-        },
-        "steps": {
-          "kind": "string",
-          "since": 5,
-          "creatable_since": 5
-        }
-      },
-      "since": 3,
-      "creatable_since": 3
-    },
-    {
-      "name": "check",
-      "content": "paragraph+",
-      "render": "host",
-      "attributes": {
-        "serves": {
-          "kind": "block[]",
-          "targets": ["requirement"]
-        },
-        "surface": {
-          "kind": "enum",
-          "choices": ["browser", "cli", "api"]
-        },
-        "run": {
-          "kind": "string"
-        },
-        "when": {
-          "kind": "enum",
-          "choices": ["before_merge", "after_merge", "default_branch"],
-          "default": "before_merge"
-        },
-        "negative_control": {
-          "kind": "string"
-        },
-        "ci_check": {
-          "kind": "string",
-          "since": 4,
-          "creatable_since": 4
-        }
-      },
-      "since": 3,
-      "creatable_since": 3
-    }
-  ]
-}
-`

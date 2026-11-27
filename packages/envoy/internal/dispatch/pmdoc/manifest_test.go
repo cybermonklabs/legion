@@ -249,34 +249,13 @@ func TestDocumentSinceIsTheHighestSinceTheDocumentHolds(t *testing.T) {
 	}
 }
 
-// manifestAsOf is the embedded manifest as the build of an earlier release read it: its version
-// lowered to version, and every element it reads only from a later one dropped. An element whose
-// since is at most version stays as it is, creatable_since above version included: that is an
-// element the earlier build already read and did not create.
+// manifestAsOf is the embedded manifest as the build of an earlier release read it
+// (ManifestAsOfForTest), failing t where it cannot be built.
 func manifestAsOf(t *testing.T, version int) []byte {
 	t.Helper()
-	var value BlockSchema
-	if err := json.Unmarshal(SchemaJSON(), &value); err != nil {
-		t.Fatalf("decode the embedded manifest: %v", err)
-	}
-	later := func(since int) bool { return since > version }
-	value.Version = version
-	value.Nodes = slices.DeleteFunc(value.Nodes, func(node BlockSchemaElement) bool { return later(node.Since) })
-	value.Marks = slices.DeleteFunc(value.Marks, func(mark BlockSchemaElement) bool { return later(mark.Since) })
-	value.Types = slices.DeleteFunc(value.Types, func(typ BlockTypeSchema) bool { return later(typ.Since) })
-	for index := range value.Types {
-		typ := &value.Types[index]
-		typ.Attributes = slices.DeleteFunc(typ.Attributes, func(attr BlockAttribute) bool { return later(attr.Since) })
-		for attrIndex := range typ.Attributes {
-			attr := &typ.Attributes[attrIndex]
-			attr.Choices = slices.DeleteFunc(slices.Clone(attr.Choices), func(choice string) bool {
-				return later(attr.ChoiceVersions[choice].Since)
-			})
-		}
-	}
-	encoded, err := json.Marshal(value)
+	encoded, err := ManifestAsOfForTest(version)
 	if err != nil {
-		t.Fatalf("encode the manifest as of version %d: %v", version, err)
+		t.Fatal(err)
 	}
 	return encoded
 }
@@ -547,42 +526,51 @@ func TestTheTaskParentIsReadAtNAndWrittenFromNPlusOne(t *testing.T) {
 }
 
 // A test process creates each element its manifest stages for the next version once it is told
-// to (CreateStagedForTest), as Dispatch's test setting DISPATCH_TEST_CREATE_STAGED tells it. Until
-// then a write that puts parent into a document that holds none is refused, and once told the
+// to (CreateStagedForTest), as Dispatch's test setting DISPATCH_TEST_CREATE_STAGED tells it. The
+// store here holds a made-up typed block, staged, read from this build's version and created
+// from the next, so the test holds whatever the shipped manifest stages. Until the process is
+// told, a write that puts the block into a document that holds none is refused, and once told the
 // same write is taken. The setting changes what a write may create and nothing a reader is told:
 // SchemaCreatable stays as it was. The store's installer installs the manifest again at each
 // wake, and the setting outlives that reinstall. Its restore makes the process refuse the write
 // again.
 func TestATestProcessCreatesAStagedElementOnlyWhenTold(t *testing.T) {
-	const markdown = ":::plan_task{#t2 parent=\"dispatch://ACME-1/artifact/plan-md#b-t1\"}\nBody.\n:::\n"
-	const refusal = `this Dispatch build reads attribute "parent" of typed block "plan_task" but cannot write it yet`
+	const markdown = ":::staged{#s1}\nBody.\n:::\n"
+	built := BuiltSchemaVersion()
+	var staged BlockSchema
+	if err := json.Unmarshal(SchemaJSON(), &staged); err != nil {
+		t.Fatalf("decode the embedded manifest: %v", err)
+	}
+	staged.Types = append(slices.Clone(staged.Types), BlockTypeSchema{
+		Name: "staged", Content: BlockContentParagraphs, Render: "host", Since: built, CreatableSince: built + 1,
+	})
+	if err := installStoreManifest(t, staged); err != nil {
+		t.Fatalf("install a store manifest that stages the typed block staged: %v", err)
+	}
+	refusal := "this Dispatch build reads " + (Element{Kind: TypedBlockElement, Name: "staged"}).String() + " but cannot write it yet"
 	if _, err := ParseForWrite(markdown, nil); !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), refusal) {
-		t.Fatalf("a write of parent before the process is told = %v, want ErrSchema saying %q", err, refusal)
+		t.Fatalf("a write of the staged block before the process is told = %v, want ErrSchema saying %q", err, refusal)
 	}
 	creatable := SchemaCreatable()
 
 	restore := CreateStagedForTest()
 	t.Cleanup(restore)
 	if _, err := ParseForWrite(markdown, nil); err != nil {
-		t.Fatalf("a write of parent once the process is told = %v, want it taken", err)
+		t.Fatalf("a write of the staged block once the process is told = %v, want it taken", err)
 	}
 	if got := SchemaCreatable(); got != creatable {
 		t.Errorf("SchemaCreatable() once the process is told = %d, want the %d it was", got, creatable)
 	}
-	var reinstalled BlockSchema
-	if err := json.Unmarshal(SchemaJSON(), &reinstalled); err != nil {
-		t.Fatalf("decode the installed manifest: %v", err)
-	}
-	if err := installStoreManifest(t, reinstalled); err != nil {
-		t.Fatalf("install the manifest again, as the store's installer does at a wake: %v", err)
+	if err := installStoreManifest(t, staged); err != nil {
+		t.Fatalf("install the store manifest again, as the store's installer does at a wake: %v", err)
 	}
 	if _, err := ParseForWrite(markdown, nil); err != nil {
-		t.Fatalf("a write of parent after the manifest's reinstall = %v, want it taken", err)
+		t.Fatalf("a write of the staged block after the manifest's reinstall = %v, want it taken", err)
 	}
 
 	restore()
 	if _, err := ParseForWrite(markdown, nil); !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), refusal) {
-		t.Errorf("a write of parent after the restore = %v, want it refused again", err)
+		t.Errorf("a write of the staged block after the restore = %v, want it refused again", err)
 	}
 }
 

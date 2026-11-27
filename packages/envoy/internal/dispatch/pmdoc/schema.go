@@ -403,7 +403,8 @@ func parseTypedAttributeValue(name string, attr BlockAttributeSchema, raw any) (
 
 // parentCount refuses values, the references the attribute name holds, when name is
 // ParentAttribute and they are more than one: a block has one parent. Its twin is parentProblem in
-// @legion/proof-editor.
+// @legion/contracts, which the proof editor calls; both are held to the rows of
+// testdata/block-pointer-values.json that name an attribute (DISPATCH_BLOCK_POINTER_VALUES).
 func parentCount(name string, values []string) error {
 	if name == ParentAttribute && len(values) > 1 {
 		return fmt.Errorf("holds %d references; a block has one parent, so it holds at most one", len(values))
