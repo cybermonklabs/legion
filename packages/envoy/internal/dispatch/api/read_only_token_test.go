@@ -478,6 +478,8 @@ func withRouteRegistry(t *testing.T, routes []routeDecl) {
 // There is no "a class naming no route" case, which the map beside the table needed: a class is a
 // field of the route's own declaration.
 func TestRegisterRefusesARouteThatIsNotClassed(t *testing.T) {
+	// Not parallel: it writes the package variable routeRegistry, the declarations every server of
+	// the package reads at Register (withRouteRegistry).
 	if refusal := registerRefusal(t); refusal != "" {
 		t.Fatalf("api.Register refused the read classes as they stand: %s", refusal)
 	}

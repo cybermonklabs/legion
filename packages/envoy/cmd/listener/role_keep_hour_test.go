@@ -1516,6 +1516,7 @@ func TestADeadLetterClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
 // built as the outbox builds one (internal/dispatch/outbox envelope), from the event types
 // Dispatch writes: the whole event as its payload, and the head of what it carries in its summary.
 func TestADeadLetterNamesADispatchPostAndQuotesNoneOfIt(t *testing.T) {
+	t.Parallel()
 	const (
 		role         = "letter-role"
 		sender       = "ses_letter_sender"
