@@ -29,7 +29,7 @@
 -- again. With none left, it writes each check again as the release before wrote it and deletes
 -- this migration's version row, so the roll forward's Migrate runs this file again:
 --
---   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
 --   do $$
 --   declare
