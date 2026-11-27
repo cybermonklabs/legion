@@ -87,6 +87,10 @@ func (r *outbox) closeWaitPublish(ctx context.Context, row record.OutboxRow, pay
 		err = r.uploadCloseWait(ctx, row, content, stale.Current)
 	}
 	if err != nil {
+		if cannotWriteCloseWait(row, err) {
+			r.log.Error(closeWaitUnwritable, "row", row.ID, "issue", row.Issue, "attempts", row.Attempts, "error", storetext.FarSideError(err.Error()))
+			return nil
+		}
 		return r.closeWaitFailed(row, err)
 	}
 	if len(shown.Withdrawn) == 0 {
@@ -105,17 +109,42 @@ func (r *outbox) closeWaitPublish(ctx context.Context, row record.OutboxRow, pay
 }
 
 // uploadCloseWait writes content as close-wait.md of the row's issue over the version token names
-// ("" for none). An upload Dispatch filed under another slug than close-wait.md's is an error,
-// since every later write reads the token by that slug.
+// ("" for none). An upload Dispatch filed under another slug than close-wait.md's is an error
+// (closeWaitUnfiled), since every later write reads the token by that slug.
 func (r *outbox) uploadCloseWait(ctx context.Context, row record.OutboxRow, content, token string) error {
 	slug, err := r.dispatch.UploadArtifactOver(ctx, row.Issue, record.CloseWaitDocumentName, content, token)
 	if err != nil {
 		return fmt.Errorf("write %s of %s: %w", record.CloseWaitDocumentName, row.Issue, err)
 	}
 	if slug != record.CloseWaitDocumentSlug {
-		return fmt.Errorf("write %s of %s: Dispatch filed it under %s, not %s", record.CloseWaitDocumentName, row.Issue, slug, record.CloseWaitDocumentSlug)
+		return &closeWaitUnfiled{issue: row.Issue, slug: slug}
 	}
 	return nil
+}
+
+// closeWaitUnfiled is an upload of close-wait.md that Dispatch filed under slug, another than the
+// document's own. Dispatch files that name so on every attempt, and each later token read by
+// close-wait.md's slug finds nothing, so a retry never writes the document (cannotWriteCloseWait).
+type closeWaitUnfiled struct {
+	issue, slug string
+}
+
+func (e *closeWaitUnfiled) Error() string {
+	return fmt.Sprintf("write %s of %s: Dispatch filed it under %s, not %s", record.CloseWaitDocumentName, e.issue, e.slug, record.CloseWaitDocumentSlug)
+}
+
+// cannotWriteCloseWait says whether err, a failed write of close-wait.md, is one that running the
+// row again cannot fix, so the row finishes rather than hold the issue's status writes behind it
+// without end: an upload filed under another slug (closeWaitUnfiled), at once, and a stale refusal
+// that names no current version once the row has run closeWaitStaleAttempts times, since a fresh
+// read may see the move that refusal saw and a read that never does can only run again forever.
+func cannotWriteCloseWait(row record.OutboxRow, err error) bool {
+	var unfiled *closeWaitUnfiled
+	if errors.As(err, &unfiled) {
+		return true
+	}
+	var stale *dispatch.StaleDocument
+	return errors.As(err, &stale) && stale.Current == "" && row.Attempts >= closeWaitStaleAttempts
 }
 
 // closeWaitFailed answers a failed read or write of close-wait.md: a refusal Dispatch makes the
