@@ -171,29 +171,37 @@ func (s *server) requirementBlocksIn(ctx context.Context, artifactID string, tre
 }
 
 // blockTreeSource is what one block's tree is read from: markdown, the content typedBlocksIn
-// hands over for the block or the one GET /api/v1/reference-targets cuts from the block's stored
-// text (blockTextContent); labels, the footnotes the block calls that its document defines
-// outside it: the ones its node calls (pmdoc.CalledFootnoteLabels), or, for a block the batched
-// reference read finds no node of, the ones its stored text writes as a call (calledFootnotes);
+// hands over for the block, the one GET /api/v1/reference-targets cuts from the block's stored
+// text (blockTextContent), a decision's section of decisions.md, or a text of a document's block
+// the reference graph's read draws; labels, the footnotes that markdown calls that its document
+// defines outside it: the ones the block's node calls (pmdoc.CalledFootnoteLabels), or, for a
+// text no node of the document's parse holds, the ones it writes as a call (footnotesCalledIn);
 // and artifactID and blockID, the document that holds the block and the id it holds it under,
 // which registerBlockTree logs a tree it cannot set with. Every source with labels names them.
+// cut is set for a markdown that is a cut of the block's text, an edge's excerpt, which can stop
+// inside a block whose end the cut leaves out (a fenced code block): the stand-ins read after it
+// then stand inside that block, so a tree that does not end in them is no fault of the read, and
+// registerBlockTree sets it nowhere and logs nothing, for the caller to read the cut alone.
 type blockTreeSource struct {
 	markdown, artifactID, blockID string
 	labels                        []string
+	cut                           bool
 }
 
 // registerBlockTree registers with trees, as field, the display tree of source, the block its
 // artifactID's document holds under its blockID. Every read that answers a block's tree registers
-// it here: the coverage read's requirements, the results read's checks and the batched reference
-// read's blocks, so one block answers one tree in all three. The markdown is cut out of the
+// it here: the coverage read's requirements, the results read's checks, the batched reference
+// read's blocks, the decisions read's decisions and the reference graph read's texts of
+// documents' blocks, so one block answers one tree in each read that draws it whole, and each of
+// them reads a call as the document does. The markdown is cut out of the
 // document, so it holds no definition the document writes outside the block, and read alone it
 // reads a call of such a label as text, where the document reads, and the browser editor holds,
 // a reference. So the markdown of a block with labels is registered with a stand-in definition of
 // each label after it (pmdoc.WithStandInDefinitions), and the stand-ins, those the markdown
 // refers to and those it does not, are taken out of the tree before it is set
 // (withoutStandInDefinitions); a block with none registers its markdown as it stands. A tree that
-// does not end in the stand-ins is logged and set nowhere, since no other field of the read
-// depends on it.
+// does not end in the stand-ins is set nowhere, since no other field of the read depends on it,
+// and is logged unless source is a cut, which can end that way (blockTreeSource).
 func registerBlockTree(trees *displayTreeReader, field *model.DisplayTree, source blockTreeSource) {
 	if len(source.labels) == 0 || source.markdown == "" {
 		trees.text(field, source.markdown)
@@ -202,8 +210,10 @@ func registerBlockTree(trees *displayTreeReader, field *model.DisplayTree, sourc
 	trees.textInto(func(tree json.RawMessage) {
 		shown, ok := withoutStandInDefinitions(tree, len(source.labels))
 		if !ok {
-			slog.Warn("dispatch: take the stand-in footnote definitions out of a block's tree",
-				"artifact", source.artifactID, "block", source.blockID, "labels", source.labels)
+			if !source.cut {
+				slog.Warn("dispatch: take the stand-in footnote definitions out of a block's tree",
+					"artifact", source.artifactID, "block", source.blockID, "labels", source.labels)
+			}
 			return
 		}
 		*field = model.DisplayTree(shown)

@@ -120,9 +120,10 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		}
 		if node.Pin != nil && node.Pin.State == "removed" {
 			// The graph lists no link to a block no current version holds.
-			reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+			trees := wantsDisplayTrees(r)
+			reader := s.readDisplayTrees(r.Context(), trees)
 			answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: []graphEdgeRead{}, UnknownKinds: unknownKinds}
-			answer.Node.shape(reader)
+			answer.Node.shape(reader, s.readGraphFootnotes(r.Context(), node, nil, trees))
 			reader.resolve()
 			WriteJSON(w, http.StatusOK, answer)
 			return
@@ -174,13 +175,100 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// The node's own text and the text its pin recorded go through the request's reader; each
-	// edge's excerpt is a cut, read where it stands (graphEdgeReads).
+	// edge's excerpt is a cut, read where it stands (graphEdgeReads). Each text of a document's
+	// block is read with the footnotes it calls that its document defines outside it
+	// (readGraphFootnotes).
 	trees := wantsDisplayTrees(r)
+	footnotes := s.readGraphFootnotes(r.Context(), node, edges, trees)
 	reader := s.readDisplayTrees(r.Context(), trees)
-	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: graphEdgeReads(edges, trees), UnknownKinds: unknownKinds}
-	answer.Node.shape(reader)
+	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: graphEdgeReads(edges, trees, footnotes), UnknownKinds: unknownKinds}
+	answer.Node.shape(reader, footnotes)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, answer)
+}
+
+// graphNodeText is the key readGraphFootnotes reads the queried node's own text under, beside
+// each edge's excerpt under the edge's index, which is never negative.
+const graphNodeText = -1
+
+// graphFootnotes is, for a read of the reference graph, the source of the tree of each text of a
+// document's block the read draws but its markdown (blockTreeSource): the document's id, the
+// block's id and the footnotes the text calls that the document defines outside the block.
+// latest holds the queried node's own text, under graphNodeText, and each edge's excerpt, under
+// the edge's index, read with the definitions of the document as it stands; pin is the text the
+// node's pin recorded, read with the definitions of the version it pins. A text with no source,
+// and every text of a node that is no document's block, is drawn from its text alone
+// (registerBlockTree).
+type graphFootnotes struct {
+	latest map[int]blockTreeSource
+	pin    blockTreeSource
+}
+
+// readGraphFootnotes is the footnotes of the texts of documents' blocks that a read of the
+// reference graph draws for a caller given trees (wantsDisplayTrees): node's own text and the
+// text its pin recorded, where node is a document's block, and the excerpt of each of edges
+// that is cut from one (graphDocumentBlock). An ask, a comment, a message and a block of one is
+// no document's, and its texts read no footnotes. They are read by calledFootnotes as the batched
+// reference read reads a block's stored text: the node's text and the excerpts in one call, so
+// each document is read and parsed once however many of its blocks the read draws, and only
+// where one of those texts holds a call at all (`[^`). The pin's text is read in a call of its
+// own, with the definitions of the version it pins: it is that version's text, whose calls that
+// version's definitions resolve, and a reader of the pinned version reads the note that version
+// gave, where the document as it stands may define another or none. A caller given no trees
+// reads no document.
+func (s *server) readGraphFootnotes(ctx context.Context, node model.GraphNode, edges []model.GraphEdge, trees bool) graphFootnotes {
+	var footnotes graphFootnotes
+	if !trees {
+		return footnotes
+	}
+	var texts map[int]string
+	var documents map[int]refs.DocumentBlock
+	hold := func(key int, block refs.DocumentBlock, text string) {
+		if !strings.Contains(text, "[^") {
+			return
+		}
+		if texts == nil {
+			texts, documents = map[int]string{}, map[int]refs.DocumentBlock{}
+		}
+		texts[key], documents[key] = text, block
+	}
+	block, documentBlock := graphDocumentBlock(node, "")
+	if documentBlock {
+		hold(graphNodeText, block, node.Text)
+	}
+	for index, edge := range edges {
+		if edge.Excerpt == nil {
+			continue
+		}
+		if cut, ok := graphDocumentBlock(edge.Node, edge.Excerpt.BlockID); ok {
+			hold(index, cut, edge.Excerpt.Text)
+		}
+	}
+	if texts != nil {
+		footnotes.latest = calledFootnotes(ctx, s, texts, documents, 0)
+	}
+	if pin := node.Pin; documentBlock && pin != nil && strings.Contains(pin.Text, "[^") {
+		pinned := calledFootnotes(ctx, s, map[int]string{graphNodeText: pin.Text},
+			map[int]refs.DocumentBlock{graphNodeText: block}, pin.Version)
+		footnotes.pin = pinned[graphNodeText]
+	}
+	return footnotes
+}
+
+// graphDocumentBlock is where the document's block stands that a read of the reference graph
+// draws a text of for node: node itself where it is a document's block, whose parent is its
+// document (refs.loadBlockNodes, refs.RemovedBlockNode), and the block blockID of node where node
+// is a document and blockID names the block holding its mention that an excerpt was cut from
+// (documentMentionExcerpts). Every other node answers false, a block of an ask, a comment or a
+// message among them, whose parent is its item.
+func graphDocumentBlock(node model.GraphNode, blockID string) (refs.DocumentBlock, bool) {
+	switch {
+	case node.Kind == "block" && node.Parent != nil && node.Parent.Kind == "artifact":
+		return refs.DocumentBlock{ArtifactID: node.Parent.ID, BlockID: node.BlockID}, true
+	case node.Kind == "artifact" && blockID != "":
+		return refs.DocumentBlock{ArtifactID: node.ID, BlockID: blockID}, true
+	}
+	return refs.DocumentBlock{}, false
 }
 
 // wholeReference is ref with its item id, or its block id, written whole where the request

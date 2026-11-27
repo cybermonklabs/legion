@@ -261,7 +261,7 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 	if err != nil {
 		return err
 	}
-	called := s.calledFootnotes(ctx, texts, documents)
+	called := calledFootnotes(ctx, s, texts, documents, 0)
 	sources := make(map[refs.Target]blockTreeSource, len(texts))
 	for target, whole := range texts {
 		source := called[target]
@@ -276,51 +276,43 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 	return nil
 }
 
-// calledFootnotes is, by target, the source of the tree of each document block of texts but its
-// markdown: its document's id, its own block id and the footnotes it calls that its document
-// defines outside it, for the blocks whose stored text holds a call at all (`[^`). Such a text is
-// a slice of its document, so it holds no definition the document writes outside the block, and
-// read alone it reads a call of such a label as text.
+// calledFootnotes is, by key, the source of the tree of each document block's text of texts but
+// its markdown: its document's id, its own block id and the footnotes it calls that its document
+// defines outside it, for the texts whose block documents places and that hold a call at all
+// (`[^`). Such a text is a slice of its document, so it holds no definition the document writes
+// outside the block, and read alone it reads a call of such a label as text. A key names a text,
+// not a block: the batched reference read keys each block's stored text by its target
+// (blockTrees), and the reference graph's read draws one block from its whole text and from an
+// edge's excerpt of it (readGraphFootnotes), which can call different labels.
 //
-// Each document is read once, however many of its blocks texts holds. Its id, and the id it
-// holds each block under, are the ones documents holds for the block: refs.BlockTexts reads them
-// from the block index (document_blocks) with the block's text. Its markdown is read through
-// TextWithToken: the block index cut each stored text from the markdown the document's latest
-// version stored, and TextWithToken answers that markdown itself, without rendering the
-// document, where that version is still the document's state and a room of this process holds
-// it, and from the read cache by the document's stamp where no room holds it; Text renders a
-// room's tree on every read. The markdown is parsed as a rendering.
-//
-// A typed block is the first node of the parse holding its id, as typedBlocksIn finds one, since
-// the rendering writes a typed block's id into its opening line, and its labels are the ones its
-// node calls (pmdoc.CalledFootnoteLabels), as the coverage and the results reads take them. Any
-// other block - a paragraph, a heading, a list item - has no id in the rendering, so the parse
-// gives it another, and so has a block its document no longer holds: no node holds its id, and
-// its labels are each label the document defines that its stored text writes as a call, up to
-// case (pmdoc.FootnoteDefinitionLabels, pmdoc.WrittenFootnoteLabels). Such a text can write a
-// call that reads as text, escaped or in code, or one of a label it defines itself, which
-// resolves to its own definition first; the stand-in of that label is then one nothing refers
-// to, which is taken out of the tree with the rest (registerBlockTree). A block whose document
-// cannot be read or parsed has no entry and keeps the tree of its stored text alone; the failure
-// is logged.
-func (s *server) calledFootnotes(ctx context.Context, texts map[refs.Target]string, documents map[refs.Target]refs.DocumentBlock) map[refs.Target]blockTreeSource {
-	// wanted is the targets to read, by their document's id and then by block id.
-	wanted := map[string]map[string]refs.Target{}
-	for target, block := range documents {
-		if !strings.Contains(texts[target], "[^") {
-			continue
+// version is the version of their documents the texts were cut from, 0 for the latest. Each
+// document is read once, however many of its blocks' texts texts holds. Its id, and the id it
+// holds each block under, are the ones documents holds for the key: the batched reference read
+// takes them from refs.BlockTexts, which reads them from the block index (document_blocks) with
+// the block's text, and the reference graph's read from the node it draws the text for
+// (graphDocumentBlock). Its latest markdown is read through TextWithToken: the block index cut
+// each stored text from the markdown the document's latest version stored, and TextWithToken
+// answers that markdown itself, without rendering the document, where that version is still the
+// document's state and a room of this process holds it, and from the read cache by the
+// document's stamp where no room holds it; Text renders a room's tree on every read. Any other
+// version's markdown is the one that version stored (footnotedMarkdown). The markdown is parsed
+// as a rendering, and the labels are read from that parse (footnotesCalledIn). A text whose
+// document cannot be read or parsed has no entry and keeps the tree of its stored text alone; the
+// failure is logged.
+func calledFootnotes[K comparable](ctx context.Context, s *server, texts map[K]string, documents map[K]refs.DocumentBlock, version int) map[K]blockTreeSource {
+	// wanted is the keys to read, by their document's id.
+	wanted := map[string][]K{}
+	for key, block := range documents {
+		if strings.Contains(texts[key], "[^") {
+			wanted[block.ArtifactID] = append(wanted[block.ArtifactID], key)
 		}
-		if wanted[block.ArtifactID] == nil {
-			wanted[block.ArtifactID] = map[string]refs.Target{}
-		}
-		wanted[block.ArtifactID][block.BlockID] = target
 	}
 	if len(wanted) == 0 {
 		return nil
 	}
-	called := map[refs.Target]blockTreeSource{}
-	for artifactID, blocks := range wanted {
-		markdown, _, err := s.deps.Docs.TextWithToken(ctx, artifactID)
+	called := map[K]blockTreeSource{}
+	for artifactID, keys := range wanted {
+		markdown, err := s.footnotedMarkdown(ctx, artifactID, version)
 		if err != nil {
 			slog.Warn("dispatch: read a document's footnote definitions for its blocks' trees", "artifact", artifactID, "error", err)
 			continue
@@ -330,25 +322,79 @@ func (s *server) calledFootnotes(ctx context.Context, texts map[refs.Target]stri
 			slog.Warn("dispatch: parse a document's footnote definitions for its blocks' trees", "artifact", artifactID, "error", err)
 			continue
 		}
-		pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
-			id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
-			if target, held := blocks[id]; held {
-				called[target] = blockTreeSource{artifactID: artifactID, blockID: id, labels: pmdoc.CalledFootnoteLabels(node)}
-				delete(blocks, id)
-			}
-			return true
-		})
-		if len(blocks) == 0 {
-			continue
-		}
-		defined := pmdoc.FootnoteDefinitionLabels(tree)
-		for id, target := range blocks {
-			if labels := pmdoc.WrittenFootnoteLabels(texts[target], defined); len(labels) > 0 {
-				called[target] = blockTreeSource{artifactID: artifactID, blockID: id, labels: labels}
-			}
-		}
+		footnotesCalledIn(tree, artifactID, keys, texts, documents, called)
 	}
 	return called
+}
+
+// footnotedMarkdown is the markdown of version of the document artifactID that calledFootnotes
+// reads the document's footnote definitions from: the document as it stands for version 0
+// (TextWithToken), and for any other the markdown that version stored (versionsMarkdown), which
+// the block index cut that version's texts of its blocks from. A version the document does not
+// hold is an error.
+func (s *server) footnotedMarkdown(ctx context.Context, artifactID string, version int) (string, error) {
+	if version == 0 {
+		markdown, _, err := s.deps.Docs.TextWithToken(ctx, artifactID)
+		return markdown, err
+	}
+	stored, err := s.versionsMarkdown(ctx, artifactID, []int{version})
+	if err != nil {
+		return "", fmt.Errorf("read version %d: %w", version, err)
+	}
+	markdown, held := stored[version]
+	if !held {
+		return "", fmt.Errorf("the document holds no version %d", version)
+	}
+	return markdown, nil
+}
+
+// footnotesCalledIn enters into called, for each of keys, the source of the tree of its text of
+// texts but its markdown, where the block of the document artifactID that documents places it at
+// is read from tree, the parse of the markdown the text was cut from. A typed block is the first
+// node of the parse holding its id, as typedBlocksIn finds one, since the rendering writes a typed
+// block's id into its opening line, and its labels are the ones its node calls
+// (pmdoc.CalledFootnoteLabels), as the coverage and the results reads take them. Any other block -
+// a paragraph, a heading, a list item - has no id in the rendering, so the parse gives it another,
+// and so has a block its document no longer holds: no node holds its id, and its labels are each
+// label the document defines that its text writes as a call, up to case
+// (pmdoc.FootnoteDefinitionLabels, pmdoc.WrittenFootnoteLabels). Such a text can write a call that
+// reads as text, escaped or in code, or one of a label it defines itself, which resolves to its
+// own definition first; the stand-in of that label is then one nothing refers to, which is taken
+// out of the tree with the rest (registerBlockTree). A text that calls no such label has no entry.
+func footnotesCalledIn[K comparable](tree *pmdoc.Node, artifactID string, keys []K, texts map[K]string, documents map[K]refs.DocumentBlock, called map[K]blockTreeSource) {
+	// nodes is, by each block id keys place a text at, the labels the first node of the parse
+	// holding that id calls, and whether a node holds it at all.
+	type nodeLabels struct {
+		labels []string
+		held   bool
+	}
+	nodes := make(map[string]nodeLabels, len(keys))
+	for _, key := range keys {
+		nodes[documents[key].BlockID] = nodeLabels{}
+	}
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+		if found, wanted := nodes[id]; wanted && !found.held {
+			nodes[id] = nodeLabels{labels: pmdoc.CalledFootnoteLabels(node), held: true}
+		}
+		return true
+	})
+	var defined []string
+	definedRead := false
+	for _, key := range keys {
+		block := documents[key]
+		node := nodes[block.BlockID]
+		labels := node.labels
+		if !node.held {
+			if !definedRead {
+				defined, definedRead = pmdoc.FootnoteDefinitionLabels(tree), true
+			}
+			labels = pmdoc.WrittenFootnoteLabels(texts[key], defined)
+		}
+		if len(labels) > 0 {
+			called[key] = blockTreeSource{artifactID: artifactID, blockID: block.BlockID, labels: labels}
+		}
+	}
 }
 
 // blockTextContent is the markdown a block's text_tree is read from, given the block's whole
