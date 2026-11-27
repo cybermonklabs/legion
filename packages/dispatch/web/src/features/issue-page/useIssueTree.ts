@@ -80,7 +80,9 @@ export interface IssueTreeView
    *  (`PublishedReferenceNames`), so no row reads a reference the page is asking for. */
   readonly published: PublishedReferences;
   readonly root: TreeNode;
-  /** Whether this caller is a standalone slot that mounted on an already-cached tree answer. */
+  /** Whether this caller is a standalone slot that builds its tree in the commit that receives a
+   *  read (`useBuiltTree`'s `layoutBuilds`): from its mount on an already-cached tree answer, or
+   *  from the commit that draws the first tree a task built for it. */
   readonly warm: boolean;
 }
 
@@ -314,16 +316,24 @@ function builtTree(reads: IssueTreeReads): TreeNode {
 /** Build from the latest cache inputs in a task of its own. Publish in a separate
  *  task, so React can draw without sharing a task with the build. A cache hit draws
  *  without waiting, including when the reader returns to Conversation. While
- *  replacing the tree, keep the last result for this outline. */
+ *  replacing the tree, keep the last result for this outline.
+ *
+ *  A standalone slot (`standalone`, no tree owner above it) builds in its layout effect instead,
+ *  in the commit that receives a read: from its mount where it mounted on an answer already held
+ *  (`prepareWarm`), and else from the commit that draws the first tree a task built for it
+ *  (`layoutBuilds`). So a read that answers after its first drawing draws in the act that brought
+ *  it, as the base drew it, and no tree of it lands a task after that act. */
 function useBuiltTree(
   reads: IssueTreeReads,
   fallback: TreeNode,
   client: QueryClient,
   keys: ReadonlySet<string>,
   latestReads: () => IssueTreeReads,
-  prepareWarm: boolean
+  prepareWarm: boolean,
+  standalone: boolean
 ): {
   readonly building: boolean;
+  readonly layoutBuilds: boolean;
   readonly root: TreeNode;
   readonly source: TreeAnswer | undefined;
 } {
@@ -339,17 +349,21 @@ function useBuiltTree(
   const renderedCached = useRef<TreeNode | undefined>(undefined);
   renderedCached.current = cached;
   if (cached !== undefined) last.current = { keys, root: cached, source: reads.tree };
+  const [layoutBuilds, setLayoutBuilds] = useState(prepareWarm);
+  if (standalone && !layoutBuilds && cached !== undefined && reads.tree !== undefined) {
+    setLayoutBuilds(true);
+  }
   // Standalone slots without a tree owner can mount on an answer already held in the cache
   // (and receive synchronous cache updates via `setQueryData`). Keep their pre-paint contract
   // in the layout effect without building inside render.
   useLayoutEffect(() => {
-    if (!prepareWarm || reads.tree === undefined || cached !== undefined) return;
+    if (!layoutBuilds || reads.tree === undefined || cached !== undefined) return;
     prepareOutline(reads);
     setPublished((count) => count + 1);
-  }, [cached, prepareWarm, reads]);
+  }, [cached, layoutBuilds, reads]);
   const schedule = useRef<(() => void) | undefined>(undefined);
   useEffect(() => {
-    if (prepareWarm) return;
+    if (layoutBuilds) return;
     let cancelBuild: (() => void) | undefined;
     let cancelPublish: (() => void) | undefined;
     const build = () => {
@@ -400,13 +414,18 @@ function useBuiltTree(
       cancelBuild?.();
       cancelPublish?.();
     };
-  }, [client, keys, latestReads, prepareWarm]);
+  }, [client, keys, latestReads, layoutBuilds]);
   const building = cached === undefined;
   useEffect(() => {
-    if (building && !prepareWarm) schedule.current?.();
+    if (building && !layoutBuilds) schedule.current?.();
   });
   const held = last.current?.keys === keys ? last.current : undefined;
-  return { building, root: cached ?? held?.root ?? fallback, source: held?.source };
+  return {
+    building,
+    layoutBuilds,
+    root: cached ?? held?.root ?? fallback,
+    source: held?.source,
+  };
 }
 
 /**
@@ -443,8 +462,10 @@ function useBuiltTree(
  * address; on every read after the first the names already in hand stand while the new set
  * loads, and after its read fails (`IssueTreeView.namesFailure`).
  *
- * A standalone slot can opt into a pre-paint build when it mounts on an answer already in
- * its cache (`warmMount`). A cold mount always schedules its build in a separate task.
+ * A standalone slot (`warmMount`) builds its tree in the commit that receives a read: from its
+ * mount where it mounts on an answer already in its cache, and else from the commit that draws
+ * the first tree a task built for it (`useBuiltTree`). A cold mount always schedules its first
+ * build in a separate task.
  */
 export function useIssueTree(issue: IssueDetails, warmMount = false): IssueTreeView {
   const key = issue.key;
@@ -694,10 +715,23 @@ export function useIssueTree(issue: IssueDetails, warmMount = false): IssueTreeV
     () => (named?.length ? { ...reads, targets: named } : reads),
     [named, reads]
   );
-  const built = useBuiltTree(withNames, empty, client, inputHashes, latestReads, prepareWarm);
+  const built = useBuiltTree(
+    withNames,
+    empty,
+    client,
+    inputHashes,
+    latestReads,
+    prepareWarm,
+    warmMount
+  );
   const openingFilter = opening.current === entry ? read.filter : undefined;
   const openingAnswer = openingFilter === undefined ? undefined : views?.[openingFilter];
-  const openingView = useOpeningViewTree(openingFilter, openingAnswer, withNames);
+  const openingView = useOpeningViewTree(
+    openingFilter,
+    openingAnswer,
+    withNames,
+    built.layoutBuilds
+  );
   // Publish a new view answer with the outline that uses it. In particular, Plan can
   // change the marks of statements that are already drawn in the outline.
   const heldViews = useRef<{
@@ -787,7 +821,7 @@ export function useIssueTree(issue: IssueDetails, warmMount = false): IssueTreeV
       pending,
       published,
       root,
-      warm: prepareWarm,
+      warm: built.layoutBuilds,
     }),
     [
       blocksHeld,
@@ -801,24 +835,32 @@ export function useIssueTree(issue: IssueDetails, warmMount = false): IssueTreeV
       pending,
       published,
       root,
-      prepareWarm,
+      built.layoutBuilds,
     ]
   );
 }
 
 /** Prepare the opening filter before its first drawing. Keep its previous rows while new
- *  answers are being built so refreshes do not remount the view or move its focus. */
+ *  answers are being built so refreshes do not remount the view or move its focus. Where the
+ *  outline builds in the commit that receives a read (`layout`, `useBuiltTree`'s
+ *  `layoutBuilds`), the view is built in that commit too. */
 function useOpeningViewTree(
   filter: TreeFilter | undefined,
   answer: TreeAnswer | undefined,
-  sources: IssueTreeReads
+  sources: IssueTreeReads,
+  layout: boolean
 ): TreeNode | undefined {
   const [held, setHeld] = useState<{
     readonly filter: TreeFilter;
     readonly root: TreeNode;
   }>();
+  useLayoutEffect(() => {
+    if (!layout || filter === undefined || answer === undefined) return;
+    const root = builtTree({ ...sources, tree: viewWithContext(answer, sources.tree) });
+    setHeld((prev) => (prev?.filter === filter && prev.root === root ? prev : { filter, root }));
+  }, [answer, filter, layout, sources]);
   useEffect(() => {
-    if (filter === undefined || answer === undefined) return;
+    if (layout || filter === undefined || answer === undefined) return;
     let cancelPublish: (() => void) | undefined;
     const cancelBuild = askForTask(() => {
       const root = builtTree({ ...sources, tree: viewWithContext(answer, sources.tree) });
@@ -834,7 +876,7 @@ function useOpeningViewTree(
       cancelBuild();
       cancelPublish?.();
     };
-  }, [answer, filter, sources]);
+  }, [answer, filter, layout, sources]);
   return answer !== undefined && held?.filter === filter ? held?.root : undefined;
 }
 

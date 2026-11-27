@@ -129,7 +129,8 @@ export interface OutlineReads {
   readonly root: TreeNode;
   /** The outline is still being read or built. Its current root cannot yet decide absence. */
   readonly treePending: boolean;
-  /** Whether this reader is a standalone slot that mounted on an already-cached tree answer. */
+  /** Whether this reader is a standalone slot that builds its tree in the commit that receives a
+   *  read (`IssueTreeView.warm`). */
   readonly warm: boolean;
 }
 

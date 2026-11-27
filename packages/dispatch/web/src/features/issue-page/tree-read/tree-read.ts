@@ -42,6 +42,7 @@ import { presetOf } from "../issue-address";
 import type { TreeNode } from "../issue-tree";
 import type { Preset } from "../page-words";
 import { isFilter } from "../presets";
+import { useRowsDrawn } from "../rows-drawn";
 import { nextTreeCursor, olderCommentsBefore } from "./comment-positions";
 import {
   blocksOfRole,
@@ -928,12 +929,14 @@ export function useReadUntilHeld(
  * draws the page again, and the caller says again whether it still wants one, so the reading ends
  * with the page that brings what it named, or once the answer names neither page. It asks for no
  * page before the page has drawn the answer that names what it wants (`useDrawnWith`), so a load
- * reads no page past its first (decision 538). A page refused stops the reading at that page, and
- * the hook answers it refused for as long as the answer names that page as its next, as
- * `useReadUntilHeld` answers a refused cursor: the control after the outline's last row, and the
- * controls above the outline and at the foot of the Contents list, read it again, and once it
- * answers the reading goes on. Answers whether it is still reading, which the address's landing
- * waits on as on the next pages.
+ * reads no page past its first (decision 538): a frame after a render that holds that answer and
+ * in which a view of the page has drawn a row of the issue (`rows-drawn.ts`), since the page
+ * draws the rows of an answer a task or more after the render that holds it. A page refused stops
+ * the reading at that page, and the hook answers it refused for as long as the answer names that
+ * page as its next, as `useReadUntilHeld` answers a refused cursor: the control after the
+ * outline's last row, and the controls above the outline and at the foot of the Contents list,
+ * read it again, and once it answers the reading goes on. Answers whether it is still reading,
+ * which the address's landing waits on as on the next pages.
  */
 export function useReadUnloadedPages(
   issue: IssueDetails,
@@ -958,7 +961,8 @@ export function useReadUnloadedPages(
   const [refusedAt, setRefusedAt] = useState<string | undefined>(undefined);
   const named =
     outline !== undefined && answer !== undefined && page !== undefined && wants(answer);
-  const drawn = useDrawnWith(named);
+  const rowsDrawn = useRowsDrawn();
+  const drawn = useDrawnWith(named && rowsDrawn);
   const refused = named && page === refusedAt;
   const reading = named && !refused;
   const next = cursor !== undefined;

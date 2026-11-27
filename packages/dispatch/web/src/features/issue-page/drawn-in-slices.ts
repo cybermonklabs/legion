@@ -1,6 +1,7 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 
+import { noteRowDrawn, RowsDrawnContext } from "./rows-drawn";
 import { abortOnReaderAct } from "./useNodeEditing";
 
 /**
@@ -152,6 +153,8 @@ export function useDrawnInSlices<Row>({
   const acts = useRef<AbortController | undefined>(undefined);
   // Whether the rows are still on the page, which a slice asked for before they left reads.
   const mounted = useRef(false);
+  // The page, told once these rows' commit holds a row of them (`rows-drawn.ts`).
+  const page = useContext(RowsDrawnContext);
 
   if (rows !== ledger.rows) {
     ledger.rows = rows;
@@ -194,6 +197,7 @@ export function useDrawnInSlices<Row>({
   useLayoutEffect(() => {
     const { focused: holding, measure: topOf } = ledger;
     noteHeld(ledger, mounted.current);
+    if (ledger.held.size < ledger.keys.length) noteRowDrawn(page);
     keepReference(ledger, topOf, acts.current?.signal.aborted === true);
     ledger.drew.clear();
     ledger.drawnBefore = new Set(ledger.keys.filter((key) => !ledger.held.has(key)));

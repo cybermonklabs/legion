@@ -1,7 +1,8 @@
-import { createContext, type ReactNode, useContext, useMemo } from "react";
+import { createContext, type ReactNode, useContext, useMemo, useState } from "react";
 
 import type { IssueDetails } from "../../api/types";
 import { HeldChipLinesProvider } from "./held-chip-lines";
+import { newRowsDrawn, RowsDrawnContext } from "./rows-drawn";
 import { type IssueTreeView, useIssueTree } from "./useIssueTree";
 
 /** The tree the page's owner holds (`IssueTreeOwnerProvider`), with the key of the issue it is
@@ -27,7 +28,9 @@ const IssueTreeOwner = createContext<OwnedTree | undefined>(undefined);
  * builds are those one reader made before.
  *
  * It holds for every chip under it the line the tree holds for each block it names, so a chip
- * holds its place before the names read names it (`held-chip-lines.tsx`).
+ * holds its place before the names read names it (`held-chip-lines.tsx`), and whether a view under
+ * it has drawn a row of the issue yet (`rows-drawn.ts`), one for the page's life, which is one
+ * issue's: the page mounts again for another issue (`IssueOutlinePage.tsx`).
  */
 export function IssueTreeOwnerProvider({
   children,
@@ -41,11 +44,14 @@ export function IssueTreeOwnerProvider({
   // One value for as long as the tree says the same, so a reader is drawn again only when it
   // changes.
   const owned = useMemo((): OwnedTree => ({ key, tree }), [key, tree]);
+  const [rowsDrawn] = useState(newRowsDrawn);
   return (
     <IssueTreeOwner.Provider value={owned}>
-      <HeldChipLinesProvider namesFailed={tree.namesFailure !== undefined} root={tree.root}>
-        {children}
-      </HeldChipLinesProvider>
+      <RowsDrawnContext.Provider value={rowsDrawn}>
+        <HeldChipLinesProvider namesFailed={tree.namesFailure !== undefined} root={tree.root}>
+          {children}
+        </HeldChipLinesProvider>
+      </RowsDrawnContext.Provider>
     </IssueTreeOwner.Provider>
   );
 }
