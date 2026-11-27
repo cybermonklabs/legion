@@ -332,6 +332,8 @@ check "a dispatch of a branch: the merge base the base step finds" \
 check "a merge group: its base" "$(is "$(generate_step_of "$ci" --event merge_group --base "$merge_base")" "filters-base=$merge_base")"
 check "a pull request: the first parent the base step finds, not the event's own base" \
   "$(is "$(generate_step_of "$ci" --event pull_request --base "$merge_base" --pull-base "$event_base")" "filters-base=$merge_base")"
+check "an approval's run (pull_request_review, large-pr-lanes.yaml's call): the same first parent" \
+  "$(is "$(generate_step_of "$ci" --event pull_request_review --base "$merge_base" --pull-base "$event_base")" "filters-base=$merge_base")"
 check "a dispatch of main: none, since it selects every job" \
   "$(is "$(generate_step_of "$ci" --event workflow_dispatch --ref refs/heads/main --base "$merge_base")" "filters-base=")"
 check "every-job: none" \
@@ -422,10 +424,17 @@ check "a pull request then hands the generation the event's older base" \
 
 echo "case: a base step that runs on no pull request fails the pull-request case"
 broken=$(copy_with "$work/base-no-pull-request" ci.yaml \
-  "if: \${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}" \
-  "if: \${{ github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job }}")
+  "if: \${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_review' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}" \
+  "if: \${{ github.event_name == 'pull_request_review' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}")
 check "a pull request then hands the generation no base" \
   "$(is "$(generate_step_of "$broken" --event pull_request --base "$merge_base" --pull-base "$event_base")" "filters-base=")"
+
+echo "case: a base step that runs on no approval's run fails the approval case"
+broken=$(copy_with "$work/base-no-review" ci.yaml \
+  "if: \${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_review' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}" \
+  "if: \${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}")
+check "an approval's run then hands the generation no base" \
+  "$(is "$(generate_step_of "$broken" --event pull_request_review --base "$merge_base" --pull-base "$event_base")" "filters-base=")"
 
 echo "case: a base step that runs on every dispatch fails the dispatch-of-main case"
 # edited-migrations-base.sh exits 2 on a dispatch of main that names no migration-base, which would
@@ -445,7 +454,7 @@ base_step=$(cat <<'YAML'
       # why: .github/ci-notes/ci.md#the-commit-a-change-is-measured-against
       - name: Find the commit this run's change is measured against
         id: base
-        if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_review' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}
         timeout-minutes: 3
         run: |
           sha=$(.github/scripts/edited-migrations-base.sh)
@@ -706,7 +715,9 @@ check "full-ci on the pull request turns on no suite its paths did not select" \
   "$(is "$(not_value "$repo/.github/workflows/ci.yaml" false --event pull_request_review --verdicts false --label full-ci | tr '\n' ' ')" "")"
 
 echo "case: an output whose event term admits only the merge group fails the approval case"
-broken=$(broken_copy "$work/merge-group-only" pi_legion "github.event_name != 'pull_request'" "github.event_name == 'merge_group'")
+broken=$(copy_with "$work/merge-group-only" ci.yaml \
+  "(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:pi_legion'))" \
+  "(github.event_name == 'merge_group' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:pi_legion'))")
 check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
 check "a merge group still turns it on" "$(is "$(not_value "$broken" true --event merge_group | tr '\n' ' ')" "")"
 check "an approval's run differs from the merge group's on exactly pi_legion" \

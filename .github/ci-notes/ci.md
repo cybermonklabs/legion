@@ -1504,10 +1504,13 @@ the image.
 The changes job hands the filter generation the commit the run's change lands onto
 (`CI_FILTERS_BASE`), and the generation compares the base tree's filters with this tree's when the
 change touches a file the filters are computed with: a merge group's `base_sha`; on a pull
-request, the first parent of the merge commit the run checked out, which is main as GitHub merged
-the branch into it; on a dispatch of a branch, its merge base with main
+request, and on the approval-time run of a large one, which runs under pull_request_review and
+checks out the same merge commit
+(#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head), the first parent of the
+merge commit the run checked out, which is main as GitHub merged the branch into it; on a
+dispatch of a branch, its merge base with main
 (#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job). The step "Find the
-commit this run's change is measured against" finds the last two with
+commit this run's change is measured against" finds the last three with
 .github/scripts/edited-migrations-base.sh, which picks the base of envoy-go-build's migration
 check by the same rule.
 
@@ -2086,9 +2089,9 @@ Three pieces make it:
     browser-image.yaml is part of the browser image's build recipe (ci_images.py's
     recipe_sha256), so any edit of it rebuilds the image and moves its row, and following does
     the same work with no second run of the suites at all.
-  - `approval` calls this file (ci.yaml's `on.workflow_call`) when `lead` says to run. A called
-    workflow runs under its caller's event, and on pull_request_review the `full-ci` term of
-    every held-back output (`github.event_name != 'pull_request' || …`) is true, so each takes its
+  - `approval` calls this file, through its `workflow_call` trigger, when `lead` says to run. A
+    called workflow runs under its caller's event, and on pull_request_review the `full-ci` term
+    of every held-back output (`github.event_name != 'pull_request' || …`) is true, so each takes its
     paths filter's verdict, as on a merge group. ci-router-outputs.test.sh holds a review run's
     outputs equal to a merge group's for the same paths verdicts. This file's own ci-ok judges
     that run as `approval / ci-ok`, a name no ruleset reads.
