@@ -395,7 +395,7 @@ func (s *server) createStoredMessage(
 	// A session target of an issue's message, named or inherited, is judged in the transaction
 	// below (refuseSessionOutsideProject), which refreshes no listener record, so it is refreshed
 	// before that transaction opens.
-	if issueKey != nil && (input.Target != nil || input.InReplyTo != nil) {
+	if issueKey != nil && mayJudgeSessionTarget(input, actor) {
 		s.refreshRosterBeforeSight(ctx)
 	}
 	tx, err := s.begin(ctx)
@@ -671,6 +671,17 @@ func (s *server) createStoredMessage(
 		}
 	}
 	return message, advice, nil
+}
+
+// mayJudgeSessionTarget reports whether createStoredMessage's transaction may judge a session
+// target's sight (refuseSessionOutsideProject): a named target that is a session's, or a user's
+// reply that names no target and so inherits its thread root's, which may be a session's.
+func mayJudgeSessionTarget(input createMessageInput, actor model.Actor) bool {
+	if input.Target == nil {
+		return input.InReplyTo != nil && actor.Kind == "user"
+	}
+	route, err := model.ParseRoute(*input.Target)
+	return err == nil && route.Kind == "session"
 }
 
 // hiddenSessionTarget answers the session a message's target names when reader may not see it

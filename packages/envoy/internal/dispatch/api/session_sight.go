@@ -96,13 +96,13 @@ func (s *server) withheldFromSession(ctx context.Context, session, project strin
 	return ""
 }
 
-// sessionSight is whether session sees project (access.ReadSessionSight), read through q, and
+// sessionSight is whether session sees project (access.SessionSeesProject), read through q, and
 // whether that verdict depends on a listener list of a stored listener record that has expired
 // (expired), which no caller judges by. With no listener configured, which lists nothing, the
 // record is judged as it stands, and no verdict is expired.
 func (s *server) sessionSight(ctx context.Context, q access.RowsQuerier, session, project string) (sees, expired bool, err error) {
-	sight, err := access.ReadSessionSight(ctx, q, []string{session}, []string{project})
-	return sight.Sees[project][session], s.deps.Envoy != nil && sight.ListExpired[project][session], err
+	sees, expired, err = access.SessionSeesProject(ctx, q, session, project)
+	return sees, s.deps.Envoy != nil && expired, err
 }
 
 // refreshedSessionSight is sessionSight on the pool, where a verdict that depends on a list of a
@@ -151,16 +151,16 @@ func sessionSightRefusal(sees, expired bool, err error, session, project, what s
 	case err != nil:
 		return err
 	case expired:
-		return errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE", sessionSightUnreadText, session, project)
+		return errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE", sessionSightListExpiredText, session, project)
 	case sees:
 		return nil
 	}
 	return errorf(http.StatusForbidden, codeSessionOutsideProject, sessionOutsideProjectText, session, project, what, project, project)
 }
 
-// sessionSightUnreadText is the message of sessionSightRefusal's 503 ENVOY_UNAVAILABLE, with the
-// session and the project: the listener did not answer, so nothing was written.
-const sessionSightUnreadText = "the Envoy listener did not answer Dispatch's read of its sessions, so Dispatch cannot tell " +
+// sessionSightListExpiredText is the message of sessionSightRefusal's 503 ENVOY_UNAVAILABLE, with
+// the session and the project: the listener did not answer, so nothing was written.
+const sessionSightListExpiredText = "the Envoy listener did not answer Dispatch's read of its sessions, so Dispatch cannot tell " +
 	"whether session %s may see project %s; nothing was written: try again"
 
 // refreshRosterBeforeSight refreshes the stored listener record (refreshRosterForContent) before a

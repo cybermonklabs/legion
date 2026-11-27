@@ -56,6 +56,16 @@ func tieSession(t *testing.T, database *store.Store, session, person string) {
 	}
 }
 
+// eventSettled reads whether event id was published, and whether it waits on a back-off.
+func eventSettled(t *testing.T, database *store.Store, id int64) (published, backedOff bool) {
+	t.Helper()
+	if err := database.Pool.QueryRow(context.Background(), `select published_at is not null, next_attempt_at is not null from events where id = $1`,
+		id).Scan(&published, &backedOff); err != nil {
+		t.Fatalf("read event %d: %v", id, err)
+	}
+	return published, backedOff
+}
+
 // TestADestinationWhoseSessionDoesNotSeeTheEventsProjectIsWithheld holds every destination that
 // reaches a session's own subject, and the role route's forward to its holder, to the session's
 // sight (destinations.withheld, withholdUnseenHolders, access.SessionSeesProjectClause): each row
@@ -288,22 +298,28 @@ func TestTheKeptCopysHandoverAsksTheHoldersSight(t *testing.T) {
 		seedSightProject(t, database, visible)
 		tieSession(t, database, roleHolder, sightOutsider)
 		deps := Deps{Store: database}
-		of := func(project string) contracts.Envelope {
+		// of is the project carriedProject reads from the payload of an event of project.
+		of := func(project string) string {
+			t.Helper()
 			payload, err := json.Marshal(model.Event{ID: 9, IssueKey: new("T-1"), Project: project, Type: "comment.created"})
 			if err != nil {
 				t.Fatalf("encode the event: %v", err)
 			}
-			return contracts.Envelope{EventID: "dispatch-9", Payload: string(payload)}
+			carried, err := carriedProject(contracts.Envelope{EventID: "dispatch-9", Payload: string(payload)})
+			if err != nil {
+				t.Fatalf("read the event's project: %v", err)
+			}
+			return carried
 		}
-		_, sees, err := holderSeesTheCopy(ctx, deps, roleHolder, of("TT"))
+		sees, err := holderSeesTheCopy(ctx, deps, roleHolder, of("TT"))
 		if err != nil || sees != visible {
 			t.Fatalf("with TT's list naming the holder's person %v, the holder sees TT's kept copy: %v, %v", visible, sees, err)
 		}
-		if _, sees, err := holderSeesTheCopy(ctx, deps, roleHolder, of("")); err != nil || !sees {
+		if sees, err := holderSeesTheCopy(ctx, deps, roleHolder, of("")); err != nil || !sees {
 			t.Fatalf("a kept copy naming no project is shown to the holder: %v, %v; want true", sees, err)
 		}
 	}
-	if _, _, err := holderSeesTheCopy(context.Background(), Deps{}, roleHolder, contracts.Envelope{Payload: `{"project":"TT"}`}); !errors.Is(err, errNoSightReader) {
+	if _, err := holderSeesTheCopy(context.Background(), Deps{}, roleHolder, "TT"); !errors.Is(err, errNoSightReader) {
 		t.Fatalf("a handover with no store answered %v, want errNoSightReader", err)
 	}
 }
@@ -424,15 +440,6 @@ func TestTheOutboxAsksTheListenerAgainBeforeItJudgesAnExpiredList(t *testing.T) 
 		})
 		return listener, runs
 	}
-	// settled reads whether event id was published, and whether it waits on a back-off.
-	settled := func(t *testing.T, database *store.Store, id int64) (published, backedOff bool) {
-		t.Helper()
-		if err := database.Pool.QueryRow(ctx, `select published_at is not null, next_attempt_at is not null from events where id = $1`,
-			id).Scan(&published, &backedOff); err != nil {
-			t.Fatalf("read event %d: %v", id, err)
-		}
-		return published, backedOff
-	}
 	route := "session:" + listed
 	for _, renews := range []bool{true, false} {
 		arm := "/a refresh that renews the record"
@@ -449,7 +456,7 @@ func TestTheOutboxAsksTheListenerAgainBeforeItJudgesAnExpiredList(t *testing.T) 
 			if _, err := scanBatch(ctx, deps, unfenced{}, holding(t, deps).instance); err != nil {
 				t.Fatalf("scan batch: %v", err)
 			}
-			published, backedOff := settled(t, database, event.ID)
+			published, backedOff := eventSettled(t, database, event.ID)
 			sentListed, sentMember := topicsNaming(publisher, listed), topicsNaming(publisher, claimer)
 			switch {
 			case renews && (len(sentListed) != 1 || len(sentMember) != 0 || !published):
@@ -472,7 +479,7 @@ func TestTheOutboxAsksTheListenerAgainBeforeItJudgesAnExpiredList(t *testing.T) 
 			if _, err := scanBatch(ctx, deps, unfenced{}, holding(t, deps).instance); err != nil {
 				t.Fatalf("scan batch: %v", err)
 			}
-			published, backedOff := settled(t, database, event.ID)
+			published, backedOff := eventSettled(t, database, event.ID)
 			forwarded := topicsNaming(publisher, contracts.RoleTopicPrefix+"reviewer")
 			switch {
 			case renews && (len(forwarded) != 1 || !published):
@@ -515,8 +522,7 @@ func TestTheOutboxAsksTheListenerAgainBeforeItJudgesAnExpiredList(t *testing.T) 
 		t.Run("the kept copy's handover"+arm, func(t *testing.T) {
 			database := seed(t, nil, false)
 			listener, runs := refresh(t, database, renews)
-			_, sees, err := holderSeesTheCopy(ctx, Deps{Store: database, ListenerRefresh: listener}, roleHolder,
-				contracts.Envelope{EventID: "dispatch-9", Payload: `{"project":"TT"}`})
+			sees, err := holderSeesTheCopy(ctx, Deps{Store: database, ListenerRefresh: listener}, roleHolder, "TT")
 			switch {
 			case renews && (err != nil || !sees):
 				t.Fatalf("after a refresh %s sees TT's kept copy: %v, %v; want true", roleHolder, sees, err)
@@ -537,7 +543,7 @@ func TestTheOutboxAsksTheListenerAgainBeforeItJudgesAnExpiredList(t *testing.T) 
 		if _, err := scanBatch(ctx, deps, unfenced{}, holding(t, deps).instance); err != nil {
 			t.Fatalf("scan batch: %v", err)
 		}
-		published, _ := settled(t, database, event.ID)
+		published, _ := eventSettled(t, database, event.ID)
 		if sentListed, sentMember := topicsNaming(publisher, listed), topicsNaming(publisher, claimer); len(sentListed) != 1 || len(sentMember) != 1 || !published || runs.Load() != 0 {
 			t.Fatalf("with no private project: %s sent %v, %s sent %v, published %v, refreshed %d times; want both sent in the pass and no refresh",
 				listed, sentListed, claimer, sentMember, published, runs.Load())
@@ -637,7 +643,7 @@ func TestTheOutboxAsksTheListenerAgainWithItsGateFree(t *testing.T) {
 	})
 	t.Run("the kept copy's handover", func(t *testing.T) {
 		deps, scan, runs := gated(t, Deps{Store: seed(t, nil)})
-		_, sees, err := holderSeesTheCopy(scan, deps, roleHolder, contracts.Envelope{EventID: "dispatch-9", Payload: `{"project":"TT"}`})
+		sees, err := holderSeesTheCopy(scan, deps, roleHolder, "TT")
 		if err != nil || !sees || runs.Load() == 0 {
 			t.Fatalf("the handover asked the listener %d times and answered %v, %v; want it asked and %s shown TT's kept copy", runs.Load(), sees, err, roleHolder)
 		}
@@ -652,6 +658,7 @@ func TestTheOutboxAsksTheListenerAgainWithItsGateFree(t *testing.T) {
 // refresh. PUB's copy depends on no list, so it is sent in that pass and its event published; TT's
 // depends on session-listed's list, so it is sent nothing and its event backs off.
 func TestAnExpiredListBacksOffOnlyTheCopiesThatDependOnIt(t *testing.T) {
+	t.Parallel()
 	const (
 		listed = "session-listed"
 		member = "session-member"
@@ -694,19 +701,11 @@ func TestAnExpiredListBacksOffOnlyTheCopiesThatDependOnIt(t *testing.T) {
 	if _, err := scanBatch(ctx, deps, unfenced{}, holding(t, deps).instance); err != nil {
 		t.Fatalf("scan batch: %v", err)
 	}
-	settled := func(id int64) (published, backedOff bool) {
-		t.Helper()
-		if err := database.Pool.QueryRow(ctx, `select published_at is not null, next_attempt_at is not null from events where id = $1`,
-			id).Scan(&published, &backedOff); err != nil {
-			t.Fatalf("read event %d: %v", id, err)
-		}
-		return published, backedOff
-	}
-	if published, backedOff := settled(public.ID); len(topicsNaming(publisher, member)) != 1 || !published || backedOff {
+	if published, backedOff := eventSettled(t, database, public.ID); len(topicsNaming(publisher, member)) != 1 || !published || backedOff {
 		t.Fatalf("PUB's event, whose copy to %s depends on no list: sent %v, published %v, backed off %v; want it sent and published in the pass",
 			member, topicsNaming(publisher, member), published, backedOff)
 	}
-	if published, backedOff := settled(private.ID); len(topicsNaming(publisher, listed)) != 0 || published || !backedOff {
+	if published, backedOff := eventSettled(t, database, private.ID); len(topicsNaming(publisher, listed)) != 0 || published || !backedOff {
 		t.Fatalf("TT's event, whose copy to %s depends on the expired list: sent %v, published %v, backed off %v; want nothing sent and the event backed off",
 			listed, topicsNaming(publisher, listed), published, backedOff)
 	}

@@ -1038,7 +1038,11 @@ func handOverKeptCopy(ctx context.Context, deps Deps, sender bus.Sender, role st
 	if handover.keptFor != "" || handover.skip != "" || handover.err != nil {
 		return nil
 	}
-	if project, sees, err := holderSeesTheCopy(ctx, deps, handover.holder, item); err != nil || !sees {
+	project, err := carriedProject(item)
+	if err != nil {
+		return err
+	}
+	if sees, err := holderSeesTheCopy(ctx, deps, handover.holder, project); err != nil || !sees {
 		if err == nil {
 			slog.Info("dispatch outbox: a destination is withheld: its session does not see the event's project",
 				"event", item.EventID, "project", project, "role", role, "session", handover.holder)
@@ -1058,30 +1062,36 @@ func handOverKeptCopy(ctx context.Context, deps Deps, sender bus.Sender, role st
 	return nil
 }
 
-// holderSeesTheCopy reports the project the event item carries names in its payload
-// (model.Event.Project), and whether holder may be shown it, by the rule every destination is
-// judged by (access.SessionSeesProjectClause, readSight), read on the outbox's pool under its
-// gate, and read again with the listener asked where the verdict depended on a list of an expired
-// listener record: an event that names no project is shown, as the batch's own destinations are
-// (destinations.withheld). A payload that does not decode, a Deps with no store, and a listener
-// record that stays expired where the verdict depends on a list answer an error, which hands
-// nothing over and leaves the copy on the lane, backing no event off.
-func holderSeesTheCopy(ctx context.Context, deps Deps, holder string, item contracts.Envelope) (string, bool, error) {
+// carriedProject is the project the event item carries names in its payload (model.Event.Project),
+// "" for an event of no project. A payload that does not decode answers an error, which hands
+// nothing over and leaves the copy on the lane.
+func carriedProject(item contracts.Envelope) (string, error) {
 	var carried struct {
 		Project string `json:"project"`
 	}
 	if err := json.Unmarshal([]byte(item.Payload), &carried); err != nil {
-		return "", false, fmt.Errorf("read the project of %s: %w", item.EventID, err)
+		return "", fmt.Errorf("read the project of %s: %w", item.EventID, err)
 	}
-	if carried.Project == "" {
-		return "", true, nil
+	return carried.Project, nil
+}
+
+// holderSeesTheCopy reports whether holder may be shown project, the project a kept copy's event
+// names (carriedProject), by the rule every destination is judged by
+// (access.SessionSeesProjectClause, readSight), read on the outbox's pool under its gate, and read
+// again with the listener asked where the verdict depended on a list of an expired listener
+// record: an event that names no project is shown, as the batch's own destinations are
+// (destinations.withheld). A Deps with no store, and a listener record that stays expired where
+// the verdict depends on a list, answer an error, which hands nothing over and leaves the copy on
+// the lane, backing no event off.
+func holderSeesTheCopy(ctx context.Context, deps Deps, holder, project string) (bool, error) {
+	if project == "" {
+		return true, nil
 	}
 	if deps.Store == nil {
-		return carried.Project, false, errNoSightReader
+		return false, errNoSightReader
 	}
-	sight, err := readSight(ctx, deps, []string{holder}, []string{carried.Project})
-	sees, err := sightOf(sight, err, holder, carried.Project)
-	return carried.Project, sees, err
+	sight, err := readSight(ctx, deps, []string{holder}, []string{project})
+	return sightOf(sight, err, holder, project)
 }
 
 // keptHandovers is what one batch's own handovers have taken off the kept lanes it writes: per

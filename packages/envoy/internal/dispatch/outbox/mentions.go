@@ -1844,20 +1844,29 @@ func fallbackCopyWithdrawn(ctx context.Context, deps Deps, held fallbackCopy) (b
 // record. A session the pass names only as it decides a row - a role destination's holder - is
 // read then, alone, and kept for the pass's later rows. A read that failed answers its error to
 // every row that asks after it, and a pair whose verdict still depends on a list of an expired
-// listener record answers errListenerRecordExpired to its own rows alone (unread), each of which
+// listener record answers errListenerRecordExpired to its own rows alone (sightOf), each of which
 // counts an attempt on the row and backs it off (failedFallbackCopy), as any decision that fails
 // does.
 type fallbackSight struct {
-	ctx    context.Context
-	deps   Deps
-	read   map[[2]string]bool
-	unread map[[2]string]bool
-	err    error
+	ctx  context.Context
+	deps Deps
+	read map[[2]string]pairSight
+	// askedAgain is whether a read of the pass has asked the listener again (readSight), or found
+	// no refresh bound to ask, and still left a pair unread: the pass's later reads then read once
+	// (readSightOnce), so a pass asks a listener that does not answer at most once.
+	askedAgain bool
+	err        error
+}
+
+// pairSight is what a read answered of one pair of a session and a project (sightOf).
+type pairSight struct {
+	sees bool
+	err  error
 }
 
 // newFallbackSight is the pass's fallbackSight, its rows' own sessions read.
 func newFallbackSight(ctx context.Context, deps Deps, copies []fallbackCopy, events map[int64]fallbackEvent) *fallbackSight {
-	sight := &fallbackSight{ctx: ctx, deps: deps, read: map[[2]string]bool{}, unread: map[[2]string]bool{}}
+	sight := &fallbackSight{ctx: ctx, deps: deps, read: map[[2]string]pairSight{}}
 	sessions, projects := map[string]struct{}{}, map[string]struct{}{}
 	for _, held := range copies {
 		event, found := events[held.eventID]
@@ -1872,21 +1881,27 @@ func newFallbackSight(ctx context.Context, deps Deps, copies []fallbackCopy, eve
 	return sight
 }
 
-// load reads the sight of every session of sessions for every project of projects (readSight),
-// and keeps every pair it read, and which of them it may not judge (unread).
+// load reads the sight of every session of sessions for every project of projects (readSight, or
+// readSightOnce once the pass has asked the listener again), and keeps what it answered of every
+// pair it read.
 func (s *fallbackSight) load(sessions, projects []string) {
 	if len(sessions) == 0 || len(projects) == 0 || s.err != nil {
 		return
 	}
-	seen, err := readSight(s.ctx, s.deps, sessions, projects)
+	read := readSight
+	if s.askedAgain {
+		read = readSightOnce
+	}
+	seen, err := read(s.ctx, s.deps, sessions, projects)
 	if err != nil {
 		s.err = err
 		return
 	}
+	s.askedAgain = s.askedAgain || len(seen.ListExpired) > 0
 	for _, session := range sessions {
 		for _, project := range projects {
-			s.read[[2]string{session, project}] = seen.Sees[project][session]
-			s.unread[[2]string{session, project}] = seen.ListExpired[project][session]
+			sees, err := sightOf(seen, nil, session, project)
+			s.read[[2]string{session, project}] = pairSight{sees: sees, err: err}
 		}
 	}
 }
@@ -1901,10 +1916,8 @@ func (s *fallbackSight) sees(session, project string) (bool, error) {
 			return false, s.err
 		}
 	}
-	if s.unread[pair] {
-		return false, errListenerRecordExpired
-	}
-	return s.read[pair], nil
+	seen := s.read[pair]
+	return seen.sees, seen.err
 }
 
 // fallbackCopyKey is the key of the session a row's copy reaches, as destination.key names it for

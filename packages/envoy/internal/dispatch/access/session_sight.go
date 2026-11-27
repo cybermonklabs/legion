@@ -172,12 +172,13 @@ func SessionsSeeProjects(ctx context.Context, q RowsQuerier, sessions, projects 
 	return sight.Sees, err
 }
 
-// SessionSeesProject reports whether session sees project (SessionSeesProjectClause), in one
-// statement.
-func SessionSeesProject(ctx context.Context, q RowsQuerier, session, project string) (bool, error) {
-	sight, err := SessionsSeeProjects(ctx, q, []string{session}, []string{project})
+// SessionSeesProject reports, in one statement (ReadSessionSight), whether session sees project
+// (SessionSeesProjectClause), and whether that verdict depended on a list of a listener record
+// that had expired (SessionSight.ListExpired). A read that fails answers false to both.
+func SessionSeesProject(ctx context.Context, q RowsQuerier, session, project string) (sees, listExpired bool, err error) {
+	sight, err := ReadSessionSight(ctx, q, []string{session}, []string{project})
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
-	return sight[project][session], nil
+	return sight.Sees[project][session], sight.ListExpired[project][session], nil
 }

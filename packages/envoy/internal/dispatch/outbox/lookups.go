@@ -142,9 +142,9 @@ func (e *unansweredRecipients) Unwrap() error { return e.err }
 // which the column it is read from refuses (validIDs; a thread's is not failed but has no entry),
 // or an id whose recipient read failed (loadRecipients) - keyed by its kind and that same key,
 // with the error the event's destinations then report. sight is what the batch read of the sight
-// of the sessions read for each project read (sightSessions, sightProjects: loadSessionSight), and
-// sightUnread, for each project, the sessions the batch may not judge by it
-// (errListenerRecordExpired: settleSight), none before it is settled.
+// of the sessions read for each project read (sightSessions, sightProjects: loadSessionSight), as
+// settleSight judged it: its ListExpired holds, for each project, the sessions the batch may not
+// judge by it (errListenerRecordExpired).
 type lookups struct {
 	asks      map[string][]string
 	roots     map[string]json.RawMessage
@@ -160,7 +160,6 @@ type lookups struct {
 	sight         access.SessionSight
 	sightSessions map[string]struct{}
 	sightProjects map[string]struct{}
-	sightUnread   map[string]map[string]bool
 }
 
 func (l *lookups) followers(askID string) ([]string, error) {
@@ -242,7 +241,7 @@ func (l *lookups) sees(sessionID, project string) (bool, error) {
 	switch {
 	case !session || !judged:
 		return false, fmt.Errorf("the batch read no sight of session %s for project %s", sessionID, project)
-	case l.sightUnread[project][sessionID]:
+	case l.sight.ListExpired[project][sessionID]:
 		return false, fmt.Errorf("the batch read no sight of session %s for project %s: %w", sessionID, project, errListenerRecordExpired)
 	}
 	return l.sight.Sees[project][sessionID], nil
@@ -413,7 +412,7 @@ func (l *lookups) settleSight(ctx context.Context, deps Deps) error {
 	if err != nil {
 		return err
 	}
-	l.sight, l.sightUnread = sight, sight.ListExpired
+	l.sight = sight
 	return nil
 }
 
