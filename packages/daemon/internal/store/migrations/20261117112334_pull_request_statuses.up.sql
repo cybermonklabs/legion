@@ -33,7 +33,7 @@
 -- .down.sql file exists — so the way back is the one transaction below, run with the daemon
 -- stopped:
 --
---   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
 --   alter table pull_requests drop column if exists statuses;
 --   delete from schema_version where version = 20261117112334;

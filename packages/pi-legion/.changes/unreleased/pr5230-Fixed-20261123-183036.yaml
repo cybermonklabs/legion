@@ -1,7 +1,7 @@
 kind: Fixed
 body: |-
     The claim boot reads a 408 and a 429 from the Legion daemon as it reads a 5xx: `claims/ready`
-    is sent again, at boot and after a role regain, and a `claims/register` answered either is
+    is sent again at boot, and a `claims/register` answered either is
     logged and rejects without stopping the agent, which the daemon's registration deadline then
     covers. The daemon writes neither, so only a proxy between the session and the daemon sends
     one. Between its three attempts the ready waits what the answer's `Retry-After` asks for, at
@@ -9,7 +9,7 @@ body: |-
     call answered 408 is sent once more, and a send an attempt of which was
     answered 408 may or may not have arrived, as after a 5xx: a hop can answer 408 after it
     forwarded the send. The skill-scenario scripts read a 408 again too. A daemon call that waits
-    out a restart (`handoff_complete`, `sign_off`, `register_gate`, `claims/turn-outcome`) now
+    out a restart (`handoff_complete`, `sign_off`, `register_gate`) now
     waits out every outage, a 408, a 429 or any 5xx, whose body is not the daemon's refusal shape,
     such as a proxy's page; it waited out only a 502 or a 503 that carried no code. After a proxy's
     408 or 5xx the call says an earlier attempt may have been applied, and after its 429 it does
