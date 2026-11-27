@@ -117,6 +117,7 @@ const otherColumns = `select row(issue, generation, task, state, running_kind, p
 // version can then move to a base its start never made (its control: the migration without its
 // update, under which each base reads ”).
 func TestTheTaskBaseMigrationWritesTheBaseOfEachRunningTask(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, taskBaseVersion-1)
@@ -164,6 +165,7 @@ func TestTheTaskBaseMigrationWritesTheBaseOfEachRunningTask(t *testing.T) {
 // which fails every try of its row and the state of its project (its control: the way back without
 // its delete, under which the row stays).
 func TestTheWayBackOfTheTaskBaseDropsTheColumn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, taskBaseVersion-1)

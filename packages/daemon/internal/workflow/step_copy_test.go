@@ -57,6 +57,7 @@ func reviewerResumed(t *testing.T, pool *pgxpool.Pool, door string) {
 // one task's step that takes out another's (its control: the start of a copy that names no claim,
 // under which the boot leaves one of the two resumes).
 func TestEachResumeOfAStepIsComposedOnItsTasksCopy(t *testing.T) {
+	t.Parallel()
 	t.Run("the boot's resume by rule", func(t *testing.T) {
 		pool := migratedPool(t)
 		standsThreeTasks(t, pool)
@@ -139,6 +140,7 @@ func TestEachResumeOfAStepIsComposedOnItsTasksCopy(t *testing.T) {
 // The fault it catches is the release of a parent's hold for its children read on the issue rather
 // than on the task held for them (its control: startHeldRetro walking the parent itself).
 func TestTheLastChildsLeaveStartsTheRetroOfTheTaskHeldForIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Reviewing)
@@ -181,6 +183,7 @@ func TestTheLastChildsLeaveStartsTheRetroOfTheTaskHeldForIt(t *testing.T) {
 // The fault it catches is the release of a root's hold read on the issue rather than on each task
 // its hold is made of (its control: releaseHeldRoot walking the root itself).
 func TestATodoOnAHeldRootReleasesEachHeldTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -236,6 +239,7 @@ func TestATodoOnAHeldRootReleasesEachHeldTask(t *testing.T) {
 // The fault it catches is a decision on a hold read on the issue where the claim it names runs no
 // step (its control: heldView answering the issue itself for such a claim).
 func TestARetryNamingAClaimThatRunsNoStepReadsItsAgentsTask(t *testing.T) {
+	t.Parallel()
 	retry := func(t *testing.T, agent claim.Agent) intake.RetryOrEscalate {
 		return intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision, Claim: agentClaim(t, "LEGION-208", agent)}
 	}
@@ -289,6 +293,7 @@ func TestARetryNamingAClaimThatRunsNoStepReadsItsAgentsTask(t *testing.T) {
 // The fault it catches is an owner's move back read on the issue where no task stands at the act it
 // is of (its control: backwardView answering the issue itself there, as actView does).
 func TestAnOwnersMoveBackWithNoTaskAtItsAcceptanceIsRefused(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)

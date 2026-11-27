@@ -62,6 +62,7 @@ func assertHeld(t *testing.T, tasks map[string]record.PlanTask, task string, pla
 // the release before, which holds the issue for the phase it stands in: reviewer-2 runs no step at
 // implementing, so nothing is held and b runs on).
 func TestAFailedClaimHoldsItsTaskAndTheOtherGoesOn(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -137,6 +138,7 @@ func TestAFailedClaimHoldsItsTaskAndTheOtherGoesOn(t *testing.T) {
 // path that resumes work reaches the step again (its control: retryPhase without the release of
 // the task, which leaves the held task held).
 func TestAnIssueHeldAtTheReleaseIsRetriedAsBefore(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		held bool
@@ -185,6 +187,7 @@ func TestAnIssueHeldAtTheReleaseIsRetriedAsBefore(t *testing.T) {
 // one never did (its control: textNamesTask true for every plan with rows, so each summary reads
 // `task a, step 2`).
 func TestAFailedClaimOfThePlansOneTaskHoldsItsTaskAndNamesNone(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Reviewing)

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
@@ -30,7 +31,10 @@ import (
 //   - an admitted child whose Dispatch row has a claim and waits on an unfinished issue, and that
 //     has an open child of its own in Dispatch;
 //   - a member whose parent is done;
-//   - a member of a tree whose root is done.
+//   - a member of a tree whose root is done;
+//   - a plan of the live root, one task running at its first step, so that the read of an issue's
+//     running steps that goes with every issue read (record's issueColumns over
+//     pods.RunningColumn) reads the tasks and the steps of a plan, and not issue_plans alone.
 //
 // The test reads the slots and judges the admission as a pass does (blockers.JudgeAdmission), in a
 // new transaction. Then it reads in that same transaction each user table that Postgres counts a
@@ -73,6 +77,19 @@ func TestAnAdmissionJudgementReadsOnlyTheJudgedTables(t *testing.T) {
 		}
 		if err := records.PutGate(ctx, tx, record.DesignGate{Issue: root, Step: record.DesignStepSpec, ArtifactID: "artifact-1",
 			LatestVersion: 1, ApprovedVersion: &approved}); err != nil {
+			return err
+		}
+		// The live root runs a plan of one task, standing at its first step, so that the read of an
+		// issue's running steps reads each of the three plan tables: issue_plans says whether the
+		// run has plan rows at all, and the tasks and the steps of a plan are read only where it
+		// holds some (pods.RunningColumn).
+		if err := records.PutPlan(ctx, tx,
+			record.PlanVersion{Issue: root, Generation: 1, Source: record.PlanSourceDefault, GivenAt: now},
+			[]record.PlanTask{{Issue: root, Generation: 1, Task: plan.DefaultTask, BlockText: "The project's default steps.",
+				StepsByDefault: true, State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}}},
+			[]record.PlanStep{{Issue: root, Generation: 1, Task: plan.DefaultTask, Position: 1,
+				Role: string(claim.RoleImplementer), Type: plan.TypeImplementation,
+				Agent: claim.Agent(claim.RoleImplementer)}}); err != nil {
 			return err
 		}
 		for _, mirrored := range []record.DispatchReading{
@@ -143,8 +160,15 @@ func TestAnAdmissionJudgementReadsOnlyTheJudgedTables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the scans of the transaction: %v", err)
 	}
-	if !slices.Contains(scanned, "issues") {
-		t.Fatalf("the transaction counts scans of %v and none of issues: Postgres counted none of the judgement's reads", scanned)
+	// A short list of scans is no clean list: a transaction Postgres counted nothing of, and a seed
+	// that stopped making one of the judgement's reads, fail here rather than pass. issues is the
+	// judgement's own read of the records, and the three plan tables are the read of the running
+	// steps that goes with it, which the planned root makes (pods.RunningColumn).
+	for _, counted := range []string{"issues", "issue_plans", "plan_tasks", "plan_steps"} {
+		if !slices.Contains(scanned, counted) {
+			t.Fatalf("the transaction counts scans of %v and none of %s: Postgres counted none of the judgement's reads, or the seed no longer makes that one",
+				scanned, counted)
+		}
 	}
 	var outside []string
 	for _, table := range scanned {

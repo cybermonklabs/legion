@@ -16,6 +16,7 @@ const oneOpenResumePerClaimVersion = 20261122074350
 // gives closes all but the newest open resume of each role, puts the one open resume per role back
 // over every row, and deletes its version row, so the roll-forward runs the migration again.
 func TestTheOneOpenResumePerClaimMigrationKeysAnOpenResumeByItsClaim(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, oneOpenResumePerClaimVersion-1)

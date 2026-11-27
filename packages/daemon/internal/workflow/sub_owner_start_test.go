@@ -122,6 +122,7 @@ func subOwnerOf(task string) record.RunningStep {
 // the plan once leaves f1 waiting in the third case; the table of f's line with its planning at
 // step 1 refuses the gate's move of f in the fourth case).
 func TestATaskWithASubOwnerStandsAtItsParts(t *testing.T) {
+	t.Parallel()
 	t.Run("the start of the work puts f at its parts, and a later version starts its parts", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -210,6 +211,7 @@ func TestATaskWithASubOwnerStandsAtItsParts(t *testing.T) {
 // startReady that tests only that f runs at its parts starts f1 before the join, and the assertion
 // "f1 waiting" fails; taskJoined with no start of f's parts leaves f1 waiting after the join).
 func TestAPartStartsOnlyAfterItsTasksJoin(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -247,6 +249,7 @@ func TestAPartStartsOnlyAfterItsTasksJoin(t *testing.T) {
 // The fault it catches is a part that runs while its task is stopped (its control: startReady with
 // no test of a part's task starts f1, and the assertion "f1 waiting" fails).
 func TestAPartWaitsWhileItsTaskIsStopped(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -273,6 +276,7 @@ func TestAPartWaitsWhileItsTaskIsStopped(t *testing.T) {
 // place's test without the report, under which each reader fails at the report, so none of them
 // answers from a list of its own).
 func TestASubOwnersActIsToldByItsPlace(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-208"
 	f := walksOf(key, &record.StoredPlan{Version: record.PlanVersion{Issue: key, Generation: 1, Version: 1},
 		Tasks: []record.PlanTask{{Issue: key, Generation: 1, Task: "f", PlanVersion: 1, OwnerRole: "architect", State: record.TaskRunning, Place: atParts}},

@@ -141,6 +141,7 @@ func assertTask(t *testing.T, tasks map[string]record.PlanTask, task string, sta
 // issue that leaves the workflow when one of its tasks is done (its control: the transition's leave
 // on its row's done rather than on the phase its tasks put the issue in).
 func TestATaskThatPassesItsLastStepIsDoneAndTheIssueGoesOn(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Reviewing)
@@ -183,6 +184,7 @@ func TestATaskThatPassesItsLastStepIsDoneAndTheIssueGoesOn(t *testing.T) {
 // such a copy refuses; and with that refusal taken off as well, the issue reads reviewing, a's
 // phase, after a's move).
 func TestAWriteOfAViewWritesTheIssuesDerivedPhase(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -231,6 +233,7 @@ func TestAWriteOfAViewWritesTheIssuesDerivedPhase(t *testing.T) {
 // It is the twin of TestAWriteOfAViewWritesTheIssuesDerivedPhase on a plan of one task: the same
 // move, the same derived phase and one status row for each move.
 func TestAMoveOfThePlansOneTaskWritesTheIssueInItsTasksPhase(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Reviewing)

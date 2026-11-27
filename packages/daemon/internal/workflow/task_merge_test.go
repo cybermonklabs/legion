@@ -87,6 +87,7 @@ func assertNoClose(t *testing.T, pool *pgxpool.Pool, key string) {
 // closeMerged with no read of lastToFinish, the revision before, whose close in a lingering tree
 // writes the status done and tells the architect above child-closed).
 func TestTheMergeOfOneTaskMakesItDoneAndTheIssueGoesOn(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		lingering bool
@@ -149,6 +150,7 @@ func TestTheMergeOfOneTaskMakesItDoneAndTheIssueGoesOn(t *testing.T) {
 // it left (its control: the merge of the issue read from the one task no task needs, which this
 // plan does not have, so b stays at its merge).
 func TestOnlyTheLastMergeWaitsForTheIssuesBeneath(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Retro)
@@ -199,6 +201,7 @@ func TestOnlyTheLastMergeWaitsForTheIssuesBeneath(t *testing.T) {
 // waits for the whole tree (its control: retroHeld with no read of lastToFinish, the revision
 // before, which holds a).
 func TestOnlyTheLastTasksRetroIsHeldForTheIssuesBeneath(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -261,6 +264,7 @@ func productionChecksOf(t *testing.T, pool *pgxpool.Pool, key string) []string {
 // leaves the issue held for the stopped task it no longer has, with no linger and no
 // child-closed).
 func TestAVersionThatRemovesTheLastUndoneTaskEndsTheIssue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		child bool

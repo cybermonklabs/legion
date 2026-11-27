@@ -129,6 +129,7 @@ func TestAMergeHoldsChangeTellsNoMergerWhosePullRequestMerged(t *testing.T) {
 // judged merged by the issue's merge pull request (its control: finishedBy given PullRequestsOf's
 // #42, which writes b's merger a second row after #7 merged).
 func TestAMergeHoldsChangeTellsTheMergerOfATaskAtItsMergeWhileAnotherImplements(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Implementing)
 	seedBAtItsMerge(t, pool, root)
@@ -169,6 +170,7 @@ func TestAMergeHoldsChangeTellsTheMergerOfATaskAtItsMergeWhileAnotherImplements(
 // mergeHoldsChanged of the revision before, which writes no notice, since the issue stands in
 // implementing).
 func TestAMergeHoldsChangeTellsTheArchitectOfATaskAtItsAcceptanceWhileAnotherImplements(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Implementing)
 	seedTasks(t, pool, root.Key, root.Generation,

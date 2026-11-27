@@ -74,6 +74,15 @@ var contractComparisonRows = []contractComparisonRow{
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < pauseContract"),
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < OwnerPlanContract"),
 	}},
+	// The tasks row of shapeAnswer, which takes the plan's `added` and each task's `needs` off
+	// register_plan's answer (withoutNeedsOrAdded); the Design's table predates it, as it does the
+	// replaces entry's rows below. The site names the one comparison in both its forms, as the
+	// stand-ins' sites do: the contract is the literal of version.go's 224 while this tree carries
+	// the numbered entry, and entryNumber(tasksContract) once the entry's own file carries it
+	// (contract_20261125180222_tasks.go), so the row holds on either side of that conversion.
+	{row: "The registered plan's tasks", compares: []comparisonSite{
+		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < tasksContract", "strip < entryNumber(tasksContract)"),
+	}},
 	// The replaces entry's two rows of shapeAnswer (contract_20261125170509_replaces.go), which take
 	// `replaces` off both registration answers; the Design's table predates the entry.
 	{row: "The registrations' replaced session", compares: []comparisonSite{

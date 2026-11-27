@@ -19,6 +19,7 @@ import (
 // cannot say whose review went round. Its control is the code before this change, under which the
 // notice reads `Issue reached review_round_cap=3: …` and the prompt is the hook's own text alone.
 func TestTheCapNoticeAndTheHookPromptNameTheTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -53,6 +54,7 @@ func TestTheCapNoticeAndTheHookPromptNameTheTask(t *testing.T) {
 
 // The twin: an issue with no plan rows names no task, and its notice and prompts read as before.
 func TestAnIssueWithNoPlanRowsNamesNoTaskInItsCapNoticeOrHookPrompt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := workBackEngine(3, Hook{Name: "work-back", On: HookEventWorkBack, Every: 1,
 		Roles: []claim.Role{claim.RoleImplementer}, Prompt: saySoFar})
@@ -88,6 +90,7 @@ func TestAnIssueWithNoPlanRowsNamesNoTaskInItsCapNoticeOrHookPrompt(t *testing.T
 // and written for the plan's first task whatever the task, which raises a's rounds to 4 with b's
 // one return).
 func TestTwoTasksOfOneIssueKeepTheirOwnCounts(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Reviewing)
@@ -146,6 +149,7 @@ func TestTwoTasksOfOneIssueKeepTheirOwnCounts(t *testing.T) {
 // so its reader cannot say whose rounds or returns they were (its control: the task's sentence
 // left off each message).
 func TestTheIssuesMessagesOfATasksCountsNameTheTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Reviewing)

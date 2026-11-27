@@ -13,6 +13,7 @@ import (
 // so it can tell that key a's later steps start fresh too. A claim named by its role keeps the
 // sentence it had: the tester of LEGION-209 lost its session.
 func TestTheOwnerIsToldWhichAgentLostItsSession(t *testing.T) {
+	t.Parallel()
 	const detail = "the session ses-abc this claim recorded is in no session store the runtime could resume it from"
 	for _, tc := range []struct {
 		name  string

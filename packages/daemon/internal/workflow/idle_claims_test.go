@@ -14,6 +14,7 @@ import (
 // plan started. The release suspends each live claim by its token, so the decision names both
 // claims, in the order the view read them, beside their roles; a role names neither of them alone.
 func TestAReleaseSuspendsEachLiveClaimByItsToken(t *testing.T) {
+	t.Parallel()
 	const keyed claim.Token = "legion-legion-legion-209-implementer"
 	const fresh claim.Token = "legion-legion-legion-209-tester"
 	view := idleChild()

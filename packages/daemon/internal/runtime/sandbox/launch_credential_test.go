@@ -28,6 +28,7 @@ const waitLine = "sandbox runtime: the start waits for its slot's gh files to ho
 // refresher already wrote for its new App still logs the line, since its files may not hold the
 // credential yet whoever wrote it. A launch that builds its pod names no credential.
 func TestALaunchOfAReroledClaimWritesItsSlotsCredentialAtOnce(t *testing.T) {
+	t.Parallel()
 	keyed := claim.Token("legion-legion-legion-208-implementer")
 	refreshed := claim.Token("legion-legion-legion-208-planner")
 	logs := &lockedLog{}

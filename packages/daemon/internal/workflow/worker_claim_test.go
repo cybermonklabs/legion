@@ -22,6 +22,7 @@ import (
 // the reviewer is addressed to it. A reviewer's token derived from the role named `…-reviewer`, a
 // claim that does not exist, so the message reached no session.
 func TestAReviewStuckNoticeNamesTheReviewersAgent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := migratedPool(t)
 	engine := returnEngine()
@@ -59,6 +60,7 @@ func TestAReviewStuckNoticeNamesTheReviewersAgent(t *testing.T) {
 // of its ready sends it the work of the entry it stands behind. A token derived from the role
 // names `…-tester`, a claim that does not exist, so none of the three finds a run.
 func TestASuspendedAgentOnItsSecondRoleIsResumedAndWatched(t *testing.T) {
+	t.Parallel()
 	issue := record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: entryIssue, Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true}
 	keyed := claim.Token(token(t, entryIssue, claim.RoleImplementer))
@@ -147,6 +149,7 @@ func TestASuspendedAgentOnItsSecondRoleIsResumedAndWatched(t *testing.T) {
 // of the role would start `…-reviewer` with the settlement's task, take the role's wake and cancel
 // its backstop, and so leave the step's agent told nothing and woken by nothing.
 func TestAWakeStartsTheWorkerOfTheRolesStep(t *testing.T) {
+	t.Parallel()
 	agent := claim.Token(token(t, "LEGION-208", claim.RoleTester))
 	stale := wakeToken(t, claim.RoleReviewer)
 	seed := func(t *testing.T, agentState string) wakeRig {

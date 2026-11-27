@@ -76,6 +76,7 @@ func assertPushRecorded(t *testing.T, pool *pgxpool.Pool, key, task, after strin
 // catches a read asked by the issue alone, which the daemon reads as the task the record judges
 // rather than c (its control: basePush appending TaskPullRequest{Issue: own.Issue} with no task).
 func TestAPushOnTheBranchOfANeedMovesTheBaseOfItsDependent(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	var asked, bases []string
@@ -152,6 +153,7 @@ func seedNeedAndDependent(t *testing.T, pool *pgxpool.Pool) record.Issue {
 // record judges rather than c, so c's head is not read (its control: askMergeState calling
 // ReadMergeState(key, "")).
 func TestAFactOfATasksPullRequestAsksTheReadOfThatTasksPullRequest(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	var asked []string

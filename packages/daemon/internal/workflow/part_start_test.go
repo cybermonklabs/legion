@@ -43,6 +43,7 @@ func partChanged(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, g
 // control: startAtFirstStep that asks needsDone alone, as before, starts f1 at step 1 in the first
 // two cases, and each fails at "f1 waiting").
 func TestAStoppedPartStartsAgainOnlyWhereItsTaskStandsAtItsParts(t *testing.T) {
+	t.Parallel()
 	h := stepped("h", "implementer", "f")
 	for _, tc := range []struct {
 		name   string
@@ -118,6 +119,7 @@ func TestAStoppedPartStartsAgainOnlyWhereItsTaskStandsAtItsParts(t *testing.T) {
 // control: startAtFirstStep that moves the task to step 1, as before, which the move refuses, so
 // the version is an error).
 func TestAStoppedTaskWithASubOwnerStartsAgainAtItsParts(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -150,6 +152,7 @@ func TestAStoppedTaskWithASubOwnerStartsAgainAtItsParts(t *testing.T) {
 // parts and starts none of its parts (its control: startAtFirstStep with no start of the waiting
 // parts, and the assertion "e1 running" fails).
 func TestATodoStartsAStoppedTaskAndItsStoppedPartAgain(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -184,6 +187,7 @@ func TestATodoStartsAStoppedTaskAndItsStoppedPartAgain(t *testing.T) {
 // generation's plan instead (its control: waitsAtZero judging the version by its own giver, as
 // before, takes it).
 func TestAPlanAtZeroWaitsOnlyBeforeAnEarlierOwnersPlan(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)

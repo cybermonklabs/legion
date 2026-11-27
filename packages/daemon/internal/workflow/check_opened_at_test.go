@@ -24,6 +24,7 @@ import (
 // check keys by the issue and that moment (its control: OpenedAt read from the clock alone, under
 // which the issue holds #1's check and one of the two new ones).
 func TestTwoChecksOpenedInOneTransactionBothStand(t *testing.T) {
+	t.Parallel()
 	rig := newCheckRig(t)
 	issue := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
 		Project: "LEGION", Title: "root", Phase: phase.Done, Generation: 7, Status: "done", Rank: "U", LastDispatchSeq: 1}

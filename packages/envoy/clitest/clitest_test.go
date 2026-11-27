@@ -39,6 +39,8 @@ const (
 	// leakEnv is a variable of no documented run: the run check's own control sets it, and the
 	// fake that checks its run must refuse it.
 	leakEnv = "CLITEST_LEAK"
+	// holdEnv is how long outputHolder holds the run's output, as a duration.
+	holdEnv = "CLITEST_HOLD"
 )
 
 // The fakes. Each defect is noDefect with one fault put in on purpose, so a control that fails
@@ -101,7 +103,22 @@ const (
 	completionLeavesAnAsker = "completion-leaves-an-asker"
 	// leftoverAsker is the process completionLeavesAnAsker leaves behind.
 	leftoverAsker = "leftover-asker"
+	// holdsTheOutput: `alpha -h` prints its help and leaves a process holding the run's output
+	// behind, as a command that starts a program of its own and does not wait for it does. The
+	// process holds it holdBriefly and exits.
+	holdsTheOutput = "holds-the-output"
+	// holdsTheOutputForever: holdsTheOutput whose process holds the run's output until it is
+	// killed.
+	holdsTheOutputForever = "holds-the-output-forever"
+	// outputHolder is the process the two above leave behind: it holds the run's standard output
+	// and standard error, prints nothing on them, and exits after the hold holdEnv names.
+	outputHolder = "output-holder"
 )
+
+// holdBriefly is how long holdsTheOutput's process holds the run's output: long enough that a
+// harness that gave the read of the output a bound of its own, shorter than the run's, would
+// throw away the help the binary printed, and well inside the run's own bound.
+const holdBriefly = 2 * time.Second
 
 // TestMain runs this binary as the fake fakeEnv names, where it names one, and runs the tests
 // otherwise. Only TestMain makes a fake of a copy a test starts: in a build of these tests without
@@ -323,6 +340,30 @@ func TestConformanceFailsOnARequestByAProcessLeftBehind(t *testing.T) {
 	t.Parallel()
 	requireFails(t, completionLeavesAnAsker, "", []string{"usage-error"},
 		"completion clitest-unknown-shell: made 1 request(s), want none: GET /v1/late",
+	)
+}
+
+// A run whose output a process the binary left behind still holds, after the binary has printed
+// its help and exited, is judged on the whole of what it printed: the read of a run's output is
+// bounded by the run's own bound alone. A harness that gave that read a bound of its own, shorter
+// than the run's, throws away what it read at that bound and reports
+// `alpha -h: exec: WaitDelay expired before I/O complete`, which is what a machine slow enough to
+// outlast such a bound between the binary's exit and the harness's read brings to a run that
+// leaves nothing behind at all.
+func TestConformanceReadsTheWholeOutputOfARunAProcessLeftBehindHolds(t *testing.T) {
+	t.Parallel()
+	out, err := runChild(t, holdsTheOutput)
+	if err != nil || !strings.Contains(out, "--- PASS: TestConformanceChild ") {
+		t.Fatalf("Conformance on %s: %v, want a pass\n%s", holdsTheOutput, err, out)
+	}
+}
+
+// A run whose output a process the binary left behind holds past the run's bound is reported, and
+// what it printed is taken as cut short rather than checked.
+func TestConformanceFailsWhenAProcessLeftBehindHoldsTheOutputPastTheBound(t *testing.T) {
+	t.Parallel()
+	requireFails(t, holdsTheOutputForever, "", []string{"help"},
+		"alpha -h: exited, but a process it started still held its output 15s later, so what it printed may be cut short",
 	)
 }
 
@@ -577,8 +618,9 @@ func TestConformanceChild(t *testing.T) {
 		c.Commands = append(c.Commands, []string{})
 	case "case-with-a-flag":
 		c.Commands = append(c.Commands, []string{"-v"})
-	case hangingHelp:
-		// Long enough that every run but the hanging one ends well inside it on a loaded machine.
+	case hangingHelp, holdsTheOutputForever:
+		// Long enough that every run but the hanging one, and the hold of the held one, ends well
+		// inside it on a loaded machine.
 		before := runTimeout
 		runTimeout = 15 * time.Second
 		t.Cleanup(func() { runTimeout = before })
@@ -712,6 +754,13 @@ func runFake(defect string, args []string) int {
 		time.Sleep(300 * time.Millisecond)
 		_ = fetch("/v1/late")
 		return 0
+	case defect == outputHolder:
+		time.Sleep(holdFor())
+		return 0
+	case defect == holdsTheOutput && slices.Equal(args, []string{"alpha", "-h"}):
+		leaveAHolder(holdBriefly)
+	case defect == holdsTheOutputForever && slices.Equal(args, []string{"alpha", "-h"}):
+		leaveAHolder(time.Hour)
 	}
 	root := fakeRoot(defect)
 	root.SetArgs(args)
@@ -909,6 +958,32 @@ func leaveAnAsker() {
 	if err := asker.Start(); err != nil {
 		panic(err)
 	}
+}
+
+// leaveAHolder starts this binary as outputHolder on this run's own standard output and standard
+// error, which it holds for hold, and does not wait for it: nothing closes the run's output until
+// that process has exited, as nothing does for a process a command leaves behind. It prints
+// nothing itself, so what the run printed is what the binary printed.
+func leaveAHolder(hold time.Duration) {
+	self, err := os.Executable()
+	if err != nil {
+		panic(err)
+	}
+	holder := exec.Command(self)
+	holder.Env = append(os.Environ(), fakeEnv+"="+outputHolder, holdEnv+"="+hold.String())
+	holder.Stdout, holder.Stderr = os.Stdout, os.Stderr
+	if err := holder.Start(); err != nil {
+		panic(err)
+	}
+}
+
+// holdFor is how long outputHolder holds the run's output, which holdEnv names.
+func holdFor() time.Duration {
+	hold, err := time.ParseDuration(os.Getenv(holdEnv))
+	if err != nil {
+		panic(err)
+	}
+	return hold
 }
 
 // knownTopic refuses, with a usage error, a help topic Find does not resolve to a command, for

@@ -20,6 +20,7 @@ import (
 // its pull request under the task "". A reopen of a task's pull request is that task's again and
 // leaves the other task's row as it was.
 func TestAPullRequestOpenedIsRecordedForTheTaskWhoseBranchItIsOn(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	pool := migratedPool(t)
 	openTree(t, pool)

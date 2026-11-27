@@ -46,6 +46,7 @@ var taskCopiesKinds = []string{
 // two basis seeds and its merge_holds_changed among them (taskCopiesKinds), and deletes its version
 // row, so the roll-forward runs the migration again.
 func TestMigrationPullRequestsByTaskKeysEachRowByItsBranch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, pullRequestsByTaskVersion-1)
@@ -204,6 +205,7 @@ const settledHeadsKeys = `select k.conname || ' ' || pg_get_constraintdef(k.oid)
 // (issue) again, which refuses a memory of an issue with no pull request. The roll-forward gives
 // the row its branch again.
 func TestMigrationPullRequestsByTaskKeysEachSettledHeadByItsBranch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, pullRequestsByTaskVersion-1)

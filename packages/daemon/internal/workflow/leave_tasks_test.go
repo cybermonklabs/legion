@@ -20,6 +20,7 @@ import (
 // as one task, which a plan of several does not give, so the merge's fact and the person's move
 // fail and the root stays in the workflow (its control: endTaskWithLeave on the issue's one walk).
 func TestARootOfSeveralTasksLeavesWithEachTaskWhereItStands(t *testing.T) {
+	t.Parallel()
 	t.Run("the merge of its task that merges", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()

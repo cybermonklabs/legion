@@ -82,6 +82,7 @@ func actStarts(t *testing.T, pool *pgxpool.Pool, key, task, kind string) int64 {
 // record.StoredPlan.MergingTask, the revision before, under which e alone merges and b ends at its
 // review).
 func TestEachTaskThatMergesWalksToItsRetroAndItsMerge(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -115,6 +116,7 @@ func TestEachTaskThatMergesWalksToItsRetroAndItsMerge(t *testing.T) {
 // The fault it catches is a version refused that Legion can carry out (its control: a refusal of
 // each running task whose answer the version changes, which refuses version 3).
 func TestAVersionThatAddsANeedOnATaskAtAStepIsTaken(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -177,6 +179,7 @@ func TestAVersionThatAddsANeedOnATaskAtAStepIsTaken(t *testing.T) {
 // merges work the plan no longer merges (its control: mergeChangeRefusals with no case of a
 // started retro or merge, which takes the version).
 func TestAVersionThatChangesWhetherATaskAtItsMergeMergesIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		place record.TaskPlace
@@ -229,6 +232,7 @@ func TestAVersionThatChangesWhetherATaskAtItsMergeMergesIsRefused(t *testing.T) 
 // control: mergeChangeRefusals with no case of a done task, which takes the version and leaves c's
 // work on no branch that merges).
 func TestAVersionThatLeavesADoneUnmergedTaskNeededByNoTaskIsRefused(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -270,6 +274,7 @@ func TestAVersionThatLeavesADoneUnmergedTaskNeededByNoTaskIsRefused(t *testing.T
 // is refused with a false text (its control: the case of a done task reading the rule of the plan
 // in force in place of the stored fact of its merge, which refuses version 3 of (3)).
 func TestAVersionThatAddsANeedOnAMergedTaskIsTaken(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		says   bool

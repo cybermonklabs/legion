@@ -20,6 +20,7 @@ const planStepAgentVersion = 20261117213545
 // written, through a store reopened as a daemon restart reopens it, and the column refuses null,
 // which the plan read cannot scan.
 func TestThePlanStepAgentMigrationLeavesEveryStepNamedForItsRole(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, planStepAgentVersion-1)

@@ -45,6 +45,7 @@ func closesAre(t *testing.T, pool *pgxpool.Pool, key, after string, want ...reco
 // not hold its work (its control: the close at the merge that ends the issue alone, under which b's
 // merge queues none, and c's queues #1 with `Merged in #3.`).
 func TestEachMergeClosesThePullRequestsWhoseWorkItHolds(t *testing.T) {
+	t.Parallel()
 	closedAt, reopenedAt := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC), time.Date(2026, 11, 24, 10, 5, 0, 0, time.UTC)
 	closeOfA := intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 1, HeadSHA: "head-a", UpdatedAt: closedAt}
 
@@ -108,6 +109,7 @@ func TestEachMergeClosesThePullRequestsWhoseWorkItHolds(t *testing.T) {
 // whose work it holds stays open for good (its control: the close queued only where the task awaits
 // its merge when the merge lands, under which c's arrival at its merge queues none).
 func TestAMergeBeforeMergingQueuesItsCloseRowWhenItsTaskReachesMerging(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		d       taskAt

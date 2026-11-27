@@ -69,6 +69,7 @@ func xAndYOnK(t *testing.T, xSteps []string, xAgents []claim.Agent) (*pgxpool.Po
 // act that waits for it waits for ever (its control: the hand-on made before the transition's
 // moves, where the store still gives k the step that ends, under which y keeps its wait).
 func TestAnAgentFreedByATaskWithNoNextActGoesToItsWaiterAtTheSettle(t *testing.T) {
+	t.Parallel()
 	pool, engine, root := xAndYOnK(t, []string{"implementer:k", "acceptance:owner"}, []claim.Agent{"k", ""})
 
 	taskMoves(t, pool, engine, root.Key, "x", TriggerImplementationReady, "")
@@ -92,6 +93,7 @@ func TestAnAgentFreedByATaskWithNoNextActGoesToItsWaiterAtTheSettle(t *testing.T
 // longest waiter alone, under which x's retro waits, y's step starts at the settle, and k's acts
 // are x's step, then y's step).
 func TestTheRetroOfXRunsBeforeTheStepOfYInSessionK(t *testing.T) {
+	t.Parallel()
 	pool, engine, root := xAndYOnK(t, []string{"implementer:k"}, []claim.Agent{"k"})
 
 	taskMoves(t, pool, engine, root.Key, "x", TriggerImplementationReady, "")
@@ -124,6 +126,7 @@ func TestTheRetroOfXRunsBeforeTheStepOfYInSessionK(t *testing.T) {
 // time (its control: start's wait for an agent at the step places alone, under which x's retro
 // starts while y's step runs).
 func TestARetroWaitsWhileItsAgentRunsAStepOfAnotherTask(t *testing.T) {
+	t.Parallel()
 	pool, engine, root := xAndYOnK(t, []string{"implementer:k", "reviewer"}, []claim.Agent{"k", "reviewer"})
 
 	taskMoves(t, pool, engine, root.Key, "x", TriggerImplementationReady, "")
@@ -155,6 +158,7 @@ func TestARetroWaitsWhileItsAgentRunsAStepOfAnotherTask(t *testing.T) {
 // The fault it catches is two merges at one time in the merger's one session (its control: the
 // merge with no agent to wait for, the revision before, under which y's merger starts beside x's).
 func TestTwoMergesOfOneIssueAreOneAtATime(t *testing.T) {
+	t.Parallel()
 	bothAtRetro := func(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
 		t.Helper()
 		pool := migratedPool(t)
@@ -206,6 +210,7 @@ func TestTwoMergesOfOneIssueAreOneAtATime(t *testing.T) {
 // bound (its control: the exemption of the retro over any next act of x, under which x's review
 // starts on k ahead of y).
 func TestAReturningTaskDoesNotHoldItsAgentFromAWaiter(t *testing.T) {
+	t.Parallel()
 	pool, engine, root := xAndYOnK(t, []string{"implementer:k", "reviewer:k"}, []claim.Agent{"k", "k"})
 
 	taskMoves(t, pool, engine, root.Key, "x", TriggerImplementationReady, "")

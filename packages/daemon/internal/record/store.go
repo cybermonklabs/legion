@@ -79,10 +79,23 @@ func (s *Postgres) StatePublished() bool { return s.state.Load() != nil }
 
 // judgedTables is every table an admission judgement reads (blockers.JudgeLine over
 // ReadLineFacts): the issue records, the slots, the tree lifecycles, the design gates, the outbox
-// rows of the starts owed (OwedStarts) and the Dispatch mirror with its claims (DispatchIssuesOf,
-// DispatchChildren). TestAnAdmissionJudgementReadsOnlyTheJudgedTables holds a judgement's reads to
-// this list.
-var judgedTables = []string{"issues", "slots", "tree_lifecycles", "design_gates", "outbox", "dispatch_issues", "dispatch_claims"}
+// rows of the starts owed (OwedStarts), the Dispatch mirror with its claims (DispatchIssuesOf,
+// DispatchChildren), and the three plan tables, which the read of an issue's running steps that
+// goes with every issue read takes it from (issueColumns over pods.RunningColumn): issue_plans
+// says whether the run has plan rows at all, and plan_tasks and plan_steps give each running step
+// its place, its role and its agent (RunningOf).
+//
+// No rule of the judgement reads a running step, but the issue records the judgement carries hold
+// them, and the controller tick reads them from the judgement it is handed to pick each issue's
+// phase worker (admit's tickRows over silentWorkers, workflow.OpenStepsOf). So a plan row written
+// in the pass's transaction after the read its judgement was made over, were its table left off
+// this list, would leave that reader on the steps of the record before the write: a task whose
+// step that write moved, held or made wait would still be read at the step it stood at before, and
+// the tick would weigh the claim of the role that worked that step and name as silent a worker the
+// issue no longer runs. TestAnAdmissionJudgementReadsOnlyTheJudgedTables holds a judgement's reads
+// to this list.
+var judgedTables = []string{"issues", "slots", "tree_lifecycles", "design_gates", "outbox", "dispatch_issues", "dispatch_claims",
+	"issue_plans", "plan_tasks", "plan_steps"}
 
 // JudgedWrites is how many rows tx has inserted, updated or deleted so far in the tables an
 // admission judgement reads (judgedTables), as Postgres counts the current transaction's own

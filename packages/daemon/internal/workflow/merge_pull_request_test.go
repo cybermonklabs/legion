@@ -52,6 +52,7 @@ func mergingTasks(t *testing.T, pool *pgxpool.Pool, aState, bState record.PullRe
 // ends the issue before its merge (its control: the readers on the issue's first pull request in
 // task order, a's #43, so the phase reads finished while #45 is open).
 func TestTheMergeOfAnIssueIsItsMergingTasksPullRequest(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	b := mergingTasks(t, pool, record.PullRequestMerged, record.PullRequestOpen)
@@ -117,6 +118,7 @@ func TestTheMergeOfAnIssueIsItsMergingTasksPullRequest(t *testing.T) {
 // pull request in task order, a's open #43, so LEGION-209 stays in merging; the close on the
 // issue, so the departure's fact fails on the walk).
 func TestAMergedIssueOfSeveralTasksClosesWhenTheLastIssueBeneathItLeaves(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	mergingTasks(t, pool, record.PullRequestOpen, record.PullRequestMerged)

@@ -23,6 +23,7 @@ const taskHeldVersion = 20261117224125
 // writes each held task running again and drops the three columns, and Migrate then holds the task
 // of each held issue again.
 func TestMigrationTaskHeldHoldsTheTaskOfEachHeldIssue(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := emptyStore(t)
 	migrateThrough(t, st, taskHeldVersion-1)

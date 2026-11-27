@@ -15,6 +15,7 @@ import (
 // the issue's own branch, legion/<KEY>, which the issue_branch row makes, and no task_branch row is
 // queued for it.
 func TestTheOneTaskOfAPlanTakesTheIssuesBranchAndQueuesNoRow(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -40,6 +41,7 @@ func TestTheOneTaskOfAPlanTakesTheIssuesBranchAndQueuesNoRow(t *testing.T) {
 // the start of tasks leaves it with a plan of several tasks that register_plan took, but the third,
 // which no start writes (see the case).
 func TestASecondTaskQueuesItsBranchRow(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// needs is the needs of each task of the plan, by id.

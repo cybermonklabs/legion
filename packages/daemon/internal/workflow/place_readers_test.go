@@ -33,6 +33,7 @@ func assertStandsAtStep(t *testing.T, pool *pgxpool.Pool, engine *Engine, key st
 // its task says so. The known pass: in `implementer reviewer tester`, whose phases each stand
 // once, the step of testing is step 3, the tester's.
 func TestTheReadersOfWhereATaskStandsReadItsPlace(t *testing.T) {
+	t.Parallel()
 	types := map[string]string{"checker": "testing", "linter": "testing"}
 
 	t.Run("moved on to step 3", func(t *testing.T) {
@@ -73,6 +74,7 @@ func TestTheReadersOfWhereATaskStandsReadItsPlace(t *testing.T) {
 // back to step 3, and the end of step 4 is failed, returned to 3. The known pass: in
 // `implementer reviewer`, a rejected review ends the reviewer's step failed, returned to 1.
 func TestTheRecordOfAReturnNamesThePlaceItReturnsTo(t *testing.T) {
+	t.Parallel()
 	endOfStep := func(t *testing.T, pool *pgxpool.Pool, key string, step int) record.StepRecord {
 		t.Helper()
 		var ends []record.StepRecord

@@ -13,6 +13,7 @@ import (
 // slot with no launcher connected, or one whose connection closed, answers true, since the launch
 // then builds or waits for a pod of this release.
 func TestASlotsLauncherSaysWhetherItWaitsForTheCredential(t *testing.T) {
+	t.Parallel()
 	launchers := testLaunchers()
 	if pod, waits := launchers.credentialWaits(workerToken); pod != "" || !waits {
 		t.Fatalf("with no launcher connected = %q, %t; want none, waits", pod, waits)

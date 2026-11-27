@@ -42,6 +42,7 @@ func joinedFact(key string, generation uint64) intake.TaskJoined {
 // The fault it catches is a join that ends and starts nothing, so its task waits for ever (its
 // control: the handler without its start: no start is queued, and the test fails).
 func TestTheEndOfAJoinStartsTheStepThatWaits(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine, _ := tickingEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -107,6 +108,7 @@ func TestTheEndOfAJoinStartsTheStepThatWaits(t *testing.T) {
 // The end of d's join writes its conflicts and moves its wait to its agent: no start of d's step is
 // counted or queued.
 func TestTheEndOfAJoinWhoseAgentIsBusyWaitsForTheAgent(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine, _ := tickingEngine()
 	root := stepRoot(t, pool, phase.Implementing)

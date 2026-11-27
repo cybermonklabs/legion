@@ -40,6 +40,7 @@ func suspendedImplementer(t *testing.T, st *Store, suspendedBy supervise.Suspend
 // rule for a pod with no live claim must not wait on it (ruling 18 point 3). The view names such
 // a start's role, and the reason of the pod's running hold streak.
 func TestTheIdleViewCountsAStartThatWaitsForItsPodAsNoDelivery(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -76,6 +77,7 @@ func TestTheIdleViewCountsAStartThatWaitsForItsPodAsNoDelivery(t *testing.T) {
 // rows too (main's #5665), and the release of a pod no claim owns makes no boundary read, so the
 // teardown alone is what lets such a pod go for the start that waits for it.
 func TestAReleaseIsNotOvertakenByAStartThatWaitsForItsPod(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	for _, tc := range []struct {
 		name      string

@@ -63,6 +63,7 @@ func pullRequestRows(t *testing.T, pool *pgxpool.Pool, number int) int {
 // another task without that is the one on the issue's branch
 // (TestARemovedTasksPullRequestOnTheIssuesBranchIsNoWaitingTasks).
 func TestARemovedTaskClosesItsPullRequest(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Testing)
@@ -145,6 +146,7 @@ func TestARemovedTaskClosesItsPullRequest(t *testing.T) {
 // where that task merges (its controls: planGiven with the close but without the delete, where z
 // reads #42 in both rows; and a delete of the open row alone, where z reads the closed #42).
 func TestARemovedTasksPullRequestOnTheIssuesBranchIsNoWaitingTasks(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		state  record.PullRequestState
 		closes []record.TaskPullRequestsClose

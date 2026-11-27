@@ -26,6 +26,7 @@ func agentsOfTask(stored *record.StoredPlan, task string) []claim.Agent {
 // before anything is written, and the fact stays unspent; version 1's rows, with their names,
 // stand.
 func TestALaterVersionThatWouldRenameAKeyIsRefusedAsAPlan(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	apply := applyFacts(t, pool, engine)
@@ -53,6 +54,7 @@ func TestALaterVersionThatWouldRenameAKeyIsRefusedAsAPlan(t *testing.T) {
 // A version that gives a task again names its keys from the rows read before it replaces the
 // task's steps, so a key keeps the name it had, even where its first step is now of another role.
 func TestARegivenTaskKeepsTheNamesOfItsKeys(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	apply := applyFacts(t, pool, engine)
@@ -71,6 +73,7 @@ func TestARegivenTaskKeepsTheNamesOfItsKeys(t *testing.T) {
 // The project's default steps are named from their own steps alone when the first step of a run
 // with no owner's plan writes them: each agent has a name, the steps of a key share it.
 func TestTheDefaultStepsAreNamedWhenTheyAreWritten(t *testing.T) {
+	t.Parallel()
 	engine := returnEngine()
 	engine.cfg.DefaultSteps = []plan.Step{{Role: "implementer"}, {Role: "tester", Key: "r"}, {Role: "reviewer", Key: "r"}}
 	_, _, steps := engine.defaultRows(record.Issue{Key: "LEGION-208", Generation: 1})

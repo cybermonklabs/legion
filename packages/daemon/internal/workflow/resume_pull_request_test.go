@@ -103,6 +103,7 @@ func bootResumes(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, r
 // it stands at waits for the reviewer's approval (its control: the resume without the merge forward
 // sentence, under which the resumed merger is not told it).
 func TestAResumedStepNamesItsTasksPullRequest(t *testing.T) {
+	t.Parallel()
 	done := func(at int) exampleStand { return exampleStand{state: record.TaskDone, place: atStep(at)} }
 	waiting := exampleStand{state: record.TaskWaiting}
 	atMerge := exampleStand{state: record.TaskRunning, place: record.TaskPlace{Kind: record.PlaceMerge}}
@@ -231,6 +232,7 @@ func countsPullReads(engine *Engine, key, task string) *pullReads {
 // the two completions, which move past implementing, read it twice; clearTaskMergeForward reading
 // it, under which the gate's opening, a move into implementing, reads it twice).
 func TestAStartReadsItsTasksPullRequestOnce(t *testing.T) {
+	t.Parallel()
 	readsOnce := func(t *testing.T, who string, reads *pullReads, task string, number int) {
 		t.Helper()
 		if reads.reads != 1 {

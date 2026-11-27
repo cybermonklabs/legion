@@ -170,6 +170,7 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 // working copy at, beside the issue's, in the start of its step, in a resume of its worker and in
 // the retro of the task. The task's pull request #44 is on its own branch.
 func TestAStepOfASecondTaskNamesItsOwnWorkingCopy(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := textEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -208,6 +209,7 @@ func TestAStepOfASecondTaskNamesItsOwnWorkingCopy(t *testing.T) {
 // The twin: the task that holds the issue's own branch, and a task that ran at the release before
 // tasks had branches, whose row holds none, are told today's line, the issue's own working copy.
 func TestTheTaskOfTheIssuesBranchIsTodaysLine(t *testing.T) {
+	t.Parallel()
 	for _, branch := range []string{"legion/LEGION-208", ""} {
 		t.Run("the row holds "+strconv.Quote(branch), func(t *testing.T) {
 			pool := migratedPool(t)
@@ -373,6 +375,7 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 // and a merge after its last step, or the agent of a first step not told the work its task starts
 // from (its control: the steps line that always ends with the retro and the merge).
 func TestTheFirstStepOfATaskWithNeedsNamesThem(t *testing.T) {
+	t.Parallel()
 	told := stepLines
 	ends := endsWith
 
@@ -469,6 +472,7 @@ func seedBranches(t *testing.T, pool *pgxpool.Pool, key string, tasks ...string)
 // its own (its controls: the conflict sentence dropped, under which d's first step names no join
 // to repair; the join branch left out of the sentence, under which d's sentence fails).
 func TestTheFirstStepOfATaskWhoseJoinConflictedIsToldToRepairIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := textEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -529,6 +533,7 @@ func TestTheFirstStepOfATaskWhoseJoinConflictedIsToldToRepairIt(t *testing.T) {
 // holds their work already (its control: the unmerged join left out of the task's text, under which
 // h's first step names no merge).
 func TestTheFirstStepOfATaskWhoseJoinBranchDidNotMergeIsToldToMergeIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := textEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -590,6 +595,7 @@ func TestTheFirstStepOfATaskWhoseJoinBranchDidNotMergeIsToldToMergeIt(t *testing
 // so the review of its task reads the work of its needs (its control: the base sentence dropped,
 // under which c's implementer is told no base).
 func TestAnImplementationStepNamesItsPullRequestsBase(t *testing.T) {
+	t.Parallel()
 	const opens = "Open the pull request of this task against"
 	t.Run("a plan of several tasks", func(t *testing.T) {
 		pool := migratedPool(t)

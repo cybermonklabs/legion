@@ -24,6 +24,11 @@
 //     the binary's own process exits, and a process it leaves behind is not waited for;
 //   - is killed and reported when it has not ended within a minute, with every process of its
 //     group;
+//   - is read until the binary's standard output and standard error are closed by every process
+//     that holds them, a process the binary left behind included, and is reported when they are
+//     still held a minute after the binary exited. Nothing shorter cuts the read: what the
+//     harness has read is thrown away when the read is cut, so a run that printed everything it
+//     had to print would be reported as having printed nothing;
 //   - counts its output as standard output and standard error together, except where a check
 //     below names standard output alone;
 //   - is the only run a contact with the recorder is counted against when the contact came while
@@ -165,6 +170,9 @@ type Case struct {
 
 // runTimeout bounds one run of the binary or of a shell: a run still going after it is killed and
 // reported, so a binary that waits on a server or on its input fails rather than holding the test.
+// It bounds the read of the run's output too (command's WaitDelay), from the binary's own exit: a
+// process the binary left behind holding the output is waited for that long, and the run is
+// reported when it still holds the output then.
 var runTimeout = time.Minute
 
 const (
@@ -509,6 +517,12 @@ func (h *harness) run(args ...string) result {
 	r := result{argv: h.display(args), stdout: stdout.String(), stderr: stderr.String()}
 	var exit *exec.ExitError
 	switch {
+	// The binary exited by itself with its output still held: where the run's bound ended the
+	// binary instead, exec reports the end of ctx, not this. It comes before the case below,
+	// since the delay runs from the exit, so ctx has ended by the time the delay does. What was
+	// read of the output may be cut short, so the run is reported rather than checked.
+	case errors.Is(err, exec.ErrWaitDelay):
+		r.failed = fmt.Sprintf("exited, but a process it started still held its output %s later, so what it printed may be cut short", runTimeout)
 	case !exited:
 		r.failed = fmt.Sprintf("did not exit within %s", runTimeout)
 	case !groupEnded:
@@ -529,10 +543,13 @@ func (h *harness) run(args ...string) result {
 }
 
 // command is a run of path with args in the environment and the directory every run gets, killed
-// when ctx ends.
+// when ctx ends. Its WaitDelay is the run's own bound, and not a shorter one: exec throws away
+// what it has read of the output when the delay ends, so a delay the machine running the tests
+// can outlast between the binary's exit and the harness's read of what it printed would report a
+// run that printed its help as having printed nothing.
 func (h *harness) command(ctx context.Context, path string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, path, args...)
-	cmd.Env, cmd.Dir, cmd.WaitDelay = h.env, h.dir, time.Second
+	cmd.Env, cmd.Dir, cmd.WaitDelay = h.env, h.dir, runTimeout
 	return cmd
 }
 

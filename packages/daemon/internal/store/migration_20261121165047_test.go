@@ -24,6 +24,7 @@ const taskCopiesVersion = 20261121165047
 // stands above, among them; a kind that is none is still refused. A name given twice in one
 // generation is refused by the table's own key.
 func TestMigrationTaskCopiesKeepsEachTaskAndEveryOutboxKind(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, taskCopiesVersion-1)

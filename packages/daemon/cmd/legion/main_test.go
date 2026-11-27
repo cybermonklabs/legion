@@ -2260,6 +2260,7 @@ func TestPlainStateSummarizesTheOpenProductionChecks(t *testing.T) {
 // `legion state` counts each and names the oldest of them. A daemon below the contract that added
 // `checks` serves `check` alone, and the line counts that one.
 func TestTheStateLineCountsEachOpenCheckOfAnIssue(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	// No admission block: the line reads the issues alone, and an issue at implementing holds a
 	// slot (record.PhaseKeepsSlot), which an empty `active` would deny.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +

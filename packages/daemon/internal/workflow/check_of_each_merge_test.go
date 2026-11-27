@@ -64,6 +64,7 @@ func checkOpenedAt(t *testing.T, rig checkRig, issue string, opened time.Time) r
 // not after now starts its last look, another is left as it stands, and while such a check has a
 // look open the issue gets one row at the look bound, however many checks it defers.
 func TestEachRowOfACheckActsOnTheCheckItNames(t *testing.T) {
+	t.Parallel()
 	t.Run("a look's end ends the look of the check it names", func(t *testing.T) {
 		rig := newCheckRig(t)
 		first, second := twoChecks(t, rig, [2]bool{true, true})
@@ -178,6 +179,7 @@ func checksOfIssue(t *testing.T, rig checkRig, issue string) []record.Production
 // linger waiting for ever (closeCheck re-arms the linger's close only when the tree's last open
 // check closes).
 func TestEachMergeOfARunOpensItsOwnCheckAndALaterRunsClosesTheEarlier(t *testing.T) {
+	t.Parallel()
 	rig := newCheckRig(t)
 	issue := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
 		Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
@@ -221,6 +223,7 @@ func TestEachMergeOfARunOpensItsOwnCheckAndALaterRunsClosesTheEarlier(t *testing
 // of an earlier run waits instead, as every check of an issue back in the workflow did before: its
 // wake is queued again a look bound later, and its bound closes it as not run.
 func TestACheckOfTheRunThatHoldsTheIssueLooksWhileItRuns(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		generation uint64
@@ -293,6 +296,7 @@ func lookStarts(t *testing.T, pool *pgxpool.Pool, key string) []record.Supervise
 // unchecked in production until the issue's last merge (its control: closeMerged with no openCheck
 // at such a merge, under which a's merge opens none).
 func TestEachMergeOpensACheckAndItsLooksRunWhileTheIssueRuns(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	clock := &checkClock{now: stepClock}
@@ -366,6 +370,7 @@ func TestEachMergeOpensACheckAndItsLooksRunWhileTheIssueRuns(t *testing.T) {
 // (its control: the lingering branch of closeMerged returning with no openCheck where the merge is
 // not the last, under which no check opens).
 func TestALingeringMembersMergeThatIsNotItsLastOpensItsCheck(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine, logged := loggedEngine()
 	until := stepClock.Add(time.Hour)
@@ -409,6 +414,7 @@ func TestALingeringMembersMergeThatIsNotItsLastOpensItsCheck(t *testing.T) {
 // check opens in a run that never made it (its control: a ClearGeneration that keeps merged rows,
 // under which the leave reads #1 as a's merge and opens a check of it).
 func TestAReenteredChildsNextRunOpensNoCheckOfTheEarlierRunsMerge(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -447,6 +453,7 @@ func TestAReenteredChildsNextRunOpensNoCheckOfTheEarlierRunsMerge(t *testing.T) 
 // its earlier generation as none of its own (its control: openCheck comparing only with the checks
 // of the issue's generation, under which a second check of a's merge opens).
 func TestACarriedOrphansLeaveOpensNoSecondCheckOfItsMerge(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	orphan := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
@@ -518,6 +525,7 @@ func seedAWithATesterAndB(t *testing.T, pool *pgxpool.Pool, engine *Engine, bAt 
 // control: startLook with no claim on its row, which the runner then reads as the claim of the
 // worker on the tester's step, so check-b's start row names no claim of check-b's).
 func TestEachRowOfACheckNamesItsAgentsClaim(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	clock := &checkClock{now: stepClock}
@@ -591,6 +599,7 @@ func TestEachRowOfACheckNamesItsAgentsClaim(t *testing.T) {
 // claim. One claim runs one turn at a time (supervise's TestALookAndAStepOfOneAgentAreSentOneTurnAtATime),
 // so the look and the step take that agent in turn, and no task of the workflow waits for the look.
 func TestALookAndAnotherTasksStepOfOneAgentGoToOneClaim(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	stepRoot(t, pool, phase.Implementing)
@@ -660,6 +669,7 @@ func closeRowsNaming(t *testing.T, pool *pgxpool.Pool, key string, token claim.T
 // it opens itself (its control: the leave keeping the claims of the checks open before it alone,
 // under which check-b's claim, the check this close opens, gets one too).
 func TestTheCloseOfTheIssueKeepsTheClaimOfEachOpenCheck(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	child := seedAWithATesterAndB(t, pool, engine, atStep(1))
@@ -715,6 +725,7 @@ func TestTheCloseOfTheIssueKeepsTheClaimOfEachOpenCheck(t *testing.T) {
 // checks open before it alone, under which the tester's claim gets an issue_close row and one
 // IssueSuspend is queued).
 func TestTheCloseOfAChildOfOneMergeKeepsItsCheckersClaimAndItsSandbox(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	stepRoot(t, pool, phase.Implementing)

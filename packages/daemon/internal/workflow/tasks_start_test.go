@@ -59,6 +59,7 @@ func startClaims(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) 
 // taken out of the plan, so c starts at the first step beside a and b, and the assertion that c
 // waits fails).
 func TestEachTaskStartsWhenItsNeedsAreDone(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -168,6 +169,7 @@ func block(id, text string, needs ...string) plan.Task {
 // The fault it catches is a task that starts again before its needs are done (its control:
 // startAtFirstStep starting the stopped task at its first step whatever its needs, which starts d).
 func TestAStoppedTaskStartsAgainOnlyWhereItsNeedsAreDone(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -207,6 +209,7 @@ func TestAStoppedTaskStartsAgainOnlyWhereItsNeedsAreDone(t *testing.T) {
 // The fault it catches is a pass raised for a run that never was (its control: the pass raised by
 // the task's state, for every task that was not waiting, which raises b's to 1).
 func TestAStoppedTaskAtNoActKeepsItsPassWhenItStartsAgain(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -235,6 +238,7 @@ func TestAStoppedTaskAtNoActKeepsItsPassWhenItStartsAgain(t *testing.T) {
 // than against the status Dispatch shows (its control: startAtFirstStep comparing with Status,
 // which writes nothing, so the board stays at todo).
 func TestATodoOnARootHeldForAStoppedTaskOfSeveralWritesItsStatusOverTheTodo(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -273,6 +277,7 @@ func TestATodoOnARootHeldForAStoppedTaskOfSeveralWritesItsStatusOverTheTodo(t *t
 // (its control: the node written before the ready tasks start, as the gate wrote it for a plan of
 // several, which puts plan_record before dispatch_status there).
 func TestTheGatesOpeningWritesItsRowsInOneOrderForEveryPlan(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		tasks []planTask
@@ -312,6 +317,7 @@ func TestTheGatesOpeningWritesItsRowsInOneOrderForEveryPlan(t *testing.T) {
 // The fault it catches is the start of a role nobody defines (its control: startReady without the
 // check of the lost role, which starts b's checker).
 func TestALostRoleAtTheFirstStepOfATaskOfSeveralStopsIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := lostChecker()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -362,6 +368,7 @@ func (s *planReads) Plan(ctx context.Context, tx pgx.Tx, issue string, generatio
 // The fault it catches is a start that reads the plan again for each part of it (its control:
 // putScope reading the plan again, which counts three).
 func TestAReadyStartReadsThePlanTwice(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	counting := &planReads{Store: engine.store}

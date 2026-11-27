@@ -34,6 +34,7 @@ func partNeeding(id, of string, needs ...string) plan.Task {
 // owner's (its control: mergeChangeRefusals with no rule of the giver, as at the base, takes the
 // sub-owner's two versions).
 func TestASubOwnerLeavesWhetherTheOwnersTasksMerge(t *testing.T) {
+	t.Parallel()
 	a := stepped("a", "implementer").at(record.TaskRunning, atStep(1))
 	f := subOwned("f").at(record.TaskRunning, atParts)
 	g := stepped("g", "implementer").at(record.TaskRunning, atStep(1))
@@ -106,6 +107,7 @@ func (s startReadyRuns) Plan(ctx context.Context, tx pgx.Tx, issue string, gener
 // it twice (its control: startAtFirstStep that runs startReadyNow at the parts, as at the base,
 // which counts two runs).
 func TestAVersionThatStartsATaskWithASubOwnerAgainStartsTasksOnce(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	runs := 0

@@ -20,6 +20,7 @@ import (
 // role alone would mark the tester's own claim owed the launch the wake took for key a's agent. A
 // resume the release before wrote names no claim, and is still each claim of its role's.
 func TestAnOpenResumeIsTheClaimItsWakeBroughtBack(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	keyed, err := claim.NewToken("legion", rootIssue, claim.RoleImplementer)
@@ -68,6 +69,7 @@ func TestAnOpenResumeIsTheClaimItsWakeBroughtBack(t *testing.T) {
 // claim finds no resume of its own and moves nothing; key a's let-out moves its clock. A resume
 // the release before wrote names no claim, so any claim of its role's let-out moves it.
 func TestALetOutMovesTheStuckClockOfItsOwnClaimsResumeAlone(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	keyed, err := claim.NewToken("legion", rootIssue, claim.RoleImplementer)
@@ -125,6 +127,7 @@ func TestALetOutMovesTheStuckClockOfItsOwnClaimsResumeAlone(t *testing.T) {
 // wrote names no claim, so a wait of any claim of its role stops its clock and the end of any
 // claim's wait starts it.
 func TestAWaitInThePacingStopsTheStuckClockOfItsOwnClaimsResumeAlone(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	keyed, err := claim.NewToken("legion", rootIssue, claim.RoleImplementer)
@@ -224,6 +227,7 @@ func TestAWaitInThePacingStopsTheStuckClockOfItsOwnClaimsResumeAlone(t *testing.
 // wake of key a's agent takes none. A resume the release before wrote names no claim and is each
 // claim of its role's, so while one is open no claim of its role takes a wake, as before.
 func TestTwoClaimsOfOneRoleEachTakeAWakeOfTheirOwn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	keyed, err := claim.NewToken("legion", rootIssue, claim.RoleImplementer)
@@ -273,6 +277,7 @@ func TestTwoClaimsOfOneRoleEachTakeAWakeOfTheirOwn(t *testing.T) {
 // woken as the implementer, re-roled to the tester's step before its first turn, still finds,
 // stamps and closes the resume its wake took.
 func TestAReRoledClaimStillReachesTheResumeItsWakeTook(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	keyed, err := claim.NewToken("legion", rootIssue, claim.RoleImplementer)

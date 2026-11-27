@@ -14,6 +14,7 @@ import (
 // names. The generation is held for both: a checker serving an earlier run is not the worker of
 // this one. On an issue with no plan rows the phase names the worker, as before.
 func TestAPhaseReminderIsArmedForTheDeploymentRoleThatRuns(t *testing.T) {
+	t.Parallel()
 	const checker claim.Role = "checker"
 	atStep := pods.IdleView{Phase: phase.Step, Planned: true, Generation: 3,
 		Running: []pods.RunningRow{{Task: "a", Kind: "step", Position: 2, Role: string(checker), At: 2}}}
