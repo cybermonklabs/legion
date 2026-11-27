@@ -44,6 +44,18 @@ func inFlight[T any](f func() T) <-chan T {
 // command that gave up on its own never reports, so no row passes by that end.
 const commandLives = `ticks=0; while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks=$((ticks+1)); done`
 
+// cpuHold is shell that keeps the shell it runs in waiting for a CPU for about secs seconds, as a
+// loaded machine would (CONTROL ONLY): the shell pins itself to one of its CPUs, starts a busy
+// loop on that CPU that SIGKILL ends after secs, drops its own priority to nice 19 under the
+// loop's, and spins until the loop has ended and done exists. Nearly all of that span is the
+// shell's run-queue wait (/proc/self/schedstat); its own run is about 1.5% of it. A kernel that
+// keeps no run-queue wait (gVisor) has the same span with nothing to read it by.
+func cpuHold(secs, done string) string {
+	return `cpu=$(taskset -pc $$ | sed 's/.*: //; s/[,-].*//'); taskset -pc "$cpu" $$ >/dev/null; ` +
+		`( timeout -s KILL ` + secs + ` sh -c 'while :; do :; done'; : >` + done + ` ) 2>/dev/null & ` +
+		`renice -n 19 -p $$ >/dev/null; until [ -e ` + done + ` ]; do :; done`
+}
+
 // RunCommand's jj and git are stopped the way execRunner's are: the budget's end sends SIGTERM to
 // the command's own process group, which is the group procgroup.Configure gives it and which
 // RunCommand never had before dispatch://INFRA-3098, waits the grace, and sends SIGKILL only
@@ -84,7 +96,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		ctx := budgetPassedOnceExists(t, ready)
 		// The lock is taken before the command reports that it is running, so a lock that is gone
 		// at the end is one the command's own SIGTERM handler removed.
-		script := testexec.MarkStart(`"$3"`) + `; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; ` + markWaited("self", `"$4"`) + `; : >"$2"; ` + commandLives
+		script := testexec.MarkStart(`"$3"`) + `; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; ` + cpuHold("1.5", `"${2%/*}/held"`) + `; ` + markWaited("self", `"$4"`) + `; : >"$2"; ` + commandLives
 
 		call := calling(t)
 		started := time.Now()
@@ -154,7 +166,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		// so a helper nothing stopped is still there however long the row waits for it, and a run
 		// that waits on its pipes for ever fails the wait below rather than ending with the helper.
 		helper := `trap '' TERM; ` + waitInto("waited", "self") + `; printf '%s\n' "$waited" >"$3"; : >"$2"; while [ -d '` + dir + `' ] && kill -0 ` + strconv.Itoa(os.Getpid()) + ` 2>/dev/null; do sleep 0.05; done`
-		script := testexec.MarkStart(`"$6"`) + `; ` + waitInto("forked", "self") + `; sh -c "$2" sh "$3" "$4" "$5" & read -r word <"$4"; ` + waitInto("heard", "self") + `; trap '' TERM; ` + markWaited("self", `"$7"`, `"$forked"`, `"$heard"`) + `; : >"$1"; ` + commandLives
+		script := testexec.MarkStart(`"$6"`) + `; ` + waitInto("forked", "self") + `; sh -c "$2" sh "$3" "$4" "$5" & read -r word <"$4"; ` + waitInto("heard", "self") + `; trap '' TERM; ` + cpuHold("2.5", `"${1%/*}/held"`) + `; ` + markWaited("self", `"$7"`, `"$forked"`, `"$heard"`) + `; : >"$1"; ` + commandLives
 
 		returned := make(chan error, 1)
 		call := calling(t)
@@ -204,7 +216,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		lock, ready, mark := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready"), filepath.Join(dir, "started")
 		readyAt := filepath.Join(dir, "ready-at")
 		fakeGit := filepath.Join(dir, "git")
-		script := "#!/bin/sh\n" + testexec.MarkStart(`"`+mark+`"`) + "\n: >\"" + lock + "\"\ntrap 'rm -f \"" + lock + "\"; exit 0' TERM\n" + markWaited("self", `"`+readyAt+`"`) + "\n: >\"" + ready + "\"\n" + commandLives + "\n"
+		script := "#!/bin/sh\n" + testexec.MarkStart(`"`+mark+`"`) + "\n: >\"" + lock + "\"\ntrap 'rm -f \"" + lock + "\"; exit 0' TERM\n" + cpuHold("1.5", `"`+filepath.Join(dir, "held")+`"`) + "\n" + markWaited("self", `"`+readyAt+`"`) + "\n: >\"" + ready + "\"\n" + commandLives + "\n"
 		if err := testexec.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
