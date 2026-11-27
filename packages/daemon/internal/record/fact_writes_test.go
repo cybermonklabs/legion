@@ -241,6 +241,14 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 		{name: "a plan deleted", seed: seedPlan, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.DeletePlan(ctx, tx, key, generation))
 		}, marks: true},
+		{name: "a plan version's giver added", seed: seedPlan, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			_, err := store.AddPlanGiver(ctx, tx, key, generation, 1, "architect-311", at)
+			must(t, err)
+		}, marks: true},
+		{name: "control: the giver the plan version names already", seed: seedPlan, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			_, err := store.AddPlanGiver(ctx, tx, key, generation, 1, "architect-310", at)
+			must(t, err)
+		}},
 		{name: "control: the delete of a plan nobody gave", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.DeletePlan(ctx, tx, key, generation))
 		}},

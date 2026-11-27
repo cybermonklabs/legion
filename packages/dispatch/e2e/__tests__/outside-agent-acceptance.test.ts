@@ -26,7 +26,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -394,15 +394,24 @@ done
       rowLimit("short")
     );
 
-    // await_child looks at its child every pause and returns once it has ended, or at its bound
-    // (outside-agent-lib.sh, end_within). A child that never ends is the control: its wait must
-    // end at the 2 s bound, so a wait that cannot end there fails here. A child that ends at 0.2 s
-    // ends its wait then, with its own exit status: the wait returns within 3 s of the moment the
-    // child writes as it ends. A wait that looked only every 5 s, the slow wait this change
-    // removes, returns 4.8 s or more after that moment, whatever the load, since load only delays
-    // a look. Measured in a builds pod: 0.01 s unloaded, at most 0.10 s in 20 runs under 8 busy
-    // loops on the test's own two CPUs, and 4.81 s with end_within planted to look every 5 s. And
-    // stop_child's TERM ends the first child well before its 10 s bound, leaving nothing running.
+    // await_child looks at its child, pauses (`pause`, a `sleep 0.1`) and looks again, and returns
+    // once the child has ended, or at its bound (outside-agent-lib.sh, end_within). The row reads
+    // each wait in its pauses rather than in seconds: a `sleep` of the row's own stands ahead on
+    // PATH, writes a line for each sleep the waits run, with its argument and whether the child
+    // the script names in WAITED had ended as it began, and runs the real one. A child that never
+    // ends is the control: its wait returns with no exit status, the child still listed, after at
+    // least a second of its 2 s bound. A child that ends at 0.2 s ends its wait then, with its own
+    // exit status: every sleep of the waits is a pause, so the wait looks every pause, and no
+    // more than one pause begins once the child has ended, since the shell reaps the child while
+    // it waits for that pause and the next look finds it gone. A wait that looked only every 5 s,
+    // the slow wait #5247 removed, sleeps 5; one that looked on past the child's end pauses again
+    // with it ended. stop_child's TERM ends the first child inside its 10 s bound: the status its
+    // wait read (end_within_exit, which stop_child holds local and kill_child, run next, sees) is
+    // 143, where a child its TERM did not end is still running at the bound, and nothing is left
+    // running. No clock decides a verdict: in a builds pod running this row beside the whole
+    // harness, the wait came back 3.02 s to 5.24 s after the child's end in 12 of 768 runs, past
+    // the 3 s the row once held it to, and the stop took up to 8.53 s of its 9, each look of each
+    // wait a fork the load slowed (dispatch://INFRA-3904).
     test(
       "await_child ends as its child ends, and at its bound for one that never does",
       async () => {
@@ -411,7 +420,23 @@ done
           .padStart(6, "0")}`;
         const sleep = hostTool("sleep") as string;
         const directory = scratch("waits");
-        const sevenEnded = join(directory, "seven-ended");
+        const sleeps = join(directory, "sleeps");
+        const shims = scratch("shims");
+        script(
+          join(shims, "sleep"),
+          `#!/usr/bin/env bash
+state=running
+if [ -e /proc/self/stat ]; then
+  { read -r stat <"/proc/$WAITED/stat"; } 2>/dev/null || stat=''
+  case $stat in '' | *') Z '*) state=ended ;; esac
+else
+  stat=$(ps -o stat= -p "$WAITED" 2>/dev/null)
+  case $stat in '' | Z*) state=ended ;; esac
+fi
+printf '%s %s %s\\n' "$WAITED" "$*" "$state" >>'${sleeps}'
+exec '${sleep}' "$@"
+`
+        );
         const waits = script(
           join(directory, "waits.sh"),
           `#!/usr/bin/env bash
@@ -424,24 +449,28 @@ listed() { case " $background " in *" $1 "*) echo yes ;; *) echo no ;; esac; }
 '${sleep}' ${base}1 &
 never=$!
 background="$background $never"
+export WAITED=$never
 began=$(clock)
 await_child "$never" 2
-echo "never exit=\${child_exit:-none} seconds=$(since "$began") listed=$(listed "$never")"
-( '${sleep}' 0.2; clock >'${sevenEnded}'; exit 7 ) &
+echo "never pid=$never exit=\${child_exit:-none} seconds=$(since "$began") listed=$(listed "$never")"
+( '${sleep}' 0.2; exit 7 ) &
 seven=$!
 background="$background $seven"
+WAITED=$seven
 await_child "$seven" 30
-echo "seven exit=\${child_exit:-none} late=$(since "$(cat '${sevenEnded}' 2>/dev/null)") listed=$(listed "$seven")"
-began=$(clock)
+echo "seven pid=$seven exit=\${child_exit:-none} listed=$(listed "$seven")"
+eval "lib_$(declare -f kill_child)"
+kill_child() { stop_exit=\${end_within_exit:-running}; lib_kill_child "$@"; }
+WAITED=$never
 stop_child "$never"
-echo "stopped seconds=$(since "$began") left=$(pgrep -f "^${sleep} ${base}1\\$" | wc -l | tr -d ' ')"
+echo "stopped exit=\${stop_exit:-none} left=$(pgrep -f "^${sleep} ${base}1\\$" | wc -l | tr -d ' ')"
 `
         );
         const { code, stdout } = await runBounded({
           argv: ["bash", waits],
           bound: "short",
           cwd: scratch("cwd"),
-          env: { PATH: process.env.PATH ?? "" },
+          env: { PATH: `${shims}:${process.env.PATH ?? ""}` },
           from: import.meta.url,
         });
         const read = (name: string) =>
@@ -454,21 +483,31 @@ echo "stopped seconds=$(since "$began") left=$(pgrep -f "^${sleep} ${base}1\\$" 
         const never = read("never");
         const seven = read("seven");
         const stopped = read("stopped");
+        const slept = (existsSync(sleeps) ? readFileSync(sleeps, "utf8") : "")
+          .split("\n")
+          .filter((line) => line !== "")
+          .map((line) => line.split(" "));
+        const pausesOnceSevenEnded = slept.filter(
+          ([pid, , state]) => pid === seven.pid && state === "ended"
+        ).length;
         expect({
           code,
           never: { exit: never.exit, listed: never.listed, atTheBound: Number(never.seconds) >= 1 },
-          neverWithin: Number(never.seconds) < 10,
-          seven: { exit: seven.exit, listed: seven.listed },
-          sevenAtItsEnd: Number(seven.late) < 3,
-          stopped: { left: stopped.left, beforeTheKill: Number(stopped.seconds) < 9 },
+          seven: {
+            exit: seven.exit,
+            listed: seven.listed,
+            atMostOnePauseOnceEnded: pausesOnceSevenEnded <= 1,
+          },
+          sleepsThatAreNoPause: slept.filter(([, seconds]) => seconds !== "0.1"),
+          stopped: { exit: stopped.exit, left: stopped.left },
           stdout,
+          sleeps: slept.map((line) => line.join(" ")),
         }).toMatchObject({
           code: 0,
           never: { exit: "none", listed: "yes", atTheBound: true },
-          neverWithin: true,
-          seven: { exit: "7", listed: "no" },
-          sevenAtItsEnd: true,
-          stopped: { left: "0", beforeTheKill: true },
+          seven: { exit: "7", listed: "no", atMostOnePauseOnceEnded: true },
+          sleepsThatAreNoPause: [],
+          stopped: { exit: "143", left: "0" },
         });
       },
       // The script, a bounded child under the short bound.
@@ -1209,6 +1248,37 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
       },
       // The four runs at once, each a bounded child under the short bound.
       rowLimit({ atOnce: ["short", "short", "short", "short"] })
+    );
+
+    // The leg links, at its start, the real program behind each tool its helper, its probe and
+    // its peer run under its PATH. A program it found and could not link leaves them to whatever
+    // PATH holds, so every row from the pins on reads UNKNOWN naming the program and the reason,
+    // and the gate with them.
+    test(
+      "a tailnet leg that cannot link a program it found reads every row UNKNOWN naming it",
+      async () => {
+        const prepared = await prepareStandIn(scratch, passingControls);
+        try {
+          rmSync(join(prepared.env.PATH as string, "ln"), { force: true });
+        } catch (error) {
+          prepared.dispatch.stop();
+          throw error;
+        }
+        const run = await runStandIn(prepared);
+        expect({ problems: unknownProblems(run, tailnetRows), stdout: run.stdout }).toEqual({
+          problems: [],
+          stdout: run.stdout,
+        });
+        const rows = rowsOf(run.stdout);
+        for (const name of tailnetRows.filter((name) => name !== "gate")) {
+          const got = rows.get(name)?.got ?? "";
+          for (const part of ["bun (", "was not linked into", "command not found"]) {
+            expect({ name, got }).toEqual({ name, got: expect.stringContaining(part) });
+          }
+        }
+      },
+      // The run, a bounded child under the short bound.
+      rowLimit("short")
     );
 
     test(

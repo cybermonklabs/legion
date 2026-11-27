@@ -273,8 +273,9 @@ daemon_image=mirror.gcr.io/library/busybox:1.37@sha256:bdf57e528e45e4433820e045b
 # written, so cleanup removes whatever part of it a run left. Empty under aws-private-ip.
 app_tokens_dir=
 # How long a planner the driver has told to plan gets to finish, as Stage 4b's plan_seconds: before
-# its handoff it runs its two model-backed plan checks, the gap analyst and up to three plan-review
-# rounds (each a subagent call), so planning takes a whole loop of its own (wait_for_phase). The
+# its handoff it runs its two model-backed plan checks, the gap analyst and as many plan-review
+# rounds as its plan needs (each a subagent call), so planning takes a whole loop of its own
+# (wait_for_phase). The
 # route is the operator route's own, so the planner runs the models production runs.
 plan_seconds=2700
 # host is the name the pods dial the run's six services by, and bind_host the address those
@@ -1570,7 +1571,7 @@ timeout_hook=report_stall_entries
 until_true 900 "the implementer's turn to end with its phase open and the reminder to reach it as Stop hook feedback" \
   reminded_or_completed "$stall_offset"
 stop_hook_reminded "$stall_offset" ||
-  fail "the implementer completed its phase (handoff $(role_handoff "$issue" implementer implementing)) before the proof's stall instruction left it a turn ending with the phase open: it did the work of the task that started its phase, against the proof's instructions, so there was no open phase for the Stop hook to remind"
+  fail "the implementer completed its phase (handoff $(role_handoff "$issue" implementer implementing testing)) before the proof's stall instruction left it a turn ending with the phase open: it did the work of the task that started its phase, against the proof's instructions, so there was no open phase for the Stop hook to remind"
 until_true 600 "the blocked turn to be continued in the same session" reminded_turn_continued "$stall_offset"
 timeout_hook=
 until_true 300 "the reminded implementer's turn to end" issue_worker_state "$issue" implementer idle
@@ -1580,14 +1581,15 @@ pass
 # Check 4. The phase is completed through the `legion` MCP tool, naming the Dispatch handoff record
 # the implementer wrote under its own claim session, and its pushed commit, from the pod's own
 # workspace and by its own App, carries no `.legion/` path. The daemon refuses a completion of
-# implementing while no pull request is open on the issue branch (HANDOFF_NO_PULL_REQUEST,
-# packages/daemon/internal/api/handoff.go), so the implementer opens one first, and exactly one is
+# implementing with no open pull request, unless GitHub cannot be read or the daemon recorded a
+# merged pull request. This proof opens one before handoff_complete and checks that exactly one is
 # open on the branch; the teardown closes it (remove_run_branch).
 begin claude-implementer-handoff
 marker="claude-sandbox-marker-$run_label-$RANDOM$RANDOM"
 send_agent "$issue" implementer "Claude backend sandbox proof implementation operation ($marker): make the smallest one-file change this issue's spec describes in your $repo workspace, commit it on legion/$issue, push the branch to origin, write the required implementation handoff with dispatch handoff-write, open a pull request from legion/$issue to the repository's default branch, then call the legion tool's handoff_complete with a concise summary. Do not merge."
-until_true 1200 "the daemon to record the implementer's handoff_complete" handoff_recorded
-commit=$(role_handoff "$issue" implementer implementing)
+wait_for_phase "$issue" testing 1200
+commit=$(role_handoff "$issue" implementer testing)
+assert_round_handoff "$issue" 0
 assert_handoff_record "$issue" implementer implementing 0
 files=$(smoke_commit_files "$commit") || exit 1
 ! grep -q '^\.legion/' <<<"$files" || fail "the implementer's commit $commit changes files under .legion/, where no handoff goes now: $(tr '\n' ' ' <<<"$files")"

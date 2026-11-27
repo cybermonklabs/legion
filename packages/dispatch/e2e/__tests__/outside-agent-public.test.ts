@@ -10,10 +10,11 @@
  *  in the same row, not PASS where the stand-in crosses the rule the judgment reads. */
 
 import { describe, expect, test } from "bun:test";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { rowLimit, runBounded } from "./bounded-subprocess";
+import { type BoundName, rowLimit, runBounded } from "./bounded-subprocess";
 import {
   copyLeg,
   type LegRun,
@@ -37,9 +38,13 @@ interface PublicScenario {
   /** The answers of the trades the T5 window makes, in turn, the last one repeating: true for an
    *  answered trade, false for a refusal, null for an answer the leg cannot read. */
   readonly trades: readonly (boolean | null)[];
-  /** When the relay socket the T5 window holds closes after it opens, and with which code; it
-   *  stays open where none is given. */
-  readonly holdCloseMs?: number;
+  /** The code the relay socket the T5 window holds closes with; it stays open for the whole hold
+   *  the leg asks for where none is given, or where no trade is refused. It closes once the leg
+   *  has made its first trade after the first refused one (the first false of `trades`), which the
+   *  leg makes only after it has read the socket open at that refusal. No time stands for that
+   *  read: a close a fixed 15 s after the socket opened came before a loaded leg's refusal, which
+   *  follows its 10 s between trades and the start of its probe, and the leg then read no socket
+   *  open at the refusal (dispatch://INFRA-3904). */
   readonly holdCode?: number;
   /** The probe's answers by command, where they differ from an edge that refuses as it should. */
   readonly foreignSend?: Record<string, unknown>;
@@ -48,9 +53,20 @@ interface PublicScenario {
   /** The rows the workflow's browser (OUTSIDE_T5_COMMAND) writes, in order, each
    *  `[row, got, verdict]`; with none, OUTSIDE_T5_COMMAND is unset. */
   readonly browserRows?: readonly (readonly [string, string, string])[];
+  /** A directory first on the leg's PATH holding a version manager: a `bun` shim that runs no
+   *  program, as mise's shim runs none under a HOME of its own, and a `mise` whose `which` names
+   *  each stand-in. The leg's children must run the program `mise which` names. */
+  readonly shimFirst?: boolean;
+  /** The leg's PATH holds no `ln`, so it can link none of the programs it found. */
+  readonly withoutLn?: boolean;
 }
 
-/** The stand-in probe: answers each command the public leg runs, from scenario.json beside it. */
+/** The stand-in probe: a Bun process the leg starts for each command it runs, on its own clock,
+ *  which no fake timer of this file reaches; it answers from scenario.json beside it. Its `trade`
+ *  counts the trades the leg made, in trades.count, and its `hold` reads that count every 25 ms, a
+ *  gap no verdict reads, until the trade it closes at: a write of another process raises no event
+ *  the hold could await. Without a close, the hold keeps its socket open for the window the leg
+ *  asks for, as the real probe does. */
 const standInProbe = `
 const dir = import.meta.dir;
 const scenario = JSON.parse(await Bun.file(dir + "/scenario.json").text());
@@ -58,6 +74,10 @@ const [command, ...args] = Bun.argv.slice(2);
 const self = process.env.OUTSIDE_PROBE_SESSION ?? "";
 const print = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 const refusal = (code) => ({ status: 403, code, detail: "refused" });
+const counter = dir + "/trades.count";
+const tradesMade = async () => ((await Bun.file(counter).exists()) ? Number(await Bun.file(counter).text()) : 0);
+const firstRefusal = scenario.trades.indexOf(false);
+const closes = scenario.holdCode !== undefined && firstRefusal !== -1;
 switch (command) {
   case "whoami":
     print({ status: 200, code: null, detail: null, kind: "agent", owner: "outside-e2e@example.com", project: "EXAMPLE", scopes: [] });
@@ -92,30 +112,38 @@ switch (command) {
     print({ port: 1 });
     break;
   case "trade": {
-    const counter = dir + "/trades.count";
-    const done = (await Bun.file(counter).exists()) ? Number(await Bun.file(counter).text()) : 0;
+    const done = await tradesMade();
     await Bun.write(counter, String(done + 1));
     const traded = scenario.trades[Math.min(done, scenario.trades.length - 1)];
     if (traded === null) print({ unknown: "the stand-in broker did not answer" });
     else print(traded ? { traded: true, expires_at: Date.now() + 300000 } : { traded: false, status: 403, detail: "refused" });
     break;
   }
-  case "hold":
+  case "hold": {
     print({ opened_at: Date.now() });
-    if (scenario.holdCloseMs === undefined) await Bun.sleep(Number(args[0]) * 1000);
-    else {
-      await Bun.sleep(scenario.holdCloseMs);
-      print({ closed_at: Date.now(), code: scenario.holdCode ?? 4401 });
+    const end = Date.now() + Number(args[0]) * 1000;
+    if (closes) {
+      while ((await tradesMade()) <= firstRefusal + 1 && Date.now() < end) await Bun.sleep(25);
+      if ((await tradesMade()) > firstRefusal + 1) {
+        print({ closed_at: Date.now(), code: scenario.holdCode });
+        break;
+      }
     }
+    await Bun.sleep(Math.max(0, end - Date.now()));
     break;
+  }
   default:
     print({ unknown: "the stand-in probe has no " + command });
     process.exit(2);
 }
 `;
 
-/** One run of a copy of the public leg against the stand-ins, as `scenario` says. */
-async function publicStandInRun(scenario: PublicScenario): Promise<LegRun> {
+/** One run of a copy of the public leg against the stand-ins, as `scenario` says; with
+ *  `shimFirst`, `asked` is each name the leg asked the version manager for, one a line. */
+async function publicStandInRun(
+  scenario: PublicScenario,
+  bound: BoundName = "publicRun"
+): Promise<LegRun & { readonly asked?: string }> {
   const leg = copyLeg(scratch, publicLeg);
   const legDir = leg.slice(0, leg.lastIndexOf("/"));
   await Bun.write(join(legDir, "outside-agent-probe.ts"), standInProbe);
@@ -173,13 +201,28 @@ exit 0
     join(bin, "t5-browser"),
     `#!/bin/sh\ncat '${rowsFile}' >"$OUTSIDE_T5_TSV"\n`
   );
+  if (scenario.withoutLn === true) rmSync(join(bin, "ln"), { force: true });
+  let path = bin;
+  const asked = join(state, "mise-asked");
+  if (scenario.shimFirst === true) {
+    const shims = scratch("shims");
+    script(
+      join(shims, "bun"),
+      `#!/bin/sh\necho '{"unknown":"the bun shim of the version manager ran, not the program mise names"}'\nexit 1\n`
+    );
+    script(
+      join(shims, "mise"),
+      `#!/bin/sh\nprintf '%s\\n' "$2" >>'${asked}'\n[ "$1" = which ] && [ -x '${bin}/'"$2" ] || exit 1\nprintf '%s\\n' '${bin}/'"$2"\n`
+    );
+    path = `${shims}:${bin}`;
+  }
   const origin = `http://127.0.0.1:${await closedPort()}`;
   const { code, stdout, stderr } = await runBounded({
     argv: ["bash", leg],
-    bound: "short",
+    bound,
     cwd: scratch("cwd"),
     env: {
-      PATH: bin,
+      PATH: path,
       HOME: scratch("home"),
       ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
       OUTSIDE_ALLOW_HTTP: "1",
@@ -196,7 +239,9 @@ exit 0
     },
     from: import.meta.url,
   });
-  return { code, stdout, stderr };
+  if (scenario.shimFirst !== true) return { code, stdout, stderr };
+  const file = Bun.file(asked);
+  return { code, stdout, stderr, asked: (await file.exists()) ? await file.text() : "" };
 }
 
 describe.skipIf(skipWithout("bash", "bun"))(
@@ -206,18 +251,17 @@ describe.skipIf(skipWithout("bash", "bun"))(
       "P6, P7 and P10 pass only on the edge's own refusals, and T5's agent part only when every later trade is refused and the socket open at the refusal closes 4401 or 4403",
       async () => {
         const [pass, crossing, early, dropped, unread] = await Promise.all([
-          publicStandInRun({ trades: [true, false, false], holdCloseMs: 15_000, holdCode: 4401 }),
+          publicStandInRun({ trades: [true, false, false], holdCode: 4401 }),
           publicStandInRun({
             trades: [true, false, true],
-            holdCloseMs: 15_000,
             holdCode: 4401,
             foreignSend: { status: 200, code: null, detail: null },
             approve: { status: 403, code: "FORBIDDEN", detail: "refused" },
             livePublish: { status: 200, code: null, detail: null },
           }),
           publicStandInRun({ trades: [false] }),
-          publicStandInRun({ trades: [true, false, false], holdCloseMs: 15_000, holdCode: 1006 }),
-          publicStandInRun({ trades: [true, false, null], holdCloseMs: 15_000, holdCode: 4401 }),
+          publicStandInRun({ trades: [true, false, false], holdCode: 1006 }),
+          publicStandInRun({ trades: [true, false, null], holdCode: 4401 }),
         ]);
         expect({ verdicts: verdictsOf(pass.stdout), stdout: pass.stdout }).toMatchObject({
           verdicts: {
@@ -270,8 +314,8 @@ describe.skipIf(skipWithout("bash", "bun"))(
         }).toMatchObject({ agent: { verdict: "UNKNOWN" } });
         expect(rowsOf(unread.stdout).get("T5-agent")?.got).toContain("got no readable answer");
       },
-      // The five runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
+      // The five runs at once, each a bounded child under the public leg's own bound.
+      rowLimit({ atOnce: ["publicRun", "publicRun", "publicRun", "publicRun", "publicRun"] })
     );
 
     test(
@@ -279,7 +323,6 @@ describe.skipIf(skipWithout("bash", "bun"))(
       async () => {
         const run = await publicStandInRun({
           trades: [true, false, false],
-          holdCloseMs: 15_000,
           holdCode: 4401,
           browserRows: [
             ["T5-cookie", "at=100 the cookie still answered", "FAIL"],
@@ -293,8 +336,68 @@ describe.skipIf(skipWithout("bash", "bun"))(
         });
         expect(rowsOf(run.stdout).get("T5-cookie")?.got).toContain("the cookie still answered");
       },
-      // The run, a bounded child under the short bound.
-      rowLimit("short")
+      // The run, a bounded child under the public leg's own bound.
+      rowLimit("publicRun")
+    );
+
+    // The leg links, at its start, the program a version manager names for each tool it drives,
+    // so its children, under a HOME of their own, run that program and never the shim first on
+    // PATH. The shim answers the probe's call with an unknown line, so a child that ran it reads
+    // P3 UNKNOWN naming the shim. The control: the leg asked the version manager for bun, so the
+    // shim and the program it names were both before it.
+    test(
+      "the leg's children run the program a version manager names, never a shim first on PATH",
+      async () => {
+        const run = await publicStandInRun({ trades: [false], shimFirst: true });
+        expect(run.asked?.split("\n"), "the leg never asked the version manager for bun").toContain(
+          "bun"
+        );
+        expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
+          verdicts: { P1: "PASS", P2: "PASS", P3: "PASS" },
+        });
+      },
+      // The run, a bounded child under the public leg's own bound.
+      rowLimit("publicRun")
+    );
+
+    // A program the leg found and could not link leaves its children to whatever PATH holds, so
+    // P1, which every row that starts a child under the leg's PATH follows, reads UNKNOWN naming
+    // the program and the reason.
+    test(
+      "a leg that cannot link a program it found reads P1 UNKNOWN naming it, and the rows after it wait on P1",
+      async () => {
+        const run = await publicStandInRun({ trades: [false], withoutLn: true });
+        const rows = rowsOf(run.stdout);
+        expect({ p1: rows.get("P1"), code: run.code, stdout: run.stdout }).toMatchObject({
+          p1: { verdict: "UNKNOWN" },
+          code: 2,
+        });
+        expect(rows.get("P1")?.got).toContain("bun (");
+        expect(rows.get("P1")?.got).toContain("was not linked into");
+        expect(rows.get("P3")?.got).toContain("P2 did not pass");
+      },
+      // The run, a bounded child under the public leg's own bound.
+      rowLimit("publicRun")
+    );
+
+    // With no close time the real stand-in's hold sleeps for the T5 window (20 minutes). The
+    // 30-second publicT5Diagnostic bound covers the measured public-leg start to this hold under
+    // the row's parallel shape, so the forced hold names the T5 window and live processes.
+    test(
+      "a T5 relay hold that never closes leaves a named timeout diagnostic",
+      async () => {
+        const failure = await publicStandInRun({ trades: [true] }, "publicT5Diagnostic").then(
+          () => "the public leg ended before its deliberate held relay bound",
+          (error: unknown) => (error instanceof Error ? error.message : String(error))
+        );
+        expect(failure, "the held relay did not reach the T5 window").toContain(
+          "outside-agent-public: T5: window open for up to 1200 s"
+        );
+        expect(failure, "the held relay named no live process").toMatch(
+          /still running when its bound passed:\n {2}pid=\d+ ppid=\d+ name=/
+        );
+      },
+      rowLimit("publicT5Diagnostic")
     );
   }
 );

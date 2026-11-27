@@ -169,23 +169,24 @@ func TestALaunchTryItsContextEndsIsChargedNothing(t *testing.T) {
 // ensure's calls), the launcher backstop (launcherBackstop: the start bound, the boot timeout,
 // ProvisionBound and two recheck intervals), the termination grace, then the calls. At the
 // daemon's production defaults — worker_boot_timeout_seconds 120 and worker_stop_timeout_seconds
-// 10 (config), and ProvisionBound's 280 minutes (workspace.FetchBudget + workspace.CloneTimeout +
-// workspace.CheckoutTimeout) — the start bound is the boot timeout, and the sum is 5 h 49 min 41 s
-// with relaunchCalls at 85: well past the 280-minute floor a provisioning pod's rightful wait sets,
-// and never under the boot timeout, ProvisionBound and the grace together. With keep_volume on,
-// the start bound is the kept-volume bound of 7 minutes (keptVolumeAttachWait), and the sum is
-// 5 minutes more, 5 h 54 min 41 s. The rig's runtime answers the same arithmetic over its own
-// options.
+// 10 (config), and ProvisionBound's 295 minutes (workspace.FetchBudget, whose terms hold the
+// fetch's 15-minute attempt on the repository cache's bucket, workspace.BucketFetchTimeout, +
+// workspace.CloneTimeout + workspace.CheckoutTimeout) — the start bound is the boot timeout, and
+// the sum is 6 h 4 min 41 s with relaunchCalls at 85: well past the 295-minute floor a
+// provisioning pod's rightful wait sets, and never under the boot timeout, ProvisionBound and the
+// grace together. With keep_volume on, the start bound is the kept-volume bound of 7 minutes
+// (keptVolumeAttachWait), and the sum is 5 minutes more, 6 h 9 min 41 s. The rig's runtime answers
+// the same arithmetic over its own options.
 func TestLaunchBoundSumsTheTrysWaitsAndCalls(t *testing.T) {
 	t.Parallel()
-	boot, provision, grace := 120*time.Second, 280*time.Minute, 10*time.Second
+	boot, provision, grace := 120*time.Second, 295*time.Minute, 10*time.Second
 	if relaunchCalls(len(claim.Roles)) != 85 || cacheEnsureCalls != 14 {
 		t.Fatalf("relaunchCalls = %d, want 85: %d per try (%d of them the repository cache's ensure) and %d per each of %d roles", relaunchCalls(len(claim.Roles)), relaunchPodCalls, cacheEnsureCalls, relaunchRoleCalls, len(claim.Roles))
 	}
 	cache := 5*boot + 14*apiTimeout
 	waits := 3*boot + cache + (boot + boot + provision + 2*recheckInterval) + grace
-	if got, want := launchBound(boot, boot, provision, grace, len(claim.Roles)), waits+85*apiTimeout; got != want || want != 5*time.Hour+49*time.Minute+41*time.Second {
-		t.Fatalf("launchBound = %s, want %s (5h49m41s)", got, want)
+	if got, want := launchBound(boot, boot, provision, grace, len(claim.Roles)), waits+85*apiTimeout; got != want || want != 6*time.Hour+4*time.Minute+41*time.Second {
+		t.Fatalf("launchBound = %s, want %s (6h4m41s)", got, want)
 	}
 	production := testOptions()
 	production.BootTimeout, production.TerminationGrace = boot, grace
@@ -193,16 +194,16 @@ func TestLaunchBoundSumsTheTrysWaitsAndCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := r.LaunchBound(); got != launchBound(boot, boot, provision, grace, len(claim.Roles)) || got < boot+r.ProvisionBound()+grace || got <= 280*time.Minute {
-		t.Fatalf("LaunchBound at the production defaults = %s, want %s, at least %s and past 280m", got, launchBound(boot, boot, provision, grace, len(claim.Roles)), boot+r.ProvisionBound()+grace)
+	if got := r.LaunchBound(); got != launchBound(boot, boot, provision, grace, len(claim.Roles)) || got < boot+r.ProvisionBound()+grace || got <= 295*time.Minute {
+		t.Fatalf("LaunchBound at the production defaults = %s, want %s, at least %s and past 295m", got, launchBound(boot, boot, provision, grace, len(claim.Roles)), boot+r.ProvisionBound()+grace)
 	}
 	kept := production
 	kept.Sandbox = SandboxConfig{Type: SandboxMicroVM, MicroVM: keptMicroVM()}
 	if r, err = configure(kept); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := r.LaunchBound(), launchBound(boot, keptVolumeAttachWait, provision, grace, len(claim.Roles)); got != want || want != 5*time.Hour+54*time.Minute+41*time.Second {
-		t.Fatalf("LaunchBound with keep_volume on = %s, want %s (5h54m41s)", got, want)
+	if got, want := r.LaunchBound(), launchBound(boot, keptVolumeAttachWait, provision, grace, len(claim.Roles)); got != want || want != 6*time.Hour+9*time.Minute+41*time.Second {
+		t.Fatalf("LaunchBound with keep_volume on = %s, want %s (6h9m41s)", got, want)
 	}
 	g := newRig(t, nil)
 	if got, want := g.r.LaunchBound(), launchBound(g.opts.BootTimeout, g.opts.BootTimeout, g.r.ProvisionBound(), g.opts.TerminationGrace, len(claim.Roles)); got != want {

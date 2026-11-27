@@ -208,16 +208,17 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 	}
 }
 
-// A finding outside the tree takes one of two paths (skill://legion-worker/references/findings.md):
-// a clear defect goes to the controller, and a finding that needs a decision is an ask. The headless
-// fragment composed into the same planner prompt says the same, so the core may not say "always an ask".
+// A finding outside the tree takes the paths of skill://legion-worker/references/findings.md: the
+// tree fixes a clear defect itself;
+// a finding that needs a decision is an ask. The headless fragment composed into the same planner
+// prompt says the same, so the core may not say "always an ask".
 func TestPlannerKeepsFindingsAndHumanToDoAsksOutsideDesignQuestions(t *testing.T) {
 	planner := rolePart(t, "core/planner.md")
 	for _, rule := range []string{
 		"Read the repository's `STRATEGY.md` when it has one",
 		"A finding outside the tree is never an issue you file.",
-		"A clear defect in code this tree touches or depends on is fixed in this tree's own pull request.",
-		"Any other clear defect goes to whoever coordinates the project's work, with its evidence, and a finding that needs a decision is an ask.",
+		"A clear defect is this tree's to fix, in its own pull request or a separate one of the tree, in whichever repository it is.",
+		"A defect that needs a person's decision, a deploy window or work much larger than your own, and any other finding that needs a decision, is an ask.",
 		"A to-do only a person can do is always an ask.",
 	} {
 		if !strings.Contains(planner, rule) {
@@ -226,6 +227,9 @@ func TestPlannerKeepsFindingsAndHumanToDoAsksOutsideDesignQuestions(t *testing.T
 	}
 	if strings.Contains(planner, "A finding outside the tree, and a to-do only a person can do, is always an ask.") {
 		t.Error("core/planner.md still makes every finding outside the tree an ask, which contradicts the headless fragment's clear-defect path")
+	}
+	if strings.Contains(planner, "Any other clear defect goes to whoever coordinates the project's work") {
+		t.Error("core/planner.md still sends a clear defect to the project's coordinator to pass on, which #4065 removes")
 	}
 }
 
@@ -364,8 +368,8 @@ func TestTheMergerTakesAStackApartOnceNothingBelowItsPullRequestIsOpen(t *testin
 // Past the review a conflict with the base is the merger's (cybermonklabs/legion#4979): the
 // merger merges the base forward itself, keeps both sides' intent, adapts in that merge what the
 // base's newer code breaks, has the reviewer read the merge's resolution and approve the new head
-// before it merges it, may ask the other workers, and sends the issue back only for a change to the
-// change's own logic. Its part says so, and no longer tells it to hand the conflict to the
+// before it merges it, and may ask the other workers.
+// Its part says so, and no longer tells it to hand the conflict to the
 // implementer, to send a failed queue check back as a matter of course, or that it pushes nothing.
 func TestTheMergerResolvesAConflictItself(t *testing.T) {
 	merger := rolePart(t, "merger.md")
@@ -382,8 +386,6 @@ func TestTheMergerResolvesAConflictItself(t *testing.T) {
 		"so ask each of them, on their role topics, to record their results at the new head",
 		"### A check that failed",
 		"Read its log, and the same check on the base branch, and decide its cause.",
-		"re-run it, or wait for the base's fix",
-		"Send the issue back with `request_backward_move` only when the fix is a change to the change's own logic that no merge of the base resolves",
 	} {
 		if !strings.Contains(merger, want) {
 			t.Errorf("roles/merger.md does not say %q", want)

@@ -73,6 +73,8 @@ export const realStackReasons: Record<string, string> = {
   "architecture-sources.e2e.ts": "fake GitHub import, saves and a reload",
   "architecture.e2e.ts":
     "a status write must move the server-computed bar; the server's import refusal is the assertion",
+  "artifact-dry-run.e2e.ts":
+    "runs the real `dispatch artifact` with `--dry-run` and without against the server over every text an upload refuses for the text alone, and compares the two answers with what the server stored",
   "artifacts.e2e.ts": "uploads, version compare, document sockets and a 503 refetch",
   "ask-blocks.e2e.ts":
     "decision answers the server records, and pastes in the live document editor",
@@ -131,6 +133,8 @@ export const realStackReasons: Record<string, string> = {
   "doc-reload-line.e2e.ts": "the read-only admission is decided at socket open",
   "doc.e2e.ts": "every row lives in the live document room, its connections and versions",
   "document-and-comment-read-alike.e2e.ts": "each row asserts inside the live spec editor",
+  "document-table.e2e.ts":
+    "the table is drawn in the live spec editor, and its width is read off the page; a full-lane row, since the pull-request lane's budget is full",
   "document-way-back.e2e.ts":
     "a correction and two removals written and then re-read on the open page, the issue's list and its Activity; the refused removal is the server's judgement that the document holds writing, which only a settled version makes true",
   "document.e2e.ts": "collaboration, uploads, marks, and the live connection dot",

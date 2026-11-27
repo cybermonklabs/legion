@@ -368,6 +368,7 @@ var DispatchEventTypes = []string{
 	"comment.reopened",
 	"comment.resolved",
 	"decision.kept",
+	"deploy.recorded",
 	"handoff.recorded",
 	"issue.claimed",
 	"issue.closed",
@@ -405,6 +406,20 @@ var DispatchEventTypes = []string{
 // packages/contracts so the server's 413 and the `dispatch handoff-write` command's pre-send
 // refusal cannot drift apart.
 const DispatchHandoffBodyMax = 262144
+
+// MarkdownDocumentMaxBytes is the most bytes of markdown one document may hold, and
+// MarkdownDocumentTooLarge what the 413 CAP_EXCEEDED of an upload past it says. Generated from
+// MARKDOWN_DOCUMENT_MAX_BYTES and MARKDOWN_DOCUMENT_TOO_LARGE in packages/contracts so the
+// server's refusal and the one `dispatch artifact` makes before it sends cannot drift apart.
+const MarkdownDocumentMaxBytes = 1048576
+const MarkdownDocumentTooLarge = "a markdown document is at most 1 MiB; a larger file is stored as a binary artifact under another content type"
+
+// TextRefusalHeader is the response header the markdown round trips put on their refusal of a
+// text for the text alone, whatever the refusal's status: a mark, with one value, that says the
+// answer is the refusal of the text (writeTextRefusal), so a client reads only that it is there.
+// Generated from TEXT_REFUSAL_HEADER in packages/contracts so the routes and `dispatch artifact`,
+// which reads an answer carrying it as the call's own refusal, name it once.
+const TextRefusalHeader = "Dispatch-Text-Refusal"
 
 // PlanRatingLeast and PlanRatingMost are the scale of a retro's rating of the plan its issue ran,
 // from the plan cost the work to the plan fit the work, and PlanReasonMax the most characters,
@@ -592,6 +607,13 @@ const DispatchSignInRequired = "SIGN_IN_REQUIRED"
 // DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
 // reading of it cannot drift apart.
 const DispatchReadOnlyToken = "READ_ONLY_TOKEN"
+
+// DispatchApproveOnlyToken is the code of the 403 for a request by an approve-only token - the
+// token the secrets broker mints for a person's approve grant and spends through Cipher's proxy -
+// to a route the approve list does not name, or for its answer of an ask that is not an approval
+// request: nothing ran and nothing was recorded. Generated from DISPATCH_APPROVE_ONLY_TOKEN in
+// packages/contracts so the server's refusal and every client's reading of it cannot drift apart.
+const DispatchApproveOnlyToken = "APPROVE_ONLY_TOKEN"
 
 // DispatchAsOfTokenNotServed is the code of the 403 for a request by a read-only token that
 // carries a cut (as_of) to a read route other than GET /api/v1/whoami: no build serves a read at

@@ -5,14 +5,12 @@
 -- The completion route takes a completion of an earlier entry when the commit it names is the
 -- head the record holds, because a verdict is a fact about a head: the phase was entered again at
 -- that same head, so the work the new entry's task asks for is the work that completion did
--- (internal/intake/facts.go, BehindEntryClause). A completion of an entry of another of the
--- role's steps or its retro, or of a run of this step that the task left for one of them, is of
--- other work whatever its head, and the route refuses it too (record.OtherStepsEntry). The head
--- alone takes one case wrongly. Where the architect or the reviewer moved the work back at a head
--- that did not move, the new entry asks for the work to be done again, and the earlier entry's
--- verdict is exactly what it must not stand on. The head is the same, so no reading of the heads
--- can tell that case from the one the route exists to take; what tells them apart is the move that
--- raised the entry, and nothing the record held said what that move was.
+-- (internal/api/handoff.go, behindEntryClause). The head alone takes one case wrongly. Where
+-- the architect or the reviewer moved the work back at a head that did not move, the new entry
+-- asks for the work to be done again, and the earlier entry's verdict is exactly what it must not
+-- stand on. The head is the same, so no reading of the heads can tell that case from the one the
+-- route exists to take; what tells them apart is the move that raised the entry, and nothing the
+-- record held said what that move was.
 --
 -- A count of moves back cannot say it. phases.pass rises on every move back
 -- (internal/workflow/engine.go reads phase.MovesBack for recordPass) and a phase is never

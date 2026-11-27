@@ -583,10 +583,11 @@ test("a refused turn reminds once, after the delay and not before", async () => 
 
 // A run of refusals that can clear — a provider overloaded, a team limit — fails no claim, a
 // reminder's own turn included: the daemon judges that turn from its turn-outcome report, counts
-// it in the claim's run of provider-error turns, and tells the project's controller once at six
-// in a row (dispatch://INFRA-4508). So each refused turn arms the next reminder at the same pace,
-// for as long as the run lasts, and the worker is reminded again the moment its provider takes a
-// turn. Only the daemon failing the claim stops them (the case below).
+// it in the claim's run of provider-error turns, and at six in a row sends the `provider-errors`
+// notice once (dispatch://INFRA-4508; `providerErrorRunReached` in the daemon's `workflow.go` says
+// to whom). So each refused turn arms the next reminder at the same pace, for as long as the run
+// lasts, and the worker is reminded again the moment its provider takes a turn. Only the daemon
+// failing the claim stops them (the case below).
 test("a run of refused turns that can clear keeps arming its reminder", async () => {
   const { reminder, timers, sent } = rig({});
 

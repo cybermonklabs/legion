@@ -619,6 +619,7 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 		{name: "admitted is the architect's", p: phase.Admitted},
 		{name: "accepting is the architect's", p: phase.Accepting},
 		{name: "awaiting a person", p: phase.AwaitingPerson},
+		{name: "awaiting its children, which no role works", p: phase.AwaitingChildren},
 		{name: "done", p: phase.Done},
 		{name: "step is its running step's role", p: phase.Step, step: "checker", want: "checker"},
 	} {

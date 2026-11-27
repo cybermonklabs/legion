@@ -194,7 +194,9 @@ func (b *Bundles) Bundle(ctx context.Context, role claim.Role, repo ghrepo.Repos
 // launch asks for it, and the API's controller route serves `legion controller start` from it
 // (internal/api's controllerGitHubCredential). It is the review App's read-only lease for every
 // owner that App is installed on, each reaching every repository its installation holds, since a
-// controller writes to none and reads them all: it is the one bundle whose directories hold a
+// controller's own gh writes to none and reads them all (the controller's two GitHub writes, a CI
+// re-run and its reply to a person's GitHub mention, take the implement App token the secrets
+// broker lends it, never this bundle): it is the one bundle whose directories hold a
 // lease narrower than the App's own installation (Tokens.ReadToken, where a role's bundle holds
 // Tokens.Token in every directory), and it holds exactly the directories a role's bundle holds
 // for the same App (bundleDirs). Its default is the owner it is asked for — the

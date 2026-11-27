@@ -1,0 +1,161 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "addKeyPaths": [
+        "gatedSteps.*.basis",
+        "gatedSteps.*.basis.approvedAt",
+        "gatedSteps.*.basis.approver",
+        "gatedSteps.*.basis.artifactId",
+        "gatedSteps.*.basis.askId",
+        "gatedSteps.*.basis.issue",
+        "gatedSteps.*.basis.version",
+        "treeRuns"
+      ],
+      "addValues": {
+        "architect.pendingTask.phase": [
+          "awaiting_children"
+        ],
+        "gatedSteps.*.status": [
+          "open_on_basis",
+          "pending_on_basis"
+        ],
+        "heldFrom": [
+          "awaiting_children"
+        ],
+        "phase": [
+          "awaiting_children"
+        ],
+        "workers.*.claim.pendingTask.phase": [
+          "awaiting_children"
+        ]
+      }
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "issues.*.gatedSteps.*.basis",
+        "issues.*.gatedSteps.*.basis.approvedAt",
+        "issues.*.gatedSteps.*.basis.approver",
+        "issues.*.gatedSteps.*.basis.artifactId",
+        "issues.*.gatedSteps.*.basis.askId",
+        "issues.*.gatedSteps.*.basis.issue",
+        "issues.*.gatedSteps.*.basis.version",
+        "issues.*.treeRuns"
+      ],
+      "addValues": {
+        "admission.held.*.reason": [
+          "awaiting_children"
+        ],
+        "issues.*.architect.pendingTask.phase": [
+          "awaiting_children"
+        ],
+        "issues.*.gatedSteps.*.status": [
+          "open_on_basis",
+          "pending_on_basis"
+        ],
+        "issues.*.heldFrom": [
+          "awaiting_children"
+        ],
+        "issues.*.phase": [
+          "awaiting_children"
+        ],
+        "issues.*.workers.*.claim.pendingTask.phase": [
+          "awaiting_children"
+        ]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "route": "POST /legion/v1/gates/register",
+      "addFieldPaths": [
+        "basisArtifactId",
+        "basisVersion",
+        "reason"
+      ]
+    }
+  ],
+  "answerRows": [],
+  "enumeratedRows": [
+    {
+      "answer": "state",
+      "keyPath": "issues.*.phase",
+      "values": [
+        "awaiting_children"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.gatedSteps.*.status",
+      "values": [
+        "open_on_basis",
+        "pending_on_basis"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.heldFrom",
+      "values": [
+        "awaiting_children"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.architect.pendingTask.phase",
+      "values": [
+        "awaiting_children"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.workers.*.claim.pendingTask.phase",
+      "values": [
+        "awaiting_children"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "admission.held.*.reason",
+      "values": [
+        "awaiting_children"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "phase",
+      "values": [
+        "awaiting_children"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "gatedSteps.*.status",
+      "values": [
+        "open_on_basis",
+        "pending_on_basis"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "heldFrom",
+      "values": [
+        "awaiting_children"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "architect.pendingTask.phase",
+      "values": [
+        "awaiting_children"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "workers.*.claim.pendingTask.phase",
+      "values": [
+        "awaiting_children"
+      ]
+    }
+  ]
+}

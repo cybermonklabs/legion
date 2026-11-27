@@ -173,9 +173,10 @@ func goneShim(t *testing.T) *os.File {
 }
 
 // The bridge's own lines pass the URL rule. A turn's outcome that cannot be reported is logged
-// with the error of the post, which quotes the daemon's URL as the pane names it
-// (LEGION_DAEMON_URL), user name and query included: the line keeps the URL's host and path, and
-// neither the user name nor the query reaches the pane.
+// through redact.RequestError, with the daemon's URL as the pane names it (LEGION_DAEMON_URL),
+// user name and query included: the line names the URL by its scheme, the mark of a URL with
+// credentials and its path, and the dial's host and port as the mark too, since the URL holds a
+// user name; neither the user name nor the query reaches the pane.
 func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	t.Parallel()
 	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
@@ -200,7 +201,7 @@ func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	})
 	p.hangUp()
 	logged := p.logged()
-	if want := `Post "http://` + daemon + `/daemon"`; !strings.Contains(logged, want) {
+	if want := "http://[a URL with credentials]/daemon: dial tcp [a URL with credentials]:[a URL with credentials]: "; !strings.Contains(logged, want) {
 		t.Errorf("the bridge logged:\n%s\nwant the report's failure naming %s", logged, want)
 	}
 	for _, credential := range []string{"legion-reader", "planted-query-token-3"} {
@@ -240,7 +241,7 @@ func startClaudeBridge(t *testing.T, script string, stdout *os.File, env ...stri
 	}
 	defer stderr.Close()
 	ready := filepath.Join(dir, "ready")
-	p.cmd = exec.Command(os.Args[0], "claude-bridge", "--", claude, "--resume", "s")
+	p.cmd = exec.Command(legionCopy(t), "claude-bridge", "--", claude, "--resume", "s")
 	p.cmd.Env = append(os.Environ(), testMainEnv+"=1", "TMPDIR="+p.tmp, "CLAUDE_CONFIG_DIR="+t.TempDir(),
 		"LEGION_ROLE=implementer", "LEGION_ISSUE=ACME-7", "CLAUDE_STANDIN_READY="+ready)
 	p.cmd.Env = append(p.cmd.Env, env...)

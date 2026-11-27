@@ -2,17 +2,21 @@ import Lean.Data.Json
 import Airlock
 
 /-! Line protocol: one JSON case per stdin line, one JSON answer per stdout line.
-case   = {"rules":{"secrets":[...]}, "grant":{...}, "value":"...", "request":{...}}
+case   = {"rules":{"kinds":[...], "names":[...]}, "grant":{...}, "value":"...", "request":{...}}
 answer = {"valid":bool, "allow":bool, "reason":"...", "rewrite":request|null}
          or {"error":"..."} when the line does not parse.
 
-The Go side marshals the same shapes with no `omitempty`, so an absent list reaches this
-program as `null`, which reads as `none`, and an entry with no kind reaches it as `""`. -/
+The Go side marshals its own `Rules`, `Grant` and `Request`, so an absent list reaches this
+program as `null`, which reads as `none`; a binding with no inline rule and an allow row with
+no host reach it with no `inline` or `host` key (Go's `omitempty`), which read as `none` too;
+and a kind's keys that are no part of the decision (`variables`, `ways`, `placeholder_prefix`,
+`max_grant`) are not read. -/
 
 open Lean Airlock
 
 deriving instance FromJson, ToJson for Allow
-deriving instance FromJson, ToJson for SecretRule
+deriving instance FromJson, ToJson for Kind
+deriving instance FromJson, ToJson for Binding
 deriving instance FromJson, ToJson for Rules
 deriving instance FromJson, ToJson for Grant
 deriving instance FromJson, ToJson for Request

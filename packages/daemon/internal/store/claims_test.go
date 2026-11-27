@@ -348,7 +348,7 @@ func TestARePutDeliveryKeepsThePhaseItWasQueuedFor(t *testing.T) {
 // The ladder a provider error puts a task on outlives the daemon that armed it: the count says
 // which step the next send waits, and the sentence is what that send puts in front of the task
 // (dispatch://INFRA-956 R2). The claim's own run of such turns is beside them, because that is
-// what the controller's notice is counted from, and neither a restart nor a re-put of the
+// what the provider-errors notice is counted from, and neither a restart nor a re-put of the
 // delivery under a new id may lose either.
 func TestAProviderErrorsLadderAndItsRunRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -1006,8 +1006,8 @@ func TestASuspendedClaimsSourceRoundTripsAndTheSchemaRefusesAnUnknownOne(t *test
 	t.Parallel()
 	s := migratedStore(t)
 	ctx := context.Background()
-	for _, by := range []supervise.SuspendSource{supervise.SuspendedByOperator, supervise.SuspendedByDaemon, supervise.SuspendedByExit,
-		supervise.SuspendedByReleased, ""} {
+	for _, by := range []supervise.SuspendSource{supervise.SuspendedByOperator, supervise.SuspendedByController,
+		supervise.SuspendedByDaemon, supervise.SuspendedByExit, supervise.SuspendedByReleased, ""} {
 		c := supervise.Claim{Token: "legion-LEGION-209-tester", Project: "legion", Tree: "LEGION-208", Issue: "LEGION-209",
 			Role: claim.RoleTester, Generation: 2, State: supervise.StateSuspended, Session: "ses_tester", SuspendedBy: by}
 		if err := s.PutClaim(ctx, c); err != nil {
@@ -1789,4 +1789,63 @@ func TestAStepOfAnUnknownClaimIsNotRecorded(t *testing.T) {
 	if known {
 		t.Fatal("a step of a claim the store does not hold was recorded")
 	}
+}
+
+// A claim's message mark is written apart from the claim (MarkClaimMessage), so a machine's write
+// of the claim it holds in memory undoes no mark. Of the marks the role has taken no turn since,
+// the earliest is the one kept and the one every mark answers; a turn at or after the mark ends
+// it, and the next mark is a new one. A retired claim takes no mark, and a claim loses the one it
+// holds as it retires.
+func TestAMessageMarkOutlivesMachineWritesButStandsOnlyUntilTheNextTurn(t *testing.T) {
+	ctx := t.Context()
+	st := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	if err := st.PutClaim(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	mark := func(at, stands time.Time) {
+		t.Helper()
+		got, err := MarkClaimMessage(ctx, st.Pool(), c.Token, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got.Equal(stands) {
+			t.Fatalf("a mark at %s answers %s, want the standing mark %s", at, got, stands)
+		}
+	}
+	read := func(want time.Time, standing bool) {
+		t.Helper()
+		claims, err := st.Claims(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := claims[0]; !got.MessageMarkAt.Equal(want) || got.MessageMarked() != standing {
+			t.Fatalf("mark = %s, stands %t; want %s, %t", got.MessageMarkAt, got.MessageMarked(), want, standing)
+		}
+	}
+	at := time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC)
+	mark(at.Add(time.Minute), at.Add(time.Minute))
+	mark(at, at)
+	mark(at.Add(time.Hour), at)
+	if err := st.PutClaim(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	read(at, true)
+	c.LastTurnStart = at
+	if err := st.PutClaim(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	read(at, false)
+	next := at.Add(time.Minute)
+	mark(next, next)
+	mark(at.Add(-time.Minute), next)
+	read(next, true)
+
+	c.State = supervise.StateRetired
+	if err := st.PutClaim(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	read(time.Time{}, false)
+	mark(next.Add(time.Minute), time.Time{})
+	read(time.Time{}, false)
 }

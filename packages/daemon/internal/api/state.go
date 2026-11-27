@@ -535,8 +535,9 @@ type AgentSecretsLoginView struct {
 }
 
 // DispatchCredentialView is the daemon's Dispatch credential under dispatch_token_broker, as the
-// state shows it: Session, the session its own Dispatch calls run under (`legion-daemon:<project>`,
-// dispatch.DaemonSession), which the secrets broker grants a token of; TransitionLaunches, the
+// state shows it: Session, the session of the daemon's own project (`legion-daemon:<project>`,
+// dispatch.DaemonSession), which the secrets broker grants a token of and every write of the
+// daemon's names, on an issue of any project (dispatch.WritesAs); TransitionLaunches, the
 // launches since the daemon's boot that carried the transition token of
 // dispatch_token_transition_file, and LastTransitionLaunchAt, when the latest of them was sent,
 // null before the first; and LiveLaunchesWithDispatchToken, the live launches whose start carried a
@@ -658,6 +659,17 @@ type ContractView struct {
 // capped on issues, never on workers, so there is no worker queue here.
 type Admission struct {
 	Cap int `json:"cap"`
+	// P0Holders is how many of the issues holding a slot admission treats as P0 (record.HoldersOf,
+	// record.Issue.StartsNow): Dispatch resolves them to P0 (own or inherited), or with an older
+	// Dispatch release that sends no `resolved_priority` their own priority is P0. They start and
+	// hold their slot outside the cap, so the cap counts the other holders of `active` alone (R10
+	// of dispatch://INFRA-3199). Every body at p0BoundContract carries it, 0 included; a body
+	// served a caller below that contract leaves it out (shaping.go's withoutP0Start).
+	P0Holders *int `json:"p0Holders,omitempty"`
+	// P0Bound is the P0 bound in force, legion.yaml's and the live value that stands, with who set
+	// it and when (P0BoundView, P0BoundStateTx). Every body the daemon's state route serves at
+	// p0BoundContract carries it; a body served a caller below that contract leaves it out.
+	P0Bound *P0BoundView `json:"p0Bound,omitempty"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
 	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
 	// issue holds one of the cap's slots while it stands in a phase that keeps one, from the moment
@@ -675,8 +687,9 @@ type Admission struct {
 	// admit.releaseSlotsForWaits) and stands in `waiting` and in `blocked`, which is how a reader
 	// tells it from an issue a person parked, which stands in none of the three.
 	Active []string `json:"active"`
-	// Waiting is the admission line, in the line's own order: by priority first (each issue's own
-	// Dispatch priority, else its tree root's, else after P3), and within one priority the issues
+	// Waiting is the admission line, in the line's own order: by priority first (the priority
+	// Dispatch resolves for each issue, or with an older Dispatch release its own priority else
+	// its tree root's for line order alone, else after P3), and within one priority the issues
 	// whose work came back, oldest first, then the issues whose first phase can start, by their
 	// tree root's Dispatch rank. It carries children as well as roots, for the same reason `active` does. An owed
 	// start in it holds no row and waits for one, as does an issue released for what it waits
@@ -798,6 +811,17 @@ type Issue struct {
 	// find the members of a tree that lingers. Absent on an issue the workflow does not record
 	// (an operator's claim, Unrecorded), which stands in no tree.
 	Tree string `json:"tree,omitempty"`
+	// TreeRuns is whether the tree this root roots is running under the workflow, as the daemon's
+	// own rule answers it (record.TreeRuns): its lifecycle stands open under the workflow, the
+	// root does not linger, and the root does not wait in the line for that tree to be opened
+	// (record.QueuedRoot). It is on every root the record holds of this daemon's project and on
+	// no other issue, since no other field of the record decides it in every case: a root a
+	// re-admission left at todo waiting for a slot runs nothing whatever its architect's claim
+	// reads, and a root a person answered runs while it waits in the line for its resume
+	// (dispatch://INFRA-3320, R4). A pointer, so a tree that does not run writes `false`. It is
+	// absent from the body the route serves a caller below gateBasisContract (api's stateFor,
+	// withoutGateBasis).
+	TreeRuns *bool `json:"treeRuns,omitempty"`
 	// Repo is the repository (owner/name) the issue targets and DefaultBranch that repository's
 	// default branch, both taken when the daemon first recorded the issue and kept after, except
 	// that the daemon's one-time rename pass writes a `repository_renames` pair's `to` over Repo.
@@ -807,10 +831,10 @@ type Issue struct {
 	// HoldReason is why a held issue is held, when its hold has one: `escalated` once its architect
 	// sent it to the controller (record.HoldEscalated), `task-stopped` once its owner stopped the task
 	// it ran (record.HoldTaskStopped), and `children` while a parent whose task's last step is not
-	// the owner's acceptance waits, before its retro, for the issues beneath it
-	// (record.HoldForChildren). A hold of either of the last two is no architect's to retry or
-	// escalate: a later version of the plan
-	// starts a stopped task again, and the last issue beneath a parent to leave starts its retro. A
+	// the owner's acceptance waits, before its retro, for the issues beneath it, the roots that rest
+	// on its approval or its open Dispatch children (record.HoldForChildren). A hold of either of
+	// the last two is no architect's to retry or escalate: a later version of the plan
+	// starts a stopped task again, and a parent's retro starts once none of those holds it. A
 	// caller below OwnerPlanContract is served no reason for those two (withoutUnadmittedHoldReason).
 	// Absent otherwise, and absent while the issue's tree lingers or is closed: the record keeps the
 	// reason, and the view shows it again once the tree is re-admitted.
@@ -838,12 +862,22 @@ type Issue struct {
 	Ancestry  []string   `json:"ancestry,omitempty"`
 	Architect *ClaimView `json:"architect,omitempty"`
 	// Priority is the issue's own Dispatch priority (record.Issue.Priority): its number, 0 for P0
-	// to 3 for P3, or null for an issue with none. It is the issue's own and never its tree
-	// root's; the priority that placed a member of the line is its waitingLine's. It is set on
-	// every issue the workflow records, and absent on an issue it does not record (an operator's
-	// claim, Unrecorded) and from every issue of the body served a caller below priorityContract
-	// (shaping.go's withoutPriority).
+	// to 3 for P3, or null for an issue with none. It is the issue's own and never an inherited
+	// priority: Dispatch's resolved priority is in ResolvedPriority, and the priority that placed
+	// a member of the line is in WaitingLine.Priority. It is set on every issue the workflow
+	// records, and absent on an issue it does not record (an operator's claim, Unrecorded) and
+	// from every issue of the body served a caller below priorityContract (shaping.go's
+	// withoutPriority).
 	Priority *PriorityView `json:"priority,omitempty"`
+	// ResolvedPriority is the priority Dispatch resolves the issue to (record.Issue.Resolved, J1 of
+	// dispatch://INFRA-5793), the one admission reads: its number, 0 for P0 to 3 for P3, or null
+	// for none. It is absent where Dispatch sent no `resolved_priority`, as a release before
+	// INFRA-5793 sends none, and then admission reads the issue's own priority alone. PriorityFrom
+	// is the key of the issue it comes from (`priority_from`), absent where it is the issue's own or
+	// none. A body served a caller below the P0 start's entry (p0BoundContract) carries neither
+	// (withoutResolvedPriority).
+	ResolvedPriority *PriorityView `json:"resolvedPriority,omitempty"`
+	PriorityFrom     string        `json:"priorityFrom,omitempty"`
 	// Workers is keyed by the role that holds the claim; the vocabulary of a claim belongs to
 	// `internal/claim`, which the runtime, the worker stream, and the supervisor all speak
 	// without importing this package. A role's entry is the claim of the worker on its step where
@@ -864,6 +898,10 @@ type Issue struct {
 	// is not its tree's root, for a deployment that gates no step and for an issue the workflow
 	// does not record, so the wire never carries an empty list. DesignGate is unchanged beside it:
 	// it is the spec step's row, which every reader that asks one question of one gate still takes.
+	// A caller below gateBasisContract is served no GatedSteps on an issue any step of which reads
+	// `open_on_basis` or `pending_on_basis`, since no word such a caller knows is true of that step
+	// (api's shapeIssue: the band withoutGateBasis and the value strip
+	// withoutUnadmittedStepStatuses).
 	GatedSteps []GatedStepView `json:"gatedSteps,omitempty"`
 	Slot       *SlotView       `json:"slot,omitempty"`
 	// WaitingLine is where this issue stands in `admission.waiting` (contract 58). It is present
@@ -920,10 +958,10 @@ type Issue struct {
 	// A root carries them as a child does: phase.RoleFor answers the architect for admitted, the
 	// phase a root's own architect works, so the two numbers there are the architect's as they
 	// are the implementer's in implementing. Both are absent together for a phase no role works —
-	// awaiting_person, done and held — where no row is read and a difference written for one
-	// would never close. GivenEntry alone is absent where it is 0, which is a role the daemon
-	// holds no claim row of — the start is what creates the claim — and one whose claim has been
-	// queued no task carrying an entry; PhaseEntry alone is absent where it is 0, a role no
+	// awaiting_person, awaiting_children, done and held — where no row is read and a difference
+	// written for one would never close. GivenEntry alone is absent where it is 0, which is a role
+	// the daemon holds no claim row of — the start is what creates the claim — and one whose claim
+	// has been queued no task carrying an entry; PhaseEntry alone is absent where it is 0, a role no
 	// transition has raised an entry for. They are keys of the issue and not of PhaseView because
 	// a phases row exists for a role whose claim row does not, where PhaseView.Claim is a
 	// required value no reader parses empty.
@@ -1198,9 +1236,9 @@ type ClaimView struct {
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row
 	// (supervise.Claim.ProviderErrorRun), and is absent for a claim whose last turn ended with
 	// none. It bounds nothing — a limit here would fail every claim of a project at once in a
-	// provider outage (dispatch://INFRA-956's R2) — and the project's controller is told of it
-	// once, at a run of six, so without this key the number behind that telling stands on no
-	// surface its reader can reach.
+	// provider outage (dispatch://INFRA-956's R2). At a run of six the daemon sends the
+	// provider-errors notice once (internal/daemon's providerErrorRunReached says to whom), so this
+	// key is the only surface that shows the count before or after that notice.
 	ProviderErrorRun int `json:"providerErrorRun,omitempty"`
 	// PendingTask is the task the claim holds, reduced to what a reader of this surface decides
 	// on and never carrying its text (PendingTaskView); absent for a claim holding none.
@@ -1569,7 +1607,9 @@ func (p PullRequestView) MarshalJSON() ([]byte, error) {
 
 // GateView is the design gate: the spec document, the version Dispatch currently holds, and the
 // version a human approved. ApprovedVersion is nil until someone approves one; the gate is open
-// exactly when it equals CurrentVersion.
+// exactly when it equals CurrentVersion. A spec step that stands open on an ancestor's approval
+// (dispatch://INFRA-3320, R1) holds the version its root registered there, which no person
+// approved: the step's entry in GatedSteps reads `open_on_basis` and names that approval.
 type GateView struct {
 	ArtifactID      string `json:"artifactId"`
 	CurrentVersion  int    `json:"currentVersion"`
@@ -1577,7 +1617,7 @@ type GateView struct {
 }
 
 // GatedStepStatus is where one step of a tree's design gate (record.TreeSteps) stands, as the
-// issue's gate records say it: the four answers a record can give.
+// issue's gate records say it: the six answers a record can give.
 type GatedStepStatus string
 
 const (
@@ -1589,19 +1629,32 @@ const (
 	// the approval or the changes request it records, if any, is of a version below the current
 	// one, which a newer version of the document left behind. It waits on a person.
 	GatedStepWaiting GatedStepStatus = "waiting"
-	// GatedStepApproved is a step a person approved at its current document version: the one
-	// status that lets the tree's work past the step (classify.DesignGateOpen).
+	// GatedStepApproved is a step a person approved at its current document version, which lets
+	// the tree's work past the step (classify.DesignGateOpen).
 	GatedStepApproved GatedStepStatus = "approved"
 	// GatedStepChangesRequested is a step whose reviewer asked for changes at its current document
 	// version, which the architect was told of; ChangesReason carries the reason the reviewer gave.
 	GatedStepChangesRequested GatedStepStatus = "changes_requested"
+	// GatedStepOpenOnBasis is a step that stands open on an ancestor's approval
+	// (record.DesignGate.OnBasis): its root's architect registered the current version of the
+	// root's document on a person's approval of the ancestor's document, which Basis names, and
+	// no person approved the root's own version. It lets the tree's work past the step as an
+	// approval does, and is no person's approval of the root.
+	GatedStepOpenOnBasis GatedStepStatus = "open_on_basis"
+	// GatedStepPendingOnBasis is a step that waits, closed, on an ancestor's open approval request
+	// (record.DesignGate.PendingOnBasis), which Basis names with its ask id: the person's approval
+	// of that version opens the step, and the step asks for no approval of the root's own.
+	GatedStepPendingOnBasis GatedStepStatus = "pending_on_basis"
 )
 
 // GatedStepView is one step of a tree's design gate (record.TreeSteps) as its root stands in it:
 // the step, the document its architect registered for the step, that document's current version,
 // the version a person approved, where the step stands and, for a step whose reviewer asked for
 // changes, the reason they gave. A step nobody has registered carries no document, no version and
-// no approval.
+// no approval. A step open on an ancestor's approval carries the root's version registered as its
+// ApprovedVersion, which the planner reads as the version its tree works from, and Basis beside it
+// says that no person approved that version; a step pending on an ancestor's request carries the
+// version a person approved of the root's own document, if any, and Basis names the request.
 type GatedStepView struct {
 	Step            record.DesignStep `json:"step"`
 	ArtifactID      string            `json:"artifactId,omitempty"`
@@ -1609,6 +1662,31 @@ type GatedStepView struct {
 	ApprovedVersion *int              `json:"approvedVersion"`
 	Status          GatedStepStatus   `json:"status"`
 	ChangesReason   string            `json:"changesReason,omitempty"`
+	Basis           *GatedStepBasis   `json:"basis,omitempty"`
+}
+
+// GatedStepBasis is the ancestor's approval a step stands open on, or the ancestor's open approval
+// request it waits on (record.GateBasis): the ancestor issue, its document and the version a
+// person approved or is asked to approve; for an approval, who gave it as Dispatch names an actor
+// and Dispatch's time of it, where Dispatch gave one; for a request, its ask id. It is present only
+// on a step whose status is GatedStepOpenOnBasis or GatedStepPendingOnBasis.
+type GatedStepBasis struct {
+	Issue      string     `json:"issue"`
+	ArtifactID string     `json:"artifactId"`
+	Version    int        `json:"version"`
+	Approver   string     `json:"approver,omitempty"`
+	ApprovedAt *time.Time `json:"approvedAt,omitempty"`
+	AskID      string     `json:"askId,omitempty"`
+}
+
+// gatedStepBasisOf is basis as a step's entry names it.
+func gatedStepBasisOf(basis record.GateBasis) *GatedStepBasis {
+	view := &GatedStepBasis{Issue: basis.Issue, ArtifactID: basis.ArtifactID, Version: basis.Version, Approver: basis.Approver,
+		ApprovedAt: instant(basis.Approval.At)}
+	if basis.Pending != nil {
+		view.AskID = basis.Pending.Ask
+	}
+	return view
 }
 
 // GatedStepViewsOf is steps, the design-gate steps one tree is gated on (record.TreeSteps), as
@@ -1623,6 +1701,11 @@ type GatedStepView struct {
 // work, so the caller passes record.TreeSteps' answer and the row is an entry. A step with no row
 // is the other direction, and is answered unregistered: it holds the tree's work, so a reader must
 // see it.
+//
+// A step on an ancestor's basis is read before the person's review, so a step a basis opened is
+// never answered `approved`, the word for a person's approval, and a step waiting on the
+// ancestor's request never `waiting`, which would send its architect to ask a person for an
+// approval of its own (dispatch://INFRA-3320, R2).
 func GatedStepViewsOf(steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) []GatedStepView {
 	views := make([]GatedStepView, 0, len(steps))
 	for _, step := range steps {
@@ -1639,6 +1722,10 @@ func GatedStepViewsOf(steps []record.DesignStep, gates map[record.DesignStep]rec
 			Status:          GatedStepWaiting,
 		}
 		switch {
+		case gate.PendingOnBasis():
+			view.Status, view.Basis = GatedStepPendingOnBasis, gatedStepBasisOf(*gate.Basis)
+		case gate.OnBasis() && classify.DesignGateOpen(gate):
+			view.Status, view.Basis = GatedStepOpenOnBasis, gatedStepBasisOf(*gate.Basis)
 		case classify.DesignGateOpen(gate):
 			view.Status = GatedStepApproved
 		case gate.ToldChangesVersion != nil && *gate.ToldChangesVersion == gate.LatestVersion:
@@ -1696,10 +1783,11 @@ type WaitingLineView struct {
 	RootRank  string     `json:"rootRank,omitempty"`
 	OwnRank   string     `json:"ownRank,omitempty"`
 	RootKey   string     `json:"rootKey,omitempty"`
-	// Priority is the priority that placed the member (record.LineEntry.Priority): the issue's
-	// own, else its tree root's, as a number from 0 for P0 to 3 for P3, or null for a member
-	// neither it nor its tree root has a priority for, whose band stands after P3. It is the first
-	// key of the whole line; Part, PartPlace and PartLength count within its band.
+	// Priority is the priority that placed the member (record.LineEntry.Priority): the priority
+	// Dispatch resolves for the issue (or, with an older Dispatch release that sends no
+	// `resolved_priority`, the issue's own else its tree root's for line order alone), as a number
+	// from 0 for P0 to 3 for P3, or null for a member with none, whose band stands after P3. It is
+	// the first key of the whole line; Part, PartPlace and PartLength count within its band.
 	Priority *PriorityView `json:"priority,omitempty"`
 	// Reason is the rendered sentence of this member's wait, the one answer a person reads: what
 	// put it in the line and when, where it stands in its own part, and what that place means
@@ -1978,9 +2066,9 @@ func StrandedMoves() []StrandedMove {
 //   - StrandedWorkflowStart, a failed phase worker: the retry of its held phase — its architect's
 //     retry_or_escalate, or the operator's retry (`legion claims retry`, which applies the same
 //     retry) — since a failed claim ignores resume and deliver.
-//   - StrandedWorkflowStart, a retired claim, whatever its role: a retired claim ignores resume
-//     and deliver, and the operator's retry (`legion claims retry`) reaches it as it reaches a
-//     failed one (supervise's operatorRetry), but the move named is a workflow start. A start of
+//   - StrandedWorkflowStart, a retired claim, whatever its role: its machine ignores resume and
+//     deliver, and the operator's retry (`legion claims retry`) reaches its agent as it reaches a
+//     failed one (supervise's askedRetry), but the move named is a workflow start. A start of
 //     its phase sends it the retry the daemon's own start executor makes of a retired claim, so
 //     the move is the act that queues such a start: the architect's retry_or_escalate of a held
 //     phase, a transition into the phase, or the tree's close and re-admission for an architect,
@@ -2057,9 +2145,13 @@ func ClaimNameInIssue(role claim.Role, token claim.Token) string {
 
 // WakeWaiting is one wake the daemon's pacing holds until its turn, as the state names it
 // (State.WakesWaiting): the claim it will wake, that claim's issue and role, what kind of wake it
-// is, and the moment the pacing gave it, which is when it runs. The kinds are the three lanes the
-// daemon paces, declared once where the machines reserve them (supervise.WakeKind) and each named
-// on the wire as the line that wake writes names it (supervise's wakeRan, the outbox's):
+// is, and the pacing's estimate, at the read, of the moment it lets the wake out, as its queues
+// stand. A waiting wake holds a place in a queue and no moment of its own. A change to the queues
+// or to the pace can move that moment earlier or later, so two reads can name two moments: for
+// example, a wake ahead of it in its own queue that leaves moves it earlier, and a wake that joins
+// and is let out ahead of it moves it later. The kinds are the three lanes the daemon paces,
+// declared once where the machines take their places (supervise.WakeKind) and each named on the
+// wire as the line that wake writes names it (supervise's wakeRan, the outbox's):
 //
 //   - `launch`, a role process the daemon is about to start, held by the claim's machine;
 //   - `plugin-refresh`, the relaunch of a process whose plugin speaks an earlier contract than
@@ -2105,11 +2197,12 @@ func WakesWaitingOf(held []supervise.WaitingWake, queued []WakeWaiting) []WakeWa
 }
 
 // WakeView is the wake the pacing holds for one claim, as that claim's view names it
-// (ClaimView.Wake): what kind of wake it is and the moment the pacing gave it, which is when it
-// runs. The claim, its issue and its role are the view's own, so the entry here is the rest of
-// the state's own `wakesWaiting` row (WakeWaiting) and reports the same wake. A claim view that
-// carries this and whose state is `queued` or `suspended` is a process the daemon has still to
-// start, which is the reading a reader of `updateState` alone cannot reach.
+// (ClaimView.Wake): what kind of wake it is and the pacing's estimate, at the read, of the moment
+// it lets the wake out (WakeWaiting says how that moment moves). The claim, its issue and its role
+// are the view's own, so the entry here is the rest of the state's own `wakesWaiting` row
+// (WakeWaiting) and reports the same wake. A claim view that carries this and whose state is
+// `queued` or `suspended` is a process the daemon has still to start, which is the reading a
+// reader of `updateState` alone cannot reach.
 type WakeView struct {
 	Kind  supervise.WakeKind `json:"kind"`
 	DueAt time.Time          `json:"dueAt"`

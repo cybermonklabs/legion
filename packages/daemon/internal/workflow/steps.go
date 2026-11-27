@@ -443,17 +443,17 @@ func (e *Engine) acceptingAgent(ctx context.Context, tx pgx.Tx, issue record.Iss
 // ownArchitectStarting is whether issue's own architect, a child's, owns its accepting step by a
 // start the outbox will act on, which the owner walk does not see: the walk reads a claim as the
 // store records it, and a claim whose start is only queued does not hold its role yet
-// (record.HoldsRole). Two moves queue such a start in the transaction that starts accepting: the
+// (supervise.HoldsRole). Two moves queue such a start in the transaction that starts accepting: the
 // move into accepting, which starts a failed child architect again (reviveArchitect), and a
 // re-admitted tree's first run, which brings back a member's suspended architect (admit's
 // startMidPhaseMembers). Once that start runs, the child's own architect owns the child, and it
 // signs it off. The start is one of no phase or of accepting (architectStartQueued).
 //
-// Two such starts do not count. One queued for a claim the operator suspended: that suspension is
-// woken by no start, queued or not, since each waits for the operator's resume
-// (supervise.Claim.RuleHolds). And one queued once the issue has left accepting, which the store's
-// record of the issue says: the start is then the next phase's (reviveArchitect at that phase's
-// start).
+// Two such starts do not count. One queued for a claim a suspension that holds is over (the
+// operator's or the controller's): that claim is woken by no start, queued or not,
+// since each waits for the resume of whoever suspended it (supervise.Claim.RuleHolds). And one
+// queued once the issue has left accepting, which the store's record of the issue says: the start
+// is then the next phase's (reviveArchitect at that phase's start).
 func (e *Engine) ownArchitectStarting(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
 	run, child, err := e.ownArchitectRun(ctx, tx, issue)
 	if err != nil || !child || !architectStartQueued(run, phase.Accepting) {

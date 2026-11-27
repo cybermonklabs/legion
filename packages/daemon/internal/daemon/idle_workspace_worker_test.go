@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -101,7 +102,8 @@ func TestTheSameWorkspaceWorkIsNewsToAnotherClaimOfTheSameRole(t *testing.T) {
 		{worker, true},
 		{worker, false},
 	} {
-		decline, _, _, err := rig.runner.declineFor(rig.issue.Key, claim.RoleImplementer, test.token, at.Add(time.Duration(index)*time.Minute), work, nil)
+		decline, _, _, err := rig.runner.declineFor(ctx, rig.issue.Key, record.IssueWorkspaceCheck{Role: claim.RoleImplementer}, test.token,
+			at.Add(time.Duration(index)*time.Minute), work, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

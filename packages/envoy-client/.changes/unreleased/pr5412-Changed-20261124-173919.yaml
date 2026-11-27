@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The `envoy_publish` description names one more answer that keeps nothing and errs: no live
+  session holds the role and the publish names no session of the caller's as its source, which a
+  listener of this release refuses `404`, since nothing could tell the caller that a kept copy had
+  expired.
+time: 2026-11-24T17:39:19Z
+custom:
+    Issue: pr5412

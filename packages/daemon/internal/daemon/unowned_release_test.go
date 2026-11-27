@@ -218,8 +218,8 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 		rig := newIdleRig(t)
 		rig.stoppedImplementer(t, false)
 
-		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); len(got) != 1 || got[0] != "issue_release" {
-			t.Fatalf("queued rows = %v, want the teardown alone: this release checks no workspace and stops no role", got)
+		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Equal(got, []string{"issue_bundle", "issue_release"}) {
+			t.Fatalf("queued rows = %v, want the launcher's workspace check and the teardown: this release stops no role, and reads the disk it deletes (R6)", got)
 		}
 		// The mark says which rule wrote it, and that kind is what the teardown and the cancel
 		// read to tell what the release did rather than guess it from a missing role.
@@ -338,8 +338,8 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 			t.Fatalf("the pod was left owing %v, want the earlier release's backstop and open resume", owed)
 		}
 
-		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); len(got) != 1 || got[0] != "issue_release" {
-			t.Fatalf("queued rows = %v, want the teardown alone: the released architect is already stopped", got)
+		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Equal(got, []string{"issue_bundle", "issue_release"}) {
+			t.Fatalf("queued rows = %v, want the launcher's workspace check and the teardown: the released architect is already stopped", got)
 		}
 
 		rig.drain(t)
@@ -428,8 +428,8 @@ func TestTheQuietPeriodBeforeAnIssueWithNoLiveClaimIsReleased(t *testing.T) {
 		rig.wrote(t, rig.token, 11)
 		rig.wrote(t, architect, 11)
 
-		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); len(got) != 1 || got[0] != "issue_release" {
-			t.Fatalf("queued rows = %v, want the teardown: the pod has recorded nothing for 11 minutes", got)
+		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Equal(got, []string{"issue_bundle", "issue_release"}) {
+			t.Fatalf("queued rows = %v, want the launcher's workspace check and the teardown: the pod has recorded nothing for 11 minutes", got)
 		}
 		if !rig.marked(t) {
 			t.Fatal("the release left no mark")
@@ -584,8 +584,8 @@ func TestAnUnownedReleaseLeavesAKeptSuspendedSandboxAlone(t *testing.T) {
 			var hold workflow.IdleHold
 			var marked bool
 			queued := rig.queuedBy(t, func() { hold, marked = rig.w.releaseUnownedPod(ctx, rig.issue.Key) })
-			if !marked || len(queued) != 1 || queued[0] != "issue_release" {
-				t.Fatalf("the pass = %s, released %t, queued %v; want the release's teardown queued", hold, marked, queued)
+			if !marked || !slices.Equal(queued, []string{"issue_bundle", "issue_release"}) {
+				t.Fatalf("the pass = %s, released %t, queued %v; want the launcher's workspace check and the release's teardown queued", hold, marked, queued)
 			}
 			if !tc.keeps {
 				return

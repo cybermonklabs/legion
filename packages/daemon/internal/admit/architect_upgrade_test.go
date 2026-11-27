@@ -472,7 +472,7 @@ func embeddedMigration(t *testing.T, version int) string {
 // the reviewed commit's (20261116234034_phase_reviewed_head.up.sql) — and internal/daemon's
 // upgrade_phase_entry_way_back_test.go reads the phase entry's the same way.
 const (
-	wayBackHeredoc    = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
+	wayBackHeredoc    = "PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'"
 	wayBackTerminator = "SQL"
 )
 

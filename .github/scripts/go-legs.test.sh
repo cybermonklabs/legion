@@ -27,9 +27,12 @@ source "$script_dir/test-lib.sh"
 # The go command reads none of the caller's workspace, flags or proxy: the fixture is all it sees.
 export GOWORK=off GOFLAGS='' GOPROXY=off GOTOOLCHAIN=local
 
-# tree <name> <legs file text>: a repository under $work/<name> holding that legs file. Echoes its root.
+# tree <name> <legs file text>: a repository under $work/<name> holding that legs file, written as
+# given. Echoes its root. Every entry must name the job whose last leg runs a package no place names
+# (go_legs.py's unlisted_problems), so each fixture below writes `unlisted: job`, the plain job of
+# every fixture here, and the cases about that line change it in the text they pass.
 tree() {
-  local root="$work/$1"
+  local root="$work/$1" text="$2"
   mkdir -p "$root/.github/scripts" "$root/mod/a" "$root/mod/b/c" "$root/mod/testonly" "$root/mod/tagged"
   cp "$script_dir/go_legs.py" "$root/.github/scripts/"
   printf 'module example.com/mod\n\ngo 1.21\n' > "$root/mod/go.mod"
@@ -38,7 +41,7 @@ tree() {
   printf 'package c\n' > "$root/mod/b/c/c.go"
   printf 'package testonly\n\nimport "testing"\n\nfunc TestX(t *testing.T) {}\n' > "$root/mod/testonly/x_test.go"
   printf '//go:build never\n\npackage tagged\n' > "$root/mod/tagged/t.go"
-  printf '%s\n' "$2" > "$root/.github/go-legs.yaml"
+  printf '%s\n' "$text" > "$root/.github/go-legs.yaml"
   echo "$root"
 }
 
@@ -61,7 +64,8 @@ whole='mod:
     2:
       - b/c
   elsewhere:
-    testonly: another-job'
+    testonly: another-job
+  unlisted: job'
 
 echo "case: a file that runs every package once"
 root=$(tree whole "$whole")
@@ -72,22 +76,70 @@ check "and says how many of the module's packages they are" "$(contains "$(err)"
 check "leg 2 prints its own" "$(is "$(legs "$root" job 2)" "./b/c/
 exit=0")"
 
-echo "case: a package no place names (a new package, or one taken out of a leg)"
-root=$(tree dropped 'mod:
+echo "case: a package no place names (a new package, or one taken out of a leg) runs in one leg"
+# The last leg of the job `unlisted` names runs it, after the leg's own packages, and every leg
+# says so as a warning: the run stays whole while the file is stale, as a test no group names
+# runs in the group placed() gives it.
+dropped='mod:
+  job:
+    1:
+      - b
+    2:
+      - a
+  race:
+    1:
+      - testonly
+  unlisted: job'
+root=$(tree dropped "$dropped")
+check "the leg before the last prints its own packages alone" "$(is "$(legs "$root" job 1)" "./b/
+exit=0")"
+check "and says which leg runs the package no place names" \
+  "$(contains "$(err)" '^::warning file=.github/go-legs.yaml::mod/b/c is a package `go list ./...` prints that no place of .github/go-legs.yaml names, so leg 2 of job .unlisted. runs it')"
+check "the last leg prints its own and then the package no place names" "$(is "$(legs "$root" job 2)" "./a/
+./b/c/
+exit=0")"
+check "another job's leg leaves it out" "$(is "$(legs "$root" race 1 1)" "./testonly/
+exit=0")"
+check "and warns too" "$(contains "$(err)" 'mod/b/c is a package .go list ./.... prints that no place')"
+
+echo "case: a package added to the module runs in exactly one leg of all the legs"
+root=$(tree added "$whole")
+mkdir -p "$root/mod/fresh"
+printf 'package fresh\n\nimport "testing"\n\nfunc TestFresh(t *testing.T) {}\n' > "$root/mod/fresh/fresh_test.go"
+every="$(legs "$root" job 1)
+$(legs "$root" job 2)"
+check "every leg passes" "$(is "$(grep -c '^exit=0$' <<<"$every")" 2)"
+check "one leg of the two prints the new package" "$(is "$(grep -c '^\./fresh/$' <<<"$every")" 1)"
+check "the last one" "$(contains "$(legs "$root" job 2)" '^\./fresh/$')"
+check "and the go test that leg's step runs runs its test" \
+  "$(contains "$(cd "$root/mod" && set -o pipefail && python3 ../.github/scripts/go_legs.py mod job 2 2 2>/dev/null | xargs go test -count=1 -v 2>&1)" '^--- PASS: TestFresh')"
+
+echo "case: an entry without unlisted"
+root=$(tree no-unlisted "$(printf '%s\n' "$whole" | grep -v '^  unlisted:')")
+out=$(legs "$root" job 1)
+check "fails every leg" "$(contains "$out" '^exit=1$')"
+check "prints nothing for the leg's go test" "$(is "$out" "
+exit=1")"
+check "naming the key and what to set" \
+  "$(contains "$(err)" "^::error file=.github/go-legs.yaml::.github/go-legs.yaml's entry has no unlisted, so a package .go list ./.... prints and no place names would run in no leg")"
+
+echo "case: unlisted names no job of the entry, or a job whose last leg runs a group"
+root=$(tree unlisted-elsewhere "$(printf '%s\n' "$whole" | sed 's/^  unlisted: job$/  unlisted: elsewhere/')")
+check "elsewhere fails" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+check "naming it" "$(contains "$(err)" "unlisted names 'elsewhere', which is no job of the entry")"
+root=$(tree unlisted-typo "$(printf '%s\n' "$whole" | sed 's/^  unlisted: job$/  unlisted: jobs/')")
+check "a name no key holds fails" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+root=$(tree unlisted-group 'mod:
   job:
     1:
       - b
       - a
-    2: []
-  elsewhere:
-    testonly: another-job')
-out=$(legs "$root" job 1)
-check "fails" "$(contains "$out" '^exit=1$')"
-check "prints nothing for the leg's go test" "$(is "$out" "
-exit=1")"
-check "names the package and what to do" "$(contains "$(err)" 'mod/b/c is a package `go list ./...` prints, and no leg of .github/go-legs.yaml runs it: add it to the leg of the job that should run it')"
-check "as an error on the legs file" "$(contains "$(err)" '^::error file=.github/go-legs.yaml::')"
-check "and fails every leg, not only the one that lost it" "$(contains "$(legs "$root" job 2)" '^exit=1$')"
+      - b/c
+    2:
+      - testonly: 1
+  unlisted: job')
+check "a last leg of a group fails" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+check "naming the leg" "$(contains "$(err)" 'unlisted names job job, whose last leg, 2, runs a group of a package.s tests')"
 
 echo "case: a package two places name"
 root=$(tree twice 'mod:
@@ -99,7 +151,8 @@ root=$(tree twice 'mod:
       - b/c
       - a
   elsewhere:
-    testonly: another-job')
+    testonly: another-job
+  unlisted: job')
 out=$(legs "$root" job 2)
 check "fails" "$(contains "$out" '^exit=1$')"
 check "names the package and both places" "$(contains "$(err)" 'mod/a is in 2 places of .github/go-legs.yaml (job leg 1, job leg 2), so it would run in each: keep it in one')"
@@ -114,7 +167,8 @@ root=$(tree leg-and-elsewhere 'mod:
     2:
       - b/c
   elsewhere:
-    testonly: another-job')
+    testonly: another-job
+  unlisted: job')
 legs "$root" job 1 >/dev/null
 check "names both places" "$(contains "$(err)" 'mod/testonly is in 2 places of .github/go-legs.yaml (job leg 1, elsewhere (another-job))')"
 
@@ -128,7 +182,8 @@ root=$(tree unknown 'mod:
     2:
       - b/c
   elsewhere:
-    testonly: another-job')
+    testonly: another-job
+  unlisted: job')
 out=$(legs "$root" job 1)
 check "fails" "$(contains "$out" '^exit=1$')"
 check "names the directory and where the file names it" "$(contains "$(err)" '.github/go-legs.yaml names mod/tagged (job leg 1), which `go list ./...` does not print as a package')"
@@ -146,7 +201,8 @@ root=$(tree unlaunched 'mod:
       - testonly
     3:
       - b/c
-  elsewhere: {}')
+  elsewhere: {}
+  unlisted: job')
 out=$(legs "$root" job 1 2)
 check "fails" "$(contains "$out" '^exit=1$')"
 check "prints nothing for the leg's go test" "$(is "$out" "
@@ -167,7 +223,8 @@ root=$(tree empty 'mod:
       - b/c
     2: []
   elsewhere:
-    testonly: another-job')
+    testonly: another-job
+  unlisted: job')
 out=$(legs "$root" job 1)
 check "fails" "$(contains "$out" '^exit=1$')"
 check "names the leg" "$(contains "$(err)" 'gives leg 2 of job job no package, and xargs would hand go test none, which tests the module.s root')"
@@ -190,12 +247,45 @@ check "so is a job" "$(contains "$(legs "$root" other 1)" '^exit=2$')"
 check "and elsewhere is no job" "$(contains "$(legs "$root" elsewhere 1)" '^exit=2$')"
 
 echo "case: a go list that fails"
+# Only the go.mod fails it: under -find an import no cache holds fails nothing (the next case), so
+# this one breaks the module file alone.
 root=$(tree broken "$whole")
-printf 'package a\n\nimport "example.com/missing/dep"\n' > "$root/mod/a/a.go"
 printf 'not a go.mod\n' > "$root/mod/go.mod"
 out=$(legs "$root" job 1)
 check "fails rather than compare with nothing" "$(contains "$out" '^exit=1$')"
 check "saying the packages are unknown" "$(contains "$(err)" 'failed (its errors are above), so which packages the legs must run is unknown')"
+
+echo "case: a package importing a module no cache holds is listed with no network"
+# The changes job runs go_legs.py on a cold module cache. In a workspace, a go list that may reach
+# a proxy resolves the import by downloading its module into the cache and writing its checksum to
+# go.work.sum, so this case gives it one that answers: a file:// proxy serving the imported module,
+# with the checksum database off. The listing must still print every package, a's among them, and
+# leave the module cache empty and no go.work.sum behind; a go_legs.py whose listing could reach
+# the proxy (GOPROXY=off left out) downloads the module here and fails the last two checks.
+root=$(tree offline "$whole")
+printf 'module example.com/mod\n\ngo 1.21\n\nrequire example.com/notcached v1.0.0\n' > "$root/mod/go.mod"
+printf 'package a\n\nimport _ "example.com/notcached/pkg"\n' > "$root/mod/a/a.go"
+printf 'go 1.21\n\nuse ./mod\n' > "$root/go.work"
+proxy="$work/offline-proxy/example.com/notcached/@v"
+mkdir -p "$proxy"
+printf 'v1.0.0\n' > "$proxy/list"
+printf '{"Version":"v1.0.0","Time":"2026-01-01T00:00:00Z"}\n' > "$proxy/v1.0.0.info"
+printf 'module example.com/notcached\n\ngo 1.21\n' > "$proxy/v1.0.0.mod"
+python3 - "$proxy/v1.0.0.zip" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr("example.com/notcached@v1.0.0/go.mod", "module example.com/notcached\n\ngo 1.21\n")
+    z.writestr("example.com/notcached@v1.0.0/pkg/pkg.go", "package pkg\n")
+PY
+out=$(GOWORK="$root/go.work" GOPROXY="file://$work/offline-proxy" GOSUMDB=off GONOSUMDB='*' \
+  GOMODCACHE="$work/offline-modcache" legs "$root" job 1)
+check "the leg passes" "$(contains "$out" '^exit=0$')"
+check "printing the package that imports it" "$(contains "$out" '^\./a/$')"
+check "and downloads nothing into the module cache" "$(is "$(find "$work/offline-modcache" -type f 2>/dev/null | wc -l | tr -d ' ')" 0)"
+check "and writes no go.work.sum" "$(is "$([ -e "$root/go.work.sum" ] && echo written || echo none)" none)"
+# Go writes a module cache read-only; a listing that downloaded leaves it so, and the trap's rm
+# could not remove it.
+chmod -R u+w "$work/offline-modcache" 2>/dev/null || true
 
 echo "case: the leg's step, a pipe to xargs under pipefail, fails when the check fails"
 root=$(tree step 'mod:
@@ -204,7 +294,8 @@ root=$(tree step 'mod:
       - b
     2: []
   elsewhere:
-    testonly: another-job')
+    testonly: another-job
+  unlisted: job')
 status=0
 ran=$(cd "$root/mod" && set -o pipefail && python3 ../.github/scripts/go_legs.py mod job 1 2 2>/dev/null | xargs echo ran) || status=$?
 check "the pipeline fails" "$(is "$status" 1)"
@@ -267,10 +358,10 @@ GO
   echo "$root"
 }
 
-# legs_for <the job's legs, indented>: a legs file for `mod` with those legs and the testonly
-# package elsewhere, so each case below writes only the legs it is about.
+# legs_for <the job's legs, indented>: a legs file for `mod` with those legs, the testonly
+# package elsewhere and `unlisted: job`, so each case below writes only the legs it is about.
 legs_for() {
-  printf 'mod:\n  job:\n%s\n  elsewhere:\n    testonly: another-job\n' "$1"
+  printf 'mod:\n  job:\n%s\n  elsewhere:\n    testonly: another-job\n  unlisted: job\n' "$1"
 }
 
 # group_run <root> <leg> <legs>: the go test a leg's step really runs, its printed arguments and
@@ -625,5 +716,92 @@ status=0
 printf 'nothing of the kind\n' > "$work/empty.txt"
 (cd "$root" && python3 .github/scripts/go_legs_groups.py mod many 2 4 "$work/listing.txt" "a fixture run" "$work/empty.txt" >/dev/null 2>&1) || status=$?
 check "a run that times nothing is refused rather than balanced from nothing" "$(is "$status" 1)"
+
+echo "case: a package twice names, in a leg of each of two jobs"
+# envoy's NATS auth service runs plain in a unit leg, which counts its hold rows' skips, and under
+# the detector in a race leg: two places, legs of two jobs, which `twice` must name.
+twice_legs='mod:
+  job:
+    1:
+      - b
+      - a
+    2:
+      - b/c
+  race:
+    1:
+      - a
+  twice:
+    a: the plain leg counts its skips, the race leg runs it under the detector
+  elsewhere:
+    testonly: another-job
+  unlisted: job'
+root=$(tree twice-ok "$twice_legs")
+check "the plain job's leg prints it" "$(is "$(legs "$root" job 1)" "./b/
+./a/
+exit=0")"
+check "and so does the race job's" "$(is "$(legs "$root" race 1 1)" "./a/
+exit=0")"
+check "and twice is no job" "$(contains "$(legs "$root" twice 1 1)" '^exit=2$')"
+
+echo "case: a package in legs of two jobs that twice does not name"
+root=$(tree twice-unnamed "$(printf '%s\n' "$twice_legs" | grep -v -e '^  twice:' -e '^    a: the plain')")
+check "fails" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+check "naming both places" \
+  "$(contains "$(err)" 'mod/a is in 2 places of .github/go-legs.yaml (job leg 1, race leg 1), so it would run in each')"
+check "and what to write" "$(contains "$(err)" 'name it under twice with why')"
+
+echo "case: a package twice names in two legs of one job"
+root=$(tree twice-one-job 'mod:
+  job:
+    1:
+      - b
+      - a
+    2:
+      - b/c
+      - a
+  twice:
+    a: two legs of one job are no second mode
+  elsewhere:
+    testonly: another-job
+  unlisted: job')
+check "fails" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+check "naming the rule" \
+  "$(contains "$(err)" 'twice names mod/a, which is in 2 place.s. .job leg 1, job leg 2.: a package twice names runs in the legs of exactly two jobs')"
+
+echo "case: a package twice names in one place only, or in a leg and elsewhere"
+root=$(tree twice-once 'mod:
+  job:
+    1:
+      - b
+      - a
+    2:
+      - b/c
+  twice:
+    a: names a package that runs once
+  elsewhere:
+    testonly: another-job
+  unlisted: job')
+check "one place fails" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+check "naming it" "$(contains "$(err)" 'twice names mod/a, which is in 1 place.s. .job leg 1.')"
+root=$(tree twice-elsewhere 'mod:
+  job:
+    1:
+      - b
+      - a
+      - testonly
+    2:
+      - b/c
+  twice:
+    testonly: a leg and elsewhere are no two jobs
+  elsewhere:
+    testonly: another-job
+  unlisted: job')
+check "a leg and elsewhere fail" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+check "naming both" "$(contains "$(err)" 'twice names mod/testonly, which is in 2 place.s. .job leg 1, elsewhere .another-job..')"
+
+echo "case: twice names a package go list does not print"
+root=$(tree twice-gone "$(printf '%s\n' "$twice_legs" | sed 's/^    a: the plain/    gone: no such package\n    a: the plain/')")
+check "fails" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+check "naming it" "$(contains "$(err)" 'twice names mod/gone, which .go list ./.... does not print as a package')"
 
 summary "go_legs.py runs each package of its module in exactly one place, and each test of a package it splits in exactly one group"

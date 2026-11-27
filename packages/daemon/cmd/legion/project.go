@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,14 +15,18 @@ import (
 )
 
 // newProjectCommand is the operator's hand on the daemon's project as a whole, one command per
-// operator project route (internal/api/pause.go). pause stops every role of the project but the
-// controller and holds every launch, task and admission until resume lets the held work out
-// through the wake pacing (dispatch://INFRA-3759); the daemon acts on its own project, so neither
-// names one.
+// operator project route (internal/api/pause.go and internal/api/p0_bound.go). pause stops every
+// role of the project but the controller and holds every launch, task and admission until resume
+// lets the held work out through the wake pacing (dispatch://INFRA-3759); set-p0-bound and
+// clear-p0-bound change how many P0 issues may hold a slot outside the admission cap while the
+// daemon runs (dispatch://INFRA-5636). The daemon acts on its own project, so none names one.
 func newProjectCommand(stdout, stderr io.Writer) *cobra.Command {
-	return group(&cobra.Command{Use: "project", Short: "pause the daemon's project, holding every role's work but the controller's, or resume it"},
+	return group(&cobra.Command{Use: "project", Short: "pause or resume the daemon's project, or change its P0 bound"},
 		projectCommand("pause", "pause the project: stop every role but the controller and hold their work", projectPause, stdout, stderr),
 		projectCommand("resume", "end the project's pause and let the held work out through the wake pacing", projectResume, stdout, stderr),
+		projectCommand("set-p0-bound", "set how many P0 issues may hold a slot outside the cap, or none, with no restart",
+			projectSetP0Bound, stdout, stderr),
+		projectCommand("clear-p0-bound", "return the P0 bound to legion.yaml's admission_p0_bound", projectClearP0Bound, stdout, stderr),
 	)
 }
 
@@ -110,17 +115,100 @@ func printResumeAnswer(w io.Writer, answer []byte) error {
 	return err
 }
 
+// projectSetP0Bound is `legion project set-p0-bound (--bound <n> | --none) --reason <text>`: the
+// daemon records the operator's P0 bound and why, and admits under it from that request's own pass
+// on, with no restart. --none sets no bound, whatever legion.yaml's admission_p0_bound says. A lower
+// bound stops nothing that runs.
+func projectSetP0Bound(c *projectCall) action {
+	bound := c.flags.Int("bound", 0, "how many P0 issues may hold a slot at once, a whole number from 1 to 2147483647 (this or --none is required)")
+	none := c.flags.Bool("none", false, "set no bound, whatever legion.yaml's admission_p0_bound says (this or --bound is required)")
+	reason := c.flags.String("reason", "", "why the bound changes: the daemon records it with the change and logs it (required)")
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check("operator-token-file", "reason"); !ok {
+			return code
+		}
+		req := api.OperatorP0BoundRequest{Unbounded: *none, Reason: *reason}
+		switch named := c.flags.Changed("bound"); {
+		case named && *none:
+			return refuse(c.cmd, "--bound and --none name two bounds; give one")
+		case !named && !*none:
+			return refuse(c.cmd, "--bound <n> or --none is required")
+		case named:
+			req.Bound = bound
+		}
+		return c.send(ctx, "/p0-bound", req, printP0BoundAnswer)
+	}
+}
+
+// projectClearP0Bound is `legion project clear-p0-bound --reason <text>`: the daemon records the
+// clear and why, and admits under legion.yaml's admission_p0_bound again from that request's own
+// pass on.
+func projectClearP0Bound(c *projectCall) action {
+	reason := c.flags.String("reason", "", "why the bound returns to legion.yaml's: the daemon records it with the change and logs it (required)")
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check("operator-token-file", "reason"); !ok {
+			return code
+		}
+		return c.send(ctx, "/p0-bound/clear", api.OperatorP0BoundClearRequest{Reason: *reason}, printP0BoundAnswer)
+	}
+}
+
+// printP0BoundAnswer is the P0 bound the daemon admits under after a change, as one line.
+func printP0BoundAnswer(w io.Writer, answer []byte) error {
+	var bound api.P0BoundView
+	if err := decodeAnswer(answer, &bound); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintln(w, "P0 bound: "+p0BoundWords(bound))
+	return err
+}
+
+// p0BoundWords is the P0 bound as `legion state` and a change's answer name it: the bound in force,
+// legion.yaml's, and the value set while the daemon runs where one stands, with who set it, when
+// and why. The reason is terminalText: the controller or the operator wrote it.
+func p0BoundWords(view api.P0BoundView) string {
+	words := boundCount(view.Bound) + " in force, " + boundCount(view.Configured) + " in legion.yaml"
+	if view.Live == nil {
+		return words + "; none set while the daemon runs"
+	}
+	return words + fmt.Sprintf("; set to %s by %s at %s: %s", boundCount(view.Live.Bound), pauseActorWords(view.Live.SetBy),
+		view.Live.SetAt.Format(time.RFC3339), terminalText(view.Live.Reason))
+}
+
+// boundCount is a P0 bound as these lines write it: the number, or "none".
+func boundCount(bound *int) string {
+	if bound == nil {
+		return "none"
+	}
+	return strconv.Itoa(*bound)
+}
+
+// p0AdmissionLine is `legion state`'s line for the P0 issues (C4 and C3 of dispatch://INFRA-5636):
+// how many P0 issues hold a slot, outside the cap, beside the slots in use and the cap, and the P0
+// bound in force, legion.yaml's and who set the live one and when. The daemon writes
+// `admission.p0Holders` and `admission.p0Bound` together, and serves a caller below the P0 start's
+// contract entry neither (withoutP0Start), so the line is empty unless the state carries both, and
+// the caller then prints nothing.
+func p0AdmissionLine(admission api.Admission) string {
+	if admission.P0Holders == nil || admission.P0Bound == nil {
+		return ""
+	}
+	return fmt.Sprintf("P0: %d of the %d issues holding a slot are P0 and hold it outside the cap of %d; P0 bound %s",
+		*admission.P0Holders, len(admission.Active), admission.Cap, p0BoundWords(*admission.P0Bound))
+}
+
 // pausedSummary is `legion state`'s line for the project's open pause (api.State.Paused): the
 // pause, who paused, since when and why, and the claims whose stop it still waits on, in the
 // state's order, each by its name (api.ClaimName: its issue and role, and its token beside them
 // for the claim of an agent not named for its role, so two claims of one role on one issue read
-// apart). It is empty while the project runs, and the caller then prints nothing.
+// apart). It is empty while the project runs, and the caller then prints nothing. The reason is
+// terminalText: the controller or the operator wrote it.
 func pausedSummary(paused *api.PausedView) string {
 	if paused == nil {
 		return ""
 	}
 	line := fmt.Sprintf("paused: pause %d since %s by %s: %s", paused.ID, paused.Since.Format(time.RFC3339),
-		pauseActorWords(paused.By), paused.Reason)
+		pauseActorWords(paused.By), terminalText(paused.Reason))
 	if len(paused.WaitsOn) == 0 {
 		return line + "; waits on no claim"
 	}
@@ -146,9 +234,10 @@ func lastPauseSummary(last *api.PauseView) string {
 	return "last pause: " + endedPauseWords(*last)
 }
 
-// pauseWords is a pause as these lines name it: its id, since when, who paused and why.
+// pauseWords is a pause as these lines name it: its id, since when, who paused and why. The reason
+// is terminalText: the controller or the operator wrote it.
 func pauseWords(p api.PauseView) string {
-	return fmt.Sprintf("pause %d since %s by %s: %s", p.ID, p.Since.Format(time.RFC3339), pauseActorWords(p.By), p.Reason)
+	return fmt.Sprintf("pause %d since %s by %s: %s", p.ID, p.Since.Format(time.RFC3339), pauseActorWords(p.By), terminalText(p.Reason))
 }
 
 // endedPauseWords is an ended pause as these lines name it: the pause, then when and by whom it
@@ -160,11 +249,11 @@ func endedPauseWords(p api.PauseView) string {
 	return fmt.Sprintf("%s; ended %s by %s", pauseWords(p), p.EndedAt.Format(time.RFC3339), pauseActorWords(*p.EndedBy))
 }
 
-// pauseActorWords is who acted on a pause: the controller with the session it acted from, or the
-// operator.
+// pauseActorWords is who acted on a pause or set the P0 bound: the controller with the session it
+// acted from, or the operator. The session is terminalText: the controller's session named it.
 func pauseActorWords(by api.PauseActorView) string {
 	if by.Session != "" {
-		return "the " + by.Kind + " (session " + by.Session + ")"
+		return "the " + by.Kind + " (session " + terminalText(by.Session) + ")"
 	}
 	return "the " + by.Kind
 }

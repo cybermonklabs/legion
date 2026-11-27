@@ -8,14 +8,19 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-var _ runtime.IssuePodReplacer = (*Runtime)(nil)
+var (
+	_ runtime.IssuePodReplacer = (*Runtime)(nil)
+	_ runtime.ActReader        = (*Runtime)(nil)
+)
 
 // A running issue pod whose configuration has drifted is not replaced where it is found: every
 // role of the issue runs in that one pod, and ending it ends each of their processes mid-turn and
@@ -24,7 +29,7 @@ var _ runtime.IssuePodReplacer = (*Runtime)(nil)
 // (supervise.UpdateTask) and answer (api's claims/ready-for-update), and replaces the pod once
 // every asked role has answered, no turn runs and no claim's activity report holds it
 // (internal/daemon's roundEnd.holding), or at the round's bound (pod_update_grace_minutes)
-// whatever the roles answered and whatever runs, an operator's suspension excepted. PodDrift is
+// whatever the roles answered and whatever runs, a holding suspension excepted. PodDrift is
 // what the round is opened on, and ReplacePod what ends the round, or ReplaceIssuePod where no
 // role process is left in the pod to name it through; the round itself, its ask and its sweep
 // are the daemon's (internal/daemon).
@@ -489,12 +494,31 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	// sides go through serviceAccountOr, so a configured account left unset matches a pod on
 	// `default` rather than reading every pod of the deployment as drifted (accountDrift). The
 	// kind gate above (!roundCovers) is what keeps the controller's pod out of this reason, as
-	// it does of every other.
+	// it does of every other. Its reason opens on runtime.BreakingDrift, which is set here, where
+	// the account's drift is decided: no role can keep working in a pod on an account the operator
+	// replaced, so the round over it replaces the pod after the read of its workspace whatever the
+	// read finds (R7 of #5285, spec v23).
 	if account, accountDrifted := accountDrift(pod, r.pod.ServiceAccount); accountDrifted {
-		drifted = append(drifted, "account "+account+", now "+serviceAccountOr(r.pod.ServiceAccount))
+		drifted = append(drifted, runtime.BreakingDrift+"account "+account+", now "+serviceAccountOr(r.pod.ServiceAccount))
 	}
-	for _, moved := range r.driftedInPod(pod, launcherOf(slot)) {
-		drifted = append(drifted, moved.String())
+	// The exchange identity's reason (movedExchangeIdentity) opens on the mark only where a launch
+	// into this pod is refused until the pod's round replaces it (spec v26): the deployment sets
+	// dispatch_token_broker, names no dispatch_token_transition_file, and the pod carries no
+	// identity the exchange trades for the launcher of the claim's slot (awaitsPodRound over
+	// tradesIn of the live pod, the condition dispatchCredential refuses on). A round that kept such
+	// a pod for work on its disk would leave a claim that waits on the pod, where it is the issue's
+	// only claim, with no way to run again (runtime.ErrAwaitingPodRound). Any other drift of the
+	// exchange identity is one the roles can keep working under: a token of another lifetime still
+	// trades (carriesExchangeIdentity), and where the identity is missing and no launch is refused, a
+	// role keeps the credential it had or carries the transition token. No other reason carries the
+	// mark.
+	launcher := launcherOf(slot)
+	for _, moved := range r.driftedInPod(pod, launcher) {
+		reason := moved.String()
+		if moved.where == agentSecretsExchangeVolume && r.awaitsPodRound(r.tradesIn(&pod.Spec, launcher)) {
+			reason = runtime.BreakingDrift + reason
+		}
+		drifted = append(drifted, reason)
 	}
 	return drifted, nil
 }
@@ -561,6 +585,108 @@ func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, podUID string, due
 	return r.replaceRoundPod(ctx, name, podUID, due, "issue", issue)
 }
 
+// ReadAct satisfies runtime.ActReader: whether a recorded act on issue's pod was made, read from
+// the API server under the pod's launch turn (GPT-6.1 Sol's point 2 on #5285 at fa9deb04,
+// the Legion reviewer's point A). The turn is taken without waiting (tryLockPod): a launch, a
+// replacement or a release that holds it may be making the act now, so ReadAct answers
+// runtime.ErrTurnBusy and reads nothing. Under the turn no act of this daemon on the pod runs, and
+// the Sandbox and its pod are read from the API server, never from the stores: a store whose feed
+// fails holds what it last heard, a Sandbox Running over a pod whose suspension landed among it.
+// decide runs under the turn. A Sandbox name no issue key builds, and a read that fails, are
+// errors, and decide is not called.
+//
+// An act that takes the pod (runtime.TakesPod, the pod's uid its target) is made where the pod is
+// taken (podTaken): the issue has no Sandbox, its Sandbox is Suspended — the suspension landed,
+// whether or not the pod is still there to see — or the Sandbox's own pod is another or none; it is
+// not made where the Sandbox runs the target as its own pod. ReplacePod writes its suspension before it waits for the
+// pod to go (replaceRoundPod), so a call whose wait ran out has taken the pod all the same.
+//
+// An act that takes the kept volume (runtime.TakesVolume, the uid of the Sandbox that owns it its
+// target) is made only where no Sandbox of that uid is left: the delete is foreground, so the
+// Sandbox's absence is the API server's confirmation that the volume it owned is gone
+// (deleteSandbox; GPT-6.1 Sol's point 4 on #5285 at fa9deb04). A Suspended Sandbox of that uid, or
+// one that runs no pod of its own, says only that the pod was taken, and the act reads uncertain.
+// A Sandbox of that uid Running with a live pod of its own, which is not being deleted, uses the
+// volume again: the act was not made.
+func (r *Runtime) ReadAct(ctx context.Context, issue string, act runtime.RecordedAct, decide func(context.Context, runtime.ActState) error) error {
+	name, err := issueSandboxName(r.project, issue)
+	if err != nil {
+		return fmt.Errorf("sandbox runtime: read an act on the pod of %s: %w", issue, err)
+	}
+	release, free := r.tryLockPod(name)
+	if !free {
+		return runtime.ErrTurnBusy
+	}
+	defer release()
+	state, err := r.actState(ctx, name, act)
+	if err != nil {
+		return fmt.Errorf("sandbox runtime: read an act on the pod of %s: %w", issue, err)
+	}
+	return decide(ctx, state)
+}
+
+// actState is what the API server holds now of act on the Sandbox named name (ReadAct).
+func (r *Runtime) actState(ctx context.Context, name string, act runtime.RecordedAct) (runtime.ActState, error) {
+	s, err := r.readSandbox(ctx, name)
+	if err != nil {
+		return runtime.ActUncertain, fmt.Errorf("read sandbox %s: %w", name, err)
+	}
+	if s == nil {
+		return runtime.ActMade, nil
+	}
+	switch act.Takes {
+	case runtime.TakesPod:
+		var pod *corev1.Pod
+		if s.mode() != modeSuspended {
+			if pod, err = r.apiPod(ctx, name); err != nil {
+				return runtime.ActUncertain, err
+			}
+		}
+		if podTaken(s, pod, act.Target) {
+			return runtime.ActMade, nil
+		}
+		return runtime.ActNotMade, nil
+	case runtime.TakesVolume:
+		if string(s.UID) != act.Target {
+			return runtime.ActMade, nil
+		}
+		if s.mode() == modeSuspended || s.DeletionTimestamp != nil {
+			return runtime.ActUncertain, nil
+		}
+		pod, err := r.apiPod(ctx, name)
+		if err != nil {
+			return runtime.ActUncertain, err
+		}
+		if ownedBy(pod, s.UID) && pod.DeletionTimestamp == nil {
+			return runtime.ActNotMade, nil
+		}
+		return runtime.ActUncertain, nil
+	}
+	return runtime.ActUncertain, fmt.Errorf("no act takes %q", act.Takes)
+}
+
+// podTaken is whether the pod of uid is taken from the issue's Sandbox s, read from the stores or
+// from the API server: there is no Sandbox, the Sandbox is Suspended — a suspension that landed
+// takes the pod, whether or not the pod is still there to see — or the pod the Sandbox owns is
+// another or none (pod, a same-named pod the Sandbox does not own being none). It is the one test of
+// a taken pod: a round's replacement makes nothing of a pod that is taken (replaceRoundPod), and a
+// recorded act that takes the pod is made once the pod is taken (actState).
+func podTaken(s *sandbox, pod *corev1.Pod, uid string) bool {
+	return s == nil || s.mode() == modeSuspended || !ownedBy(pod, s.UID) || string(pod.UID) != uid
+}
+
+// apiPod is the pod named name as the API server holds it now, nil where it holds none.
+func (r *Runtime) apiPod(ctx context.Context, name string) (*corev1.Pod, error) {
+	pod, err := r.kube.CoreV1().Pods(r.namespace).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read pod %s: %w", name, err)
+	}
+	return pod, nil
+}
+
 // replaceRoundPod is the act ReplacePod and ReplaceIssuePod share: under the launch turn of the
 // Sandbox named name, it ends that Sandbox's pod podUID as a finished update round's own
 // replacement and waits until the cluster no longer has it. It answers nil having written nothing
@@ -578,13 +704,10 @@ func (r *Runtime) replaceRoundPod(ctx context.Context, name, podUID string, due 
 	if err != nil {
 		return fmt.Errorf("replace %s's pod: %w", of, err)
 	}
-	if s == nil || s.mode() == modeSuspended {
-		return nil
-	}
 	// The pod the Sandbox owns, as every other reader of the two together takes it (viewOf): a
 	// same-named pod it does not own is some earlier Sandbox's, and no pod of this round.
 	v := r.viewOf(name, s)
-	if v.pod == nil || string(v.pod.UID) != podUID {
+	if podTaken(s, v.pod, podUID) {
 		return nil
 	}
 	if err := due(ctx); err != nil {
