@@ -314,8 +314,9 @@ WORKSPACES = root_workspaces()
 
 def setup_bun(job, workflow=""):
     """.github/actions/setup-bun alone: the Bun a job runs its own file with, where no step of it
-    installs the workspace's dependencies. The one job on this read without bun_job below is
-    sessions-script, whose test and the script it spawns import node: builtins and bun alone."""
+    installs the workspace's dependencies. Two jobs are on this read without bun_job below:
+    sessions-script, whose test and the script it spawns import node: builtins and bun alone, and
+    daemon-go-legs, whose Bun only installs the pinned Claude Code (install_claude_code)."""
     return reads(
         (".github/actions/setup-bun/**", at(job, "./.github/actions/setup-bun", workflow)),
         (".bun-version", "`.github/actions/setup-bun/action.yml#bun-version-file`, `.github/actions/setup-bun/action.yml#bun-already-here` and `.github/actions/setup-bun/action.yml#bun-second-source`: "
@@ -374,6 +375,13 @@ def install_omp(job, workflow=""):
         (".omp-pin", "`.github/actions/install-omp/action.yml#pin=$(<.omp-pin)`"),
         (f"{DAEMON}/docker/worker.Dockerfile", "`.github/actions/install-omp/action.yml#s/^ARG OMP_SHA256=//p` reads ARG OMP_SHA256, the "
                                                "sha256 the release archive is held to"),
+    )
+
+
+def install_claude_code(job, workflow="", *, pin_why=""):
+    return reads(
+        (".github/actions/install-claude-code/**", at(job, "./.github/actions/install-claude-code", workflow)),
+        (".claude-code-pin", "`.github/actions/install-claude-code/action.yml#pin=$(<.claude-code-pin)`" + pin_why),
     )
 
 
@@ -519,10 +527,11 @@ CLAUDE_ENVOY_BUILD = reads(
 
 # The build above, and what only the claude-envoy job reads: the Claude Code its live answer test
 # runs, and the fixtures and modules of its other tests. The test job runs none of them.
-CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
-        (".github/actions/install-claude-code/**", at("claude-envoy", "./.github/actions/install-claude-code")),
-        (".claude-code-pin", "`.github/actions/install-claude-code/action.yml#pin=$(<.claude-code-pin)`, the release "
-                             "`packages/claude-envoy/tests/answers-claude.test.ts#print` and `packages/claude-envoy/tests/answers-claude.test.ts#streamSession` runs"),
+CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + install_claude_code(
+    "claude-envoy",
+    pin_why=", the release `packages/claude-envoy/tests/answers-claude.test.ts#print` and "
+            "`packages/claude-envoy/tests/answers-claude.test.ts#streamSession` run",
+) + reads(
         ("packages/envoy-client/test/**", "`packages/claude-envoy/tests/envoy-channel-stall.test.ts#@legion/envoy-client/test/envoy-stack` and tests/agent-stream-reply-grant.test.ts import modules of that directory, and tsc puts them in the claude-envoy program"),
         ("packages/pi-shared/test/image-manifest.ts", "`packages/claude-envoy/tests/legion-tool.test.ts#withImageManifest` imports it from @legion/pi-shared/test/image-manifest"),
         (f"{FIX}/daemon-api/**", "`packages/claude-envoy/tests/legion-claim.test.ts#daemonFixture`, `packages/claude-envoy/tests/legion-pane-mcp.test.ts#daemonFixture` "

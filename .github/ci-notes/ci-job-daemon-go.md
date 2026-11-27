@@ -69,9 +69,10 @@ leg 611 s of job (run 45737777272, jobs 139637308654 and 139637308512). So the p
 three legs, a runner each: leg 1 is cmd/legion's with internal/leakguard, internal/record and
 internal/repocache; leg 2 is internal/store's with the small packages and the race-impossible
 tests, the forced-order tests and Stage 1; leg 3 is internal/workspace, internal/runtime/sandbox,
-internal/workflow, internal/admit, internal/api and the rest, about 874 s of package time over
-four cores, and the stamped shape gate, which reuses the test build of internal/api that leg 3's
-plain step compiled.
+internal/workflow, internal/admit, internal/api and the rest. That is about 924 s of package time
+over four cores: 874 s in those groups and 50 s for internal/conversation/omp and
+internal/conversation/claude in pull-request run 45683245721. Leg 3 also runs the stamped shape
+gate, which reuses the test build of internal/api that leg 3's plain step compiled.
 
 The rules the legs keep:
 
@@ -118,10 +119,11 @@ The rules the legs keep:
 
 What it costs:
 
-- each leg repeats its setup, about 70 s for a plain leg and 100 s for a race leg, and a leg's
-  runner sits partly idle when one package sets its time, so a kind's legs use more runner
-  minutes than one job did: 1,705 runner seconds (29 billed minutes) in merge group 45553934471,
-  1,939 and 2,135 s (37 and 39 billed minutes) in this change's runs 45586895835 and 45601893438;
+- each leg repeats its setup, and a leg's runner sits partly idle when one package sets its time.
+  Setup took about 70 s for a plain leg before it added Bun and Claude Code, and about 100 s for a
+  race leg. A kind's legs use more runner minutes than one job did: 1,705 runner seconds
+  (29 billed minutes) in merge group 45553934471, and 1,939 and 2,135 s (37 and 39 billed minutes)
+  in runs 45586895835 and 45601893438;
 - each of the two jobs that keep the old names is a second wait for a runner, after its kind's
   last leg and before ci-ok can start: in run 45601893438 `daemon-go / daemon-go-race` waited 79 s
   for a runner after the race legs ended at 11:23:39Z, then ran 6 s, and ci-ok started after it,

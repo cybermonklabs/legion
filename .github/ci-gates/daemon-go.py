@@ -8,9 +8,9 @@
 # daemon_go_tests, the list that already stood for exactly this closure while it was aliased
 # into the test filter and gated nothing of its own. The tests
 # the race step does not run are the plugin-pack job's (PLUGIN_PACK_TESTS), whose gate is
-# plugin-pack.py: with them goes the Bun install, which no other test of this module needs, and with
-# that the lockfile and the workspace manifests, and with them skills/ and the prepack script
-# that stages each plugin's partition of it, which no other test of this module reads.
+# plugin-pack.py. That job keeps the frozen workspace install, its lockfile and manifests,
+# and skills/ and the prepack script that stages each plugin's partition of it. No other test
+# of this module reads those inputs. The plain legs use Bun only to install Claude Code.
 # The plain step leaves two tests out as well, internal/supervise's table pins
 # (SUPERVISE_TABLE_TESTS), which the text-check job runs by name: they read that package's
 # source and the source of everything it imports, which their type-checker reads from source
@@ -103,6 +103,7 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
   + ceiling_reads(DAEMON_RACE_LEGS_JOB, DAEMON_FILE)
   + service_settings_reads(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + service_settings_reads(DAEMON_RACE_LEGS_JOB, DAEMON_FILE)
   + install_jj(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + install_omp(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE)
+  + setup_bun(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + install_claude_code(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE)
   + setup_go(DAEMON_PLAIN_LEGS_JOB, f"{DAEMON}/go.mod", DAEMON_FILE))
 GATE = with_reads(GATE, [
     Read('packages/daemon/**', "filter daemon_go_tests held packages/daemon/** by hand before the filters were computed: it selected 171 file(s) no other read of this gate declares", but=('**/*_test.go',)),
