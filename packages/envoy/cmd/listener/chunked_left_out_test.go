@@ -16,16 +16,20 @@ import (
 // is of the fourth kind, one that does not begin with notifications. (*.team.chunked, which as a
 // wildcard matches notifications.team.chunked). The answer's warnings name it, neither record
 // holds it, and a publish on notifications.team.chunked counts no recipient, while a publish on a
-// topic the session's wide wildcard covers counts it once. The control is the same registration
-// with topics short enough to fit in one message. (The fifth kind does not arise at a registration
-// on a stream as this build deploys it: the route takes an uncaptured wildcard pair off first.)
+// topic a wildcard of the session's covers counts it once. That wildcard is a team topic's
+// (notifications.team.counted.>) beside the wide topics: the publish route refuses a
+// notifications.dispatch. topic, which Dispatch alone publishes, so no publish can be on a topic
+// the wide wildcard over the issues covers. The control is the same registration with topics short
+// enough to fit in one message. (The fifth kind does not arise at a registration on a stream as
+// this build deploys it: the route takes an uncaptured wildcard pair off first.)
 func TestAChunkedRecordKeepsNoTopicTheFilterLeavesOut(t *testing.T) {
 	// Not parallel: a registration of about 1.18 MB of topics must finish inside the route's own
 	// 3.5 s budget (sendRequestBudget), and load beside it stretched such a registration past it.
 	const (
-		fourth  = "*.team.chunked"
-		matched = "notifications.team.chunked"
-		counted = "notifications.dispatch.issue.K-0.counted"
+		fourth   = "*.team.chunked"
+		matched  = "notifications.team.chunked"
+		covering = "notifications.team.counted.>"
+		counted  = "notifications.team.counted.k-0"
 	)
 	for _, tc := range []struct {
 		name       string
@@ -39,7 +43,7 @@ func TestAChunkedRecordKeepsNoTopicTheFilterLeavesOut(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			wide := wideTopics(300, tc.tokenBytes, "legion-controller")
 			wide = wide[:len(wide)-1] // no role lane: the session holds no role
-			topics := append(slices.Clone(wide), fourth)
+			topics := append(slices.Clone(wide), covering, fourth)
 			conn := testnats.Connect(t, testnats.URL(t))
 			t.Cleanup(conn.Close)
 			if size, maxPayload := len(mustJSON(t, topics)), int(conn.MaxPayload()); (size > maxPayload) != tc.pastMax {
