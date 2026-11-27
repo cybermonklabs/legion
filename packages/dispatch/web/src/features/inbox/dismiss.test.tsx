@@ -17,6 +17,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, settle } from "../../__tests__/fake-clock";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { pickIn } from "../../__tests__/issue-picks";
 import { answerAskSnoozes, answerInboxDismisses } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -186,6 +187,97 @@ test("the row's Dismiss sends the row's own id and drawn version and takes it ou
   });
   settle.resolve({ dismissed: 1 });
   await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
+});
+
+/** A thread row's own Dismiss, by the row's id. */
+function dismissOf(id: string): HTMLElement {
+  const control = document.querySelector<HTMLElement>(`[data-inbox-dismiss="${id}"]`);
+  if (control === null) throw new Error(`${id} Dismiss missing`);
+  return control;
+}
+
+/** The `detail` of each click the document hears, in order, until `stop`: which click of a
+ *  pointer's run it is, or 0 for a click no pointer made. */
+function clickDetails(): { details: number[]; stop: () => void } {
+  const details: number[] = [];
+  const hear = (event: MouseEvent) => {
+    details.push(event.detail);
+  };
+  document.addEventListener("click", hear, true);
+  return { details, stop: () => document.removeEventListener("click", hear, true) };
+}
+
+// A row's Dismiss takes its row out of the list at once, so the row below moves up under the
+// pointer, and the second click of a double click lands on that row's Dismiss. The control acts on
+// the first click of a pointer's run alone, so the gesture sends one dismiss, of the row pressed,
+// and leaves the row that moved up listed. Every dismiss is one write in turn (`inbox:dismiss`),
+// so a second would be sent once the first has landed.
+test("a double click on a row's Dismiss sends one dismiss, though its second click lands on the Dismiss of the row that moved up", async () => {
+  const user = userEvent.setup();
+  const dismissed = answerInboxDismisses();
+  const landing = Promise.withResolvers<{ dismissed: number }>();
+  dismissed.mockReturnValue(landing.promise);
+  const clicks = clickDetails();
+  try {
+    renderInbox(seeded([replyRow("c1"), replyRow("c9")]));
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
+    // One run of the pointer: the second click is the double click's (`detail` 2).
+    await user.pointer([
+      { keys: "[MouseLeft]", target: dismissOf("reply:c1") },
+      { keys: "[MouseLeft]", target: dismissOf("reply:c9") },
+    ]);
+    await afterFrameAndTasks();
+    expect(clicks.details).toEqual([1, 2]);
+    expect(rowIds()).toEqual(["reply:c9"]);
+
+    await act(async () => {
+      landing.resolve({ dismissed: 1 });
+    });
+    await afterFrameAndTasks();
+    await afterFrameAndTasks();
+    expect(dismissed.mock.calls.map((call) => call[0])).toEqual([
+      { seen_replies: { "reply:c1": SEEN }, threads: ["reply:c1"] },
+    ]);
+  } finally {
+    clicks.stop();
+  }
+});
+
+// A click after the pointer has moved starts a run of its own (`detail` 1), and Enter on a
+// focused Dismiss clicks it with no pointer (`detail` 0): each is a press of its own row, made
+// while the dismisses before it are still out, and each row leaves at once. The writes go one in
+// turn (`inbox:dismiss`), each once the one before it has landed.
+test("a Dismiss clicked after the pointer moved, and one pressed with Enter, each dismiss their own row", async () => {
+  const user = userEvent.setup();
+  const dismissed = answerInboxDismisses();
+  const landing = Promise.withResolvers<{ dismissed: number }>();
+  dismissed.mockReturnValue(landing.promise);
+  const clicks = clickDetails();
+  try {
+    renderInbox(seeded([replyRow("c1"), replyRow("c5"), replyRow("c9")]));
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c5", "reply:c9"]));
+    await user.click(dismissOf("reply:c1"));
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c5", "reply:c9"]));
+    await user.click(dismissOf("reply:c5"));
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c9"]));
+    act(() => dismissOf("reply:c9").focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(rowIds()).toEqual([]));
+    expect(clicks.details).toEqual([1, 1, 0]);
+
+    await act(async () => {
+      landing.resolve({ dismissed: 1 });
+    });
+    await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(3));
+    expect(dismissed.mock.calls.map((call) => call[0])).toEqual(
+      ["reply:c1", "reply:c5", "reply:c9"].map((id) => ({
+        seen_replies: { [id]: SEEN },
+        threads: [id],
+      }))
+    );
+  } finally {
+    clicks.stop();
+  }
 });
 
 test("a refused dismiss puts the row back where it stood and says so", async () => {

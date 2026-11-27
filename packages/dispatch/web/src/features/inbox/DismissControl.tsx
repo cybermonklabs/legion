@@ -45,6 +45,16 @@ export const RowDismissContext = createContext<RowDismiss | undefined>(undefined
  * row they meant to open, and beside the column, on a tablet held wide, in a row they meant to
  * select. The column's own head and the card draw it beside their other controls, where there is
  * room for it. It is held while its write is out (`heldPress`).
+ *
+ * It acts on the first click of a pointer's run of clicks alone (`detail` 1), and on Enter and
+ * Space as ever (`detail` 0). Its press takes the row out of the list at once
+ * (`useInboxDismiss`'s `onMutate`), so the row below moves up under the pointer, and the second
+ * click of a double click would land on that row's Dismiss and dismiss it too: two writes for one
+ * gesture, in every engine at 1440 and 390 px wide. The hold covers only the pressed row's own
+ * control (`pending`), so it cannot stop that click. What this costs: a reader who clicks one
+ * row's Dismiss and then, within the system's double-click time and at the same place, the
+ * Dismiss of the row that moved up into it dismisses only the first. A click after the pointer
+ * has moved starts a run of its own and acts.
  */
 export function DismissControl({
   shown = false,
@@ -61,6 +71,7 @@ export function DismissControl({
   const restoring = dismiss.show === "dismissed";
   const label = restoring ? "Move to Inbox" : "Dismiss";
   const live = dismiss.pending.has(named.id);
+  const press = heldPress(live, () => dismiss.dismiss(named));
   // The label is an `aria-label`, which can hold no markup: it takes the row's one plain-text
   // line (`ThreadLine`) - the projection of the subject, from the same reader that draws the
   // row's own line and with the record that line names (`ThreadTitle`), or a deleted root's
@@ -70,6 +81,7 @@ export function DismissControl({
     <ThreadLine thread={thread}>
       {(line) => (
         <button
+          aria-disabled={press["aria-disabled"]}
           aria-label={`${label}: ${line ?? ""}`}
           className={`min-h-11 shrink-0 text-sm font-medium md:min-h-8 ${linkText} ${linkHoverText} ${
             shown
@@ -77,7 +89,9 @@ export function DismissControl({
               : "opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(any-pointer:coarse)]:opacity-100"
           }`}
           data-inbox-dismiss={named.id}
-          {...heldPress(live, () => dismiss.dismiss(named))}
+          onClick={(event) => {
+            if (event.detail <= 1) press.onClick();
+          }}
           type="button"
         >
           {live ? (restoring ? "Moving…" : "Dismissing…") : label}
