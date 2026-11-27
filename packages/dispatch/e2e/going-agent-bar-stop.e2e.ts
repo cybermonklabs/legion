@@ -1,3 +1,6 @@
+/** The row reads the server's stop of a Do run whose conversation the bar keeps: an Esc in the
+ *  bar's empty box is the server's stop of a run whose model call the fake records its caller
+ *  leaving, and the run's state the bar draws is the one the server keeps. */
 import { createIssue, createProject } from "./api";
 import {
   callTool,
