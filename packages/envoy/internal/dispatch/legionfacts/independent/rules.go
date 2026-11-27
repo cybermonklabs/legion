@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -516,11 +517,14 @@ const (
 	fromStatus
 )
 
-// logMark is one moment the event log says the issue's phase changed, and what says so.
+// logMark is one moment the event log says the issue's phase changed, what says so, and its rank:
+// where the phase stands on the issue's line at that moment (lineAt), -1 for a phase the line
+// does not hold.
 type logMark struct {
 	at     time.Time
 	source int
 	phase  string
+	rank   int
 }
 
 // rolePhase is the phase each role's first event on the issue starts, until the issue is first
@@ -536,23 +540,105 @@ var rolePhase = map[string]string{
 	"merger":      phaseMerging,
 }
 
-// handoffStarts is the phase each handoff word starts: the planner's `plan` starts implementing,
-// the implementer's `implement` starts testing, the tester's `test` starts reviewing and the
-// reviewer's `review` starts accepting. "A handoff starts the next phase", so no hour falls
-// between two phases. A word Legion never writes starts none.
-var handoffStarts = map[string]string{
-	"plan":      phaseImplementing,
-	"implement": phaseTesting,
-	"test":      phaseReviewing,
-	"review":    phaseAccepting,
+// handoffEnds is the phase each handoff word ends: the planner's `plan` ends planning, the
+// implementer's `implement` implementing, the tester's `test` testing and the reviewer's `review`
+// reviewing. A word Legion never writes ends none.
+var handoffEnds = map[string]string{
+	"plan":      phasePlanning,
+	"implement": phaseImplementing,
+	"test":      phaseTesting,
+	"review":    phaseReviewing,
 }
 
-// phaseOrder is the order the workflow moves an issue through the phases the event log names.
-// One rule reads it: a role that speaks again after its phase has passed does not send the issue
-// back to it.
+// handoffStart is the phase a handoff of word starts on line, the issue's line at the handoff
+// (lineAt). "A handoff starts the next phase": the phase after the one the word ends, so no hour
+// falls between two phases. On the default steps' line `plan` starts implementing, `implement`
+// testing, `test` reviewing and `review` accepting, and the handoff of a plan's last step starts
+// retro. The handoff of a phase the line does not hold starts none.
+func handoffStart(line []string, word string) (string, bool) {
+	ends, known := handoffEnds[word]
+	at := slices.Index(line, ends)
+	if !known || at < 0 || at+1 >= len(line) {
+		return "", false
+	}
+	return line[at+1], true
+}
+
+// phaseOrder is the order the default steps move an issue through the phases the event log
+// names, the line of an issue this reading reads by the default steps (lineAt). Two rules read an
+// issue's line: the phase a handoff starts (handoffStart), and the rank that keeps a role that
+// speaks again after its phase has passed from sending the issue back to it (phaseSteps). The
+// phase `needs_review` names reads it too (statusPhase).
 var phaseOrder = []string{
 	phaseDesign, phasePlanning, phaseImplementing, phaseTesting, phaseReviewing,
 	phaseAccepting, phaseRetro, phaseMerging,
+}
+
+// stepPhase is the phase each step of a plan is worked in, by the role the step names before its
+// key (`acceptance` of `acceptance:owner`): the planner's planning, the implementer's
+// implementing, the tester's testing, the reviewer's reviewing and the owner's acceptance,
+// accepting.
+var stepPhase = map[string]string{
+	"planner":     phasePlanning,
+	"implementer": phaseImplementing,
+	"tester":      phaseTesting,
+	"reviewer":    phaseReviewing,
+	"acceptance":  phaseAccepting,
+}
+
+// planLine is the line a plan whose one task holds these steps orders the issue's phases by:
+// "design, then the phase of each step of the plan's one task in the task's order, then retro and
+// merging". It is nil, which reads the default steps' line, where "a step that names no phase
+// reads the default steps", where the task holds no step and so names no phase at all, and where
+// the steps put the phases in the default steps' own order.
+func planLine(steps []string) []string {
+	if len(steps) == 0 {
+		return nil
+	}
+	line := make([]string, 0, len(steps)+3)
+	line = append(line, phaseDesign)
+	for _, step := range steps {
+		role, _, _ := strings.Cut(step, ":")
+		phase, names := stepPhase[role]
+		if !names {
+			return nil
+		}
+		line = append(line, phase)
+	}
+	line = append(line, phaseRetro, phaseMerging)
+	if slices.Equal(line, phaseOrder) {
+		return nil
+	}
+	return line
+}
+
+// lineAt is the issue's line at the moment at, the order its plan put the phases in then: "The
+// plan is that of the newest run whose plan was made at or before the moment, or the first run's
+// plan before every plan", since a run's design comes before its plan is written. The versions
+// are walked in their order (readPlans), the first run's first, and the walk stops at the first
+// version made after the moment. "An issue with no plan, a plan whose tasks are not exactly one,
+// or a step that names no phase reads the default steps" (readPlans, planLine).
+func (i *issue) lineAt(at time.Time) []string {
+	if len(i.plans) == 0 {
+		return phaseOrder
+	}
+	inForce := i.plans[0]
+	for _, later := range i.plans[1:] {
+		if later.made.After(at) {
+			break
+		}
+		inForce = later
+	}
+	if inForce.line == nil {
+		return phaseOrder
+	}
+	return inForce.line
+}
+
+// otherSteps is whether the reading reads the issue by a plan whose steps are not the default
+// steps: a version of its plan puts the phases on a line of its own (planLine).
+func (i *issue) otherSteps() bool {
+	return slices.ContainsFunc(i.plans, func(version plan) bool { return version.line != nil })
 }
 
 // loggedPhases is the timeline the event log's steps draw up to until: "Each phase ends, and the
@@ -579,9 +665,12 @@ func loggedPhases(steps []logMark, until time.Time) []phaseSpan {
 func (r *reading) logMarks(key string) []logMark {
 	held := r.population.issues[key]
 	var marks []logMark
+	add := func(at time.Time, source int, line []string, phase string) {
+		marks = append(marks, logMark{at: at, source: source, phase: phase, rank: slices.Index(line, phase)})
+	}
 	for role, at := range held.firstRoleEvent {
 		if phase, works := rolePhase[role]; works {
-			marks = append(marks, logMark{at: at, source: fromRole, phase: phase})
+			add(at, fromRole, held.lineAt(at), phase)
 		}
 	}
 	// "An issue has a design phase when a session titled `Legion architect · <its own key>`
@@ -592,11 +681,12 @@ func (r *reading) logMarks(key string) []logMark {
 		if slots := r.slotStretches(key); len(slots) > 0 && slots[0].from.Before(at) {
 			at = slots[0].from
 		}
-		marks = append(marks, logMark{at: at, source: fromRole, phase: phaseDesign})
+		add(at, fromRole, held.lineAt(at), phaseDesign)
 	}
 	for _, handed := range held.handoffs {
-		if phase, starts := handoffStarts[handed.phase]; starts {
-			marks = append(marks, logMark{at: handed.at, source: fromHandoff, phase: phase})
+		line := held.lineAt(handed.at)
+		if phase, starts := handoffStart(line, handed.phase); starts {
+			add(handed.at, fromHandoff, line, phase)
 		}
 	}
 	previous := ""
@@ -604,8 +694,9 @@ func (r *reading) logMarks(key string) []logMark {
 		if recorded.value == previous {
 			continue
 		}
-		if phase, names := statusPhase(previous, recorded.value); names {
-			marks = append(marks, logMark{at: recorded.at, source: fromStatus, phase: phase})
+		line := held.lineAt(recorded.at)
+		if phase, names := statusPhase(previous, recorded.value, line); names {
+			add(recorded.at, fromStatus, line, phase)
 		}
 		previous = recorded.value
 	}
@@ -616,7 +707,7 @@ func (r *reading) logMarks(key string) []logMark {
 		if source := a.source - b.source; source != 0 {
 			return source
 		}
-		return phaseRank(a.phase) - phaseRank(b.phase)
+		return a.rank - b.rank
 	})
 	return marks
 }
@@ -628,12 +719,14 @@ func phaseSteps(marks []logMark) []logMark {
 	reached := -1
 	sentBack := false
 	for _, one := range marks {
-		rank := phaseRank(one.phase)
+		rank := one.rank
 		// A role's first event starts that role's phase only where the issue has not reached
-		// that phase already: a role that speaks again after its phase has passed does not send
-		// the issue back, while a handoff and a status do. And once the issue has been sent
-		// back no role's first event starts a phase at all: "After a send-back, the next phases
-		// come from status writes and handoffs" (the base's rule since 687c7048d5).
+		// that phase already, by the rank the issue's line gives it at that moment (lineAt): a
+		// role that speaks again after its phase has passed does not send the issue back, while a
+		// handoff and a status do, and a role whose phase the line does not hold starts none. And
+		// once the issue has been sent back no role's first event starts a phase at all: "After a
+		// send-back, the next phases come from status writes and handoffs" (the base's rule since
+		// 687c7048d5).
 		if one.source == fromRole && (sentBack || rank <= reached) {
 			continue
 		}
@@ -660,25 +753,28 @@ func phaseSteps(marks []logMark) []logMark {
 	return steps
 }
 
-// phaseRank is where a phase stands in the workflow's order, and -1 for a phase the event log
-// never names.
-func phaseRank(phase string) int {
-	return slices.Index(phaseOrder, phase)
-}
-
-// statusPhase is the phase a status change sets for an issue the sampler never saw: "After a
-// send-back, the Dispatch status sets the phase: `in_progress` after `testing` or `needs_review`
-// is implementing, `testing` is testing, and `needs_review` is reviewing until the `review`
-// handoff of that round, then accepting until the status changes."
+// statusPhase is the phase a status change sets for an issue the sampler never saw, on the
+// issue's line at that moment (lineAt): "After a send-back, the Dispatch status sets the phase:
+// `in_progress` after `testing` or `needs_review` is implementing, `testing` is testing, and
+// `needs_review` is reviewing until the `review` handoff of that round, then accepting until the
+// status changes." The workflow writes `needs_review` for reviewing and for accepting alike, so it
+// names the first of the two the line holds, and reviewing where it holds neither: reviewing on
+// the default steps' line, and accepting on a plan whose owner's acceptance comes before its
+// reviewer or that has no reviewer.
 //
 // The statuses that name no phase — `todo`, `triage`, `backlog`, `icebox` and `done` — leave the
 // phase as it was, and so does the `in_progress` the workflow writes when it admits an issue:
 // "A status write such as the `in_progress` of admission starts no phase."
-func statusPhase(previous, status string) (string, bool) {
+func statusPhase(previous, status string, line []string) (string, bool) {
 	switch status {
 	case "testing":
 		return phaseTesting, true
 	case "needs_review":
+		for _, phase := range line {
+			if phase == phaseReviewing || phase == phaseAccepting {
+				return phase, true
+			}
+		}
 		return phaseReviewing, true
 	case "retro":
 		return phaseRetro, true

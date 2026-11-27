@@ -1,6 +1,7 @@
 package independent
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,8 +15,9 @@ import (
 // read.go is everything this reading takes out of the database, and the shape it keeps it in.
 // Three tables hold what R1's words are written over: `events` is what Dispatch recorded of an
 // issue, `handoffs` is each phase handed on, and `legion_observations` is what the daemon's
-// sampler saw. The reading reads them itself, with statements of its own, so a fault in another
-// reader's statements cannot reach it.
+// sampler saw. Two more hold the plan each run of an issue ran, which orders the issue's phases
+// before the sampler saw it: `workflow_nodes` and `workflow_tuples`. The reading reads them
+// itself, with statements of its own, so a fault in another reader's statements cannot reach it.
 
 // mark is one value as of one moment: a status an event carried, or a field the sampler recorded.
 type mark struct {
@@ -27,6 +29,16 @@ type mark struct {
 type handoff struct {
 	phase string
 	at    time.Time
+}
+
+// plan is one version of the plan of one run of an issue: the run's generation, the moment the
+// version was written, the plan's id, and the order it puts the phases the event log names in
+// (planLine), nil where it reads the default steps' order.
+type plan struct {
+	generation int64
+	made       time.Time
+	id         string
+	line       []string
 }
 
 // issue is one issue of the project with everything the rules below read of it.
@@ -48,6 +60,9 @@ type issue struct {
 	// askTurns is the stretches an ask opened on this issue by a Legion session of its tree
 	// stood on a person's turn.
 	askTurns []span
+	// plans is every version of the plan of every run of the issue made by the window's end, in
+	// the order the rule walks them (lineAt).
+	plans []plan
 
 	// tree is the tree root the daemon named for the issue, empty where it named none, and
 	// reported is whether the daemon reports the issue at all.
@@ -112,6 +127,9 @@ func readPopulation(ctx context.Context, db Querier, scope Scope, window Window)
 		return nil, err
 	}
 	if err := held.readHandoffs(ctx, q); err != nil {
+		return nil, err
+	}
+	if err := held.readPlans(ctx, q); err != nil {
 		return nil, err
 	}
 	if err := held.readObservations(ctx, q); err != nil {
@@ -362,6 +380,61 @@ func (p *population) readHandoffs(ctx context.Context, db Querier) error {
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the handoffs of %s: %w", p.scope.Project, err)
+	}
+	return nil
+}
+
+// readPlans reads every version of the plan of every run of the project's issues made by
+// window.To, each issue's in the order the rule walks them (lineAt): by the run's generation,
+// then by the moment the version was written, then by the plan's id. The daemon writes a run's
+// plan as one node of kind `plan` in workflow_nodes, part of its issue by a `part_of` tuple in
+// workflow_tuples, and each version of its tasks as a `tasks` value tuple of that node, stamped
+// with the moment of the write. A node whose tasks no tuple holds is read from its own row, made
+// when the node was.
+func (p *population) readPlans(ctx context.Context, db Querier) error {
+	rows, err := db.Query(ctx, `
+		select t.to_id, n.id, coalesce((n.attributes->>'generation')::bigint, 0),
+			coalesce(v.to_id, n.attributes->>'tasks', '[]'), coalesce(v.at, n.made_at)
+		from issues i
+		join workflow_tuples t on t.to_kind = 'issue' and t.to_id = i.key and t.kind = 'part_of'
+			and t.from_kind = 'plan' and t.asserted
+		join workflow_nodes n on n.kind = t.from_kind and n.id = t.from_id
+		left join workflow_tuples v on v.from_kind = n.kind and v.from_id = n.id
+			and v.kind = 'tasks' and v.to_kind = 'value' and v.asserted
+		where i.project_key = $1 and coalesce(v.at, n.made_at) <= $2
+	`, p.scope.Project, p.window.To)
+	if err != nil {
+		return fmt.Errorf("read the plans of %s: %w", p.scope.Project, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, tasks string
+		var one plan
+		if err := rows.Scan(&key, &one.id, &one.generation, &tasks, &one.made); err != nil {
+			return fmt.Errorf("scan a plan of %s: %w", p.scope.Project, err)
+		}
+		held := p.issues[key]
+		if held == nil {
+			continue
+		}
+		var read []struct {
+			Steps []string `json:"steps"`
+		}
+		if err := json.Unmarshal([]byte(tasks), &read); err != nil {
+			return fmt.Errorf("read the tasks of plan %s of %s: %w", one.id, key, err)
+		}
+		if len(read) == 1 {
+			one.line = planLine(read[0].Steps)
+		}
+		held.plans = append(held.plans, one)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read the plans of %s: %w", p.scope.Project, err)
+	}
+	for _, held := range p.issues {
+		slices.SortFunc(held.plans, func(a, b plan) int {
+			return cmp.Or(cmp.Compare(a.generation, b.generation), a.made.Compare(b.made), cmp.Compare(a.id, b.id))
+		})
 	}
 	return nil
 }

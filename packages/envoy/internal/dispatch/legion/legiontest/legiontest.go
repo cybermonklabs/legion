@@ -30,8 +30,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
 // askNamespace is the uuid namespace every ask id this rig writes is derived under (askID), so
@@ -42,6 +45,14 @@ var askNamespace = uuid.MustParse("6f1b4b0e-2f1a-4a5f-9a3d-8c7c1f0b2d41")
 // commentNamespace is the uuid namespace every comment id this rig writes is derived under
 // (CommentID), as askNamespace is the asks'.
 var commentNamespace = uuid.MustParse("cd835789-4cf8-41e1-9b33-90c563970371")
+
+// planNamespace is the uuid namespace the ids of Spec.PlannedTree's plans and of the documents
+// they were read from are derived under (planWrite), as askNamespace is the asks'.
+var planNamespace = uuid.MustParse("4e45026c-8936-49c3-8af1-4b6b3b661afd")
+
+// plannedSteps is the one task of the plan each issue of Spec.PlannedTree's tree ran: no planner
+// and no tester, and the reviewer before the owner's acceptance.
+var plannedSteps = []string{"implementer", "reviewer", "acceptance:owner"}
 
 const (
 	// defaultProject is the project a Spec that names none is written under. The key is what
@@ -135,6 +146,16 @@ type Spec struct {
 	// on with every other child closed, so hours 44 to 48 stand as nonzero `awaiting_children`
 	// hours on the root. Off by default so the golden files keep their recorded rows.
 	AwaitingChildren bool
+	// PlannedTree adds one tree the sampler never saw, older than every other tree and numbered
+	// after every other issue of the history, whose issues ran a plan of the steps
+	// plannedSteps: each issue Legion works in it carries the plan of its one run, written as the
+	// daemon writes it (workflowstore.PutPlan) at the hour its work starts. Before observations
+	// the facts order an issue's phases by its plan, so the tree's events give hours that the
+	// default steps' order would put in another phase: the implemented child's `implement`
+	// handoff starts reviewing, not testing, and its tester's first event and `test` handoff
+	// start nothing, so its three hours from that handoff to the `test` handoff are reviewing
+	// rather than testing. Off by default so the golden files keep their recorded rows.
+	PlannedTree bool
 }
 
 // spacing is how long before the tree after it each tree opens.
@@ -153,6 +174,7 @@ type Fixture struct {
 	// tree's root, then its five children, then, under Spec.Filings, the three issues Filings
 	// writes for that tree (its implementer's, its reviewer's and the controller's). Those three
 	// are numbered after every tree's issues, so under Filings the keys need not be in number order.
+	// Spec.PlannedTree's tree comes last, and is numbered after all of them.
 	Keys []string
 	// Roots is each tree's root, in the same order.
 	Roots []string
@@ -168,6 +190,9 @@ type Fixture struct {
 	// NoPhaseWork is the keys no Legion role ever worked, which get no facts entry: that is what
 	// makes "has an entry" mean "Legion worked it".
 	NoPhaseWork []string
+	// Planned is the keys of the issues of Spec.PlannedTree's tree that ran its plan, which are
+	// the ones of that tree that carry Legion phase work.
+	Planned []string
 	// Phases is the keys the sampler recorded in each phase, by the daemon's own phase name. A
 	// caller reads it to state which of legion.PhaseColumns the history reaches.
 	Phases map[string][]string
@@ -231,6 +256,9 @@ func Write(ctx context.Context, pool *store.Pool, spec Spec) (Fixture, error) {
 	for index := range spec.Trees {
 		run.tree(index)
 	}
+	if spec.PlannedTree {
+		run.tree(spec.Trees)
+	}
 	for index, key := range run.rows.issueKeys {
 		closed := run.rows.issueClosed[index]
 		if closed != nil && run.phaseWork[key] && (run.fixture.FirstFinished.IsZero() || closed.Before(run.fixture.FirstFinished)) {
@@ -245,8 +273,8 @@ func Write(ctx context.Context, pool *store.Pool, spec Spec) (Fixture, error) {
 
 // seeding is one run of Write: the spec it was given, what it has written so far, the next event
 // sequence number of each issue, which events.seq is unique on, the title it wrote each issue
-// with, the issues it has already recorded Legion phase work for, and whether the sampler saw the
-// tree it is writing.
+// with, the issues it has already recorded Legion phase work for, whether the sampler saw the
+// tree it is writing, and whether that tree is Spec.PlannedTree's.
 type seeding struct {
 	spec      Spec
 	fixture   Fixture
@@ -255,10 +283,12 @@ type seeding struct {
 	titles    map[string]string
 	phaseWork map[string]bool
 	observed  bool
+	planned   bool
 }
 
 // rows is the five tables one seed writes beside its project's row (issues, the pull requests,
-// events, handoffs and observations), each held as the columns of one batched insert.
+// events, handoffs and observations), each held as the columns of one batched insert, and the
+// plans of Spec.PlannedTree, each the issue that ran it and the moment its run's work started.
 type rows struct {
 	issueKeys       []string
 	issueNumbers    []int32
@@ -294,6 +324,9 @@ type rows struct {
 	prIssues  []string
 	prCreated []time.Time
 	prMerged  []time.Time
+
+	planIssues []string
+	planAt     []time.Time
 }
 
 // SessionActor is the actor JSON of a Legion role's session working issue, carrying the title
@@ -331,9 +364,11 @@ func (s *seeding) tree(index int) {
 	at := func(hours float64) time.Time {
 		return start.Add(time.Duration(hours * float64(time.Hour)))
 	}
-	number := s.spec.IssueOffset + index*issuesPerTree + 1
-	// The oldest Spec.Unobserved trees are the ones the sampler never saw.
+	number, extra := s.numbers(index)
+	// The oldest Spec.Unobserved trees are the ones the sampler never saw, and so is the tree of
+	// Spec.PlannedTree, at the index after every other tree's.
 	s.observed = index < s.spec.Trees-s.spec.Unobserved
+	s.planned = index == s.spec.Trees
 
 	// The root. Its architect designs it while it holds a slot, its planner plans it, it waits on
 	// its children through its accepting phase, a person answers its ask, and its merger closes
@@ -345,6 +380,7 @@ func (s *seeding) tree(index int) {
 	s.event(root, "issue.created", person, `{"status":"triage"}`, at(0))
 	s.handOver(root, person, at(1))
 	s.roleEvent(root, "architect", "comment.created", `{"status":"in_progress"}`, at(1))
+	s.ran(root, at(1))
 	s.roleEvent(root, "planner", "comment.created", `{}`, at(6))
 	s.handoff(root, "plan", "planner", at(8))
 	s.ask(root, "architect", at(30), at(34))
@@ -390,6 +426,7 @@ func (s *seeding) tree(index int) {
 	s.event(implemented, "issue.created", SessionActor("architect", root), filing(root), at(2))
 	s.handOver(implemented, SessionActor("architect", root), at(3))
 	s.roleEvent(implemented, "implementer", "comment.created", `{"status":"in_progress"}`, at(4))
+	s.ran(implemented, at(4))
 	s.handoff(implemented, "implement", "implementer", at(12))
 	// Under Spec.InBacklogOrIcebox a person puts an even tree's implemented child in `icebox`
 	// between its implementer's handoff and its tester.
@@ -425,6 +462,7 @@ func (s *seeding) tree(index int) {
 	s.event(reviewed, "issue.created", SessionActor("architect", root), filing(root), at(5))
 	s.handOver(reviewed, SessionActor("architect", root), at(6))
 	s.roleEvent(reviewed, "implementer", "comment.created", `{"status":"in_progress"}`, at(10))
+	s.ran(reviewed, at(10))
 	// Under Spec.InBacklogOrIcebox the root's architect moves an odd tree's reviewed child to
 	// `backlog` for three hours of its implementing, then back to `in_progress`.
 	backlog := s.spec.InBacklogOrIcebox && index%2 == 1
@@ -465,6 +503,7 @@ func (s *seeding) tree(index int) {
 	s.event(open, "issue.created", SessionActor("architect", root), filing(root), at(8))
 	s.handOver(open, SessionActor("architect", root), at(9))
 	s.roleEvent(open, "implementer", "comment.created", `{"status":"in_progress"}`, at(12))
+	s.ran(open, at(12))
 	s.event(open, "issue.updated", person, `{"status":"backlog"}`, at(20))
 	s.event(open, "issue.updated", person, `{"status":"in_progress"}`, at(26))
 	s.claim(open, "implementer", at(12), at(20))
@@ -485,6 +524,7 @@ func (s *seeding) tree(index int) {
 	s.event(instant, "issue.created", person, `{"status":"triage"}`, at(46))
 	s.handOver(instant, person, at(46))
 	s.handoff(instant, "implement", "implementer", at(46))
+	s.ran(instant, at(46))
 	s.event(instant, "issue.closed", person, `{"status":"done"}`, at(46))
 
 	// The follow-up a person filed and closed. No role session wrote on it and it carries no
@@ -495,9 +535,8 @@ func (s *seeding) tree(index int) {
 	s.event(untouched, "issue.closed", person, `{"status":"done"}`, at(52))
 
 	// Under Spec.Filings, one filing of each class but the architect's at design, each numbered
-	// after every tree's issues and closed by a person an hour after it was filed.
+	// after every tree's issues (numbers) and closed by a person an hour after it was filed.
 	if s.spec.Filings {
-		extra := s.spec.IssueOffset + s.spec.Trees*issuesPerTree + index*filingsPerTree + 1
 		// Into the tree, under the implemented child, after its implementer's first event.
 		later := s.issue(extra, "A follow-up the implementer filed", implemented, 3, at(10), new(at(11)))
 		s.event(later, "issue.created", SessionActor("implementer", implemented),
@@ -517,6 +556,22 @@ func (s *seeding) tree(index int) {
 
 // filingsPerTree is how many issues Spec.Filings files in each tree.
 const filingsPerTree = 3
+
+// numbers is the first issue number of the tree at index and the first number of the issues
+// Spec.Filings files in it. The trees take the numbers from Spec.IssueOffset+1 in index order,
+// and the filings the numbers after every tree's issues. Spec.PlannedTree's tree, at index
+// Spec.Trees, takes the numbers after all of those, and its own filings the numbers after its
+// issues, so no history it is added to changes a number.
+func (s *seeding) numbers(index int) (tree, filed int) {
+	after := s.spec.IssueOffset + s.spec.Trees*issuesPerTree
+	if index < s.spec.Trees {
+		return s.spec.IssueOffset + index*issuesPerTree + 1, after + index*filingsPerTree + 1
+	}
+	if s.spec.Filings {
+		after += s.spec.Trees * filingsPerTree
+	}
+	return after + 1, after + issuesPerTree + 1
+}
 
 // controller is the actor of the project's Legion controller session, titled as Legion titles it
 // (`Legion controller · <PROJECT>`).
@@ -710,6 +765,37 @@ func (s *seeding) carriesPhaseWork(issue string) {
 	s.fixture.PhaseWork = append(s.fixture.PhaseWork, issue)
 }
 
+// ran records that issue, of Spec.PlannedTree's tree, ran its plan from at, the moment its run's
+// work started and the daemon wrote the plan; write stores it as the daemon does (planWrite). An
+// issue of any other tree ran no plan this history writes.
+func (s *seeding) ran(issue string, at time.Time) {
+	if !s.planned {
+		return
+	}
+	s.rows.planIssues = append(s.rows.planIssues, issue)
+	s.rows.planAt = append(s.rows.planAt, at)
+	s.fixture.Planned = append(s.fixture.Planned, issue)
+}
+
+// planWrite is the plan the daemon writes for the first run of issue whose owner gave a plan of
+// the steps plannedSteps: the source owner, version 1 of the owner's document, and one task. The
+// plan's id and the document's are uuids derived from the issue's key under planNamespace, so two
+// seedings of one history write one plan of each issue.
+func (s *seeding) planWrite(issue string) workflowstore.PlanWrite {
+	return workflowstore.PlanWrite{
+		ID:         uuid.NewSHA1(planNamespace, []byte(issue)).String(),
+		Issue:      issue,
+		Project:    &s.spec.Project,
+		Source:     new(workflowstore.PlanSourceOwner),
+		Generation: new(int64(1)),
+		Document: workflowstore.PlanDocument{
+			ArtifactID: uuid.NewSHA1(planNamespace, []byte(issue+"/document")).String(),
+			Version:    1,
+		},
+		Tasks: []workflowstore.PlanTask{{ID: "work", Steps: plannedSteps}},
+	}
+}
+
 // observe writes one observation of one field of one issue, as the sampler records a value it
 // found had moved.
 func (s *seeding) observe(issue, field, value string, at time.Time) {
@@ -773,9 +859,11 @@ func (s *seeding) waiting(issue, kind string, since, answered time.Time) {
 // write stores everything the trees built, one statement per table. Each statement takes its
 // table's columns as arrays and unnests them, so a history of thousands of rows costs nine round
 // trips (the project's row, four tables, the observations' transaction of three and one read of
-// whether the database has a keyword fill) rather than thousands. The project's row is kept where
-// it exists already; one it makes names alice, the history's person, as its default assignee, the
-// column every project fills (store migration 20261111210103). Each issue's last_seq is the seq of
+// whether the database has a keyword fill) rather than thousands. Spec.PlannedTree's five plans
+// add one transaction of their own, since a plan is a node with its tuples and only
+// workflowstore.PutPlan writes one. The project's row is kept where it exists already; one it
+// makes names alice, the history's person, as its default assignee, the column every project
+// fills (store migration 20261111210103). Each issue's last_seq is the seq of
 // the last event written of it, 0 for one with none: an event the server writes takes the issue's
 // last_seq + 1, and events_issue_key_seq_key holds one event to each, so an issue left at 0 beside
 // events 1..n would refuse the next write the API makes to it.
@@ -854,6 +942,21 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 			as seeded(issue, phase, author, at)`,
 		s.rows.handoffIssues, s.rows.handoffPhases, s.rows.handoffAuthors, s.rows.handoffAt); err != nil {
 		return err
+	}
+	// Spec.PlannedTree's plans, each written as the daemon writes it, by the project's daemon
+	// session at the moment its run's work started.
+	if len(s.rows.planIssues) > 0 {
+		daemon := model.Actor{Kind: "session", ID: ciphertoken.LegionDaemonSessionPrefix + s.spec.Project}
+		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			for index, issue := range s.rows.planIssues {
+				if _, err := workflowstore.PutPlan(ctx, tx, s.planWrite(issue), daemon, s.rows.planAt[index]); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			return fmt.Errorf("write the plans of %s: %w", s.spec.Project, err)
+		}
 	}
 	// The observations go in as every insert into legion_observations does: under the observations'
 	// lock (legion.QueueLockObservations), held to its own transaction's commit, since a history
