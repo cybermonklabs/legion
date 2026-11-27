@@ -79,6 +79,15 @@ const TWO_STEPS: readonly string[] = [
   `    ${MIDDLE}: [${WEAK}]`,
 ];
 
+/** How many requests the host sends the model a classifier refused before any output, before it
+ * walks its own chain: the refused one and the `CLASSIFIER_REFUSAL_SAME_MODEL_RETRIES` it sends
+ * again at once (two, `session/refusal-retries.ts` at the pinned tag). A refusal after streamed
+ * text is not sent again. */
+const REFUSED_SENDS = 3;
+
+/** The models of the first `REFUSED_SENDS` requests a pre-output refusal of `model` takes. */
+const refusedSends = (model: string): string[] => Array<string>(REFUSED_SENDS).fill(model);
+
 /**
  * The first wait a refusal of one selector buys, through `LEGION_REFUSAL_COOLDOWN_MS`
  * (`fallbackCooldownLimits`): seconds here, an hour in a deployment, so every case below runs
@@ -433,24 +442,28 @@ test.skipIf(skip)(
   "a refusal before any output is retried on the chain's next model, which is the host's own walk",
   async () => {
     const pane = await fallbackPane({
-      // One assignment, one run: the host's replay of the refused turn and every turn after it
-      // ask the gateway again, a second apart, while the session is on the weaker model, so no
-      // step of the case falls between the refusal and the return. The run ends at its first
-      // request to any other model: it ends on the return, whenever that comes, and a session
-      // that never comes back is left to the test runner's timeout.
+      // One assignment, one run: the host's sends of the refused turn, its replay on the weaker
+      // model and every turn after it ask the gateway again, a second apart, while the session is
+      // on the weaker model, so no step of the case falls between the refusal and the return. The
+      // run ends at its first request to any other model: it ends on the return, whenever that
+      // comes, and a session that never comes back is left to the test runner's timeout.
       prompt: ["Start FALL-1."],
       answer: (model, nth) => {
-        if (nth === 1) return refuses("refusal_1");
+        if (nth <= REFUSED_SENDS) return refuses(`refusal_${nth}`);
         return model === "weak-model"
           ? replies([sleeps(1)], `ping_${nth}`)
           : replies([{ type: "text", text: "Done." }], `msg_${nth}`);
       },
     });
 
-    expect(pane.models().slice(0, 2)).toEqual(["strong-model", "weak-model"]);
-    // One assignment, two requests: the host replayed the refused turn itself, which it may do
+    expect(pane.models().slice(0, REFUSED_SENDS + 1)).toEqual([
+      ...refusedSends("strong-model"),
+      "weak-model",
+    ]);
+    // One assignment, and every request of it the same turn: the host sent the refused turn to
+    // the stronger model again and then replayed it on the weaker one itself, which it may do
     // because nothing of it had been committed, rather than the plugin moving a later turn.
-    expect(userText(pane.turns()[1] as Request)).toContain("Start FALL-1.");
+    expect(userText(pane.turns()[REFUSED_SENDS] as Request)).toContain("Start FALL-1.");
 
     // The host walked its own chain, and the host's replay of the turn succeeded, so the settled
     // turn reads clean and only the fallback event itself says a filter refused the session. The
@@ -472,7 +485,7 @@ test.skipIf(skip)(
     const timeline = await pane.modelTimeline();
     expect(timeline.map((change) => change.value)).toEqual([STRONG, WEAK, STRONG]);
     expect(timeline[2]?.at).toBeGreaterThanOrEqual(dueAt);
-    const waiting = pane.served.slice(1).filter((turn) => turn.at < dueAt);
+    const waiting = pane.served.slice(REFUSED_SENDS).filter((turn) => turn.at < dueAt);
     expect(waiting.map((turn) => turn.model)).not.toContain("strong-model");
     // And the session does come back, once the wait is over.
     expect(pane.returnedAt(dueAt)).toBeDefined();
@@ -497,13 +510,13 @@ test.skipIf(skip)(
             `msg_${nth}`
           );
         }
-        // Refused before any output: the host walks its own chain to the middle model and
-        // replays the turn there.
-        if (nth === 2) return refuses("refusal_1");
+        // Refused before any output: the host sends the turn to the stronger model again, then
+        // walks its own chain to the middle model and replays the turn there.
+        if (nth <= 1 + REFUSED_SENDS) return refuses(`refusal_${nth}`);
         // The replay is refused after text, which the host leaves where it is, and the turn ends
         // waiting on the job's result: the plugin's own walk takes it from the middle model to
         // the weaker one.
-        if (nth === 3) return refuses("refusal_2", { text: "Looking at it." });
+        if (nth === 2 + REFUSED_SENDS) return refuses("refusal_middle", { text: "Looking at it." });
         // The job's result starts a run that asks the gateway every second while the session is
         // on the weaker model, and ends at its first request to any other: on the return, or at
         // once when the result comes after it. A session that never comes back is left to the
@@ -514,8 +527,12 @@ test.skipIf(skip)(
       },
     });
 
-    // The job's start, the refused turn, and the host's replay of it on the middle model.
-    expect(pane.models().slice(0, 3)).toEqual(["strong-model", "strong-model", "middle-model"]);
+    // The job's start, the refused turn's sends, and the host's replay of it on the middle model.
+    expect(pane.models().slice(0, 2 + REFUSED_SENDS)).toEqual([
+      "strong-model",
+      ...refusedSends("strong-model"),
+      "middle-model",
+    ]);
     const states = await pane.cooldowns();
     const armed = states.findLast((state) => state.arming !== undefined)?.arming;
     // The defect this case is the proof of: the plugin's own walk armed the return on the model
@@ -526,7 +543,7 @@ test.skipIf(skip)(
     expect(states.findLast((state) => state.arming !== undefined)?.levels).toEqual({
       [STRONG]: 3,
     });
-    const refusedAt = pane.served[2]?.at ?? 0;
+    const refusedAt = pane.served[1 + REFUSED_SENDS]?.at ?? 0;
     const dueAt = armed?.dueAt ?? 0;
     expect(dueAt - refusedAt).toBeGreaterThanOrEqual(2 * COOLDOWN_MS);
     // Nothing went back before that wait, and what the session went back to is the stronger
@@ -538,10 +555,10 @@ test.skipIf(skip)(
     const timeline = await pane.modelTimeline();
     expect(timeline.map((change) => change.value)).toEqual([STRONG, MIDDLE, WEAK, STRONG]);
     expect(timeline[3]?.at).toBeGreaterThanOrEqual(dueAt);
-    const waiting = pane.served.slice(3).filter((turn) => turn.at < dueAt);
+    const waiting = pane.served.slice(2 + REFUSED_SENDS).filter((turn) => turn.at < dueAt);
     expect(waiting.map((turn) => turn.model)).not.toContain("strong-model");
     expect(pane.returnedAt(dueAt)).toBeDefined();
-    expect(pane.models().slice(3)).not.toContain("middle-model");
+    expect(pane.models().slice(2 + REFUSED_SENDS)).not.toContain("middle-model");
   },
   240_000
 );
@@ -576,14 +593,16 @@ test.skipIf(skip)(
       // One assignment, one run, so no step of the case falls inside the wait.
       prompt: ["Start FALL-1."],
       answer: (_model, nth) => {
-        // Refused before any output: the host walks its own chain and replays the turn on the
-        // weaker model inside the same run.
-        if (nth === 1) return refuses("refusal_1");
+        // Refused before any output: the host sends the turn to the stronger model again, then
+        // walks its own chain and replays the turn on the weaker model inside the same run.
+        if (nth <= REFUSED_SENDS) return refuses(`refusal_${nth}`);
         // One long turn on the weaker model: the sleep outlasts the cooldown, so the wait ends
         // while the turn's tool runs. It starts after the refusal, so it outlasts what is left of
         // the wait however late it starts.
-        if (nth === 2) return replies([sleeps(6)], `msg_${nth}`);
-        if (nth === 3) return replies([call("bash", { command: "echo next" })], `msg_${nth}`);
+        if (nth === REFUSED_SENDS + 1) return replies([sleeps(6)], `msg_${nth}`);
+        if (nth === REFUSED_SENDS + 2) {
+          return replies([call("bash", { command: "echo next" })], `msg_${nth}`);
+        }
         return replies([{ type: "text", text: "Done." }], `msg_${nth}`);
       },
     });
@@ -591,10 +610,15 @@ test.skipIf(skip)(
     // The wait ends while the turn runs, so the runner's timer switches no model: a switch there
     // could land in the middle of a stream. The turn's own `context` hook makes the return, and the
     // host chooses a request's model before it runs that hook, so the hook's switch is the model of
-    // the *next* request of that turn: the third request, sent after the sleep, is still the
-    // weaker model, and the fourth is the model the session fell back from — inside the same
+    // the *next* request of that turn: the request sent after the sleep is still the weaker
+    // model, and the one after it is the model the session fell back from — inside the same
     // turn, which no new prompt and no host setting would have reached.
-    expect(pane.models()).toEqual(["strong-model", "weak-model", "weak-model", "strong-model"]);
+    expect(pane.models()).toEqual([
+      ...refusedSends("strong-model"),
+      "weak-model",
+      "weak-model",
+      "strong-model",
+    ]);
     const states = await pane.cooldowns();
     expect(states[0]).toMatchObject({
       arming: { restoreTo: STRONG, cause: "refusal" },
@@ -665,7 +689,8 @@ test.skipIf(skip)(
   "a clean turn on the model the session came back to puts its wait back to the base",
   async () => {
     /** How many turns the stronger model has been sent: the first is refused, the second is the
-     * clean turn that puts the wait back, the third is refused again. */
+     * clean turn that puts the wait back, the third is refused again, before any output, and so are
+     * the host's sends of it again. */
     let onStrong = 0;
     const pane = await fallbackPane({
       prompt: ["Start FALL-1.", "Keep working.", "Keep going."],
@@ -675,10 +700,11 @@ test.skipIf(skip)(
           if (onStrong === 1) return refuses("refusal_1", { text: "Looking at it." });
           // The clean turn: it ends the second assignment's run on the stronger model.
           if (onStrong === 2) return replies([{ type: "text", text: "Back on it." }], `msg_${nth}`);
-          // The second refusal comes before any output: the host walks its own chain and replays
-          // the turn on the weaker model, and that replay ends the last run, so the pane is idle
-          // while the wait runs and the runner's own timer makes the return, at the due time.
-          if (onStrong === 3) return refuses("refusal_2");
+          // The second refusal comes before any output: the host sends the turn again, then walks
+          // its own chain and replays the turn on the weaker model, and that replay ends the last
+          // run, so the pane is idle while the wait runs and the runner's own timer makes the
+          // return, at the due time.
+          if (onStrong >= 3 && onStrong < 3 + REFUSED_SENDS) return refuses(`refusal_${onStrong}`);
           return replies([{ type: "text", text: "Done." }], `msg_${nth}`);
         }
         if (nth === 2) return replies([sleeps(6)], `msg_${nth}`);
@@ -906,9 +932,10 @@ test.skipIf(skip)(
             `msg_${nth}`
           );
         }
-        // The turn after the job has started is refused before any output: the host walks its
-        // own chain and replays the turn on the weaker model, and that replay ends the run.
-        if (nth === 3) return refuses("refusal_1");
+        // The turn after the job has started is refused before any output: the host sends it to
+        // the stronger model again, then walks its own chain and replays the turn on the weaker
+        // model, and that replay ends the run.
+        if (nth >= 3 && nth < 3 + REFUSED_SENDS) return refuses(`refusal_${nth}`);
         return replies([{ type: "text", text: "Done." }], `msg_${nth}`);
       },
       whileUp: async (life) => {
@@ -934,16 +961,22 @@ test.skipIf(skip)(
     expect(pane.models()).toEqual([
       "strong-model",
       "strong-model",
-      "strong-model",
+      ...refusedSends("strong-model"),
       "weak-model",
       "strong-model",
     ]);
-    // The order omp printed: the walk at the refusal, the job's run awaiting its background job
-    // once the replay (the fourth turn) has answered, and the return after that with no turn
-    // served in between, before the job's result started a run. No hook ran while the pane waited,
-    // so the return is the timer's; a return made inside the job's run would come before
-    // `awaitingAsyncWork 4`.
-    expect(pane.frames).toEqual(["end 1", "model", "awaitingAsyncWork 4", "model", "end 5"]);
+    // The order omp printed: the walk at the last refused send, the job's run awaiting its
+    // background job once the replay has answered, and the return after that with no turn served in
+    // between, before the job's result started a run. No hook ran while the pane waited, so the
+    // return is the timer's; a return made inside the job's run would come before the awaiting end.
+    const replay = 3 + REFUSED_SENDS;
+    expect(pane.frames).toEqual([
+      "end 1",
+      "model",
+      `awaitingAsyncWork ${replay}`,
+      "model",
+      `end ${replay + 1}`,
+    ]);
     // And the return came no earlier than the wait the refusal armed, which the transcript records.
     const armed = (await pane.cooldowns())[0];
     expect(armed).toMatchObject({
