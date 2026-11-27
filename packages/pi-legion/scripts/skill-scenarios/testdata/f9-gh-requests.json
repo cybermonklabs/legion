@@ -1,14 +1,6 @@
 [
   {
-    "argv": [
-      "pr",
-      "edit",
-      "77",
-      "-R",
-      "acme/widgets",
-      "--body-file",
-      "-"
-    ],
+    "argv": ["pr", "edit", "77", "-R", "acme/widgets", "--body-file", "-"],
     "stdin": "New body.\n",
     "branch": "one",
     "exit": 0,
@@ -75,17 +67,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "view",
-      "77",
-      "-R",
-      "acme/widgets",
-      "--json",
-      "body",
-      "--jq",
-      ".body"
-    ],
+    "argv": ["pr", "view", "77", "-R", "acme/widgets", "--json", "body", "--jq", ".body"],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -103,17 +85,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "view",
-      "7",
-      "-R",
-      "acme/widgets",
-      "--json",
-      "id",
-      "-q",
-      ".id"
-    ],
+    "argv": ["pr", "view", "7", "-R", "acme/widgets", "--json", "id", "-q", ".id"],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -215,11 +187,7 @@
     ]
   },
   {
-    "argv": [
-      "api",
-      "--paginate",
-      "repos/acme/widgets/rules/branches/main"
-    ],
+    "argv": ["api", "--paginate", "repos/acme/widgets/rules/branches/main"],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -232,12 +200,7 @@
     ]
   },
   {
-    "argv": [
-      "api",
-      "repos/acme/widgets",
-      "--jq",
-      "{default_branch, allow_merge_commit}"
-    ],
+    "argv": ["api", "repos/acme/widgets", "--jq", "{default_branch, allow_merge_commit}"],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -297,13 +260,7 @@
     ]
   },
   {
-    "argv": [
-      "api",
-      "-XPATCH",
-      "repos/acme/widgets/pulls/7",
-      "-f",
-      "body=new"
-    ],
+    "argv": ["api", "-XPATCH", "repos/acme/widgets/pulls/7", "-f", "body=new"],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -318,14 +275,7 @@
     ]
   },
   {
-    "argv": [
-      "api",
-      "-X",
-      "PATCH",
-      "repos/acme/widgets/pulls/7",
-      "-f",
-      "state=closed"
-    ],
+    "argv": ["api", "-X", "PATCH", "repos/acme/widgets/pulls/7", "-f", "state=closed"],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -362,14 +312,7 @@
     ]
   },
   {
-    "argv": [
-      "api",
-      "-X",
-      "PUT",
-      "repos/acme/widgets/pulls/7/merge",
-      "-f",
-      "merge_method=squash"
-    ],
+    "argv": ["api", "-X", "PUT", "repos/acme/widgets/pulls/7/merge", "-f", "merge_method=squash"],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -410,12 +353,7 @@
     ]
   },
   {
-    "argv": [
-      "api",
-      "repos/acme/widgets/issues/7/comments",
-      "-F",
-      "body=@-"
-    ],
+    "argv": ["api", "repos/acme/widgets/issues/7/comments", "-F", "body=@-"],
     "stdin": "A comment.\n",
     "branch": "one",
     "exit": 0,
@@ -431,11 +369,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "review",
-      "-a"
-    ],
+    "argv": ["pr", "review", "-a"],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -466,11 +400,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "review",
-      "-a"
-    ],
+    "argv": ["pr", "review", "-a"],
     "branch": "none",
     "exit": 1,
     "stderr": "no pull requests found for branch \"legion/ACME-12\"\n",
@@ -489,25 +419,14 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "review",
-      "-a"
-    ],
+    "argv": ["pr", "review", "-a"],
     "branch": "detached",
     "exit": 1,
     "stderr": "could not determine current branch: failed to run git: not on any branch\n",
     "requests": []
   },
   {
-    "argv": [
-      "pr",
-      "review",
-      "7",
-      "-r",
-      "-b",
-      "Changes."
-    ],
+    "argv": ["pr", "review", "7", "-r", "-b", "Changes."],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -537,14 +456,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "review",
-      "-c",
-      "-b",
-      "A note.",
-      "7"
-    ],
+    "argv": ["pr", "review", "-c", "-b", "A note.", "7"],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -574,13 +486,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "review",
-      "7",
-      "--approve",
-      "--body=Fine at B."
-    ],
+    "argv": ["pr", "review", "7", "--approve", "--body=Fine at B."],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -610,13 +516,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "review",
-      "7",
-      "-cb",
-      "Joined."
-    ],
+    "argv": ["pr", "review", "7", "-cb", "Joined."],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -646,12 +546,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "review",
-      "https://github.localhost/acme/widgets/pull/7",
-      "-a"
-    ],
+    "argv": ["pr", "review", "https://github.localhost/acme/widgets/pull/7", "-a"],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -681,12 +576,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "review",
-      "legion/ACME-12",
-      "-a"
-    ],
+    "argv": ["pr", "review", "legion/ACME-12", "-a"],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -717,63 +607,35 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "review",
-      "7"
-    ],
+    "argv": ["pr", "review", "7"],
     "branch": "one",
     "exit": 1,
     "stderr": "--approve, --request-changes, or --comment required when not running interactively\n\nUsage:  gh pr review [<number> | <url> | <branch>] [flags]\n\nFlags:\n  -a, --approve           Approve pull request\n  -b, --body string       Specify the body of a review\n  -F, --body-file file    Read body text from file (use \"-\" to read from standard input)\n  -c, --comment           Comment on a pull request\n  -r, --request-changes   Request changes on a pull request\n  \n",
     "requests": []
   },
   {
-    "argv": [
-      "pr",
-      "review",
-      "7",
-      "-a",
-      "-r"
-    ],
+    "argv": ["pr", "review", "7", "-a", "-r"],
     "branch": "one",
     "exit": 1,
     "stderr": "body cannot be blank for request-changes review\n\nUsage:  gh pr review [<number> | <url> | <branch>] [flags]\n\nFlags:\n  -a, --approve           Approve pull request\n  -b, --body string       Specify the body of a review\n  -F, --body-file file    Read body text from file (use \"-\" to read from standard input)\n  -c, --comment           Comment on a pull request\n  -r, --request-changes   Request changes on a pull request\n  \n",
     "requests": []
   },
   {
-    "argv": [
-      "pr",
-      "review",
-      "7",
-      "-a",
-      "-r",
-      "-b",
-      "x"
-    ],
+    "argv": ["pr", "review", "7", "-a", "-r", "-b", "x"],
     "branch": "one",
     "exit": 1,
     "stderr": "need exactly one of --approve, --request-changes, or --comment\n\nUsage:  gh pr review [<number> | <url> | <branch>] [flags]\n\nFlags:\n  -a, --approve           Approve pull request\n  -b, --body string       Specify the body of a review\n  -F, --body-file file    Read body text from file (use \"-\" to read from standard input)\n  -c, --comment           Comment on a pull request\n  -r, --request-changes   Request changes on a pull request\n  \n",
     "requests": []
   },
   {
-    "argv": [
-      "pr",
-      "review",
-      "7",
-      "-c"
-    ],
+    "argv": ["pr", "review", "7", "-c"],
     "branch": "one",
     "exit": 1,
     "stderr": "body cannot be blank for comment review\n\nUsage:  gh pr review [<number> | <url> | <branch>] [flags]\n\nFlags:\n  -a, --approve           Approve pull request\n  -b, --body string       Specify the body of a review\n  -F, --body-file file    Read body text from file (use \"-\" to read from standard input)\n  -c, --comment           Comment on a pull request\n  -r, --request-changes   Request changes on a pull request\n  \n",
     "requests": []
   },
   {
-    "argv": [
-      "pr",
-      "review",
-      "99",
-      "-a"
-    ],
+    "argv": ["pr", "review", "99", "-a"],
     "branch": "one",
     "exit": 1,
     "stderr": "GraphQL: Could not resolve to a PullRequest with the number of 99. (repository.pullRequest)\n",
@@ -791,19 +653,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "create",
-      "-d",
-      "-H",
-      "legion/ACME-13",
-      "-B",
-      "main",
-      "-t",
-      "T",
-      "-b",
-      "B"
-    ],
+    "argv": ["pr", "create", "-d", "-H", "legion/ACME-13", "-B", "main", "-t", "T", "-b", "B"],
     "branch": "none",
     "exit": 0,
     "stderr": "",
@@ -825,9 +675,7 @@
           "headRefName": "legion/ACME-13",
           "owner": "acme",
           "repo": "widgets",
-          "states": [
-            "OPEN"
-          ]
+          "states": ["OPEN"]
         }
       },
       {
@@ -882,9 +730,7 @@
           "headRefName": "legion/ACME-13",
           "owner": "acme",
           "repo": "widgets",
-          "states": [
-            "OPEN"
-          ]
+          "states": ["OPEN"]
         }
       },
       {
@@ -906,15 +752,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "edit",
-      "7",
-      "-b",
-      "new",
-      "-t",
-      "New title"
-    ],
+    "argv": ["pr", "edit", "7", "-b", "new", "-t", "New title"],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -955,12 +793,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "edit",
-      "-b",
-      "branch body"
-    ],
+    "argv": ["pr", "edit", "-b", "branch body"],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -1001,12 +834,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "edit",
-      "-b",
-      "branch body"
-    ],
+    "argv": ["pr", "edit", "-b", "branch body"],
     "branch": "none",
     "exit": 1,
     "stderr": "no pull requests found for branch \"legion/ACME-12\"\n",
@@ -1025,13 +853,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "edit",
-      "99",
-      "-b",
-      "x"
-    ],
+    "argv": ["pr", "edit", "99", "-b", "x"],
     "branch": "one",
     "exit": 1,
     "stderr": "GraphQL: Could not resolve to a PullRequest with the number of 99. (repository.pullRequest)\n",
@@ -1049,13 +871,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "merge",
-      "7",
-      "-s",
-      "-d"
-    ],
+    "argv": ["pr", "merge", "7", "-s", "-d"],
     "branch": "one",
     "exit": 1,
     "stderr": "failed to run git: fatal: 'origin/main' is not a commit and a branch 'main' cannot be created from it\n\n",
@@ -1094,12 +910,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "merge",
-      "--auto",
-      "--squash"
-    ],
+    "argv": ["pr", "merge", "--auto", "--squash"],
     "branch": "one",
     "exit": 0,
     "stderr": "! Pull request acme/widgets#7 (T) has diverged from local branch\n",
@@ -1139,12 +950,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "merge",
-      "7",
-      "--disable-auto"
-    ],
+    "argv": ["pr", "merge", "7", "--disable-auto"],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -1180,12 +986,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "close",
-      "-d",
-      "7"
-    ],
+    "argv": ["pr", "close", "-d", "7"],
     "branch": "one",
     "exit": 1,
     "stderr": "✓ Closed pull request acme/widgets#7 (T)\nfailed to run git: error: pathspec 'main' did not match any file(s) known to git\n\n",
@@ -1222,13 +1023,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "close",
-      "7",
-      "-c",
-      "Superseded."
-    ],
+    "argv": ["pr", "close", "7", "-c", "Superseded."],
     "branch": "one",
     "exit": 0,
     "stderr": "✓ Closed pull request acme/widgets#7 (T)\n",
@@ -1267,11 +1062,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "reopen",
-      "7"
-    ],
+    "argv": ["pr", "reopen", "7"],
     "branch": "one",
     "exit": 0,
     "stderr": "! Pull request acme/widgets#7 (T) is already open\n",
@@ -1289,12 +1080,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "ready",
-      "7",
-      "--undo"
-    ],
+    "argv": ["pr", "ready", "7", "--undo"],
     "branch": "one",
     "exit": 0,
     "stderr": "✓ Pull request acme/widgets#7 is converted to \"draft\"\n",
@@ -1322,13 +1108,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "comment",
-      "7",
-      "-b",
-      "A comment."
-    ],
+    "argv": ["pr", "comment", "7", "-b", "A comment."],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -1357,11 +1137,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "checks",
-      "7"
-    ],
+    "argv": ["pr", "checks", "7"],
     "branch": "one",
     "exit": 8,
     "stderr": "",
@@ -1397,16 +1173,7 @@
     ]
   },
   {
-    "argv": [
-      "pr",
-      "list",
-      "-H",
-      "legion/ACME-12",
-      "-s",
-      "all",
-      "--json",
-      "number"
-    ],
+    "argv": ["pr", "list", "-H", "legion/ACME-12", "-s", "all", "--json", "number"],
     "branch": "one",
     "exit": 0,
     "stderr": "",
@@ -1420,25 +1187,13 @@
           "limit": 30,
           "owner": "acme",
           "repo": "widgets",
-          "state": [
-            "OPEN",
-            "CLOSED",
-            "MERGED"
-          ]
+          "state": ["OPEN", "CLOSED", "MERGED"]
         }
       }
     ]
   },
   {
-    "argv": [
-      "pr",
-      "list",
-      "-a",
-      "@me",
-      "-d",
-      "--json",
-      "number"
-    ],
+    "argv": ["pr", "list", "-a", "@me", "-d", "--json", "number"],
     "branch": "one",
     "exit": 0,
     "stderr": "",
