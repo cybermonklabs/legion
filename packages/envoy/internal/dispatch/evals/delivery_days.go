@@ -103,9 +103,10 @@ import (
 // that repository's rows alone (the pull request's repository, the run's), where it counts
 // something: a repository's part that is empty, such as a lead time of the day's pull requests
 // when no deploy has shipped any of them yet, is no row (repositoryRows), since R12 writes no zero
-// row for a repository, and that repository's day reads "no data" for the series. So every row
-// counted is in one repository's rows, and the repositories' rows of a series partition its
-// all-repositories row, an empty part adding nothing: their n, sum, num, den, counts and
+// row for a repository, and that repository's day reads "no data" for the series: each delivery
+// and CI eval with day rows lists one series, so the day holds no row of the eval (cutZeros). So
+// every row counted is in one repository's rows, and the repositories' rows of a series partition
+// its all-repositories row, an empty part adding nothing: their n, sum, num, den, counts and
 // via_repository add up to its own, and their samples are its samples. A family a project holds no
 // row of that day writes no row: the explicit zero rows of a series from its first input day on
 // are the refresher's, in the all-repositories row alone (ZeroDeliveryDay, ProjectDay.WithZeros).

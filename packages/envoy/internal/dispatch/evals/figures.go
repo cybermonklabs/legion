@@ -34,12 +34,14 @@ import (
 //   - eval_range_figures holds, for each project, cut (figureCut: '' for the project's own rows, or
 //     a repository), range (one of FigureLengths and its end day, exclusive) and eval, the
 //     statistics FoldStatistics answers for the eval's listed series over the range's rows of the
-//     cut, those rows in the folds' one order (sortWindowRows), each series' via-repository count,
-//     and the oldest updated_at of the rows (the read's freshness). A range that holds no listed row
-//     of the eval in the cut has no row: its fold is the fold of no parts.
+//     cut, those rows in the folds' one order (sortWindowRows) with a repository cut's zero parts
+//     (cutZeros, withZeros), each series' via-repository count, and the oldest updated_at of the
+//     rows (the read's freshness). A range that holds no listed row of the eval in the cut has no
+//     row: its fold is the fold of no parts.
 //   - eval_day_figures holds, for each project, cut, day and eval that holds a listed row of the
-//     eval in the cut, the day's figures of each headline series that holds a row that day (the
-//     per-day array SeriesValuesOf answers), and the stamp of the rows it folded (rowsStamp).
+//     eval in the cut, the day's figures of each headline series that holds a part that day, a
+//     repository cut's zero part among them (the per-day array SeriesValuesOf answers), and the
+//     stamp of the rows it folded (rowsStamp).
 //
 // Each is kept for every cut a read folds: the project's own rows (repo '', the all-repositories
 // day rows: its own and those of the owner keys it reads under the published defaults, owners.go),
@@ -374,7 +376,9 @@ func rowsStamp(rows []stampedRow) int64 {
 
 // figureGroup is one eval's listed day rows of one cut and deploy repository, in the folds' order
 // (sortWindowRows), and what folds them: the stored figures of every range and day of the rows are
-// folded from it.
+// folded from it. parts is the rows' parts in the same order and, in a repository's cut, the zero
+// part of each series of the eval each day holds no row of after that day's (withZeros): the parts
+// every fold of the group reads, as SeriesValuesOf folds them.
 type figureGroup struct {
 	entry            Entry
 	listed, headline []Series
@@ -390,22 +394,27 @@ type figureGroup struct {
 // a sort keeps bit for bit (SortableSamples) has each row's samples sorted in place, once, so every
 // range of the series reads its ranks across them (measures.MergedSamples, which finds them
 // sorted); a series with a -0 or a NaN keeps its rows' samples in the order they were stored, which
-// the merge and sort of each range reads as a read of the rows does, in the same order.
+// the merge and sort of each range reads as a read of the rows does, in the same order. A
+// repository cut's zero parts (cutZeros) are added once, here, for every range and day of the
+// group: each is a part of one day alone, so the parts of a range's days are those a read of that
+// range folds.
 func newFigureGroup(entry Entry, key int64, rows []WindowRow) *figureGroup {
 	sortWindowRows(rows)
-	group := &figureGroup{entry: entry, key: key, rows: rows, parts: make([]measures.DayPart, len(rows))}
+	group := &figureGroup{entry: entry, key: key, rows: rows}
 	group.listed, group.headline = listedAndHeadline(entry)
 	sortable := map[string]bool{}
 	for _, row := range rows {
 		held, seen := sortable[row.Part.Series]
 		sortable[row.Part.Series] = (held || !seen) && measures.SortableSamples(row.Part.Samples)
 	}
+	parts := make([]measures.DayPart, len(rows))
 	for index, row := range rows {
 		if sortable[row.Part.Series] {
 			slices.Sort(row.Part.Samples)
 		}
-		group.parts[index] = row.Part
+		parts[index] = row.Part
 	}
+	group.parts = withZeros(parts, cutZeros(entry.Definition, rows))
 	return group
 }
 
@@ -414,6 +423,13 @@ func (g *figureGroup) span(from, to time.Time) (int, int) {
 	first := sort.Search(len(g.rows), func(k int) bool { return !g.rows[k].Part.Day.Before(from) })
 	last := sort.Search(len(g.rows), func(k int) bool { return !g.rows[k].Part.Day.Before(to) })
 	return first, last
+}
+
+// partsIn is the group's parts of the days [from, to), which a fold of those days reads.
+func (g *figureGroup) partsIn(from, to time.Time) []measures.DayPart {
+	first := sort.Search(len(g.parts), func(k int) bool { return !g.parts[k].Day.Before(from) })
+	last := sort.Search(len(g.parts), func(k int) bool { return !g.parts[k].Day.Before(to) })
+	return g.parts[first:last]
 }
 
 // rangeOf is the n days ending at end, exclusive.
@@ -429,23 +445,25 @@ func (g *figureGroup) rangeFigure(n int, end time.Time) ([]byte, time.Time, bool
 	if first == last {
 		return nil, time.Time{}, false
 	}
-	folded := FoldStatistics(g.entry.Definition, g.listed, g.parts[first:last], r)
+	folded := FoldStatistics(g.entry.Definition, g.listed, g.partsIn(r.From, r.To), r)
 	via := map[string]int{}
 	oldest := g.rows[first].UpdatedAt
 	for index := first; index < last; index++ {
-		via[g.parts[index].Series] += g.parts[index].ViaRepository
-		if g.rows[index].UpdatedAt.Before(oldest) {
-			oldest = g.rows[index].UpdatedAt
+		row := &g.rows[index]
+		via[row.Part.Series] += row.Part.ViaRepository
+		if row.UpdatedAt.Before(oldest) {
+			oldest = row.UpdatedAt
 		}
 	}
 	return encodeFigures(folded, via), oldest, true
 }
 
-// dayFigure is the stored day row of day: the figures of each headline series that holds a row
-// that day, each folded over the day's rows alone as SeriesValuesOf folds a day of its per-day
+// dayFigure is the stored day row of day: the figures of each headline series that holds a part
+// that day, each folded over the day's parts alone as SeriesValuesOf folds a day of its per-day
 // array (foldDay), and the stamp of the day's rows; false where the day holds no row of the group.
 func (g *figureGroup) dayFigure(day time.Time) ([]byte, int64, bool) {
-	first, last := g.span(day, day.AddDate(0, 0, 1))
+	next := day.AddDate(0, 0, 1)
+	first, last := g.span(day, next)
 	if first == last {
 		return nil, 0, false
 	}
@@ -453,7 +471,7 @@ func (g *figureGroup) dayFigure(day time.Time) ([]byte, int64, bool) {
 	for _, row := range g.rows[first:last] {
 		stamped = append(stamped, stampedRow{series: row.Part.Series, updatedAt: row.UpdatedAt, via: row.Part.ViaRepository})
 	}
-	return encodeFigures(foldDay(g.entry.Definition, g.headline, g.parts[first:last], day), nil), rowsStamp(stamped), true
+	return encodeFigures(foldDay(g.entry.Definition, g.headline, g.partsIn(day, next), day), nil), rowsStamp(stamped), true
 }
 
 // foldEnds folds the group's stored figures of each end day from first through last, of evalID in
