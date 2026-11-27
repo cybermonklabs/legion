@@ -345,7 +345,7 @@ func TestStreamCacheFallsBackFromPacksToTar(t *testing.T) {
 		name string
 		// edit makes the row's fault once the stand-in is built, before the fetch.
 		edit func(t *testing.T, run *recordingRunner, c *packsCache)
-		// took, when set, is the clock time each step bucketFirst(cacheFetchStep) names takes on a
+		// took, when set, is the clock time each step bucketFirst(fillStep) names takes on a
 		// test clock (slowSteps), and the fetch runs on that clock; otherwise it runs on the local
 		// runner and the wall clock.
 		took map[string]time.Duration
