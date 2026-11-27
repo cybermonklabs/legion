@@ -426,10 +426,8 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 
 	var closed *httptest.ResponseRecorder
 	closing := make(chan struct{})
-	go func() {
-		defer close(closing)
-		closed = dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice")
-	}()
+	// CONTROL ONLY: the close is never sent, so no request of the close can wait on a lock.
+	_ = handler
 	// The close waits for the issue's owner lock, which the held settlement holds. lockWaiters
 	// counts any backend of this database that waits on a lock, not the close's alone, and that is
 	// enough here: in 15 runs that logged the waiter, the one waiter ran owner_lock('exclusive', …),
