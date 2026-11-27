@@ -19,7 +19,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
+	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
@@ -61,6 +64,21 @@ func newSession(t testing.TB, id string, life time.Duration) *session {
 			ExpiresAt:  time.Now().Add(life).Unix(),
 		},
 	}
+}
+
+// jobService is the service a job's token names: the identity its job entry lists, here a pod's
+// Kubernetes service account as the exchange spells its subject.
+const jobService = "system:serviceaccount:example-ns:example-job"
+
+// newJobSession is a job's session: its token names the job entry's identity as its service and
+// no person, the entry's project scope and whole list - named with its one project, or public
+// with the private projects its entry lists - and no OAuth scope, as the exchange mints it.
+func newJobSession(t testing.TB, id string, life time.Duration, scope string, projects ...string) *session {
+	t.Helper()
+	s := newSession(t, id, life)
+	s.answer.Person, s.answer.Service = "", jobService
+	s.answer.ProjectScope, s.answer.Projects = scope, projects
+	return s
 }
 
 // request is the authorization request the server sends for this session connecting with nonce:
@@ -141,6 +159,31 @@ func TestASessionTokenGetsItsOwnChannel(t *testing.T) {
 	require.Equal(t, time.Unix(a.answer.ExpiresAt, 0), decision.Expires)
 	require.Contains(t, decision.Grant.Subscribe, "notifications.envoy.deliver.ses_a")
 	require.NotContains(t, decision.Grant.Subscribe, "notifications.envoy.deliver.*")
+}
+
+// A job's live token, named with its one project or public with its entry's private projects,
+// beside a proof over this connection's nonce, is answered as a person's session's token is: with
+// natsgrant.Session's grant of its own session, named session/<id>, expiring with the token.
+func TestAJobsSessionTokenGetsItsOwnChannel(t *testing.T) {
+	for _, row := range []struct {
+		name     string
+		scope    string
+		projects []string
+	}{
+		{"a job's named token", ciphertoken.ProjectScopeNamed, []string{"ACME"}},
+		{"a job's public token", ciphertoken.ProjectScopePublic, []string{"PRIVA", "PRIVB"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			job := newJobSession(t, "ses_job", 15*time.Minute, row.scope, row.projects...)
+			decision, err := Decide(t.Context(), Deps{Introspect: introspector(job)}, nil, job.request(t, "nonce-of-this-connection"))
+			require.NoError(t, err)
+			want, err := natsgrant.Session("ses_job")
+			require.NoError(t, err)
+			require.Equal(t, want, decision.Grant)
+			require.Equal(t, "session/ses_job", decision.Name)
+			require.Equal(t, time.Unix(job.answer.ExpiresAt, 0), decision.Expires)
+		})
+	}
 }
 
 // A service's platform token, from an account the deployment lists, is answered with its kind's
@@ -241,6 +284,17 @@ func TestRefusals(t *testing.T) {
 	readOnly := newSession(t, "ses_reader", 15*time.Minute)
 	readOnly.answer.Person, readOnly.answer.Service = "", "example-reader"
 	readOnly.answer.ProjectScope, readOnly.answer.Scope = ciphertoken.ProjectScopeNone, ciphertoken.ScopeRead
+	// The broker's introspection answers a live token whose person Dispatch holds Held, with no
+	// error (oauth.Provider.Introspect); one whose not-held answer has a deadline names it in
+	// NotHeldUntil; and a gate that cannot tell is *oauth.HoldUncheckableError, with no answer.
+	held := newSession(t, "ses_held", 15*time.Minute)
+	held.answer.Held = true
+	lapsed := newSession(t, "ses_lapsed", 15*time.Minute)
+	lapsed.answer.NotHeldUntil = now.Add(-time.Second).Unix()
+	// A public token is a job's, which names a service and no person: one beside a person, which
+	// no entry that names a person mints, is no session's credential (ciphertoken.SessionCaller).
+	publicForPerson := newJobSession(t, "ses_public_person", 15*time.Minute, ciphertoken.ProjectScopePublic, "PRIVA")
+	publicForPerson.answer.Person = "person@example.com"
 	// A token narrowed to reading is read-only too, whatever project scope it narrows, so each
 	// answer of the golden file the broker's own test holds its narrowed answers to is no
 	// session's credential to the auth service either: each is a session of its own, presenting
@@ -257,10 +311,14 @@ func TestRefusals(t *testing.T) {
 		"two-hours-token": {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
 		"held-token":      {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
 	}
-	introspected := append([]*session{a, expired, dotted, foreign, unbounded, readOnly}, narrowed...)
+	introspected := append([]*session{a, expired, dotted, foreign, unbounded, readOnly, publicForPerson, held, lapsed}, narrowed...)
 	deps := Deps{Introspect: introspector(introspected...), ServiceToken: serviceTokens(tokens)}
 	unreachable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
 		return oauthwire.Introspection{}, errors.New("dial tcp: connection refused")
+	}}
+	uncheckable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
+		return oauthwire.Introspection{}, &oauth.HoldUncheckableError{Verdict: hold.Verdict{Kind: hold.BrokerRefused, Person: "person@example.com",
+			Err: fmt.Errorf("hold: Dispatch refused the broker's account: %w", dispatchread.ErrBrokerRefused)}}
 	}}
 	// cancelled is what each of the broker's calls answers once the decision's context ends.
 	cancelled := Deps{
@@ -291,10 +349,14 @@ func TestRefusals(t *testing.T) {
 		{"a proof of another key", deps, nil, otherKey.request(t, "nonce"), labelKeyMismatch, "key mismatch"},
 		{"a live token that is no session's credential", deps, nil, foreign.request(t, "nonce"), labelNotASession, "token is no session's credential"},
 		{"a read-only token", deps, nil, readOnly.request(t, "nonce"), labelNotASession, "token is no session's credential"},
+		{"a public token beside a person", deps, nil, publicForPerson.request(t, "nonce"), labelNotASession, "token is no session's credential"},
 		{"a proof that is no base64url", deps, nil, badSig, labelProofInvalid, "proof invalid: jws"},
 		{"a token that names no expiry", deps, nil, unbounded.request(t, "nonce"), labelNoExpiry, "token names no expiry"},
 		{"a session id that is not one subject token", deps, nil, dotted.request(t, "nonce"), labelBadSessionID, "session id is not one subject token"},
 		{"a broker that does not answer", unreachable, nil, a.request(t, "nonce"), labelBrokerUnreachable, "broker unreachable"},
+		{"a token whose person's hold cannot be read", uncheckable, nil, a.request(t, "nonce"), labelHoldUncheckable, "hold unchecked: whether Dispatch holds the token's person cannot be read"},
+		{"a token whose person Dispatch holds", deps, nil, held.request(t, "nonce"), labelMembershipHeld, "membership held: Dispatch holds the token's person"},
+		{"a token whose person's not-held answer has passed its deadline", deps, nil, lapsed.request(t, "nonce"), labelDeadlinePassed, "hold unchecked: Dispatch's answer that the token's person is not held has passed its deadline"},
 		{"a budget spent in the token's introspection", cancelled, spent, a.request(t, "nonce"), labelBudget, "decision exceeded its budget at the token's introspection"},
 		{"a service token that does not verify", deps, nil, serviceRequest("forged"), labelServiceToken, "service token not verified"},
 		{"a budget spent in the service token's verification", cancelled, spent, serviceRequest("held-token"), labelBudget, "decision exceeded its budget at the service token's verification"},
@@ -325,6 +387,36 @@ func TestRefusals(t *testing.T) {
 		})
 	}
 	require.Equal(t, machine.MaxTokenLoginLifetime, time.Hour, "the refusal's text names the bound")
+}
+
+// A session whose person Dispatch does not hold is admitted, and its user expires no later than
+// the deadline of Dispatch's answer that the person is not held (the introspection's
+// not_held_until), which an IAP deployment's Dispatch puts on every such answer: a connection
+// admitted before the deadline must not outlive it, as the airlock cuts a call it carries then. A
+// deadline after the token's expiry changes nothing, and an answer naming none expires with the
+// token. The decider's clock is the broker's: Dispatch's unavailable answer, whose deadline is its
+// own as_of, never reaches it as a not-held answer (hold.Gate.Decide answers it uncheckable).
+func TestANotHeldSessionIsAdmittedNoLongerThanItsDeadline(t *testing.T) {
+	now := time.Now()
+	for name, row := range map[string]struct {
+		notHeldUntil int64
+		want         func(s *session) time.Time
+	}{
+		"no deadline": {0, func(s *session) time.Time { return time.Unix(s.answer.ExpiresAt, 0) }},
+		"a deadline before the token's expiry": {now.Add(5 * time.Minute).Unix(), func(*session) time.Time {
+			return time.Unix(now.Add(5*time.Minute).Unix(), 0)
+		}},
+		"a deadline after the token's expiry": {now.Add(24 * time.Hour).Unix(), func(s *session) time.Time { return time.Unix(s.answer.ExpiresAt, 0) }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newSession(t, "ses_served", 15*time.Minute)
+			s.answer.NotHeldUntil = row.notHeldUntil
+			decision, err := Decide(t.Context(), Deps{Introspect: introspector(s)}, nil, s.request(t, "nonce"))
+			require.NoError(t, err)
+			require.Equal(t, "session/ses_served", decision.Name)
+			require.Equal(t, row.want(s), decision.Expires)
+		})
+	}
 }
 
 // An error of the service's own, one that is no *Refusal, is refused as the service's failure,

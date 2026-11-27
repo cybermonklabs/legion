@@ -298,6 +298,15 @@ const MaxIssueComponents = 50
 const MaxIssuePageLimit = 250
 const DefaultIssuePageLimit = 50
 
+// MaxThreadPageLimit is the most threads one page of an issue's threads holds, and
+// DefaultThreadPageLimit the page size when a caller names no limit: GET
+// /api/v1/issues/{key}/comments, GET /api/v1/issues/{key}/messages and GET
+// /api/v1/issues/{key}/asks under order=activity. Generated from MAX_THREAD_PAGE_LIMIT and
+// DEFAULT_THREAD_PAGE_LIMIT in packages/contracts so the server's bounds and every client's cannot
+// drift apart.
+const MaxThreadPageLimit = 100
+const DefaultThreadPageLimit = 20
+
 // PostHistoryPageLimit is the most rows one answer of GET /api/v1/comments/{id}/history or
 // GET /api/v1/messages/{id}/history holds, newest first. Generated from POST_HISTORY_PAGE_LIMIT
 // in packages/contracts so the page the server reads and the full page on which the
@@ -368,6 +377,7 @@ var DispatchEventTypes = []string{
 	"comment.reopened",
 	"comment.resolved",
 	"decision.kept",
+	"deploy.recorded",
 	"handoff.recorded",
 	"issue.claimed",
 	"issue.closed",
@@ -389,6 +399,7 @@ var DispatchEventTypes = []string{
 	"project.updated",
 	"result.recorded",
 	"result.retracted",
+	"role.undelivered",
 	"settings.architecture_source.updated",
 	"settings.project_default_assignee.updated",
 	"settings.repo_project.updated",
@@ -406,6 +417,20 @@ var DispatchEventTypes = []string{
 // packages/contracts so the server's 413 and the `dispatch handoff-write` command's pre-send
 // refusal cannot drift apart.
 const DispatchHandoffBodyMax = 262144
+
+// MarkdownDocumentMaxBytes is the most bytes of markdown one document may hold, and
+// MarkdownDocumentTooLarge what the 413 CAP_EXCEEDED of an upload past it says. Generated from
+// MARKDOWN_DOCUMENT_MAX_BYTES and MARKDOWN_DOCUMENT_TOO_LARGE in packages/contracts so the
+// server's refusal and the one `dispatch artifact` makes before it sends cannot drift apart.
+const MarkdownDocumentMaxBytes = 1048576
+const MarkdownDocumentTooLarge = "a markdown document is at most 1 MiB; a larger file is stored as a binary artifact under another content type"
+
+// TextRefusalHeader is the response header the markdown round trips put on their refusal of a
+// text for the text alone, whatever the refusal's status: a mark, with one value, that says the
+// answer is the refusal of the text (writeTextRefusal), so a client reads only that it is there.
+// Generated from TEXT_REFUSAL_HEADER in packages/contracts so the routes and `dispatch artifact`,
+// which reads an answer carrying it as the call's own refusal, name it once.
+const TextRefusalHeader = "Dispatch-Text-Refusal"
 
 // PlanRatingLeast and PlanRatingMost are the scale of a retro's rating of the plan its issue ran,
 // from the plan cost the work to the plan fit the work, and PlanReasonMax the most characters,
@@ -446,6 +471,14 @@ const (
 	StepOtherIssueCode = "STEP_OTHER_ISSUE"
 )
 
+// The states of a step of an issue's plan in the steps read beside the results of a run that
+// ended: not started before any run of it, and running while its newest run has no end.
+// Generated from PLANNED_STEP_STATES in packages/contracts: Dispatch's steps read writes them.
+const (
+	PlannedStepNotStarted = "not started"
+	PlannedStepRunning    = "running"
+)
+
 // The codes of the plan write's refusals that no retry changes: a value outside its form, and an id
 // whose plan is the plan of another issue (a writer that is not the daemon's session is refused
 // StepWriterCode). Generated from PLAN_INPUT_CODE and PLAN_OTHER_ISSUE_CODE in packages/contracts:
@@ -465,6 +498,17 @@ const StepAgentTextPattern = "^[!-~]{1,128}$"
 // StepAgentTextRule says StepAgentTextPattern's rule in words, which Dispatch's refusal gives.
 // Generated from STEP_AGENT_TEXT_RULE_WORDS in packages/contracts.
 const StepAgentTextRule = "printable ASCII with no space, from 1 to 128 characters"
+
+// StepTaskPattern is the form of the id of a task a step record names, which is also the id of a
+// plan_task block of an owner's plan: lowercase letters, digits and hyphens, the first a letter or
+// a digit, at most StepTaskMax bytes. StepTaskRule says it in words, which the refusal of either
+// side gives. Generated from STEP_TASK_PATTERN, STEP_TASK_MAX and STEP_TASK_RULE_WORDS in
+// packages/contracts: Dispatch's step write and plan write refuse a task outside it, and the
+// Legion daemon, through github.com/sjawhar/envoy/steprecord, refuses a plan whose task block has
+// such an id, whose steps Dispatch could record none of.
+const StepTaskPattern = "^[a-z0-9][a-z0-9-]{0,63}$"
+const StepTaskMax = 64
+const StepTaskRule = "lowercase letters, digits and hyphens, starting with a letter or a digit, at most 64 bytes"
 
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the
@@ -581,7 +625,8 @@ const IDAmbiguous = "ID_AMBIGUOUS"
 
 // DispatchSignInRequired is the code of the 403 for a write by a broker-issued access token that
 // names a session and a service but no person under the project scope person: the machine
-// holding it has signed nobody in.
+// holding it has signed nobody in. A job's token, under named or public, and an exchange account
+// entry's token naming no person, under named, write as their service.
 // Generated from DISPATCH_SIGN_IN_REQUIRED in packages/contracts so the server's refusal and
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = "SIGN_IN_REQUIRED"
@@ -592,6 +637,13 @@ const DispatchSignInRequired = "SIGN_IN_REQUIRED"
 // DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
 // reading of it cannot drift apart.
 const DispatchReadOnlyToken = "READ_ONLY_TOKEN"
+
+// DispatchApproveOnlyToken is the code of the 403 for a request by an approve-only token - the
+// token the secrets broker mints for a person's approve grant and spends through Cipher's proxy -
+// to a route the approve list does not name, or for its answer of an ask that is not an approval
+// request: nothing ran and nothing was recorded. Generated from DISPATCH_APPROVE_ONLY_TOKEN in
+// packages/contracts so the server's refusal and every client's reading of it cannot drift apart.
+const DispatchApproveOnlyToken = "APPROVE_ONLY_TOKEN"
 
 // DispatchAsOfTokenNotServed is the code of the 403 for a request by a read-only token that
 // carries a cut (as_of) to a read route other than GET /api/v1/whoami: no build serves a read at

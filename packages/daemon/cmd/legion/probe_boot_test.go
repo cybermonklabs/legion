@@ -11,10 +11,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
 // probe-boot names its configuration only by --config: an argument is refused as start refuses it.
 func TestProbeBootRefusesAnArgument(t *testing.T) {
+	t.Parallel()
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "probe-boot", "legion.yaml"}, &out, &errb)
 	if code != 2 || !strings.Contains(errb.String(), `unexpected argument "legion.yaml"`) {
@@ -26,6 +29,7 @@ func TestProbeBootRefusesAnArgument(t *testing.T) {
 // reading the configuration without running either App's private_key_command; it only reads the
 // cluster, and prints no OK line.
 func TestProbeBootRefusesAClusterWithoutAgentSandboxAndRunsNoKeyCommand(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	var mu sync.Mutex
 	var requested []string
@@ -82,12 +86,12 @@ func TestProbeBootRefusesAClusterWithoutAgentSandboxAndRunsNoKeyCommand(t *testi
 // A cluster read that never reaches the API server fails with a *url.Error, whose text keeps the
 // server URL's user name (Go's client masks only a password). probe-boot writes its refusal to
 // stderr through the URL rule (redact.URLCredentials): the refusal names the CRD and the server's
-// address, and no part of the URL's userinfo.
+// address, and no part of the URL's userinfo. The address is one the test holds bound and never
+// listening (testport.Refused), so no other program on the machine can take it and answer the read.
 func TestProbeBootWritesARefusalWithNoUserNameOfTheURLItFailedToRead(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
-	closed := httptest.NewServer(http.NotFoundHandler())
-	address := closed.Listener.Addr().String()
-	closed.Close()
+	address := testport.Refused(t)
 	config := kubernetesCheckConfig(t, "")
 	const user = "legion-reader"
 	kubeconfig := "apiVersion: v1\nkind: Config\n" +

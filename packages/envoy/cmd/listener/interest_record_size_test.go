@@ -40,7 +40,8 @@ func wideTopics(count, tokenBytes int, role string) []string {
 }
 
 // registerTopics sends one registration of topics for sessionID by holdingProcess through
-// subscribe, asking for the session's own consumer, and returns the answer.
+// subscribe, asking for the session's own consumer, and returns the answer. The time it logs is
+// for the reader only: no case here reads it.
 func registerTopics(t *testing.T, subscribe http.Handler, sessionID string, topics []string) *httptest.ResponseRecorder {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{
@@ -53,13 +54,15 @@ func registerTopics(t *testing.T, subscribe http.Handler, sessionID string, topi
 		t.Fatalf("encode the registration: %v", err)
 	}
 	recorder := httptest.NewRecorder()
+	sent := time.Now()
 	subscribe.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", bytes.NewReader(body)))
+	took := time.Since(sent)
 	answer := strings.TrimSpace(recorder.Body.String())
 	if len(answer) > 400 {
 		answer = answer[:400] + "..."
 	}
-	t.Logf("registration of %s: %d topics, %d bytes of them as JSON: answered %d (Retry-After %q) %s",
-		sessionID, len(topics), len(mustJSON(t, topics)), recorder.Code, recorder.Header().Get("Retry-After"), answer)
+	t.Logf("registration of %s: %d topics, %d bytes of them as JSON: answered %d in %s (Retry-After %q) %s",
+		sessionID, len(topics), len(mustJSON(t, topics)), recorder.Code, took.Round(time.Millisecond), recorder.Header().Get("Retry-After"), answer)
 	return recorder
 }
 
@@ -77,6 +80,17 @@ func mustJSON(t *testing.T, value any) []byte {
 // session's process holds, and to leave a record that reads back whole from the bucket. pastMax
 // says which side of the server's max payload the topics' JSON must be on, so the case and its
 // control cannot drift to the same side.
+//
+// Each registration is given the time left before the test binary's deadline
+// (budgetsUntilTheDeadline) in place of its 3.5 s (sendRequestBudget), and the cases assert what
+// the registration writes, not how soon. The renewal runs last, on what the registration's work
+// left of its budget, and a record past the max payload is about 1.2 MB the race build encodes,
+// splits, writes and reads back on the runner's CPUs. Alone on four idle CPUs each registration
+// took 0.38 to 0.47 s; beside 24 busy processes on those four CPUs, 4.8 to 7.2 s, and the
+// renewal ran out of the product's budget in every run. CI's race job runs other packages' test
+// binaries beside this one, and there the case failed with its claim unrenewed (envoy-go-race job
+// 139003345250). The rows that assert the route's own budget keep it
+// (write_routes_frozen_bus_test.go).
 func requireWideRegistrationRenews(t *testing.T, sessionID string, tokenBytes int, pastMax bool) {
 	t.Helper()
 	const role = "legion-controller"
@@ -87,6 +101,7 @@ func requireWideRegistrationRenews(t *testing.T, sessionID string, tokenBytes in
 		t.Fatalf("the topics take %d bytes as JSON against the server's max payload of %d bytes: the case wants past it %v", size, maxPayload, pastMax)
 	}
 	rig := newRoleClaimRenewalRig(t)
+	budgetsUntilTheDeadline(t, rig.deps)
 	rig.seed(role, lapsedClaim(sessionID, ""))
 
 	for _, heartbeat := range []string{"the first registration", "the heartbeat after it"} {
@@ -123,11 +138,13 @@ func requireWideRegistrationRenews(t *testing.T, sessionID string, tokenBytes in
 // The case: 300 issue topics of about 3,950 bytes each, about 1.18 MB as JSON, past the server's
 // 1 MiB max payload.
 func TestARegistrationPastTheMaxPayloadIsStoredWholeAndRenewsItsClaim(t *testing.T) {
+	t.Parallel()
 	requireWideRegistrationRenews(t, "ses_wide_long_topics", 3900, true)
 }
 
 // The control: the same 300 issue topics, each of about 50 bytes, under the max payload.
 func TestARegistrationUnderTheMaxPayloadIsStoredWholeAndRenewsItsClaim(t *testing.T) {
+	t.Parallel()
 	requireWideRegistrationRenews(t, "ses_wide_short_topics", 10, false)
 }
 
@@ -136,6 +153,7 @@ func TestARegistrationUnderTheMaxPayloadIsStoredWholeAndRenewsItsClaim(t *testin
 // bucket's bound, with no Retry-After, and the client is not told to retry a write that cannot
 // land. A registration whose record fits the same bucket is the control: it is answered 200.
 func TestARegistrationTheBusRefusesForItsSizeIsAnsweredTooLarge(t *testing.T) {
+	t.Parallel()
 	const valueBound = 4096
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
@@ -174,6 +192,9 @@ func TestARegistrationTheBusRefusesForItsSizeIsAnsweredTooLarge(t *testing.T) {
 // control is the same topics under a wildcard that covers them, whose filter reduces to a few
 // subjects: it is answered 200, and its record, larger than one message, is stored in chunks.
 func TestARegistrationWhoseConsumerFilterIsPastTheMaxPayloadIsAnsweredTooLarge(t *testing.T) {
+	// Not parallel: its two registrations of about 1.18 MB of topics must each be answered inside
+	// the route's own 3.5 s budget (sendRequestBudget), and load beside it stretched such a
+	// registration past it.
 	rig := newRoleClaimRenewalRig(t)
 	covered := wideTopics(300, 3900, "legion-controller")
 	if control := registerTopics(t, rig.subscribe, "ses_filter_reduces", covered); control.Code != http.StatusOK {
@@ -203,10 +224,17 @@ func TestARegistrationWhoseConsumerFilterIsPastTheMaxPayloadIsAnsweredTooLarge(t
 // stopped) rather than refused 404, the publish to count it as a recipient that is not connected,
 // and the record to hold every topic registered. Every one of the three is read and logged before
 // any is judged, so a run that fails names all three answers.
+//
+// The registration is the case's setup, and it is given the time left before the test binary's
+// deadline (budgetsUntilTheDeadline) in place of its 3.5 s: the known-session record is its last
+// write, and a write its budget no longer covers is a WARN and no record at all. Beside 32 busy
+// processes on four CPUs that write ran out of the product's budget in every run, and the case
+// failed on a send answered 404 for a session it had just registered.
 func requireStoppedSessionKnown(t *testing.T, sessionID string, tokenBytes int) {
 	t.Helper()
 	const topic = "notifications.dispatch.issue.K-0.counted"
 	rig := newRecipientRig(t)
+	budgetsUntilTheDeadline(t, rig.deps)
 	topics := wideTopics(300, tokenBytes, "legion-controller")
 	topics = topics[:len(topics)-1] // no role lane: the session holds no role
 	rig.register(t, recipientSender, []string{topic})
@@ -239,10 +267,12 @@ func requireStoppedSessionKnown(t *testing.T, sessionID string, tokenBytes int) 
 // for its size, the registration answered 200 with a WARN, and the session had no record: the send
 // answered 404 and the publish counted nobody.
 func TestAStoppedSessionPastTheMaxPayloadIsStillSentToAndCounted(t *testing.T) {
+	t.Parallel()
 	requireStoppedSessionKnown(t, "ses_known_wide_long", 3900)
 }
 
 // The control: the same 300 topics, each of about 50 bytes, under the max payload.
 func TestAStoppedSessionUnderTheMaxPayloadIsSentToAndCounted(t *testing.T) {
+	t.Parallel()
 	requireStoppedSessionKnown(t, "ses_known_wide_short", 10)
 }

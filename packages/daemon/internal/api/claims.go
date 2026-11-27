@@ -48,11 +48,13 @@ type Supervisor interface {
 // names the launch; the registration is that launch's machine's to accept or refuse, and an
 // accepted one is issued a secret whose hash the machine has persisted before this answers — a
 // store that refuses the write is a 500 with no secret, so no agent holds a secret the daemon
-// forgot. A launch of the daemon's own controller registers as the project's controller too
-// (registerLaunchedController), and only under `controller: daemon`. A token no launch minted may
-// be the controller capability `legion controller start` fetched, which registers the project's
-// controller (registerController), and only under `controller: operator`: a daemon that launches
-// its own controller registers no other, so such a token is the unknown one it is.
+// forgot. The answer names the session the registering session replaces, if any
+// (replacedSession). A launch of the daemon's own controller registers as the project's
+// controller too (registerLaunchedController), and only under `controller: daemon`. A token no
+// launch minted may be the controller capability `legion controller start` fetched, which
+// registers the project's controller (registerController), and only under `controller:
+// operator`: a daemon that launches its own controller registers no other, so such a token is the
+// unknown one it is.
 func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	var req claim.RegisterRequest
 	if !s.readRegisterBody(w, r, &req) || !s.requireFields(w, r,
@@ -119,7 +121,24 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		Generation:   launch.Generation,
 		Secret:       secret,
 		PromptAgents: s.promptAgentsList(),
+		Replaces:     replacedSession(c, req.SessionID),
 	})
+}
+
+// replacedSession is the session a registration of session on claim c replaces, which the answer
+// names as `replaces` (claim.RegisterResponse.Replaces): the session c abandoned when it last
+// forgot one (supervise.Claim.Abandoned), and "" where c abandoned none, where the abandoned
+// session is the one registering now (a relaunch that found no file abandoned it and its agent
+// registered it again), or where an operator's release freed its names
+// (supervise.AbandonedSession.Released), after which another claim may register that session
+// and the messages sent to it are that claim's. c is the claim as the machine left it once it
+// accepted the registration. The record stays until the claim's next forget, so each later
+// registration of the claim names the same session again.
+func replacedSession(c supervise.Claim, session string) string {
+	if a := c.Abandoned; a.Session != session && a.Released.IsZero() {
+		return a.Session
+	}
+	return ""
 }
 
 // promptAgentsList is Options.PromptAgents as the registration answers it: never nil, so a role
@@ -248,8 +267,9 @@ func (s *server) exit(w http.ResponseWriter, r *http.Request) {
 // provider, with its own sequence within the launch generation. The daemon keeps the report and
 // derives the claim's run of refused turns from the reports it holds, which fails no claim. A turn
 // that ran no prompt of the daemon's is judged from its report, as a prompt's turn is from its
-// result (supervise's turnOutcome): a refusal whose status cannot clear fails the claim at once.
-// The answer says what the run now is and whether this report failed the claim.
+// result (supervise's turnOutcome): a refusal whose status cannot clear fails the claim at once,
+// and so does one the producer classed as OpenAI's cyber-policy refusal (`code`), whatever its
+// status. The answer says what the run now is and whether this report failed the claim.
 //
 // The caller is the claim's, proved one of two ways. An Oh My Pi session's pi-legion holds the
 // registration's secret and names the claim with it, as the ready and the exit do. The Claude
@@ -280,13 +300,23 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 	status := req.HTTPStatus
 	if status != 0 && (status < 100 || status > 599) {
 		// A number outside the HTTP range is no status a provider answered, and the status decides
-		// whether the claim fails (supervise's holdsTheIssue), so the report is taken as one whose
-		// status cannot be read, which fails nothing. The rollout is warn-first: the report is not
-		// refused (the refusal would be `400 httpStatus <n> is no HTTP status`), so a producer that
-		// sends such a number still has its turn counted, and the warning names it.
+		// whether the claim fails (supervise's classifyProviderError), so the report is taken as
+		// one whose status cannot be read, which fails nothing. The rollout is warn-first: the
+		// report is not refused (the refusal would be `400 httpStatus <n> is no HTTP status`), so
+		// a producer that sends such a number still has its turn counted, and the warning names it.
 		s.log.Warn("api: a turn outcome named an HTTP status outside 100 to 599; it is taken as no status",
 			"claim", token, "generation", req.Generation, "sequence", req.Sequence, "httpStatus", status)
 		status = 0
+	}
+	code := req.Code
+	if code != "" && code != claim.TurnCodeCyberPolicy {
+		// The daemon reads one class off a report (claim.TurnOutcomeRequest.Code), and the class
+		// decides whether the claim fails, so a word it does not know is taken as none, which
+		// changes nothing the status decides. Warn-first, as a status outside the HTTP range is:
+		// the report is not refused, so its turn is still counted, and the warning names the word.
+		s.log.Warn("api: a turn outcome named a code the daemon does not read; it is taken as no code",
+			"claim", token, "generation", req.Generation, "sequence", req.Sequence, "code", code)
+		code = ""
 	}
 	ctx, decided := s.decision(r, token)
 	defer decided()
@@ -295,7 +325,7 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 	answer, err := m.HandleTurnOutcome(ctx, supervise.RequestTurnOutcome{
 		Claim: token, Generation: req.Generation, Sequence: req.Sequence,
 		Refused: req.Outcome == claim.TurnRefused, Message: req.Message,
-		HTTPStatus: status, Unprompted: req.Unprompted,
+		HTTPStatus: status, Unprompted: req.Unprompted, Code: code,
 	})
 	if err != nil {
 		s.claimFailure(w, r, "turn outcome", token, err)

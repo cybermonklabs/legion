@@ -205,7 +205,7 @@ func TestAWakeReportIsRetriedUntilTheBusTakesIt(t *testing.T) {
 	}
 	select {
 	case <-reported:
-	case <-time.After(30 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("the report's goroutine is still retrying after the stream took it")
 	}
 }
@@ -215,6 +215,8 @@ func TestAWakeReportIsRetriedUntilTheBusTakesIt(t *testing.T) {
 // of the reports in flight held all that time: the grant refuses it again however often it is
 // sent.
 func TestAWakeReportTheGrantRefusesIsGivenUpAtOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv in
+	// deniedGrantClient).
 	client := deniedGrantClient(t, bus.LegionWakeTopic)
 	logs := &lockedBuffer{}
 	lifetime, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -264,7 +266,7 @@ func TestWakeReportsEndWithTheListenerAndAreCappedInFlight(t *testing.T) {
 	// The listener stops: every report still retrying ends with it, rather than holding its
 	// goroutine for the rest of its budget.
 	stopListener()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for len(reporter.slots) > 0 {
 		if time.Now().After(deadline) {
 			t.Fatalf("%d reports are still retrying after the listener stopped", len(reporter.slots))

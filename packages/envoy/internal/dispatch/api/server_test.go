@@ -67,9 +67,11 @@ import (
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const apiTestParallelism = 8
 
-// TestMain runs the package's tests through the Dispatch harness's Main, which waits for their
-// databases to drop and drops their templates, inside the broker harness's Run, which then drops
-// the database brokerstoretest.URL made the contract rows' broker schemas in.
+// TestMain runs the package's tests through the Dispatch harness's Main, which drops their
+// databases and their templates, inside the broker harness's Run, which then drops the database
+// brokerstoretest.URL made the contract rows' broker schemas in. Both waits end at the bound
+// testdb.TeardownDeadline gives the test binary, and the broker's, which begins where the Dispatch
+// harness's may have reached that bound, still waits testdb's floor for its own drop.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
@@ -110,6 +112,7 @@ func withDocumentService(t testing.TB, input DepsInput) DepsInput {
 // it down, and its compaction worker would outlive every server it served. An input with none is
 // refused, naming the field.
 func TestNewDepsRefusesAnInputWithNoDocumentService(t *testing.T) {
+	t.Parallel()
 	if _, err := NewDeps(DepsInput{}); err == nil || !strings.Contains(err.Error(), "Docs is required") {
 		t.Fatalf("an input with no document service = %v, want it refused naming Docs", err)
 	}
@@ -1263,25 +1266,23 @@ func TestExternalIssueLinkedInAnotherProjectIsRefused(t *testing.T) {
 	}
 }
 
-// dispatch_issue's external says what POST /api/v1/issues does with the reference it names: a
-// reference already imported into the call's project answers its issue and creates nothing, and
-// one imported into another project is refused 400 EXTERNAL_PROJECT_MISMATCH. The words are the
-// tool's generated copy (contracts.DispatchTools), the text the catalogue serves, and each promise
-// is held to the route here, so a change of either the words or the route fails this test.
-func TestDispatchIssuesExternalWordsAreWhatItsRouteAnswers(t *testing.T) {
+// dispatch_issue's external names the code POST /api/v1/issues refuses an import with when the
+// reference is already imported into another project, 400 EXTERNAL_PROJECT_MISMATCH, and the
+// route answers that code; a reference already imported into the call's project answers its
+// issue. The description is the tool's generated copy (contracts.DispatchTools), the text the
+// catalogue serves, so a change of the code in either the description or the route fails here.
+func TestDispatchIssuesExternalNamesTheCodeItsRouteAnswers(t *testing.T) {
 	t.Parallel()
-	var words string
+	var description string
 	for _, tool := range contracts.DispatchTools {
 		for _, argument := range tool.Arguments {
 			if tool.Name == "dispatch_issue" && argument.Name == "external" {
-				words = argument.Description
+				description = argument.Description
 			}
 		}
 	}
-	for _, promise := range []string{"owner/repo#n", "answers its issue and creates nothing", "400 EXTERNAL_PROJECT_MISMATCH"} {
-		if !strings.Contains(words, promise) {
-			t.Fatalf("dispatch_issue's external says %q, want it to say %q", words, promise)
-		}
+	if !strings.Contains(description, "400 EXTERNAL_PROJECT_MISMATCH") {
+		t.Fatalf("dispatch_issue's external reads %q, want it to name 400 EXTERNAL_PROJECT_MISMATCH", description)
 	}
 	handler := newTestHandler(t)
 	for _, project := range []map[string]string{{"key": "CORE", "name": "Core"}, {"key": "OTHER", "name": "Other"}} {

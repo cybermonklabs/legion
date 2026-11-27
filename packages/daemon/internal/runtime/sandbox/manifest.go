@@ -30,14 +30,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// The pod's init containers: workspace-fetch, the one container of the pod that holds the
-// provisioning token, which mounts nothing an agent of the issue can write; and workspace-init,
-// which works on the issue's volume without the token. The pod's one container is its kind's
-// (podKind.container).
-const (
-	fetchContainer = "workspace-fetch"
-	initContainer  = "workspace-init"
-)
+// The issue pod's one init container, workspace-init, provisions the repository clone with the
+// provisioning token. The pod's one main container is its kind's (podKind.container).
+const initContainer = "workspace-init"
 
 // The pod's volumes. ghVolume is the prefix of each launcher role's gh volume (roleVolume), the
 // projection of its role Secret's gh files, which only that role's namespace sees at GHConfigDir.
@@ -81,13 +76,13 @@ const (
 	agentSecretsExchangeVolume = "agent-secrets-exchange"
 )
 
-// The Legion pool every pod runs on: its taint, tolerated, and its label, selected
-// (the cluster's `legion` NodePool). The gVisor RuntimeClass's own selector also
-// matches another pool, so the pool label is what keeps a pod on Legion's nodes.
+// poolKey is the label of the retired Legion pool, a node pool that set Legion's pods apart from
+// the cluster's general nodes. Legion's pods share the general nodes, so no pod selects or
+// tolerates anything of the pool, and configure refuses a configured selector that names the key.
+// gvisor is the RuntimeClass of every pod that does not run in a microVM (placement).
 const (
-	poolKey   = "legion.dev/pool"
-	poolValue = "legion"
-	gvisor    = "gvisor"
+	poolKey = "legion.dev/pool"
+	gvisor  = "gvisor"
 )
 
 // A microVM pod's placement (placement): GKE Sandbox's microVM RuntimeClass, which adds the
@@ -101,10 +96,11 @@ const (
 	computeClassKey     = "cloud.google.com/compute-class"
 )
 
-// doNotDisruptAnnotation and safeToEvictAnnotation are the autoscaler stop-eviction annotation
-// keys podTemplate sets unconditionally (probeManifest sets only the first): Karpenter's own
-// (AWS), and the Cluster Autoscaler's, which GKE Autopilot honours as a request for
-// extended-duration protection.
+// doNotDisruptAnnotation and safeToEvictAnnotation are the autoscaler annotation keys:
+// Karpenter's own (AWS), and the Cluster Autoscaler's, which GKE Autopilot honours as a request
+// for extended-duration protection. podTemplate sets both against eviction, unconditionally;
+// probeManifest sets only the first; and cachePodTemplate sets the first and the second as "true",
+// so the cluster autoscaler may move a cache pod and remove the node it held.
 const (
 	doNotDisruptAnnotation = "karpenter.sh/do-not-disrupt"
 	safeToEvictAnnotation  = "cluster-autoscaler.kubernetes.io/safe-to-evict"
@@ -329,20 +325,19 @@ func legionVolumeNames(exchange bool) []string {
 // one: an operator's mount may be neither at, under, nor above one. AgentSecretsKeyDir and
 // AgentSecretsTokenDir are reserved whether or not this deployment enrolls, AgentSecretsExchangeDir
 // only where exchange says it names an exchange audience (one that names none keeps the path the
-// operator's, as it was before the key existed), GHConfigDir whether or
-// not the pod is an issue's, FeedDir, which TreeRoot already covers, is named for the read-only
-// mount every issue pod's container carries there, RolesDir is where an issue pod mounts every
-// role's own volumes, which each role's namespace covers whole, HomeMountsDir is where an issue
-// pod's roles container mounts what belongs under the home (homeMountsView), which each role's
-// namespace covers too once it has bound each back, RoleProbeDir is the image probe's volume
-// for its role-namespace check, ControllerWorkloadIdentityDir is where the controller's pod mounts
-// the metadata endpoint's token, reserved whether or not that pod runs in a microVM or the
-// deployment names the endpoint (an issue pod's, WorkloadIdentityDir, is under RolesDir), and
-// TestPGLogFile is reserved whether or not the deployment serves a test database: it is where each
-// role's namespace binds the pod's test server log when the pod serves one.
+// operator's, as it was before the key existed), GHConfigDir whether or not the pod is an issue's,
+// RolesDir is where an issue pod mounts every role's own volumes, which each role's namespace
+// covers whole, HomeMountsDir is where an issue pod's roles container mounts what belongs under the
+// home (homeMountsView), which each role's namespace covers too once it has bound each back,
+// RoleProbeDir is the image probe's volume for its role-namespace check, ControllerWorkloadIdentityDir
+// is where the controller's pod mounts the metadata endpoint's token, reserved whether or not that
+// pod runs in a microVM or the deployment names the endpoint (an issue pod's, WorkloadIdentityDir,
+// is under RolesDir), and TestPGLogFile is reserved whether or not the deployment serves a test
+// database: it is where each role's namespace binds the pod's test server log when the pod serves
+// one.
 func legionMountPaths(exchange bool) []string {
 	paths := []string{
-		TreeRoot, FeedDir, LauncherDir, LauncherPrivateDir, StateDir, xdgConfigHome, ProvidersDir,
+		TreeRoot, LauncherDir, LauncherPrivateDir, StateDir, xdgConfigHome, ProvidersDir,
 		AgentSecretsKeyDir, AgentSecretsTokenDir, GHConfigDir, RolesDir, HomeMountsDir, RoleProbeDir,
 		ControllerWorkloadIdentityDir, TestPGLogFile,
 	}
@@ -410,7 +405,7 @@ type launch struct {
 	// (systemPromptPath says where the launcher writes it and who can read it).
 	prompt string
 	// cacheURL is the address of the issue's repository's cache (cacheURL, set by
-	// issuePod.provision), which its fetch container is told (fetchEnvironment).
+	// issuePod.provision), which workspace-init is told.
 	cacheURL string
 	// gitHubDirs are the directories of the pod's gh bundle, sorted, whose files each role's gh
 	// volume projects — a GitHub owner, or one of its repositories as `<owner>/<repo>` — and
@@ -1091,17 +1086,18 @@ func (r *Runtime) sandboxManifest(l launch) sandbox {
 // podTemplate is the pod a launch runs (decisions 7 and 10). Every pod mounts one disk at the same
 // volume name (issueVolume), from the source its kind gives it (podKind.disk): an issue pod's is
 // its own ephemeral claim, made with the pod and deleted with it, or, where the pod keeps its
-// volume (keptVolume), the kept claim its Sandbox owns and that outlives the pod; the
-// controller's is the claim its Sandbox owns and that outlives every pod it makes. The pod runs as
-// the operator's ServiceAccount (the namespace's default when the operator names none), and its
-// launcher containers mount the providers Secret's configured keys and the operator's mounts, are
-// told the operator's variables, and start Oh My Pi on the pod's baseline (`--pod-safety`,
+// volume (keptVolume), the kept claim its Sandbox owns and that outlives the pod; the controller's
+// is the claim its Sandbox owns and that outlives every pod it makes. The pod runs as its kind's
+// ServiceAccount (podKind.serviceAccount: the operator's, the namespace's default when the operator
+// names none, and for the controller's pod the controller's own account where one is named), and
+// its launcher containers mount the providers Secret's configured keys and the operator's mounts,
+// are told the operator's variables, and start Oh My Pi on the pod's baseline (`--pod-safety`,
 // internal/podsafety). Its init containers and the volumes only they mount are its kind's
-// (podKind). Beyond the Legion pool's selector and tolerations, and a microVM pod's ComputeClass
-// (placement), it asks nothing of its placement: an ephemeral disk is made where the pod is
-// scheduled, so the scheduler puts such a pod wherever the pool has room. A claim that outlives
-// its pods binds each later pod to the zones of its volume. The controller applies a template only
-// to the next pod it creates, so the template is rebuilt for every relaunch. Its metadata
+// (podKind). Beyond the operator's scheduling and a microVM pod's ComputeClass (placement), it
+// asks nothing of its placement: an ephemeral disk is made where the pod is scheduled, so the
+// scheduler puts such a pod wherever a node has room. A claim that outlives its pods binds each
+// later pod to the zones of its volume. The controller applies a template only to the next pod
+// it creates, so the template is rebuilt for every relaunch. Its metadata
 // carries, beside the two stop-eviction annotations, the configuration the pod is built from
 // (podShapeAnnotation, podShape), its kind's in the sandbox the launch runs it in
 // (launch.shapeKey): the one write of it, so that a later sweep can read what a pod was built from
@@ -1115,7 +1111,7 @@ func (r *Runtime) podTemplate(l launch) podTemplate {
 		RestartPolicy:                 corev1.RestartPolicyAlways,
 		TerminationGracePeriodSeconds: new(int64(math.Ceil(r.terminationGrace.Seconds()))),
 		AutomountServiceAccountToken:  new(false),
-		ServiceAccountName:            r.pod.ServiceAccount,
+		ServiceAccountName:            l.kind.serviceAccount(r),
 		EnableServiceLinks:            new(false),
 		// OnRootMismatch: every file on the pod's disk is already the pod user's, so the kubelet skips
 		// re-owning the whole volume at each mount; on a full volume that walk took about 35 s.
@@ -1445,15 +1441,42 @@ func (r *Runtime) mountsProviders() bool {
 	return len(r.providerKeys) > 0 || len(r.providersSecrets) > 0 || r.sessionStore.DSNSecretKey() != ""
 }
 
-// providersKeys are the providers Secret's keys every pod mounts, sorted: what the image probe
-// names when the kubelet cannot mount one.
-func (r *Runtime) providersKeys() []string {
-	keys := slices.Concat(slices.Collect(maps.Values(r.providerKeys)), r.providersSecrets)
-	if key := r.sessionStore.DSNSecretKey(); key != "" {
-		keys = append(keys, key)
+// providersEntries name the settings whose keys of the providers Secret every pod mounts, sorted:
+// what the image probe names when the kubelet cannot mount one. A provider key is named by its
+// variable (provider_keys.<VAR>) and the session database's URL by its setting, never by the key
+// of the Secret that holds it: a provider_keys value can be the provider's key itself, pasted
+// where its name goes, and this refusal is printed as it is. A providers secret is a launch
+// secret's fixed name.
+func (r *Runtime) providersEntries() []string {
+	entries := slices.Concat(slices.Collect(maps.Keys(r.providerKeys)), r.providersSecrets)
+	for i, entry := range entries[:len(r.providerKeys)] {
+		entries[i] = "provider_keys." + entry
 	}
-	slices.Sort(keys)
-	return keys
+	if r.sessionStore.DSNSecretKey() != "" {
+		entries = append(entries, "runtime.kubernetes.session_dsn_secret")
+	}
+	slices.Sort(entries)
+	return entries
+}
+
+// providersEntryOf is the settings whose key of the providers Secret is key, by providersEntries'
+// names, sorted and joined with " and ", so two provider_keys variables that read one key are
+// both named the same way each run; or "" when none is.
+func (r *Runtime) providersEntryOf(key string) string {
+	var entries []string
+	for variable, secretKey := range r.providerKeys {
+		if secretKey == key {
+			entries = append(entries, "provider_keys."+variable)
+		}
+	}
+	if slices.Contains(r.providersSecrets, key) {
+		entries = append(entries, key)
+	}
+	if dsn := r.sessionStore.DSNSecretKey(); dsn != "" && dsn == key {
+		entries = append(entries, "runtime.kubernetes.session_dsn_secret")
+	}
+	slices.Sort(entries)
+	return strings.Join(entries, " and ")
 }
 
 // sessionDSNPointer is OMP_SESSION_SQL_DSN_FILE naming the mounted session database URL, none
@@ -1622,9 +1645,8 @@ const (
 )
 
 // xdgEnvironment is the four XDG base directories on the image's HOME: what the issue pod's
-// workspace-init is told (initEnvironment), the one container of a pod told any of them besides
-// what each role is told — workspace-fetch is told none (fetchEnvironment). A role is told none of
-// them but the config home, at whose path it sees its own; its cache and data homes are the issue's
+// workspace-init is told (initEnvironment). A role is told none of the three home-directory ones
+// but the config home, at whose path it sees its own; its cache and data homes are the issue's
 // scratch's and its state home a directory per role there (roleEnvironment).
 func xdgEnvironment() []corev1.EnvVar {
 	return []corev1.EnvVar{
@@ -1761,64 +1783,44 @@ const (
 	goModCache   = TreeRoot + "/go/mod"
 )
 
-// fetchEnvironment is `workspace-init fetch`'s: the image's PATH alone, its own TMPDIR, the mounted
-// provisioning token, and, for an issue pod, its repository's cache — its address, which resolves
-// only while the cache is Ready, so the fetch waits for it, and its bearer token's file, from the
-// same Secret — which `fetch` streams a fresh feed from alone before it asks GitHub for the delta,
-// and the default branch the daemon recorded for the issue (LEGION_DEFAULT_BRANCH), which the
-// delta brings current beside the one GitHub names now, since `workspace-init provision` starts an
-// issue with no branch there. It is a variable and not a flag so that an image from before it
-// ignores it rather than refusing the command, and a daemon from before it leaves it unset, which
-// the fetch reads as no recorded default. Its git reads no configuration but its own, so it is
-// told no config home.
-func fetchEnvironment(l launch) []corev1.EnvVar {
-	return []corev1.EnvVar{
+// initEnvironment is workspace-init provision's contract: the image's PATH, its in-memory TMPDIR,
+// the mounted provisioning token, the repository cache URL and bearer-token file, and the XDG
+// configuration home. Its PATH names no directory on the issue's disk, so the git and jj it
+// resolves are never ones an agent put there; it carries no tool-path variables. A pod's own
+// ephemeral disk is created with the pod and empty, so its provision is the first. A kept volume
+// (keptVolume) holds the clone and the workspace that the issue's earlier pods left, and its
+// provision reuses what the volume holds (workspace.Provision). Nothing here sizes a wait on
+// another pod: each issue pod provisions its own clone on the issue's own disk, which no other pod
+// mounts at the same time, so no two provisions share a repository.
+func (r *Runtime) initEnvironment(l launch) []corev1.EnvVar {
+	return append([]corev1.EnvVar{
 		{Name: "PATH", Value: imagePath},
 		{Name: "TMPDIR", Value: initTempDir},
 		{Name: "LEGION_PROVISION_TOKEN_FILE", Value: ProvisionDir + "/" + provisionTokenKey},
 		{Name: "LEGION_REPOSITORY_CACHE_URL", Value: l.cacheURL},
 		{Name: repocache.CacheTokenFileEnv, Value: ProvisionDir + "/" + cacheTokenKey},
-		{Name: "LEGION_DEFAULT_BRANCH", Value: l.spec.DefaultBranch},
-	}
-}
-
-// initEnvironment is `workspace-init provision`'s contract (research runtime §2.3), the one
-// provisioning every role of the issue pod shares. Its PATH is the image's alone, naming no
-// directory on the issue's disk, so the git and jj it resolves from PATH are never ones an agent
-// put there; it carries no tool-path variables, and it is never pointed at the provisioning token.
-// It carries no role's session path either: a missing transcript must not prevent sibling
-// launchers from starting, and no session lives on the disk at all (INFRA-80). It expects nothing
-// of the disk. A pod's own ephemeral disk is created with the pod and empty, so its provision is
-// the first. A kept volume (keptVolume) holds the clone and the workspace that the issue's
-// earlier pods left, and its provision reuses what the volume holds (workspace.Provision). Nothing
-// here sizes a wait on another pod: each issue pod provisions its own clone on the issue's own
-// disk, which no other pod mounts at the same time, so no two provisions share a repository.
-func (r *Runtime) initEnvironment(launch) []corev1.EnvVar {
-	return append([]corev1.EnvVar{{Name: "PATH", Value: imagePath}}, xdgEnvironment()...)
+	}, xdgEnvironment()...)
 }
 
 // ProvisionBound satisfies runtime.Runtime: workspace.FetchBudget plus workspace.CloneTimeout plus
 // workspace.CheckoutTimeout. Each term is the real bound of one step whose duration follows the
-// repository's size, and the three run one after the other: workspace-fetch's whole budget (its
-// wait for the repository cache, then one FetchTimeout for the verification of what the cache
-// streamed, then one of its own for the delta from GitHub), workspace-init's shared clone of
-// the feed, whose size-following steps share one CloneTimeout, and the issue's own checkout, the
-// one command that writes the whole working copy (`jj sparse reset`, workspace.Provision), under
-// CheckoutTimeout. It is how much longer than the boot timeout a launch may wait for its pod's
-// launcher, counted from when it first sees one of the pod's init containers running
-// (awaitRoleLauncher). The fetch started no later than that, the shared clone after the fetch
-// ended and the checkout after the clone, so the three end inside the bound, each failing on its
-// own, naming why, when it runs out, while the commands between them take the moments they do.
-// The stream from the repository cache is the one part of the fetch outside those bounds: it
-// ends when it falls below the low-speed bound rather than on any clock
+// repository's size: FetchBudget is the fill's wait for the repository cache, then one
+// BucketFetchTimeout for its attempt on the cache's bucket, then one FetchTimeout for the
+// verification of what the cache's /tar streamed when that attempt failed, then one of its own for
+// the GitHub transfer; CloneTimeout is the fill's jj steps; and CheckoutTimeout is the issue's
+// checkout, the one command that writes the whole working copy (`jj sparse reset`,
+// workspace.Provision). workspace-init runs them in that order. It is how much longer than the boot
+// timeout a launch may wait for its pod's launcher, counted from when it first sees workspace-init
+// running (awaitRoleLauncher). The stream from the repository cache is the one part of the fill
+// outside those bounds: it ends when it falls below the low-speed bound rather than on any clock
 // (workspace.CacheStreamLowSpeedBytes), so a stream that keeps receiving runs on into the slack
-// this bound holds over what its fetch actually waited and checked.
+// this bound holds over what its fill actually waited and checked.
 //
-// The sum counts no term for the commands that keep CommandTimeout, and never has: workspace-
-// init's dozen other commands, local work that waits on no other pod. What covers them is the
-// boot timeout past the sum, so the sum is no worst case: when the fetch and the clone each run
-// their whole bound, whatever those commands take comes out of the checkout's hour and that boot
-// timeout. A test shortens the sum (provisionBound).
+// The sum counts no term for the commands that keep CommandTimeout, and never has: workspace-init's
+// local work that waits on no other pod. What covers them is the boot timeout past the sum, so the
+// sum is no worst case: when the fill and the jj steps each run their whole bound, whatever those
+// commands take comes out of the checkout's hour and that boot timeout. A test shortens the sum
+// (provisionBound).
 func (r *Runtime) ProvisionBound() time.Duration {
 	return r.provisionBound
 }
@@ -2145,38 +2147,39 @@ func podPath(legionDir string) string {
 	return strings.Join(entries, ":")
 }
 
-// nodeSelector is the Legion pool's label and the configured selector, which configure keeps off
-// the pool's key.
+// nodeSelector is a copy of the configured selector, which configure keeps off poolKey: a pod
+// selects no node label the operator did not name. It is a copy so that a pod's own selector
+// (placement's microVM class) never writes the operator's.
 func (r *Runtime) nodeSelector() map[string]string {
-	selector := map[string]string{poolKey: poolValue}
-	for key, value := range r.scheduling.NodeSelector {
-		selector[key] = value
-	}
-	return selector
+	return maps.Clone(r.scheduling.NodeSelector)
 }
 
-// tolerations are the Legion pool's taint, tolerated, then the configured ones.
+// tolerations are a copy of the configured tolerations: a pod tolerates no taint the operator did
+// not name. It is a copy so that a pod's own list (placement's microVM class) never writes the
+// operator's.
 func (r *Runtime) tolerations() []corev1.Toleration {
-	return append([]corev1.Toleration{{
-		Key: poolKey, Operator: corev1.TolerationOpEqual, Value: poolValue, Effect: corev1.TaintEffectNoSchedule,
-	}}, r.scheduling.Tolerations...)
+	return slices.Clone(r.scheduling.Tolerations)
 }
 
 // placement is where a launch's pod runs: its RuntimeClass, node selector and tolerations. A
 // gVisor pod's are every other pod's (the repository cache pods' and the image probe's, which run
-// in gVisor whatever the sandbox block says): gVisor, on the Legion pool (nodeSelector,
-// tolerations). A microVM pod (launch.microVM), an issue's or the controller's, runs under
-// microVMRuntimeClass on the Legion pool's nodes of its ComputeClass: its selector is the gVisor
-// pod's with computeClassKey set to that class, in place of any class the operator's selector
-// names, and its tolerations are the gVisor pod's, less any the operator gave of computeClassKey,
-// which tolerates the class being replaced, then the taint GKE puts on that class's nodes. The
-// RuntimeClass adds the sandbox's own selector and toleration at admission.
+// in gVisor whatever the sandbox block says): gVisor, under the operator's selector and
+// tolerations alone (nodeSelector, tolerations), on the cluster's general nodes. A microVM pod
+// (launch.microVM), an issue's or the controller's, runs under microVMRuntimeClass on the nodes of
+// its ComputeClass: its selector is the gVisor pod's with computeClassKey set to that class, in
+// place of any class the operator's selector names, and its tolerations are the gVisor pod's, less
+// any the operator gave of computeClassKey, which tolerates the class being replaced, then the
+// taint GKE puts on that class's nodes. The RuntimeClass adds the sandbox's own selector and
+// toleration at admission.
 func (r *Runtime) placement(l launch) (runtimeClass string, selector map[string]string, tolerations []corev1.Toleration) {
 	selector, tolerations = r.nodeSelector(), r.tolerations()
 	if l.microVM == nil {
 		return gvisor, selector, tolerations
 	}
 	class := l.microVM.ComputeClass
+	if selector == nil {
+		selector = map[string]string{}
+	}
 	selector[computeClassKey] = class
 	tolerations = slices.DeleteFunc(tolerations, func(t corev1.Toleration) bool { return t.Key == computeClassKey })
 	tolerations = append(tolerations, corev1.Toleration{

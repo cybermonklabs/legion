@@ -218,7 +218,7 @@ declare module "@oh-my-pi/pi-ai" {
     readonly stopReason: string;
     readonly errorMessage?: string;
     /** The HTTP status of the provider request an `error` stop failed on, where the provider gave
-     * one (`packages/ai/src/types.ts:1517-1518` at the pinned tag). */
+     * one (`packages/ai/src/types.ts:1524-1525` at the pinned tag). */
     readonly errorStatus?: number;
   }
   export function completeSimple<TApi extends Api>(
@@ -250,14 +250,45 @@ declare module "@oh-my-pi/pi-ai" {
   ): Promise<AssistantMessage>;
 }
 
+/** The host's error classifiers (`packages/ai/src/error/` of cybermonklabs/oh-my-pi, the `./error`
+ * subpath of its package). */
+declare module "@oh-my-pi/pi-ai/error" {
+  /** Whether `error` (an error, its causes, an assistant message or a message string) is OpenAI's
+   * `cyber_policy` refusal, or a request the host held after one (`flags.ts:1044` at the pinned
+   * tag). The host sets a `prompt_result`'s `code: "cyber_policy"` from it. */
+  export function isCyberPolicyRefusal(error: unknown): boolean;
+}
+
+/** The host's OpenAI `cyber_policy` hold (`packages/coding-agent/src/session/cyber-policy-closure.ts`
+ * of cybermonklabs/oh-my-pi). */
+declare module "@oh-my-pi/pi-coding-agent/session/cyber-policy-closure" {
+  /** Whether `outcome` is OpenAI's own `cyber_policy` refusal, and not a call the hold itself held
+   * after one, whose error names the code too (lines 34-46 at v18.18.6-sami.20261127-010836). */
+  export function isRecordableCyberPolicyRefusal(outcome: unknown): boolean;
+}
+
 declare module "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader" {
-  /** The module path of every extension loaded for `cwd`: the explicit paths, then the
-   * discovered ones, less the disabled. */
+  /** Where discovery found an extension: a project's own, the user's, an explicit or configured
+   * path, or a host's inline factory. Oh My Pi declares it in `extensibility/extensions/types.ts`
+   * (`ExtensionScope`, line 2687 at v18.18.6-sami.20261127-010836); it is a type alone, so
+   * declaring it here beside its one reader changes nothing at run time. */
+  export type ExtensionScope = "project" | "user" | "explicit" | "inline";
+  /** One extension discovery found: its module path and the scope it was found at
+   * (`ExtensionPathEntry`, `extensibility/extensions/types.ts:2690-2693` at
+   * v18.18.6-sami.20261127-010836). */
+  export interface ExtensionPathEntry {
+    readonly path: string;
+    readonly scope: ExtensionScope;
+  }
+  /** Every extension loaded for `cwd`, each found once: the native modules, the hooks and the
+   * installed plugins' modules, then the explicit paths, less the disabled
+   * (`extensibility/extensions/loader.ts:804-883` at v18.18.6-sami.20261127-010836). Each is an
+   * entry; v18.18.6-sami.20261123-024918 returned the bare paths. */
   export function discoverExtensionPaths(
     explicit: readonly string[],
     cwd: string,
     disabled: readonly string[]
-  ): Promise<string[]>;
+  ): Promise<ExtensionPathEntry[]>;
 }
 
 declare module "@oh-my-pi/pi-coding-agent/mcp/config" {

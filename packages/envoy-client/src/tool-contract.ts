@@ -10,6 +10,7 @@ import {
   zodSchemaApi,
 } from "@legion/contracts";
 import { z } from "zod";
+import { STORED_TOPIC_KINDS } from "./stream-topics";
 import { formatZodIssues, ToolInputError } from "./tool-input-errors";
 import {
   type ConnectionState,
@@ -41,17 +42,18 @@ const PUBLISH_COUNTS =
   "recipients_connected is how many of those are running now. A listener that counts neither " +
   "sends neither, and a role topic names its holder instead.";
 
-const STORED_DELIVERY =
-  "Every notification topic is stored (agent, dispatch, github, slack, legion, ghostwispr, " +
-  "whatsapp, team; a role message reaches its holder as a stored copy on the holder's agent " +
-  "topic), and reaches each subscribed session once from the durable consumer its listener " +
-  "relays to it, also one that was away or restarted. A 200 means the stream stored the message " +
-  "for each subscribed session's consumer, not that any recipient has read it.";
+/** What a subscription and a publish reach, in envoy_subscribe's and envoy_publish's texts. */
+export const STORED_DELIVERY =
+  `Every notification topic is stored (${STORED_TOPIC_KINDS.join(", ")}; a role message reaches ` +
+  "its holder as a stored copy on the holder's agent topic), and reaches each subscribed session " +
+  "once from the durable consumer its listener relays to it, also one that was away or restarted. " +
+  "A 200 means the stream stored the message for each subscribed session's consumer, not that any " +
+  "recipient has read it.";
 
 // The listener's 503 under `MESSAGE_NOT_SENT_PREFIX` (`@legion/contracts`): the bus refused the
 // message before anything went out, because the deployed stream does not capture its topic for
 // now (a hub move's quiesce). It is temporary, and the transport throws the listener's own text.
-const NOT_SENT_GUIDE =
+export const NOT_SENT_GUIDE =
   "An error that says the message was not sent means nothing was stored, so the same message may " +
   "be sent again later.";
 
@@ -87,23 +89,39 @@ const URGENCY_VALUES = EnvelopeSchema.shape.urgency.unwrap().options as unknown 
   "blocking",
 ];
 
+/** What each reply mode asks of the recipient, keyed by every value of EXPECTS_REPLY_VALUES. */
+const EXPECTS_REPLY_MEANINGS: Readonly<Record<`${ExpectsReply}`, string>> = {
+  false: "no reply wanted",
+  optional: "a reply is welcome; nothing waits on it",
+  required: "the sender waits on the answer",
+};
+
+/** Each value of EXPECTS_REPLY_VALUES as JSON, then its meaning: `false (no reply wanted), ...`. */
+const EXPECTS_REPLY_GUIDE = EXPECTS_REPLY_VALUES.map(
+  (value) => `${JSON.stringify(value)} (${EXPECTS_REPLY_MEANINGS[`${value}`]})`
+).join(", ");
+
 /** Message metadata arguments shared by envoy_send and envoy_publish, built on the host's Zod. */
 export function messageMetadataShape<Element extends SchemaNode<Element>>(
   schema: SchemaApi<Element>
 ): ToolArgumentsShape {
+  // Every described Envoy tool field describes last: Oh My Pi's `pi.zod` facade drops a
+  // description attached before `.optional()` on an enum or on a field widened to `unknown` (as
+  // `expects_reply` is there, `zodSchemaApi`'s `literal`), and a model reading the tool's schema
+  // would see no value it may send.
   return {
     in_reply_to: schema.string().optional(),
     supersedes: schema.string().optional(),
     urgency: schema
       .enum(URGENCY_VALUES)
+      .optional()
       .describe(
         "low | med | high | blocking: how soon the recipient should act, shown on its card. It does not deliver the message sooner or ahead of others."
-      )
-      .optional(),
+      ),
     expects_reply: schema
       .literal(EXPECTS_REPLY_VALUES)
-      .describe("false | optional | required")
-      .optional(),
+      .optional()
+      .describe(`One of these JSON values: ${EXPECTS_REPLY_GUIDE}.`),
     expires_at: schema.number({ int: true }).optional(),
   };
 }
@@ -232,16 +250,16 @@ export const envoyToolSpecs = [
       ...messageArguments(schema),
       idempotency_key: schema
         .string()
+        .optional()
         .describe(
           "Only to send again a message whose envoy_send was not confirmed delivered: the idempotency_key that error named. Omit it for a new message."
-        )
-        .optional(),
+        ),
     }),
     operation: EnvoyToolOperation.send,
   },
   {
     name: "envoy_publish",
-    description: `Publish an Envoy message to a notifications. topic. ${STORED_DELIVERY} A role or built-in topic is delivered as its guide says. A role message has three possible answers. First, a live session holds the role, and the stream stores the forward for that holder's consumer. Its 200 says the stream stored it. It does not say that the holder read it. It names the holder and the state the listener resolved the holder in. Second, no live session holds the role: nobody claims it, or its holder is unresponsive or gone. The listener then keeps the message for one hour. This is a success. The result says that the listener kept the message, and its kept_until is the time that hour ends. For a holder that is not live, the result also names that holder and its state. The next session to hold the role live before kept_until gets the message. That can be the same holder when it answers again. If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late. Third, the listener keeps nothing and errs, which tells you to reach the agent some other way: the holder refuses the message, or the forward is not stored within four seconds. A team topic (such as notifications.team.deploy-squad.all) is stored like every other, so a session subscribed to it that was away still receives it when it returns, and one that subscribes after you publish does not. A notifications. topic no stream subject captures is refused by name: nothing would store it. ${NOT_SENT_GUIDE} ${PUBLISH_COUNTS} ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT}`,
+    description: `Publish an Envoy message to a notifications. topic. ${STORED_DELIVERY} A role or built-in topic is delivered as its guide says. A role message has three possible answers. First, a live session holds the role, and the stream stores the forward for that holder's consumer. Its 200 says the stream stored it. It does not say that the holder read it. It names the holder and the state the listener resolved the holder in. Second, no live session holds the role: nobody claims it, or its holder is unresponsive or gone. The listener then keeps the message for one hour. This is a success. The result says that the listener kept the message, and its kept_until is the time that hour ends. For a holder that is not live, the result also names that holder and its state. The next session to hold the role live before kept_until gets the message. That can be the same holder when it answers again. If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late. Third, the listener keeps nothing and errs, which tells you to reach the agent some other way: the holder refuses the message, the forward is not stored within four seconds, or no live session holds the role and the publish names no session of yours as its source, so nothing could tell you that a kept copy expired. A team topic (such as notifications.team.deploy-squad.all) is stored like every other, so a session subscribed to it that was away still receives it when it returns, and one that subscribes after you publish does not. A notifications. topic no stream subject captures is refused by name: nothing would store it. ${NOT_SENT_GUIDE} ${PUBLISH_COUNTS} ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT}`,
     arguments: (schema) => ({ topic: schema.string(), ...messageArguments(schema) }),
     operation: EnvoyToolOperation.publish,
   },

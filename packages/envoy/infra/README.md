@@ -644,7 +644,10 @@ Each hub pod's exporter runs with the chart's arguments (`-jsz=all -prefix=nats`
 serves one series per stream for each server holding a copy of it, labelled with the server's and
 the stream's names; it has no metric of whether a copy is current. An alert on a stream with fewer
 than three current copies therefore counts the servers whose copy's `nats_stream_last_seq` equals
-the stream's highest; a KV bucket is the stream `KV_<bucket>`, so the same query covers it.
+the stream's highest; a KV bucket is the stream `KV_<bucket>`, so the same query covers it. The
+PodMonitoring drops every series named `nats_consumer_*`, each of which names a JetStream consumer,
+so none reaches Managed Prometheus; `-jsz=streams` would serve none of them, but no
+`nats_stream_limit_bytes` or `nats_stream_limit_messages` either.
 [Metrics and alerts](docs/nats-hub.md#metrics-and-alerts) in `docs/nats-hub.md` gives the metric
 names, their labels and the PromQL. A pod that is down, a hub pod (container `nats`), a tailnet
 host (container `tailscale`) or the session listener's pod (container `listener`), is read from
@@ -1005,11 +1008,11 @@ builds no subnetwork: unset regionalNetwork`. It refuses every other input by na
 configures Dispatch, which clusterOnly does not build: unset it, or unset clusterOnly`.
 `existingCluster` and `existingDatabaseInstance` are among them, since this mode always makes its
 own cluster and uses no database. `clusterName`, `kubeconfig` and `serviceAccountIssuer` carry the
-cluster's own values; `url`, `databaseInstance`, `principal`, `agentToken` and
-`serviceAccountSubject` are an explicit empty string, which is the same value in a preview and in
-an update. A stack already running Dispatch cannot turn it on: such a stack sets
-the inputs the mode refuses, so the update is refused before anything it would no longer build is
-deleted.
+cluster's own values; `url`, `databaseInstance`, `principal`, `agentToken`,
+`serviceAccountSubject` and `serviceAccountUid` are an explicit empty string, which is the same
+value in a preview and in an update. A stack already running Dispatch cannot turn it on: such a
+stack sets the inputs the mode refuses, so the update is refused before anything it would no
+longer build is deleted.
 
 With the tailnet group and `publicOrigin` unset the component is the sandbox: it builds its
 network and its app as it always does, on its own cluster and database or on the ones
@@ -1727,9 +1730,22 @@ finish. The component itself grants that
 principal `roles/secretmanager.secretAccessor` only on the NATS seed secret (and on the Azure key
 secret when `azureEmbedKeySecret` is set, and on the chat token's secret when `chatTokenSecret`
 is), and grants the listener's own account, `<hostname>-listener`, the same role on the NATS seed
-secret alone (`<hostname>-listener-nats-seed-accessor`); the app and the listener, which mount the
-seed, each wait for their own account's grant to be written, as the app waits for the Azure key's
-and the chat token's. IAM can take minutes to apply
+secret alone (`<hostname>-listener-nats-seed-accessor`). It grants each of the two accounts the
+NATS seed a second time by its uid,
+`principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<project id>.svc.id.goog/kubernetes.serviceaccount.uid/<uid>`
+(`<hostname>-nats-seed-uid-accessor` and `<hostname>-listener-nats-seed-uid-accessor`), a member
+that only the account its cluster's API server gave that uid holds, where the member by name is
+held by an account of that namespace and name in any cluster of the project's pool. Each takes its
+account's `metadata.uid`, so it registers after that account, and an account made again under a
+new uid replaces it. An update in which an account has no uid fails, naming the account. A preview
+that cannot dry-run an account's create (a namespace the same update creates, as when Dispatch is
+turned on after `clusterOnly`, on the move onto `existingCluster` without `existingNamespace` and
+on a change of `namespace`; a cluster the preview cannot reach; server-side apply's
+`AlreadyExists`) shows that grant's member as unknown. This release keeps the grants by name
+beside them, so a running pod mounts the seed through either while a consumer moves; a later
+release drops the grants by name. The app and the listener, which mount the seed, each wait for
+their own account's grants to be written, as the app waits for the Azure key's and the chat
+token's. IAM can take minutes to apply
 a new binding (Google cites typically two, sometimes seven or more), and a pod restarts until it
 can mount. Each pod runs as an account of its own: the app as `<hostname>`, the listener as
 `<hostname>-listener` and the front door as `<hostname>-tailnet`, so only the app's pods can
@@ -1754,6 +1770,16 @@ projected tokens and no other, and the identity needs a role on the Azure AI Fou
 lets it call each deployment it is given, the embedding deployment's and the chat deployment's.
 The component writes nothing in Azure: the consumer's Azure program
 declares the credential and the role from these two outputs.
+
+The `serviceAccountUid` output is the `metadata.uid` of the app's ServiceAccount `<hostname>`, as
+the cluster's API server gave it: in the uid form above it names the app's pods and no account of
+the same namespace and name in another cluster of the project's pool, which `principal` names
+too. Like every output of the component it resolves only once every child has registered, the
+app Deployment's readiness wait included. So a consumer grants by it only a role the app does not
+need to become ready; `roles/cloudsql.client`, which that wait needs, stays on the principal's
+known form, as above. In a preview that creates the account it is the uid the API server's dry
+run of the create answers, which the create replaces, or unknown where no dry run can be made.
+With `clusterOnly` it is `""`.
 
 ### The pods
 
@@ -4095,7 +4121,10 @@ It publishes to:
   the routes serve once the grant reaches it, by a reload or a reconnect, without a restart.
   A listener whose grant lacks `envoy_known_sessions` logs one WARN naming that bucket and serves
   everything else: a publish answers no recipient count, and a send to a session with no registry
-  entry answers 404.
+  entry answers 404. It records no session's principal, so it admits each registration, heartbeats
+  included, with a warning that says so (one more WARN line a minute at most), refuses every
+  claim's handover of a replaced session's messages with a warning, and names no successor on
+  `GET /v1/sessions/{session_id}/successors`.
   That WARN is the store's own line, not the whole log a missing grant leaves: the server refuses
   each open attempt's publish to `$JS.API.STREAM.INFO.KV_envoy_known_sessions`, which the
   connection reports as one `envoy nats async error` at ERROR per attempt (`options`' async error

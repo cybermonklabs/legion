@@ -8,6 +8,8 @@ package bus
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sync/atomic"
@@ -75,11 +77,16 @@ func TestAStartThatCreatesTheStreamAtThreeCopiesServesItsFirstPublish(t *testing
 }
 
 // A start that raises the notification stream from one copy to three answers only once the raised
-// stream has a leader, so the first publish after it is answered. The server answers the raise at
-// once, from the member that held the one copy, and the stream has no leader until its new group
-// elects one; a publish sent then draws no answer even after the leader is there, so a start that
-// took the raise's answer as the stream's left its first publish to fail at its 5 s bound, with no
-// election held.
+// stream has a leader that takes a write, so the first publish after it is answered. The server
+// answers the raise at once, from the member that held the one copy, and the stream has no leader
+// until its new group elects one; a publish sent then draws no answer even after the leader is
+// there, so a start that took the raise's answer as the stream's left its first publish to fail at
+// its 5 s bound, with no election held. A start that took the new leader's name as the stream's
+// lost its first publish the same way while that leader had not yet applied its first entry as
+// leader (leaderNotServing): envoy-go-race job 139083337221, "the stream did not acknowledge the
+// publish" after 5.79 s, with nothing stored. On a cluster whose leader applies at once this row
+// passes either way; the run that holds it is this row against a server that holds the new
+// leader's first apply (the issue's verification).
 func TestAStartThatRaisesTheStreamToThreeCopiesServesItsFirstPublish(t *testing.T) {
 	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
@@ -93,8 +100,11 @@ func TestAStartThatRaisesTheStreamToThreeCopiesServesItsFirstPublish(t *testing.
 	}
 }
 
-// hasLeader reads stream once and reports whether it has a leader then: the fact a start that
+// hasLeader reads stream once and reports whether it names a leader then: the fact a start that
 // answered must leave behind, read with one request so that the row does not itself wait for it.
+// It reads the name alone, not whether that leader takes a write yet (leaderNotServing): a read a
+// member other than the leader answers names the leader with no LeaderSince, so one read cannot
+// tell, and each row's write after it is what shows the leader serves.
 func hasLeader(t *testing.T, js nats.JetStreamContext, stream string) bool {
 	t.Helper()
 	info, err := js.StreamInfo(stream)
@@ -102,6 +112,49 @@ func hasLeader(t *testing.T, js nats.JetStreamContext, stream string) bool {
 		t.Fatalf("read %s: %v", stream, err)
 	}
 	return info.Cluster != nil && info.Cluster.Leader != ""
+}
+
+// A start's wait for a stream's leader does not end on a read that names the new leader before that
+// leader takes a write: nats-server names it from its election on and stores a write only once it
+// has applied its first entry as leader, which a read reports as Cluster.LeaderSince
+// (leaderNotServing). A start that ended its wait on the name handed its caller a stream that
+// dropped the first publish with no answer. Here the first two reads name n1 with no LeaderSince,
+// and the wait must read until the third, which carries it. So must a raised bucket's wait for its
+// copies (copiesBehind), and a start's check of a stream it finds (leaderless).
+func TestAWaitForTheLeaderEndsOnlyOnceTheLeaderTakesWrites(t *testing.T) {
+	t.Parallel()
+	for _, step := range []streamStep{afterCreate, afterRaise, afterOpen} {
+		reads := &scriptedReads{script: []string{"unserved", "unserved"}}
+		if err := awaitStreamLeader(t.Context(), slog.New(slog.DiscardHandler), reads, step, "KV_envoy_unserved_test"); err != nil {
+			t.Fatalf("after %s: the wait = %v, want nil once the leader serves", step, err)
+		}
+		if got := reads.reads.Load(); got != 3 {
+			t.Fatalf("after %s: the wait read the stream %d times, want 3: it ended on a read whose leader took no write yet", step, got)
+		}
+	}
+	unserved := servingStreamInfo("KV_envoy_unserved_test")
+	unserved.Cluster.LeaderSince = nil
+	if !leaderless(unserved) {
+		t.Fatal("a start reads a stream whose named leader takes no write yet as led: its first write would draw no answer")
+	}
+	// Three copies, every replica current: the named leader taking no write is the only shortfall,
+	// and the same read with LeaderSince set is current.
+	unserved.Cluster.Replicas = []*nats.PeerInfo{{Name: "n2", Current: true}, {Name: "n3", Current: true}}
+	if got, want := copiesBehind(unserved, 3), leaderNotServing(unserved); want == "" || got != want {
+		t.Fatalf("a raised bucket's wait reads three current copies under a leader that takes no write yet as %q, want %q", got, want)
+	}
+	since := time.Now()
+	served := *unserved
+	served.Cluster = &nats.ClusterInfo{Leader: "n1", LeaderSince: &since, Replicas: unserved.Cluster.Replicas}
+	if got := copiesBehind(&served, 3); got != "" {
+		t.Fatalf("the same three current copies under a leader that takes writes read as %q, want current", got)
+	}
+	unserved.Cluster.Replicas = nil
+	// A stream of one copy has no Raft node and reports no LeaderSince: its named member serves.
+	unserved.Config.Replicas = 1
+	if short := leaderNotServing(unserved); short != "" {
+		t.Fatalf("a one-copy stream named with its member reads as %q, want serving: a wait on it would last to the hang guard", short)
+	}
 }
 
 // A start that finds a bucket another program raised a moment ago, whose new group has not elected
@@ -180,7 +233,8 @@ func (js *missingOnceJetStream) KeyValue(bucket string) (nats.KeyValue, error) {
 // its create may have been answered before its stream's first election ended. The other start's
 // create is abandoned the moment a listener on its subject sees it go out, so it lands with its
 // answer lost; the cut is made on the create itself, so the account read nats.go makes before it
-// is answered first however slow the machine is.
+// is answered first. That read waits nats.go's own 5 s, which a loaded machine can outlast, ending
+// the try with no create sent, so a try that ends before its create is seen is made again.
 //
 // A create that has gone out has not landed. The meta leader hands each JetStream API request to
 // one of a pool of GOMAXPROCS workers (nats-server v2.15.1 server/jetstream_api.go:1029 and
@@ -207,24 +261,50 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 	if err := conn.Flush(); err != nil {
 		t.Fatalf("flush the listener: %v", err)
 	}
-	createCtx, abandon := context.WithCancel(t.Context())
-	abandoned := make(chan error, 1)
-	go func() {
-		_, err := other.CreateKeyValue(createCtx, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.FileStorage, Replicas: 3})
-		abandoned <- err
-	}()
-	_, err = creates.NextMsg(time.Minute)
-	abandon()
-	if err != nil {
-		t.Fatalf("the other start's create never went out, so this row holds nothing: %v", err)
+	var abandon context.CancelFunc
+	var abandoned chan error
+	send := func() {
+		createCtx, cancel := context.WithCancel(t.Context())
+		abandon, abandoned = cancel, make(chan error, 1)
+		go func(ended chan<- error) {
+			_, err := other.CreateKeyValue(createCtx, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.FileStorage, Replicas: 3})
+			ended <- err
+		}(abandoned)
 	}
-	<-abandoned
-	testwait.Eventually(t, "the meta leader to list the other start's stream", func() bool {
-		listed := false
-		for name := range js.StreamNames() {
-			listed = listed || name == "KV_"+bucket
+	send()
+	// The reading is how many tries were made and how the last one that ended ended, so a try
+	// that always fails before its create goes out names its error when the wait gives up.
+	type createTries struct {
+		Tries   int
+		LastErr error
+	}
+	read := createTries{Tries: 1}
+	testwait.Until(t, "the other start's create to go out, without which this row holds nothing (the last read is how many tries were made and the last ended one's error)", func() (createTries, bool) {
+		_, err := creates.NextMsg(testwait.Poll)
+		if err == nil {
+			return read, true
 		}
-		return listed
+		if !errors.Is(err, nats.ErrTimeout) {
+			t.Fatalf("read the other start's create: %v", err)
+		}
+		select {
+		case ended := <-abandoned:
+			read.LastErr = ended
+			abandon()
+			send()
+			read.Tries++
+		default:
+		}
+		return read, false
+	})
+	abandon()
+	<-abandoned
+	testwait.Until(t, "the meta leader to list the other start's stream (the last read is the streams it listed)", func() ([]string, bool) {
+		var listed []string
+		for name := range js.StreamNames() {
+			listed = append(listed, name)
+		}
+		return listed, slices.Contains(listed, "KV_"+bucket)
 	})
 	kv, err := EnsureKeyValue(t.Context(), conn, &missingOnceJetStream{JetStreamContext: js}, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1})
 	if err != nil {
@@ -332,13 +412,11 @@ func TestAReconnectRunThatFindsTheStreamWithNoLeaderRunsTheHooksAfterIt(t *testi
 	})
 	cluster.Servers[1].Stop(t)
 	cluster.Servers[2].Stop(t)
-	noLeader := testwait.Holds(60*time.Second, 100*time.Millisecond, func() bool {
+	testwait.UntilPolling(t, 100*time.Millisecond, "the remaining member to answer the stream's read with no leader, which this row needs", func() (string, bool) {
 		info, err := client.JS().StreamInfo(Stream)
-		return err == nil && leaderless(info)
+		none := err == nil && leaderless(info)
+		return fmt.Sprintf("read error %v, no leader %t", err, none), none
 	})
-	if !noLeader {
-		t.Fatal("the remaining member never answered the stream's read with no leader: this row needs that read")
-	}
 
 	started := time.Now()
 	err = client.runReconnectHooks(client.Conn)

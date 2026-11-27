@@ -19,33 +19,42 @@ import (
 
 // An issue's role holders are the sessions that hold its Legion roles, one session for each role
 // (issue_role_holders, migration 20261116163813_issue_role_holders). The Legion daemon is the one
-// party that gives a session a role. It publishes the live set of each issue here: when a claim
-// readies, when a claim ends and at each boot. The results route of a later release reads the set
-// in the write transaction of a result (heldRole), so that the stored role of a result is the role
-// that its session holds.
+// party that gives a session a role. It publishes the set of each issue here: when a claim
+// readies, when a claim ends and at each boot. A claim whose idle pod the daemon released, or that
+// a project pause's stop suspended, keeps its session and its role, so its session stays in the
+// set until the claim ends (packages/daemon's supervise.HoldsRole). The results route of a later
+// release reads the set in the write transaction of a result (heldRole), so that the stored role
+// of a result is the role that its session holds.
 //
-// With DISPATCH_LEGION_STATUS_SCOPE on, only the daemon's own broker token can publish.
-// It must prove session legion-daemon:<project> and hold model.ScopeLegionStatus.
-// The route refuses any other credential with 403 ROLE_HOLDER_FORBIDDEN before it opens a
-// transaction. With the setting off, the actor must still name the daemon's session, but a
-// bearer that proves no session of its own can name it in the body (bearerSessionActor).
+// With DISPATCH_LEGION_STATUS_SCOPE on, only a Legion daemon's own broker token can publish. It
+// must hold model.ScopeLegionStatus. It must prove session legion-daemon:<project> of the issue's
+// project, or prove session legion-daemon:<P> of another project's daemon and name that project
+// P (isIssueDaemon). The route refuses any other credential with 403 ROLE_HOLDER_FORBIDDEN before
+// it opens a transaction. With the setting off, the actor must still name the daemon's session, or
+// the session of another project's daemon that the request's broker token proves (isIssueDaemon),
+// but a bearer that proves no session of its own can name the daemon's session in the body
+// (bearerSessionActor).
 // The project's proven_sessions setting refuses that unproven actor with
 // 403 ROLE_HOLDER_NOT_PROVEN.
 //
 // Each accepted publication marks the issue's project in project_role_holder_marks, even if it
 // lists no holders. The document-writer guard reads that mark. Each stored pair also records
-// whether the daemon's own token published it (issue_role_holders.daemon_proven). A publication
+// whether a daemon's own token published it (issue_role_holders.daemon_proven): the issue's own
+// daemon's, or another project's daemon's. A publication
 // sets that mark even on a pair it keeps. The status guard trusts only marked architect pairs.
 //
-// A claim ends when the daemon retires it, fails it or suspends it. The session of an ended claim
-// leaves the set only when the daemon's next publication lands, and until then its row stays. The
-// process of a failed or a suspended claim can still run during that window: the daemon lets go of
-// a process whose stop the runtime refused. Such a process keeps the pane's bearer, and its session
-// keeps its role, until the publication lands. The daemon queues the publication in the
-// transaction of each claim write that changes the session holding a role, so an end whose claim
-// write failed with an error that the daemon owes is published when the daemon makes that write
-// again at the claim's next decision. An end whose claim write failed and is not owed leaves the
-// daemon's memory ended and its store live, and the set follows the store (dispatch://INFRA-4099).
+// A claim ends when the daemon retires it, fails it or suspends it by any source but the idle
+// release. The session of an ended claim leaves the set only when the daemon's next publication
+// lands, and until then its row stays. The process of a failed or a suspended claim can still run
+// during that window: the daemon lets go of a process whose stop the runtime refused. Such a
+// process keeps the pane's bearer, and its session keeps its role, until the publication lands.
+// A released claim has not ended: its session holds its role through the release, so a process of
+// it whose stop the runtime refused writes as that session in its role, as the resumed agent
+// will. The daemon queues the publication in the transaction of each claim write that changes the
+// session holding a role, so an end whose claim write failed with an error that the daemon owes
+// is published when the daemon makes that write again at the claim's next decision. An end whose
+// claim write failed and is not owed leaves the daemon's memory ended and its store live, and the
+// set follows the store (dispatch://INFRA-4099).
 // A later decision of that claim, such as a second stop, makes that write again only while the
 // claim still holds a pending task that the decision retires, such as the task of a turn that is
 // over, because the retirement writes the claim with it; otherwise the session stays listed until
@@ -137,11 +146,35 @@ func legionProjectOf(key string) string {
 // the one putIssueRoleHolders compares are one string.
 const legionDaemonSessionPrefix = ciphertoken.LegionDaemonSessionPrefix
 
-// legionDaemonSessionOf is the session the Legion daemon writes the issue key's project as:
+// legionDaemonSessionOf is the session of the Legion daemon of the issue key's project:
 // legion-daemon:<legionProjectOf(key)>, the daemon's own rule (packages/daemon's
-// dispatch.DaemonSession).
+// dispatch.DaemonSession). A daemon whose broker token proves its own session writes another
+// project's issue as that session instead (isIssueDaemon).
 func legionDaemonSessionOf(key string) string {
 	return legionDaemonSessionPrefix + legionProjectOf(key)
+}
+
+// isIssueDaemon reports whether actor writes the records of the issue key: its step records, their
+// ratings, its plans and its role holders. The Legion daemon of the issue's project writes them as
+// legionDaemonSessionOf(key). A daemon that runs a claim on another project's issue writes that
+// issue's records as itself, legion-daemon:<P>. Only a broker token proves that session, so the
+// request's broker token must prove the actor's session and name the project P. A credential that
+// proves no session, such as the shared token, cannot write as another project's daemon by naming
+// its session in the body.
+func (s *server) isIssueDaemon(r *http.Request, actor model.Actor, key string) bool {
+	if actor.Kind != "session" {
+		return false
+	}
+	if actor.ID == legionDaemonSessionOf(key) {
+		return true
+	}
+	project, daemon := strings.CutPrefix(actor.ID, legionDaemonSessionPrefix)
+	if !daemon {
+		return false
+	}
+	session, proved := s.callerSession(r)
+	named, ok := s.callerProject(r)
+	return proved && session == actor.ID && ok && named == project
 }
 
 // heldRole is the role that session holds on issueKey, and "" when it holds none. An empty session
@@ -214,10 +247,11 @@ const maxRoleHolderSessionBytes = 256
 
 // putIssueRoleHolders publishes the session of each Legion role of an issue. It reads the
 // request's credential as optionalActor resolved it (requestWriter), and refuses what requireActor
-// refuses. The credential is the daemon's own when it proves the session legion-daemon:<project>
-// of the issue's project and holds model.ScopeLegionStatus. With Deps.LegionStatusScope on, every
-// other credential is refused 403 ROLE_HOLDER_FORBIDDEN. With it off, the actor must be that
-// session (this file's comment).
+// refuses. The credential is a daemon's own when it holds model.ScopeLegionStatus and proves the
+// session legion-daemon:<project> of the issue's project, or proves the session
+// legion-daemon:<P> of another project's daemon and names that project P (isIssueDaemon). With
+// Deps.LegionStatusScope on, every other credential is refused 403 ROLE_HOLDER_FORBIDDEN. With it
+// off, the actor must be that session (this file's comment).
 //
 // The daemon sends the issue's whole set, so the transaction deletes each stored pair that the
 // body does not name, then inserts the pairs that are not stored yet. A pair that changed is
@@ -230,7 +264,8 @@ const maxRoleHolderSessionBytes = 256
 // each session is a session id (text.IsSessionID) of at most maxRoleHolderSessionBytes, once. A
 // body that fails is 400 INVALID_ROLE_HOLDER and stores nothing, so no body gives a 500 from a
 // check or an index of the table. Six distinct roles bound the set at six holders. On a project
-// whose proven_sessions is on, a write whose credential does not prove the daemon's session is 403
+// whose proven_sessions is on, a write whose credential does not prove its actor's session, the
+// session of the issue's project's daemon or of another project's daemon (isIssueDaemon), is 403
 // ROLE_HOLDER_NOT_PROVEN, after those refusals; a write the route takes marks the issue's project
 // in its transaction (project_role_holder_marks).
 func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
@@ -247,18 +282,25 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	daemon := legionDaemonSessionOf(key)
 	credential := writer.credential
-	daemonProven := credential != nil && credential.Session == daemon && credential.Holds(model.ScopeLegionStatus)
+	// Whether the actor is a daemon that writes the issue's records: the issue's project's daemon,
+	// or another project's daemon whose broker token proves its session and names its project.
+	issueDaemon := s.isIssueDaemon(r, writer.actor, key)
+	// A daemon's own token: it holds legion-status, which the broker grants to a daemon's token
+	// alone, and proves the session of the issue's project's daemon, or that of another project's
+	// daemon whose project it names. Such a token's actor is the session it proves.
+	daemonProven := credential != nil && credential.Holds(model.ScopeLegionStatus) &&
+		(credential.Session == daemon || issueDaemon)
 	if s.deps.LegionStatusScope {
 		if !daemonProven {
 			writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
-				"only the Legion daemon's own broker token, which proves session %s and holds the %s scope, publishes the roles of %s.",
-				daemon, model.ScopeLegionStatus, key))
+				"only a Legion daemon's own broker token publishes the roles of %s. It holds the %s scope, and it proves session %s, or it proves session legion-daemon:<P> and names project P.",
+				key, model.ScopeLegionStatus, daemon))
 			return
 		}
-	} else if writer.actor.Kind != "session" || writer.actor.ID != daemon {
+	} else if !issueDaemon {
 		writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
-			"only the Legion daemon of project %s names the sessions that hold the roles of %s. That daemon writes as session %s.",
-			legionProjectOf(key), key, daemon))
+			"only a Legion daemon names the sessions that hold the roles of %s: the daemon of project %s, as session %s, or another project's daemon, as session legion-daemon:<P> with a broker token that names P and proves that session.",
+			key, legionProjectOf(key), legionDaemonSessionOf(key)))
 		return
 	}
 	if input.Holders == nil {
@@ -326,10 +368,12 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// Another project's daemon passes isIssueDaemon only on a broker token that proves its session,
+	// so the one actor this refuses names the issue's project's daemon without proving it.
 	if provenSessions && !writer.actor.Proven {
 		writeError(w, "ROLE_HOLDER_NOT_PROVEN", http.StatusForbidden, fmt.Sprintf(
-			"project %s records proven sessions, so it takes the role holders of %s only on a credential that proves session %s. This request's credential does not prove that session.",
-			project, key, daemon))
+			"project %s records proven sessions, so it takes the role holders of %s only on a credential that proves the session it publishes as: session %s, or session legion-daemon:<P> on a broker token that names project P. This request's credential does not prove session %s.",
+			project, key, daemon, daemon))
 		return
 	}
 	// The set before this write, read under the owner lock that every writer of the set takes, so

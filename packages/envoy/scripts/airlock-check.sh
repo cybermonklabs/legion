@@ -15,7 +15,10 @@
 #   - one PASS: or FAIL: line for each property the check's outcome sentence names, and one for
 #     its negative control, because a control that does not behave as the check says leaves the
 #     check proving nothing;
-#   - one last line, `check <id>: passed` or `check <id>: failed (<n> of <m>)`.
+#   - one last line, `check <id>: passed`, `check <id>: failed (<n> of <m>)`, or, when every
+#     property it judged passed and one it could not judge (an UNKNOWN: or DEFERRED: line, a
+#     property this head does not build), `check <id>: not every property judged (...)`, which is
+#     no pass.
 #
 # No line it prints is a credential. A value is compared by its SHA-256 (the first 16 hex
 # digits) and its length, and every line that compares one says so; that is a rule of the
@@ -28,19 +31,20 @@
 #     therefore a small Python program (scripts/airlock/memscan.py) that starts
 #     `agent-secrets` itself and scans the descendant it started.
 #   - k15 needs no stack at all: it builds the Lean model, prints its theorem statements and
-#     their axioms, runs the comparison fuzz test for ten minutes, and runs every mutant
-#     through scripts/airlock-mutants.sh.
+#     their axioms, runs the comparison fuzz test for ten minutes, and runs the ten mutants it
+#     names through scripts/airlock-mutants.sh.
 #
 # Where a check needs a secret the stack does not hold, this script extends the stack's own
 # fake Secrets Manager (the file AIRLOCK_FAKE_SECRETS_FILE names) at run time and makes every
-# broker reread it; a plain stored value no profile names is served by its own name. It never
-# edits the stack's profiles file (AIRLOCK_PROFILES_FILE, which dev-airlock.sh writes and each
-# broker reads once, at boot): a control that needs other profiles or other proxy settings is a
-# second broker process this script starts on the stack's own database, certificate authority
-# and stand-ins, with a profiles file of its own or that one setting changed.
+# broker reread it; a plain stored value with no proxy tag and no profile is served by its own
+# name. It never edits the stack's profiles file (AIRLOCK_PROFILES_FILE, which dev-airlock.sh
+# writes and each broker reads once, at boot): a control that needs other kinds, other profiles,
+# other proxy settings or other code is a second broker process this script starts on the stack's
+# own database, certificate authority and stand-ins, with a profiles file of its own, that one
+# setting changed, or a binary built from a copy of this module with one defect put in.
 #
 # Usage: packages/envoy/scripts/airlock-check.sh <id> [--keep-stack]
-#        <id> is k1, k2, k3, k4, k5, k6, k7, k8a, k9 or k15. --keep-stack leaves the stack and
+#        <id> is k1, k2, k3, k4, k5, k6, k7, k8, k9, k15 or k47. --keep-stack leaves the stack and
 #        the work directory up for a person to look at a failure with. --help prints this usage.
 #        A usage error exits 2.
 #
@@ -49,9 +53,10 @@
 # before the airlock, OLD_CLI_DEFAULT_TAG below, which AIRLOCK_OLD_CLI_TAG overrides, and k7's
 # consumer files come from sjawhar/dotfiles), k6 and k7 need bun, wget, git, uv and the
 # clients scripts/airlock-clients.sh
-# installs (az, gcloud, pulumi and boto3), k9 needs git, and k15 needs lake from the Lean
-# toolchain this environment names. DEV_BROKER_POSTGRES_URL is passed to dev-airlock.sh as it
-# is, so a pod with no container runtime names its test server there.
+# installs (az, gcloud, pulumi and boto3), k9 needs git, k15 needs lake from the Lean toolchain
+# this environment names, and k47 builds two control brokers with go. DEV_BROKER_POSTGRES_URL is
+# passed to dev-airlock.sh as it is, so a pod with no container runtime names its test server
+# there.
 # k7 also requires four operator inputs, and refuses to start without them, naming each one
 # missing: AIRLOCK_GCLOUD_SECRET, AIRLOCK_GWS_READ_SECRET and AIRLOCK_GWS_ADMIN_SECRET, the
 # broker names of the operator's own gcloud login and Google Workspace read and administrator
@@ -60,6 +65,7 @@
 # supplied by default.
 #
 # k9 is a long run: ten minutes of connections and two stacks, about twenty-five minutes in all.
+# k47 builds two brokers and approves four grants, about ten minutes.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -82,7 +88,7 @@ usage: airlock-check.sh <id> [--keep-stack]
 Runs one before_merge check of the airlock's verification document and prints, for each
 property the check's outcome sentence names, what it expected beside what it got.
 
-  <id>           k1, k2, k3, k4, k5, k6, k7, k8a, k9 or k15
+  <id>           k1, k2, k3, k4, k5, k6, k7, k8, k9, k15 or k47
   --keep-stack   leave the stack and this run's work directory up, to look at a failure with
   --help         print this
 
@@ -91,8 +97,14 @@ names of the operator's gcloud and Google Workspace logins) and AIRLOCK_GWS_TIER
 key in gws/accounts.json whose read tier it reports) in its environment, and refuses to start
 without them.
 
-It exits 0 only when every property passed, 1 when one did not and 2 on a usage error. k9 takes
-about twenty-five minutes; every other check takes a few.
+--keep-stack does not work with k6: k6 starts a second stack (its --no-kind control) after the
+first, and with the first kept up the second cannot bind (listen tcp 127.0.0.2:443: bind: address
+already in use). Use --keep-stack with the other checks.
+
+It exits 0 only when every property passed, 1 when one did not, 2 on a usage error, and 3 when
+every property it judged passed and one it could not judge here (an UNKNOWN: or DEFERRED: line),
+which is no pass. k9 takes about twenty-five minutes and k47 about ten; every other check takes a
+few.
 EOF
 }
 
@@ -129,9 +141,9 @@ if [ -z "$CHECK_ID" ]; then
 fi
 
 case "$CHECK_ID" in
-k1 | k2 | k3 | k4 | k5 | k6 | k7 | k8a | k9 | k15) ;;
+k1 | k2 | k3 | k4 | k5 | k6 | k7 | k8 | k9 | k15 | k47) ;;
 *)
-	echo "airlock-check: $CHECK_ID is no check of this document; it holds k1, k2, k3, k4, k5, k6, k7, k8a, k9 and k15" >&2
+	echo "airlock-check: $CHECK_ID is no check of this document; it holds k1, k2, k3, k4, k5, k6, k7, k8, k9, k15 and k47" >&2
 	usage >&2
 	exit 2
 	;;
@@ -176,14 +188,18 @@ trap cleanup EXIT
 
 # --- What a run says -----------------------------------------------------------------------
 #
-# Three lists make the result block, and one pair of counters makes the verdict. A property is
-# recorded with pass or fail and nothing else decides the exit status.
+# Three lists make the result block, and three counters make the verdict. A property is recorded
+# with pass or fail, or, when this head does not build what it is about, as not judged: an
+# UNKNOWN: line (unknown) or a DEFERRED: line naming the slice that builds it (deferred). A
+# property not judged is never a pass: a run with one ends "not every property judged" and
+# exits 3, so nothing reads it as a check that passed.
 
 EXPECTED=()
 OBSERVED=()
 CONTROL=()
 PASSED=0
 TOTAL=0
+NOT_JUDGED=0
 VERDICTS=()
 
 expect() { EXPECTED+=("$1"); }
@@ -199,6 +215,16 @@ pass() {
 fail() {
 	TOTAL=$((TOTAL + 1))
 	VERDICTS+=("FAIL: $1")
+}
+
+unknown() {
+	NOT_JUDGED=$((NOT_JUDGED + 1))
+	VERDICTS+=("UNKNOWN: $1")
+}
+
+deferred() { # <what the property is> <the slice that builds it> <what was seen>
+	NOT_JUDGED=$((NOT_JUDGED + 1))
+	VERDICTS+=("DEFERRED: $1 — deferred to $2: $3")
 }
 
 # judge records one property from a condition the caller has already evaluated: "0" passes and
@@ -225,11 +251,19 @@ report() {
 	echo
 	printf '%s\n' "${VERDICTS[@]+"${VERDICTS[@]}"}"
 	echo
-	if [ "$PASSED" -eq "$TOTAL" ]; then
+	if [ "$TOTAL" -eq 0 ] && [ "$NOT_JUDGED" -eq 0 ]; then
+		echo "check $CHECK_ID: UNKNOWN: no property was judged, so nothing passed"
+		return 3
+	fi
+	if [ "$PASSED" -eq "$TOTAL" ] && [ "$NOT_JUDGED" -eq 0 ]; then
 		echo "check $CHECK_ID: passed"
 		return 0
 	fi
-	echo "check $CHECK_ID: failed ($((TOTAL - PASSED)) of $TOTAL)"
+	if [ "$PASSED" -eq "$TOTAL" ]; then
+		echo "check $CHECK_ID: not every property judged ($PASSED passed, $NOT_JUDGED not judged here)"
+		return 3
+	fi
+	echo "check $CHECK_ID: failed ($((TOTAL - PASSED)) of $TOTAL$([ "$NOT_JUDGED" -gt 0 ] && printf ', %d not judged' "$NOT_JUDGED"))"
 	return 1
 }
 
@@ -329,9 +363,13 @@ broker_env() { # <VAR=value>...
 
 # start_extra_broker starts one more broker process beside the stack's, on its database, profiles
 # file, certificate authority and stand-ins, with the environment the caller adds on top, and
-# answers its proxy address in EXTRA_PROXY_ADDR. It is how a control that turns one proxy setting
-# off is run: the stack's own brokers keep the setting, and the command's HTTPS_PROXY is pointed
-# at this one for that step alone.
+# answers its API and proxy addresses in EXTRA_API_ADDR and EXTRA_PROXY_ADDR. It is how a control
+# that turns one proxy setting off is run: the stack's own brokers keep the setting, and the
+# command's HTTPS_PROXY is pointed at this one for that step alone. EXTRA_BROKER_BIN is the binary
+# it runs, the stack's own when the caller sets none: k47's controls are brokers built from a copy
+# of this module with one defect put in, which no setting stands in for, and everything else
+# about that process - the database, the profiles file, the fake store, the identities - has to
+# stay the stack's. judge-check.sh's start_extra_broker is the same device.
 start_extra_broker() { # <name> <VAR=value>...
 	local name="$1"
 	shift
@@ -339,11 +377,29 @@ start_extra_broker() { # <name> <VAR=value>...
 	: >"$log"
 	# Three ports the system picks, so this one never collides with the broker it was copied from.
 	broker_env BROKER_LISTEN_ADDR="127.0.0.1:0" BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" "$@"
-	( with_broker_env "$BROKER_BIN" ) >"$log" 2>&1 &
+	( with_broker_env "${EXTRA_BROKER_BIN:-$BROKER_BIN}" ) >"$log" 2>&1 &
 	local pid=$!
 	EXTRA_BROKER_PIDS+=("$pid")
 	await "the $name broker" 120 "$log" '"message":"airlock proxy listening"' "$pid"
+	EXTRA_API_ADDR="$(logged_addr 'broker listening' "$log")"
 	EXTRA_PROXY_ADDR="$(logged_addr 'airlock proxy listening' "$log")"
+}
+
+# front_backends points the stack's two fronts at one API address and one proxy address, so a
+# command whose AGENT_SECRETS_URL and HTTPS_PROXY are the fronts - every agent-secrets run - is
+# served by a broker this script started. The broker's public URL is the front's, so a session's
+# proofs, which are signed for that URL, verify at it. front_backends_stack points them back at
+# the stack's own brokers. Each front rereads its backends file when it changes; a moment is
+# enough for both to have read it.
+front_backends() { # <api addr> <proxy addr>
+	printf '%s\n' "$1" >"$AIRLOCK_DIR/api-backends"
+	printf '%s\n' "$2" >"$AIRLOCK_DIR/proxy-backends"
+	sleep 2
+}
+front_backends_stack() {
+	printf '%s\n' "${BROKER_API_ADDRS[@]}" >"$AIRLOCK_DIR/api-backends"
+	printf '%s\n' "${BROKER_PROXY_ADDRS[@]}" >"$AIRLOCK_DIR/proxy-backends"
+	sleep 2
 }
 
 # logged_addr answers the addr field of the first line of a broker's log whose message is the one
@@ -362,6 +418,19 @@ logged_addr() { # <message> <log>
 # as nothing and is left out.
 bound_call_lines() { # <log>...
 	jq -Rc 'fromjson? | select(.message == "airlock proxy: a call to a bound host" or (.message == "broker: answer refused" and .caller_class == "airlock"))' "$@" 2>/dev/null || true
+}
+
+# tunnel_lines is the proxy's line for each socket it opens to a host it does not read - a CONNECT
+# to an unbound host, tunnelled end to end. k3's one tunnel is its call to T.
+tunnel_lines() { # <log>...
+	jq -Rc 'fromjson? | select(.message == "airlock proxy: a tunnel")' "$@" 2>/dev/null || true
+}
+
+# refusal_lines counts the proxy's refusal lines coded <code> in this stack's brokers' logs, to
+# <host> alone when one is given.
+refusal_lines() { # <code> [host]
+	bound_call_lines "$AIRLOCK_DIR"/broker*.log |
+		jq -s --arg c "$1" --arg h "${2:-}" '[.[] | select(.message == "broker: answer refused" and .code == $c and ($h == "" or .host == $h))] | length'
 }
 
 # stack_facts reads the few settings a second broker and the fake store need and that the
@@ -386,6 +455,7 @@ stack_facts() {
 		microsoft.airlock.test 127.0.0.4
 		azure-resource.airlock.test 127.0.0.4
 		aws.airlock.test 127.0.0.5
+		api.anthropic.com 127.0.0.6
 	EOF
 }
 
@@ -395,7 +465,6 @@ stack_facts() {
 # in RELEASE_JSON and the grant's placeholder, proxy password and id in three variables. The
 # placeholder and the password never reach the output.
 release() { # <name> <ttl>
-	local url proof
 	RELEASE_REQUEST="$(agent-secrets request "$1" --ttl "$2" --json 2>"$WORK_DIR/request.err")" || {
 		echo "airlock-check: the request for $1 failed:" >&2
 		cat "$WORK_DIR/request.err" >&2
@@ -406,11 +475,51 @@ release() { # <name> <ttl>
 		echo "airlock-check: the request for $1 was not granted: $(printf '%s' "$RELEASE_REQUEST" | jq -r .state)" >&2
 		return 1
 	}
+	release_values "$1"
+}
+
+# release_values releases GRANT_ID's values as the CLI does (POST /v1/grants/{id}/values, signed by
+# the session), leaving the raw answer in RELEASE_JSON and <name>'s placeholder and the proxy
+# password in two variables.
+release_values() { # <name>
+	local url proof
 	url="$AGENT_SECRETS_URL/v1/grants/$GRANT_ID/values"
 	proof="$(agent-secrets sign --method POST --url "$url")"
 	RELEASE_JSON="$(curl -sS -X POST -H "Proof: $proof" "$url")"
 	PLACEHOLDER="$(printf '%s' "$RELEASE_JSON" | jq -r --arg n "$1" '.airlock.names[$n].value // ""')"
 	PROXY_PASSWORD="$(printf '%s' "$RELEASE_JSON" | jq -r '.airlock.proxy_password // ""')"
+}
+
+# release_approved is release for a human-tier name: the request waits for its person, so this
+# approves it on the broker's page as the stack's person does (approve_record), waits for its
+# grant, and releases it. A live grant of the name and lifetime is handed back with no request
+# (the broker's reuse), and is released as it is. It answers 1, with RELEASE_JSON empty, when no
+# grant came within a minute.
+release_approved() { # <name> <ttl> <reason>
+	RELEASE_JSON="" PLACEHOLDER="" PROXY_PASSWORD="" GRANT_ID=""
+	# A pending request exits non-zero, which is no failure here: its state is read below.
+	RELEASE_REQUEST="$(agent-secrets request "$1" --ttl "$2" --reason "$3" --json 2>"$WORK_DIR/request.err")"
+	GRANT_ID="$(printf '%s' "$RELEASE_REQUEST" | jq -r '.grant_id // ""' 2>/dev/null)"
+	if [ -z "$GRANT_ID" ]; then
+		local request record i
+		request="$(printf '%s' "$RELEASE_REQUEST" | jq -r '.request_id // ""' 2>/dev/null)"
+		record="$(printf '%s' "$RELEASE_REQUEST" | jq -r '.approve_url // ""' 2>/dev/null | grep -o '[0-9a-f]\{64\}' | head -n 1)"
+		[ -n "$request" ] && [ -n "$record" ] || {
+			echo "airlock-check: the request for $1 is neither granted nor waiting for a person: $(cat "$WORK_DIR/request.err")" >&2
+			return 1
+		}
+		approve_record "$record" >/dev/null 2>&1 || true
+		for ((i = 0; i < 60; i++)); do
+			GRANT_ID="$(agent-secrets status "$request" --json 2>/dev/null | jq -r '.grant_id // ""')"
+			[ -n "$GRANT_ID" ] && break
+			sleep 1
+		done
+	fi
+	[ -n "$GRANT_ID" ] || {
+		echo "airlock-check: the request for $1 was not granted within a minute of its approval" >&2
+		return 1
+	}
+	release_values "$1"
 }
 
 # proxy_for is the proxy URL of this grant at one address, credential and all. It is never
@@ -426,6 +535,10 @@ proxy_config() { printf 'proxy = "%s"\n' "$(proxy_for "$1")"; }
 
 records() { curl -sS "$AIRLOCK_RECORDS_URL/records/$1"; }
 records_count() { records "$1" | jq 'length'; }
+# refusals_of is why each call stand-in <stand> refused did not verify, in order (GET <records
+# URL>/refusals/<stand>), as one JSON array, and nothing at all when the route answered no array:
+# a reader takes nothing as UNKNOWN, never as no refusal.
+refusals_of() { curl -sS "$AIRLOCK_RECORDS_URL/refusals/$1" 2>/dev/null | jq -ce 'if type == "array" then . else empty end' 2>/dev/null || true; }
 
 # reread_all makes every broker read one secret's name again, which is what the release of a
 # new version of a stored value waits on. Each call is signed by this stack's session, one proof a
@@ -466,6 +579,17 @@ set_fake_value() { # <store name> <value>
 	local tmp="$WORK_DIR/fake-secrets.json"
 	jq --arg name "$1" --arg value "$2" \
 		'.secrets = [.secrets[] | if .name == $name then .value = $value else . end]' \
+		"$AIRLOCK_FAKE_SECRETS_FILE" >"$tmp"
+	cat "$tmp" >"$AIRLOCK_FAKE_SECRETS_FILE"
+	rm -f "$tmp"
+}
+
+# set_fake_tags replaces one stored secret's tags, which is how a check moves a key's judge tag
+# at run time; every broker reads it at its next reread of the name.
+set_fake_tags() { # <store name> <tags json>
+	local tmp="$WORK_DIR/fake-secrets.json"
+	jq --arg name "$1" --argjson tags "$2" \
+		'.secrets = [.secrets[] | if .name == $name then .tags = $tags else . end]' \
 		"$AIRLOCK_FAKE_SECRETS_FILE" >"$tmp"
 	cat "$tmp" >"$AIRLOCK_FAKE_SECRETS_FILE"
 	rm -f "$tmp"
@@ -638,9 +762,9 @@ check_k1() {
 	# The token reaches curl on standard input, in no command line.
 	proxy_status="$(printf 'Authorization: Bearer %s' "$proxy_token" | curl -sS -o /dev/null -w '%{http_code}' -H @- "$AIRLOCK_GITHUB_URL/repos/acme-org/k1")"
 	observe "github: GitHub got $((revokes_after - revokes_before)) revoke(s) after the session's own release, and a read at GitHub with the token the proxy sent S, $(shape "$proxy_token"), answered $proxy_status"
-	judge "$([ -n "$proxy_token" ] && [ "$revokes_after" -gt "$revokes_before" ] && [ "$proxy_status" != 401 ] && echo 0 || echo 1)" \
+	judge "$([ -n "$proxy_token" ] && [ "$revokes_after" -gt "$revokes_before" ] && [ "$proxy_status" = 200 ] && echo 0 || echo 1)" \
 		"the session's release gives back the token it minted for the slots, and the token the proxy sent S is still live at GitHub" \
-		"$((revokes_after - revokes_before)) revoke(s) after the session's release; the proxy's token, $(shape "$proxy_token") (empty is a header no token was read from), answered $proxy_status, where 401 is a token GitHub no longer knows"
+		"$((revokes_after - revokes_before)) revoke(s) after the session's release; the proxy's token, $(shape "$proxy_token") (empty is a header no token was read from), answered $proxy_status, where 200 is live and anything else (401 a token GitHub no longer knows, 000 no answer) is not"
 
 	# The negative control: the same two runs for names no profile has a proxy block for. A
 	# plain stored value no profile names is served by its own name, so the control adds one to
@@ -742,7 +866,7 @@ check_k2() {
 
 	judge "$([ "$values_keys" = "[]" ] && echo 0 || echo 1)" \
 		"the answer leaves the name out of values" "values keys are $values_keys"
-	judge "$([ -n "$name_value" ] && ! contains "$demo_value" "$RELEASE_JSON" && echo 0 || echo 1)" \
+	judge "$([ -n "$name_value" ] && contains "agent-secrets-placeholder" "$name_value" && ! contains "$demo_value" "$RELEASE_JSON" && echo 0 || echo 1)" \
 		"the answer carries the placeholder in its new field and no real value anywhere" \
 		"airlock.names.AIRLOCK_DEMO_TOKEN.value is $(shape "$name_value"); the stored value's bytes are not in the answer"
 	judge "$(printf '%s' "$RELEASE_JSON" | jq -e '.airlock.ca_certificate | startswith("-----BEGIN CERTIFICATE-----")' >/dev/null && echo 0 || echo 1)" \
@@ -785,7 +909,8 @@ check_k2() {
 
 check_k3() {
 	expect "S gets the real value only in Authorization and X-Key of GET /read"
-	expect "X-Other, the query and the body reach S with the placeholder"
+	expect "X-Other and the query are refused 403 PLACEHOLDER_NOT_SWAPPED, and S records neither; the body reaches S with the placeholder"
+	expect "a GET of /read carrying a minted placeholder's form in X-Other is refused 403 PLACEHOLDER_NOT_SWAPPED, and S records it not"
 	expect "POST /read and GET /other get an error that names the rule, and S records neither"
 	expect "T records the placeholder"
 	expect "the request whose TLS name and Host name T is refused with an error that names the mismatch, and neither S nor T records a value"
@@ -795,12 +920,29 @@ check_k3() {
 
 	start_stack
 	stack_facts
-	local scoped_value s_before t_before log_before
+	local scoped_value s_before t_before log_before minted
+	# A string of a minted placeholder's form: the prefix, a minted kind's word and a hyphen, then
+	# 32 letters and digits (placeholder.MintedPrefix). No grant holds it; what it tests is that
+	# the leftover scan reads that form, as it reads a release's. It is written in two parts so no
+	# file holds it whole.
+	minted="agent-secrets-placeholder-""results-k3mintedk3mintedk3mintedk3minted"
 	scoped_value="$(stored_value "${STACK_SECRETS_PREFIX}airlock-scoped-token")"
 	s_before="$(records_count s)"
 	t_before="$(records_count t)"
 	log_before="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log | wc -l)"
-
+	tunnel_before="$(tunnel_lines "$AIRLOCK_DIR"/broker*.log | wc -l)"
+	# T is reached end-to-end through the CONNECT tunnel the proxy opens to it, and T presents
+	# its own certificate, which the stands' authority signs (PROXY_STANDS_CA_CERT_FILE). The
+	# command verifies T against its own trust bundle, the system ca-bundle agent-secrets points
+	# it at, which holds no stands' authority; AIRLOCK_CA_CERT_FILE, the broker-client bundle
+	# dev-airlock.sh writes, holds both the proxy root and the stands' authority, but the command
+	# does not read it. So the T call names the stands' authority itself. The proxy front is plain
+	# http, so the CONNECT uses no proxy TLS root and --cacert verifies T's leaf alone: the
+	# stands' authority is the one root that should sign T, and trusting any other - the proxy's
+	# own among them - would let a proxy that MITM'd T pass the one check that exists to catch it.
+	# printf %q so a TMPDIR path with a space in it stays one argument in the generated script.
+	local stands_ca
+	stands_ca="$(printf %q "$PROXY_STANDS_CA_CERT_FILE")"
 	cat >"$WORK_DIR/k3-steps.sh" <<EOF
 set -u
 P="\$AIRLOCK_SCOPED_TOKEN"
@@ -810,7 +952,11 @@ say() { printf '%s\n' "\$1" >>"\$out"; }
 say "authorization=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/read)"
 say "xkey=\$(curl -sS -o /dev/null -w %{http_code} -H "X-Key: \$P" $AIRLOCK_S_URL/read)"
 say "xother=\$(curl -sS -o /dev/null -w %{http_code} -H "X-Other: \$P" $AIRLOCK_S_URL/read)"
+say "xother_error=\$(curl -sS -H "X-Other: \$P" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
 say "query=\$(curl -sS -o /dev/null -w %{http_code} "$AIRLOCK_S_URL/read?k=\$P")"
+say "query_error=\$(curl -sS "$AIRLOCK_S_URL/read?k=\$P" 2>&1 | tr '\n' ' ')"
+say "minted=\$(curl -sS -o $WORK_DIR/k3-minted-answer -w %{http_code} -H "X-Other: $minted" $AIRLOCK_S_URL/read)"
+say "minted_error=\$(tr '\n' ' ' <$WORK_DIR/k3-minted-answer)"
 say "getbody=\$(curl -sS -o /dev/null -w %{http_code} -X GET --data "k=\$P" $AIRLOCK_S_URL/read)"
 say "postbody=\$(curl -sS -o /dev/null -w %{http_code} -X POST --data "k=\$P" $AIRLOCK_S_URL/read)"
 say "postbody_error=\$(curl -sS -X POST --data "k=\$P" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
@@ -818,14 +964,15 @@ say "post=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w 
 say "post_error=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -X POST -H @- $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
 say "other=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/other)"
 say "other_error=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -H @- $AIRLOCK_S_URL/other 2>&1 | tr '\n' ' ')"
-say "t=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_T_URL/read)"
+say "t=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS --cacert $stands_ca -o /dev/null -w %{http_code} -H @- $AIRLOCK_T_URL/read)"
 say "mismatch_sni=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS --connect-to t.airlock.test:443:s.airlock.test:443 -H @- $AIRLOCK_T_URL/read 2>&1 | tr '\n' ' ')"
 say "mismatch_host=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -H "Host: t.airlock.test" -H @- $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
 say "carries=\$(curl -sS -H "X-Key: \$(cat $WORK_DIR/k3-real)" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
 EOF
 	printf '%s' "$scoped_value" >"$WORK_DIR/k3-real"
 	chmod 600 "$WORK_DIR/k3-real"
-	agent-secrets AIRLOCK_SCOPED_TOKEN -- bash "$WORK_DIR/k3-steps.sh" >"$WORK_DIR/k3-cli.log" 2>&1 || true
+	agent-secrets AIRLOCK_SCOPED_TOKEN --reason "airlock check k3: the scoped placeholder in each header, the query and the body of calls to S" -- \
+		bash "$WORK_DIR/k3-steps.sh" >"$WORK_DIR/k3-cli.log" 2>&1 || true
 	rm -f "$WORK_DIR/k3-real"
 	declare -A K3
 	while IFS='=' read -r key value; do K3["$key"]="$value"; done <"$WORK_DIR/k3-out"
@@ -840,59 +987,73 @@ EOF
 	body_hits="$(printf '%s' "$recs" | jq --arg v "$scoped_value" '[.[] | select(.body | contains($v))] | length')"
 	post_records="$(printf '%s' "$recs" | jq '[.[] | select(.method == "POST")] | length')"
 	other_records="$(printf '%s' "$recs" | jq '[.[] | select(.path == "/other")] | length')"
-	local xother_ph query_ph body_ph
-	xother_ph="$(printf '%s' "$recs" | jq -r '[.[] | .header["X-Other"] // [] | .[]] | .[0] // ""')"
-	query_ph="$(printf '%s' "$recs" | jq -r '[.[] | select(.query != "") | .query] | .[0] // ""')"
+	local xother_records query_records body_ph minted_records
+	xother_records="$(printf '%s' "$recs" | jq '[.[] | select(.header["X-Other"] != null)] | length')"
+	minted_records="$(printf '%s' "$recs" | jq --arg m "$minted" '[.[] | .header["X-Other"] // [] | .[] | select(contains($m))] | length')"
+	query_records="$(printf '%s' "$recs" | jq '[.[] | select(.query != "")] | length')"
 	body_ph="$(printf '%s' "$recs" | jq -r '[.[] | select(.body != "") | .body] | .[0] // ""')"
 	local t_recs t_ph
 	t_recs="$(records t | jq --argjson n "$t_before" '.[$n:]')"
 	t_ph="$(printf '%s' "$t_recs" | jq -r '[.[] | .header.Authorization // [] | .[]] | .[0] // ""')"
 
-	observe "status by step: Authorization ${K3[authorization]}, X-Key ${K3[xkey]}, X-Other ${K3[xother]}, query ${K3[query]}, GET /read with a body ${K3[getbody]}, POST /read with a body ${K3[postbody]}, POST /read ${K3[post]}, GET /other ${K3[other]}, T ${K3[t]}"
+	observe "status by step: Authorization ${K3[authorization]}, X-Key ${K3[xkey]}, X-Other ${K3[xother]}, query ${K3[query]}, X-Other with a minted placeholder's form ${K3[minted]}, GET /read with a body ${K3[getbody]}, POST /read with a body ${K3[postbody]}, POST /read ${K3[post]}, GET /other ${K3[other]}, T ${K3[t]}"
 	observe "S recorded $(printf '%s' "$recs" | jq length) requests: the real value (by SHA-256 and length, $(shape "$scoped_value")) in $auth_hits Authorization and $key_hits X-Key of GET /read, and in $other_hits X-Other, $query_hits queries and $body_hits bodies"
-	observe "what X-Other, the query and the body actually carried: $(shape "$xother_ph"), $(shape "$query_ph"), $(shape "$body_ph") — the placeholder, not the value"
+	observe "S recorded $xother_records requests with an X-Other header and $query_records with a query; the body carried $(shape "$body_ph") — the placeholder, not the value"
 	observe "S recorded $post_records POST and $other_records /other requests"
 	observe "how the body step is read: the proxy block's allow is GET /read alone, and the same check requires POST /read to be refused, so the body carrying the placeholder is read off the GET of /read that carries one; the POST of /read with a placeholder body is refused with the other POST"
 	observe "how the mismatch step is read: the proxy answers the CONNECT to S with a leaf for S, so a client whose TLS name is T fails the handshake and nothing is sent; the same request with the Host header alone changed reaches the proxy and is refused 'airlock: host header mismatch'"
-	observe "the refusals: POST /read said ${K3[post_error]}; GET /other said ${K3[other_error]}; the TLS-name and Host mismatch said ${K3[mismatch_sni]}; a Host-only mismatch said ${K3[mismatch_host]}; a request already carrying the value said ${K3[carries]}"
+	observe "the refusals: X-Other said ${K3[xother_error]}; the query said ${K3[query_error]}; POST /read said ${K3[post_error]}; GET /other said ${K3[other_error]}; the TLS-name and Host mismatch said ${K3[mismatch_sni]}; a Host-only mismatch said ${K3[mismatch_host]}; a request already carrying the value said ${K3[carries]}"
 	observe "T recorded $(printf '%s' "$t_recs" | jq length) requests and its Authorization was $(shape "$t_ph")"
 
 	judge "$([ "$auth_hits" = 1 ] && [ "$key_hits" = 1 ] && [ "$other_hits" = 0 ] && [ "$query_hits" = 0 ] && [ "$body_hits" = 0 ] && echo 0 || echo 1)" \
 		"S gets the real value only in Authorization and X-Key of GET /read" \
 		"Authorization $auth_hits, X-Key $key_hits, X-Other $other_hits, query $query_hits, body $body_hits (compared by SHA-256 and length)"
-	judge "$(contains "agent-secrets-placeholder" "$xother_ph" && contains "agent-secrets-placeholder" "$query_ph" && contains "agent-secrets-placeholder" "$body_ph" && echo 0 || echo 1)" \
-		"X-Other, the query and the body reach S with the placeholder" \
-		"each carried the grant's placeholder: X-Other $(shape "$xother_ph"), query $(shape "$query_ph"), body $(shape "$body_ph")"
-	judge "$(contains "not allowed by rule" "${K3[post_error]}" && contains "not allowed by rule" "${K3[other_error]}" && [ "$post_records" = 0 ] && [ "$other_records" = 0 ] && echo 0 || echo 1)" \
-		"POST /read and GET /other get an error that names the rule, and S records neither" \
-		"both answered ${K3[post]} and ${K3[other]} with 'not allowed by rule'; S recorded $post_records POST and $other_records /other"
-	judge "$(contains "agent-secrets-placeholder" "$t_ph" && echo 0 || echo 1)" \
-		"T records the placeholder" "T's Authorization was $(shape "$t_ph"), the grant's placeholder"
-	judge "$( { contains "t.airlock.test" "${K3[mismatch_sni]}" || contains "mismatch" "${K3[mismatch_sni]}"; } && [ "$(printf '%s' "$recs" | jq --arg v "$scoped_value" '[.[] | select(.host == "t.airlock.test")] | length')" = 0 ] && echo 0 || echo 1)" \
-		"the request whose TLS name and Host name T is refused with an error that names the mismatch, and neither S nor T records a value" \
-		"it was refused: ${K3[mismatch_sni]}; the same request with the Host alone changed was refused ${K3[mismatch_host]}"
+	# The two refusals' code is on their refusal lines (the answer's words name the rule, and the
+	# code beside it is the broker's own record of it).
+	local left_lines
+	left_lines="$(refusal_lines PLACEHOLDER_NOT_SWAPPED)"
+	judge "$([ "${K3[xother]}" = 403 ] && [ "${K3[query]}" = 403 ] && contains "still carries a placeholder after the swap" "${K3[xother_error]}" && contains "still carries a placeholder after the swap" "${K3[query_error]}" && [ "$left_lines" -ge 4 ] && [ "$xother_records" = 0 ] && [ "$query_records" = 0 ] && contains "agent-secrets-placeholder" "$body_ph" && echo 0 || echo 1)" \
+		"X-Other and the query are refused 403 PLACEHOLDER_NOT_SWAPPED, and S records neither; the body reaches S with the placeholder" \
+		"X-Other answered ${K3[xother]} saying '${K3[xother_error]}' and the query ${K3[query]} saying '${K3[query_error]}' (want 403, each naming 'still carries a placeholder after the swap'); $left_lines refusal lines coded PLACEHOLDER_NOT_SWAPPED for their four requests; S recorded $xother_records with X-Other and $query_records with a query; the body carried $(shape "$body_ph")"
+	# The minted form is read as a placeholder too: in a build whose scan reads a release's form
+	# alone (the proxy mutant proxy-leftover-stored-form-only) it reaches S, and this fails. It is
+	# one request, whose answer is kept to read its words from.
+	judge "$([ "${K3[minted]}" = 403 ] && contains "still carries a placeholder after the swap" "${K3[minted_error]}" && [ "$minted_records" = 0 ] && [ "$left_lines" -ge 5 ] && echo 0 || echo 1)" \
+		"a GET of /read carrying a minted placeholder's form in X-Other is refused 403 PLACEHOLDER_NOT_SWAPPED, and S records it not" \
+		"it answered ${K3[minted]}, saying ${K3[minted_error]}; S recorded $minted_records requests carrying it, and the brokers logged $left_lines refusal lines coded PLACEHOLDER_NOT_SWAPPED for the five requests that carry a placeholder left after the swap"
+	judge "$(contains "not allowed by rule" "${K3[post_error]}" && contains "not allowed by rule" "${K3[postbody_error]}" && contains "not allowed by rule" "${K3[other_error]}" && [ "$post_records" = 0 ] && [ "$other_records" = 0 ] && echo 0 || echo 1)" \
+		"POST /read with the placeholder in its header and in its body, and GET /other, get an error that names the rule, and S records neither" \
+		"the header POST answered ${K3[post]} saying '${K3[post_error]}', the body POST ${K3[postbody]} saying '${K3[postbody_error]}' and GET /other ${K3[other]} saying '${K3[other_error]}'; S recorded $post_records POST and $other_records /other"
+	judge "$(contains "agent-secrets-placeholder" "$t_ph" && [ "$(printf '%s' "$t_recs" | jq length)" = 1 ] && echo 0 || echo 1)" \
+		"T records the placeholder, and only the one call to T reaches it" \
+		"T recorded $(printf '%s' "$t_recs" | jq length) request(s) (want 1); its Authorization was $(shape "$t_ph") (want the grant's placeholder, which opens agent-secrets-placeholder)"
+	judge "$( { contains "t.airlock.test" "${K3[mismatch_sni]}" || contains "mismatch" "${K3[mismatch_sni]}"; } && contains "host header mismatch" "${K3[mismatch_host]}" && [ "$(printf '%s' "$recs" | jq --arg v "$scoped_value" '[.[] | select(.host == "t.airlock.test")] | length')" = 0 ] && echo 0 || echo 1)" \
+		"the request whose TLS name and Host name T fails the handshake, the Host-only mismatch is refused 'host header mismatch', and neither S nor T records a value for T" \
+		"the TLS-name mismatch answered: ${K3[mismatch_sni]}; the Host-only mismatch answered: ${K3[mismatch_host]} (want a refusal naming 'host header mismatch')"
 	judge "$(contains "already carries the value" "${K3[carries]}" && echo 0 || echo 1)" \
 		"the request that already carries the value is refused with an error that names it, and S records nothing" \
-		"it was refused: ${K3[carries]}"
+		"the request that already carries the value answered: ${K3[carries]} (want a refusal that names it)"
 
-	# Thirteen of the fourteen requests this command makes reach the proxy on a CONNECT to a
-	# bound host and so log a line: the one that does not is the TLS-name mismatch, whose
-	# handshake fails before a request exists. A carried call logs its call line and a refused
-	# one its refusal record in that line's place, so the two are counted together
-	# (bound_call_lines). The run also checks that both a carried and a refused call are among
-	# them, the refused one with the reason its record names. Each number comes from one read of
-	# the logs, so a line written between two reads cannot make them disagree.
-	local calls log_after log_lines allowed refused
+	# The 17 requests this command makes leave exactly 17 log rows by request: 16 reach the proxy
+	# on a CONNECT to a bound host and log a line (bound_call_lines - a carried call logs its call
+	# line, a refused one its refusal record in that line's place), the call to T logs one tunnel
+	# line (it is no bound host, so it is tunnelled unread), and the TLS-name mismatch logs none,
+	# its handshake failing before a request exists. The counts are exact, not a lower bound: a
+	# broker that wrote no tunnel line, wrote one request twice, or logged the handshake is caught.
+	# Each number comes from one read of the logs, so a line written between two reads cannot make
+	# them disagree.
+	local calls log_after tunnel_after log_lines allowed refused
 	calls="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log)"
 	log_after="$(jq -s length <<<"$calls")"
+	tunnel_after="$(tunnel_lines "$AIRLOCK_DIR"/broker*.log | wc -l)"
 	log_lines="$(printf '%s' "$calls" | tail -n 3 | sed 's/^/    /')"
 	allowed="$(jq -s '[.[] | select(.message == "airlock proxy: a call to a bound host" and .allowed == true)] | length' <<<"$calls")"
 	refused="$(jq -s '[.[] | select(.message == "broker: answer refused" and (.reason // "") != "")] | length' <<<"$calls")"
-	observe "the brokers logged $((log_after - log_before)) lines for a call to a bound host during this run (call lines and the proxy's refusal records), $allowed of them allowed and $refused refused with a reason; the last three:"
+	observe "the brokers logged $((log_after - log_before)) bound-call lines and $((tunnel_after - tunnel_before)) tunnel line this run, $allowed of the bound-call lines allowed and $refused refused with a reason; the last three bound-call lines:"
 	observe "$log_lines"
-	judge "$([ "$((log_after - log_before))" -ge 13 ] && [ "$allowed" -gt 0 ] && [ "$refused" -gt 0 ] && echo 0 || echo 1)" \
-		"the broker's log has a line for each call to S, allowed or refused with its reason" \
-		"$((log_after - log_before)) lines for the 13 requests of this command that reached the proxy, $allowed allowed and $refused refused with the reason their refusal record names"
+	judge "$([ "$((log_after - log_before))" -eq 16 ] && [ "$((tunnel_after - tunnel_before))" -eq 1 ] && [ "$allowed" -gt 0 ] && [ "$refused" -gt 0 ] && echo 0 || echo 1)" \
+		"the broker's log has exactly 17 rows by request: one bound-call line for each of the 16 calls to S, one tunnel line for the call to T, and none for the handshake that failed" \
+		"$((log_after - log_before)) bound-call lines for the 16 requests that reached the proxy (want 16), $((tunnel_after - tunnel_before)) tunnel line for T (want 1), $allowed allowed and $refused refused with the reason their refusal record names"
 
 	# The negative control. The stack's AIRLOCK_DEMO_TOKEN profile has the scoped profile's proxy
 	# block with its allow removed: the same host and the authorization header, and no allow list.
@@ -906,7 +1067,8 @@ out="$WORK_DIR/k3-control-out"
 printf 'post=%s\n' "\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -X POST -H @- $AIRLOCK_S_URL/read)" >>"\$out"
 printf 'other=%s\n' "\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/other)" >>"\$out"
 EOF
-	agent-secrets AIRLOCK_DEMO_TOKEN -- bash "$WORK_DIR/k3-control.sh" >>"$WORK_DIR/k3-cli.log" 2>&1 || true
+	agent-secrets AIRLOCK_DEMO_TOKEN --reason "airlock check k3 control: the demo placeholder on POST /read and GET /other, with no allow" -- \
+		bash "$WORK_DIR/k3-control.sh" >>"$WORK_DIR/k3-cli.log" 2>&1 || true
 	local crecs cpost cother
 	crecs="$(records s | jq --argjson n "$s_mark" '.[$n:]')"
 	cpost="$(printf '%s' "$crecs" | jq --arg v "$demo_value" '[.[] | select(.method == "POST" and .path == "/read") | .header.Authorization // [] | .[] | select(contains($v))] | length')"
@@ -915,7 +1077,7 @@ EOF
 	control "S recorded the real value (by SHA-256 and length) in $cpost POST /read and $cother GET /other"
 	judge "$([ "$cpost" = 1 ] && [ "$cother" = 1 ] && echo 0 || echo 1)" \
 		"negative control: with the proxy block's allow removed, the POST and the GET of /other reach S with the real value in Authorization" \
-		"POST /read $cpost, GET /other $cother, both carrying the stored value by SHA-256 and length"
+		"POST /read $cpost and GET /other $cother records carried the stored value in Authorization by SHA-256 and length (want 1 each)"
 
 	stop_stack
 }
@@ -938,18 +1100,24 @@ check_k4() {
 
 	# A stand-in on a .svc name of its own, which the stack does not have. It is this run's
 	# own: one Python HTTP server on loopback, reached by the .svc name with curl --resolve,
-	# because a Legion pod's /etc/hosts cannot be written.
-	local svc_port
-	svc_port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+	# because a Legion pod's /etc/hosts cannot be written. It binds port 0 and names the port the
+	# kernel gave it ("Serving HTTP on 127.0.0.1 port <port>"), unbuffered, so no port of its is
+	# one this check picked and another process could have taken first.
+	local svc_port svc_pid
 	mkdir -p "$WORK_DIR/svc"
 	echo "the .svc stand-in answered" >"$WORK_DIR/svc/index.html"
-	(cd "$WORK_DIR/svc" && exec python3 -m http.server "$svc_port" --bind 127.0.0.1 >"$WORK_DIR/svc.log" 2>&1) &
-	HELPER_PIDS+=($!)
+	(cd "$WORK_DIR/svc" && exec python3 -u -m http.server 0 --bind 127.0.0.1 >"$WORK_DIR/svc.log" 2>&1) &
+	svc_pid=$!
+	HELPER_PIDS+=("$svc_pid")
+	await "the .svc stand-in" 30 "$WORK_DIR/svc.log" '^Serving HTTP on 127\.0\.0\.1 port [1-9][0-9]* ' "$svc_pid"
+	svc_port="$(sed -n 's/^Serving HTTP on 127\.0\.0\.1 port \([1-9][0-9]*\) .*/\1/p' "$WORK_DIR/svc.log" | head -n 1)"
 
 	local s_before t_before
 	s_before="$(records_count s)"
 	t_before="$(records_count t)"
-
+	# printf %q so a TMPDIR path with a space in it stays one argument in the generated script.
+	local stands_ca
+	stands_ca="$(printf %q "$PROXY_STANDS_CA_CERT_FILE")"
 	cat >"$WORK_DIR/k4-steps.sh" <<EOF
 set -u
 out="$WORK_DIR/k4-out"
@@ -958,8 +1126,8 @@ say() { printf '%s\n' "\$1" >>"\$out"; }
 say "no_proxy=\$NO_PROXY"
 printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w "%{certs}" -H @- $AIRLOCK_S_URL/ok >"$WORK_DIR/s-leaf.pem"
 say "s_status=\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/ok)"
-curl -sS -o /dev/null -w "%{certs}" $AIRLOCK_T_URL/read >"$WORK_DIR/t-leaf.pem"
-say "t_body=\$(curl -sS -X POST --data 'the-bytes-the-command-sent' $AIRLOCK_T_URL/echo | tr '\n' ' ')"
+curl -sS --cacert $stands_ca -o /dev/null -w "%{certs}" $AIRLOCK_T_URL/read >"$WORK_DIR/t-leaf.pem"
+say "t_body=\$(curl -sS --cacert $stands_ca -X POST --data 'the-bytes-the-command-sent' $AIRLOCK_T_URL/echo | tr '\n' ' ')"
 say "svc=\$(curl -sS --resolve stand.default.svc:$svc_port:127.0.0.1 --max-time 10 http://stand.default.svc:$svc_port/ 2>&1 | tr '\n' ' ')"
 say "svc_exit=\$?"
 say "tsnet=\$(curl -sS --max-time 10 https://host.example-tailnet.ts.net/ 2>&1 | tr '\n' ' ')"
@@ -984,18 +1152,31 @@ EOF
 	declare -A K4
 	while IFS='=' read -r key value; do K4["$key"]="$value"; done <"$WORK_DIR/k4-out"
 
-	local s_leaf t_leaf s_own t_own s_issuer
+	local s_leaf t_leaf s_own t_own s_issuer s_chain_ok s_not_stands s_chain_verify
 	s_leaf="$(openssl x509 -in "$WORK_DIR/s-leaf.pem" -noout -fingerprint -sha256 | sed 's/.*=//')"
 	t_leaf="$(openssl x509 -in "$WORK_DIR/t-leaf.pem" -noout -fingerprint -sha256 | sed 's/.*=//')"
 	s_own="$(openssl x509 -in "$AIRLOCK_DIR/stands/s.crt" -noout -fingerprint -sha256 | sed 's/.*=//')"
 	t_own="$(openssl x509 -in "$AIRLOCK_DIR/stands/t.crt" -noout -fingerprint -sha256 | sed 's/.*=//')"
 	s_issuer="$(openssl x509 -in "$WORK_DIR/s-leaf.pem" -noout -issuer)"
+	# Build the chain, do not compare a string: S's leaf must chain through the broker's
+	# intermediate to the proxy test root (PROXY_ROOT_FILE). An issuer-string check cannot tell a
+	# leaf that chains to the root from one that does not; openssl verify does. The control is the
+	# negative - the same served chain must not verify against the stands' authority
+	# (PROXY_STANDS_CA_CERT_FILE), which signs a stand's own certificate - so a leaf chaining
+	# elsewhere is caught. %{certs} writes the chain with metadata between the PEM blocks, so the
+	# blocks are pulled out first.
+	sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' "$WORK_DIR/s-leaf.pem" >"$WORK_DIR/s-chain.pem"
+	s_chain_ok=0
+	openssl verify -CAfile "$PROXY_ROOT_FILE" -untrusted "$WORK_DIR/s-chain.pem" "$WORK_DIR/s-chain.pem" >/dev/null 2>&1 && s_chain_ok=1
+	s_not_stands=0
+	openssl verify -CAfile "$PROXY_STANDS_CA_CERT_FILE" -untrusted "$WORK_DIR/s-chain.pem" "$WORK_DIR/s-chain.pem" >/dev/null 2>&1 || s_not_stands=1
+	s_chain_verify="$(openssl verify -CAfile "$PROXY_ROOT_FILE" -untrusted "$WORK_DIR/s-chain.pem" "$WORK_DIR/s-chain.pem" 2>&1 | tr '\n' ' ')"
 	local s_recs t_recs
 	s_recs="$(records s | jq --argjson n "$s_before" '.[$n:]')"
 	t_recs="$(records t | jq --argjson n "$t_before" '.[$n:]')"
 
 	observe "the command's NO_PROXY is ${K4[no_proxy]}"
-	observe "S's certificate as the command saw it is $s_leaf and S's own certificate file is $s_own: a different leaf, signed by $s_issuer, which is the proxy minting one of its own"
+	observe "S's certificate as the command saw it is $s_leaf and S's own certificate file is $s_own: a different leaf, issued by $s_issuer; its served chain verifies against the proxy test root (chain_ok=$s_chain_ok: $s_chain_verify) and not against the stands' authority (not_stands=$s_not_stands)"
 	observe "T's certificate as the command saw it is $t_leaf and T's own certificate file is $t_own"
 	observe "T answered the POST with: ${K4[t_body]}; T's last record's body is $(printf '%s' "$t_recs" | jq -r '[.[] | select(.body != "") | .body] | .[0] // ""')"
 	observe ".svc: ${K4[svc]}; .ts.net: ${K4[tsnet]}; curl 10.x: ${K4[curl10]}; Go 10.x: ${K4[go10]}; Node 10.x: ${K4[node10]}"
@@ -1004,18 +1185,24 @@ EOF
 	observe "the same private address asked of the proxy with curl: ${K4[private]}"
 	observe "no proxy password: ${K4[no_password]}; a made-up one: ${K4[made_up]}"
 
-	judge "$([ "${K4[s_status]}" = 200 ] && [ "$s_leaf" != "$s_own" ] && contains "dev-airlock-stands authority" "$s_issuer" && echo 0 || echo 1)" \
-		"the call to S goes through the proxy port and S's certificate comes from the proxy's authority" \
-		"S answered ${K4[s_status]} and presented a leaf the stand never wrote ($s_leaf against the stand's own $s_own), signed by the authority the proxy holds the key of"
+	judge "$([ "${K4[s_status]}" = 200 ] && [ "$s_leaf" != "$s_own" ] && [ "$s_chain_ok" = 1 ] && [ "$s_not_stands" = 1 ] && contains "Cipher proxy intermediate" "$s_issuer" && echo 0 || echo 1)" \
+		"the call to S goes through the proxy port and S's certificate chains through the broker's intermediate to the proxy test root" \
+		"S answered ${K4[s_status]} (want 200) and presented a leaf $s_leaf against the stand's own $s_own (want a leaf the stand never wrote), issued by $s_issuer (want an issuer naming 'Cipher proxy intermediate'); its chain against the proxy test root verified: '$s_chain_verify' (chain_ok=$s_chain_ok, want 1; not_stands=$s_not_stands, want 1 - it must not verify against the stands' authority)"
 	judge "$([ "$t_leaf" = "$t_own" ] && contains "the-bytes-the-command-sent" "$(printf '%s' "$t_recs" | jq -r '[.[] | .body] | join(" ")')" && echo 0 || echo 1)" \
 		"T presents its own certificate and gets the bytes the command sent" \
-		"T's leaf is its own certificate file, and its record holds the bytes the command POSTed"
-	judge "$(! contains "CONNECT tunnel failed" "${K4[svc]}" && contains "the .svc stand-in answered" "${K4[svc]}" && ! contains "CONNECT tunnel failed" "${K4[tsnet]}" && ! contains "CONNECT tunnel failed" "${K4[curl10]}" && ! contains "Proxy response" "${K4[go10]}" && echo 0 || echo 1)" \
+		"T's leaf as the command saw it was $t_leaf and T's own certificate is $t_own; T's recorded body held: '$(printf '%s' "$t_recs" | jq -r '[.[] | .body] | join(" ")')'"
+	# 1186 reads the Go probe's error as "did not reach the proxy" only when it names the direct
+	# dial (dial tcp 10.11.12.13:443). That text appears only where a direct dial to 10/8 is refused
+	# quickly - a no-route namespace, as a Legion pod gives itself with a NET_ADMIN sidecar that adds
+	# `unreachable 10.0.0.0/8` (Go then prints "no route to host" in a few ms). On a host that
+	# blackholes 10/8 instead, Go times out ("context deadline exceeded"), never writes "dial tcp",
+	# and this judge fails though nothing regressed: run k4 where a dial to 10/8 is refused, not dropped.
+	judge "$(! contains "CONNECT tunnel failed" "${K4[svc]}" && contains "the .svc stand-in answered" "${K4[svc]}" && contains "curl:" "${K4[tsnet]}" && ! contains "CONNECT tunnel failed" "${K4[tsnet]}" && contains "curl:" "${K4[curl10]}" && ! contains "CONNECT tunnel failed" "${K4[curl10]}" && contains "dial tcp 10.11.12.13:443" "${K4[go10]}" && echo 0 || echo 1)" \
 		"the .svc and .ts.net calls and the 10.x calls of curl and of a Go program do not reach the proxy port" \
-		".svc reached this run's own stand-in directly; .ts.net, curl's 10.x and Go's 10.x failed to connect or resolve with no answer from a proxy"
+		".svc reached its own stand-in directly (${K4[svc]}); .ts.net and curl's 10.x each failed with a curl error and no proxy CONNECT; Go's 10.x said '${K4[go10]}' - read as not reaching the proxy only when it names its own direct dial (dial tcp 10.11.12.13:443), which a proxy-reached refusal (the proxy's status) does not carry"
 	judge "$(contains "Proxy response (403)" "${K4[node10]}" && contains "private" "${K4[private]}" && echo 0 || echo 1)" \
 		"Node's 10.x call reaches the proxy and is refused with an error that names the private address" \
-		"undici reported '${K4[node10]}', so the proxy answered its CONNECT 403; undici does not show a proxy's body, and the same address asked of the proxy with curl is refused '${K4[private]}'"
+		"undici reported '${K4[node10]}' - read as the proxy's CONNECT 403 only when it holds 'Proxy response (403)', where a 'status 200' is the proxy letting it through; and the same address asked of the proxy with curl answered '${K4[private]}', read as a refusal only when it names 'private'"
 	judge "$(contains "link-local" "${K4[metadata]}" && contains "loopback" "${K4[broker_port]}" && echo 0 || echo 1)" \
 		"the connections to 169.254.169.254 and the broker's own loopback port are refused with an error that names the rule" \
 		"169.254.169.254: ${K4[metadata]}; the broker's port: ${K4[broker_port]}"
@@ -1044,7 +1231,7 @@ EOF
 	observe "S recorded $tunnelled requests across the four refused calls and the two that were meant to succeed"
 	judge "$(contains "407" "${K4[no_password]}" && contains "407" "${K4[made_up]}" && contains "407" "$short_later" && contains "407" "$withheld_after" && [ "$tunnelled" = 2 ] && echo 0 || echo 1)" \
 		"both bad proxy passwords, the call after the grant ends and the call after the withholding get 407, and nothing is tunnelled" \
-		"no password and a made-up one were refused 407; the call after the grant ended was '$short_later' and the one after the withholding '$withheld_after'; S recorded only the $tunnelled calls that were meant to succeed"
+		"the call with no password answered ${K4[no_password]}, with a made-up one ${K4[made_up]}, after the grant ended '$short_later', after the withholding '$withheld_after' (want 407 each); S recorded $tunnelled of the calls (want the 2 that were meant to succeed)"
 
 	# The negative control: one more broker, on the stack's own database and profiles, whose
 	# refusal of loopback is turned off for the first broker's API port alone.
@@ -1052,11 +1239,15 @@ EOF
 		BROKER_AIRLOCK_TEST_DIAL_ALLOW="$STACK_DIAL_ALLOW ${BROKER_API_ADDRS[0]}"
 	release AIRLOCK_DEMO_TOKEN 30m
 	local control_answer
-	control_answer="$(curl -sS --noproxy '' -K <(proxy_config "$EXTRA_PROXY_ADDR") "http://${BROKER_API_ADDRS[0]}/healthz" 2>&1 | tr '\n' ' ')"
-	control "a second broker on the same database and profiles, started with the first broker's address in BROKER_AIRLOCK_TEST_DIAL_ALLOW — the setting that turns the refusal of a loopback address off for one host — answered the same request: $control_answer"
-	judge "$(! contains "loopback" "$control_answer" && echo 0 || echo 1)" \
-		"negative control: with the refusal turned off the connection to the broker's loopback port is tunnelled" \
-		"the same request through that broker answered '$control_answer', where the stack's own brokers answer '${K4[broker_port]}'"
+	# The tunnel must reach the fixture, not merely answer without the word "loopback": a refusal
+	# by any other rule also lacks it (the tester's control: with addr.IsLoopback() off, a later
+	# localRule rule refuses 127.0.0.1 anyway). The proof the tunnel reached the broker's /healthz
+	# is its 200, which a proxy refusal (403) or a failed CONNECT (000) never gives.
+	control_answer="$(curl -sS -w ' http_status=%{http_code}' --noproxy '' -K <(proxy_config "$EXTRA_PROXY_ADDR") "http://${BROKER_API_ADDRS[0]}/healthz" 2>&1 | tr '\n' ' ')"
+	control "a second broker on the same database and profiles, started with the first broker's address in BROKER_AIRLOCK_TEST_DIAL_ALLOW — the setting that turns the refusal of a loopback address off for one host — answered /healthz: $control_answer"
+	judge "$(contains "http_status=200" "$control_answer" && echo 0 || echo 1)" \
+		"negative control: with the refusal turned off the connection to the broker's loopback port is tunnelled and its /healthz answers 200" \
+		"the same request through that broker answered '$control_answer' - read as the tunnel reaching /healthz only when it holds http_status=200, where a 403 is a refusal and 000 a failed CONNECT - and the stack's own brokers refuse it with '${K4[broker_port]}'"
 
 	stop_stack
 }
@@ -1194,9 +1385,11 @@ k6_clients() {
 # page sends a browser to the stack's issuer, which signs the approver in with no form to fill,
 # and the decision is posted back with an Origin header, which the page requires. curl's own
 # cookie jar cannot be used - both cookies are Secure and this broker is on http - so each
-# Set-Cookie is read out of the headers and sent back by hand. The decision carries every
-# profile_digest field the page printed, one per profile the request names: the broker refuses an
-# approval whose form lacks a profile's fingerprint as one whose profile changed since the page.
+# Set-Cookie is read out of the headers and sent back by hand. Every printed and every
+# profile_digest field of the form is posted back: the page token is a MAC over every record the
+# page printed, so an approval that names fewer is refused 403 PAGE_TOKEN_INVALID, and an approval
+# names the fingerprint of each profile the page printed, so one that names fewer is refused as
+# "Profile changed". Either way nothing is decided.
 approve_record() { # <record id>
 	local rec="$1" d="$WORK_DIR/approve"
 	mkdir -p "$d"
@@ -1211,18 +1404,27 @@ approve_record() { # <record id>
 	session="$(sed -n 's/^Set-Cookie: \(__Host-broker-session=[^;]*\).*/\1/p' "$d/callback" | tr -d '\r')"
 	[ -n "$session" ] || return 1
 	curl -sS -H "Cookie: $session" -o "$d/page.html" "$AGENT_SECRETS_URL/approve/$rec"
-	local digest
-	field() { sed -n "s/.*name=\"$1\" value=\"\([^\"]*\)\".*/\1/p" "$d/page.html" | head -n 1; }
-	local -a digests=()
-	while IFS= read -r digest; do
-		digests+=(--data-urlencode "profile_digest=$digest")
-	done < <(grep -o 'name="profile_digest" value="[^"]*"' "$d/page.html" | sed 's/.*value="\([^"]*\)"/\1/')
+	# values is every value of the hidden field the page names, in the page's order, read one
+	# field at a time: the form prints all of its fields on one line, and a field it prints more
+	# than once - one printed field per record, one profile_digest field per profile, each
+	# "<record> <name> <digest>" - comes back once each. field is its first value.
+	local value
+	values() { grep -o "name=\"$1\" value=\"[^\"]*\"" "$d/page.html" | sed 's/.*value="\([^"]*\)"/\1/'; }
+	field() { values "$1" | head -n 1; }
+	local printed=() digests=()
+	while IFS= read -r value; do
+		printed+=(--data-urlencode "printed=$value")
+	done < <(values printed)
+	while IFS= read -r value; do
+		digests+=(--data-urlencode "profile_digest=$value")
+	done < <(values profile_digest)
 	# The page's form token reaches curl on standard input (`--data-urlencode token@-`), in no
 	# command line.
 	printf '%s' "$(field token)" | curl -sS -o "$d/decided.html" -w '%{http_code}' -H "Cookie: $session" -H "Origin: $AGENT_SECRETS_URL" \
 		--data-urlencode "decision=approve" --data-urlencode "record=$(field record)" \
-		--data-urlencode "printed=$(field printed)" --data-urlencode token@- \
-		--data-urlencode "expires=$(field expires)" ${digests[@]+"${digests[@]}"} "$AGENT_SECRETS_URL/approve" >>"$d/decisions"
+		"${printed[@]+"${printed[@]}"}" --data-urlencode token@- \
+		"${digests[@]+"${digests[@]}"}" \
+		--data-urlencode "expires=$(field expires)" "$AGENT_SECRETS_URL/approve" >>"$d/decisions"
 	echo >>"$d/decisions"
 }
 
@@ -1329,19 +1531,21 @@ k6_azure() {
 	# What each run does once it is logged in: `az group list`, the admin command,
 	# and then `az account get-access-token`, which prints the access token az itself holds -
 	# the one the broker's exchange handed it, which has to be a placeholder and never the real
-	# token the Resource Manager is sent.
+	# token the Resource Manager is sent. Each run writes its own access file, named by the run's
+	# number, so each of the five is judged and not only the last.
 	cat >"$d/az-steps.sh" <<EOF
 set -u
 az group list -o json
-az account get-access-token -o json >$d/access.json
+az account get-access-token -o json >$d/access-\$1.json
 EOF
 	local run
 	: >"$d/runs.log"
+	rm -f "$d"/access-*.json
 	for run in 1 2 3 4 5; do
 		echo "=== run $run ===" >>"$d/runs.log"
 		PATH="$d/bin:$K6_AZ_PATH" agent-secrets AIRLOCK_AZURE_LOGIN --ttl 1h --wait 5m \
 			--reason "airlock check k6 run $run: az logs in and calls the Resource Manager" -- \
-			sh -c "$(k6_azure_login_steps)" sh bash "$d/az-steps.sh" >>"$d/runs.log" 2>>"$d/cli.err"
+			sh -c "$(k6_azure_login_steps)" sh bash "$d/az-steps.sh" "$run" >>"$d/runs.log" 2>>"$d/cli.err"
 		echo "exit $?" >>"$d/runs.log"
 	done
 	kill "$watcher" 2>/dev/null || true
@@ -1356,21 +1560,34 @@ EOF
 	# The form's own percent-encoding: a JWT holds none of the characters a form escapes but
 	# the "=" of its padding, and the comparison is against the stack's own token.
 	K6_AZ_ASSERTION="${K6_AZ_ASSERTION//%3D/=}"
-	K6_AZ_ACCESS="$(jq -r '.accessToken // ""' "$d/access.json" 2>/dev/null)"
+	# The access token az held after each run, and how many of the five hold the placeholder
+	# prefix anywhere in them (contains): a run whose file is missing or holds no token counts as
+	# none.
+	K6_AZ_ACCESS_SHAPES="" K6_AZ_ACCESS_PLACEHOLDERS=0
+	local token
+	for run in 1 2 3 4 5; do
+		token="$(jq -r '.accessToken // ""' "$d/access-$run.json" 2>/dev/null)"
+		K6_AZ_ACCESS_SHAPES+="run $run: $(shape "$token"); "
+		contains agent-secrets-placeholder "$token" && K6_AZ_ACCESS_PLACEHOLDERS=$((K6_AZ_ACCESS_PLACEHOLDERS + 1))
+	done
 	mapfile -t K6_AZ_ARM_HEADERS < <(printf '%s' "$recs" | jq -r '.[] | select(.path == "/subscriptions") | .header.Authorization // [] | .[]')
 	K6_AZ_ARM_STATUS="$(grep '^exit ' "$d/runs.log" | tr '\n' ' ')"
 	K6_AZ_EXCHANGES="$(printf '%s' "$recs" | jq '[.[] | select(.path | endswith("/token"))] | length')"
 	K6_AZ_SERVED="$(for log in "$AIRLOCK_DIR"/broker*.log; do printf '%s:%s ' "${log##*/}" "$(bound_call_lines "$log" | jq -s '[.[] | select(.message == "airlock proxy: a call to a bound host")] | length')"; done)"
 }
 
-# k6_aws runs the AWS CLI's three calls and boto3's two against the stand-in AWS service.
+# k6_aws runs the AWS CLI's three calls and boto3's two against the stand-in AWS service, and
+# reads what it recorded and why it refused each call it refused (refusals_of), before and after:
+# the stand-in records a call whose signature it refuses as well as one it accepts, so its
+# records alone cannot show a refused signature.
 k6_aws() {
 	local d="$WORK_DIR/k6"
 	mkdir -p "$d"
 	head -c 102400 /dev/urandom >"$d/100k.bin"
 	# boto3's own two steps are scripts/airlock/aws-boto3.py, run where it lies.
-	local aws_before
+	local aws_before refusals_before
 	aws_before="$(records_count aws)"
+	refusals_before="$(refusals_of aws)"
 	cat >"$d/aws-steps.sh" <<EOF
 set -u
 out=$d/aws-out
@@ -1385,12 +1602,13 @@ say "cp=\$(aws --endpoint-url $AIRLOCK_AWS_URL s3 cp $d/100k.bin s3://airlock-bu
 $AIRLOCK_BOTO3_PYTHON $SCRIPT_DIR/airlock/aws-boto3.py $AIRLOCK_AWS_URL $d/boto3.json >$d/boto3.log 2>&1
 echo "boto3 exit \$?" >>$d/boto3.log
 EOF
-	agent-secrets AIRLOCK_AWS_KEY --ttl 30m -- bash "$d/aws-steps.sh" >>"$d/runs.log" 2>>"$d/cli.err"
+	agent-secrets AIRLOCK_AWS_KEY --ttl 30m --reason "airlock check k6: the AWS CLI and boto3 call the stand-in AWS service" -- \
+		bash "$d/aws-steps.sh" >>"$d/runs.log" 2>>"$d/cli.err"
 
 	declare -gA K6AWS
 	local key value
 	while IFS='=' read -r key value; do K6AWS["$key"]="$value"; done <"$d/aws-out"
-	K6_AWS_RECS="$(records aws | jq --argjson n "$aws_before" '.[$n:]')"
+	K6_AWS_RECS="$(records aws | jq --argjson n "$aws_before" '(.[$n:] // [])')"
 	K6_AWS_CALLS="$(printf '%s' "$K6_AWS_RECS" | jq 'length')"
 	K6_AWS_TOKENS="$(printf '%s' "$K6_AWS_RECS" | jq -r '[.[] | .header["X-Amz-Security-Token"] // [] | .[]] | unique | length')"
 	K6_AWS_KEYIDS="$(printf '%s' "$K6_AWS_RECS" | jq -r '[.[] | .header.Authorization // [] | .[] | capture("Credential=(?<k>[^/]*)/") | .k] | unique | join(",")')"
@@ -1400,6 +1618,75 @@ EOF
 	K6_AWS_PRESIGNED="$(jq -r '.presigned // ""' "$d/boto3.json" 2>/dev/null)"
 	K6_AWS_BOTO3="$(jq -c '{boto3, botocore, chunks, decoded_length, presigned_query}' "$d/boto3.json" 2>/dev/null)"
 	K6_AWS_BOTO3_LOG="$(tail -n 3 "$d/boto3.log" 2>/dev/null | tr '\n' ' ')"
+	# The stand-in's refusals of this run's calls, and UNKNOWN when either read answered no array.
+	# The two arrays reach jq on its standard input, never as arguments: a refusal of a call that
+	# carries a placeholder holds that whole call, body included, which a 100 kB upload takes past
+	# the limit of one argument.
+	local refusals_after this_run
+	refusals_after="$(refusals_of aws)"
+	if [ -n "$refusals_before" ] && [ -n "$refusals_after" ]; then
+		this_run="$(printf '%s\n%s\n' "$refusals_before" "$refusals_after" | jq -cs '.[1][(.[0] | length):]')"
+		K6_AWS_STAND_REFUSED="$(printf '%s' "$this_run" | jq 'length')"
+		K6_AWS_STAND_REFUSALS="$(printf '%s' "$this_run" | jq -r 'map(split("\n")[0]) | join(" | ")')"
+	else
+		K6_AWS_STAND_REFUSED=UNKNOWN
+		K6_AWS_STAND_REFUSALS="the stand-in's refusals route answered no JSON array, so whether it refused a signature is not known"
+	fi
+}
+
+# k6_second_aws starts a second stand-in AWS service that holds a second fake key pair with no
+# session token, which no kind binds and no proxy reaches, and sends it, outside agent-secrets,
+# aws sts get-caller-identity signed with that pair and the same call with the pair's key id and
+# a wrong secret key. It reads what that service recorded and why it refused (its refusals
+# route), so the check can see the stand-in refuse a bad signature after it has passed the key id
+# and the session token. It is a second dev-airlock-stands process of its own, killed on return.
+k6_second_aws() {
+	local d="$WORK_DIR/k6/second-aws"
+	mkdir -p "$d"
+	local key_id="AKIA""SECONDSTANDIN000" secret="the-second-stand-in-aws-secret-key"
+	"$STANDS_BIN" --dir "$d/files" --aws-key "$key_id=$secret" >"$d/report.json" 2>"$d/stands.log" &
+	local pid=$!
+	HELPER_PIDS+=("$pid")
+	local _
+	for _ in $(seq 1 100); do
+		grep -q 'stands listening' "$d/stands.log" 2>/dev/null && break
+		sleep 0.1
+	done
+	local url ca records_url
+	url="$(jq -r '.stands.aws.url' "$d/report.json")"
+	ca="$(jq -r '.ca_cert_file' "$d/report.json")"
+	records_url="$(jq -r '.records_url' "$d/report.json")"
+	declare -gA K6SECOND
+	local name secret_used out exit_code
+	for name in signed wrong; do
+		secret_used="$secret"
+		[ "$name" = wrong ] && secret_used="not-the-second-stand-in-secret-key"
+		exit_code=0
+		# --debug writes the exchange to standard error, where the status line of each answer is
+		# read: the CLI's own error for a refusal whose body is no XML names no status.
+		out="$(env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy -u AWS_SESSION_TOKEN -u AWS_PROFILE \
+			AWS_ACCESS_KEY_ID="$key_id" AWS_SECRET_ACCESS_KEY="$secret_used" AWS_DEFAULT_REGION=us-east-1 \
+			AWS_CA_BUNDLE="$ca" AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_EC2_METADATA_DISABLED=true \
+			aws --debug --endpoint-url "$url" sts get-caller-identity --output text 2>"$d/$name.debug")" || exit_code=$?
+		K6SECOND["${name}_exit"]="$exit_code"
+		K6SECOND["${name}_status"]="$(grep -oE 'HTTP/1\.1" [0-9]{3}' "$d/$name.debug" | tail -n 1 | grep -oE '[0-9]{3}$')"
+		K6SECOND["${name}_said"]="$(printf '%s' "$out" | tail -n 1 | tr -d '\r')"
+	done
+	# What the second stand-in recorded and why it refused, read with the same helpers as the
+	# stack's own stand-in, at its own records URL: a refusals route that answers no array is
+	# UNKNOWN, which fails the judge.
+	local refusals
+	K6SECOND[records]="$(AIRLOCK_RECORDS_URL="$records_url" records_count aws)"
+	refusals="$(AIRLOCK_RECORDS_URL="$records_url" refusals_of aws)"
+	if [ -n "$refusals" ]; then
+		K6SECOND[refusal_count]="$(printf '%s' "$refusals" | jq 'length')"
+		K6SECOND[refusals]="$(printf '%s' "$refusals" | jq -r 'map(split("\n")[0]) | join(" | ")')"
+	else
+		K6SECOND[refusal_count]=UNKNOWN
+		K6SECOND[refusals]="the second stand-in's refusals route answered no JSON array"
+	fi
+	kill "$pid" 2>/dev/null || true
+	wait "$pid" 2>/dev/null || true
 }
 
 check_k6() {
@@ -1409,7 +1696,8 @@ check_k6() {
 	expect "the stand-in AWS service accepts each signature of the STS call, the list and the upload, with the real session token, and finds no placeholder in them"
 	expect "the list is answered, not only signed: aws s3 ls exits 0 through the airlock"
 	expect "the chunk-signed upload and the presigned URL get an error that names them"
-	expect "the negative control, with the exchange and the signing turned off (dev-airlock.sh --no-kind), gives the token endpoint the placeholder and makes the stand-in AWS service reject every signature"
+	expect "the negative control, with the exchange and the signing turned off (dev-airlock.sh --no-kind), gives the token endpoint the placeholder, and refuses each AWS call 403 PLACEHOLDER_NOT_SWAPPED, because X-Amz-Security-Token keeps its placeholder, so the stand-in AWS service records nothing"
+	expect "the second stand-in AWS service, which holds a second key pair with no session token and which no kind binds, records both of its calls, answers the call signed with its pair 2xx, and refuses the call with the wrong secret key 403 because the signature is not the one its pair makes"
 
 	k6_clients
 	start_stack
@@ -1417,23 +1705,25 @@ check_k6() {
 	observe "the clients this run drove: $CLIENT_VERSIONS, each installed by scripts/airlock-clients.sh at a pinned version whose SHA-256 it checked"
 
 	k6_azure
-	local federated access_shape
+	local federated
 	federated="$(cat "$AIRLOCK_DIR/azure-identity-token")"
-	access_shape="$(shape "$K6_AZ_ACCESS")"
 	observe "the five az runs: $K6_AZ_RUNS runs, $K6_AZ_FAILED of them non-zero ($K6_AZ_ARM_STATUS); what they reached on the Microsoft stand-in was $K6_AZ_REACHED, and the first ERROR line az wrote, if any, was: ${K6_AZ_ERROR:-none}"
 	observe "the exchange: the token endpoint was asked $K6_AZ_EXCHANGES times and its client_assertion was $(shape "$K6_AZ_ASSERTION") against the stack's own federated token $(shape "$federated") (compared by SHA-256 and length)"
-	observe "the access token az itself holds after its login (az account get-access-token) is $access_shape, which opens 'agent-secrets-placeholder': $(contains agent-secrets-placeholder "$K6_AZ_ACCESS" && echo yes || echo no)"
+	observe "the access token az itself holds after its login (az account get-access-token), for each run: ${K6_AZ_ACCESS_SHAPES}$K6_AZ_ACCESS_PLACEHOLDERS of the five open 'agent-secrets-placeholder'"
 	observe "the Resource Manager calls az made, one per run, and their Authorization headers: $(for h in "${K6_AZ_ARM_HEADERS[@]+"${K6_AZ_ARM_HEADERS[@]}"}"; do printf '%s; ' "$(shape "$h")"; done)"
 	observe "the brokers' own logs of calls to a bound host, which is how many each process served: $K6_AZ_SERVED"
 
-	judge "$([ "$K6_AZ_EXCHANGES" -gt 0 ] && contains "$federated" "$K6_AZ_ASSERTION" && echo 0 || echo 1)" \
+	judge "$([ "$K6_AZ_EXCHANGES" -gt 0 ] && [ -n "$federated" ] && contains "$federated" "$K6_AZ_ASSERTION" && echo 0 || echo 1)" \
 		"the stand-in token endpoint gets the real federated token" \
-		"its client_assertion is the stack's own federated token by SHA-256 and length ($(shape "$K6_AZ_ASSERTION")), over $K6_AZ_EXCHANGES exchanges"
+		"the token endpoint saw $K6_AZ_EXCHANGES exchange(s); its client_assertion was $(shape "$K6_AZ_ASSERTION") against the stack's own federated token $(shape "$federated"), compared by SHA-256 and length - an empty federated token is no match"
 
-	judge "$([ "$K6_AZ_RUNS" = 5 ] && [ "$K6_AZ_FAILED" = 0 ] && contains agent-secrets-placeholder "$K6_AZ_ACCESS" && echo 0 || echo 1)" \
+	judge "$([ "$K6_AZ_RUNS" = 5 ] && [ "$K6_AZ_FAILED" = 0 ] && [ "$K6_AZ_ACCESS_PLACEHOLDERS" = 5 ] && echo 0 || echo 1)" \
 		"az gets a placeholder access token" \
-		"all five az runs logged in against the stand-in cloud and listed resource groups ($K6_AZ_FAILED of $K6_AZ_RUNS exited non-zero), and the token az holds is $access_shape, which opens 'agent-secrets-placeholder': $(contains agent-secrets-placeholder "$K6_AZ_ACCESS" && echo yes || echo no)"
+		"az ran $K6_AZ_RUNS times against the stand-in cloud ($K6_AZ_FAILED exited non-zero; want 5 runs, 0 failed), and the token az held after each run opens 'agent-secrets-placeholder' on $K6_AZ_ACCESS_PLACEHOLDERS of the $K6_AZ_RUNS runs (want 5) ($K6_AZ_ACCESS_SHAPES)"
 
+	# The Resource Manager calls are az's own, one per run, made with the azure-access placeholder
+	# the exchange handed it. The front hands each connection to whichever broker it picks, so
+	# K6_AZ_SERVED counts, from each broker process's own log, the calls that process served.
 	local arm_calls=0 arm_real=0 header
 	for header in "${K6_AZ_ARM_HEADERS[@]+"${K6_AZ_ARM_HEADERS[@]}"}"; do
 		arm_calls=$((arm_calls + 1))
@@ -1441,7 +1731,7 @@ check_k6() {
 	done
 	judge "$([ "$arm_calls" = 5 ] && [ "$arm_real" = 5 ] && [ "$(echo "$K6_AZ_SERVED" | tr ' ' '\n' | grep -c ':[1-9]')" -ge 2 ] && echo 0 || echo 1)" \
 		"the stand-in Resource Manager gets a real access token in Authorization on all five runs, whichever process served each call" \
-		"$arm_real of $arm_calls calls carried a token that is no placeholder, each answered by whichever broker the front gave its connection to ($K6_AZ_SERVED); the five calls are az's own, one per run, made with the azure-access placeholder the exchange handed it"
+		"$arm_real of $arm_calls calls carried a token that is no placeholder (want 5 of 5); the calls each broker process served, from its own log: $K6_AZ_SERVED (want 2 or more processes serving)"
 
 	k6_aws
 	local aws_secret aws_session
@@ -1449,15 +1739,19 @@ check_k6() {
 	aws_session="$(printf '%s' "$aws_secret" | jq -r .session_token)"
 	observe "the AWS CLI: sts said '${K6AWS[sts]}'; s3 ls said '${K6AWS[ls]}' and exited ${K6AWS[ls_exit]}; s3 cp said '${K6AWS[cp]}'"
 	observe "the stand-in AWS service recorded $K6_AWS_CALLS calls on $K6_AWS_REFUSED; the Credential of each named the key id '$K6_AWS_KEYIDS' and the real key id is '$AIRLOCK_AWS_KEY_ID'; $K6_AWS_PLACEHOLDERS of them carried a placeholder in a header or the query"
+	observe "the stand-in AWS service refused $K6_AWS_STAND_REFUSED of this run's calls (its own refusals route): ${K6_AWS_STAND_REFUSALS:-none}"
 	observe "boto3: $K6_AWS_BOTO3 (its own last lines: $K6_AWS_BOTO3_LOG)"
 	observe "the chunk-signed upload got: $K6_AWS_CHUNK"
 	observe "the presigned URL got: $K6_AWS_PRESIGNED"
 
+	# A record is a call that reached the stand-in, accepted or refused, so the judge reads the
+	# stand-in's own refusals as well: a call it refused is a signature it did not accept, and a
+	# refusals route that could not be read is UNKNOWN, which is no pass.
 	local accepted
 	accepted="$(printf '%s' "$K6_AWS_RECS" | jq '[.[] | select(.path != "")] | length')"
-	judge "$([ "$K6_AWS_PLACEHOLDERS" = 0 ] && [ "$accepted" -ge 3 ] && contains "$AIRLOCK_AWS_KEY_ID" "$K6_AWS_KEYIDS" && ! contains "403" "${K6AWS[sts]}" && echo 0 || echo 1)" \
+	judge "$([ "$K6_AWS_PLACEHOLDERS" = 0 ] && [ "$accepted" -ge 3 ] && [ "$K6_AWS_STAND_REFUSED" = 0 ] && contains "$AIRLOCK_AWS_KEY_ID" "$K6_AWS_KEYIDS" && ! contains "403" "${K6AWS[sts]}" && echo 0 || echo 1)" \
 		"the stand-in AWS service accepts each signature of the STS call, the list and the upload, with the real session token, and finds no placeholder in them" \
-		"$accepted calls were verified against the real key id $K6_AWS_KEYIDS and the stack's own session token ($(shape "$aws_session")), with $K6_AWS_PLACEHOLDERS placeholders among them; the three calls said '${K6AWS[sts]}' / '${K6AWS[ls]}' / '${K6AWS[cp]}'"
+		"$accepted calls reached it (want 3 or more), signed with key id(s) $K6_AWS_KEYIDS (want the real $AIRLOCK_AWS_KEY_ID) and the stack's own session token ($(shape "$aws_session")), with $K6_AWS_PLACEHOLDERS placeholders among them (want 0), and it refused $K6_AWS_STAND_REFUSED of them (want 0); the three calls said '${K6AWS[sts]}' / '${K6AWS[ls]}' / '${K6AWS[cp]}'"
 
 	# The list is read for its own answer as well as its signature. A stand-in that verifies a
 	# signature and then answers a line of prose makes the AWS CLI report a 500, and a check that
@@ -1469,7 +1763,7 @@ check_k6() {
 
 	judge "$(contains "refusing a chunk-signed upload" "$K6_AWS_CHUNK" && contains "refusing a presigned URL" "$K6_AWS_PRESIGNED" && echo 0 || echo 1)" \
 		"the chunk-signed upload and the presigned URL get an error that names them" \
-		"the upload was refused '$(printf '%s' "$K6_AWS_CHUNK" | head -c 120)…' and the presigned URL '$(printf '%s' "$K6_AWS_PRESIGNED" | head -c 120)…'"
+		"the chunk-signed upload answered '$(printf '%s' "$K6_AWS_CHUNK" | head -c 120)…' and the presigned URL '$(printf '%s' "$K6_AWS_PRESIGNED" | head -c 120)…' (want each refused with an error that names it)"
 
 	stop_stack
 
@@ -1482,10 +1776,26 @@ check_k6() {
 	local control_federated
 	control_federated="$(cat "$AIRLOCK_DIR/azure-identity-token")"
 	control "with --no-kind (BROKER_AIRLOCK_TEST_NO_KIND=true) the token endpoint's client_assertion was $(shape "$K6_AZ_ASSERTION"), against the real federated token $(shape "$control_federated") and a placeholder: it opens 'agent-secrets-placeholder': $(contains agent-secrets-placeholder "$K6_AZ_ASSERTION" && echo yes || echo no)"
-	control "with --no-kind the stand-in AWS service recorded $K6_AWS_CALLS calls, $K6_AWS_PLACEHOLDERS of them carrying a placeholder in a header or the query, and the key ids their Credentials named were '$K6_AWS_KEYIDS' against the real '$AIRLOCK_AWS_KEY_ID'; sts said '${K6AWS[sts]}'"
-	judge "$(contains "agent-secrets-placeholder" "$K6_AZ_ASSERTION" && [ "$K6_AWS_PLACEHOLDERS" = "$K6_AWS_CALLS" ] && [ "$K6_AWS_CALLS" -gt 0 ] && contains "placeholder" "${K6AWS[sts]}" && echo 0 || echo 1)" \
-		"negative control: with the exchange and the signing turned off the token endpoint gets the placeholder and the AWS service rejects every signature" \
-		"the assertion the endpoint got was the grant's placeholder, and all $K6_AWS_PLACEHOLDERS of the $K6_AWS_CALLS calls the stand-in recorded carried a placeholder, where the same runs with the kinds on carry none; the stand-in refused each of them, sts with '${K6AWS[sts]}'"
+	# Each AWS call keeps the session token's placeholder in X-Amz-Security-Token when nothing
+	# signs it again, so the proxy refuses it before it goes upstream: the stand-in records
+	# nothing, and the refusal lines of this stack's brokers say why.
+	local aws_host aws_left
+	aws_host="${AIRLOCK_AWS_URL#https://}"
+	aws_left="$(refusal_lines PLACEHOLDER_NOT_SWAPPED "$aws_host")"
+	control "with --no-kind the stand-in AWS service recorded $K6_AWS_CALLS calls, and the brokers refused $aws_left calls to $aws_host 403 PLACEHOLDER_NOT_SWAPPED; sts said '${K6AWS[sts]}', s3 ls exited ${K6AWS[ls_exit]}"
+	judge "$(contains "agent-secrets-placeholder" "$K6_AZ_ASSERTION" && [ "$K6_AWS_CALLS" = 0 ] && [ "$aws_left" -ge 3 ] && [ "${K6AWS[ls_exit]}" != 0 ] && echo 0 || echo 1)" \
+		"negative control: with the exchange and the signing turned off the token endpoint gets the placeholder, and each AWS call is refused 403 PLACEHOLDER_NOT_SWAPPED and reaches no stand-in" \
+		"the assertion the endpoint got was $(shape "$K6_AZ_ASSERTION") (want the grant's placeholder, which opens agent-secrets-placeholder); the stand-in AWS service recorded $K6_AWS_CALLS calls (want 0), and $aws_left calls to $aws_host were refused PLACEHOLDER_NOT_SWAPPED (want 3 or more), where the same runs with the kinds on are signed again and accepted"
+
+	# The second stand-in AWS service: the control that the stand-in refuses a bad signature
+	# after its key id and session token checks pass, so the acceptance above is the signature's.
+	# In a stand-in build whose VerifySigV4 skips its last comparison, the wrong-key call is
+	# answered 2xx and this fails.
+	k6_second_aws
+	control "the second stand-in AWS service recorded ${K6SECOND[records]} calls: the one signed with its pair was answered ${K6SECOND[signed_status]} and exited ${K6SECOND[signed_exit]} saying '${K6SECOND[signed_said]}', and the one with a wrong secret key was answered ${K6SECOND[wrong_status]} and exited ${K6SECOND[wrong_exit]}; its ${K6SECOND[refusal_count]} refusals: ${K6SECOND[refusals]}"
+	judge "$([ "${K6SECOND[records]}" = 2 ] && [ "${K6SECOND[signed_status]}" = 200 ] && [ "${K6SECOND[signed_exit]}" = 0 ] && contains "arn:aws:iam" "${K6SECOND[signed_said]}" && [ "${K6SECOND[wrong_status]}" = 403 ] && [ "${K6SECOND[wrong_exit]}" != 0 ] && [ "${K6SECOND[refusal_count]}" = 1 ] && contains "the signature is" "${K6SECOND[refusals]}" && echo 0 || echo 1)" \
+		"the second stand-in AWS service, which holds a second key pair with no session token and which no kind binds, records both of its calls, answers the call signed with its pair 2xx, and refuses the call with the wrong secret key 403 because the signature is not the one its pair makes" \
+		"it recorded ${K6SECOND[records]} calls; the signed call was answered ${K6SECOND[signed_status]} and the wrong-key call ${K6SECOND[wrong_status]}; it refused ${K6SECOND[refusal_count]}: ${K6SECOND[refusals]}"
 
 	stop_stack
 }
@@ -1507,7 +1817,7 @@ check_k6() {
 # Workspace logins, which k7's inputs name - and the hosts are the real ones, so this check needs
 # a profiles file the stack's does not hold. That is one broker process of this check's own, on
 # the stack's own database, store, certificate authority and stand-ins, with its profiles file,
-# its own two ports and its own public URL changed - the same device k4's control uses for one
+# its own ports, its proxy's URL and its own public URL changed - the same device k4's control uses for one
 # setting, with the public URL changed too because this broker must serve the release as well as
 # the proxy, and a session's proof is verified against the public URL it was signed for. Its
 # whole environment is the first stack broker's own, read out of /proc/<pid>/environ, so nothing
@@ -1538,26 +1848,43 @@ k7_dotfiles() {
 
 # k7_broker starts the one broker this check's steps run through: a broker like the stack's,
 # whose environment comes from the running one, with the profiles file, the three listening
-# addresses and the public URL replaced; the metrics port is one the system picks, since nothing
-# here scrapes it and the stack's own brokers hold theirs.
+# addresses, the public URL and the proxy's URL replaced. Each of its ports is one the system picks
+# as the broker binds it, so no port of its is one this check picked and another process could
+# have taken first. Its public URL is port 0 too, which the broker reads as "the address I bind"
+# (dev-broker.sh's convention), so the API's URL is the address its "broker listening" line names.
+# A release names the proxy's URL (BROKER_AIRLOCK_PROXY_URL), which the broker must hold at boot
+# while its proxy's port is known only once it has bound, so the proxy is named by a front bound
+# before the broker, pointed at the port the broker logs, as dev-airlock.sh's and dev-broker.sh's
+# fronts are.
 k7_broker() {
-	local d="$WORK_DIR/k7" api proxy
-	api="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
-	proxy="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
-	K7_API_URL="http://127.0.0.1:$api"
-	K7_PROXY_URL="http://127.0.0.1:$proxy"
+	local d="$WORK_DIR/k7" front_pid started proxy_addr
+	: >"$d/proxy-front.log"
+	: >"$d/proxy-backends"
+	"$STANDS_BIN" front --listen 127.0.0.1:0 --backends-file "$d/proxy-backends" \
+		>"$d/proxy-front.json" 2>"$d/proxy-front.log" &
+	front_pid=$!
+	HELPER_PIDS+=("$front_pid")
+	await "k7's proxy front" 30 "$d/proxy-front.log" 'front listening addr=' "$front_pid"
+	K7_PROXY_URL="$(jq -r .url "$d/proxy-front.json")"
 	broker_env \
 		BROKER_PROFILES_FILE="$d/profiles.json" \
-		BROKER_LISTEN_ADDR="127.0.0.1:$api" \
-		BROKER_PUBLIC_URL="$K7_API_URL" \
-		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:$proxy" \
+		BROKER_LISTEN_ADDR="127.0.0.1:0" \
+		BROKER_PUBLIC_URL="http://127.0.0.1:0" \
+		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" \
 		BROKER_AIRLOCK_PROXY_URL="$K7_PROXY_URL" \
 		BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0"
 	: >"$d/broker.log"
 	( with_broker_env "$BROKER_BIN" ) >"$d/broker.log" 2>&1 &
-	local started=$!
+	started=$!
 	EXTRA_BROKER_PIDS+=("$started")
 	await "k7's broker" 120 "$d/broker.log" '"message":"airlock proxy listening"' "$started"
+	K7_API_URL="http://$(logged_addr 'broker listening' "$d/broker.log")"
+	proxy_addr="$(logged_addr 'airlock proxy listening' "$d/broker.log")"
+	if [ "$K7_API_URL" = "http://" ] || [ -z "$proxy_addr" ]; then
+		echo "airlock-check: k7's broker logged no API or proxy address; see $d/broker.log" >&2
+		exit 1
+	fi
+	printf '%s\n' "$proxy_addr" >"$d/proxy-backends"
 }
 
 
@@ -1665,7 +1992,7 @@ check_k7() {
 	K7_CONSUMER_WORK_DIR="$WORK_DIR/k7" \
 		k7_consumer_add_fixtures
 	k7_broker
-	observe "this check's own broker is the stack's first broker's environment with its profiles file, its two ports and its public URL changed: api $K7_API_URL, proxy $K7_PROXY_URL, names $(jq -c '[.profiles[].name]' "$WORK_DIR/k7/profiles.json")"
+	observe "this check's own broker is the stack's first broker's environment with its profiles file, its ports, its proxy's URL and its public URL changed: api $K7_API_URL, proxy $K7_PROXY_URL (a front over the broker's own proxy port), names $(jq -c '[.profiles[].name]' "$WORK_DIR/k7/profiles.json")"
 
 	K7_CONSUMER_WORK_DIR="$WORK_DIR/k7" \
 		k7_consumer_write_pulumi
@@ -1735,7 +2062,7 @@ check_k7() {
 	swapped="$(jq -s '[.[] | select(.message == "airlock proxy: a call to a bound host" and .allowed == true)] | length' <<<"$calls")"
 	observe "this check's broker logged $logged calls to a bound host, $swapped of them allowed; the last three:"
 	observe "$(printf '%s' "$calls" | tail -n 3 | sed 's/^/    /')"
-	judge "$([ "$logged" -ge 10 ] && [ "$swapped" -ge 10 ] && echo 0 || echo 1)" \
+	judge "$([ "$logged" -ge 10 ] && [ "$swapped" = "$logged" ] && echo 0 || echo 1)" \
 		"each call went through the proxy port and the broker swapped the fake value into the header that the consumer uses" \
 		"$logged calls to a bound host were logged by the proxy, $swapped of them allowed and so swapped"
 	judge "$([ "$refused" = 7 ] && echo 0 || echo 1)" \
@@ -1744,6 +2071,10 @@ check_k7() {
 	# proxy in HTTP/2 and reached Cloud KMS, and a call line naming its host is the proxy's side.
 	local kms_calls
 	kms_calls="$(jq -s '[.[] | select(.host == "cloudkms.googleapis.com")] | length' <<<"$calls")"
+	# The absence of "application protocol" is the property, not a weak anchor: a broker that broke
+	# HTTP/2 would make the gRPC client fail ALPN with an "application protocol" error before it
+	# ever reached Cloud KMS. Its absence, with the positive "unauthenticated" and a logged call,
+	# is how the check reads that HTTP/2 was negotiated end to end.
 	judge "$(printf '%s' "${K7[kms]-}" | grep -qi 'unauthenticated' && ! printf '%s' "${K7[kms]-}" | grep -qi 'application protocol' && [ "$kms_calls" -ge 1 ] && echo 0 || echo 1)" \
 		"a gRPC client reaches its service through the proxy in HTTP/2, and the service refuses the fake value" \
 		"Pulumi's gcpkms secrets manager said '$(printf '%s' "${K7[kms]-}" | head -c 300)', and the proxy logged $kms_calls calls to cloudkms.googleapis.com"
@@ -1791,16 +2122,22 @@ check_k7() {
 }
 
 ###############################################################################################
-# k8a
+# k8
 ###############################################################################################
+#
+# The rules test of the head's profiles file and of ten changed copies, each run as the
+# deployment's pull-request check runs it (`envoy-broker profiles check <copy> --against <head's
+# file>`), the local broker on each failing copy, and the policy load's refusal of a judge tag of
+# 1800 seconds. The pull request half of k8 (a draft pull request whose required check goes red)
+# is the deployment's and is not run here.
 
-# k8a_start_broker starts a broker on one profiles file and answers 0 when it refused to start
-# for that file, leaving why in K8A_WHY. Its environment is the running stack broker's own, with
+# k8_start_broker starts a broker on one profiles file and answers 0 when it refused to start
+# for that file, leaving why in K8_WHY. Its environment is the running stack broker's own, with
 # the profiles file and the three addresses replaced, so that what it refuses on is the profiles
 # file and not a setting this function left out. It runs in the foreground under timeout,
 # because what it is here to see is a broker that never comes up.
-k8a_start_broker() { # <profiles file> <label>
-	local log="$WORK_DIR/k8a-broker-$2.log"
+k8_start_broker() { # <profiles file> <label>
+	local log="$WORK_DIR/k8-broker-$2.log"
 	broker_env \
 		BROKER_PUBLIC_URL="http://127.0.0.1:0" \
 		BROKER_LISTEN_ADDR="127.0.0.1:0" \
@@ -1809,76 +2146,190 @@ k8a_start_broker() { # <profiles file> <label>
 		BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0"
 	( with_broker_env timeout 25 "$BROKER_BIN" ) >"$log" 2>&1
 	local status=$?
-	K8A_WHY="$(grep -m1 'fatal' "$log" | tr '\n' ' ')"
+	K8_WHY="$(grep -m1 'fatal' "$log" | tr '\n' ' ')"
 	# The refusal has to be about this file: a broker that died of a setting this function did
 	# not give it would otherwise read as a refusal of the profiles file.
-	[ "$status" -ne 0 ] && [ -n "$K8A_WHY" ] && contains "$1" "$K8A_WHY"
+	[ "$status" -ne 0 ] && [ -n "$K8_WHY" ] && contains "$1" "$K8_WHY"
 }
 
-check_k8a() {
-	expect "the judge-1800 and the no-hosts copies exit non-zero naming the profile"
-	expect "the malformed copy names the parse position"
-	expect "a local broker refuses to start on each of the three failing copies"
-	expect "the new-host, new-header and removed-entry copies exit 0 and list what they add or remove"
-	expect "the negative control, the valid file against itself, exits 0 and lists no change"
+# k8_copies writes the ten copies of <head's file> into <directory>, one file each, named for
+# what it changes, and the list of them, one "<label> <what it should do>" a line, where the
+# second word is fail or pass: a kind with no host, a kind's new host, header and variable, a
+# kind's changed fields, a new row of a kind's allow, a new row inside its kind's allow of a
+# profile's allow, a kind removed, a kind naming a secret, and a file that is not JSON. The fields
+# copy is listed as unknown: a kind's fields are the named-fields slice's, which this head does
+# not build, so the copy is not written.
+k8_copies() { # <head's file> <directory>
+	local head="$1" d="$2"
+	jq '(.kinds[] | select(.name == "stest") | .hosts) = []' "$head" >"$d/no-host.json"
+	jq '(.kinds[] | select(.name == "stest") | .hosts) += ["extra.airlock.test"]' "$head" >"$d/new-host.json"
+	jq '(.kinds[] | select(.name == "scoped") | .headers) += ["x-extra"]' "$head" >"$d/new-header.json"
+	jq '(.kinds[] | select(.name == "stest") | .variables) = ["STEST_TOKEN"]' "$head" >"$d/new-variable.json"
+	jq '(.kinds[] | select(.name == "scoped") | .allow) += [{"method": "GET", "pathPrefix": "/other"}]' "$head" >"$d/kind-allow-row.json"
+	jq '(.profiles[] | select(.name == "AIRLOCK_ANTHROPIC_NARROWED") | .allow) += [{"method": "GET", "pathPrefix": "/v1/organizations/workspaces"}]' "$head" >"$d/profile-allow-row.json"
+	jq '.kinds |= map(select(.name != "aws"))' "$head" >"$d/removed-kind.json"
+	jq '(.kinds[] | select(.name == "stest")) += {"secrets": ["AIRLOCK_DEMO_TOKEN"]}' "$head" >"$d/names-secret.json"
+	printf '{"kinds": [{"name": "a", "hosts": ["a.airlock.test"], "ways": ["swap"]},], "profiles": []}' >"$d/malformed.json"
+	printf '%s\n' "no-host fail" "new-host pass" "new-header pass" "new-variable pass" "fields unknown" \
+		"kind-allow-row pass" "profile-allow-row pass" "removed-kind leaves" "names-secret fail" "malformed fail" >"$d/copies"
+}
+
+# k8_names is what each copy's output must name, beside its exit status: the kind and the value a
+# passing copy adds or removes, and the kind or the field a failing copy is refused for.
+k8_names() { # <label>
+	case "$1" in
+	no-host) printf '%s\n' 'stest' 'no host' ;;
+	new-host) printf '%s\n' 'kind "stest"' 'extra.airlock.test' ;;
+	new-header) printf '%s\n' 'kind "scoped"' 'x-extra' ;;
+	new-variable) printf '%s\n' 'kind "stest"' 'STEST_TOKEN' ;;
+	kind-allow-row) printf '%s\n' 'kind "scoped"' 'GET /other' ;;
+	profile-allow-row) printf '%s\n' 'profile "AIRLOCK_ANTHROPIC_NARROWED"' 'GET /v1/organizations/workspaces' ;;
+	removed-kind) printf '%s\n' 'kind "aws"' 'removed' ;;
+	names-secret) printf '%s\n' 'secrets' ;;
+	esac
+}
+
+# k8_named answers 0 when <output> holds every line k8_names gives <label>, and for the malformed
+# copy when it names the position of the parse error.
+k8_named() { # <label> <output>
+	local want
+	if [ "$1" = malformed ]; then
+		printf '%s' "$2" | grep -qE '(byte|offset|line|column|character) [0-9]+'
+		return
+	fi
+	while IFS= read -r want; do
+		[ -n "$want" ] || continue
+		contains "$want" "$2" || return 1
+	done < <(k8_names "$1")
+}
+
+# k8_untagged writes a store list (k47_secrets_json's form) with the proxy tag taken off each
+# secret whose proxy tag names <kind>, and every other secret and tag as it was: the store as it is
+# once a reviewed retag has moved that kind's secrets off it, which is the order a removal of the
+# kind takes.
+k8_untagged() { # <store list> <kind>
+	jq --arg k "$2" 'map(if .annotations.proxy == $k then .annotations |= del(.proxy) else . end)' "$1"
+}
+
+# k8_reread makes every broker of the stack read one name again, as reread_all does, and answers
+# in K8_ANSWERS what each said, "<code> served=<served> reason=<reason>" per broker joined by
+# "; ", so a refused name is read off the broker's own answer and not off a reread that ended.
+# judge-check.sh's k8j_reread is the same call.
+k8_reread() { # <name>
+	local addr proof body code
+	K8_ANSWERS=""
+	for addr in "${BROKER_API_ADDRS[@]}"; do
+		proof="$(agent-secrets sign --method POST --url "$AGENT_SECRETS_URL/v1/secrets/$1/reread")" || { K8_ANSWERS="$K8_ANSWERS; unsigned"; continue; }
+		code="$(curl -sS -o "$WORK_DIR/k8-reread.json" -w '%{http_code}' -X POST -H "Proof: $proof" "http://$addr/v1/secrets/$1/reread" 2>/dev/null)"
+		body="$(jq -r '"served=\(.served) reason=\(.reason // "")"' "$WORK_DIR/k8-reread.json" 2>/dev/null)"
+		K8_ANSWERS="${K8_ANSWERS:+$K8_ANSWERS; }$code $body"
+	done
+}
+
+check_k8() {
+	expect "the copy with a kind that has no host and the copy that names a secret each fail with an error that names the kind or the field"
+	expect "the malformed copy fails with the position of the parse error"
+	expect "the local broker refuses to start on each failing copy"
+	expect "the copies with a new host, a new header, a new variable, changed fields and new allow rows pass and list what they add, of the kind or of the profile (changed fields: the named-fields slice's, not judged here)"
+	expect "the copy without a kind passes and lists the kind leaving the airlock, once no secret carries that kind's proxy tag; while one does, the rules test refuses the copy and names that secret, which would otherwise leave the proxy"
+	expect "the policy load refuses the judge tag of 1800 seconds and names the key"
+	expect "the negative control: on the head's file the test passes and lists no change, and the same policy load with a judge tag of 900 seconds refuses nothing"
 
 	start_stack
 	stack_facts
-	local d="$WORK_DIR/k8a"
+	local d="$WORK_DIR/k8"
 	mkdir -p "$d"
-	cp "$AIRLOCK_PROFILES_FILE" "$d/valid.json"
-	jq '.profiles[0].proxy.judge = 1800' "$d/valid.json" >"$d/judge-1800.json"
-	jq '.profiles[0].proxy += {judge: 300} | .profiles[0].proxy.hosts = []' "$d/valid.json" >"$d/no-hosts.json"
-	jq '.profiles[0].proxy.hosts += ["extra.airlock.test"]' "$d/valid.json" >"$d/new-host.json"
-	jq '.profiles[0].proxy += {headers: ["authorization", "x-extra"]}' "$d/valid.json" >"$d/new-header.json"
-	jq '.profiles = .profiles[1:]' "$d/valid.json" >"$d/removed-entry.json"
-	printf '{"profiles": [{"name": "A", "proxy": {"hosts": ["a.airlock.test"]}},]}' >"$d/malformed.json"
+	cp "$AIRLOCK_PROFILES_FILE" "$d/head.json"
+	k8_copies "$d/head.json" "$d"
+	# Each run reads the store's tags (--secrets-json), as the rules test reads them for a
+	# deployment's change: a profile with no proxy string takes its kind from its source's proxy
+	# tag, which the file alone does not hold, so a run without them answers 3 (UNKNOWN) for a
+	# file it refuses nothing of. The second list is the same store with the aws kind's secrets
+	# untagged, the retag that a removal of that kind comes with.
+	k47_secrets_json "$AIRLOCK_FAKE_SECRETS_FILE" >"$d/secrets.json"
+	k8_untagged "$d/secrets.json" aws >"$d/secrets-aws-untagged.json"
+	local aws_tagged
+	aws_tagged="$(jq -r '[.[] | select(.annotations.proxy == "aws") | .name] | length' "$d/secrets.json")"
 
-	local label status out
-	declare -A K8A_STATUS K8A_OUT
-	for label in judge-1800 no-hosts new-host new-header removed-entry malformed; do
-		out="$("$BROKER_BIN" profiles check "$d/$label.json" --against "$d/valid.json" 2>&1)"
+	local label want status out failing=()
+	while read -r label want <&3; do
+		if [ "$want" = unknown ]; then
+			unknown "the $label copy: a kind's fields are the named-fields slice's (s-fields), which this head does not build, so the copy was not run"
+			continue
+		fi
+		out="$("$BROKER_BIN" profiles check "$d/$label.json" --against "$d/head.json" --secrets-json "$d/secrets.json" 2>&1)"
 		status=$?
-		K8A_STATUS[$label]=$status
-		K8A_OUT[$label]="$out"
-		observe "$label: exit ${K8A_STATUS[$label]}; $(printf '%s' "$out" | head -n 3 | tr '\n' ' / ')"
-	done
-
-	judge "$([ "${K8A_STATUS[judge-1800]}" -ne 0 ] && contains 'AIRLOCK_DEMO_TOKEN' "${K8A_OUT[judge-1800]}" && [ "${K8A_STATUS[no-hosts]}" -ne 0 ] && contains 'AIRLOCK_DEMO_TOKEN' "${K8A_OUT[no-hosts]}" && echo 0 || echo 1)" \
-		"the 1800 and no-hosts copies exit non-zero naming the profile" \
-		"judge-1800 exited ${K8A_STATUS[judge-1800]} saying '${K8A_OUT[judge-1800]}'; no-hosts exited ${K8A_STATUS[no-hosts]} saying '${K8A_OUT[no-hosts]}'"
-	judge "$([ "${K8A_STATUS[malformed]}" -ne 0 ] && contains 'byte' "${K8A_OUT[malformed]}" && echo 0 || echo 1)" \
-		"the malformed copy names the parse position" "it exited ${K8A_STATUS[malformed]} saying '${K8A_OUT[malformed]}'"
+		observe "$label: exit $status; $(printf '%s' "$out" | grep -vE '^profiles check: (compared against|.* is valid:)' | head -n 4 | tr '\n' ' ')"
+		case "$want" in
+		fail)
+			failing+=("$label")
+			judge "$([ "$status" -ne 0 ] && k8_named "$label" "$out" && echo 0 || echo 1)" \
+				"the $label copy fails with an error that names $([ "$label" = malformed ] && echo "the position of the parse error" || k8_names "$label" | tr '\n' ' ')" \
+				"it exited $status saying '$(printf '%s' "$out" | tail -n 1)'"
+			;;
+		pass)
+			judge "$([ "$status" = 0 ] && k8_named "$label" "$out" && echo 0 || echo 1)" \
+				"the $label copy passes and lists what it changes ($(k8_names "$label" | tr '\n' ' '))" \
+				"it exited $status; its lines naming the change: $(printf '%s' "$out" | grep -F "$(k8_names "$label" | tail -n 1)" | head -n 2 | tr '\n' ' ')"
+			;;
+		leaves)
+			# The store as it is: a secret still tagged proxy=aws would name no kind of the copy,
+			# so the rules test refuses the copy as the policy load would refuse that secret.
+			judge "$([ "$aws_tagged" -ge 1 ] 2>/dev/null && [ "$status" = 1 ] && contains "proxy-kind-unknown" "$out" && printf '%s' "$out" | grep -qiE 'airlock[-_]aws[-_]key' && echo 0 || echo 1)" \
+				"the $label copy, while a secret carries the aws kind's proxy tag, is refused, naming that secret and proxy-kind-unknown" \
+				"$aws_tagged secret(s) in the store list carry proxy=aws; it exited $status saying '$(printf '%s' "$out" | grep -iE 'proxy-kind-unknown|leaving' | head -n 2 | tr '\n' ' ')'"
+			out="$("$BROKER_BIN" profiles check "$d/$label.json" --against "$d/head.json" --secrets-json "$d/secrets-aws-untagged.json" 2>&1)"
+			status=$?
+			observe "$label, with the aws kind's secrets untagged: exit $status; $(printf '%s' "$out" | grep -F 'kind "aws"' | head -n 2 | tr '\n' ' ')"
+			judge "$([ "$status" = 0 ] && k8_named "$label" "$out" && echo 0 || echo 1)" \
+				"the $label copy, once no secret carries that kind's proxy tag, passes and lists the kind leaving the airlock ($(k8_names "$label" | tr '\n' ' '))" \
+				"it exited $status; its lines naming the change: $(printf '%s' "$out" | grep -F 'kind "aws"' | head -n 2 | tr '\n' ' ')"
+			;;
+		esac
+	done 3<"$d/copies"
 
 	local refusals=0 why=""
-	for label in judge-1800 no-hosts malformed; do
-		if k8a_start_broker "$d/$label.json" "$label"; then
+	for label in "${failing[@]}"; do
+		if k8_start_broker "$d/$label.json" "$label"; then
 			refusals=$((refusals + 1))
-			why="$why; $label: $K8A_WHY"
+			why="$why; $label: $K8_WHY"
 		else
-			why="$why; $label: the broker did not refuse to start"
+			why="$why; $label: the broker did not refuse to start for this file"
 		fi
 	done
 	observe "a local broker on each failing copy${why}"
-	judge "$([ "$refusals" = 3 ] && echo 0 || echo 1)" \
-		"the local broker refuses to start on each failing copy" "$refusals of 3 refused"
+	judge "$([ "${#failing[@]}" -gt 0 ] && [ "$refusals" = "${#failing[@]}" ] && echo 0 || echo 1)" \
+		"the local broker refuses to start on each failing copy" "$refusals of ${#failing[@]} refused, naming the file"
 
-	local listed=0
-	for label in new-host new-header removed-entry; do
-		if [ "${K8A_STATUS[$label]}" = 0 ] && printf '%s' "${K8A_OUT[$label]}" | grep -qE 'added|removed|→'; then
-			listed=$((listed + 1))
-		fi
-	done
-	judge "$([ "$listed" = 3 ] && echo 0 || echo 1)" \
-		"the new-host, new-header and removed-entry copies exit 0 and list what they add or remove" \
-		"new-host said '$(printf '%s' "${K8A_OUT[new-host]}" | tail -n 1)', new-header '$(printf '%s' "${K8A_OUT[new-header]}" | tail -n 1)', removed-entry '$(printf '%s' "${K8A_OUT[removed-entry]}" | tail -n 1)'"
-
-	out="$("$BROKER_BIN" profiles check "$d/valid.json" --against "$d/valid.json" 2>&1)"
+	out="$("$BROKER_BIN" profiles check "$d/head.json" --against "$d/head.json" --secrets-json "$d/secrets.json" 2>&1)"
 	status=$?
-	control "the valid file against itself exited $status saying: $(printf '%s' "$out" | tail -n 1)"
+	control "the head's file against itself exited $status saying: $(printf '%s' "$out" | tail -n 1)"
 	judge "$([ "$status" = 0 ] && contains "nothing changed" "$out" && echo 0 || echo 1)" \
-		"negative control: on the valid file the command exits 0 and lists no change" \
+		"negative control: on the head's file the test passes and lists no change" \
 		"it exited $status and said '$(printf '%s' "$out" | tail -n 1)'"
+
+	# The judge tag: a key of the approver's with a judge tag of 1800 seconds and no proxy tag, a
+	# stored value the broker serves by its own name, read at the next policy load.
+	local name="AIRLOCK_K8_TOKEN" suffix="airlock-k8-token" over_answers over_line ok=0
+	add_fake_secret "${STACK_SECRETS_PREFIX}$suffix" "$(jq -nc --arg o "$AIRLOCK_APPROVER" '{owner: $o, tier: "human", judge: "1800"}')" "the-k8-test-value"
+	k8_reread "$name"
+	over_answers="$K8_ANSWERS"
+	over_line="$(jq -Rc --arg s "$suffix" 'fromjson? | select(.message == "agent secret policy refused" and ((.name // "") | endswith($s)))' "$AIRLOCK_DIR"/broker*.log 2>/dev/null | tail -n 1)"
+	observe "a key with a judge tag of 1800 seconds, after a reread: the brokers answered [$over_answers]; the broker's log: ${over_line:-no refusal line for it}"
+	case "$over_answers" in "" | *unsigned* | *served=true*) ok=1 ;; esac
+	printf '%s' "$over_answers" | tr ';' '\n' | grep -qv 'reason=judge-out-of-range' && ok=1
+	judge "$([ "$ok" = 0 ] && contains '"reason":"judge-out-of-range"' "$over_line" && contains "$suffix" "$over_line" && echo 0 || echo 1)" \
+		"the policy load refuses the judge tag of 1800 seconds and names the key" \
+		"rereads [$over_answers]; log line ${over_line:-none}"
+
+	set_fake_tags "${STACK_SECRETS_PREFIX}$suffix" "$(jq -nc --arg o "$AIRLOCK_APPROVER" '{owner: $o, tier: "human", judge: "900"}')"
+	k8_reread "$name"
+	ok=0
+	case "$K8_ANSWERS" in "" | *unsigned* | *served=false*) ok=1 ;; esac
+	printf '%s' "$K8_ANSWERS" | tr ';' '\n' | grep -qv 'served=true' && ok=1
+	control "the same key retagged with a judge of 900 seconds, after a reread: the brokers answered [$K8_ANSWERS]"
+	judge "$ok" "negative control: the same policy load with a judge tag of 900 seconds refuses nothing" \
+		"rereads [$K8_ANSWERS], where at 1800 they answered [$over_answers]"
 
 	stop_stack
 }
@@ -2088,7 +2539,7 @@ check_k9() {
 	local still_up=0
 	kill -0 "$stopped" 2>/dev/null && still_up=1
 	observe "with broker $stopped stopped while it carried a connection: that connection answered $(cat "$WORK_DIR/k9/stopped.json" | tr -d '\n ') and the four calls after it answered$after_stop (the stopped process is still up: $still_up)"
-	judge "$([ "$ok" -gt 0 ] && echo 0 || echo 1)" \
+	judge "$([ "$ok" -gt 0 ] && [ -z "$(jq -r '.second // ""' "$WORK_DIR/k9/stopped.json")" ] && [ -n "$(jq -r '.second_error // .error // ""' "$WORK_DIR/k9/stopped.json")" ] && echo 0 || echo 1)" \
 		"the stream on the stopped process ends after the drain, and the next call succeeds" \
 		"the connection on the stopped process ended $(jq -r 'if .second then "with its second event answering " + (.second|tostring) else "with " + (.second_error // .error // "no answer") end' "$WORK_DIR/k9/stopped.json"), and $ok of the four calls after it answered 200 ($after_stop); the ones that did not are the connections the front still handed to the stopped process, which it keeps in its backends file with no health check of its own"
 
@@ -2105,7 +2556,7 @@ check_k9() {
 	local control_second
 	control_second="$(jq -r '.second // ""' "$WORK_DIR/k9/control-gap.json")"
 	control "with --idle-seconds 60 the same answer with a 90-second gap in it: $(cat "$WORK_DIR/k9/control-gap.json" | tr -d '\n ')"
-	judge "$([ -z "$control_second" ] && echo 0 || echo 1)" \
+	judge "$([ -s "$WORK_DIR/k9/control-gap.json" ] && [ -z "$control_second" ] && [ -n "$(jq -r '.second_error // .error // ""' "$WORK_DIR/k9/control-gap.json")" ] && echo 0 || echo 1)" \
 		"negative control: with the idle limit at 60 seconds the answer with the 90-second gap is cut" \
 		"its second event $(jq -r 'if .second then "answered " + (.second|tostring) else "did not arrive: " + (.second_error // .error // "no answer") end' "$WORK_DIR/k9/control-gap.json")"
 
@@ -2132,7 +2583,7 @@ check_k15() {
 	expect "its $count theorems are there and are printed with their statements"
 	expect "they depend on no sorry and on no axiom outside propext, Classical.choice and Quot.sound"
 	expect "the comparison fuzz test passes for ten minutes"
-	expect "the negative control, the six mutants of scripts/airlock-mutants.sh, is caught: each Go mutant fails the comparison and each model mutant fails lake build or that same comparison"
+	expect "the negative control, the ten mutants this check names, is caught: the five Go mutants of verification k15 (go-extra-header, go-no-host-check, go-hostless-entry, go-carries-value, go-cipher-repository-forwarded) and its two model mutants (lean-all-headers, lean-carries-value), and the kinds slice's three (lean-no-widen, go-no-widen, go-override-kind-allow-only); each Go mutant fails the comparison and each model mutant fails lake build or that same comparison"
 
 	if ! command -v lake >/dev/null 2>&1; then
 		echo "airlock-check: k15 needs lake from the Lean toolchain; set ELAN_HOME and PATH" >&2
@@ -2196,25 +2647,520 @@ check_k15() {
 		"the seed corpus exited $seed_status and -fuzztime=600s exited $fuzz_status"
 
 	echo "airlock-check: running the mutants..." >&2
-	(cd "$ENVOY_DIR" && AIRLOCK_MODEL="$model" bash "$SCRIPT_DIR/airlock-mutants.sh") >"$WORK_DIR/mutants.log" 2>&1
+	# The ten this check names, and no other: verification k15's five Go mutants and two model
+	# mutants, and the three the kinds slice adds (a profile's allow that widens its kind, in the
+	# model and in Go, and a method override refused on the kind's allow alone). Each is passed to
+	# airlock-mutants.sh by its patch's name, so the script runs exactly these, and a name with no
+	# patch is its refusal rather than a mutant quietly left out. None is a requests mutant, so no
+	# database is needed and none is passed.
+	local k15_mutants=(go-extra-header go-no-host-check go-hostless-entry go-carries-value go-cipher-repository-forwarded
+		lean-all-headers lean-carries-value lean-no-widen go-no-widen go-override-kind-allow-only)
+	(cd "$ENVOY_DIR" && AIRLOCK_MODEL="$model" bash "$SCRIPT_DIR/airlock-mutants.sh" "${k15_mutants[@]}") >"$WORK_DIR/mutants.log" 2>&1
 	local mutants_status=$?
 	echo
 	echo "the mutants:"
-	grep -E '^(PASS|FAIL):' "$WORK_DIR/mutants.log" | sed 's/^/  /'
-	# The check's words name six mutants, which is a floor and not a count: the tree holds every
-	# mutant of the decision anyone has written, and each must be caught. So this reads two
-	# things — that airlock-mutants.sh caught every mutant it found, and that the six the check
-	# names are among them.
-	local caught named missing=""
+	grep -E '^(PASS|FAIL|UNKNOWN):' "$WORK_DIR/mutants.log" | sed 's/^/  /'
+	# Each of the ten must have its own PASS line, and the run no line for any other mutant: a
+	# count of PASS lines alone would read ten catches of the wrong ten as the right ones.
+	local caught named missing="" others
 	caught=$(grep -cE '^PASS:' "$WORK_DIR/mutants.log" || true)
-	for named in go-extra-header go-no-host-check go-judge-over-900 go-carries-value lean-all-headers lean-carries-value; do
-		grep -qE "^PASS: $named " "$WORK_DIR/mutants.log" || missing="$missing $named"
+	for named in "${k15_mutants[@]}"; do
+		grep -qE "^PASS: $named( |$)" "$WORK_DIR/mutants.log" || missing="$missing $named"
 	done
-	control "scripts/airlock-mutants.sh exited $mutants_status: $caught mutant(s) caught, the check's six among them"
-	control "$(grep -E '^(PASS|FAIL):' "$WORK_DIR/mutants.log" | tr '\n' ' ')"
-	judge "$([ "$mutants_status" = 0 ] && [ -z "$missing" ] && echo 0 || echo 1)" \
-		"negative control: each of the six mutants is caught" \
-		"airlock-mutants.sh exited $mutants_status with $caught caught and none of the six missing${missing:+; missing:$missing}"
+	# A mutant's own line names it second; the summary lines ("UNKNOWN: 3 mutant(s) not run",
+	# "UNKNOWN: no mutant ran") name a count or "no" there and are no mutant.
+	others="$(grep -E '^(PASS|FAIL|UNKNOWN|SKIPPED): ' "$WORK_DIR/mutants.log" | awk '$2 ~ /^[a-z]+-[a-z-]+$/ {print $2}' | grep -vxF -f <(printf '%s\n' "${k15_mutants[@]}") | tr '\n' ' ' || true)"
+	control "scripts/airlock-mutants.sh ran the ten named and exited $mutants_status: $caught caught; $(grep -E '^UNKNOWN: [0-9]' "$WORK_DIR/mutants.log" || echo 'every one ran')"
+	control "$(grep -E '^(PASS|FAIL|UNKNOWN):' "$WORK_DIR/mutants.log" | tr '\n' ' ')"
+	judge "$([ "$mutants_status" = 0 ] && [ -z "$missing" ] && [ "$caught" = "${#k15_mutants[@]}" ] && [ -z "$others" ] && echo 0 || echo 1)" \
+		"negative control: each of the ten mutants is caught, and no other mutant ran" \
+		"airlock-mutants.sh exited $mutants_status$(case "$mutants_status" in 0) ;; 3) echo ' (UNKNOWN: a mutant did not run)' ;; *) echo ' (a mutant was not caught, or a name has no patch)' ;; esac) with $caught of ${#k15_mutants[@]} caught${missing:+; not caught or not run:$missing}${others:+; other mutants that ran: $others}"
+}
+
+###############################################################################################
+# k47
+###############################################################################################
+#
+# The anthropic kind on the local stack. dev-airlock.sh declares the kind as the spec writes it,
+# stores the two anthropic-federation secrets (N, AIRLOCK_ANTHROPIC_NARROWED, proxy-narrowed with
+# one profile of the kind's three rows; K, AIRLOCK_ANTHROPIC_KIND, with neither), binds each to a
+# Google account of its own, points the minter at the iam and anthropic-token stands, and has
+# api.anthropic.com resolve to the Admin API stand. Every call this check makes to
+# api.anthropic.com names that stand's loopback address with curl's --resolve too, which curl
+# uses only for a call it makes directly: a call that leaves the proxy out reaches the stand, not
+# Anthropic, and is read there as a call that never reached the proxy.
+#
+# Each grant is a person's: the stack's approver approves it on the broker's page as each
+# human-tier check does (approve_watch, release_approved). The broker hands back a live grant of
+# the same name and lifetime with no new request, so the runs after the first of a secret reuse
+# its grant, and the 3601 run asks for another lifetime to get a grant, and a mint, of its own.
+#
+# The two controls that need other code are brokers built from a copy of this module with one
+# defect put in (k47_control_tree), started beside the stack's on its database, profiles file and
+# stand-ins, with the stack's two fronts pointed at them for that step alone.
+
+# K47_KIND_WANT is the anthropic kind of spec v70 as k47_kind writes a kind: its hosts, its
+# headers (lower-cased, since the airlock compares header names after an ASCII fold), its allow
+# rows, its ways, its variables and its max_grant.
+K47_KIND_WANT='hosts=api.anthropic.com headers=authorization allow=GET /v1/organizations/,POST /v1/organizations/,DELETE /v1/organizations/ ways=mint variables=ANTHROPIC_ADMIN_TOKEN max_grant=1h'
+
+# k47_kind writes the anthropic kind of a profiles file on one line, in K47_KIND_WANT's form, and
+# nothing for a file with no such kind. A kind that leaves headers out takes the default header,
+# authorization, as proxyrules.Kind.HeaderNames reads it.
+k47_kind() { # <profiles file>
+	jq -r '[.kinds[]? | select(.name == "anthropic")][0] // empty
+		| "hosts=\(.hosts // [] | join(",")) headers=\(.headers // ["authorization"] | map(ascii_downcase) | join(",")) allow=\(.allow // [] | map("\(.method) \(.pathPrefix)") | join(",")) ways=\(.ways // [] | join(",")) variables=\(.variables // [] | join(",")) max_grant=\(.max_grant // "")"' "$1" 2>/dev/null
+}
+
+# k47_lines reads broker log lines, one JSON object each, on standard input, and writes what they
+# say of one secret's calls to api.anthropic.com: the lines in all (each carried call's call line
+# and each refused call's refusal record), the carried ones and of those the ones that name the
+# way mint, the refused ones and of those the ones whose reason names an allow rule, the method
+# and path of each refused one, and the mint lines of the secret, how many of them hold a SHA-256
+# and each hash. A line that is no JSON object is left out.
+k47_lines() { # <secret>
+	jq -Rrs --arg n "$1" '
+		[split("\n")[] | fromjson? | select(type == "object")] as $all
+		| [$all[] | select(.message == "airlock proxy: a call to a bound host" and .secret == $n and .host == "api.anthropic.com")] as $calls
+		| [$all[] | select(.message == "broker: answer refused" and .caller_class == "airlock" and .host == "api.anthropic.com" and ((.secrets // []) | index($n)) != null)] as $refused
+		| [$all[] | select(.message == "broker: a token was minted for a call" and .secret == $n)] as $mints
+		| "lines=\(($calls + $refused) | length) allowed=\([$calls[] | select(.allowed == true)] | length) allowed_mint=\([$calls[] | select(.allowed == true and .way == "mint")] | length) refused=\($refused | length) refused_rule=\([$refused[] | select((.reason // "") | test("not allowed by"))] | length) refused_methods=\([$refused[] | "\(.method) \(.path)"] | join(",")) mints=\($mints | length) mints_hashed=\([$mints[] | select((.sha256 // "") | test("^[0-9a-f]{64}$"))] | length) mint_hashes=\([$mints[] | .sha256 // ""] | join(",")) grants=\([$calls[] | .grant // ""] | unique | join(","))"'
+}
+
+# k47_api writes what the Admin API stand's records of one run say against the tokens the token
+# exchange stand answered for one secret's service account: the records in all, those of the
+# three requests the kind allows and their methods, those of the three it refuses (POST
+# /v1/oauth/token, POST /v1/messages, a PUT), how many of the allowed ones carry in Authorization a
+# token the exchange answered for that service account, how many distinct values those
+# Authorization headers hold, and how many records hold a placeholder anywhere.
+k47_api() { # <records json file> <exchange tokens json file> <service_account_id>
+	jq -rn --slurpfile recs "$1" --slurpfile toks "$2" --arg s "$3" '
+		([$toks[0][]? | select(.service_account_id == $s) | .access_token]) as $mine
+		| ($recs[0] // []) as $r
+		| [$r[] | select((.method + " " + .path) as $m | ["GET /v1/organizations/workspaces", "POST /v1/organizations/workspaces", "DELETE /v1/organizations/workspaces/w1"] | index($m) != null)] as $allowed
+		| [$allowed[] | ((.header.Authorization // [])[0] // "") | ltrimstr("Bearer ")] as $auth
+		| "records=\($r | length) allowed=\($allowed | length) allowed_methods=\([$allowed[] | .method] | join(",")) refused_reached=\([$r[] | select(.path == "/v1/oauth/token" or .path == "/v1/messages" or .method == "PUT")] | length) token_ok=\([$auth[] | select(. as $a | $mine | index($a) != null)] | length) distinct=\($auth | unique | length) placeholders=\([$r[] | tostring | select(test("agent-secrets-placeholder-"))] | length)"'
+}
+
+# k47_exchanges writes what the token exchange stand's records say of one secret: the exchanges
+# that named its service account, how many of them name its organization, federation rule and
+# workspace and carry as their assertion an identity token the iam stand minted for its bound
+# account and Anthropic's audience, how many such identity tokens the iam stand minted, and how
+# many it minted for that account for any other audience.
+k47_exchanges() { # <exchange records json file> <iam tokens json file> <account> <service_account_id> <organization_id> <federation_rule_id> <workspace_id>
+	jq -rn --slurpfile recs "$1" --slurpfile ids "$2" --arg acct "$3" --arg s "$4" --arg org "$5" --arg rule "$6" --arg ws "$7" '
+		([$ids[0][]? | select(.account == $acct and .audience == "https://api.anthropic.com") | .token]) as $theirs
+		| [($recs[0] // [])[] | .body | fromjson? | select(type == "object" and .service_account_id == $s)] as $mine
+		| "exchanges=\($mine | length) matching=\([$mine[] | select(.organization_id == $org and .federation_rule_id == $rule and .workspace_id == $ws and (.assertion as $a | $theirs | index($a)) != null)] | length) identity_tokens=\($theirs | length) other_audiences=\([$ids[0][]? | select(.account == $acct and .audience != "https://api.anthropic.com")] | length)"'
+}
+
+# k47_hits writes how many times the files named hold the opening of an Anthropic token,
+# sk-ant-oat01-, and how many bytes they hold in all: a search of nothing finds nothing, so the
+# bytes are what says the search had something to read.
+k47_hits() { # <file>...
+	printf 'hits=%s bytes=%s' "$(cat "$@" 2>/dev/null | grep -o 'sk-ant-oat01-' | wc -l | tr -d ' ')" "$(cat "$@" 2>/dev/null | wc -c | tr -d ' ')"
+}
+
+# k47_secrets_json writes the fake store's secrets as `gcloud secrets list
+# --format='json(name,annotations)'` lists them, which `envoy-broker profiles check
+# --secrets-json` reads: each a name ending in /secrets/agent-secrets-<slug> and its tags as its
+# annotations. A profile with no proxy string takes its kind from its source's proxy tag, which
+# only that list gives the rules test.
+k47_secrets_json() { # <fake secrets file>
+	jq '[.secrets[] | {name: ("projects/000000000000/secrets/agent-secrets-" + (.name | sub("^.*/"; ""))), annotations: .tags}]' "$1"
+}
+
+# k47_field reads one field of a k47_* line: the word after <name>= up to the next " <word>=".
+k47_field() { # <line> <name>
+	printf '%s\n' "$1" | sed -n "s/.*\(^\| \)$2=\([^=]*\)\( [a-z_]*=.*\)\?\$/\2/p"
+}
+
+# k47_control_tree copies this module (packages/envoy) to <directory> and puts one defect in it
+# (k47_control_edit). The copy leaves out the module root's build products and the Lean model's
+# build directory, which no build of cmd/cipherd reads.
+k47_control_tree() { # <directory> <kind-allow|lifetime>
+	mkdir -p "$1"
+	(cd "$ENVOY_DIR" && tar -cf - --exclude=./out --exclude=./dispatch-e2e --exclude=./node_modules --exclude=./internal/cipher/proxyrules/lean/.lake .) | tar -xf - -C "$1"
+	k47_control_edit "$1" "$2"
+}
+
+# k47_control_edit puts one defect into a module tree: kind-allow takes the kind's allow out of
+# the decision (proxyrules check), so the proxy reads a profile's allow and not its kind's;
+# lifetime takes the lifetime bound out of the anthropic-federation minter, so it takes a token of
+# any lifetime. It answers 1 unless the text it takes out was in the file before the edit and is
+# gone after it: a patch that matched nothing builds the broker this check already has, whose
+# control would then fail for the wrong reason or pass for none.
+k47_control_edit() { # <directory> <kind-allow|lifetime>
+	local file text before left
+	case "$2" in
+	kind-allow)
+		file="$1/internal/cipher/proxyrules/airlock.go" text='case !allowOK(k.Allow, r):'
+		before="$(grep -cF "$text" "$file" 2>/dev/null)"
+		perl -0777 -pi -e 's/\n\tcase !allowOK\(k\.Allow, r\):\n\t\treturn nil, "not allowed by rule"\n/\n/' "$file" 2>/dev/null
+		;;
+	lifetime)
+		file="$1/internal/cipher/secrets/anthropicfederation.go" text='	if lifetime > federationLifetimeMax {'
+		before="$(grep -cF "$text" "$file" 2>/dev/null)"
+		perl -0777 -pi -e 's/\tif lifetime > federationLifetimeMax \{/\tif false && lifetime > federationLifetimeMax {/' "$file" 2>/dev/null
+		;;
+	*) return 1 ;;
+	esac
+	left="$(grep -cF "$text" "$file" 2>/dev/null)"
+	[ "${before:-0}" = 1 ] && [ "${left:-1}" = 0 ]
+}
+
+# k47_control_broker builds one control broker (k47_control_tree) and starts it beside the stack's,
+# leaving its addresses in EXTRA_API_ADDR and EXTRA_PROXY_ADDR; it answers 1, with why in
+# K47_CONTROL_WHY, when the tree or the build failed.
+k47_control_broker() { # <kind-allow|lifetime>
+	local tree="$WORK_DIR/k47-tree-$1" binary="$WORK_DIR/k47-broker-$1"
+	K47_CONTROL_WHY=""
+	if ! k47_control_tree "$tree" "$1"; then
+		K47_CONTROL_WHY="the $1 edit left the text it takes out in the copy, so a broker built from it would be the stack's own"
+		return 1
+	fi
+	if ! (cd "$tree" && GOWORK=off go build -o "$binary" ./cmd/cipherd) >"$WORK_DIR/k47-build-$1.log" 2>&1; then
+		K47_CONTROL_WHY="the $1 broker did not build: $(tail -n 3 "$WORK_DIR/k47-build-$1.log" | tr '\n' ' ')"
+		return 1
+	fi
+	EXTRA_BROKER_BIN="$binary"
+	start_extra_broker "k47-$1"
+	EXTRA_BROKER_BIN=""
+}
+
+# k47_log_mark remembers how many lines each broker log holds, the stack's and this run's own
+# brokers', and k47_log_since writes every line each of them gained since: one run's lines, read
+# from logs both stack brokers write to.
+k47_log_mark() {
+	K47_LOG_MARK=""
+	local f
+	for f in "$AIRLOCK_DIR"/broker*.log "$WORK_DIR"/broker-*.log; do
+		[ -f "$f" ] && K47_LOG_MARK+="$f $(wc -l <"$f")"$'\n'
+	done
+}
+k47_log_since() {
+	local f n
+	for f in "$AIRLOCK_DIR"/broker*.log "$WORK_DIR"/broker-*.log; do
+		[ -f "$f" ] || continue
+		n="$(printf '%s' "$K47_LOG_MARK" | awk -v f="$f" '$1 == f { print $2 }')"
+		tail -n +"$((${n:-0} + 1))" "$f"
+	done
+}
+
+# k47_steps writes the command one agent-secrets run starts: it reads the grant's placeholder from
+# the variable named as <name>, notes whether ANTHROPIC_ADMIN_TOKEN holds it, the child's NO_PROXY,
+# and its whole environment, and makes the calls <mode> names, each with the placeholder as a
+# Bearer token, each line of its output file <step>=<status> <what the answer and curl said>.
+# all is the six calls of (a) to (d); get is (a)'s GET; messages is (c); gated is (a)'s GET once
+# the driver has made the go file, after the command has made the ready file.
+k47_steps() { # <label> <name> <all|get|messages|gated>
+	local label="$1" name="$2" mode="$3" d="$WORK_DIR/k47"
+	{
+		cat <<EOF
+set -u
+P="\${$name:-}"
+out="$d/out-$label"
+: >"\$out"
+say() { printf '%s\n' "\$1" >>"\$out"; }
+say "admin_token=\$(if [ -z "\${ANTHROPIC_ADMIN_TOKEN:-}" ]; then echo unset; elif [ "\$ANTHROPIC_ADMIN_TOKEN" = "\$P" ]; then echo placeholder; else echo other; fi)"
+say "placeholder=\$(case "\$P" in agent-secrets-placeholder-*) echo yes ;; *) echo no ;; esac)"
+say "no_proxy=\${NO_PROXY:-}"
+env >"$d/env-$label.txt"
+call() {
+	local code
+	code="\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS --max-time 60 --resolve api.anthropic.com:443:$AIRLOCK_ANTHROPIC_ADDRESS -o "$d/body-$label-\$1" -w '%{http_code}' -X "\$2" -H @- -H 'Content-Type: application/json' \${4:+--data "\$4"} "$AIRLOCK_ANTHROPIC_URL\$3" 2>"$d/err-$label-\$1")"
+	say "\$1=\$code \$(cat "$d/body-$label-\$1" "$d/err-$label-\$1" 2>/dev/null | tr '\n' ' ' | cut -c1-240)"
+}
+EOF
+		case "$mode" in
+		all)
+			printf '%s\n' "call get GET /v1/organizations/workspaces" \
+				"call post POST /v1/organizations/workspaces '{\"name\":\"k47\"}'" \
+				"call delete DELETE /v1/organizations/workspaces/w1" \
+				"call token POST /v1/oauth/token '{\"grant_type\":\"k47\"}'" \
+				"call messages POST /v1/messages '{\"model\":\"k47\"}'" \
+				"call put PUT /v1/organizations/workspaces/w1 '{\"name\":\"k47\"}'"
+			;;
+		get) printf '%s\n' "call get GET /v1/organizations/workspaces" ;;
+		messages) printf '%s\n' "call messages POST /v1/messages '{\"model\":\"k47\"}'" ;;
+		gated)
+			printf '%s\n' ": >\"$d/ready-$label\"" \
+				"for i in \$(seq 1 300); do [ -e \"$d/go-$label\" ] && break; sleep 1; done" \
+				"call get GET /v1/organizations/workspaces"
+			;;
+		esac
+	} >"$d/steps-$label.sh"
+}
+
+# k47_run runs one agent-secrets run of <name> with <ttl> and a reason naming k47, its command
+# k47_steps', its stderr where approve_watch reads the page of a request that waits for a person,
+# and reads the command's output into K47OUT.
+declare -A K47OUT
+k47_run() { # <label> <name> <ttl> <what the run does>
+	local d="$WORK_DIR/k47" key value
+	agent-secrets "$2" --ttl "$3" --wait 5m --reason "airlock check k47: $4" -- bash "$d/steps-$1.sh" >>"$d/runs.log" 2>>"$d/cli.err"
+	K47_EXIT=$?
+	K47OUT=()
+	while IFS='=' read -r key value; do [ -n "$key" ] && K47OUT["$key"]="$value"; done <"$d/out-$1" 2>/dev/null
+	sleep 1
+}
+
+# k47_code is the status of one call of K47OUT, empty for a call the run did not make. The script
+# runs under set -u, so a missing key reads as empty rather than ending the run.
+k47_code() {
+	local line="${K47OUT[$1]:-}"
+	printf '%s' "${line%% *}"
+}
+
+check_k47() {
+	expect "the anthropic kind binds api.anthropic.com alone, names the header Authorization, allows GET, POST and DELETE under /v1/organizations/, takes the way mint, names the variable ANTHROPIC_ADMIN_TOKEN, and has a max_grant of 1 hour"
+	expect "for each of the two secrets, the three requests of (a) reach the stand-in API with the exchange's token in Authorization and no placeholder"
+	expect "for each of the two secrets, (b), (c) and (d) are refused 403 with an error that names the rule, with no record at the stand-in API; secret K has no profile, so its refusals come from the kind's allow alone"
+	expect "the identity reader records each secret's bound account and the audience https://api.anthropic.com"
+	expect "the exchange records one exchange for each secret's three allowed requests, with that reader's token as its assertion, and with the organization_id, federation_rule_id, service_account_id and workspace_id of that secret's stored value"
+	expect "the command's environment holds the placeholder in ANTHROPIC_ADMIN_TOKEN (the variables rule, deferred to the slice that builds it), and neither the environment nor the release answer holds a string that starts with sk-ant-oat01-"
+	expect "the call from the parent whose NO_PROXY holds api.anthropic.com reaches the proxy, and that parent's own NO_PROXY is unchanged"
+	expect "the request after the exchange answers an expires_in of 3601 is refused, and the stand-in API records nothing for it"
+	expect "the broker logs one line for each request, allowed or refused with its reason, and each allowed line names the way mint; each mint line holds the SHA-256 of the token and not the token"
+	expect "the rules test refuses the copy whose anthropic kind allows GET under /v1/organizations/ alone, and names each profile row its kind's allow does not hold, POST and DELETE under /v1/organizations/"
+	expect "the negative controls: a build whose proxy reads a profile's allow and not its kind's lets K's POST /v1/messages reach the stand-in API with the exchange's token; a build whose minter takes any lifetime lets the request after the 3601 answer reach it; a parent run with a grant of another kind keeps the NO_PROXY entry in the child, and the child's call does not reach the proxy; and the search for sk-ant-oat01- over the stand-in API's record of (a) finds the token"
+
+	# One broker, not the stack's two, for the reason k5 gives: each pod mints and holds its own
+	# token for a grant, and the front gives each connection whichever pod it pleases, so with two
+	# the three allowed requests of one secret carry one token or two by where the front sent
+	# them. "One exchange serves the three allowed requests" is read on the pod that served them,
+	# and neither the check's words nor its controls name a second process.
+	start_stack --one-broker
+	stack_facts
+	local d="$WORK_DIR/k47"
+	mkdir -p "$d"
+	: >"$d/cli.err"
+	: >"$d/runs.log"
+	approve_watch "$d/cli.err" &
+	HELPER_PIDS+=($!)
+
+	# --- The kind, as the head's profiles file declares it and as the broker reads it. ---
+	local kind
+	kind="$(k47_kind "$AIRLOCK_PROFILES_FILE")"
+	observe "the anthropic kind of the head's profiles file: ${kind:-none}"
+	observe "the broker's own reading of it (envoy-broker profiles check): $("$BROKER_BIN" profiles check "$AIRLOCK_PROFILES_FILE" 2>&1 | grep '^kind "anthropic"' | tr '\n' ';')"
+	judge "$([ -n "$kind" ] && [ "$kind" = "$K47_KIND_WANT" ] && echo 0 || echo 1)" \
+		"the kind binds api.anthropic.com alone, names the header Authorization, allows GET, POST and DELETE under /v1/organizations/, takes the way mint, names the variable ANTHROPIC_ADMIN_TOKEN, and has a max_grant of 1 hour" \
+		"it reads '${kind:-no anthropic kind}'"
+
+	# --- (a) to (d), once for each secret. ---
+	local label name account value svac org rule ws api_mark exchange_mark lines api exchanges token env_hits release_hits
+	local n_grants="" n_api_file=""
+	for label in narrowed kind; do
+		case "$label" in
+		narrowed) name="$AIRLOCK_ANTHROPIC_NARROWED_SECRET" account="$AIRLOCK_ANTHROPIC_NARROWED_ACCOUNT" ;;
+		kind) name="$AIRLOCK_ANTHROPIC_KIND_SECRET" account="$AIRLOCK_ANTHROPIC_KIND_ACCOUNT" ;;
+		esac
+		value="$(stored_value "${STACK_SECRETS_PREFIX}airlock-anthropic-$label")"
+		svac="$(printf '%s' "$value" | jq -r .service_account_id)"
+		org="$(printf '%s' "$value" | jq -r .organization_id)"
+		rule="$(printf '%s' "$value" | jq -r .federation_rule_id)"
+		ws="$(printf '%s' "$value" | jq -r .workspace_id)"
+		api_mark="$(records_count anthropic)"
+		exchange_mark="$(records_count anthropic-token)"
+		k47_log_mark
+		k47_steps "$label" "$name" all
+		k47_run "$label" "$name" 1h "secret $name sends the Admin API's three allowed requests and three it refuses"
+		k47_log_since >"$d/log-$label.jsonl"
+		records anthropic | jq --argjson n "$api_mark" '.[$n:]' >"$d/api-$label.json"
+		records anthropic-token | jq --argjson n "$exchange_mark" '.[$n:]' >"$d/exchange-$label.json"
+		curl -sS "$AIRLOCK_ANTHROPIC_TOKENS_URL" >"$d/tokens.json"
+		curl -sS "$AIRLOCK_IAM_TOKENS_URL" >"$d/identities.json"
+		lines="$(k47_lines "$name" <"$d/log-$label.jsonl")"
+		api="$(k47_api "$d/api-$label.json" "$d/tokens.json" "$svac")"
+		exchanges="$(k47_exchanges "$d/exchange-$label.json" "$d/identities.json" "$account" "$svac" "$org" "$rule" "$ws")"
+		token="$(jq -r '[.[] | (.header.Authorization // [])[0] // "" | ltrimstr("Bearer ")][0] // ""' "$d/api-$label.json")"
+		release_approved "$name" 1h "airlock check k47: read the release answer of secret $name" >/dev/null 2>&1
+		printf '%s' "$RELEASE_JSON" >"$d/release-$label.json"
+		env_hits="$(k47_hits "$d/env-$label.txt")"
+		release_hits="$(k47_hits "$d/release-$label.json")"
+		[ "$label" = narrowed ] && n_grants="$(k47_field "$lines" grants)" && n_api_file="$d/api-$label.json"
+
+		observe "$name: agent-secrets exited $K47_EXIT; the placeholder variable held a placeholder: ${K47OUT[placeholder]:-unread}; get ${K47OUT[get]:-}; post ${K47OUT[post]:-}; delete ${K47OUT[delete]:-}; token ${K47OUT[token]:-}; messages ${K47OUT[messages]:-}; put ${K47OUT[put]:-}"
+		observe "$name: the Admin API stand's records of this run: $api; the token it got is $(shape "$token") (compared by SHA-256 and length)"
+		observe "$name: the broker's lines for it: $lines"
+		observe "$name: the exchange's records: $exchanges"
+		observe "$name: ANTHROPIC_ADMIN_TOKEN in the command's environment: ${K47OUT[admin_token]:-unread}; sk-ant-oat01- in the environment: $env_hits; in the release answer: $release_hits"
+
+		judge "$([ "$(k47_code get)" = 200 ] && [ "$(k47_code post)" = 200 ] && [ "$(k47_code delete)" = 200 ] && [ "$(k47_field "$api" allowed)" = 3 ] && [ "$(k47_field "$api" token_ok)" = 3 ] && [ "$(k47_field "$api" placeholders)" = 0 ] && echo 0 || echo 1)" \
+			"$name: the three requests of (a) reach the stand-in API with the exchange's token in Authorization and no placeholder" \
+			"statuses $(k47_code get) $(k47_code post) $(k47_code delete); the stand recorded $(k47_field "$api" allowed) of them ($(k47_field "$api" allowed_methods)), $(k47_field "$api" token_ok) carrying a token the exchange answered for $svac, and $(k47_field "$api" placeholders) records holding a placeholder"
+		local rule_words="not allowed by"
+		[ "$label" = kind ] && rule_words="not allowed by rule"
+		judge "$([ "$(k47_code token)" = 403 ] && [ "$(k47_code messages)" = 403 ] && [ "$(k47_code put)" = 403 ] && contains "$rule_words" "${K47OUT[token]:-}" && contains "$rule_words" "${K47OUT[messages]:-}" && contains "$rule_words" "${K47OUT[put]:-}" && [ "$(k47_field "$api" refused_reached)" = 0 ] && echo 0 || echo 1)" \
+			"$name: (b), (c) and (d) are refused 403 with an error that names the rule, with no record at the stand-in API$([ "$label" = kind ] && echo "; with no profile, the kind's allow refuses them")" \
+			"token ${K47OUT[token]:-}; messages ${K47OUT[messages]:-}; put ${K47OUT[put]:-}; the stand recorded $(k47_field "$api" refused_reached) of them"
+		judge "$([ "$(k47_field "$exchanges" identity_tokens)" -ge 1 ] 2>/dev/null && [ "$(k47_field "$exchanges" other_audiences)" = 0 ] && echo 0 || echo 1)" \
+			"$name: the identity reader records its bound account and the audience https://api.anthropic.com" \
+			"the iam stand minted $(k47_field "$exchanges" identity_tokens) identity token(s) of $account for https://api.anthropic.com and $(k47_field "$exchanges" other_audiences) for any other audience"
+		judge "$([ "$(k47_field "$exchanges" exchanges)" -ge 1 ] 2>/dev/null && [ "$(k47_field "$exchanges" matching)" = "$(k47_field "$exchanges" exchanges)" ] && [ "$(k47_field "$api" distinct)" = 1 ] && [ "$(k47_field "$api" token_ok)" = 3 ] && echo 0 || echo 1)" \
+			"$name: one exchange serves its three allowed requests, with the reader's token as its assertion and the ids of its stored value" \
+			"the three requests carried $(k47_field "$api" distinct) distinct token(s), one the exchange answered for $svac; the exchange was asked $(k47_field "$exchanges" exchanges) time(s) for $svac in this run (the session's release mints once to learn its slots, the proxy once for its calls), $(k47_field "$exchanges" matching) of them with the reader's token for $account and organization $org, rule $rule, workspace $ws"
+		deferred "$name: the command's environment holds the placeholder in ANTHROPIC_ADMIN_TOKEN" "the variables slice (s-vars, SC2)" \
+			"ANTHROPIC_ADMIN_TOKEN read '${K47OUT[admin_token]:-unread}' against the placeholder in $name"
+		judge "$([ "$(k47_field "$env_hits" hits)" = 0 ] && [ "$(k47_field "$env_hits" bytes)" -gt 0 ] 2>/dev/null && [ "$(k47_field "$release_hits" hits)" = 0 ] && [ "$(k47_field "$release_hits" bytes)" -gt 0 ] 2>/dev/null && echo 0 || echo 1)" \
+			"$name: neither the command's environment nor the release answer holds a string that starts with sk-ant-oat01-" \
+			"environment $env_hits; release answer $release_hits"
+		judge "$([ "$(k47_field "$lines" lines)" = 6 ] && [ "$(k47_field "$lines" allowed)" = 3 ] && [ "$(k47_field "$lines" allowed_mint)" = 3 ] && [ "$(k47_field "$lines" refused)" = 3 ] && [ "$(k47_field "$lines" refused_rule)" = 3 ] && echo 0 || echo 1)" \
+			"$name: the broker logs one line for each of the six requests, allowed or refused with its reason, and each allowed line names the way mint" \
+			"$(k47_field "$lines" lines) lines, $(k47_field "$lines" allowed) allowed ($(k47_field "$lines" allowed_mint) naming mint), $(k47_field "$lines" refused) refused ($(k47_field "$lines" refused_rule) naming an allow rule: $(k47_field "$lines" refused_methods))"
+		local hash
+		hash="$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)"
+		judge "$([ -n "$token" ] && contains "$hash" "$(k47_field "$lines" mint_hashes)" && [ "$(k47_field "$lines" mints)" = "$(k47_field "$lines" mints_hashed)" ] && echo 0 || echo 1)" \
+			"$name: a mint line holds the SHA-256 of the token the proxy swapped in" \
+			"$(k47_field "$lines" mints) mint line(s), $(k47_field "$lines" mints_hashed) with a SHA-256; one is the token's own hash: $(contains "$hash" "$(k47_field "$lines" mint_hashes)" && echo yes || echo no)"
+	done
+	local log_hits
+	log_hits="$(k47_hits "$AIRLOCK_DIR"/broker*.log)"
+	observe "sk-ant-oat01- in every line the stack's brokers logged: $log_hits"
+	judge "$([ "$(k47_field "$log_hits" hits)" = 0 ] && [ "$(k47_field "$log_hits" bytes)" -gt 0 ] 2>/dev/null && echo 0 || echo 1)" \
+		"no mint line, and no other line, holds a token: the brokers' logs hold no sk-ant-oat01-" "$log_hits"
+	local api_hits
+	api_hits="$(k47_hits "$n_api_file")"
+	control "the same search over the stand-in API's record of N's (a): $api_hits"
+	judge "$([ "$(k47_field "$api_hits" hits)" -ge 1 ] 2>/dev/null && echo 0 || echo 1)" \
+		"negative control: the search for sk-ant-oat01- over the stand-in API's record of (a) finds the token" "$api_hits"
+
+	# --- The parent whose NO_PROXY holds api.anthropic.com, with N's grant (handed back). ---
+	local before_parent after_parent parent_lines parent_api
+	before_parent="localhost,api.anthropic.com"
+	api_mark="$(records_count anthropic)"
+	k47_log_mark
+	k47_steps parent "$AIRLOCK_ANTHROPIC_NARROWED_SECRET" get
+	after_parent="$(
+		export NO_PROXY="$before_parent" no_proxy="$before_parent"
+		k47_run parent "$AIRLOCK_ANTHROPIC_NARROWED_SECRET" 1h "a parent whose NO_PROXY names api.anthropic.com sends (a)'s GET" >/dev/null 2>&1
+		printf '%s|%s' "$NO_PROXY" "$no_proxy"
+	)"
+	k47_read_out parent
+	parent_lines="$(k47_log_since | k47_lines "$AIRLOCK_ANTHROPIC_NARROWED_SECRET")"
+	records anthropic | jq --argjson n "$api_mark" '.[$n:]' >"$d/api-parent.json"
+	parent_api="$(k47_api "$d/api-parent.json" "$d/tokens.json" "$(stored_value "${STACK_SECRETS_PREFIX}airlock-anthropic-narrowed" | jq -r .service_account_id)")"
+	observe "a parent with NO_PROXY=$before_parent: the child's NO_PROXY was '${K47OUT[no_proxy]:-}', its GET ${K47OUT[get]:-}; the broker's lines: $parent_lines; the stand: $parent_api; the parent's NO_PROXY and no_proxy after the run: $after_parent"
+	judge "$([ "$(k47_code get)" = 200 ] && [ "$(k47_field "$parent_lines" allowed)" = 1 ] && [ "$(k47_field "$parent_api" token_ok)" = 1 ] && [ "$after_parent" = "$before_parent|$before_parent" ] && echo 0 || echo 1)" \
+		"the call from the parent whose NO_PROXY holds api.anthropic.com reaches the proxy, and that parent's own NO_PROXY is unchanged" \
+		"the GET answered $(k47_code get), the broker carried $(k47_field "$parent_lines" allowed) call of it with the minted token ($(k47_field "$parent_api" token_ok) at the stand), and the parent's NO_PROXY and no_proxy read '$after_parent' after it"
+
+	# --- Its control: the same parent with a grant of another kind keeps the entry. ---
+	local other_lines other_api
+	api_mark="$(records_count anthropic)"
+	k47_log_mark
+	k47_steps other AIRLOCK_DEMO_TOKEN get
+	(
+		export NO_PROXY="$before_parent" no_proxy="$before_parent"
+		k47_run other AIRLOCK_DEMO_TOKEN 30m "a parent whose NO_PROXY names api.anthropic.com, with a grant of another kind, calls it" >/dev/null 2>&1
+	)
+	k47_read_out other
+	other_lines="$(k47_log_since | jq -Rc 'fromjson? | select(.host == "api.anthropic.com")' | wc -l | tr -d ' ')"
+	records anthropic | jq --argjson n "$api_mark" '.[$n:]' >"$d/api-other.json"
+	other_api="$(k47_api "$d/api-other.json" "$d/tokens.json" none)"
+	control "a parent with NO_PROXY=$before_parent and a grant of AIRLOCK_DEMO_TOKEN (kind stest): the child's NO_PROXY was '${K47OUT[no_proxy]:-}', its GET ${K47OUT[get]:-}; the brokers wrote $other_lines line(s) for api.anthropic.com; the stand, which the call reaches directly at its --resolve address when it leaves the proxy out: $other_api"
+	judge "$(case ",${K47OUT[no_proxy]:-}," in *,api.anthropic.com,*) [ "$other_lines" = 0 ] && echo 0 || echo 1 ;; *) echo 1 ;; esac)" \
+		"negative control: with a grant of another kind the child keeps the NO_PROXY entry, and its call to api.anthropic.com does not reach the proxy" \
+		"the child's NO_PROXY read '${K47OUT[no_proxy]:-}' and the brokers logged $other_lines line(s) for the host"
+
+	# --- The 3601 answer: a new grant of N (another lifetime, so no live grant is handed back),
+	# released while the exchange answers 3600, and its command's first call made only once the
+	# exchange answers 3601, so the proxy's own mint is the one that meets it. ---
+	local pid i tokens_before fresh_lines fresh_api fresh_tokens n_svac
+	n_svac="$(stored_value "${STACK_SECRETS_PREFIX}airlock-anthropic-narrowed" | jq -r .service_account_id)"
+	api_mark="$(records_count anthropic)"
+	k47_log_mark
+	k47_steps fresh "$AIRLOCK_ANTHROPIC_NARROWED_SECRET" gated
+	rm -f "$d/ready-fresh" "$d/go-fresh"
+	k47_run fresh "$AIRLOCK_ANTHROPIC_NARROWED_SECRET" 50m "a new grant whose first call meets an exchange that answers expires_in 3601" &
+	pid=$!
+	for ((i = 0; i < 600; i++)); do
+		[ -e "$d/ready-fresh" ] && break
+		kill -0 "$pid" 2>/dev/null || break
+		sleep 0.5
+	done
+	tokens_before="$(curl -sS "$AIRLOCK_ANTHROPIC_TOKENS_URL" | jq length)"
+	curl -sS -X POST -H 'Content-Type: application/json' --data '{"expires_in": 3601}' "$AIRLOCK_ANTHROPIC_ANSWER_URL" >"$d/answer-3601.json"
+	: >"$d/go-fresh"
+	wait "$pid"
+	k47_read_out fresh
+	curl -sS -X POST -H 'Content-Type: application/json' --data '{"expires_in": 3600}' "$AIRLOCK_ANTHROPIC_ANSWER_URL" >/dev/null
+	fresh_lines="$(k47_log_since | k47_lines "$AIRLOCK_ANTHROPIC_NARROWED_SECRET")"
+	records anthropic | jq --argjson n "$api_mark" '.[$n:]' >"$d/api-fresh.json"
+	fresh_api="$(k47_api "$d/api-fresh.json" "$d/tokens.json" "$n_svac")"
+	fresh_tokens="$(curl -sS "$AIRLOCK_ANTHROPIC_TOKENS_URL" | jq --argjson n "${tokens_before:-0}" --arg s "$n_svac" '[.[$n:][] | select(.service_account_id == $s and .expires_in == 3601)] | length')"
+	observe "after the exchange answered $(jq -c . "$d/answer-3601.json" 2>/dev/null): the new grant's GET ${K47OUT[get]:-not made}; the exchange answered $fresh_tokens token(s) of 3601 seconds for $n_svac after the switch; the broker's lines: $fresh_lines (earlier grants of N: $n_grants); the stand: $fresh_api"
+	judge "$([ -e "$d/ready-fresh" ] && [ "$fresh_tokens" -ge 1 ] 2>/dev/null && [ "$(k47_code get)" = 403 ] && [ "$(k47_field "$fresh_api" records)" = 0 ] && echo 0 || echo 1)" \
+		"the request after the exchange answers an expires_in of 3601 is refused, and the stand-in API records nothing for it" \
+		"the command reached its call: $([ -e "$d/ready-fresh" ] && echo yes || echo no); a fresh mint met the 3601 answer ($fresh_tokens token(s)); the GET answered ${K47OUT[get]:-nothing}; the stand recorded $(k47_field "$fresh_api" records) request(s)"
+
+	# --- The rules test on a copy whose anthropic kind allows GET alone. ---
+	local copy_out copy_status head_status
+	jq '(.kinds[] | select(.name == "anthropic") | .allow) = [{"method": "GET", "pathPrefix": "/v1/organizations/"}]' "$AIRLOCK_PROFILES_FILE" >"$d/get-only.json"
+	k47_secrets_json "$AIRLOCK_FAKE_SECRETS_FILE" >"$d/secrets.json"
+	copy_out="$("$BROKER_BIN" profiles check "$d/get-only.json" --secrets-json "$d/secrets.json" 2>&1)"
+	copy_status=$?
+	"$BROKER_BIN" profiles check "$AIRLOCK_PROFILES_FILE" --secrets-json "$d/secrets.json" >"$d/head-check.txt" 2>&1
+	head_status=$?
+	observe "the rules test on the GET-only copy exited $copy_status: $(printf '%s' "$copy_out" | grep -i 'outside' | tr '\n' ' ')"
+	observe "the same test on the head's file exited $head_status"
+	judge "$([ "$copy_status" != 0 ] && [ "$head_status" = 0 ] && contains "$AIRLOCK_ANTHROPIC_NARROWED_SECRET" "$copy_out" && contains "POST /v1/organizations/" "$copy_out" && contains "DELETE /v1/organizations/" "$copy_out" && echo 0 || echo 1)" \
+		"the rules test refuses the copy, and names each profile row its kind's allow does not hold, POST and DELETE under /v1/organizations/" \
+		"the copy exited $copy_status naming $AIRLOCK_ANTHROPIC_NARROWED_SECRET's rows: $(printf '%s' "$copy_out" | grep -c 'outside') line(s); the head's file exited $head_status"
+
+	# --- The control of the kind's allow: a broker whose proxy reads a profile's allow alone. ---
+	local ctl_api
+	if k47_control_broker kind-allow; then
+		front_backends "$EXTRA_API_ADDR" "$EXTRA_PROXY_ADDR"
+		api_mark="$(records_count anthropic)"
+		k47_steps ctl-kind "$AIRLOCK_ANTHROPIC_KIND_SECRET" messages
+		k47_run ctl-kind "$AIRLOCK_ANTHROPIC_KIND_SECRET" 1h "secret K's POST /v1/messages at a broker that reads a profile's allow alone"
+		front_backends_stack
+		records anthropic | jq --argjson n "$api_mark" '.[$n:]' >"$d/api-ctl-kind.json"
+		curl -sS "$AIRLOCK_ANTHROPIC_TOKENS_URL" >"$d/tokens.json"
+		ctl_api="$(jq --slurpfile toks "$d/tokens.json" '[.[] | select(.path == "/v1/messages") | ((.header.Authorization // [])[0] // "" | ltrimstr("Bearer ")) as $a | select($toks[0] | map(.access_token) | index($a) != null)] | length' "$d/api-ctl-kind.json")"
+		control "a broker built from a copy of this module whose decision skips the kind's allow (proxyrules check, 'not allowed by rule' taken out): K's POST /v1/messages answered ${K47OUT[messages]:-nothing}, and the stand recorded $ctl_api POST /v1/messages carrying a token the exchange answered"
+		judge "$([ "$(k47_code messages)" = 200 ] && [ "$ctl_api" -ge 1 ] 2>/dev/null && echo 0 || echo 1)" \
+			"negative control: with the kind's allow out of the decision, K's POST /v1/messages reaches the stand-in API with the exchange's token" \
+			"it answered $(k47_code messages) and the stand recorded $ctl_api such request(s)"
+	else
+		control "UNKNOWN: $K47_CONTROL_WHY"
+		fail "negative control: with the kind's allow out of the decision, K's POST /v1/messages reaches the stand-in API — UNKNOWN, $K47_CONTROL_WHY"
+	fi
+
+	# --- The control of the lifetime bound: a broker whose minter takes any lifetime. ---
+	local life_api
+	if k47_control_broker lifetime; then
+		front_backends "$EXTRA_API_ADDR" "$EXTRA_PROXY_ADDR"
+		curl -sS -X POST -H 'Content-Type: application/json' --data '{"expires_in": 3601}' "$AIRLOCK_ANTHROPIC_ANSWER_URL" >/dev/null
+		tokens_before="$(curl -sS "$AIRLOCK_ANTHROPIC_TOKENS_URL" | jq length)"
+		api_mark="$(records_count anthropic)"
+		k47_steps ctl-life "$AIRLOCK_ANTHROPIC_NARROWED_SECRET" get
+		k47_run ctl-life "$AIRLOCK_ANTHROPIC_NARROWED_SECRET" 50m "the new grant's GET after a 3601 answer at a broker whose minter takes any lifetime"
+		front_backends_stack
+		curl -sS -X POST -H 'Content-Type: application/json' --data '{"expires_in": 3600}' "$AIRLOCK_ANTHROPIC_ANSWER_URL" >/dev/null
+		records anthropic | jq --argjson n "$api_mark" '.[$n:]' >"$d/api-ctl-life.json"
+		curl -sS "$AIRLOCK_ANTHROPIC_TOKENS_URL" >"$d/tokens.json"
+		life_api="$(jq --slurpfile toks "$d/tokens.json" --argjson n "${tokens_before:-0}" '[.[] | select(.path == "/v1/organizations/workspaces") | ((.header.Authorization // [])[0] // "" | ltrimstr("Bearer ")) as $a | select($toks[0][$n:] | map(select(.expires_in == 3601) | .access_token) | index($a) != null)] | length' "$d/api-ctl-life.json")"
+		control "a broker built from a copy of this module whose anthropic-federation minter takes any lifetime: the GET after the 3601 answer answered ${K47OUT[get]:-nothing}, and the stand recorded $life_api GET carrying a 3601-second token"
+		judge "$([ "$(k47_code get)" = 200 ] && [ "$life_api" -ge 1 ] 2>/dev/null && echo 0 || echo 1)" \
+			"negative control: with the minter taking any lifetime, the request after the 3601 answer reaches the stand-in API" \
+			"it answered $(k47_code get) and the stand recorded $life_api such request(s)"
+	else
+		control "UNKNOWN: $K47_CONTROL_WHY"
+		fail "negative control: with the minter taking any lifetime, the request after the 3601 answer reaches the stand-in API — UNKNOWN, $K47_CONTROL_WHY"
+	fi
+
+	stop_stack
+}
+
+# k47_read_out reads one run's output file into K47OUT, for a run whose k47_run ran in a subshell
+# or in the background, where the K47OUT it set is not this shell's.
+k47_read_out() { # <label>
+	local key value
+	K47OUT=()
+	while IFS='=' read -r key value; do [ -n "$key" ] && K47OUT["$key"]="$value"; done <"$WORK_DIR/k47/out-$1" 2>/dev/null
 }
 
 ###############################################################################################
@@ -2239,9 +3185,10 @@ k4) check_k4 ;;
 k5) check_k5 ;;
 k6) check_k6 ;;
 k7) check_k7 ;;
-k8a) check_k8a ;;
+k8) check_k8 ;;
 k9) check_k9 ;;
 k15) check_k15 ;;
+k47) check_k47 ;;
 esac
 
 report

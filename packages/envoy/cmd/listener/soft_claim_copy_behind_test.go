@@ -19,6 +19,7 @@ import (
 // is gone, and the claim took a live holder's role. Control: a holder whose session the bucket
 // has no record of gives the role up through the same copy.
 func TestASoftClaimLeavesALiveHolderItsRoleWhileTheSessionsCopyIsBehind(t *testing.T) {
+	t.Parallel()
 	const (
 		holder           = "ses_soft_copy_behind_holder"
 		claimantID       = "ses_soft_copy_behind_claimant"

@@ -19,7 +19,7 @@ import (
 // removeArtifact removes a document of an issue that is still untouched: one made by typing a
 // title and never written in. It answers 204 and no body.
 //
-// It needs the person scope (routeScopes) and takes two locks: the owner's lock (store.LockOwner,
+// It needs the person scope (its route's OAuthScopes) and takes two locks: the owner's lock (store.LockOwner,
 // which beginArtifactWrite takes), as the title correction does (renameArtifact), so a correction
 // and a removal of one owner cannot each miss the other, and then the document's room
 // (docs.LockDocumentRoom), which is the lock a durable write of the document takes. In that

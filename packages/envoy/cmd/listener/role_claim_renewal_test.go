@@ -78,7 +78,7 @@ func (r *roleClaimRenewalRig) seed(role string, claim store.RoleClaim) store.Rol
 	if _, err := r.registry.Upsert(store.Interest{SessionID: claim.HolderSessionID, MachineID: "test-machine"}, []string{contracts.RoleTopicPrefix + role}); err != nil {
 		r.t.Fatalf("register %s's interest in %s's lane: %v", claim.HolderSessionID, role, err)
 	}
-	waitFor(r.t, 5*time.Second, fmt.Sprintf("%s's claim to reach the role claim view", role), func() bool {
+	waitFor(r.t, fmt.Sprintf("%s's claim to reach the role claim view", role), func() bool {
 		held, err := r.registry.RolesHeldBy(claim.HolderSessionID)
 		return err == nil && slices.Contains(held, role)
 	})
@@ -399,6 +399,8 @@ const reduceAllocsPerTopic = 3
 // parallel: it measures nothing and only waits. The run alone is not, because
 // testing.AllocsPerRun refuses to measure in a parallel test.
 func TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair(t *testing.T) {
+	// Not parallel: its run alone counts allocations with testing.AllocsPerRun, which panics
+	// during a parallel test; only the run that starts it (alonetest.Run) calls t.Parallel.
 	if !alonetest.Child(reduceAllocsChildEnv) {
 		t.Parallel()
 		alonetest.Run(t, reduceAllocsChildEnv, 2)

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -110,58 +111,85 @@ func TestASendsWindowRunsOnTheClientsClock(t *testing.T) {
 // context.DeadlineExceeded and a net.Error whose Timeout is true, as an end of http.Client.Timeout
 // was; a call the caller's own deadline ended first is not ErrCallWindow, so a caller tells its
 // own bound's end from the window's. A send carries the chain (errors.Is); a read carries its cause
-// as text, which names ErrCallWindow the same way.
+// as text, which names ErrCallWindow the same way. Each holds under a listener URL carrying a
+// made-up token as its user name or in its query too, and no call's error holds any 10-byte run of
+// the token, though net/http's error under it quotes the request URL (transportCause).
 func TestACallTheWindowEndedIsErrCallWindowAndOneItsCallerEndedIsNot(t *testing.T) {
-	reached, held := make(chan struct{}, 4), make(chan struct{})
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reached <- struct{}{}
-		select {
-		case <-held:
-		case <-r.Context().Done():
-		}
-	}))
-	defer func() {
-		close(held)
-		listener.Close()
-	}()
-	start := time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC)
-	fake := clocktest.New(start)
-	client := New(listener.URL, WithClock(fake))
-	send := func(ctx context.Context) error {
-		_, err := client.Send(ctx, SendInput{TargetSession: "s1", Message: "held", IdempotencyKey: "held:steer"})
-		return err
-	}
-
-	ended := make(chan error, 2)
-	go func() { ended <- send(context.Background()) }()
-	testwait.Receive(t, "the send to reach the listener", reached)
-	go func() {
-		_, err := client.Sessions(context.Background())
-		ended <- err
-	}()
-	testwait.Receive(t, "the read to reach the listener", reached)
-	fake.Set(start.Add(CallWindow))
-	for range 2 {
-		err := testwait.Receive(t, "a call to end once its clock reached its window", ended)
-		var timeout net.Error
-		if strings.Contains(err.Error(), "/v1/sessions") {
-			if !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) || !strings.Contains(err.Error(), ErrCallWindow.Error()) {
-				t.Fatalf("a read the window ended = %v, want it to name %v and %v", err, context.DeadlineExceeded, ErrCallWindow)
+	const token = "madeUpEnvoyToken0123"
+	for _, form := range []struct {
+		name string
+		url  func(host string) string
+	}{
+		{"a plain listener URL", func(host string) string { return "http://" + host }},
+		{"a token as the user name", func(host string) string { return "http://" + token + "@" + host }},
+		{"a token in the query", func(host string) string { return "http://" + host + "?token=" + token }},
+	} {
+		// Each form's own listener, so a call of one form that reached it is no arrival of the next's.
+		reached, held := make(chan struct{}, 4), make(chan struct{})
+		listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			reached <- struct{}{}
+			select {
+			case <-held:
+			case <-r.Context().Done():
 			}
-			continue
+		}))
+		t.Cleanup(func() {
+			close(held)
+			listener.Close()
+		})
+		printsNoToken := func(what string, err error) {
+			t.Helper()
+			for at := 0; err != nil && at+10 <= len(token); at++ {
+				if strings.Contains(err.Error(), token[at:at+10]) {
+					t.Fatalf("%s, %s = %q, which holds %q of the token", form.name, what, err, token[at:at+10])
+				}
+			}
 		}
-		if !errors.Is(err, ErrCallWindow) || !errors.Is(err, context.DeadlineExceeded) || !errors.As(err, &timeout) || !timeout.Timeout() {
-			t.Fatalf("a send the window ended = %v, want ErrCallWindow, context.DeadlineExceeded and a net.Error that is a timeout", err)
+		start := time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC)
+		fake := clocktest.New(start)
+		client := New(form.url(strings.TrimPrefix(listener.URL, "http://")), WithClock(fake))
+		send := func(ctx context.Context) error {
+			_, err := client.Send(ctx, SendInput{TargetSession: "s1", Message: "held", IdempotencyKey: "held:steer"})
+			return err
 		}
-	}
 
-	caller, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if err := send(caller); !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrCallWindow) {
-		t.Fatalf("a send its caller's own deadline ended = %v, want context.DeadlineExceeded and not ErrCallWindow", err)
-	}
-	if _, err := client.Sessions(caller); err == nil || strings.Contains(err.Error(), ErrCallWindow.Error()) {
-		t.Fatalf("a read its caller's own deadline ended = %v, want a failure that does not name %v", err, ErrCallWindow)
+		ended := make(chan error, 2)
+		go func() { ended <- send(context.Background()) }()
+		testwait.Receive(t, "the send to reach the listener", reached)
+		go func() {
+			_, err := client.Sessions(context.Background())
+			ended <- err
+		}()
+		testwait.Receive(t, "the read to reach the listener", reached)
+		fake.Set(start.Add(CallWindow))
+		for range 2 {
+			err := testwait.Receive(t, "a call to end once its clock reached its window", ended)
+			printsNoToken("a call the window ended", err)
+			var timeout net.Error
+			if strings.Contains(err.Error(), "/v1/sessions") {
+				if !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) || !strings.Contains(err.Error(), ErrCallWindow.Error()) {
+					t.Fatalf("%s, a read the window ended = %v, want it to name %v and %v", form.name, err, context.DeadlineExceeded, ErrCallWindow)
+				}
+				continue
+			}
+			if !errors.Is(err, ErrCallWindow) || !errors.Is(err, context.DeadlineExceeded) || !errors.As(err, &timeout) || !timeout.Timeout() {
+				t.Fatalf("%s, a send the window ended = %v, want ErrCallWindow, context.DeadlineExceeded and a net.Error that is a timeout", form.name, err)
+			}
+		}
+
+		caller, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		err := send(caller)
+		printsNoToken("a send its caller's own deadline ended", err)
+		if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrCallWindow) {
+			cancel()
+			t.Fatalf("%s, a send its caller's own deadline ended = %v, want context.DeadlineExceeded and not ErrCallWindow", form.name, err)
+		}
+		_, err = client.Sessions(caller)
+		cancel()
+		printsNoToken("a read its caller's own deadline ended", err)
+		if err == nil || strings.Contains(err.Error(), ErrCallWindow.Error()) {
+			t.Fatalf("%s, a read its caller's own deadline ended = %v, want a failure that does not name %v", form.name, err, ErrCallWindow)
+		}
 	}
 }
 
@@ -1088,11 +1116,62 @@ func TestRoleAndIssueAgentsReportAnyOtherAnswerAsUnavailable(t *testing.T) {
 	}
 }
 
-// Only what a listener being replaced gives - no connection, or a 502, 503 or 504 - is
-// ErrUnreachable, the failure a sender may wait out; a status the listener chose (a 401 for a token
-// it refuses, a 403, a 500) and an answer that does not decode are its answer, which asking again
-// repeats. ErrUnreachable is ErrUnavailable too, with the same text, so a caller that asks only
-// for ErrUnavailable reads a take-over exactly as before.
+// The successors of a session are the listener's list and the principal it names them for, read
+// from GET /v1/sessions/<session_id>/successors. A 5xx, a listener outage from in front of it (a
+// 408 or a 429, listenerwire.Outage), a body that does not decode and a listener that cannot be
+// reached are ErrUnavailable: who replaced the session was not read, so a proxy that timed the
+// request out or limited it reads as "ask again". Any other status is the listener's own answer
+// and is not ErrUnavailable: a listener that predates the route answers its GET 405 through the
+// session delete route, and a 403 or a 404 names no successor either.
+func TestSuccessorsReadsTheListenersListAndTellsAnUnansweredRead(t *testing.T) {
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.EscapedPath() != "/v1/sessions/ses-old/successors" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.EscapedPath())
+		}
+		_, _ = w.Write([]byte(`{"session_id":"ses-old","principal":"ada@example.com","successors":["ses-a","ses-b"]}`))
+	}))
+	defer listener.Close()
+	successors, err := New(listener.URL).Successors(context.Background(), "ses-old")
+	if err != nil || !slices.Equal(successors.Successors, []string{"ses-a", "ses-b"}) || successors.Principal != "ada@example.com" {
+		t.Fatalf("Successors = %+v, %v; want [ses-a ses-b] for ada@example.com", successors, err)
+	}
+
+	for _, tc := range []struct {
+		status      int
+		body        string
+		unavailable bool
+		reason      string
+	}{
+		{http.StatusServiceUnavailable, `{"error":"envoy: the message bus did not answer: timeout"}`, true, "did not answer"},
+		{http.StatusInternalServerError, `{"error":"envoy: broken"}`, true, "broken"},
+		{http.StatusOK, `{"successors":`, true, "decode"},
+		{http.StatusRequestTimeout, `<html>408 Request Timeout</html>`, true, "408"},
+		{http.StatusTooManyRequests, `{"error":"slow down"}`, true, "slow down"},
+		{http.StatusMethodNotAllowed, `{"error":"method not allowed"}`, false, "405"},
+		{http.StatusForbidden, `{"error":"forbidden"}`, false, "it names no successor"},
+		{http.StatusNotFound, ``, false, "it names no successor"},
+	} {
+		answering := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		successors, err := New(answering.URL).Successors(context.Background(), "ses-old")
+		answering.Close()
+		if err == nil || errors.Is(err, ErrUnavailable) != tc.unavailable || successors.Successors != nil || successors.Principal != "" || !strings.Contains(err.Error(), tc.reason) {
+			t.Fatalf("Successors on a %d %s = %+v, %v; want an error carrying %q, ErrUnavailable %t", tc.status, tc.body, successors, err, tc.reason, tc.unavailable)
+		}
+	}
+	if _, err := New("http://"+testport.Refused(t)).Successors(context.Background(), "ses-old"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Successors on an unreachable listener: %v, want ErrUnavailable", err)
+	}
+}
+
+// Only what says the listener could not answer now - no connection, or an outage status (a 408 or
+// a 429 from something in front of it, a 502, 503 or 504, any other 5xx but the listener's own 500,
+// listenerwire.FaultStatus) - is ErrUnreachable, the failure a sender may wait out; a status the
+// listener chose (a 401 for a token it refuses, a 403, its 500) and an answer that does not decode
+// are its answer, which asking again repeats. ErrUnreachable is ErrUnavailable too, with the same
+// text, so a caller that asks only for ErrUnavailable reads a take-over exactly as before.
 func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 	calls := map[string]func(*Client) error{
 		"session": func(client *Client) error {
@@ -1124,10 +1203,17 @@ func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 		{status: http.StatusServiceUnavailable, body: `{"error":"service starting"}`, unreachable: true},
 		{status: http.StatusBadGateway, body: ``, unreachable: true},
 		{status: http.StatusGatewayTimeout, body: `{"error":"upstream timed out"}`, unreachable: true},
+		{status: http.StatusRequestTimeout, body: `<html>408 Request Timeout</html>`, unreachable: true},
+		{status: http.StatusRequestTimeout, body: `{"error":"request timed out"}`, unreachable: true},
+		{status: http.StatusTooManyRequests, body: `<html>429 Too Many Requests</html>`, unreachable: true},
+		{status: http.StatusNotImplemented, body: ``, unreachable: true},
+		{status: http.StatusHTTPVersionNotSupported, body: `{"error":"HTTP version not supported"}`, unreachable: true},
+		{status: 599, body: ``, unreachable: true},
 		{status: http.StatusUnauthorized, body: `{"error":"unauthorized"}`},
 		{status: http.StatusUnauthorized, body: ``},
 		{status: http.StatusForbidden, body: `{"error":"forbidden"}`},
 		{status: http.StatusInternalServerError, body: ``},
+		{status: http.StatusInternalServerError, body: `{"error":"envoy: the claim record of role legion-planner is unreadable: …"}`},
 		{status: http.StatusOK, body: `{"session_id":`},
 	} {
 		listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1144,5 +1230,51 @@ func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 			}
 		}
 		listener.Close()
+	}
+}
+
+// A listener URL that carries a made-up token as its user name or in its query, with nothing
+// listening: no call's error holds any part of the token, though net/http's error quotes the
+// request URL with only a password masked, and each is still ErrUnavailable and ErrUnreachable.
+// Boot refuses such an ENVOY_URL; the client prints none of it all the same, since the API answers
+// a listener failure with this error's text (503 ENVOY_UNAVAILABLE, 502 ENVOY_UNSUBSCRIBE_FAILED).
+func TestNoListenerCallPrintsATokenInTheListenersURL(t *testing.T) {
+	const token = "madeUpEnvoyToken0123"
+	refused := testport.Refused(t)
+	calls := map[string]func(*Client) error{
+		"sessions": func(client *Client) error {
+			_, err := client.Sessions(context.Background())
+			return err
+		},
+		"session": func(client *Client) error {
+			_, err := client.Session(context.Background(), "s1")
+			return err
+		},
+		"interests": func(client *Client) error {
+			_, err := client.ListInterests(context.Background())
+			return err
+		},
+		"unsubscribe": func(client *Client) error {
+			_, err := client.Unsubscribe(context.Background(), "s1", []string{"notifications.issue.x"})
+			return err
+		},
+		"send": func(client *Client) error {
+			_, err := client.Send(context.Background(), SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k"})
+			return err
+		},
+	}
+	for form, listenerURL := range map[string]string{
+		"a token as the user name": "http://" + token + "@" + refused,
+		"a token in the query":     "http://" + refused + "?token=" + token,
+	} {
+		for name, call := range calls {
+			err := call(New(listenerURL))
+			if !errors.Is(err, ErrUnavailable) || !errors.Is(err, ErrUnreachable) {
+				t.Fatalf("%s, %s: err = %v, want ErrUnavailable and ErrUnreachable", form, name, err)
+			}
+			if strings.Contains(err.Error(), token[:10]) {
+				t.Errorf("%s, %s: err = %q, which holds part of the token", form, name, err)
+			}
+		}
 	}
 }

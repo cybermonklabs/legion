@@ -216,6 +216,7 @@ func seedOtherSessionsRoleClaims(t *testing.T, kv natsgo.KeyValue, count int) {
 // a sweep reading a view that had not seen them would prove nothing about a bucket that holds
 // them.
 func TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFiveThousandOtherSessionsClaims(t *testing.T) {
+	t.Parallel()
 	const topic = "notifications.team.sweep-route"
 	cases := []struct {
 		name         string
@@ -292,7 +293,7 @@ func TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFive
 
 	wantClaims := sweepRouteOtherClaims + sweepRouteClaimsHeld*len(cases)
 	viewStarted := time.Now()
-	waitFor(t, time.Minute, "the role claim view to name every claim in the bucket", func() bool {
+	waitFor(t, "the role claim view to name every claim in the bucket", func() bool {
 		held, err := registry.RolesBySession()
 		if err != nil {
 			return false
@@ -442,7 +443,7 @@ func TestADeregistrationOnARoleClaimViewThatCannotBeServedCostsOneScanAndNotARea
 
 	wantClaims := sweepRouteDegradedOtherClaims + sweepRouteClaimsHeld
 	viewStarted := time.Now()
-	waitFor(t, time.Minute, "the role claim view to name every claim in the bucket", func() bool {
+	waitFor(t, "the role claim view to name every claim in the bucket", func() bool {
 		held, err := registry.RolesBySession()
 		if err != nil {
 			return false

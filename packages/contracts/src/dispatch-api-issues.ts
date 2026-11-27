@@ -340,6 +340,16 @@ export const IssueDeployedEventPayloadSchema = z.strictObject({
 
 export type IssueDeployedEventPayload = z.output<typeof IssueDeployedEventPayloadSchema>;
 
+/** A recorded build that wakes an open issue with a stored live-check result in this repository. */
+export const DeployRecordedEventPayloadSchema = z.strictObject({
+  repo: z.string(),
+  program: z.string(),
+  commit: z.string(),
+  deployed_at: z.string(),
+  source: z.enum(["delivery_run", "route"]),
+});
+export type DeployRecordedEventPayload = z.output<typeof DeployRecordedEventPayloadSchema>;
+
 export const childStatusEventPayloadFields = {
   child_key: z.string(),
   from: z.string(),

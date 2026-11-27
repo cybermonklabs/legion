@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
@@ -29,6 +30,7 @@ import (
 // last check pass with no child seen. The read must end, refused, with the test binary's deadline
 // as the only bound on the wait, and the child must be gone with it.
 func TestAGitReadThatOutlivesItsBoundIsStoppedWithWhatItStarted(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	for _, tc := range []struct {
 		name, refused string
 		read          func(context.Context) error
@@ -40,7 +42,7 @@ func TestAGitReadThatOutlivesItsBoundIsStoppedWithWhatItStarted(t *testing.T) {
 			bin, child := t.TempDir(), filepath.Join(t.TempDir(), "child.pid")
 			const childSeconds, gitSeconds = "86397", "86396"
 			script := "#!/bin/sh\n" + recordsChild(child, childSeconds) + "\nexec sleep " + gitSeconds + "\n"
-			if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -71,6 +73,7 @@ func TestAGitReadThatOutlivesItsBoundIsStoppedWithWhatItStarted(t *testing.T) {
 // records it and exits 0 at once; the row gives WaitDelay a value of its own (procgroup.
 // WaitDelayBound), since it reads that delay's end, and the child holds the output past any delay.
 func TestAGitReadCutShortByWhatItStartedIsRefused(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable procgroup.WaitDelayBound.
 	previous := procgroup.WaitDelayBound
 	procgroup.WaitDelayBound = 100 * time.Millisecond
 	t.Cleanup(func() { procgroup.WaitDelayBound = previous })
@@ -85,7 +88,7 @@ func TestAGitReadCutShortByWhatItStartedIsRefused(t *testing.T) {
 			bin, child := t.TempDir(), filepath.Join(t.TempDir(), "child.pid")
 			const childSeconds = "86398"
 			script := "#!/bin/sh\n" + recordsChild(child, childSeconds) + "\nexit 0\n"
-			if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -134,6 +137,7 @@ func gitConfigPairsOf(t *testing.T, block []string) [][2]string {
 // scoped. A count past the pairs the environment holds reads the pairs there, and a count that is
 // no count reads none.
 func TestGhChildGitConfigKeepsOnlyTheRuntimesPairs(t *testing.T) {
+	t.Parallel()
 	runtime := sandbox.GitConfigPairs()
 	cased := slices.Clone(runtime)
 	cased[2][0] = "CREDENTIAL.https://github.com.USEHTTPPATH"
@@ -211,6 +215,7 @@ func repositoryWith(t *testing.T, settings ...[]string) string {
 // submodule recursion on, which would fetch a submodule with its own configuration; the command
 // line holds the runtime's pairs and ghForcedGitConfig alone, recursion off among them.
 func TestGhChildGitReadsNoConfigurationOfTheCallers(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
 	}
@@ -270,6 +275,7 @@ func TestGhChildGitReadsNoConfigurationOfTheCallers(t *testing.T) {
 // extraheader, a key on the command line, a global file the environment never lets git read, and
 // a directory that is no repository pass. A configuration git cannot read is refused.
 func TestGhRepoGitConfigRefusalNamesWhatHandsTheTokenOn(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
 	}
@@ -361,6 +367,7 @@ func TestGhRepoGitConfigRefusalNamesWhatHandsTheTokenOn(t *testing.T) {
 // (boundByTheDeadline): at a box load of about 1,100 that script and the git it runs took past the
 // product's 30 s, which the rows read as a refusal.
 func TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
 	}
@@ -371,7 +378,7 @@ func TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit(t *testing.T) {
 	old := t.TempDir()
 	script := "#!/bin/sh\nfor arg; do\n  if [ \"$arg\" = --show-scope ]; then\n    echo \"error: unknown option \\`show-scope'\" >&2\n    exit 129\n  fi\ndone\n" +
 		"PATH=" + shellWord(started) + "\nexec git \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(old, "git"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(old, "git"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct{ name, path, dir, want string }{
@@ -431,6 +438,7 @@ func withoutRecursionOff(env []string) []string {
 // with submodule.recurse and fetch.recurseSubmodules true in the repository's own configuration,
 // and not with fetchRecurseSubmodules true in the .gitmodules of HEAD or of the fetched commit.
 func TestGhChildGitRecursesIntoNoSubmodule(t *testing.T) {
+	t.Parallel()
 	git, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("no git on this machine")
@@ -445,7 +453,7 @@ func TestGhChildGitRecursesIntoNoSubmodule(t *testing.T) {
 		t.Helper()
 		scratch := t.TempDir()
 		helper = filepath.Join(scratch, "helper.sh")
-		if err := os.WriteFile(helper, []byte("#!/bin/sh\n[ \"$1\" = get ] || exit 0\nprintf 'username=x-access-token\\npassword=ghs_submodule_fake\\n'\n"), 0o700); err != nil {
+		if err := execfile.Write(helper, []byte("#!/bin/sh\n[ \"$1\" = get ] || exit 0\nprintf 'username=x-access-token\\npassword=ghs_submodule_fake\\n'\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		iso := []string{"PATH=" + filepath.Dir(git) + ":/usr/bin:/bin", "HOME=" + t.TempDir(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
@@ -559,11 +567,14 @@ func TestGhChildGitRecursesIntoNoSubmodule(t *testing.T) {
 // `legion gh` refuses, before gh runs, what has gh's git recurse into a submodule or take
 // configuration from the call: `pr checkout --recurse-submodules`, and any git flag a clone leaf
 // (repo clone, repo fork, gist clone) passes on that ghCloneGitFlagTakes does not hold, spelled in
-// full, abbreviated, joined, with `=`, or after a second `--`. It reads every flag passed on, not
-// the first alone: the second review's `-- --depth 1 -c ...` is refused at its `-c`. The flags it
-// holds, a directory first, pass, scripts/e2e's fixture clone among them, at gh 2.104.0 and 2.98.0.
+// full, abbreviated, joined, with `=`, or after a second `--`, each named by its place alone. It
+// reads every flag passed on, not the first alone: the second review's `-- --depth 1 -c ...` is
+// refused at its `-c`. The flags it holds, a directory first, pass, scripts/e2e's fixture clone
+// among them, at gh 2.104.0 and 2.98.0.
 func TestGhTargetOfRefusesRecursionAndUnreadCloneFlags(t *testing.T) {
+	t.Parallel()
 	off, proxy := "http.https://github.com/.sslVerify=false", "http.https://github.com/.proxy=http://127.0.0.1:1"
+	const refused = "hands a git flag after -- to git clone"
 	for _, version := range []string{"2.104.0", "2.98.0"} {
 		help := savedGhHelpOf(t, version)
 		for _, tc := range []struct {
@@ -571,32 +582,32 @@ func TestGhTargetOfRefusesRecursionAndUnreadCloneFlags(t *testing.T) {
 			refuse string // "" for a call that passes
 		}{
 			{[]string{"pr", "checkout", "1", "-R", "acme/widgets", "--recurse-submodules"}, `"--recurse-submodules" runs`},
-			{[]string{"pr", "checkout", "1", "-R", "acme/widgets", "--recurse-submodules=false"}, `"--recurse-submodules=false" runs`},
-			{[]string{"repo", "clone", "acme/widgets", "w2", "--", "-c", off, "-c", proxy}, `hands "-c" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--depth", "1", "-c", off}, `hands "-c" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--config", off}, `hands "--config" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--config=" + off}, `hands "--config=` + off + `" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--conf", off}, `hands "--conf" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--recurse-submodules"}, `hands "--recurse-submodules" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--recurse-submodules=lib"}, `hands "--recurse-submodules=lib" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--recursive"}, `hands "--recursive" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--template", "/tmp/example-template"}, `hands "--template" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--template=/tmp/example-template"}, `hands "--template=/tmp/example-template" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "-u", "/tmp/example-upload-pack"}, `hands "-u" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--upload-pack", "/tmp/example-upload-pack"}, `hands "--upload-pack" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--reference", "/tmp/example-reference"}, `hands "--reference" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--reference-if-able", "/tmp/example-reference"}, `hands "--reference-if-able" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--separate-git-dir", "/tmp/example-git-dir"}, `hands "--separate-git-dir" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "-qn"}, `hands "-qn" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "-bmain"}, `hands "-bmain" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "-b=main"}, `hands "-b=main" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--quiet=true"}, `hands "--quiet=true" to git clone`},
+			{[]string{"pr", "checkout", "1", "-R", "acme/widgets", "--recurse-submodules=false"}, `"--recurse-submodules" runs`},
+			{[]string{"repo", "clone", "acme/widgets", "w2", "--", "-c", off, "-c", proxy}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--depth", "1", "-c", off}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--config", off}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--config=" + off}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--conf", off}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--recurse-submodules"}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--recurse-submodules=lib"}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--recursive"}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--template", "/tmp/example-template"}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--template=/tmp/example-template"}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "-u", "/tmp/example-upload-pack"}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--upload-pack", "/tmp/example-upload-pack"}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--reference", "/tmp/example-reference"}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--reference-if-able", "/tmp/example-reference"}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--separate-git-dir", "/tmp/example-git-dir"}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "-qn"}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "-bmain"}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "-b=main"}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--quiet=true"}, refused},
 			{[]string{"repo", "clone", "acme/widgets", "--", "--depth"}, `hands "--depth" to git clone with no value`},
-			{[]string{"repo", "clone", "acme/widgets", "widgets", "extra"}, `hands "extra" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "widgets", "--", "--recursive"}, `hands "--" to git clone`},
-			{[]string{"repo", "fork", "acme/widgets", "--clone", "--", "--recursive"}, `hands "--recursive" to git clone`},
-			{[]string{"repo", "fork", "acme/widgets", "--clone", "--", "-c", off}, `hands "-c" to git clone`},
-			{[]string{"gist", "clone", "0123456789abcdef", "--", "-c", "core.hooksPath=/tmp/example-hooks"}, `hands "-c" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "widgets", "extra"}, refused},
+			{[]string{"repo", "clone", "acme/widgets", "--", "widgets", "--", "--recursive"}, refused},
+			{[]string{"repo", "fork", "acme/widgets", "--clone", "--", "--recursive"}, refused},
+			{[]string{"repo", "fork", "acme/widgets", "--clone", "--", "-c", off}, refused},
+			{[]string{"gist", "clone", "0123456789abcdef", "--", "-c", "core.hooksPath=/tmp/example-hooks"}, refused},
 			{[]string{"pr", "checkout", "1", "-R", "acme/widgets"}, ""},
 			{[]string{"repo", "clone", "acme/widgets", "widgets", "--", "--quiet", "--depth", "1", "--branch", "main"}, ""},
 			{[]string{"repo", "clone", "acme/widgets", "--", "--depth=1", "--filter=blob:none", "--single-branch", "-b", "main", "--no-tags", "--origin", "up"}, ""},
@@ -631,6 +642,7 @@ func TestGhTargetOfRefusesRecursionAndUnreadCloneFlags(t *testing.T) {
 //   - extensions.worktreeConfig, with a URL-scoped sslVerify=false in a linked worktree's own
 //     config.worktree, which the main worktree's read does not hold.
 func TestGhRepoGitConfigRefusalSeesWhatALaterGitReads(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	git, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("no git on this machine")
@@ -638,7 +650,7 @@ func TestGhRepoGitConfigRefusalSeesWhatALaterGitReads(t *testing.T) {
 	proxy := startCaptureProxy(t)
 	scratch := t.TempDir()
 	helper := filepath.Join(scratch, "helper.sh")
-	if err := os.WriteFile(helper, []byte("#!/bin/sh\n[ \"$1\" = get ] || exit 0\nprintf 'username=x-access-token\\npassword=ghs_later_read_fake\\n'\n"), 0o700); err != nil {
+	if err := execfile.Write(helper, []byte("#!/bin/sh\n[ \"$1\" = get ] || exit 0\nprintf 'username=x-access-token\\npassword=ghs_later_read_fake\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	iso := []string{"PATH=" + filepath.Dir(git) + ":/usr/bin:/bin", "HOME=" + t.TempDir(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",

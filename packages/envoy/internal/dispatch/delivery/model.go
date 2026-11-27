@@ -171,8 +171,10 @@ const (
 // start; CreatedAt is GitHub's created_at, which a re-run keeps, nil on a row stored before it was
 // (Created says what stands in for it).
 type DeliveryRun struct {
-	Repo         string                 `json:"repo"`
-	RunID        int64                  `json:"run_id"`
+	Repo  string `json:"repo"`
+	RunID int64  `json:"run_id"`
+	// RunAttempt is nil for an old row or a GitHub answer that supplies no attempt.
+	RunAttempt   *int                   `json:"run_attempt"`
 	Kind         DeliveryRunKind        `json:"kind"`
 	PRNumber     *int                   `json:"pr_number"`
 	HeadSHA      string                 `json:"head_sha"`
