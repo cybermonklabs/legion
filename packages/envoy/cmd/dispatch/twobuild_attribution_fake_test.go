@@ -13,6 +13,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -268,7 +269,9 @@ func (f *attributionFake) serve(t *testing.T, build string) string {
 
 // serveFacts answers the facts query (delivery's readFactsBatch), whose text holds the fragment
 // pullRequestFacts. A pull request the stand-in does not hold is GitHub's NOT_FOUND on its alias
-// path, and a repository the App is not installed on is NOT_FOUND on its alias.
+// path, and a repository the App is not installed on is NOT_FOUND on its alias. The batched read of
+// commits' pull requests (delivery's commitPullsQuery) carries the same fragment, and its aliases
+// are object(oid:) fields: serveCommitsPulls answers it.
 func (f *attributionFake) serveFacts(t *testing.T, build string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
@@ -280,6 +283,10 @@ func (f *attributionFake) serveFacts(t *testing.T, build string) http.HandlerFun
 			f.unexpected[build] = append(f.unexpected[build], "POST /graphql (not the facts query)")
 			f.mu.Unlock()
 			writeGitHubJSON(t, w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+			return
+		}
+		if commits := attributionCommitAlias.FindAllStringSubmatch(request.Query, -1); len(commits) > 0 {
+			f.serveCommitsPulls(t, w, build, request.Variables, commits)
 			return
 		}
 		f.mu.Lock()
@@ -324,4 +331,38 @@ func (f *attributionFake) serveFacts(t *testing.T, build string) http.HandlerFun
 		}
 		writeGitHubJSON(t, w, http.StatusOK, answer)
 	}
+}
+
+// attributionCommitAlias is one alias of the batched read of commits' pull requests: c<i> and the
+// commit it names.
+var attributionCommitAlias = regexp.MustCompile(`(c\d+): object\(oid: "([0-9a-f]+)"\)`)
+
+// serveCommitsPulls answers the batched read of commits' pull requests (delivery's
+// commitPullsQuery) from the stand-in's state, as GET …/commits/{sha}/pulls answers each commit:
+// every pull request that holds the commit, with their count, and each commit counted as one read
+// of a commit's pull requests. A repository the App is not installed on is null with NOT_FOUND.
+func (f *attributionFake) serveCommitsPulls(t *testing.T, w http.ResponseWriter, build string, variables map[string]any, commits [][]string) {
+	owner, _ := variables["owner"].(string)
+	name, _ := variables["name"].(string)
+	repo := owner + "/" + name
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, installed := attributionInstallations[repo]; !installed {
+		writeGitHubJSON(t, w, http.StatusOK, map[string]any{
+			"data": map[string]any{"repository": nil},
+			"errors": []any{map[string]any{"type": "NOT_FOUND", "path": []any{"repository"},
+				"message": fmt.Sprintf("Could not resolve to a Repository with the name '%s'.", repo)}},
+		})
+		return
+	}
+	answered := map[string]any{}
+	for _, commit := range commits {
+		f.countLocked(build, "commit pulls")
+		nodes := []any{}
+		for _, pull := range f.pullsAtLocked(repo, commit[2]) {
+			nodes = append(nodes, pull.node(repo))
+		}
+		answered[commit[1]] = map[string]any{"associatedPullRequests": map[string]any{"totalCount": len(nodes), "nodes": nodes}}
+	}
+	writeGitHubJSON(t, w, http.StatusOK, map[string]any{"data": map[string]any{"repository": answered}})
 }
