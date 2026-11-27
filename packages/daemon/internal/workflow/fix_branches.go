@@ -242,10 +242,9 @@ func (e *Engine) queueBesideDelete(ctx context.Context, tx pgx.Tx, issue record.
 // (queueBesideDelete) where no step of the task can run again because it moves into its retro with
 // no hold (transition, StartHeldRetro).
 func (e *Engine) queueTaskEnd(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
-	if !w.Stored {
-		return nil
-	}
-	return e.queueBesideDelete(ctx, tx, issue, w.Task)
+	// CONTROL (fb8-ctl-2b): the task's end queues no deletion, so nothing deletes the branches
+	// beside its fixes at the move into the retro or at the release of its end hold.
+	return nil
 }
 
 // recordBesidePush keeps the head a push left a branch beside a fix at (record.Store.RecordBesidePush),
