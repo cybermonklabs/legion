@@ -3161,6 +3161,10 @@ type Store interface {
 	// DesignNewsPending says whether a reconcile of tree's news (DesignNewsReconcile) is queued and
 	// has not begun to run at now (Postgres.DesignNewsPending).
 	DesignNewsPending(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error)
+	// DesignNewsWaiting is the reconcile of tree's news that has not begun to run at now, and
+	// whether there is one, held until tx ends so no lane claims it before tx commits
+	// (Postgres.DesignNewsWaiting).
+	DesignNewsWaiting(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (OutboxRow, bool, error)
 	// DesignChangesOf is the recorded change set of each of pairs that has one, by pair.
 	DesignChangesOf(ctx context.Context, tx pgx.Tx, pairs []VersionPair) (map[VersionPair]DesignChanges, error)
 	// PutDesignChanges records the change set of one pair; a pair already recorded read keeps
@@ -3395,7 +3399,8 @@ type Store interface {
 	// one: a row still to run, which reads the record when it runs. A kind of which one row waits
 	// for an issue at a time, as close_read and close_wait_publish do, is queued only where this
 	// finds none. A row a lane runs now is not waiting, so a fact its run applies can queue the
-	// next. The earliest waiting row is the one answered.
+	// next. The earliest waiting row is the one answered, and it is held until tx ends, so no lane
+	// claims it before the change that relies on it commits.
 	OutboxWaiting(ctx context.Context, tx pgx.Tx, issue string, kind OutboxKind) (OutboxRow, bool, error)
 	// UnfinishedLanes is each (issue, lane) with a row of project still in the outbox, by issue
 	// then lane.
