@@ -1,13 +1,20 @@
+// The Git of a scenario's case world (buildGitWorld), the jj operation record of a run's workspace
+// (recordWorkspace), and the staging recorder of D1 (stageJob). Lane D's replay starts each run
+// from the Git `build` makes of the run's world.json, with the commit ids, parents and trees the run
+// started from, and moves its workspace as the run's `record` says the run's workspace moved:
+//   bun git-world.ts build <dir> <world file>   the case world's Git in <dir>, with commit-map.json
+//   bun git-world.ts record <workspace> <dir>   workspace-ops.jsonl and workspace.pack in <dir>
 import {
   appendFileSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import type { World } from "./heldout-case";
+import { World } from "./heldout-case";
 
 export type CommitMap = Record<string, string>;
 
@@ -367,5 +374,95 @@ export function stageJob(dir: string, job: string, source = process.cwd()) {
     return record;
   } finally {
     rmSync(candidate, { recursive: true });
+  }
+}
+
+/** One operation of a run workspace's jj record, as workspace-ops.jsonl holds it. */
+export interface WorkspaceOperation {
+  id: string;
+  start: string;
+  end: string;
+  description: string;
+  standingOn: string[];
+}
+
+/** jj's template of one operation but the root: its id, when it began and ended (RFC 3339, to the
+ * millisecond jj keeps), and its description's first line, separated by tabs. */
+const OPERATION_LINE =
+  'if(self.root(), "", id ++ "\\t" ++ self.time().start().format("%Y-%m-%dT%H:%M:%S%.3f%:z") ++ "\\t" ++ self.time().end().format("%Y-%m-%dT%H:%M:%S%.3f%:z") ++ "\\t" ++ description.first_line() ++ "\\n")';
+
+/** The record of what a run's workspace stood on, which lane D's replay reads to rebuild the commit
+ * the workspace stood on (`@-`) at each legion call: one line of `<out>/workspace-ops.jsonl` for
+ * each jj operation of `workspace` but the root, oldest first, with its id, when it began and
+ * ended, its description's first line and the commits `@-` names in its view; and
+ * `<out>/workspace.pack`, the objects of each of those commits, so the replay holds a commit the
+ * role made and never pushed. jj reads each operation's view as it was and leaves the working copy
+ * alone, and git only reads: the workspace is not changed. */
+export function recordWorkspace(workspace: string, out: string): WorkspaceOperation[] {
+  const temp = mkdtempSync(path.join(out, "workspace-record-"));
+  try {
+    const config = path.join(temp, "jj.toml");
+    writeFileSync(
+      config,
+      '[user]\nname = "Scenario Worker"\nemail = "worker@example.invalid"\n[fsmonitor]\nbackend = "none"\n'
+    );
+    const env = { ...gitEnv(), JJ_CONFIG: config };
+    const jj = (...args: string[]) => run(workspace, env, ["jj", "--ignore-working-copy", ...args]);
+    const operations = jj("op", "log", "--no-graph", "-T", OPERATION_LINE)
+      .split("\n")
+      .filter((line) => line !== "")
+      .reverse()
+      .map((line): WorkspaceOperation => {
+        const [id = "", start = "", end = "", ...description] = line.split("\t");
+        const standingOn = jj(
+          "--at-op",
+          id,
+          "log",
+          "-r",
+          "@-",
+          "--no-graph",
+          "-T",
+          'commit_id ++ "\\n"'
+        )
+          .split("\n")
+          .filter((commit) => commit !== "");
+        return { id, start, end, description: description.join("\t"), standingOn };
+      });
+    writeFileSync(
+      path.join(out, "workspace-ops.jsonl"),
+      operations.map((operation) => `${JSON.stringify(operation)}\n`).join("")
+    );
+    // jj's root commit is no Git object.
+    const commits = [...new Set(operations.flatMap(({ standingOn }) => standingOn))].filter(
+      (commit) => !/^0+$/.test(commit)
+    );
+    if (commits.length > 0) {
+      const objects = run(workspace, env, ["git", "rev-list", "--objects", ...commits]);
+      const pack = Bun.spawnSync(["git", "pack-objects", "--stdout", "-q"], {
+        cwd: workspace,
+        env,
+        stdin: Buffer.from(`${objects}\n`),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (pack.exitCode !== 0)
+        throw new Error(`git pack-objects: ${pack.stderr.toString().trim()}`);
+      writeFileSync(path.join(out, "workspace.pack"), pack.stdout);
+    }
+    return operations;
+  } finally {
+    rmSync(temp, { recursive: true });
+  }
+}
+
+if (import.meta.main) {
+  const [mode, first, second, ...rest] = Bun.argv.slice(2);
+  if (mode === "build" && first !== undefined && second !== undefined && rest.length === 0)
+    buildGitWorld(first, World.parse(JSON.parse(readFileSync(second, "utf8"))));
+  else if (mode === "record" && first !== undefined && second !== undefined && rest.length === 0)
+    recordWorkspace(first, second);
+  else {
+    console.error("usage: git-world.ts build <dir> <world file> | record <workspace> <dir>");
+    process.exit(2);
   }
 }

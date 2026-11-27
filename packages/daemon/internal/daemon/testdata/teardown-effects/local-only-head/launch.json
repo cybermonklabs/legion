@@ -1,0 +1,7 @@
+{
+  "role": "implementer",
+  "agent": null,
+  "plain": false,
+  "tools": ["read", "bash", "edit", "legion"],
+  "stage": false
+}

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -159,21 +160,25 @@ func (c *teardownEffectsClock) advance(at time.Time) {
 }
 
 type teardownEffectsHarness struct{ root, out, legion, omp, home, profile string }
+
+// teardownEffectsRun is one booted daemon and pane on a case's starting state. fail ends the run
+// on a failure of its setup, which is a harness failure for a replay.
 type teardownEffectsRun struct {
 	liveAgentProof
-	harness                                             teardownEffectsHarness
-	clock                                               *teardownEffectsClock
-	dispatch                                            *handoffDispatch
-	github                                              *teardownEffectsGitHub
-	proxy                                               *teardownEffectsProxy
-	model                                               *teardownEffectsModel
-	key, branch, repo, base, workspace, remote, session string
-	role                                                claim.Role
-	token                                               claim.Token
-	git                                                 fixturegit.Runner
-	commits                                             map[string]string
-	handoffs                                            map[string]teardownEffectsHandoff
-	before                                              phase.Phase
+	harness                                                         teardownEffectsHarness
+	clock                                                           *teardownEffectsClock
+	dispatch                                                        *handoffDispatch
+	github                                                          *teardownEffectsGitHub
+	proxy                                                           *teardownEffectsProxy
+	model                                                           *teardownEffectsModel
+	key, branch, repo, base, workspace, remote, remoteName, session string
+	role                                                            claim.Role
+	token                                                           claim.Token
+	git                                                             fixturegit.Runner
+	commits                                                         map[string]string
+	handoffs                                                        map[string]teardownEffectsHandoff
+	before                                                          phase.Phase
+	fail                                                            func(error)
 }
 
 func TestTeardownEffectsLive(t *testing.T) {
@@ -200,7 +205,10 @@ func TestTeardownEffectsLive(t *testing.T) {
 	}
 }
 
-func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, role, task, runDir string) *teardownEffectsRun {
+// start boots the whole daemon on the case's starting state: world's Git, its pull requests and its
+// Dispatch records. A replay (plan, from runDir) seeds Dispatch from the run's own record of that
+// state and builds its Git with lane R's builder; harness, given, ends the run on a setup failure.
+func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, role, task string, plan *teardownEffectsPlan, runDir string, harness func(error)) *teardownEffectsRun {
 	t.Helper()
 	if world.Daemon == nil {
 		t.Fatal("world has no daemon record")
@@ -261,7 +269,13 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 	t.Cleanup(st.Close)
 	proof := liveProof{t: t, cfg: cfg, st: st, records: record.NewStore(), project: projectToken}
 	r := &teardownEffectsRun{liveAgentProof: liveAgentProof{liveProof: proof, legion: h.legion}, harness: h, dispatch: dispatch, key: key, branch: "legion/" + key, role: roleOfClaim, token: token,
-		clock: &teardownEffectsClock{now: world.Clock}, git: fixturegit.Isolated(t, h.home), commits: map[string]string{}, handoffs: map[string]teardownEffectsHandoff{}, repo: liveRepo, base: "main"}
+		clock: &teardownEffectsClock{now: world.Clock}, git: fixturegit.Isolated(t, h.home), commits: map[string]string{}, handoffs: map[string]teardownEffectsHandoff{}, repo: liveRepo, base: "main", remoteName: "origin", fail: harness}
+	if harness == nil {
+		r.fail = func(err error) { t.Helper(); t.Fatal(err) }
+	}
+	if world.Git != nil && world.Git.Remote.Name != "" {
+		r.remoteName = world.Git.Remote.Name
+	}
 	if world.GitHub != nil {
 		r.repo = world.GitHub.Repository
 	}
@@ -289,22 +303,16 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 			r.github.pulls[pull.Number] = pull
 		}
 	}
-	if runDir != "" {
-		r.rebuildGitHub(runDir)
-	}
 	githubURL := githubtest.Server(t, githubtest.Spec{Handle: r.github.serve})
 	r.setupIssue(world)
-	if runDir != "" {
-		// The run's own claim session, whose handoffs the replay writes under its new pane's.
-		calls, err := teardownEffectsReadCalls(filepath.Join(runDir, "sessions"))
-		if err != nil {
-			t.Fatal(err)
+	if plan != nil {
+		// The seeded records go in before the issue takes its status: Dispatch refuses a handoff on a
+		// closed issue (ISSUE_CLOSED).
+		for _, c := range plan.Seed {
+			if err := r.applyDispatch(*c.event, "", &plan.Readback); err != nil {
+				r.fail(fmt.Errorf("seed %s (%s) of the case's starting state: %w", c.Source, c.What, err))
+			}
 		}
-		original := ""
-		if len(calls) > 0 {
-			original = calls[0].Session
-		}
-		r.restoreDispatch(runDir, original, false)
 	} else {
 		for _, doc := range world.Dispatch.Documents {
 			r.document(doc.Name, doc.Body)
@@ -313,13 +321,25 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 			r.handoff(handoff.Phase, handoff.Author, r.mapBody(handoff.Body))
 		}
 	}
-	r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+r.key, map[string]any{"status": world.Dispatch.Issue.Status, "labels": []string{"legion"}}, http.StatusOK, nil)
+	if world.Dispatch.Issue.Parent == "" {
+		r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+r.key, map[string]any{"status": world.Dispatch.Issue.Status, "labels": []string{"legion"}}, http.StatusOK, nil)
+	} else {
+		// As lane R's seed sets a child's status (seed.ts seedCaseDispatch): each ancestor not in
+		// work moves to in_progress with it, as Dispatch keeps a parent in line with its children.
+		if world.Dispatch.Issue.Status != "triage" {
+			r.dispatch.user(http.MethodPost, "/api/v1/issues/"+r.key+"/status-change", map[string]any{"status": world.Dispatch.Issue.Status, "include_parent": true}, http.StatusOK, nil)
+		}
+		// The parent carries Legion's label too, as the root handed over that seed records it as.
+		for _, labelled := range []string{world.Dispatch.Issue.Parent, r.key} {
+			r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+labelled, map[string]any{"labels": []string{"legion"}}, http.StatusOK, nil)
+		}
+	}
 	r.seed(world, task)
 	o := r.rt.daemonOverrides(r.rt)
 	o.clock, o.githubAPI, o.workflowTokens = r.clock, githubURL, &workflowTokenRecorder{}
 	r.d = startDaemonWithin(t, cfg, o, r.log(), 2*time.Minute)
 	if got := r.issue(key).Phase; got != world.Daemon.Phase {
-		t.Fatalf("boot changed %s from %s to %s", key, world.Daemon.Phase, got)
+		r.fail(fmt.Errorf("boot changed %s from %s to %s", key, world.Daemon.Phase, got))
 	}
 	r.before = world.Daemon.Phase
 	r.model.await(t, r.model.ready, "the real pane's first turn")
@@ -328,29 +348,69 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 		t.Fatal("the pane did not register a session")
 	}
 	t.Cleanup(r.model.finish)
+	// A child stands in its parent's tree, as it does in Dispatch, and that tree runs.
+	if parent := world.Dispatch.Issue.Parent; parent != "" {
+		if s := r.state(); s.Tree != parent || s.Parent != parent || !s.TreeRuns {
+			r.fail(fmt.Errorf("the replay holds %s in tree %q (running: %t) under the Dispatch parent %q, and the case's world names the parent %s", key, s.Tree, s.TreeRuns, s.Parent, parent))
+		}
+	}
 	return r
 }
 
+// setupIssue files the case's issue in the scratch Dispatch under its own key and, where the world
+// names one, under its parent, as lane R's seed files them (seed.ts seedCaseDispatch): the parent
+// first, titled as lane R titles it, then the issue naming it as its parent, so a child is no root
+// here either. A parent in another project, or one that follows its child, is not set up.
 func (r *teardownEffectsRun) setupIssue(world teardownEffectsWorld) {
-	t := r.t
-	t.Helper()
 	project := r.cfg.Project
 	r.dispatch.user(http.MethodPost, "/api/v1/projects", map[string]string{"key": project, "name": "Teardown effects"}, 201, nil)
 	r.dispatch.user(http.MethodPut, "/api/v1/projects/"+project+"/default-repository", map[string]string{"repo": r.repo}, 200, nil)
-	wanted, err := strconv.Atoi(strings.TrimPrefix(r.key, project+"-"))
-	if err != nil || wanted < 1 {
-		t.Fatalf("invalid issue number: %s", r.key)
+	fields := map[string]any{"title": world.Dispatch.Issue.Title, "spec": world.Dispatch.Issue.Spec}
+	if parent := world.Dispatch.Issue.Parent; parent != "" {
+		if !strings.HasPrefix(parent, project+"-") || r.issueNumber(parent) >= r.issueNumber(r.key) {
+			r.fail(fmt.Errorf("the case's issue %s has the parent %s, which is in another project or follows it, and which the replay does not set up", r.key, parent))
+		}
+		r.fileIssue(parent, map[string]any{"title": "Parent of " + r.key})
+		fields["parent"] = parent
 	}
-	// Dispatch allocates the key. Set its counter in this disposable database so replay does
-	// not change the key embedded in branch names, prompts and the original requests.
-	teardownEffectsIssueCounter(t, r.dispatch, project, wanted)
+	r.fileIssue(r.key, fields)
+}
+
+// issueNumber is the number of key, an issue of the run's project.
+func (r *teardownEffectsRun) issueNumber(key string) int {
+	r.t.Helper()
+	number, err := strconv.Atoi(strings.TrimPrefix(key, r.cfg.Project+"-"))
+	if err != nil || number < 1 {
+		r.t.Fatalf("invalid issue number: %s", key)
+	}
+	return number
+}
+
+// fileIssue files key in the scratch Dispatch with fields. Dispatch allocates the key: its counter
+// is set in this disposable database so the replay does not change the key embedded in branch
+// names, prompts and the original requests.
+func (r *teardownEffectsRun) fileIssue(key string, fields map[string]any) {
+	t := r.t
+	t.Helper()
+	teardownEffectsIssueCounter(t, r.dispatch, r.cfg.Project, r.issueNumber(key))
+	fields["project"], fields["force"] = r.cfg.Project, true
 	var issue struct{ Key string }
-	r.dispatch.user(http.MethodPost, "/api/v1/issues", map[string]any{"project": project, "title": world.Dispatch.Issue.Title, "spec": world.Dispatch.Issue.Spec, "force": true}, http.StatusCreated, &issue)
-	if issue.Key != r.key {
-		t.Fatalf("created issue %s, want %s", issue.Key, r.key)
+	r.dispatch.user(http.MethodPost, "/api/v1/issues", fields, http.StatusCreated, &issue)
+	if issue.Key != key {
+		t.Fatalf("created issue %s, want %s", issue.Key, key)
 	}
 }
 
+// seed records the case's daemon state. A child (the world names its parent) stands in its parent's
+// tree, as lane R's daemon stand-in holds it (`--tree`, the parent): its record, its claim and its
+// production check name that tree, it was not handed over itself, and the tree's lifecycle stands
+// open under the workflow. The world holds nothing of the parent's own daemon state, so the parent
+// is recorded with the least that makes its tree run, without which admission takes the child's
+// tree for one that finished and releases its slot (admit's releaseSlots): a root handed over,
+// in Dispatch's status, at admitted, with no slot, no claim and no phases row, so no worker of it is
+// owed a start (admit's owedOf) and it lingers nowhere. A controller case's issue that is a child
+// is not seeded: the daemon knows that issue and has not admitted it, and under a running tree a
+// child the daemon has not admitted would be admitted into it.
 func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 	t := r.t
 	t.Helper()
@@ -367,11 +427,35 @@ func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 	if controller {
 		delivery.Phase = ""
 	}
+	tree, parent := r.key, world.Dispatch.Issue.Parent
+	if parent != "" {
+		if controller {
+			r.fail(fmt.Errorf("the controller case's issue %s is a child of %s, which the replay does not seed", r.key, parent))
+		}
+		tree = parent
+	}
+	var root struct {
+		Title, Rank, Status string
+		LastSeq             int64 `json:"last_seq"`
+	}
+	if parent != "" {
+		r.dispatch.agentGet("/api/v1/issues/"+parent, &root)
+	}
 	ctx := t.Context()
 	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		issue := record.Issue{Key: r.key, Title: listed.Title, Project: r.cfg.Project, Tree: r.key, Repo: r.repo, GitHubRepo: r.repo, DefaultBranch: r.base, Phase: world.Daemon.Phase, Generation: 1,
-			Status: world.Dispatch.Issue.Status, DispatchStatus: world.Dispatch.Issue.Status, Rank: listed.Rank, LastDispatchSeq: listed.LastSeq, HandedOver: true}
-		if issue.Phase == phase.Done {
+		if parent != "" {
+			if err := r.records.PutIssue(ctx, tx, record.Issue{Key: parent, Title: root.Title, Project: r.cfg.Project, Tree: parent, Repo: r.repo, GitHubRepo: r.repo, DefaultBranch: r.base, Phase: phase.Admitted,
+				Generation: 1, Status: root.Status, DispatchStatus: root.Status, Rank: root.Rank, LastDispatchSeq: root.LastSeq, HandedOver: true}); err != nil {
+				return err
+			}
+		}
+		issue := record.Issue{Key: r.key, Title: listed.Title, Project: r.cfg.Project, Tree: tree, Repo: r.repo, GitHubRepo: r.repo, DefaultBranch: r.base, Phase: world.Daemon.Phase, Generation: 1,
+			Status: world.Dispatch.Issue.Status, DispatchStatus: world.Dispatch.Issue.Status, Rank: listed.Rank, LastDispatchSeq: listed.LastSeq, HandedOver: parent == ""}
+		if parent != "" {
+			issue.Parent = &parent
+		}
+		// A tree lingers after its root closes: the linger is the root's, never a child's.
+		if issue.Phase == phase.Done && parent == "" {
 			linger := now.Add(48 * time.Hour)
 			if wall := time.Now().Add(time.Hour); linger.Before(wall) {
 				linger = wall
@@ -399,7 +483,7 @@ func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 			}
 			delivery.Phase = ""
 			delivery.CheckLook = supervise.CheckLook{Look: check.Look, OpenedAt: check.OpenedAt}
-			if err := r.records.PutProductionCheck(ctx, tx, record.ProductionCheck{Issue: r.key, Project: r.cfg.Project, Tree: r.key, Repo: r.repo, Number: number, MergeSHA: r.sha(check.MergeCommit),
+			if err := r.records.PutProductionCheck(ctx, tx, record.ProductionCheck{Issue: r.key, Project: r.cfg.Project, Tree: tree, Repo: r.repo, Number: number, MergeSHA: r.sha(check.MergeCommit),
 				Role: r.role, OpenedAt: check.OpenedAt, BoundAt: check.BoundAt, Looks: check.Look, LookOpen: true, LookWakeAt: &now, Last: check.Last}); err != nil {
 				return err
 			}
@@ -411,7 +495,7 @@ func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 	}); err != nil {
 		t.Fatalf("seed daemon state: %v", err)
 	}
-	c := supervise.Claim{Token: r.token, Project: r.project, Tree: r.key, Issue: r.key, Role: r.role, Generation: 1, State: supervise.StateLaunching, BootTokenHash: supervise.HashBootToken("seed-" + randomSuffix(t))}
+	c := supervise.Claim{Token: r.token, Project: r.project, Tree: tree, Issue: r.key, Role: r.role, Generation: 1, State: supervise.StateLaunching, BootTokenHash: supervise.HashBootToken("seed-" + randomSuffix(t))}
 	if delivery.CheckLook.Look == 0 {
 		c.ServingGeneration = 1
 	}
@@ -421,7 +505,7 @@ func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 			t.Fatal(err)
 		}
 	} else {
-		if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.key, treelifecycle.AuthorityWorkflow); err != nil {
+		if _, err := r.st.OpenTreeLifecycle(ctx, r.project, tree, treelifecycle.AuthorityWorkflow); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := r.st.AdmitClaim(ctx, c); err != nil {
@@ -447,16 +531,7 @@ func (r *teardownEffectsRun) setupGit(world teardownEffectsWorld, runDir string)
 		t.Fatal(err)
 	}
 	if runDir != "" {
-		teardownEffectsReadJSON(t, filepath.Join(runDir, "commit-map.json"), &r.commits)
-		// Copy the artifacts rather than rebuilding them from a SHA or running the role's shell
-		// commands. Repoint origin without fetching: its local tracking refs are part of the evidence.
-		for _, pair := range [][2]string{{"workspace", r.workspace}, {"remote.git", r.remote}} {
-			src := filepath.Join(runDir, pair[0])
-			if out, err := exec.CommandContext(t.Context(), "cp", "-a", src+"/.", pair[1]).CombinedOutput(); err != nil {
-				t.Fatalf("copy %s: %v\n%s", src, err, out)
-			}
-		}
-		r.git.Run(r.workspace, "jj", "git", "remote", "set-url", "origin", r.remote)
+		r.buildCaseGit(runDir)
 		return
 	}
 	r.git.Run(r.workspace, fixturegit.JJInit("", true)...)
@@ -502,6 +577,55 @@ func (r *teardownEffectsRun) setupGit(world teardownEffectsWorld, runDir string)
 	// commit in jj, which would silently rebase the working copy onto its parent.
 	if got := strings.TrimSpace(r.git.Out(r.workspace, "jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id")); got != standing {
 		t.Fatalf("workspace stands on %s, want %s", got, standing)
+	}
+}
+
+// buildCaseGit builds the case's starting Git as lane R built it, with lane R's own builder
+// (git-world.ts build), so each commit keeps its id, parents and tree; the commit map it writes must
+// be the run's commit-map.json. The run's final workspace and remote are never copied in: they hold
+// what the run left. The objects of every commit the run's workspace stood on (workspace.pack, which
+// git-world.ts record writes) go into the workspace's object store and nowhere else, as sources of
+// the commits the run made: a commit there is on no ref, so neither jj nor the remote sees it until
+// a recorded move (applyWorkspace) or push (applyPush) makes it seen.
+func (r *teardownEffectsRun) buildCaseGit(runDir string) {
+	t := r.t
+	t.Helper()
+	built, home := t.TempDir(), t.TempDir()
+	command := exec.CommandContext(t.Context(), "bun", filepath.Join(r.harness.root, "packages", "pi-legion", "scripts", "skill-scenarios", "git-world.ts"), "build", built, filepath.Join(runDir, "world.json"))
+	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "TMPDIR=" + home}
+	if out, err := command.CombinedOutput(); err != nil {
+		r.fail(fmt.Errorf("build the case's starting Git with git-world.ts: %v\n%s", err, out))
+	}
+	var made, recorded map[string]string
+	teardownEffectsReadJSON(t, filepath.Join(built, "commit-map.json"), &made)
+	teardownEffectsReadJSON(t, filepath.Join(runDir, "commit-map.json"), &recorded)
+	if !maps.Equal(made, recorded) {
+		r.fail(fmt.Errorf("the case's starting Git has the commits %v, and the run's commit-map.json names %v: the run did not start from this world", made, recorded))
+	}
+	r.commits = made
+	for _, pair := range [][2]string{{"workspace", r.workspace}, {"remote.git", r.remote}} {
+		if out, err := exec.CommandContext(t.Context(), "cp", "-a", filepath.Join(built, pair[0])+"/.", pair[1]).CombinedOutput(); err != nil {
+			t.Fatalf("copy the built %s: %v\n%s", pair[0], err, out)
+		}
+	}
+	// The builder's push recorder writes outside the copied remote; replay.json names each push the
+	// replay applies, and the replay pushes nothing of its own.
+	if err := os.Remove(filepath.Join(r.remote, "hooks", "post-receive")); err != nil {
+		t.Fatal(err)
+	}
+	r.git.Run(r.workspace, "jj", "git", "remote", "set-url", r.remoteName, r.remote)
+	pack, err := os.Open(filepath.Join(runDir, "workspace.pack"))
+	if os.IsNotExist(err) {
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pack.Close()
+	unpack := exec.CommandContext(t.Context(), "git", "unpack-objects", "-q")
+	unpack.Dir, unpack.Env, unpack.Stdin = r.workspace, r.git.Env, pack
+	if out, err := unpack.CombinedOutput(); err != nil {
+		r.fail(fmt.Errorf("load workspace.pack into the replay's workspace: %v\n%s", err, out))
 	}
 }
 func (r *teardownEffectsRun) push(branch, head string) {
@@ -596,12 +720,6 @@ func teardownEffectsWriteJSON(t *testing.T, path string, value any) {
 
 // Observe actual bytes on the pane's HTTP hop to the real daemon. Boot, registration,
 // and asynchronous lifecycle calls are not tool answers.
-type teardownEffectsHTTP struct {
-	At           time.Time `json:"at"`
-	Method, Path string
-	Status       int
-	Body, Answer json.RawMessage
-}
 type teardownEffectsProxy struct {
 	mu      sync.Mutex
 	url     string
@@ -652,16 +770,6 @@ func teardownEffectsStartProxy(t *testing.T, target string) *teardownEffectsProx
 	p.url = server.URL
 	t.Cleanup(server.Close)
 	return p
-}
-func teardownEffectsToolRoute(path string) bool {
-	if !strings.HasPrefix(path, "/legion/v1/") || path == "/legion/v1/grants" {
-		return false
-	}
-	switch path {
-	case "/legion/v1/claims/register", "/legion/v1/claims/ready", "/legion/v1/claims/exit", "/legion/v1/claims/turn-outcome", "/legion/v1/claims/activity":
-		return false
-	}
-	return true
 }
 func (p *teardownEffectsProxy) since(from int) []teardownEffectsHTTP {
 	p.mu.Lock()
@@ -796,11 +904,6 @@ func (r *teardownEffectsRun) call(seq int, at time.Time, args map[string]any) ([
 	answers = append(answers, teardownEffectsAnswer{Seq: seq + len(answers), At: at.UTC(), By: "client", Op: op, Body: body})
 	return answers, records, handoffs, result
 }
-func (x teardownEffectsHTTP) status() teardownEffectsStatus {
-	var a struct{ Code *string }
-	_ = json.Unmarshal(x.Answer, &a)
-	return teardownEffectsStatus{Status: x.Status, Code: a.Code}
-}
 func teardownEffectsCode(x teardownEffectsHTTP) string {
 	if code := x.status().Code; code != nil {
 		return *code
@@ -821,7 +924,7 @@ func (h teardownEffectsHarness) controls(t *testing.T, path string) {
 	var implementer, check bool
 	for _, c := range file.Cases {
 		if !t.Run(c.ID, func(t *testing.T) {
-			r := h.start(t, c.World, c.Role, c.Task, "")
+			r := h.start(t, c.World, c.Role, c.Task, nil, "", nil)
 			if c.World.Daemon.Phase == phase.Implementing && c.Role == "implementer" && !implementer {
 				implementer = true
 				r.implementerControls(c, &capture)
@@ -1028,6 +1131,14 @@ func teardownEffectsNoWake(t *testing.T, got teardownEffectsRecord) {
 	}
 }
 
+// replay drives each run of root (a run directory, or a directory of them) on the real daemon from
+// the case's starting state. Before each of the run's legion calls it applies the Git, GitHub and
+// Dispatch changes the run recorded before that call (teardownEffectsOrder), then lets the real
+// pane and daemon answer the call and make its effects. It writes replay.json for every run, and
+// effects.json for a run whose every call it judged: `ok`, or `DIVERGED` where the real daemon
+// answered a request otherwise than the stand-in, after which no later call is replayed. A run
+// whose records cannot place a change, pair a request or join a difference is `HARNESS`, and has
+// no effects.json. A replay never overwrites another's record, nor any answers file.
 func (h teardownEffectsHarness) replay(t *testing.T, root string) {
 	dirs, err := os.ReadDir(root)
 	if err != nil {
@@ -1053,6 +1164,12 @@ func (h teardownEffectsHarness) replay(t *testing.T, root string) {
 			if !teardownEffectsUUID.MatchString(outcome.ID) {
 				t.Fatalf("invalid outcome id %q", outcome.ID)
 			}
+			out := filepath.Join(h.out, outcome.ID)
+			for _, name := range []string{"effects.json", "replay.json"} {
+				if _, err := os.Stat(filepath.Join(out, name)); err == nil {
+					t.Fatalf("%s already holds %s: a replay never overwrites another's record", out, name)
+				}
+			}
 			var world teardownEffectsWorld
 			teardownEffectsReadJSON(t, filepath.Join(dir, "world.json"), &world)
 			var launch struct {
@@ -1060,139 +1177,131 @@ func (h teardownEffectsHarness) replay(t *testing.T, root string) {
 				Plain bool
 			}
 			teardownEffectsReadJSON(t, filepath.Join(dir, "launch.json"), &launch)
-			world.Clock = teardownEffectsReadTime(t, filepath.Join(dir, "clock.txt"))
-			realStart := teardownEffectsReadTime(t, filepath.Join(dir, "clock-real.txt"))
-			calls, err := teardownEffectsReadCalls(filepath.Join(dir, "sessions"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			old := teardownEffectsReadLines[teardownEffectsHTTP](t, filepath.Join(dir, "daemon.log"))
 			if launch.Plain {
 				t.Fatal("a plain session has no Legion claim to replay")
 			}
-			r := h.start(t, world, launch.Role, "", dir)
-			session := ""
-			if len(calls) > 0 {
-				session = calls[0].Session
+			world.Clock = teardownEffectsReadTime(t, filepath.Join(dir, "clock.txt"))
+			launched := teardownEffectsReadTime(t, filepath.Join(dir, "clock-real.txt"))
+			record := teardownEffectsReplayRecord{ID: outcome.ID, Seed: []teardownEffectsChange{}, Calls: []teardownEffectsReplayCall{}, After: []teardownEffectsChange{}, NotReplayed: []string{}}
+			harness := func(err error) {
+				t.Helper()
+				record.Verdict, record.Reason = "HARNESS", err.Error()
+				teardownEffectsWriteNew(t, filepath.Join(out, "replay.json"), record)
+				t.Fatalf("HARNESS %s: %v", outcome.ID, err)
 			}
-			r.restoreDispatch(dir, session, true)
+			calls, err := teardownEffectsReadCalls(filepath.Join(dir, "sessions"))
+			if err != nil {
+				harness(err)
+			}
+			own := ""
+			for _, call := range calls {
+				if own == "" {
+					own = call.Session
+				}
+				if call.Session != own {
+					harness(fmt.Errorf("legion calls of the sessions %s and %s: the replay drives one claim's", own, call.Session))
+				}
+			}
+			plan, err := teardownEffectsOrder(dir, calls, world.Clock, launched)
+			if err != nil {
+				harness(err)
+			}
+			record.Seed, record.After = append(record.Seed, plan.Seed...), append(record.After, plan.After...)
+			r := h.start(t, world, launch.Role, "", &plan, dir, harness)
+			ran := func(id string) (teardownEffectsHandoff, bool) {
+				_, version, word, ok := plan.Readback.handoffBody(id)
+				return teardownEffectsHandoff{Phase: word, Version: version, ID: id}, ok
+			}
+			wrote := func(id string) (teardownEffectsHandoff, bool) {
+				found, ok := r.handoffs[id]
+				return found, ok
+			}
+			same := func(run, replay teardownEffectsHTTP) error {
+				return teardownEffectsSameRequest(run, replay, ran, wrote)
+			}
 			var answers []teardownEffectsAnswer
 			var differences []teardownEffectsDifference
 			var names []teardownEffectsHandoff
-			// Each stand-in answer goes to one call: the first in whose window it falls and whose
-			// own request it answered (the same method and route). Calls the model sent in one
-			// message share one window, so pairing answers by place alone would set one call's
-			// answer against another's.
-			taken := map[int]bool{}
-			seqOf := map[int]int{}
-			var windowed []int
-			for _, call := range calls {
-				if call.Session != session {
-					t.Fatal("cannot attribute legion calls from more than one claim session")
+			for i, step := range plan.Steps {
+				call := step.Call
+				if len(differences) > 0 {
+					record.NotReplayed = append(record.NotReplayed, call.ID)
+					continue
 				}
+				for _, c := range step.Before {
+					if err := r.applyChange(c, own, dir, &plan.Readback); err != nil {
+						harness(fmt.Errorf("%s (%s), before legion call %d (%s): %w", c.Source, c.What, i+1, call.ID, err))
+					}
+				}
+				replayed := teardownEffectsReplayCall{Call: call.ID, Op: call.Op, At: world.Clock.Add(call.At.Sub(launched)).UTC(), Before: append([]teardownEffectsChange{}, step.Before...), State: r.state(),
+					Standin: []teardownEffectsAnswerRef{}, Daemon: []teardownEffectsAnswerRef{}}
 				seq := len(answers)
-				more, replies, handoffs, _ := r.call(seq, world.Clock.Add(call.At.Sub(realStart)), call.Args)
+				more, replies, handoffs, result := r.call(seq, replayed.At, call.Args)
 				answers = append(answers, more...)
 				names = append(names, handoffs...)
-				var window []int
-				for k, res := range old {
-					if !taken[k] && teardownEffectsToolRoute(res.Path) && !res.At.Before(call.At) && (call.ResultAt.IsZero() || !res.At.After(call.ResultAt)) {
-						window = append(window, k)
-						if _, ok := seqOf[k]; !ok {
-							seqOf[k] = seq
-							windowed = append(windowed, k)
-						}
-					}
+				for _, s := range step.Standin {
+					replayed.Standin = append(replayed.Standin, teardownEffectsAnswerRef{OutcomeSeq: s.OutcomeSeq, Route: s.route(), teardownEffectsStatus: s.status()})
 				}
-				for i, reply := range replies {
-					var a teardownEffectsHTTP
-					for _, k := range window {
-						if !taken[k] && old[k].Method == reply.Method && old[k].Path == reply.Path {
-							a, taken[k] = old[k], true
-							break
-						}
-					}
-					if !teardownEffectsSameAnswer(a, reply) {
-						differences = append(differences, teardownEffectsDifference{Seq: min(seq+i, len(answers)-1), Standin: a.status(), Daemon: reply.status()})
-					}
+				for k, x := range replies {
+					at := seq + k
+					replayed.Daemon = append(replayed.Daemon, teardownEffectsAnswerRef{Seq: &at, Route: x.route(), teardownEffectsStatus: x.status()})
 				}
-			}
-			// A stand-in answer no replayed request matched: the run's call reached the stand-in
-			// with a request the real daemon never got.
-			for _, k := range windowed {
-				if !taken[k] {
-					differences = append(differences, teardownEffectsDifference{Seq: seqOf[k], Standin: old[k].status(), Daemon: teardownEffectsHTTP{}.status()})
+				replayed.Client = teardownEffectsClientRef{Run: teardownEffectsClientAnswer{IsError: call.IsError, Text: call.Result}, Replay: teardownEffectsClientAnswer{IsError: result.isError, Text: result.text}}
+				replayed.PhaseAfter = string(r.issue(r.key).Phase)
+				record.Calls = append(record.Calls, replayed)
+				found, err := teardownEffectsJudge(i, call, step.Standin, replies, teardownEffectsAnswered{isError: result.isError, text: result.text}, seq, same)
+				if err != nil {
+					harness(err)
 				}
+				differences = append(differences, found...)
 			}
 			got := r.evidence(outcome.ID, answers, differences, names)
-			teardownEffectsWriteJSON(t, filepath.Join(h.out, outcome.ID, "effects.json"), got)
+			record.Verdict = "ok"
 			if len(differences) > 0 {
-				t.Errorf("DIVERGED %s: %d stand-in and real daemon answers differ", outcome.ID, len(differences))
-			} else {
-				fmt.Println("ok replay " + outcome.ID)
+				record.Verdict = "DIVERGED"
 			}
+			teardownEffectsWriteNew(t, filepath.Join(out, "effects.json"), got)
+			teardownEffectsWriteNew(t, filepath.Join(out, "replay.json"), record)
+			if len(differences) > 0 {
+				first := differences[0]
+				t.Errorf("DIVERGED %s: %d answers differ; the first, legion call %s (outcome action %d) %s: the stand-in answered %s and the real daemon %s",
+					outcome.ID, len(differences), first.Call, first.OutcomeSeq, first.Route, teardownEffectsStatusText(first.Standin), teardownEffectsStatusText(first.Daemon))
+				return
+			}
+			fmt.Println("ok replay " + outcome.ID)
 		})
 	}
 }
 
 var teardownEffectsUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// teardownEffectsSameAnswer reports whether the real daemon answered a request as the stand-in
-// did. A run diverges on an acceptance against a refusal, or one refusal against another (plan
-// T4, lane D step 3): the route and the status must match, and a refusal's code too. An accepted
-// answer's body is not compared, since the stand-in's simpler records say less than the daemon's.
-func teardownEffectsSameAnswer(a, b teardownEffectsHTTP) bool {
-	if a.Status != b.Status || a.Method != b.Method || a.Path != b.Path {
-		return false
+// teardownEffectsStatusText is an answer's status and refusal code, as a verdict line names it.
+func teardownEffectsStatusText(s teardownEffectsStatus) string {
+	if s.Code == nil {
+		return strconv.Itoa(s.Status)
 	}
-	if a.Status < 400 {
-		return true
-	}
-	return teardownEffectsRefusalCode(a.Answer) == teardownEffectsRefusalCode(b.Answer)
+	return strconv.Itoa(s.Status) + " " + *s.Code
 }
 
-// teardownEffectsRefusalCode is the `code` of a refusal's JSON body, or the whole body where it is
-// no JSON object naming one.
-func teardownEffectsRefusalCode(body []byte) string {
-	var refusal struct {
-		Code string `json:"code"`
-	}
-	if json.Unmarshal(body, &refusal) != nil || refusal.Code == "" {
-		return string(body)
-	}
-	return refusal.Code
-}
-func teardownEffectsReadTime(t *testing.T, path string) time.Time {
+// teardownEffectsWriteNew writes value to path, which must not exist: a replay's record is never
+// written over another's.
+func teardownEffectsWriteNew(t *testing.T, path string, value any) {
 	t.Helper()
-	b, err := os.ReadFile(path)
+	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	at, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(b)))
-	if err != nil {
-		t.Fatalf("%s: %v", path, err)
-	}
-	return at
-}
-func teardownEffectsReadLines[T any](t *testing.T, path string) []T {
-	t.Helper()
-	f, err := os.Open(path)
-	if err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
-	var out []T
-	if err := teardownEffectsLines(f, func(line []byte) error {
-		var item T
-		if err := json.Unmarshal(line, &item); err != nil {
-			return err
-		}
-		out = append(out, item)
-		return nil
-	}); err != nil {
-		t.Fatalf("%s: %v", path, err)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
-	return out
+	defer file.Close()
+	if _, err := file.Write(append(data, '\n')); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func teardownEffectsIssueCounter(t *testing.T, d *handoffDispatch, project string, number int) {
@@ -1243,90 +1352,313 @@ func (r *teardownEffectsRun) result(fields map[string]any, session string) {
 	r.cli(session, args...)
 }
 
-// Dispatch creates new artifact and handoff IDs. Preserve the order and authors of
-// handoffs; only the original claim's author is rebound to the new pane's session.
-func (r *teardownEffectsRun) restoreDispatch(dir, session string, withHandoffs bool) {
-	t := r.t
-	t.Helper()
-	var snapshot struct {
-		Documents []struct{ Name, Kind, Text string }
-		Handoffs  []handoffRecord
-		Comments  []struct {
-			Body   string
-			Author struct{ Kind, ID string }
+// applyChange makes one recorded change again, before the call it preceded in the run.
+func (r *teardownEffectsRun) applyChange(c teardownEffectsChange, own, runDir string, readback *teardownEffectsReadback) error {
+	switch {
+	case c.push != nil:
+		return r.applyPush(*c.push, runDir)
+	case c.github != nil:
+		return r.applyGitHub(*c.github)
+	case c.event != nil:
+		return r.applyDispatch(*c.event, own, readback)
+	case c.workspace != "":
+		return r.applyWorkspace(c.workspace)
+	}
+	return fmt.Errorf("%s records no change", c.Source)
+}
+
+// teardownEffectsStandingRef is the local branch through which the replay lets jj see a commit
+// the role's workspace moved onto. It stays, as setupGit's fixture-standing does: jj's import of a
+// deleted Git ref can abandon the commit it named and rebase the working copy onto its parent.
+const teardownEffectsStandingRef = "refs/heads/teardown-replay-standing"
+
+// applyWorkspace moves the replay's workspace onto commit as the run's recorded jj operation moved
+// the role's (workspace-ops.jsonl): a new working-copy commit whose parent, `@-`, is commit, which
+// is what the legion tool reads as the commit the workspace stands on. The commit comes from
+// workspace.pack, so it keeps the run's id, parents and tree. What the role's working copy held
+// above it is not rebuilt: no recorded call reads it.
+func (r *teardownEffectsRun) applyWorkspace(commit string) error {
+	if r.standing() == commit {
+		return nil
+	}
+	if out, err := r.git.Try(r.workspace, "git", "update-ref", teardownEffectsStandingRef, commit); err != nil {
+		return fmt.Errorf("the run's workspace stood on %s, which neither workspace.pack nor the case's world holds: %v\n%s", commit, err, out)
+	}
+	for _, argv := range [][]string{{"jj", "git", "import"}, {"jj", "new", commit}} {
+		if out, err := r.git.Try(r.workspace, argv...); err != nil {
+			return fmt.Errorf("%s: %v\n%s", strings.Join(argv, " "), err, out)
 		}
-		Asks []struct {
-			Question, State string
-			Options         json.RawMessage
-			Author          struct{ Kind, ID string }
+	}
+	if got := r.standing(); got != commit {
+		return fmt.Errorf("the replay's workspace stands on %q after its move onto %s", got, commit)
+	}
+	return nil
+}
+
+// standing is the commit the replay's workspace stands on, `@-`, as the legion tool reads it (each
+// of several parents on a line of its own).
+func (r *teardownEffectsRun) standing() string {
+	return strings.TrimSpace(r.git.Out(r.workspace, "jj", "log", "-r", "@-", "--no-graph", "-T", `commit_id ++ "\n"`))
+}
+
+// remoteHead is the commit ref names on the replay's remote, "" where it names none.
+func (r *teardownEffectsRun) remoteHead(ref string) string {
+	out, err := r.git.Try(r.workspace, "git", "--git-dir", r.remote, "rev-parse", "--verify", "-q", ref+"^{commit}")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// applyPush moves the remote's ref as the run's push did, from the head it moved it from, and
+// lets the workspace's jj read the move. A commit the run made comes from the run's own remote or
+// workspace, which are sources only: the commit is on the remote from this push on, not before.
+func (r *teardownEffectsRun) applyPush(p teardownEffectsPush, runDir string) error {
+	from := p.Old
+	if from == teardownEffectsNoCommit {
+		from = ""
+	}
+	if got := r.remoteHead(p.Ref); got != from {
+		return fmt.Errorf("the run's push moved %s from %q, and the replay's remote holds %q there: the replay's state is not the run's", p.Ref, from, got)
+	}
+	gitDir := []string{"git", "--git-dir", r.remote}
+	switch {
+	case p.New == teardownEffectsNoCommit:
+		if out, err := r.git.Try(r.workspace, append(gitDir, "update-ref", "-d", p.Ref)...); err != nil {
+			return fmt.Errorf("delete %s: %v\n%s", p.Ref, err, out)
 		}
-		Results struct {
-			Checks []struct {
-				ID      string `json:"block_id"`
-				Results []map[string]any
+	default:
+		moved := false
+		if _, err := r.git.Try(r.workspace, append(gitDir, "cat-file", "-e", p.New+"^{commit}")...); err == nil {
+			out, err := r.git.Try(r.workspace, append(gitDir, "update-ref", p.Ref, p.New)...)
+			if err != nil {
+				return fmt.Errorf("move %s to %s: %v\n%s", p.Ref, p.New, err, out)
+			}
+			moved = true
+		}
+		for _, source := range []string{r.workspace, filepath.Join(runDir, "remote.git"), filepath.Join(runDir, "workspace")} {
+			if moved {
+				break
+			}
+			if _, err := os.Stat(source); err != nil {
+				continue
+			}
+			_, err := r.git.Try(r.workspace, append(gitDir, "fetch", "-q", "--no-tags", source, "+"+p.New+":"+p.Ref)...)
+			moved = err == nil
+		}
+		if !moved {
+			return fmt.Errorf("the run pushed %s to %s, and neither the replay's workspace nor the run's remote.git or workspace holds that commit", p.New, p.Ref)
+		}
+	}
+	if out, err := r.git.Try(r.workspace, "jj", "git", "fetch", "--remote", r.remoteName); err != nil {
+		return fmt.Errorf("jj git fetch after the push to %s: %v\n%s", p.Ref, err, out)
+	}
+	return nil
+}
+
+// applyGitHub makes a GitHub change again: the change gh-standin kept (`pull`), with the pull
+// request it opened at the head it opened it on, which the replay's remote must hold there; or, in
+// a capture from before gh-standin recorded it, the call read from its arguments (githubAction).
+// A merge or a close is always read from its arguments, as the daemon stand-in reads it.
+func (r *teardownEffectsRun) applyGitHub(row teardownEffectsGitHubRow) error {
+	g := r.github
+	if p := row.Pull; p != nil {
+		if p.Action == "open" {
+			if got := r.remoteHead("refs/heads/" + p.Head); got != p.SHA {
+				return fmt.Errorf("gh-standin opened pull request #%d on %s at %s, and the replay's remote holds %q there: the replay's state is not the run's", p.Number, p.Head, p.SHA, got)
+			}
+		}
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		switch p.Action {
+		case "open":
+			if _, taken := g.pulls[p.Number]; taken {
+				return fmt.Errorf("gh-standin opened pull request #%d, which the replay already holds", p.Number)
+			}
+			pull := teardownEffectsPull{Number: p.Number, State: "open", Base: p.Base, Body: p.Body, Draft: p.Draft}
+			pull.Head.Ref, pull.Head.SHA = p.Head, p.SHA
+			g.pulls[p.Number] = pull
+		case "edit":
+			for _, n := range p.Numbers {
+				pull, ok := g.pulls[n]
+				if !ok {
+					return fmt.Errorf("gh-standin edited the body of pull request #%d, which the replay does not hold", n)
+				}
+				pull.Body = p.Body
+				g.pulls[n] = pull
+			}
+		case "review":
+			pull, ok := g.pulls[p.Number]
+			if !ok {
+				return fmt.Errorf("gh-standin reviewed pull request #%d, which the replay does not hold", p.Number)
+			}
+			at, err := time.Parse(time.RFC3339Nano, p.SubmittedAt)
+			if err != nil {
+				return fmt.Errorf("review of #%d: %w", p.Number, err)
+			}
+			pull.Reviews = append(pull.Reviews, struct {
+				Author, State, Commit, Body string
+				At                          time.Time
+			}{Author: "legion-review[bot]", State: p.State, Commit: p.Commit, Body: p.Body, At: at})
+			g.pulls[p.Number] = pull
+		default:
+			return fmt.Errorf("gh-standin kept a pull request change %q the replay does not make", p.Action)
+		}
+		return nil
+	}
+	command, method, path, fields, err := teardownEffectsGitHubRequest(row)
+	if err != nil {
+		return err
+	}
+	if command == "gh pr create" || method == "POST" && teardownEffectsPullsPath.MatchString(path) {
+		head := r.branch
+		if named, ok := fields["head"].(string); ok && named != "" {
+			head = named
+			if _, branch, owned := strings.Cut(named, ":"); owned {
+				head = branch
+			}
+		}
+		fields["head"] = head
+		if r.remoteHead("refs/heads/"+head) == "" {
+			return fmt.Errorf("gh %s opened a pull request on %s, which the replay's remote does not hold", strings.Join(row.Argv, " "), head)
+		}
+	} else if _, named := fields["number"]; !named && !strings.Contains(path, "/pulls/") {
+		// A gh pr command that names no pull request acts on the one of the issue's branch.
+		if pull, ok := g.forBranch(r.branch); ok {
+			fields["number"] = float64(pull.Number)
+		}
+	}
+	r.githubAction(command, method, path, fields)
+	return nil
+}
+
+// applyDispatch writes one Dispatch event's record again as its author wrote it: the run's own
+// session's as the replay's pane (own names the run's session), any other session's as that
+// session, and a person's as the scratch Dispatch's person. Dispatch gives each record a new id;
+// a handoff keeps its phase's version.
+func (r *teardownEffectsRun) applyDispatch(e teardownEffectsEvent, own string, b *teardownEffectsReadback) error {
+	actor := e.Actor
+	if actor.Kind == "session" && own != "" && actor.ID == own {
+		actor.ID = r.session
+	}
+	prefix := "/api/v1/issues/" + r.key
+	text := func(key string) string { s, _ := e.Payload[key].(string); return s }
+	if fault := teardownEffectsDispatchFault(b, e); fault != "" {
+		return fmt.Errorf("%s: %s", e.Type, fault)
+	}
+	switch e.Type {
+	case "handoff.recorded":
+		body, version, word, _ := b.handoffBody(text("handoff_id"))
+		if err := r.dispatchPost(actor, prefix+"/handoffs/"+word, map[string]any{"body": body}); err != nil {
+			return err
+		}
+		got := r.dispatch.latest(r.key, word)
+		if got.Version != version {
+			return fmt.Errorf("the replay wrote the %s handoff version %d, and the run's was version %d", word, got.Version, version)
+		}
+		r.handoffs[got.ID] = teardownEffectsHandoff{Phase: word, ID: got.ID, Version: got.Version}
+		return nil
+	case "comment.created":
+		return r.dispatchPost(actor, prefix+"/comments", map[string]any{"body": text("body")})
+	case "result.recorded":
+		result, check, _ := b.result(text("result_id"))
+		return r.recordResult(actor.ID, check, result)
+	case "ask.opened":
+		for _, ask := range b.Asks {
+			if ask.ID == text("id") {
+				return r.dispatchPost(actor, prefix+"/asks", map[string]any{"question": ask.Question, "options": ask.Options})
+			}
+		}
+	case "artifact.created":
+		for _, doc := range b.Documents {
+			if doc.ID == e.ArtifactID {
+				return r.dispatchPost(actor, prefix+"/artifacts", map[string]any{"name": doc.Name, "content": doc.Text})
 			}
 		}
 	}
-	teardownEffectsReadJSON(t, filepath.Join(dir, "dispatch-readback.json"), &snapshot)
-	// The handoffs other sessions wrote go in with the rest of the world, before the issue takes
-	// its status: Dispatch refuses a handoff on a closed issue (ISSUE_CLOSED). The run's own go in
-	// once the replay's pane has registered, rebound to its session.
-	slices.SortStableFunc(snapshot.Handoffs, func(a, b handoffRecord) int { return a.Version - b.Version })
-	for _, old := range snapshot.Handoffs {
-		own := session != "" && old.Author.ID == session
-		if own != withHandoffs {
+	return fmt.Errorf("the replay writes no %s", e.Type)
+}
+
+// dispatchPost posts body as actor: a session through the agent's bearer, naming it, and a person
+// as the scratch Dispatch's person (handoffRecordsUser), whose login stands for the run's.
+func (r *teardownEffectsRun) dispatchPost(actor teardownEffectsActor, path string, body map[string]any) error {
+	var status int
+	var answer []byte
+	switch actor.Kind {
+	case "session":
+		body["actor"] = actor
+		status, answer = r.dispatch.agentPost(path, body)
+	case "user":
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		request, err := http.NewRequest(http.MethodPost, r.dispatch.base+path, bytes.NewReader(encoded))
+		if err != nil {
+			return err
+		}
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Dispatch-User", handoffRecordsUser)
+		status, answer = r.dispatch.do(request)
+	default:
+		return fmt.Errorf("the replay writes nothing as a %s", actor.Kind)
+	}
+	if status != http.StatusCreated {
+		return fmt.Errorf("Dispatch POST %s = %d %s", path, status, answer)
+	}
+	return nil
+}
+
+// recordResult records a check result as the session that recorded it in the run, each value of the
+// stored result through its `--<field>-file` flag, as `result` does.
+func (r *teardownEffectsRun) recordResult(session, check string, result map[string]any) error {
+	dir := r.t.TempDir()
+	args := []string{"result", "--issue", r.key}
+	for _, field := range []struct{ flag, key string }{{"check", ""}, {"role", "role"}, {"verdict", "verdict"}, {"commit", "commit_sha"}, {"surface", "surface"}, {"run", "run"}, {"observed", "observed"}, {"negative-control", "negative_control"}} {
+		value := check
+		if field.key != "" {
+			value, _ = result[field.key].(string)
+		}
+		if value == "" {
 			continue
 		}
-		author := old.Author.ID
-		if own {
-			author = r.session
-		}
-		got := r.handoff(old.Phase, author, old.Body)
-		if got.Version != old.Version {
-			t.Fatalf("restored %s version %d, want %d", old.Phase, got.Version, old.Version)
-		}
+		file := filepath.Join(dir, field.flag)
+		writeProofFile(r.t, file, value)
+		args = append(args, "--"+field.flag+"-file", file)
 	}
-	if withHandoffs {
-		return
+	shell := cliShell{t: r.t, dir: dir, session: session, base: r.dispatch.base, token: r.dispatch.token}
+	out, status := shell.bun(nil, dispatchCLI(r.harness.root), args...)
+	if status != 0 {
+		return fmt.Errorf("dispatch result as %s = %d: %s%s", session, status, out.stdout, out.stderr)
 	}
-	prefix := "/api/v1/issues/" + r.key
-	for _, doc := range snapshot.Documents {
-		if doc.Kind == "doc" && doc.Name != "spec.md" {
-			r.document(doc.Name, doc.Text)
-		}
+	return nil
+}
+
+// state is what the next call runs against: the issue's phase, the tree the daemon holds it in and
+// whether that tree runs, its parent in Dispatch, the commit its workspace stands on, its branch on
+// the remote and the pull requests the GitHub fixture holds.
+func (r *teardownEffectsRun) state() teardownEffectsState {
+	issues := r.d.state().Issues
+	issue, ok := issues[r.key]
+	if !ok {
+		r.t.Fatalf("the state records no issue %s", r.key)
 	}
-	for _, comment := range snapshot.Comments {
-		switch comment.Author.Kind {
-		case "system":
-			// Dispatch's own comment, such as the parent-status rule's on a seeded status change:
-			// Dispatch writes it again where the restored writes call for it, and no caller can.
-			continue
-		case "user":
-			r.dispatch.user(http.MethodPost, prefix+"/comments", map[string]any{"body": comment.Body}, http.StatusCreated, nil)
-			continue
-		}
-		status, body := r.dispatch.agentPost(prefix+"/comments", map[string]any{"actor": comment.Author, "body": comment.Body})
-		if status != 201 {
-			t.Fatalf("restore comment: %d %s", status, body)
-		}
+	var listed struct{ Parent *string }
+	r.dispatch.agentGet("/api/v1/issues/"+r.key, &listed)
+	s := teardownEffectsState{Phase: string(issue.Phase), Tree: issue.Tree, Standing: r.standing(), Branch: r.remoteHead("refs/heads/" + r.branch), Pulls: []teardownEffectsPullState{}}
+	if root, ok := issues[issue.Tree]; ok && root.TreeRuns != nil {
+		s.TreeRuns = *root.TreeRuns
 	}
-	for _, ask := range snapshot.Asks {
-		if ask.State != "" && ask.State != "open" {
-			t.Fatalf("cannot restore %s ask without its transition record", ask.State)
-		}
-		status, body := r.dispatch.agentPost(prefix+"/asks", map[string]any{"actor": ask.Author, "question": ask.Question, "options": ask.Options})
-		if status != 201 {
-			t.Fatalf("restore ask: %d %s", status, body)
-		}
+	if listed.Parent != nil {
+		s.Parent = *listed.Parent
 	}
-	for _, check := range snapshot.Results.Checks {
-		for _, result := range check.Results {
-			result["check"] = check.ID
-			result["commit"] = result["commit_sha"]
-			result["negative-control"] = result["negative_control"]
-			r.result(result, "teardown-results")
-		}
+	r.github.mu.Lock()
+	for _, pull := range r.github.pulls {
+		s.Pulls = append(s.Pulls, teardownEffectsPullState{Number: pull.Number, State: pull.State, Head: pull.Head.SHA})
 	}
+	r.github.mu.Unlock()
+	slices.SortFunc(s.Pulls, func(a, b teardownEffectsPullState) int { return a.Number - b.Number })
+	return s
 }
 
 type teardownEffectsGitHub struct {
@@ -1485,86 +1817,5 @@ func (r *teardownEffectsRun) githubAction(command, method, path string, fields m
 			}{Author: "legion-reviewer[bot]", State: state, Commit: pull.Head.SHA, Body: teardownEffectsString(fields, "body"), At: r.clock.Now()})
 			g.pulls[number] = pull
 		}
-	}
-}
-
-func (r *teardownEffectsRun) rebuildGitHub(runDir string) {
-	for _, call := range teardownEffectsReadLines[struct {
-		Argv  []string
-		Exit  int
-		Body  *string
-		Files map[string]string
-	}](r.t, filepath.Join(runDir, "calls.jsonl")) {
-		if call.Exit != 0 || len(call.Argv) < 2 {
-			continue
-		}
-		args := call.Argv
-		command, method, path := "", "", ""
-		fields := map[string]any{}
-		if args[0] == "pr" {
-			command = "gh pr " + args[1]
-			args = args[2:]
-			if len(args) > 0 {
-				if n, err := strconv.Atoi(args[0]); err == nil {
-					fields["number"] = float64(n)
-					args = args[1:]
-				}
-			}
-		} else if args[0] == "api" {
-			method = "GET"
-			args = args[1:]
-		} else {
-			continue
-		}
-		for len(args) > 0 {
-			flag := args[0]
-			args = args[1:]
-			if key, value, ok := strings.Cut(flag, "="); ok && strings.HasPrefix(key, "--") {
-				flag = key
-				args = append([]string{value}, args...)
-			}
-			if flag == "--approve" {
-				fields["event"] = "APPROVE"
-				continue
-			}
-			if flag == "--request-changes" {
-				fields["event"] = "REQUEST_CHANGES"
-				continue
-			}
-			if !strings.HasPrefix(flag, "-") && path == "" {
-				path = strings.TrimPrefix(flag, "/")
-				continue
-			}
-			if len(args) == 0 {
-				continue
-			}
-			value := args[0]
-			switch flag {
-			case "-X", "--method":
-				method = value
-			case "--head", "--base", "--body":
-				fields[strings.TrimPrefix(flag, "--")] = value
-			case "--body-file":
-				fields["body"] = call.Files[value]
-			case "--input":
-				if err := json.Unmarshal([]byte(call.Files[value]), &fields); err != nil {
-					r.t.Fatalf("read GitHub request input: %v", err)
-				}
-			case "-f", "-F", "--raw-field", "--field":
-				if key, text, ok := strings.Cut(value, "="); ok {
-					if name, ok := strings.CutPrefix(text, "@"); ok && flag != "-f" && flag != "--raw-field" {
-						text = call.Files[name]
-					}
-					fields[key] = text
-				}
-			default:
-				continue
-			}
-			args = args[1:]
-		}
-		if call.Body != nil {
-			fields["body"] = *call.Body
-		}
-		r.githubAction(command, method, path, fields)
 	}
 }

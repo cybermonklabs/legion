@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Drive the real Legion tool against a whole daemon and scratch Dispatch in a builds Job.
 # No model service is used: the provider sends the calls from a known-good trace or a lane R
-# transcript. The run writes effects.json for each proof and daemon-answers.json for --controls.
+# transcript. --runs starts each run from its case's starting state and applies only the changes
+# the run recorded before each call (scripts/e2e/README.md#teardown-effectssh). The run writes
+# effects.json for each proof, replay.json for each run and daemon-answers.json for --controls.
 set -euo pipefail
 
 usage() {

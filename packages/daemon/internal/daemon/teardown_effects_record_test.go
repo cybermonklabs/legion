@@ -55,16 +55,97 @@ type teardownEffectsHandoff struct {
 	ID      string `json:"id"`
 }
 
+// teardownEffectsDifference is one request the real daemon answered otherwise than the stand-in
+// answered the role (plan T4, lane D step 3), in call order: `seq` is the place of the daemon's
+// real answer among the record's answers, `route` the request's method and path, `call` the
+// original legion call's tool call id, and `outcomeSeq` the outcome.json action that records the
+// stand-in's answer, so a reader can grade the original through that call with the real answer.
 type teardownEffectsDifference struct {
-	Seq     int                   `json:"seq"`
-	Standin teardownEffectsStatus `json:"standin"`
-	Daemon  teardownEffectsStatus `json:"daemon"`
+	Seq        int                   `json:"seq"`
+	Route      string                `json:"route"`
+	Call       string                `json:"call"`
+	OutcomeSeq int                   `json:"outcomeSeq"`
+	Standin    teardownEffectsStatus `json:"standin"`
+	Daemon     teardownEffectsStatus `json:"daemon"`
 }
 
+// teardownEffectsReplayRecord is replay.json, written beside effects.json for every replayed run,
+// and alone where the replay is a harness failure: the verdict (`ok`, `DIVERGED` or `HARNESS`, with
+// the reason of a harness failure), the seeded Dispatch records the replay started from, each call
+// replayed with the recorded changes applied before it, the state it ran in, the stand-in's answers
+// and the real daemon's, and the client's answer in the run and in the replay; then the changes
+// recorded after the last call, which the replay did not apply, and the calls it did not replay,
+// which follow the first call the real daemon answered otherwise.
+type teardownEffectsReplayRecord struct {
+	ID          string                      `json:"id"`
+	Verdict     string                      `json:"verdict"`
+	Reason      string                      `json:"reason,omitempty"`
+	Seed        []teardownEffectsChange     `json:"seed"`
+	Calls       []teardownEffectsReplayCall `json:"calls"`
+	After       []teardownEffectsChange     `json:"after"`
+	NotReplayed []string                    `json:"notReplayed"`
+}
+
+type teardownEffectsReplayCall struct {
+	Call       string                     `json:"call"`
+	Op         string                     `json:"op"`
+	At         time.Time                  `json:"at"`
+	Before     []teardownEffectsChange    `json:"before"`
+	State      teardownEffectsState       `json:"state"`
+	Standin    []teardownEffectsAnswerRef `json:"standin"`
+	Daemon     []teardownEffectsAnswerRef `json:"daemon"`
+	Client     teardownEffectsClientRef   `json:"client"`
+	PhaseAfter string                     `json:"phaseAfter"`
+}
+
+// teardownEffectsAnswerRef is one answer to a call's request: a stand-in's, with the outcome.json
+// action that records it, or the real daemon's, with its place among effects.json's answers.
+type teardownEffectsAnswerRef struct {
+	OutcomeSeq int    `json:"outcomeSeq,omitempty"`
+	Seq        *int   `json:"seq,omitempty"`
+	Route      string `json:"route"`
+	teardownEffectsStatus
+}
+
+type teardownEffectsClientRef struct {
+	Run    teardownEffectsClientAnswer `json:"run"`
+	Replay teardownEffectsClientAnswer `json:"replay"`
+}
+
+type teardownEffectsClientAnswer struct {
+	IsError bool   `json:"isError"`
+	Text    string `json:"text"`
+}
+
+// teardownEffectsState is what a call ran against once the changes before it were applied: the
+// issue's phase, the tree the daemon holds it in (its own key for a root, its parent's for a child)
+// and whether that tree runs, its parent in Dispatch ("" for none), the commit its workspace stands
+// on (`@-`), the head of its branch on the remote ("" where the remote holds no branch) and each
+// pull request the GitHub fixture holds.
+type teardownEffectsState struct {
+	Phase    string                     `json:"phase"`
+	Tree     string                     `json:"tree"`
+	TreeRuns bool                       `json:"treeRuns"`
+	Parent   string                     `json:"parent"`
+	Standing string                     `json:"standing"`
+	Branch   string                     `json:"branch"`
+	Pulls    []teardownEffectsPullState `json:"pulls"`
+}
+
+type teardownEffectsPullState struct {
+	Number int    `json:"number"`
+	State  string `json:"state"`
+	Head   string `json:"head"`
+}
+
+// teardownEffectsCall is one legion call of a run's transcript, its time, and the result the role
+// was given: when it came back, its text and whether it is an error.
 type teardownEffectsCall struct {
 	ID, Op, Session string
 	Args            map[string]any
 	At, ResultAt    time.Time
+	Result          string
+	IsError         bool
 }
 
 // teardownEffectsReadCalls reads the full arguments on assistant message blocks, not the
@@ -106,6 +187,7 @@ func teardownEffectsTranscript(r io.Reader) ([]teardownEffectsCall, error) {
 			Message   struct {
 				Role, ToolCallID string
 				Content          json.RawMessage
+				IsError          bool
 			}
 		}
 		if err := json.Unmarshal(line, &entry); err != nil {
@@ -121,7 +203,17 @@ func teardownEffectsTranscript(r io.Reader) ([]teardownEffectsCall, error) {
 		switch entry.Message.Role {
 		case "toolResult":
 			if i, ok := byID[entry.Message.ToolCallID]; ok {
-				calls[i].ResultAt = entry.Timestamp
+				var blocks []struct{ Type, Text string }
+				if err := json.Unmarshal(entry.Message.Content, &blocks); err != nil {
+					return fmt.Errorf("result of legion call %s: %w", entry.Message.ToolCallID, err)
+				}
+				var text strings.Builder
+				for _, block := range blocks {
+					if block.Type == "text" {
+						text.WriteString(block.Text)
+					}
+				}
+				calls[i].ResultAt, calls[i].Result, calls[i].IsError = entry.Timestamp, text.String(), entry.Message.IsError
 			}
 		case "assistant":
 			var blocks []struct {
@@ -172,6 +264,7 @@ func teardownEffectsLines(r io.Reader, visit func([]byte) error) error {
 }
 
 func TestTeardownEffectsRecordJSONRoundTrip(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile("testdata/teardown-effects/effects-example.json")
 	if err != nil {
 		t.Fatal(err)
@@ -200,6 +293,7 @@ func TestTeardownEffectsRecordJSONRoundTrip(t *testing.T) {
 }
 
 func TestTeardownEffectsTranscript(t *testing.T) {
+	t.Parallel()
 	f, err := os.Open("testdata/teardown-effects/session-synthetic.jsonl")
 	if err != nil {
 		t.Fatal(err)
@@ -213,15 +307,18 @@ func TestTeardownEffectsTranscript(t *testing.T) {
 		t.Fatalf("read %d legion calls, want 2", len(calls))
 	}
 	for i, want := range []struct {
-		id, at string
-		wake   any
+		id, at  string
+		wake    any
+		isError bool
+		result  string
 	}{
-		{"toolu_02legion_refused", "2030-01-08T12:03:10Z", nil},
-		{"toolu_03legion_ok", "2030-01-08T12:03:40Z", "2030-01-08T12:30:00Z"},
+		{"toolu_02legion_refused", "2030-01-08T12:03:10Z", nil, true, "400 CHECK_WAKE_REQUIRED: a pending report names wakeAt"},
+		{"toolu_03legion_ok", "2030-01-08T12:03:40Z", "2030-01-08T12:30:00Z", false, "{}"},
 	} {
 		got := calls[i]
-		if got.ID != want.id || got.Op != "handoff_complete" || got.Session != "11111111-2222-4333-8444-555555555555" || got.At.Format(time.RFC3339) != want.at || got.ResultAt.Sub(got.At) != time.Second || got.Args["wake_at"] != want.wake {
-			t.Fatalf("call %d: %+v, want %s at %s (wake %v)", i, got, want.id, want.at, want.wake)
+		if got.ID != want.id || got.Op != "handoff_complete" || got.Session != "11111111-2222-4333-8444-555555555555" || got.At.Format(time.RFC3339) != want.at || got.ResultAt.Sub(got.At) != time.Second || got.Args["wake_at"] != want.wake ||
+			got.IsError != want.isError || !strings.HasPrefix(got.Result, want.result) {
+			t.Fatalf("call %d: %+v, want %s at %s (wake %v), answered %q (error %t)", i, got, want.id, want.at, want.wake, want.result, want.isError)
 		}
 	}
 }
@@ -231,6 +328,7 @@ func TestTeardownEffectsTranscript(t *testing.T) {
 // call is the pending report, read whole from the assistant message with the session the header
 // names and the time its result came back.
 func TestTeardownEffectsTranscriptF2(t *testing.T) {
+	t.Parallel()
 	f, err := os.Open("../../../pi-legion/scripts/skill-scenarios/testdata/f2/sessions/p10-production-check.jsonl")
 	if err != nil {
 		t.Fatal(err)

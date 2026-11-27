@@ -1,0 +1,181 @@
+{
+  "issue": {
+    "key": "ACME-12",
+    "title": "Step records carry experiment and variant",
+    "status": "in_progress",
+    "parent": "ACME-10"
+  },
+  "seedThrough": 4,
+  "documents": [
+    {
+      "id": "art-acme-12-verification",
+      "name": "verification.md",
+      "kind": "doc",
+      "version": 1,
+      "text": "# Verification\n\n:::check{#k1 surface=\"api\" run=\"go test -run 'TestStepRecord' ./internal/api/ ./internal/dispatch/\" when=\"before_merge\" negative_control=\"A step record without experiment fails the reader test.\"}\nThe daemon's step record and its Dispatch reader carry `experiment` and `variant`.\n:::\n"
+    }
+  ],
+  "handoffs": [
+    {
+      "id": "hnd-acme-12-implement-1",
+      "issue_key": "ACME-12",
+      "phase": "implement",
+      "version": 1,
+      "body": "{\"head\":\"d9585820bbbfe46ceb0a69284276fa120eefd9c5\",\"summary\":\"Step records carry experiment and variant through the API and the Dispatch reader; check k1 passes at this head.\"}",
+      "created_at": "2026-11-27T00:06:51.120000Z",
+      "author": {
+        "kind": "session",
+        "id": "7d1e5a12-0c05-4a12-9b12-a5120c05a512"
+      }
+    },
+    {
+      "id": "hnd-acme-12-plan-1",
+      "issue_key": "ACME-12",
+      "phase": "plan",
+      "version": 1,
+      "body": "{\"head\":\"3d669591dcafe9170992a26efe256208e7d658bf\",\"summary\":\"Add experiment and variant to the step record, its API answer and the Dispatch reader, each with a focused test.\"}",
+      "created_at": "2026-11-27T00:06:37.940000Z",
+      "author": {
+        "kind": "session",
+        "id": "ses-acme-12-planner"
+      }
+    }
+  ],
+  "comments": [],
+  "asks": [],
+  "results": {
+    "checks": [
+      {
+        "block_id": "k1",
+        "results": [
+          {
+            "id": "res-acme-12-k1-1",
+            "role": "implementer",
+            "verdict": "pass",
+            "commit_sha": "d9585820bbbfe46ceb0a69284276fa120eefd9c5",
+            "run": "go test -run 'TestStepRecord' ./internal/api/ ./internal/dispatch/",
+            "surface": "",
+            "observed": "",
+            "negative_control": "",
+            "created_at": "2026-11-27T00:07:18.250000Z",
+            "author": {
+              "kind": "session",
+              "id": "7d1e5a12-0c05-4a12-9b12-a5120c05a512"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "events": [
+    {
+      "id": 9001,
+      "issue_key": "ACME-12",
+      "seq": 1,
+      "actor": {
+        "kind": "session",
+        "id": "rig-seed"
+      },
+      "notify": false,
+      "created_at": "2026-11-27T00:06:37.900000Z",
+      "type": "issue.created",
+      "payload": {
+        "key": "ACME-12",
+        "title": "Step records carry experiment and variant",
+        "status": "triage"
+      }
+    },
+    {
+      "id": 9002,
+      "issue_key": "ACME-12",
+      "artifact_id": "art-acme-12-verification",
+      "seq": 2,
+      "actor": {
+        "kind": "session",
+        "id": "rig-seed"
+      },
+      "notify": false,
+      "created_at": "2026-11-27T00:06:37.920000Z",
+      "type": "artifact.created",
+      "payload": {
+        "id": "art-acme-12-verification",
+        "name": "verification.md",
+        "kind": "doc"
+      }
+    },
+    {
+      "id": 9003,
+      "issue_key": "ACME-12",
+      "seq": 3,
+      "actor": {
+        "kind": "session",
+        "id": "ses-acme-12-planner"
+      },
+      "notify": true,
+      "created_at": "2026-11-27T00:06:37.940000Z",
+      "type": "handoff.recorded",
+      "payload": {
+        "handoff_id": "hnd-acme-12-plan-1",
+        "phase": "plan",
+        "version": 1
+      }
+    },
+    {
+      "id": 9004,
+      "issue_key": "ACME-12",
+      "seq": 4,
+      "actor": {
+        "kind": "session",
+        "id": "rig-seed"
+      },
+      "notify": false,
+      "created_at": "2026-11-27T00:06:37.960000Z",
+      "type": "issue.updated",
+      "payload": {
+        "key": "ACME-12",
+        "status": "in_progress"
+      }
+    },
+    {
+      "id": 9005,
+      "issue_key": "ACME-12",
+      "seq": 5,
+      "actor": {
+        "kind": "session",
+        "id": "7d1e5a12-0c05-4a12-9b12-a5120c05a512"
+      },
+      "notify": true,
+      "created_at": "2026-11-27T00:06:51.120000Z",
+      "type": "handoff.recorded",
+      "payload": {
+        "handoff_id": "hnd-acme-12-implement-1",
+        "phase": "implement",
+        "version": 1
+      }
+    },
+    {
+      "id": 9006,
+      "issue_key": "ACME-12",
+      "seq": 6,
+      "actor": {
+        "kind": "session",
+        "id": "7d1e5a12-0c05-4a12-9b12-a5120c05a512"
+      },
+      "notify": true,
+      "created_at": "2026-11-27T00:07:18.250000Z",
+      "type": "result.recorded",
+      "payload": {
+        "result_id": "res-acme-12-k1-1",
+        "issue": "ACME-12",
+        "check_issue": "ACME-12",
+        "check_artifact_id": "art-acme-12-verification",
+        "check_block_id": "k1",
+        "check_version": 1,
+        "when": "before_merge",
+        "verdict": "pass",
+        "role": "implementer",
+        "commit_sha": "d9585820bbbfe46ceb0a69284276fa120eefd9c5"
+      }
+    }
+  ]
+}

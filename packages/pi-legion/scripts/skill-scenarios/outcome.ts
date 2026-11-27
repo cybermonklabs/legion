@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { translateCommits } from "./git-world";
+import { recordWorkspace, translateCommits } from "./git-world";
 import { type OutcomeRecord, parseOutcome } from "./heldout-case";
 import { parseInstant } from "./production-dispatch";
 import {
@@ -461,6 +461,9 @@ export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
       lastText: translateCommits(lastText, inverse),
     })
   );
+  // The jj operation record of the run's workspace, beside the other records lane D's replay
+  // places against the run's calls: the workspace's own moves are recorded nowhere else.
+  if (existsSync(file("workspace/.jj"))) recordWorkspace(file("workspace"), dir);
   writeFileSync(file("outcome.json.new"), `${JSON.stringify(result, null, 2)}\n`);
   renameSync(file("outcome.json.new"), file("outcome.json"));
   return result;

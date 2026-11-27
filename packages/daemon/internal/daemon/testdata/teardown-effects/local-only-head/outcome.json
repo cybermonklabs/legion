@@ -1,0 +1,91 @@
+{
+  "id": "1b815eb3-4c9a-4174-b231-5c3d864f1622",
+  "actions": [
+    {
+      "kind": "dispatch",
+      "seq": 1,
+      "at": "2030-01-07T15:00:13.130834969Z",
+      "command": "handoff-write",
+      "target": "ACME-12",
+      "fields": {
+        "handoff_id": "hnd-acme-12-implement-1",
+        "phase": "implement",
+        "version": 1,
+        "body": {
+          "head": "d9585820bbbfe46ceb0a69284276fa120eefd9c5",
+          "summary": "Step records carry experiment and variant through the API and the Dispatch reader; check k1 passes at this head."
+        }
+      }
+    },
+    {
+      "kind": "push",
+      "seq": 2,
+      "at": "2030-01-07T15:00:27.372005949Z",
+      "ref": "legion/ACME-12",
+      "commit": "d9585820bbbfe46ceb0a69284276fa120eefd9c5"
+    },
+    {
+      "kind": "github",
+      "seq": 3,
+      "at": "2030-01-07T15:00:35.840834969Z",
+      "command": "gh pr create",
+      "fields": {
+        "head": "legion/ACME-12",
+        "base": "main",
+        "title": "feat(daemon): step records carry experiment and variant (ACME-12)",
+        "body": "Dispatch: ACME-12"
+      }
+    },
+    {
+      "kind": "dispatch",
+      "seq": 4,
+      "at": "2030-01-07T15:00:40.260834969Z",
+      "command": "result",
+      "target": "ACME-12",
+      "fields": {
+        "result_id": "res-acme-12-k1-1",
+        "issue": "ACME-12",
+        "check_issue": "ACME-12",
+        "check_artifact_id": "art-acme-12-verification",
+        "check_block_id": "k1",
+        "check_version": 1,
+        "when": "before_merge",
+        "verdict": "pass",
+        "role": "implementer",
+        "commit_sha": "d9585820bbbfe46ceb0a69284276fa120eefd9c5",
+        "id": "res-acme-12-k1-1",
+        "run": "go test -run 'TestStepRecord' ./internal/api/ ./internal/dispatch/",
+        "surface": "",
+        "observed": "",
+        "negative_control": "",
+        "created_at": "2026-11-27T00:07:18.250000Z",
+        "author": {
+          "kind": "session",
+          "id": "7d1e5a12-0c05-4a12-9b12-a5120c05a512"
+        },
+        "check": "k1",
+        "commit": "d9585820bbbfe46ceb0a69284276fa120eefd9c5"
+      }
+    },
+    {
+      "kind": "daemon",
+      "seq": 5,
+      "at": "2030-01-07T15:00:49.360834969Z",
+      "op": "handoff_complete",
+      "args": {
+        "summary": "Step records carry experiment and variant through the API and the Dispatch reader. Check k1 passes at the pushed head, and the pull request is open.",
+        "verdict": "",
+        "commit": "d9585820bbbfe46ceb0a69284276fa120eefd9c5",
+        "handoffId": "hnd-acme-12-implement-1",
+        "handoffVersion": 1
+      },
+      "answer": {
+        "code": null,
+        "body": {}
+      }
+    }
+  ],
+  "skillReads": [],
+  "dispatchFirstInjected": false,
+  "lastText": "Implementing is complete at d9585820: the head is pushed to legion/ACME-12, pull request #1 is open, and k1 passed there."
+}

@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 // Stand-in for `gh` on a skill scenario's PATH. Each call is recorded to
 // $SKILL_SCENARIO_RUN/calls.jsonl (argv, the contents of any file or stdin it hands GitHub a body
-// through, its exit status, and the pull request body it kept, if any), then answered from the
+// through, its exit status, the pull request body it kept, if any, when it began (`at`) and ended
+// (`done`), and the change it kept to a pull request (`pull`: `open`, `edit` or `review`), from
+// which lane D's replay makes that change again in its place), then answered from the
 // first route in $SKILL_SCENARIO_RUN/fixtures.json whose regex matches "gh <argv...>". A call no
 // route matches answers `gh: Not Found (HTTP 404)` and exits 1. Nothing is sent anywhere.
 // `--json a,b` picks those fields of the answer, or of each object of a list answer (`gh pr list`),
@@ -199,11 +201,16 @@ for (const pull of created) {
 }
 const joined = `${as} ${args.join(" ")}`;
 const route = routes.find((candidate) => new RegExp(candidate.match, "s").test(joined));
-/** Records the call with the status it exits with, then exits. */
+/** The change this call kept to a pull request, as lane D's replay makes it again: `open` (the
+ * number, branch, base and head commit it gave the new one), `edit` (the body it gave each pull
+ * request it answers with) or `review` (the review it added). */
+let pullChange: Record<string, unknown> | undefined;
+/** Records the call with the status it exits with and the time it ends, then exits. */
 function exit(status: number): never {
+  const done = new Date().toISOString();
   appendFileSync(
     `${run}/calls.jsonl`,
-    `${JSON.stringify({ at, as, argv: args, files, stdin, route: route?.match ?? null, body: kept, exit: status })}\n`
+    `${JSON.stringify({ at, as, argv: args, files, stdin, route: route?.match ?? null, body: kept, exit: status, done, pull: pullChange })}\n`
   );
   process.exit(status);
 }
@@ -212,16 +219,21 @@ if (!route) {
   exit(1);
 }
 if (body !== undefined) {
+  const numbers = new Set<number>();
   /** `value` with the new body, when it is a pull request (an object with a `number` and a body),
    * never one of its reviews or comments, whose bodies are their own. */
-  const withBody = (value: unknown): unknown =>
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    "body" in value &&
-    "number" in value
-      ? { ...value, body }
-      : value;
+  const withBody = (value: unknown): unknown => {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      !("body" in value) ||
+      !("number" in value)
+    )
+      return value;
+    numbers.add(Number(value.number));
+    return { ...value, body };
+  };
   const edited = routes.map((candidate) => ({
     ...candidate,
     stdout: Array.isArray(candidate.stdout)
@@ -230,6 +242,7 @@ if (body !== undefined) {
   }));
   writeFileSync(`${run}/fixtures.json`, JSON.stringify({ ...fixtures, routes: edited }));
   kept = body;
+  pullChange = { action: "edit", numbers: [...numbers].sort((a, b) => a - b), body };
 }
 
 /** The method a `gh api` call names (`-X`, `--method`, `-XPOST`, `--method=POST`), uppercase. */
@@ -370,6 +383,14 @@ if (apiReview || prReview) {
       return candidate;
     });
     writeFileSync(`${run}/fixtures.json`, JSON.stringify({ ...fixtures, routes: edited }));
+    pullChange = {
+      action: "review",
+      number,
+      state: review.state,
+      commit: sha,
+      body: text,
+      submittedAt: when,
+    };
   }
 }
 // A pull request opened: `gh pr create` (`--head`/`-H`, `--base`/`-B`, `--title`/`-t`,
@@ -564,6 +585,7 @@ if ((apiCreate || prCreate) && repository !== undefined && existsSync(remote)) {
         created: [...created, { number, head, sha }],
       })
     );
+    pullChange = { action: "open", number, head, base, sha, title, body: prBody, draft };
   }
 }
 const jqIndex = args.findIndex((arg) => arg === "--jq" || arg === "-q");

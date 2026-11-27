@@ -162,7 +162,44 @@ test("a review POST answers with the created review, and the pull request's read
     "Fine at B.",
   ]);
   expect(JSON.parse(gh(run, "pr", "view", "73", "--json", "body").stdout)).toEqual({ body: "new" });
+  // Each row names the change the call kept to a pull request, which lane D's replay makes again.
+  expect(pullChanges(run)).toEqual([
+    {
+      action: "review",
+      number: 73,
+      state: "CHANGES_REQUESTED",
+      commit: "b".repeat(40),
+      body: "Changes at B.",
+      submittedAt: listed[1].submitted_at,
+    },
+    {
+      action: "review",
+      number: 73,
+      state: "APPROVED",
+      commit: "b".repeat(40),
+      body: "Fine at B.",
+      submittedAt: viewed.reviews[2].submitted_at,
+    },
+    { action: "edit", numbers: [73], body: "new" },
+  ]);
 });
+
+/** The pull request change each row of the run's calls.jsonl kept, in order, once every row is
+ * held to say when its call ended, no earlier than it began. */
+function pullChanges(run: string): unknown[] {
+  const Row = z.looseObject({
+    at: z.string(),
+    done: z.string(),
+    exit: z.number(),
+    pull: z.record(z.string(), z.unknown()).optional(),
+  });
+  const rows = readFileSync(path.join(run, "calls.jsonl"), "utf8")
+    .trimEnd()
+    .split("\n")
+    .map((line) => Row.parse(JSON.parse(line)));
+  for (const row of rows) expect(Date.parse(row.done)).toBeGreaterThanOrEqual(Date.parse(row.at));
+  return rows.flatMap((row) => (row.pull === undefined ? [] : [row.pull]));
+}
 
 // Paged reads. Each testdata/f7-* fixture is the output of one real `gh` 2.98.0 call (its
 // `.command`, whose first line is the command, and its `.stdout`, `.stderr` and `.exit`) against
@@ -498,7 +535,7 @@ test("a pull request the role opens is kept, follows its branch, and GitHub's re
   expect(gh(run, "pr", "edit", "1", "--body", "new").code).toBe(0);
   expect(gh(run, "pr", "view", "1", "--json", "body").stdout).toBe('{"body":"new"}\n');
 
-  pushed(run, "legion/ACME-13");
+  const third = pushed(run, "legion/ACME-13");
   const posted = gh(
     run,
     "api",
@@ -549,6 +586,31 @@ test("a pull request the role opens is kept, follows its branch, and GitHub's re
     .map((line) => z.object({ exit: z.number() }).parse(JSON.parse(line)).exit);
   // The three refusals: the branch the remote did not hold, and the two second pull requests.
   expect(exits.filter((exit) => exit !== 0)).toHaveLength(3);
+  // The opened pull requests, each at the head its branch had then, and the body edit; no refusal
+  // kept a change.
+  expect(pullChanges(run)).toEqual([
+    {
+      action: "open",
+      number: 1,
+      head: "legion/ACME-12",
+      base: "main",
+      sha: first,
+      title: "T",
+      body: "B",
+      draft: false,
+    },
+    { action: "edit", numbers: [1], body: "new" },
+    {
+      action: "open",
+      number: 2,
+      head: "legion/ACME-13",
+      base: "main",
+      sha: third,
+      title: "U",
+      body: "",
+      draft: false,
+    },
+  ]);
 }, 60_000);
 
 // Help and the version reach no GitHub: the real gh, the first executable gh on PATH outside the

@@ -1,0 +1,79 @@
+{
+  "clock": "2030-01-07T15:00:00Z",
+  "dispatch": {
+    "issue": {
+      "key": "ACME-12",
+      "title": "Step records carry experiment and variant",
+      "status": "in_progress",
+      "spec": "## Goal\n\nThe daemon's step record and its Dispatch reader carry `experiment` and `variant`.\n\n## Requirements\n\n:::requirement{#r1}\n**R1.** A step record read through the daemon's API names the experiment and the variant it ran under. From: the issue.\n:::\n",
+      "parent": "ACME-10"
+    },
+    "documents": [
+      {
+        "name": "verification.md",
+        "body": "# Verification\n\n:::check{#k1 surface=\"api\" run=\"go test -run 'TestStepRecord' ./internal/api/ ./internal/dispatch/\" when=\"before_merge\" negative_control=\"A step record without experiment fails the reader test.\"}\nThe daemon's step record and its Dispatch reader carry `experiment` and `variant`.\n:::\n"
+      }
+    ],
+    "handoffs": [
+      {
+        "id": "hnd-acme-12-plan-1",
+        "phase": "plan",
+        "version": 1,
+        "author": "ses-acme-12-planner",
+        "at": "2030-01-07T13:10:00Z",
+        "body": {
+          "head": "1f3a5c7e9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a",
+          "summary": "Add experiment and variant to the step record, its API answer and the Dispatch reader, each with a focused test."
+        }
+      }
+    ],
+    "comments": [],
+    "asks": [],
+    "results": []
+  },
+  "git": {
+    "commits": [
+      {
+        "id": "1f3a5c7e9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a",
+        "parents": [],
+        "description": "main: the base the issue branch starts from"
+      },
+      {
+        "id": "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c",
+        "parents": ["1f3a5c7e9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a"],
+        "description": "feat(daemon): step records carry experiment and variant"
+      }
+    ],
+    "remote": {
+      "name": "origin",
+      "branches": [
+        {
+          "name": "main",
+          "head": "1f3a5c7e9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a"
+        }
+      ]
+    },
+    "workspace": {
+      "standingOn": "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c",
+      "localOnly": ["7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c"]
+    }
+  },
+  "github": {
+    "repository": "cybermonklabs/legion",
+    "pullRequests": [],
+    "mergeQueue": []
+  },
+  "daemon": {
+    "phase": "implementing",
+    "step": {
+      "place": 2,
+      "name": "implement"
+    },
+    "task": {
+      "steps": "plan (planner), implement (implementer), test (tester), review (reviewer), retro (implementer)",
+      "implement": "Implement the plan, and record check k1's result at the commit you tested before you hand off."
+    },
+    "productionCheck": null
+  },
+  "production": null
+}

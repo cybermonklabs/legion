@@ -446,7 +446,7 @@ Each item below names a script, then what it proves.
 
 - `teardown-effects.sh`
 
-  replay recorded `legion` calls through the real Oh My Pi tool and a whole daemon on scratch Dispatch, or drive the no-model controls for implementer completion and production-check scheduling.
+  replay recorded `legion` calls through the real Oh My Pi tool and a whole daemon on scratch Dispatch, each run from its case's starting state with only the changes it recorded before each call applied first, or drive the no-model controls for implementer completion and production-check scheduling.
   Run this proof in an isolated build Job, not in the issue pod.
 
 - `busy-relaunch-delivery.sh`
@@ -5190,6 +5190,7 @@ export LEGION_OMP_PATH=/opt/omp/bin/omp
 export LEGION_TEST_PG_DSN='postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable'
 bash scripts/e2e/teardown-effects.sh --controls --cases packages/pi-legion/scripts/skill-scenarios/testdata/heldout-case-example.json
 bash scripts/e2e/teardown-effects.sh --runs <lane-R-run-directory-or-parent>
+bash scripts/e2e/teardown-effects.sh --runs packages/daemon/internal/daemon/testdata/teardown-effects/local-only-head   # → "ok replay <id>", exit 0
 ```
 
 Run both modes in a build Job with `go`, `git`, `jj`, `bun` after `bun install`, `python3`, and loopback PostgreSQL with `pgvector` and permission to create scratch databases.
@@ -5203,9 +5204,23 @@ Neither that refusal nor the comment writes `production_checks.wake_at` or a `ch
 A pushed head with an open pull request allows implementing to advance.
 Each control writes an `effects.json`, and `daemon-answers.json` records the completion responses observed on the wire.
 
-`--runs` reads each run's world, clock, Dispatch readback, GitHub calls, git remote, jj workspace and session JSONL.
-It replays the `legion` calls in transcript order and writes `<outcome id>/effects.json`, including the before and after phase, wake state, named handoffs and ordered replies.
-A different, missing or extra daemon reply marks the replay `DIVERGED`, not a result.
+`--runs` starts each run from its case's starting state, never from the state the run left.
+It builds the case's Git with lane R's own builder (`git-world.ts build`) and refuses a run whose `commit-map.json` names other commits, seeds Dispatch with the records the run's `dispatch-readback.json` holds at or below its seed cursor, and gives GitHub the world's pull requests.
+A child stays a child: the world's parent is filed in the scratch Dispatch first (titled `Parent of <issue>`, as lane R's seed titles it) and the issue under it, with the parent moved into work beside it, as lane R's seed does, and labelled for Legion, as the root handed over that the daemon records; in the daemon the issue, its claim and its production check stand in the parent's tree, whose lifecycle is open under the workflow.
+The world holds nothing of the parent's own daemon state, so the parent is recorded with the least that makes its tree run (without it, admission takes the tree for one that finished and releases the child's slot): a root handed over, in its Dispatch status, at `admitted`, with no slot, no claim and no phases row.
+A controller case whose issue is a child, and a parent in another project or after its child, are not set up and end the run `HARNESS`.
+Before each `legion` call of the session JSONL it applies only the changes the run recorded before that call, in their recorded order: each push of `pushes.log`, from the head it moved; each pull request change `gh-standin.ts` kept (`calls.jsonl`'s `pull`, or the call's arguments in an older capture, and a merge or a close always from its arguments); each Dispatch write of the readback's event log after the seed, by its author; and each move of the role's workspace onto another commit (`@-`, which the `legion` tool reads), from the jj operation of `workspace-ops.jsonl` that made it.
+`outcome.ts` writes `workspace-ops.jsonl` and `workspace.pack` at the end of each lane R run (`git-world.ts record`): each jj operation of the run's workspace with its start, end and the commit `@-` named, and the objects of those commits.
+Those objects go into the replay workspace's object store at the start, on no ref, so a commit the role made and never pushed keeps its id, parents and tree, and is seen only once its recorded move or push is applied; the run's own `remote.git` and `workspace`, where present, serve as further sources of pushed commits.
+A capture made before `outcome.ts` recorded the workspace has no `workspace-ops.jsonl`: run `bun packages/pi-legion/scripts/skill-scenarios/git-world.ts record <workspace> <dir>` on a copy of its original job archive's run directory first.
+Then the real pane and daemon answer the call and make its effects.
+The run is a harness failure, `HARNESS`, where its records cannot place a change a call needs or pair a request with its call: a change whose time touches a call's window, a push and a GitHub change that overlap, a GitHub change with no recorded end before a later call, a legion write the stand-in answered outside every call (or inside more than one), a record no `outcome.json` action holds or an `outcome.json` action no record holds, no `workspace-ops.jsonl`, a workspace that stood at the launch elsewhere than the world stands it or a move that began before the launch and ended after it, and a change the replay does not make (a workspace standing on several commits, any Dispatch write but a handoff, an issue comment, a result, a question, or a document not changed after it was made).
+It is `HARNESS` too where the replayed call shows the replay's state is not the run's: a request one side sent alone, a request naming another commit or handoff record, or a tool refusal in other words.
+A request the real daemon answered otherwise than the stand-in marks the run `DIVERGED`, and no later call is replayed.
+Each run writes `<outcome id>/replay.json`: its verdict, the seeded records, each call with the changes applied before it and their provenance (the `outcome.json` action, or the workspace record's line and jj operation), the state it ran in (phase, the daemon's tree for the issue and whether it runs, the issue's Dispatch parent, the commit the workspace stands on, the issue branch's head on the remote, the pull requests), the stand-in's and the daemon's answers and the tool's in the run and in the replay, the changes after the last call and the calls not replayed.
+A run that is not `HARNESS` writes `<outcome id>/effects.json` too, whose `diverged` entries name each difference in call order: the daemon answer's place among `answers` (`seq`), its `route`, the original call's tool call id (`call`) and the `outcome.json` action of the stand-in's answer (`outcomeSeq`), and the stand-in's and the daemon's status and refusal code.
+Neither file is ever written over, and the replay writes no answers file.
+`internal/daemon/testdata/teardown-effects/local-only-head` is the public development control, on a child issue: the implementer commits with jj, and its first completion is refused by the tool with the phase unmoved while that commit is local only; its push, pull request and result follow, and its second completion is accepted.
 The transcript reader's unit fixture is synthetic and uses the Oh My Pi JSONL shape; it is not evidence from a lane R run.
 
 `TEARDOWN_EFFECTS_EVIDENCE_DIR` selects the output directory.
