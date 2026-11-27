@@ -24,13 +24,17 @@ package api
 //     Client.Controller). The precedent for who may write a state and what the row keeps is
 //     POST /api/v1/results/{id}/retract.
 //
-// The route class is scopeProject, which reads the path's key alone, so the state route holds the
-// row to that project itself: a row of another project is 404 PRODUCTION_EVENT_NOT_FOUND. And both
-// writes hold the deploy they name, a failure's blamed deploy and a restore's restoring deploy, to
-// a deploy that counts for that project (evals.DeployCountsFor), whichever project's row it is,
-// asked in the write's transaction: a deploy that counts for other projects alone is answered as a
-// deploy no row holds, so neither write reaches another project's numbers through its deploy, nor
-// tells the caller which deploys another project made.
+// The route class is scopeProject, which reads the path's key alone, so the list and the state
+// route hold the rows to that project themselves: the project's own rows, and an automatic
+// signal's failure (check_fail, revert, incident_issue) of another project whose deploy counts for
+// this one (evals.DeployCountsFor), since such a failure counts in the numbers of every project its
+// deploy counts for (evals' failure_days.go), so each of them lists it and takes its reject,
+// re-count and restore; any other row of another project is 404 PRODUCTION_EVENT_NOT_FOUND. And
+// both writes hold the deploy they name, a failure's blamed deploy and a restore's restoring
+// deploy, to a deploy that counts for that project, whichever project's row it is, asked in the
+// write's transaction: a deploy that counts for other projects alone is answered as a deploy no
+// row holds, so neither write reaches another project's numbers through its deploy, nor tells the
+// caller which deploys another project made.
 
 import (
 	"context"
@@ -98,11 +102,14 @@ type productionEventInput struct {
 	// SourceRef is the system's own key for the event: a repeat under it answers the first row
 	// and writes nothing. A system's post needs one; a person's flag takes the server's.
 	SourceRef string `json:"source_ref"`
-	// Environment is the deployment environment, production where the body names none.
+	// Environment is the deployment environment, production where the body names none. A deploy's
+	// is production, the one environment the record counts (DORA's deploys to production), and a
+	// deploy naming another is refused; a failure's is kept as sent.
 	Environment string `json:"environment"`
 	// DeploymentEnvironmentName is OTel's name for Environment.
 	DeploymentEnvironmentName string `json:"deployment.environment.name"`
-	// Status is the system's own status word, stored as sent.
+	// Status is the event's status word: a deploy's is succeeded, succeeded where the body names
+	// none, and a deploy naming another (failed, say) is refused; a failure's is kept as sent.
 	Status string `json:"status"`
 	// DeploymentStatus is OTel's name for Status.
 	DeploymentStatus string `json:"deployment.status"`
@@ -155,7 +162,8 @@ type productionEventStateInput struct {
 // GET /api/v1/projects/{key}/production-events  (every authenticated reader)
 //
 // One page of the project's rows, newest first: a deploy by its finished_at and a failure by its
-// detected_at, within [from, to).
+// detected_at, within [from, to). Beside the project's own rows it lists each automatic signal's
+// failure of another project that counts for this one (reachedFailures).
 func (s *server) listProductionEvents(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -170,12 +178,44 @@ func (s *server) listProductionEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	if query.Reached, err = s.reachedFailures(r.Context(), query); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	events, total, err := prodevents.List(r.Context(), s.deps.Store.Pool, query)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, productionEventList{Items: events, Total: total, Limit: query.Limit, Offset: query.Offset})
+}
+
+// reachedFailures is the failures of other projects query.Project's list keeps beside its own
+// rows (prodevents.ListQuery.Reached): each automatic signal's failure the window and the filters
+// keep (prodevents.OthersFailures) whose blamed deploy counts for the project
+// (evals.DeployCountsFor), asked once of each deploy. Such a failure counts in the project's
+// numbers whichever project's row it is (evals' failure_days.go), so the project lists it, and its
+// state route takes its reject, re-count and restore (putProductionEventState).
+func (s *server) reachedFailures(ctx context.Context, query prodevents.ListQuery) ([]string, error) {
+	others, err := prodevents.OthersFailures(ctx, s.deps.Store.Pool, query)
+	if err != nil {
+		return nil, err
+	}
+	counts := map[string]bool{}
+	var reached []string
+	for _, other := range others {
+		counted, asked := counts[other.Deploy.ID]
+		if !asked {
+			if counted, err = evals.DeployCountsFor(ctx, s.deps.Store.Pool, s.deps.Attributor, query.Project, other.Deploy); err != nil {
+				return nil, err
+			}
+			counts[other.Deploy.ID] = counted
+		}
+		if counted {
+			reached = append(reached, other.ID)
+		}
+	}
+	return reached, nil
 }
 
 // parseProductionEventsQuery reads the list read's query: the window as every delivery and eval
@@ -221,11 +261,15 @@ func parseProductionEventsQuery(query url.Values) (prodevents.ListQuery, error) 
 // POST /api/v1/projects/{key}/production-events  (a system's deploy or failure, a person's failure)
 //
 // Stores one event: 201 with the new row, or 200 with the row the project already holds under the
-// event's source_ref, writing nothing. A failure blames a deploy that counts for the route's
-// project (evals.DeployCountsFor), asked in the write's transaction once the store holds the
-// deploy's row (prodevents.DeployCheck): a deploy that counts for other projects alone, public or
-// private and whoever posts, is answered as a deploy no row holds is by the same selector, and the
-// failure, which counts for the route's project alone (evals' failure_days.go), writes nothing.
+// event's source_ref, writing nothing. A system's repeat under a source_ref the project holds is
+// answered so before the failure's deploy is looked up, so a retry after its deploy was dropped
+// or stopped counting for the project answers its row too (R10). A deploy is one to production
+// that succeeded, the deploys DORA counts: one that names another environment or status is
+// refused 400. A failure blames a deploy that counts for the route's project
+// (evals.DeployCountsFor), asked in the write's transaction once the store holds the deploy's row
+// (prodevents.DeployCheck): a deploy that counts for other projects alone, public or private and
+// whoever posts, is answered as a deploy no row holds is by the same selector, and the failure,
+// which counts for the route's project alone (evals' failure_days.go), writes nothing.
 func (s *server) postProductionEvent(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -269,34 +313,64 @@ func (s *server) postProductionEvent(w http.ResponseWriter, r *http.Request) {
 	var blamed blame
 	var check prodevents.DeployCheck
 	if event.Kind == prodevents.KindFailure {
-		if blamed, err = s.blamedDeploy(r.Context(), event.ProjectKey, input); err != nil {
+		if err := input.checkBlameInput(); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+		if event.FinishedAt != nil {
+			s.writeHandlerError(w, productionEventInputError("a failure has no finished_at; it counts on its deploy's day"))
+			return
+		}
+		if !person {
+			held, found, err := prodevents.BySourceRef(r.Context(), s.deps.Store.Pool, event.ProjectKey, event.SourceRef)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			if found {
+				WriteJSON(w, http.StatusOK, held)
+				return
+			}
+		}
+		if blamed, err = s.blamedDeploy(r.Context(), event.ProjectKey, input); err != nil {
+			s.writeProductionEventError(w, err)
+			return
+		}
 		event.DeployID = &blamed.id
-		supplied := strings.TrimSpace(input.SourceRef)
 		if person {
 			event.SourceRef = prodevents.PersonSourceRef(blamed.id, actor.ID)
+			if supplied := strings.TrimSpace(input.SourceRef); supplied != "" && supplied != event.SourceRef {
+				deploy, found, err := prodevents.Deploy(r.Context(), s.deps.Store.Pool, blamed.id)
+				if err != nil {
+					s.writeHandlerError(w, err)
+					return
+				}
+				counts := false
+				if found {
+					if counts, err = evals.DeployCountsFor(r.Context(), s.deps.Store.Pool, s.deps.Attributor, event.ProjectKey, deploy); err != nil {
+						s.writeHandlerError(w, err)
+						return
+					}
+				}
+				if !counts {
+					s.writeProductionEventError(w, blamed.none)
+					return
+				}
+				s.writeHandlerError(w, productionEventInputError(
+					"a person's flag is keyed by the server, %s, so a second flag of one deploy writes nothing; send no source_ref, or that one",
+					event.SourceRef))
+				return
+			}
 		}
-		// The deploy's own questions, once the store holds its row: whether it counts for the
-		// route's project, and only then whether a person's source_ref is the server's key of it,
-		// whose refusal names that deploy's id.
 		check = func(ctx context.Context, tx pgx.Tx, deploy prodevents.Event) error {
 			counts, err := evals.DeployCountsFor(ctx, tx, s.deps.Attributor, event.ProjectKey, deploy)
-			switch {
-			case err != nil:
-				return err
-			case !counts:
-				return blamed.none
-			case person && supplied != "" && supplied != event.SourceRef:
-				return productionEventInputError(
-					"a person's flag is keyed by the server, %s, so a second flag of one deploy writes nothing; send no source_ref, or that one",
-					event.SourceRef)
+			if err == nil && !counts {
+				err = blamed.none
 			}
-			return nil
+			return err
 		}
 	}
-	stored, created, err := prodevents.WriteChecked(r.Context(), s.deps.Store.Pool, event, check)
+	stored, created, err := prodevents.Write(r.Context(), s.deps.Store.Pool, event, check)
 	// A blamed deploy the store holds no row of, or no deploy row of (a run's or a commit's row
 	// dropped since its lookup among them), is answered in the selector's words too.
 	var refused *prodevents.Error
@@ -318,7 +392,8 @@ func (s *server) postProductionEvent(w http.ResponseWriter, r *http.Request) {
 // known: the plain and the OTel name of one field taken as one, a system's source_ref required and
 // refused where it starts with an automatic source's prefix (prodevents.AutomaticSourceRefPrefix),
 // the times no event has refused (checkedTimes) and each pull request it names held to
-// `owner/repo#n` (pullRequestRef), the fields of a failure's deploy refused on a deploy, a
+// `owner/repo#n` (pullRequestRef), the fields of a failure's deploy refused on a deploy, a deploy
+// held to one to production that succeeded (its status succeeded where it names none), a
 // failure's signal and source the caller's (person or api), and its detected_at the server's time
 // where the body names none.
 func (input productionEventInput) event(person bool) (prodevents.Event, error) {
@@ -370,10 +445,20 @@ func (input productionEventInput) event(person bool) (prodevents.Event, error) {
 		return prodevents.Event{}, err
 	}
 	if input.Kind == prodevents.KindDeploy {
-		if input.PipelineRunID != "" || input.CommitSHA != "" || input.DeployID != nil || input.DetectedAt != nil {
+		switch {
+		case input.PipelineRunID != "" || input.CommitSHA != "" || input.DeployID != nil || input.DetectedAt != nil:
 			return prodevents.Event{}, productionEventInputError(
 				"deploy_id, cicd.pipeline.run.id, commit_sha and detected_at name a failure's deploy and its detection; a deploy's own run is its source_ref and url")
+		case environment != "" && environment != prodevents.DefaultEnvironment:
+			return prodevents.Event{}, productionEventInputError(
+				"environment (deployment.environment.name) %q is not %s: the record holds the deploys DORA counts, deploys to %s; post a deploy to %s alone, naming that environment or none",
+				evals.BoundedField(environment), prodevents.DefaultEnvironment, prodevents.DefaultEnvironment, prodevents.DefaultEnvironment)
+		case status != "" && status != prodevents.StatusSucceeded:
+			return prodevents.Event{}, productionEventInputError(
+				"status (deployment.status) %q is not %s: the record holds the deploys DORA counts, deploys that reached production; post a deploy once it %s, naming that status or none",
+				evals.BoundedField(status), prodevents.StatusSucceeded, prodevents.StatusSucceeded)
 		}
+		event.Status = prodevents.StatusSucceeded
 		return event, nil
 	}
 	signal := prodevents.SignalAPI
@@ -443,20 +528,9 @@ type blame struct {
 	none error
 }
 
-// blamedDeploy is the deploy a failure posted to project blames, named exactly one way: its row's
-// id, in its canonical spelling where it is a uuid, so a person's flag keys one deploy one way
-// (person:<deploy id>:<login>) however the body spells it, and which the store holds to a deploy
-// row as it writes (a body's id that is no uuid included); the GitHub run it was
-// (prodevents.DeployForRun); or a commit it shipped: the earliest deploy holding it
-// (prodevents.DeploysForCommit) that counts for project (evals.DeployCountsFor), so a deploy of
-// another project that shipped the commit first neither hides project's own nor turns the post
-// into a refusal, where the automatic signals blame the first deploy of any project
-// (prodevents.DeployForCommit). A run no deploy row holds, or a commit no deploy that counts for
-// project holds, is refused none at once, 409 PRODUCTION_EVENT_NO_DEPLOY, and the route refuses
-// none as well a deploy that does not count for its project once its write holds the row
-// (postProductionEvent): a commit's deploy dropped or no longer counted since this lookup is
-// refused so, never swapped for a later one.
-func (s *server) blamedDeploy(ctx context.Context, project string, input productionEventInput) (blame, error) {
+// checkBlameInput refuses a failure body whose deploy selector is absent, repeated or malformed,
+// before any repeat lookup runs so an invalid request is never answered 200.
+func (input productionEventInput) checkBlameInput() error {
 	named := 0
 	for _, set := range []bool{input.DeployID != nil, input.PipelineRunID != "", input.CommitSHA != ""} {
 		if set {
@@ -465,9 +539,37 @@ func (s *server) blamedDeploy(ctx context.Context, project string, input product
 	}
 	switch {
 	case named == 0:
-		return blame{}, productionEventInputError("a failure names the deploy it blames: deploy_id, cicd.pipeline.run.id with repo, or commit_sha")
+		return productionEventInputError("a failure names the deploy it blames: deploy_id, cicd.pipeline.run.id with repo, or commit_sha")
 	case named > 1:
-		return blame{}, productionEventInputError("a failure names the deploy it blames one way: deploy_id, cicd.pipeline.run.id or commit_sha, not two of them")
+		return productionEventInputError("a failure names the deploy it blames one way: deploy_id, cicd.pipeline.run.id or commit_sha, not two of them")
+	case input.PipelineRunID != "":
+		run, err := strconv.ParseInt(input.PipelineRunID, 10, 64)
+		if err != nil || run <= 0 {
+			return productionEventInputError("cicd.pipeline.run.id %q is not a GitHub run id, a positive integer", input.PipelineRunID)
+		}
+		if strings.TrimSpace(input.Repo) == "" {
+			return productionEventInputError("cicd.pipeline.run.id names a run of repo: name repo too")
+		}
+	}
+	return nil
+}
+
+// blamedDeploy is the deploy a failure posted to project blames, named exactly one way: its row's
+// id, in its canonical spelling where it is a uuid, so a person's flag keys one deploy one way
+// (person:<deploy id>:<login>) however the body spells it, and which the store holds to a deploy
+// row as it writes (a body's id that is no uuid included); the GitHub run it was
+// (prodevents.DeployForRun); or a commit it shipped: the earliest deploy holding it
+// (prodevents.DeploysForCommit) that counts for project (evals.DeployCountsFor), so a deploy of
+// another project that shipped the commit first neither hides project's own nor turns the post
+// into a refusal, where an automatic signal blames the first deploy holding it
+// (prodevents.DeployForCommit). A run no deploy row holds, or a commit no deploy that counts for
+// project holds, is refused none at once, and the route refuses none as well a deploy that does
+// not count for its project once its write holds the row (postProductionEvent): a commit's deploy
+// dropped or no longer counted since this lookup is refused so, never swapped for a later one.
+// Each none is the store's refusal (prodevents.NoDeploy, prodevents.NoDeployf), which the route
+// answers 409 PRODUCTION_EVENT_NO_DEPLOY (writeProductionEventError).
+func (s *server) blamedDeploy(ctx context.Context, project string, input productionEventInput) (blame, error) {
+	switch {
 	case input.DeployID != nil:
 		id := *input.DeployID
 		if parsed, err := uuid.Parse(id); err == nil {
@@ -479,10 +581,7 @@ func (s *server) blamedDeploy(ctx context.Context, project string, input product
 		if err != nil || run <= 0 {
 			return blame{}, productionEventInputError("cicd.pipeline.run.id %q is not a GitHub run id, a positive integer", input.PipelineRunID)
 		}
-		if strings.TrimSpace(input.Repo) == "" {
-			return blame{}, productionEventInputError("cicd.pipeline.run.id names a run of repo: name repo too")
-		}
-		none := errorf(http.StatusConflict, prodevents.CodeNoDeploy, "no deploy row is run %d of %s", run, input.Repo)
+		none := prodevents.NoDeployf("no deploy row is run %d of %s", run, input.Repo)
 		deploy, found, err := prodevents.DeployForRun(ctx, s.deps.Store.Pool, input.Repo, run)
 		if err != nil {
 			return blame{}, err
@@ -492,7 +591,7 @@ func (s *server) blamedDeploy(ctx context.Context, project string, input product
 		}
 		return blame{id: deploy.ID, none: none}, nil
 	}
-	none := errorf(http.StatusConflict, prodevents.CodeNoDeploy, "no deploy row holds commit %s", input.CommitSHA)
+	none := prodevents.NoDeployf("no deploy row holds commit %s", input.CommitSHA)
 	candidates, err := prodevents.DeploysForCommit(ctx, s.deps.Store.Pool, project, input.CommitSHA)
 	if err != nil {
 		return blame{}, err
@@ -520,12 +619,18 @@ func productionEventInputError(format string, args ...any) *apiError {
 //
 // Rejects, re-counts or restores one failure of the project and answers the row: a reject and a
 // re-count keep their reason, writer and time; a restore sets the restore time, its writer and the
-// restoring deploy where the body names one. A restoring deploy counts for the route's project
-// (evals.DeployCountsFor), asked in the write's transaction once the store holds its row
-// (prodevents.DeployCheck): one that counts for other projects alone is answered as a deploy no
-// row holds is (prodevents.NoDeploy), and one that finished before the failed deploy finished is
-// 400 PRODUCTION_EVENT_STATE_INPUT (prodevents.SetState). Who may write is decided before that
-// transaction opens (productionEventStateWriter), since it can ask the project's Legion daemon.
+// restoring deploy where the body names one, and a restore of a failure restored already, by a
+// person or by a revert's own deploy, answers the row as it stands and writes nothing (the first
+// restore stands). The failure is the project's, or an automatic signal's failure of another
+// project whose blamed deploy counts for this one, which counts in this project's numbers too and
+// so is this project's to judge under the same rule (prodevents.SetState, reachedFrom); every other
+// row is 404. A restoring deploy, and the deploy such a failure blames, count for the route's
+// project (evals.DeployCountsFor), asked in the write's transaction once the store holds the row
+// (prodevents.DeployCheck): a restoring deploy that counts for other projects alone is answered as
+// a deploy no row holds is (prodevents.NoDeploy), and one that finished before the failed deploy
+// finished is 400 PRODUCTION_EVENT_STATE_INPUT (prodevents.SetState). Who may write is decided
+// before that transaction opens (productionEventStateWriter), since it can ask the project's
+// Legion daemon.
 func (s *server) putProductionEventState(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

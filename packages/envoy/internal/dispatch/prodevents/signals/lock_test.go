@@ -111,13 +111,13 @@ func TestTheSignalsWritesTakeNoChangeLogLock(t *testing.T) {
 		t.Fatalf("deploy rows = %+v, want runs 200 and 201", rows)
 	}
 
-	handled := r.checkResult(issue, "c1", sha("8"), verdictFail, model.CheckWhenAfterMerge)
+	handled := r.checkResult(issue, "c1", sha("8"), VerdictFail, model.CheckWhenAfterMerge)
 	r.underChangeLogLock("the record route's check_fail", func() error {
 		_, err := RecordCheckFailure(r.ctx, r.pool, handled)
 		return err
 	}, r.newFailure())
 
-	r.checkResult(issue, "c2", sha("8"), verdictFail, model.CheckWhenAfterMerge)
+	r.checkResult(issue, "c2", sha("8"), VerdictFail, model.CheckWhenAfterMerge)
 	safe := r.safe()
 	r.underChangeLogLock("the checks feed's check_fail", func() error { return passChecks(r.ctx, r.pool, safe) }, r.newFailure())
 

@@ -20,9 +20,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -55,7 +58,7 @@ func writeProductionDeploy(t *testing.T, database *store.Store, project string, 
 		ProjectKey: project, Kind: prodevents.KindDeploy, Source: prodevents.SourceGitHub,
 		SourceRef: prodevents.GitHubSourceRef(run), StartedAt: &finished, FinishedAt: &finished,
 		Repo: "acme/app", Commits: commits, Actor: model.Actor{Kind: "session", ID: "ses-adapter"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("write deploy run %d of %s: %v", run, project, err)
 	}
@@ -70,7 +73,7 @@ func writeProductionFailure(t *testing.T, database *store.Store, project, ref, d
 	stored, _, err := prodevents.Write(context.Background(), database.Pool, prodevents.Event{
 		ProjectKey: project, Kind: prodevents.KindFailure, Source: prodevents.SourceAPI, SourceRef: ref,
 		DeployID: &deploy, Signal: &signal, DetectedAt: &detected, Actor: model.Actor{Kind: "session", ID: "ses-alerts"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("write failure %s of %s: %v", ref, project, err)
 	}
@@ -109,7 +112,7 @@ func TestASystemPostsDeploysAndFailuresAndReadsThemBack(t *testing.T) {
 	finished := now.Add(-2 * time.Hour)
 	posted := bearerRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), map[string]any{
 		"kind": "deploy", "source_ref": "ci:deploy-17", "started_at": now.Add(-150 * time.Minute), "finished_at": finished,
-		"deployment.environment.name": "staging", "deployment.status": "succeeded",
+		"deployment.environment.name": "production", "deployment.status": "succeeded",
 		"cicd.pipeline.run.url.full": "https://ci.example.com/runs/17",
 		"repo":                       "acme/app", "commits": []string{"ABCDEF0123456789ABCDEF0123456789ABCDEF01"}, "pull_requests": []string{"acme/app#7"},
 		"actor": agent,
@@ -121,8 +124,8 @@ func TestASystemPostsDeploysAndFailuresAndReadsThemBack(t *testing.T) {
 	switch {
 	case deploy.Kind != prodevents.KindDeploy || deploy.Source != prodevents.SourceAPI || deploy.ProjectKey != "PRD":
 		t.Fatalf("the posted deploy is %s from %s of %s, want an api deploy of PRD", deploy.Kind, deploy.Source, deploy.ProjectKey)
-	case deploy.Environment != "staging" || deploy.Status != "succeeded" || deploy.URL != "https://ci.example.com/runs/17":
-		t.Fatalf("the OTel names stored environment %q, status %q, url %q; want staging, succeeded and the run's page",
+	case deploy.Environment != "production" || deploy.Status != "succeeded" || deploy.URL != "https://ci.example.com/runs/17":
+		t.Fatalf("the OTel names stored environment %q, status %q, url %q; want production, succeeded and the run's page",
 			deploy.Environment, deploy.Status, deploy.URL)
 	case len(deploy.Commits) != 1 || deploy.Commits[0] != "abcdef0123456789abcdef0123456789abcdef01":
 		t.Fatalf("the deploy's commits are %v, want the one commit in lower case", deploy.Commits)
@@ -131,7 +134,7 @@ func TestASystemPostsDeploysAndFailuresAndReadsThemBack(t *testing.T) {
 	}
 
 	repeat := bearerRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), map[string]any{
-		"kind": "deploy", "source_ref": "ci:deploy-17", "finished_at": now, "status": "failed", "actor": agent,
+		"kind": "deploy", "source_ref": "ci:deploy-17", "finished_at": now, "actor": agent,
 	})
 	if repeat.Code != http.StatusOK {
 		t.Fatalf("repeat the deploy: status=%d body=%s, want 200", repeat.Code, repeat.Body.String())
@@ -672,7 +675,7 @@ func TestAFailurePostedByACommitBlamesTheEarliestDeployOfTheRoutesProject(t *tes
 		ProjectKey: "PRD", Kind: prodevents.KindDeploy, Source: prodevents.SourceAPI, SourceRef: "ci:prd-deploy",
 		FinishedAt: new(now.Add(-time.Hour)), Commits: []string{shared},
 	})
-	if automatic, held, err := prodevents.DeployForCommit(t.Context(), database.Pool, shared); err != nil || !held || automatic.ID != foreign.ID {
+	if automatic, held, err := prodevents.DeployForCommit(t.Context(), database.Pool, "PRD", shared); err != nil || !held || automatic.ID != foreign.ID {
 		t.Fatalf("the automatic signals' deploy of the commit is %q (held %v, err %v), want OTH's first deploy %s", automatic.ID, held, err, foreign.ID)
 	}
 	post := func(ref, commit string) *httptest.ResponseRecorder {
@@ -799,6 +802,10 @@ func TestAPostRefusesAnImpossibleTimeAndAMalformedPullRequest(t *testing.T) {
 			deployOf(map[string]any{"started_at": now.Add(-time.Minute), "finished_at": now.Add(-2 * time.Minute)})},
 		{"a deploy that finishes ten minutes past the server's clock", "finished_at", deployOf(map[string]any{"finished_at": now.Add(10 * time.Minute)})},
 		{"a failure found ten minutes past the server's clock", "detected_at", failureOf(map[string]any{"detected_at": now.Add(10 * time.Minute)})},
+		{"a deploy to staging", "environment", deployOf(map[string]any{"environment": "staging"})},
+		{"a deploy to staging under OTel's name", "environment", deployOf(map[string]any{"deployment.environment.name": "staging"})},
+		{"a failed deploy", "status", deployOf(map[string]any{"status": "failed"})},
+		{"a failed deploy under OTel's name", "status", deployOf(map[string]any{"deployment.status": "failed"})},
 		{"a deploy naming a repository and no number", "pull_requests", deployOf(pulls("acme/app"))},
 		{"a deploy naming a number and no owner", "pull_requests", deployOf(pulls("app#7"))},
 		{"a deploy naming pull request 0", "pull_requests", deployOf(pulls("acme/app#0"))},
@@ -836,7 +843,12 @@ func TestAPostRefusesAnImpossibleTimeAndAMalformedPullRequest(t *testing.T) {
 // route that blames it by its GitHub run is taken though the row is ALPHA's. OMEGA reads 1 failed deploy
 // of 1 with 1 failure not restored, and ALPHA still 0 of 1 with none. A failing check on it, an
 // automatic signal written under ALPHA's row, counts for both: ALPHA then reads 1 of 1 with 1 not
-// restored, and OMEGA 1 of 1 with 2.
+// restored, and OMEGA 1 of 1 with 2. That failing check is listed by OMEGA's production events
+// beside OMEGA's own failure, and by ALPHA's, which does not list OMEGA's posted failure; OMEGA's
+// person rejects it through OMEGA's state route, which takes it out of both projects' numbers
+// (ALPHA 0 of 1, OMEGA 1 of 1 with 1) and leaves it rejected for ALPHA too. A failing check on a
+// deploy that counts for ALPHA alone is neither listed by OMEGA nor reached by OMEGA's state
+// route, 404, as ALPHA's state route does not reach OMEGA's posted failure.
 func TestAFailurePostedThroughOneRouteOnASharedDeployCountsForThatProjectAlone(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx, pool := t.Context(), database.Pool
@@ -917,15 +929,293 @@ func TestAFailurePostedThroughOneRouteOnASharedDeployCountsForThatProjectAlone(t
 	if posted.Code != http.StatusCreated {
 		t.Fatalf("OMEGA's failure on the shared deploy: status=%d body=%s, want 201", posted.Code, posted.Body.String())
 	}
-	if failure := decodeBody[prodevents.Event](t, posted); failure.ProjectKey != "OMEGA" || failure.DeployID == nil || *failure.DeployID != shared.ID {
-		t.Fatalf("OMEGA's failure is a row of %s blaming %v, want OMEGA's blaming the shared deploy %s", failure.ProjectKey, failure.DeployID, shared.ID)
+	omegaFailure := decodeBody[prodevents.Event](t, posted)
+	if omegaFailure.ProjectKey != "OMEGA" || omegaFailure.DeployID == nil || *omegaFailure.DeployID != shared.ID {
+		t.Fatalf("OMEGA's failure is a row of %s blaming %v, want OMEGA's blaming the shared deploy %s", omegaFailure.ProjectKey, omegaFailure.DeployID, shared.ID)
 	}
 	requireFigures("after OMEGA's posted failure", map[string][3]float64{"ALPHA": {0, 1, 0}, "OMEGA": {1, 1, 1}})
-	writeProductionEvent(t, pool, prodevents.Event{
+	check := writeProductionEvent(t, pool, prodevents.Event{
 		ProjectKey: "ALPHA", Kind: prodevents.KindFailure, Source: prodevents.SourceCheckResults, SourceRef: "check:doc/c1@" + shared.ID,
 		DeployID: new(shared.ID), Signal: new(prodevents.SignalCheckFail), DetectedAt: new(finished.Add(30 * time.Minute)),
 	})
 	requireFigures("after a failing check on it", map[string][3]float64{"ALPHA": {1, 1, 1}, "OMEGA": {1, 1, 2}})
+
+	failureIDs := func(project string) []string {
+		t.Helper()
+		query := url.Values{"kind": {"failure"}, "from": window["from"], "to": window["to"]}
+		response := dispatchRequest(t, handler, http.MethodGet, productionEventsPath(project)+"?"+query.Encode(), nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("read %s's failures: status=%d body=%s", project, response.Code, response.Body.String())
+		}
+		var ids []string
+		for _, item := range decodeBody[productionEventList](t, response).Items {
+			ids = append(ids, item.ID)
+		}
+		slices.Sort(ids)
+		return ids
+	}
+	if got, want := failureIDs("OMEGA"), slices.Sorted(slices.Values([]string{omegaFailure.ID, check.ID})); !slices.Equal(got, want) {
+		t.Fatalf("OMEGA lists the failures %v, want its own %s and ALPHA's check_fail %s", got, omegaFailure.ID, check.ID)
+	}
+	if got := failureIDs("ALPHA"); !slices.Equal(got, []string{check.ID}) {
+		t.Fatalf("ALPHA lists the failures %v, want its check_fail %s alone, not OMEGA's posted failure", got, check.ID)
+	}
+	rejected := dispatchRequest(t, handler, http.MethodPut, productionEventStatePath("OMEGA", check.ID),
+		map[string]any{"state": "rejected", "reason": "The check read the wrong cluster."}, "alice")
+	if rejected.Code != http.StatusOK || decodeBody[prodevents.Event](t, rejected).State != prodevents.StateRejected {
+		t.Fatalf("OMEGA's person's reject of ALPHA's check_fail: status=%d body=%s, want 200 and a rejected row", rejected.Code, rejected.Body.String())
+	}
+	if stored := readProductionEvent(t, database, "ALPHA", check.ID); stored.State != prodevents.StateRejected || stored.StateBy == nil || stored.StateBy.ID != "alice" {
+		t.Fatalf("ALPHA's check_fail after OMEGA's reject is %s by %v, want rejected by alice", stored.State, stored.StateBy)
+	}
+	requireFigures("after OMEGA's person rejects the check_fail", map[string][3]float64{"ALPHA": {0, 1, 0}, "OMEGA": {1, 1, 1}})
+	expectRefusal(t, "ALPHA's reject of OMEGA's posted failure", dispatchRequest(t, handler, http.MethodPut,
+		productionEventStatePath("ALPHA", omegaFailure.ID), map[string]any{"state": "rejected", "reason": "Not ALPHA's."}, "alice"),
+		http.StatusNotFound, codeProductionEventNotFound)
+
+	alphaOnly := writeProductionEvent(t, pool, prodevents.Event{
+		ProjectKey: "ALPHA", Kind: prodevents.KindDeploy, Status: prodevents.StatusSucceeded, Source: prodevents.SourceGitHub,
+		SourceRef: prodevents.GitHubSourceRef(32), StartedAt: new(finished), FinishedAt: new(finished.Add(10 * time.Minute)),
+		Repo: repo, PullRequests: []string{repo + "#1"},
+	})
+	alphaCheck := writeProductionEvent(t, pool, prodevents.Event{
+		ProjectKey: "ALPHA", Kind: prodevents.KindFailure, Source: prodevents.SourceCheckResults, SourceRef: "check:doc/c2@" + alphaOnly.ID,
+		DeployID: new(alphaOnly.ID), Signal: new(prodevents.SignalCheckFail), DetectedAt: new(finished.Add(40 * time.Minute)),
+	})
+	if got, want := failureIDs("OMEGA"), slices.Sorted(slices.Values([]string{omegaFailure.ID, check.ID})); !slices.Equal(got, want) {
+		t.Fatalf("OMEGA lists the failures %v beside ALPHA's check_fail on a deploy for ALPHA alone, want only %s and %s", got, omegaFailure.ID, check.ID)
+	}
+	expectRefusal(t, "OMEGA's reject of ALPHA's check_fail on a deploy for ALPHA alone", dispatchRequest(t, handler, http.MethodPut,
+		productionEventStatePath("OMEGA", alphaCheck.ID), map[string]any{"state": "rejected", "reason": "Not OMEGA's."}, "alice"),
+		http.StatusNotFound, codeProductionEventNotFound)
+	if stored := readProductionEvent(t, database, "ALPHA", alphaCheck.ID); stored.State != prodevents.StateCounted {
+		t.Fatalf("the refused write moved ALPHA's check_fail to %s, want counted", stored.State)
+	}
+}
+
+// TestASecondRestoreThroughTheStateRouteKeepsTheFirstOne: a person's restore of a failure that a
+// revert's own deploy restored, with no restoring deploy and with another one, answers 200 with
+// the revert's restore as it was (its time, its writer and its restoring deploy), and so does a
+// second person's restore of a failure a person restored: the stored row keeps the first
+// restore, so the failure's recovery time does not grow with a retried write (R7).
+func TestASecondRestoreThroughTheStateRouteKeepsTheFirstOne(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "PRD")
+	now := time.Now().UTC().Truncate(time.Second)
+	blamed := writeProductionDeploy(t, database, "PRD", 7, now.Add(-4*time.Hour))
+	restoring := writeProductionDeploy(t, database, "PRD", 8, now.Add(-3*time.Hour))
+	later := writeProductionDeploy(t, database, "PRD", 9, now.Add(-2*time.Hour))
+	loop := model.Actor{Kind: "system", ID: "production-signals"}
+	revert := writeProductionEvent(t, database.Pool, prodevents.Event{
+		ProjectKey: "PRD", Kind: prodevents.KindFailure, Source: prodevents.SourceReverts, SourceRef: "revert:acme/app#3",
+		DeployID: new(blamed.ID), Signal: new(prodevents.SignalRevert), DetectedAt: new(now.Add(-210 * time.Minute)),
+		RestoredAt: restoring.FinishedAt, RestoredBy: &loop, RestoredByDeploy: &restoring.ID,
+	})
+	flag := writeProductionFailure(t, database, "PRD", "alerts:1", blamed.ID, now.Add(-200*time.Minute))
+
+	restore := func(id, as string, body map[string]any) prodevents.Event {
+		t.Helper()
+		body["state"] = "restored"
+		response := dispatchRequest(t, handler, http.MethodPut, productionEventStatePath("PRD", id), body, as)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s's restore of %s: status=%d body=%s, want 200", as, id, response.Code, response.Body.String())
+		}
+		return decodeBody[prodevents.Event](t, response)
+	}
+	sameRestore := func(what string, got, want prodevents.Event) {
+		t.Helper()
+		if got.RestoredAt == nil || want.RestoredAt == nil || !got.RestoredAt.Equal(*want.RestoredAt) ||
+			got.RestoredBy == nil || want.RestoredBy == nil || *got.RestoredBy != *want.RestoredBy ||
+			deref(got.RestoredByDeploy) != deref(want.RestoredByDeploy) {
+			t.Errorf("%s: restored at %v by %v with deploy %q, want the first restore, at %v by %v with deploy %q",
+				what, got.RestoredAt, got.RestoredBy, deref(got.RestoredByDeploy), want.RestoredAt, want.RestoredBy, deref(want.RestoredByDeploy))
+		}
+	}
+
+	sameRestore("a person's restore of the revert's failure", restore(revert.ID, "alice", map[string]any{}), revert)
+	sameRestore("a person's restore of the revert's failure naming another deploy",
+		restore(revert.ID, "alice", map[string]any{"restored_by_deploy": later.ID}), revert)
+	sameRestore("the revert's failure as stored", readProductionEvent(t, database, "PRD", revert.ID), revert)
+
+	first := restore(flag.ID, "alice", map[string]any{})
+	if first.RestoredBy == nil || first.RestoredBy.ID != "alice" || first.RestoredAt == nil {
+		t.Fatalf("alice's restore of the flag answered restored at %v by %v, want her restore", first.RestoredAt, first.RestoredBy)
+	}
+	sameRestore("a second person's restore of the flag", restore(flag.ID, "bob", map[string]any{"restored_by_deploy": later.ID}), first)
+	sameRestore("the flag as stored", readProductionEvent(t, database, "PRD", flag.ID), first)
+}
+
+// TestARepeatOfAFailurePostAnswersItsRowOnceItsDeployIsDropped: a system's failure posted by a
+// deploy's id, by its run and by its commit is stored; once the GitHub adapter drops that deploy
+// (status dropped, which counts for no project), a new failure under a new source_ref naming it
+// by any of the three is 409 PRODUCTION_EVENT_NO_DEPLOY, while each of the three posts repeated
+// under its own source_ref answers 200 with its stored row and writes nothing (R10).
+func TestARepeatOfAFailurePostAnswersItsRowOnceItsDeployIsDropped(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "PRD")
+	now := time.Now().UTC().Truncate(time.Second)
+	const commit = "5555555555555555555555555555555555555555"
+	deploy := writeProductionDeploy(t, database, "PRD", 7, now.Add(-2*time.Hour), commit)
+	agent := map[string]any{"kind": "session", "id": "ses-ci"}
+	selectors := map[string]map[string]any{
+		"alerts:by-id":     {"deploy_id": deploy.ID},
+		"alerts:by-run":    {"cicd.pipeline.run.id": "7", "repo": "acme/app"},
+		"alerts:by-commit": {"commit_sha": commit},
+	}
+	post := func(ref string, selector map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		body := map[string]any{"kind": "failure", "source_ref": ref, "actor": agent}
+		for key, value := range selector {
+			body[key] = value
+		}
+		return bearerRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), body)
+	}
+	stored := map[string]string{}
+	for ref, selector := range selectors {
+		posted := post(ref, selector)
+		if posted.Code != http.StatusCreated {
+			t.Fatalf("post %s: status=%d body=%s, want 201", ref, posted.Code, posted.Body.String())
+		}
+		stored[ref] = decodeBody[prodevents.Event](t, posted).ID
+	}
+	if _, err := database.Pool.Exec(t.Context(), `update production_events set status = $2, note = 'the rule no longer calls this run a deploy' where id = $1`,
+		deploy.ID, prodevents.StatusDropped); err != nil {
+		t.Fatalf("drop the deploy: %v", err)
+	}
+	rows := countRows(t, database, `select count(*) from production_events`)
+	for ref, selector := range selectors {
+		expectRefusal(t, "a new failure naming the dropped deploy ("+ref+")", post(ref+":new", selector), http.StatusConflict, prodevents.CodeNoDeploy)
+		repeat := post(ref, selector)
+		if repeat.Code != http.StatusOK || decodeBody[prodevents.Event](t, repeat).ID != stored[ref] {
+			t.Errorf("a repeat of %s after its deploy was dropped: status=%d body=%s, want 200 and row %s", ref, repeat.Code, repeat.Body.String(), stored[ref])
+		}
+	}
+	if after := countRows(t, database, `select count(*) from production_events`); after != rows {
+		t.Fatalf("the refused posts and the repeats left %d rows, want the %d there were", after, rows)
+	}
+}
+
+// seedFailedAfterMergeCheck records a fail of an after_merge check of issue's Verification
+// document at commit, as the results route stores one: its result.recorded event, then its row
+// naming that event, and answers the result's id.
+func seedFailedAfterMergeCheck(t *testing.T, pool *store.Pool, issue, project, commit string) string {
+	t.Helper()
+	ctx := t.Context()
+	var artifact string
+	if err := pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+		values ($1, $2, 'verification-md', 'verification.md', 'doc', '{"kind":"user","id":"alice"}')
+		returning id::text`, issue, project).Scan(&artifact); err != nil {
+		t.Fatalf("make the Verification document of %s: %v", issue, err)
+	}
+	id := uuid.NewString()
+	payload, err := json.Marshal(model.CheckResultEventPayload{
+		ResultID: id, Issue: issue, CheckIssue: issue, CheckArtifactID: artifact, CheckBlockID: "c1", CheckVersion: 1,
+		When: model.CheckWhenAfterMerge, Verdict: signals.VerdictFail, Role: "tester", CommitSHA: commit,
+	})
+	if err != nil {
+		t.Fatalf("encode the result's event: %v", err)
+	}
+	var seq int64
+	if err := pool.QueryRow(ctx, `
+		insert into events (issue_key, seq, type, actor, payload, notify)
+		values ($1, (select coalesce(max(seq), 0) + 1 from events where issue_key = $1), 'result.recorded',
+			'{"kind":"session","id":"tester-session"}', $2, false)
+		returning seq`, issue, payload).Scan(&seq); err != nil {
+		t.Fatalf("append result.recorded on %s: %v", issue, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into check_results (id, issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
+			check_sha256, role, commit_sha, verdict, actor, event_seq)
+		values ($1, $2, $2, $3, 'c1', 1, 'digest', 'tester', $4, 'fail', '{"kind":"session","id":"tester-session"}', $5)`,
+		id, issue, artifact, commit, seq); err != nil {
+		t.Fatalf("record the result: %v", err)
+	}
+	return id
+}
+
+// TestAnAutomaticSignalWritesItsRowBeforeTheRefresherPublishesItsRuleAndCountsOnceItDoes: ALPHA's
+// source reads acme/fresh and its rule is saved, but the refresher has not yet published it
+// (eval_days_rules holds no row of acme/fresh), so the published attribution counts the repository's
+// deploy for no project (evals.DeployCountsFor says no). A failing after-merge check at that
+// deploy's commit still writes its check_fail row, judged by the stored settings' rules in the
+// write's own transaction (dispatch://INFRA-978/comment/6da2d490-27d2-4d03-816a-a164a8d24dde), and
+// once the next refresher pass publishes the rule, the row counts: ALPHA's change fail rate reads
+// 1 failed deploy of 1.
+func TestAnAutomaticSignalWritesItsRowBeforeTheRefresherPublishesItsRuleAndCountsOnceItDoes(t *testing.T) {
+	t.Parallel()
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	ctx, pool := t.Context(), database.Pool
+	now := time.Now().UTC()
+	today := now.Truncate(24 * time.Hour)
+	since := today.AddDate(0, 0, -3)
+	const repo, commit = "acme/fresh", "9999999999999999999999999999999999999999"
+	if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee, next_number, default_repo)
+		values ('ALPHA', 'Alpha', 'alice', 2, $1)`, repo); err != nil {
+		t.Fatalf("seed the project: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `insert into issues (key, project_key, number, title, status, rank, created_by, created_at)
+		values ('ALPHA-1', 'ALPHA', 1, 'Alpha work', 'in_progress', '00000001', '{"kind":"system","id":"unpublished-rule-test"}', $1)`,
+		since.AddDate(0, 0, -1)); err != nil {
+		t.Fatalf("seed the issue: %v", err)
+	}
+	saveProjectDelivery(t, pool, delivery.ProjectSettingsInput{
+		Project: "ALPHA", Delivery: true,
+		Sources:           []delivery.SourceInput{deliveryseed.SourceOf(deployRule(repo, "production / apply"), nil)},
+		PopulationAuthors: []string{"octocat"}, ExcludedRepos: []string{},
+		FailureSources: []string{delivery.FailureSourceCheckResults}, FailuresMeasuredSince: &since,
+	})
+	created := now.Add(-3 * time.Hour)
+	done := created.Add(10 * time.Minute)
+	if err := delivery.UpsertRun(ctx, pool, delivery.DeliveryRun{
+		Repo: repo, RunID: 51, Kind: delivery.DeliveryRunKindDeploy, HeadSHA: commit, HeadCommitAt: created.Add(-time.Minute),
+		StartedAt: created, CreatedAt: &created, CompletedAt: &done, Conclusion: new(delivery.DeliveryRunConclusion(delivery.DeliveryRunConclusionSuccess)),
+		URL: "https://github.com/" + repo + "/actions/runs/51", HeadBranch: new("main"), Event: new("push"),
+	}); err != nil {
+		t.Fatalf("store the deploy run: %v", err)
+	}
+	if err := delivery.UpsertRunJobs(ctx, pool, repo, 51, []delivery.DeliveryRunJob{{
+		Repo: repo, RunID: 51, Name: "production / apply", StartedAt: &created, CompletedAt: &done,
+		Conclusion: new(delivery.DeliveryJobConclusion(delivery.DeliveryJobConclusionSuccess)),
+	}}, true); err != nil {
+		t.Fatalf("store the deploy run's job: %v", err)
+	}
+	deploy := writeProductionEvent(t, pool, prodevents.Event{
+		ProjectKey: "ALPHA", Kind: prodevents.KindDeploy, Status: prodevents.StatusSucceeded, Source: prodevents.SourceGitHub,
+		SourceRef: prodevents.GitHubSourceRef(51), StartedAt: &created, FinishedAt: &done, Repo: repo, Commits: []string{commit},
+	})
+	if published := countRows(t, database, `select count(*) from eval_days_rules where lower(repo) = '`+repo+`'`); published != 0 {
+		t.Fatalf("eval_days_rules holds %d rows of %s before any refresher pass, want none", published, repo)
+	}
+	if counts, err := evals.DeployCountsFor(ctx, pool, deps.Attributor, "ALPHA", deploy); err != nil || counts {
+		t.Fatalf("the published attribution counts the unpublished rule's deploy for ALPHA (%v, %v), want it counting for no project yet", counts, err)
+	}
+
+	result := seedFailedAfterMergeCheck(t, pool, "ALPHA-1", "ALPHA", commit)
+	if wrote, err := signals.RecordCheckFailure(ctx, pool, result); err != nil || !wrote {
+		t.Fatalf("RecordCheckFailure at the unpublished rule's deploy = %v, %v; want ALPHA's check_fail row", wrote, err)
+	}
+	rows := countRows(t, database, `select count(*) from production_events where kind = 'failure' and project_key = 'ALPHA' and signal = 'check_fail' and deploy_id = '`+deploy.ID+`'`)
+	if rows != 1 {
+		t.Fatalf("ALPHA holds %d check_fail rows on the deploy, want 1", rows)
+	}
+
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
+	refreshEvalDays(t, registry, database, time.Now().UTC())
+	window := url.Values{"from": {today.AddDate(0, 0, -2).Format(time.RFC3339)}, "to": {today.AddDate(0, 0, 1).Format(time.RFC3339)}}
+	for _, item := range evalGet[evalListResponse](t, handler, "/api/v1/projects/ALPHA/evals?limit=200&"+window.Encode()).Items {
+		if item.Definition.Slug != evals.SlugChangeFailRate || len(item.Series) == 0 {
+			continue
+		}
+		got := item.Series[0].Window
+		if failed, total := got["failed"], got["total"]; failed == nil || total == nil || *failed != 1 || *total != 1 {
+			t.Fatalf("after the refresher's pass ALPHA's change fail rate reads failed %v of total %v, want 1 of 1", failed, total)
+		}
+		return
+	}
+	t.Fatal("ALPHA's evals hold no change fail rate series")
 }
 
 // controllerDaemon is a Legion daemon stand-in serving GET /legion/v1/controller, as

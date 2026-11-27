@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 )
@@ -19,7 +21,8 @@ func (r *rig) issueEvent(issue, kind string, labels, links, changed []string) {
 	for i, link := range links {
 		external[i] = map[string]string{"url": link, "kind": "url"}
 	}
-	payload := map[string]any{"key": issue, "project": alpha, "labels": labels, "external_links": external}
+	project, _, _ := strings.Cut(issue, "-")
+	payload := map[string]any{"key": issue, "project": project, "labels": labels, "external_links": external}
 	if changed != nil {
 		payload["changed"] = changed
 	}
@@ -142,5 +145,49 @@ func TestAnIncidentLinkNamesAPullRequestNumberOfAtMostNineDigits(t *testing.T) {
 		if got, ok := parseLink(link); ok {
 			t.Errorf("parseLink(%q) = %+v, want no target", link, got)
 		}
+	}
+}
+
+// TestAnIncidentBlamesNoDeployAnotherProjectPostedAndNeedsACountingDeploy: a deploy posted to
+// BETA that names acme/widgets#11 and finished first is never blamed by ALPHA's incident linking
+// #11, which blames ALPHA's GitHub deploy of #11 instead; BETA's own incident linking #11 blames
+// BETA's post. And a BETA incident linking ALPHA's run 311, whose deploy counts for ALPHA alone,
+// writes no row.
+func TestAnIncidentBlamesNoDeployAnotherProjectPostedAndNeedsACountingDeploy(t *testing.T) {
+	r := newRig(t)
+	r.project("BETA", "acme/beta")
+	r.pullRequest(11, at(30), sha("b"), "")
+	r.deployRun(310, at(60), sha("a"), prodJob, success, success)
+	r.deployRun(311, at(120), sha("c"), prodJob, success, success)
+	r.passDeploys()
+	shipped := r.deployOf(310)
+	betaPost := r.postDeploy("BETA", "ci:beta-11", at(40), nil, []string{"acme/widgets#11"})
+
+	const pullLink = "https://github.com/acme/widgets/pull/11"
+	const betaPullLink = "https://github.com/acme/widgets/pull/11/files"
+	const runLink = "https://github.com/acme/widgets/actions/runs/311"
+	alphaIncident := r.issue(20, "incident")
+	r.link(alphaIncident, pullLink)
+	r.issueEvent(alphaIncident, "issue.created", []string{"incident"}, []string{pullLink}, nil)
+	betaOwn := r.issueOf("BETA", 1, "incident")
+	r.link(betaOwn, betaPullLink)
+	r.issueEvent(betaOwn, "issue.created", []string{"incident"}, []string{betaPullLink}, nil)
+	betaForeign := r.issueOf("BETA", 2, "incident")
+	r.link(betaForeign, runLink)
+	r.issueEvent(betaForeign, "issue.created", []string{"incident"}, []string{runLink}, nil)
+	r.passEvents()
+
+	if rows := r.failures(); len(rows) != 1 || rows[0].SourceRef != IncidentSourceRef(alphaIncident) || *rows[0].DeployID != shipped.ID {
+		t.Fatalf("ALPHA's incident rows = %+v, want one blaming ALPHA's deploy %s rather than BETA's earlier post", rows, shipped.ID)
+	}
+	betaRows, _, err := prodevents.List(r.ctx, r.pool, prodevents.ListQuery{
+		Project: "BETA", From: base.Add(-365 * 24 * time.Hour), To: time.Now().Add(24 * time.Hour), Kind: prodevents.KindFailure, Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("read BETA's failures: %v", err)
+	}
+	if len(betaRows) != 1 || betaRows[0].SourceRef != IncidentSourceRef(betaOwn) || *betaRows[0].DeployID != betaPost.ID {
+		t.Fatalf("BETA's incident rows = %+v, want only %s blaming BETA's post %s (and no row for %s linking ALPHA's run)",
+			betaRows, betaOwn, betaPost.ID, betaForeign)
 	}
 }

@@ -195,7 +195,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 // after it and writes the same row, and a result whose commit no deploy row holds yet makes its
 // row when one lands.
 func (s *server) recordCheckFailure(ctx context.Context, written recordedCheckResult) {
-	if written.result.Verdict != "fail" || written.check.Attributes.When != model.CheckWhenAfterMerge {
+	if !signals.IsCheckFail(written.result.Verdict, written.check.Attributes.When) {
 		return
 	}
 	if _, err := signals.RecordCheckFailure(ctx, s.deps.Store.Pool, written.result.ID); err != nil {

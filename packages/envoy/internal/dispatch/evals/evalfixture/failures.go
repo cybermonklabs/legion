@@ -553,7 +553,7 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 			ProjectKey: second, Kind: prodevents.KindDeploy, Status: prodevents.StatusSucceeded, Source: prodevents.SourceAPI,
 			SourceRef: post.ref, StartedAt: new(post.finished.Add(-5 * time.Minute)), FinishedAt: new(post.finished),
 			Repo: post.repo, PullRequests: post.pulls, Actor: failuresPoster,
-		})
+		}, nil)
 		if err != nil {
 			return FailuresResult{}, fmt.Errorf("post the deploy %s of %s: %w", post.ref, second, err)
 		}
@@ -572,7 +572,7 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 			DeployID: new(deploys["R4"].ID), DetectedAt: new(at(1, 16, 0)), Actor: failuresFlagger},
 	} {
 		post.Kind = prodevents.KindFailure
-		if _, _, err := prodevents.Write(ctx, pool, post); err != nil {
+		if _, _, err := prodevents.Write(ctx, pool, post, nil); err != nil {
 			return FailuresResult{}, fmt.Errorf("post the failure %s of %s: %w", post.SourceRef, post.ProjectKey, err)
 		}
 	}

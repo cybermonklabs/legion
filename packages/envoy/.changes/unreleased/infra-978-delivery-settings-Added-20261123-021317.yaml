@@ -30,6 +30,12 @@ body: |-
   the answer keeps those objects with every leaf null in every window, and computes none of
   them; they go in the next release, with `GET` and `PUT /api/v1/settings/delivery`.
   An after-merge check result stays bound to its failure when a replay finds an earlier deploy.
+  A posted deploy is one to production that succeeded: `POST .../production-events` refuses another
+  environment or status with `400 PRODUCTION_EVENT_INPUT`. An automatic failure (`check_fail`,
+  `revert`, `incident_issue`) is written only for a deploy that counts for its project, is listed
+  by `GET .../production-events` of each project its deploy counts for, and is rejected,
+  re-counted and restored through each of their `PUT .../{id}/state` routes; a failure keeps its
+  first restore.
 time: 2026-11-23T02:13:17Z
 custom:
     Issue: INFRA-978

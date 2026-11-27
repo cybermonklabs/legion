@@ -305,10 +305,11 @@ func failureEvalIDs(projects ...string) []string {
 }
 
 // recordProjects uses the same ownership keys as attribution.deploy for a GitHub deploy. A
-// posted deploy belongs only to its route's project, and a dropped deploy counts nowhere.
+// posted deploy belongs only to its route's project, and a dropped GitHub deploy
+// (prodevents.Event.Dropped) counts nowhere.
 func (a attribution) recordProjects(deploy prodevents.Event) []counted {
 	switch {
-	case deploy.Status == prodevents.StatusDropped:
+	case deploy.Dropped():
 		return nil
 	case deploy.Source == prodevents.SourceAPI:
 		return []counted{{project: deploy.ProjectKey}}
@@ -329,7 +330,7 @@ func (a attribution) recordProjects(deploy prodevents.Event) []counted {
 func readShippedAttribution(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor, deploys []prodevents.Event) (attribution, error) {
 	var pulls []delivery.PullRequestKey
 	for _, deploy := range deploys {
-		if deploy.Source == prodevents.SourceAPI || deploy.Status == prodevents.StatusDropped {
+		if deploy.Source == prodevents.SourceAPI || deploy.Dropped() {
 			continue
 		}
 		for _, ref := range deploy.PullRequests {
@@ -377,31 +378,57 @@ func readRecordReaders(ctx context.Context, q delivery.Querier, attributor *deli
 	return keys, readers, missing, err
 }
 
+// readPublishedDeployFacts reads in q the facts deploy is counted by from the state the refresher
+// published: each project's published default repository (eval_days_defaults), the attribution of
+// the pull requests deploy ships (readShippedAttribution) and, where it ships none, the project
+// eval_days_rules records as reading its repository. A posted and a dropped deploy read none of it.
+func readPublishedDeployFacts(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor, deploy prodevents.Event) (prodevents.DeployFacts, error) {
+	facts := prodevents.DeployFacts{Defaults: map[string]string{}}
+	if deploy.Source == prodevents.SourceAPI || deploy.Dropped() {
+		return facts, nil
+	}
+	attribute, err := readShippedAttribution(ctx, q, attributor, []prodevents.Event{deploy})
+	if err != nil {
+		return prodevents.DeployFacts{}, err
+	}
+	for _, ref := range deploy.PullRequests {
+		if repo, number, ok := parsePullRequestRef(ref); ok {
+			list := attribute.lists[PullRequestMember(repo, number)]
+			facts.Pulls = append(facts.Pulls, prodevents.PullAttribution{Conditions: list.conditions, Terminal: list.terminal})
+		}
+	}
+	rows, err := q.Query(ctx, `select p.key, coalesce(d.repo, '') from projects p left join eval_days_defaults d on d.project_key = p.key`)
+	if err != nil {
+		return prodevents.DeployFacts{}, fmt.Errorf("read the projects' published default repositories: %w", err)
+	}
+	var project, repo string
+	if _, err := pgx.ForEachRow(rows, []any{&project, &repo}, func() error {
+		facts.Defaults[project] = repo
+		return nil
+	}); err != nil {
+		return prodevents.DeployFacts{}, fmt.Errorf("read the projects' published default repositories: %w", err)
+	}
+	if len(facts.Pulls) == 0 {
+		err := q.QueryRow(ctx, `select coalesce(project_key, '') from eval_days_rules where lower(repo) = lower($1)`,
+			deploy.Repo).Scan(&facts.Source)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return prodevents.DeployFacts{}, fmt.Errorf("read the project that reads %s: %w", deploy.Repo, err)
+		}
+	}
+	return facts, nil
+}
+
 // DeployCountsFor reads in q whether deploy, a deploy row of the record, counts for project under
-// the attribution the failure measures count it by (readFailureRecords, readRecordReaders): a
-// posted deploy for its route's project alone, a GitHub deploy for the projects the published
-// attribution of the pull requests it ships names or, shipping none, for the project whose deploy
-// source reads its repository, and a dropped deploy for none. It answers whether or not project's
-// failure measures are on, and reads deploy's own pull requests' attribution and its owner keys'
-// readers alone, so the record's routes ask it in the transaction of their write (api's
-// production events, prodevents.DeployCheck).
+// the attribution the failure measures count it by: the one rule prodevents.DeployProjects, over the state the
+// refresher published (readPublishedDeployFacts). It answers whether or not project's failure
+// measures are on, and reads deploy's own pull requests' attribution alone, so the record's routes
+// ask it in the transaction of their write (api's production events, prodevents.DeployCheck).
 func DeployCountsFor(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor, project string, deploy prodevents.Event) (bool, error) {
-	if deploy.Status == prodevents.StatusDropped {
-		return false, nil
-	}
-	if deploy.Source == prodevents.SourceAPI {
-		return deploy.ProjectKey == project, nil
-	}
-	keys, readers, _, err := readRecordReaders(ctx, q, attributor, []prodevents.Event{deploy})
+	facts, err := readPublishedDeployFacts(ctx, q, attributor, deploy)
 	if err != nil {
 		return false, err
 	}
-	return slices.ContainsFunc(keys[0], func(key counted) bool {
-		if !isOwner(key.project) {
-			return key.project == project
-		}
-		return slices.ContainsFunc(readers[key.project], func(reader counted) bool { return reader.project == project })
-	}), nil
+	return slices.Contains(prodevents.DeployProjects(deploy, facts), project), nil
 }
 
 // deploysFrom is the index in f.deploys of the first deploy that finished at or after at.

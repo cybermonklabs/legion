@@ -24,7 +24,7 @@ func TestAFailedAfterMergeCheckMakesOneCheckFailRow(t *testing.T) {
 	r.passDeploys()
 	deploy := r.deployOf(200)
 
-	result := r.checkResult(issue, "c1", sha("8"), verdictFail, model.CheckWhenAfterMerge)
+	result := r.checkResult(issue, "c1", sha("8"), VerdictFail, model.CheckWhenAfterMerge)
 	created, err := RecordCheckFailure(r.ctx, r.pool, result)
 	if err != nil || !created {
 		t.Fatalf("RecordCheckFailure = %v, %v; want a row", created, err)
@@ -66,8 +66,8 @@ func TestAPassABeforeMergeFailAndAnUnmatchedCommitMakeNoCheckFailRow(t *testing.
 
 	for _, result := range []string{
 		r.checkResult(issue, "c1", sha("b"), "pass", model.CheckWhenAfterMerge),
-		r.checkResult(issue, "c2", sha("b"), verdictFail, "before_merge"),
-		r.checkResult(issue, "c3", sha("e"), verdictFail, model.CheckWhenAfterMerge),
+		r.checkResult(issue, "c2", sha("b"), VerdictFail, "before_merge"),
+		r.checkResult(issue, "c3", sha("e"), VerdictFail, model.CheckWhenAfterMerge),
 	} {
 		if created, err := RecordCheckFailure(r.ctx, r.pool, result); err != nil || created {
 			t.Errorf("RecordCheckFailure(%s) = %v, %v; want no row", result, created, err)
@@ -87,7 +87,7 @@ func TestARetractionRejectsTheCheckFailRow(t *testing.T) {
 	issue := r.issue(3)
 	r.deployRun(220, at(60), sha("c"), prodJob, success, success)
 	r.passDeploys()
-	result := r.checkResult(issue, "c1", sha("c"), verdictFail, model.CheckWhenAfterMerge)
+	result := r.checkResult(issue, "c1", sha("c"), VerdictFail, model.CheckWhenAfterMerge)
 	r.passEvents()
 	if rows := r.failures(); len(rows) != 1 || rows[0].State != prodevents.StateCounted {
 		t.Fatalf("before the retraction, failure rows = %+v, want one counted", rows)
@@ -118,7 +118,7 @@ func TestARetractionRejectsTheCheckFailRow(t *testing.T) {
 func TestAnEarlyCheckFailIsMatchedWhenItsDeployRowLands(t *testing.T) {
 	r := newRig(t)
 	issue := r.issue(4)
-	r.checkResult(issue, "c1", sha("d"), verdictFail, model.CheckWhenAfterMerge)
+	r.checkResult(issue, "c1", sha("d"), VerdictFail, model.CheckWhenAfterMerge)
 	r.passEvents()
 	if rows := r.failures(); len(rows) != 0 {
 		t.Fatalf("before any deploy holds the commit, failure rows = %+v, want none", rows)
@@ -225,7 +225,7 @@ func TestAnEarlyCheckFailSurvivesAPassThatFailsAfterItsDeployRowCommits(t *testi
 				r.passDeploys()
 			}
 			issue := r.issue(7)
-			result := r.checkResult(issue, "c1", sha("d"), verdictFail, model.CheckWhenAfterMerge)
+			result := r.checkResult(issue, "c1", sha("d"), VerdictFail, model.CheckWhenAfterMerge)
 			r.passEvents()
 			r.deployRun(250, at(60), sha("d"), prodJob, success, success)
 			before, err := readCursor(r.ctx, r.pool, deploysCursor)
@@ -296,7 +296,7 @@ func TestACheckFailRowAndItsBindingCommitTogether(t *testing.T) {
 	issue := r.issue(11)
 	r.deployRun(290, at(60), sha("a"), prodJob, success, success)
 	r.passDeploys()
-	result := r.checkResult(issue, "c1", sha("a"), verdictFail, model.CheckWhenAfterMerge)
+	result := r.checkResult(issue, "c1", sha("a"), VerdictFail, model.CheckWhenAfterMerge)
 
 	r.failNextInsert("check_fail_bindings", "true")
 	if created, err := RecordCheckFailure(r.ctx, r.pool, result); err == nil || created ||
@@ -328,7 +328,7 @@ func TestACheckFailStaysOnTheRowItFirstMatchedWhenAnEarlierDeployLands(t *testin
 	r.deployRun(262, at(120), sha("d"), prodJob, success, success)
 	r.passDeploys()
 	later := r.deployOf(262)
-	result := r.checkResult(issue, "c1", sha("d"), verdictFail, model.CheckWhenAfterMerge)
+	result := r.checkResult(issue, "c1", sha("d"), VerdictFail, model.CheckWhenAfterMerge)
 	r.passEvents()
 	first := r.failures()
 	if ref := "check:" + r.verification(issue) + "/c1@" + later.ID; len(first) != 1 || first[0].SourceRef != ref || r.boundTo(result) != first[0].ID {
@@ -338,7 +338,7 @@ func TestACheckFailStaysOnTheRowItFirstMatchedWhenAnEarlierDeployLands(t *testin
 	r.deployRun(261, at(60), sha("d"), prodJob, success, success)
 	r.passDeploys()
 	earlier := r.deployOf(261)
-	if blamed, held, err := prodevents.DeployForCommit(r.ctx, r.pool, sha("d")); err != nil || !held || blamed.ID != earlier.ID {
+	if blamed, held, err := prodevents.DeployForCommit(r.ctx, r.pool, alpha, sha("d")); err != nil || !held || blamed.ID != earlier.ID {
 		t.Fatalf("the deploy that first shipped the commit = %q (%v, %v), want run 261's %s", blamed.ID, held, err, earlier.ID)
 	}
 	if created, err := RecordCheckFailure(r.ctx, r.pool, result); err != nil || created {
@@ -375,8 +375,8 @@ func TestTwoResultsOfOneCheckStandBehindOneCheckFailRow(t *testing.T) {
 	r.deployRun(270, at(60), sha("e"), prodJob, success, success)
 	r.passDeploys()
 	deploy := r.deployOf(270)
-	atHead := r.checkResult(issue, "c1", sha("e"), verdictFail, model.CheckWhenAfterMerge)
-	atMerge := r.checkResult(issue, "c1", sha("2"), verdictFail, model.CheckWhenAfterMerge)
+	atHead := r.checkResult(issue, "c1", sha("e"), VerdictFail, model.CheckWhenAfterMerge)
+	atMerge := r.checkResult(issue, "c1", sha("2"), VerdictFail, model.CheckWhenAfterMerge)
 	r.passEvents()
 	rows := r.failures()
 	if ref := "check:" + r.verification(issue) + "/c1@" + deploy.ID; len(rows) != 1 || rows[0].SourceRef != ref {
@@ -416,7 +416,7 @@ func TestAFirstMatchAndARetractionOfOneResultTakeItInTurn(t *testing.T) {
 		issue := r.issue(12)
 		r.deployRun(280, at(60), sha("f"), prodJob, success, success)
 		r.passDeploys()
-		return r, issue, r.checkResult(issue, "c1", sha("f"), verdictFail, model.CheckWhenAfterMerge)
+		return r, issue, r.checkResult(issue, "c1", sha("f"), VerdictFail, model.CheckWhenAfterMerge)
 	}
 	// firstMatch runs result's first match (RecordCheckFailure) on a connection of its own and
 	// answers its error once it ends.
@@ -510,8 +510,8 @@ func TestTwoDocumentsChecksOfOneBlockIDMakeTwoCheckFailRows(t *testing.T) {
 	r.deployRun(240, at(60), sha("f"), prodJob, success, success)
 	r.passDeploys()
 	deploy := r.deployOf(240)
-	retracted := r.checkResult(first, "c1", sha("f"), verdictFail, model.CheckWhenAfterMerge)
-	r.checkResult(second, "c1", sha("f"), verdictFail, model.CheckWhenAfterMerge)
+	retracted := r.checkResult(first, "c1", sha("f"), VerdictFail, model.CheckWhenAfterMerge)
+	r.checkResult(second, "c1", sha("f"), VerdictFail, model.CheckWhenAfterMerge)
 	r.passEvents()
 
 	firstRef := "check:" + r.verification(first) + "/c1@" + deploy.ID
@@ -537,5 +537,69 @@ func TestTwoDocumentsChecksOfOneBlockIDMakeTwoCheckFailRows(t *testing.T) {
 	if got := states(); len(got) != 2 || got[firstRef] != prodevents.StateRejected || got[secondRef] != prodevents.StateCounted {
 		t.Fatalf("after the first result's retraction, check_fail rows by source_ref = %v, want %s rejected and %s counted",
 			got, firstRef, secondRef)
+	}
+}
+
+// TestACheckFailBlamesNoDeployAnotherProjectPosted: a deploy posted to BETA that holds a commit
+// and finished first is never blamed by ALPHA's check_fail at that commit, which blames ALPHA's
+// GitHub deploy instead; a deploy ALPHA posted itself, earlier still, stays ALPHA's blame target.
+func TestACheckFailBlamesNoDeployAnotherProjectPosted(t *testing.T) {
+	r := newRig(t)
+	r.project("BETA", "acme/beta")
+	r.deployRun(295, at(60), sha("a"), prodJob, success, success)
+	r.deployRun(296, at(120), sha("b"), prodJob, success, success)
+	r.passDeploys()
+	githubA := r.deployOf(295)
+	r.postDeploy("BETA", "ci:beta-a", at(30), []string{sha("a")}, nil)
+	alphaB := r.postDeploy(alpha, "ci:alpha-b", at(90), []string{sha("b")}, nil)
+
+	issue := r.issue(15)
+	r.checkResult(issue, "c1", sha("a"), VerdictFail, model.CheckWhenAfterMerge)
+	r.checkResult(issue, "c2", sha("b"), VerdictFail, model.CheckWhenAfterMerge)
+	r.passEvents()
+
+	blamed := map[string]string{}
+	for _, row := range r.failures() {
+		blamed[row.SourceRef] = *row.DeployID
+	}
+	wantA := CheckSourceRef(r.verification(issue), "c1", githubA.ID)
+	wantB := CheckSourceRef(r.verification(issue), "c2", alphaB.ID)
+	if len(blamed) != 2 || blamed[wantA] != githubA.ID || blamed[wantB] != alphaB.ID {
+		t.Fatalf("check_fail rows by source_ref = %v, want %s -> %s and %s -> %s", blamed, wantA, githubA.ID, wantB, alphaB.ID)
+	}
+}
+
+// TestACheckFailIsWrittenOnlyWhereItsBlamedDeployCountsForTheIssuesProject: a fail of an
+// after_merge check on a BETA issue, at a commit only ALPHA's deploy holds (which counts for
+// ALPHA alone), writes no row and leaves the result unbound, through the handler's write and
+// through the checks feed alike; the same commit on an ALPHA issue writes its row.
+func TestACheckFailIsWrittenOnlyWhereItsBlamedDeployCountsForTheIssuesProject(t *testing.T) {
+	r := newRig(t)
+	r.project("BETA", "acme/beta")
+	r.deployRun(297, at(60), sha("a"), prodJob, success, success)
+	r.passDeploys()
+	deploy := r.deployOf(297)
+
+	betaIssue := r.issueOf("BETA", 1)
+	betaResult := r.checkResult(betaIssue, "c1", sha("a"), VerdictFail, model.CheckWhenAfterMerge)
+	if created, err := RecordCheckFailure(r.ctx, r.pool, betaResult); err != nil || created {
+		t.Fatalf("RecordCheckFailure on BETA's issue at ALPHA's commit = %v, %v; want no row", created, err)
+	}
+	r.passEvents()
+	var total int
+	if err := r.pool.QueryRow(r.ctx, `select count(*) from production_events where kind = 'failure'`).Scan(&total); err != nil || total != 0 {
+		t.Fatalf("failure rows across every project = %d (%v), want none", total, err)
+	}
+	if bound := r.boundTo(betaResult); bound != "" {
+		t.Fatalf("BETA's result is bound to %q, want unbound", bound)
+	}
+
+	alphaIssue := r.issue(16)
+	alphaResult := r.checkResult(alphaIssue, "c1", sha("a"), VerdictFail, model.CheckWhenAfterMerge)
+	if created, err := RecordCheckFailure(r.ctx, r.pool, alphaResult); err != nil || !created {
+		t.Fatalf("RecordCheckFailure on ALPHA's issue at ALPHA's commit = %v, %v; want a row", created, err)
+	}
+	if rows := r.failures(); len(rows) != 1 || *rows[0].DeployID != deploy.ID {
+		t.Fatalf("ALPHA's failure rows = %+v, want one blaming %s", rows, deploy.ID)
 	}
 }

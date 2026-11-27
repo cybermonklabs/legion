@@ -1075,7 +1075,7 @@ func (r *refresherRig) post(t *testing.T, project, ref string, finished time.Tim
 	event, _, err := prodevents.Write(t.Context(), r.database.Pool, prodevents.Event{
 		ProjectKey: project, Kind: prodevents.KindDeploy, Source: prodevents.SourceAPI, SourceRef: ref,
 		FinishedAt: &finished, PullRequests: prs, Actor: alice,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("post the deploy %s to %s: %v", ref, project, err)
 	}

@@ -199,10 +199,36 @@ func (r *rig) failures() []prodevents.Event {
 // issue makes issue ALPHA-number labelled labels, and answers its key.
 func (r *rig) issue(number int, labels ...string) string {
 	r.t.Helper()
-	key := fmt.Sprintf("%s-%d", alpha, number)
+	return r.issueOf(alpha, number, labels...)
+}
+
+// issueOf makes issue <project>-number labelled labels, and answers its key.
+func (r *rig) issueOf(project string, number int, labels ...string) string {
+	r.t.Helper()
+	key := fmt.Sprintf("%s-%d", project, number)
 	r.exec("make issue "+key, `insert into issues (key, project_key, number, title, status, created_by, rank, labels)
-		values ($1, $2, $3, $1, 'todo', '{"kind":"user","id":"alice"}', $1, $4)`, key, alpha, number, append([]string{}, labels...))
+		values ($1, $2, $3, $1, 'todo', '{"kind":"user","id":"alice"}', $1, $4)`, key, project, number, append([]string{}, labels...))
 	return key
+}
+
+// project makes project key, whose default repository is repo where it names one.
+func (r *rig) project(key, repo string) {
+	r.t.Helper()
+	r.exec("make project "+key, `insert into projects (key, name, default_assignee, default_repo) values ($1, $1, 'alice', nullif($2, ''))`, key, repo)
+}
+
+// postDeploy stores a deploy a system posted to project's route, finished at finished, shipping
+// commits and pulls, as the route writes it.
+func (r *rig) postDeploy(project, ref string, finished time.Time, commits, pulls []string) prodevents.Event {
+	r.t.Helper()
+	posted, _, err := prodevents.Write(r.ctx, r.pool, prodevents.Event{
+		ProjectKey: project, Kind: prodevents.KindDeploy, Status: prodevents.StatusSucceeded, Source: prodevents.SourceAPI,
+		SourceRef: ref, FinishedAt: &finished, Commits: commits, PullRequests: pulls, Actor: tester,
+	}, nil)
+	if err != nil {
+		r.t.Fatalf("post the deploy %s of %s: %v", ref, project, err)
+	}
+	return posted
 }
 
 // event appends an event of type kind on issue with payload, as actor, and answers its seq.
@@ -236,11 +262,11 @@ func (r *rig) checkResult(issue, block, commit, verdict, when string) string {
 		with held as (select id from artifacts where issue_key = $1 and slug = 'verification-md'),
 		made as (
 			insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
-			select $1, $2, 'verification-md', 'verification.md', 'doc', '{"kind":"user","id":"alice"}'
+			select $1, (select project_key from issues where key = $1), 'verification-md', 'verification.md', 'doc', '{"kind":"user","id":"alice"}'
 			where not exists (select from held)
 			returning id
 		)
-		select id::text from held union all select id::text from made`, issue, alpha).Scan(&artifact); err != nil {
+		select id::text from held union all select id::text from made`, issue).Scan(&artifact); err != nil {
 		r.t.Fatalf("make the Verification document of %s: %v", issue, err)
 	}
 	id := uuid.NewString()

@@ -3,11 +3,13 @@ package prodevents
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -75,11 +77,11 @@ func TestARepeatedSourceRefWritesNoSecondRow(t *testing.T) {
 	database := storetest.Open(t)
 	project(t, ctx, database.Pool, "ALPHA")
 
-	first, created, err := Write(ctx, database.Pool, deploy("ALPHA", "github:7", at(10), "aaaa"))
+	first, created, err := Write(ctx, database.Pool, deploy("ALPHA", "github:7", at(10), "aaaa"), nil)
 	if err != nil || !created {
 		t.Fatalf("first write: created %v, err %v", created, err)
 	}
-	again, created, err := Write(ctx, database.Pool, deploy("ALPHA", "github:7", at(11), "bbbb"))
+	again, created, err := Write(ctx, database.Pool, deploy("ALPHA", "github:7", at(11), "bbbb"), nil)
 	if err != nil {
 		t.Fatalf("repeat write: %v", err)
 	}
@@ -104,7 +106,7 @@ func TestARepeatedSourceRefWritesNoSecondRow(t *testing.T) {
 
 	// Another project may hold the same source_ref: the key is per project.
 	project(t, ctx, database.Pool, "BETA")
-	if _, created, err := Write(ctx, database.Pool, deploy("BETA", "github:7", at(10))); err != nil || !created {
+	if _, created, err := Write(ctx, database.Pool, deploy("BETA", "github:7", at(10)), nil); err != nil || !created {
 		t.Fatalf("another project's row under the same source_ref: created %v, err %v", created, err)
 	}
 }
@@ -116,21 +118,21 @@ func TestAFailureNeedsTheDeployItBlames(t *testing.T) {
 
 	var refusal *Error
 	if _, _, err := Write(ctx, database.Pool, Event{ProjectKey: "ALPHA", Kind: KindFailure, Source: SourceAPI, SourceRef: "x",
-		Signal: new(SignalAPI), DetectedAt: at(1), Actor: writer}); !errors.As(err, &refusal) || refusal.Code != "PRODUCTION_EVENT_INPUT" {
+		Signal: new(SignalAPI), DetectedAt: at(1), Actor: writer}, nil); !errors.As(err, &refusal) || refusal.Code != "PRODUCTION_EVENT_INPUT" {
 		t.Fatalf("a failure with no deploy answered %v, want PRODUCTION_EVENT_INPUT", err)
 	}
-	if _, _, err := Write(ctx, database.Pool, failure("ALPHA", "y", "0193a000-0000-7000-8000-000000000000", SignalAPI)); !errors.As(err, &refusal) || refusal.Code != "PRODUCTION_EVENT_NO_DEPLOY" {
+	if _, _, err := Write(ctx, database.Pool, failure("ALPHA", "y", "0193a000-0000-7000-8000-000000000000", SignalAPI), nil); !errors.As(err, &refusal) || refusal.Code != "PRODUCTION_EVENT_NO_DEPLOY" {
 		t.Fatalf("a failure blaming no row answered %v, want PRODUCTION_EVENT_NO_DEPLOY", err)
 	}
-	stored, _, err := Write(ctx, database.Pool, deploy("ALPHA", "github:1", at(10)))
+	stored, _, err := Write(ctx, database.Pool, deploy("ALPHA", "github:1", at(10)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, _, err := Write(ctx, database.Pool, failure("ALPHA", "z", stored.ID, SignalAPI))
+	first, _, err := Write(ctx, database.Pool, failure("ALPHA", "z", stored.ID, SignalAPI), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := Write(ctx, database.Pool, failure("ALPHA", "w", first.ID, SignalAPI)); !errors.As(err, &refusal) || refusal.Code != "PRODUCTION_EVENT_NO_DEPLOY" {
+	if _, _, err := Write(ctx, database.Pool, failure("ALPHA", "w", first.ID, SignalAPI), nil); !errors.As(err, &refusal) || refusal.Code != "PRODUCTION_EVENT_NO_DEPLOY" {
 		t.Fatalf("a failure blaming a failure answered %v, want PRODUCTION_EVENT_NO_DEPLOY", err)
 	}
 
@@ -175,7 +177,7 @@ func TestAFailureAndTheDropOfItsDeployWaitForEachOther(t *testing.T) {
 		})
 	}
 
-	dropped, _, err := Write(ctx, pool, deploy("ALPHA", "github:1", at(10)))
+	dropped, _, err := Write(ctx, pool, deploy("ALPHA", "github:1", at(10)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +195,7 @@ func TestAFailureAndTheDropOfItsDeployWaitForEachOther(t *testing.T) {
 	}
 	written := make(chan error, 1)
 	go func() {
-		_, _, err := Write(ctx, pool, failure("ALPHA", "alerts:1", dropped.ID, SignalAPI))
+		_, _, err := Write(ctx, pool, failure("ALPHA", "alerts:1", dropped.ID, SignalAPI), nil)
 		written <- err
 	}()
 	waitsOnALock("the failure blaming the deploy being dropped", written)
@@ -205,7 +207,7 @@ func TestAFailureAndTheDropOfItsDeployWaitForEachOther(t *testing.T) {
 		t.Fatalf("a failure blaming a deploy dropped while it was written answered %v, want %s", err, CodeNoDeploy)
 	}
 
-	kept, _, err := Write(ctx, pool, deploy("ALPHA", "github:2", at(20)))
+	kept, _, err := Write(ctx, pool, deploy("ALPHA", "github:2", at(20)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +216,7 @@ func TestAFailureAndTheDropOfItsDeployWaitForEachOther(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer failing.Rollback(ctx)
-	blamed, _, err := WriteIn(ctx, failing, failure("ALPHA", "alerts:2", kept.ID, SignalAPI))
+	blamed, _, err := WriteIn(ctx, failing, failure("ALPHA", "alerts:2", kept.ID, SignalAPI), nil)
 	if err != nil {
 		t.Fatalf("write the failure blaming the deploy: %v", err)
 	}
@@ -243,14 +245,14 @@ func TestEachWriteLogsAChangeOfTheDayItCountsOn(t *testing.T) {
 	database := storetest.Open(t)
 	project(t, ctx, database.Pool, "ALPHA")
 
-	stored, _, err := Write(ctx, database.Pool, deploy("ALPHA", "github:1", at(10)))
+	stored, _, err := Write(ctx, database.Pool, deploy("ALPHA", "github:1", at(10)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if changes := pendingOf(t, ctx, database.Pool, stored.ID); len(changes) != 1 || changes[0][0] != nil || !changes[0][1].Equal(*at(10)) {
 		t.Fatalf("a deploy's insert logged %v, want one change carrying its finished_at", changes)
 	}
-	failed, _, err := Write(ctx, database.Pool, failure("ALPHA", "flag", stored.ID, SignalPerson))
+	failed, _, err := Write(ctx, database.Pool, failure("ALPHA", "flag", stored.ID, SignalPerson), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,11 +279,11 @@ func TestTheStateRoutesWriteKeepsWhoAndWhy(t *testing.T) {
 	database := storetest.Open(t)
 	project(t, ctx, database.Pool, "ALPHA")
 	project(t, ctx, database.Pool, "BETA")
-	stored, _, err := Write(ctx, database.Pool, deploy("ALPHA", "github:1", at(10)))
+	stored, _, err := Write(ctx, database.Pool, deploy("ALPHA", "github:1", at(10)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	failed, _, err := Write(ctx, database.Pool, failure("ALPHA", "flag", stored.ID, SignalAPI))
+	failed, _, err := Write(ctx, database.Pool, failure("ALPHA", "flag", stored.ID, SignalAPI), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,16 +326,16 @@ func TestTheListPagesAWindowOfAProjectsRows(t *testing.T) {
 	project(t, ctx, database.Pool, "BETA")
 	var deploys []Event
 	for hour, ref := range []string{"github:1", "github:2", "github:3"} {
-		stored, _, err := Write(ctx, database.Pool, deploy("ALPHA", ref, at(hour*24)))
+		stored, _, err := Write(ctx, database.Pool, deploy("ALPHA", ref, at(hour*24)), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		deploys = append(deploys, stored)
 	}
-	if _, _, err := Write(ctx, database.Pool, deploy("BETA", "github:9", at(0))); err != nil {
+	if _, _, err := Write(ctx, database.Pool, deploy("BETA", "github:9", at(0)), nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := Write(ctx, database.Pool, failure("ALPHA", "f", deploys[0].ID, SignalAPI)); err != nil {
+	if _, _, err := Write(ctx, database.Pool, failure("ALPHA", "f", deploys[0].ID, SignalAPI), nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -374,26 +376,26 @@ func TestTheListKeepsTheFailuresThatBlameOneDeploy(t *testing.T) {
 	database := storetest.Open(t)
 	project(t, ctx, database.Pool, "ALPHA")
 	project(t, ctx, database.Pool, "BETA")
-	first, _, err := Write(ctx, database.Pool, deploy("ALPHA", "github:1", at(1)))
+	first, _, err := Write(ctx, database.Pool, deploy("ALPHA", "github:1", at(1)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, _, err := Write(ctx, database.Pool, deploy("ALPHA", "github:2", at(2)))
+	second, _, err := Write(ctx, database.Pool, deploy("ALPHA", "github:2", at(2)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var blamingFirst []string
 	for _, ref := range []string{"api:1", "api:2"} {
-		stored, _, err := Write(ctx, database.Pool, failure("ALPHA", ref, first.ID, SignalAPI))
+		stored, _, err := Write(ctx, database.Pool, failure("ALPHA", ref, first.ID, SignalAPI), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		blamingFirst = append(blamingFirst, stored.ID)
 	}
-	if _, _, err := Write(ctx, database.Pool, failure("ALPHA", "api:3", second.ID, SignalAPI)); err != nil {
+	if _, _, err := Write(ctx, database.Pool, failure("ALPHA", "api:3", second.ID, SignalAPI), nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := Write(ctx, database.Pool, failure("BETA", "api:4", first.ID, SignalAPI)); err != nil {
+	if _, _, err := Write(ctx, database.Pool, failure("BETA", "api:4", first.ID, SignalAPI), nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -431,22 +433,22 @@ func TestACommitBlamesTheFirstDeployThatShippedIt(t *testing.T) {
 	ctx := t.Context()
 	database := storetest.Open(t)
 	project(t, ctx, database.Pool, "ALPHA")
-	later, _, err := Write(ctx, database.Pool, deploy("ALPHA", "github:2", at(20), "cccc", "aaaa"))
+	later, _, err := Write(ctx, database.Pool, deploy("ALPHA", "github:2", at(20), "cccc", "aaaa"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, _, err := Write(ctx, database.Pool, deploy("ALPHA", "github:1", at(10), "aaaa"))
+	first, _, err := Write(ctx, database.Pool, deploy("ALPHA", "github:1", at(10), "aaaa"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	found, ok, err := DeployForCommit(ctx, database.Pool, "AAAA")
+	found, ok, err := DeployForCommit(ctx, database.Pool, "ALPHA", "AAAA")
 	if err != nil || !ok || found.ID != first.ID {
 		t.Fatalf("commit aaaa blamed %v (ok %v, err %v), want the first deploy %s", found.ID, ok, err, first.ID)
 	}
-	if found, ok, _ := DeployForCommit(ctx, database.Pool, "cccc"); !ok || found.ID != later.ID {
+	if found, ok, _ := DeployForCommit(ctx, database.Pool, "ALPHA", "cccc"); !ok || found.ID != later.ID {
 		t.Fatalf("commit cccc blamed %v, want %s", found.ID, later.ID)
 	}
-	if _, ok, err := DeployForCommit(ctx, database.Pool, "dddd"); err != nil || ok {
+	if _, ok, err := DeployForCommit(ctx, database.Pool, "ALPHA", "dddd"); err != nil || ok {
 		t.Fatalf("a commit no deploy holds answered ok %v, err %v", ok, err)
 	}
 	if found, ok, err := DeployForRun(ctx, database.Pool, "ACME/widgets", 1); err != nil || !ok || found.ID != first.ID {
@@ -533,11 +535,11 @@ func TestTheRoutesAndTheSignalsWritesTakeNoChangeLogLock(t *testing.T) {
 	database := storetest.Open(t)
 	pool := database.Pool
 	project(t, ctx, pool, "ALPHA")
-	blamed, _, err := Write(ctx, pool, deploy("ALPHA", "github:1", at(10)))
+	blamed, _, err := Write(ctx, pool, deploy("ALPHA", "github:1", at(10)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	restorer, _, err := Write(ctx, pool, deploy("ALPHA", "github:2", at(40)))
+	restorer, _, err := Write(ctx, pool, deploy("ALPHA", "github:2", at(40)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,7 +552,7 @@ func TestTheRoutesAndTheSignalsWritesTakeNoChangeLogLock(t *testing.T) {
 	}
 	writes := func(event Event) func() error {
 		return func() error {
-			_, _, err := Write(ctx, pool, event)
+			_, _, err := Write(ctx, pool, event, nil)
 			return err
 		}
 	}
@@ -599,4 +601,232 @@ func TestTheRoutesAndTheSignalsWritesTakeNoChangeLogLock(t *testing.T) {
 	incident := failure("ALPHA", "incident:ALPHA-10", blamed.ID, SignalIncidentIssue)
 	incident.Source = SourceIncidentLabel
 	underTheChangeLogLock(t, ctx, pool, "an incident_issue", writes(incident), rowOf(incident.SourceRef))
+}
+
+// TestASignalBlamesNoDeployAnotherProjectPosted: a commit and a pull request that a deploy posted
+// to BETA names, and that finished first, are blamed for ALPHA's signals on ALPHA's GitHub deploy
+// of them, never on BETA's post, which counts for BETA alone; BETA's signals blame BETA's post. A
+// deploy ALPHA posted itself, earlier still, is the one ALPHA's signals blame.
+func TestASignalBlamesNoDeployAnotherProjectPosted(t *testing.T) {
+	ctx := t.Context()
+	database := storetest.Open(t)
+	pool := database.Pool
+	project(t, ctx, pool, "ALPHA")
+	project(t, ctx, pool, "BETA")
+	posted := func(projectKey, ref string, finished *time.Time) Event {
+		t.Helper()
+		event := deploy(projectKey, ref, finished, "aaaa")
+		event.Source = SourceAPI
+		stored, _, err := Write(ctx, pool, event, nil)
+		if err != nil {
+			t.Fatalf("post the deploy %s of %s: %v", ref, projectKey, err)
+		}
+		return stored
+	}
+	github, _, err := Write(ctx, pool, deploy("ALPHA", "github:1", at(20), "aaaa"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beta := posted("BETA", "ci:beta-1", at(5))
+	blames := func(when string, want map[string]string) {
+		t.Helper()
+		for projectKey, id := range want {
+			if found, held, err := DeployForCommit(ctx, pool, projectKey, "AAAA"); err != nil || !held || found.ID != id {
+				t.Errorf("%s: %s's signals blame %q (held %v, %v) for commit aaaa, want %s", when, projectKey, found.ID, held, err, id)
+			}
+			if found, held, err := DeployForPullRequest(ctx, pool, projectKey, "ACME/widgets#1"); err != nil || !held || found.ID != id {
+				t.Errorf("%s: %s's signals blame %q (held %v, %v) for acme/widgets#1, want %s", when, projectKey, found.ID, held, err, id)
+			}
+		}
+	}
+	blames("beside BETA's earlier post", map[string]string{"ALPHA": github.ID, "BETA": beta.ID})
+	alpha := posted("ALPHA", "ci:alpha-1", at(10))
+	blames("beside ALPHA's own post", map[string]string{"ALPHA": alpha.ID, "BETA": beta.ID})
+}
+
+// TestARepeatAnswersItsRowOnceItsDeployNoLongerCounts: a write under a source_ref its project
+// holds answers that row, created false, before it asks anything of the deploy the failure
+// blames, so a retry is answered so after the deploy stopped counting for the project: its check
+// refuses the deploy now (R10).
+func TestARepeatAnswersItsRowOnceItsDeployNoLongerCounts(t *testing.T) {
+	ctx := t.Context()
+	database := storetest.Open(t)
+	pool := database.Pool
+	project(t, ctx, pool, "ALPHA")
+	blamed, _, err := Write(ctx, pool, deploy("ALPHA", "github:1", at(10)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := failure("ALPHA", "alerts:1", blamed.ID, SignalAPI)
+	first, created, err := Write(ctx, pool, post, nil)
+	if err != nil || !created {
+		t.Fatalf("the first write: created %v, %v", created, err)
+	}
+	refusing := func(context.Context, pgx.Tx, Event) error { return NoDeploy(blamed.ID) }
+	var refusal *Error
+	if _, _, err := Write(ctx, pool, failure("ALPHA", "alerts:2", blamed.ID, SignalAPI), refusing); !errors.As(err, &refusal) || refusal.Code != CodeNoDeploy {
+		t.Fatalf("a new failure the check refuses answered %v, want %s", err, CodeNoDeploy)
+	}
+	again, created, err := Write(ctx, pool, post, refusing)
+	if err != nil || created || again.ID != first.ID {
+		t.Fatalf("the repeat answered row %q, created %v, %v; want the first row %s", again.ID, created, err, first.ID)
+	}
+}
+
+// TestARestoreKeepsTheFirstRestore: a failure restored already keeps its first restore: a
+// person's restore of a revert's failure, which its own deploy restored, with or without a
+// restoring deploy of its own, and a person's second restore of a failure a person restored, each
+// answer the row as it stands, its restore time, writer and restoring deploy unmoved, and log no
+// change (R7).
+func TestARestoreKeepsTheFirstRestore(t *testing.T) {
+	ctx := t.Context()
+	database := storetest.Open(t)
+	pool := database.Pool
+	project(t, ctx, pool, "ALPHA")
+	write := func(event Event) Event {
+		t.Helper()
+		stored, _, err := Write(ctx, pool, event, nil)
+		if err != nil {
+			t.Fatalf("write %s: %v", event.SourceRef, err)
+		}
+		return stored
+	}
+	blamed, restoring, later := write(deploy("ALPHA", "github:1", at(10))), write(deploy("ALPHA", "github:2", at(20))), write(deploy("ALPHA", "github:3", at(30)))
+	revert := failure("ALPHA", "revert:acme/widgets#9", blamed.ID, SignalRevert)
+	revert.Source = SourceReverts
+	revert.RestoredAt, revert.RestoredBy, revert.RestoredByDeploy = restoring.FinishedAt, &writer, &restoring.ID
+	reverted := write(revert)
+	flag := failure("ALPHA", PersonSourceRef(blamed.ID, "alice"), blamed.ID, SignalPerson)
+	flag.Source, flag.Actor = SourcePerson, person
+	flagged, err := SetState(ctx, pool, "ALPHA", write(flag).ID, StateChange{State: StateRestored, Actor: person, At: *at(40)})
+	if err != nil || flagged.RestoredAt == nil || !flagged.RestoredAt.Equal(*at(40)) {
+		t.Fatalf("the first restore of the flag answered %+v, %v; want it restored at %v", flagged, err, at(40))
+	}
+	restoreOf := func(row Event) string {
+		restorer := "none"
+		if row.RestoredByDeploy != nil {
+			restorer = *row.RestoredByDeploy
+		}
+		by := "nobody"
+		if row.RestoredBy != nil {
+			by = row.RestoredBy.Kind + ":" + row.RestoredBy.ID
+		}
+		return fmt.Sprintf("restored at %v by %s, restoring deploy %s", row.RestoredAt, by, restorer)
+	}
+	for _, again := range []struct {
+		what   string
+		row    Event
+		change StateChange
+	}{
+		{"a person's restore of a revert's failure", reverted, StateChange{State: StateRestored, Actor: person, At: *at(50)}},
+		{"a person's restore of a revert's failure naming another deploy", reverted,
+			StateChange{State: StateRestored, RestoredByDeploy: &later.ID, Actor: person, At: *at(50)}},
+		{"a person's repeated restore", flagged, StateChange{State: StateRestored, Actor: person, At: *at(60)}},
+	} {
+		changes := len(pendingOf(t, ctx, pool, again.row.ID))
+		answered, err := SetState(ctx, pool, "ALPHA", again.row.ID, again.change)
+		if err != nil {
+			t.Fatalf("%s: %v", again.what, err)
+		}
+		stored, err := Get(ctx, pool, "ALPHA", again.row.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := restoreOf(again.row)
+		if got := restoreOf(answered); got != want {
+			t.Errorf("%s answered a row %s, want the first restore, %s", again.what, got, want)
+		}
+		if got := restoreOf(stored); got != want {
+			t.Errorf("%s left the row %s, want the first restore, %s", again.what, got, want)
+		}
+		if now := len(pendingOf(t, ctx, pool, again.row.ID)); now != changes {
+			t.Errorf("%s logged %d changes, want none", again.what, now-changes)
+		}
+	}
+}
+
+// TestAnotherProjectsAutomaticFailureIsListedAndJudgedWhereItsDeployCountsForIt: an automatic
+// signal's failure of ALPHA on a GitHub deploy counts for every project that deploy counts for,
+// so it is among the failures of other projects BETA's list asks its route of (OthersFailures),
+// and BETA's list and state write take it where the route's check of its deploy does (Reached,
+// StateChange.Check). A posted failure of ALPHA on that deploy, an automatic failure on a deploy
+// ALPHA posted, and the deploy's own row are none of them: BETA's write of the first and the last
+// is ErrNotFound whatever its check says, and so is its write of the check_fail where its check
+// refuses the deploy. A reject through BETA's route is the row's own state, which ALPHA reads too.
+func TestAnotherProjectsAutomaticFailureIsListedAndJudgedWhereItsDeployCountsForIt(t *testing.T) {
+	ctx := t.Context()
+	database := storetest.Open(t)
+	pool := database.Pool
+	project(t, ctx, pool, "ALPHA")
+	project(t, ctx, pool, "BETA")
+	write := func(event Event) Event {
+		t.Helper()
+		stored, _, err := Write(ctx, pool, event, nil)
+		if err != nil {
+			t.Fatalf("write %s: %v", event.SourceRef, err)
+		}
+		return stored
+	}
+	shared := write(deploy("ALPHA", "github:1", at(10)))
+	postedDeploy := deploy("ALPHA", "ci:deploy-1", at(11))
+	postedDeploy.Source = SourceAPI
+	posted := write(postedDeploy)
+	checkFail := func(ref, deployID string) Event {
+		event := failure("ALPHA", ref, deployID, SignalCheckFail)
+		event.Source = SourceCheckResults
+		return write(event)
+	}
+	check := checkFail("check:doc/c1@"+shared.ID, shared.ID)
+	checkFail("check:doc/c2@"+posted.ID, posted.ID)
+	alert := write(failure("ALPHA", "alerts:1", shared.ID, SignalAPI))
+
+	query := ListQuery{Project: "BETA", From: day, To: day.Add(72 * time.Hour), Limit: 10}
+	others, err := OthersFailures(ctx, pool, query)
+	if err != nil || len(others) != 1 || others[0].ID != check.ID || others[0].Deploy.ID != shared.ID || others[0].Deploy.Source != SourceGitHub {
+		t.Fatalf("the failures of other projects that may count for BETA = %+v (%v), want ALPHA's check_fail %s on its GitHub deploy %s", others, err, check.ID, shared.ID)
+	}
+	deploys := query
+	deploys.Kind = KindDeploy
+	if others, err := OthersFailures(ctx, pool, deploys); err != nil || len(others) != 0 {
+		t.Fatalf("a read of deploys alone asked of %+v (%v), want no failure", others, err)
+	}
+	query.Reached = []string{check.ID}
+	if page, total, err := List(ctx, pool, query); err != nil || total != 1 || len(page) != 1 || page[0].ID != check.ID {
+		t.Fatalf("BETA's page with ALPHA's check_fail reached = %+v, total %d (%v); want that row alone", page, total, err)
+	}
+
+	reaches := func(_ context.Context, _ pgx.Tx, deploy Event) error {
+		if deploy.ID == shared.ID {
+			return nil
+		}
+		return NoDeploy(deploy.ID)
+	}
+	refuses := func(_ context.Context, _ pgx.Tx, deploy Event) error { return NoDeploy(deploy.ID) }
+	reject := func(id string, asks DeployCheck) (Event, error) {
+		return SetState(ctx, pool, "BETA", id, StateChange{State: StateRejected, Reason: "A flaky probe.", Check: asks, Actor: person, At: *at(40)})
+	}
+	for _, refused := range []struct {
+		what  string
+		id    string
+		check DeployCheck
+	}{
+		{"the check_fail where the check refuses its deploy", check.ID, refuses},
+		{"the check_fail with no check", check.ID, nil},
+		{"the posted failure", alert.ID, reaches},
+		{"the deploy's own row", shared.ID, reaches},
+	} {
+		if _, err := reject(refused.id, refused.check); !errors.Is(err, ErrNotFound) {
+			t.Errorf("BETA's reject of %s answered %v, want ErrNotFound", refused.what, err)
+		}
+	}
+	if stored, err := Get(ctx, pool, "ALPHA", check.ID); err != nil || stored.State != StateCounted {
+		t.Fatalf("after the refused writes ALPHA's check_fail is %s (%v), want counted", stored.State, err)
+	}
+	rejected, err := reject(check.ID, reaches)
+	if err != nil || rejected.State != StateRejected || rejected.StateBy == nil || rejected.StateBy.ID != person.ID {
+		t.Fatalf("BETA's reject of ALPHA's check_fail answered %+v, %v; want it rejected by %s", rejected, err, person.ID)
+	}
+	if stored, err := Get(ctx, pool, "ALPHA", check.ID); err != nil || stored.State != StateRejected {
+		t.Fatalf("after BETA's reject ALPHA reads its check_fail %s (%v), want rejected", stored.State, err)
+	}
 }

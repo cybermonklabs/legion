@@ -70,7 +70,7 @@ func (r *refresherRig) githubDeploy(t *testing.T, project, repo, ref string, fin
 	event, _, err := prodevents.Write(t.Context(), r.database.Pool, prodevents.Event{
 		ProjectKey: project, Kind: prodevents.KindDeploy, Source: prodevents.SourceGitHub, SourceRef: ref, Status: status,
 		StartedAt: new(finished.Add(-20 * time.Minute)), FinishedAt: &finished, Repo: repo, PullRequests: prs, Actor: alice,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("write the deploy %s of %s: %v", ref, project, err)
 	}
@@ -92,7 +92,7 @@ func (r *refresherRig) failure(t *testing.T, project, ref, source, signal string
 			event.RestoredByDeploy = &restoring.ID
 		}
 	}
-	written, _, err := prodevents.Write(t.Context(), r.database.Pool, event)
+	written, _, err := prodevents.Write(t.Context(), r.database.Pool, event, nil)
 	if err != nil {
 		t.Fatalf("write the failure %s of %s: %v", ref, project, err)
 	}
@@ -273,13 +273,20 @@ func TestARejectMovesChangeFailRateByThatDeploysShare(t *testing.T) {
 		"failed-deploy-recovery.n": new(2.0), "deployment-rework-rate.restoring": new(2.0),
 	})
 	expectTruth(t, "F2 restored", r.storedFigures(t), r.truthFigures(t))
-	// Removing the restoring deploy still changes its finish day, even when neither the
-	// blamed deploy nor the old and new restore times fall on it.
+	// A second restore keeps the first restore and its restoring deploy (R7).
 	if _, err := prodevents.SetState(t.Context(), r.database.Pool, "ALPHA", w.failures["F2"].ID, prodevents.StateChange{
 		State: prodevents.StateRestored, Actor: alice, At: failureAt(3, 11, 0),
 	}); err != nil {
-		t.Fatalf("clear F2's restoring deploy: %v", err)
+		t.Fatalf("repeat F2's restore: %v", err)
 	}
+	r.refreshIn(t.Context(), t, nil)
+	wantFigures(t, "F2 after a repeated restore", r.failureValues(t, "ALPHA", throughToday), map[string]*float64{
+		"failed-deploy-recovery.n": new(2.0), "deployment-rework-rate.restoring": new(2.0),
+	})
+	expectTruth(t, "F2 after a repeated restore", r.storedFigures(t), r.truthFigures(t))
+	// Removing the restoring deploy directly in the table still changes its finish day through the
+	// change trigger, even when neither the blamed deploy nor the restore time falls on it.
+	r.exec(t, "clear F2's restoring deploy", `update production_events set restored_by_deploy = null where id = $1`, w.failures["F2"].ID)
 	r.refreshIn(t.Context(), t, nil)
 	wantFigures(t, "F2 restored without a deploy", r.failureValues(t, "ALPHA", throughToday), map[string]*float64{
 		"failed-deploy-recovery.n": new(2.0), "deployment-rework-rate.restoring": new(1.0),
@@ -822,4 +829,28 @@ func TestTheFailureRowsOfAMovedProjectAreWrittenUnderThePublishedDefaults(t *tes
 		"change-fail-rate.failed": new(1.0), "change-fail-rate.total": new(1.0),
 	})
 	expectTruth(t, "after publishing PIER's default move", r.storedFigures(t), r.truthFigures(t))
+}
+
+// TestAPostedDeployWhoseStatusIsDroppedStillCountsAndSoDoesItsFailure: only the GitHub adapter
+// drops a deploy (prodevents.Event.Dropped), so a posted deploy a system stored with the status
+// "dropped" is a deploy of ALPHA's events source like any other: it is the one deploy of the
+// window, and the failure posted on it counts, change fail rate reading 1 failed deploy of 1 with
+// 1 failure not restored.
+func TestAPostedDeployWhoseStatusIsDroppedStillCountsAndSoDoesItsFailure(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedFailureProjects(t)
+	r.putFailures(t, "ALPHA", alphaJob, []string{delivery.FailureSourceEvents}, failureDay, delivery.SourceInput{Kind: delivery.SourceKindEvents})
+	posted, _, err := prodevents.Write(t.Context(), r.database.Pool, prodevents.Event{
+		ProjectKey: "ALPHA", Kind: prodevents.KindDeploy, Source: prodevents.SourceAPI, SourceRef: "release-1",
+		Status: prodevents.StatusDropped, FinishedAt: new(failureAt(0, 10, 0)), Actor: alice,
+	}, nil)
+	if err != nil {
+		t.Fatalf("store the posted deploy: %v", err)
+	}
+	r.failure(t, "ALPHA", "post:1", prodevents.SourceAPI, prodevents.SignalAPI, posted, failureAt(0, 11, 0), nil, nil)
+	r.settle(t)
+	wantFigures(t, "a posted deploy sent as dropped", r.failureValues(t, "ALPHA", threeDays), map[string]*float64{
+		"change-fail-rate.failed": new(1.0), "change-fail-rate.total": new(1.0), "change-fail-rate.rate": new(1.0),
+		"failed-deploy-recovery.not_restored": new(1.0),
+	})
 }

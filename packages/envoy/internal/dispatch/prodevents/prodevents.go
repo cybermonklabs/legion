@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -118,12 +119,18 @@ func refuse(code, format string, args ...any) error {
 // deploy a DeployCheck refuses in these same words, so the refusal tells the writer nothing of a
 // row outside its reach.
 func NoDeploy(id string) error {
-	return refuse(CodeNoDeploy, "no deploy row has id %s", id)
+	return NoDeployf("no deploy row has id %s", id)
 }
 
-// DeployCheck checks the attribution fields of a deploy that a route's write names.
+// NoDeployf is the refusal of a deploy the writer named by another selector than its id (a run, a
+// commit), in the words of that selector: CodeNoDeploy, which a route answers 409.
+func NoDeployf(format string, args ...any) error {
+	return refuse(CodeNoDeploy, format, args...)
+}
+
+// DeployCheck checks the attribution fields of a deploy that a write names.
 // The check runs in the write transaction while the deploy row is held for key share, so a drop
-// waits for the write. A nil check is used by automatic writers.
+// waits for the write. A nil check asks nothing.
 type DeployCheck func(ctx context.Context, tx pgx.Tx, deploy Event) error
 
 // ErrNotFound is a row the project does not hold.
@@ -195,21 +202,16 @@ func prepared(event Event) ([]byte, string, error) {
 
 // Write stores event under its project, or answers the row its project already holds under its
 // source_ref: a signal sent twice writes one row (R6), and the second write answers the first
-// row and created false. A failure's blamed deploy must be a deploy row; a deploy names none. The
-// row's id, its creation time and its state are the server's, whatever event carries.
-func Write(ctx context.Context, pool *store.Pool, event Event) (Event, bool, error) {
-	return WriteChecked(ctx, pool, event, nil)
-}
-
-// WriteChecked is Write with check asked of each deploy event names (DeployCheck), nil for no
-// question: a route's post holds the failure's blamed deploy to its project with it.
-func WriteChecked(ctx context.Context, pool *store.Pool, event Event, check DeployCheck) (Event, bool, error) {
+// row and created false. A failure's blamed deploy must be a deploy row, and check is asked of
+// each deploy event names (DeployCheck), nil for no question; a deploy names none. The row's id,
+// its creation time and its state are the server's, whatever event carries.
+func Write(ctx context.Context, pool *store.Pool, event Event, check DeployCheck) (Event, bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return Event{}, false, fmt.Errorf("begin the write of production event %s: %w", event.SourceRef, err)
 	}
 	defer tx.Rollback(ctx)
-	stored, created, err := writeIn(ctx, tx, event, check)
+	stored, created, err := WriteIn(ctx, tx, event, check)
 	if err != nil {
 		return Event{}, false, err
 	}
@@ -225,16 +227,20 @@ func WriteChecked(ctx context.Context, pool *store.Pool, event Event, check Depl
 // WriteIn is Write's write in tx, the caller's transaction, for a writer that keeps a row of its
 // own beside the event's and commits the two together. It takes the delivery change log's lock
 // nowhere either: the caller commits tx and then, where created, drains the change rows the write
-// left in the outbox (delivery.DrainAfterCommit), as Write does.
-func WriteIn(ctx context.Context, tx pgx.Tx, event Event) (Event, bool, error) {
-	return writeIn(ctx, tx, event, nil)
-}
-
-// writeIn is WriteIn's write with check asked of each deploy event names (WriteChecked).
-func writeIn(ctx context.Context, tx pgx.Tx, event Event, check DeployCheck) (Event, bool, error) {
+// left in the outbox (delivery.DrainAfterCommit), as Write does. The row the project holds under
+// event's source_ref is read first and answered as it stands, before any deploy event names is
+// asked of, so a repeat is answered so after its deploy was dropped or stopped counting (R10).
+func WriteIn(ctx context.Context, tx pgx.Tx, event Event, check DeployCheck) (Event, bool, error) {
 	actor, environment, err := prepared(event)
 	if err != nil {
 		return Event{}, false, err
+	}
+	stored, err := bySourceRef(ctx, tx, event.ProjectKey, event.SourceRef)
+	switch {
+	case err == nil:
+		return stored, false, nil
+	case !errors.Is(err, pgx.ErrNoRows):
+		return Event{}, false, fmt.Errorf("read production event %s of %s: %w", event.SourceRef, event.ProjectKey, err)
 	}
 	commits, pulls := nonNil(event.Commits), nonNil(event.PullRequests)
 	named := make([]string, 0, 2)
@@ -245,7 +251,7 @@ func writeIn(ctx context.Context, tx pgx.Tx, event Event, check DeployCheck) (Ev
 		named = append(named, *event.RestoredByDeploy)
 	}
 	for _, id := range named {
-		deploy, err := requireDeploy(ctx, tx, id, check != nil)
+		deploy, err := requireDeploy(ctx, tx, id)
 		if err == nil && check != nil {
 			err = check(ctx, tx, deploy)
 		}
@@ -259,7 +265,7 @@ func writeIn(ctx context.Context, tx pgx.Tx, event Event, check DeployCheck) (Ev
 			return Event{}, false, fmt.Errorf("encode the restorer of production event %s: %w", event.SourceRef, err)
 		}
 	}
-	stored, err := scan(tx.QueryRow(ctx, `
+	stored, err = scan(tx.QueryRow(ctx, `
 		insert into production_events (id, project_key, kind, environment, status, source, source_ref,
 			started_at, finished_at, repo, commits, pull_requests, url, actor, deploy_id, signal, detected_at,
 			restored_at, restored_by, restored_by_deploy, note)
@@ -326,21 +332,15 @@ func validate(event Event) error {
 }
 
 // requireDeploy holds the deploy row for key share, as the foreign key does, before a writer
-// references it. A concurrent drop must wait or leave no deploy to reference. Automatic writers
-// only need to know the row is a deploy; routes and restores also read its attribution and finish.
-func requireDeploy(ctx context.Context, tx pgx.Tx, id string, details bool) (Event, error) {
+// references it, and reads its attribution and its finish (deployOwnership). A concurrent drop
+// must wait or leave no deploy to reference.
+func requireDeploy(ctx context.Context, tx pgx.Tx, id string) (Event, error) {
 	parsed, err := uuid.Parse(id)
 	if err != nil {
 		return Event{}, refuse(CodeNoDeploy, "deploy %q is not a production event id", id)
 	}
-	var deploy Event
-	if details {
-		deploy, err = scanDeployOwnership(tx.QueryRow(ctx, `select `+deployOwnership+`
-			from production_events where id = $1 and kind = 'deploy' for key share`, parsed.String()))
-	} else {
-		err = tx.QueryRow(ctx, `select kind from production_events where id = $1 and kind = 'deploy' for key share`,
-			parsed.String()).Scan(&deploy.Kind)
-	}
+	deploy, err := scanDeployOwnership(tx.QueryRow(ctx, `select `+deployOwnership+`
+		from production_events where id = $1 and kind = 'deploy' for key share`, parsed.String()))
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return Event{}, NoDeploy(parsed.String())
@@ -350,9 +350,28 @@ func requireDeploy(ctx context.Context, tx pgx.Tx, id string, details bool) (Eve
 	return deploy, nil
 }
 
+// Deploy reads the deploy row id, of any project (deployOwnership), without locking it, and false
+// where id is no uuid or names no deploy row.
+func Deploy(ctx context.Context, q delivery.Querier, id string) (Event, bool, error) {
+	parsed, err := uuid.Parse(id)
+	if err != nil {
+		return Event{}, false, nil
+	}
+	deploy, err := scanDeployOwnership(q.QueryRow(ctx, `select `+deployOwnership+`
+		from production_events where id = $1 and kind = 'deploy'`, parsed.String()))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Event{}, false, nil
+	}
+	if err != nil {
+		return Event{}, false, fmt.Errorf("read deploy %s: %w", id, err)
+	}
+	return deploy, true, nil
+}
+
 // deployOwnership is the columns of a deploy row its attribution and its finish are read by
-// (evals.DeployCountsFor, restorable), in the order scanDeployOwnership reads them: the narrow
-// read of a deploy a route names or may name, which leaves its actor, note and commits unread.
+// (evals.DeployCountsFor, a write's DeployCheck, restorable), in the order scanDeployOwnership
+// reads them: the narrow read of a deploy a write names or may name, which leaves its actor, note
+// and commits unread.
 const deployOwnership = `id::text, project_key, kind, source, status, repo, pull_requests, finished_at`
 
 // scanDeployOwnership reads one row of deployOwnership.
@@ -371,7 +390,9 @@ type StateChange struct {
 	Reason string
 	// RestoredByDeploy names the deploy that restored the failure, where one did.
 	RestoredByDeploy *string
-	// Check is the route's question of the restoring deploy (DeployCheck), nil for none.
+	// Check is the route's question of each deploy the change reaches through (DeployCheck): the
+	// restoring deploy, and the deploy an automatic signal's failure of another project blames
+	// (reachedFrom). Nil asks nothing of a restoring deploy and reaches no other project's row.
 	Check DeployCheck
 	Actor model.Actor
 	At    time.Time
@@ -383,7 +404,11 @@ const StateRestored = "restored"
 // SetState writes change to the failure id of project and answers the row. A deploy has no
 // state; a reject and a re-count keep the writer, the time and the reason (R8); a restore sets the
 // restore time and its writer, and the restoring deploy where change names one, a deploy that
-// finished at or after the failure's deploy finished.
+// finished at or after the failure's deploy finished. A failure keeps its first restore: a restore
+// of a failure restored already, by a person or by a revert's own deploy, answers the row as it
+// stands and writes nothing (R7), unless it names a restoring deploy that is no deploy row, which
+// is refused as a first restore's is. The row is project's, or an automatic signal's failure of
+// another project whose blamed deploy change.Check takes (reachedFrom).
 func SetState(ctx context.Context, pool *store.Pool, project, id string, change StateChange) (Event, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -416,25 +441,35 @@ func SetStateIn(ctx context.Context, tx pgx.Tx, project, id string, change State
 	// A restore's restoring deploy is held before the failure, in the order a drop holds a deploy
 	// and then writes the failures that blame it (DropGitHubDeploy), so neither waits on the
 	// other's second lock. Its refusal waits for the failure's own: a row the project does not
-	// hold, a deploy's row.
+	// hold, a deploy's row, and a failure restored already.
 	var restoring Event
 	var noRestorer error
 	if change.State == StateRestored && change.RestoredByDeploy != nil {
 		var refused *Error
-		if restoring, noRestorer = requireDeploy(ctx, tx, *change.RestoredByDeploy, true); noRestorer != nil && !errors.As(noRestorer, &refused) {
+		if restoring, noRestorer = requireDeploy(ctx, tx, *change.RestoredByDeploy); noRestorer != nil && !errors.As(noRestorer, &refused) {
 			return Event{}, noRestorer
 		}
 	}
-	current, err := scan(tx.QueryRow(ctx, `select `+columns+` from production_events
-		where project_key = $1 and id = $2 for update`, project, id))
+	current, err := scan(tx.QueryRow(ctx, `select `+columns+` from production_events where id = $1 for update`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}
 	if err != nil {
 		return Event{}, fmt.Errorf("read production event %s: %w", id, err)
 	}
+	if current.ProjectKey != project {
+		if err := reachedFrom(ctx, tx, current, change.Check); err != nil {
+			return Event{}, err
+		}
+	}
 	if current.Kind != KindFailure {
 		return Event{}, refuse(CodeStateInput, "row %s is a deploy, which has no state: only a failure is rejected or restored", id)
+	}
+	if noRestorer != nil {
+		return Event{}, noRestorer
+	}
+	if change.State == StateRestored && current.RestoredAt != nil {
+		return current, nil
 	}
 	var updated Event
 	switch change.State {
@@ -446,19 +481,19 @@ func SetStateIn(ctx context.Context, tx pgx.Tx, project, id string, change State
 			return Event{}, refuse(CodeStateInput, "restored_by_deploy goes with state restored alone")
 		}
 		updated, err = scan(tx.QueryRow(ctx, `
-			update production_events set state = $3, state_reason = $4, state_by = $5, state_at = $6
-			where project_key = $1 and id = $2
-			returning `+columns, project, id, change.State, change.Reason, by, change.At))
+			update production_events set state = $2, state_reason = $3, state_by = $4, state_at = $5
+			where id = $1
+			returning `+columns, id, change.State, change.Reason, by, change.At))
 	case StateRestored:
 		if change.RestoredByDeploy != nil {
-			if err := restorable(ctx, tx, current, restoring, noRestorer, change.Check); err != nil {
+			if err := restorable(ctx, tx, current, restoring, change.Check); err != nil {
 				return Event{}, err
 			}
 		}
 		updated, err = scan(tx.QueryRow(ctx, `
-			update production_events set restored_at = $3, restored_by = $4, restored_by_deploy = $5::uuid
-			where project_key = $1 and id = $2
-			returning `+columns, project, id, change.At, by, change.RestoredByDeploy))
+			update production_events set restored_at = $2, restored_by = $3, restored_by_deploy = $4::uuid
+			where id = $1
+			returning `+columns, id, change.At, by, change.RestoredByDeploy))
 	default:
 		return Event{}, refuse(CodeStateInput, "state must be counted, rejected or restored, not %q", change.State)
 	}
@@ -468,17 +503,53 @@ func SetStateIn(ctx context.Context, tx pgx.Tx, project, id string, change State
 	return updated, nil
 }
 
-// restorable refuses restoring, the deploy a restore of failure names (held by requireDeploy, which
-// refused it noRestorer where it names no deploy row), where check refuses it, and where it finished
-// before the deploy failure blames: deployment-rework-rate counts a restoring deploy on its own
-// finish day (evals' failure_days.go), so a deploy that finished before the failed one would count
-// as rework in a window the failure is not in. The failed deploy is read and not locked: the
-// failure's foreign key keeps its row, and a lock of it after the failure's would take the two
-// rows in the order opposite to a drop's (DropGitHubDeploy).
-func restorable(ctx context.Context, tx pgx.Tx, failure, restoring Event, noRestorer error, check DeployCheck) error {
-	if noRestorer != nil {
-		return noRestorer
+// reachedFrom answers nil where the state route of a project takes failure, a row of another
+// project: an automatic signal's failure (automaticSignals) counts for every project its deploy
+// counts for (evals' failure_days.go), so each of those projects lists it and judges it (R8), and
+// check decides of the deploy it blames whether this project is one of them, a NoDeploy refusal
+// being no. Any other row of another project, and every one where check is nil, is ErrNotFound,
+// as a row of no project is. The blamed deploy is read and not locked, as restorable reads it.
+func reachedFrom(ctx context.Context, tx pgx.Tx, failure Event, check DeployCheck) error {
+	if check == nil || !failure.automatic() {
+		return ErrNotFound
 	}
+	blamed, err := scanDeployOwnership(tx.QueryRow(ctx, `select `+deployOwnership+` from production_events where id = $1`,
+		*failure.DeployID))
+	if err != nil {
+		return fmt.Errorf("read the deploy production event %s blames: %w", failure.ID, err)
+	}
+	var refused *Error
+	if err := check(ctx, tx, blamed); !errors.As(err, &refused) || refused.Code != CodeNoDeploy {
+		return err
+	}
+	return ErrNotFound
+}
+
+// automaticSignals is the signals of the three automatic failure sources, whose failure counts for
+// every project its deploy counts for, whichever project's row it is; a posted failure, a system's
+// (SignalAPI) or a person's flag (SignalPerson), counts for its route's project alone.
+var automaticSignals = []string{SignalCheckFail, SignalRevert, SignalIncidentIssue}
+
+// automatic reports whether e is an automatic signal's failure (automaticSignals).
+func (e Event) automatic() bool {
+	return e.Kind == KindFailure && e.Signal != nil && slices.Contains(automaticSignals, *e.Signal)
+}
+
+// RestoresTooEarly reports whether restoring, the deploy a restore of a failure names, finished
+// before failedAt, the finish of the deploy the failure blames: such a deploy restores none of that
+// deploy's failures. Deployment-rework-rate counts a restoring deploy on its own finish day (evals'
+// failure_days.go), so it would count as rework in a window the failure is not in, and the recovery
+// minutes would be negative. The state route refuses such a restore (restorable), and the revert
+// signal writes no row of it (signals' revertFailures).
+func RestoresTooEarly(restoring Event, failedAt time.Time) bool {
+	return restoring.FinishedAt.Before(failedAt)
+}
+
+// restorable refuses restoring, the deploy a restore of failure names (held by requireDeploy),
+// where check refuses it, and where it restores too early (RestoresTooEarly). The failed deploy is
+// read and not locked: the failure's foreign key keeps its row, and a lock of it after the
+// failure's would take the two rows in the order opposite to a drop's (DropGitHubDeploy).
+func restorable(ctx context.Context, tx pgx.Tx, failure, restoring Event, check DeployCheck) error {
 	if check != nil {
 		if err := check(ctx, tx, restoring); err != nil {
 			return err
@@ -488,7 +559,7 @@ func restorable(ctx context.Context, tx pgx.Tx, failure, restoring Event, noRest
 	if err := tx.QueryRow(ctx, `select finished_at from production_events where id = $1`, *failure.DeployID).Scan(&failedAt); err != nil {
 		return fmt.Errorf("read the finish of production event %s's deploy: %w", failure.ID, err)
 	}
-	if restoring.FinishedAt.Before(failedAt) {
+	if RestoresTooEarly(restoring, failedAt) {
 		return refuse(CodeStateInput,
 			"restored_by_deploy %s finished before the deploy the failure blames finished: a deploy restores a failure of a deploy that finished at or before its own finish",
 			restoring.ID)
@@ -514,7 +585,9 @@ func Get(ctx context.Context, q delivery.Querier, project, id string) (Event, er
 
 // ListQuery is one page of a project's rows: a window over a deploy's finished_at and a failure's
 // detected_at, [From, To), optionally one kind, one state and the failures that blame one deploy
-// (DeployID, a deploy row's uuid), newest first.
+// (DeployID, a deploy row's uuid), newest first. Reached is the failures of other projects the
+// page keeps beside the project's own rows where the window and the filters keep them too: the
+// automatic signals' failures that count for Project through their deploy (OthersFailures).
 type ListQuery struct {
 	Project  string
 	From     time.Time
@@ -522,30 +595,33 @@ type ListQuery struct {
 	Kind     string
 	State    string
 	DeployID string
+	Reached  []string
 	Limit    int
 	Offset   int
 }
 
-// listMatches is the rows a ListQuery matches, its parameters $1 to $6 being the query's project,
-// window, kind, state and deploy, in that order. A DeployID keeps the project's failures that
-// blame that deploy, so it matches no row of another project.
+// listMatches is the rows a ListQuery matches, its parameters $1 to $7 being the query's project,
+// window, kind, state, deploy and reached failures, in that order. A DeployID keeps the failures
+// that blame that deploy, the project's own and those Reached names.
 const listMatches = `
 	from production_events
-	where project_key = $1
+	where (project_key = $1 or id = any($7::uuid[]))
 	  and (kind = 'deploy' and finished_at >= $2 and finished_at < $3
 	    or kind = 'failure' and detected_at >= $2 and detected_at < $3)
 	  and ($4 = '' or kind = $4)
 	  and ($5 = '' or state = $5)
 	  and ($6 = '' or kind = 'failure' and deploy_id = nullif($6, '')::uuid)`
 
-// List reads one page of a project's rows and the count of every row the query matches.
+// List reads one page of a project's rows, and the failures of other projects query reaches
+// (ListQuery.Reached), and the count of every row the query matches.
 func List(ctx context.Context, q delivery.Querier, query ListQuery) ([]Event, int, error) {
+	reached := nonNil(query.Reached)
 	rows, err := q.Query(ctx, `
 		with matched as (select *, coalesce(finished_at, detected_at) as at `+listMatches+`)
 		select `+columns+`, count(*) over () from matched
 		order by at desc, id desc
-		limit $7 offset $8`,
-		query.Project, query.From, query.To, query.Kind, query.State, query.DeployID, query.Limit, query.Offset)
+		limit $8 offset $9`,
+		query.Project, query.From, query.To, query.Kind, query.State, query.DeployID, reached, query.Limit, query.Offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list %s's production events: %w", query.Project, err)
 	}
@@ -564,11 +640,57 @@ func List(ctx context.Context, q delivery.Querier, query ListQuery) ([]Event, in
 	}
 	if len(events) == 0 && query.Offset > 0 {
 		if err := q.QueryRow(ctx, `select count(*) `+listMatches,
-			query.Project, query.From, query.To, query.Kind, query.State, query.DeployID).Scan(&total); err != nil {
+			query.Project, query.From, query.To, query.Kind, query.State, query.DeployID, reached).Scan(&total); err != nil {
 			return nil, 0, fmt.Errorf("count %s's production events: %w", query.Project, err)
 		}
 	}
 	return events, total, nil
+}
+
+// OthersFailure is a failure of another project that may count for a project through its
+// deploy (OthersFailures): the failure's id, and the deploy it blames (deployOwnership).
+type OthersFailure struct {
+	ID     string
+	Deploy Event
+}
+
+// OthersFailures reads, in q, the automatic signals' failures (check_fail, revert and
+// incident_issue) of projects other than query.Project that query's window, state and deploy keep,
+// each with the GitHub deploy it blames, oldest detection first (ties by id), and none where query
+// keeps deploys alone: the rows of other projects that count for query.Project where their deploy
+// does (evals.DeployCountsFor), which List then keeps through ListQuery.Reached. A failure on a
+// dropped GitHub deploy counts for no project, and one on a posted deploy for the deploy's own
+// project alone, so neither is read.
+func OthersFailures(ctx context.Context, q delivery.Querier, query ListQuery) ([]OthersFailure, error) {
+	if query.Kind == KindDeploy {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `
+		select failure.id::text, deploy.id::text, deploy.project_key, deploy.kind, deploy.source, deploy.status,
+			deploy.repo, deploy.pull_requests, deploy.finished_at
+		from production_events failure
+		join production_events deploy on deploy.id = failure.deploy_id
+		where failure.kind = 'failure' and failure.project_key <> $1 and failure.signal = any($2::text[])
+		  and failure.detected_at >= $3 and failure.detected_at < $4
+		  and ($5 = '' or failure.state = $5)
+		  and ($6 = '' or failure.deploy_id = nullif($6, '')::uuid)
+		  and deploy.source = '`+SourceGitHub+`' and deploy.status <> '`+StatusDropped+`'
+		order by failure.detected_at, failure.id`,
+		query.Project, automaticSignals, query.From, query.To, query.State, query.DeployID)
+	if err != nil {
+		return nil, fmt.Errorf("read the failures of other projects that may count for %s: %w", query.Project, err)
+	}
+	others, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (OthersFailure, error) {
+		var other OthersFailure
+		deploy := &other.Deploy
+		err := row.Scan(&other.ID, &deploy.ID, &deploy.ProjectKey, &deploy.Kind, &deploy.Source, &deploy.Status,
+			&deploy.Repo, &deploy.PullRequests, &deploy.FinishedAt)
+		return other, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the failures of other projects that may count for %s: %w", query.Project, err)
+	}
+	return others, nil
 }
 
 // totalRow scans one row of List's statement: the row's columns, then the window's count into
@@ -582,35 +704,40 @@ func (r totalRow) Scan(dest ...any) error {
 	return r.rows.Scan(append(dest, r.total)...)
 }
 
-// DeployForCommit is the deploy row, of any project, whose commits hold sha: the earliest to
-// reach production, which is the deploy that first shipped the commit (a check made at a commit
-// blames the deploy that shipped it, R7). ok is false where no deploy holds it yet. A dropped
-// GitHub deploy (StatusDropped) holds none. The read is a probe of production_events_commits.
-func DeployForCommit(ctx context.Context, q delivery.Querier, sha string) (Event, bool, error) {
+// blamable is the SQL condition of a deploy row a signal of the project $2 may blame: any but a
+// dropped GitHub deploy (droppedDeploy) and a deploy another project posted (SourceAPI), which
+// counts for its own project alone (evals' failure_days.go).
+const blamable = `not ` + droppedDeploy + ` and (source <> '` + SourceAPI + `' or project_key = $2)`
+
+// DeployForCommit is the deploy row whose commits hold sha that a signal of project may blame
+// (blamable): the earliest to reach production, which is the deploy that first shipped the commit
+// (a check made at a commit blames the deploy that shipped it, R7), of any project but a deploy
+// another project posted. ok is false where no such deploy holds it yet. The read is a probe of
+// production_events_commits.
+func DeployForCommit(ctx context.Context, q delivery.Querier, project, sha string) (Event, bool, error) {
 	event, err := scan(q.QueryRow(ctx, `select `+columns+` from production_events
-		where kind = 'deploy' and commits @> array[$1::text] and not `+droppedDeploy+`
-		order by finished_at, id limit 1`, strings.ToLower(sha)))
+		where kind = 'deploy' and commits @> array[$1::text] and `+blamable+`
+		order by finished_at, id limit 1`, strings.ToLower(sha), project))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Event{}, false, nil
 	}
 	if err != nil {
-		return Event{}, false, fmt.Errorf("read the deploy of commit %s: %w", sha, err)
+		return Event{}, false, fmt.Errorf("read the deploy of commit %s for %s: %w", sha, project, err)
 	}
 	return event, true, nil
 }
 
 // DeploysForCommit reads, in q, the deploy rows whose commits hold sha that may count for project,
-// earliest to reach production first (ties by id), as DeployForCommit orders them: a dropped
-// GitHub deploy (StatusDropped) holds none, and a deploy another project posted (SourceAPI), which
-// counts for its own project alone, is left out at once. Each row carries deployOwnership alone.
-// The read collects its rows before it answers, so a caller may ask of each in turn, in the same q,
-// whether it counts for project (evals.DeployCountsFor): the post of a failure that names its
-// deploy by a commit blames the first that does (api's production events), where the automatic
-// signals blame DeployForCommit's. The read is a probe of production_events_commits.
+// earliest to reach production first (ties by id), as DeployForCommit orders them and of the same
+// rows (blamable). Each row carries deployOwnership alone. The read collects its rows before it
+// answers, so a caller may ask of each in turn, in the same q, whether it counts for project
+// (evals.DeployCountsFor): the post of a failure that names its deploy by a commit blames the first
+// that does (api's production events), where an automatic signal blames DeployForCommit's and is
+// written only where that one counts for its project. The read is a probe of
+// production_events_commits.
 func DeploysForCommit(ctx context.Context, q delivery.Querier, project, sha string) ([]Event, error) {
 	rows, err := q.Query(ctx, `select `+deployOwnership+` from production_events
-		where kind = 'deploy' and commits @> array[$1::text] and not `+droppedDeploy+`
-		  and (source <> '`+SourceAPI+`' or project_key = $2)
+		where kind = 'deploy' and commits @> array[$1::text] and `+blamable+`
 		order by finished_at, id`, strings.ToLower(sha), project)
 	if err != nil {
 		return nil, fmt.Errorf("read the deploys of commit %s for %s: %w", sha, project, err)

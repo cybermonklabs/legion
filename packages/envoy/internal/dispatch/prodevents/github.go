@@ -32,8 +32,15 @@ const StatusSucceeded = "succeeded"
 const StatusDropped = "dropped"
 
 // droppedDeploy is the SQL condition of a dropped GitHub deploy row (StatusDropped), which no
-// signal blames: the reads of a signal's deploy leave it out.
+// signal blames: the reads of a signal's deploy leave it out. Event.Dropped is the same rule.
 const droppedDeploy = `(source = '` + SourceGitHub + `' and status = '` + StatusDropped + `')`
+
+// Dropped reports whether e is a dropped GitHub deploy row (droppedDeploy), which counts for no
+// project: only the GitHub adapter drops a row, so a posted deploy is never one, whatever status
+// its system sent.
+func (e Event) Dropped() bool {
+	return e.Source == SourceGitHub && e.Status == StatusDropped
+}
 
 // UpsertGitHubDeploy stores the GitHub adapter's deploy row event, or moves the row its project
 // already holds under its source_ref to event's fields (a re-run's times, the pull requests and
@@ -165,14 +172,15 @@ func GitHubDeploys(ctx context.Context, q delivery.Querier, repo string, runIDs 
 	return deploys, rows.Err()
 }
 
-// DeployForPullRequest is the deploy row, of any project, that names pullRequest (owner/repo#n, in
-// any case) among the pull requests it shipped, the earliest to reach production where several do,
-// and false where none does. A dropped GitHub deploy is none.
-func DeployForPullRequest(ctx context.Context, q delivery.Querier, pullRequest string) (Event, bool, error) {
+// DeployForPullRequest is the deploy row that names pullRequest (owner/repo#n, in any case) among
+// the pull requests it shipped that a signal of project may blame (blamable), the earliest to reach
+// production where several do, and false where none does: a deploy of any project but a dropped
+// GitHub deploy and a deploy another project posted.
+func DeployForPullRequest(ctx context.Context, q delivery.Querier, project, pullRequest string) (Event, bool, error) {
 	event, err := scan(q.QueryRow(ctx, `select `+columns+` from production_events
-		where kind = 'deploy' and not `+droppedDeploy+`
+		where kind = 'deploy' and `+blamable+`
 		  and exists (select from unnest(pull_requests) shipped where lower(shipped) = lower($1))
-		order by finished_at, id limit 1`, pullRequest))
+		order by finished_at, id limit 1`, pullRequest, project))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Event{}, false, nil
 	}

@@ -169,7 +169,7 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	// retraction has committed. A failure of that write is logged and fails nothing: the production
 	// signals' loop reads the result.retracted event after it and rejects the row then. A retracted
 	// pass made no row.
-	if result.Verdict == "fail" {
+	if result.Verdict == signals.VerdictFail {
 		if _, err := signals.RejectRetractedCheck(r.Context(), s.deps.Store.Pool, resultID, reason, actor, retraction.CreatedAt); err != nil {
 			slog.Warn("dispatch: reject the check_fail of a retracted result; the production signals' loop rejects it later",
 				"result", resultID, "error", err)

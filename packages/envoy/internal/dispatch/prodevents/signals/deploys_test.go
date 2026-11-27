@@ -160,7 +160,7 @@ func TestARuleChangeDerivesTheRepositorysDeployRowsAgain(t *testing.T) {
 	flagged, _, err := prodevents.Write(r.ctx, r.pool, prodevents.Event{
 		ProjectKey: alpha, Kind: prodevents.KindFailure, Source: prodevents.SourcePerson, SourceRef: prodevents.PersonSourceRef(blamed.ID, "alice"),
 		Actor: person, DeployID: new(blamed.ID), Signal: new(prodevents.SignalPerson), DetectedAt: new(at(200)),
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("flag the deploy of run 130: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestARuleChangeDerivesTheRepositorysDeployRowsAgain(t *testing.T) {
 		!strings.Contains(*rejected.StateReason, canaryJob) || rejected.StateBy == nil || *rejected.StateBy != loopActor {
 		t.Errorf("the failure on the dropped row = state %q, reason %v, by %v; want rejected naming the rule change", rejected.State, rejected.StateReason, rejected.StateBy)
 	}
-	if _, held, err := prodevents.DeployForCommit(r.ctx, r.pool, sha("e")); err != nil || held {
+	if _, held, err := prodevents.DeployForCommit(r.ctx, r.pool, alpha, sha("e")); err != nil || held {
 		t.Errorf("a signal finds the dropped deploy by its commit (%v, %v): no signal blames it", held, err)
 	}
 }

@@ -45,7 +45,7 @@ func saveProjectDelivery(t *testing.T, pool *store.Pool, input delivery.ProjectS
 func writeProductionEvent(t *testing.T, pool *store.Pool, event prodevents.Event) prodevents.Event {
 	t.Helper()
 	event.Actor = model.Actor{Kind: "agent", ID: "release-bot"}
-	written, _, err := prodevents.Write(t.Context(), pool, event)
+	written, _, err := prodevents.Write(t.Context(), pool, event, nil)
 	if err != nil {
 		t.Fatalf("write production event %s: %v", event.SourceRef, err)
 	}

@@ -16,9 +16,6 @@ import (
 // deploy and source api, which a system posted to the project's route. The GitHub adapter's deploy
 // rows, source github, are a repository's runs, which a source repository's rows count already.
 
-// postedEnd is the end of the window PostedDeploysFrom reads: later than any deploy finishes.
-var postedEnd = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
-
 // FirstPostedAt reads, in q, the moment the first posted deploy of each of projects finished, in
 // the order of projects, nil for a project that holds none; none where projects is empty. One
 // statement probes, for each project, the low end of production_events_posted, (project_key,
@@ -71,10 +68,9 @@ type PostedDeploy struct {
 func PostedDeploysFrom(ctx context.Context, q delivery.Querier, project string, from time.Time) ([]PostedDeploy, error) {
 	rows, err := q.Query(ctx, `
 		select id::text, finished_at, repo, pull_requests from production_events
-		where project_key = $1 and kind = '`+KindDeploy+`' and source = '`+SourceAPI+`'
-		  and finished_at >= $2 and finished_at < $3
+		where project_key = $1 and kind = '`+KindDeploy+`' and source = '`+SourceAPI+`' and finished_at >= $2
 		order by finished_at desc, id desc
-	`, project, from, postedEnd)
+	`, project, from)
 	if err != nil {
 		return nil, fmt.Errorf("read the posted deploys of %s: %w", project, err)
 	}

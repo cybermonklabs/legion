@@ -15,16 +15,20 @@
 --                    counts for is the attribution's (dispatch://INFRA-2916, R15), read when the
 --                    day rows are built, not this column.
 --   kind             deploy or failure.
---   environment      the deployment environment, production unless a system posted another
---                    (OTel deployment.environment.name).
---   status           the system's own status word (OTel deployment.status), stored as sent.
+--   environment      the deployment environment (OTel deployment.environment.name): a deploy's
+--                    is production, which the GitHub adapter writes and the route takes alone; a
+--                    posted failure's is the one its post names, production where it names none.
+--   status           a deploy's status (OTel deployment.status): succeeded, which the GitHub
+--                    adapter writes and the route takes alone, or dropped, a GitHub deploy row its
+--                    rule no longer calls a deploy; a failure's status word as its writer sent it.
 --   source           which writer made the row: github (the adapter), api (a system's post),
 --                    person (a person's flag), check_results, reverts, incident_label (the three
 --                    automatic signals).
 --   source_ref       the writer's own key for the row; one row per project and source_ref, so a
 --                    signal sent twice writes one row.
 --   started_at, finished_at   a deploy's run creation and its production job's completion; a
---                    deploy counts on its finished_at day. A failure leaves both null.
+--                    deploy counts on its finished_at day. A failure has no finished_at, and keeps
+--                    the started_at its post names, null where it names none.
 --   repo, commits, pull_requests, url   a deploy's repository, the commits it shipped (the run's
 --                    head and each shipped pull request's merge commit), the pull requests it
 --                    shipped as owner/repo#n, and the run's page; a failure's pull requests are

@@ -24,7 +24,8 @@ import (
 // request's deploy or that run's deploy row: the cause the issue names, not the pull requests that
 // cite the issue, which are its fix. It is written under the issue's project, keyed by the issue
 // (IncidentSourceRef), its actor and detected time those of the event that made the issue an
-// incident or gave it its link. A bug label makes none.
+// incident or gave it its link, and only where the deploy it blames counts for the issue's project
+// (deployCountsForRow). A bug label makes none.
 
 // incidentLabel is the label that makes an issue an incident, in any case.
 const incidentLabel = "incident"
@@ -54,12 +55,13 @@ func passIncidents(ctx context.Context, pool *store.Pool, safe int64) error {
 
 // recordIncident writes the incident_issue of issue, an incident, from the links it holds now, and
 // reports whether it wrote a row. The failure blames the earliest deploy among those its links
-// name: a pull request's (the deploy row that names it among the pull requests it shipped, else the
-// one whose commits hold its stored merge commit) and a run's (the run's deploy row). Its pull
-// requests are the pull requests its links name, or the blamed deploy's where they name only runs.
-// An issue whose links name no deployed pull request and no deploy run writes nothing until a link
-// that does is added; a repeat writes nothing, and an incident whose row is made already reads no
-// link.
+// name, of any project but a deploy another project posted: a pull request's (the deploy row that
+// names it among the pull requests it shipped, else the one whose commits hold its stored merge
+// commit) and a run's (the run's deploy row, the GitHub adapter's). Its pull requests are the pull
+// requests its links name, or the blamed deploy's where they name only runs. An issue whose links
+// name no deployed pull request and no deploy run writes nothing until a link that does is added,
+// and neither does one whose blamed deploy counts for other projects than the issue's alone
+// (countsForRow); a repeat writes nothing, and an incident whose row is made already reads no link.
 func recordIncident(ctx context.Context, pool *store.Pool, issue string, detected time.Time, actor model.Actor) (bool, error) {
 	var project string
 	if err := pool.QueryRow(ctx, `select project_key from issues where key = $1`, issue).Scan(&project); err != nil {
@@ -88,7 +90,7 @@ func recordIncident(ctx context.Context, pool *store.Pool, issue string, detecte
 		if target.pull > 0 {
 			name := delivery.PullRequestName(target.repo, target.pull)
 			pulls = append(pulls, name)
-			if deploy, held, err = pullRequestDeploy(ctx, pool, target.repo, target.pull); err != nil {
+			if deploy, held, err = pullRequestDeploy(ctx, pool, project, target.repo, target.pull); err != nil {
 				return false, err
 			}
 		} else if deploy, held, err = prodevents.DeployForRun(ctx, pool, target.repo, target.run); err != nil {
@@ -108,7 +110,10 @@ func recordIncident(ctx context.Context, pool *store.Pool, issue string, detecte
 		ProjectKey: project, Kind: prodevents.KindFailure, Source: prodevents.SourceIncidentLabel,
 		SourceRef: ref, PullRequests: pulls, Actor: actor,
 		DeployID: new(blamed.ID), Signal: new(prodevents.SignalIncidentIssue), DetectedAt: new(detected.UTC()),
-	})
+	}, countsForRow(project, blamed.ID))
+	if refusesBlame(err) {
+		return false, nil
+	}
 	if err != nil {
 		return false, fmt.Errorf("write the incident_issue of %s: %w", issue, err)
 	}
@@ -133,11 +138,12 @@ func issueLinks(ctx context.Context, q delivery.Querier, issue string) ([]string
 	return links, rows.Err()
 }
 
-// pullRequestDeploy is the deploy of repo#number: the deploy row that names it among the pull
-// requests it shipped, else the one whose commits hold its merge commit as delivery_pull_requests
-// stores it, and false where neither holds it.
-func pullRequestDeploy(ctx context.Context, q delivery.Querier, repo string, number int) (prodevents.Event, bool, error) {
-	deploy, held, err := prodevents.DeployForPullRequest(ctx, q, delivery.PullRequestName(repo, number))
+// pullRequestDeploy is the deploy of repo#number that a signal of project may blame: the deploy row
+// that names it among the pull requests it shipped, else the one whose commits hold its merge
+// commit as delivery_pull_requests stores it, and false where neither holds it
+// (prodevents.DeployForPullRequest, prodevents.DeployForCommit).
+func pullRequestDeploy(ctx context.Context, q delivery.Querier, project, repo string, number int) (prodevents.Event, bool, error) {
+	deploy, held, err := prodevents.DeployForPullRequest(ctx, q, project, delivery.PullRequestName(repo, number))
 	if err != nil || held {
 		return deploy, held, err
 	}
@@ -150,7 +156,7 @@ func pullRequestDeploy(ctx context.Context, q delivery.Querier, repo string, num
 	if err != nil {
 		return prodevents.Event{}, false, fmt.Errorf("read the merge commit of %s#%d: %w", repo, number, err)
 	}
-	return prodevents.DeployForCommit(ctx, q, *sha)
+	return prodevents.DeployForCommit(ctx, q, project, *sha)
 }
 
 // linkTarget is what a link names: a pull request (pull above zero) or a workflow run (run above
