@@ -13,11 +13,14 @@ import (
 	"crypto/ecdsa"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,19 +30,25 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // podAudience is the fixed audience every Rig's pod verifier is constructed for, and the value
@@ -90,6 +99,28 @@ const (
 // Rig's BROKER_POD_REGISTRARS lists DaemonAccount as a registrar of its pods.
 const ExchangeRolesAccount = "system:serviceaccount:example-ns:example-roles"
 
+// The third account every Rig's BROKER_EXCHANGE_ACCOUNTS lists: a Legion daemon's own pod, whose
+// entry fixes DaemonExchangeSession, the session a daemon of ExchangeProject writes Dispatch
+// under, and names the Rig's approver (Operator) as its person, since Dispatch refuses every
+// write of a token that names none (SIGN_IN_REQUIRED). It is an account of its own rather than
+// DaemonAccount, which a Rig lists for no exchange: the registration route refuses a pod token of
+// an account the exchange does not list (POD_ACCOUNT_NOT_LISTED), and a test of that refusal
+// presents the daemon's own login token.
+const (
+	DaemonExchangeAccount = "system:serviceaccount:legion-system:legion-daemon-exchange"
+	DaemonExchangeSession = "legion-daemon:" + ExchangeProject
+)
+
+// The fourth account every Rig's BROKER_EXCHANGE_ACCOUNTS lists: a pod of a second project,
+// OtherProject, whose entry fixes OtherProjectSession and names the Rig's approver as its person,
+// so a test holds a token that Dispatch serves for its person and that names a project other
+// than ExchangeProject.
+const (
+	OtherProjectAccount = "system:serviceaccount:other-ns:other-project-worker"
+	OtherProject        = "OTHER"
+	OtherProjectSession = "other-project-worker"
+)
+
 // The one workflow every Rig's BROKER_EXCHANGE_WORKFLOWS lists and what a run of it may write. It
 // fixes no session, so a run names its own.
 const (
@@ -109,6 +140,10 @@ type Rig struct {
 	// URL is the broker's own httptest.Server base URL: every proof's htu and every request
 	// object's aud must check against this one value.
 	URL string
+	// EdgeURL is the base URL of the broker's edge, the second httptest.Server WithEdge mounts
+	// api.RegisterEdge on: every request object and proof made there names it in place of URL.
+	// It is "" for a Rig with no edge.
+	EdgeURL string
 	// Operator is the approver, named by email as Dispatch names a signed-in person, also the
 	// owner of the fixture secrets below and the operator of the sessions a test enrolls.
 	Operator string
@@ -128,8 +163,10 @@ type Rig struct {
 	Secrets *secrets.Local
 	// Registry holds the policy's two metrics as cmd/cipherd/main.go builds them on its own
 	// registry: broker_policy_store_reads_total, counted from the first load on, and
-	// broker_unservable_secrets, registered once that load answered. A test reads them through
-	// Registry.Handler(), the scrape main serves.
+	// broker_unservable_secrets, registered once that load answered; and, for a Rig built
+	// WithDispatchAccess, the hold gate's broker_hold_unchecked_total and the Dispatch client's
+	// broker_member_kind_unchecked_total. A test reads them through Registry.Handler(), the scrape
+	// main serves.
 	Registry *metrics.Registry
 	// Policy is the broker's live policy, for a test that reloads it as the broker's five-minute
 	// reload does (Refresh): the rig's own reload runs once an hour, so never within a test.
@@ -154,10 +191,72 @@ type Rig struct {
 type Option func(*rigConfig)
 
 type rigConfig struct {
-	lease      time.Duration
-	maxConns   int
-	minters    map[string]requests.Minter
-	personPods []personPod
+	lease          time.Duration
+	maxConns       int
+	minters        map[string]requests.Minter
+	accessLifetime time.Duration
+	personPods     []personPod
+	projectAccess  *projectaccess.Client
+	// projectAccessNow is the clock WithDispatchAccess gives the client and the gate; nil is the
+	// wall clock.
+	projectAccessNow func() time.Time
+	// projects is WithProjectAccess: the token exchange's own check of projects and member kinds,
+	// for a test that gives it a reader of its own.
+	projects projectaccess.Access
+	// holdRequiresDeadline is WithHoldRequiresDeadline: the gate's RequireDeadline.
+	holdRequiresDeadline bool
+	profiles             string
+	edge                 bool
+	// edgeDeviceLimit is the edge's bucket every caller of a device authorization shares
+	// (api.Edge.DeviceLimit); nil is api.DefaultEdgeDeviceLimit.
+	edgeDeviceLimit *ratelimit.Limit
+	// edgeDeviceLogin wraps the edge's device login (api.Edge.DeviceLogin); nil is the login as
+	// it is.
+	edgeDeviceLogin func(api.DeviceLoginFunc) api.DeviceLoginFunc
+}
+
+// EdgeMachineLoginURL is the page a device authorization made at a Rig's edge sends its person
+// to (BROKER_EDGE_MACHINE_LOGIN_URL), and EdgeWorkspaceDomain the one domain a Rig's edge counts
+// as the Workspace's beside SignInDomain (BROKER_SIGNIN_WORKSPACE_DOMAINS).
+const (
+	EdgeMachineLoginURL = "https://dispatch.edge.example/credentials/machine"
+	EdgeWorkspaceDomain = "second.example"
+)
+
+// WithEdge gives the broker its edge, as BROKER_EDGE_LISTEN_ADDR does: api.RegisterEdge on an
+// httptest.Server of its own at Rig.EdgeURL, over the same Deps the Rig's own address serves,
+// sending a person to EdgeMachineLoginURL and refusing a login on SignInDomain or
+// EdgeWorkspaceDomain. The Rig's machine-login service, request machine and launcher credentials'
+// chain each take EdgeURL as their EdgeAudience, as cmd/cipherd wires them.
+func WithEdge() Option {
+	return func(c *rigConfig) { c.edge = true }
+}
+
+// WithEdgeDeviceLimit is WithEdge with limit as the edge's bucket every caller of a device
+// authorization shares, for a test of that bucket that cannot wait for its refill.
+func WithEdgeDeviceLimit(limit ratelimit.Limit) Option {
+	return func(c *rigConfig) { c.edge, c.edgeDeviceLimit = true, &limit }
+}
+
+// WithEdgeDeviceLogin is WithEdge with wrap around the edge's device login (api.Edge.DeviceLogin),
+// for a test of what the edge does with a login its pre-check refused and its login opened.
+func WithEdgeDeviceLogin(wrap func(api.DeviceLoginFunc) api.DeviceLoginFunc) Option {
+	return func(c *rigConfig) { c.edge, c.edgeDeviceLogin = true, wrap }
+}
+
+// ProviderOption changes the OAuth provider NewOAuthProvider constructs. It stays variadic so
+// existing rigs retain the default issuer and exchange entries unchanged.
+type ProviderOption func(*providerConfig)
+
+type providerConfig struct {
+	// accessLifetime is how long the access tokens the provider issues live; zero is fifteen
+	// minutes, as main sets it where BROKER_ACCESS_TOKEN_SECONDS is unset.
+	accessLifetime time.Duration
+	projectAccess  projectaccess.Access
+	hold           *hold.Gate
+	// exchange is the token exchange's entries NewRig built and gives the request machine too; nil
+	// has NewOAuthProvider build its own (newExchangeSet).
+	exchange *exchange.Set
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -177,6 +276,62 @@ func WithPoolMaxConns(n int) Option {
 // upstream; none by default.
 func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
+}
+
+// WithDispatchAccess wires the rig's broker to Dispatch at baseURL as cmd/cipherd wires one whose
+// BROKER_PROJECT_ACCESS_URL is set: one Dispatch client, which the token exchange, the enrollment,
+// the request machine and the policy loader's project checks read and which keeps each person
+// answer in the rig's store (projectaccess.Client.Keep), and the hold gate built on that client and
+// the rig's store, given to every field of the broker that takes it. now is the
+// clock the client's 30-second cache of an answer (projectaccess.CacheTTL) and the gate's memories
+// are timed by, so a test can move it past an answer it would otherwise wait out; nil is the
+// wall clock, as main runs. NewRig fails t when it is given with WithProjectAccess, which gives the
+// token exchange a reader of its own.
+func WithDispatchAccess(baseURL string, account ciphertoken.Account, now func() time.Time) Option {
+	return func(c *rigConfig) {
+		c.projectAccess = projectaccess.New(baseURL, account, nil)
+		if now != nil {
+			c.projectAccess.UseClock(now)
+		}
+		c.projectAccessNow = now
+	}
+}
+
+// WithProjectAccess gives the broker's token exchange access as its check of what Dispatch says
+// each person sees and what kind of member they are, as BROKER_PROJECT_ACCESS_URL does; none by
+// default, which is a broker that checks no project. It builds no hold gate: for a broker that
+// holds people too, WithDispatchAccess.
+func WithProjectAccess(access projectaccess.Access) Option {
+	return func(c *rigConfig) { c.projects = access }
+}
+
+// WithHoldRequiresDeadline sets the hold gate's deadline rule (hold.Config.RequireDeadline), as
+// cmd/cipherd sets it where BROKER_HOLD_REQUIRES_DEADLINE is true, which an IAP deployment's broker
+// sets: Dispatch's answer that a person is not held then serves only with the deadline such a
+// Dispatch puts on it (not_held_until), a person of whom the broker keeps no answer is not served
+// while Dispatch cannot be asked, and every refusal of a held person says the Workspace Directory
+// ends the hold (hold.Verdict.HeldWords). NewRig fails t when it is given without
+// WithDispatchAccess, as the broker's boot refuses the setting without BROKER_PROJECT_ACCESS_URL:
+// that broker builds no gate, so the rule would rule nothing and hold nobody.
+func WithHoldRequiresDeadline() Option {
+	return func(c *rigConfig) { c.holdRequiresDeadline = true }
+}
+
+// WithAccessLifetime makes every access token the broker issues live d, a machine login's and an
+// exchanged one's alike, as BROKER_ACCESS_TOKEN_SECONDS sets it; fifteen minutes by default.
+func WithAccessLifetime(d time.Duration) Option {
+	return func(c *rigConfig) { c.accessLifetime = d }
+}
+
+// WithProfiles serves file as the deployment's profiles file, the JSON BROKER_PROFILES_FILE
+// names (policytest.ProfilesFile builds one), so a test asks for a profile by its name as a session
+// of a deployment that lists it does. Every github-app secret the policy serves is a profile's
+// (policy.ReasonGitHubAppNoProfile), so a test that releases one names its profile here. With no
+// such option, or with "", the rig has no profiles file, as a deployment that leaves the setting
+// unset has none. The rig wires no proxy rules (requests.Machine.Airlock), so a proxy block the
+// file holds keeps no value back here.
+func WithProfiles(file string) Option {
+	return func(c *rigConfig) { c.profiles = file }
 }
 
 // personPod is one WithPersonPod: an account that BROKER_POD_OPERATORS maps to person, and the
@@ -202,13 +357,20 @@ func WithPersonPod(account, service, person string) Option {
 // authenticates the listed caller of the routes Dispatch's server calls, and mounts api.Register
 // on an httptest.Server as cmd/cipherd/main.go and api_test.go's newTestServer mount it, but with
 // no answer recorder in front (answer.Middleware): its answers carry no answer id, and its
-// Registry counts none of them. It skips t when BROKER_TEST_DATABASE_URL is unset
-// (storetest.Open's own contract).
+// Registry counts none of them. It skips t when BROKER_TEST_DATABASE_URL is unset, and fails it
+// when the calling package's TestMain does not run its tests through storetest.Main or
+// storetest.Run (storetest.Open's own contract).
 func NewRig(t *testing.T, options ...Option) *Rig {
 	t.Helper()
-	config := rigConfig{lease: time.Hour}
+	config := rigConfig{lease: time.Hour, accessLifetime: 15 * time.Minute}
 	for _, option := range options {
 		option(&config)
+	}
+	if config.holdRequiresDeadline && config.projectAccess == nil {
+		t.Fatal("ciphertest: WithHoldRequiresDeadline needs WithDispatchAccess: the deadline rules the hold of refused people, which a broker builds only when it has a Dispatch to ask, as the broker's boot refuses BROKER_HOLD_REQUIRES_DEADLINE without BROKER_PROJECT_ACCESS_URL")
+	}
+	if config.projectAccess != nil && config.projects != nil {
+		t.Fatal("ciphertest: WithDispatchAccess and WithProjectAccess each give the token exchange its reader of Dispatch; give one")
 	}
 	var params []string
 	if config.maxConns > 0 {
@@ -223,12 +385,34 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	local := secrets.NewLocal(fixtures...)
 	// The policy's metrics as main wires them: the store-read counter before the first load,
 	// which NewCurrent takes, and the gauge of unservable secrets once NewCurrent has answered.
+	// The loader serves a secret tagged with a project only where the broker can ask Dispatch
+	// whether that project is private, as main's does (policy.Loader.ProjectChecks).
+	// Its profiles are WithProfiles's file, or none.
 	registry := metrics.New()
-	cur := policytest.MeteredCurrent(t, local, registry)
+	// The Dispatch client keeps each person answer in this rig's store and counts on its registry,
+	// as main's does, before anything is built on it.
+	if config.projectAccess != nil {
+		config.projectAccess.Keep(st, slog.Default(), registry)
+	}
+	loader := policytest.Loader(local)
+	loader.ProjectChecks = config.projectAccess != nil
+	if config.profiles != "" {
+		loader.Profiles = policytest.Profiles(t, config.profiles)
+	}
+	cur := policytest.Metered(t, loader, registry)
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	// The edge's server, made before anything is built on its URL, as srv is for the Rig's own.
+	var edgeMux *http.ServeMux
+	var edgeURL string
+	if config.edge {
+		edgeMux = http.NewServeMux()
+		edgeSrv := httptest.NewServer(edgeMux)
+		t.Cleanup(edgeSrv.Close)
+		edgeURL = edgeSrv.URL
+	}
 
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
@@ -260,11 +444,20 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	for _, pod := range []string{WorkerAccount, ExchangeRolesAccount, ExchangeAccount} {
 		podRegistrars[api.PodRegistrar{Registrar: DaemonAccount, Pod: pod}] = struct{}{}
 	}
+	// Projects is set below only when the rig holds a Dispatch client: config.projectAccess is a
+	// *projectaccess.Client, and a nil one put in the interface field is a non-nil Access that
+	// panics at its first read, so a rig with no client would ask Dispatch on every enrollment.
 	enr := &enroll.Service{
 		Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier},
 		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
+	enr.Chain.EdgeAudience = edgeURL
+	// The enrollment asks Dispatch whether a person may see each project their session names, on
+	// the one client main gives every consumer (enroll.Service.Projects); none without it.
+	if config.projectAccess != nil {
+		enr.Projects = config.projectAccess
+	}
 	// A session name is held here as the real broker holds one with no account paired
 	// (oauthstore.Store.SetSessionPairs never called, BROKER_SESSION_ACCOUNT_PAIRS unset), so it
 	// belongs to one principal: the binder is a store on the same pool the OAuth provider's own
@@ -274,18 +467,49 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
-		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
+		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
 		PodOperators: podOperators,
 	}
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
-	provider := NewOAuthProvider(t, st, issuer)
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Policy)
+	// The token exchange's entries, built once and given to both the OAuth provider and the request
+	// machine, as main gives both the one set.
+	entries := newExchangeSet(t)
+	// The request machine reads a credential's project from the same entries the exchange mints
+	// from, and asks Dispatch about projects on the one client, as main gives it both
+	// (requests.Machine.Exchange and Projects).
+	reqMachine.Exchange = entries
+	if config.projectAccess != nil {
+		reqMachine.Projects = config.projectAccess
+	}
+	providerOptions := []ProviderOption{func(c *providerConfig) { c.exchange = entries }}
+	// The hold gate, as main builds it where BROKER_PROJECT_ACCESS_URL is set: on the exchange's
+	// own Dispatch client, which keeps its answers in this rig's store, and on its registry, with
+	// the deadline rule where WithHoldRequiresDeadline sets it, as BROKER_HOLD_REQUIRES_DEADLINE
+	// does. Without WithDispatchAccess there is none, and every field that takes one is nil, which
+	// holds nobody.
+	var gate *hold.Gate
+	if config.projectAccess != nil {
+		gate = hold.New(hold.Config{Access: config.projectAccess, Log: slog.Default(), Metrics: registry, Now: config.projectAccessNow, RequireDeadline: config.holdRequiresDeadline})
+		providerOptions = append(providerOptions, func(c *providerConfig) {
+			c.projectAccess = config.projectAccess
+			c.hold = gate
+		})
+	}
+	if config.projects != nil {
+		// WithProjectAccess: the token exchange's own check of projects and member kinds, and no
+		// hold gate.
+		providerOptions = append(providerOptions, func(c *providerConfig) { c.projectAccess = config.projects })
+	}
+	providerOptions = append(providerOptions, func(c *providerConfig) { c.accessLifetime = config.accessLifetime })
+	provider := NewOAuthProvider(t, st, issuer, providerOptions...)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
-		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
+		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
 		OAuth: provider, Replay: enr.Replay,
+		ApprovalsWithoutGeneration: machine.NewApprovalsWithoutGeneration(registry),
 	}
 
-	api.Register(mux, api.Deps{
+	deps := api.Deps{
 		PublicURL: srv.URL,
 		APIAccounts: map[string]api.Account{
 			APIAccount:      Caller(t, APICaller),
@@ -298,8 +522,14 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
-		Approval: NewApprovalPage(t, SignIn(issuer, podKey), srv.URL, st, reqMachine),
-	})
+		Approval: NewApprovalPage(t, SignIn(issuer, podKey), srv.URL, st, reqMachine, WithApprovalHold(gate)),
+		Hold:     gate,
+	}
+	api.Register(mux, deps)
+	if config.edge {
+		api.RegisterEdge(edgeMux, deps, api.Edge{URL: edgeURL, VerificationURL: EdgeMachineLoginURL, WorkspaceDomains: []string{SignInDomain, EdgeWorkspaceDomain},
+			DeviceLimit: config.edgeDeviceLimit, DeviceLogin: config.edgeDeviceLogin})
+	}
 
 	operatorFile := filepath.Join(t.TempDir(), "operator")
 	if err := os.WriteFile(operatorFile, []byte(operator), 0o600); err != nil {
@@ -307,7 +537,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	}
 
 	rig := &Rig{
-		URL: srv.URL, Operator: operator, OperatorFile: operatorFile,
+		URL: srv.URL, EdgeURL: edgeURL, Operator: operator, OperatorFile: operatorFile,
 		Store:     st,
 		Secrets:   local,
 		Registry:  registry,
@@ -335,25 +565,17 @@ func Caller(t *testing.T, name string) api.Account {
 // MachineLoginURL is the rig broker's machine-login page, the device grant's verification_uri.
 const MachineLoginURL = "https://dispatch.example/credentials/machine"
 
-// NewOAuthProvider builds the machine login's OAuth provider on st's database as
-// cmd/cipherd/main.go does: device codes live as long as a pending machine login, access tokens
-// fifteen minutes, refresh tokens as long as a launcher credential, and verification_uri is
-// MachineLoginURL. Its token exchange reads issuer for both kinds of subject token — a pod's, for
-// ExchangeAudience, and a workflow run's, for githubAudience — and lists the two accounts and the
-// one workflow the Rig's constants name, so an exchange test has an identity to be, a registered
-// one, and an unlisted one to be refused as.
-func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
+// newExchangeSet is the token exchange's entries a rig's broker trades on, the one set cmd/cipherd
+// builds from its exchange settings: the four accounts and the one workflow the Rig's constants
+// name.
+func newExchangeSet(t *testing.T) *exchange.Set {
 	t.Helper()
-	oauthStore := oauthstore.New(st.Pool)
-	oauthStore.Reused = enroll.RevokeReusedCredential
-	secret, err := oauthStore.Secret(context.Background())
-	if err != nil {
-		t.Fatalf("OAuth secret: %v", err)
-	}
-	policy, err := exchange.NewSet(
+	set, err := exchange.NewSet(
 		[]exchange.AccountEntry{
 			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession},
 			{Account: ExchangeRolesAccount, Project: ExchangeProject, Person: ExchangePerson},
+			{Account: DaemonExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: DaemonExchangeSession},
+			{Account: OtherProjectAccount, Project: OtherProject, Person: ExchangePerson, Session: OtherProjectSession},
 		},
 		nil,
 		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
@@ -365,18 +587,55 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
+	return set
+}
+
+// DeviceLifetime is how long a device code and its user code the rig broker issues wait for a
+// person's decision (oauth.Config.DeviceLifetime), as long as cmd/cipherd's pending machine login.
+const DeviceLifetime = 15 * time.Minute
+
+// NewOAuthProvider builds the machine login's OAuth provider on st's database as
+// cmd/cipherd/main.go does: device codes live as long as a pending machine login, access tokens
+// fifteen minutes, refresh tokens as long as a launcher credential, and verification_uri is
+// MachineLoginURL. Its token exchange reads issuer for both kinds of subject token — a pod's, for
+// ExchangeAudience, and a workflow run's, for githubAudience — and lists the four accounts and the
+// one workflow the Rig's constants name, so an exchange test has an identity to be, a registered
+// one, a daemon's fixed session, a second project's, and an unlisted one to be refused as.
+func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, opts ...ProviderOption) *oauth.Provider {
+	t.Helper()
+	var config providerConfig
+	for _, opt := range opts {
+		opt(&config)
+	}
+	accessLifetime := config.accessLifetime
+	if accessLifetime == 0 {
+		accessLifetime = 15 * time.Minute
+	}
+	oauthStore := oauthstore.New(st.Pool)
+	oauthStore.Reused = enroll.RevokeReusedCredential
+	secret, err := oauthStore.Secret(context.Background())
+	if err != nil {
+		t.Fatalf("OAuth secret: %v", err)
+	}
+	policy := config.exchange
+	if policy == nil {
+		policy = newExchangeSet(t)
+	}
 	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
 	if err != nil {
 		t.Fatalf("oidc.NewKeys: %v", err)
 	}
+	exchangeConfig := oauth.ExchangeConfig{
+		Policy:     policy,
+		Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: ExchangeAudience, Keys: keys},
+		GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
+		Projects:   config.projectAccess,
+		Hold:       config.hold,
+	}
 	provider, err := oauth.New(oauth.Config{
-		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: 15 * time.Minute,
+		Secret: secret, DeviceLifetime: DeviceLifetime, AccessLifetime: accessLifetime,
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
-		Exchange: oauth.ExchangeConfig{
-			Policy:     policy,
-			Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: ExchangeAudience, Keys: keys},
-			GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
-		},
+		Exchange: exchangeConfig,
 	}, oauthStore)
 	if err != nil {
 		t.Fatalf("oauth.New: %v", err)
@@ -384,9 +643,13 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 	return provider
 }
 
-// request issues method against baseURL+path through client, with an optional body (marshaled to
-// JSON) and headers, and answers the status and the body bytes. It asserts no status itself: a
-// caller does that, so a mismatch names the actual body.
+// request issues method against baseURL+path through client on ctx, with an optional body
+// (marshaled to JSON) and headers, and answers the status and the body bytes. It asserts no
+// status itself: a caller does that, so a mismatch names the actual body.
+//
+// ctx carries the request's one bound, the test binary's deadline less testwait's margin
+// (testwait.Context): a broker a loaded machine slows is waited for, and one that never answers
+// fails the test there.
 //
 // It is the one request body in this package: Rig.Req and Client.Req differ in the broker they
 // name, the client they go out on, and at — the process a failure is about, " (at host:port)"
@@ -394,6 +657,7 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 // has one broker and so nothing to tell apart.
 func request(
 	t *testing.T,
+	ctx context.Context,
 	client *http.Client,
 	baseURL, method, path string,
 	headers map[string]string,
@@ -409,7 +673,7 @@ func request(
 		}
 		reader = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, baseURL+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, reader)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
@@ -436,7 +700,7 @@ func request(
 // caller does that so a mismatch names the actual body.
 func (r *Rig) Req(t *testing.T, method, path string, headers map[string]string, body any) (int, []byte) {
 	t.Helper()
-	return request(t, http.DefaultClient, r.URL, method, path, headers, body, "")
+	return request(t, testwait.Context(t), http.DefaultClient, r.URL, method, path, headers, body, "")
 }
 
 // UI is Req as the listed caller of the routes Dispatch's server calls: it presents UIToken, the
@@ -445,6 +709,33 @@ func (r *Rig) Req(t *testing.T, method, path string, headers map[string]string, 
 func (r *Rig) UI(t *testing.T, method, path string, body any) (int, []byte) {
 	t.Helper()
 	return r.Req(t, method, path, map[string]string{"Authorization": "Bearer " + r.UIToken}, body)
+}
+
+// Introspect is what the broker's introspection reads token back as, asked as the Envoy listener
+// asks it: POST /v1/oauth/introspect with the token in a form, presenting ListenerToken. It fails
+// t on any answer but 200.
+func (r *Rig) Introspect(t *testing.T, token string) oauthwire.Introspection {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, r.URL+"/v1/oauth/introspect", strings.NewReader(url.Values{"token": {token}}.Encode()))
+	if err != nil {
+		t.Fatalf("build the introspection request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+r.ListenerToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/oauth/introspect: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read the answer of POST /v1/oauth/introspect: %v", err)
+	}
+	var read oauthwire.Introspection
+	if err := json.Unmarshal(body, &read); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /v1/oauth/introspect = %d %s, want 200 and an introspection (%v)", resp.StatusCode, body, err)
+	}
+	return read
 }
 
 // NewSession inserts a live session enrollment of operator's, under a launcher credential of its
@@ -567,6 +858,13 @@ func (r *Rig) DecideMachineLogin(t *testing.T, code string, approve bool) (crede
 	return decideMachineLogin(t, r.UI, r.Operator, code, approve, "")
 }
 
+// DecideMachineLoginAs decides the pending machine login whose confirmation code is code, naming
+// approver as the approver, as a person other than the Rig's Operator does on Dispatch's page.
+func (r *Rig) DecideMachineLoginAs(t *testing.T, approver, code string, approve bool) (credentialID string) {
+	t.Helper()
+	return decideMachineLogin(t, r.UI, approver, code, approve, "")
+}
+
 // MintPodToken mints a projected service-account token bound to podUID — the shape
 // enroll.K8sPodVerifier.Verify reads — signed by this Rig's own local OIDC issuer, which the
 // Rig's enroll.Service trusts as its PodVerifier (wired in NewRig). Mirrors
@@ -595,9 +893,10 @@ const DaemonAccount = "system:serviceaccount:legion-system:legion-daemon-test"
 
 // WorkerAccount is the ServiceAccount the pods MintPodToken mints tokens for run as, which every
 // Rig's BROKER_SERVICES binds to the service DaemonAccount logs in as, as a Legion worker pod's
-// account is bound to legion-daemon. BROKER_POD_REGISTRARS lists DaemonAccount for it and no
-// BROKER_EXCHANGE_ACCOUNTS entry lists it, so a registration of one of its pods is refused by the
-// exchange policy (403 POD_ACCOUNT_NOT_LISTED), past the route's own checks.
+// account is bound to legion-daemon. BROKER_POD_REGISTRARS lists DaemonAccount for it, and no
+// entry of BROKER_EXCHANGE_ACCOUNTS, BROKER_EXCHANGE_READ_ACCOUNTS or BROKER_EXCHANGE_JOB_ACCOUNTS
+// lists it, so a registration of one of its pods is refused by the exchange policy (403
+// POD_ACCOUNT_NOT_LISTED), past the route's own checks.
 const WorkerAccount = "system:serviceaccount:legion:worker"
 
 // MintAccountToken mints a projected ServiceAccount token for account, expiring lifetime from now

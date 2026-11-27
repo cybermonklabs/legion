@@ -19,12 +19,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A write outside Join would reach no transaction to weigh it in and no ledger to record it, so
 // every document write refuses to run, whichever entry point it comes through, and writes nothing:
 // the document keeps its tree and its updates.
 func TestEveryDocumentWriteRefusesAnUnjoinedContext(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "The quick brown fox\n\n:::ask{#ask-1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n")
 	if _, err := joinedMarkQuote(service, artifactID, MarkSpec{
@@ -91,10 +93,11 @@ func TestEveryDocumentWriteRefusesAnUnjoinedContext(t *testing.T) {
 }
 
 func TestSeedTextStoresTreeAndReturnsCanonicalMarkdown(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	tx, err := database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -132,10 +135,11 @@ func TestSeedTextStoresTreeAndReturnsCanonicalMarkdown(t *testing.T) {
 }
 
 func TestSeedTextRollsBackWithCreatingTransaction(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 
 	tx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -160,6 +164,7 @@ func TestSeedTextRollsBackWithCreatingTransaction(t *testing.T) {
 }
 
 func TestReplaceTextUpdatesLiveDocumentAndSettlesVersion(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "# First")
 	actor := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
@@ -183,12 +188,16 @@ func TestReplaceTextUpdatesLiveDocumentAndSettlesVersion(t *testing.T) {
 	}
 }
 
-// Every replacement names the token of the version it replaces, so the write refuses one that
-// names none, on the tree it has already read and under its own lock, and leaves the document as
-// it was; one that names the live token is taken. A replacement of a document whose live tree is
-// outside the Proof schema names no token either, and is taken, since such a tree has none for
-// any caller to name (TestRepairingUploadNeedsNoToken in api).
-func TestReplaceTextRefusesAReplacementThatNamesNoToken(t *testing.T) {
+// A replacement that names no token is taken unchecked, as every replacement was before #3000,
+// since no deployed `dispatch` client can name one on `dispatch artifact` (INFRA-4980); the
+// refusal of a missing token comes back once every deployed client sends one. A replacement that
+// names a token is still checked, on the tree the write has already read and under its own lock:
+// one naming a token the document has moved past is refused and leaves the document as it was,
+// and one naming the live token is taken. A replacement of a document whose live tree is outside
+// the Proof schema names no token either, since such a tree has none for any caller to name
+// (TestRepairingUploadNeedsNoToken in api).
+func TestReplaceTextTakesAReplacementNamingNoTokenAndChecksANamedOne(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before\n")
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -199,21 +208,30 @@ func TestReplaceTextRefusesAReplacementThatNamesNoToken(t *testing.T) {
 		})
 	}
 
-	if err := replace("after\n", nil); !errors.Is(err, ErrPreconditionRequired) {
-		t.Fatalf("a replacement naming no token = %v, want ErrPreconditionRequired", err)
-	}
-	if text := documentText(t, service, artifactID); text != "before\n" {
-		t.Fatalf("the refused replacement left %q, want the text standing before it", text)
-	}
-	if err := replace("after\n", liveDocumentToken(t, service, artifactID)); err != nil {
-		t.Fatalf("a replacement naming the live token: %v", err)
+	stale := liveDocumentToken(t, service, artifactID)
+	if err := replace("after\n", nil); err != nil {
+		t.Fatalf("a replacement naming no token: %v, want it taken", err)
 	}
 	if text := documentText(t, service, artifactID); text != "after\n" {
+		t.Fatalf("the document reads %q after the replacement naming no token, want the replacement", text)
+	}
+	var failed *ErrPreconditionFailed
+	if err := replace("again\n", stale); !errors.As(err, &failed) {
+		t.Fatalf("a replacement naming a token the document moved past = %v, want ErrPreconditionFailed", err)
+	}
+	if text := documentText(t, service, artifactID); text != "after\n" {
+		t.Fatalf("the refused replacement left %q, want the text standing before it", text)
+	}
+	if err := replace("again\n", liveDocumentToken(t, service, artifactID)); err != nil {
+		t.Fatalf("a replacement naming the live token: %v", err)
+	}
+	if text := documentText(t, service, artifactID); text != "again\n" {
 		t.Fatalf("the document reads %q after the replacement that named its token, want the replacement", text)
 	}
 }
 
 func TestReplaceTextWithTransactionRollsBackUpdate(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "# First")
 	ctx := context.Background()
@@ -254,6 +272,7 @@ func TestReplaceTextWithTransactionRollsBackUpdate(t *testing.T) {
 	}
 }
 func TestTransactionalApplySchedulesSettlementAfterCommit(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = 20 * time.Millisecond
 	seedServiceText(t, service, artifactID, "before")
@@ -278,6 +297,7 @@ func TestTransactionalApplySchedulesSettlementAfterCommit(t *testing.T) {
 }
 
 func TestTransactionalApplyRefreshesAnchoredComment(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "target")
@@ -341,6 +361,7 @@ func TestTransactionalApplyRefreshesAnchoredComment(t *testing.T) {
 	}
 }
 func TestClosedIssueRejectsLiveEditsAndNamedVersions(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	if _, err := service.store.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
@@ -362,6 +383,7 @@ func TestClosedIssueRejectsLiveEditsAndNamedVersions(t *testing.T) {
 // to - and nothing else under it: a suggestion's mark and a content edit are refused as they are
 // without it, and so is a comment mark made without it.
 func TestClosedIssueTakesOnlyCommentMarksUnderWithCommentMarks(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	if _, err := service.store.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
@@ -420,6 +442,7 @@ func TestClosedIssueTakesOnlyCommentMarksUnderWithCommentMarks(t *testing.T) {
 }
 
 func TestNamedVersionIncludesTrackedActorsAndResetsRoom(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	connected := model.Actor{Kind: "user", ID: "alice"}
@@ -441,6 +464,7 @@ func TestNamedVersionIncludesTrackedActorsAndResetsRoom(t *testing.T) {
 	}
 }
 func TestSnapshotVersionDoesNotAttributeUnchangedDocument(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "# First")
 	snapshotter := model.Actor{Kind: "user", ID: "alice"}
@@ -479,6 +503,7 @@ func TestSnapshotVersionDoesNotAttributeUnchangedDocument(t *testing.T) {
 // version changed the content, a snapshot writes no version, even though this build renders the
 // document differently, as settlement writes none.
 func TestSnapshotVersionWritesNoVersionForAnotherRenderersMarkdownOfUnchangedContent(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ctx := context.Background()
@@ -522,7 +547,49 @@ func TestSnapshotVersionWritesNoVersionForAnotherRenderersMarkdownOfUnchangedCon
 		t.Fatalf("snapshot = version %d wrote=%t, want version %d without a write", again.Version.Number, again.Wrote, latest.Version.Number)
 	}
 }
+
+// A version another renderer version wrote holds its renderer's spelling of the document, and an
+// edit typed and undone since it changed the content and changed it back. An anchor's snapshot
+// renders the same tree in this build's spelling, which the version holds in another: it writes no
+// version, so an approval of that version still reads approved. An edit that stays is still
+// versioned.
+func TestSnapshotVersionWritesNoVersionForAnotherRendererVersionsSpellingOfTheSameTree(t *testing.T) {
+	t.Parallel()
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	snapshot := func() VersionResult {
+		t.Helper()
+		var result VersionResult
+		if err := joinedWrite(service, func(ctx context.Context) (err error) {
+			result, err = service.SnapshotVersion(ctx, artifactID, alice)
+			return err
+		}); err != nil {
+			t.Fatalf("snapshot the document: %v", err)
+		}
+		return result
+	}
+	seedServiceText(t, service, artifactID, looseList)
+	settleCurrentGeneration(t, service, artifactID)
+	approved := respellLatestVersion(t, service.store, artifactID, respelledLooseList)
+	approveStoredVersion(t, service.store, artifactID, approved, "alice")
+	typeAndUndo(t, service, artifactID)
+
+	if again := snapshot(); again.Wrote || again.Version.Number != approved {
+		t.Fatalf("snapshot = version %d wrote=%t, want version %d without a write: it holds the same tree in another renderer version's spelling", again.Version.Number, again.Wrote, approved)
+	}
+	if stored := latestVersionMarkdown(t, service, artifactID); stored != respelledLooseList {
+		t.Fatalf("the latest version holds %q, want %q as it was stored", stored, respelledLooseList)
+	}
+	requireApprovedAt(t, service, artifactID, approved)
+
+	editLiveTree(t, service, artifactID, replaceRun("third", "third, edited"))
+	if edited := snapshot(); !edited.Wrote || edited.Version.Number != approved+1 {
+		t.Fatalf("snapshot of an edit that stays = version %d wrote=%t, want version %d written", edited.Version.Number, edited.Wrote, approved+1)
+	}
+}
 func TestCommittedSnapshotAndNamedVersionsClearPendingAuthors(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -570,6 +637,7 @@ func TestCommittedSnapshotAndNamedVersionsClearPendingAuthors(t *testing.T) {
 }
 
 func TestVersionCaptureDoesNotClearAuthorsFromLaterEdits(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -624,6 +692,7 @@ func TestVersionCaptureDoesNotClearAuthorsFromLaterEdits(t *testing.T) {
 // author's newer credit under the key it had taken (LEGION-503). The transaction's own write is
 // credited on the named version alone.
 func TestNamedVersionKeepsTheCreditOfAnEditItsAuthorMakesBeforeItCommits(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -673,6 +742,7 @@ func TestNamedVersionKeepsTheCreditOfAnEditItsAuthorMakesBeforeItCommits(t *test
 // and credits its author alone; the transaction's own write is credited on the named version
 // (LEGION-503).
 func TestNamedVersionCreditsNoAuthorOfAnEditMadeAfterItsForkRead(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -731,6 +801,7 @@ func TestNamedVersionCreditsNoAuthorOfAnEditMadeAfterItsForkRead(t *testing.T) {
 // pending authors the snapshot then lists: the snapshot credits the author although the credit
 // followed the bound, and no later version credits them again.
 func TestSnapshotCreditsAnEditMadeBetweenItsCreditBoundAndReadOnce(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -788,10 +859,11 @@ func TestSnapshotCreditsAnEditMadeBetweenItsCreditBoundAndReadOnce(t *testing.T)
 }
 
 func TestColdSnapshotCapturesFirstEditAfterWarm(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "before")
 	if err := service.srv.Apply(context.Background(), artifactID, func(_ *crdt.Doc, _ func(func(*crdt.Transaction))) {}); err != nil && !errors.Is(err, ygws.ErrNoChanges) {
 		t.Fatalf("warm cold document: %v", err)
@@ -837,6 +909,7 @@ func TestColdSnapshotCapturesFirstEditAfterWarm(t *testing.T) {
 }
 
 func TestReplaceTextAcceptsUnchangedEmptyDocument(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "")
 	if _, err := joinedReplaceText(service, artifactID, "", model.Actor{Kind: "user", ID: "alice"}); err != nil {
@@ -852,6 +925,7 @@ func TestReplaceTextAcceptsUnchangedEmptyDocument(t *testing.T) {
 // that first resolved the block changed the document, and appended its update and marked the
 // settlement owed.
 func TestAJoinedWriteWhoseTransactionChangesNothingAppendsNoUpdateAndKeepsItsSettlementMark(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Context\n\n"+regionBlock)
@@ -934,6 +1008,7 @@ func liveWritesOf(t *testing.T, service *Service, artifactID string) liveWrites 
 }
 
 func TestRefreshAnchorsClosesRowsBeforeUpdating(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before after")
 	const askID = "00000000-0000-4000-8000-000000000004"
@@ -1007,6 +1082,7 @@ func TestRefreshAnchorsClosesRowsBeforeUpdating(t *testing.T) {
 	}
 }
 func TestNamedVersionIndexesDocumentReferences(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -1029,6 +1105,7 @@ func TestNamedVersionIndexesDocumentReferences(t *testing.T) {
 }
 
 func TestNamedVersionIndexesServerURLDocumentReferences(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -1054,6 +1131,7 @@ func TestNamedVersionIndexesServerURLDocumentReferences(t *testing.T) {
 // nodes its new markdown cites, so a reader holding those nodes' batched backlink counts — an
 // Inbox row's ask — refreshes without reading the graph.
 func TestSettledVersionNamesChangedReferenceTargets(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	askID := uuid.NewString()
 	if _, err := service.store.Pool.Exec(context.Background(), `
@@ -1084,7 +1162,7 @@ func TestSettledVersionNamesChangedReferenceTargets(t *testing.T) {
 		t.Fatalf("decode settle event payload: %v", err)
 	}
 	issueKey := "DOC-1"
-	want := []model.ChangedReference{{Kind: "ask", ID: askID, IssueKey: &issueKey}}
+	want := []model.ChangedReference{{Kind: "ask", ID: askID, IssueKey: &issueKey}, {Kind: "issue", ID: issueKey}}
 	if !reflect.DeepEqual(named.ReferencesChanged, want) {
 		t.Fatalf("settle event references_changed = %#v, want %#v", named.ReferencesChanged, want)
 	}
@@ -1098,6 +1176,7 @@ func TestSettledVersionNamesChangedReferenceTargets(t *testing.T) {
 // NamedVersion writes a copy whose references settlement already indexed. So settlement waits an
 // hour here, as in every test of a version writer's own write.
 func TestVersionWritersReportChangedReferenceTargets(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "# First\n\nPending.")
@@ -1134,7 +1213,7 @@ func TestVersionWritersReportChangedReferenceTargets(t *testing.T) {
 	if err := ledger.Commit(context.Background()); err != nil {
 		t.Fatalf("commit snapshot: %v", err)
 	}
-	want := []model.ChangedReference{{Kind: "ask", ID: askIDs[0], IssueKey: &issueKey}}
+	want := []model.ChangedReference{{Kind: "ask", ID: askIDs[0], IssueKey: &issueKey}, {Kind: "issue", ID: issueKey}}
 	if !snapshot.Wrote || !reflect.DeepEqual(snapshot.Changes.Targets, want) {
 		t.Fatalf("snapshot changes = %#v (wrote=%t), want %#v", snapshot.Changes.Targets, snapshot.Wrote, want)
 	}
@@ -1153,6 +1232,7 @@ func TestVersionWritersReportChangedReferenceTargets(t *testing.T) {
 	want = []model.ChangedReference{
 		{Kind: "ask", ID: askIDs[1], IssueKey: &issueKey},
 		{Kind: "ask", ID: askIDs[0], IssueKey: &issueKey},
+		{Kind: "issue", ID: issueKey},
 	}
 	if !reflect.DeepEqual(named.Changes.Targets, want) {
 		t.Fatalf("named version changes = %#v, want %#v", named.Changes.Targets, want)

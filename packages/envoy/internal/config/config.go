@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/listenfd"
 )
@@ -40,6 +41,13 @@ type Service struct {
 	// AllowedHosts are the ENVOY_ALLOWED_HOSTS names, each as HostName writes it, that an
 	// unauthenticated listener serves /v1 to beside loopback.
 	AllowedHosts []string
+	// EdgeProjects is ENVOY_EDGE_PROJECTS (parseEdgeProjects): the project keys an edge listener
+	// serves, sorted, each once. Non-empty is edge mode, in which the listener runs under the edge
+	// listener's NATS grant for these projects (natsgrant.Edge; cmd/listener's edge_nats.go) and
+	// /v1 admits only a broker token whose projects are all among these (cmd/listener's
+	// EdgeAdmits). Empty, the variable unset or empty, is every other listener, which reads
+	// nothing of it.
+	EdgeProjects []string
 }
 
 func (s Service) ListenAddress() string {
@@ -110,6 +118,10 @@ func Load(defaultPort int) (Service, error) {
 	if err != nil {
 		return Service{}, err
 	}
+	edgeProjects, err := parseEdgeProjects(os.Getenv(EdgeProjectsEnvVar))
+	if err != nil {
+		return Service{}, err
+	}
 	return Service{
 		AllowedHosts:   allowedHosts,
 		MachineID:      machine,
@@ -120,6 +132,7 @@ func Load(defaultPort int) (Service, error) {
 		ListenHost:     listenHost,
 		Port:           port,
 		ListenSocket:   listenSocket,
+		EdgeProjects:   edgeProjects,
 	}, nil
 }
 
@@ -133,8 +146,9 @@ var dnsName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z
 
 // parseAllowedHosts reads ENVOY_ALLOWED_HOSTS: comma-separated host names or addresses, blank
 // entries skipped. An entry that is not a host name or an IP address (one carrying a port, a
-// scheme, a path or a stray bracket) is refused naming it, since a Host is compared by its name
-// alone.
+// scheme, a path or a stray bracket) is refused naming its position in the list, never its text,
+// which can be a credential or a URL holding one pasted there, since a Host is compared by its
+// name alone.
 //
 // CheckAllowedHosts in github.com/sjawhar/envoy/infra/core carries this rule by hand on the
 // plugin's side, so a component is refused before it deploys a listener that would not boot, and
@@ -145,7 +159,7 @@ var dnsName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z
 // rules and pins that asymmetry.
 func parseAllowedHosts(raw string) ([]string, error) {
 	var hosts []string
-	for _, entry := range strings.Split(raw, ",") {
+	for index, entry := range strings.Split(raw, ",") {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue
@@ -153,7 +167,7 @@ func parseAllowedHosts(raw string) ([]string, error) {
 		_, _, withPort := net.SplitHostPort(entry)
 		name := HostName(entry)
 		if withPort == nil || !hostEntry.MatchString(entry) || (net.ParseIP(name) == nil && !dnsName.MatchString(name)) {
-			return nil, fmt.Errorf("invalid ENVOY_ALLOWED_HOSTS entry %q: want a host name or address with no port, scheme or path", entry)
+			return nil, fmt.Errorf("invalid ENVOY_ALLOWED_HOSTS entry %d: want a host name or address with no port, scheme or path", index+1)
 		}
 		hosts = append(hosts, name)
 	}
@@ -171,4 +185,24 @@ func HostName(host string) string {
 		host = host[1 : len(host)-1]
 	}
 	return strings.TrimSuffix(fold.ASCII(host), ".")
+}
+
+// EdgeProjectsEnvVar names the projects an edge listener serves (Service.EdgeProjects).
+const EdgeProjectsEnvVar = "ENVOY_EDGE_PROJECTS"
+
+// parseEdgeProjects reads ENVOY_EDGE_PROJECTS: project keys separated by commas or white space,
+// read by the rule a broker token's own list is read by (oauthwire.ParseProjects): sorted, each
+// once, at most oauthwire.MaxProjects, and nil when empty. A key that is not a project key, a key
+// named twice and a longer list are refused, naming the variable, and so is a value other than
+// the empty string that names no project (a lone comma, white space): that is a misspelt edge
+// setting, and a listener started from it would serve with no edge rules.
+func parseEdgeProjects(raw string) ([]string, error) {
+	projects, err := oauthwire.ParseProjects(strings.ReplaceAll(raw, ",", " "))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", EdgeProjectsEnvVar, err)
+	}
+	if raw != "" && len(projects) == 0 {
+		return nil, fmt.Errorf("%s=%q names no project: set it to the project keys the edge listener serves, or to the empty string for a listener that is no edge", EdgeProjectsEnvVar, raw)
+	}
+	return projects, nil
 }

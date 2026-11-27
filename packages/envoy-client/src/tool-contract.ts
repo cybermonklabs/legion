@@ -13,6 +13,7 @@ import { z } from "zod";
 import { formatZodIssues, ToolInputError } from "./tool-input-errors";
 import {
   type ConnectionState,
+  type KeyTakenResult,
   type MessageMetadataInput,
   type PublishResult,
   type SessionInfo,
@@ -47,6 +48,13 @@ const STORED_DELIVERY =
   "relays to it, also one that was away or restarted. A 200 means the stream stored the message " +
   "for each subscribed session's consumer, not that any recipient has read it.";
 
+// The listener's 503 under `MESSAGE_NOT_SENT_PREFIX` (`@legion/contracts`): the bus refused the
+// message before anything went out, because the deployed stream does not capture its topic for
+// now (a hub move's quiesce). It is temporary, and the transport throws the listener's own text.
+const NOT_SENT_GUIDE =
+  "An error that says the message was not sent means nothing was stored, so the same message may " +
+  "be sent again later.";
+
 const TOPIC_GUIDE =
   "Topic guide (all are under notifications.): agent.<session_id> (subscribe: own inbox); role.<role> " +
   "(publish-to; holders claim via envoy_role_set). > matches one or more trailing tokens and does not " +
@@ -79,23 +87,39 @@ const URGENCY_VALUES = EnvelopeSchema.shape.urgency.unwrap().options as unknown 
   "blocking",
 ];
 
+/** What each reply mode asks of the recipient, keyed by every value of EXPECTS_REPLY_VALUES. */
+const EXPECTS_REPLY_MEANINGS: Readonly<Record<`${ExpectsReply}`, string>> = {
+  false: "no reply wanted",
+  optional: "a reply is welcome; nothing waits on it",
+  required: "the sender waits on the answer",
+};
+
+/** Each value of EXPECTS_REPLY_VALUES as JSON, then its meaning: `false (no reply wanted), ...`. */
+const EXPECTS_REPLY_GUIDE = EXPECTS_REPLY_VALUES.map(
+  (value) => `${JSON.stringify(value)} (${EXPECTS_REPLY_MEANINGS[`${value}`]})`
+).join(", ");
+
 /** Message metadata arguments shared by envoy_send and envoy_publish, built on the host's Zod. */
 export function messageMetadataShape<Element extends SchemaNode<Element>>(
   schema: SchemaApi<Element>
 ): ToolArgumentsShape {
+  // Every described Envoy tool field describes last: Oh My Pi's `pi.zod` facade drops a
+  // description attached before `.optional()` on an enum or on a field widened to `unknown` (as
+  // `expects_reply` is there, `zodSchemaApi`'s `literal`), and a model reading the tool's schema
+  // would see no value it may send.
   return {
     in_reply_to: schema.string().optional(),
     supersedes: schema.string().optional(),
     urgency: schema
       .enum(URGENCY_VALUES)
+      .optional()
       .describe(
         "low | med | high | blocking: how soon the recipient should act, shown on its card. It does not deliver the message sooner or ahead of others."
-      )
-      .optional(),
+      ),
     expects_reply: schema
       .literal(EXPECTS_REPLY_VALUES)
-      .describe("false | optional | required")
-      .optional(),
+      .optional()
+      .describe(`One of these JSON values: ${EXPECTS_REPLY_GUIDE}.`),
     expires_at: schema.number({ int: true }).optional(),
   };
 }
@@ -216,7 +240,7 @@ export const envoyToolSpecs = [
   },
   {
     name: "envoy_send",
-    description: `Send an Envoy agent-to-agent message directly to another session by session ID. The confirmation names the recipient's state. A message to an unresponsive session is stored and reaches it when it answers again, so an unresponsive recipient is not a failed send and no reason to send to someone else instead. ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT} A send that is not confirmed delivered errs naming its idempotency_key; send the same message again with that idempotency_key within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, and Envoy drops it as a repeat if the first copy arrived.`,
+    description: `Send an Envoy agent-to-agent message directly to another session by session ID. The confirmation names the recipient's state. A message to an unresponsive session is stored and reaches it when it answers again, so an unresponsive recipient is not a failed send and no reason to send to someone else instead. ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT} A send that is not confirmed delivered errs naming its idempotency_key; send the same message again with that idempotency_key within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, and Envoy drops it as a repeat if the first copy arrived. ${NOT_SENT_GUIDE}`,
     arguments: (schema) => ({
       session_id: schema
         .string()
@@ -224,16 +248,16 @@ export const envoyToolSpecs = [
       ...messageArguments(schema),
       idempotency_key: schema
         .string()
+        .optional()
         .describe(
           "Only to send again a message whose envoy_send was not confirmed delivered: the idempotency_key that error named. Omit it for a new message."
-        )
-        .optional(),
+        ),
     }),
     operation: EnvoyToolOperation.send,
   },
   {
     name: "envoy_publish",
-    description: `Publish an Envoy message to a notifications. topic. ${STORED_DELIVERY} A role or built-in topic is delivered as its guide says. A role message has three possible answers. First, a live session holds the role, and the stream stores the forward for that holder's consumer. Its 200 says the stream stored it. It does not say that the holder read it. It names the holder and the state the listener resolved the holder in. Second, no live session holds the role: nobody claims it, or its holder is unresponsive or gone. The listener then keeps the message for one hour. This is a success. The result says that the listener kept the message, and its kept_until is the time that hour ends. For a holder that is not live, the result also names that holder and its state. The next session to hold the role live before kept_until gets the message. That can be the same holder when it answers again. If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late. Third, the listener keeps nothing and errs, which tells you to reach the agent some other way: the holder refuses the message, or the forward is not stored within four seconds. A team topic (such as notifications.team.deploy-squad.all) is stored like every other, so a session subscribed to it that was away still receives it when it returns, and one that subscribes after you publish does not. A notifications. topic no stream subject captures is refused by name: nothing would store it. ${PUBLISH_COUNTS} ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT}`,
+    description: `Publish an Envoy message to a notifications. topic. ${STORED_DELIVERY} A role or built-in topic is delivered as its guide says. A role message has three possible answers. First, a live session holds the role, and the stream stores the forward for that holder's consumer. Its 200 says the stream stored it. It does not say that the holder read it. It names the holder and the state the listener resolved the holder in. Second, no live session holds the role: nobody claims it, or its holder is unresponsive or gone. The listener then keeps the message for one hour. This is a success. The result says that the listener kept the message, and its kept_until is the time that hour ends. For a holder that is not live, the result also names that holder and its state. The next session to hold the role live before kept_until gets the message. That can be the same holder when it answers again. If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late. Third, the listener keeps nothing and errs, which tells you to reach the agent some other way: the holder refuses the message, the forward is not stored within four seconds, or no live session holds the role and the publish names no session of yours as its source, so nothing could tell you that a kept copy expired. A team topic (such as notifications.team.deploy-squad.all) is stored like every other, so a session subscribed to it that was away still receives it when it returns, and one that subscribes after you publish does not. A notifications. topic no stream subject captures is refused by name: nothing would store it. ${NOT_SENT_GUIDE} ${PUBLISH_COUNTS} ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT}`,
     arguments: (schema) => ({ topic: schema.string(), ...messageArguments(schema) }),
     operation: EnvoyToolOperation.publish,
   },
@@ -320,9 +344,11 @@ const STORED_ONCE =
  * silent is what an agent judges the wait by.
  *
  * A `duplicate` answer is a resend of a message the listener already stored under the same
- * idempotency key. It stored nothing this time, so this answer's event id names no stored copy
- * and the line leaves the id out; the target's state still chooses the verb, because a stopped
- * target's one stored copy is waiting rather than delivered.
+ * idempotency key. It stored nothing this time. A current listener answers the stored copy, whose
+ * event id is the first send's, but an older one answers the event id it minted for the resend,
+ * which names no stored copy, and the answer does not say which listener wrote it, so the line
+ * leaves the id out; the target's state still chooses the verb, because a stopped target's one
+ * stored copy is waiting rather than delivered.
  *
  * `confirmed` is false only for a listener too old to echo the recipient, which is also too old
  * to answer a state, so the unconfirmed note belongs to the connected line alone.
@@ -355,6 +381,38 @@ export function sendConfirmationText(result: {
       ? `unresponsive${since}, so it is stored until that session answers; ${UNRESPONSIVE_RULE}`
       : result.recipientState;
   return `sent ${result.envelope.event_id} to ${result.recipient} (${state})${result.confirmed ? "" : " (recipient unconfirmed by listener)"}`;
+}
+
+/**
+ * How the line for a taken key says to deliver the message after all, for each tool that can get
+ * one: `envoy_send` mints a new idempotency_key when the call names none (its idempotency_key is
+ * only for a send that was not confirmed), and `envoy_publish` takes none and mints one for every
+ * publish.
+ */
+const KEY_TAKEN_AGAIN = {
+  envoy_send: "send it again without an idempotency_key; Envoy gives it a new one",
+  envoy_publish: "publish it again; Envoy gives every publish a new idempotency_key",
+} as const;
+
+/**
+ * The line both hosts show the model for a send or a publish whose idempotency key another
+ * sender's message already holds ({@link KeyTakenResult}): nothing was delivered for this caller,
+ * and the line names that message's event id so the model does not read the key as its own, and
+ * says how `tool` delivers the message after all.
+ */
+export function keyTakenText(result: KeyTakenResult, tool: keyof typeof KEY_TAKEN_AGAIN): string {
+  return `not delivered: another sender's message (${result.keyTaken.eventId}) already holds this idempotency_key, so Envoy stored nothing for you; ${KEY_TAKEN_AGAIN[tool]}`;
+}
+
+/** The fields of a key-taken result both hosts hand the model beside {@link keyTakenText}, under
+ *  the listener's own snake_case names. */
+export function keyTakenDetails(result: KeyTakenResult) {
+  return {
+    event_id: result.keyTaken.eventId,
+    topic: result.keyTaken.topic,
+    delivered: false,
+    key_taken: true,
+  } as const;
 }
 
 /**

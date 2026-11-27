@@ -121,9 +121,11 @@ func TestPromptHonoursItsContextAndTheRPCTimeout(t *testing.T) {
 	q.expect(shimwire.TypeHelloAck)
 	short.next()
 	quiet := short.conn()
+	// The peer answers nothing, so the negotiation ahead of the prompt is what runs out, and no
+	// prompt frame was written.
 	err := awaitResult(t, async(func() error { return quiet.Prompt(context.Background(), "delivery-1", "verify #41") }))
-	if !errors.Is(err, ErrNoAnswer) {
-		t.Fatalf("Prompt with no answer = %v, want ErrNoAnswer", err)
+	if !errors.Is(err, runtime.ErrNoAnswer) || errors.Is(err, runtime.ErrPromptUnanswered) {
+		t.Fatalf("Prompt whose negotiation got no answer = %v, want runtime.ErrNoAnswer and not runtime.ErrPromptUnanswered: no prompt was written", err)
 	}
 }
 
@@ -226,7 +228,9 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 				_, result := h.prompt(p, "delivery-1", "verify #41")
 				return awaitResult(h.t, result)
 			},
-			isCase: func(err error) bool { return errors.Is(err, ErrNoAnswer) },
+			isCase: func(err error) bool {
+				return errors.Is(err, runtime.ErrNoAnswer) && errors.Is(err, runtime.ErrPromptUnanswered)
+			},
 		},
 		{name: "the caller's deadline",
 			drive: func(h *harness, p *peer) error {
@@ -238,7 +242,9 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 				p.expect(shimwire.TypePrompt)
 				return awaitResult(h.t, result)
 			},
-			isCase: func(err error) bool { return errors.Is(err, context.DeadlineExceeded) },
+			isCase: func(err error) bool {
+				return errors.Is(err, context.DeadlineExceeded) && errors.Is(err, runtime.ErrPromptUnanswered)
+			},
 		},
 		{name: "OMP refuses the negotiation ahead of the prompt",
 			drive: func(h *harness, p *peer) error {
@@ -498,7 +504,7 @@ func TestAPromptResultNamesTheDeliveryItsRequestIDCarries(t *testing.T) {
 // reads what Oh My Pi writes however this package models it. The daemon must take it: a result
 // it drops is a prompt the supervisor waits on for the life of the process, and the next task
 // for that claim is refused as pending behind it. So the result reaches the supervisor whole —
-// the message and the four members a later decision reads, never the message parsed — and the
+// the message and the members a later decision reads, never the message parsed — and the
 // connection takes the next delivery.
 func TestATurnThatEndedInAProviderErrorStillReportsItsResult(t *testing.T) {
 	h := startListener(t, harnessOptions{})
@@ -529,6 +535,32 @@ func TestATurnThatEndedInAProviderErrorStillReportsItsResult(t *testing.T) {
 	p.send(shimwire.Response{ID: second.ID, Command: shimwire.TypePrompt, Success: true})
 	if err := awaitResult(t, next); err != nil {
 		t.Fatalf("the delivery after the failed turn: %v", err)
+	}
+}
+
+// Oh My Pi's class of a failure reaches the supervisor with the rest of the error object: a
+// gateway relays OpenAI's cyber-policy refusal as a 503, which on its status alone is "not now",
+// and only the code says that sending the same content again is refused again (supervise's
+// classifyProviderError). The line is the shape Oh My Pi's promptError writes, verbatim.
+func TestAPromptResultCarriesItsCodeToTheSupervisor(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := h.connect(testToken)
+	first, result := h.prompt(p, "delivery-1", "implement the plan")
+	p.send(shimwire.Response{ID: first.ID, Command: shimwire.TypePrompt, Success: true})
+	if err := awaitResult(t, result); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	p.send(shimwire.AgentEnd{})
+	p.writeRaw(`{"type":"prompt_result","id":"` + first.ID + `","agentInvoked":true,"status":"error","sessionSettled":true,` +
+		`"error":{"message":"503 cyber_policy: synthetic refusal text","provider":"openai","model":"gpt-5.5","retryable":false,"code":"cyber_policy","httpStatus":503}}` + "\n")
+	for _, want := range []Event{
+		TurnEnd{Claim: testClaim},
+		PromptResult{Claim: testClaim, DeliveryID: "delivery-1", AgentInvoked: true, Error: "503 cyber_policy: synthetic refusal text",
+			HTTPStatus: 503, Provider: "openai", Model: "gpt-5.5", Code: "cyber_policy"},
+	} {
+		if got := h.next(); got != want {
+			t.Fatalf("event = %#v, want %#v", got, want)
+		}
 	}
 }
 
@@ -981,5 +1013,34 @@ func TestATokenRequestTheShimCannotAnswerIsRefused(t *testing.T) {
 				t.Fatal("a refused token request reads as a refused prompt")
 			}
 		})
+	}
+}
+
+// A shim built before the workspace read forwards the frame to Oh My Pi, which refuses it as an
+// unknown command. The read is then a refusal that carries Oh My Pi's words, which the caller
+// reads as a failed read: never as a workspace with no work, and never as a refused prompt, which
+// the supervisor would charge to the claim's prompt budget.
+func TestWorkspaceWorkOfAnOlderShimIsARefusal(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := h.connect(testToken)
+	result := async(func() error {
+		_, err := h.conn().WorkspaceWork(context.Background(), "INFRA-945", runtime.WorkspaceWorkTimeout)
+		return err
+	})
+	request := p.expect(shimwire.TypeWorkspaceWork).(shimwire.WorkspaceWork)
+	if request.ID == "" || request.Issue != "INFRA-945" || request.TimeoutMs != int(runtime.WorkspaceWorkTimeout.Milliseconds()) {
+		t.Fatalf("the shim received %+v, want the issue and the read's budget", request)
+	}
+	p.send(shimwire.Response{ID: request.ID, Command: shimwire.TypeWorkspaceWork, Success: false, Error: "Unknown command: workspace-work"})
+	err := awaitResult(t, result)
+	var refused *RefusedError
+	if !errors.As(err, &refused) || refused.Command != shimwire.TypeWorkspaceWork {
+		t.Fatalf("err = %v, want a RefusedError of %s", err, shimwire.TypeWorkspaceWork)
+	}
+	if reason := runtime.RefusalReason(err); reason != "Unknown command: workspace-work" {
+		t.Fatalf("the refusal carries %q, want Oh My Pi's words", reason)
+	}
+	if errors.Is(err, runtime.ErrPromptRefused) {
+		t.Fatal("a refused workspace read reads as a refused prompt")
 	}
 }

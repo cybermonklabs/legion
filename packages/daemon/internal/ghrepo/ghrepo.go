@@ -9,7 +9,6 @@ package ghrepo
 import (
 	"fmt"
 	"regexp"
-	"slices"
 	"strings"
 	"unicode"
 )
@@ -51,25 +50,6 @@ func (r Repository) String() string {
 	return r.owner + "/" + r.name
 }
 
-// Serves is whether repos, the repositories a project serves, holds repo: the two names compared
-// without case, as GitHub compares an owner and a repository's name alike. It is the predicate
-// the rename rule is read with (Renames.Serving, Renames.OwnerAliases), asked of one repository
-// and never of an owner — a project that serves one more repository of the owner a pair moved a
-// repository away from serves no more of the moved repository, so an owner set answers the wrong
-// question. The daemon's own mapping answers this same question from a map keyed by the
-// lowercased `<owner>/<name>` (its repositories.servesRepository); this is the answer for a
-// caller that holds the set as the slice it already has.
-//
-// It compares the two halves rather than the names String joins, which is the same answer —
-// Parse admits exactly one `/` and refuses one inside either half, so two joined names are equal
-// without case exactly when both halves are — and allocates nothing, where the joined form
-// concatenates the needle's two names once per candidate.
-func Serves(repos []Repository, repo Repository) bool {
-	return slices.ContainsFunc(repos, func(served Repository) bool {
-		return strings.EqualFold(served.owner, repo.owner) && strings.EqualFold(served.name, repo.name)
-	})
-}
-
 // MustParse is Parse of a repository the caller wrote as a literal, a test's fixture: it panics on
 // one Parse refuses.
 func MustParse(repository string) Repository {
@@ -79,6 +59,12 @@ func MustParse(repository string) Repository {
 	}
 	return parsed
 }
+
+// IsName says whether name has the grammar of a GitHub repository's own name (repositoryName), the
+// rule Parse holds a name to before its `.`, `..` and `.git` checks. A caller that reads a name as
+// gh reads it trims a `.git` suffix first, as gh and ghconfig.RepositoryName do: GitHub's
+// 100-character limit counts the name without it, which `gh repo clone` writes into a remote.
+func IsName(name string) bool { return repositoryName.MatchString(name) }
 
 // Parse is repository's owner and name, or a refusal that begins with what, the input's name: it
 // must be exactly `<owner>/<name>`, both names non-empty and neither holding whitespace; neither

@@ -7,6 +7,9 @@ import (
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // ClientCheck is what one check of a code flow's client at its issuer found. The three words are
@@ -16,14 +19,17 @@ type ClientCheck string
 
 const (
 	// ClientCheckReady: the issuer knows the client and took its secret. It answered the check's
-	// token request invalid_grant, which is a refusal of the code alone (RFC 6749 section 5.2).
+	// token request invalid_grant at a refusal's status (oauthrefusal.Refusal), which is a refusal
+	// of the code alone (RFC 6749 section 5.2).
 	ClientCheckReady ClientCheck = "ready"
-	// ClientCheckRejected: the issuer refused the client itself, invalid_client - the client was
+	// ClientCheckRejected: the issuer refused at a refusal's status (oauthrefusal.Refuses) for
+	// any reason but the code itself - invalid_client, another OAuth error or none: the client was
 	// deleted, its id is not this issuer's, or its secret has been rotated out from under the
 	// caller. No person can sign in until it is fixed.
 	ClientCheckRejected ClientCheck = "client_rejected"
-	// ClientCheckIssuerUnreachable: the issuer could not be asked, or answered something the
-	// check cannot read as either of the two above. It says nothing about the client.
+	// ClientCheckIssuerUnreachable: the issuer could not be asked or could not answer, or answered
+	// something the check cannot read as either of the two above. It says nothing about the
+	// client; the error a check returns with it says which it was.
 	ClientCheckIssuerUnreachable ClientCheck = "issuer_unreachable"
 )
 
@@ -32,10 +38,14 @@ const (
 // the client's credentials and a code that does not exist.
 //
 // An issuer that knows the client and takes its secret gets as far as the code and refuses that,
-// invalid_grant, which is ClientCheckReady; one that refuses the client itself answers
-// invalid_client, which is ClientCheckRejected. Any other answer, and a discovery or transport
-// failure, is ClientCheckIssuerUnreachable: the check has no verdict on the client, and must not
-// report one.
+// invalid_grant, which is ClientCheckReady. The status alone decides the rest (oauthrefusal). A
+// refusal for any other reason or none, a 4xx that is no 408 or 429 naming invalid_client, another
+// OAuth error or no error at all, is the issuer answering and refusing the client, which is
+// ClientCheckRejected. A 5xx, a 408 or a 429, whatever error its body names, and a discovery or
+// transport failure, are an issuer that could not answer; a 2xx naming an error and a 3xx are an
+// answer that refuses nothing. Both are ClientCheckIssuerUnreachable, the closed set's one word for
+// a check with no verdict, which must not report one; its error says whether the issuer could not
+// answer or answered with none.
 //
 // The request names no redirect_uri, since no code of this client's exists for one to match, and
 // the code is freshly random, so no live code is ever spent by a check. The discovery document is
@@ -43,8 +53,9 @@ const (
 // things, whether the issuer is still there.
 //
 // The error is nil only for ClientCheckReady. For the other two it says what happened, for the
-// caller's log; it never carries the client secret, and a caller publishing the check publishes
-// the word alone.
+// caller's log; it never carries the client secret, it names the issuer through redact.URL and a
+// transport failure as issuerError prints it, and a caller publishing the check publishes the word
+// alone.
 func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (ClientCheck, error) {
 	// One bounded client for both requests: the issuer's discovery read and the token request.
 	client := tokenClient()
@@ -61,13 +72,16 @@ func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (Cl
 		// An issuer that exchanged a code it never issued has a problem of its own, but it has
 		// plainly accepted the client, which is the one question this asks.
 		return ClientCheckReady, nil
-	case !errors.As(err, &retrieve):
-		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: check the client at %s: %w", issuer, err)
-	case retrieve.ErrorCode == "invalid_grant":
+	case !errors.As(err, &retrieve) || retrieve.Response == nil:
+		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: check the client at %s: %w", redact.URL(issuer), issuerError(issuer, err))
+	case oauthrefusal.Refusal(err) == "invalid_grant":
 		return ClientCheckReady, nil
-	case retrieve.ErrorCode == "invalid_client":
-		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: %s", issuer, clientID, retrieve.ErrorCode)
+	case oauthrefusal.Refuses(retrieve.Response.StatusCode):
+		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: HTTP %d with the OAuth error %q",
+			redact.URL(issuer), clientID, retrieve.Response.StatusCode, retrieve.ErrorCode)
+	case oauthrefusal.Outage(retrieve.Response.StatusCode):
+		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s could not answer the client check: HTTP %d: %w", redact.URL(issuer), retrieve.Response.StatusCode, issuerError(issuer, err))
 	}
-	return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s answered the client check with the OAuth error %q, which says nothing about the client: %w",
-		issuer, retrieve.ErrorCode, err)
+	return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s answered the client check HTTP %d with the OAuth error %q and no refusal, which says nothing about the client: %w",
+		redact.URL(issuer), retrieve.Response.StatusCode, retrieve.ErrorCode, issuerError(issuer, err))
 }

@@ -60,14 +60,9 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"log/slog"
 	"maps"
-	"net"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -75,21 +70,11 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
-)
-
-// conflictBase is the base branch of both pull requests, the repository's default, and
-// conflictRequiredCheck the one check its ruleset requires (conflictGitHub). The daemon reads that
-// ruleset for a conflicting head (readBaseRules): the issue's head has no run of the check at all,
-// and the control's head has one that passed.
-const (
-	conflictRequiredCheck = "ci"
-	conflictBase          = "main"
 )
 
 // The heads the proof drives: the issue's seeded head, which the push onto the base leaves
@@ -101,30 +86,11 @@ const (
 	conflictControlHead = "c1"
 )
 
-// The lines the daemon logs for what it decides of a conflicting head, which the steps read its
-// decisions from: the first read (workflow's mergeability), the second read's attempt that GitHub
-// answered (the outbox's conflictConfirm), the ask a confirmed conflict needs (workflow's
-// mergeForward), and the confirmed conflict that needs none (mergeability).
-const (
-	conflictFirstReadLine  = "workflow: a conflict read waits for a second read"
-	conflictSecondReadLine = "outbox conflict confirm: GitHub answered; the workflow decides on the answer"
-	conflictAskedLine      = "workflow: merge forward asked"
-	conflictNoMergeLine    = "workflow: a confirmed conflict needs no merge yet"
-)
-
-// conflictSecondReadBound is how long a step waits for what the second read decides: the minute
-// the daemon waits after a first read (workflow's conflictConfirmWait), with room for the lane that
-// runs the read and the one that publishes the messages it writes.
-const conflictSecondReadBound = 3 * time.Minute
-
-// conflictNoTakeoverLive is one run of the proof: the booted daemon and its log, the issue it
-// drives and the control beside it, the stand-ins the steps read the daemon's own writes back from,
-// and the two roles the driver acts as over the worker stream.
+// conflictNoTakeoverLive is one run of the proof: the booted daemon, its log and the baseline of
+// each role topic (conflictLive), the issue it drives and the control beside it, and the two roles
+// the driver acts as over the worker stream.
 type conflictNoTakeoverLive struct {
-	liveIssueProof
-	// logged is the daemon's own log, kept in memory as it is written, which the steps read the
-	// daemon's decisions of a conflicting head from.
-	logged *recordingLog
+	conflictLive
 	// imp and test are the implementer and the tester as their agents reach the daemon, and
 	// delivery the delivery of the tester's testing task, whose turn runs from step 1 to step 4.
 	imp, test *liveClaimant
@@ -133,10 +99,9 @@ type conflictNoTakeoverLive struct {
 	// controlNumber its pull request's number.
 	control       string
 	controlNumber int
-	// heard is how many messages each role topic of the issue had taken when step 2 began, and
-	// suspends how many suspensions the fake runtime had been asked for, so the steps after it read
-	// what the conflict's reads sent apart from anything before them.
-	heard    map[claim.Role]int
+	// suspends is how many suspensions the fake runtime had been asked for when step 2 began, which
+	// sets the role topics' baseline (heard) too, so the steps after it read what the conflict's
+	// reads sent apart from anything before them.
 	suspends int
 }
 
@@ -148,6 +113,9 @@ type conflictNoTakeoverLive struct {
 // it replaced refused and its completion at the new head taken, and last the control, a conflict
 // whose required check passed, which the second read gets nothing.
 func TestAConflictKeepsThePhaseAndTakesNoTurnOverLive(t *testing.T) {
+	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names: it creates the stream
+	// ENVOY_NOTIFICATIONS there and writes the file LEGION_E2E_DAEMON_LOG names, which a proof beside it
+	// would share, and its steps watch liveSettle's 3 s for what must not happen.
 	r := newConflictNoTakeoverLive(t)
 	r.step("step1-the-tester-works-the-assignment-its-phase-handed-it", r.testerWorksItsAssignment)
 	r.step("step2-the-first-conflicting-read-waits-for-a-second-and-sends-nothing", r.firstReadSendsNothing)
@@ -162,8 +130,8 @@ func TestAConflictKeepsThePhaseAndTakesNoTurnOverLive(t *testing.T) {
 // session, serving run 1, without an operator's spawn.
 func newConflictNoTakeoverLive(t *testing.T) *conflictNoTakeoverLive {
 	t.Helper()
-	r := &conflictNoTakeoverLive{liveIssueProof: newLiveIssueProof(t, "scripts/e2e/conflict-no-takeover.sh",
-		conflictBase, "the issue whose head starts conflicting with its base")}
+	r := &conflictNoTakeoverLive{conflictLive: conflictLive{liveIssueProof: newLiveIssueProof(t, "scripts/e2e/conflict-no-takeover.sh",
+		conflictBase, "the issue whose head starts conflicting with its base")}}
 	r.control, r.controlNumber = r.cfg.Project+"-2", r.number+1
 	r.serveGitHub(&liveGitHub{sha: conflictFirstHead, also: r.conflictGitHub()})
 	r.seed()
@@ -212,39 +180,6 @@ func (r *conflictNoTakeoverLive) seed() {
 		conflictControlHead, conflictRequiredCheck)
 }
 
-// bootLogged boots the daemon as liveIssueProof.boot does, with the daemon's own log also kept in
-// memory as it is written (recordingLog, as sub_architect_live_test.go keeps it), since the steps
-// read what the daemon decided of a conflicting head from the lines it logs for it.
-func (r *conflictNoTakeoverLive) bootLogged() {
-	r.t.Helper()
-	r.rt.InPod = true
-	o := fakeRuntime(r.rt, r.built)
-	o.workflowTokens = &workflowTokenRecorder{}
-	o.githubAPI = r.github.url
-	r.logged = newRecordingLog(r.log())
-	r.d = startDaemonWithin(r.t, r.cfg, o, slog.New(r.logged), 60*time.Second)
-}
-
-// silent holds that the daemon sends this role's connection nothing at all for within: the RPC
-// carries no abort frame, and nothing else it could send would end that role's turn either.
-func (c *liveClaimant) silent(within time.Duration) {
-	t := c.p.t
-	t.Helper()
-	if err := c.sh.conn.SetReadDeadline(time.Now().Add(within)); err != nil {
-		t.Fatalf("set the read deadline on the %s's connection: %v", c.role, err)
-	}
-	line, err := c.sh.lines.ReadBytes('\n')
-	var timeout net.Error
-	switch {
-	case errors.As(err, &timeout) && timeout.Timeout():
-		return
-	case err != nil:
-		t.Fatalf("read the %s's connection: %v", c.role, err)
-	default:
-		t.Fatalf("the daemon sent the %s %q, want nothing at all", c.role, strings.TrimSpace(string(line)))
-	}
-}
-
 // Step 1. The seeded implementer completes implementing, naming a handoff record of its own,
 // which hands the testing phase to the tester with an assignment of its own and starts it. The
 // tester registers, takes that task and works it: a claim working a delivery it confirmed, which is
@@ -276,7 +211,7 @@ func (r *conflictNoTakeoverLive) testerWorksItsAssignment() {
 
 // Step 2. Another pull request lands on the base and GitHub answers the issue's head conflicting
 // with it, while the tester's turn runs. The push onto the base asks the daemon to read every open
-// pull request on that base (workflow's basePush, askMergeStateFor: the issue stands in testing),
+// pull request on that base (workflow's basePush, mergeStateOwed: the issue stands in testing),
 // and this read of the issue's head is its first conflicting one: the daemon records it, queues its
 // second read a minute on (record.ConflictConfirm), logs it and acts on nothing. No role of the
 // issue is sent anything on its role topic, the architect's included, and neither the tester's
@@ -293,7 +228,7 @@ func (r *conflictNoTakeoverLive) firstReadSendsNothing() {
 	r.publishBasePush()
 	r.note("drove a push onto %s while the tester's turn runs, after which GitHub answers %s conflicting with it; %s's ruleset requires %s, which has no run on %s",
 		conflictBase, conflictFirstHead, conflictBase, conflictRequiredCheck, conflictFirstHead)
-	first := r.awaitLogged(conflictFirstReadLine, r.key, testwait.Bounded(t, time.Minute, time.Second))
+	first := r.awaitLogged(conflictFirstReadLine, r.key, testwait.Remaining(t))
 	r.note("read back: the daemon logged %q for %s, head %v against base %v", first.Message, r.key, first.Attrs["head"], first.Attrs["base"])
 	if rows := outboxRowsOfKind(t, r.st.Pool(), r.key, record.OutboxKindConflictConfirm); rows != 1 {
 		t.Fatalf("the outbox holds %d second reads of %s, want the one the first read queued", rows, r.key)
@@ -336,18 +271,21 @@ func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 	}
 	r.note("read back: the daemon logged %q for %s: head %v, phase %v, why %v", asked.Message, r.key, asked.Attrs["head"], asked.Attrs["phase"], asked.Attrs["why"])
 
+	// The texts name the pull request by the repository the record holds it under; neither the ask
+	// nor the hold reads anything else of the record.
+	pull := record.PullRequest{Repo: liveRepo}
 	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: conflictFirstHead,
 		Base: conflictBase, Phase: phase.Testing, PullRequest: r.number, Why: record.ConflictCheckNotGreen}
-	if told := r.awaitHeard(claim.RoleImplementer, 1, bound); told[0].Message != ask.Message(r.key, liveRepo) {
-		t.Fatalf("the implementer was told %q, want the merge forward's ask %q", told[0].Message, ask.Message(r.key, liveRepo))
+	if told := r.awaitHeard(claim.RoleImplementer, 1, bound); told[0].Message != ask.Message(r.key, pull) {
+		t.Fatalf("the implementer was told %q, want the merge forward's ask %q", told[0].Message, ask.Message(r.key, pull))
 	}
-	r.note("read back: one message on the implementer's role topic — %s", ask.Message(r.key, liveRepo))
+	r.note("read back: one message on the implementer's role topic — %s", ask.Message(r.key, pull))
 	hold := ask
 	hold.Role, hold.Step = claim.RoleTester, record.MergeForwardHold
-	if told := r.awaitHeard(claim.RoleTester, 1, bound); told[0].Message != hold.Message(r.key, liveRepo) {
-		t.Fatalf("the tester was told %q, want the merge forward's hold %q", told[0].Message, hold.Message(r.key, liveRepo))
+	if told := r.awaitHeard(claim.RoleTester, 1, bound); told[0].Message != hold.Message(r.key, pull) {
+		t.Fatalf("the tester was told %q, want the merge forward's hold %q", told[0].Message, hold.Message(r.key, pull))
 	}
-	r.note("read back: one message on the tester's role topic — %s", hold.Message(r.key, liveRepo))
+	r.note("read back: one message on the tester's role topic — %s", hold.Message(r.key, pull))
 	var notices []record.Notice
 	testwait.WithinPolling(t, bound, testwait.Poll, "the architect's notice of the merge forward", func() bool {
 		notices = r.architectNoticesSince()
@@ -390,11 +328,13 @@ func (r *conflictNoTakeoverLive) mergeLands() {
 		conflictMergedHead, conflictBase, conflictFirstHead, r.number)
 	landed := record.MergeForwardMessage{Role: claim.RoleTester, Step: record.MergeForwardLanded, Head: conflictFirstHead,
 		Landed: conflictMergedHead, Base: conflictBase, Phase: phase.Testing, PullRequest: r.number, Why: record.ConflictCheckNotGreen}
-	told := r.awaitHeard(claim.RoleTester, 2, testwait.Bounded(t, time.Minute, time.Second))
-	if told[1].Message != landed.Message(r.key, liveRepo) {
-		t.Fatalf("the tester was told %q, want the merge forward's landing %q", told[1].Message, landed.Message(r.key, liveRepo))
+	// The tester's landed reads nothing of the record but the repository it holds the pull request under.
+	pull := record.PullRequest{Repo: liveRepo}
+	told := r.awaitHeard(claim.RoleTester, 2, testwait.Remaining(t))
+	if told[1].Message != landed.Message(r.key, pull) {
+		t.Fatalf("the tester was told %q, want the merge forward's landing %q", told[1].Message, landed.Message(r.key, pull))
 	}
-	r.note("read back: the tester's role topic took the landing — %s", landed.Message(r.key, liveRepo))
+	r.note("read back: the tester's role topic took the landing — %s", landed.Message(r.key, pull))
 	r.heldOn("the landing")
 
 	status, failure := r.test.complete("tested it", conflictFirstHead, "pass", r.test.handoff("test"))
@@ -472,110 +412,17 @@ func (r *conflictNoTakeoverLive) heldOn(what string) {
 	r.note("read back: after %s the tester's claim is still %s on delivery %s, and the fake runtime was asked to suspend nothing", what, held.State, held.Pending.ID)
 }
 
-// loggedFor is every line the daemon logged with message for issue, oldest first.
-func (r *conflictNoTakeoverLive) loggedFor(message, issue string) []loggedRecord {
-	return r.logged.matching(func(kept loggedRecord) bool { return kept.Message == message && kept.Attrs["issue"] == issue })
-}
-
-// awaitLogged waits up to bound for the daemon's first line with message for issue, and returns it.
-// The log grows with every line the daemon writes at debug, so it is read ten times a second rather
-// than at testwait's own pace.
-func (r *conflictNoTakeoverLive) awaitLogged(message, issue string, bound time.Duration) loggedRecord {
-	r.t.Helper()
-	var lines []loggedRecord
-	testwait.WithinPolling(r.t, bound, 100*time.Millisecond, fmt.Sprintf("the daemon's line %q for %s", message, issue), func() bool {
-		lines = r.loggedFor(message, issue)
-		return len(lines) > 0
-	})
-	return lines[0]
-}
-
-// roleTopic is the Envoy role topic of role's claim on issue, as the daemon spells it.
-func (r *conflictNoTakeoverLive) roleTopic(issue string, role claim.Role) string {
-	r.t.Helper()
-	token, err := claim.NewToken(r.project, issue, role)
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	return notify.RoleTopicPrefix + string(token)
-}
-
-// heardOn is how many messages the listener has taken on the role topic of each of issue's roles,
-// the architect's among them.
-func (r *conflictNoTakeoverLive) heardOn(issue string) map[claim.Role]int {
-	heard := map[claim.Role]int{}
-	for _, role := range claim.Roles {
-		heard[role] = len(r.notices.acceptedOn(r.roleTopic(issue, role)))
-	}
-	return heard
-}
-
-// awaitHeard waits up to bound for the role topic of role on the issue to have taken count messages
-// more than it had when step 2 began, and returns every message it took since then, oldest first.
-func (r *conflictNoTakeoverLive) awaitHeard(role claim.Role, count int, bound time.Duration) []listenerPublish {
-	r.t.Helper()
-	topic := r.roleTopic(r.key, role)
-	var heard []listenerPublish
-	testwait.WithinPolling(r.t, bound, testwait.Poll, fmt.Sprintf("%d message(s) on the %s's role topic %s since the conflict began", count, role, topic), func() bool {
-		heard = r.notices.acceptedOn(topic)
-		return len(heard) >= r.heard[role]+count
-	})
-	return heard[r.heard[role]:]
-}
-
-// architectNoticesSince is every notice the architect's role topic of the issue took since step 2
-// began, each decoded from the payload the outbox publishes it with (record.Notice).
-func (r *conflictNoTakeoverLive) architectNoticesSince() []record.Notice {
-	r.t.Helper()
-	var notices []record.Notice
-	for _, published := range r.notices.acceptedOn(r.roleTopic(r.key, claim.RoleArchitect))[r.heard[claim.RoleArchitect]:] {
-		var notice record.Notice
-		if err := json.Unmarshal([]byte(published.Payload), &notice); err != nil {
-			r.t.Fatalf("decode the architect's notice %q: %v", published.Payload, err)
-		}
-		notices = append(notices, notice)
-	}
-	return notices
-}
-
-// published waits for the outbox to hold no message of issue still to be published to a role
-// topic — a notice, a role message, a hook prompt or a merge-forward message — so the step that
-// counts what the topics took does not count while a message an earlier step wrote is on its way.
-func (r *conflictNoTakeoverLive) published(issue string) {
-	r.t.Helper()
-	kinds := []string{string(record.OutboxKindNotice), string(record.OutboxKindRoleMessage), string(record.OutboxKindHookPrompt),
-		string(record.OutboxKindMergeForward)}
-	testwait.Eventually(r.t, "the outbox to publish every message of "+issue+" it holds", func() bool {
-		var rows int
-		if err := r.st.Pool().QueryRow(context.Background(), "select count(*) from outbox where issue = $1 and kind = any($2)",
-			issue, kinds).Scan(&rows); err != nil {
-			r.t.Fatalf("read the outbox rows of %s: %v", issue, err)
-		}
-		return rows == 0
-	})
-}
-
 // conflictGitHub is what this proof's GitHub answers beyond the harness's stand-in (liveGitHub's
-// also). First, what the daemon reads of the base for a head GitHub answers conflicting
-// (readBaseRules): the rules of the branch, one ruleset requiring ci whose rule does not require a
-// pull request to be current with the branch, and the branch itself unprotected otherwise, which a
-// 404 would make rules the daemon could not read, and act on at once (record.ConflictRulesUnread).
-// Then the control's pull request, which GitHub answers conflicting with that base from the start,
-// and its reviews, as none.
+// also): the base's rules for a conflicting head (conflictBaseRules), then the control's pull
+// request, which GitHub answers conflicting with that base from the start, and its reviews, as
+// none.
 func (r *conflictNoTakeoverLive) conflictGitHub() map[string]any {
-	return map[string]any{
-		"/rules/branches/" + conflictBase: []map[string]any{
-			{"type": "pull_request"},
-			{"type": "required_status_checks", "parameters": map[string]any{
-				"required_status_checks": []map[string]string{{"context": conflictRequiredCheck}},
-			}},
-		},
-		"/branches/" + conflictBase: map[string]any{"name": conflictBase, "protected": false},
-		fmt.Sprintf("/pulls/%d", r.controlNumber): map[string]any{
-			"number": r.controlNumber, "state": "open", "mergeable": false,
-			"base": map[string]string{"ref": conflictBase},
-			"head": map[string]string{"ref": claim.IssueBranch(r.control), "sha": conflictControlHead},
-		},
-		fmt.Sprintf("/pulls/%d/reviews", r.controlNumber): []any{},
+	also := conflictBaseRules()
+	also[fmt.Sprintf("/pulls/%d", r.controlNumber)] = map[string]any{
+		"number": r.controlNumber, "state": "open", "mergeable": false,
+		"base": map[string]string{"ref": conflictBase},
+		"head": map[string]string{"ref": claim.IssueBranch(r.control), "sha": conflictControlHead},
 	}
+	also[fmt.Sprintf("/pulls/%d/reviews", r.controlNumber)] = []any{}
+	return also
 }

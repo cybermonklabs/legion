@@ -3,16 +3,25 @@
 // anywhere in the plan, whether any scan in it reads a relation without an index condition,
 // which index each index scan reads through, under which condition, which relations the plan
 // reads at all, how often each and under which subplan (Scans), every node with the conditions
-// it tests and what an analyzed plan measured of it (Nodes), and each bitmap heap scan with the
-// bitmap it reads its rows through (BitmapHeapScans). It also answers, from the catalog, the
-// first key column of a named index and whether a scan's condition names it, which is what
-// tells a read served by an index from one that reads the whole index and filters it, and it
-// holds a whole plan to that (RequireIndexKeyed) and builds the generic plan a prepared
-// statement settles on (GenericPlan), which is the plan an index is lost in.
-// dispatch/api, dispatch/refs and cipher/requests each pin an index's reach with these checks,
-// so they live here once rather than as a second (or third) hand copy of the same recursive
-// walk; it is an ordinary package rather than a _test.go file because Go cannot share test-only
-// code across packages (see internal/stacktest's identical reasoning).
+// it tests, what an analyzed plan measured of it, the rows its Filter and a join's Join Filter
+// removed each time it ran among them, and the shared buffers it hit and read (Nodes), and each
+// bitmap heap scan with the bitmap it reads its rows through (BitmapHeapScans). It also answers,
+// from the catalog, the first key column of a named index and whether a scan's condition names
+// it, which is what tells a read served by an index from one that reads the whole index and
+// filters it, and it holds a whole plan to that (RequireIndexKeyed) and builds the generic plan a
+// prepared statement settles on, which is the plan an index is lost in, explained (GenericPlan)
+// or run and measured (AnalyzedGenericPlan), and runs a statement with sequential scans off and
+// measures the plan it read its rows by (AnalyzedPlan). For a statement over a batch of rows
+// (batch.go) it runs the statement a writer sent, after the statements it sent first, under each
+// plan-cache mode (ExplainAfter), and holds the analyzed plan to reading the batch once and each
+// named table by a probe of one row's key (UnprobedReads, RequireEachRowProbedOnce), with a
+// control that must fail it (RequireTheCheckFails), and it runs any statement under a plan-cache
+// mode with the planner's own settings and explains it with the shared buffers each node hit and
+// read (ExplainBuffered).
+// dispatch/api, dispatch/refs, dispatch/graphstore and cipher/requests each pin a plan with these
+// checks, so they live here once rather than as a second (or third) hand copy of the same
+// recursive walk; it is an ordinary package rather than a _test.go file because Go cannot share
+// test-only code across packages (see internal/stacktest's identical reasoning).
 package explaintest
 
 import (
@@ -34,24 +43,37 @@ var indexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Index Sca
 // planNode is what the checks below read of one "Plan" node of `EXPLAIN (FORMAT JSON)`: its
 // type, the relation and index it names, the index condition it carries - nil when it carries
 // none, which is not the same as an empty one - the condition it tests every row it reads by
-// (Filter) and the one a bitmap heap scan rechecks a row by, the name of the subplan it begins
-// and its place under its own parent, what an analyzed plan measured of it (its loops and the
-// rows each answered, and the rows an index-only scan fetched from the heap, all 0 in a plan
-// explained without ANALYZE), the CTE it scans, and its children.
+// (Filter) and the one a bitmap heap scan rechecks a row by, a join's type, the condition a hash
+// or a merge join matches its two sides by (Hash Cond, Merge Cond) and the one a join tests each
+// pair it joins by (Join Filter), the name of the subplan it begins and its place under its own
+// parent, what an analyzed plan measured of it (its loops and the rows each answered, the rows an
+// index-only scan fetched from the heap, and the rows its Filter and a join's Join Filter removed
+// each time it ran, all 0 in a plan explained without ANALYZE), the shared buffers it and the
+// nodes under it hit and read (0 in a plan explained without BUFFERS), the CTE it scans, the alias
+// the statement gives the relation it reads, and its children.
 type planNode struct {
-	NodeType           string            `json:"Node Type"`
-	RelationName       string            `json:"Relation Name"`
-	IndexName          string            `json:"Index Name"`
-	IndexCond          *string           `json:"Index Cond"`
-	Filter             string            `json:"Filter"`
-	RecheckCond        string            `json:"Recheck Cond"`
-	SubplanName        string            `json:"Subplan Name"`
-	ParentRelationship string            `json:"Parent Relationship"`
-	ActualLoops        float64           `json:"Actual Loops"`
-	ActualRows         float64           `json:"Actual Rows"`
-	HeapFetches        float64           `json:"Heap Fetches"`
-	CTEName            string            `json:"CTE Name"`
-	Plans              []json.RawMessage `json:"Plans"`
+	NodeType                string            `json:"Node Type"`
+	RelationName            string            `json:"Relation Name"`
+	IndexName               string            `json:"Index Name"`
+	IndexCond               *string           `json:"Index Cond"`
+	Filter                  string            `json:"Filter"`
+	RecheckCond             string            `json:"Recheck Cond"`
+	JoinType                string            `json:"Join Type"`
+	HashCond                string            `json:"Hash Cond"`
+	MergeCond               string            `json:"Merge Cond"`
+	JoinFilter              string            `json:"Join Filter"`
+	SubplanName             string            `json:"Subplan Name"`
+	ParentRelationship      string            `json:"Parent Relationship"`
+	ActualLoops             float64           `json:"Actual Loops"`
+	ActualRows              float64           `json:"Actual Rows"`
+	HeapFetches             float64           `json:"Heap Fetches"`
+	RowsRemovedByFilter     float64           `json:"Rows Removed by Filter"`
+	RowsRemovedByJoinFilter float64           `json:"Rows Removed by Join Filter"`
+	SharedHitBlocks         float64           `json:"Shared Hit Blocks"`
+	SharedReadBlocks        float64           `json:"Shared Read Blocks"`
+	CTEName                 string            `json:"CTE Name"`
+	Alias                   string            `json:"Alias"`
+	Plans                   []json.RawMessage `json:"Plans"`
 
 	// subplan is the subplan this node runs under, which the walk carries down from the node
 	// that began it (nodesUnder), and so is no field of the plan's own JSON.
@@ -65,10 +87,13 @@ type planNode struct {
 func (n planNode) asNode() Node {
 	found := Node{
 		Type: n.NodeType, Relation: n.RelationName, Index: n.IndexName,
-		CTE: n.CTEName, Subplan: n.subplan,
+		CTE: n.CTEName, Alias: n.Alias, Subplan: n.subplan,
 		Loops: n.ActualLoops, Rows: n.ActualRows,
 		Filter: n.Filter, RecheckCond: n.RecheckCond,
-		HeapFetches: n.HeapFetches,
+		JoinType: n.JoinType, HashCond: n.HashCond, MergeCond: n.MergeCond, JoinFilter: n.JoinFilter,
+		HeapFetches:         n.HeapFetches,
+		RowsRemovedByFilter: n.RowsRemovedByFilter, RowsRemovedByJoinFilter: n.RowsRemovedByJoinFilter,
+		SharedHitBlocks: n.SharedHitBlocks, SharedReadBlocks: n.SharedReadBlocks,
 	}
 	if n.IndexCond != nil {
 		found.IndexCond = *n.IndexCond
@@ -236,16 +261,29 @@ func Scans(t testing.TB, planJSON json.RawMessage) []Scan {
 //
 // Filter is the condition the node tests every row it reads by, IndexCond the one an index scan
 // reads its index by, and RecheckCond the one a bitmap heap scan tests a row by where its bitmap
-// cannot vouch for the row (a page the bitmap holds lossily, or an index that answers lossily);
-// each is the plan's own text, empty when the node carries none. Loops is how many times the
-// node ran and Rows how many rows it answered each time; HeapFetches is how many rows an
-// index-only scan fetched from the heap, since the visibility map did not mark their pages
-// all-visible.
+// cannot vouch for the row (a page the bitmap holds lossily, or an index that answers lossily).
+// JoinType is a join's type (Inner, Left, Semi, Anti and so on), HashCond and MergeCond the
+// condition a hash join and a merge join match their two sides by, and JoinFilter the one a join
+// tests each pair it joins by. Each is the plan's own text, empty when the node carries none.
+// Loops is how many times the node ran and Rows how many rows it answered each time; HeapFetches
+// is how many rows an index-only scan fetched from the heap, since the visibility map did not mark
+// their pages all-visible. RowsRemovedByFilter is how many rows the node's Filter removed each
+// time it ran, and RowsRemovedByJoinFilter how many rows a join's Join Filter removed each time it
+// ran: each is the per-loop figure `EXPLAIN (ANALYZE)` prints ("Rows Removed by Filter", "Rows
+// Removed by Join Filter"), the rows removed over every loop divided by Loops and rounded to a
+// whole number, and 0 where the node prints none, as a node carrying no such filter does. Alias is
+// the name the statement gives the relation the node reads, which a condition of another node
+// spells that relation's columns with. SharedHitBlocks and SharedReadBlocks are the shared buffers
+// the node and the nodes under it hit in the cache and read into it, which a plan explained with
+// the BUFFERS option carries, and 0 in a plan explained without it.
 type Node struct {
-	Type, Relation, Index, CTE, Subplan string
-	Loops, Rows                         float64
-	Filter, IndexCond, RecheckCond      string
-	HeapFetches                         float64
+	Type, Relation, Index, CTE, Alias, Subplan   string
+	Loops, Rows                                  float64
+	Filter, IndexCond, RecheckCond               string
+	JoinType, HashCond, MergeCond, JoinFilter    string
+	HeapFetches                                  float64
+	RowsRemovedByFilter, RowsRemovedByJoinFilter float64
+	SharedHitBlocks, SharedReadBlocks            float64
 }
 
 // String names the node as a failure message cites it: its type, and whichever of the relation,
@@ -483,6 +521,41 @@ func GenericPlan(
 	settings ...string,
 ) json.RawMessage {
 	t.Helper()
+	return explainGenericPlan(t, ctx, connection, "format json", true, name, statement, parameters, literals, settings)
+}
+
+// AnalyzedGenericPlan is GenericPlan's plan run and measured: the prepared statement is explained
+// with ANALYZE and BUFFERS, so each node carries the loops and rows it ran and the shared buffers
+// it hit and read (Nodes). ANALYZE executes the statement, so the transaction it runs in is
+// rolled back rather than committed, and nothing the statement wrote is left behind. A prepared
+// statement belongs to the session rather than to the transaction, so the rollback keeps it, and
+// it is deallocated by name on connection after it, as GenericPlan's is.
+func AnalyzedGenericPlan(
+	t testing.TB,
+	ctx context.Context,
+	connection *pgxpool.Conn,
+	name, statement string,
+	parameters, literals []string,
+	settings ...string,
+) json.RawMessage {
+	t.Helper()
+	return explainGenericPlan(t, ctx, connection, "analyze, buffers, format json", false, name, statement, parameters, literals, settings)
+}
+
+// explainGenericPlan is the body GenericPlan and AnalyzedGenericPlan share: it prepares statement
+// under name, explains its EXECUTE with options under settings and plan_cache_mode
+// force_generic_plan, commits the transaction it does that in where commit is set and rolls it
+// back where it is not, deallocates the statement, and answers the plan.
+func explainGenericPlan(
+	t testing.TB,
+	ctx context.Context,
+	connection *pgxpool.Conn,
+	options string,
+	commit bool,
+	name, statement string,
+	parameters, literals, settings []string,
+) json.RawMessage {
+	t.Helper()
 	tx, err := connection.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin %s's transaction: %v", name, err)
@@ -497,14 +570,43 @@ func GenericPlan(
 		t.Fatalf("prepare %s: %v", name, err)
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (format json) execute "+name+"("+strings.Join(literals, ", ")+")").Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, "explain ("+options+") execute "+name+"("+strings.Join(literals, ", ")+")").Scan(&raw); err != nil {
 		t.Fatalf("explain %s: %v", name, err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit %s's transaction: %v", name, err)
+	if commit {
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit %s's transaction: %v", name, err)
+		}
+	} else if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("roll back %s's transaction: %v", name, err)
 	}
 	if _, err := connection.Exec(ctx, "deallocate "+name); err != nil {
 		t.Fatalf("deallocate %s: %v", name, err)
 	}
 	return OnePlan(t, raw)
+}
+
+// AnalyzedPlan runs statement under `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` with sequential
+// scans off, in a transaction of its own that is rolled back, and answers its one plan node for
+// the checks above and the plan's text, which a failure prints. A test's fixtures hold a handful
+// of rows, which is read fastest whole however a statement is written, so without that setting
+// the planner answers a sequential scan whatever indexes exist and the plan says nothing about the
+// statement; with it, a read that no index serves still shows up, as a sequential scan or a scan
+// carrying no index condition. ANALYZE runs the statement, so the plan is the one that read the
+// rows, with the buffers it touched; the rollback keeps a write it makes out of the database.
+func AnalyzedPlan(t testing.TB, ctx context.Context, pool Beginner, statement string, arguments ...any) (json.RawMessage, string) {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the plan's transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "set local enable_seqscan = off"); err != nil {
+		t.Fatalf("disable sequential scans: %v", err)
+	}
+	var raw []byte
+	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement, arguments...).Scan(&raw); err != nil {
+		t.Fatalf("explain the statement: %v", err)
+	}
+	return OnePlan(t, raw), string(raw)
 }

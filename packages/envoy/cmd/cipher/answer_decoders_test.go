@@ -29,6 +29,7 @@ import (
 // the echoed password among them where the type has a time field, so the check sees what a
 // decoder prints.
 func TestTheAnswerDecodersPrintTheAnswerOnlyAsTheAddressLetsItPrint(t *testing.T) {
+	t.Parallel()
 	// Built from parts, so no line of this file reads as a credential.
 	password := "hunter2pw-" + "decoders-5e1b"
 	echo := `"` + password + `"`
@@ -55,7 +56,7 @@ func TestTheAnswerDecodersPrintTheAnswerOnlyAsTheAddressLetsItPrint(t *testing.T
 			return err
 		}},
 		{"decode grant values", `{"values":{},"expires_at":` + echo + `}`, func(c *client) error {
-			_, err := c.GrantValues(ctx, signer, "grant-1", nil, releaseCall{})
+			_, err := c.GrantValues(ctx, signer, "grant-1", releaseCall{})
 			return err
 		}},
 		{"decode self", `{"enrollment_id":"enr-test","lease_expires_at":` + echo + `}`, func(c *client) error {

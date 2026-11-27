@@ -9,12 +9,13 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 )
 
 func executable(t *testing.T, dir, name string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := execfile.Write(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -25,20 +26,20 @@ func executable(t *testing.T, dir, name string) string {
 func binary(t *testing.T, dir, name string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("\x7fELF\x02\x01\x01\x00"), 0o755); err != nil {
+	if err := execfile.Write(path, []byte("\x7fELF\x02\x01\x01\x00"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
 }
 
 // currentJJ is what the worker image's jj prints for `jj --version`.
-const currentJJ = "jj 0.45.1-sami.20260910-043938-bb5ffc8f23b1e2a9dac6fdf05b0540058a3a21d0"
+const currentJJ = "jj 0.46.0-sami.20261120-120102-996da512bf688570cc3eaf9c3252819b13818a8b"
 
 // fakeJJ is an executable jj in dir whose `jj --version` prints version.
 func fakeJJ(t *testing.T, dir, version string) string {
 	t.Helper()
 	path := filepath.Join(dir, "jj")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '%s\\n' '"+version+"'\n"), 0o755); err != nil {
+	if err := execfile.Write(path, []byte("#!/bin/sh\nprintf '%s\\n' '"+version+"'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -48,6 +49,7 @@ func fakeJJ(t *testing.T, dir, version string) string {
 // `legion gh` runs — once, each by its LEGION_<TOOL>_PATH override or on the daemon's PATH, and
 // names every missing one with its override.
 func TestResolveToolsPrefersTheOverrideAndNamesEveryMissingTool(t *testing.T) {
+	t.Parallel()
 	onPath, elsewhere := t.TempDir(), t.TempDir()
 	executable(t, onPath, "git")
 	pinned := executable(t, elsewhere, "git")
@@ -79,6 +81,7 @@ func TestResolveToolsPrefersTheOverrideAndNamesEveryMissingTool(t *testing.T) {
 // built claude-envoy plugin: boot names every gap in one refusal, and takes each tool's override
 // before PATH.
 func TestResolveClaudeNamesEveryGap(t *testing.T) {
+	t.Parallel()
 	onPath, plugin := t.TempDir(), t.TempDir()
 	env := map[string]string{"PATH": onPath}
 	lookup := func(name string) (string, bool) { v, ok := env[name]; return v, ok }
@@ -130,12 +133,13 @@ func TestResolveClaudeNamesEveryGap(t *testing.T) {
 // LEGION_GH_PATH, rather than taking the compiled gh behind it. LEGION_GH_PATH is the operator's
 // own word, so a script it names is taken.
 func TestResolveToolsRefusesAScriptAsTheRealGh(t *testing.T) {
+	t.Parallel()
 	shims, bin := t.TempDir(), t.TempDir()
 	binary(t, bin, "git")
 	fakeJJ(t, bin, currentJJ)
 	real := binary(t, bin, "gh")
 	shim := filepath.Join(shims, "gh")
-	if err := os.WriteFile(shim, []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o755); err != nil {
+	if err := execfile.Write(shim, []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	env := map[string]string{"PATH": shims + ":" + bin}
@@ -160,6 +164,7 @@ func TestResolveToolsRefusesAScriptAsTheRealGh(t *testing.T) {
 // the jj came from the override or from PATH; 0.38 itself and later releases, a build's suffix
 // included, pass.
 func TestResolveToolsRefusesAJJOlderThanTheLayoutProvisioningReliesOn(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, version string
 		override      bool
@@ -207,6 +212,7 @@ func TestResolveToolsRefusesAJJOlderThanTheLayoutProvisioningReliesOn(t *testing
 // The jj --version boot runs starts without either raw NATS seed the daemon holds, as every
 // command the daemon starts does (runtime.WithoutNATSSeeds).
 func TestTheJJVersionCheckGetsNoNATSSeed(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	// Unique values, so that only a variable a seed reached can hold one (envlisting).
 	paneSeed, daemonSeed := envlisting.Unique("pane-seed-"), envlisting.Unique("daemon-seed-")
 	t.Setenv("NATS_NKEY_SEED", paneSeed)
@@ -214,7 +220,7 @@ func TestTheJJVersionCheckGetsNoNATSSeed(t *testing.T) {
 	dir := t.TempDir()
 	dump := filepath.Join(dir, "env")
 	jj := filepath.Join(dir, "jj")
-	if err := os.WriteFile(jj, []byte("#!/bin/sh\nenv >"+dump+"\necho '"+currentJJ+"'\n"), 0o755); err != nil {
+	if err := execfile.Write(jj, []byte("#!/bin/sh\nenv >"+dump+"\necho '"+currentJJ+"'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := checkJJVersion(jj); err != nil {

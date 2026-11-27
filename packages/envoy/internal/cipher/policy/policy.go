@@ -28,17 +28,23 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // The tags a namespace secret carries, and their fixed values.
 const (
-	// TagOwner names who owns the secret: OwnerShared, a person's lowercase email, or a registered
-	// service's name.
+	// TagOwner names who owns the secret: OwnerShared, a person's lowercase email, a Google group
+	// as group:<its lowercase email> (ValidGroupOwner), whose members each decide as the one owner
+	// does, or a registered service's name.
 	TagOwner = "owner"
 	// TagTier is TierAgent or TierHuman.
 	TagTier = "tier"
@@ -48,6 +54,18 @@ const (
 	// TypeGitHubApp mints one installation token for every installation of the stored GitHub App
 	// on an account its TagGitHubOwners lists.
 	TypeGitHubApp = "github-app"
+	// TypeGitHubInstallations hands over installation tokens a minter outside the broker minted
+	// ahead of any request, from an App key the broker never holds, and stores as one value:
+	// {"installations": {"<account login>": {"installation_id", "token", "expires_at",
+	// "permissions", "repository_selection" and, for a token narrowed to repositories,
+	// "repositories"}}} (secrets.ParseValue). It is served as a github-app secret is, only through
+	// profiles on the accounts its TagGitHubOwners lists, and released in the github-app release's
+	// form; the broker mints nothing for it, and a token cannot be cut once it is minted, so a
+	// release serves a profile only the token whose permissions are within the profile's and whose
+	// repositories are the profile's exactly (none, for a token the seed minter marked
+	// "all-except-protected"), and a target of it names no repository
+	// (secrets.GitHubInstallations).
+	TypeGitHubInstallations = "github-installations"
 	// TypeGoogleLogin exchanges the stored authorized-user refresh token for an access token.
 	TypeGoogleLogin = "google-login"
 	// TypeAzureLogin releases the broker's projected token with the stored Entra identity ids.
@@ -61,6 +79,16 @@ const (
 	// secret to one account email, and a mint for any other account is refused, so a value
 	// rewritten to name another account releases no token.
 	TypeGoogleServiceAccount = "google-service-account"
+	// TypeAnthropicFederation mints an Anthropic organization's token by Workload Identity
+	// Federation: the Google identity token of the one service account the stored value names,
+	// {"organization_id", "federation_rule_id", "service_account_id", "service_account" and,
+	// for a rule enabled for more than one workspace, "workspace_id"}, traded at Anthropic's token
+	// exchange for the token the federation rule grants. The deployment's
+	// BROKER_SERVICE_ACCOUNT_SECRETS binds each such secret to one account, as it binds a
+	// google-service-account secret. The token can be an organization administrator's, so the
+	// type is human tier only, its grants an hour at most, and its requesters held as
+	// google-service-account's are (TagRules).
+	TypeAnthropicFederation = "anthropic-federation"
 	// TagMaxGrant bounds a request's signed grant lifetime for this secret (ParseMaxGrant).
 	TagMaxGrant = "max-grant"
 	// TagDefaultGrant, set to DefaultGrantSession, keeps a request that names no lifetime for this
@@ -68,16 +96,18 @@ const (
 	TagDefaultGrant = "default-grant"
 	// DefaultGrantSession is the one value TagDefaultGrant takes.
 	DefaultGrantSession = "session"
-	// TagGitHubOwners lists the GitHub accounts a github-app secret mints installation tokens for
-	// (ParseGitHubOwners). A github-app secret without it is refused, since a public App can be
-	// installed by any account, and an installation on an account it does not list gets no token.
+	// TagGitHubOwners lists the GitHub accounts a github-app secret mints installation tokens for,
+	// or a github-installations secret hands stored ones over for (ParseGitHubOwners). Such a
+	// secret without it is refused, since a public App can be installed by any account, and an
+	// installation on an account it does not list gets no token.
 	TagGitHubOwners = "github-owners"
-	// TagRequesters lists who may ask for the secret at all: people by lowercase email and
-	// registered services by name, separated by white space (ParseRequesters). A session or pod
-	// the list does not name is denied before owner and tier are read (ReasonRequesterNotListed),
-	// so the tag narrows who may ask and never widens it. It bounds no grant by itself: the
-	// hour-long cap is the business of TagAdmin and of the google-service-account type, each of
-	// which demands one (TagRules).
+	// TagRequesters lists who may ask for the secret at all: people by lowercase email, Google
+	// groups as group:<lowercase email>, whose members' sessions it admits, and registered
+	// services by name, separated by white space (ParseRequesters). A session or pod the list
+	// does not name is denied before owner and tier are read (ReasonRequesterNotListed), so the
+	// tag narrows who may ask and never widens it. It bounds no grant by itself: the hour-long cap
+	// is the business of TagAdmin and of the google-service-account and anthropic-federation
+	// types, each of which demands one (TagRules).
 	TagRequesters = "requesters"
 	// TagScopes lists the OAuth scope names of the token a google-service-account secret mints,
 	// separated by white space, each the part of a Google scope that follows
@@ -86,7 +116,11 @@ const (
 	// what every such secret minted before the tag existed. The names are short because the
 	// broker's AWS store keeps its annotations as AWS tags, an AWS tag value holds at most 256
 	// characters, and five full scope URLs are longer than that. The tag on a secret of any
-	// other type is refused (ReasonScopesType), since no other minter reads it.
+	// other type is refused (ReasonScopesType), since no other minter reads it. It is in the
+	// fingerprint of every name that mints at it (Secret.ProfileDigest): the secret by its own name
+	// and each profile of it with no google block of its own; so a change of it, the tag added or
+	// taken off among them, ends each grant decided under the old one, which would otherwise mint at
+	// the new scopes at its next release.
 	TagScopes = "scopes"
 	// TagAdmin marks a secret whose grant is an administrator's: "true" is the only value the
 	// loader accepts, and anything else is refused (ReasonAdminMalformed). The broker cannot tell
@@ -100,6 +134,64 @@ const (
 	// loader refuses every other value (ReasonAdminMalformed), and `agent-secrets` holds --admin
 	// to it before it writes, so the two cannot drift on what the tag says.
 	AdminTrue = "true"
+	// TagJudge makes a key one the model judge decides: whole seconds from 1 to MaxJudgeSeconds
+	// (ParseJudge), the longest grant of it the judge makes, and the lifetime a request for it
+	// that names none gets. Any other value refuses the key (ReasonJudgeOutOfRange). A key with
+	// the tag and an admin tag is no judge key: a person approves every release of an
+	// administrator's credential (Secret.PersonApprovesEveryRelease). A key without it is never
+	// the judge's.
+	TagJudge = "judge"
+	// TagGuidance is the key owner's instruction to the model judge: when to grant a request for
+	// the key. The judge shows it to its model whole, so a value longer than MaxGuidanceRunes
+	// refuses the key (ReasonGuidanceTooLong). It decides nothing a live grant may do, so it is
+	// in no policy version.
+	TagGuidance = "guidance"
+	// TagProject names the one Dispatch project the secret belongs to, by its key as written
+	// (ParseProject): a secret of a private project goes only to a credential that names that
+	// project (Evaluate, ReasonProjectNotNamed), and one whose tag names a project Dispatch does
+	// not hold goes to nobody (ReasonProjectMissing). A secret with no tag belongs to no project
+	// and is decided by owner and tier alone, as before the tag existed. It is not "project",
+	// which AWS accounts commonly use as a cost-allocation tag and which the loader would then
+	// refuse as malformed. Only a broker that can ask Dispatch whether a project is private
+	// serves a tagged secret (Loader.ProjectChecks, ReasonProjectUnchecked).
+	TagProject = "dispatch-project"
+	// TagProjectChannels marks a secret whose use a private project's owner limits to the places
+	// they named. Its one value is ProjectChannelsSlack: the Legion Slack bot token, which a
+	// credential of a private project may spend only on a post to a channel that project's owner
+	// named in Dispatch (proxy's slackPostAllowed). The limit holds for a credential that
+	// names a private project, whatever project the secret itself belongs to, so the tag is read
+	// beside TagProject and never instead of it. A secret with no tag is unchanged.
+	TagProjectChannels = "project-channels"
+	// ProjectChannelsSlack is TagProjectChannels' one value. Any other is
+	// ReasonProjectChannelsMalformed: a value the broker cannot read names no limit it could
+	// apply, and such a secret goes to nobody rather than out unlimited.
+	ProjectChannelsSlack = "slack"
+	// TagSupersededBy names the profile source that replaces a stored secret under the stored
+	// secret's own name: a profile of that name whose source is exactly this value is served by the
+	// name, and the stored secret is not (supersededBy), whether the policy serves the stored
+	// secret, refuses it or holds it waiting for its value, so retiring the old secret's value
+	// leaves the profile served. Any other value, and a stored secret with no such tag, leaves a
+	// profile of its name refused profile-name-taken. A broker before this tag reads no such tag and
+	// refuses that profile as before, so a deployment can add the tag first.
+	TagSupersededBy = "superseded-by"
+	// TagProxy names the kind of the profiles file's kinds (Profiles.Kinds) a secret is served
+	// behind: a secret that carries it is behind Cipher's proxy, which puts its credential into
+	// each call to its kind's hosts, and its credential is never released to a command. A tag
+	// naming no kind of the file refuses the secret (ReasonProxyKindUnknown), and so does a kind
+	// whose ways do not hold the way the secret's type takes (WayOf, ReasonProxyWay), or whose
+	// max_grant the secret's max-grant tag is absent under or above (ReasonProxyMaxGrant). It is in
+	// the secret's fingerprint (Secret.ProfileDigest), so retagging it ends the grants of its names.
+	TagProxy = "proxy"
+	// TagProxyNarrowed, set to ProxyNarrowedTrue, marks a secret whose one profile's allow narrows
+	// it at the proxy (Profile.Allow): the policy serves it through exactly one profile, and that
+	// profile has an allow, and refuses it, and every profile naming it, otherwise
+	// (ReasonProxyNarrowedProfiles). A profile with an allow is served only from a source carrying
+	// it (ReasonProfileAllowNotNarrowed), so no narrowing is in force that the store does not also
+	// hold, and taking it off takes a change of the file and a change of the tag. Any other value
+	// refuses the secret (ReasonProxyNarrowedMalformed).
+	TagProxyNarrowed = "proxy-narrowed"
+	// ProxyNarrowedTrue is TagProxyNarrowed's one value, as AdminTrue is TagAdmin's.
+	ProxyNarrowedTrue = "true"
 	// typeSourcePrefix opens the Source of a type secret (TypeSource). The type and store source
 	// are frozen into a request, so changing or clearing the type ends every live grant.
 	typeSourcePrefix = "mint:"
@@ -121,6 +213,30 @@ const (
 	// type tag (the settings' secret_type_tag).
 	TagRollbackGuard   = "mint-service-account"
 	RollbackGuardValue = "type-secret"
+	// RequestersRollbackGuard is the entry `agent-secrets secret` writes into a secret's
+	// requesters tag beside a dispatch-project or a project-channels tag (WithGuards), and takes
+	// out once the secret carries neither. This broker takes it out before it reads the list
+	// (SplitGuards), so it means nothing here: a requesters tag holding it alone is no
+	// list, and a list beside it reads as it would without it. Brokers before the project tags
+	// read every requesters entry as a person's email or a registered service, and no service
+	// name holds a colon (record.ValidService, which BROKER_SERVICES is held to), so they refuse
+	// the secret (requesters-malformed) rather than serve it by owner and tier to every session,
+	// which is what they do with a project tag they cannot read. A project tag written without
+	// it, by a console or an infra-applier, leaves that rollback open: never run a broker from
+	// before the project tags against a store holding one.
+	RequestersRollbackGuard = "rollback-guard:project-tags"
+	// KindsRollbackGuard is the entry `agent-secrets secret` writes into a secret's requesters
+	// tag beside a proxy or a proxy-narrowed tag (TagProxy, TagProxyNarrowed), after the project
+	// tags' guard where both are written (WithGuards), and takes out once the secret carries
+	// neither, as RequestersRollbackGuard is beside the project tags. This broker takes it out
+	// before it reads the list (SplitGuards), so it means nothing here.
+	// Brokers before the kinds read neither proxy tag, and would serve a secret behind the proxy
+	// by its tag alone as its value, to a command; they read the guard as a requester, which is
+	// no person's email and no registered service (it holds a colon, which record.ValidService
+	// refuses), so they refuse the secret (requesters-malformed) instead. A proxy tag written
+	// without it, by a console or an infra-applier, leaves that rollback open, and `agent-secrets
+	// secret list --json` shows such a secret.
+	KindsRollbackGuard = "rollback-guard:kinds"
 	// OwnerShared is the owner value of a secret nobody owns alone.
 	OwnerShared = "shared"
 	// TierAgent is a secret its owner's agents use without asking.
@@ -137,7 +253,7 @@ const (
 )
 
 // Types is every value a secret's type tag may name. The broker holds a minter for each.
-var Types = []string{TypeGitHubApp, TypeGoogleLogin, TypeAzureLogin, TypeGoogleServiceAccount}
+var Types = []string{TypeGitHubApp, TypeGitHubInstallations, TypeGoogleLogin, TypeAzureLogin, TypeGoogleServiceAccount, TypeAnthropicFederation}
 
 // ValidType reports whether type is one of Types.
 func ValidType(secretType string) bool {
@@ -189,6 +305,67 @@ func ParseMaxGrant(raw string) (time.Duration, error) {
 	return maxGrant, nil
 }
 
+// MaxJudgeSeconds is the longest grant the model judge makes of any key, and the most a judge tag
+// may name (ParseJudge): 15 minutes, the class's bound.
+const MaxJudgeSeconds = 900
+
+// MaxGuidanceRunes is the longest guidance tag a key may carry (TagRules,
+// ReasonGuidanceTooLong). The judge shows the whole text to its model beside the request's reason
+// and what Dispatch holds of it, all within one bounded prompt, so a text past this would be cut
+// rather than read; the key is refused instead, and `agent-secrets secret` refuses the write.
+const MaxGuidanceRunes = 2000
+
+// ErrJudgeOutOfRange is a judge tag that is not a whole number of seconds from 1 to
+// MaxJudgeSeconds.
+var ErrJudgeOutOfRange = fmt.Errorf("judge is a whole number of seconds from 1 to %d", MaxJudgeSeconds)
+
+// ParseJudge reads a judge tag: decimal digits alone, no sign, unit or white space, naming whole
+// seconds from 1 to MaxJudgeSeconds, so 0 is free to mean that a key has no judge. Every other
+// value is ErrJudgeOutOfRange, which the loader answers as ReasonJudgeOutOfRange.
+func ParseJudge(raw string) (uint32, error) {
+	seconds, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil || seconds < 1 || seconds > MaxJudgeSeconds {
+		return 0, ErrJudgeOutOfRange
+	}
+	return uint32(seconds), nil
+}
+
+// ErrProjectMalformed is a dispatch-project tag that is not one Dispatch project key.
+var ErrProjectMalformed = errors.New("dispatch-project names one Dispatch project key: " + contracts.ProjectKeyRule)
+
+// projectKey is a whole Dispatch project key (contracts.ProjectKeyPattern), the one pattern the
+// server creates keys by and the dispatch command checks them against.
+var projectKey = regexp.MustCompile(contracts.ProjectKeyPattern)
+
+// ParseProject reads a dispatch-project tag (TagProject): one Dispatch project key, matched as
+// written. A key in another case, one with white space around it, an empty tag and the word
+// none are each ErrProjectMalformed rather than read as a key or as no project: a project key
+// is upper case, and a tag that names no project is one the secret does not carry, which
+// `agent-secrets secret retag --project none` removes rather than writes.
+func ParseProject(raw string) (string, error) {
+	if !projectKey.MatchString(raw) {
+		return "", ErrProjectMalformed
+	}
+	return raw, nil
+}
+
+// ProjectState is what Dispatch holds of one project, as the broker resolved it before it
+// evaluates (Requester.ProjectStates). It is plain data, so Evaluate does no I/O and is safe to
+// call while a transaction holds a lock.
+type ProjectState int
+
+const (
+	// ProjectStateUnknown is the zero value: no state was resolved, and Evaluate answers
+	// ErrNoProjectState for a secret tagged with that project rather than guess.
+	ProjectStateUnknown ProjectState = iota
+	// ProjectPublic is a project every person and credential may see.
+	ProjectPublic
+	// ProjectPrivate is a project only its own people may see.
+	ProjectPrivate
+	// ProjectMissing is a key Dispatch holds no project for.
+	ProjectMissing
+)
+
 // ErrGitHubOwnersMissing is a github-owners tag that names no account.
 var ErrGitHubOwnersMissing = errors.New("github-owners names at least one GitHub account")
 
@@ -202,24 +379,13 @@ var ErrGitHubOwnersComma = errors.New(`github-owners separates GitHub logins wit
 // underscores, is longer than 39 characters, or is the word none.
 var ErrGitHubOwnersLogin = errors.New("github-owners names GitHub logins: up to 39 ASCII letters, digits, hyphens and underscores, starting with a letter or digit")
 
-// gitHubLogin is what a GitHub login can be: an ASCII letter or digit, then ASCII letters, digits,
-// hyphens and underscores. It is matched against the entry as written, before it is lowercased,
-// since Unicode lowercasing maps some non-ASCII letters onto ASCII ones (U+212A KELVIN SIGN to `k`,
-// U+0130 to `i` with a combining dot). GitHub's sign-up rule today also refuses an underscore and
-// a trailing or doubled hyphen, but accounts made under its older rules keep their hyphens (`x-`
-// is an organization from 2011), and a managed user's login ends in `_<shortcode>`
-// (`mona-cat_octo`), so this refuses only what no login can hold. A login is at most 39
-// characters (maxGitHubLogin), which the pattern does not check.
-var gitHubLogin = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
-
-const maxGitHubLogin = 39
-
 // ParseGitHubLogin reads one GitHub account login, as written: up to 39 ASCII letters, digits,
-// hyphens and underscores, starting with a letter or digit, and not the word none
-// (ErrGitHubOwnersLogin). It answers it lowercased, since GitHub compares logins without regard to
-// case. White space is no part of a login, so "ada ada" is refused rather than read as one.
+// hyphens and underscores, starting with a letter or digit (githubname.ValidLogin), and not the
+// word none (ErrGitHubOwnersLogin). It answers it lowercased, since GitHub compares logins without
+// regard to case. White space is no part of a login, so "ada ada" is refused rather than read as
+// one.
 func ParseGitHubLogin(raw string) (string, error) {
-	if len(raw) > maxGitHubLogin || !gitHubLogin.MatchString(raw) {
+	if !githubname.ValidLogin(raw) {
 		return "", fmt.Errorf("%w, not %q", ErrGitHubOwnersLogin, raw)
 	}
 	login := strings.ToLower(raw)
@@ -318,106 +484,6 @@ func ParseScopes(raw string) (string, error) {
 	return strings.Join(scopes, " "), nil
 }
 
-// ErrRequestersMissing is a requesters tag that names nobody: a tag that let no one ask would
-// serve the secret to no session at all, which is a mistake rather than a policy.
-var ErrRequestersMissing = errors.New("requesters names at least one person or service")
-
-// ErrRequestersComma is a requesters tag that holds a comma: its entries are separated by spaces,
-// as github-owners' and BROKER_SERVICES' are, since an AWS tag value takes a space and no comma.
-var ErrRequestersComma = errors.New(`requesters separates its entries with spaces, not commas ("<email> <service>")`)
-
-// ErrRequestersEntry is a requesters entry that names neither a person nor a service: one holding
-// an @ that is not a lowercase email of the form a person signs in under (an uppercase one is
-// refused rather than lowercased, since the tag is compared against the sign-in as it is written),
-// or one naming a service the deployment does not register.
-var ErrRequestersEntry = errors.New("requesters names people by their lowercase sign-in email and services by their registered name")
-
-// ParseRequesters reads a requesters tag for a caller that holds the deployment's registered
-// service list — the loader (Loader.Services), the one reader whose answer decides whether the
-// secret is served. People are named by lowercase email and services by name, separated by white
-// space. It refuses a comma anywhere (ErrRequestersComma), a list that names nobody
-// (ErrRequestersMissing), and an entry that is neither (ErrRequestersEntry). An entry holding an
-// @ is a person, and must be the lowercase email their sign-in names them by (emailPattern),
-// since Evaluate compares it against record.CanonicalLogin of the session's operator; any other
-// entry is a service, and must be one of services, ALWAYS, so a nil or empty list refuses every
-// service entry, exactly as the owner tag already refuses a name the deployment does not
-// register (Loader.secret). ParseRequesterShapes checks a service entry's shape alone, for the
-// one caller that holds no registered list. It answers the entries sorted, each
-// once and joined by single spaces, so a Secret holding them stays comparable, two spellings of
-// one list are one policy, and the value is one an AWS tag and a Secret Manager annotation both
-// hold.
-func ParseRequesters(raw string, services []string) (string, error) {
-	return parseRequesters(raw, services, true)
-}
-
-// ParseRequesterShapes reads a requesters tag for a caller that holds no registered service list:
-// `agent-secrets`, which never sees BROKER_SERVICES. It is ParseRequesters in every respect but
-// one — an entry naming a service is checked for a service name's shape alone
-// (record.ValidService) rather than against the registered list — so the CLI refuses a malformed
-// tag before it writes, and the broker's answer to the write's reread (ReasonRequestersMalformed)
-// is what catches a name no deployment registers. ParseRequesters exists for the loader, which
-// holds that list and must apply it.
-func ParseRequesterShapes(raw string) (string, error) {
-	return parseRequesters(raw, nil, false)
-}
-
-// parseRequesters is the one reading behind both exported functions. registered says which check
-// a service entry gets: membership of services, or a service name's shape alone.
-func parseRequesters(raw string, services []string, registered bool) (string, error) {
-	if strings.Contains(raw, ",") {
-		return "", ErrRequestersComma
-	}
-	var requesters []string
-	for _, entry := range strings.Fields(raw) {
-		switch {
-		case strings.Contains(entry, "@"):
-			if !emailPattern.MatchString(entry) {
-				return "", fmt.Errorf("%w, not %q", ErrRequestersEntry, entry)
-			}
-		case registered:
-			if !slices.Contains(services, entry) {
-				return "", fmt.Errorf("%w, not %q: no registered service has that name", ErrRequestersEntry, entry)
-			}
-		default:
-			if !record.ValidService(entry) {
-				return "", fmt.Errorf("%w, not %q", ErrRequestersEntry, entry)
-			}
-		}
-		requesters = append(requesters, entry)
-	}
-	if len(requesters) == 0 {
-		return "", ErrRequestersMissing
-	}
-	slices.Sort(requesters)
-	return strings.Join(slices.Compact(requesters), " "), nil
-}
-
-// SplitRequesters splits a requesters tag into the people it names and the services it names,
-// each list in the order the tag holds them and both nil for a tag that names nobody. The @ is
-// the whole of the test: both parsers behind the tag make every person entry a lowercase email,
-// which holds one, and every service entry a service name, which holds none (ParseRequesters
-// against the deployment's registered list, ParseRequesterShapes against a service name's shape
-// alone), so a reader of the split needs neither alphabet and no entry can be both. An entry is
-// answered as it was written, since a tag the loader read is already sorted, compacted and
-// single-spaced and a caller comparing an entry against an owner tag compares it as the sign-in
-// writes it.
-func SplitRequesters(requesters string) (people, services []string) {
-	for _, entry := range strings.Fields(requesters) {
-		if strings.Contains(entry, "@") {
-			people = append(people, entry)
-		} else {
-			services = append(services, entry)
-		}
-	}
-	return people, services
-}
-
-// devServiceAccount is the id, the part before the @, of a service account the deployment binds
-// to one person: it binds each person's DEV_<NAME> secret to their own dev-<name> account, whose
-// token therefore goes to that person and to nobody else. RequesterRule reads it to refuse a
-// service entry on such a secret's requesters list.
-var devServiceAccount = regexp.MustCompile(`^dev-[a-z0-9-]+$`)
-
 // TagSet is one secret's tags as TagRules weighs them: the values the loader read from the store
 // (Loader.secret) or the values `agent-secrets secret create` and `retag` will write, beside the
 // one thing that is no tag at all, BoundAccount.
@@ -439,78 +505,16 @@ type TagSet struct {
 	// MaxGrant is the secret's max-grant tag as ParseMaxGrant answered it, and 0 when it sets
 	// none.
 	MaxGrant time.Duration
-}
-
-// RequesterFault is which condition of the requesters rules refuses a secret's requesters tag,
-// as RequesterRule answers it. TagRules turns every fault but RequesterFaultNone into the one
-// load reason ReasonRequestersNotOwner, so the fault is what tells those conditions apart for a
-// caller that must say which flag fixes a write.
-type RequesterFault int
-
-const (
-	// RequesterFaultNone is a tag set no requesters condition refuses.
-	RequesterFaultNone RequesterFault = iota
-	// RequesterFaultOwnerNotPerson is a google-service-account secret whose owner is no person
-	// (ValidPersonOwner). The token it mints acts as a service account, which is given to the
-	// one person who owns the secret, so a secret owned by shared or by a service can carry no
-	// such type and no requesters list could make it servable.
-	RequesterFaultOwnerNotPerson
-	// RequesterFaultServiceBelowHumanTier is a google-service-account secret whose requesters
-	// name a service at a tier that is not human. A service's pod may ask for such a token only
-	// where a person approves each release of it, which human tier is.
-	RequesterFaultServiceBelowHumanTier
-	// RequesterFaultNotTheOwnerOnce is a google-service-account secret whose requesters do not
-	// name its person owner exactly once: no list at all, a list naming no person, one naming
-	// somebody else, or one naming more than one person. The secret is served to that one
-	// person, who is therefore on its list, beside the registered services a human-tier secret
-	// may name as well.
-	RequesterFaultNotTheOwnerOnce
-	// RequesterFaultServiceOnDevAccount is a secret the deployment binds to a dev-<name> account
-	// (TagSet.BoundAccount, devServiceAccount) whose requesters name a service, at either tier.
-	// Such an account is one person's own, so no service may ask for its token, whatever type
-	// the secret is.
-	RequesterFaultServiceOnDevAccount
-)
-
-// RequesterRule answers which condition refuses t's requesters, and RequesterFaultNone for a set
-// no such condition refuses. It holds the conditions most fundamental first: the owner is no
-// person, so no list could make the secret servable; the list names a service below human tier;
-// the list does not name that owner exactly once; the secret is bound to a dev-<name> account
-// and the list names a service, which holds for every type.
-//
-// The loader reads none of these apart: it reads TagRules' reason, and every fault here is the
-// one reason ReasonRequestersNotOwner. The fault exists for `agent-secrets`' tagRefusal, which
-// says which flag fixes the write and so must name the condition that refused it rather than
-// another that happens to be true beside it — a secret owned by shared is answered for its owner
-// however its list and tier read, and a list naming a service at agent tier is answered for the
-// tier and not for the person it leaves out.
-func RequesterRule(t TagSet) RequesterFault {
-	// Each entry's own shape is ParseRequesters' and ParseRequesterShapes' business, and they
-	// answer the entries sorted and separated by single spaces, so the conditions below read
-	// only the @ that tells a person from a service (SplitRequesters), and read it once for all
-	// of them.
-	people, services := SplitRequesters(t.Requesters)
-	if t.Type == TypeGoogleServiceAccount {
-		switch {
-		case !ValidPersonOwner(t.Owner):
-			return RequesterFaultOwnerNotPerson
-		case len(services) > 0 && t.Tier != TierHuman:
-			return RequesterFaultServiceBelowHumanTier
-		case len(people) != 1 || people[0] != t.Owner:
-			return RequesterFaultNotTheOwnerOnce
-		}
-	}
-	if id, _, bound := strings.Cut(t.BoundAccount, "@"); bound && devServiceAccount.MatchString(id) && len(services) > 0 {
-		return RequesterFaultServiceOnDevAccount
-	}
-	return RequesterFaultNone
+	// Guidance is the secret's guidance tag as written (TagGuidance), "" for a secret carrying
+	// none.
+	Guidance string
 }
 
 // TagRules is the one statement of what a secret's tags demand of each other, which the loader
 // applies to every secret it reads and `agent-secrets secret` create and retag apply before they
 // write (so it asks for no registered service list of its own). It takes a TagSet rather than a
-// positional list because the rules weigh eight values — the type, owner, tier, requesters,
-// scopes, admin and max-grant tags, and the deployment's binding of the secret to an
+// positional list because the rules weigh nine values — the type, owner, tier, requesters,
+// scopes, admin, max-grant and guidance tags, and the deployment's binding of the secret to an
 // account — which no caller could pass in order without mistaking one for another. It answers
 // "" for a secret the rules allow, and otherwise the load reason that refuses it:
 //
@@ -520,16 +524,21 @@ func RequesterRule(t TagSet) RequesterFault {
 //     released only by a person's approval, which agent tier does not ask for.
 //   - ReasonAdminRequesters: an admin secret carries no requesters tag. Who may ask for an
 //     administrator's credential is named, never left to owner and tier alone.
-//   - ReasonMaxGrantRequired: an admin secret, or a google-service-account one, sets no
-//     max-grant or one longer than an hour. Such a grant is reviewed while it is live, so it
-//     lasts an hour at most. A secret that merely lists its requesters keeps its own cap, or
-//     none.
+//   - ReasonTypeHumanTier: an anthropic-federation secret is not human tier. Its token can be an
+//     organization administrator's, which a person approves each release of.
+//   - ReasonMaxGrantRequired: an admin secret, a google-service-account one or an
+//     anthropic-federation one sets no max-grant or one longer than an hour. Such a grant is
+//     reviewed while it is live, so it lasts an hour at most. A secret that merely lists its
+//     requesters keeps its own cap, or none.
 //   - ReasonRequestersNotOwner: a condition of RequesterRule refuses the secret's requesters —
-//     a google-service-account secret whose owner is no person, one whose list names a service
-//     below human tier, or one whose list does not name its person owner exactly once, and a
-//     secret of any type the deployment binds to a dev-<name> account whose list names a
-//     service. The one reason is all a load answers; which of those conditions refused it is
-//     RequesterRule's fault, which `agent-secrets` reads to name the flag that fixes the write.
+//     a google-service-account or anthropic-federation secret whose owner is neither a person
+//     nor a group, one whose list names a service below human tier, or one whose list does not
+//     name its owner exactly once, and a secret of any type the deployment binds to a dev-<name>
+//     account whose list names a service. The one reason is all a load answers; which of those
+//     conditions refused it is RequesterRule's fault, which `agent-secrets` reads to name the
+//     flag that fixes the write.
+//   - ReasonGuidanceTooLong: the guidance tag is longer than MaxGuidanceRunes. The judge shows it
+//     whole to its model, and a cut instruction is not the one its owner wrote.
 //
 // The rules above are weighed in the order they are written, so a secret several of them refuse
 // is refused by the first.
@@ -543,66 +552,62 @@ func TagRules(t TagSet) string {
 	if t.Admin && t.Requesters == "" {
 		return ReasonAdminRequesters
 	}
-	if (t.Admin || t.Type == TypeGoogleServiceAccount) && (t.MaxGrant == 0 || t.MaxGrant > time.Hour) {
+	if t.Type == TypeAnthropicFederation && t.Tier != TierHuman {
+		return ReasonTypeHumanTier
+	}
+	if (t.Admin || t.Type == TypeGoogleServiceAccount || t.Type == TypeAnthropicFederation) && (t.MaxGrant == 0 || t.MaxGrant > time.Hour) {
 		return ReasonMaxGrantRequired
 	}
 	if RequesterRule(t) != RequesterFaultNone {
 		return ReasonRequestersNotOwner
 	}
+	if utf8.RuneCountInString(t.Guidance) > MaxGuidanceRunes {
+		return ReasonGuidanceTooLong
+	}
 	return ""
 }
 
-// gitHubRepositoryName is what a repository name GitHub creates can be: ASCII letters, digits,
-// '.', '-' and '_', at most 100 of them. The names . and .. are refused beside it.
-var gitHubRepositoryName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
-
-// NarrowingError is ParseGitHubNarrowing's refusal: Field is the narrowing's field it names,
-// "owner" or "repositories", so a caller can name it in its own terms (the API's
-// github_app.<field>, the CLI's flag), and Reason says what is wrong with it.
-type NarrowingError struct {
-	Field, Reason string
+// ServesGitHubTokens reports whether a secret of type is released as GitHub installation tokens:
+// a github-app secret, whose tokens the broker mints from the App's key, and a
+// github-installations one, whose tokens a minter outside the broker stored. Both are served only
+// through profiles with a github block on the accounts their github-owners tag lists, in the one
+// release form, and both are taken apart alike behind the airlock.
+func ServesGitHubTokens(secretType string) bool {
+	return secretType == TypeGitHubApp || secretType == TypeGitHubInstallations
 }
 
-func (e *NarrowingError) Error() string {
-	return e.Field + " " + e.Reason
-}
-
-// ParseGitHubNarrowing checks one release's narrowing of its GitHub App tokens as a caller wrote it
-// and answers it in its canonical form: owner one GitHub login (ParseGitHubLogin, once white space
-// around it is trimmed), lowercased, and repositories names GitHub can hold, without the owner, at
-// most secrets.MaxNarrowedRepositories, sorted and each once. Repositories nil names none, so the
-// token reaches every repository of the installation; present but empty is refused, since a caller
-// that built it from a list that matched nothing would otherwise get that widest token. Nothing
-// else reaches GitHub: the permissions a narrowing can name are fixed, so a caller can only
-// narrow. It answers its refusal as a *NarrowingError, typed rather than error, so a caller names
-// the field without reading the text. The broker applies a narrowing in this form and names it back in
-// the release's answer, and the CLI builds its request with this function too, so the CLI's check
-// that the broker applied the narrowing it asked for compares like with like.
-func ParseGitHubNarrowing(owner string, repositories []string, readOnly bool) (secrets.GitHubNarrowing, *NarrowingError) {
-	login, err := ParseGitHubLogin(strings.TrimSpace(owner))
-	if err != nil {
-		return secrets.GitHubNarrowing{}, &NarrowingError{"owner", fmt.Sprintf("must name one GitHub login, not %q", owner)}
-	}
-	if repositories != nil && len(repositories) == 0 {
-		return secrets.GitHubNarrowing{}, &NarrowingError{"repositories", "is empty: name at least one repository, or leave it out for every repository of the installation"}
-	}
-	if len(repositories) > secrets.MaxNarrowedRepositories {
-		return secrets.GitHubNarrowing{}, &NarrowingError{"repositories", fmt.Sprintf("names %d repositories; the broker takes at most %d", len(repositories), secrets.MaxNarrowedRepositories)}
-	}
-	for _, name := range repositories {
-		if !gitHubRepositoryName.MatchString(name) || name == "." || name == ".." {
-			return secrets.GitHubNarrowing{}, &NarrowingError{"repositories", fmt.Sprintf("names %s's repositories by name alone, in ASCII letters, digits, '.', '-' and '_', not %q", login, name)}
+// WayOf is the way a credential of a secret of secretType goes into a call under kind, and whether
+// kind's ways hold it. A secret of no type, a stored value, is swapped in (proxyrules.WaySwap), or,
+// under a kind whose ways hold sign and not swap, signed with again (proxyrules.WaySign): that is a
+// stored AWS key pair under the aws kind, whose credential goes into no header as it is. A
+// github-app, github-installations, google-login, google-service-account or anthropic-federation
+// secret's token is minted, or taken from its stored tokens, and swapped in (proxyrules.WayMint),
+// and an azure-login secret's is exchanged at Microsoft's token endpoint
+// (proxyrules.WayExchange). A type it does not know takes no way. The policy load refuses a secret
+// whose way its kind's ways do not hold (ReasonProxyWay): its credential would go into no call.
+func WayOf(kind proxyrules.Kind, secretType string) (string, bool) {
+	var way string
+	switch secretType {
+	case "":
+		way = proxyrules.WaySwap
+		if !slices.Contains(kind.Ways, proxyrules.WaySwap) && slices.Contains(kind.Ways, proxyrules.WaySign) {
+			way = proxyrules.WaySign
 		}
+	case TypeGitHubApp, TypeGitHubInstallations, TypeGoogleLogin, TypeGoogleServiceAccount, TypeAnthropicFederation:
+		way = proxyrules.WayMint
+	case TypeAzureLogin:
+		way = proxyrules.WayExchange
+	default:
+		return "", false
 	}
-	sorted := slices.Clone(repositories)
-	slices.Sort(sorted)
-	return secrets.GitHubNarrowing{Owner: login, Repositories: slices.Compact(sorted), ReadOnly: readOnly}, nil
+	return way, slices.Contains(kind.Ways, way)
 }
 
 // TypeNeedsGitHubOwners reports whether a secret of type must carry a github-owners tag naming at
-// least one account. Only a github-app secret reads the tag.
+// least one account: a secret released as GitHub installation tokens (ServesGitHubTokens), whose
+// tokens are handed over for the accounts the tag lists and no other.
 func TypeNeedsGitHubOwners(secretType string) bool {
-	return secretType == TypeGitHubApp
+	return ServesGitHubTokens(secretType)
 }
 
 // GitHubOwnersFor is the github-owners rule every reader and writer of a secret's tags applies:
@@ -651,6 +656,19 @@ var ErrUnknownSecret = errors.New("no agent secret has this name")
 // the secret, never as unknown.
 var ErrPendingValue = errors.New("exists and awaits its first value; ask again after its owner stores it")
 
+// ErrServedOnlyAsProfiles is a request for a source by its own name while profiles of other names
+// use it (Set.ProfilesOf) and none holds that name: the source is served only through them, so no
+// caller gets the whole credential by the source's name. Evaluate's error names the profiles of it
+// the set serves, to ask for instead, or, where the set refuses each of them, says so and names
+// them.
+var ErrServedOnlyAsProfiles = errors.New("is served only through its profiles")
+
+// ErrProfileRefused is a request for a name the profiles file decides and the policy refuses: a
+// profile that failed against its source, or a github-app or github-installations secret no
+// profile names (ReasonGitHubAppNoProfile, ReasonGitHubInstallationsNoProfile). Evaluate's error
+// gives the reason and its detail.
+var ErrProfileRefused = errors.New("is refused by the profiles file")
+
 // ReasonAbsent is LoadOne's answer for a name no secret carries: none exists under the prefix, or
 // the one that does is scheduled for deletion. It is not a refusal, so it is never in
 // Set.Refused nor written as RefusedMessage: a reread of a name nobody created adds no
@@ -664,6 +682,7 @@ const (
 	ownerPerson ownerKind = iota
 	ownerShared
 	ownerService
+	ownerGroup
 )
 
 // Secret is one namespace secret the policy serves.
@@ -675,7 +694,8 @@ type Secret struct {
 	// name in Secret Manager. A type secret's is TypeSource of its type and that store source, so
 	// the type is frozen into every request (ParseTypeSource reads it back).
 	Source string
-	// Owner is OwnerShared, a person's email, or a registered service.
+	// Owner is OwnerShared, a person's email, a group as group:<its email>, or a registered
+	// service.
 	Owner string
 	// Tier is TierAgent or TierHuman.
 	Tier string
@@ -683,8 +703,9 @@ type Secret struct {
 	// none (ParseMaxGrant refuses anything under a second). A value, never a pointer, so a Secret
 	// compares equal to an unchanged reread of itself (Current.RefreshOne).
 	MaxGrant time.Duration
-	// GitHubOwners is a github-app secret's github-owners tag as ParseGitHubOwners answers it, and
-	// "" for every other secret. A string, not a slice, for the same reason as MaxGrant.
+	// GitHubOwners is the github-owners tag of a secret released as GitHub installation tokens
+	// (ServesGitHubTokens) as ParseGitHubOwners answers it, and "" for every other secret. A
+	// string, not a slice, for the same reason as MaxGrant.
 	GitHubOwners string
 	// Requesters is the secret's requesters tag as ParseRequesters answers it, and "" for a secret
 	// that carries none, which every session and pod may ask for. A string, not a slice, for the
@@ -694,19 +715,83 @@ type Secret struct {
 	// a secret that carries none, whose token the minter asks for with the cloud-platform scope
 	// alone (TagScopes, Secret.ScopeURLs). A string, not a slice, for the same reason as MaxGrant.
 	Scopes string
+	// Project is the secret's dispatch-project tag as ParseProject answers it, and "" for a
+	// secret carrying none, which belongs to no project and is decided by owner and tier alone.
+	// A string, not a pointer, for the same reason as MaxGrant. It is in Version, so tagging a
+	// secret, or moving it to another project, makes the broker evaluate each live grant of it
+	// again at its next use; a grant the policy now refuses ends there, and one it still allows
+	// goes on.
+	Project string
+	// ProjectChannels is the secret's project-channels tag (TagProjectChannels), ProjectChannelsSlack
+	// or "" for a secret carrying none: a private project's credential may spend such a secret only
+	// where that project's owner allows, which the airlock's proxy is what enforces, so Evaluate
+	// refuses one that is not served behind the proxy (ReasonProjectChannelsNeedAirlock). It is in
+	// Version, so the airlock proxy reads again a value it read before the tag was added.
+	ProjectChannels string
 	// Admin is true when the secret carries admin: "true" (TagAdmin): its grant is an
 	// administrator's, which the rules hold to human tier, a requesters list and an hour's cap
 	// (TagRules).
 	Admin bool
-	// AirlockDigest is the fingerprint of this secret's entry in the airlock's rules file
-	// (proxyrules.Rules.Digest), and "" for a secret the rules do not name or a deployment with no
-	// rules file. A string, not a pointer, for the same reason as MaxGrant. It is in Version, so
-	// a change to one secret's entry moves the policy version and ends the grants of that name.
-	AirlockDigest string
+	// Judge is the secret's judge tag as ParseJudge answers it, whole seconds from 1 to
+	// MaxJudgeSeconds, and 0 for a secret carrying none, which the model judge never decides
+	// (Set.JudgeSeconds). A value, never a pointer, for the same reason as MaxGrant. It is in
+	// Version, so a judge tag added, changed or removed makes the broker check each live judged
+	// grant of the secret again at its next release (requests' judgeStillDecides).
+	Judge uint32
+	// Guidance is the secret's guidance tag (TagGuidance) as written, "" for a secret carrying
+	// none: the instruction the model judge follows when it decides a request for the secret. It
+	// is not in Version: it tells the judge how to decide requests to come and changes nothing a
+	// live grant may do, so writing it ends no grant.
+	Guidance string
+	// ProfileDigest is the fingerprint of what a name is served as, for each name a grant of which
+	// a tag or the profiles file can widen:
+	// a profile's entry's, with the kind it is behind, its source's proxy-narrowed tag and, behind
+	// the proxy, its source's judge seconds, and its source's scopes tag where it has no google
+	// block of its own (Profiles.servedDigest); a stored secret's served by its own name behind the
+	// proxy, its proxy, proxy-narrowed and scopes tags (proxyDigest); a stored secret's served by
+	// its own name behind no proxy, its scopes tag (scopesDigest); and "" for such a secret with no
+	// scopes tag. A string, not a pointer, for the same reason as MaxGrant. A request records it
+	// (request_secrets.airlock_digest), and a release ends a grant whose name's fingerprint moved
+	// (requests.Machine's checkRelease), so an edit of one profile's entry, or a change of the
+	// proxy, proxy-narrowed, judge or scopes tag it reads, ends the grants of that name and no
+	// others, across a restart too. It is in Version.
+	ProfileDigest string
+	// Profile is the profiles file's entry this secret is served as, and nil for a stored secret
+	// served by its own name. It points into the one Profiles the boot read, which never changes,
+	// so a Secret stays comparable and two publishes of one profile hold the same pointer.
+	Profile *Profile
+	// Proxy is the kind the secret is served behind (TagProxy), and "" for a secret not behind
+	// Cipher's proxy, whose credential the release hands to an approved command. A profile is
+	// behind its source's tag's kind, or, where its source carries none, its own proxy string's
+	// (Profile.ProxyKind), until the string goes, once every source a profile names carries its
+	// own proxy tag.
+	Proxy string
+	// ProxyNarrowed is true when the secret, or a profile's source, carries proxy-narrowed: "true"
+	// (TagProxyNarrowed): the one profile it is served through narrows it at the proxy.
+	ProxyNarrowed bool
+	// Way is the way the secret's credential goes into a call under its kind (WayOf), and "" for a
+	// secret not behind the proxy.
+	Way string
 	// SessionDefault is true when the secret's default-grant tag is "session": a request naming
 	// no lifetime gets a grant that lasts until its session ends instead of DefaultGrantLifetime.
 	SessionDefault bool
-	ownership      ownerKind
+	// SupersededBy is the stored secret's superseded-by tag (TagSupersededBy) as written, "" for a
+	// secret carrying none. No rule reads it but a profile's claim on the secret's name, which is
+	// why it is not in Version: what it changes, the profile served or refused, is.
+	SupersededBy string
+	ownership    ownerKind
+}
+
+// ProxyAllow is the allow of the profile the secret is served as (Profile.Allow), which narrows its
+// kind's at the proxy, and nil for a stored secret served by its own name, which its kind's allow
+// alone bounds. A present empty list allows nothing. It is a method of the profile the Secret holds
+// rather than a field of its own, so a Secret stays comparable (Current.RefreshOne's answers): the
+// list points into the one Profiles the boot read, which never changes.
+func (secret Secret) ProxyAllow() []proxyrules.Allow {
+	if secret.Profile == nil {
+		return nil
+	}
+	return secret.Profile.Allow
 }
 
 // Type is the type the secret is served as, read back from its Source (TypeSource), or "" for a
@@ -717,6 +802,16 @@ func (secret Secret) Type() string {
 		return ""
 	}
 	return secretType
+}
+
+// PersonApprovesEveryRelease reports whether a person approves every release of the secret, so
+// the model judge decides none of its requests whatever its judge tag says: a secret tagged admin
+// (TagAdmin), and an anthropic-federation secret (TypeAnthropicFederation, read from its Source
+// with ParseTypeSource), whose token can be an organization administrator's whether or not the
+// tag says so. Each of the judge's gates reads it (requests' judgeKey, judgeStillDecides,
+// currentPolicyAdmits and JudgePolicy).
+func (secret Secret) PersonApprovesEveryRelease() bool {
+	return secret.Admin || secret.Type() == TypeAnthropicFederation
 }
 
 // GitHubOwnerLogins is GitHubOwners as a list of lowercase logins, nil when it is "".
@@ -742,41 +837,9 @@ func (secret Secret) ScopeURLs() []string {
 	return urls
 }
 
-// requesterNames is Requesters as a list of the emails and service names it holds, nil when it
-// is "". It is unexported because lists, just below, is its one caller: nothing outside this
-// package reads a secret's requesters as a list.
-func (secret Secret) requesterNames() []string {
-	if secret.Requesters == "" {
-		return nil
-	}
-	return strings.Fields(secret.Requesters)
-}
-
-// lists reports whether secret's requesters name r: the person whose session it is, or the
-// service of the pod it is. Each sort is matched only by an entry of its own sort, which the @
-// tells apart (ParseRequesters makes every person entry hold one and every service entry hold
-// none): a login record.CanonicalLogin answers may be a GitHub login rather than an email, for
-// a record decided before people were named by email, and such a login has a service name's own
-// alphabet, so an operator named "legion-daemon" would otherwise be served every secret that
-// lists the legion-daemon service. An empty Operator and an empty Service (a session has no
-// service) match nothing, never an entry. A pod's Operator is empty unless BROKER_POD_OPERATORS
-// maps the pod's account to the person its login carried (requests.Machine.requester).
-func (secret Secret) lists(r Requester) bool {
-	operator := record.CanonicalLogin(r.Operator)
-	for _, entry := range secret.requesterNames() {
-		person := strings.Contains(entry, "@")
-		if person && operator != "" && entry == operator {
-			return true
-		}
-		if !person && r.Service != "" && entry == r.Service {
-			return true
-		}
-	}
-	return false
-}
-
 // approver is who decides an approval request for secret: anyone signed in to Dispatch for a
-// shared secret, its owner otherwise.
+// shared secret, its owner otherwise, a group owner as written (group:<address>), whose members
+// each decide it (record.MayDecide).
 func (secret Secret) approver() string {
 	if secret.ownership == ownerShared {
 		return record.AnyoneApprover
@@ -787,13 +850,22 @@ func (secret Secret) approver() string {
 // Set is the policy as one load read it, or as a single name's reread left it (NewSet builds both).
 type Set struct {
 	// Version is the SHA-256 of every served secret's name, owner, tier, source, max-grant,
-	// github-owners, requesters, scopes and admin, and of the fingerprint of each one's
-	// airlock entry: equal versions are equal policies. A request records the version it was
-	// decided under, so a live grant is re-evaluated only once the policy changed.
+	// github-owners, requesters, scopes, admin, project, project-channels and judge, and of the
+	// fingerprint of each profile it serves and of each name it serves behind the proxy
+	// (Secret.ProfileDigest): equal versions are equal policies. A request records
+	// the version it was decided under, so a live grant is re-evaluated only once the policy
+	// changed. The project-channels tag is in it because the airlock proxy holds a grant's
+	// released values per pod and reads them again only when one of the grant's names is reread
+	// or this version moves (internal/cipher/proxy/bound.go): a project-channels retag a
+	// console or an infra-applier made reaches a pod that already holds values by no other road,
+	// and that pod would go on spending the Slack token with no channel limit. Whether a project
+	// is private is Dispatch's state and not in it, so a caller re-checks a grant of a tagged name
+	// on every use.
 	Version string
 	Secrets map[string]Secret
 	// Refused is every secret under the prefix the policy refuses to serve, keyed by its whole
-	// name in the store (the name its RefusedMessage line carries), with why. It is not in
+	// name in the store (the name its RefusedMessage line carries), and every profile it refuses,
+	// keyed "profile:" and the profile's name (profileKey), with why. It is not in
 	// Version: a refused secret is served to nobody, so a refusal that comes, goes or changes its
 	// reason re-evaluates no live grant the served secrets did not already move. Current compares
 	// it with the set before to write the state-change lines, and broker_unservable_secrets
@@ -809,7 +881,50 @@ type Set struct {
 	// each version and type it has not decoded, and refuses the secret only when the decoder does
 	// (ReasonValueMalformed).
 	versions map[string]string
+	// profiles is the profiles file applied to the set (Profiles.apply), and the zero Profiles for
+	// a set none were applied to. Every reading of a profile's source and of a source's profiles
+	// is its (Profiles.SourceOf, Profiles.Of), built once as the file was read.
+	profiles Profiles
+	// profileRefused is, for each name a request may ask for that the set refuses because of the
+	// profiles file, its refusal as Refused holds it: each failed profile's name, and each
+	// github-app or github-installations secret no profile names (ReasonGitHubAppNoProfile,
+	// ReasonGitHubInstallationsNoProfile). Evaluate answers it
+	// ErrProfileRefused. Refused itself is keyed by store id, which Evaluate, holding no prefix,
+	// cannot form.
+	profileRefused map[string]Refusal
+	// groups is the group reader of the Current that published the set (Loader.Groups), which
+	// every decision on the set asks who is a member of a group, and nil for a set no Current
+	// published. It is in neither Version nor any digest: who is a member changes with no change
+	// of the policy's tags.
+	groups record.Directory
+	// rules is ProxyRules, built once with the set (setOf, apply), since the proxy reads it on
+	// every request and the release on every use of a grant.
+	rules proxyrules.Rules
+	// redundantProxy is each profile the set serves whose proxy string names the kind its source's
+	// proxy tag names too, in the file's order: Current's reload writes ProxyKindRedundantMessage
+	// for each, once per load. It goes with the proxy string, once every source a profile names
+	// carries its own proxy tag.
+	redundantProxy []string
 }
+
+// ProfilesOf is the names of the profiles of other names the set's profiles file makes from
+// source, in the file's order, whether they pass or fail (Profiles.Of): such a source is served
+// only through them, so Evaluate refuses its own name (ErrServedOnlyAsProfiles), naming those
+// that pass, unless a profile holds that name too. It is nil for a source no profile of another
+// name uses, and for every name of a set no profiles were applied to (Profiles.apply).
+func (s *Set) ProfilesOf(source string) []string { return s.profiles.Of(source) }
+
+// ProxyRules is the airlock's rules as the set serves them: the profiles file's kinds and its
+// dpop blocks' inline bindings (Profiles.FileRules), and one binding for each name the set serves
+// behind the proxy, in name order, with its kind (Secret.Proxy), its way (Secret.Way) and its
+// profile's own allow (Secret.ProxyAllow). It is built once when the set is (a load, a reread's
+// merge, a value refusal's withhold, the profiles' apply), since the proxy reads it on every
+// request and the release on every use of a grant, so it allocates nothing here; a set built with
+// no profiles applied answers the file's kinds and the bindings of its tagged secrets all the
+// same. proxyrules.Validate accepts it for every set the policy builds from a file ParseProfiles
+// accepted. The answer is the set's own and is never changed. A set NewSet builds, outside a
+// load, has none.
+func (s *Set) ProxyRules() proxyrules.Rules { return s.rules }
 
 // ValueVersion is the version of the type secret name's value as s lists it, and "" for a name s
 // lists no type secret's value for: what a mint the decoder refuses hands Current.RefuseValue, so
@@ -821,8 +936,21 @@ type Refusal struct {
 	// Reason is one of the Reason* refusal constants.
 	Reason string
 	// Owner is the secret's owner tag as the store holds it, and "" for ReasonOwnerTagMissing and
-	// ReasonOwnerTagMalformed, whose tag is the fault and names nobody the broker knows.
+	// ReasonOwnerTagMalformed, whose tag is the fault and names nobody the broker knows. A
+	// profile's is its source's, "" when the source is not one the store holds.
 	Owner string
+	// Detail says which part of a profile, or of the store's secret beside it, a profile reason
+	// is about (the source's own reason, the account a github block names that the source does
+	// not), or, for ReasonValueMalformed, the decoder's own words of what is wrong with the value
+	// (secrets.ParseValue, which never quotes the value), or, for a secret's proxy tags, what of
+	// its kind they do not fit (the kind its tag names that the file does not declare, the way its
+	// type takes that its kind's ways do not hold, the max_grant it is above), and is "" for every
+	// other reason that is a secret's own tag's. RefusedMessage writes it as detail.
+	Detail string
+	// SupersededBy is the refused secret's superseded-by tag (TagSupersededBy) as written, "" for
+	// none: a refused secret gives its name to the profile of that source as a served one does
+	// (supersededBy), so retiring the old secret's value leaves the profile served.
+	SupersededBy string
 }
 
 // Pending is one secret under the prefix waiting for its first value (ReasonPendingValue), as a
@@ -833,27 +961,37 @@ type Pending struct {
 	// Created is when the store created the secret, so a caller can tell the wait has ended
 	// (Current.PendingValue, pendingAt) without a reload.
 	Created time.Time
+	// SupersededBy is the secret's superseded-by tag (TagSupersededBy) as written, "" for none, as
+	// Refusal's is.
+	SupersededBy string
 }
 
 // setOf is NewSet(secrets) carrying refused, pending and versions, which NewSet's Version leaves
-// out.
-func setOf(secrets map[string]Secret, refused map[string]Refusal, pending map[string]Pending, versions map[string]string) *Set {
+// out, and the proxy rules of profiles' kinds over the secrets it serves (Profiles.proxyRules).
+func setOf(profiles Profiles, secrets map[string]Secret, refused map[string]Refusal, pending map[string]Pending, versions map[string]string) *Set {
 	set := NewSet(secrets)
 	set.Refused, set.Pending, set.versions = refused, pending, versions
+	set.rules = profiles.proxyRules(secrets)
 	return set
 }
 
 // NewSet builds the one Set shape both Load and the single-name merges produce, keeping secrets
 // (keyed by Name) as its Secrets. A secret with no max-grant, no github-owners, no requesters, no
-// scopes and no admin tag writes the pre-type digest bytes,
-// "<Name>\t<Owner>\t<Tier>\t<Source>\n" (a type secret's type is in its Source); one with any of
-// them adds the first two, as a fifth field (time.Duration's form, 0s for none) and a sixth
-// (empty for none), and then ends its line with "\trequesters=<list>", "\tscopes=<list>" and
-// "\tadmin=true", in that order, for each of those three it carries. A
-// secret the airlock's rules name adds one line more, "<Name>\tairlock=<digest>\n", rather than a
-// field of the line above it, so every line a deployment with no rules file writes is
-// byte-identical to the one it writes
-// today and its Version does not shift. Entries are ascending by the secret's name in the store
+// scopes, no admin, no project, no project-channels and no judge tag writes the pre-type digest
+// bytes, "<Name>\t<Owner>\t<Tier>\t<Source>\n" (a type secret's type is in its Source); one with
+// any of them adds the first two, as a fifth field (time.Duration's form, 0s for none) and a sixth
+// (empty for none), and then ends its line with "\trequesters=<list>", "\tscopes=<list>",
+// "\tadmin=true", "\tproject=<KEY>", "\tproject-channels=slack" and "\tjudge=<seconds>", in that
+// order, for each of those six it carries. The project, project-channels and judge tags are
+// written only by a secret that carries one, so the secrets of a deployment that tags none write
+// the bytes they wrote before the tag existed and no deployed version shifts. The guidance tag is
+// in no line (Secret.Guidance). A secret served as a profile, or by its own name behind the proxy,
+// adds one line more, "<Name>\tprofile=<digest>\n" (Secret.ProfileDigest), rather than a field of
+// the line above it, so every line a stored secret served by its own name behind no proxy writes
+// is byte-identical to the one it wrote before profiles existed, and its Version does not shift.
+// Such a secret's own fingerprint, which a scopes tag gives it (scopesDigest), is written nowhere:
+// it holds the scopes tag alone, which the line above holds already.
+// Entries are ascending by the secret's name in the store
 // (the slug) — the exact order Load wrote before NewSet existed, so deployed plain-secret digests
 // do not shift. (Sorting by the uppercased Name would NOT be equivalent: '-' is 0x2D, '_' is
 // 0x5F, so "a-b" < "a0" as slugs but "A0" < "A_B" as Names.)
@@ -881,52 +1019,32 @@ func NewSet(secrets map[string]Secret) *Set {
 		if s.secret.Admin {
 			admin = "\tadmin=true"
 		}
+		// The project and project-channels fields: both are written only by a secret that
+		// carries the tag, project first.
+		projectTags := ""
+		if s.secret.Project != "" {
+			projectTags = "\tproject=" + s.secret.Project
+		}
+		if s.secret.ProjectChannels != "" {
+			projectTags += "\tproject-channels=" + s.secret.ProjectChannels
+		}
+		judge := ""
+		if s.secret.Judge != 0 {
+			judge = fmt.Sprintf("\tjudge=%d", s.secret.Judge)
+		}
 		switch {
-		case s.secret.MaxGrant == 0 && s.secret.GitHubOwners == "" && !s.secret.SessionDefault && s.secret.Requesters == "" && s.secret.Scopes == "" && !s.secret.Admin:
+		case s.secret.MaxGrant == 0 && s.secret.GitHubOwners == "" && !s.secret.SessionDefault && s.secret.Requesters == "" && s.secret.Scopes == "" && !s.secret.Admin && projectTags == "" && judge == "":
 			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source)
 		case s.secret.SessionDefault:
-			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s\tdefault-grant=session%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin)
+			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s\tdefault-grant=session%s%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, projectTags, judge)
 		default:
-			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin)
+			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, projectTags, judge)
 		}
-		if s.secret.AirlockDigest != "" {
-			fmt.Fprintf(digest, "%s\tairlock=%s\n", s.secret.Name, s.secret.AirlockDigest)
+		if s.secret.ProfileDigest != "" && (s.secret.Profile != nil || s.secret.Proxy != "") {
+			fmt.Fprintf(digest, "%s\tprofile=%s\n", s.secret.Name, s.secret.ProfileDigest)
 		}
 	}
 	return &Set{Version: hex.EncodeToString(digest.Sum(nil)), Secrets: secrets}
-}
-
-// Requester is an enrolled session or pod as the policy sees it.
-type Requester struct {
-	// Operator is the email of the person whose machine login the session enrolled under. For a
-	// pod it is the person a person's pod login carried, while BROKER_POD_OPERATORS still maps the
-	// pod's account to that person (requests.Machine.requester), and empty for any other pod.
-	Operator string
-	// Service is the service of the machine login that enrolled the session, set only when the
-	// session is a pod whose verified service account is one of the accounts BROKER_SERVICES maps
-	// to that same service (requests.Machine.requester); empty otherwise. A service may list
-	// several accounts, but each account is listed once and proves exactly one service, since a
-	// machine login's service is its own claim and only the pod's account can prove it: an
-	// account listed for another service, or for none, proves nothing here.
-	Service string
-	// Withheld is the names the session's operator withheld from it by revoking a grant of them
-	// the session got without asking (requests.Machine.RevokeByApprover). Evaluate answers each as
-	// a human-tier secret.
-	Withheld []string
-}
-
-// Decision is how the policy answers one requester's ask for one name.
-type Decision struct {
-	// Outcome is Automatic, Approval or Deny.
-	Outcome string
-	// Approver is who decides an Approval: the owner's email, or record.AnyoneApprover for a
-	// shared secret.
-	Approver string
-	// Source is what the secret's value is read by (Secret.Source).
-	Source string
-	// Reason names the rule behind a Deny the policy can name, and is empty for every other
-	// decision: a caller tells a session why it was refused without reading the policy itself.
-	Reason string
 }
 
 // ServiceOwned reports whether the set serves name as a registered service's secret. Who is a
@@ -936,51 +1054,15 @@ func (s *Set) ServiceOwned(name string) bool {
 	return s.Secrets[name].ownership == ownerService
 }
 
-// ReasonRequesterNotListed is the Reason of a Deny the requesters tag decided: neither the
-// person the asking session is signed in as nor the service the asking pod proves is on the
-// secret's list, so it is refused whatever its owner and tier would have given them.
-const ReasonRequesterNotListed = "requester-not-listed"
-
-// ReasonNoReason is the Reason of a Deny the request machine decided: the request named a
-// credential that would wait for a person's approval and carried no reason, so it is refused
-// rather than put to anyone. Set.Evaluate never answers it, since the reason is not the
-// policy's to see.
-const ReasonNoReason = "a reason is necessary; ask again with --reason"
-
-// ReasonSignInOff is the Reason of a Deny the request machine decided on a broker that signs
-// nobody in (BROKER_SIGNIN=off): the name's answer would be a person's approval, and no person
-// can sign in to give one, so the request is refused at once rather than left pending for
-// nobody. It is named before ReasonNoReason, since asking again with a reason would be refused
-// the same way. Set.Evaluate never answers it, since whether anyone can sign in is not the
-// policy's to see.
-const ReasonSignInOff = "a person must approve it, and this broker signs nobody in (BROKER_SIGNIN=off)"
-
-// Evaluate answers r's ask for name. A name the set does not serve is ErrUnknownSecret. A secret
-// whose requesters are listed (Secret.Requesters) is denied, ReasonRequesterNotListed, to every
-// requester the list does not name, before owner and tier are read at all. A name withheld from r
-// (Requester.Withheld) is decided as a human-tier secret: what r would have got at once is an
-// approval request to the owner, or to anyone for a shared secret, and a service's own secret,
-// which no person approves, is denied.
-func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
-	secret, ok := s.Secrets[name]
-	if !ok {
-		return Decision{}, ErrUnknownSecret
-	}
-	if secret.Requesters != "" && !secret.lists(r) {
-		return Decision{Outcome: Deny, Reason: ReasonRequesterNotListed, Source: secret.Source}, nil
-	}
-	withheld := slices.Contains(r.Withheld, name)
-	d := Decision{Source: secret.Source}
-	switch {
-	case secret.ownership == ownerService:
-		d.Outcome = Deny
-		if r.Service == secret.Owner && !withheld {
-			d.Outcome = Automatic
-		}
-	case secret.Tier == TierAgent && !withheld && (secret.ownership == ownerShared || record.CanonicalLogin(r.Operator) == secret.Owner):
-		d.Outcome = Automatic
-	default:
-		d.Outcome, d.Approver = Approval, secret.approver()
-	}
-	return d, nil
+// JudgeSeconds is the longest grant the model judge may make of name, and whether its key lets the
+// judge decide it at all: the judge tag of the secret s serves as name (Secret.Judge), a profile's
+// being its source's, and (0, false) for a name s does not serve or whose secret carries no judge
+// tag. It reads the tag alone: whether a person approves every release of the secret all the same
+// (Secret.PersonApprovesEveryRelease) is each caller's to weigh, since a judged grant of a secret
+// tagged an administrator's later is ended by the release (requests' judgeStillDecides) and not
+// refused as a broken chain. Every reader of the bound goes through it, and what it answers is at
+// most MaxJudgeSeconds, since the loader refuses a judge tag above that (ReasonJudgeOutOfRange).
+func (s *Set) JudgeSeconds(name string) (uint32, bool) {
+	seconds := s.Secrets[name].Judge
+	return seconds, seconds != 0
 }

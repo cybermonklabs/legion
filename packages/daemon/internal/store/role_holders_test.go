@@ -91,14 +91,17 @@ func openHolderTree(t *testing.T, s *Store) {
 
 // The publication of an issue's role sessions is queued in the transaction of the claim write
 // that changes the session holding a role: the row the write replaces named one holder and the
-// row it writes names another. A claim's session holds its role in the states
-// supervise.HoldsCapability answers true for, so the agent's registration, a new session while
-// the role is held, and each end — retirement, failure, suspension and a move back to launching —
-// queue it, through every write that stores a claim: PutClaim, PutClaimAndDelivery,
-// RetireDelivery and AdmitClaim. A write that changes no holder queues nothing: a ready, a turn's
-// start and end, and a second write of an ended claim. A pending row of the issue is made due
-// again rather than queued beside, so the outbox never holds two.
+// row it writes names another. A claim's session holds its role in the states and suspension
+// sources supervise.HoldsRole answers true for, so the agent's registration, a new session while
+// the role is held, and each end — retirement, failure and a suspension by any source but the
+// idle release's — queue it, through every write that stores a claim: PutClaim,
+// PutClaimAndDelivery, RetireDelivery and AdmitClaim. A write that changes no holder queues
+// nothing: a ready, a turn's start and end, a second write of an ended claim, an admission that
+// launches the claim again over the session it kept and that session's registration, and the idle
+// release's suspension. A pending row of the issue is made due again rather than queued beside,
+// so the outbox never holds two.
 func TestAClaimWriteThatChangesTheRoleHolderQueuesThePublicationWithIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := publishingStore(t)
 	openHolderTree(t, s)
@@ -124,11 +127,11 @@ func TestAClaimWriteThatChangesTheRoleHolderQueuesThePublicationWithIt(t *testin
 	step("a turn's start", put(holderClaim(supervise.StateWorking, "ses-1")), none)
 	step("a turn's end", put(holderClaim(supervise.StateIdle, "ses-1")), none)
 	step("a new session while the role is held", put(holderClaim(supervise.StateIdle, "ses-2")), queued)
-	step("an admission over a row the store still holds live", func() error {
+	step("an admission that launches the claim again over the session it kept", func() error {
 		_, err := s.AdmitClaim(ctx, holderClaim(supervise.StateLaunching, "ses-2"))
 		return err
-	}, queued)
-	step("the registration of the admitted claim", put(holderClaim(supervise.StateRegistered, "ses-2")), queued)
+	}, none)
+	step("the registration of the admitted claim", put(holderClaim(supervise.StateRegistered, "ses-2")), none)
 
 	task := supervise.Delivery{ID: "delivery-1", Task: "test it", QueuedAt: at(1), DeliveredAt: at(2), ConfirmedAt: at(3), Generation: 1}
 	step("a confirmed task", func() error {
@@ -143,7 +146,10 @@ func TestAClaimWriteThatChangesTheRoleHolderQueuesThePublicationWithIt(t *testin
 	}, queued)
 	step("a second write of the retired claim", put(holderClaim(supervise.StateRetired, "ses-3")), none)
 	step("a registration over the retirement", put(holderClaim(supervise.StateRegistered, "ses-4")), queued)
-	step("a suspension", put(holderClaim(supervise.StateSuspended, "ses-4")), queued)
+	released := holderClaim(supervise.StateSuspended, "ses-4")
+	released.SuspendedBy = supervise.SuspendedByReleased
+	step("the idle release's suspension", put(released), none)
+	step("a suspension that is not the idle release's", put(holderClaim(supervise.StateSuspended, "ses-4")), queued)
 
 	// Two changes before the lane sends either leave one row.
 	if err := s.PutClaim(ctx, holderClaim(supervise.StateRegistered, "ses-5")); err != nil {
@@ -160,6 +166,7 @@ func TestAClaimWriteThatChangesTheRoleHolderQueuesThePublicationWithIt(t *testin
 // The controller holds no role of an issue, and neither does a claim on no issue, so no write of
 // either queues a publication.
 func TestAClaimOfNoIssueRoleQueuesNoPublication(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := publishingStore(t)
 	controller := supervise.Claim{Token: claim.ControllerToken("legion"), Project: "legion", Role: claim.RoleController,
@@ -184,6 +191,7 @@ func TestAClaimOfNoIssueRoleQueuesNoPublication(t *testing.T) {
 // as it stands, its lease and its due time unchanged. The same writes of a claim of this project's
 // issue queue its own.
 func TestAClaimOfAnotherProjectsIssueQueuesNoPublication(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := publishingStore(t)
 	const theirs = "OTHERPROJECT-9"
@@ -237,6 +245,7 @@ func TestAClaimOfAnotherProjectsIssueQueuesNoPublication(t *testing.T) {
 // queued there would be neither sent nor deleted. The same writes on a store that publishes queue
 // one row, the control that these writes are ones that change a holder.
 func TestAStoreThatDoesNotPublishQueuesNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, publishes := range []bool{false, true} {
 		s := migratedStore(t)
@@ -294,15 +303,13 @@ func tracedStore(t *testing.T, s *Store, publishes bool) (*Store, *transactionsB
 	return traced, counter
 }
 
-// A claim write that can queue no publication is one statement on the pool, as PutClaim was before
-// the publication, with no BEGIN and no COMMIT around it. Two conditions make such a write, and
-// both are read before a transaction opens: a store the daemon has not turned the publication on
-// for (each claim write of a daemon with no dispatch_url), and a claim that holds no role this
-// store publishes (each write of the project's controller, of a claim on no issue, and of a claim
-// of another project's issue). The last row is the control that the count sees a transaction when
-// one opens: a retirement on a store that publishes can queue, so it runs in one transaction with
-// the row it queues.
-func TestAClaimWriteThatCanQueueNothingOpensNoTransaction(t *testing.T) {
+// Every claim write opens one transaction, including a write that can queue no publication. Two
+// conditions make such a write: a store the daemon has not turned the publication on for (each
+// claim write of a daemon with no dispatch_url), and a claim that holds no role of an issue (each
+// write of the project's controller, of a claim on no issue, or of another project's issue).
+// The last row can queue, so it also checks that the transaction writes the publication with the claim.
+func TestEveryClaimWriteOpensOneTransaction(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := migratedStore(t)
 	quiet, quietBegun := tracedStore(t, s, false)
@@ -320,10 +327,10 @@ func TestAClaimWriteThatCanQueueNothingOpensNoTransaction(t *testing.T) {
 		claim supervise.Claim
 		want  int64
 	}{
-		{"the tester's registration on a store that does not publish", quiet, quietBegun, holderClaim(supervise.StateRegistered, "ses-1"), 0},
-		{"the controller's registration on a store that publishes", publishing, publishingBegun, controller, 0},
-		{"the registration of a claim on no issue on a store that publishes", publishing, publishingBegun, noIssue, 0},
-		{"the registration of a claim of another project's issue on a store that publishes", publishing, publishingBegun, otherProject, 0},
+		{"the tester's registration on a store that does not publish", quiet, quietBegun, holderClaim(supervise.StateRegistered, "ses-1"), 1},
+		{"the controller's registration on a store that publishes", publishing, publishingBegun, controller, 1},
+		{"the registration of a claim on no issue on a store that publishes", publishing, publishingBegun, noIssue, 1},
+		{"the registration of a claim of another project's issue on a store that publishes", publishing, publishingBegun, otherProject, 1},
 		{"the tester's retirement on a store that publishes", publishing, publishingBegun, holderClaim(supervise.StateRetired, "ses-1"), 1},
 	} {
 		before := write.begun.begun.Load()
@@ -352,6 +359,7 @@ func TestAClaimWriteThatCanQueueNothingOpensNoTransaction(t *testing.T) {
 // its own. A write that queues nothing tells nobody, and neither does a write whose transaction
 // rolled back: it queued nothing that stands.
 func TestTheStoreTellsTheIssueOnceItsQueuedPublicationCommits(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := publishingStore(t)
 	openHolderTree(t, s)
@@ -415,6 +423,7 @@ func refuseRoleHoldersQueue(t *testing.T, s *Store) {
 // owes such a write as it owes any other (supervise's writeOwed), and its repair queues the row
 // when it lands. A write that changes no holder queues nothing, so the refusal does not reach it.
 func TestAClaimWriteAndThePublicationItQueuesCommitTogether(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := publishingStore(t)
 	openHolderTree(t, s)
@@ -442,7 +451,7 @@ func TestAClaimWriteAndThePublicationItQueuesCommitTogether(t *testing.T) {
 		}},
 		{"RetireDelivery", func() error { return s.RetireDelivery(ctx, holderClaim(supervise.StateRetired, "ses-1"), task.ID) }},
 		{"AdmitClaim", func() error {
-			_, err := s.AdmitClaim(ctx, holderClaim(supervise.StateLaunching, "ses-1"))
+			_, err := s.AdmitClaim(ctx, holderClaim(supervise.StateLaunching, ""))
 			return err
 		}},
 	} {

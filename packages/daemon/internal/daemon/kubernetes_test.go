@@ -83,7 +83,7 @@ func defaultRepositoryCache(t *testing.T) sandbox.RepositoryCache {
 	return cache
 }
 
-// noRepositories is a mapping that names none, for a test whose runtime makes no cache.
+// noRepositories is a cache set that names none, for a test whose runtime makes no cache.
 func noRepositories() []ghrepo.Repository { return nil }
 
 // writeKubeconfig is a kubeconfig of one cluster at server and one context, its current context
@@ -107,6 +107,7 @@ func writeKubeconfig(t *testing.T, server, current string) string {
 // A cluster without Agent Sandbox is refused by name (LEGION-206 Requirement 10) before the boot
 // is recorded: the CRD and the controller's Deployment are each named, and nothing is launched.
 func TestAKubernetesDaemonRefusesAClusterWithoutAgentSandboxBeforeItsBoot(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var requested []string
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -151,6 +152,7 @@ func TestAKubernetesDaemonRefusesAClusterWithoutAgentSandboxBeforeItsBoot(t *tes
 // after the store opened, or after a migration, would be refused for the store instead. The
 // cluster is only read.
 func TestAKubernetesDaemonRefusesALegacyPerClaimSandboxBeforeItOpensItsStore(t *testing.T) {
+	t.Parallel()
 	const legacy = "legion-test-legion-208-tester"
 	var mu sync.Mutex
 	var requested []string
@@ -207,6 +209,7 @@ func TestAKubernetesDaemonRefusesALegacyPerClaimSandboxBeforeItOpensItsStore(t *
 // daemon could not make on 2026-10-26, which opened its store on what the cluster check had left
 // of the budget and exited with `context deadline exceeded`.
 func TestAKubernetesDaemonOpensItsStoreAfterAClusterCheckThatUsedMostOfItsBudget(t *testing.T) {
+	t.Parallel()
 	const censusTakes = 22 * time.Second
 	var census sync.Once
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -239,7 +242,7 @@ func TestAKubernetesDaemonOpensItsStoreAfterAClusterCheckThatUsedMostOfItsBudget
 	defer apiServer.Close()
 	cfg := kubernetesConfig(t, apiServer.URL)
 	database := testdb.Database(t, "legion_daemon_late_open")
-	cfg.PostgresDSN = pgProxy(t, database, silentConnection)
+	cfg.PostgresDSN = testdb.Outage(t, database, testdb.Silent).DSN
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
@@ -301,6 +304,7 @@ func TestAKubernetesDaemonOpensItsStoreAfterAClusterCheckThatUsedMostOfItsBudget
 // The worker image is proven after the runtime is built and before the boot is recorded; a refusal
 // refuses the boot.
 func TestAKubernetesDaemonRefusesTheBootItsWorkerImageProbeRefuses(t *testing.T) {
+	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
@@ -326,12 +330,36 @@ func TestAKubernetesDaemonRefusesTheBootItsWorkerImageProbeRefuses(t *testing.T)
 
 // Under kubernetes the worker stream is TCP on the daemon's bind, at a port the listener resolves
 // itself, the one address the runtime hands every pod's shim, and the runtime is given the
-// workflow's App tokens, its repository of an issue, already set when the runtime is built, and the
-// repositories Dispatch's mapping names, which its repository caches follow. The host's own agent
-// machinery never runs: no pane launcher is installed, no Dispatch token file is written, and the
-// workflow's boot has no worker-bin stage.
+// workflow's App tokens, its repository of an issue, already set when the runtime is built — for
+// an issue no record names, the repository Dispatch resolves the issue to, at GitHub's default
+// branch (unrecordedRepository) — and the cache set, the repositories the project's live records
+// name, which its repository caches follow: none for a project with no record. The host's own
+// agent machinery never runs: no pane launcher is installed, no Dispatch token file is written,
+// and the workflow's boot has no worker-bin stage.
 func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t *testing.T) {
-	cfg := workflowConfig(t, workflowNATS(t))
+	t.Parallel()
+	cfg := workflowConfigOn(t, workflowNATS(t), func(t *testing.T, project string) string {
+		return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
+			var body any
+			switch {
+			case servedBootCall(t, w, r, project):
+				return
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
+				body = []any{}
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues/LEGSMOKE-9":
+				body = map[string]any{"key": "LEGSMOKE-9", "title": "an operator's claim", "status": "in_progress", "labels": []string{},
+					"last_seq": 1, "project": project, "resolved_repo": "acme/widgets"}
+			default:
+				t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(body); err != nil {
+				t.Errorf("write %s: %v", r.URL.Path, err)
+			}
+		})
+	})
 	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
 	tokens := &workflowTokenRecorder{}
 	record := &built{}
@@ -351,13 +379,13 @@ func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t
 	awaitHealthz(t, cfg, done)
 
 	record.mu.Lock()
-	address, apps, repository, mapped := record.address, record.apps, record.repository, record.mapped
+	address, apps, repository, cached := record.address, record.apps, record.repository, record.cached
 	record.mu.Unlock()
-	if mapped == nil {
-		t.Fatal("the runtime was handed no mapping")
+	if cached == nil {
+		t.Fatal("the runtime was handed no cache set")
 	}
-	if got := mapped(); !slices.Equal(got, []ghrepo.Repository{ghrepo.MustParse("acme/widgets")}) {
-		t.Errorf("the runtime's repository caches follow %v, want the workflow's mapping, acme/widgets", got)
+	if got := cached(); len(got) != 0 {
+		t.Errorf("the runtime's repository caches follow %v, want none: no live record of the project names a repository", got)
 	}
 	prefix := "tcp://" + cfg.Bind + ":"
 	if !strings.HasPrefix(address, prefix) || strings.HasSuffix(address, ":0") {
@@ -383,7 +411,7 @@ func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t
 		t.Fatal("the runtime was handed no repository rule, want the workflow's")
 	}
 	if repo, branch, err := repository(ctx, "LEGSMOKE-9"); err != nil || repo.String() != "acme/widgets" || branch != "main" {
-		t.Errorf("the runtime's repository of an unrecorded issue = %s@%s, %v; want the project's default acme/widgets@main", repo, branch, err)
+		t.Errorf("the runtime's repository of an unrecorded issue = %s@%s, %v; want the one Dispatch resolves it to, acme/widgets@main", repo, branch, err)
 	}
 	for _, path := range []string{filepath.Join(cfg.StateDir, "bin"), filepath.Join(cfg.StateDir, "secrets", "dispatch-token")} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -422,6 +450,7 @@ func bootField(t *testing.T, logged, field string) string {
 // testConfig's own port is always 0 — this does, by configuring a nonzero one and checking
 // prepare()'s plan directly, with no listener bound.
 func TestPrepareDerivesTheWorkerStreamAddressFromWorkerStreamPort(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, bind, advertiseHost string }{
 		{"no advertise_host", "192.0.2.30", ""},
 		{"advertise_host set", "0.0.0.0", "legion-daemon-legsmoke.legion.svc"},
@@ -450,6 +479,7 @@ func TestPrepareDerivesTheWorkerStreamAddressFromWorkerStreamPort(t *testing.T) 
 // listener's bound address before handing it to the runtime factory. An address it cannot split
 // beside an advertise_host is refused rather than handed to pods.
 func TestShimAddressSubstitutesAdvertiseHostsHostKeepingTheBoundPort(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, bound, advertiseHost, want string }{
 		{"no advertise_host, a real bind", "tcp://192.0.2.30:13371", "", "tcp://192.0.2.30:13371"},
 		{"no advertise_host, a unix socket", "unix:///run/legion/stream.sock", "", "unix:///run/legion/stream.sock"},
@@ -478,6 +508,7 @@ func TestShimAddressSubstitutesAdvertiseHostsHostKeepingTheBoundPort(t *testing.
 // name resolves nowhere here, but the listener binds every interface, so 127.0.0.1 at the advertised
 // port reaches it: the port is the stream listener's own.
 func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
 	cfg.Bind, cfg.AdvertiseHost = "0.0.0.0", "legion-daemon-legsmoke.legion.svc"
@@ -514,6 +545,7 @@ func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) 
 // prepare refuses what the cluster would refuse only later: a kubeconfig with no current context
 // when runtime.kubernetes.context names none, or a context the kubeconfig does not have.
 func TestAKubernetesDaemonRefusesAConfigurationTheClusterWouldRefuseLater(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		change func(*config.Kubernetes, *testing.T)
@@ -553,12 +585,13 @@ func TestAKubernetesDaemonRefusesAConfigurationTheClusterWouldRefuseLater(t *tes
 // translated the same way and no pod's share — a probe that reserved the controller's 1 CPU and
 // 4Gi could not boot the daemon on a pool with room for less.
 func TestEveryReservationReachesTheSandboxRuntimeAsRequestAndLimit(t *testing.T) {
+	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	cfg.Runtime.Kubernetes.Resources = config.PodResources{
 		Issue:      config.Reservation{CPU: "4", CPURequest: "2", Memory: "32Gi", MemoryRequest: "8Gi", EphemeralStorage: "20Gi", EphemeralStorageRequest: "1Gi"},
 		Controller: config.Reservation{CPU: "1500m", CPURequest: "1500m", Memory: "8Gi", MemoryRequest: "8Gi", EphemeralStorage: "40Gi", EphemeralStorageRequest: "2Gi"},
 	}
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -620,6 +653,7 @@ func TestEveryReservationReachesTheSandboxRuntimeAsRequestAndLimit(t *testing.T)
 // runtime.kubernetes.setup reaches sandbox.Options unchanged: every role's launcher receives this
 // argv, while leaving the setting out keeps the runtime setup-free.
 func TestKubernetesSetupReachesTheSandboxRuntime(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
 	k := config.Kubernetes{
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
@@ -627,7 +661,7 @@ func TestKubernetesSetupReachesTheSandboxRuntime(t *testing.T) {
 	}
 	want := []string{"/bin/sh", "-c", "omp plugin install agent-skills"}
 	k.Setup = want
-	opts, err := sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, k, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -636,7 +670,7 @@ func TestKubernetesSetupReachesTheSandboxRuntime(t *testing.T) {
 	}
 
 	k.Setup = nil
-	opts, err = sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	opts, err = sandboxOptions(cfg, k, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions without setup: %v", err)
 	}
@@ -650,6 +684,7 @@ func TestKubernetesSetupReachesTheSandboxRuntime(t *testing.T) {
 // runtime.kubernetes.storage_class where the file names none), its keep_volume and its metadata
 // endpoint, while leaving the block out runs every pod in gVisor.
 func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
 	k := config.Kubernetes{
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
@@ -662,7 +697,7 @@ func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
 			IdentityProvider: "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster",
 		}},
 	}
-	opts, err := sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, k, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -682,7 +717,7 @@ func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
 	}
 
 	k.Sandbox = config.SandboxConfig{}
-	opts, err = sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	opts, err = sandboxOptions(cfg, k, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions without a sandbox block: %v", err)
 	}
@@ -694,10 +729,11 @@ func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
 // runtime.kubernetes.repository_cache reaches the runtime's Options as its volume, its intervals and
 // its container's requirements, a settled reservation's lower memory request under its limit.
 func TestTheRepositoryCacheReachesTheSandboxRuntime(t *testing.T) {
+	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	reservation := config.Reservation{CPU: "2", CPURequest: "2", Memory: "8Gi", MemoryRequest: "4Gi", EphemeralStorage: "2Gi", EphemeralStorageRequest: "1Gi"}
 	cfg.Runtime.Kubernetes.RepositoryCache = config.RepositoryCacheConfig{Volume: "50Gi", RefreshMinutes: 5, RetainHours: 24, Resources: reservation}
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -722,9 +758,10 @@ func TestTheRepositoryCacheReachesTheSandboxRuntime(t *testing.T) {
 // which hands the enabled block's runtime nothing and the disabled one's the settings, and the
 // two marks swapped.
 func TestTheVolumeTrimReachesTheSandboxRuntime(t *testing.T) {
+	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	cfg.Runtime.Kubernetes.VolumeTrim = config.VolumeTrimConfig{Enabled: true, HighPercent: 90, LowPercent: 60, MinAgeMinutes: 45, IntervalSeconds: 30}
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -734,7 +771,7 @@ func TestTheVolumeTrimReachesTheSandboxRuntime(t *testing.T) {
 	}
 
 	cfg.Runtime.Kubernetes.VolumeTrim.Enabled = false
-	opts, err = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions with the trimmer off: %v", err)
 	}
@@ -752,6 +789,7 @@ func TestTheVolumeTrimReachesTheSandboxRuntime(t *testing.T) {
 // container takes ImageProbe.Resources as it is (TestManifestGoldens, probe.json), and a boot-level
 // run needs a cluster.
 func TestAnImpossibleControllerReservationLeavesTheImageProbeItsOwn(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	body := fmt.Sprintf(`project: DEMO
 postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
@@ -804,7 +842,7 @@ current-context: legion-daemon
 	if err != nil {
 		t.Fatalf("load the liveness checkpoint's configuration: %v", err)
 	}
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "demo", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "demo", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -829,10 +867,12 @@ current-context: legion-daemon
 }
 
 // A Kubernetes daemon refuses, before its boot, an operator pod that collides with Legion's own —
-// a mount at Legion's launcher token projection (the LEGION-270 plan's negative control), and a provider key
-// or pod variable a launch secret's pointer names (the Envoy bearer's, the NATS nkey seed's) — so
-// no pod is ever built with it.
+// a mount at Legion's launcher token projection (the LEGION-270 plan's negative control), a provider key
+// or pod variable a launch secret's pointer names (the Envoy bearer's, the NATS nkey seed's), and,
+// under dispatch_token_broker, a provider key named for the Dispatch token — so no pod is ever
+// built with it.
 func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		change func(*config.Config)
@@ -877,6 +917,18 @@ func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(
 			want: "provider_keys names FOO from the providers Secret's key NATS_NKEY_SEED, which the pod mounts as the launch secret NATS_NKEY_SEED: the shim would export that secret into Oh My Pi's environment as FOO",
 		},
 		{
+			// The boot refuses this key with or without dispatch_token_broker, since the runtime
+			// owns its pointer, DISPATCH_TOKEN_FILE. Under the setting it gives the broker's own
+			// reason: each role trades its pod's identity for its own Dispatch token.
+			name: "a provider key for the Dispatch token under dispatch_token_broker",
+			change: func(cfg *config.Config) {
+				cfg.DispatchTokenBroker = true
+				cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpirySeconds: 3600, ExchangeAudience: "legion-broker-exchange"}
+				cfg.ProviderKeys = []config.ProviderKey{{Env: "DISPATCH_TOKEN", Secret: "dispatch"}}
+			},
+			want: "provider_keys names DISPATCH_TOKEN, a Dispatch credential, under dispatch_token_broker: each role trades its pod's identity for its own Dispatch token, so the providers Secret may hold no shared one; remove the key",
+		},
+		{
 			// Every agent reads it, and the dispatch command turns Dispatch off over a value that is
 			// not a URL, so the daemon refuses it here rather than leave each agent to find out.
 			name: "a public Dispatch dashboard that is not a URL",
@@ -908,6 +960,7 @@ func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(
 // agent-secrets-exchange and a mount at /var/run/legion/agent-secrets-exchange are the operator's,
 // as they were before the key existed (R9); with one, the first of them is refused by name.
 func TestTheDaemonLeavesTheExchangeNamesToTheOperatorWhileTheExchangeIsOff(t *testing.T) {
+	t.Parallel()
 	emptyDir := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
 	pod := config.PodConfig{
 		Env: map[string]string{"AGENT_SECRETS_MACHINE_IDENTITY": "metadata", "AGENT_SECRETS_MACHINE_TOKEN_FILE": "/etc/operator/identity/token"},
@@ -948,6 +1001,7 @@ func TestTheDaemonLeavesTheExchangeNamesToTheOperatorWhileTheExchangeIsOff(t *te
 // builds from them are the sandbox package's to test, and this is the one place the daemon hands
 // them over.
 func TestTheOperatorsPodReachesTheSandboxRuntime(t *testing.T) {
+	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	cfg.ProviderKeys = []config.ProviderKey{{Env: "ANTHROPIC_API_KEY", Secret: "anthropic"}}
 	pod := config.PodConfig{
@@ -957,7 +1011,7 @@ func TestTheOperatorsPodReachesTheSandboxRuntime(t *testing.T) {
 		VolumeMounts:   []corev1.VolumeMount{{Name: "creds", MountPath: "/etc/legion-operator/creds", ReadOnly: true}},
 	}
 	cfg.Runtime.Kubernetes.Pod = pod
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -975,6 +1029,7 @@ func TestTheOperatorsPodReachesTheSandboxRuntime(t *testing.T) {
 // NATS_NKEY_SEED — it is a launch secret the runtime reads from the providers mount, and with none
 // it is neither.
 func TestTheNatsSeedReachesTheSandboxRuntimeAsTheProvidersSecrets(t *testing.T) {
+	t.Parallel()
 	seedFile := testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 	for _, tc := range []struct {
 		name string
@@ -990,7 +1045,7 @@ func TestTheNatsSeedReachesTheSandboxRuntimeAsTheProvidersSecrets(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 			cfg.NatsNkeySeedFile = tc.key
-			opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(tc.env), quietLogger())
+			opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(tc.env), quietLogger())
 			if err != nil {
 				t.Fatalf("sandboxOptions: %v", err)
 			}
@@ -1034,10 +1089,11 @@ func awaitHealthz(t *testing.T, cfg config.Config, done chan error) {
 // worker_stop_timeout_seconds in particular has no other test: it is tmux's stop grace and the
 // sandbox's termination grace.
 func TestEveryDurationKeyReachesTheRuntimeOptionThatTakesIt(t *testing.T) {
+	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	cfg.WorkerStopTimeout, cfg.WorkerBootTimeout, cfg.ProbeInterval, cfg.SlowCommandTimeout = 11*time.Second, 22*time.Second, 33*time.Second, 44*time.Second
 
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -1064,11 +1120,12 @@ func TestEveryDurationKeyReachesTheRuntimeOptionThatTakesIt(t *testing.T) {
 // nil when the configuration sets no block, and the worker image's agent-secrets binary is
 // always the tools path (Task 11 mounts it there whether or not the deployment enrolls).
 func TestSandboxOptionsCarryTheAgentSecretsBlock(t *testing.T) {
+	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1") // the file's fixture (`:32-41`): testConfig under runtime: kubernetes
 	cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{
 		URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpirySeconds: 1800, ExchangeAudience: "legion-broker-exchange",
 	}
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1080,7 +1137,7 @@ func TestSandboxOptionsCarryTheAgentSecretsBlock(t *testing.T) {
 		t.Fatalf("Tools.AgentSecrets = %q", opts.Tools.AgentSecrets)
 	}
 	cfg.Runtime.Kubernetes.AgentSecrets = nil
-	opts, _ = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, _ = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if opts.AgentSecrets != nil {
 		t.Fatalf("AgentSecrets = %+v without the block", opts.AgentSecrets)
 	}
@@ -1090,11 +1147,12 @@ func TestSandboxOptionsCarryTheAgentSecretsBlock(t *testing.T) {
 // launches as LEGION_SLACK_CHANNELS and compares with the list a running controller was launched
 // under (sandbox's address record), so a changed list relaunches it; no channel is no list.
 func TestSandboxOptionsCarryTheProjectsSlackChannels(t *testing.T) {
+	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	project := cfg.Projects[cfg.Project]
 	project.SlackChannels = []string{"C00000000", "G00000001"}
 	cfg.Projects = map[string]config.Project{cfg.Project: project}
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1103,7 +1161,7 @@ func TestSandboxOptionsCarryTheProjectsSlackChannels(t *testing.T) {
 	}
 	project.SlackChannels = nil
 	cfg.Projects[cfg.Project] = project
-	if opts, _ = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger()); len(opts.ControllerSlackChannels) != 0 {
+	if opts, _ = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger()); len(opts.ControllerSlackChannels) != 0 {
 		t.Fatalf("ControllerSlackChannels = %q with no channel, want none", opts.ControllerSlackChannels)
 	}
 }
@@ -1114,6 +1172,7 @@ func TestSandboxOptionsCarryTheProjectsSlackChannels(t *testing.T) {
 // carry no field for at all. newSecretsLogin hands the runtime only the broker URL, audience and
 // pod token lifetime, and no launch's secrets ever name an AGENT_SECRETS_* variable.
 func TestNoCredentialMaterialReachesAPod(t *testing.T) {
+	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{
 		URL: "https://s", TokenFile: filepath.Join(t.TempDir(), "token"), Audience: "agent-secrets", TokenExpirySeconds: 3600,
@@ -1123,7 +1182,7 @@ func TestNoCredentialMaterialReachesAPod(t *testing.T) {
 			t.Fatalf("launch secret %s: no daemon credential material may reach a pod", secret.name)
 		}
 	}
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1153,6 +1212,7 @@ func TestNoCredentialMaterialReachesAPod(t *testing.T) {
 // newSecretsLogin logs in at boot with the token token_file holds, posting it to the broker's token
 // route, and logs that it did; no confirmation code exists, so nothing waits for a person.
 func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var tokens []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1204,6 +1264,7 @@ func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 // identity, so the broker files the pod's requests under the claim and the claim's next pod reads
 // them.
 func TestTheBrokerEnrollerSendsTheClaim(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var enrolled []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1256,6 +1317,7 @@ type lockedBuffer = testlog.Buffer
 // A hello carrying an agent-secrets identity maps to the machine's StreamHello with it; a hello
 // with none maps to one with no identity.
 func TestAHelloWithAnIdentityMapsToTheMachinesEvent(t *testing.T) {
+	t.Parallel()
 	ev, err := superviseEvent(stream.Hello{Claim: "legion-LEGION-209-implementer", Generation: 2,
 		AgentSecrets: &stream.AgentSecretsIdentity{Thumbprint: "tp", PodToken: "a.b.c"}})
 	if err != nil {
@@ -1278,6 +1340,7 @@ func TestAHelloWithAnIdentityMapsToTheMachinesEvent(t *testing.T) {
 // worker_boot_timeout_seconds reached slow_command_timeout_seconds never got there). imageProbe
 // carries the same budget onto its ImageProbe.
 func TestProbeBudgetIsTheLargerOfTheTwoTimeoutsPlusAMargin(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		bootTimeout, slowCommand time.Duration
 		wantBudget               time.Duration
@@ -1308,6 +1371,7 @@ func TestProbeBudgetIsTheLargerOfTheTwoTimeoutsPlusAMargin(t *testing.T) {
 // above slow_command_timeout_seconds; a daemon whose worker_boot_timeout_seconds leaves it under
 // that bound logs nothing of it.
 func TestTheBootLogNamesTheDerivedProbeBudgetOnlyWhenItIsDerived(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		bootTimeout time.Duration

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/natsconn"
 )
 
 // ErrPublishDenied is returned, wrapping nats.ErrPermissionViolation and the server's own text,
@@ -25,14 +27,34 @@ var ErrPublishDenied = errors.New("NATS denied the publish")
 // did not acknowledge, from one that is not known to have reached the server at all.
 var ErrPublishUnconfirmed = errors.New("publish not known to have been accepted")
 
+// ErrWindowEndedBeforePublish is also the error of a publish whose window had already ended when
+// publishConfirmed came to make it, its deadline spent or its context cancelled, so that nothing
+// was sent. Its text is no part of that error's, which stays the spent window's (errWindowElapsed)
+// for whatever matches it. A caller reads it with errors.Is to tell a publish that never left this
+// process from one whose window ended after it was made (a flush or an acknowledgement that did not
+// come in time), which may have reached its subscribers; the listener marks a role forward that
+// failed so (finishRoleForward).
+var ErrWindowEndedBeforePublish = errors.New("the window ended before the publish was made")
+
+// windowEndedBeforePublish is publishConfirmed's error for a window that ended before the publish:
+// err's text alone, and both err and ErrWindowEndedBeforePublish to errors.Is.
+type windowEndedBeforePublish struct{ err error }
+
+func (e windowEndedBeforePublish) Error() string { return e.err.Error() }
+
+func (e windowEndedBeforePublish) Unwrap() []error {
+	return []error{e.err, ErrWindowEndedBeforePublish}
+}
+
 // publishConfirmed publishes msg on conn with publish, flushes within ctx's deadline, and confirms
 // the server accepted it (confirmPublished). A nil error means the server accepted the publish;
-// otherwise the error is a window already spent (errWindowElapsed), nats.go's refusal before
-// sending (refused), a flush that failed or ran out of the window, ErrPublishDenied, or one
-// wrapping ErrPublishUnconfirmed. publish is conn.PublishMsg, bound to the same conn: every caller
-// reads its connection once and passes it and its PublishMsg, so publish publishes on the
-// connection observe and confirmPublished judge. It is a parameter so a test can make the server's
-// answer arrive before publish returns, which is the case the state read before it exists for.
+// otherwise the error is a window already spent (errWindowElapsed, and before the publish
+// ErrWindowEndedBeforePublish as well), nats.go's refusal before sending (refused), a flush that
+// failed or ran out of the window, ErrPublishDenied, or one wrapping ErrPublishUnconfirmed. publish
+// is conn.PublishMsg, bound to the same conn: every caller reads its connection once and passes it
+// and its PublishMsg, so publish publishes on the connection observe and confirmPublished judge. It
+// is a parameter so a test can make the server's answer arrive before publish returns, which is the
+// case the state read before it exists for.
 //
 // A ctx that has ended - cancelled, or its deadline spent - is refused before publish is called,
 // never after: a core publish is on its way to the subject the moment publish returns, so
@@ -50,7 +72,7 @@ func (c *Client) publishConfirmed(ctx context.Context, conn *nats.Conn, msg *nat
 		err = context.DeadlineExceeded
 	}
 	if err != nil {
-		return fmt.Errorf("%w: %w", errWindowElapsed(msg.Subject), err)
+		return windowEndedBeforePublish{fmt.Errorf("%w: %w", errWindowElapsed(msg.Subject), err)}
 	}
 	before := observe(conn)
 	if err := publish(msg); err != nil {
@@ -136,7 +158,17 @@ func observe(conn *nats.Conn) connState {
 // subscription), at which one that falls far enough behind to report a slow consumer, twice around
 // one publish, is rare. So it is accepted.
 func confirmPublished(conn *nats.Conn, subject string, before connState) error {
-	after := observe(conn)
+	return confirmedAcross(subject, before, observe(conn))
+}
+
+// confirmedAcross is confirmPublished's judgment of a core publish to subject from the connection's
+// state observed before the publish and after its flush. The connection's last error, when it
+// changed and is no denial of this publish, prints by its class (natsconn.ConnectionClass), as every
+// NATS line of the bus does, and stays beneath for errors.Is: a server's -ERR that nats.go names no
+// refusal for sets the last error to the server's text just before nats.go closes the connection,
+// so an observation between the two holds that text, and nats.go's own fixed words and a server's
+// named refusal print as they are.
+func confirmedAcross(subject string, before, after connState) error {
 	if !after.connected || after.reconnects != before.reconnects {
 		return fmt.Errorf("bus: %w: NATS disconnected during the publish to %q", ErrPublishUnconfirmed, subject)
 	}
@@ -147,7 +179,7 @@ func confirmPublished(conn *nats.Conn, subject string, before connState) error {
 		return denied
 	}
 	return fmt.Errorf("bus: %w: NATS reported an error during the publish to %q: %w",
-		ErrPublishUnconfirmed, subject, after.lastError)
+		ErrPublishUnconfirmed, subject, natsconn.ConnectionError(after.lastError))
 }
 
 // publishDenial names err as ErrPublishDenied when it is the server's refusal of a publish to

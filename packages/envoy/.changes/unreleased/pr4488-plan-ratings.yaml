@@ -2,8 +2,9 @@ kind: Added
 body: |-
   Dispatch keeps the plan each run of an issue ran from and the rating each retro gave it:
   `PUT /api/v1/issues/{key}/plans/{id}` (`400 PLAN_INPUT`, `409 PLAN_OTHER_ISSUE`) and
-  `PUT /api/v1/issues/{key}/steps/{id}/rating`, each written by the session
-  `legion-daemon:<PROJECT>` of the issue's project alone (`403 STEP_WRITER` otherwise).
+  `PUT /api/v1/issues/{key}/steps/{id}/rating`, each written by a Legion daemon's session alone:
+  `legion-daemon:<PROJECT>` of the issue's project, or the session of another project's daemon
+  that its broker token proves (`403 STEP_WRITER` otherwise).
   `GET /api/v1/projects/{key}/plans` lists a project's finished issues, each with its plan, its
   ratings and their reasons, its time and its count of failed steps, and a read-only token may
   read it. The step read gains `rating` and `rating_reason`.

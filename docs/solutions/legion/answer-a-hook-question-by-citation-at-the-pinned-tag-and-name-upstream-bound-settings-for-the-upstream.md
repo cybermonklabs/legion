@@ -21,8 +21,8 @@ related_issues:
 
 ## Two decisions that shaped the whole issue
 
-Sami's order of attempts for putting an agent's session in Postgres was: the Legion extension
-first (swap the storage from inside OMP), a setting in the Oh My Pi fork only if no hook exists.
+The order of attempts for putting an agent's session in Postgres was: the Legion extension first
+(swap the storage from inside OMP), a setting in the Oh My Pi fork only if no hook exists.
 Two things decided early saved every later phase from re-litigating them.
 
 ### 1. "Is there a hook?" is answered by code citation at the pinned tag, not by trying

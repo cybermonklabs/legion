@@ -37,20 +37,24 @@ func (c *passClock) times() []time.Time {
 	return append([]time.Time(nil), c.at...)
 }
 
-// Every wait after a pass is the interval plus up to a tenth of it again, never less: at the
-// smallest draw the gap is exactly the interval, at the largest it is just under 1.1 intervals, so
-// no tick lands inside a period duty_passes already records as served and two processes' ticks do
-// not stay in step. Each pass is handed the moment its timer fired as its due time, the moment a
-// leased pass buckets its period by (Exclusive).
-func TestRunJitteredWaitsBetweenOneAndOnePointOneIntervalsAfterEveryPass(t *testing.T) {
+// Every wait after a pass is the interval less up to a tenth of it, never more: at the smallest
+// draw the gap is exactly the interval, at the largest it is just over 0.9 of one. So a pass comes
+// at most one interval after the pass before it, two processes' ticks do not stay in step, and
+// every gap is longer than the lease period a leased pass hands Exclusive (duty.LeasePeriod), so no
+// tick lands inside a period its own previous pass served. Each pass is handed the moment its timer
+// fired as its due time, the moment a leased pass buckets its period by (Exclusive).
+func TestRunJitteredWaitsMoreThanNineTenthsAndAtMostOneIntervalAfterEveryPass(t *testing.T) {
+	// Not parallel: its rows fix duty.JitterN (fixJitter), the package variable every jittered
+	// wait reads.
 	const interval = 5 * time.Minute
+	period := duty.LeasePeriod(interval)
 	for _, tc := range []struct {
 		name string
 		draw func(n time.Duration) time.Duration
 		gap  time.Duration
 	}{
 		{name: "smallest draw", draw: func(time.Duration) time.Duration { return 0 }, gap: interval},
-		{name: "largest draw", draw: func(n time.Duration) time.Duration { return n - 1 }, gap: interval + interval/10 - 1},
+		{name: "largest draw", draw: func(n time.Duration) time.Duration { return n - 1 }, gap: interval - interval/10 + 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixJitter(t, tc.draw)
@@ -73,16 +77,16 @@ func TestRunJitteredWaitsBetweenOneAndOnePointOneIntervalsAfterEveryPass(t *test
 				<-done
 
 				at := passes.times()
-				if len(at) < 4 {
-					t.Fatalf("passes in six intervals = %d, want at least 4", len(at))
+				if len(at) < 6 {
+					t.Fatalf("passes in six intervals = %d, want at least 6", len(at))
 				}
 				if start := at[0].Sub(booted); start < 0 || start >= interval {
 					t.Errorf("first pass %v after boot, want within [0, %v)", start, interval)
 				}
 				for i := 1; i < len(at); i++ {
 					gap := at[i].Sub(at[i-1])
-					if gap < interval || gap >= interval+interval/10 {
-						t.Errorf("gap before pass %d = %v, want within [%v, %v)", i+1, gap, interval, interval+interval/10)
+					if gap <= period || gap > interval {
+						t.Errorf("gap before pass %d = %v, want within (%v, %v]", i+1, gap, period, interval)
 					}
 					if gap != tc.gap {
 						t.Errorf("gap before pass %d = %v, want %v for this draw", i+1, gap, tc.gap)
@@ -95,6 +99,7 @@ func TestRunJitteredWaitsBetweenOneAndOnePointOneIntervalsAfterEveryPass(t *test
 
 // A caller with nothing to do never starts the loop.
 func TestRunJitteredDoesNotStartWhenIdle(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ran := false
 		duty.RunJittered(context.Background(), time.Minute, func() bool { return true }, func(context.Context, time.Time) { ran = true })
@@ -116,6 +121,9 @@ const runLeasedDeadline = 30 * time.Second
 // indexed. And no tick may come sooner than its wait after the pass before it ended, which is what
 // keeps two of a lone loop's ticks out of one period.
 func TestRunLeasedAfterEachPassTicksAtStartAndThenAtTheWaitEachPassAsksFor(t *testing.T) {
+	// Not parallel: it holds each pass to beginning at least the 100 ms step after the one before
+	// it ended, and the parallel tests' load could delay a tick by that much, so a loop that
+	// ticked on a fixed cadence would go unseen.
 	leases := leasesOf(t, storetest.Open(t))
 	const interval, step = time.Hour, 100 * time.Millisecond
 	const passes = 4
@@ -165,6 +173,9 @@ func TestRunLeasedAfterEachPassTicksAtStartAndThenAtTheWaitEachPassAsksFor(t *te
 // first) - must not pass at start: the issue-ask repair's boot pass would run twice on each
 // deploy.
 func TestRunLeasedWaitsAnIntervalBeforeTheFirstTickWhenAsked(t *testing.T) {
+	// Not parallel: it holds the first pass to coming at least the 300 ms interval after start,
+	// and the parallel tests' load could delay a pass made at start by that much, so a loop that
+	// passed at start would go unseen.
 	leases := leasesOf(t, storetest.Open(t))
 	const interval = 300 * time.Millisecond
 

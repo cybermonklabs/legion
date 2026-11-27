@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  A `plan_task` block of a Dispatch document takes a `steps` attribute, the steps of Legion that
+  the task runs, and the read of one version of a document answers that version's blocks with
+  `blocks=true`, so a reader gets the plan exactly as that version wrote it. An issue's plan node
+  takes each later version of the owner's plan that Legion takes: a write of a version above the
+  one the node holds replaces its source, its document, its version and its tasks in one write,
+  and a write at or below it changes nothing, so the default plan, which counts as version 0,
+  gives way to the owner's first version.
+time: 2026-11-20T10:37:42Z
+custom:
+    Issue: pr4611

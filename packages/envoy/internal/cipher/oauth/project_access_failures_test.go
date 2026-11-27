@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -102,11 +103,11 @@ func TestAnUnreadableAccessTokenFileRefusesTheTrade(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			server := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{project: {Visibility: "private", Owner: person}},
 				map[string]string{person: projectaccess.MemberRestricted})
-			client := projectaccess.New(server.URL, ciphertoken.NewAccountToken(c.path(t)), nil)
-			if _, err := client.Access(context.Background(), project, person); !errors.Is(err, projectaccess.ErrBrokerRefused) || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_TOKEN_FILE") {
+			client := projectaccess.New(server.URL, ciphertoken.NewAccountToken("BROKER_PROJECT_ACCESS_TOKEN_FILE", c.path(t)), nil)
+			if _, err := client.Access(context.Background(), project, person); !errors.Is(err, dispatchread.ErrBrokerRefused) || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_TOKEN_FILE") {
 				t.Fatalf("Access with an unreadable account token = %v, want ErrBrokerRefused naming BROKER_PROJECT_ACCESS_TOKEN_FILE", err)
 			}
-			if err := projectaccess.ListAllowed(context.Background(), client, person, nil); !errors.Is(err, projectaccess.ErrBrokerRefused) || errors.Is(err, projectaccess.ErrUnchecked) {
+			if err := projectaccess.ListAllowed(context.Background(), client, person, nil); !errors.Is(err, dispatchread.ErrBrokerRefused) || errors.Is(err, projectaccess.ErrUnchecked) {
 				t.Fatalf("ListAllowed(restricted, none) with an unreadable account token = %v, want ErrBrokerRefused and not ErrUnchecked", err)
 			}
 

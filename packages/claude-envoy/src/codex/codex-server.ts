@@ -25,7 +25,7 @@ import {
   admittingMoves,
   channelReopener,
   closeUnstartedConnection,
-  dialChannelNats,
+  dialChannelInbound,
   sessionAdmission,
 } from "../channel-connection"
 import type { ChannelConnection } from "../channel-topics"
@@ -41,7 +41,7 @@ import {
   startChannelSession,
 } from "../envoy-channel-server"
 import { inboundOffChannelSession } from "../envoy-off"
-import { installedPluginVersion } from "../installed-build"
+import { channelConnectionName, installedPluginVersion } from "../installed-build"
 import { SessionIdentity } from "../session-identity"
 import { sessionTitle } from "../session-title"
 import { type CodexAgentStream, startCodexAgentStream } from "./codex-agent-stream"
@@ -140,7 +140,7 @@ export function callingThread(meta: unknown): string | undefined {
 export function dispatchToolDefinition() {
   return {
     description:
-      'Runs the `dispatch` command as this session, outside Codex\'s sandbox. Pass the words after `dispatch` as `args` (for example ["read", "--issue", "LEGION-3"]) and what the command would read on standard input as `stdin` (the text of a here-document given as `--body-file -`). `["--help"]` lists the commands. Answers with what the command printed and its exit code: 0 written or read, 1 refused by Dispatch, 2 a usage error.',
+      'Runs the `dispatch` command as this session, outside Codex\'s sandbox. Pass the words after `dispatch` as `args` (for example ["read", "--issue", "LEGION-3"]) and what the command would read on standard input as `stdin` (the text of a here-document given as `--body-file -`). `["--help"]` lists the commands. Answers with what the command printed and its exit code. A command that a Dispatch spec defines exits 0 when it wrote or read. It exits 1 when Dispatch or AskGate refused it, Dispatch failed, the command could not reach Dispatch, its trade for a token at the secrets broker failed, or Dispatch kept no answer for a call that writes nothing (`ANSWER_NOT_KEPT`, which you run again). It exits 2 on a usage error or a session or configuration it cannot use. `dispatch proxy` and `dispatch login` give their own exit codes in their help.',
     inputSchema: {
       properties: {
         args: {
@@ -452,7 +452,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
     RECORD_POLL_MS,
   )
   const id = new SessionIdentity(bound.session_id, bound.cwd)
-  const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, {
+  const { dispatch, envoy, notice } = await sessionSettings(configFile, process.env, {
     cwd: bound.cwd,
     session: () => id.id,
   })
@@ -536,16 +536,23 @@ export async function runCodexEnvoyServer(): Promise<void> {
     if ("off" in inbound) {
       session = inboundOffChannelSession({ identity: id, stateDirectory, why: inbound.off })
     } else {
-      // Dialled as the Claude Code session's connection is (`dialChannelNats`): with a seed, no
-      // credential, or the session's broker token, which is then kept renewed and, at a `/new`,
-      // moved to the new session's (`followSession`) before that session's subjects are taken. A
+      // Dialled as the Claude Code session's connection is (`dialChannelInbound`): NATS with a
+      // seed, no credential, or the session's broker token, which is then kept renewed and, at a
+      // `/new`, moved to the new session's (`followSession`) before that session's subjects are
+      // taken; or the listener's relay socket, opened again for the new session at a `/new`. A
       // connection that closes for good is replaced as the Claude Code one is (`channelReopener`):
       // Codex starts no plugin server again for a thread whose server lost its connection.
-      const natsName = `codex-envoy-channel-${id.id}`
+      const natsName = channelConnectionName(
+        `codex-envoy-channel-${id.id}`,
+        bundlePath,
+        CODEX_PACKAGE_NAME,
+      )
       // A stop asked for while the token or the dial is awaited ends the start, and is no failure:
       // the process ends as an asked-for stop does, as the Claude Code server's does.
-      const dialled = await dialChannelNats(
+      const dialled = await dialChannelInbound(
         inbound,
+        envoy.url,
+        () => id.id,
         natsName,
         warn,
         connect,
@@ -568,6 +575,8 @@ export async function runCodexEnvoyServer(): Promise<void> {
       const followSession = admitting(dialled.followSession)
       const reopen = channelReopener({
         inbound,
+        listenerUrl: envoy.url,
+        session: () => id.id,
         name: natsName,
         signal: stopping.signal,
         swapKeeper: (stop) => {
@@ -590,6 +599,9 @@ export async function runCodexEnvoyServer(): Promise<void> {
         heartbeatMs: envoy.heartbeatMs,
         identity: id,
         ...(followSession === undefined ? {} : { followSession }),
+        ...(dialled.reportOutagesTo === undefined
+          ? {}
+          : { reportOutagesTo: dialled.reportOutagesTo }),
         notifier: {
           notification: ({ content, eventId }) =>
             codexDelivery.deliver({ content, ...(eventId === undefined ? {} : { eventId }) }),
@@ -600,9 +612,10 @@ export async function runCodexEnvoyServer(): Promise<void> {
           createCodexUserTurnRouter({
             ask: (question) => askSideQuestion(command(), id.id, question),
             deliver: (item) => codexDelivery.deliver(item),
-            dispatch: (ms) => {
+            dispatch: async (ms) => {
               const active = activeDispatchSettings(
-                sessionDispatchSettings(configFile, process.env, { cwd: bound.cwd }).dispatch,
+                (await sessionDispatchSettings(configFile, process.env, { cwd: bound.cwd }))
+                  .dispatch,
               )
               return active === null
                 ? undefined
@@ -636,6 +649,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
       session = started
       stream = startCodexAgentStream({
         connection,
+        liveView: dialled.liveView,
         sessionId: id.id,
         warn,
         ...(admission === undefined

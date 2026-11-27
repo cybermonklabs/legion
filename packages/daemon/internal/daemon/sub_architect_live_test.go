@@ -8,10 +8,12 @@
 // published to its own topic alone, and the daemon writes one `outbox notice published` line for
 // each notice it publishes. The child's architect files its own children under its issue and
 // releases them with its own grant, and a grandchild's notices reach it rather than the root's
-// architect. It may park, rerun and release only issues under its own issue, and is answered 403
-// ISSUE_NOT_OWNED for any other. When its claim fails because its launches ran out, the architect
-// above it is told, the child's notices go there too, and the child's next phase start retries the
-// claim in the same session with fresh budgets. A parked child's architect is suspended with the
+// architect. It may rerun and release only issues under its own issue, and is answered 403
+// ISSUE_NOT_OWNED for any other. Its own status write in Dispatch on an issue under its own issue
+// stands, and the daemon sets back its write on its sibling and on the root. When its claim fails
+// because its launches ran out, the architect above it is told, the child's notices go there too,
+// and the child's next phase start retries the claim in the same session with fresh budgets. A
+// child's architect is suspended with the child when the root's architect writes backlog on the
 // child, and the child's rerun resumes that session.
 // scripts/e2e/sub-architect.sh builds this driver with `-tags e2e` and owns the nats-server and
 // the PostgreSQL it runs against, through the run lib/live-daemon-proof.sh makes around every
@@ -71,6 +73,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -116,6 +119,7 @@ type subArchitectLive struct {
 // TestEveryChildThatStartsRunsUnderItsOwnArchitectLive drives the seven steps of the proof
 // against one booted daemon.
 func TestEveryChildThatStartsRunsUnderItsOwnArchitectLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newSubArchitectLive(t)
 	r.step("release", r.releaseStep)
@@ -165,7 +169,7 @@ func (r *subArchitectLive) seed() {
 	ctx := context.Background()
 	r.board.show(r.tree, "in_progress")
 	approved := 1
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.tree, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.tree, Project: r.cfg.Project,
 			Title: r.tree, Phase: phase.Planning, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "A",
@@ -276,38 +280,51 @@ func (r *subArchitectLive) grandchildStep() {
 	r.note("read back: %s's architect topic holds no child-status of %s", r.tree, g)
 }
 
-// ownership: C's architect's park_child of S, its sibling, and of T, the root, are each answered
-// 403 ISSUE_NOT_OWNED, in a message naming the issue and C, with nothing written to Dispatch; its
-// park_child of G, under its own issue, is answered 200 and parks G.
+// ownership: C's architect's rerun_child of S, its sibling, and of T, the root, is each answered
+// 403 ISSUE_NOT_OWNED, in a message naming the issue and C, with nothing written to Dispatch. C's
+// architect then writes backlog on S and on T in Dispatch itself. The daemon sets each write back:
+// it writes the issue's own status to Dispatch again, and the issue stays in its phase. C's
+// architect's backlog on G, under its own issue, stands: the daemon takes it as it takes a
+// person's move, and G leaves the workflow with its slot freed.
 func (r *subArchitectLive) ownershipStep() {
 	t := r.t
 	for _, key := range []string{r.sibling, r.tree} {
 		writes := len(r.board.writes())
-		status, failure := r.childOp("park", r.childArchitect, key)
+		status, failure := r.rerun(r.childArchitect, key)
 		if status != http.StatusForbidden || failure.Code != "ISSUE_NOT_OWNED" {
-			t.Fatalf("park_child of %s by %s's architect = %d %s %s, want 403 ISSUE_NOT_OWNED", key, r.child, status, failure.Code, failure.Error)
+			t.Fatalf("rerun_child of %s by %s's architect = %d %s %s, want 403 ISSUE_NOT_OWNED", key, r.child, status, failure.Code, failure.Error)
 		}
 		if !strings.Contains(failure.Error, key) || !strings.Contains(failure.Error, r.child) {
-			t.Fatalf("the refusal of %s's park by %s's architect says %q, want it to name %s and %s", key, r.child, failure.Error, key, r.child)
+			t.Fatalf("the refusal of %s's rerun by %s's architect says %q, want it to name %s and %s", key, r.child, failure.Error, key, r.child)
 		}
 		if wrote := r.board.writes()[writes:]; len(wrote) != 0 {
-			t.Fatalf("the refused park of %s wrote %+v to Dispatch, want nothing", key, wrote)
+			t.Fatalf("the refused rerun of %s wrote %+v to Dispatch, want nothing", key, wrote)
 		}
-		r.note("drove POST /legion/v1/children/park of %s with a grant of %s's architect: %d %s — %s; the stand-in took no write",
+		r.note("drove POST /legion/v1/children/rerun of %s with a grant of %s's architect: %d %s — %s; the stand-in took no write",
 			key, r.child, status, failure.Code, failure.Error)
 	}
+	for _, key := range []string{r.sibling, r.tree} {
+		before := r.issue(key)
+		writes := len(r.board.writes())
+		r.sessionWrite(r.childArchitect, key, "backlog")
+		r.note("drove %s's architect's own write of %s to backlog: an issue.updated envelope, actor %s", r.child, key, r.childArchitect.session)
+		setBack := liveDispatchWrite{Issue: key, Status: before.Status}
+		testwait.Eventually(t, fmt.Sprintf("the daemon's write of %s back to %s over the backlog of %s's architect", key, before.Status, r.child), func() bool {
+			return slices.Contains(r.board.writes()[writes:], setBack)
+		})
+		if got := r.issue(key); got.Phase != before.Phase || got.Status != before.Status {
+			t.Fatalf("%s after the backlog of %s's architect = phase %s, status %s; want it set back, still phase %s, status %s",
+				key, r.child, got.Phase, got.Status, before.Phase, before.Status)
+		}
+		r.note("read back: the stand-in took the daemon's PATCH of %s back to %s, and %s is still %s", key, before.Status, key, before.Phase)
+	}
 	g := r.grandchild
-	if status, failure := r.childOp("park", r.childArchitect, g); status != http.StatusOK {
-		t.Fatalf("park_child of %s by %s's architect = %d %s %s, want 200", g, r.child, status, failure.Code, failure.Error)
-	}
-	r.note("drove POST /legion/v1/children/park of %s with a grant of %s's architect: 200", g, r.child)
-	if !r.board.wrote(g, "backlog") {
-		t.Fatalf("the park of %s wrote no backlog to the Dispatch stand-in; writes %+v", g, r.board.writes())
-	}
-	r.echo(g)
-	got := r.waitFor(g+" parked", g, func(got api.Issue) bool { return got.Phase == phase.Done && got.Slot == nil })
-	r.note("read back: the stand-in took the park's PATCH of %s to backlog; after that write's own event %s is %s, status %s, with no slot",
-		g, g, got.Phase, got.Status)
+	r.sessionWrite(r.childArchitect, g, "backlog")
+	r.note("drove %s's architect's own write of %s to backlog: an issue.updated envelope, actor %s", r.child, g, r.childArchitect.session)
+	got := r.waitFor(g+" out of the workflow in backlog", g, func(got api.Issue) bool {
+		return got.Phase == phase.Done && got.Status == "backlog" && got.Slot == nil
+	})
+	r.note("read back: after that write's event %s is %s, status %s, with no slot", g, got.Phase, got.Status)
 }
 
 // todo: a person moves D, under T, to todo from the Dispatch dashboard. D starts planning with an
@@ -452,9 +469,10 @@ func (r *subArchitectLive) failureStep() {
 	r.catchUpNames(c, r.waitCatchUp(c, r.childArchitect.launch), c, r.grandchild)
 }
 
-// rerun: T's architect parks D, whose architect is suspended by the daemon with its session kept;
-// T's architect then reruns D, whose next run resumes that architect's session rather than
-// spawning a fresh one, and its ready is told D at its new generation.
+// rerun: T's architect writes backlog on D in Dispatch, and D's architect is suspended by the
+// daemon with its session kept; T's architect then reruns D, whose next run resumes that
+// architect's session rather than spawning a fresh one, and its ready is told D at its new
+// generation.
 func (r *subArchitectLive) rerunStep() {
 	t := r.t
 	d := r.todoChild
@@ -462,23 +480,19 @@ func (r *subArchitectLive) rerunStep() {
 	before := r.d.claim(architect)
 	started := r.issue(d)
 	mark := len(r.rt.Calls())
-	if status, failure := r.childOp("park", r.root, d); status != http.StatusOK {
-		t.Fatalf("park_child of %s by %s's architect = %d %s %s, want 200", d, r.tree, status, failure.Code, failure.Error)
-	}
-	if !r.board.wrote(d, "backlog") {
-		t.Fatalf("the park wrote no backlog of %s to the Dispatch stand-in; writes %+v", d, r.board.writes())
-	}
-	r.echo(d)
-	r.note("drove POST /legion/v1/children/park of %s with a grant of %s's architect: 200, and that write's own event", d, r.tree)
-	r.waitFor(d+" parked", d, func(got api.Issue) bool { return got.Phase == phase.Done && got.Slot == nil })
+	r.sessionWrite(r.root, d, "backlog")
+	r.note("drove %s's architect's own write of %s to backlog: an issue.updated envelope, actor %s", r.tree, d, r.root.session)
+	r.waitFor(d+" out of the workflow in backlog", d, func(got api.Issue) bool {
+		return got.Phase == phase.Done && got.Status == "backlog" && got.Slot == nil
+	})
 	r.waitClaim(architect, "suspended by the daemon", func(held api.OperatorClaim) bool {
 		return held.State == string(supervise.StateSuspended) && held.SuspendedBy == string(supervise.SuspendedByDaemon)
 	})
 	// The suspension stopped the agent's process, and its shim's connection went with it.
 	r.todoArchitect.end()
-	parked := r.d.claim(architect)
-	if parked.Session != before.Session || parked.SessionFile != before.SessionFile {
-		t.Fatalf("%s after the park = %+v, want its session %s kept", architect, parked, before.Session)
+	suspended := r.d.claim(architect)
+	if suspended.Session != before.Session || suspended.SessionFile != before.SessionFile {
+		t.Fatalf("%s after the backlog = %+v, want its session %s kept", architect, suspended, before.Session)
 	}
 	suspends := 0
 	for _, call := range r.rt.Calls()[mark:] {
@@ -487,12 +501,12 @@ func (r *subArchitectLive) rerunStep() {
 		}
 	}
 	if suspends != 1 {
-		t.Fatalf("the park suspended %s's process %d times, want once", architect, suspends)
+		t.Fatalf("the backlog suspended %s's process %d times, want once", architect, suspends)
 	}
-	r.note("read back: %s is done; %s is %s by %s with its session %s kept, its process suspended once", d, architect, parked.State, parked.SuspendedBy, parked.Session)
+	r.note("read back: %s is done; %s is %s by %s with its session %s kept, its process suspended once", d, architect, suspended.State, suspended.SuspendedBy, suspended.Session)
 
 	mark = len(r.rt.Calls())
-	if status, failure := r.childOp("rerun", r.root, d); status != http.StatusOK {
+	if status, failure := r.rerun(r.root, d); status != http.StatusOK {
 		t.Fatalf("rerun_child of %s by %s's architect = %d %s %s, want 200", d, r.tree, status, failure.Code, failure.Error)
 	}
 	if !r.board.wrote(d, "todo") {
@@ -561,7 +575,7 @@ func (r *subArchitectLive) waitClaim(token claim.Token, what string, want func(a
 func (r *subArchitectLive) recorded(key string) *record.Issue {
 	r.t.Helper()
 	var issue *record.Issue
-	if err := r.st.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = r.records.Issue(context.Background(), tx, key)
 		return err
@@ -741,11 +755,11 @@ func (r *subArchitectLive) release(by *subArchitectSession, keys ...string) (int
 	return r.answer(r.d.request(http.MethodPost, "/legion/v1/waves/release", api.WaveReleaseRequest{GrantID: by.grant(), Issues: keys}, false))
 }
 
-// childOp is by's park_child or rerun_child (op "park" or "rerun") of key, as POST
-// /legion/v1/children/<op>: the status and, for any answer but 200, the refusal.
-func (r *subArchitectLive) childOp(op string, by *subArchitectSession, key string) (int, api.Failure) {
+// rerun is by's rerun_child of key, as POST /legion/v1/children/rerun: the status and, for any
+// answer but 200, the refusal.
+func (r *subArchitectLive) rerun(by *subArchitectSession, key string) (int, api.Failure) {
 	r.t.Helper()
-	return r.answer(r.d.request(http.MethodPost, "/legion/v1/children/"+op, api.ChildRequest{GrantID: by.grant(), Issue: key}, false))
+	return r.answer(r.d.request(http.MethodPost, "/legion/v1/children/rerun", api.ChildRequest{GrantID: by.grant(), Issue: key}, false))
 }
 
 // answer is a route's status and, for any answer but 200, the refusal its body names.
@@ -772,21 +786,41 @@ func (r *subArchitectLive) echo(key string) {
 	r.publishIssue(key, issue.status, issue.parent, r.links.of(key), true)
 }
 
+// sessionWrite publishes the event of by's own write of status on key in Dispatch, as Dispatch
+// delivers it: the issue as the board holds it, with status, its links and by's session as its
+// actor, on the next sequence, and answers its event id. An architect writes a status in Dispatch
+// itself with `dispatch issue-update`, and the daemon reads that write only from this event.
+func (r *subArchitectLive) sessionWrite(by *subArchitectSession, key, status string) string {
+	r.t.Helper()
+	r.board.mu.Lock()
+	issue := r.board.issues[key]
+	r.board.mu.Unlock()
+	return r.publishIssueBy(map[string]string{"kind": "session", "id": by.session}, key, status, issue.parent, r.links.of(key))
+}
+
 // publishIssue publishes Dispatch's issue.updated event of key at status under parent ("" for
 // none), blocked_by blockers, as a person's move from the Dispatch dashboard makes one — or, when
-// daemon, as the echo of the daemon's own write — on the next sequence, and answers its event id.
-// No issue it publishes carries the Legion label: a child needs none, and the blocker is one
-// Legion does not work. The event stands for a write already on Dispatch's board, so the board
-// shows it first, and Dispatch's reads of key answer its links (linkedDispatch).
+// daemon, as the echo of the daemon's own write — on the next sequence, and answers its event id
+// (publishIssueBy).
 func (r *subArchitectLive) publishIssue(key, status, parent string, blockers []string, daemon bool) string {
 	r.t.Helper()
-	r.board.place(key, status, parent, false)
-	r.links.link(key, blockers)
-	r.seq++
 	actor := map[string]string{"kind": "user", "id": "operator"}
 	if daemon {
 		actor = map[string]string{"kind": "session", "id": dispatch.DaemonSession(key)}
 	}
+	return r.publishIssueBy(actor, key, status, parent, blockers)
+}
+
+// publishIssueBy is publishIssue with the event's actor given: a session's own write carries
+// {"kind": "session", "id": <its session>}. No issue it publishes carries the Legion label: a child
+// needs none, and the blocker is one Legion does not work. The event stands for a write already on
+// Dispatch's board, so the board shows it first, and Dispatch's reads of key answer its links
+// (linkedDispatch).
+func (r *subArchitectLive) publishIssueBy(actor map[string]string, key, status, parent string, blockers []string) string {
+	r.t.Helper()
+	r.board.place(key, status, parent, false)
+	r.links.link(key, blockers)
+	r.seq++
 	var parentKey any
 	if parent != "" {
 		parentKey = parent
@@ -825,7 +859,7 @@ func (r *subArchitectLive) register(issue string, role claim.Role, session strin
 	r.waitClaim(token, "with its shim connected", func(held api.OperatorClaim) bool { return held.State == string(supervise.StateShimConnected) })
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
+		AgentID: session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s = %d %s, want 200", token, status, body)

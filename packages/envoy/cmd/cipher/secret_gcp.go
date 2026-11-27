@@ -33,6 +33,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -40,6 +41,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"cloud.google.com/go/auth/credentials"
+	"cloud.google.com/go/auth/oauth2adapt"
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	"golang.org/x/oauth2"
@@ -84,19 +87,29 @@ func checkSettingsKMSKeyName(settings Settings) error {
 
 // gcpCredentialsFile loads the credentials file at path, of whatever type it names, scoped for
 // Secret Manager: the file GOOGLE_APPLICATION_CREDENTIALS names and the well-known credentials
-// file. A file it cannot read is the os error, and one it cannot load errUnloadableCredentials,
-// never x/oauth2's or encoding/json's error, which quote the file's fields (credentialsFileRefusal).
-// Tests replace it.
+// file. The file is checked first, in the machine source's words, before any reader reads it
+// (cipherclient.CredentialsFileFailure): one that repeats a key, or an X.509 certificate's whose
+// files cannot be used, is refused before Google's library reads a configuration that would make
+// it start an enterprise certificate proxy's signer. An external_account file is loaded by
+// externalAccountCredentials. A file it cannot read is the os error, one the check refuses a
+// fileRefusal, and one it cannot load errUnloadableCredentials, never a library's or
+// encoding/json's error, which quote the file's fields (credentialsFileRefusal). Tests replace it.
 var gcpCredentialsFile = func(ctx context.Context, path string) (*google.Credentials, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
+	}
+	if reason := cipherclient.CredentialsFileFailure(data); reason != "" {
+		return nil, fileRefusal(reason)
 	}
 	var file struct {
 		Type string `json:"type"`
 	}
 	if json.Unmarshal(data, &file) != nil {
 		return nil, errUnloadableCredentials
+	}
+	if file.Type == string(google.ExternalAccount) {
+		return externalAccountCredentials(data)
 	}
 	creds, err := google.CredentialsFromJSONWithType(ctx, data, google.CredentialsType(file.Type), secretmanager.DefaultAuthScopes()...)
 	if err != nil {
@@ -105,18 +118,47 @@ var gcpCredentialsFile = func(ctx context.Context, path string) (*google.Credent
 	return creds, nil
 }
 
+// externalAccountCredentials loads an external_account credentials file (workload identity
+// federation) that gcpCredentialsFile checked, with cloud.google.com/go/auth, which reads every
+// credential_source, an X.509 certificate's among them (golang.org/x/oauth2 reads none), as the
+// x/oauth2 credentials the Secret Manager client and gcpUserinfo take. The file's own exchange and
+// its impersonation URL mint the account's access token. The library logs nothing, whatever
+// GOOGLE_SDK_GO_LOGGING_LEVEL says: its log of the exchange and the impersonation holds both
+// tokens.
+func externalAccountCredentials(data []byte) (*google.Credentials, error) {
+	creds, err := credentials.NewCredentialsFromJSON(credentials.ExternalAccount, data, &credentials.DetectOptions{
+		Scopes: secretmanager.DefaultAuthScopes(),
+		Logger: slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		return nil, errUnloadableCredentials
+	}
+	return oauth2adapt.Oauth2CredentialsFromAuthCredentials(creds), nil
+}
+
+// fileRefusal is why a credentials file must not be loaded, in words that print no path and no part
+// of it (cipherclient.CredentialsFileFailure).
+type fileRefusal string
+
+func (r fileRefusal) Error() string { return string(r) }
+
 // errUnloadableCredentials is a credentials file gcpCredentialsFile read but could not load: not
 // JSON, or no credential Google's libraries make a token source of.
 var errUnloadableCredentials = errors.New("holds no Google Cloud credential this command can load")
 
 // credentialsFileRefusal is the refusal of the credentials file file names (a phrase, such as
 // "the credentials file GOOGLE_APPLICATION_CREDENTIALS names") whose load failed with err
-// (gcpCredentialsFile): fixed text for a file it could not load, else the system's reason alone
-// (redact.File), which drops the path. The file holds a credential, and a variable meant for its
-// path is where a person who pasted the credential itself puts it.
+// (gcpCredentialsFile): fixed text for a file it could not load, the check's reason for one it
+// refused, else the system's reason alone (redact.File), which drops the path. The file holds a
+// credential, and a variable meant for its path is where a person who pasted the credential itself
+// puts it.
 func credentialsFileRefusal(file string, err error) error {
-	if errors.Is(err, errUnloadableCredentials) {
+	var refusal fileRefusal
+	switch {
+	case errors.Is(err, errUnloadableCredentials):
 		return fmt.Errorf("%s %w", file, errUnloadableCredentials)
+	case errors.As(err, &refusal):
+		return fmt.Errorf("%s: %w", file, refusal)
 	}
 	return fmt.Errorf("read %s: %w", file, redact.File(err))
 }
@@ -271,8 +313,8 @@ type gcloudSettings struct {
 // gcloudSettingsDeadline bounds readGcloudSettings. The read only names whom a login's token acts
 // as, which R2 makes best effort, so a gcloud that has not answered by then leaves the principal
 // unknown (unreadPrincipal) and the command goes on; each gcloud run starts a Python interpreter,
-// which on a loaded machine takes seconds, so the bound leaves room for that.
-const gcloudSettingsDeadline = 5 * time.Second
+// which on a loaded machine takes seconds, so the bound leaves room for that. Tests lengthen it.
+var gcloudSettingsDeadline = 5 * time.Second
 
 // readGcloudSettings runs `gcloud config list` under gcloudSettingsDeadline. Its error is never
 // the command's (signInWithGcloud).
@@ -475,25 +517,47 @@ var runningGcloud = struct {
 // each of which ends the form by a signal through exitBySignal itself.
 var formWatchesSignals atomic.Int32
 
+// gcloudStarted and gcloudWaited name the two moments of runRecorded at which onGcloudStep runs.
+const (
+	gcloudStarted = "started" // gcloud has started; its pid is not recorded yet
+	gcloudWaited  = "waited"  // gcloud has been waited for; what it left is not killed yet
+)
+
+// onGcloudStep runs in runRecorded at each of gcloudStarted and gcloudWaited. A test replaces it
+// to send a signal at one of those moments, which no timing of the test's own can hit on every
+// run.
+var onGcloudStep = func(step string) {}
+
 // runRecorded runs cmd as cmd.Run does, its pid recorded in runningGcloud from its start until it
 // has been waited for, so that an end by a signal (exitBySignal) kills it with its group. Where no
-// form watches createSignals, it watches them itself for as long as cmd runs
-// (watchSignalsWhileGcloudRuns). Once cmd has been waited for, on every outcome, it kills what is
-// left of cmd's group (killGroupLeft): a gcloud that exits by itself can leave a child holding
-// its output, which gcloudWaitDelay stops the wait for and does not kill. The group is gcloud's
-// own, so nothing else is in it, and while a process is left in it its id names no other group.
+// form watches createSignals, it watches them itself (watchSignalsWhileGcloudRuns) from before cmd
+// starts until what cmd left is killed, so that no signal in that span takes its default action
+// and ends this process with cmd's group still running; one caught while cmd starts is handled
+// once cmd's pid is recorded, since killRunningGcloud waits on runningGcloud's lock. Once cmd has
+// been waited for, on every outcome, it kills what is left of cmd's group (killGroupLeft): a
+// gcloud that exits by itself can leave a child holding its output, which gcloudWaitDelay stops
+// the wait for and does not kill. The group is gcloud's own, so nothing else is in it, and while
+// a process is left in it its id names no other group.
+// It runs on one OS thread from before cmd starts until cmd has been waited for: where gcloud's
+// parent-death signal is set (gcloudProcAttr), the kernel sends it when the thread that started
+// gcloud ends, not this process, and the Go runtime ends a thread only when a goroutine locked to
+// it returns locked.
 func runRecorded(cmd *exec.Cmd) error {
+	stop := watchSignalsWhileGcloudRuns()
+	defer stop()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	runningGcloud.Lock()
 	if err := cmd.Start(); err != nil {
 		runningGcloud.Unlock()
 		return err
 	}
 	pid := cmd.Process.Pid
+	onGcloudStep(gcloudStarted)
 	runningGcloud.pids[pid] = true
 	runningGcloud.Unlock()
-	stop := watchSignalsWhileGcloudRuns()
 	err := cmd.Wait()
-	stop()
+	onGcloudStep(gcloudWaited)
 	killGroupLeft(pid)
 	runningGcloud.Lock()
 	delete(runningGcloud.pids, pid)
@@ -515,7 +579,9 @@ func killRunningGcloud() {
 // ignored, until stop is called, where no form watches them (formWatchesSignals), and ends the
 // process by the first that comes (exitBySignal, which kills the running gcloud first), as the
 // signal's default action would have, once the value prompt, where it reads, has finished
-// (promptBusy). A signal that came before the stop still ends the process.
+// (promptBusy). stop never returns once the watch has taken a signal, since the process is ending
+// by it, as watchCreateSignals' stop does; a signal that came with the stop still ends the
+// process.
 func watchSignalsWhileGcloudRuns() (stop func()) {
 	if formWatchesSignals.Load() > 0 {
 		return func() {}
@@ -535,16 +601,18 @@ func watchSignalsWhileGcloudRuns() (stop func()) {
 		promptBusy.Lock()
 		exitBySignal(sig)
 	}
-	done := make(chan struct{})
+	done, exited := make(chan struct{}), make(chan struct{})
 	go func() {
 		select {
 		case sig := <-signals:
 			end(sig)
 		case <-done:
+			close(exited)
 		}
 	}()
 	return func() {
 		close(done)
+		<-exited
 		signal.Stop(signals)
 		select {
 		case sig := <-signals:
@@ -844,6 +912,12 @@ func (b *gcpBackend) displayName(id string) string { return displayName(b.settin
 // make.
 func (b *gcpBackend) requireAccount(context.Context) error { return nil }
 
+// checkTagValues refuses nothing: Secret Manager holds tags as annotations, whose values take any
+// character and no per-value limit, only one of under 16 KiB for every key and value of the secret
+// together (https://cloud.google.com/secret-manager/docs/reference/rest/v1/projects.secrets, field
+// annotations), which the API holds an update to itself.
+func (b *gcpBackend) checkTagValues(map[string]string) error { return nil }
+
 // personEmail answers, for --owner me, the lowercased email of the person this sign-in is, as
 // Google's userinfo endpoint (gcpUserinfo) names the account behind its token. It is the one
 // userinfo call any form makes. It refuses a token userinfo does not answer, which is any token
@@ -1077,6 +1151,10 @@ func (b *gcpBackend) removeTags(ctx context.Context, slug string, held heldTags,
 }
 
 // updateAnnotations sends held's annotations, as change leaves a copy of them, with held's etag.
+// The client makes one attempt (UpdateSecret's default call options retry nothing), so
+// FAILED_PRECONDITION is the etag refusing it (errTagsChanged), and any other code that is no
+// gcpDefiniteRefusal (UNAVAILABLE, DEADLINE_EXCEEDED, INTERNAL, a lost connection) may follow an
+// update the store applied: it is answered as tagsUnknown.
 func (b *gcpBackend) updateAnnotations(ctx context.Context, slug string, held heldTags, change func(map[string]string)) error {
 	annotations := maps.Clone(held.tags)
 	if annotations == nil {
@@ -1091,8 +1169,11 @@ func (b *gcpBackend) updateAnnotations(ctx context.Context, slug string, held he
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"annotations"}},
 	})
-	if status.Code(err) == codes.FailedPrecondition {
+	switch {
+	case status.Code(err) == codes.FailedPrecondition:
 		return fmt.Errorf("%w, so the store refused this write: %w", errTagsChanged, err)
+	case err != nil && !gcpDefiniteRefusal(err):
+		return tagsUnknown{err}
 	}
 	return err
 }

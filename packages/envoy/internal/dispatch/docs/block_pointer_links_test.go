@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
@@ -20,6 +22,57 @@ import (
 
 func claimPointing(id, serves, body string) string {
 	return ":::claim{#" + id + " serves=\"" + serves + "\"}\n" + body + "\n:::\n"
+}
+
+// seedPointerAttribute writes the supertag node of typeName, the attribute node of its attrName
+// pointer and the attribute_of tuple that ties them, as migration 20261109051232 seeds the
+// shipped schema's nodes into graph_nodes. The tuple arm of graph_edges reads a pointer's
+// allowed targets from this attribute node (block_pointer_targets), not from the citing row, so
+// a test over a type the shipped schema does not hold - claim - seeds its node here or the arm
+// finds no targets. targets is the types the pointer may name, null for no limit.
+func seedPointerAttribute(t *testing.T, database *store.Store, typeName, attrName string, targets []string) {
+	t.Helper()
+	updatePointerTargets(t, database, typeName, attrName, targets)
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
+		values ('supertag', $1, 'supertag', 'project', 'live', '{}'::jsonb, now(), '{"kind":"system","id":"block-schema-seed"}', 0)
+		on conflict (kind, id) do nothing`, typeName); err != nil {
+		t.Fatalf("seed the %s supertag node: %v", typeName, err)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
+		select 'attribute', $1, 'attribute_of', 'supertag', $2, now(), '{"kind":"system","id":"block-schema-seed"}', 0, null, true
+		where not exists (
+			select 1 from graph_tuples held
+			where held.from_kind = 'attribute' and held.from_id = $1 and held.kind = 'attribute_of'
+			  and held.to_kind = 'supertag' and held.to_id = $2 and held.source_event = 0 and held.asserted)`,
+		typeName+"/"+attrName, typeName); err != nil {
+		t.Fatalf("tie the %s/%s attribute to its supertag: %v", typeName, attrName, err)
+	}
+}
+
+// updatePointerTargets writes the attribute node of typeName's attrName pointer with targets,
+// which is what a schema change and its notify-driven reinstall do in a deployment
+// (pmdoc/schemanodes). It is a write of one node, no pass over any document: the tuple arm
+// reads the new targets at once, which is how a change to an attribute's targets reaches every
+// link of that attribute with no reindex of the documents that cite it.
+func updatePointerTargets(t *testing.T, database *store.Store, typeName, attrName string, targets []string) {
+	t.Helper()
+	attributes := map[string]any{"kind": "block[]", "name": attrName, "store_name": attrName, "position": 0}
+	if targets != nil {
+		attributes["targets"] = targets
+	}
+	encoded, err := json.Marshal(attributes)
+	if err != nil {
+		t.Fatalf("encode the %s/%s attribute: %v", typeName, attrName, err)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
+		values ('attribute', $1, 'attribute', 'project', 'live', $2, now(), '{"kind":"system","id":"block-schema-seed"}', 0)
+		on conflict (kind, id) do update set attributes = excluded.attributes`,
+		typeName+"/"+attrName, encoded); err != nil {
+		t.Fatalf("seed the %s/%s attribute node: %v", typeName, attrName, err)
+	}
 }
 
 // writeIndexedDocument creates document slug of CORE-1 holding markdown as its version 1, written
@@ -47,8 +100,17 @@ func writeIndexedDocument(t *testing.T, database *store.Store, service *Service,
 		`, id, written); err != nil {
 			return err
 		}
-		_, err = service.IndexDocumentReferences(ctx, id, 1, written)
-		return err
+		_, write, err := service.IndexDocumentReferences(ctx, id, 1, written)
+		if err != nil {
+			return err
+		}
+		// The caller of IndexDocumentReferences appends the pass's tuples under the event that
+		// caused the write, as the version-write and reconciliation paths do (block_index.go's
+		// Caused). This helper writes no event, so the tuples carry the store's sentinel, which
+		// is what a version no event recorded leaves. Without this the rows and their nodes are
+		// written but the tuples are not, and the graph_edges tuple arm, which answers every row
+		// that names its node, would answer nothing for this document.
+		return causeInWritePhase(ctx, tx, write, graphstore.NoEvent)
 	}); err != nil {
 		t.Fatalf("write document %s: %v", slug, err)
 	}
@@ -77,7 +139,7 @@ func editIndexedDocument(t *testing.T, service *Service, artifactID string, ops 
 // the block node nodeID.
 func requireLinksTo(t *testing.T, database *store.Store, stage, nodeID string, want ...string) {
 	t.Helper()
-	edges, err := refs.Edges(context.Background(), database.Pool, refs.Query{Direction: "in", Kind: "block", ID: nodeID})
+	edges, err := refs.Edges(context.Background(), database.Pool, model.Actor{}, refs.Query{Direction: "in", Kind: "block", ID: nodeID})
 	if err != nil {
 		t.Fatalf("%s: read the links to %s: %v", stage, nodeID, err)
 	}
@@ -121,38 +183,100 @@ func pointerRowsOf(t *testing.T, database *store.Store, artifactID string) []poi
 	return found
 }
 
-// A change of an attribute's targets reaches the pointers a document already stores at its next
-// indexing: a version of the citing document that changes nothing about the pointer lists the edge
-// the new targets allow.
-func TestATargetsChangeReachesStoredPointersAtTheNextIndexing(t *testing.T) {
+// A change of an attribute's targets reaches the pointers a document already stores at once, with
+// no pass over the documents that cite it: the tuple arm of graph_edges reads a pointer's allowed
+// targets from the attribute node (block_pointer_targets), so a write of that node - a schema
+// change and its reinstall - lists the edges the new targets allow without re-indexing any
+// citing document.
+//
+// The attribute is read as pmdoc/schemanodes.Read installs it: through the current attribute_of
+// tuple alone and from a live attribute node. An attribute_of the store has since retracted, and
+// an attribute node it holds gone, each stop answering, so the link they limited is listed with no
+// limit, as the installed schema, which declares no such attribute, lists it.
+func TestATargetsChangeReachesStoredPointersAtOnce(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process and sets an environment
+	// variable to claim it (pmdoctest.UseBlockSchema, t.Setenv).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	database, service := blockIndexService(t)
+	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
 	target := writeIndexedDocument(t, database, service, "target", ":::requirement{#r1}\nA requirement.\n:::\n")
-	checks := writeIndexedDocument(t, database, service, "checks", claimPointing("c1", "dispatch://CORE-1/artifact/target#b-r1", "It holds."))
+	writeIndexedDocument(t, database, service, "checks", claimPointing("c1", "dispatch://CORE-1/artifact/target#b-r1", "It holds."))
 	requireLinksTo(t, database, "pointing at a requirement", "CORE-1/target#r1", "serves CORE-1/checks#c1")
 
 	editIndexedDocument(t, service, target, model.EditOp{Op: "retype", Block: "r1", Type: "callout"})
 	requireLinksTo(t, database, "r1 retyped to a callout", "CORE-1/target#r1")
 
-	// No room reads the schema across the swap.
-	closeDocumentRoom(t, service, target)
-	closeDocumentRoom(t, service, checks)
-	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(pmdoc.BlockAttributes{
-		{Name: "serves", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeBlockList, Targets: []string{"requirement", "callout"}}},
-	}))
-	requireLinksTo(t, database, "serves allowing callouts, checks.md not yet indexed", "CORE-1/target#r1")
+	// The attribute now allows callouts. The tuple arm reads this off the attribute node, so the
+	// edge at r1 - a callout - is listed again at once, with no re-index of checks.md.
+	updatePointerTargets(t, database, "claim", "serves", []string{"requirement", "callout"})
+	requireLinksTo(t, database, "serves now allowing callouts, checks.md not re-indexed", "CORE-1/target#r1", "serves CORE-1/checks#c1")
 
-	editIndexedDocument(t, service, checks, model.EditOp{Op: "insert", After: "end", Markdown: "Unrelated.\n"})
-	requireLinksTo(t, database, "checks.md indexed under the new targets", "CORE-1/target#r1", "serves CORE-1/checks#c1")
-	closeDocumentRoom(t, service, checks)
+	updatePointerTargets(t, database, "claim", "serves", []string{"requirement"})
+	requirePointerTargets(t, database, "serves back at requirements alone", "CORE-1/checks#c1", "serves", []string{"requirement"})
+	requireLinksTo(t, database, "serves back at requirements alone", "CORE-1/target#r1")
+
+	stateAttributeOf(t, database, "claim", "serves", false)
+	requirePointerTargets(t, database, "the attribute_of retracted", "CORE-1/checks#c1", "serves", nil)
+	requireLinksTo(t, database, "the attribute_of retracted", "CORE-1/target#r1", "serves CORE-1/checks#c1")
+
+	stateAttributeOf(t, database, "claim", "serves", true)
+	requirePointerTargets(t, database, "the attribute_of asserted again", "CORE-1/checks#c1", "serves", []string{"requirement"})
+	requireLinksTo(t, database, "the attribute_of asserted again", "CORE-1/target#r1")
+
+	if _, err := database.Pool.Exec(context.Background(),
+		`update graph_nodes set state = 'gone' where kind = 'attribute' and id = 'claim/serves'`); err != nil {
+		t.Fatalf("end the claim/serves attribute: %v", err)
+	}
+	requirePointerTargets(t, database, "the attribute gone", "CORE-1/checks#c1", "serves", nil)
+	requireLinksTo(t, database, "the attribute gone", "CORE-1/target#r1", "serves CORE-1/checks#c1")
+}
+
+// stateAttributeOf appends an attribute_of tuple from typeName's attrName attribute to its
+// supertag, asserting or retracting it, as a schema change that adds or removes the attribute from
+// the type does.
+func stateAttributeOf(t *testing.T, database *store.Store, typeName, attrName string, asserted bool) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the attribute_of write: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{{
+		FromKind: "attribute", FromID: typeName + "/" + attrName, Kind: "attribute_of", ToKind: "supertag", ToID: typeName,
+		At: time.Now(), Who: model.Actor{Kind: "system", ID: "block-schema-seed"}, SourceEvent: graphstore.NoEvent, Asserted: asserted,
+	}}); err != nil {
+		t.Fatalf("state the attribute_of of %s/%s %t: %v", typeName, attrName, asserted, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the attribute_of write: %v", err)
+	}
+}
+
+// requirePointerTargets fails unless block_pointer_targets answers want for the pointer attribute
+// of the block at nodeID: the targets graph_edges' tuple arm holds that block's links to, nil for
+// no limit.
+func requirePointerTargets(t *testing.T, database *store.Store, stage, nodeID, attribute string, want []string) {
+	t.Helper()
+	var targets []string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select block_pointer_targets($1, $2)`, nodeID, attribute).Scan(&targets); err != nil {
+		t.Fatalf("%s: read the targets of %s's %s: %v", stage, nodeID, attribute, err)
+	}
+	if !reflect.DeepEqual(targets, want) {
+		t.Fatalf("%s: block_pointer_targets(%s, %s) = %#v, want %#v", stage, nodeID, attribute, targets, want)
+	}
 }
 
 // A browser's write is never refused: a settled browser tree holding a pointer to a block of a type
 // the attribute does not allow writes its version and stores the pointer, which the graph does not
 // list until its target has an allowed type.
 func TestABrowserWrittenPointerToADisallowedTypeIsStoredAndNotListed(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process and sets an environment
+	// variable to claim it (pmdoctest.UseBlockSchema, t.Setenv).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	database, service := blockIndexService(t)
+	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
 	target := writeIndexedDocument(t, database, service, "target", ":::callout{#k1 kind=\"note\" title=\"\"}\nA callout.\n:::\n")
 	checks := writeIndexedDocument(t, database, service, "checks", "First.\n")
 
@@ -190,6 +314,8 @@ func TestABrowserWrittenPointerToADisallowedTypeIsStoredAndNotListed(t *testing.
 // The reconciliation indexes a document's pointers as its version write did: re-indexing the same
 // version leaves every block_refs row as it was, the pointer's targets included.
 func TestTheReconciliationIndexesTheSamePointersAsTheVersionWrite(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process and sets an environment
+	// variable to claim it (pmdoctest.UseBlockSchema, t.Setenv).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	database, service := blockIndexService(t)
 	writeIndexedDocument(t, database, service, "target", ":::requirement{#r1}\nA requirement.\n:::\n")
@@ -242,6 +368,8 @@ func TestTheReconciliationIndexesTheSamePointersAsTheVersionWrite(t *testing.T) 
 // version write, which indexes the tree, and the reconciliation, which reads the version's markdown
 // back (no paragraph's or list item's id is written there), store the same rows.
 func TestARepeatedBlockIDWritesPointersOnlyFromItsNode(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process and sets an environment
+	// variable to claim it (pmdoctest.UseBlockSchema, t.Setenv).
 	const (
 		r1 = "dispatch://CORE-1/artifact/target#b-r1"
 		r2 = "dispatch://CORE-1/artifact/target#b-r2"
@@ -342,6 +470,8 @@ func TestARepeatedBlockIDWritesPointersOnlyFromItsNode(t *testing.T) {
 // holds a space keeps its pointer on both. An id holding U+0000 is written U+FFFD, as markdown reads
 // that character, and both paths list the claim's pointer under the id as written.
 func TestATypedBlockIDReadsBackFromTheMarkdownAsTheTreeHoldsIt(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process and sets an environment
+	// variable to claim it (pmdoctest.UseBlockSchema, t.Setenv).
 	const r1 = "dispatch://CORE-1/artifact/target#b-r1"
 	for _, test := range []struct{ name, id, written string }{
 		{name: "an id holding a space", id: "a b", written: "a b"},

@@ -5,7 +5,6 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 // Who a question reaches, from the command line and from the texts that state the rule.
 //
@@ -204,7 +203,6 @@ beforeEach(() => {
   projectDefault = DEFAULT_ASSIGNEE;
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function run(argv: readonly string[]): Promise<{
@@ -611,11 +609,6 @@ const OLD_RULE_ALLOWED: readonly (readonly [string, string, string])[] = [
     "packages/envoy/internal/dispatch/docs/copied_asks_test.go",
     "A block taken for a copy opens no ask and reaches nobody's Inbox",
     "a copy of an ask block opens no ask, so it is no question waiting on anyone",
-  ],
-  [
-    "skills/legion-controller/references/finding-asks.md",
-    "a reference published then reaches nobody",
-    "a bus message published while no controller runs; the asks are the ones a session follows",
   ],
   // History: an applied migration says what was true when it ran, and is never edited.
   [

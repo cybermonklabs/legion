@@ -55,6 +55,7 @@ func exceptionPayloadOf(t *testing.T, exception contracts.Envelope) deliveryExce
 // one-line summary -- is carried whatever the payload's size. The delivery path passes no bound
 // and carries the payload whole, as it always has.
 func TestARefusalExceptionCarriesThePayloadOnlyWhileItFitsItsBound(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		payload string
@@ -92,14 +93,15 @@ func TestARefusalExceptionCarriesThePayloadOnlyWhileItFitsItsBound(t *testing.T)
 // publish that fails is logged and nothing else -- no retry, and nothing of the answer changes. A
 // closed client is the failure every other cause reaches this branch the same way.
 func TestARefusalExceptionThatCannotBePublishedIsOnlyLogged(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	logs := &cmdtest.LockedBuffer{}
 	logger := logging.NewWithWriter("test", logs)
 	client.Close()
 
-	publishRefusalException(client, logger, refusedPublish(""), roles.Resolution{State: roles.Unclaimed})
+	publishRefusalException(client, logger, nil, refusedPublish(""), roles.Resolution{State: roles.Unclaimed})
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for time.Now().Before(deadline) {
 		if strings.Contains(logs.String(), exceptionPublishFailedLine) {
 			return
@@ -116,6 +118,8 @@ func TestARefusalExceptionThatCannotBePublishedIsOnlyLogged(t *testing.T) {
 // publish waits there for a connection until the bus's 5 s publish bound runs out, and this call
 // must return long before that.
 func TestARefusalExceptionDoesNotWaitForTheBus(t *testing.T) {
+	// Not parallel: it requires publishRefusalException to return within 500 ms against a
+	// reconnecting bus.
 	server, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
@@ -123,10 +127,10 @@ func TestARefusalExceptionDoesNotWaitForTheBus(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 	server.Stop(t)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for client.Connected() || !client.Conn.IsReconnecting() {
 		if time.Now().After(deadline) {
-			t.Fatal("the client is not reconnecting 10 s after its server stopped")
+			t.Fatal("the client is not reconnecting the time this package gives a wait after its server stopped")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -135,7 +139,7 @@ func TestARefusalExceptionDoesNotWaitForTheBus(t *testing.T) {
 	}
 
 	started := time.Now()
-	publishRefusalException(client, logging.NewWithWriter("test", &cmdtest.LockedBuffer{}), refusedPublish(""), roles.Resolution{State: roles.Unclaimed})
+	publishRefusalException(client, logging.NewWithWriter("test", &cmdtest.LockedBuffer{}), nil, refusedPublish(""), roles.Resolution{State: roles.Unclaimed})
 	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
 		t.Fatalf("publishRefusalException took %s against a reconnecting bus, want it back within 500ms: the 404 waits for it",
 			elapsed)
@@ -145,6 +149,7 @@ func TestARefusalExceptionDoesNotWaitForTheBus(t *testing.T) {
 // A non-live state outside roleholder is not a refusal reason the Legion daemon knows, so it raises
 // no exception. This keeps a third listener state from becoming a malformed role-lane exception.
 func TestARefusalExceptionIsRaisedOnlyForASharedNoHolderReason(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	item := refusedPublish("{}")
 	item.Topic = contracts.RoleTopicPrefix + "unknown-refusal"
@@ -157,7 +162,7 @@ func TestARefusalExceptionIsRaisedOnlyForASharedNoHolderReason(t *testing.T) {
 		t.Fatalf("flush the exception subscription: %v", err)
 	}
 
-	publishRefusalException(client, logging.NewWithWriter("test", io.Discard), item, roles.Resolution{State: roles.State("not_live")})
+	publishRefusalException(client, logging.NewWithWriter("test", io.Discard), nil, item, roles.Resolution{State: roles.State("not_live")})
 
 	if message, err := probe.NextMsg(250 * time.Millisecond); err == nil {
 		t.Fatalf("an unlisted refusal state raised an exception: %s", message.Data)
@@ -170,6 +175,7 @@ func TestARefusalExceptionIsRaisedOnlyForASharedNoHolderReason(t *testing.T) {
 // refusalExceptionBound reaches the exception lane of a live bus without its payload, and with the
 // fields a consumer of the refusal needs.
 func TestARefusalExceptionLeavesAnOversizedPayloadOutOnTheBus(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	item := refusedPublish(strings.Repeat("p", refusalExceptionBound+1))
 	item.Topic = contracts.RoleTopicPrefix + "oversized-refusal"
@@ -182,7 +188,7 @@ func TestARefusalExceptionLeavesAnOversizedPayloadOutOnTheBus(t *testing.T) {
 		t.Fatalf("flush the exception subscription: %v", err)
 	}
 
-	publishRefusalException(client, logging.NewWithWriter("test", io.Discard), item, roles.Resolution{State: roles.Unclaimed})
+	publishRefusalException(client, logging.NewWithWriter("test", io.Discard), nil, item, roles.Resolution{State: roles.Unclaimed})
 
 	message, err := probe.NextMsg(5 * time.Second)
 	if err != nil {
@@ -208,6 +214,7 @@ func TestARefusalExceptionLeavesAnOversizedPayloadOutOnTheBus(t *testing.T) {
 // exception follows it; a publish whose message the route kept instead is answered 202 and raises
 // nothing, because nothing was refused.
 func TestTheRouteRaisesOneExceptionWhereItRefusesARoleSend(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	const refused, kept = "refusal-exception-opted-out", "refusal-exception-kept"
 
@@ -250,7 +257,7 @@ func TestTheRouteRaisesOneExceptionWhereItRefusesARoleSend(t *testing.T) {
 	}
 
 	recorder, _ = publishThrough(d,
-		`{"topic":"`+contracts.RoleTopicPrefix+kept+`","source":"agent","message":"this one waits for the next holder"}`)
+		`{"topic":"`+contracts.RoleTopicPrefix+kept+`","source":"agent","source_session":"ses_refusal_exception_sender","message":"this one waits for the next holder"}`)
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("publish to an unheld role: status %d, body %s; want 202, the message kept", recorder.Code, recorder.Body.String())
 	}

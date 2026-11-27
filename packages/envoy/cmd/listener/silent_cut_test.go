@@ -38,6 +38,8 @@ func disconnectedUnderName(output, name string) bool {
 // the cut within seconds whether or not that call site carries the option, and would prove
 // nothing.
 func TestTheListenersNATSClientReportsASilentCutWithinSeconds(t *testing.T) {
+	// Not parallel: it requires the cut reported within silentCutBound (5 s), and the client's
+	// pings declare the connection stale only at two to three seconds.
 	server, uri := testnats.Start(t)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "silent-cut")
 	listener.waitHealthy(t)

@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  The xid window rig's NUMA hold tests no longer fail in a container whose seccomp profile
+  refuses the memory-policy calls, as a container runtime's default profile does without
+  CAP_SYS_NICE. The thread hold's test read the thread's policy first and failed on EPERM, where
+  the hold itself, on a machine NUMA balancing leaves alone, makes no such call. It now checks
+  that the hold answers held there, and its policy comparison skips, naming why, when the policy
+  cannot be read. Where NUMA balancing runs and the kernel refuses the hold's calls (EPERM or
+  ENOSYS), the two tests stop as the rig's other self-tests do: they fail under
+  DISPATCH_XID_REQUIRE_GAP_JUDGMENT and skip with the reason elsewhere. A thread hold that fails
+  where the kernel permits its calls fails the test in every build.
+time: 2026-11-24T11:43:30Z
+custom:
+    Issue: pr5366

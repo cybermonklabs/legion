@@ -19,7 +19,6 @@ import {
   inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
-  registerWithRelay,
 } from "@legion/envoy-client/consumer-delivery"
 import {
   createDeliveryDedupe,
@@ -37,7 +36,7 @@ import {
   failureNoticeFields,
 } from "@legion/envoy-client/delivery-ledger"
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config"
-import { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import { DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory"
 import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state"
 import {
@@ -46,7 +45,9 @@ import {
   SHUTDOWN_SETTLE_MS,
 } from "@legion/envoy-client/envoy-settings"
 import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors"
+import type { RelayOutage } from "@legion/envoy-client/listener-relay"
 import { machineID } from "@legion/envoy-client/machine"
+import { refusedTopicsNoticeText, registerWithRelay } from "@legion/envoy-client/relay-registration"
 import {
   type SessionConfigFile,
   sessionConfigFile,
@@ -63,6 +64,8 @@ import {
 import {
   EnvoyToolOperation,
   envoyToolSpecs,
+  keyTakenDetails,
+  keyTakenText,
   publishConfirmationText,
   publishResultDetails,
   sendConfirmationText,
@@ -98,7 +101,7 @@ import {
   admittingMoves,
   channelReopener,
   closeUnstartedConnection,
-  dialChannelNats,
+  dialChannelInbound,
   type ReopenConnection,
   type ReopenedConnection,
   START_STOPPING,
@@ -113,7 +116,7 @@ import {
 } from "./channel-topics"
 import { claudeProjectDirectory, claudeSessionId, configuredValue } from "./claude-session"
 import { inboundOffChannelSession, serveEnvoyOff } from "./envoy-off"
-import { installedPluginVersion } from "./installed-build"
+import { channelConnectionName, installedPluginVersion } from "./installed-build"
 import {
   endPane,
   type LegionClaim,
@@ -132,7 +135,7 @@ import {
   phaseStallFile,
 } from "./legion-phase-hook"
 import {
-  executeLegionTool,
+  answerLegionTool,
   LEGION_TOOL_NAME,
   type LegionToolRuntime,
   legionToolDefinition,
@@ -372,6 +375,9 @@ export interface ChannelSessionOptions {
    * alone. A failed move leaves the relay closed and the next registration retries it.
    */
   readonly followSession?: () => Promise<void>
+  /** Has a refused trade of the connection's own told the session's outage report: the relay
+   *  socket's (`ListenerRelay.reportOutagesTo`); absent for NATS. */
+  readonly reportOutagesTo?: (outage: RelayOutage) => void
   /**
    * Told each `/clear` this session adopts from the handoff file, as it moves from `previous` to
    * `next` (`adoptHandoff`), before the new id registers: what else the server keeps under the
@@ -507,12 +513,38 @@ export async function postDispatchReply(
   delivery: DispatchDelivery,
   result: { readonly body?: string; readonly error?: string; readonly followUp?: boolean },
 ): Promise<void> {
-  const config = sessionDispatchSettings(configFile, process.env, {
-    cwd: identity.directory,
-    session: () => identity.id,
-  }).dispatch
+  const config = (
+    await sessionDispatchSettings(configFile, process.env, {
+      cwd: identity.directory,
+      session: () => identity.id,
+    })
+  ).dispatch
   if (!config.enabled) throw new Error(config.error ?? config.notice)
   await postDeliveryReply(config, identity.id, delivery, result)
+}
+
+/**
+ * The Dispatch client a person's message, command, pick or BTW is accepted and read through
+ * (`UserTurnRouterOptions.dispatch`), bounded to `ms`, or undefined while nothing configures
+ * Dispatch. It trades under this session's id, as `postDispatchReply` does: no pod sets
+ * `AGENT_SECRETS_SESSION`, so a trade that named no session would write under none.
+ */
+export async function userTurnDispatchClient(
+  identity: SessionIdentity,
+  configFile: SessionConfigFile,
+  ms: number,
+): Promise<DispatchClient | undefined> {
+  const active = activeDispatchSettings(
+    (
+      await sessionDispatchSettings(configFile, process.env, {
+        cwd: identity.directory,
+        session: () => identity.id,
+      })
+    ).dispatch,
+  )
+  return active === null
+    ? undefined
+    : new DispatchClient(active.url, active.credential, fetch, { deadlineMs: ms })
 }
 
 /**
@@ -567,6 +599,13 @@ export function createChannelDelivery(input: {
     if (envelope === undefined) return
     const eventId = envelope.event_id
     if (eventId !== undefined && inbox.some((entry) => entry.event_id === eventId)) return
+    // A payload the card could not lay out is shown as the text its sender sent: said here, for
+    // the message the inbox lists the first time, so a copy Envoy sends again says nothing new.
+    if (rendered.payloadShownAsText !== undefined) {
+      process.stderr.write(
+        `envoy-channel: message ${eventId ?? "unknown"}'s payload is shown as its text; the card could not lay it out (${rendered.payloadShownAsText})\n`,
+      )
+    }
     inbox.unshift({
       event_id: eventId ?? "unknown",
       at: inboundTimestamp(envelope.issued_at),
@@ -600,7 +639,9 @@ export function createChannelDelivery(input: {
       if (rendered.skip) return tail.then(() => false)
       // A targeted Dispatch delivery the shared renderer could not validate is
       // never shown to the model: it is answered on Dispatch when it names a
-      // message, and dropped with a log line when it does not.
+      // message, and dropped with a log line when it does not. A report Dispatch
+      // made and gave no copy of its answer for (`DispatchWriteLandedError`)
+      // answered the attempt, and its line says it landed.
       if (rendered.rejectedDelivery !== undefined) {
         const rejected = rendered.rejectedDelivery
         process.stderr.write(
@@ -612,7 +653,9 @@ export function createChannelDelivery(input: {
           () => false,
           (error: unknown) => {
             process.stderr.write(
-              `envoy-channel: could not report the rejected delivery to Dispatch — ${messageFor(error)}\n`,
+              error instanceof DispatchWriteLandedError
+                ? `envoy-channel: the report of the rejected delivery landed on Dispatch, which gave no copy of its answer — ${error.message}\n`
+                : `envoy-channel: could not report the rejected delivery to Dispatch — ${messageFor(error)}\n`,
             )
             return false
           },
@@ -1341,6 +1384,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       })
     },
   )
+  // A relay socket's refused trade is this session's outage too, told once with its
+  // registrations', which only a registration the listener accepted ends.
+  options.reportOutagesTo?.(inboundOutage)
 
   /** The title last stamped, so a heartbeat stamps nothing new. */
   let stampedTitle: { readonly sessionID: string; readonly title: string } | undefined
@@ -1418,7 +1464,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       relay: asking?.delivery,
       ...(relayMissing === undefined ? {} : { relayMissing }),
       ownAgentSubject: directSubject,
-      followed: followedTopics.topics(),
+      followed: () => followedTopics.topics(),
       roles: heldRole === undefined ? [] : [heldRole],
       outage: inboundOutage,
       send: (topics, deliveryRequest) => {
@@ -1453,6 +1499,27 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       answered: (result) => {
         if (asking !== undefined) takeDeliveryAnswer(sessionID, asking, result)
       },
+      // An edge listener refused these topics for the projects of the session's token: they stop
+      // being followed, here and in the ledger, so no later registration carries them and a
+      // restart does not follow them again, and the session is told which, once, where it is told
+      // an outage, whichever path registered. A session this process has since left keeps its own.
+      drop: (topics, reason) => {
+        if (identity.id !== sessionID) return
+        for (const topic of topics) userTopics.delete(topic)
+        followedTopics.unfollow(topics)
+        ledger.followedChanged().catch((error: unknown) => {
+          process.stderr.write(
+            `envoy-channel: the topics the listener refused stay in the delivery state until it is written next — ${messageFor(error)}\n`,
+          )
+        })
+        if (shuttingDown) return
+        delivery.notice(refusedTopicsNoticeText(topics, reason)).catch((noticeError: unknown) => {
+          process.stderr.write(
+            `envoy-channel: the session could not be told which topics the listener refused — ${messageFor(noticeError)}\n`,
+          )
+        })
+      },
+      log: (line) => process.stderr.write(`envoy-channel: ${line}\n`),
     })
   }
 
@@ -1671,6 +1738,16 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * old one leaves the topic list before the first registration under it. Runs
    * only inside `serialized`.
    *
+   * A `/clear` waits while the connection is closed for good and not yet replaced and set up
+   * (`connectionLost`, which the replacement's own step in the chain clears, `reopenFor`): until
+   * then the new id's relay can be neither moved to its credential nor subscribed, so the new id's
+   * registration would be refused after the identity had already moved, and the handoff would end
+   * there, half done and never reported. A heartbeat queued in the chain can run after the
+   * replacement has connected and before that set-up. The check follows the read of the handoff
+   * file: the connection can close for good, and its replacement connect, while that read is
+   * awaited, and only a check after it sees the loss. The next heartbeat after the set-up adopts
+   * the `/clear`.
+   *
    * The deregistration of the old id carries this process's client instance id, so the listener
    * removes that entry only while it is still this instance's: a later process that resumed the
    * old session id and registered it keeps its registration, and this handoff takes nothing
@@ -1680,6 +1757,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     if (handoffFile === undefined) return
     const next = await readSessionHandoff(handoffFile)
     if (next === undefined || next === identity.id) return
+    if (connectionLost !== undefined) return
     const previous = identity.id
     const previousSubject = directSubject
     const nextSubject = legacyAgentSubject(next)
@@ -2109,6 +2187,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     }
     connection = live
     followSession = reopened.followSession
+    reopened.reportOutagesTo?.(inboundOutage)
     // A handoff that waits for its relay opens it on this connection as it registers.
     if (relay !== undefined && !handoffDeliveryPending) subscribeRelay(relay)
     watchConnection(live)
@@ -2296,6 +2375,9 @@ export async function executeEnvoyTool(
         ...(args.idempotency_key === undefined ? {} : { idempotencyKey: args.idempotency_key }),
         ...toMessageMetadata(args),
       })
+      if (result.keyTaken !== undefined) {
+        return { message: keyTakenText(result, "envoy_send"), ...keyTakenDetails(result) }
+      }
       return {
         message: sendConfirmationText(result),
         event_id: result.envelope.event_id,
@@ -2320,6 +2402,9 @@ export async function executeEnvoyTool(
       // plugin uses (`publishConfirmationText`). This server always names its own session as the
       // source, so the listener sends that session a message for a kept copy no session took,
       // unless it drops the copy more than an hour late, and the line says so.
+      if (result.keyTaken !== undefined) {
+        return { message: keyTakenText(result, "envoy_publish"), ...keyTakenDetails(result) }
+      }
       return {
         message: publishConfirmationText(result, { senderNamed: true }),
         event_id: result.envelope.event_id,
@@ -2419,7 +2504,7 @@ function pluginStateDirectory(): string {
  * notifications (`./legion-inbox`). */
 export async function runEnvoyChannelServer(): Promise<void> {
   const directory = projectDirectory()
-  const pane = legionPane(process.env)
+  const pane = await legionPane(process.env)
   // The session's envoy.json, by Claude Code's rule (`$CLAUDE_CONFIG_DIR/envoy.json` when that is
   // set), worked out once as the server starts; Dispatch's URL and token are re-read from it on each
   // use, so a file that moved its server takes effect without a restart.
@@ -2427,7 +2512,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // The session this server drives, read at every broker trade: Claude Code mints a new id on
   // /clear and `identity` is set to it, so a token this session presents names this session.
   const currentSessionId = (): string => identity.id
-  const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, {
+  const { dispatch, envoy, notice } = await sessionSettings(configFile, process.env, {
     cwd: directory,
     session: currentSessionId,
   })
@@ -2591,17 +2676,15 @@ export async function runEnvoyChannelServer(): Promise<void> {
       }
       // The request's signal aborts on the client's notifications/cancelled, which ends a wait
       // for a restarting daemon.
-      const answer = await executeLegionTool(legionRuntime, request.params.arguments, extra.signal)
-      // A call that returned without throwing: a completion, and a backward move, which hands the
-      // issue to another phase. Either way this session's phase is no longer open, and the
-      // reminder must stop — the same two operations the Oh My Pi host closes its phase on
-      // (`createLegionTool` in `packages/pi-legion/src/tools.ts`). `ready_for_update` ends no
-      // phase: it answers the pod's update message, and the worker then waits for its process to be
-      // replaced, so the `Stop` of the turn it answered in blocks nothing (`updateAnswered`,
-      // `./legion-phase-hook`), as the Oh My Pi host's `onUpdateAnswered` does.
-      const op = request.params.arguments?.["op"]
-      if (op === "handoff_complete" || op === "request_backward_move") phaseHook?.phaseClosed()
-      else if (op === "ready_for_update") phaseHook?.updateAnswered()
+      const answer = await answerLegionTool(
+        legionRuntime,
+        request.params.arguments ?? {},
+        {
+          phaseClosed: () => phaseHook?.phaseClosed(),
+          updateAnswered: () => phaseHook?.updateAnswered(),
+        },
+        extra.signal,
+      )
       return mcpResult(answer)
     }
     if (runtime === undefined)
@@ -2737,16 +2820,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
    */
   const router = (state: UserTurnState): UserTurnRouter => {
     const options: UserTurnRouterOptions = {
-      dispatch: (ms) => {
-        const active = activeDispatchSettings(
-          sessionDispatchSettings(configFile, process.env, { cwd: directory }).dispatch,
-        )
-        return active === null
-          ? undefined
-          : new DispatchClient(active.url, active.credential, fetch, {
-              deadlineMs: ms,
-            })
-      },
+      dispatch: (ms) => userTurnDispatchClient(identity, configFile, ms),
       effortPicked: (effort) => agentStream?.pickedEffort(effort),
       refreshSettings: () => agentStream?.refresh(),
       reply: (delivery, result) => postDispatchReply(identity, configFile, delivery, result),
@@ -2775,12 +2849,20 @@ export async function runEnvoyChannelServer(): Promise<void> {
       session = inboundOffChannelSession({ identity, stateDirectory, why: inbound.off })
     } else {
       starting =
-        inbound.natsCredential.kind === "broker"
-          ? "it waits for this session's broker token, and its stderr says what each trade came to"
-          : "it connects to NATS"
-      const natsName = `claude-envoy-channel-${identity.id}`
-      const dialled = await dialChannelNats(
+        "relaySetting" in inbound
+          ? "it opens the listener's relay socket for this session, and its stderr says why an open failed"
+          : inbound.natsCredential.kind === "broker"
+            ? "it waits for this session's broker token, and its stderr says what each trade came to"
+            : "it connects to NATS"
+      const natsName = channelConnectionName(
+        `claude-envoy-channel-${identity.id}`,
+        bundlePath,
+        packageName,
+      )
+      const dialled = await dialChannelInbound(
         inbound,
+        envoy.url,
+        currentSessionId,
         natsName,
         (text, dialError) => {
           // A redial's warning names what the start waits on; the token keeper warns through the
@@ -2808,6 +2890,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
       const followSession = admitting(dialled.followSession)
       const reopen = channelReopener({
         inbound,
+        listenerUrl: envoy.url,
+        session: currentSessionId,
         name: natsName,
         signal: booting.signal,
         swapKeeper: (stop) => {
@@ -2838,6 +2922,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
         ...(followSession === undefined ? {} : { followSession }),
+        ...(dialled.reportOutagesTo === undefined
+          ? {}
+          : { reportOutagesTo: dialled.reportOutagesTo }),
         // The live view follows a `/clear` the mod reported before it began listening.
         adopted: (previous, next) => agentStream?.sessionAdopted(previous, next),
         reopen,
@@ -2859,6 +2946,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         if (stopping || connection === undefined) return
         agentStream = startAgentStream({
           connection,
+          liveView: dialled.liveView,
           // Only a Claude-minted id follows `/clear`; the override names a fixed identity.
           followsSessionId: configuredValue(overrideSessionId) === undefined,
           ...(admission === undefined ? {} : { admitted: (id: string) => admission.admitted(id) }),

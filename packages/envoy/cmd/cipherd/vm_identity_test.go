@@ -23,7 +23,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/judge"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -83,8 +82,8 @@ func (d *discovery) keysFor(_ context.Context, issuer string) (*oidc.Keys, error
 	return d.keys[issuer], nil
 }
 
-// issuedBy is an unsigned token naming issuer, enough for oidc.Verifier.Issues, which reads the
-// claim without verifying anything.
+// issuedBy is an unsigned token naming issuer, enough for oidc.LazyVerifier.Issues, which reads
+// the claim without verifying anything.
 func issuedBy(issuer string) string {
 	payload, _ := json.Marshal(map[string]string{"iss": issuer})
 	return "e30." + base64.RawURLEncoding.EncodeToString(payload) + ".c2ln"
@@ -112,7 +111,7 @@ func TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer(t *testing.T) {
 		t.Fatalf("read the key sets of %v, want the cluster's issuer alone, %v", d.asked, want)
 	}
 	cluster, ok := found.Pod.(enroll.K8sPodVerifier)
-	if !ok || !cluster.Verifier.Issues(issuedBy("https://cluster.example")) {
+	if !ok || !oidc.DiscoveredVerifier(cluster.Verifier).Issues(issuedBy("https://cluster.example")) {
 		t.Fatalf("verifiers = pod %#v; want a pod verifier for the cluster's issuer", found.Pod)
 	}
 	if found.K8sKeys == nil || found.K8sKeys != d.keys["https://cluster.example"] {
@@ -184,7 +183,7 @@ func TestTheEnrollmentServiceCarriesTheMachineServices(t *testing.T) {
 	if want := map[string]string{exampleVMAccount: "example-fleet"}; !maps.Equal(enr.VMServicesByAccount, want) {
 		t.Fatalf("the enrollment service's VMServicesByAccount = %v, want %v", enr.VMServicesByAccount, want)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, nil)
+	m := newRequestMachine(cfg, nil, nil, nil, nil, nil, nil, nil, nil)
 	if want := map[string]string{"system:serviceaccount:example:example-sa": "example-service"}; !maps.Equal(m.ServicesByAccount, want) {
 		t.Fatalf("request Machine's ServicesByAccount = %v, want %v", m.ServicesByAccount, want)
 	}
@@ -208,7 +207,7 @@ func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 	if dispatch := judgeDispatch(cfg); dispatch != nil {
 		t.Fatalf("judgeDispatch = %#v with no BROKER_JUDGE_DISPATCH_URL; want none", dispatch)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, judgeDispatch(cfg))
+	m := newRequestMachine(cfg, nil, nil, nil, nil, nil, nil, judgeDispatch(cfg), nil)
 	if want := map[string]string{exampleVMAccount: "ada@example.com"}; !maps.Equal(m.VMPersonsByAccount, want) {
 		t.Fatalf("request Machine's VMPersonsByAccount = %v, want %v", m.VMPersonsByAccount, want)
 	}
@@ -222,7 +221,7 @@ func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 	if dispatch == nil || dispatch.BaseURL != cfg.JudgeDispatchURL || dispatch.Account == nil {
 		t.Fatalf("judgeDispatch = %#v; want a read of Dispatch at %s", dispatch, cfg.JudgeDispatchURL)
 	}
-	m = newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, dispatch)
+	m = newRequestMachine(cfg, nil, nil, nil, nil, nil, nil, dispatch, nil)
 	if got, ok := m.Assignees.(*judge.Dispatch); !ok || got != dispatch {
 		t.Fatalf("request Machine's Assignees = %#v; want the one read of Dispatch judgeDispatch built, %p", m.Assignees, dispatch)
 	}
@@ -257,16 +256,17 @@ func TestDeviceSignInWithNoVMServicesIsRefusedAtBoot(t *testing.T) {
 }
 
 // TestAGoogleAudienceWithNoGoogleCallerIsRefusedAtBoot drives the real binary: an audience that
-// neither a google: entry in BROKER_API_ACCOUNTS nor a VM service would ever present a token for
-// refuses the boot, naming the audience and both ways to give it a caller, before the broker
-// reaches its database or binds.
+// no Google caller would ever present a token for — no google: entry in BROKER_API_ACCOUNTS, no
+// VM service and no google: edge-listener entry in BROKER_NATS_SERVICES — refuses the boot,
+// naming the audience and all three ways to give it a caller, before the broker reaches its
+// database or binds.
 func TestAGoogleAudienceWithNoGoogleCallerIsRefusedAtBoot(t *testing.T) {
 	out := runRefusedBroker(t, buildBroker(t),
 		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 		"BROKER_PUBLIC_URL=https://secrets.internal.example",
 		"BROKER_GOOGLE_OIDC_AUDIENCE=example-vm-audience",
 	)
-	if !strings.Contains(out, "BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES") {
+	if !strings.Contains(out, "BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS, a VM service in BROKER_VM_SERVICES or a google: edge-listener entry in BROKER_NATS_SERVICES") {
 		t.Fatalf("broker refused, but not naming the audience's missing Google caller: %s", out)
 	}
 }

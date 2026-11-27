@@ -44,6 +44,7 @@ import (
 // concurrently against one broker. Both must succeed and keep working: each ends up with a
 // launcher credential of its own, and the enrollment each made is live under its own key.
 func TestTwoPodsOfOneAccountEnrolThemselvesAtOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_concurrent_e2e_test.go:54); it signals the test process or changes its signal handling (ciphertest.NewRig, api.Register, api.routes, (*server).listLauncherCredentials, (*server).machineLoginsOwnOnly, projectaccess.Restricted, (*Client).MemberKind, (*Client).askKind, (*Client).readKind, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (ciphertest.NewRig, api.Register, api.routes, (*server).listLauncherCredentials, (*server).machineLoginsOwnOnly, projectaccess.Restricted, (*Client).MemberKind, (*Client).askKind, (*Client).readKind, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	rig := ciphertest.NewRig(t)
 	// The schema of the release after #2777's, which is where each pod of a ServiceAccount holds
 	// a launcher credential of its own. Until then one pod's login takes the other's key over
@@ -77,7 +78,7 @@ func TestTwoPodsOfOneAccountEnrolThemselvesAtOnce(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			<-start
-			p.code = cmdEnrollPod("legion-daemon", tokenFiles[i], p.out, &p.stdout, &p.stderr)
+			p.code = cmdEnrollPod("legion-daemon", tokenFiles[i], p.out, podProjects{}, &p.stdout, &p.stderr)
 		}()
 	}
 	close(start)
@@ -140,6 +141,7 @@ func TestTwoPodsOfOneAccountEnrolThemselvesAtOnce(t *testing.T) {
 // renewal is a different proof (the session key's, not the login key's) that the real verifier
 // checks.
 func TestAPodEnrolsItselfAgainstTheRealBroker(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_concurrent_e2e_test.go:146); it signals the test process or changes its signal handling (ciphertest.NewRig, api.Register, api.routes, (*server).listLauncherCredentials, (*server).machineLoginsOwnOnly, projectaccess.Restricted, (*Client).MemberKind, (*Client).askKind, (*Client).readKind, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (ciphertest.NewRig, api.Register, api.routes, (*server).listLauncherCredentials, (*server).machineLoginsOwnOnly, projectaccess.Restricted, (*Client).MemberKind, (*Client).askKind, (*Client).readKind, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	rig := ciphertest.NewRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 	podUID := uuid.NewString()
@@ -147,7 +149,7 @@ func TestAPodEnrolsItselfAgainstTheRealBroker(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "keys")
 
 	var stdout, stderr strings.Builder
-	if code := cmdEnrollPod("legion-daemon", tokenFile, out, &stdout, &stderr); code != 0 {
+	if code := cmdEnrollPod("legion-daemon", tokenFile, out, podProjects{}, &stdout, &stderr); code != 0 {
 		t.Fatalf("enroll --pod against the real broker = exit %d, stderr %q", code, stderr.String())
 	}
 	id := strings.TrimSpace(stdout.String())
@@ -183,7 +185,7 @@ func TestAPodEnrolsItselfAgainstTheRealBroker(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := cmdEnrollPod("legion-daemon", tokenFile, out, &stdout, &stderr); code != 0 {
+	if code := cmdEnrollPod("legion-daemon", tokenFile, out, podProjects{}, &stdout, &stderr); code != 0 {
 		t.Fatalf("the re-run = exit %d, stderr %q", code, stderr.String())
 	}
 	if again := strings.TrimSpace(stdout.String()); again != id {

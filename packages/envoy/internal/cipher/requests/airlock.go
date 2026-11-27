@@ -8,10 +8,9 @@
 package requests
 
 import (
+	"cmp"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,16 +22,29 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
+// AirlockRules is the airlock's rules as the live policy holds them (policy.Set.ProxyRules): the
+// profiles file's kinds, and the binding of each name whose secret's proxy tag names one. A tag
+// changes at runtime, so the proxy reads them on each request rather than once at boot, and the
+// zero Rules answer a Machine with no policy, which holds nothing back.
+func (m *Machine) AirlockRules() proxyrules.Rules {
+	if m.Policy == nil {
+		return proxyrules.Rules{}
+	}
+	return m.Policy.Get().ProxyRules()
+}
+
 // ErrAirlockNoNames is AirlockConnection's refusal of a placeholder whose grant is live and holds
-// no airlock name the session may still have: every one of them is withheld from it. The proxy
-// answers it 407, as it answers an unknown placeholder, since a connection that may carry nothing
-// is no connection.
+// no airlock name the session may still have: nobody decided the grant, and every one of its names
+// is withheld from the session. The proxy answers it 407, as it answers an unknown placeholder,
+// since a connection that may carry nothing is no connection.
 var ErrAirlockNoNames = errors.New("this grant holds no airlock name the session may still have")
 
 // ErrAirlockValueShape is airlockSplitOf's refusal of a value that does not hold what its type
@@ -42,6 +54,13 @@ var ErrAirlockNoNames = errors.New("this grant holds no airlock name the session
 // rules hold back, and no retry changes a value's shape, so the proxy answers it 403 in these
 // words.
 var ErrAirlockValueShape = errors.New("a name of this grant does not hold what its type releases")
+
+// ErrMintedOnly is readRelease's refusal of a release under a rules entry of kind dpop,
+// before anything of the name is read. A name of that kind is a capability the broker mints for a
+// grant of its own and holds (MintedKind, mintedValues), and never a stored secret: a secret
+// stored under such a name is never released, to the session or to the proxy, as a value or as a
+// placeholder.
+var ErrMintedOnly = errors.New("a name of kind dpop is a capability the broker mints and holds, never a stored secret's release")
 
 // The slots of a secret. A slot names which value of a secret a placeholder stands for, because
 // one secret can release several values at once and each needs a placeholder of its own:
@@ -67,40 +86,6 @@ const (
 	SlotAzureFederated     = "azure-federated"
 	SlotAzureAccessPrefix  = "azure-access:"
 )
-
-// PlaceholderPrefix opens every placeholder, so a value that leaks into a log or a bug report is
-// recognizable for what it is: a string that stands for a secret rather than a secret.
-const PlaceholderPrefix = "agent-secrets-placeholder-"
-
-// PlaceholderAlphabet and PlaceholderLength are what follows the prefix: 32 characters of 62, so
-// about 190 bits, which nobody guesses and no birthday collision reaches. The broker's log mask
-// reads a placeholder as the prefix and at most PlaceholderLength characters of PlaceholderAlphabet
-// after it.
-const (
-	PlaceholderAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-	PlaceholderLength   = 32
-)
-
-// mintPlaceholder draws one placeholder from crypto/rand.
-//
-// Each character takes its own uniform 64-bit draw reduced modulo 62. 62 does not divide 2^64, so
-// the first 2^64 mod 62 characters of the alphabet are favoured by about one part in 2^58 — a
-// difference nothing can observe — where the obvious byte-per-character reduction would favour
-// the first eight characters by one part in four. Reducing a wide draw rejects nothing and so
-// always costs one read of the random source, where redrawing a byte until it falls below 248
-// loops an unbounded number of times.
-func mintPlaceholder() (string, error) {
-	draws := make([]byte, 8*PlaceholderLength)
-	if _, err := rand.Read(draws); err != nil {
-		return "", fmt.Errorf("mint an airlock placeholder: %w", err)
-	}
-	out := make([]byte, 0, len(PlaceholderPrefix)+PlaceholderLength)
-	out = append(out, PlaceholderPrefix...)
-	for i := range PlaceholderLength {
-		out = append(out, PlaceholderAlphabet[binary.BigEndian.Uint64(draws[8*i:])%uint64(len(PlaceholderAlphabet))])
-	}
-	return string(out), nil
-}
 
 // placeholderHash is a placeholder's SHA-256 in hex: the key airlock_placeholders holds it under,
 // and the only form of it any query carries, so the plaintext a command holds never reaches a
@@ -139,8 +124,11 @@ func placeholdersOf(ctx context.Context, q querier, grantID string) (map[string]
 // releases racing on different pods — the loser's insert does nothing and the rows are read again
 // rather than assumed. A pair the grant holds a row for that want no longer names (a key pair
 // that lost its session token) keeps its row: it names no value the proxy can serve, and deleting
-// it would cost a write on every release to save a row the grant's end removes anyway.
-func (m *Machine) mintPlaceholders(ctx context.Context, grantID string, expires *time.Time, want map[string][]string) (map[string]map[string]string, error) {
+// it would cost a write on every release to save a row the grant's end removes anyway. prefixes
+// is the placeholder prefix of each name whose kind sets one (proxyrules.Kind.PlaceholderPrefix),
+// for a client that checks a key's shape; every other name's placeholder opens with
+// placeholder.Prefix.
+func (m *Machine) mintPlaceholders(ctx context.Context, grantID string, expires *time.Time, want map[string][]string, prefixes map[string]string) (map[string]map[string]string, error) {
 	held, err := placeholdersOf(ctx, m.Store.Pool, grantID)
 	if err != nil {
 		return nil, err
@@ -151,12 +139,12 @@ func (m *Machine) mintPlaceholders(ctx context.Context, grantID string, expires 
 			if _, minted := held[name][slot]; minted {
 				continue
 			}
-			placeholder, err := mintPlaceholder()
+			text, err := placeholder.Mint(cmp.Or(prefixes[name], placeholder.Prefix))
 			if err != nil {
 				return nil, err
 			}
 			names, slots = append(names, name), append(slots, slot)
-			texts, hashes = append(texts, placeholder), append(hashes, placeholderHash(placeholder))
+			texts, hashes = append(texts, text), append(hashes, placeholderHash(text))
 		}
 	}
 	if len(names) == 0 {
@@ -181,6 +169,10 @@ func (m *Machine) mintPlaceholders(ctx context.Context, grantID string, expires 
 // a connection of that grant while it lives, it goes when the grant's rows go
 // (deleteSpentPlaceholders), and AirlockConnection answers it among the name's slots.
 func (m *Machine) AirlockAccessPlaceholder(ctx context.Context, grantID, name, slot string) (string, error) {
+	if _, _, minted := m.mintedKindOfGrant(grantID); minted {
+		// A minted grant holds its kind's one slot, and no exchange is ever made for it.
+		return "", ErrGrantNotLive
+	}
 	if !strings.HasPrefix(slot, SlotAzureAccessPrefix) {
 		return "", fmt.Errorf("airlock: %q is no access-token slot", slot)
 	}
@@ -191,7 +183,7 @@ func (m *Machine) AirlockAccessPlaceholder(ctx context.Context, grantID, name, s
 		}
 		return "", err
 	}
-	minted, err := m.mintPlaceholders(ctx, grantID, expires, map[string][]string{name: {slot}})
+	minted, err := m.mintPlaceholders(ctx, grantID, expires, map[string][]string{name: {slot}}, nil)
 	if err != nil {
 		return "", err
 	}
@@ -212,22 +204,25 @@ func (m *Machine) deleteSpentPlaceholders(ctx context.Context) (int64, error) {
 }
 
 // AirlockRelease is how a release tells a session to reach the values it did not hand over: the
-// proxy that holds them, the certificate authority to trust it by, the password every connection
-// to it opens with, and each name the airlock holds back.
+// proxy that holds them, the roots to trust it by, the password every connection to it opens
+// with, and each name the airlock holds back.
 type AirlockRelease struct {
-	ProxyURL      string
-	CACertificate string // PEM
+	ProxyURL string
+	// CACertificate is every root the session trusts the proxy by, PEM blocks one after the
+	// other: a client writes the whole string into its trust bundle, so a release that carries
+	// two roots during a rollout is trusted under either by a client of any release.
+	CACertificate string
 	ProxyPassword string
 	Names         map[string]AirlockName
 }
 
 // AirlockName is one name the airlock holds back: what the command's environment variable of that
-// name holds, the placeholder of each slot that value is built from, and the hosts the entry
-// allows, which the command keeps off its NO_PROXY so they reach the proxy.
+// name holds, the placeholder of each slot that value is built from, and the hosts its kind binds,
+// which the command keeps off its NO_PROXY so they reach the proxy.
 type AirlockName struct {
 	Value string            // what the command's NAME holds
 	Slots map[string]string // slot -> placeholder
-	Hosts []string          // the entry's hosts, which the command keeps off its NO_PROXY
+	Hosts []string          // the hosts of the name's kind, which the command keeps off its NO_PROXY
 }
 
 // airlockSplit is one airlock name's value taken apart, which one walk of that value answers
@@ -261,25 +256,32 @@ func (s airlockSplit) slots() []string { return slices.Sorted(maps.Keys(s.values
 //
 //   - a stored secret and a google-login access token are one string, so they are the value
 //     slot's placeholder alone;
-//   - a stored AWS key pair, which the entry marks kind "aws", is the stored object re-emitted
+//   - a GitHub profile whose github.value is token (gitHubValue, githubname.ValueToken), of a
+//     github-app or a github-installations source (policy.ServesGitHubTokens), is released as the
+//     one account's bare token, which is one string too, so it is the value slot's placeholder
+//     alone;
+//   - a stored AWS key pair, whose way is sign (the aws kind), is the stored object re-emitted
 //     with each of its three credential fields replaced;
-//   - a github-app's minted installations and an azure-login's minted identity are re-emitted
-//     with the token fields replaced and every other field as the minter wrote it.
+//   - the installations object of a GitHub profile of either source, and an azure-login's minted
+//     identity, are re-emitted with the token fields replaced and every other field as the
+//     release wrote it.
 //
-// The policy type decides first and the entry's kind only for a stored secret, because the type
-// is what says how the broker built the value, where the entry says where that value may go. A
-// value that does not hold what its type releases — no object, a missing or non-string token — is
-// an ErrAirlockValueShape rather than a release, since the one other answer would be to release
-// the real value the rules hold back.
-func airlockSplitOf(entryKind, secretType, value string) (airlockSplit, error) {
+// The policy type and the profile's value form decide first and the way only for a stored
+// secret, because they are what says how the broker built the value, where the kind says where
+// that value may go. A value that does not hold what its type releases — no object, a missing or
+// non-string token — is an ErrAirlockValueShape rather than a release, since the one other
+// answer would be to release the real value the rules hold back.
+func airlockSplitOf(way, secretType, gitHubValue, value string) (airlockSplit, error) {
 	var split airlockSplit
 	var err error
 	switch {
-	case secretType == policy.TypeGitHubApp:
+	case policy.ServesGitHubTokens(secretType) && gitHubValue == githubname.ValueToken:
+		return valueSplit(value), nil
+	case policy.ServesGitHubTokens(secretType):
 		split, err = githubAppSplit(value)
 	case secretType == policy.TypeAzureLogin:
 		split, err = azureLoginSplit(value)
-	case secretType == "" && entryKind == proxyrules.KindAWS:
+	case secretType == "" && way == proxyrules.WaySign:
 		split, err = objectSplit(value, map[string]string{"access_key_id": SlotAWSAccessKeyID, "secret_access_key": SlotAWSSecretAccessKey},
 			map[string]string{"session_token": SlotAWSSessionToken})
 	default:
@@ -457,17 +459,26 @@ func marshalObject(doc map[string]json.RawMessage) (string, error) {
 
 // airlockRelease mints each airlock name's placeholders, writes proxy as those names' delivery,
 // and answers what the session is told: where the proxy is, the certificate to trust it by, the
-// password its connections open with, and each name's released value, slots and hosts.
-func (m *Machine) airlockRelease(ctx context.Context, grantID string, expires *time.Time, splits map[string]airlockSplit) (*AirlockRelease, error) {
+// password its connections open with, and each name's released value, slots and hosts. rules are
+// the airlock's rules of the policy set the release was checked under, whose kinds give each
+// name its hosts and its placeholder prefix.
+func (m *Machine) airlockRelease(ctx context.Context, grantID string, expires *time.Time, splits map[string]airlockSplit, rules proxyrules.Rules) (*AirlockRelease, error) {
 	want := map[string][]string{}
+	prefixes := map[string]string{}
 	for name, split := range splits {
 		want[name] = split.slots()
+		if kind := rules.KindOf(rules.Lookup(name)); kind != nil && kind.PlaceholderPrefix != "" {
+			prefixes[name] = kind.PlaceholderPrefix
+		}
 	}
-	minted, err := m.mintPlaceholders(ctx, grantID, expires, want)
+	minted, err := m.mintPlaceholders(ctx, grantID, expires, want, prefixes)
 	if err != nil {
 		return nil, err
 	}
-	released := &AirlockRelease{ProxyURL: m.AirlockProxyURL, CACertificate: m.AirlockCACertificate, Names: map[string]AirlockName{}}
+	released := &AirlockRelease{ProxyURL: m.AirlockProxyURL, Names: map[string]AirlockName{}}
+	if m.ProxyRoots != nil {
+		released.CACertificate = m.ProxyRoots()
+	}
 	for name, split := range splits {
 		slots := map[string]string{}
 		for _, slot := range split.slots() {
@@ -477,7 +488,7 @@ func (m *Machine) airlockRelease(ctx context.Context, grantID string, expires *t
 		if err != nil {
 			return nil, fmt.Errorf("release %s behind the airlock: %w", name, err)
 		}
-		released.Names[name] = AirlockName{Value: value, Slots: slots, Hosts: m.Airlock.Bound(name).Hosts}
+		released.Names[name] = AirlockName{Value: value, Slots: slots, Hosts: rules.HostsOf(name)}
 	}
 	released.ProxyPassword = proxyPassword(released.Names)
 	// Which names went out as a placeholder rather than as their value, recorded where the
@@ -508,8 +519,9 @@ func proxyPassword(names map[string]AirlockName) string {
 
 // AirlockConnection is what one proxy connection's password proves: the live grant behind it and
 // every airlock name it may carry. It runs the checks that must hold on EVERY connection - the
-// grant's liveness, its enrollment's lease, and the names its operator withheld - and no others;
-// the full release checks run once per grant per pod, in AirlockValues.
+// grant's liveness, its enrollment's lease, whether Dispatch calls the enrollment's person a
+// restricted member, and the names its operator withheld from a grant nobody decided - and no
+// others; the full release checks run once per grant per pod, in AirlockValues.
 type AirlockConnection struct {
 	GrantID, EnrollmentID, RequestID string
 	// SessionID and RuntimeID are the enrollment's: the session the grant belongs to, empty for
@@ -519,8 +531,16 @@ type AirlockConnection struct {
 	// they cost nothing: the read below already joins the enrollment row.
 	SessionID, RuntimeID string
 	Issue                string // the first Dispatch issue key in the request's own signed reason, "" when it names none
-	Expires              *time.Time
-	Names                map[string]AirlockGrantName
+	// Minted marks a grant of a capability the broker mints and holds (MintedKind): it belongs to
+	// no enrollment, and the proxy holds it to the one host its grant binds.
+	Minted  bool
+	Expires *time.Time
+	Names   map[string]AirlockGrantName
+	// Operator is the enrollment's operator, the person its session acts for, whose hold the
+	// proxy asks about (proxy's holdRefusal), and "" for an enrollment that names none: a
+	// pod's own, or a machine's own session. It costs nothing either: the read below joins the
+	// enrollment row already.
+	Operator string
 }
 
 // AirlockGrantName is one name a connection may carry: the placeholder of each of its slots, and
@@ -532,30 +552,63 @@ type AirlockGrantName struct {
 
 // AirlockConnection answers what the placeholder a proxy connection authenticated with proves. It
 // refuses with ErrGrantNotLive when no row holds that placeholder, when its grant is revoked or
-// expired, or when its enrollment is revoked or its lease lapsed; it drops every name the
-// enrollment's operator withheld, and refuses with ErrAirlockNoNames when that leaves none, which
-// the proxy answers 407.
+// expired, or when its enrollment is revoked or its lease lapsed; it drops, from a grant whose
+// request nobody decided, every name the enrollment's operator withheld, read as
+// policy.Set.Withholds reads them, so every other name served from a withheld name's source is
+// dropped too, and refuses with ErrAirlockNoNames when that leaves none, which the proxy answers
+// 407.
 //
-// This runs on every connection, so it is indexed reads alone and nothing else: the row by its
-// primary key with its grant and enrollment joined in, the grant's other placeholders by
-// grant_id, and the enrollment's withheld names by enrollment_id. Each name's type comes from the
-// policy snapshot already in memory, which costs no query. The checks a release makes besides —
-// the approval chain, the policy re-evaluation, the max-grant and the airlock fingerprint — are
-// AirlockValues's, once per grant per pod.
-func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (AirlockConnection, error) {
+// A grant someone decided keeps its withheld names, as Values releases them: stillAllowed judges a
+// withheld name by the login that decided the request, so only an automatic grant, which no one
+// decided, never passes. A withhold ends every grant that got a name it covers without asking, in
+// the transaction that withholds it (withhold), so a live grant someone decided that holds a
+// withheld name had that name approved: by a person after the withhold, whom the withheld name let
+// approve it (currentPolicyAdmits), or as a name its request waited on a decision for. Either
+// approval stands. A name the request got without asking, beside one it waited on a person for,
+// is approved with the whole request.
+//
+// It asks, on every connection, whether Dispatch calls the person the enrollment was made for a
+// restricted member (restrictedOperator), because the proxy serves a grant's values from what it
+// read once for as long as its pod holds them (AirlockValues), and this is the one read every
+// call makes. A restricted member's grant ends for good here (errRestrictedMember), answered
+// ErrGrantNotLive, which the proxy answers 407 and which cuts the calls it carries for the grant;
+// an answer that cannot be had is the *projectaccess.MemberKindUncheckable restrictedOperator
+// returns, which the proxy answers 503, so nothing is carried for the person while it cannot be
+// told. The answer is projectaccess's, cached CacheTTL, so most connections ask Dispatch nothing.
+//
+// It applies the project rule as well (projectFacts, policy.Set.Evaluate's project block): when
+// a held name is tagged with a private project the session no longer names, or with one Dispatch
+// does not hold, the grant ends for good (endGrant, errProjectNotNamed) and the connection is
+// refused ErrGrantNotLive. That is read only for a grant holding a tagged name, from the K3
+// client's cache (at most one call to Dispatch per project per projectaccess.CacheTTL), so an
+// untagged grant's connection asks Dispatch nothing.
+//
+// Besides those two questions it is indexed reads alone: the row by its primary key with its
+// grant, its enrollment and its request, which says who decided it, joined in, the grant's other
+// placeholders by grant_id, and the enrollment's withheld names by enrollment_id. Each name's type
+// comes from the policy snapshot already in memory, which costs no query. The checks a release
+// makes besides — the approval chain, the policy re-evaluation, the max-grant and the profile
+// fingerprint — are AirlockValues's, once per grant per pod.
+func (m *Machine) AirlockConnection(ctx context.Context, presented string) (AirlockConnection, error) {
+	if kind, minted := m.mintedKindOfPlaceholder(presented); minted {
+		return m.mintedConnection(ctx, kind, presented)
+	}
 	var conn AirlockConnection
-	var reason string
+	var reason, decidedBy string
 	var live bool
-	err := m.Store.Pool.QueryRow(ctx, `select p.grant_id, g.enrollment_id, g.request_id, g.expires_at, r.reason,
-		e.runtime_id, coalesce(e.session_id, ''),
-		g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at)
+	var enr enrollmentRow
+	err := m.Store.Pool.QueryRow(ctx, `select p.grant_id, g.enrollment_id, g.request_id, g.expires_at, r.reason, coalesce(r.decided_by, ''),
+		e.runtime_id, coalesce(e.session_id, ''), coalesce(e.operator, ''),
+		g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at),
+		e.kind, e.operator, e.subject, e.projects, c.service
 		from airlock_placeholders p
 		join grants g on g.id = p.grant_id
 		join enrollments e on e.id = g.enrollment_id
 		join requests r on r.id = g.request_id
-		where p.placeholder_sha256 = $1`, placeholderHash(placeholder)).
-		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason,
-			&conn.RuntimeID, &conn.SessionID, &live)
+		left join launcher_credentials c on c.id = e.launcher_credential_id
+		where p.placeholder_sha256 = $1`, placeholderHash(presented)).
+		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason, &decidedBy,
+			&conn.RuntimeID, &conn.SessionID, &conn.Operator, &live, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Projects, &enr.Service)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AirlockConnection{}, ErrGrantNotLive
 	}
@@ -564,6 +617,14 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 	}
 	if !live {
 		return AirlockConnection{}, ErrGrantNotLive
+	}
+	enr.ID = conn.EnrollmentID
+	restricted, err := m.restrictedOperator(ctx, enr)
+	if err != nil {
+		return AirlockConnection{}, err
+	}
+	if restricted {
+		return AirlockConnection{}, m.endGrant(ctx, conn.GrantID, restrictedMember())
 	}
 	conn.Issue = record.IssueKeyInReason(reason)
 	held, err := placeholdersOf(ctx, m.Store.Pool, conn.GrantID)
@@ -579,17 +640,48 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 		return AirlockConnection{}, err
 	}
 	set := m.Policy.Get()
+	requester := policy.Requester{Withheld: withheld}
 	conn.Names = map[string]AirlockGrantName{}
 	for name, slots := range held {
-		if slices.Contains(withheld, name) {
+		if decidedBy == "" && set.Withholds(requester, name) {
 			continue
 		}
 		conn.Names[name] = AirlockGrantName{Slots: slots, Type: set.Secrets[name].Type()}
+	}
+	if err := m.airlockProjectRule(ctx, conn.GrantID, enr, slices.Collect(maps.Keys(conn.Names)), set); err != nil {
+		return AirlockConnection{}, err
 	}
 	if len(conn.Names) == 0 {
 		return AirlockConnection{}, ErrAirlockNoNames
 	}
 	return conn, nil
+}
+
+// airlockProjectRule is AirlockConnection's project rule over names, the airlock names a
+// connection may carry: a name tagged with a private project the credential no longer names, or
+// with a project Dispatch does not hold, ends the grant for good (projectNotNamed). A grant
+// holding no tagged name asks Dispatch nothing.
+func (m *Machine) airlockProjectRule(ctx context.Context, grantID string, enr enrollmentRow, names []string, set *policy.Set) error {
+	facts, err := m.projectFacts(ctx, enr, names, set)
+	if err != nil || facts.states == nil {
+		return err
+	}
+	// policy.ProjectRule is the rule Evaluate applies at the release, so the proxy's check and the
+	// release's cannot drift. projectFacts resolves a state for every tagged project of names, so
+	// ErrNoProjectState here is a broken caller, and fails the connection rather than keeping it.
+	requester := facts.requester(policy.Requester{})
+	slices.Sort(names)
+	for _, name := range names {
+		project := set.Secrets[name].Project
+		reason, err := policy.ProjectRule(project, requester)
+		if err != nil {
+			return fmt.Errorf("%w: %s is tagged %s", err, name, project)
+		}
+		if reason != "" {
+			return m.endGrant(ctx, grantID, projectNotNamed(name))
+		}
+	}
+	return nil
 }
 
 // AirlockSecret is one airlock name as the proxy holds it: the real value behind each of its
@@ -599,6 +691,14 @@ type AirlockSecret struct {
 	Slots   map[string]string // slot -> the real value that slot's placeholder stands for
 	Expires time.Time         // zero for a stored value, which no clock ends
 	Type    string
+	// Limited says a private project's limit applies to this secret: the grant's credential names
+	// a private project and the secret carries the project-channels tag. The proxy then checks
+	// every request that spends it (proxy's slackPostAllowed). A flag, not a non-nil list:
+	// an empty Channels under Limited is a credential that may post nowhere.
+	Limited bool
+	// Channels, under Limited, are the Slack channel ids every private project the credential
+	// names allows: the intersection of their owners' lists, sorted, never nil.
+	Channels []string
 	// Azure is the tenant and the application an azure-login name's own document names, which
 	// the proxy holds every exchange of its federated token to, and zero for every other type.
 	// The two travel as fields of their own rather than as slots or as the document whole. Not
@@ -612,13 +712,16 @@ type AirlockSecret struct {
 }
 
 // AirlockValues runs the full release checks of Values - the record chain, the policy
-// re-evaluation, the max-grant, the airlock fingerprint - and answers the real value of each
+// re-evaluation, the max-grant, the profile fingerprint - and answers the real value of each
 // slot of each airlock name, which is what the proxy swaps into a request: a placeholder stands
 // for one slot, not for a name's whole released value, so a github-app name answers one token
 // per installation and an AWS pair one string per field. The split is the one the release makes
 // (readRelease, release.go, the one loop both releases of a grant run), so no slot the session
-// holds a placeholder for is a slot this answers nothing for. The proxy calls it on a grant's
-// first connection on its own pod.
+// holds a placeholder for is a slot this answers nothing for. A GitHub profile is minted here
+// exactly as the session's release mints it (release): its permissions, for the target its
+// request recorded, else for the profile's own accounts and repositories (gitHubScope), so the
+// token the proxy swaps in is the profile's for that target and its slots are the target's. The
+// proxy calls it on a grant's first connection on its own pod.
 //
 // It answers beside the values the policy version those checks ran under. The proxy holds the
 // two together and asks PolicyVersion whether that version still stands, which is what makes a
@@ -632,6 +735,9 @@ type AirlockSecret struct {
 // whose chain fails is logged as Values logs it, under at=airlock (GrantChainInvalidMessage),
 // since the proxy refuses it GRANT_CHAIN_INVALID as the session's release does.
 func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string]AirlockSecret, string, error) {
+	if kind, id, minted := m.mintedKindOfGrant(grantID); minted {
+		return m.mintedValues(ctx, kind, id)
+	}
 	checked, err := m.checkRelease(ctx, grantID, "", "airlock")
 	if err != nil {
 		return nil, "", err
@@ -640,9 +746,39 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 	if err != nil {
 		return nil, "", err
 	}
+	// A grant holding a project-tagged name is read again by the proxy within
+	// airlockProjectRecheck: whether the project is private, and whether the session's person may
+	// still see it, are Dispatch's and move no policy version, so nothing else would make a pod
+	// holding these values run the release checks again once access is lost.
+	var recheck time.Time
+	if anyProjectTagged(checked.set, checked.granted) {
+		recheck = time.Now().Add(airlockProjectRecheck)
+	}
+	// The channels the grant's credential may post to, for a project-channels secret released to
+	// a credential that names a private project (channelLimit). Such a secret is bounded to
+	// airlockProjectRecheck itself whenever its credential names any project, Limited or not:
+	// whether a named project is private, and the channels its owner allows, are Dispatch's and
+	// move no policy version, and the Slack bot token carries no dispatch-project tag, so the
+	// bound above would never reach it. Without it, a project the credential names turning
+	// private, or an owner's change to its list, would never reach a running proxy.
+	channels, limited := m.channelLimit(ctx, checked)
+	readAt := time.Now()
 	values := map[string]AirlockSecret{}
 	for _, released := range read {
-		values[released.name] = AirlockSecret{Slots: released.split.values, Expires: released.expires, Type: released.secretType, Azure: released.split.azure}
+		expires := released.expires
+		if !recheck.IsZero() && (expires.IsZero() || expires.After(recheck)) {
+			expires = recheck
+		}
+		value := AirlockSecret{Slots: released.split.values, Expires: expires, Type: released.secretType, Azure: released.split.azure}
+		if checked.set.Secrets[released.name].ProjectChannels == policy.ProjectChannelsSlack {
+			if limited {
+				value.Limited, value.Channels = true, channels
+			}
+			if bound := readAt.Add(airlockProjectRecheck); len(checked.facts.named) > 0 && (value.Expires.IsZero() || value.Expires.After(bound)) {
+				value.Expires = bound
+			}
+		}
+		values[released.name] = value
 	}
 	// The same grant.used row and line a session's own release writes, marked as the proxy's: the
 	// values did leave the broker, and an operator reading the trail must see that they did.

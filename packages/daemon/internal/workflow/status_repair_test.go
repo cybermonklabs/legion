@@ -22,6 +22,7 @@ import (
 // record's own status with it. The status Dispatch last showed stays where it is: only a Dispatch
 // event or admission's own observation writes that, once the queued write echoes back.
 func TestTheStatusRepairQueuesTheStatusWriteTheDaemonLost(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Implementing, "todo", "todo"))
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
@@ -42,6 +43,7 @@ func TestTheStatusRepairQueuesTheStatusWriteTheDaemonLost(t *testing.T) {
 // since the record's own status already reads in_progress, which is why the repair enqueues its
 // row directly.
 func TestTheStatusRepairWritesThePhasesStatusAndNotTheRecords(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Reviewing, "in_progress", "in_progress"))
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
@@ -54,6 +56,7 @@ func TestTheStatusRepairWritesThePhasesStatusAndNotTheRecords(t *testing.T) {
 // One case per rule the repair skips an issue by. Each of these issues differs from the status of
 // its phase, and each is left alone.
 func TestTheStatusRepairSkipsEveryIssueItsRulesExclude(t *testing.T) {
+	t.Parallel()
 	lingerUntil := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name string
@@ -112,7 +115,7 @@ func TestTheStatusRepairSkipsEveryIssueItsRulesExclude(t *testing.T) {
 		{name: "an issue whose status write is already queued", seed: func(t *testing.T, pool *pgxpool.Pool) {
 			seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Implementing, "in_progress", "todo"))
 			seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
-			seedStatusWrite(t, pool, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""))
+			seedOutboxRow(t, pool, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""))
 		}, want: []statusRow{{"LEGION-208", "in_progress", "todo"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -130,6 +133,7 @@ func TestTheStatusRepairSkipsEveryIssueItsRulesExclude(t *testing.T) {
 // would queue could never be written: the outbox writes a status only where Dispatch shows the
 // row's observed or target status, and a park the record holds is the park Dispatch shows.
 func TestTheStatusRepairSkipsARecordedStatusOutOfTheWorkflow(t *testing.T) {
+	t.Parallel()
 	for _, shown := range []string{"backlog", "icebox", "triage", "done"} {
 		t.Run(shown, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -145,6 +149,7 @@ func TestTheStatusRepairSkipsARecordedStatusOutOfTheWorkflow(t *testing.T) {
 
 // The boot runs the repair too, so a write lost before a restart is queued again by the restart.
 func TestTheBootQueuesTheStatusWriteTheDaemonLost(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Testing, "testing", "in_progress"))
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
@@ -161,6 +166,7 @@ func TestTheBootQueuesTheStatusWriteTheDaemonLost(t *testing.T) {
 // issue, the status recorded and the status written. A run that queues nothing writes its line
 // too, which is how a reader tells a quiet run from a run that never happened.
 func TestTheStatusRepairLogsEachRepairAndEveryRun(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Implementing, "todo", "todo"))
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
@@ -169,7 +175,7 @@ func TestTheStatusRepairLogsEachRepairAndEveryRun(t *testing.T) {
 	// Its write is already queued, so it waits for the outbox rather than for the repair.
 	seedIssue(t, pool, repairIssue("LEGION-400", "LEGION-400", phase.Testing, "testing", "in_progress"))
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-400", Index: 1})
-	seedStatusWrite(t, pool, "LEGION-400", record.OrdinaryStatusWrite("testing", "in_progress", ""))
+	seedOutboxRow(t, pool, "LEGION-400", record.OrdinaryStatusWrite("testing", "in_progress", ""))
 
 	var logged bytes.Buffer
 	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logged, nil)))
@@ -209,12 +215,12 @@ func repairIssue(key, tree string, at phase.Phase, status, shown string) record.
 // statusRow is one queued Dispatch status write, as the repair's tests read it back.
 type statusRow struct{ issue, status, observed string }
 
-// seedStatusWrite queues a Dispatch status write for issue, as a write the outbox has not finished.
-func seedStatusWrite(t *testing.T, pool *pgxpool.Pool, issue string, write record.StatusWrite) {
+// seedOutboxRow queues payload for issue, as a row the outbox has not finished.
+func seedOutboxRow(t *testing.T, pool *pgxpool.Pool, issue string, payload record.OutboxPayload) {
 	t.Helper()
-	row, err := record.NewOutboxRow(issue, write, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))
+	row, err := record.NewOutboxRow(issue, payload, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))
 	if err != nil {
-		t.Fatalf("build the queued status write of %s: %v", issue, err)
+		t.Fatalf("build the queued %s row of %s: %v", payload.OutboxKind(), issue, err)
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error { return record.NewStore().Enqueue(t.Context(), tx, row) })
 }

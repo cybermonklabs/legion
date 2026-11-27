@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
@@ -18,6 +19,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -459,21 +462,20 @@ func (a *awsAttempts) record(o *secretsmanager.Options) {
 	})
 }
 
-// definiteRefusal reports whether the call err ended may have made nothing for certain: it made
-// exactly one attempt, and that attempt ended in an error whose code awsDefiniteRefusals lists. More
-// than one attempt is never certain: an attempt the SDK retried may have reached the store, which
-// then answers the retry as a refusal (a name taken, by the secret that attempt made). A client
-// that runs no SDK middleware, and so records no attempt, is judged by err alone.
+// definiteRefusal reports whether the call err ended may have made nothing for certain: every
+// attempt it made ended in an error whose code awsDefiniteRefusals lists. An attempt answered that
+// way acted on nothing, so a call the SDK retried for such a code (it retries a throttle such as
+// LimitExceededException, a quota refusal) and that met it every time made nothing either. One
+// attempt that ended any other way may have reached the store, which can then answer a retry as a
+// refusal (a name taken, by the secret that attempt made), so the call's outcome is open. A
+// client that runs no SDK middleware, and so records no attempt, is judged by err alone.
 func (a *awsAttempts) definiteRefusal(err error) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	switch len(a.errs) {
-	case 0:
+	if len(a.errs) == 0 {
 		return awsDefiniteRefusal(err)
-	case 1:
-		return awsDefiniteRefusal(a.errs[0])
 	}
-	return false
+	return !slices.ContainsFunc(a.errs, func(e error) bool { return !awsDefiniteRefusal(e) })
 }
 
 // awsDefiniteRefusals are the error codes Secrets Manager, or AWS's request handling in front of
@@ -557,6 +559,39 @@ func (b *awsBackend) tagReadPermission() string {
 	return "secretsmanager:DescribeSecret on the secret"
 }
 
+// awsTagValueMax is the most characters AWS takes in one tag value, and awsTagValuePunctuation the
+// characters it takes beside Unicode letters, numbers and space separators: the Resource Groups
+// Tagging API's own pattern for a tag value, `^([\p{L}\p{Z}\p{N}_.:\/=+\-@]*)$` of length 0 to 256
+// (https://docs.aws.amazon.com/resourcegroupstagging/latest/APIReference/API_Tag.html). The
+// Secrets Manager user guide's list leaves ':' out, but this client already writes it on AWS
+// (owner=group:EMAIL, policy.RequestersRollbackGuard), and CloudFormation tags each secret it
+// makes with ARNs, so ':' is in.
+const (
+	awsTagValueMax         = 256
+	awsTagValuePunctuation = "_.:/=+-@"
+)
+
+// checkTagValues refuses, before any write, a tag value AWS would refuse: one longer than
+// awsTagValueMax characters, or holding a character that is no Unicode letter, number or space
+// separator (a tab or a newline is none) and none of awsTagValuePunctuation. The refusal names the
+// tag, the store's limit and, for a character, the first that fails and where, as a flag's
+// refusal does, and prints no other part of the value. tags is every tag the write sends.
+func (*awsBackend) checkTagValues(tags map[string]string) error {
+	for _, key := range slices.Sorted(maps.Keys(tags)) {
+		value := tags[key]
+		if n := utf8.RuneCountInString(value); n > awsTagValueMax {
+			return usageErr{fmt.Errorf("the %s tag is %d characters, and AWS Secrets Manager holds at most %d in a tag value: shorten it", key, n, awsTagValueMax)}
+		}
+		for i, r := range value {
+			if unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.Is(unicode.Z, r) || strings.ContainsRune(awsTagValuePunctuation, r) {
+				continue
+			}
+			return usageErr{fmt.Errorf("the %s tag holds %q at character %d, and AWS Secrets Manager takes in a tag value only Unicode letters, digits, spaces and %s: write it without that character", key, string(r), utf8.RuneCountInString(value[:i])+1, strings.Join(strings.Split(awsTagValuePunctuation, ""), " "))}
+		}
+	}
+	return nil
+}
+
 // setTags writes tags in one TagResource, which keeps every tag it does not name. TagResource takes
 // no condition on held, so the write checks its own race afterwards (raceCheck).
 func (b *awsBackend) setTags(ctx context.Context, slug string, held heldTags, tags map[string]string) error {
@@ -575,44 +610,61 @@ func (b *awsBackend) removeTags(ctx context.Context, slug string, held heldTags,
 	return b.raceCheck(ctx, slug, held)
 }
 
+// tag and untag answer an error that is no definite refusal (awsAttempts.definiteRefusal: every
+// attempt ending in a code awsDefiniteRefusals lists) as tagsUnknown: a service fault, an attempt
+// that ended any other way before a retry, or a lost connection may follow a call the store
+// carried out.
 func (b *awsBackend) tag(ctx context.Context, slug string, tags map[string]string) error {
+	var attempts awsAttempts
 	_, err := b.sm.TagResource(ctx, &secretsmanager.TagResourceInput{
 		SecretId: aws.String(b.id(slug)),
 		Tags:     secrets.TagList(tags),
-	})
-	return err
+	}, attempts.record)
+	return tagOutcome(err, &attempts)
 }
 
 func (b *awsBackend) untag(ctx context.Context, slug string, keys []string) error {
+	var attempts awsAttempts
 	_, err := b.sm.UntagResource(ctx, &secretsmanager.UntagResourceInput{
 		SecretId: aws.String(b.id(slug)),
 		TagKeys:  keys,
-	})
-	return err
+	}, attempts.record)
+	return tagOutcome(err, &attempts)
+}
+
+// tagOutcome is a tag call's error as tag and untag answer it: nil, a definite refusal as it
+// is, and any other error as tagsUnknown.
+func tagOutcome(err error, attempts *awsAttempts) error {
+	if err == nil || attempts.definiteRefusal(err) {
+		return err
+	}
+	return tagsUnknown{err}
 }
 
 // raceCheck is how a tag write on AWS, whose tag calls take no condition, answers for the
 // github-owners rule when another writer retags the same secret between the write's read (held)
 // and the write itself: it reads the tags back, and when the type and github-owners there are a
-// pair the broker refuses (policy.GitHubOwnersFor), it answers errTagsChanged wrapping
-// errTagsRaced, naming the tags it read, the tags it found and the retag that sets the secret
-// right. It writes nothing: the tags it read are no more current than the other writer's, so
-// putting them back would take that writer's retag away, and more than one writer is the normal
-// case. It answers nil when the pair is one the broker serves.
+// pair the broker refuses (policy.GitHubOwnersFor), it answers errTagsChanged, saying this
+// retag's write landed beside the other writer's, naming the tags it read, the tags it found and
+// the retag that sets the secret right. It writes nothing: the tags it read are no more current
+// than the other writer's, so putting them back would take that writer's retag away, and more
+// than one writer is the normal case. It answers nil when the pair is one the broker serves. Both
+// of its errors come after the write landed, and are marked so (tagsLanded): the race, and a
+// read-back that failed.
 func (b *awsBackend) raceCheck(ctx context.Context, slug string, held heldTags) error {
 	now, err := b.currentTags(ctx, slug)
 	if err != nil {
-		return fmt.Errorf("the retag was written, but reading its tags back failed, so whether another write left it a type without the GitHub owners it needs is unknown: %w", err)
+		return tagsLanded{fmt.Errorf("the retag was written, but reading its tags back failed, so whether another write left it a type without the GitHub owners it needs is unknown: %w", err)}
 	}
 	secretType, owners := policy.TypeFromTags(now.tags), now.tags[policy.TagGitHubOwners]
 	if _, err := policy.GitHubOwnersFor(secretType, owners); err == nil {
 		return nil
 	}
 	name := b.displayName(b.id(slug))
-	return fmt.Errorf("%w, leaving type %q with github-owners %q, which the broker refuses; %w. This retag read %s and found %s. Give that type its owners with `%s`, or drop the type with `%s`",
-		errTagsChanged, secretType, owners, errTagsRaced, tagPairs(held.tags), tagPairs(now.tags),
+	return tagsLanded{fmt.Errorf("%w, leaving type %q with github-owners %q, which the broker refuses; this retag's write landed beside another writer's, and nothing was restored. This retag read %s and found %s. Give that type its owners with `%s`, or drop the type with `%s`",
+		errTagsChanged, secretType, owners, tagPairs(held.tags), tagPairs(now.tags),
 		b.agentSecrets("secret", "retag", name, "--type", secretType, "--github-owners", "LOGINS"),
-		b.agentSecrets("secret", "retag", name, "--type", policy.TagRemoved))
+		b.agentSecrets("secret", "retag", name, "--type", policy.TagRemoved))}
 }
 
 func (b *awsBackend) delete(ctx context.Context, slug string) (*time.Time, error) {

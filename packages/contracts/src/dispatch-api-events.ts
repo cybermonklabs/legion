@@ -13,6 +13,7 @@ import type {
   ArchitectureSyncFailedEventPayload,
   DisplayTree,
   PriorityUpdatedEventPayload,
+  ProjectAccessChangedEventPayload,
   ProjectDefaultAssigneeUpdatedEventPayload,
   RepoProjectUpdatedEventPayload,
 } from "./dispatch-api-core";
@@ -32,6 +33,7 @@ import type {
   CheckResultRetractedEventPayload,
   ChildEventPayload,
   ChildStatusEventPayload,
+  DeployRecordedEventPayload,
   IssueClaimEventPayload,
   IssueDeployedEventPayload,
   IssueEventPayload,
@@ -107,6 +109,8 @@ interface DispatchEventBase {
 export type DispatchEvent =
   | (DispatchEventBase & { readonly type: "project.created"; readonly payload: Project })
   | (DispatchEventBase & { readonly type: "project.updated"; readonly payload: Project })
+  /** A retained event: no build writes it now. The type stays for the events an earlier build
+   *  stored, which a reader of the event log still reads. */
   | (DispatchEventBase & {
       readonly type: "settings.repo_project.updated";
       readonly payload: RepoProjectUpdatedEventPayload;
@@ -149,6 +153,10 @@ export type DispatchEvent =
       readonly type: "priority.updated";
       readonly payload: PriorityUpdatedEventPayload;
     })
+  | (DispatchEventBase & {
+      readonly type: "project.access_changed";
+      readonly payload: ProjectAccessChangedEventPayload;
+    })
   | (DispatchEventBase & { readonly type: "issue.created"; readonly payload: IssueEventPayload })
   | (DispatchEventBase & { readonly type: "issue.updated"; readonly payload: IssueEventPayload })
   | (DispatchEventBase & { readonly type: "issue.closed"; readonly payload: IssueEventPayload })
@@ -163,6 +171,10 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "issue.deployed";
       readonly payload: IssueDeployedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "deploy.recorded";
+      readonly payload: DeployRecordedEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "handoff.recorded";
@@ -281,6 +293,14 @@ export type DispatchEvent =
       readonly type: "comment.edited";
       readonly payload: CommentEventPayload;
     })
+  /** The author withdrew the comment: its body is cleared, and the payload carries the routing
+   *  fields its `comment.created` carried with `deleted_at` and `deleted_by` in place of every
+   *  body. A reply's carries no text of the post it answers: its `reply_block` keeps every field
+   *  but `text`, which is empty. */
+  | (DispatchEventBase & {
+      readonly type: "comment.deleted";
+      readonly payload: CommentEventPayload;
+    })
   | (DispatchEventBase & {
       readonly type: "suggestion.accepted";
       readonly payload: CommentEventPayload;
@@ -303,6 +323,20 @@ export type DispatchEvent =
     })
   | (DispatchEventBase & {
       readonly type: "message.answered";
+      readonly payload: MessageEventPayload;
+    })
+  /** The author replaced the body of an issue message, as `comment.edited` does for a comment.
+   *  The payload carries the new body. */
+  | (DispatchEventBase & {
+      readonly type: "message.edited";
+      readonly payload: MessageEventPayload;
+    })
+  /** The author withdrew the issue message: its body is cleared, and the payload carries the
+   *  routing fields its `message.created` carried with `deleted_at` and `deleted_by` in place of
+   *  every body. A reply's carries no text of the post it answers: no `reply_body`, and its
+   *  `reply_block` keeps every field but `text`, which is empty. */
+  | (DispatchEventBase & {
+      readonly type: "message.deleted";
       readonly payload: MessageEventPayload;
     })
   | (DispatchEventBase & {
@@ -335,6 +369,94 @@ export type DispatchEvent =
     });
 
 export type EventType = DispatchEvent["type"];
+
+/** Each member of `EventType` once: a record over the union, so the compiler refuses a type left
+ *  out of it and a key that is no type. */
+const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
+  "architecture.sync_failed": true,
+  "architecture.synced": true,
+  "artifact.approved": true,
+  "artifact.changes_requested": true,
+  "artifact.created": true,
+  "artifact.human_edited": true,
+  "artifact.removed": true,
+  "artifact.renamed": true,
+  "artifact.version": true,
+  "ask.anchor_refreshed": true,
+  "ask.answered": true,
+  "ask.asked_of": true,
+  "ask.edited": true,
+  "ask.follower_added": true,
+  "ask.follower_removed": true,
+  "ask.handed_back": true,
+  "ask.opened": true,
+  "ask.resolved": true,
+  "block.invalid": true,
+  "block.repaired": true,
+  "child.added": true,
+  "child.removed": true,
+  "child.status": true,
+  "comment.anchor_refreshed": true,
+  "comment.answered": true,
+  "comment.created": true,
+  "comment.deleted": true,
+  "comment.delivery": true,
+  "comment.edited": true,
+  "comment.reopened": true,
+  "comment.resolved": true,
+  "decision.kept": true,
+  "deploy.recorded": true,
+  "handoff.recorded": true,
+  "issue.claimed": true,
+  "issue.closed": true,
+  "issue.created": true,
+  "issue.deployed": true,
+  "issue.pull_request_attribution_changed": true,
+  "issue.released": true,
+  "issue.updated": true,
+  "message.accepted": true,
+  "message.answered": true,
+  "message.created": true,
+  "message.deleted": true,
+  "message.delivery": true,
+  "message.edited": true,
+  "priority.updated": true,
+  "project.access_changed": true,
+  "project.created": true,
+  "project.updated": true,
+  "result.recorded": true,
+  "result.retracted": true,
+  "settings.architecture_source.updated": true,
+  "settings.project_default_assignee.updated": true,
+  "settings.repo_project.updated": true,
+  "subscription.remove_requested": true,
+  "subscription.removed": true,
+  "suggestion.accepted": true,
+  "suggestion.rejected": true,
+  "user_agent_state.updated": true,
+  "user_state.updated": true,
+  "user_thread_state.updated": true,
+};
+
+/**
+ * Every event type Dispatch writes to its log, sorted: the members of the `DispatchEvent` union,
+ * held to it by `EVENT_TYPE_MEMBERS`. `scripts/gen-go.ts` writes it into envoy's
+ * `internal/contracts` as `DispatchEventTypes`, so a Go reader that sorts every type, as the
+ * keyword fill's inventory test does, learns of a new one from the same list.
+ */
+export const DISPATCH_EVENT_TYPES: readonly EventType[] = (
+  Object.keys(EVENT_TYPE_MEMBERS) as EventType[]
+).sort();
+
+/**
+ * Whether `value` names an event type of the `DispatchEvent` union, so a reader of a frame can
+ * narrow its `type` before it reads the frame as that event. `Object.hasOwn`, not `in`:
+ * `EVENT_TYPE_MEMBERS` inherits `Object.prototype`, so `in` would read `constructor` or
+ * `toString` as an event type.
+ */
+export function isEventType(value: string): value is EventType {
+  return Object.hasOwn(EVENT_TYPE_MEMBERS, value);
+}
 
 /**
  * One event as Dispatch's outbox publishes it to NATS: the event this API serves, plus `quiet`.

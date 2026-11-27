@@ -1,3 +1,5 @@
+//go:build !race
+
 package docs
 
 import (
@@ -12,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // The document service's own write transactions under storetest's xid rig (INFRA-636, plan test
@@ -27,6 +30,13 @@ import (
 // own, is judged below. RestoreDecidedWordings does no document work under its xid (only the
 // reconciliation of its asks' own references on short questions, planAskReferences), and
 // reaching it needs the reworded state an earlier release leaves.
+//
+// This file and anchor_blocks_xid_window_test.go build without the race detector (`//go:build
+// !race`), as the API's and delivery's window tests do. Under it the rig judges no gap
+// (storetest.XidJudgesGaps) and the shape is the same rule in either build, so a race run of
+// these tests proved nothing the plain run does not: envoy-go-alone's step "Test the xid window
+// rows, the API's issue-list bound and the auth service's storm, alone" runs them, judging shape
+// and gaps both.
 
 // xidService is a document service on a traced pool of a fresh database, settling after an hour so
 // only the settlement a test runs itself settles.
@@ -41,7 +51,7 @@ func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 		ServerURL: "https://dispatch.example",
 		Settle:    time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -51,15 +61,17 @@ func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 
 // The rig is not vacuous: a transaction whose statements run back to back after its first write
 // keeps D6 even when it spent long in Go before that write, since a transaction holds no xid until
-// a statement gives it one.
+// a statement gives it one. A run that judges no gap holds the window's shape here and says so
+// (AssertXidWindows).
 func TestXidWindowRigPassesBackToBackStatementsAfterTheFirstWrite(t *testing.T) {
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone).
 	_, database, tracer := xidService(t)
 	report := tracer.Measure(t, database.Pool, func() {
 		runRigTransaction(t, database, 0)
 	})
-	if err := report.Err(); err != nil {
-		t.Fatalf("a back-to-back transaction broke D6: %v", err)
-	}
+	storetest.AssertXidWindows(t, report, xidRigWindow)
 	if len(report.Windows) != 1 {
 		t.Fatalf("windows = %d, want the one transaction", len(report.Windows))
 	}
@@ -70,6 +82,9 @@ func TestXidWindowRigPassesBackToBackStatementsAfterTheFirstWrite(t *testing.T) 
 	t.Logf("%s\n%s", window.Summary(), window.Detail())
 }
 
+// xidRigWindow is the rig transaction's window: its insert, its two reads and its COMMIT.
+var xidRigWindow = storetest.XidWindowOf(4, "the rig transaction's insert, its two reads and its COMMIT")
+
 // rigInjectedGap is the statement-free gap the deliberate-fault self-tests put inside the window
 // (storetest.XidFaultGap), four times the bound for a window whose statements are as short as
 // this transaction's. A sleep cannot run shorter than it asks for, so it is also the floor that
@@ -77,24 +92,63 @@ func TestXidWindowRigPassesBackToBackStatementsAfterTheFirstWrite(t *testing.T) 
 // violation and would say so.
 const rigInjectedGap = storetest.XidFaultGap
 
-// skipWhereNoGapIsJudged skips the timing arm of a self-test in a build that judges no window's
-// time (storetest.XidJudgesGaps). Each of these tests spends its injected time in Go alone, so
-// it adds no statement and the shape rule cannot see it; under the race detector there is
-// nothing left for it to assert, and the plain lane, which runs this package's window tests, is
-// where it holds.
-func skipWhereNoGapIsJudged(t *testing.T) {
-	t.Helper()
-	if !storetest.XidJudgesGaps() {
-		t.Skip("this build judges no statement-free gap; the window's shape is what holds here")
+// The rig's own work on a statement - classifying its text, reading whether it wrote - is done
+// inside the statement, between its Start and its End, and none of it in the gaps around it
+// (storetest's XidTracer.begin and XidTracer.end). The statement here carries a comment long
+// enough that that work takes many times the bound of CPU: its text lowered to classify it, and
+// the two expressions that read whether a statement wrote run over it. Put back in a gap, as
+// before this rule, that CPU is the gap's and the window breaks D6; inside the statement, the
+// window keeps it. The test first holds that the work did take that long, so a machine that ran it
+// in no time cannot pass for one that kept it out of the gaps.
+func TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps(t *testing.T) {
+	// Not parallel: it measures a window's statement-free gaps in CPU time on this machine, which
+	// other tests' work on the same cores would stretch.
+	storetest.RequireXidGapJudgment(t)
+	_, database, tracer := xidService(t)
+	long := "SELECT 1 /* " + strings.Repeat("Rig Work ", 1<<19) + "*/"
+	report := tracer.Measure(t, database.Pool, func() {
+		ctx := storetest.MarkXid(context.Background())
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the transaction: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, "select pg_current_xact_id()"); err != nil {
+			t.Fatalf("take a transaction id: %v", err)
+		}
+		if _, err := tx.Exec(ctx, long); err != nil {
+			t.Fatalf("run the long statement: %v", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit the transaction: %v", err)
+		}
+	})
+	if len(report.Problems) > 0 || len(report.Windows) != 1 {
+		t.Fatalf("the rig judged %d windows with problems %v, want the one transaction", len(report.Windows), report.Problems)
 	}
+	window := report.Windows[0]
+	if len(window.Statements) != 3 {
+		t.Fatalf("the window holds %d statements, want the forced xid, the long statement and the commit:\n%s", len(window.Statements), window.Detail())
+	}
+	ran := window.Statements[1].Ran()
+	if ran <= 4*storetest.XidMaxGap {
+		t.Fatalf("the long statement's thread ran %s of CPU with the rig's work on it, not past %s: the rig's work was too quick to tell where it fell\n%s",
+			storetest.XidMillis(ran), storetest.XidMillis(4*storetest.XidMaxGap), window.Detail())
+	}
+	if err := report.Err(); err != nil {
+		t.Fatalf("the rig's own work on a long statement broke D6, so it ran in a gap:\n%v", err)
+	}
+	t.Logf("%s\n%s", window.Summary(), window.Detail())
 }
 
 // The rig sees a gap inside the window: the same transaction with Go work between its write and
 // its commit breaks D6, and the report names the statement the gap follows. The gap is four
-// times the bound and is spent in Go, so this test is a reading of the bound alone and skips in
-// a build that judges no window's time.
+// times the bound and is spent in Go, so this test is a reading of the bound alone.
 func TestXidWindowRigCatchesAGapAfterTheFirstWrite(t *testing.T) {
-	skipWhereNoGapIsJudged(t)
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone).
+	storetest.RequireXidGapJudgment(t)
 	_, database, tracer := xidService(t)
 	report := tracer.Measure(t, database.Pool, func() {
 		runRigTransaction(t, database, rigInjectedGap)
@@ -113,12 +167,13 @@ func TestXidWindowRigCatchesAGapAfterTheFirstWrite(t *testing.T) {
 // replaces is gone: nothing here waits. A build whose bound reached what that parse costs would
 // let the real fault through, so this is the test that would go red first were XidMaxGap ever
 // widened too far. The parse runs no statement of its own, so the window's shape is the same
-// with it as without it and only the bound can see it: under the race detector, which judges no
-// window's time, this test skips, and the plain lane is where it holds. A document call that
-// does run a statement inside the window is caught in either build, by the shape each window
-// test asserts.
+// with it as without it and only the bound can see it. A document call that does run a
+// statement inside the window is caught by the shape each window test asserts as well.
 func TestXidWindowCatchesADocumentCallInsideTheWindow(t *testing.T) {
-	skipWhereNoGapIsJudged(t)
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone).
+	storetest.RequireXidGapJudgment(t)
 	_, database, tracer := xidService(t)
 	spec, _ := storetest.XidSpec("DOC", 1)
 	report := tracer.Measure(t, database.Pool, func() {
@@ -143,6 +198,9 @@ func TestXidWindowCatchesADocumentCallInsideTheWindow(t *testing.T) {
 // first one whose result shows it wrote - and never reported as a rig problem; a sleep after that
 // write is caught there as it is under a poller that saw the xid.
 func TestXidWindowRigJudgesAWriteThePollerNeverSaw(t *testing.T) {
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone).
 	for _, probe := range []struct {
 		name string
 		gap  time.Duration
@@ -152,7 +210,7 @@ func TestXidWindowRigJudgesAWriteThePollerNeverSaw(t *testing.T) {
 	} {
 		t.Run(probe.name, func(t *testing.T) {
 			if probe.gap > 0 {
-				skipWhereNoGapIsJudged(t)
+				storetest.RequireXidGapJudgment(t)
 			}
 			_, database, tracer := xidService(t)
 			// Blind for longer than the whole operation: no poll is sent while the transaction is
@@ -201,35 +259,49 @@ func runRigTransaction(t *testing.T, database *store.Store, gap time.Duration) {
 // sleep: what the transaction does in Go while it holds its transaction id.
 func runRigTransactionDoing(t *testing.T, database *store.Store, between func()) {
 	t.Helper()
+	if err := rigTransactionDoing(database, func() error { between(); return nil }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// rigTransactionDoing is runRigTransactionDoing answering its failure, for a goroutine other than
+// the test's, which may not stop the test; between's error fails it too.
+func rigTransactionDoing(database *store.Store, between func() error) error {
 	ctx := storetest.MarkXid(context.Background())
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin: %v", err)
+		return fmt.Errorf("begin: %w", err)
 	}
 	defer tx.Rollback(ctx)
 	var count int
 	if err := tx.QueryRow(ctx, `select count(*) from projects`).Scan(&count); err != nil {
-		t.Fatalf("read before the write: %v", err)
+		return fmt.Errorf("read before the write: %w", err)
 	}
 	time.Sleep(20 * time.Millisecond)
 	if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('RIG', 'Rig', 'alice')`); err != nil {
-		t.Fatalf("write: %v", err)
+		return fmt.Errorf("write: %w", err)
 	}
-	between()
+	if err := between(); err != nil {
+		return err
+	}
 	for range 2 {
 		if err := tx.QueryRow(ctx, `select count(*) from projects`).Scan(&count); err != nil {
-			t.Fatalf("read after the write: %v", err)
+			return fmt.Errorf("read after the write: %w", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit: %v", err)
+		return fmt.Errorf("commit: %w", err)
 	}
+	return nil
 }
 
 // Settlement versions a document a person edited live: it renders the room, refreshes every open
 // anchor against the new tree and writes the version, its anchors and its events in one
 // transaction (settleRoomWithin).
 func TestXidWindowSettlementVersionWrite(t *testing.T) {
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone).
 	service, database, tracer := xidService(t)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	artifactID, before, generation := settlementFixture(t, service, database, alice)
@@ -252,6 +324,9 @@ func TestXidWindowSettlementVersionWrite(t *testing.T) {
 // heard of yet: the room stays resident, and the settlement reads the close off the issue row
 // under the owner's lock (lockArtifactOwner).
 func TestXidWindowClosedIssueSettlementVersionWrite(t *testing.T) {
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone).
 	service, database, tracer := xidService(t)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	artifactID, before, generation := settlementFixture(t, service, database, alice)
@@ -321,6 +396,9 @@ func settlementFixture(t *testing.T, service *Service, database *store.Store, ed
 // The edit-notice sweep claims a due notice, then reads both versions it names, parses them to
 // tell a server-state-only change from a person's edit and diffs them (sendEditNotice).
 func TestXidWindowEditNoticeSweep(t *testing.T) {
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone).
 	service, database, tracer := xidService(t)
 	spec, quotes := storetest.XidSpec("DOC", 1)
 	document := createIssueDocument(t, database, 2, spec)
@@ -351,6 +429,9 @@ func TestXidWindowEditNoticeSweep(t *testing.T) {
 // with large specs, as a deploy whose overlap wrote versions through code that records no count
 // leaves them.
 func TestXidWindowReconcileTaskProgress(t *testing.T) {
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone).
 	service, database, tracer := xidService(t)
 	spec, _ := storetest.XidSpec("DOC", 1)
 	const issues = 20
@@ -384,6 +465,9 @@ func TestXidWindowReconcileTaskProgress(t *testing.T) {
 // way the whole write is the one statement that writes the windows, so the window is that
 // statement and the commit after it.
 func TestXidWindowBlockIndexWindowArm(t *testing.T) {
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone).
 	service, database, tracer := xidService(t)
 	ctx := context.Background()
 	spec, _ := storetest.XidSpec("DOC", 1)

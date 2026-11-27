@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -10,7 +12,55 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
+
+// seedPointerAttribute writes the supertag node of typeName, the attribute node of its attrName
+// pointer with targets (nil for no limit), and the attribute_of tuple that ties them, as migration
+// 20261109051232 seeds the shipped schema's nodes. A test that swaps in a type the shipped schema
+// does not hold - claim - writes these so the store holds what the swapped-in schema declares:
+// graph_edges' tuple arm reads a pointer's allowed targets from that attribute node
+// (block_pointer_targets), and a stamped pointer row is answered by that arm, so without the node
+// the arm finds no limit at all. It is docs' helper of the same name: graphstore's
+// TestEveryStoreWriteCallSiteIsListed refuses a raw write of the store outside a test file, so
+// the two packages cannot share it through pmdoctest.
+func seedPointerAttribute(t *testing.T, database *store.Store, typeName, attrName string, targets []string) {
+	t.Helper()
+	ctx := context.Background()
+	attributes := map[string]any{"kind": "block[]", "name": attrName, "store_name": attrName, "position": 0}
+	if targets != nil {
+		attributes["targets"] = targets
+	}
+	encoded, err := json.Marshal(attributes)
+	if err != nil {
+		t.Fatalf("encode the %s/%s attribute: %v", typeName, attrName, err)
+	}
+	for _, seed := range []struct {
+		what, statement string
+		args            []any
+	}{
+		{"the " + typeName + " supertag node", `
+			insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
+			values ('supertag', $1, 'supertag', 'project', 'live', '{}'::jsonb, now(), '{"kind":"system","id":"block-schema-seed"}', 0)
+			on conflict (kind, id) do nothing`, []any{typeName}},
+		{"the " + typeName + "/" + attrName + " attribute node", `
+			insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
+			values ('attribute', $1, 'attribute', 'project', 'live', $2, now(), '{"kind":"system","id":"block-schema-seed"}', 0)
+			on conflict (kind, id) do update set attributes = excluded.attributes`, []any{typeName + "/" + attrName, encoded}},
+		{"the attribute_of tying " + typeName + "/" + attrName + " to its supertag", `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
+			select 'attribute', $1, 'attribute_of', 'supertag', $2, now(), '{"kind":"system","id":"block-schema-seed"}', 0, null, true
+			where not exists (
+				select 1 from graph_tuples held
+				where held.from_kind = 'attribute' and held.from_id = $1 and held.kind = 'attribute_of'
+				  and held.to_kind = 'supertag' and held.to_id = $2 and held.source_event = 0 and held.asserted)`,
+			[]any{typeName + "/" + attrName, typeName}},
+	} {
+		if _, err := database.Pool.Exec(ctx, seed.statement, seed.args...); err != nil {
+			t.Fatalf("seed %s: %v", seed.what, err)
+		}
+	}
+}
 
 // edgeSources is each edge as "<kind> <node kind> <node id>", sorted.
 func edgeSources(edges []model.GraphEdge) []string {
@@ -35,6 +85,7 @@ func requireEdgeSources(t *testing.T, stage string, edges []model.GraphEdge, wan
 // claim's block to the requirement, listed and queried by that name, and is the only link the
 // pointer makes: neither the claim nor its document lists a mentions edge beside it.
 func TestASavedBlockPointerIsALinkNamedByItsAttribute(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process (pmdoctest.UseBlockSchema).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
 	issue, _ := pointerSpec(t, handler)
@@ -89,6 +140,7 @@ func TestASavedBlockPointerIsALinkNamedByItsAttribute(t *testing.T) {
 // it: the claim's serves and supports edges from the claim, and the mention from the claim's
 // paragraph. Dropping the prose keeps the pointer's edge as it was first written.
 func TestAPointerAndAProseCitationOfOneTargetAreTwoEdges(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process (pmdoctest.UseBlockSchema).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(pmdoc.BlockAttributes{
 		{Name: "serves", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeBlockList, Targets: []string{"requirement"}}},
 		{Name: "supports", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeBlockList}},
@@ -143,6 +195,7 @@ func TestAPointerAndAProseCitationOfOneTargetAreTwoEdges(t *testing.T) {
 // comes first, on a claim with no link yet: two equal pairs there are one insert writing one new
 // row twice, which the store refuses, while against a link already stored they change nothing.
 func TestABlockPointerAttributeLinksEachDistinctTargetOnce(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process (pmdoctest.UseBlockSchema).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "ACME")
@@ -185,8 +238,11 @@ func TestABlockPointerAttributeLinksEachDistinctTargetOnce(t *testing.T) {
 // citation whatever the target's type (D7). A target retyped back, or deleted and restored, is
 // listed again.
 func TestABlockPointerIsListedOnlyWhileItsTargetHasAnAllowedType(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process (pmdoctest.UseBlockSchema).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
+	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
+	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
 	issue, _ := pointerSpec(t, handler)
 	specRef := "dispatch://" + issue.Key + "/spec"
 	r1 := specRef + "#b-r1"

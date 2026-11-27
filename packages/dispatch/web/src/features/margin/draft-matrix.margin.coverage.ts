@@ -20,12 +20,14 @@ const REASONS = {
   8: "8. Which end of a margin thread its reply sits at (`composerFirst`, from `useThreadOrder` in `ThreadCard`) is read when the card is drawn and again only when who is signed in changes (`useUserPreference`), so it never moves a reply that is on screen.",
   9: "9. The phone panel's being open or closed is the reader's own (its toggle, its backdrop and Escape, `toggleSheet`) and moves no address: closed, only the stylesheet hides what is in it (`hidden xl:block`), so the compose and every card, reply and editor stay mounted under it, and opening it shows them as they were. Closing it closes a phone thread as Back does (`closeThread`), the first row. The margin opens it for each compose it shows (`openCompactSheet`), which the first two phone rows assert.",
   10: "10. On a phone a card's tap and a mark's click open the thread full-screen in place of opening it in the list (`onToggleThread`, `selectMarginItem`), so the first row's Back is the way off a thread there, and another thread is opened after it; a comment or ask link only selects its card (`openPhoneThread` false), which moves no composer.",
-  11: "11. Where the margin sits moves no composer: the desktop column's width, class and resize handle, the compact layout's `contents` class (`Margin`), and the panel's dialog role, its place at the foot of the screen and its backdrop (`MarginSheet`).",
+  11: "11. Where the margin sits moves no composer: the desktop column's width, class and resize handle, the compact layout's `contents` class (`Margin`), and the panel's dialog role, its place at the foot of the screen and its backdrop (`MarginSheet`), and the band the hook holds for the collapsed panel for the floats above it (`useFootInset`). Each branch of the hook only measures a box, publishes a CSS property and gives each scroller under a float its end room (an attribute, a custom property or an inline bottom padding), so it moves no composer. That end room reaches the margin's column and Details' drawer. The expanded panel's own height, published for the editor's selection bar (`--margin-sheet-height`), is the same: a box measured into a property.",
   12: "12. The rest is focus and scrolling: the compose takes focus once it is on screen (`onScreen`, `autoFocus`), the margin scrolls the compose or a linked card into view only in an open panel (`useMarginListeners`, `useCardHold`), and an open panel or thread view keeps focus inside it and the page still under it (`useDialog`). None moves an address or ends a mount. The app shell's forms, above every host, are the sign-in file's.",
   13: "13. The compose's kind (`composer.kind`) changes only by the compose's own Comment, Suggest and Ask switch (`onKindChange`), the reader's own control, which retypes the same mark (`retypeCompose`) and leaves the draft in the field (`useKeptDrafts`), so it re-addresses the same compose and moves nothing it holds.",
   14: "14. A render inside the margin that throws draws the shell's error section in its place (`ErrorBoundary`, \"the margin\", in `app.tsx`), which unmounts the compose and every card as leaving the document does. Each composer keeps what it holds as it goes (`useKeptDrafts`): the compose and an editor by their address (`keepAway`), a thread's reply under its thread's name, written at each keystroke (`unsent.write`), and what was typed over a refusal in its held send (`keepDraft`). Those stores live with the query client, above the boundary (`unsentDraftsOf`, `heldSends`), and so does the compose (`MarginProvider`). The boundary draws the margin again when the page's path changes (`resetKey`, `componentDidUpdate`), with no thread open and no editor (`useMarginSheet` starts again), and its Reload Dispatch reloads the page as the reload rows do. A composer drawn again at its address opens on its draft (`mountDraft`): the compose on its document, a thread's reply when its thread is opened, an editor when its comment's Edit is pressed (beside a newer body where the comment changed, `changedUnder`), as the document-left rows, the another-thread row and the edit file's margin card show.",
   15: "15. On the new issue page, once its reader turns it on, the margin is Details (`Margin`'s `drawer`, `DetailsDrawer`): the same `MarginSheet` with the same model, under the same `MarginProvider`, in a drawer over the right of the page, so where it sits - its width, its resize handle, its class, and on a phone its dialog role and its shade - moves no composer, as (11) says of the column and the panel. Closed, Details hides itself (`hidden={!open}`) and keeps the compose and every card, reply and editor mounted under it, as (9) says of the phone panel. Its being open is the reader's own (its Close, its shade, `Shift+M`, and Escape on a phone), or the margin's when a card the reader picked or a link names lands, and on a phone a link followed inside it closes it; none moves an address. Its focus, and its dialog on a phone, are (12)'s.",
   16: "16. In Details the margin's box draws only what the page put in the margin's slot (`SheetBody`, `useMarginSlotFill`), and nothing while the page has put nothing there; and a reader who turns the new page on or off, or leaves the issue page, moves the margin between Details and its column (`Margin`'s `drawer`). Either unmounts the compose and every card as leaving the document does, and each keeps what it holds as (5) and (14) say: its stores and the compose live above the margin, so it comes back as it was when the margin draws it again, as the document-left rows' returns show.",
+  17: "17. In Details the page's fill draws the margin's own content - its tabs, the compose and every card - only while the editor of a document the page shows is bound (`DetailsFill`'s `documentUp`: the margin's `documentBridge`, which `ProofDocument`'s page editor registers as it binds and takes back as it unbinds), and hands `IssueMarginCards` no `conversation` otherwise: before that editor binds, once the reader leaves the document, and after the server refuses an editor's connection (`onOutsideSchema`), while it waits to be admitted again or, once it stops trying, until the page is loaded again. Each unmounts the compose and every card, reply and editor as leaving the document does, and each keeps what it holds and comes back on it when an editor binds again, as (16) says.",
+  18: "18. A thread whose root its author deleted takes no reply: Dispatch refuses one (409 POST_DELETED), so the card draws its reply only while the root stands (`ThreadCard`'s `rootDeleted`). A delete that lands while the reply is open unmounts it as opening another thread does, and what it held stays under the thread's reply send name, as the closed card says (`keptReply`). The delete is its author's, not a move of the margin's or the reader's, and Dispatch takes no reply to a deleted root, so no row makes it.",
 } as const;
 
 /** The rows that end a newer compose offering the earlier compose's draft beside its field. */
@@ -80,6 +82,12 @@ export const coverage: readonly CoverageEntry[] = [
     "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | conditional | (expanded) ? …",
     cells(`${HOST} · another thread opened, then back`),
     { reason: REASONS[2] }
+  ),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | conditional | (expanded && rootDeleted === null) ? …",
+    cells(`${HOST} · another thread opened, then back`),
+    { reason: REASONS[2] },
+    { reason: REASONS[18] }
   ),
   ...answers(
     "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | address prop | mutationKey={replyMutationKey}",
@@ -307,6 +315,12 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[11],
   }),
   ...answers("MarginSheet | - | form | (compactSheet) ? …", { reason: REASONS[11] }),
+  ...answers("MarginSheet | - | form | if (!modalSheet || element === null) return …", {
+    reason: REASONS[11],
+  }),
+  ...answers("useFootInset | - | form | if (!active || element === null) return …", {
+    reason: REASONS[11],
+  }),
   ...answers("MarginSheet | - | form | (covered) ? …", { reason: REASONS[4] }),
   ...answers('MarginSheet | - | form | !covered && tab.value === "comments" && …', {
     reason: REASONS[12],
@@ -400,4 +414,12 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[15] }
   ),
   ...answers("DetailsDrawer | - | form | (isPhoneViewport) ? …", { reason: REASONS[15] }),
+  // The page's fill of the margin's slot (`DetailsFill`), which draws the margin's content inside
+  // Details.
+  ...answers("DetailsFill | MarginComposerSlot | conditional | (documentUp) ? …", {
+    reason: REASONS[17],
+  }),
+  ...answers("DetailsFill | CommentsTab | conditional | (documentUp) ? …", {
+    reason: REASONS[17],
+  }),
 ];

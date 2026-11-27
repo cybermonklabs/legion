@@ -50,16 +50,20 @@ import (
 //
 // With PRODUCTION_RENDER_OUT set, TestProductionRender writes the document to that file. Without
 // it, the test compares the document against testdata/production-render.golden and fails on
-// any byte of difference, printing the first differing lines. TestProductionRenderSeesAOneInputChange
-// is the instrument's control: one input changed must change the document.
+// any byte of difference, printing testify's whole diff of the two and the command that writes the
+// golden again (prodRenderRegenerate). TestProductionRenderSeesAOneInputChange is the instrument's
+// control: one input changed must change the document, and the comparison must report it.
 // TestProductionRenderHarnessMatchesPulumitest holds the construct path the document takes to
 // pulumitest.Construct's, which cannot serve the PriorityClass reads production's shapes make.
 
 // prodRenderOutEnv names the file TestProductionRender writes the document to, in place of the
-// comparison against prodRenderGolden.
+// comparison against prodRenderGolden. prodRenderRegenerate is the command, run from
+// packages/envoy/infra, that writes the golden from the tree's render; it names the file by an
+// absolute path, since go test runs the test in gcp/.
 const (
-	prodRenderOutEnv = "PRODUCTION_RENDER_OUT"
-	prodRenderGolden = "production-render.golden"
+	prodRenderOutEnv     = "PRODUCTION_RENDER_OUT"
+	prodRenderGolden     = "production-render.golden"
+	prodRenderRegenerate = prodRenderOutEnv + "=$PWD/gcp/testdata/" + prodRenderGolden + " go test ./gcp -run '^TestProductionRender$'"
 )
 
 // prodRenderConsumer is the URN prefix of a resource of the consumer's own program, which an input
@@ -458,8 +462,8 @@ func (e *prodRenderEngine) call(args pulumi.MockCallArgs) (resource.PropertyMap,
 
 // prodRenderComputed answers what a provider computes: an account's email and member, a network's
 // and a health check's self link, a template's unique self link, a group's name, a cluster's
-// endpoint and CA, a database instance's connection name, a password's result and a Kubernetes
-// Secret's resourceVersion.
+// endpoint and CA, a database instance's connection name, a password's result, a Kubernetes
+// Secret's resourceVersion and a Kubernetes ServiceAccount's uid.
 func prodRenderComputed(args pulumi.MockResourceArgs) (string, resource.PropertyMap) {
 	out := resource.PropertyMap{}
 	switch args.TypeToken {
@@ -486,14 +490,9 @@ func prodRenderComputed(args pulumi.MockResourceArgs) (string, resource.Property
 	case "random:index/randomPassword:RandomPassword":
 		out["result"] = resource.NewProperty(args.Name + "-result")
 	case "kubernetes:core/v1:Secret":
-		metadata := resource.PropertyMap{}
-		if registered, ok := args.Inputs["metadata"]; ok && registered.IsObject() {
-			for key, value := range registered.ObjectValue() {
-				metadata[key] = value
-			}
-		}
-		metadata["resourceVersion"] = resource.NewProperty(args.Name + "-resource-version")
-		out["metadata"] = resource.NewProperty(metadata)
+		out["metadata"] = resource.NewProperty(registeredMetadataWith(args, "resourceVersion", args.Name+"-resource-version"))
+	case "kubernetes:core/v1:ServiceAccount":
+		out["metadata"] = resource.NewProperty(registeredMetadataWith(args, "uid", mockServiceAccountUID(args.Name)))
 	}
 	return "", out
 }
@@ -840,8 +839,17 @@ func TestProductionRender(t *testing.T) {
 	}
 	golden := filepath.Join("testdata", prodRenderGolden)
 	want, err := os.ReadFile(golden)
-	require.NoError(t, err, "read the golden; %s=<file> writes the document instead", prodRenderOutEnv)
-	require.Equal(t, string(want), string(got), "production's render differs from %s", golden)
+	require.NoError(t, err, "read the golden; run %s from packages/envoy/infra to write it", prodRenderRegenerate)
+	if !prodRenderCompare(t, golden, want, got) {
+		t.FailNow()
+	}
+}
+
+// prodRenderCompare is TestProductionRender's comparison of the document got against want, the
+// golden read from golden: testify's Equal, which on a difference reports the whole diff and the
+// command that writes the golden again.
+func prodRenderCompare(t assert.TestingT, golden string, want, got []byte) bool {
+	return assert.Equal(t, string(want), string(got), "production's render differs from %s; if the change is meant to move it, run %s from packages/envoy/infra and commit the golden it writes", golden, prodRenderRegenerate)
 }
 
 // prodRenderReport is a testing.T that records what a failed assertion would report and fails
@@ -855,8 +863,8 @@ func (r *prodRenderReport) Errorf(format string, args ...any) {
 
 // TestProductionRenderSeesAOneInputChange is the instrument's control: gcp:Dispatch's replicas,
 // which reaches only the app Deployment's spec, moved from 1 to 2 must change the document, and
-// the comparison TestProductionRender runs, testify's Equal on the two documents, must fail and
-// report the replica count's lines.
+// the comparison TestProductionRender runs (prodRenderCompare) must fail, report the replica
+// count's lines, and name the command that regenerates the golden.
 func TestProductionRenderSeesAOneInputChange(t *testing.T) {
 	base := prodRenderDocument(t, prodRenderShapes())
 	shapes := prodRenderShapes()
@@ -865,10 +873,12 @@ func TestProductionRenderSeesAOneInputChange(t *testing.T) {
 	shapes[0].inputs["replicas"] = prodRenderInt(2)
 	changed := prodRenderDocument(t, shapes)
 	var report prodRenderReport
-	require.False(t, assert.Equal(&report, string(base), string(changed)), "Dispatch's replicas moved from 1 to 2 and the comparison passed")
+	require.False(t, prodRenderCompare(&report, filepath.Join("testdata", prodRenderGolden), base, changed), "Dispatch's replicas moved from 1 to 2 and the comparison passed")
 	require.Len(t, report.messages, 1)
 	diff := report.messages[0][strings.Index(report.messages[0], "Diff:"):]
 	require.Contains(t, diff, `"replicas"`, "the differing lines the comparison reports are the replica count's")
+	require.Contains(t, report.messages[0], "PRODUCTION_RENDER_OUT=$PWD/gcp/testdata/production-render.golden go test ./gcp -run '^TestProductionRender$'",
+		"the report names the command that regenerates the golden")
 	t.Logf("the comparison reports the one-input change:\n%s", diff)
 }
 

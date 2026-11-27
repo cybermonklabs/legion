@@ -29,6 +29,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -44,12 +45,13 @@ type planRatingsLive struct {
 // its retro, whose completion is refused until it rates the plan. The fourth goes no further than
 // merging, so the read by project lists the three alone.
 func TestPlanRatingsLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live, in newStepRecordsLive).
 	l := &planRatingsLive{newStepRecordsLive(t, "scripts/e2e/plan-ratings.sh", 4, "plans-reader")}
 	keys := make([]string, 0, len(l.issues))
 	for _, issue := range l.issues {
 		keys = append(keys, issue.key)
 	}
-	l.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s, issues %s; daemon at dispatch_url %s; the reader is the person's personal token",
+	l.note("Dispatch %s (database of its own, NATS off), project %s with default repository %s, issues %s; daemon at dispatch_url %s; the reader is the person's personal token",
 		l.dispatch.base, l.cfg.Project, liveRepo, strings.Join(keys, ", "), l.cfg.DispatchURL)
 	l.step("three-finished-issues-each-rated", l.readByProject)
 	l.step("a-retro-with-no-rating-is-refused", l.ratingRequired)
@@ -164,7 +166,7 @@ func (l *planRatingsLive) readScript(issue string) (string, int) {
 	if err := os.MkdirAll(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(bin, "dispatch"), []byte("#!/bin/sh\nexec bun '"+cli+"' \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "dispatch"), []byte("#!/bin/sh\nexec bun '"+cli+"' \"$@\"\n"), 0o700); err != nil {
 		t.Fatalf("write the dispatch command of the person's shell: %v", err)
 	}
 	out, code := l.personsShell().run([]string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")},

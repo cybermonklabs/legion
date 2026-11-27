@@ -31,14 +31,14 @@ flowchart TB
 
   people -->|file issues, answer asks, approve specs| dispatch
   people -->|approve secret requests| approve
-  people -->|merge| github
+  people -->|review, and set the rules a merge lands under| github
   dispatch -->|events| envoy
   github -->|pull request and CI events| envoy
   envoy -->|events| coordinator
   envoy -->|messages| agents
   coordinator -->|runs| agents
   agents -->|specs, comments, asks, status| dispatch
-  agents -->|pull requests| github
+  agents -->|pull requests, merges| github
   agents -->|request a secret| broker
   broker -->|pending requests, each linking its page| inbox
   inbox -->|link| approve
@@ -47,8 +47,7 @@ flowchart TB
 ## Dispatch: the record of work and decisions
 
 Dispatch is a web dashboard and an HTTP API over one store of projects and issues. Each issue has a
-lifecycle status, from Triage, Icebox, Backlog and Todo through In Progress, Testing, Needs Review
-and Retro to Done.
+lifecycle status: Triage, Icebox, Backlog, Todo, In Progress, Testing, Needs Review, Retro or Done.
 
 An issue carries documents, the first of which is its spec. People and agents comment on a
 document, suggest exact replacements for its text, and ask questions. An **ask** is a decision put
@@ -66,17 +65,18 @@ Legion's coordinator works only the issues handed to it, which are the ones carr
 label `legion`. That lets Legion share a project with people and other agents. A person sets the
 label from the issue header, or asks Legion's own **controller** agent to set it for them; the
 controller never hands over work on its own. An agent that finds a problem outside its own issue
-files no issue: a defect with a clear fix in code its own tree touches or depends on is fixed in that tree's
-pull request, any other goes to the controller, which gives it to the tree that owns that code and
-files it for Legion only when none does, and a
-problem that needs a decision goes to a person in a Dispatch ask.
+files no issue: it fixes a defect with a clear fix itself, in its own pull request or a separate
+pull request of its tree. The controller files for Legion a defect in a repository the agent's
+token does not reach, and passes no message on. A problem that needs a decision goes to a person
+in a Dispatch ask.
 
 Each admitted issue gets an **architect**, which owns the issue's tree. It writes the spec, splits
-large work into child issues, and runs each change through phase workers in turn: a **planner**, an
-**implementer**, a **tester** and a **reviewer**, then a **merger**. Every agent works in a
-workspace of its own, and every phase records a structured handoff on the issue in Dispatch, which
-the next role reads and a restarted agent recovers from. The coordinator writes the issue's status
-back to Dispatch as the work moves (In Progress, Testing, Needs Review, Retro).
+large work into child issues, and runs each change through the phase workers its plan names, in the
+order it names them — in the default steps a **planner**, an **implementer**, a **tester** and a
+**reviewer** — then a **merger**. The phase workers of an issue share its one workspace, and the
+planner, the implementer, the tester and the reviewer each record a structured handoff on the issue
+in Dispatch, which the next role reads and a restarted agent recovers from. The coordinator writes
+the issue's status back to Dispatch as the work moves (In Progress, Testing, Needs Review, Retro).
 
 Two decisions stay with people:
 
@@ -90,8 +90,9 @@ Two decisions stay with people:
   whether and when it lands, so a check it requires, or a review a person must give, stays
   theirs; the coordinator submits no merge and turns auto-merge on nowhere.
 
-The coordinator runs its agents as Oh My Pi sessions, either in tmux panes on one host or as Agent
-Sandbox pods in a Kubernetes cluster.
+The coordinator runs its agents as Oh My Pi sessions, or a phase worker on Claude Code where the
+deployment puts it there, either in tmux panes on one host or, in a Kubernetes cluster, in one
+Agent Sandbox pod for each issue.
 
 ## Secrets Broker: credentials a person approved
 
@@ -141,10 +142,12 @@ business.
 3. The coordinator admits it and starts its architect, which writes the spec.
 4. The architect requests approval. The request reaches the approver's Inbox, they approve that
    version, and Dispatch publishes the approval on Envoy. The coordinator opens the design gate.
-5. The planner, implementer, tester and reviewer take the change in turn. A review that requests
-   changes sends it back to the implementer, and through the tester again.
-6. Once the reviewer approves, the architect reads the evidence and accepts the change (or sends
-   it back), and the retrospective runs. The merger then reads the pull request and merges it
+5. The steps of the architect's plan take the change in the order it names them: in the default
+   steps, the planner, implementer, tester and reviewer. A review that requests changes sends it
+   back to the implementer, and through the steps after it again.
+6. Where the plan has the architect's acceptance step (in the default steps, once the reviewer
+   approves), the architect reads the evidence and accepts the change (or sends it back); once the
+   plan's last step passes, the retrospective runs. The merger then reads the pull request and merges it
    itself, at the head it read, under a message it writes rather than GitHub's default; it lands
    under the repository's own rules, and the coordinator closes the issue when it reads that
    merge: it is Done.

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,8 +19,10 @@ import (
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipherclient"
@@ -123,7 +126,7 @@ func TestNatsprobeSaysWhatTheHubAnswered(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte(text), 0o600))
 		return path
 	}
-	services, err := natscallout.ParseServices("daemon/-/*=" + daemonAccount)
+	services, err := config.ParseNATSServices("daemon/-/*=" + daemonAccount)
 	require.NoError(t, err)
 	service, err := natscallout.Start(t.Context(), natscallout.Settings{
 		URLs: []string{url}, SeedFile: write("service.seed", keys.ServiceSeed),
@@ -206,4 +209,66 @@ func TestAnUnreachableHubIsNoRefusal(t *testing.T) {
 	require.Equal(t, exitFailed, exit, "stdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
 	require.Empty(t, stdout.String(), "the probe reported an answer of a hub it never reached")
 	require.Contains(t, stderr.String(), "natsprobe: connect: ")
+}
+
+// A made-up password holding a comma and then nats://, split as --servers is split, leaves its
+// head a URL whose port is the password's digits and its tail a URL that names a NATS scheme,
+// which the rules let through (a later URL that names one is one a person writes). nats.go dials
+// the head, and net's error quotes the port (`dial tcp: address <digits>: invalid port`); the
+// probe prints the connection's failure by its class and how many servers it tried, never the
+// error's text. nats.go shuffles the servers and returns the last one's error, a refused dial's
+// as ErrNoServers, so the tail's port is one net cannot read either (`address 99999: invalid
+// port`), and the probe runs ten times: the control, the probe printing nats.Connect's error
+// whole, prints the digits in all but about one run in a thousand. The wording is checked without
+// stopping the run, so the control reaches the run that prints them.
+func TestAnUnreachableHubsErrorPrintsNoPieceOfASplitCredential(t *testing.T) {
+	const digits = "8472915603918274"
+	// The URL is built here, so no source line holds a URL with a password. Its user is an IP
+	// address, so the head's host is one nats.go dials without a lookup.
+	split := "nats://127.0.0.1:" + digits + ",nats://madeUpProbeTail@" + "127.0.0.1:99999"
+	for range 10 {
+		var stdout, stderr bytes.Buffer
+		exit := run([]string{"--servers", split, "--wait", "1s", "--no-credential",
+			"--subscribe", "notifications.envoy.deliver.ses_a"}, func(string) string { return "" }, &stdout, &stderr)
+		printed := stdout.String() + stderr.String()
+		for i := 0; i+10 <= len(digits); i++ {
+			require.NotContains(t, printed, digits[i:i+10], "the probe prints a run of the made-up password")
+		}
+		assert.Equal(t, exitFailed, exit, "stdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+		assert.Contains(t, stderr.String(), "natsprobe: connect: the server's address is no host and port the system can dial (tried the 2 servers --servers names)")
+	}
+}
+
+// A --servers URL nats.go would read other than as written is refused before any dial, naming the
+// URL by its position and printing none of it: here a made-up password holding a "/", which
+// nats.go's URL parse reads as a port and quotes. The control is the same probe without the check,
+// whose `natsprobe: connect:` line quotes the password's head.
+func TestTheProbeRefusesAServerURLItCannotReadPrintingNoneOfIt(t *testing.T) {
+	const madeUp = "madeUpProbePassword"
+	var stdout, stderr bytes.Buffer
+	exit := run([]string{"--servers", "nats://127.0.0.1:4222,nats://legion:" + madeUp + "/rest@127.0.0.1:1", "--wait", "1s", "--no-credential",
+		"--subscribe", "notifications.envoy.deliver.ses_a"}, func(string) string { return "" }, &stdout, &stderr)
+	require.Equal(t, exitUsage, exit, "stdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "natsprobe: --servers: NATS server URL 2 of 2 cannot be read")
+	require.NotContains(t, stderr.String(), madeUp, "the refusal quotes the password")
+}
+
+// A --servers list that begins with an empty entry, then a ws:// URL, then a URL with no scheme
+// whose path stops parsing once decoded and whose query holds a made-up token: nats.go drops the
+// empty entry, makes the pool ws from the ws:// URL and dials the later URL as ws, whose handshake
+// error quotes it, query and all. The probe refuses it by its position in --servers, the empty
+// entry counted, before any dial. With the pool read from the first entry, empty or not, the probe
+// dialled it and printed the token in most runs.
+func TestTheProbeRefusesAWebsocketListsLaterURLAfterAnEmptyEntry(t *testing.T) {
+	const madeUp = "madeUpProbeQueryToken0123"
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	var stdout, stderr bytes.Buffer
+	exit := run([]string{"--servers", ",ws://127.0.0.1:1," + listener.Addr().String() + "/%25zz?token=" + madeUp, "--wait", "1s", "--no-credential",
+		"--subscribe", "notifications.envoy.deliver.ses_a"}, func(string) string { return "" }, &stdout, &stderr)
+	require.Equal(t, exitUsage, exit, "stdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	require.Contains(t, stderr.String(), "natsprobe: --servers: NATS server URL 3 of 3 cannot be read: its path does not parse once decoded")
+	require.NotContains(t, stderr.String(), madeUp, "the refusal quotes the token")
 }

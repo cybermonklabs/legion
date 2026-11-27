@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -33,24 +34,37 @@ import (
 )
 
 // A repository cache is the third kind of Sandbox the runtime makes, beside the issue pods and the
-// controller's (podKind) and the image probe: one per mapped repository, holding a bare clone on a
-// volume of its own and serving it to the issue pods' fetch containers (internal/repocache). It is
-// no claim: nothing registers on the worker stream for it, no claim.Token names it, and `legion
-// state` lists it under the repositories. Every place that lists the project's Sandboxes tells a
-// cache apart by its marker label (labelCache) before anything else, as each does the probe.
+// controller's (podKind) and the image probe: one per repository of the cache set
+// (Options.CacheRepositories), holding a bare clone on a volume of its own and serving it to the
+// issue pods' fetch containers (internal/repocache). It is no claim: nothing registers on the
+// worker stream for it, no claim.Token names it, and `legion state` lists it under the
+// repositories. Every place that lists the project's Sandboxes tells a cache apart by its marker
+// label (labelCache) before anything else, as each does the probe.
 
 // RepositoryCache is runtime.kubernetes.repository_cache: the volume each cache Sandbox owns, how
-// often its process fetches GitHub, how long the cache of a repository the mapping no longer names
-// is kept before the sweep deletes it, and the one container's reservation.
+// often its process fetches GitHub, how long the cache of a repository the cache set no longer
+// holds is kept before the sweep deletes it, the one container's reservation, and the Cloud Storage
+// bucket each cache keeps its packs in with the ServiceAccount the cache pods alone run as, the one
+// holding the bucket's grant. Bucket and ServiceAccount are set together or not at all: both "" is
+// off, and a cache pod then runs as Options.Pod.ServiceAccount, as every issue pod does, and the
+// controller's pod too where Options.Pod.ControllerServiceAccount is unset (cachePodAccount).
 type RepositoryCache struct {
-	Volume    resource.Quantity
-	Refresh   time.Duration
-	Retain    time.Duration
-	Resources corev1.ResourceRequirements
+	Volume         resource.Quantity
+	Refresh        time.Duration
+	Retain         time.Duration
+	Resources      corev1.ResourceRequirements
+	Bucket         string
+	ServiceAccount string
 }
 
-// check is why c is no configuration a runtime can make caches with, or nil.
-func (c RepositoryCache) check() error {
+// check is why c is no configuration a runtime whose other pods run as pod's accounts
+// (Options.Pod) can make caches with, or nil. Besides the sizes and the reservation, it holds the
+// bucket's pair as config's loader does (readCacheBucket): the bucket and the cache's account set
+// together or not at all, and the cache's account never the one the issue pods run as, read as
+// accountDrift reads an unset account (serviceAccountOr), since the bucket's grant to that account
+// would reach every issue pod, nor the controller's own account where one is named
+// (Pod.ControllerServiceAccount), since the grant would then reach the controller's pod.
+func (c RepositoryCache) check(pod Pod) error {
 	switch {
 	case c.Volume.Sign() <= 0:
 		return fmt.Errorf("repository cache volume %s is not a positive quantity", c.Volume.String())
@@ -58,17 +72,35 @@ func (c RepositoryCache) check() error {
 		return fmt.Errorf("repository cache refresh %s is not positive", c.Refresh)
 	case c.Retain <= 0:
 		return fmt.Errorf("repository cache retention %s is not positive", c.Retain)
+	case (c.Bucket == "") != (c.ServiceAccount == ""):
+		return fmt.Errorf("repository cache bucket %q and ServiceAccount %q are set together or not at all: the cache pods run as an account of their own only to write the bucket", c.Bucket, c.ServiceAccount)
+	case c.ServiceAccount != "" && c.ServiceAccount == serviceAccountOr(pod.ServiceAccount):
+		return fmt.Errorf("repository cache ServiceAccount %s is the one the issue pods run as: the bucket's grant to it would reach every issue pod", c.ServiceAccount)
+	case c.ServiceAccount != "" && c.ServiceAccount == pod.ControllerServiceAccount:
+		return fmt.Errorf("repository cache ServiceAccount %s is the one the controller's pod runs as: the bucket's grant to it would reach the controller's pod", c.ServiceAccount)
 	}
 	return checkRequirements("the repository cache", c.Resources)
+}
+
+// cachePodAccount is the ServiceAccount a cache pod runs as: the cache's own
+// (RepositoryCache.ServiceAccount) while its bucket is on, else the one every issue pod runs as
+// (runtime.kubernetes.pod.service_account), "" for the namespace's default. It is the one reading of
+// that choice: the pod template is written with it (cachePodTemplate) and a cache pod is held to it
+// (reconcileCachePod), so a cache pod the template makes is never drifted.
+func (r *Runtime) cachePodAccount() string {
+	return cmp.Or(r.cacheConfig.ServiceAccount, r.pod.ServiceAccount)
 }
 
 // CacheStatus is a repository's cache as the runtime's stores show it: the repository, exactly as
 // the cache's annotation names it; its Sandbox; its State (starting, cloning, ready, failing or
 // refused), with the kubelet's Reason while it is failing and its Service's while it is refused;
 // whether its pod has passed its readiness probe behind its own Service, and its address then,
-// that Service's (cacheURL); once the repository has left the mapping, until when the sweep keeps
-// it; and, from RepositoryCaches alone, the pod's last health read: what its /healthz answered
-// (Health), or why it could not be read (HealthError), both empty when it was not Ready to be read.
+// that Service's (cacheURL); once the repository has left the cache set, until when the sweep
+// keeps it; and, from RepositoryCaches alone, its volume claim's name (Claim, cacheClaimName) and
+// the pod's last health read: what its /healthz answered (Health), or why it could not be read
+// (HealthError), both empty when it was not Ready to be read. The daemon's capability report reads
+// Repo, Claim, Health's room on the volume (VolumeBytes, AvailableBytes, VolumeError, the two
+// failure times) and Bytes, a nil Health counting the cache unread (daemon's supervision.caches).
 type CacheStatus struct {
 	Repo          ghrepo.Repository
 	Sandbox       string
@@ -77,6 +109,7 @@ type CacheStatus struct {
 	Ready         bool
 	Address       string
 	RetainedUntil time.Time
+	Claim         string
 	Health        *repocache.Health
 	HealthError   string
 }
@@ -129,14 +162,25 @@ func (r *Runtime) cacheManifest(repo ghrepo.Repository) sandbox {
 }
 
 // cachePodTemplate is a cache's pod: one container, cacheContainer, running `legion workspace-init
-// cache` on the runtime's image, on the Legion pool under gVisor with the workers' pod security and
-// the probe's placement, mounting its volume at CacheRoot and its Secret's two tokens read-only —
+// cache` on the runtime's image, under gVisor with the workers' pod security and the probe's
+// placement (which templateMoved holds a stored template to), mounting its volume at CacheRoot and
+// its Secret's two tokens read-only —
 // the provisioning token, as workspace-fetch mounts the issue pod's (LEGION_PROVISION_TOKEN_FILE),
 // and the bearer token its clients present (LEGION_REPOSITORY_CACHE_TOKEN_FILE) — with a memory
 // TMPDIR for the fetch's one-shot credential and a readinessProbe of GET /readyz on
 // repocache.Port, which needs no token. Restarted Always. It carries no model-route volume,
 // provider key, operator mount or Dispatch variable: the process reads GitHub and serves pods,
-// nothing else.
+// nothing else. It runs as cachePodAccount, and while the cache's bucket is on its container is
+// also told the bucket (repocache.BucketEnv), which is all the bucket changes: the argv and the
+// Secret's projection are the same either way. The token automount stays off with the bucket on
+// too: on GKE the cache's Google identity comes from the node's metadata server through Workload
+// Identity, never from a mounted Kubernetes token. The pod carries the Cluster Autoscaler's
+// safeToEvictAnnotation as "true", with the bucket on or off, where an issue pod's and the
+// controller's carry "false" (podTemplate): a Sandbox is no controller the cluster autoscaler
+// knows, so without the annotation the autoscaler keeps every node a cache pod runs on
+// (no.scale.down.node.pod.not.backed.by.controller). A move makes the pod again on the same volume,
+// in the same zone; a /tar stream the move cuts fails its fetch, and the daemon makes that issue
+// pod again. Karpenter's do-not-disrupt, which the cluster autoscaler ignores, stays "true".
 func (r *Runtime) cachePodTemplate(name string, repo ghrepo.Repository) podTemplate {
 	memory := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}
 	container := corev1.Container{
@@ -166,16 +210,19 @@ func (r *Runtime) cachePodTemplate(name string, repo ghrepo.Repository) podTempl
 		Resources:       r.cacheConfig.Resources,
 		SecurityContext: restrictedContainer(),
 	}
+	if r.cacheConfig.Bucket != "" {
+		container.Env = append(container.Env, corev1.EnvVar{Name: repocache.BucketEnv, Value: r.cacheConfig.Bucket})
+	}
 	kubeletLiteral(&container)
 	return podTemplate{
 		Metadata: podMetadata{
 			Labels:      r.cacheLabels(),
-			Annotations: map[string]string{annotationCacheRepo: repo.String(), "karpenter.sh/do-not-disrupt": "true"},
+			Annotations: map[string]string{annotationCacheRepo: repo.String(), "karpenter.sh/do-not-disrupt": "true", safeToEvictAnnotation: "true"},
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy:                corev1.RestartPolicyAlways,
 			AutomountServiceAccountToken: new(false),
-			ServiceAccountName:           r.pod.ServiceAccount,
+			ServiceAccountName:           r.cachePodAccount(),
 			EnableServiceLinks:           new(false),
 			// OnRootMismatch, as an issue pod's: the clone on the cache's volume is the pod user's
 			// already, so a restart does not wait for the kubelet to re-own every file of it.
@@ -254,10 +301,10 @@ func nestedNames(object unstructured.Unstructured, path ...string) []string {
 }
 
 // EnsureRepositoryCache makes repo's cache exist and run, under the pod's launch turn (lockPod on
-// CacheSandboxName) so two mapping changes never race on one cache: the Sandbox is read and, absent,
-// created Suspended (ensureCacheSandbox); its Secret brought to the current token
+// CacheSandboxName) so a launch and the sweep never race on one cache: the Sandbox is read and,
+// absent, created Suspended (ensureCacheSandbox); its Secret brought to the current token
 // (writeCacheSecret); and its pod made or replaced when it must be (reconcileCachePod). Readiness
-// is not awaited: RepositoryCache reads it from the pod store, so a mapping change never blocks on
+// is not awaited: RepositoryCache reads it from the pod store, so the sweep never blocks on
 // a volume being bound or an image being pulled. A cache already as it should be costs one Sandbox
 // read and one Secret read.
 func (r *Runtime) EnsureRepositoryCache(ctx context.Context, repo ghrepo.Repository) error {
@@ -295,7 +342,7 @@ func (r *Runtime) ensureRepositoryCache(ctx context.Context, repo ghrepo.Reposit
 // (cacheSandboxShape), or is another project's; waited out, within the boot timeout, while it is
 // being deleted (the sweep retiring it), and then created afresh.
 func (r *Runtime) ensureCacheSandbox(ctx context.Context, name string, repo ghrepo.Repository) (*sandbox, error) {
-	deadline := time.Now().Add(r.bootTimeout)
+	deadline := r.clock.Now().Add(r.bootTimeout)
 	for {
 		u, err := r.sandboxClient().Get(ctx, name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
@@ -304,7 +351,7 @@ func (r *Runtime) ensureCacheSandbox(ctx context.Context, name string, repo ghre
 				return nil, err
 			}
 			created, err := r.sandboxClient().Create(ctx, manifest, metav1.CreateOptions{})
-			if apierrors.IsAlreadyExists(err) && time.Now().Before(deadline) {
+			if apierrors.IsAlreadyExists(err) && r.clock.Now().Before(deadline) {
 				continue
 			}
 			if err != nil {
@@ -339,7 +386,7 @@ func (r *Runtime) ensureCacheSandbox(ctx context.Context, name string, repo ghre
 			}
 			return err == nil && current.GetUID() != uid, err
 		}
-		if err := r.await(ctx, time.Until(deadline), fmt.Sprintf("sandbox %s (uid %s) to be deleted", name, uid), gone); err != nil {
+		if err := r.await(ctx, deadline.Sub(r.clock.Now()), fmt.Sprintf("sandbox %s (uid %s) to be deleted", name, uid), gone); err != nil {
 			return nil, err
 		}
 	}
@@ -422,27 +469,38 @@ func (r *Runtime) cacheURL(name string) string {
 
 // reconcileCachePod makes s's pod (again) when it must be: s is Suspended (a fresh create, or one a
 // failed earlier run left Suspended), s's pod template reserves other than the configuration's
-// runtime.kubernetes.repository_cache.resources (templateResized: the operator changed them), or
-// the pod it owns runs an image other than the runtime's (imageDrift), runs as a ServiceAccount
-// other than the configured runtime.kubernetes.pod.service_account (accountDrift: the account is
-// fixed for the pod's life, so a cache pod reaches the new one only by being made again), or has
-// ended (terminal: evicted, say). A pod it would replace while that pod still runs waits until the
-// cache serves no stream (cacheStreams), for either drift: replacing it ends every tar it is
-// sending, which fails each fetch reading one and has the daemon make its issue pod again, so the
-// replacement is left to a later sweep while a tar is sent or queued. It then suspends s when it
-// is not already, waits the old pod out (awaitPodGone), and sets the pod template, on the
-// runtime's image and reservation, and Running in one patch, as relaunch does. The Sandbox and
-// its volume are kept through every replacement: a drifted pod costs a new pod, not a new clone.
-// A Running Sandbox whose template reserves what the configuration does, and whose pod is live on
-// the right image under the right account or not made yet — the controller makes one — is left
-// alone.
+// runtime.kubernetes.repository_cache.resources (templateResized: the operator changed them),
+// binds the cache to another bucket or account than the configuration now does (templateRebound:
+// the bucket turned on or off, or another bucket or account configured), or places the pod other
+// than cachePodTemplate places it now (templateMoved: its RuntimeClass, node selector or
+// tolerations differ, as for a cache an earlier release made on the retired Legion pool, or after
+// the operator changed runtime.kubernetes.scheduling's node_selector or tolerations; a change of
+// its priority_class alone does not make the pod again), or the pod it owns runs an image other
+// than the runtime's (imageDrift), runs as a ServiceAccount other than the one a cache pod runs as
+// now (cachePodAccount, accountDrift: the account is fixed for the pod's life, so a cache pod
+// reaches the new one only by being made again), or has ended (terminal: evicted, say). The
+// account is the cache's own while its bucket is on, so a cache pod on the issue pods' account is
+// made again then, and the configuration's runtime.kubernetes.pod.service_account otherwise. A pod
+// it would replace while that pod still runs waits until the cache serves no stream
+// (cacheStreams), whichever of those replaces it: replacing it ends every tar it is sending, which
+// fails each fetch reading one and has the daemon make its issue pod again, so the replacement is
+// left to a later sweep while a tar is sent or queued. It then suspends s when it is not already,
+// waits the old pod out (awaitPodGone), and sets the pod template, on the runtime's image,
+// reservation, placement, bucket and account, and Running in one patch, as relaunch does. The
+// Sandbox and its volume are kept through every replacement: a drifted pod costs a new pod, not a
+// new clone. A Running Sandbox whose template reserves, binds and places as the configuration
+// does, and whose pod is live on the right image under the right account or not made yet — the
+// controller makes one — is left alone, so the pod a replacement makes is accepted by the next
+// ensure.
 func (r *Runtime) reconcileCachePod(ctx context.Context, s *sandbox, repo ghrepo.Repository) error {
 	pod := r.storedPod(s.Name)
 	owned := ownedBy(pod, s.UID) && pod.DeletionTimestamp == nil
+	account := r.cachePodAccount()
 	_, imageDrifted := imageDrift(pod, r.image)
-	_, accountDrifted := accountDrift(pod, r.pod.ServiceAccount)
+	_, accountDrifted := accountDrift(pod, account)
 	drifted := imageDrifted || accountDrifted
-	if s.mode() != modeSuspended && !templateResized(s, r.cacheConfig.Resources) && (!owned || (!drifted && !terminal(pod))) {
+	retemplated := templateResized(s, r.cacheConfig.Resources) || templateRebound(s, r.cacheConfig.Bucket, account) || templateMoved(s, r.scheduling)
+	if s.mode() != modeSuspended && !retemplated && (!owned || (!drifted && !terminal(pod))) {
 		return nil
 	}
 	if s.mode() != modeSuspended && owned && !terminal(pod) {
@@ -465,7 +523,8 @@ func (r *Runtime) reconcileCachePod(ctx context.Context, s *sandbox, repo ghrepo
 	); err != nil {
 		return fmt.Errorf("set sandbox %s running: %w", s.Name, err)
 	}
-	r.log.Info("sandbox runtime: repository cache pod started", "sandbox", s.Name, "repo", repo.String(), "image", r.image)
+	r.log.Info("sandbox runtime: repository cache pod started", "sandbox", s.Name, "repo", repo.String(), "image", r.image,
+		"serviceAccount", serviceAccountOr(account), "bucket", r.cacheConfig.Bucket)
 	return nil
 }
 
@@ -480,6 +539,49 @@ func templateResized(s *sandbox, want corev1.ResourceRequirements) bool {
 		}
 	}
 	return true
+}
+
+// templateRebound is whether s's pod template binds the cache otherwise than bucket and account,
+// the configuration's bucket ("" while it is off) and the account a cache pod runs as now
+// (cachePodAccount): its cache container told another bucket (repocache.BucketEnv), or one where
+// the configuration names none, or none where it names one, or the template's ServiceAccount
+// another account, each read as accountDrift reads one (serviceAccountOr). It reads the template,
+// as templateResized does, since the template is the pod the controller makes next: a template
+// written before the bucket was turned on or off would make the next pod on the old binding though
+// no pod is live yet to drift, and a template written for another bucket makes a pod that runs as
+// the right account and writes the wrong bucket, which no reading of the pod's account shows.
+func templateRebound(s *sandbox, bucket, account string) bool {
+	spec := s.Spec.PodTemplate.Spec
+	if serviceAccountOr(spec.ServiceAccountName) != serviceAccountOr(account) {
+		return true
+	}
+	for _, c := range spec.Containers {
+		if c.Name != cacheContainer {
+			continue
+		}
+		told := ""
+		for _, e := range c.Env {
+			if e.Name == repocache.BucketEnv {
+				told = e.Value
+			}
+		}
+		return told != bucket
+	}
+	return true
+}
+
+// templateMoved is whether s's pod template places the cache's pod other than cachePodTemplate
+// places it under scheduling: a RuntimeClass other than gvisor, or a node selector or tolerations
+// other than scheduling's (nodeSelector, tolerations), an absent and an empty one alike. A cache
+// an earlier release made selects the retired Legion pool's label and tolerates its taint, and the
+// Sandbox controller makes every later pod of the cache from that template, after a drain deletes
+// the pod, say. It reads the template, never the pod: RuntimeClass admission adds the class's own
+// selector and tolerations to the pod, so a pod need not match the template it was made from.
+func templateMoved(s *sandbox, scheduling Scheduling) bool {
+	spec := s.Spec.PodTemplate.Spec
+	return spec.RuntimeClassName == nil || *spec.RuntimeClassName != gvisor ||
+		!equality.Semantic.DeepEqual(spec.NodeSelector, scheduling.NodeSelector) ||
+		!equality.Semantic.DeepEqual(spec.Tolerations, scheduling.Tolerations)
 }
 
 // The states of a repository cache, as legion state shows them and a failed fetch names them.
@@ -581,7 +683,7 @@ var cacheFailures = []string{"CrashLoopBackOff", "ImagePullBackOff", "ErrImagePu
 // controller has made no Service for it yet, failing with the kubelet's reason while its container
 // waits on one of cacheFailures or the pod has failed, ready once the pod's Ready condition is True
 // (the readiness probe passed) and its Service is made, with its address, that Service's
-// (cacheURL), and cloning otherwise — and RetainedUntil from annotationCacheUnmappedAt plus the
+// (cacheURL), and cloning otherwise — and RetainedUntil from annotationCacheUnusedAt plus the
 // retention when the annotation is set. Not found when no Sandbox of the name is stored.
 func (r *Runtime) RepositoryCache(repo ghrepo.Repository) (CacheStatus, bool) {
 	name := CacheSandboxName(r.project, repo)
@@ -625,15 +727,17 @@ func (r *Runtime) RepositoryCache(repo ghrepo.Repository) (CacheStatus, bool) {
 	case !made && status.State == cacheReady:
 		status.State, status.Ready, status.Address = cacheStarting, false, ""
 	}
-	if at, err := time.Parse(time.RFC3339, s.Annotations[annotationCacheUnmappedAt]); err == nil {
+	if at, err := time.Parse(time.RFC3339, s.Annotations[annotationCacheUnusedAt]); err == nil {
 		status.RetainedUntil = at.Add(r.cacheConfig.Retain)
 	}
 	return status, true
 }
 
 // RepositoryCaches is every cache the stores hold whose repository parses, sorted by repository,
-// each as RepositoryCache answers it with the last health read (readCacheHealth) of the pod it
-// owns now, none when that read was of another: what `legion state` shows of the caches.
+// each as RepositoryCache answers it with its volume claim's name, as the controller names the
+// claim it makes from the Sandbox's template (cacheClaimName), and the last health read
+// (readCacheHealth) of the pod it owns now, none when that read was of another: what `legion
+// state` shows of the caches, and what the daemon's capability report reads of their room.
 func (r *Runtime) RepositoryCaches() []CacheStatus {
 	var caches []CacheStatus
 	for _, u := range r.storedCaches() {
@@ -645,6 +749,7 @@ func (r *Runtime) RepositoryCaches() []CacheStatus {
 		if !found {
 			continue
 		}
+		status.Claim = cacheClaimName(status.Sandbox)
 		r.mu.Lock()
 		read, held := r.cacheHealth[status.Sandbox]
 		r.mu.Unlock()
@@ -798,38 +903,50 @@ func (r *Runtime) refreshCacheTokens(ctx context.Context) {
 }
 
 // sweepCaches is ReconcileOrphans' pass over the repository caches (the claim path, sweep, never
-// sees one), against the repositories the project works now (Options.Mapped: the repositories
-// Dispatch's mapping names and the repositories of the project's live issue records). For each
-// stored cache Sandbox: a repository that does not parse, or a shape this runtime does not build,
-// is logged and kept, as sweep keeps a Sandbox it cannot judge (the next boot's census refuses it
-// by name); a repository the set holds has its cache's annotationCacheUnmappedAt removed; one the
-// set does not — no live record and no mapping names it — is marked
-// with now once, kept while now minus the mark is under the retention, and deleted after it
-// (deleteFenced, in the foreground, so its volume and Secret go with it), logged with the repository
-// and how long it was kept. Then every member's cache is ensured (EnsureRepositoryCache):
-// one missing is made — at boot, whose reconciliation runs this, and after an ensure a mapping
-// change asked for failed — and a drifted or dead cache pod is replaced, all on the sweep's
-// schedule. Each runs under the cache's launch turn, fenced to the Sandbox as the store held it.
-// Every failure is logged, as a warning naming the cache, and tried at the next sweep; none is
-// ReconcileOrphans' error, which holds the claims' launches back at boot (reconcileBootOrphans):
-// each launch ensures its own repository's cache and fails, naming why, when it cannot be made, so
-// one repository's cache never stops another's launches.
+// sees one), against the cache set (Options.CacheRepositories: the repositories of the project's
+// live issue records and of the launches since the daemon last read them). For each stored cache
+// Sandbox: a repository that does not parse, or a shape this runtime does not build, is logged
+// and kept, as sweep keeps a Sandbox it cannot judge (the next boot's census refuses it by name);
+// a repository the set holds has its cache's annotationCacheUnusedAt and
+// annotationCacheOldUnusedAt removed; one the set does not — no live record and no launch since
+// the last read names it — is marked with now once, kept while now minus the mark is under the
+// retention, and deleted after it (deleteFenced, in the foreground, so its volume and Secret go
+// with it), logged with the repository and how long it was kept. A cache an earlier release
+// marked under annotationCacheOldUnusedAt loses that annotation at the first pass that judges it
+// (sweepOldMarkedCache), in the set or not. Outside the set it keeps the time of its first mark,
+// the earlier of its marks that parse as a time: it is retired at that pass when that mark is one
+// retention old or more, and otherwise has that time written under annotationCacheUnusedAt in the
+// patch that removes the old annotation, so it retires one retention after its first mark; one
+// none of whose marks parses is marked with now in that patch, with a warning naming each value,
+// and kept one retention. Then every member's cache is ensured (EnsureRepositoryCache): one
+// missing is made — at boot, whose reconciliation runs this, and after a launch's own ensure
+// failed — and a drifted or dead cache pod is replaced, all on the sweep's schedule. Each runs
+// under the cache's launch turn, fenced to the Sandbox as the store held it. Every failure is
+// logged, as a warning naming the cache, and tried at the next sweep; none is ReconcileOrphans'
+// error, which holds the claims' launches back at boot (reconcileBootOrphans): each launch
+// ensures its own repository's cache and fails, naming why, when it cannot be made, so one
+// repository's cache never stops another's launches.
 func (r *Runtime) sweepCaches(ctx context.Context) {
-	mapped := r.mapped()
+	cached := r.cacheRepositories()
 	for _, u := range r.storedCaches() {
-		if err := r.sweepCache(ctx, u, mapped); err != nil && ctx.Err() == nil {
+		if err := r.sweepCache(ctx, u, cached); err != nil && ctx.Err() == nil {
 			r.log.Warn("sandbox runtime: repository cache sweep failed; tried at the next sweep", "sandbox", u.GetName(), "err", err)
 		}
 	}
-	for _, repo := range mapped {
+	for _, repo := range cached {
 		if err := r.EnsureRepositoryCache(ctx, repo); err != nil && ctx.Err() == nil {
 			r.log.Warn("sandbox runtime: repository cache sweep failed; tried at the next sweep", "sandbox", CacheSandboxName(r.project, repo), "repo", repo.String(), "err", err)
 		}
 	}
 }
 
-// sweepCache is sweepCaches' judgement of one stored cache Sandbox, u, against mapped.
-func (r *Runtime) sweepCache(ctx context.Context, u *unstructured.Unstructured, mapped []ghrepo.Repository) error {
+// sweepCache is sweepCaches' judgement of one stored cache Sandbox, u, against cached, the cache
+// set, with one of four outcomes. In the set, a cache that carries annotationCacheUnusedAt loses
+// it. Outside the set, a cache with no mark is marked with now; one whose mark is not a time is
+// logged and kept; and one whose mark is a time is retired once now minus that mark reaches the
+// retention, and kept until then. A cache an earlier release marked under
+// annotationCacheOldUnusedAt is judged by sweepOldMarkedCache instead, under the same lock.
+func (r *Runtime) sweepCache(ctx context.Context, u *unstructured.Unstructured, cached []ghrepo.Repository) error {
 	repo, err := cacheRepository(u.GetAnnotations())
 	if err != nil {
 		return fmt.Errorf("%w; kept", err)
@@ -846,41 +963,106 @@ func (r *Runtime) sweepCache(ctx context.Context, u *unstructured.Unstructured, 
 	if err != nil {
 		return err
 	}
-	marked := s.Annotations[annotationCacheUnmappedAt]
-	if slices.ContainsFunc(mapped, func(m ghrepo.Repository) bool { return sameRepository(m, repo) }) {
+	held := slices.ContainsFunc(cached, func(m ghrepo.Repository) bool { return sameRepository(m, repo) })
+	if old, markedBefore := s.Annotations[annotationCacheOldUnusedAt]; markedBefore {
+		return r.sweepOldMarkedCache(ctx, s, repo, held, old)
+	}
+	marked := s.Annotations[annotationCacheUnusedAt]
+	if held {
 		if marked != "" {
-			if _, err := r.markUnmapped(ctx, s, nil); err != nil {
+			if _, err := r.markUnused(ctx, s, nil); err != nil {
 				return err
 			}
-			r.log.Info("sandbox runtime: repository cache mapped again; kept", "sandbox", s.Name, "repo", repo.String())
+			r.log.Info("sandbox runtime: repository cache back in the cache set; its marks cleared, kept", "sandbox", s.Name, "repo", repo.String())
 		}
 		return nil
 	}
 	now := r.now()
 	if marked == "" {
 		stamp := now.UTC().Format(time.RFC3339)
-		if _, err := r.markUnmapped(ctx, s, &stamp); err != nil {
+		if _, err := r.markUnused(ctx, s, &stamp); err != nil {
 			return err
 		}
-		r.log.Info("sandbox runtime: repository cache no longer mapped; kept for its retention", "sandbox", s.Name, "repo", repo.String(), "retain", r.cacheConfig.Retain.String())
+		r.log.Info("sandbox runtime: repository cache no longer in the cache set; kept for its retention",
+			"sandbox", s.Name, "repo", repo.String(), "retain", r.cacheConfig.Retain.String())
 		return nil
 	}
 	at, err := time.Parse(time.RFC3339, marked)
 	if err != nil {
-		return fmt.Errorf("%s is %q, not a time: %w; kept", annotationCacheUnmappedAt, marked, err)
+		return fmt.Errorf("%s is %q, not a time: %w; kept", annotationCacheUnusedAt, marked, err)
 	}
-	if kept := now.Sub(at); kept < r.cacheConfig.Retain {
+	kept := now.Sub(at)
+	if kept < r.cacheConfig.Retain {
 		return nil
 	}
-	return r.deleteFenced(ctx, s,
-		"sandbox runtime: retired a repository cache no longer mapped", "repo", repo.String(), "kept", now.Sub(at).Truncate(time.Second).String())
+	return r.deleteFenced(ctx, s, "sandbox runtime: retired a repository cache no longer in the cache set",
+		"repo", repo.String(), "kept", kept.Truncate(time.Second).String())
 }
 
-// markUnmapped sets s's annotationCacheUnmappedAt to stamp, or removes it when stamp is nil, in one
-// JSON merge patch carrying s's uid, so a Sandbox replaced in between is never written.
-func (r *Runtime) markUnmapped(ctx context.Context, s *sandbox, stamp *string) (*sandbox, error) {
+// sweepOldMarkedCache is sweepCache's judgement of s, a cache an earlier release marked under
+// annotationCacheOldUnusedAt with the value old, held telling whether the cache set holds its
+// repository, repo. It is the pass that takes that annotation off, which INFRA-4401's A4 requires
+// of the first sweep that judges the cache: each of its writes is markUnused's patch, which
+// removes the annotation, or the cache's deletion. In the set, the cache loses both marks. Outside
+// it, the cache's first mark is the earlier of its marks that parse as a time, old and its
+// annotationCacheUnusedAt, and the cache is retired once now minus that mark reaches the
+// retention; a cache kept has that mark written under annotationCacheUnusedAt (markUnused with that
+// mark's time, never now), so it retires one retention after its first mark, and one none of whose
+// marks parses is marked with now and logged as a warning naming each value, so it is kept one
+// retention and not retired at once. Each outcome has one INFO line naming the cache, its
+// repository, the old annotation's value and what the pass did: cleared it in the set, marked the
+// cache at its first mark, retired it, or marked it with now. dispatch://INFRA-3532's pull request
+// deletes it, with the one `if` of sweepCache that calls it.
+func (r *Runtime) sweepOldMarkedCache(ctx context.Context, s *sandbox, repo ghrepo.Repository, held bool, old string) error {
+	if held {
+		if _, err := r.markUnused(ctx, s, nil); err != nil {
+			return err
+		}
+		r.log.Info("sandbox runtime: repository cache back in the cache set; its marks cleared, kept",
+			"sandbox", s.Name, "repo", repo.String(), annotationCacheOldUnusedAt, old)
+		return nil
+	}
+	marked := s.Annotations[annotationCacheUnusedAt]
+	now := r.now()
+	// first is the cache's first mark, the earlier of its marks that parse as a time; err is nil
+	// once one does.
+	first := marked
+	at, err := time.Parse(time.RFC3339, first)
+	if oldAt, oldErr := time.Parse(time.RFC3339, old); oldErr == nil && (err != nil || oldAt.Before(at)) {
+		first, at, err = old, oldAt, nil
+	}
+	if err == nil {
+		if kept := now.Sub(at); kept >= r.cacheConfig.Retain {
+			return r.deleteFenced(ctx, s, "sandbox runtime: retired a repository cache no longer in the cache set",
+				"repo", repo.String(), "kept", kept.Truncate(time.Second).String(), annotationCacheOldUnusedAt, old)
+		}
+		if _, err := r.markUnused(ctx, s, &first); err != nil {
+			return err
+		}
+		r.log.Info("sandbox runtime: repository cache marked at its first mark, its old annotation removed; kept for the rest of its retention",
+			"sandbox", s.Name, "repo", repo.String(), annotationCacheOldUnusedAt, old, annotationCacheUnusedAt, first, "retain", r.cacheConfig.Retain.String())
+		return nil
+	}
+	stamp := now.UTC().Format(time.RFC3339)
+	if _, err := r.markUnused(ctx, s, &stamp); err != nil {
+		return err
+	}
+	values := []any{"sandbox", s.Name, "repo", repo.String(), annotationCacheOldUnusedAt, old}
+	if marked != "" {
+		values = append(values, annotationCacheUnusedAt, marked)
+	}
+	r.log.Warn("sandbox runtime: repository cache carries no mark that is a time; marked with this sweep's time, its old annotation removed", values...)
+	r.log.Info("sandbox runtime: repository cache no longer in the cache set; kept for its retention",
+		"sandbox", s.Name, "repo", repo.String(), "retain", r.cacheConfig.Retain.String(), annotationCacheOldUnusedAt, old)
+	return nil
+}
+
+// markUnused sets s's annotationCacheUnusedAt to stamp, or removes it when stamp is nil, and
+// removes annotationCacheOldUnusedAt either way, in one JSON merge patch carrying s's uid, so a
+// Sandbox replaced in between is never written.
+func (r *Runtime) markUnused(ctx context.Context, s *sandbox, stamp *string) (*sandbox, error) {
 	body, err := json.Marshal(map[string]any{
-		"metadata": map[string]any{"uid": string(s.UID), "annotations": map[string]*string{annotationCacheUnmappedAt: stamp}},
+		"metadata": map[string]any{"uid": string(s.UID), "annotations": map[string]*string{annotationCacheUnusedAt: stamp, annotationCacheOldUnusedAt: nil}},
 	})
 	if err != nil {
 		return nil, err

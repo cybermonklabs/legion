@@ -89,7 +89,9 @@ func envoyRoleRegistry(t *testing.T, session string, alive bool) (*httptest.Serv
 	t.Helper()
 	var lookups atomic.Int64
 	envoy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		code, body := http.StatusNotFound, any(map[string]any{})
+		// The listener's own refusal of a role nobody holds (listenerwire.RoleRefusal): only that
+		// body reads as gone (controller.Prober, dispatch://INFRA-2045 R5).
+		code, body := http.StatusNotFound, any(map[string]any{"error": "no holder for role " + strings.TrimPrefix(r.URL.Path, "/v1/roles/"), "reason": "unclaimed"})
 		if alive {
 			code, body = http.StatusOK, map[string]any{"holder": session, "last_seen": time.Now().UnixMilli()}
 		}
@@ -106,6 +108,7 @@ func envoyRoleRegistry(t *testing.T, session string, alive bool) (*httptest.Serv
 // to start one — once per worker boot timeout, and never about a controller the registry holds
 // alive. The line names the mode.
 func TestTheDaemonSaysWhenNoControllerIsRegistered(t *testing.T) {
+	t.Parallel()
 	const session = "ses_controller"
 	for _, tc := range []struct {
 		name     string
@@ -184,6 +187,7 @@ func checkDaemonModeLine(t *testing.T, line map[string]any) {
 // reader tells a launch in flight or a backoff from a death. A controller that holds the role is
 // not reported, neither the session recorded before its launch registers nor the launch once it has.
 func TestTheDaemonSaysWhenItsOwnControllerIsNotRegistered(t *testing.T) {
+	t.Parallel()
 	const session = "ses_controller"
 	for _, tc := range []struct {
 		name string
@@ -294,6 +298,7 @@ func (r stalledLaunches) Spawn(ctx context.Context, spec runtime.SpawnSpec) (run
 // The machines' timers never fire here (stillClock), so a short worker boot timeout spaces the line
 // a few sweeps apart and nothing else; one line after the launch began shows the sweep did not wait.
 func TestTheDaemonSaysItsControllerIsNotRegisteredWhileItsLaunchHangs(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	cfg.WorkerBootTimeout = 100 * time.Millisecond

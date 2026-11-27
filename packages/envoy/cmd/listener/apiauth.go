@@ -22,34 +22,44 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 const bearerPrefix = "Bearer "
 
 // The credential label of envoy_listener_requests_total: which credential admitted a request.
-// none is the open /v1, which admits a request that presents no credential it knows.
+// none is the open /v1, which admits a request that presents no credential it knows, and
+// none_broker_token is the open /v1 admitting a request that presents a broker token on a
+// listener that takes none (brokers is nil), so serves it unverified: the gate on the open /v1
+// counts it apart from a bare request, since a caller that already holds a broker token is served
+// as one only once its listener takes that credential.
 const (
-	credentialSharedToken = "shared_token"
-	credentialNone        = "none"
-	credentialOIDC        = "oidc"
-	credentialGoogle      = "google"
-	credentialBroker      = "broker"
+	credentialSharedToken     = "shared_token"
+	credentialNone            = "none"
+	credentialNoneBrokerToken = "none_broker_token"
+	credentialOIDC            = "oidc"
+	credentialGoogle          = "google"
+	credentialBroker          = "broker"
 )
 
-// The warnings an admission on one of the two credentials the shared token's removal waits on
-// logs, and how often each logs at most (admissionWarnings).
+// The warnings an admission on one of the credentials the shared token's removal waits on logs,
+// and how often each logs at most (admissionWarnings).
 const (
-	sharedTokenAdmittedMessage = "listener: request admitted on the shared token"
-	openAdmittedMessage        = "listener: request admitted with no credential"
-	admissionWarnEvery         = time.Minute
+	sharedTokenAdmittedMessage      = "listener: request admitted on the shared token"
+	openAdmittedMessage             = "listener: request admitted with no credential"
+	unverifiedBrokerAdmittedMessage = "listener: request admitted with a broker token this listener does not verify"
+	admissionWarnEvery              = time.Minute
 )
 
 // newListenerRequests registers envoy_listener_requests_total, the census the removal of the
-// shared token and of the open /v1 is gated on: both credential="shared_token" and
-// credential="none" must read zero on every deployed listener for 72 hours before they go.
+// shared token and of the open /v1 is gated on: credential="shared_token" and credential="none"
+// must read zero on every deployed listener for 72 hours before they go, and
+// credential="none_broker_token" on every listener but the clustered session listeners, which the
+// removal begins to verify broker tokens on.
 func newListenerRequests(met *metrics.Registry) *metrics.Counter {
 	return met.NewCounter("envoy_listener_requests_total",
-		"Requests /v1 admitted, by the credential that admitted each (shared_token, none, oidc, google, broker) and the route it reached")
+		"Requests /v1 admitted, by the credential that admitted each (shared_token, none, none_broker_token, oidc, google, broker) and the route it reached")
 }
 
 // listenerAPIAuth is everything apiAuth admits a /v1 caller with, and where it records each caller
@@ -57,8 +67,9 @@ func newListenerRequests(met *metrics.Registry) *metrics.Counter {
 type listenerAPIAuth struct {
 	// token is ENVOY_API_TOKEN, the shared bearer; empty takes none.
 	token string
-	// verifier is the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair's, nil when the pair is unset.
-	verifier *oidc.Verifier
+	// verifier is the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair's, nil when the pair is unset. It
+	// reads its issuer when first needed, so until it has, a projected token is answered 503.
+	verifier *oidc.LazyVerifier
 	// accounts is ENVOY_OIDC_ACCOUNTS, the subjects the projected-token branch admits. Empty admits
 	// every subject verifier verifies, as the branch did before the list existed.
 	accounts []string
@@ -66,6 +77,10 @@ type listenerAPIAuth struct {
 	google *googleIdentities
 	// brokers takes access tokens the secrets broker issued; nil on a listener that takes none.
 	brokers *brokerTokens
+	// edgeProjects is ENVOY_EDGE_PROJECTS (config.Service.EdgeProjects): the projects an edge
+	// listener serves, empty on every other listener. Non-empty, /v1 admits a broker token alone,
+	// and only one EdgeAdmits admits (project_scope.go).
+	edgeProjects []string
 	// allowedHosts is ENVOY_ALLOWED_HOSTS, the names an open /v1 serves beside loopback.
 	allowedHosts []string
 	// logger takes every refusal and every warned admission; apiAuth refuses an auth without one.
@@ -80,9 +95,9 @@ type listenerAPIAuth struct {
 }
 
 // requiresBearer reports whether /v1 takes a bearer, which is what closes it to a caller that
-// presents none.
+// presents none. An edge listener always does: it admits a broker token alone.
 func (a listenerAPIAuth) requiresBearer() bool {
-	return a.token != "" || a.verifier != nil || a.google != nil
+	return a.token != "" || a.verifier != nil || a.google != nil || len(a.edgeProjects) > 0
 }
 
 // googleIdentities admits a caller by its own Google identity token, the credential of a caller
@@ -93,8 +108,9 @@ type googleIdentities struct {
 	// audience is ENVOY_OIDC_GOOGLE_AUDIENCE, the audience the caller asks its metadata server for.
 	audience string
 	// verifier verifies a token Google (oidc.GoogleIssuer) signed for audience; apiAuth refuses
-	// Google identities without one.
-	verifier *oidc.Verifier
+	// Google identities without one. It reads Google's discovery document when first needed, so
+	// until it has, a Google identity token is answered 503.
+	verifier *oidc.LazyVerifier
 	// accounts is ENVOY_OIDC_GOOGLE_ACCOUNTS, each address in lower case.
 	accounts []string
 }
@@ -107,7 +123,11 @@ type googleIdentities struct {
 // and not_listed. Its error is the verifier's own, which matches oidc.ErrIssuerUnavailable when no
 // verdict was reached (refuseIdentityToken).
 func (g *googleIdentities) admits(r *http.Request, raw string, logger *logging.Logger) (string, error) {
-	claims, err := g.verifier.VerifyGoogleIdentity(r.Context(), raw)
+	var claims oidc.Claims
+	check, err := identityCheck(r, g.verifier)
+	if err == nil {
+		claims, err = g.verifier.VerifyGoogleIdentity(check, raw)
+	}
 	account := fold.ASCII(claims.Email)
 	var reason string
 	switch {
@@ -138,7 +158,11 @@ func (g *googleIdentities) admits(r *http.Request, raw string, logger *logging.L
 // is the verifier's own, which matches oidc.ErrIssuerUnavailable when no verdict was reached
 // (refuseIdentityToken).
 func (a listenerAPIAuth) admitsServiceAccount(r *http.Request, raw string) (string, error) {
-	claims, err := a.verifier.Verify(r.Context(), raw)
+	var claims oidc.Claims
+	check, err := identityCheck(r, a.verifier)
+	if err == nil {
+		claims, err = a.verifier.Verify(check, raw)
+	}
 	if err != nil {
 		a.logger.Warn("listener: service-account token rejected",
 			slog.String("reason", oidc.Reason(err)),
@@ -153,6 +177,37 @@ func (a listenerAPIAuth) admitsServiceAccount(r *http.Request, raw string) (stri
 		return "", identityRefusal(nil, "not_listed")
 	}
 	return claims.Subject, nil
+}
+
+// identityBudget bounds the whole of an identity token's check against its issuer, from the moment
+// the check begins, as the request arrives: the wait for the issuer's discovery document and then
+// the wait for its key set,
+// together. Each read can take longer on its own (an issuer that accepts the connection and never
+// answers holds a discovery attempt for 10 s and a key-set read for oidc.DefaultKeysFetchTimeout,
+// 10 s too), and one after the other they can pass the 10 s newHTTPServer gives a route to write
+// its answer, which would cut the request off with no answer at all rather than the 503
+// refuseIdentityToken gives. It is below the 5 s Dispatch's client gives a call to the listener,
+// so Dispatch reads the 503 rather than its own timeout. A read the budget cuts short carries on
+// in the background and is kept for the next request.
+const identityBudget = 4 * time.Second
+
+// identityCheck waits, until identityBudget after it begins at the latest, for verifier
+// to have read its issuer's discovery document, reading it if no attempt is under way, and answers
+// the context to verify the token on: the request's own, with the rest of that budget as its keys
+// deadline (oidc.WithKeysDeadline). Its error matches oidc.ErrIssuerUnavailable. The budget never
+// ends that context itself: a verification whose context ends is oidc.ErrCancelled, which is a
+// 401, while a key read cut short by the keys deadline is oidc.ErrIssuerUnavailable, the 503.
+func identityCheck(r *http.Request, verifier *oidc.LazyVerifier) (context.Context, error) {
+	deadline := time.Now().Add(identityBudget)
+	if !verifier.Discovered() {
+		wait, cancel := context.WithDeadline(r.Context(), deadline)
+		err := verifier.Discover(wait)
+		cancel()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return oidc.WithKeysDeadline(r.Context(), deadline), nil
 }
 
 // identityRefusal is the error an identity token that was judged and not admitted reads as: the
@@ -202,11 +257,12 @@ func verifiedPrincipal(r *http.Request) string {
 	return principal
 }
 
-// admissionWarnings logs an admission on the shared token or on no credential at all once a
-// minute for each, naming the route and the caller's address, so an operator can find the callers
-// envoy_listener_requests_total counts there before those two credentials go. Each line says how
-// many admissions of its credential it held back since the last line. The other credentials stay
-// out of the log: they are the ones a caller is meant to hold.
+// admissionWarnings logs an admission on the shared token, on no credential at all, or on a broker
+// token this listener serves unverified once a minute for each, naming the route and the caller's
+// address, so an operator can find the callers envoy_listener_requests_total counts there before
+// those credentials go. Each line says how many admissions of its credential it held back since
+// the last line. The other credentials stay out of the log: they are the ones a caller is meant to
+// hold.
 type admissionWarnings struct {
 	now func() time.Time
 	mu  sync.Mutex
@@ -230,6 +286,8 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 		message = sharedTokenAdmittedMessage
 	case credentialNone:
 		message = openAdmittedMessage
+	case credentialNoneBrokerToken:
+		message = unverifiedBrokerAdmittedMessage
 	default:
 		return
 	}
@@ -266,17 +324,18 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // listener is configured for.
 //
 // The two identity-token bearers are told apart by the token's own issuer
-// (oidc.Verifier.Issues), including Google's scheme-less issuer spelling: a token
+// (oidc.LazyVerifier.Issues), including Google's scheme-less issuer spelling: a token
 // Google issued goes to the Google branch, any other to the projected-token one, and a listener
 // that takes only one of them gives it every token, so each refusal is logged with its class and
 // no token is judged twice.
 //
 // Every request it admits is counted in envoy_listener_requests_total under the credential that
-// admitted it and the route it reached (route), and an admission on the shared token or on none
-// at all also logs a warning once a minute (admissionWarnings): those two are what the removal of
-// the shared token and of the open /v1 is gated on. A request admitted on an identity token
-// carries the principal that token proved to the handler (withVerifiedPrincipal, verifiedPrincipal),
-// which is how the send route tells Dispatch's own sends from every other caller's.
+// admitted it and the route it reached (route), and an admission on the shared token, on none at
+// all or on a broker token this listener does not verify also logs a warning once a minute
+// (admissionWarnings): those three are what the removal of the shared token and of the open /v1
+// is gated on. A request admitted on an identity token carries the principal that token proved to
+// the handler (withVerifiedPrincipal, verifiedPrincipal), which is how the send route tells
+// Dispatch's own sends from every other caller's.
 //
 // The broker-token branch is taken only on a listener that takes this credential (brokers is
 // nil on one that does not), and there the scheme alone decides it, before every bearer one:
@@ -284,7 +343,11 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // presentation is this credential whatever the listener's other settings are, and is never
 // retried as a bearer. It comes before the open pass-through too, which is what binds a session
 // on an open listener: a caller that presents a broker token is held to the session it names
-// even where /v1 would have served the request with no credential at all.
+// even where /v1 would have served the request with no credential at all. A token that passes
+// every check but whose broker answers its person held is refused 401 MEMBERSHIP_HELD
+// (refuseHeldBrokerToken), and served again once the broker answers otherwise; one whose broker
+// answers its person not held only until a deadline that has passed is 503 BROKER_UNAVAILABLE
+// (refuseLapsedBrokerToken), and served again once the broker answers a later deadline.
 //
 // A listener with none of the broker variables set reads that header as it read every
 // Authorization header it did not know before this credential existed: the open listener serves
@@ -295,7 +358,9 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // behind its NetworkPolicy; neither takes a bearer. A clustered hub listener that pods of the
 // cluster reach takes the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair, so a caller that presents
 // only DPoP gets its 401. A client sends Authorization: DPoP whenever it has a broker and an
-// identity to trade and no Envoy bearer is set, whatever the listener it is calling takes.
+// identity to trade and no Envoy bearer is set, whatever the listener it is calling takes. The
+// open listener counts such a request as none_broker_token rather than none, so the gate on the
+// open /v1 sees which of its callers already present a broker token it does not verify.
 //
 // Configuring it opens nothing and closes nothing. A request presenting no token is judged
 // exactly as it was before this credential existed — the open listener still serves it, the Host
@@ -331,6 +396,10 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		r, read := auth.readEdgeCaller(w, r)
+		if !read {
+			return
+		}
 		if open && !servesHost(r.Host, auth.allowedHosts) {
 			auth.logger.Warn("listener: request for a host it does not serve",
 				slog.String("host", r.Host),
@@ -346,17 +415,60 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 				return
 			}
 		}
-		if _, presented := ciphertoken.Presented(r); auth.brokers != nil && presented {
+		_, presented := ciphertoken.Presented(r)
+		if auth.brokers != nil && presented {
+			// An edge listener gives a body-less request its proof back on a 503
+			// (proofReleasingWriter), so the one retry Google's load balancer sends of it is not
+			// refused as a replay. No other listener has that balancer in front of it.
+			var spend *proofSpend
+			if r.ContentLength == 0 && len(auth.edgeProjects) > 0 {
+				spend = &proofSpend{}
+				r = r.WithContext(withProofSpend(r.Context(), spend))
+			}
 			caller, err := auth.brokers.verify(r)
 			if err != nil {
 				refuseBrokerToken(w, auth.logger, r, auth.brokers, err)
 				return
 			}
-			admit(w, r.WithContext(withBrokerCaller(r.Context(), caller)), credentialBroker)
+			switch {
+			case caller.Held:
+				refuseHeldBrokerToken(w, auth.logger, r, caller)
+				return
+			case auth.brokers.lapsed(caller):
+				refuseLapsedBrokerToken(w, auth.logger, r)
+				return
+			}
+			ctx := withBrokerCaller(r.Context(), caller)
+			if len(auth.edgeProjects) > 0 {
+				if err := EdgeAdmits(auth.edgeProjects, caller); err != nil {
+					auth.logger.Warn("listener: edge listener refused a broker token",
+						slog.String("session", caller.Session),
+						slog.String("reason", err.Error()),
+						slog.Any("served", auth.edgeProjects),
+						slog.String("path", r.URL.Path))
+					writeJSON(w, http.StatusForbidden, listenerwire.EdgeRefusal{Reason: edgeTokenNotAdmitted, Error: err.Error()})
+					return
+				}
+				ctx = withEdgeHold(ctx, auth.logger)
+			}
+			if spend != nil {
+				w = &proofReleasingWriter{ResponseWriter: w, r: r, spend: spend, logger: auth.logger}
+			}
+			admit(w, r.WithContext(ctx), credentialBroker)
 			return
 		}
 		if open {
+			if presented {
+				admit(w, r, credentialNoneBrokerToken)
+				return
+			}
 			admit(w, r, credentialNone)
+			return
+		}
+		// An edge listener admits a broker token alone (EdgeAdmits): whatever else a request
+		// presents, it is refused here as an unknown credential is, before any bearer is compared.
+		if len(auth.edgeProjects) > 0 {
+			writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 
@@ -394,6 +506,31 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 	})
 }
 
+// readEdgeCaller is r as an edge listener reads it before anything else of it: carrying the
+// address Google's load balancer forwarded for its caller (withCallerAddress), which the broker
+// token's introspection bucket keys on (listenerSourceAddress), so the address is read once,
+// here. It reports false when it refused r, a request from the balancer's proxies that names no
+// such address (edgeCallerAddress), with the 400 and the log line that says why. Every other
+// listener's r is answered as it is.
+func (a listenerAPIAuth) readEdgeCaller(w http.ResponseWriter, r *http.Request) (*http.Request, bool) {
+	if len(a.edgeProjects) == 0 {
+		return r, true
+	}
+	address, forwarded, err := edgeCallerAddress(r)
+	if err != nil {
+		a.logger.Warn("listener: edge request without the address Google's load balancer forwards",
+			slog.String("reason", err.Error()),
+			slog.String("path", r.URL.Path),
+			slog.String("remote", r.RemoteAddr))
+		writeJSONError(w, http.StatusBadRequest, edgeForwardedRefusal)
+		return nil, false
+	}
+	if forwarded {
+		r = r.WithContext(withCallerAddress(r.Context(), address))
+	}
+	return r, true
+}
+
 // refuseBrokerToken answers a DPoP presentation this listener did not admit, and logs the one
 // line that says why: the class, as the service-account branch logs oidc.Reason's, the path, and
 // never the token or the proof.
@@ -408,6 +545,13 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 // wait it must come back after; nothing of it reached the broker. Every other outcome is the
 // same 401 and the same body every other refused credential gets here, so the answer tells an
 // unauthenticated caller nothing about which credentials this listener takes.
+//
+// None of the 503s here comes after the proof is spent, so a retry of the same request with the
+// same proof, the one Google's load balancer sends after a 503, is judged afresh: the broker is
+// asked before the proof is checked (ciphertoken.Verify), and a spent-proof store that did not
+// answer recorded nothing the listener knows of. That store's create may still land after it
+// stopped waiting, and the retry then meets it as a replay; proofReleasingWriter says why no
+// release follows it.
 func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request, brokers *brokerTokens, err error) {
 	reason := brokerTokenReason(err)
 	logger.Warn("listener: broker token rejected",
@@ -429,6 +573,39 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 	default:
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 	}
+}
+
+// refuseHeldBrokerToken answers a broker token that passed every check of this listener, the
+// proof and the key among them, whose broker answered its person held (ciphertoken.Caller.Held):
+// Dispatch holds that person's credentials until it confirms them again, by their next sign-in
+// under a Google rule or the Workspace Directory's next active answer under Identity-Aware Proxy.
+// The answer carries no rule and the listener knows none, so it is 401 MEMBERSHIP_HELD in words
+// true under both, naming the person; the token is still live, so a client keeps it and the same
+// token is served once the broker answers otherwise. It logs the rejection line every refused
+// presentation writes, under the class membership_held.
+func refuseHeldBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request, caller ciphertoken.Caller) {
+	logger.Warn("listener: broker token rejected",
+		slog.String("reason", relaySocketReasonMembershipHeld),
+		slog.String("path", r.URL.Path))
+	writeJSON(w, http.StatusUnauthorized, listenerwire.APIError{Code: "MEMBERSHIP_HELD", Error: fmt.Sprintf(
+		"Dispatch holds %s's credentials; they work again once Dispatch confirms them", caller.Person)})
+}
+
+// refuseLapsedBrokerToken answers a broker token that passed every check of this listener whose
+// broker answered its person not held only until a deadline that has passed
+// (ciphertoken.Verifier.Lapsed): an IAP deployment's Dispatch has had no active Workspace Directory
+// answer for that person in 24 hours, so whether they may still act cannot be read. It is 503
+// BROKER_UNAVAILABLE with Retry-After 60, as its words ask, and never a refusal of the token, which
+// is served again once the broker answers a later deadline (Dispatch reads no deadline yet, and
+// serves such a token). It logs the rejection line every refused presentation writes, under the
+// class deadline_passed.
+func refuseLapsedBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request) {
+	logger.Warn("listener: broker token rejected",
+		slog.String("reason", relaySocketReasonDeadlinePassed),
+		slog.String("path", r.URL.Path))
+	w.Header().Set("Retry-After", "60")
+	writeJSON(w, http.StatusServiceUnavailable, listenerwire.APIError{Code: "BROKER_UNAVAILABLE",
+		Error: "whether this token's person may still act could not be read; try again in a minute"})
 }
 
 // brokerTokenCheckFailed is the class of a presentation this listener could not judge at all:
@@ -633,7 +810,7 @@ func describeListenerAPIAuth(auth listenerAPIAuth, issuer string) string {
 		named = append(named, "shared token")
 	}
 	if issuer != "" {
-		described := "oidc " + issuer
+		described := "oidc " + redact.URL(issuer)
 		if len(auth.accounts) > 0 {
 			described += " for " + strings.Join(auth.accounts, ", ")
 		}
@@ -643,6 +820,9 @@ func describeListenerAPIAuth(auth listenerAPIAuth, issuer string) string {
 		named = append(named, "google "+auth.google.audience+" for "+strings.Join(auth.google.accounts, ", "))
 	}
 	if described := auth.brokers.describe(); described != "" {
+		if len(auth.edgeProjects) > 0 {
+			described += " alone, as the edge listener of " + strings.Join(auth.edgeProjects, ", ")
+		}
 		named = append(named, described)
 	}
 	if len(named) == 0 {

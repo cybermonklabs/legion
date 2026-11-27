@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -24,16 +25,23 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// A planner whose launches run out holds its issue: the architect's role topic takes the held and
-// worker-died notices once each, and the controller's topic takes the held one from an outbox row
-// of its own. Here the listener refuses the controller's topic twice first, as a stream outage
-// answers: only the controller's row retries, so the architect is sent the held notice once however
-// long the controller's topic keeps failing, and every try carries the one key the controller's
-// subscriber dedupes on. The controller reads the notice the architect is sent, without the row's
-// routing.
-func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitects(t *testing.T) {
+// A planner whose launches run out holds its issue, and the hold is its architect's alone: the
+// architect's role topic takes the held and worker-died notices once each, the held one carrying
+// the failure that held the issue, and the controller's topic takes nothing, because the
+// controller's skill does nothing for a hold its architect has not escalated
+// (#4065).
+//
+// A tree architect whose own launches run out is the case the controller still hears, from an
+// outbox row of its own (workflow's noticeWithController). Here the listener refuses the
+// controller's topic twice first, as a stream outage answers: only the controller's row retries,
+// so the architect's topic is sent the worker-died once however long the controller's topic keeps
+// failing, and every try carries the one key the controller's subscriber dedupes on. The
+// controller reads the notice the architect is sent, without the row's routing.
+func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResendTheArchitects(t *testing.T) {
+	t.Parallel()
 	listener := newNoticeListener()
 	server := httptest.NewServer(listener)
 	t.Cleanup(server.Close)
@@ -41,7 +49,7 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 	cfg.EnvoyURL = server.URL
 	cfg.LaunchFailureLimit = 1
 	rt := fake.NewRuntime()
-	rt.ScriptSpawn(fake.SpawnResult{Err: errors.New("pane launch failed")})
+	rt.ScriptSpawn(fake.SpawnResult{Err: errors.New("pane launch failed")}, fake.SpawnResult{Err: errors.New("pane launch failed")})
 	o := fakeRuntime(rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
 	d := startDaemon(t, cfg, o)
@@ -50,83 +58,87 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 	if err != nil {
 		t.Fatal(err)
 	}
-	issue := cfg.Project + "-1"
-	architect, err := claim.NewToken(token, issue, claim.RoleArchitect)
-	if err != nil {
-		t.Fatal(err)
+	controllerTopic := notify.ControllerTopic(token)
+	architectTopic := func(issue string) string {
+		t.Helper()
+		architect, err := claim.NewToken(token, issue, claim.RoleArchitect)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return notify.RoleTopicPrefix + string(architect)
 	}
-	architectTopic, controllerTopic := notify.RoleTopicPrefix+string(architect), notify.ControllerTopic(token)
-	listener.refuseFirst(controllerTopic, 2)
 	raw, err := pgxpool.New(context.Background(), cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the daemon's database: %v", err)
 	}
 	pool := store.NewPool(raw)
 	t.Cleanup(pool.Close)
-	// The issue's tree is admitted, as every tree the workflow runs is: its record, the slot its
-	// work holds and its open lifecycle are written in one transaction, as promotion writes them.
-	// The lifecycle is what says the tree runs now that a slot counts one issue at work, so a pass
-	// that saw the slot without it would take the tree out of the workflow and its architect would
-	// be told nothing. Slot indexes are unique across the shared database, so the tree takes the
-	// next free one.
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		records := record.NewStore()
-		if err := records.PutIssue(context.Background(), tx, record.Issue{
-			Key: issue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: issue, Project: cfg.Project, Title: "held", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U",
+	// Each issue's tree is admitted: its record, the slot its work holds and its open lifecycle are
+	// written in one transaction, as promotion writes them. The lifecycle is what says the tree
+	// runs now that a slot counts one issue at work, so a pass that saw the slot without it would
+	// take the tree out of the workflow and its architect would be told nothing. A tree whose
+	// architect the operator starts here holds its lifecycle under the operator's authority, which
+	// that start asks for; every other tree holds it under the workflow's. Slot indexes are unique
+	// across the shared database, so each tree takes the next free one.
+	runningTree := func(issue string, authority treelifecycle.Authority) {
+		t.Helper()
+		if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+			records := record.NewStore()
+			if err := records.PutIssue(context.Background(), tx, record.Issue{
+				Key: issue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: issue, Project: cfg.Project, Title: "held", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U",
+			}); err != nil {
+				return err
+			}
+			taken, err := records.Slots(context.Background(), tx)
+			if err != nil {
+				return err
+			}
+			index := 0
+			for _, slot := range taken {
+				index = max(index, slot.Index+1)
+			}
+			if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: issue, Index: index, AdmittedAt: time.Now()}); err != nil {
+				return err
+			}
+			_, err = records.OpenTreeLifecycle(context.Background(), tx, token, issue, authority)
+			return err
 		}); err != nil {
-			return err
+			t.Fatalf("record the running tree %s: %v", issue, err)
 		}
-		taken, err := records.Slots(context.Background(), tx)
-		if err != nil {
-			return err
-		}
-		index := 0
-		for _, slot := range taken {
-			index = max(index, slot.Index+1)
-		}
-		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: issue, Index: index, AdmittedAt: time.Now()}); err != nil {
-			return err
-		}
-		return openTreeTx(context.Background(), tx, cfg.Project, issue)
-	}); err != nil {
-		t.Fatalf("record the running tree: %v", err)
+		hostWorkspace(t, cfg.StateDir, "acme/widgets", issue)
 	}
-	hostWorkspace(t, cfg.StateDir, "acme/widgets", issue)
-	// The one launch the limit allows fails, and the operator is answered with it; the claim is
-	// failed, and the workflow holds the issue.
-	if status, body := d.request(http.MethodPost, "/legion/v1/operator/claims", api.SpawnRequest{Tree: issue, Issue: issue, Role: claim.RolePlanner, Prompt: "Plan it."}, true); status != http.StatusInternalServerError || !strings.Contains(string(body), "pane launch failed") {
-		t.Fatalf("spawn the planner = %d %s, want its one launch refused", status, body)
-	}
-
-	testwait.Eventually(t, "every notice row finished and the controller's held notice taken", func() bool {
+	rowsOf := func(issue string) int {
+		t.Helper()
 		var rows int
 		if err := pool.QueryRow(context.Background(), "select count(*) from outbox where issue = $1", issue).Scan(&rows); err != nil {
-			t.Fatalf("count the issue's outbox rows: %v", err)
+			t.Fatalf("count the outbox rows of %s: %v", issue, err)
 		}
-		return rows == 0 && len(listener.acceptedOn(controllerTopic)) == 1
+		return rows
+	}
+
+	// The planner's one launch the limit allows fails, and the operator is answered with it; the
+	// claim is failed, and the workflow holds the issue.
+	held := cfg.Project + "-1"
+	runningTree(held, treelifecycle.AuthorityWorkflow)
+	if status, body := d.request(http.MethodPost, "/legion/v1/operator/claims", api.SpawnRequest{Tree: held, Issue: held, Role: claim.RolePlanner, Prompt: "Plan it."}, true); status != http.StatusInternalServerError || !strings.Contains(string(body), "pane launch failed") {
+		t.Fatalf("spawn the planner = %d %s, want its one launch refused", status, body)
+	}
+	testwait.Eventually(t, "every notice row of the hold finished and its architect told twice", func() bool {
+		return rowsOf(held) == 0 && len(listener.acceptedOn(architectTopic(held))) == 2
 	})
-	onArchitect := listener.acceptedOn(architectTopic)
-	if len(onArchitect) != 2 || onArchitect[0].Message != "held on "+issue || onArchitect[1].Message != "worker-died on "+issue {
+	onArchitect := listener.acceptedOn(architectTopic(held))
+	if onArchitect[0].Message != "held on "+held || onArchitect[1].Message != "worker-died on "+held {
 		t.Fatalf("the architect's role topic took %+v, want held then worker-died, once each", onArchitect)
 	}
-	refused, taken := listener.refusedOn(controllerTopic), listener.acceptedOn(controllerTopic)[0]
-	if len(refused) != 2 {
-		t.Fatalf("the controller's topic refused %d publishes, want the 2 it was set to refuse", len(refused))
+	if told, tried := listener.acceptedOn(controllerTopic), listener.refusedOn(controllerTopic); len(told) != 0 || len(tried) != 0 {
+		t.Fatalf("the controller's topic took %+v and refused %+v, want nothing published to it: a hold its architect has not escalated is the architect's", told, tried)
 	}
-	for _, try := range refused {
-		if try.DedupeKey != taken.DedupeKey {
-			t.Fatalf("a refused try carried key %q and the taken one %q, want one key across the row's tries", try.DedupeKey, taken.DedupeKey)
-		}
-	}
-	if taken.Message != "held on "+issue {
-		t.Fatalf("the controller took %+v, want held on %s", taken, issue)
-	}
-	// The copy the controller reads carries the failure that held the issue, as the architect's
-	// own does: the one word for what failed the claim, the sentence beside it and each count
-	// against the limit it ran out at (workflow's claimFailed).
+	// The held notice the architect reads carries the failure that held the issue: the one word for
+	// what failed the claim, the sentence beside it and each count against the limit it ran out at
+	// (workflow's claimFailed).
 	var payload record.Notice
-	if err := json.Unmarshal([]byte(taken.Payload), &payload); err != nil {
-		t.Fatalf("decode the controller's payload %q: %v", taken.Payload, err)
+	if err := json.Unmarshal([]byte(onArchitect[0].Payload), &payload); err != nil {
+		t.Fatalf("decode the architect's payload %q: %v", onArchitect[0].Payload, err)
 	}
 	limit := supervise.Limits{LaunchFailures: cfg.LaunchFailureLimit,
 		PromptFailures: cfg.PromptFailureLimit, PromptRetires: cfg.PromptRetireLimit}
@@ -137,13 +149,51 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 		Deaths:         record.FailureBudget{Limit: limit.LaunchFailures},
 		PromptFailures: record.FailureBudget{Limit: limit.PromptFailures},
 		PromptRetires:  record.FailureBudget{Limit: limit.PromptRetires},
-		// The two causes the claim recorded, which the controller reading this line has no other
+		// The two causes the claim recorded, which the architect reading this line has no other
 		// way to learn (dispatch://INFRA-714 R6).
 		StartFailure: "pane launch failed",
 	}}
 	if !reflect.DeepEqual(payload, want) {
-		t.Fatalf("the controller's payload = %+v with failure %+v, want %+v with failure %+v beside its reason",
+		t.Fatalf("the architect's payload = %+v with failure %+v, want %+v with failure %+v beside its reason",
 			payload, payload.Failure, want, want.Failure)
+	}
+
+	// A tree architect's own launch runs out on another tree, whose root is not done: the
+	// controller is told from a row of its own, and its topic refuses the first two tries.
+	failed := cfg.Project + "-2"
+	runningTree(failed, treelifecycle.AuthorityOperator)
+	listener.refuseFirst(controllerTopic, 2)
+	if status, body := d.request(http.MethodPost, "/legion/v1/operator/claims", api.SpawnRequest{Tree: failed, Issue: failed, Role: claim.RoleArchitect, Prompt: "Reply ready and wait."}, true); status != http.StatusInternalServerError || !strings.Contains(string(body), "pane launch failed") {
+		t.Fatalf("spawn the architect = %d %s, want its one launch refused", status, body)
+	}
+	testwait.Eventually(t, "every notice row of the failed architect finished and the controller's copy taken", func() bool {
+		return rowsOf(failed) == 0 && len(listener.acceptedOn(controllerTopic)) == 1
+	})
+	if onArchitect := listener.acceptedOn(architectTopic(failed)); len(onArchitect) != 1 || onArchitect[0].Message != "worker-died on "+failed {
+		t.Fatalf("the architect's role topic took %+v, want the worker-died once however often the controller's topic refused", onArchitect)
+	}
+	refused, taken := listener.refusedOn(controllerTopic), listener.acceptedOn(controllerTopic)[0]
+	if len(refused) != 2 {
+		t.Fatalf("the controller's topic refused %d publishes, want the 2 it was set to refuse", len(refused))
+	}
+	for _, try := range refused {
+		if try.DedupeKey != taken.DedupeKey {
+			t.Fatalf("a refused try carried key %q and the taken one %q, want one key across the row's tries", try.DedupeKey, taken.DedupeKey)
+		}
+	}
+	if taken.Message != "worker-died on "+failed {
+		t.Fatalf("the controller took %+v, want worker-died on %s", taken, failed)
+	}
+	payload = record.Notice{}
+	if err := json.Unmarshal([]byte(taken.Payload), &payload); err != nil {
+		t.Fatalf("decode the controller's payload %q: %v", taken.Payload, err)
+	}
+	// The tree architect's own worker-died carries no failure record, so its reason
+	// carries the launch failure's sentence instead, quoted as workflow's
+	// deathReason quotes it (strconv.Quote).
+	if want := (record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning,
+		Reason: strconv.Quote("launch failures ran out: pane launch failed")}); !reflect.DeepEqual(payload, want) {
+		t.Fatalf("the controller's payload = %+v, want the architect's own notice %+v", payload, want)
 	}
 }
 

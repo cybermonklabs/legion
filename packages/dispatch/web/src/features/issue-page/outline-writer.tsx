@@ -1,16 +1,16 @@
 import { type MutationKey, useQuery } from "@tanstack/react-query";
 import { createContext, type ReactNode, useCallback, useContext, useMemo, useState } from "react";
 
-import { api } from "../../api/client";
 import type { Actor, Comment, MessageDelivery, MessageRead } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { deliveryMode } from "../conversation/delivery";
 import { redirectedReplyTarget, useHeldReplyTo, useHeldSends } from "../conversation/held-sends";
 import { type AgentText, useAgentText } from "../refs/AgentName";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import type { TreeNode } from "./issue-tree";
-import { EVENT_FRESH, issueAsksQuery } from "./useIssueTree";
+import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /**
  * Where the reader writes on the issue page (R16): the one line at the foot
@@ -157,19 +157,11 @@ export function OutlineWriterProvider({
   const [editing, setEditing] = useState<{ readonly body: string; readonly id: string }>();
   const agentText = useAgentText();
   // The reads the outline is drawn from, under the keys it reads them by and kept fresh as it
-  // keeps them (`useIssueTree.ts`'s `EVENT_FRESH`), so a reply's target costs no request of its
+  // keeps them (`reference-target.ts`'s `EVENT_FRESH`), so a reply's target costs no request of its
   // own, and a window focus past the app's 30 s `staleTime` reads none of them again.
   const asks = useQuery({ ...issueAsksQuery(issueKey), ...EVENT_FRESH });
-  const comments = useQuery({
-    queryFn: () => api.listComments(issueKey),
-    queryKey: ["comments", issueKey],
-    ...EVENT_FRESH,
-  });
-  const messages = useQuery({
-    queryFn: () => api.listIssueMessages(issueKey),
-    queryKey: ["issue-messages", issueKey],
-    ...EVENT_FRESH,
-  });
+  const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH });
+  const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });
   const focus = useCallback(() => {
     // The field that is drawn: the line keeps its write field mounted, hidden, while it answers
     // a question or edits a comment (`IssueComposer.tsx`), and a hidden field takes no caret.
@@ -339,10 +331,12 @@ export interface ReplyItem {
 }
 
 /** The item a row of the outline is, where the row takes a reply (R16): an ask in any state, a
- *  comment, a message. Every other row takes none in today's model. */
+ *  comment, a message. Every other row takes none in today's model, and neither does a comment or
+ *  a message its author deleted: Dispatch refuses a reply to it (409 `POST_DELETED`, INFRA-1523
+ *  R3), and its words are the deleted line, which no reply quotes. */
 export function replyItemOf(node: TreeNode): ReplyItem | undefined {
   const item = conversationItem(node);
-  return item === undefined || node.author === undefined
+  return item === undefined || node.author === undefined || node.deletedAt !== undefined
     ? undefined
     : { ...item, author: node.author, text: node.text };
 }

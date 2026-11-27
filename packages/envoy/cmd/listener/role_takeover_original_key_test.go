@@ -17,6 +17,7 @@ import (
 // notice by that key and ignores a key it cannot parse. The controls are a kept copy that is no
 // takeover copy, which keeps its key, and a minted-looking key whose message id names no frame.
 func TestAnExceptionAboutATakeoverCopyNamesTheMessagesOwnKey(t *testing.T) {
+	t.Parallel()
 	const role = "architect"
 	const original = "legion.notice.ISSUE-1.0123456789abcdef"
 	copied := contracts.Envelope{EventID: "evt-notice", Topic: contracts.RoleTopicPrefix + role, DedupeKey: takenFrameDedupeKey(original, 41)}
@@ -39,6 +40,7 @@ func TestAnExceptionAboutATakeoverCopyNamesTheMessagesOwnKey(t *testing.T) {
 // control is a copy of a frame Dispatch's outbox forwarded under its own key, which is the outbox's
 // at both. Each copy key is in the minted form, so every walk forwards it by its key.
 func TestATakeoverCopyIsJudgedAnOutboxCopyByItsOwnKeyAfterEveryMove(t *testing.T) {
+	t.Parallel()
 	const role = "architect"
 	for _, row := range []struct {
 		name, key string
@@ -67,6 +69,8 @@ func TestATakeoverCopyIsJudgedAnOutboxCopyByItsOwnKeyAfterEveryMove(t *testing.T
 // younger than takeoverWarningForget: the next warning forgets a role whose line is older, with the
 // lines it held back. The control is a role whose line is a minute old, which stays.
 func TestTheTakeoverWarningForgetsRolesItHasNotWarnedOfLately(t *testing.T) {
+	// Not parallel: it writes and asserts on entries of the package variable
+	// takeoverUnrecordedWarnings (warn-old, warn-recent, warn-now).
 	w := &takeoverUnrecordedWarnings
 	w.mu.Lock()
 	w.last["warn-old"], w.held["warn-old"] = time.Now().Add(-takeoverWarningForget-time.Second), 3

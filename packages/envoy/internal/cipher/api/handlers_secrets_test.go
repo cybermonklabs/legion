@@ -23,16 +23,18 @@ import (
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
-// wireSettings is GET /v1/settings's answer as the CLI reads it.
+// wireSettings is GET /v1/settings's answer as the CLI reads it, with approver_fields as Dispatch
+// reads it.
 type wireSettings struct {
-	Store         string `json:"store"`
-	SecretsPrefix string `json:"secrets_prefix"`
-	KMSKeyARN     string `json:"kms_key_arn"`
-	AWSAccountID  string `json:"aws_account_id"`
-	AWSRegion     string `json:"aws_region"`
-	KMSKeyName    string `json:"kms_key_name"`
-	GCPProject    string `json:"gcp_project"`
-	SecretTypeTag bool   `json:"secret_type_tag"`
+	Store          string `json:"store"`
+	SecretsPrefix  string `json:"secrets_prefix"`
+	KMSKeyARN      string `json:"kms_key_arn"`
+	AWSAccountID   string `json:"aws_account_id"`
+	AWSRegion      string `json:"aws_region"`
+	KMSKeyName     string `json:"kms_key_name"`
+	GCPProject     string `json:"gcp_project"`
+	SecretTypeTag  bool   `json:"secret_type_tag"`
+	ApproverFields bool   `json:"approver_fields"`
 }
 
 // wireReread is POST /v1/secrets/{name}/reread's answer.
@@ -44,9 +46,11 @@ type wireReread struct {
 }
 
 // TestSettingsAnswersTheNamespaceAndKey pins GET /v1/settings for a broker on AWS Secrets
-// Manager: the store, the prefix, the key ARN with its account and region, and secret_type_tag,
+// Manager: the store, the prefix, the key ARN with its account and region, secret_type_tag,
 // which says this broker reads a secret's type from the type tag, so agent-secrets writes a typed
-// secret through it (a broker from before the tag sends no such field).
+// secret through it (a broker from before the tag sends no such field), and approver_fields,
+// which says this broker takes the approver fields in a machine login's approve (a broker from
+// before them answers no such field and refuses them).
 func TestSettingsAnswersTheNamespaceAndKey(t *testing.T) {
 	ts := newTestServer(t)
 	status, body := ts.req(t, http.MethodGet, "/v1/settings", nil, nil)
@@ -54,7 +58,7 @@ func TestSettingsAnswersTheNamespaceAndKey(t *testing.T) {
 		t.Fatalf("status %d: %s", status, body)
 	}
 	got := decode[wireSettings](t, body)
-	want := wireSettings{Store: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: "111122223333", AWSRegion: "us-east-1", SecretTypeTag: true}
+	want := wireSettings{Store: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: "111122223333", AWSRegion: "us-east-1", SecretTypeTag: true, ApproverFields: true}
 	if got != want {
 		t.Fatalf("settings = %+v, want %+v", got, want)
 	}
@@ -66,7 +70,7 @@ func TestSettingsAnswersTheNamespaceAndKey(t *testing.T) {
 
 // TestSettingsAnswersTheGCPStore pins GET /v1/settings for a broker on Google Secret Manager: the
 // store's name, the prefix, the Cloud KMS key's name and the project number cut from the prefix,
-// with none of the AWS fields, and secret_type_tag, as on AWS.
+// with none of the AWS fields, and secret_type_tag and approver_fields, as on AWS.
 func TestSettingsAnswersTheGCPStore(t *testing.T) {
 	const prefix = "projects/000000000000/secrets/agent-secrets-"
 	const key = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
@@ -88,7 +92,7 @@ func TestSettingsAnswersTheGCPStore(t *testing.T) {
 		t.Fatalf("status %d: %s", resp.StatusCode, body)
 	}
 	got := decode[wireSettings](t, body)
-	want := wireSettings{Store: secrets.StoreGCP, SecretsPrefix: prefix, KMSKeyName: key, GCPProject: "000000000000", SecretTypeTag: true}
+	want := wireSettings{Store: secrets.StoreGCP, SecretsPrefix: prefix, KMSKeyName: key, GCPProject: "000000000000", SecretTypeTag: true, ApproverFields: true}
 	if got != want {
 		t.Fatalf("settings = %+v, want %+v", got, want)
 	}
@@ -188,21 +192,30 @@ func TestRereadServesANewSecretAndDropsADeletedOne(t *testing.T) {
 
 // TestARereadNamesTheTypeItServes: a reread's answer names the type the broker serves the secret
 // as, and none for a stored secret, so a person who retags a secret to a type can tell a reread
-// that read the new tags from one that read them stale. It carries nothing else of the tags.
+// that read the new tags from one that read them stale. It carries nothing else of the tags. A
+// profile of another name uses the secret, as a profile must for the broker to serve it as a
+// github-app one, and a reread answers the secret as the store holds it.
 func TestARereadNamesTheTypeItServes(t *testing.T) {
-	ts := newTestServerWith(t, func(d *api.Deps) { d.RereadOverallLimit = &rereadsFreely })
+	ts := newProfiledTestServer(t, policytest.ProfilesFile(`{"name": "PLAIN_READ", "source": "PLAIN_KEY", "github": {"accounts": ["acme"], "permissions": {"metadata": "read"}}}`),
+		func(d *api.Deps) { d.RereadOverallLimit = &rereadsFreely })
 	ts.Secrets.Put(policytest.Secret("PLAIN_KEY", testApprover, policy.TierAgent, "v1"))
 	_, body := ts.sessionReread(t, "PLAIN_KEY")
 	if r := decode[wireReread](t, body); !r.Served || r.Type != "" || strings.Contains(string(body), `"type"`) {
 		t.Fatalf("reread of a stored secret = %s, want served with no type", body)
 	}
 	for _, secretType := range policy.Types {
-		ts.Secrets.Put(policytest.TypeSecret("PLAIN_KEY", testApprover, policy.TierAgent, secretType, policytest.TypeValue(secretType)))
+		// An anthropic-federation secret is served at human tier alone (policy.ReasonTypeHumanTier);
+		// every other type at agent tier, as before.
+		tier := policy.TierAgent
+		if secretType == policy.TypeAnthropicFederation {
+			tier = policy.TierHuman
+		}
+		ts.Secrets.Put(policytest.TypeSecret("PLAIN_KEY", testApprover, tier, secretType, policytest.TypeValue(secretType)))
 		_, body = ts.sessionReread(t, "PLAIN_KEY")
 		if r := decode[wireReread](t, body); !r.Served || r.Type != secretType {
 			t.Fatalf("reread once the type is %s = %s, want served as %s", secretType, body, secretType)
 		}
-		for _, private := range []string{testApprover, policy.TierAgent, "github-owners", "owner"} {
+		for _, private := range []string{testApprover, tier, "github-owners", "owner"} {
 			if strings.Contains(string(body), private) {
 				t.Fatalf("reread answer %s carries %q; it names only the type", body, private)
 			}
@@ -490,7 +503,7 @@ type recordingNotifier struct {
 	names []string
 }
 
-func (n *recordingNotifier) notify(ctx context.Context, name string) {
+func (n *recordingNotifier) notify(ctx context.Context, name string, _ []string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if err := ctx.Err(); err != nil {

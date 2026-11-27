@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 func testKeyPEM(t *testing.T) (*rsa.PrivateKey, string) {
@@ -718,20 +719,21 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 // process shutting down -- is no failure of GitHub's. Both are marked sent.
 func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
 	t.Run("a transport error", func(t *testing.T) {
-		closed := httptest.NewServer(http.NotFoundHandler())
-		closed.Close()
+		// A port the test holds and nothing listens on: a closed server's port is any process's
+		// to take, and one that takes it answers the read.
+		base := "http://" + testport.Refused(t)
 		_, pemText := testKeyPEM(t)
-		client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, closed.URL)
+		client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
 		if err != nil {
 			t.Fatalf("new client: %v", err)
 		}
 		ctx, attempt := githubreads.Begin(context.Background(), githubreads.CIReconcile)
 		_, _, _, readErr := client.Read(ctx, "installation-token", "/repos/acme/web")
 		if readErr == nil {
-			t.Fatal("a read of a closed server succeeded")
+			t.Fatal("a read of a port that refuses every dial succeeded")
 		}
 		sent, failed, cause := attempt.Outcome()
-		if !sent || !failed || cause != readErr.Error() || !strings.HasPrefix(cause, "GET "+closed.URL+"/repos/acme/web: ") {
+		if !sent || !failed || cause != readErr.Error() || !strings.HasPrefix(cause, "GET "+base+"/repos/acme/web: ") {
 			t.Fatalf("sent %v, failed %v, cause %q; want sent and the read's own error %q", sent, failed, cause, readErr)
 		}
 	})

@@ -13,8 +13,8 @@ import (
 // The broker's address as an operator writes it, on the helper's side of the same one rule the
 // clients keep. AGENT_SECRETS_URL is typed by hand into a unit file, a pod's environment or an
 // install command, so a URL ending in more than one slash is a typo rather than a shape to
-// refuse, and cipherclient.WithoutTrailingSlashes is the one reading of it this change gives both
-// halves of the token client. The helper is the third reader, and it decides what a whole box
+// refuse, and cipherclient.WithoutTrailingSlashes is the one reading of it that both halves of the
+// token client share. The helper is the third reader, and it decides what a whole box
 // can do: it holds the launcher credential every session on the machine enrols under.
 //
 // Driven on the dev stack at 29e9bce8, a helper whose AGENT_SECRETS_URL ends in two slashes

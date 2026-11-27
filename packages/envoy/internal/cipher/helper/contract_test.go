@@ -59,8 +59,9 @@ func newContractRig(t *testing.T, options ...ciphertest.Option) *contractRig {
 // recovers its sessions and listens. Every registry/operator artifact lives under its own TempDir
 // and the socket under a short temporary directory of its own, never under $HOME — the caller is
 // expected to have set HOME to a separate, otherwise-untouched TempDir of its own so it can later
-// assert nothing wrote there.
-func startContractHelper(t *testing.T, broker *ciphertest.Rig, machineFile string, client *http.Client) *contractRig {
+// assert nothing wrote there. Each of configure runs on the Broker before it starts, for a row
+// that sets a test seam the Broker's start already reads (its expiry timers, for one).
+func startContractHelper(t *testing.T, broker *ciphertest.Rig, machineFile string, client *http.Client, configure ...func(*Broker)) *contractRig {
 	t.Helper()
 	artifacts := t.TempDir()
 	logBuf := &syncBuffer{}
@@ -94,6 +95,9 @@ func startContractHelper(t *testing.T, broker *ciphertest.Rig, machineFile strin
 		<-served
 		cr.srv.Broker.Close()
 	})
+	for _, c := range configure {
+		c(cr.srv.Broker)
+	}
 	if err := cr.srv.Broker.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -165,6 +169,7 @@ func contractDecode[T any](t *testing.T, body []byte) T {
 // never reach a log line or the registry's own persisted sessions.json state file, and that
 // nothing is written under $HOME but the machine file the Broker names (here outside it).
 func TestContractLoginApprovalEnrollSignAndExpiry(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv).
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -199,7 +204,7 @@ func TestContractLoginApprovalEnrollSignAndExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	boxEnrollmentID, _, err := b.EnrollSessionKey(context.Background(), "box-"+t.Name(), boxThumbprint, nil)
+	boxEnrollmentID, _, err := b.EnrollSessionKey(context.Background(), "box-"+t.Name(), boxThumbprint, nil, nil)
 	if err != nil {
 		t.Fatalf("EnrollSessionKey: %v", err)
 	}
@@ -327,6 +332,7 @@ func TestContractLoginApprovalEnrollSignAndExpiry(t *testing.T) {
 // but says at ERROR that the broker refused the credential and that the session cannot enroll and
 // why, where a minute-by-minute stream of retry warnings once hid it for hours.
 func TestContractARefusedLauncherCredentialIsAnErrorAndTheHelperKeepsServing(t *testing.T) {
+	t.Parallel()
 	cr := newContractRig(t)
 	b := cr.srv.Broker
 	code, err := b.Login(context.Background(), cr.srv.Hostname)
@@ -373,6 +379,7 @@ func TestContractARefusedLauncherCredentialIsAnErrorAndTheHelperKeepsServing(t *
 // carries the minted credential's expiry, and login-status hands it on, so a human sees the
 // deadline for the next machine login before the credential lapses.
 func TestContractLoginStatusNamesWhenTheLauncherCredentialExpires(t *testing.T) {
+	t.Parallel()
 	cr := newContractRig(t)
 	b := cr.srv.Broker
 	code, err := b.Login(context.Background(), cr.srv.Hostname)
@@ -398,6 +405,7 @@ func TestContractLoginStatusNamesWhenTheLauncherCredentialExpires(t *testing.T) 
 // launcher route is refused 401 LAUNCHER_INVALID, so the helper drops the credential, says at
 // ERROR that the broker refused it, and login-status reports no credential held.
 func TestContractRevokingTheMachineLoginEndsItsSessionsAndTheHelperDropsIt(t *testing.T) {
+	t.Parallel()
 	cr := newContractRig(t, ciphertest.WithLease(3*time.Second))
 	b := cr.srv.Broker
 	code, err := b.Login(context.Background(), cr.srv.Hostname)
@@ -443,6 +451,7 @@ func TestContractRevokingTheMachineLoginEndsItsSessionsAndTheHelperDropsIt(t *te
 // answers this machine's own login, the held credential on this helper's host; and since the proof
 // names its method and URL, the broker refuses one replayed against another route.
 func TestContractSignLauncherProvesTheOperatorRoutes(t *testing.T) {
+	t.Parallel()
 	cr := newContractRig(t)
 	b := cr.srv.Broker
 	code, err := b.Login(context.Background(), cr.srv.Hostname)

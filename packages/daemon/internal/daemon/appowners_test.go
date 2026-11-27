@@ -62,16 +62,22 @@ type roleOwners struct{ implementer, reviewer, controller []string }
 // while a Kubernetes issue pod projects only the directories both its Apps' bundles hold, so an
 // owner the other App is not installed on, or one the other App's mint left out, is in no
 // container of that pod, whichever App the role runs as. The project controller's pod holds the
-// review App alone and answers alike under both runtimes. Until a bundle of each App the
-// container's directories come from has been read, there is no read to report, and the answer
-// is the owners of the repositories the project is mapped.
+// review App alone and answers alike under both runtimes. The owners an App was read installed on
+// come from the boot's proof of its key first (proveAppKeys, appauth.Installed.RecordProof) and
+// then from its last bundle; until either has read every App the container's directories come
+// from, there is no read to report and the answer is none.
 func TestAppOwnersAreTheInstalledOwnersTheRolesContainerHoldsADirectoryFor(t *testing.T) {
+	t.Parallel()
 	moved := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
 	for _, tc := range []struct {
 		name    string
 		renames ghrepo.Renames
-		mapped  []string
-		source  appOwnersSource
+		// served are the names both role Apps answered installed on (repositories.fill).
+		served []string
+		source appOwnersSource
+		// proved is whether the boot's proof of each App's key recorded the owners source
+		// answers for it, before any bundle is built.
+		proved bool
 		// built are the roles whose bundles are built for repo before the launches are asked.
 		built []claim.Role
 		repo  string
@@ -80,14 +86,14 @@ func TestAppOwnersAreTheInstalledOwnersTheRolesContainerHoldsADirectoryFor(t *te
 	}{
 		{
 			name:   "every installed owner's lease is minted",
-			mapped: []string{"acme/widgets"}, source: bothApps("acme", "globex"),
+			served: []string{"acme/widgets"}, source: bothApps("acme", "globex"),
 			built: []claim.Role{claim.RoleImplementer, claim.RoleReviewer}, repo: "acme/widgets",
 			tmux: roleOwners{[]string{"acme", "globex"}, []string{"acme", "globex"}, []string{"acme", "globex"}},
 			pod:  roleOwners{[]string{"acme", "globex"}, []string{"acme", "globex"}, []string{"acme", "globex"}},
 		},
 		{
 			name:   "an installed owner whose lease the role's own App is refused is left out",
-			mapped: []string{"acme/widgets"},
+			served: []string{"acme/widgets"},
 			source: appOwnersSource{
 				installed: bothApps("acme", "globex").installed,
 				refused:   map[appauth.AppRole][]string{appauth.Implement: {"globex"}},
@@ -100,7 +106,7 @@ func TestAppOwnersAreTheInstalledOwnersTheRolesContainerHoldsADirectoryFor(t *te
 		},
 		{
 			name:   "the pod's other App is not installed on an owner",
-			mapped: []string{"acme/widgets"},
+			served: []string{"acme/widgets"},
 			source: appOwnersSource{installed: map[appauth.AppRole][]string{
 				appauth.Implement: {"acme", "globex"}, appauth.Review: {"acme"},
 			}},
@@ -110,7 +116,7 @@ func TestAppOwnersAreTheInstalledOwnersTheRolesContainerHoldsADirectoryFor(t *te
 		},
 		{
 			name:   "the pod's other App's mint leaves an owner out",
-			mapped: []string{"acme/widgets"},
+			served: []string{"acme/widgets"},
 			source: appOwnersSource{
 				installed: bothApps("acme", "globex").installed,
 				refused:   map[appauth.AppRole][]string{appauth.Review: {"globex"}},
@@ -121,35 +127,44 @@ func TestAppOwnersAreTheInstalledOwnersTheRolesContainerHoldsADirectoryFor(t *te
 		},
 		{
 			name:    "the alias directory of a resolving rename is no installed owner",
-			renames: moved, mapped: []string{"cybermonklabs/legion"}, source: bothApps("cybermonklabs"),
+			renames: moved, served: []string{"cybermonklabs/legion"}, source: bothApps("cybermonklabs"),
 			built: []claim.Role{claim.RoleImplementer, claim.RoleReviewer}, repo: "sjawhar/legion",
 			tmux: roleOwners{[]string{"cybermonklabs"}, []string{"cybermonklabs"}, []string{"cybermonklabs"}},
 			pod:  roleOwners{[]string{"cybermonklabs"}, []string{"cybermonklabs"}, []string{"cybermonklabs"}},
 		},
 		{
+			// The review App's installations are read by no bundle and no proof yet, so no role
+			// that runs as it, and no issue pod, which projects what both Apps' bundles hold, has
+			// a read to report: the answer is none for each, never the owners of a repository.
 			name:   "the pod's other App has not been read yet",
-			mapped: []string{"acme/widgets"}, source: bothApps("acme", "globex"),
+			served: []string{"acme/widgets"}, source: bothApps("acme", "globex"),
 			built: []claim.Role{claim.RoleImplementer}, repo: "acme/widgets",
-			tmux: roleOwners{[]string{"acme", "globex"}, []string{"acme"}, []string{"acme"}},
-			pod:  roleOwners{[]string{"acme"}, []string{"acme"}, []string{"acme"}},
+			tmux: roleOwners{implementer: []string{"acme", "globex"}},
 		},
 		{
-			name:   "no bundle of either App built yet",
-			mapped: []string{"acme/widgets", "zeta/tools"}, source: bothApps("globex"),
-			tmux: roleOwners{[]string{"acme", "zeta"}, []string{"acme", "zeta"}, []string{"acme", "zeta"}},
-			pod:  roleOwners{[]string{"acme", "zeta"}, []string{"acme", "zeta"}, []string{"acme", "zeta"}},
+			name:   "no installations of either App read yet",
+			served: []string{"acme/widgets", "zeta/tools"}, source: bothApps("globex"),
+		},
+		{
+			name:   "the boot's proof of each App's key read its installations",
+			served: []string{"acme/widgets"}, source: bothApps("acme", "globex"), proved: true,
+			tmux: roleOwners{[]string{"acme", "globex"}, []string{"acme", "globex"}, []string{"acme", "globex"}},
+			pod:  roleOwners{[]string{"acme", "globex"}, []string{"acme", "globex"}, []string{"acme", "globex"}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := plan{repositories: newRepositories("LEGION", tc.renames), installed: appauth.NewInstalled(), left: appauth.NewLeftOut()}
-			accepted := make([]mappedRepository, len(tc.mapped))
-			for i, repo := range tc.mapped {
-				accepted[i] = mappedRepository{Repo: ghrepo.MustParse(repo)}
+			for _, repo := range tc.served {
+				p.repositories.fill(ghrepo.MustParse(repo))
 			}
-			p.repositories.set(accepted, nil)
+			if tc.proved {
+				for _, app := range appauth.Roles {
+					p.installed.RecordProof(app, tc.source.installed[app])
+				}
+			}
 			// Each bundle is built as a runtime builds it, over the plan's own two records, so
 			// what a row reads is what a real mint recorded.
-			credential := appauth.GitHubCredential(tc.source, p.repositories.Accepted, p.repositories.renames, p.installed, p.left, quietLogger())
+			credential := appauth.GitHubCredential(tc.source, p.repositories.servesRepository, p.repositories.renames, p.installed, p.left, quietLogger())
 			for _, role := range tc.built {
 				if _, err := credential(context.Background(), role, ghrepo.MustParse(tc.repo)); err != nil {
 					t.Fatalf("build the %s's bundle for %s: %v", role, tc.repo, err)

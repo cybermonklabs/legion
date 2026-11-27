@@ -13,13 +13,15 @@ import {
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool } from "../dispatch-execute";
-import { DispatchNoRouteError, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DispatchNoRouteError } from "../dispatch-http";
 
 // `dispatch steps --issue <KEY>`: the steps that ran on an issue, as Dispatch's
-// `GET /api/v1/issues/{key}/steps` answers them, one header line and one line per run. The
-// format cases drive `executeDispatchTool` over the shared fake Dispatch (`test/fake-dispatch.ts`)
-// as a fetch, so each reads the text and the details a host is handed; the command-line cases
-// drive the real CLI against that fake on a loopback port, and read its exit code and output.
+// `GET /api/v1/issues/{key}/steps` answers them, one header line and one line per run, and
+// between them, where the records of the issue's newest run name an experiment, the line
+// `Experiment <experiment>: variant <variant>.`. The format cases drive `executeDispatchTool` over
+// the shared fake Dispatch (`test/fake-dispatch.ts`) as a fetch, so each reads the text and the
+// details a host is handed; the command-line cases drive the real CLI against that fake on a
+// loopback port, and read its exit code and output.
 
 /** The implementer's run of LEG-1's step 2: ended, with its model and its report. */
 const implementer: StepRecord = {
@@ -42,6 +44,8 @@ const implementer: StepRecord = {
   report: "9b2e4d6f-8a1c-4e3b-a5d7-c9f1e3b5d7a9",
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 /** The tester's run of step 3, still running: no end, no result, and no session or model, which
@@ -66,6 +70,8 @@ const tester: StepRecord = {
   report: null,
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 /**
@@ -92,6 +98,8 @@ const mergedByGitHub: StepRecord = {
   report: null,
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 /** The docs task's first run, which started before any run of task default. */
@@ -115,6 +123,8 @@ const docsDraft: StepRecord = {
   report: null,
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 /** A second run of a review of another task, sent back to step 1 of that task. */
@@ -138,6 +148,8 @@ const docsReview: StepRecord = {
   report: null,
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 /** The implementer's retro of LEG-1, which rated the plan: a retro is the one kind of run that
@@ -162,6 +174,8 @@ const ratedRetro: StepRecord = {
   report: null,
   rating: 4,
   rating_reason: "The plan fit the work; the review sent it back once.",
+  experiment: null,
+  variant: null,
 };
 
 /** A merger's run that failed and sent its task back to place 0, the retro: a destination of 0
@@ -186,6 +200,8 @@ const mergeSentBack: StepRecord = {
   report: null,
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 const config = {
@@ -259,6 +275,77 @@ describe("dispatch steps", () => {
     expect(result.text.split("\n")[2]).toBe(
       "default 0 merge merger - attempt 1 - - - 2026-11-16T12:00:00Z passed"
     );
+  });
+
+  // The task and the role print - when the record holds them empty, as every other field does, so
+  // the line keeps its columns. The contract always sends both (StepRecord's task and role).
+  test("a task or a role that is empty prints -", async () => {
+    const { result } = await readSteps({
+      issue: "LEG-1",
+      tasks: [{ task: "default", steps: [{ ...implementer, task: "", role: "" }] }],
+    });
+
+    expect(result.text.split("\n")[1]).toBe(
+      "- 2 step - implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed"
+    );
+  });
+
+  // An issue a draw put in an experiment names the experiment and the variant drawn on each of its
+  // records, and the read prints them once, above its steps; an issue whose records name none
+  // prints no such line (the first row above).
+  test("an issue in an experiment prints its variant once, above its steps", async () => {
+    const drawn = { experiment: "planning", variant: "b" };
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        {
+          task: "default",
+          steps: [
+            { ...implementer, ...drawn },
+            { ...tester, ...drawn },
+          ],
+        },
+      ],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.text).toBe(
+      [
+        "LEG-1: 2 steps in 1 tasks",
+        "Experiment planning: variant b.",
+        "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
+        "default 3 step tester testing attempt 1 legion-leg-leg-1-tester - 2026-11-16T10:00:00Z running running",
+      ].join("\n")
+    );
+  });
+
+  // The variant is the one the records of the issue's newest run name: a run of an older
+  // generation that names another, and a record of the newest that names none yet, change nothing.
+  test("the variant printed is the one the newest run's records name", async () => {
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        {
+          task: "default",
+          steps: [
+            { ...implementer, experiment: "planning", variant: "a" },
+            { ...tester, generation: 2 },
+            {
+              ...implementer,
+              id: "8e2c4a6b-1d3f-5b7a-9c0e-2f4a6c8e0b13",
+              generation: 2,
+              experiment: "planning",
+              variant: "b",
+            },
+          ],
+        },
+      ],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.text.split("\n")[1]).toBe("Experiment planning: variant b.");
   });
 
   // The line keeps its columns and prints no rating; the details a host is handed are the
@@ -456,7 +543,6 @@ describe("dispatch steps on the command line", () => {
   let stateDir = "";
   beforeEach(() => {
     stateDir = makeDirectory();
-    forgetKeyedLayerMemory();
   });
 
   /** A fake Dispatch on a loopback port of its own, answering as `options` say, which the hook

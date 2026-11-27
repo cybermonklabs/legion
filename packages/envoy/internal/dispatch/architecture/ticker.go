@@ -10,9 +10,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 )
 
-// SyncInterval is how often the server re-imports every enabled architecture
-// source. The Refresh button and the `dispatch architecture-sync` command are the
-// impatient paths; this one keeps a model honest on its own.
+// SyncInterval is the longest the server waits between two passes that re-import every enabled
+// architecture source: each wait is more than 0.9 of it and at most it (duty.RunJittered). While
+// delivery settings are saved, a push of a source's branch imports that source at once
+// (Importer.Pushed, through the delivery intake, which runs only then), and the Refresh button and
+// the `dispatch architecture-sync` command are the impatient paths; this pass is the repair where
+// a push event never arrives (GitHub did not deliver it, or no process took it), and it keeps a
+// model honest on its own.
 const SyncInterval = 5 * time.Minute
 
 // architectureImportLease names the lease one import pass runs under. Every pass re-reads each
@@ -20,23 +24,25 @@ const SyncInterval = 5 * time.Minute
 // importing is N times those calls for one result.
 const architectureImportLease = "architecture-import"
 
-// Run re-imports every enabled architecture source on SyncInterval, one
-// source at a time, until ctx is cancelled. The first tick is jittered so a
-// restart does not stampede GitHub, and a server without App credentials logs
-// once and stops: no sync can be signed. Shares its jittered-ticker loop with
-// delivery.Reconcile.Run via duty.RunJittered.
+// Run re-imports every enabled architecture source about every SyncInterval, one source at a time,
+// until ctx is cancelled. The first tick is jittered within one interval so a restart does not
+// stampede GitHub, each later one comes at most SyncInterval after the pass before it ended, and a
+// server without App credentials logs once and stops: no sync can be signed. Shares its
+// jittered-ticker loop with delivery.Reconcile.Run via duty.RunJittered.
 //
-// Each pass runs under architectureImportLease for one SyncInterval, so one process imports per
-// interval however many serve the database - the second process's tick, jittered to a phase of
-// its own, finds that interval imported and skips rather than spending the same GitHub calls
-// again; leases is required, as it is of every leased loop (cmd/dispatch exits at boot if the
-// lease pool cannot be opened).
+// Each pass runs under architectureImportLease for one period of duty.LeasePeriod(SyncInterval),
+// so one process imports per period however many serve the database - the second process's tick,
+// jittered to a phase of its own, finds that period imported and skips rather than spending the
+// same GitHub calls again; leases is required, as it is of every leased loop (cmd/dispatch exits at
+// boot if the lease pool cannot be opened).
 //
 // atStart runs one pass as Run starts, before its jittered ticks, for an end-to-end test that must
 // see a pass inside its window (DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START, under the test hooks),
 // as delivery.Reconcile.FirstPassAtStart does for the delivery reconcile. The pass takes the lease
-// for the current interval as any tick's does, so a jittered tick inside that interval finds it
-// served. A deployment never sets it: the jitter is what keeps a restart from stampeding GitHub.
+// for the period its start falls in, as any tick's does: a bucket of duty.LeasePeriod(SyncInterval),
+// aligned to the epoch. The first jittered tick comes within one SyncInterval of the start, so it
+// can land in that bucket and find it served. A deployment never sets it: the jitter is what keeps
+// a restart from stampeding GitHub.
 func Run(ctx context.Context, importer *Importer, leases duty.Leases, atStart bool) {
 	if atStart && importer.HasApp() {
 		syncAllLeased(ctx, importer, leases, time.Now())
@@ -50,18 +56,20 @@ func Run(ctx context.Context, importer *Importer, leases duty.Leases, atStart bo
 	}, func(ctx context.Context, due time.Time) { syncAllLeased(ctx, importer, leases, due) })
 }
 
-// syncAllLeased runs one import pass under the lease, for the SyncInterval this loop ticks on and
-// the tick due at due.
+// syncAllLeased runs one import pass under the lease, for the tick due at due. Its period is
+// duty.LeasePeriod(SyncInterval), shorter than any wait the loop leaves between two ticks, so a
+// lone process's tick is never refused as a period its own last pass served.
 //
 // The pass the lease runs is one attempt at reading GitHub (githubreads), recorded through
 // importer.GitHubReads when it ends: the GitHub client notes on it each request and each failure
 // no caller takes as data, and each sync notes the reads of GitHub it gave up (syncOnce). It opens
-// here and not in Sync, which the Settings Refresh route and `dispatch architecture-sync` also
-// run, and it is recorded on the context the lease handed the pass, so a pass this process's
-// shutdown cut short records nothing. Begin also names the read as the caller kind its calls to
-// GitHub are counted under, for the rate reading.
+// here and not in the sync, which the Settings Refresh route, `dispatch architecture-sync` and the
+// import a push starts (Importer.Pushed's worker, through syncAfter) also run. It is recorded on
+// the context the lease handed the pass, so a pass this process's shutdown cut short records
+// nothing. Begin also names the read as the caller kind its calls to GitHub are counted under, for
+// the rate reading.
 func syncAllLeased(ctx context.Context, importer *Importer, leases duty.Leases, due time.Time) {
-	duty.Exclusive(ctx, leases, architectureImportLease, due, SyncInterval, func(caller context.Context) {
+	duty.Exclusive(ctx, nil, leases, architectureImportLease, due, duty.LeasePeriod(SyncInterval), func(caller context.Context) {
 		ctx, attempt := githubreads.Begin(caller, githubreads.ArchitectureImport)
 		defer githubreads.Finish(caller, attempt, importer.GitHubReads, nil)
 		syncAll(ctx, importer)

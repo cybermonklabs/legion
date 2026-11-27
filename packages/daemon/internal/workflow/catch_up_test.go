@@ -29,6 +29,7 @@ import (
 // it, and that nothing has registered it yet, so the architect knows what to register and
 // whether to ask for approval.
 func TestARootArchitectIsToldItsTreeAtEachLaunchsReady(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		policy config.DesignGate
@@ -88,6 +89,7 @@ func TestARootArchitectIsToldItsTreeAtEachLaunchsReady(t *testing.T) {
 // is said to be carried as well when its old root's gate came with it, so the architect registers
 // no spec. The same root at a later generation (closed and reopened) is a root like any other.
 func TestACatchUpMarksAHandedOverRootInEveryPhase(t *testing.T) {
+	t.Parallel()
 	for _, at := range []phase.Phase{phase.Planning, phase.Reviewing, phase.Accepting} {
 		for _, gateCarried := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s, gate carried %t", at, gateCarried), func(t *testing.T) {
@@ -124,6 +126,7 @@ func TestACatchUpMarksAHandedOverRootInEveryPhase(t *testing.T) {
 // whose ready drops it names it again, and only the forget of what a delivered catch-up named (the
 // outbox's notice) leaves nothing for the launch after.
 func TestARelaunchedArchitectsCatchUpNamesTheDecisionsKeptForIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := migratedPool(t)
 	seedAdmittedTree(t, pool, 1)
@@ -189,6 +192,7 @@ func lastCatchUp(t *testing.T, pool *pgxpool.Pool) record.CatchUp {
 // workflow (signOff), and the catch-up is what tells the architect the issue is there to be
 // decided.
 func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) {
+	t.Parallel()
 	const base = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says"
 	awaiting := func(keys string) string {
 		return base + "; in accepting, waiting for your acceptance, which no worker gives: " + keys + " (read the evidence, then sign_off or request_backward_move)"
@@ -225,10 +229,43 @@ func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) 
 	}
 }
 
+// A Verification document its architect registered as criteria beside a deployment of spec alone
+// holds the tree as the spec does, so the catch-up states it as a step of its own, after the
+// spec and gated as the spec is. A root that registered none is told the spec alone, as before.
+func TestACatchUpStatesARegisteredVerificationDocumentAsAGatedStep(t *testing.T) {
+	t.Parallel()
+	spec := record.CatchUpGate{Step: record.DesignStepSpec, Gated: true, Artifact: "artifact-1", Version: 4, Approved: 4, Open: true}
+	for _, tc := range []struct {
+		name     string
+		criteria bool
+		want     []record.CatchUpGate
+	}{
+		{name: "a criteria row registered", criteria: true, want: []record.CatchUpGate{spec,
+			{Step: record.DesignStepCriteria, Gated: true, Artifact: "artifact-1-verification", Version: 2}}},
+		{name: "no criteria row", want: []record.CatchUpGate{spec}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedAdmittedTree(t, pool, 1)
+			seedGate(t, pool, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepSpec, ArtifactID: "artifact-1",
+				LatestVersion: 4, ApprovedVersion: new(4)})
+			if tc.criteria {
+				seedGate(t, pool, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepCriteria, ArtifactID: "artifact-1-verification",
+					LatestVersion: 2})
+			}
+			claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), "LEGION-1", claim.RoleArchitect, 1)
+			if got := lastCatchUp(t, pool).Gates; fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Fatalf("the catch-up states %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
 // Only a live tree's architects are told their issues. A tree that lingers or has left the
 // workflow is told nothing, nor is a phase worker on the root; a child's own architect is told
 // the child and the issues under it, with no gate.
 func TestOnlyALiveTreesArchitectsAreToldTheirIssues(t *testing.T) {
+	t.Parallel()
 	// A lingering root set back to todo still lingers until admission takes it again: only its
 	// linger, not its status, says the tree has left the workflow.
 	lingering := func(root *record.Issue) {
@@ -327,35 +364,42 @@ func catchUpRows(t *testing.T, pool *pgxpool.Pool) []int64 {
 }
 
 // The catch-up a start writes in place of a launch waits its turn in the daemon's wake pacing:
-// the ready carries the mark only that start sets (intake.ClaimReady.Paced), the engine takes one
-// turn from the limiter it was given, and the row is due at the moment that turn comes and
-// carries it (record.Notice.PacedAt), which is what the outbox reads for the wait in the line
-// that wake writes and what a ready compares its now against. A launch's own ready takes no turn,
-// whatever the pacing: the launch already took one at the machine's gate. An engine with no
-// limiter at all — the deployment that paces nothing — writes both at once, with no moment.
-func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
+// the ready carries the mark only that start sets (intake.ClaimReady.Paced). The row is written
+// held, with no due moment, and once it has committed the daemon's hook is told its id to join
+// it to the pacing's queue (Config.HoldCatchUp). A launch's own ready holds no catch-up, and
+// without pacing both kinds are due at once.
+func TestAPacedReadysCatchUpIsWrittenHeldForTheWakePacing(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
-	turn := now.Add(90 * time.Second)
+	held := record.CatchUpHeldAt
 	for _, tc := range []struct {
 		name    string
 		paced   bool
 		pacing  bool
 		due     time.Time
-		marked  time.Time
-		reserve int
+		pacedAt time.Time
+		holds   int
 	}{
-		{name: "a start's ready while the pacing is on", paced: true, pacing: true, due: turn, marked: turn, reserve: 1},
+		{name: "a start's ready while the pacing is on", paced: true, pacing: true, due: held, pacedAt: held, holds: 1},
 		{name: "a launch's ready while the pacing is on", pacing: true, due: now},
 		{name: "a start's ready while the pacing is off", paced: true, due: now},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedAdmittedTree(t, pool, 1)
-			reserved := 0
+			holds := 0
+			var joined int64
 			cfg := Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Repositories: testRepositories,
 				Clock: func() time.Time { return now }}
 			if tc.pacing {
-				cfg.Reserve = func(time.Time) time.Time { reserved++; return turn }
+				cfg.HoldCatchUp = func(id int64, issue string) {
+					holds++
+					joined = id
+					var due time.Time
+					if err := pool.QueryRow(t.Context(), `select next_at from outbox where id = $1 and issue = $2`, id, issue).Scan(&due); err != nil || !due.Equal(held) {
+						t.Errorf("the hold hook saw row %d due at %s, error %v; want a committed held row", id, due, err)
+					}
+				}
 			}
 			engine := New(record.NewStore(), cfg, nil)
 			token, err := claim.NewToken("legion", "LEGION-1", claim.RoleArchitect)
@@ -368,19 +412,23 @@ func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
 			}
 
 			var due time.Time
-			// A catch-up the pacing reserved no moment for carries none at all (omitzero).
+			var id int64
+			// A catch-up no pacing holds carries no paced_at at all (omitzero).
 			var marked *time.Time
-			if err := pool.QueryRow(t.Context(), `select next_at, (payload->>'paced_at')::timestamptz from outbox
-				where kind = 'notice' and payload->>'kind' = 'catch-up'`).Scan(&due, &marked); err != nil {
+			if err := pool.QueryRow(t.Context(), `select id, next_at, (payload->>'paced_at')::timestamptz from outbox
+				where kind = 'notice' and payload->>'kind' = 'catch-up'`).Scan(&id, &due, &marked); err != nil {
 				t.Fatalf("read the catch-up: %v", err)
 			}
-			var reservedAt time.Time
+			var pacedAt time.Time
 			if marked != nil {
-				reservedAt = marked.UTC()
+				pacedAt = marked.UTC()
 			}
-			if !due.UTC().Equal(tc.due) || !reservedAt.Equal(tc.marked) || reserved != tc.reserve {
-				t.Fatalf("the catch-up is due at %s, reserved for %s, after %d reservations; want %s, %s, %d",
-					due.UTC(), reservedAt, reserved, tc.due, tc.marked, tc.reserve)
+			if !due.UTC().Equal(tc.due) || !pacedAt.Equal(tc.pacedAt) || holds != tc.holds {
+				t.Fatalf("the catch-up is due at %s with paced_at %s, after %d holds; want %s, %s, %d",
+					due.UTC(), pacedAt, holds, tc.due, tc.pacedAt, tc.holds)
+			}
+			if tc.holds != 0 && id != joined {
+				t.Fatalf("the hold was told row %d, want catch-up %d", joined, id)
 			}
 		})
 	}

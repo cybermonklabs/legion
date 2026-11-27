@@ -49,9 +49,32 @@ func (s roleHolderSessions) Holder(ctx context.Context, sessionID string) (sessi
 	return s.Refresh(readCtx, sessionID)
 }
 
+// leaderHolderSessions is roleHolderSessions for the one resolution that reads the leaders: a role
+// send that asks to be kept and names no source session, which the route refuses with nothing kept
+// when its role has no live holder (roleSend.noHolder). A `keep: false` send and a send whose keep
+// failed are refused on a "no live holder" too, and read the cache; roleSend.resolve says why
+// they need no read of the leaders. Its holder is always read from the session bucket stream's
+// leader (bucketSessionEntry), never from the cache and never by a direct get. A cached record
+// read live can pass its live deadline before the resolution judges it (roles.ResolveHolder reads
+// the holder's state again), and on a replicated bucket a copy that has not applied a
+// registration made a moment ago answers that the session has no record; either would refuse the
+// send for a holder that can take it. nats.ErrKeyNotFound is the leader's word that no record
+// stands, as it is Holder's.
+type leaderHolderSessions struct{ *session.SessionRegistry }
+
+func (s leaderHolderSessions) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
+	return bucketSessionEntry(ctx, s.SessionRegistry, sessionID, roleHolderReadTimeout)
+}
+
 // writeRoleHolderError writes the 404 of a role whose claim has no live holder
-// (listenerwire.RoleRefusal), naming the holder and its state where a claim names one.
+// (roleHolderRefusal).
 func writeRoleHolderError(w http.ResponseWriter, role string, result roles.Resolution) {
+	writeJSON(w, http.StatusNotFound, roleHolderRefusal(role, result))
+}
+
+// roleHolderRefusal is the body of the 404 of a role whose claim has no live holder
+// (listenerwire.RoleRefusal), naming the holder and its state where a claim names one.
+func roleHolderRefusal(role string, result roles.Resolution) listenerwire.RoleRefusal {
 	response := listenerwire.RoleRefusal{
 		Reason:        result.State,
 		ClaimRevision: result.ClaimRevision,
@@ -78,7 +101,7 @@ func writeRoleHolderError(w http.ResponseWriter, role string, result roles.Resol
 			lastSeen,
 		)
 	}
-	writeJSON(w, http.StatusNotFound, response)
+	return response
 }
 
 // writeRoleClaimUnreadable answers a role-holder resolution that read a claim record it cannot
@@ -96,7 +119,7 @@ func writeRoleClaimUnreadable(w http.ResponseWriter, role string, err error) int
 // liveSessionEntry is sessionID's record and the state that record puts its session in, for a
 // decision that turns on whether that session is still answering: a soft claim, the reapers, a
 // session lookup, a session-addressed send and an agent delivery. accept is the caller's rule
-// about that state.
+// about that state, and read the caller's read of the session bucket.
 //
 // A caller that may act on a session which merely stopped answering passes notGone: the send
 // route, whose message is stored for such a session; the agent delivery path; both reapers
@@ -108,7 +131,7 @@ func writeRoleClaimUnreadable(w http.ResponseWriter, role string, err error) int
 //
 // The cache answers when it holds a record accept takes (session.SessionRegistry.Lookup, which
 // judges the record's own age and never its membership of the cache); otherwise the session is
-// read from the session bucket itself (Refresh), because the cache follows the bucket through a
+// read from the session bucket itself (read), because the cache follows the bucket through a
 // watcher and so trails it: a session another listener registered a moment ago, or one this
 // listener has not re-read since its bus connection came back, is in the bucket before it is
 // here. A role claim is read from the role bucket itself, so during a rolling deploy the old task
@@ -116,6 +139,13 @@ func writeRoleClaimUnreadable(w http.ResponseWriter, role string, err error) int
 // since a sender told its destination is gone acts on that answer - it routes around the pane,
 // reports it, or stops - and the cache alone cannot tell a session that ended from one it has not
 // caught up with.
+//
+// read is session.SessionRegistry.RefreshFromLeader for a caller that takes something away from
+// the session on a miss - both reapers, and a soft claim that takes the holder's role - and
+// Refresh, a direct get, for one that only answers or waits on it. On a replicated bucket a copy
+// that has not applied a registration made a moment ago answers that the session has no record,
+// and the reaper would delete a live session's interest or release its role, and the soft claim
+// take a live holder's role.
 //
 // nats.ErrKeyNotFound is the answer for a session the bucket holds no record of and for one whose
 // record accept refuses, and the state returned with it says which: session.Gone for the first,
@@ -130,13 +160,14 @@ func liveSessionEntry(
 	sessionID string,
 	bound time.Duration,
 	accept func(session.State) bool,
+	read func(context.Context, string) (session.SessionEntry, error),
 ) (session.SessionEntry, session.State, error) {
 	if entry, state := sessions.Lookup(sessionID); accept(state) {
 		return entry, state, nil
 	}
 	readCtx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
-	entry, err := sessions.Refresh(readCtx, sessionID)
+	entry, err := read(readCtx, sessionID)
 	if err != nil {
 		return session.SessionEntry{}, session.Gone, err
 	}
@@ -147,26 +178,29 @@ func liveSessionEntry(
 	return entry, state, nil
 }
 
-// bucketSessionEntry is sessionID's entry read from the session bucket itself
-// (session.SessionRegistry.Refresh) and from nowhere else, for the decisions that must not be
-// made on a cached entry because they turn on the entry's client instance id: a soft claim naming
-// a predecessor, which reads that predecessor's id to decide whether the role passes to the
-// claimant (POST /v1/roles/set), and the registration view of GET /v1/registry/<session_id>
-// (writeSessionRegistration), whose caller names that id in the delete that follows. It asks the
-// cache nothing, not even as a first answer the way liveSessionEntry does, because the cache
-// follows the bucket through a watcher and so trails it: the entry it still holds can carry an
-// instance id that session has since replaced, or no id at all where the bucket has one, and a
-// stale entry would then decide who keeps a role - handing it to a client instance the predecessor
-// no longer belongs to, which is the whole point of reading the id.
+// bucketSessionEntry is sessionID's entry read from the session bucket stream's leader
+// (session.SessionRegistry.RefreshFromLeader) and from nowhere else, for the decisions that must
+// not be made on a cached entry or a copy's because they turn on the entry's client instance id: a
+// soft claim naming a predecessor, which reads that predecessor's id to decide whether the role
+// passes to the claimant (POST /v1/roles/set), and the registration view of GET
+// /v1/registry/<session_id> (writeSessionRegistration), whose caller names that id in the delete
+// that follows. It asks the cache nothing, not even as a first answer the way liveSessionEntry
+// does, because the cache follows the bucket through a watcher and so trails it: the entry it
+// still holds can carry an instance id that session has since replaced, or no id at all where the
+// bucket has one, and a stale entry would then decide who keeps a role - handing it to a client
+// instance the predecessor no longer belongs to, which is the whole point of reading the id. A
+// direct get trails the leader the same way on a replicated bucket: a copy that has not applied
+// the predecessor's registration answers that it has no record, and the soft claim would take a
+// live predecessor's role out of the instance that still runs it.
 //
-// nats.ErrKeyNotFound is the bucket's word that the session is gone, and the caller acts on it;
+// nats.ErrKeyNotFound is the leader's word that the session is gone, and the caller acts on it;
 // any other error is a read that did not answer, on which nothing is taken from a holder. The read
 // gets bound, derived from ctx, so a route answers its 503 inside the deadline its own caller
 // holds.
 func bucketSessionEntry(ctx context.Context, sessions *session.SessionRegistry, sessionID string, bound time.Duration) (session.SessionEntry, error) {
 	readCtx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
-	return sessions.Refresh(readCtx, sessionID)
+	return sessions.RefreshFromLeader(readCtx, sessionID)
 }
 
 // roleSupersession is what a soft claim may do to the role holder it found (POST /v1/roles/set,
@@ -310,31 +344,32 @@ func roleOwnSessionVerdict(registry *store.Registry, role string, claim store.Ro
 // before requests carried one.
 //
 // A holder the claimant did not name as its predecessor is weighed on its state alone
-// (liveSessionEntry with sessionIsLive): anything but live - unresponsive past the live window,
-// or gone - and the role is the claimant's to take, which is how a relaunched Legion role
-// recovers its own role once its predecessor stopped answering; live, it keeps the role.
+// (liveSessionEntry with sessionIsLive, its bucket read the stream leader's): anything but live -
+// unresponsive past the live window, or gone - and the role is the claimant's to take, which is
+// how a relaunched Legion role recovers its own role once its predecessor stopped answering;
+// live, it keeps the role.
 //
 // The declared predecessor is weighed on that same state and on the client instance it belongs
-// to, and is read from the bucket itself (bucketSessionEntry, which says why a cached entry
-// cannot decide this). Not live, it gives the role up whatever instance it ran in. Live, it
-// gives it up only to a claimant session.InstanceMatches accepts, which is its own client
-// instance, or a side that carries no id at all - the one of those two arms the route logs, and
-// the only reason this function tells them apart. So knowing a live predecessor's session id is
-// not enough to take its role out of the client instance that still runs it.
+// to, and is read from the bucket stream's leader (bucketSessionEntry, which says why neither a
+// cached entry nor a copy's can decide this). Not live, it gives the role up whatever instance it
+// ran in. Live, it gives it up only to a claimant session.InstanceMatches accepts, which is its
+// own client instance, or a side that carries no id at all - the one of those two arms the route
+// logs, and the only reason this function tells them apart. So knowing a live predecessor's
+// session id is not enough to take its role out of the client instance that still runs it.
 //
-// The error is non-nil only with roleHolderUnread, wrapped as the route reports it, naming the
-// read that failed. A key the bucket does not hold is that bucket's word that the session is
-// gone, not a failure; every other read failure takes nothing from a holder. Both reads are
-// bounded by roleHolderReadTimeout within ctx, so the route answers inside the budget its own
-// caller holds.
+// The error is non-nil only with roleHolderUnread, a holderSessionUnread naming the read that
+// failed and the session it read. A key the bucket does not hold is that bucket's word that the
+// session is gone, not a failure; every other read failure takes nothing from a holder. Both
+// reads are bounded by roleHolderReadTimeout within ctx, so the route answers inside the budget
+// its own caller holds.
 func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegistry, holder, previous, claimantInstanceID string) (roleSupersession, error) {
 	if previous == "" || holder != previous {
-		_, _, err := liveSessionEntry(ctx, sessions, holder, roleHolderReadTimeout, sessionIsLive)
+		_, _, err := liveSessionEntry(ctx, sessions, holder, roleHolderReadTimeout, sessionIsLive, sessions.RefreshFromLeader)
 		switch {
 		case errors.Is(err, nats.ErrKeyNotFound):
 			return roleTakenFromHolder, nil
 		case err != nil:
-			return roleHolderUnread, fmt.Errorf("read role holder liveness: %w", err)
+			return roleHolderUnread, &holderSessionUnread{read: "read role holder liveness", holder: holder, err: err}
 		default:
 			return roleStaysWithHolder, nil
 		}
@@ -344,7 +379,7 @@ func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegis
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return roleTakenFromHolder, nil
 	case err != nil:
-		return roleHolderUnread, fmt.Errorf("read role predecessor registration: %w", err)
+		return roleHolderUnread, &holderSessionUnread{read: "read role predecessor registration", holder: holder, err: err}
 	case !sessionIsLive(sessions.EntryState(predecessor)):
 		return roleTakenFromHolder, nil
 	case !session.InstanceMatches(predecessor.ClientInstanceID, claimantInstanceID):
@@ -355,6 +390,20 @@ func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegis
 		return roleTakenFromHolder, nil
 	}
 }
+
+// holderSessionUnread is a soft claim's read of the session its standing claim names that did not
+// answer (roleSupersessionVerdict): the holder's liveness, or the declared predecessor's
+// registration. Its text is read's words and the read's own error, which names holder, the
+// session read, so an edge answer gives it in the listener's own words (edgeScope.unresolved).
+type holderSessionUnread struct {
+	read   string
+	holder string
+	err    error
+}
+
+func (e *holderSessionUnread) Error() string { return e.read + ": " + e.err.Error() }
+
+func (e *holderSessionUnread) Unwrap() error { return e.err }
 
 // notGone is the state test of every caller that may act on a session that stopped answering as
 // it acts on one that answers: a session-addressed send, an agent delivery, both reapers

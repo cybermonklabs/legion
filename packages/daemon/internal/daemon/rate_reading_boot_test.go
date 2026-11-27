@@ -23,7 +23,6 @@ import (
 // call the token manager makes with its own client, which counts as every REST call does: as
 // other, on acme's installation of each App, since the boot's mint names no caller kind.
 func TestADaemonBootLogsARateReadingOfEachInstallationWithItsOwnCalls(t *testing.T) {
-	quickAppMints(t)
 	// The boot puts the process's REST client on its counter's transport; the next test of the
 	// binary starts from the default.
 	t.Cleanup(func() { githubrest.SetTransport(nil) })
@@ -39,7 +38,7 @@ func TestADaemonBootLogsARateReadingOfEachInstallationWithItsOwnCalls(t *testing
 		Review:    config.GitHubApp{AppID: "2", PrivateKey: github.key},
 	}
 	var logs testlog.Buffer
-	if err := bootsOrExitsOn(t, cfg, nil, github.url, 60*time.Second, slog.New(slog.NewJSONHandler(&logs, nil))); err != nil {
+	if err := bootsOrExitsOn(t, cfg, nil, github.url, 60*time.Second, slog.New(slog.NewJSONHandler(&logs, nil)), quickAppMints()); err != nil {
 		t.Fatalf("boot = %v, want the daemon serving with a token manager of its own", err)
 	}
 
@@ -87,7 +86,7 @@ func TestARefusedWorkflowBootReleasesItsRateTransport(t *testing.T) {
 		Implement: config.GitHubApp{AppID: "1", PrivateKey: "not a private key"},
 		Review:    config.GitHubApp{AppID: "2", PrivateKey: "not a private key"},
 	}
-	if err := bootsOrExitsOn(t, cfg, nil, "http://github.invalid", 60*time.Second, quietLogger()); err == nil {
+	if err := bootsOrExitsOn(t, cfg, nil, "http://github.invalid", 60*time.Second, quietLogger(), quickAppMints()); err == nil {
 		t.Fatal("the invalid App key did not refuse workflow boot")
 	}
 	if githubrest.HTTPClient() != http.DefaultClient {

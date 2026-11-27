@@ -6,13 +6,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // scrape answers registry's /metrics body.
@@ -29,23 +32,63 @@ func scrape(t *testing.T, registry *metrics.Registry) string {
 // second - the sender logs one WARN naming the owner, the event it waits behind and that event's
 // last publish error. The cause is logged too: the outbox's own ERROR for the earlier event's
 // failed topic send names that event and its topic. While it waits, each try of the parked lane
-// reads the rule alone: no claim, resolution or settle of the attempt is written (a traced pool
-// counts the server's statements). Once the topic family is captured again the send lands, the
-// gauges read none and no second WARN comes. The controls are the scrape before the comment and
-// the one after the send landed.
+// reads the rule at most once and sends nothing else: the test steps the lane one try at a time,
+// holding each park's timer and running it itself, and reads every statement the server ran or
+// refused on its connections between one park and the next, off the bytes they write and the
+// server's answers (SentStatements), so a statement shows however it was sent - on its own, in a
+// batch, prepared and run by name, bound in one round trip and run in a later one. Each must be,
+// byte for byte, the rule's own statement (model.MentionCopyRuleSQL), run, bound to this send's
+// event and destination, at most one a try, or the pool's idle-connection check (PoolPing); any
+// other statement, and any the server refused, fails the test, whatever it reads.
+// The send was decided held on a read of the rule: at least one, for this send, is sent between
+// the comment and the first WARN, and none for any other send. Once the topic family is captured
+// again the send lands, the gauges read none and no second WARN comes. The controls are the scrape
+// before the comment and the one after the send landed. Each of the test's waits for the lane ends
+// on what it waits for, bounded only by the test binary's deadline, never by the bound under test.
+//
+// The test sees what the test store's own connections send, and a connection the server opened
+// from a copy of their configuration; a read on a connection the code opens itself from a
+// connection string is outside it. Both roads read the rule through copyrule.Holder on the store's
+// pool (deps.Store.Pool, in comment_delivery.go and in the outbox's mentions.go), which is the
+// recorded pool here; TestOnlyHolderReadsTheCopyRule keeps the rule's SQL and names in Holder and
+// each road calling it, and does not check which pool a call is given. A road whose only read of
+// the rule moved to another connection fails the floor of one read before the send is held.
+//
+// The windows are contiguous: from the comment to the first park the test holds, each try's, and
+// from the last park to the end, so no statement falls between two. The sender's claim refresh
+// ticks once an hour here (withMentionClaimRefresh), so it writes nothing in a window, and the
+// held gauges are registered again on that sender.
 func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	database := storetest.Open(t)
-	recorder := &storetest.StatementRecorder{}
+	sent := &storetest.SentStatements{}
 	registry := metrics.New()
 	listener, state := newMentionListener(t)
 	handler, _, deps, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second, outboxPublishes: true, metrics: registry,
-		store: storetest.TracedStore(t, database, recorder),
+		store: storetest.SentStore(t, database, sent),
 	})
+	// A sender whose claim refresh cannot tick while the test runs, with the held gauges read off
+	// it on a registry of its own (the server's read the sender it replaces).
+	withMentionClaimRefresh(t, served, time.Hour)
+	registry = metrics.New()
+	served.registerHeldGauges(registry)
+	// The sender's park timer: until the test steps the lane, each park's timer starts as the
+	// sender starts it; from then each park hands its timer's run to the test instead.
+	parked := make(chan func(), 4)
+	var stepping atomic.Bool
 	served.mentions.mu.Lock()
 	served.mentions.heldWarnAfter = time.Second
+	own := served.mentions.after
+	served.mentions.after = func(delay time.Duration, f func()) {
+		if stepping.Load() {
+			parked <- f
+			return
+		}
+		own(delay, f)
+	}
 	served.mentions.mu.Unlock()
 	issue := createInteractionIssue(t, handler, "TEST", "A held mention", "before")
 	view := &sessionView{issue: issue.Key}
@@ -57,9 +100,10 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	outboxDeps := deps
 	outboxDeps.Store = database
 	runOutboxBeside(t, outboxDeps, view)
-	waitUntil(t, 10*time.Second, "the issue's first events published", func() bool {
+	waitUntil(t, "the issue's first events published", func() bool {
 		return unpublishedEvents(t, database, issue.Key) == 0
 	})
+
 	if body := scrape(t, registry); !strings.Contains(body, "envoy_dispatch_mention_sends_held 0\n") {
 		t.Fatalf("the gauges read %q before any mention, want no held send", heldLines(body))
 	}
@@ -69,40 +113,85 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 		"body": "event 1, by a session", "actor": map[string]any{"kind": "session", "id": "s2"},
 	}))
 	first := commentEventID(t, database, firstComment.ID)
-	waitUntil(t, 10*time.Second, "event 1's topic send backed off", func() bool {
+	waitUntil(t, "event 1's topic send backed off", func() bool {
 		attempts, _ := eventAttempts(t, database, first)
 		return attempts > 0
 	})
+	posted := len(sent.Statements())
 	mention := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "the comment that mentions s1", "mentions": []map[string]any{{"target": "session:s1"}},
 	}))
 	const warning = `level=WARN msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
-	waitUntil(t, 10*time.Second, "the held send counted and reported", func() bool {
+	waitUntil(t, "the held send counted and reported", func() bool {
 		return strings.Contains(scrape(t, registry), "envoy_dispatch_mention_sends_held 1\n") &&
 			strings.Contains(logs.String(), warning)
 	})
+	// The held send's own read of the rule: its comment's event, and its destination.
+	heldRead := fmt.Sprintf("event %d to %s", commentEventID(t, database, mention.ID), contracts.LegacyAgentSubject("s1"))
+	var unrecognised []string
+	pings := 0
+	// window reads the statements recorded since the last window ended, up to now, and answers how
+	// many read the rule for the held send; the next window starts where this one ended. A strict
+	// window allows nothing else but the pool's idle-connection check; the first allows the
+	// comment's own statements, but no read of the rule for another send.
+	scanned := posted
+	window := func(strict bool) (reads int) {
+		statements := sent.Statements()
+		for _, statement := range statements[scanned:] {
+			switch read, isRule := ruleRead(statement); {
+			case statement.Failed:
+				unrecognised = append(unrecognised, refusedStatement(statement))
+			case isRule && read == heldRead:
+				reads++
+			case isRule:
+				unrecognised = append(unrecognised, "a read of the rule for another send, "+read)
+			case statement.SQL == storetest.PoolPing:
+				pings++
+			case strict:
+				unrecognised = append(unrecognised, firstChars(statement.SQL, 160))
+			}
+		}
+		scanned = len(statements)
+		return reads
+	}
 
-	// Three seconds parked: count what the server sends the database meanwhile.
-	before := len(recorder.Statements())
-	time.Sleep(3 * time.Second)
-	window := recorder.Statements()[before:]
-	var reads, attemptWrites int
-	for _, statement := range window {
-		switch {
-		case strings.Contains(statement, "k.owed_keys &&"):
-			reads++
-		case strings.Contains(statement, "comment_deliveries"):
-			attemptWrites++
+	// The parked lane stepped one try at a time: each park's timer is held and the test runs it,
+	// so the statements between one park and the next are one try's, with nothing else of the
+	// lane in flight. The first window runs from the comment to the first park the test holds,
+	// over the tries that decided the send held.
+	stepping.Store(true)
+	unpark := nextPark(t, parked)
+	decidedOn := window(false)
+	if decidedOn == 0 {
+		t.Errorf("the send was counted held with no read of the rule for it (%s) since the comment, want at least one", heldRead)
+	}
+	var readsPerTry []int
+	for range 3 {
+		unpark()
+		unpark = nextPark(t, parked)
+		readsPerTry = append(readsPerTry, window(true))
+	}
+	// Scraped while the lane is parked: the gauges leave out a held lane's head while a try of it
+	// is in flight, which the run of the last timer would start. The last window runs from the last
+	// park to here, the lane parked, so it holds no read of the rule.
+	body := scrape(t, registry)
+	if reads := window(true); reads != 0 {
+		unrecognised = append(unrecognised, fmt.Sprintf("%d reads of the rule while the lane was parked", reads))
+	}
+	for _, what := range sent.Blind() {
+		t.Errorf("the recorder could not read a statement the server's connections sent: %s", what)
+	}
+	stepping.Store(false)
+	unpark()
+	t.Logf("%d reads of the rule for the held send (%s) from the comment to the first park the test held; three tries of the parked send: reads of the rule %v, %d idle-connection checks, %d other statements; gauges:\n%s",
+		decidedOn, heldRead, readsPerTry, pings, len(unrecognised), heldLines(body))
+	for try, reads := range readsPerTry {
+		if reads > 1 {
+			t.Errorf("try %d of the parked send read the rule %d times, want at most once", try+1, reads)
 		}
 	}
-	body := scrape(t, registry)
-	t.Logf("over 3 s parked: %d reads of the rule, %d statements on comment_deliveries, %d statements in all; gauges:\n%s",
-		reads, attemptWrites, len(window), heldLines(body))
-	if reads == 0 || reads > 4 {
-		t.Errorf("the parked lane read the rule %d times over 3 s, want one each try at mentionOrderRetryMax (%v) once it ramps up", reads, mentionOrderRetryMax)
-	}
-	if attemptWrites != 0 {
-		t.Errorf("the parked lane made %d statements on comment_deliveries over 3 s, want none: a try of a held send reads the rule alone", attemptWrites)
+	for _, statement := range unrecognised {
+		t.Errorf("the server sent a statement that is not the held send's read of the rule: %q", statement)
 	}
 	if !strings.Contains(body, "envoy_dispatch_mention_send_held_oldest_seconds ") ||
 		strings.Contains(body, "envoy_dispatch_mention_send_held_oldest_seconds 0\n") {
@@ -128,10 +217,11 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	}
 
 	view.refuseTopics(false)
-	waitUntil(t, 30*time.Second, "the held send landed", func() bool {
+	waitUntil(t, "the held send landed", func() bool {
 		attempts := waitForCommentDeliveries(t, database, mention.ID, "the mention's attempts", func([]model.CommentDelivery) bool { return true })
 		return len(attempts) == 1 && attempts[0].State == "sent"
 	})
+
 	if body := scrape(t, registry); !strings.Contains(body, "envoy_dispatch_mention_sends_held 0\n") {
 		t.Fatalf("the gauges read %q once the send landed, want no held send", heldLines(body))
 	}
@@ -159,4 +249,42 @@ func warningLine(logged, marker string) string {
 		}
 	}
 	return ""
+}
+
+// nextPark waits for the sender's next park and answers its timer's run, which the test makes.
+// A try takes milliseconds, and a park the sender started before the test held the timers waits
+// at most its own delay; the wait's one bound is the test binary's deadline (testwait.Receive).
+func nextPark(t *testing.T, parked <-chan func()) func() {
+	t.Helper()
+	return testwait.Receive(t, "the held send's next park", parked)
+}
+
+// firstChars is statement's first n characters, its runs of white space each one space.
+func firstChars(statement string, n int) string {
+	text := strings.Join(strings.Fields(statement), " ")
+	if len(text) > n {
+		return text[:n] + "..."
+	}
+	return text
+}
+
+// ruleRead is whether statement is the rule's own statement (model.MentionCopyRuleSQL), byte for
+// byte, and which send it reads for: the event and the destination bound to it, as "event <id> to
+// <destination>".
+func ruleRead(statement storetest.SentStatement) (string, bool) {
+	if statement.SQL != model.MentionCopyRuleSQL {
+		return "", false
+	}
+	event, readEvent := statement.Int8(0)
+	destination, readDestination := statement.Text(1)
+	if !readEvent || !readDestination {
+		return "with arguments that do not read as an event and a destination", true
+	}
+	return fmt.Sprintf("event %d to %s", event, destination), true
+}
+
+// refusedStatement describes a statement the server refused or that failed while it ran, which
+// may have read the rule in part, so the read-bound tests count none as expected.
+func refusedStatement(statement storetest.SentStatement) string {
+	return fmt.Sprintf("a statement the server answered with error %s: %s", statement.Code, firstChars(statement.SQL, 160))
 }

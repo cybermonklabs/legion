@@ -1,4 +1,5 @@
 import { type LegionRole, zodSchemaApi } from "@legion/contracts";
+import { daemonContract, type PluginManifest } from "@legion/contracts/daemon-contract";
 import {
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PLAN_RATING_LEAST,
@@ -63,6 +64,21 @@ export function isPhaseOp(op: string): op is PhaseOp {
   return (PHASE_OPS as readonly string[]).includes(op);
 }
 
+function namesCheck(args: Readonly<Record<string, unknown>>): boolean {
+  return args["check_opened_at"] !== undefined;
+}
+
+/** The input gate effect of a successful call. A look's report leaves phase input open. */
+export function phaseInputAfter(
+  op: string,
+  args: { readonly check_opened_at?: unknown }
+): "phase-closed" | "update-answered" | undefined {
+  if (op === "ready_for_update") return "update-answered";
+  if (op === "request_backward_move" || (op === "handoff_complete" && !namesCheck(args)))
+    return "phase-closed";
+  return undefined;
+}
+
 /** A string field `op` requires: present, and not blank. The value is passed on as it was sent. */
 const requiredString = (op: PhaseOp, field: string) => {
   const message = `${op} requires ${field}`;
@@ -98,6 +114,13 @@ const nextLook = rfc3339String(
   "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is"
 );
 
+/** The named production check, exactly the instant the look task supplies. */
+const checkOpening = rfc3339String(
+  "handoff_complete",
+  "check_opened_at",
+  "handoff_complete's check_opened_at is the RFC 3339 time, with seconds, its look task names"
+);
+
 /** The refusal of a `plan_rating` that is not one of the scale's whole numbers. */
 const PLAN_RATING_REFUSAL = `handoff_complete's plan_rating is a whole number from ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}`;
 
@@ -130,6 +153,18 @@ const planReason = legionPlanReasonRules(z.string({ error: PLAN_REASON_REQUIRED 
   blank: PLAN_REASON_REQUIRED,
   long: `handoff_complete's plan_reason holds at most ${PLAN_REASON_MOST} characters`,
 });
+
+/** The refusal of a `return_to` that is not the place of a step. */
+const RETURN_TO_REFUSAL =
+  "handoff_complete's return_to is a whole number of 1 or more: the place of a step of your task, 1 for its first";
+
+/** `handoff_complete`'s `return_to`: the step of the issue's running task that a step that failed
+ * names for its task to return to, by its place in the task, 1 for its first
+ * (`LegionHandoffCompleteRequest`'s `returnTo`, which goes on the wire). */
+const returnTo = z
+  .number({ error: RETURN_TO_REFUSAL })
+  .int({ error: RETURN_TO_REFUSAL })
+  .min(1, { error: RETURN_TO_REFUSAL });
 
 /** The refusal of the fields `refused` that `op` does not take: each named, then once the fields
  * `op` takes (`takes`), so the agent's next call can be right. The one wording every `legion`
@@ -188,8 +223,10 @@ export const PhaseOpArguments = z.discriminatedUnion(
         })
         .optional(),
       wake_at: nextLook.optional(),
+      check_opened_at: checkOpening.optional(),
       plan_rating: planRating.optional(),
       plan_reason: planReason.optional(),
+      return_to: returnTo.optional(),
     })
       // A rating of the plan carries its reason, and the daemon takes neither alone
       // (PLAN_RATING_INPUT, the contract's `legionPlanRatingLoneField`): one without the other is
@@ -288,10 +325,14 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
 export const PHASE_OP_SENTENCES = {
   readRecord:
     "read_record returns the record of `issue` from the daemon's record route for that issue, your own issue when you leave `issue` out. " +
-    "A held issue names in `heldFrom` the phase the hold took it out of. A failed claim carries `failure`: the " +
+    "A held issue names in `heldFrom` the phase the hold took it out of, and in `holdReason` why it is held when its hold has a reason: " +
+    "`escalated` (its architect sent it to the controller), `task-stopped` (its owner stopped its task with stop_task) or `children` (it " +
+    "waits, before its retro, for the issues beneath it, the roots that rest on its approval or its open Dispatch children). A failed claim carries `failure`: the " +
     "`cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and " +
     "`attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts " +
-    "that phase again, as the architect's retry_or_escalate with retry does. ",
+    "that phase again, as the architect's retry_or_escalate with retry does, but a root held `task-stopped` starts its task again at its " +
+    "first step (a task that never started waits for its gate and its line, as any task does before its first step), and a root held " +
+    "`children` stays held until none of those holds it any longer. ",
   readReleaseRecords:
     "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
     "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +
@@ -301,7 +342,8 @@ export const PHASE_OP_SENTENCES = {
     "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. ",
   requestBackwardMove:
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
-    "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. ",
+    "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. " +
+    "That move counts no review round: only a review that requests changes counts one. ",
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
     "It also reports the contract the daemon states on its answer to the health route. " +
@@ -345,10 +387,14 @@ export function legionToolDescription(host: {
     "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off; " +
     "the daemon accepts a completion only from the role working the issue's current phase, " +
     "or a role's first completion of the phase it left, which it records and which moves nothing, " +
-    "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
+    "and the checking role's report naming its production check with `check_opened_at`) reports this phase complete: `summary` (two sentences for the " +
     "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
     "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
     "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
+    "A tester's fail may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
+    "to; without it, the task goes back to the first implementation step before the step that failed. Only a completion with the verdict " +
+    "fail names it (RETURN_TO_NEEDS_FAIL), a place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
+    "(RETURN_REFUSED). " +
     "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
     "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
@@ -357,11 +403,12 @@ export function legionToolDescription(host: {
     "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
     "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
     "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
-    "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
-    "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
-    "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
-    "(CHECK_WAKE_UNEXPECTED), and a pending on any other look is refused without one (CHECK_WAKE_REQUIRED). A report on an issue whose check is " +
-    "closed or never opened is refused (CHECK_NOT_OPEN), and so is one from a role the check does not record (CHECK_ROLE_MISMATCH). " +
+    "names `check_opened_at`, the RFC 3339 opening time in its `Production check of <KEY>` task, with its stored microseconds unchanged. " +
+    "Only that field selects a check report, on any phase. Without it the call completes a step. A report carries its verdict and summary, " +
+    "no handoff or commit: this tool reads no record first. A pending report names `wake_at` when it asks for another look. " +
+    "The daemon refuses a wake on a pass, fail or last look (CHECK_WAKE_UNEXPECTED), and a pending on any other look without one " +
+    "(CHECK_WAKE_REQUIRED). It first refuses a missing, closed or differently opened check (CHECK_NOT_OPEN), then another role " +
+    "(CHECK_ROLE_MISMATCH), then a look the claim has not served (CHECK_LOOK_NOT_SERVED). A report ends no phase. " +
     `The completion that ends the retro carries \`plan_rating\` (${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}) and \`plan_reason\`, as ` +
     "skill://legion-retro says, and the daemon refuses a completion that breaks that skill's rating rule " +
     "(PLAN_RATING_REQUIRED, PLAN_RATING_UNEXPECTED or PLAN_RATING_INPUT). " +
@@ -374,9 +421,13 @@ export function legionToolDescription(host: {
     "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
     "nothing, so fix what it names and complete again. " +
     "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
-    "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
+    "daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit " +
+    "and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch " +
     "first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made " +
-    "before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message " +
+    "before you answer. The daemon replaces the pod and its disk when the round ends. A kept volume stays with its Sandbox " +
+    "through the round, but a reset or a change of its disk shape still deletes it, so push first there too. If the daemon " +
+    "finds work that origin does not hold, it keeps the pod and says so; push that work. A round over a drift that breaks the " +
+    "pod replaces the pod anyway. The round ends at the moment the message " +
     "names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running " +
     "subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background " +
     "job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. " +
@@ -387,12 +438,13 @@ export function legionToolDescription(host: {
 }
 
 /** The plugin build one process loaded, as its host's own `package.json` names it: the package
- * `name`, its `version`, and the daemon API contract that build speaks
- * (`legion.daemonApiVersion`, which the client states on every request as `pluginContract` and
- * `read_build` answers beside the daemon's own). It is the host's manifest and never a path on
- * the image: an Oh My Pi role's relaunch onto the daemon's contract installs the plugin pair
- * fresh under the role's state home, so the build at `/opt/legion/pi-legion` is another one. A
- * Claude Code role in a pod installs no plugin, and its build is its image's own claude-envoy. */
+ * `name`, its `version`, and the daemon API contract that build speaks (`daemonContract`: the
+ * `legion.daemonApiVersion` a pack writes, which the client states on every request as
+ * `pluginContract` and `read_build` answers beside the daemon's own). It is the host's manifest
+ * and never a path on the image: an Oh My Pi role's relaunch onto the daemon's contract installs
+ * the plugin pair fresh under the role's state home, so the build at `/opt/legion/pi-legion` is
+ * another one. A Claude Code role in a pod installs no plugin, and its build is its image's own
+ * claude-envoy. */
 export interface PluginBuild {
   readonly name: string;
   readonly version: string;
@@ -401,17 +453,17 @@ export interface PluginBuild {
 
 /** The three values of `PluginBuild` read off one host's manifest. `pi-shared` imports no
  * manifest and is bundled into both plugins, so each host calls this with the `package.json` it
- * imported (`packages/pi-legion/src/tools.ts`,
- * `packages/claude-envoy/src/legion-tool.ts`). */
-export function pluginBuildOf(manifest: {
-  readonly name: string;
-  readonly version: string;
-  readonly legion: { readonly daemonApiVersion: number };
-}): PluginBuild {
+ * imported and its own directory, the `from` of `daemonContract`
+ * (`packages/pi-legion/src/tools.ts`, `packages/claude-envoy/src/legion-tool.ts`). It throws
+ * where `daemonContract` does: a manifest that names no contract outside a checkout. */
+export function pluginBuildOf(
+  manifest: PluginManifest & { readonly name: string; readonly version: string },
+  from: string
+): PluginBuild {
   return {
     name: manifest.name,
     version: manifest.version,
-    pluginContract: manifest.legion.daemonApiVersion,
+    pluginContract: daemonContract(manifest, from),
   };
 }
 
@@ -532,23 +584,13 @@ export async function readBuild(runtime: {
  * failed. A refusal throws before any write, minting nothing and posting nothing: each problem
  * `PhaseOpArguments` finds, joined by `; `, a field the operation does not take named first,
  * then a root architect's completion,
- * then each problem with the operation's own fields in the order it takes them, and a completion's
- * `plan_rating` or `plan_reason` without the other; then what the record decides (a check
- * report's verdict, its claim's role against the check's own, its `wake_at`, `pending` or
- * `wake_at` on a phase completion, the issue a completion or a move names), then a refused
- * handoff report (`findHandoffReport`). A daemon refusal throws its code and sentence.
- *
- * A completion is a phase's or a look's report on the closed issue's production check. The daemon
- * tells them apart by the caller's own live assignment (`api.handoffComplete`,
- * `supervise.Claim.ServingCheck`), which this tool cannot read: it shapes the call by the issue's
- * phase instead, a call on a `done` issue carrying what a check report carries and every other
- * call what its phase's completion carries, and the daemon's answer decides. A check report names
- * its verdict (`pass`, `pending` or `fail`), and a `pending` whose look is not the check's last
- * the `wake_at` of its next look; no handoff was written and nothing pushed, so no record or commit
- * is looked up and none is sent. `pending` is a check's verdict alone, refused on a phase
- * completion, and so is `wake_at`. A rating of the plan is sent as given on either: which
- * completion ends the retro, and so takes one, is the daemon's to say (`PLAN_RATING_UNEXPECTED`,
- * `PLAN_RATING_REQUIRED`).
+ * then each problem with the operation's own fields, a lone plan rating or reason, an invalid
+ * verdict, a phase call's pending or wake_at without check_opened_at, a named
+ * report's return_to, the issue a completion or move names, or a refused handoff report.
+ * A daemon refusal throws its code and sentence. Only check_opened_at selects a look report:
+ * it goes straight to the daemon with no record or commit lookup. A step completion reads the
+ * issue's phase to find its handoff, never to decide the call's meaning. The daemon decides
+ * check state, role, served look and last-look wake rules; a plan rating is sent as given.
  */
 export async function executePhaseOp(
   runtime: PhaseOpRuntime,
@@ -591,6 +633,13 @@ export async function executePhaseOp(
       if (named !== "" && named !== claim.issue) {
         throw new Error(
           `handoff_complete reports this session's own issue ${claim.issue}; leave issue out, or name ${claim.issue}, not ${named}`
+        );
+      }
+      // Only a step that failed names the step its task returns to, and the daemon refuses one on
+      // any other completion (RETURN_TO_NEEDS_FAIL), so it is refused here in the same words.
+      if (args.return_to !== undefined && args.verdict !== "fail") {
+        throw new Error(
+          "handoff_complete names return_to without the verdict fail: only the completion of a step that failed, with the verdict fail, names the step its task returns to; send it again without return_to"
         );
       }
       // The rating of the plan is built here, where the call was parsed: `PhaseOpArguments`' pair
@@ -843,77 +892,48 @@ async function completeHandoff(
   rating: PlanRatingGiven | undefined
 ): Promise<Readonly<Record<string, unknown>>> {
   const { daemon, claim } = runtime;
-  // The record is read before anything is minted: it says what this call has to carry. An issue
-  // no role works (`done`) has no handoff for anyone to write, so no record or commit is looked
-  // up, and the call carries what a check report carries; it is posted all the same where the
-  // record shows no open check, for the daemon's own answer. Which of the two the call is, is the
-  // daemon's to say, and it says it from the caller's own live assignment (`api/handoff.go`,
-  // `supervise.Claim.ServingCheck`), which the record does not show: a session working a look of
-  // its issue's production check reports on that look, and every other session's completion is
-  // its phase's, which the daemon refuses on a `done` issue whatever it carries
-  // (`CHECK_LOOK_NOT_SERVED`). So the two can disagree: a look's report from an issue back in
-  // the workflow is refused here as a phase completion, and a phase's completion that outlived
-  // the close is posted here as a report and refused `CHECK_LOOK_NOT_SERVED`, before the phase
-  // path.
-  // The report's own refusals apply while the record shows the check it is of: the record carries
-  // that object only while the check is open. A refusal here posts nothing and mints nothing.
-  const record = await recordFrom(daemon, claim.issue);
-  if (record.phase === "done") {
-    const check = record.check;
-    if (check !== undefined) {
-      if (args.verdict === undefined) {
-        throw new Error(
-          "handoff_complete on a production check names a verdict of pass, pending or fail"
-        );
-      }
-      // The check records the role that works it, and takes a report from that role alone, as
-      // the daemon does (CHECK_ROLE_MISMATCH).
-      if (claim.role !== check.role) {
-        throw new Error(
-          `${claim.issue}'s production check is the ${check.role}'s, and this session is the ${claim.role}'s: only the role the check records reports on it`
-        );
-      }
-      // The checking agent names its own next look, and nothing else starts one, so a pending
-      // carries a wake wherever a look follows it (CHECK_WAKE_REQUIRED). A pass and a fail close
-      // the check, and the last look's pending closes it as not run, so none of them carries one
-      // (CHECK_WAKE_UNEXPECTED).
-      if (args.verdict === "pending" && args.wake_at === undefined && !check.last) {
-        throw new Error(
-          `handoff_complete's pending report names wake_at, when the next look of ${claim.issue}'s production check is due`
-        );
-      }
-      if (args.wake_at !== undefined && (args.verdict !== "pending" || check.last)) {
-        const why =
-          args.verdict === "pending"
-            ? `look ${check.looks} is the check's last, after which the check closes as not run`
-            : `a ${args.verdict} report closes the check`;
-        throw new Error(
-          `handoff_complete names wake_at and no look follows it: ${why}; send it again without a time`
-        );
-      }
+  // Only the explicit field selects a look report. No record read chooses the call or adds a
+  // handoff to it; the daemon checks the named check, its role and its last-look state.
+  if (namesCheck(args)) {
+    if (args.verdict === undefined) {
+      throw new Error(
+        "handoff_complete with check_opened_at names a verdict of pass, pending or fail"
+      );
+    }
+    if (args.return_to !== undefined) {
+      throw new Error(
+        "handoff_complete's return_to names the step a failed step's task returns to; a report with check_opened_at names none"
+      );
+    }
+    if (args.wake_at !== undefined && args.verdict !== "pending") {
+      throw new Error(
+        "handoff_complete names wake_at and no look follows a pass or fail; send it again without a time"
+      );
     }
     return daemon.handoffComplete({
       grantId: await mintClaimGrant(daemon, claim),
       summary: args.summary,
-      verdict: args.verdict ?? "",
+      verdict: args.verdict,
+      checkOpenedAt: args.check_opened_at,
       ...(args.wake_at === undefined ? {} : { wakeAt: args.wake_at }),
       ...rating,
     });
   }
   if (args.verdict === "pending") {
     throw new Error(
-      "handoff_complete's verdict is pass or fail on a phase completion; pending is a production check's"
+      "handoff_complete's pending verdict reports a production check. Send check_opened_at with the time from the look task or check.openedAt from read_record. To complete a step, send pass or fail."
     );
   }
   // The daemon refuses a phase completion that carries a wake (CHECK_WAKE_UNEXPECTED); this says
   // so without the round trip.
   if (args.wake_at !== undefined) {
     throw new Error(
-      "handoff_complete's wake_at is a production check's pending report alone; a phase completion carries none"
+      "handoff_complete's wake_at reports a production check. Send check_opened_at with the time from the look task or check.openedAt from read_record. A step's completion carries no wake."
     );
   }
   // The record and the commit are found before the grant is minted. The phase is the issue
   // record's, the role the claim's.
+  const record = await recordFrom(daemon, claim.issue);
   const report = await runtime.handoffReport(record.phase, claim.role);
   return daemon.handoffComplete({
     grantId: await mintClaimGrant(daemon, claim),
@@ -921,5 +941,6 @@ async function completeHandoff(
     verdict: args.verdict ?? "",
     ...report,
     ...rating,
+    ...(args.return_to === undefined ? {} : { returnTo: args.return_to }),
   });
 }

@@ -1,5 +1,7 @@
 package intake
 
+//ci:reads packages/contracts/fixtures/checks-settlement/* fixtureSettlement
+
 import (
 	"encoding/json"
 	"os"
@@ -90,6 +92,7 @@ func runNamed(t *testing.T, runs []record.AttemptRun, name string) record.Attemp
 // else, so the fact stands with every run. An absent or null word is no word and nothing unread,
 // and a name the skipped group gives with no run changes nothing.
 func TestDecodeChecksReadsTheSkippedGroupAndEachConclusionWord(t *testing.T) {
+	t.Parallel()
 	for _, file := range []string{"held-back-suites-skip.json", "listener-rules.json"} {
 		t.Run(file, func(t *testing.T) {
 			settlement := fixtureSettlement(t, file)
@@ -274,6 +277,7 @@ func TestDecodeChecksReadsTheSkippedGroupAndEachConclusionWord(t *testing.T) {
 // every run with its name and id alone, no conclusion and no word, the failing and cancelled
 // names as given, and nothing unread.
 func TestDecodeChecksReadsASettlementWithNoSkippedGroupOrConclusionWordAsToday(t *testing.T) {
+	t.Parallel()
 	runs := []record.AttemptRun{{Name: "unit", ID: 12}, {Name: "build", ID: 11}, {Name: "docs", ID: 13}}
 	want := PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: statusesHead, CheckRuns: byName(runs), Generation: 3,
 		Snapshot: "snapshot-3", Failing: []string{"unit"}, Cancelled: []string{}}

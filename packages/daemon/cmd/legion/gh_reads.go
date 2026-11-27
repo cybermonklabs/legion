@@ -7,11 +7,19 @@ import (
 )
 
 // ghCheckedOnlyVisibility is the call log's visibility for a call the shared check alone read
-// (leakguard.GhAnswer.CheckedOnly): a call that writes nothing, under the check the rule was
+// (leakguard.GhReadCheckedOnly): a call that writes nothing, under the check the rule was
 // proven against, for which nothing read its repository's visibility. It is neither `github` nor
 // `kept`, and not the empty value of a call the guard read no visibility for because it named no
 // repository.
 const ghCheckedOnlyVisibility = "checked-only"
+
+// ghNoRulesVisibility is the call log's visibility for a call that skipped the private-name step
+// because the deployment names no rule file (leakguard.GhReadNoRules): the shared check read it,
+// where one runs, and nothing read its repository's visibility, since without a rule there is
+// nothing the visibility would decide. It is neither checked-only, which is a read the shared
+// check alone clears whatever rules are named, nor the empty value of a call that named no
+// repository.
+const ghNoRulesVisibility = "no-rules"
 
 // ghReadsProvenCheck is the shared check ghWritesNothing's rule was proven against: its tag,
 // which is the tag the worker image pins (`ARG LEAK_CHECK_TAG` in
@@ -29,8 +37,8 @@ const ghCheckedOnlyVisibility = "checked-only"
 // rows; then write its tag here and the sha256 of its public_leak_check.py, `git show
 // <tag>:leak-check/public_leak_check.py | sha256sum` in the shared check's own repository.
 var ghReadsProvenCheck = struct{ tag, sha256 string }{
-	tag:    "leak-check-v21",
-	sha256: "5e5e0e00e4932ac307b79f53ac43e7cb156ed9dd38f01780022e69c18cce6354",
+	tag:    "leak-check-v33",
+	sha256: "2e9049bfe5969e039878ae88d72dbc844a843f2d7a4819124456f3dd6c2dd1c3",
 }
 
 // leakguardCurl is the curl the leak guard's curl reads run in this binary, the one every guard

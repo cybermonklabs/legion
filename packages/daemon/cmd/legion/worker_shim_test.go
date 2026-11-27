@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
@@ -25,6 +26,7 @@ import (
 // 590-620), each naming the flag or path at fault: the daemon's pane has nothing to show but
 // this line, and a shim that dialled first would register a pane that can never start OMP.
 func TestWorkerShimRefusesBeforeDialOrSpawn(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion worker-shim` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	dir := t.TempDir()
 	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
@@ -110,6 +112,7 @@ func TestWorkerShimRefusesBeforeDialOrSpawn(t *testing.T) {
 // the child's environment only, and the shim's exit status is the child's — which is what the
 // pane, and the runtime watching it, see.
 func TestWorkerShimBridgesTheChildAndExitsWithItsStatus(t *testing.T) {
+	// Not parallel: it runs `legion worker-shim` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	dir := t.TempDir()
 	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
@@ -156,13 +159,9 @@ func TestWorkerShimBridgesTheChildAndExitsWithItsStatus(t *testing.T) {
 	if code != 7 {
 		t.Fatalf("exit %d, want the child's 7; stderr: %s; stdout: %s", code, stderr.String(), stdout.String())
 	}
-	select {
-	case err := <-daemon:
-		if err != nil {
-			t.Fatalf("the daemon side: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the shim never completed the handshake")
+	// The daemon side's report is waited for with no span of its own (testwait.Receive).
+	if err := testwait.Receive(t, "the daemon side of the shim's handshake", daemon); err != nil {
+		t.Fatalf("the daemon side: %v", err)
 	}
 	if got, err := os.ReadFile(seen); err != nil || string(got) != "provided" {
 		t.Fatalf("the child saw LEGION_SHIM_TEST_PROVIDED=%q (%v), want the providers file's trimmed contents", got, err)
@@ -179,6 +178,7 @@ func TestWorkerShimBridgesTheChildAndExitsWithItsStatus(t *testing.T) {
 // shim's, and the build never holds it up — here the agent waits for the build, since a warm-up
 // ends with the agent (the test below), and the shim returns the moment both are done.
 func TestWorkerShimWarmsTheWorkspacesCodegraphIndexOnceTheAgentStarts(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion worker-shim` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	dir := t.TempDir()
 	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
@@ -194,7 +194,7 @@ func TestWorkerShimWarmsTheWorkspacesCodegraphIndexOnceTheAgentStarts(t *testing
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(bin, "codegraph"), []byte(fakeCodegraph), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "codegraph"), []byte(fakeCodegraph), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -236,6 +236,7 @@ func TestWorkerShimWarmsTheWorkspacesCodegraphIndexOnceTheAgentStarts(t *testing
 // second later, as the real one does when the group signal reaches it; at the command's return the
 // lease must be gone.
 func TestWorkerShimLetsAnInFlightWarmUpReleaseItsLeaseBeforeItExits(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion worker-shim` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	dir := t.TempDir()
 	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
@@ -257,7 +258,7 @@ case "$1" in
   init) sleep 0.5; exit 1 ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(bin, "codegraph"), []byte(slowInit), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "codegraph"), []byte(slowInit), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -269,18 +270,22 @@ esac
 
 	var stdout, stderr bytes.Buffer
 	started := time.Now()
-	code := run(context.Background(), []string{"legion", "worker-shim",
-		"--connect", "unix://" + socket, "--boot-token-file", token, "--warm-codegraph",
-		"--", "sh", "-c", `echo '{"type":"fake_ready"}'; while [ ! -e "$0" ]; do sleep 0.01; done; exit 7`, lease}, &stdout, &stderr)
+	// The shim's return is waited for with no span of its own: the wait for the warm-up must be
+	// bounded, so a shim that waited on it for ever fails here by name before the test binary's
+	// deadline (testwait.Receive), and a shim a loaded machine makes slow passes.
+	returned := make(chan int, 1)
+	go func() {
+		returned <- run(context.Background(), []string{"legion", "worker-shim",
+			"--connect", "unix://" + socket, "--boot-token-file", token, "--warm-codegraph",
+			"--", "sh", "-c", `echo '{"type":"fake_ready"}'; while [ ! -e "$0" ]; do sleep 0.01; done; exit 7`, lease}, &stdout, &stderr)
+	}()
+	code := testwait.Receive(t, "the shim's return once the agent exited", returned)
 	elapsed := time.Since(started)
 	if code != 7 {
 		t.Fatalf("exit %d, want the child's 7; stderr: %s; stdout: %s", code, stderr.String(), stdout.String())
 	}
 	if _, err := os.Stat(lease); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the shim returned %s after the agent exited with the warm-up's lease still at %s (stat: %v): a relaunch within the minute will skip its warm-up; stderr: %s", elapsed, lease, err, stderr.String())
-	}
-	if elapsed > 10*time.Second {
-		t.Fatalf("the shim took %s to return after the agent exited; the wait for the warm-up must be bounded", elapsed)
 	}
 	if err := <-daemon; err != nil {
 		t.Fatalf("the daemon side: %v", err)
@@ -297,6 +302,7 @@ esac
 // not under its state home, not on its scratch. With --pod-safety and a state home whose profile
 // directory cannot be made, the shim refuses naming it, before anything is dialled or spawned.
 func TestWorkerShimStartsAPodsAgentOnTheBaselineAndAPanesAsBefore(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion worker-shim` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	dir := t.TempDir()
 	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
@@ -439,6 +445,7 @@ func acknowledgeHello(ln net.Listener) chan error {
 // both: the line the stop logs to the pane, the agent's own SIGTERM, and the agent's status as
 // the command's.
 func TestWorkerShimStopsOnSIGHUP(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		signal syscall.Signal
@@ -482,17 +489,18 @@ ticks=0
 while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks=$((ticks+1)); done
 exit 9
 `
-			command := exec.Command(os.Args[0], "worker-shim",
+			command := exec.Command(legionCopy(t), "worker-shim",
 				"--connect", "unix://"+socket, "--boot-token-file", token,
 				"--", "sh", "-c", agent, "sh", record, running)
 			command.Env = append(os.Environ(), testMainEnv+"=1")
 			var printed bytes.Buffer
 			command.Stdout, command.Stderr = &printed, &printed
 			// A shim that ran no stop leaves the agent holding these pipes until it gives up on
-			// its own, and Wait would sit there for the whole of that minute before the failure
-			// below could be read: the delay closes them a few seconds after the shim's exit
-			// instead. It changes nothing where the stop ran, the agent being gone by then.
-			command.WaitDelay = 5 * time.Second
+			// its own, a minute on, and Wait reads them to their end. The delay that cuts that
+			// read short has no span of its own, only what is left of the test binary's deadline
+			// less 30 s (testwait.Bounded): a span would cut short a read of the shim's last lines
+			// that a loaded machine made slow, and fail the row where the stop ran.
+			command.WaitDelay = testwait.Bounded(t, 1<<60, 30*time.Second)
 			if err := command.Start(); err != nil {
 				t.Fatalf("start the shim: %v", err)
 			}
@@ -531,6 +539,7 @@ exit 9
 // quoted in its refusal: each keeps the URL's host and path, and neither the user name nor the
 // token reaches the pane.
 func TestWorkerShimWritesNoURLCredentials(t *testing.T) {
+	// Not parallel: it runs `legion worker-shim` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	dir := t.TempDir()
 	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
@@ -557,13 +566,13 @@ func TestWorkerShimWritesNoURLCredentials(t *testing.T) {
 			name:   "the agent's extension_error, summarized on the pane",
 			args:   []string{"--connect", "unix://" + socket, "--boot-token-file", token, "--", "sh", "-c", `printf '%s\n' "$0"; exit 7`, failed},
 			daemon: true, code: 7,
-			shown: "fetch https://daemon.example/legion/v1/claims failed", planted: "planted-query-token-1",
+			shown: "fetch https://[a URL with credentials]/legion/v1/claims failed", planted: "planted-query-token-1",
 		},
 		{
 			name:  "a --connect the shim refuses",
 			args:  []string{"--connect", "tcp://legion-reader@127.0.0.1:1/?token=planted-query-token-2", "--boot-token-file", token, "--", "true"},
 			code:  1,
-			shown: `got "tcp://127.0.0.1:1/"`, planted: "planted-query-token-2",
+			shown: `got "tcp://[a URL with credentials]/"`, planted: "planted-query-token-2",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -596,6 +605,7 @@ func TestWorkerShimWritesNoURLCredentials(t *testing.T) {
 // before its "@", where the rule finds no userinfo in what is left and keeps the start of the user
 // name and the password as the URL's host. The shim writes no part of either.
 func TestWorkerShimWritesNoPartOfAUserinfoCutBeforeItsAt(t *testing.T) {
+	// Not parallel: it runs `legion worker-shim` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	// Built as the other tests of this package build one, so the pre-push leak check reads no
 	// credential in the source. The line's first 80 bytes end inside the password, before the "@".
 	const user, pass = "legion-reader", "demopass-not-a-secret-48c1-48c1-48c1-48c1-48c1-48c1"

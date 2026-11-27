@@ -5,12 +5,18 @@ import (
 	"maps"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/natsurl"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/omplaunch"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // Settings is the daemon's resolved legion.yaml as `GET /legion/v1/state` carries it (contract
@@ -20,8 +26,8 @@ import (
 // out every credential, every source of one (a secretsd or Secret key, a key command) and every
 // path of a file holding one, and carries only what every pod may already know. Of the strings it
 // carries, the four address keys (`daemon_url`, `envoy_url`, `nats_urls`, `dispatch_url`) ride
-// endpointOf, which masks their userinfo as `xxxxx@`; a `runtime.kubernetes.plugins` source in
-// URL form rides it too (pluginSourceOf), losing its userinfo, query and fragment; and
+// endpointOf, which shows one with userinfo by its scheme and `[a URL with credentials]`; a
+// URL form rides it too (PluginSourceOf), losing its userinfo, query and fragment; and
 // `runtime.kubernetes.agent_secrets.url` rides as written, since the loader refuses userinfo, a
 // path, a query and a fragment on it. Every other string is a name, a path, a quantity or a
 // version, never a URL. SettingsOf is an allowlist: it names each field it emits, and a
@@ -36,10 +42,15 @@ type Settings struct {
 	StateDir      string          `json:"state_dir"`
 	Runtime       RuntimeSettings `json:"runtime"`
 	// AdmissionCap is the cap; `admission.cap` carries the same value, read from the same configuration.
-	AdmissionCap     int    `json:"admission_cap"`
+	AdmissionCap int `json:"admission_cap"`
+	// AdmissionP0Bound is legion.yaml's P0 bound, absent while the file gives none; the bound in
+	// force, which a value set while the daemon runs may replace, is `admission.p0Bound`.
+	AdmissionP0Bound *int   `json:"admission_p0_bound,omitempty"`
 	DaemonURL        string `json:"daemon_url"`
 	WorkerStreamPort int    `json:"worker_stream_port"`
-	// OmpInvocation is absent while the file sets none; OmpLaunchPrefix is `[]` then.
+	// OmpInvocation is absent while the file sets none; OmpLaunchPrefix is `[]` then, and otherwise
+	// the prefix's program and how many arguments follow (omplaunch.PrefixShown), never an
+	// argument, which can carry a credential (`env NAME=<token>`, a proxy URL with a password).
 	OmpInvocation   string   `json:"omp_invocation,omitempty"`
 	OmpLaunchPrefix []string `json:"omp_launch_prefix"`
 	// ProviderKeys are the variable names of `provider_keys`, in file order, and never the store
@@ -47,6 +58,11 @@ type Settings struct {
 	ProviderKeys []string `json:"provider_keys"`
 	// Instructions is the deployment instructions' path, absent while the file sets none.
 	Instructions string `json:"instructions,omitempty"`
+	// PrivateNameRulesFile is the deployment's private-name rule file's path, from
+	// `private_name_rules_file` or else LEGION_PRIVATE_NAME_RULES_FILE in the daemon's environment,
+	// absent while neither names one. It is the path alone, as `instructions` is, and never the
+	// rules, which name the deployment's private names.
+	PrivateNameRulesFile string `json:"private_name_rules_file,omitempty"`
 	// The durations, in whole seconds as the file takes them.
 	WorkerBootTimeoutSeconds      int `json:"worker_boot_timeout_seconds"`
 	WorkerRPCTimeoutSeconds       int `json:"worker_rpc_timeout_seconds"`
@@ -68,6 +84,11 @@ type Settings struct {
 	NatsURLs             []string `json:"nats_urls"`
 	// DispatchURL is absent while the file sets none.
 	DispatchURL string `json:"dispatch_url,omitempty"`
+	// DispatchTokenBroker is `dispatch_token_broker`, absent while it is false, so a deployment
+	// that never set it reads byte for byte as before the key existed. It says how the daemon and
+	// its roles reach Dispatch, never with what: the credential is a broker trade, and no path of
+	// a file holding one rides here (`dispatch_token_transition_file` stays out).
+	DispatchTokenBroker bool `json:"dispatch_token_broker,omitempty"`
 	// Projects is `{}` while the file declares none.
 	Projects map[string]ProjectSettings `json:"projects"`
 	Gates    GatesSettings              `json:"gates"`
@@ -78,10 +99,10 @@ type Settings struct {
 	LingerHours          float64 `json:"linger_hours"`
 	ProductionCheckHours float64 `json:"production_check_hours"`
 	// PodUpdateGraceMinutes is `pod_update_grace_minutes`, a decimal number of minutes: how long
-	// a pod's update round waits for its roles after it opens. An answer from every role ends the
-	// round before it once no turn runs and no claim's activity report holds it (internal/daemon's
-	// roundEnd.holding), and no answer, turn or background work holds the round past it. It is a
-	// decimal so a live proof can drive the bound inside one run.
+	// a pod's update round waits for its roles after it opens. An answer from every role the round
+	// asks ends the round before it once no turn runs and no claim's activity report holds it
+	// (internal/daemon's roundEnd.holding), and no answer, turn or background work holds the round
+	// past it. It is a decimal so a live proof can drive the bound inside one run.
 	PodUpdateGraceMinutes float64 `json:"pod_update_grace_minutes"`
 	// StalledTreeNoticeHours is `stalled_tree_notice_hours`, a decimal number of hours as the two
 	// hour keys above are: how long a tree this daemon runs may be quiet before the daemon tells the
@@ -111,7 +132,15 @@ type Settings struct {
 	PodUpdateRoundsPerMinute *int                    `json:"pod_update_rounds_per_minute"`
 	ReviewRoundCap           int                     `json:"review_round_cap"`
 	Controller               config.ControllerLaunch `json:"controller"`
-	Capabilities             CapabilitiesSettings    `json:"capabilities"`
+	// ControllerTurnBoundMinutes is `controller_turn_bound_minutes` and
+	// ControllerSessionMaxAgeHours `controller_session_max_age_hours`, decimals as the file takes
+	// them and 0 the rule off: how long a turn of the daemon's own controller may stay open before
+	// its keeper ends the launch, and how old its session may grow before a relaunch the daemon
+	// makes of it starts a fresh one (dispatch://INFRA-2045 R2 and R3). No reader types either
+	// (answers.go's typedSettings), so neither takes a contract number.
+	ControllerTurnBoundMinutes   float64              `json:"controller_turn_bound_minutes"`
+	ControllerSessionMaxAgeHours float64              `json:"controller_session_max_age_hours"`
+	Capabilities                 CapabilitiesSettings `json:"capabilities"`
 	// WorkerBackends is `worker_backends`, the roles that run on a backend other than Oh My Pi by
 	// role, `{}` while the file names none.
 	WorkerBackends map[string]string `json:"worker_backends"`
@@ -209,9 +238,9 @@ type KubernetesSettings struct {
 	// every pod may read them.
 	IdleRelease IdleReleaseSettings `json:"idle_release"`
 	// MemoryGuard is the settled `runtime.kubernetes.memory_guard`: whether each issue pod's
-	// launcher runs a memory guard, and the shares, wait and interval it runs by. None of it is a
-	// credential, and a role reads it to know when a process of its own may be ended under it, so
-	// every pod may read it.
+	// launcher, and the launcher of the controller's pod, runs a memory guard, and the shares, wait
+	// and interval each runs by. None of it is a credential, and a role reads it to know when a
+	// process of its own may be ended under it, so every pod may read it.
 	MemoryGuard MemoryGuardSettings `json:"memory_guard"`
 	// VolumeTrim is the settled `runtime.kubernetes.volume_trim`: whether each issue pod's
 	// launcher runs a cache trimmer, and the marks, age and period it runs by. None of it is a
@@ -219,9 +248,10 @@ type KubernetesSettings struct {
 	// out from under a build it left running, so every pod may read it.
 	VolumeTrim VolumeTrimSettings `json:"volume_trim"`
 	// Sandbox is the settled `runtime.kubernetes.sandbox`: the sandbox of the project's issue
-	// pods, the issues whose pods run in the other one, and where a microVM pod runs. Every
-	// member is a word, an issue key, a class name, or the cluster's Workload Identity pool and
-	// identity provider, which name the cluster and grant nothing, so no member is a credential.
+	// pods and of its controller's pod, which follows `type` alone, the issues whose pods run in
+	// the other one, and where a microVM pod runs. Every member is a word, an issue key, a class
+	// name, or the cluster's Workload Identity pool and identity provider, which name the cluster
+	// and grant nothing, so no member is a credential.
 	Sandbox SandboxSettings `json:"sandbox"`
 }
 
@@ -235,10 +265,11 @@ type SandboxSettings struct {
 }
 
 // MicroVMSettings is `runtime.kubernetes.sandbox.microvm`: the ComputeClass of the microVM pods'
-// nodes, absent in a block no issue pod uses that names none; their workspace volume's class,
-// `runtime.kubernetes.storage_class` when the block names none; whether a microVM issue pod keeps
-// that volume, false when the block names none; and the metadata endpoint's two members, absent
-// while the block names none.
+// nodes, absent in a block no issue pod uses that names none; the microVM issue pods' workspace
+// volume's class, `runtime.kubernetes.storage_class` when the block names none, which the
+// controller's disk is on in either sandbox; whether a microVM issue pod keeps that volume, false
+// when the block names none; and the metadata endpoint's two members, absent while the block names
+// none.
 type MicroVMSettings struct {
 	ComputeClass string            `json:"compute_class,omitempty"`
 	StorageClass string            `json:"storage_class"`
@@ -260,9 +291,10 @@ type IdleReleaseSettings struct {
 }
 
 // MemoryGuardSettings is the settled `runtime.kubernetes.memory_guard`, by the kind of pod a
-// guard runs in.
+// guard runs in: every issue pod's, and the project controller's pod's.
 type MemoryGuardSettings struct {
-	IssuePods MemoryGuardPodSettings `json:"issue_pods"`
+	IssuePods     MemoryGuardPodSettings `json:"issue_pods"`
+	ControllerPod MemoryGuardPodSettings `json:"controller_pod"`
 }
 
 // MemoryGuardPodSettings is one kind of pod's settled memory guard. `enabled` false is the guard
@@ -319,8 +351,8 @@ type ReservationSettings struct {
 }
 
 // RepositoryCacheSettings is the settled `runtime.kubernetes.repository_cache`: each repository
-// cache's volume, its fetch period, how long an unmapped repository's cache is kept, and its one
-// container's reservation in a pod's shape.
+// cache's volume, its fetch period, how long the cache of a repository no live record names is
+// kept, and its one container's reservation in a pod's shape.
 type RepositoryCacheSettings struct {
 	Volume         string              `json:"volume"`
 	RefreshMinutes int                 `json:"refresh_minutes"`
@@ -344,8 +376,9 @@ type PluginsSettings struct {
 	PiEnvoy  string `json:"pi_envoy"`
 }
 
-// ProjectSettings is one `projects.<KEY>` entry. Dispatch holds the project's repository mapping,
-// which the state's `repositories` shows, and this file holds none of it.
+// ProjectSettings is one `projects.<KEY>` entry. It names no repository the project works in: an
+// issue's repository is Dispatch's resolution of it, and the state's `repositories` shows the
+// repositories the live records name.
 type ProjectSettings struct {
 	SlackChannels []string       `json:"slack_channels"`
 	Memory        MemorySettings `json:"memory"`
@@ -361,6 +394,13 @@ type ProjectSettings struct {
 	// for the project that opens none (config.Project.ProductionCheckWord), never the empty string
 	// the role takes for off.
 	ProductionCheck string `json:"production_check"`
+	// DefaultSteps is `default_steps` as the file writes it, each step one word (`planner`, or
+	// `acceptance:owner`): the steps a task runs when its plan block names neither steps nor a
+	// sub-owner, and the steps of the one task of an issue whose owner gives no plan or whose
+	// experiment's group takes none. It is what the project runs by default
+	// (config.Project.RunsByDefault), so a project that names none shows today's line up to the
+	// owner's acceptance rather than no step.
+	DefaultSteps []string `json:"default_steps"`
 	// Deploys is `projects.<KEY>.deploys`, reported while the loader still accepts the key and
 	// reads nothing from it (config's readProject, which warns a project that sets it): no
 	// deploy run wakes a production check any more. It is the deprecated key's resolved value,
@@ -407,7 +447,7 @@ func (p ProjectSettings) DeclaredExperiments(key string) []config.Experiment {
 		}
 		for _, variant := range experiment.Variants {
 			declared.Variants = append(declared.Variants, config.Variant{Name: variant.Name, Weight: variant.Weight,
-				ConfigFiles: variant.ConfigFiles, InstructionsPath: variant.Instructions})
+				ConfigFiles: variant.ConfigFiles, InstructionsPath: variant.Instructions, Plan: config.PlanGroup(variant.Plan)})
 		}
 		project.Experiments = append(project.Experiments, declared)
 	}
@@ -442,15 +482,16 @@ type ExperimentSettings struct {
 
 // VariantSettings is one arm of an experiment as the file writes it: its name, the weight a
 // random draw gives it against its siblings, the Oh My Pi overlays each role its experiment
-// reaches of a unit drawn into it names, `[]` for an arm that names none, and the one
-// instructions file such a role's system prompt takes, absent where the arm names none. The
-// paths are the operator's own file names, which no credential rides in, as the `memory` block's
-// are.
+// reaches of a unit drawn into it names, `[]` for an arm that names none, the one instructions
+// file such a role's system prompt takes, absent where the arm names none, and how the issues
+// drawn into it are done (`plan`), absent where the arm names none. The paths are the operator's
+// own file names, which no credential rides in, as the `memory` block's are.
 type VariantSettings struct {
 	Name         string   `json:"name"`
 	Weight       int      `json:"weight"`
 	ConfigFiles  []string `json:"config_files"`
 	Instructions string   `json:"instructions,omitempty"`
+	Plan         string   `json:"plan,omitempty"`
 }
 
 // DeploySettings is the shape one `projects.<KEY>.deploys` entry had while the daemon read the
@@ -516,7 +557,7 @@ type HookSettings struct {
 // SettingsOf is cfg as the state shows it: every setting of the resolved file the audience of an
 // unauthenticated route may read, and no credential, credential source or credential file path
 // (Settings). Of the URLs it emits, the four address keys ride endpointOf and a plugin source in
-// URL form rides pluginSourceOf, so no userinfo reaches the wire; `agent_secrets.url` is the one
+// URL form rides PluginSourceOf, so no userinfo reaches the wire; `agent_secrets.url` is the one
 // URL that rides as written, which the loader has made safe by refusing userinfo, a path, a query
 // and a fragment on it (internal/config/kubernetes.go, readAgentSecrets). Every slice and map it
 // emits is non-nil, so the state marshals no `null` inside it.
@@ -529,12 +570,14 @@ func SettingsOf(cfg config.Config) Settings {
 		StateDir:                                cfg.StateDir,
 		Runtime:                                 RuntimeSettings{Name: cfg.Runtime.Name, Kubernetes: kubernetesSettingsOf(cfg.Runtime.Kubernetes), Tmux: tmuxSettingsOf(cfg.Runtime.Tmux)},
 		AdmissionCap:                            cfg.AdmissionCap,
+		AdmissionP0Bound:                        cfg.AdmissionP0Bound,
 		DaemonURL:                               endpointOf(cfg.DaemonURL),
 		WorkerStreamPort:                        cfg.WorkerStreamPort,
 		OmpInvocation:                           cfg.OmpInvocation,
-		OmpLaunchPrefix:                         stringsOf(cfg.OmpLaunchPrefix),
+		OmpLaunchPrefix:                         stringsOf(omplaunch.PrefixShown(cfg.OmpLaunchPrefix)),
 		ProviderKeys:                            make([]string, len(cfg.ProviderKeys)),
 		Instructions:                            cfg.InstructionsPath,
+		PrivateNameRulesFile:                    cfg.PrivateNameRulesFile,
 		WorkerBootTimeoutSeconds:                seconds(cfg.WorkerBootTimeout),
 		WorkerRPCTimeoutSeconds:                 seconds(cfg.WorkerRPCTimeout),
 		WorkerStopTimeoutSeconds:                seconds(cfg.WorkerStopTimeout),
@@ -551,6 +594,7 @@ func SettingsOf(cfg config.Config) Settings {
 		EnvoyURL:                                endpointOf(cfg.EnvoyURL),
 		NatsURLs:                                make([]string, len(cfg.NatsURLs)),
 		DispatchURL:                             endpointOf(cfg.DispatchURL),
+		DispatchTokenBroker:                     cfg.DispatchTokenBroker,
 		Projects:                                make(map[string]ProjectSettings, len(cfg.Projects)),
 		Gates:                                   GatesSettings{Design: append([]record.DesignStep{}, cfg.Gates.Steps()...)},
 		LingerHours:                             cfg.Linger.Hours(),
@@ -563,6 +607,8 @@ func SettingsOf(cfg config.Config) Settings {
 		PodUpdateRoundsPerMinute:                cfg.PodUpdateRoundsPerMinute,
 		ReviewRoundCap:                          cfg.ReviewRoundCap,
 		Controller:                              cfg.ControllerLaunch,
+		ControllerTurnBoundMinutes:              cfg.ControllerTurnBound.Minutes(),
+		ControllerSessionMaxAgeHours:            cfg.ControllerSessionMaxAge.Hours(),
 		Capabilities:                            CapabilitiesSettings{Decided: make(map[string]string, len(cfg.Capabilities.Decided))},
 		WorkerBackends:                          make(map[string]string, len(cfg.WorkerBackends)),
 		RoleConfigFiles:                         make(map[string][]string, len(cfg.RoleConfigFiles)),
@@ -585,6 +631,7 @@ func SettingsOf(cfg config.Config) Settings {
 			},
 			Experiments:     experimentsOf(project.Experiments),
 			ProductionCheck: project.ProductionCheckWord(),
+			DefaultSteps:    plan.Words(project.RunsByDefault()),
 			Deploys:         []DeploySettings{},
 		}
 		settings.Projects[key] = entry
@@ -694,13 +741,10 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 			Type:         string(block.Sandbox.Type),
 			CanaryIssues: stringsOf(block.Sandbox.CanaryIssues),
 		},
-		MemoryGuard: MemoryGuardSettings{IssuePods: MemoryGuardPodSettings{
-			Enabled:              block.MemoryGuard.IssuePods.Enabled,
-			ActPercent:           block.MemoryGuard.IssuePods.ActPercent,
-			FloorPercent:         block.MemoryGuard.IssuePods.FloorPercent,
-			WaitSeconds:          block.MemoryGuard.IssuePods.WaitSeconds,
-			IntervalMilliseconds: block.MemoryGuard.IssuePods.IntervalMilliseconds,
-		}},
+		MemoryGuard: MemoryGuardSettings{
+			IssuePods:     memoryGuardPodSettingsOf(block.MemoryGuard.IssuePods),
+			ControllerPod: memoryGuardPodSettingsOf(block.MemoryGuard.ControllerPod),
+		},
 		VolumeTrim: VolumeTrimSettings{
 			Enabled:         block.VolumeTrim.Enabled,
 			HighPercent:     block.VolumeTrim.HighPercent,
@@ -717,7 +761,7 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 		settings.AgentSecrets = &AgentSecretsSettings{URL: broker.URL, Audience: broker.Audience, TokenExpirySeconds: broker.TokenExpirySeconds, ExchangeAudience: broker.ExchangeAudience}
 	}
 	if plugins := block.Plugins; plugins != nil {
-		settings.Plugins = &PluginsSettings{PiLegion: pluginSourceOf(plugins.PiLegion), PiEnvoy: pluginSourceOf(plugins.PiEnvoy)}
+		settings.Plugins = &PluginsSettings{PiLegion: PluginSourceOf(plugins.PiLegion), PiEnvoy: PluginSourceOf(plugins.PiEnvoy)}
 	}
 	if microVM := block.Sandbox.MicroVM; microVM != nil {
 		settings.Sandbox.MicroVM = &MicroVMSettings{ComputeClass: microVM.ComputeClass, StorageClass: microVM.StorageClass, KeepVolume: microVM.KeepVolume}
@@ -734,6 +778,14 @@ func reservationSettingsOf(reservation config.Reservation) ReservationSettings {
 		CPU: reservation.CPU, CPURequest: reservation.CPURequest,
 		Memory: reservation.Memory, MemoryRequest: reservation.MemoryRequest,
 		EphemeralStorage: reservation.EphemeralStorage, EphemeralStorageRequest: reservation.EphemeralStorageRequest,
+	}
+}
+
+// memoryGuardPodSettingsOf is one pod kind's settled memory guard as the state shows it.
+func memoryGuardPodSettingsOf(guard config.MemoryGuardPodConfig) MemoryGuardPodSettings {
+	return MemoryGuardPodSettings{
+		Enabled: guard.Enabled, ActPercent: guard.ActPercent, FloorPercent: guard.FloorPercent,
+		WaitSeconds: guard.WaitSeconds, IntervalMilliseconds: guard.IntervalMilliseconds,
 	}
 }
 
@@ -767,7 +819,7 @@ func experimentsOf(experiments []config.Experiment) []ExperimentSettings {
 		}
 		for _, variant := range experiment.Variants {
 			entry.Variants = append(entry.Variants, VariantSettings{Name: variant.Name, Weight: variant.Weight,
-				ConfigFiles: stringsOf(variant.ConfigFiles), Instructions: variant.InstructionsPath})
+				ConfigFiles: stringsOf(variant.ConfigFiles), Instructions: variant.InstructionsPath, Plan: string(variant.Plan)})
 		}
 		declared = append(declared, entry)
 	}
@@ -775,14 +827,19 @@ func experimentsOf(experiments []config.Experiment) []ExperimentSettings {
 }
 
 // endpointOf is one address key's value as the state shows it: the scheme, the host and the path,
-// with the userinfo, where the loader has NATS and Envoy credentials live (`use URL userinfo or a
-// secret for credentials`), masked as `xxxxx@`. "" stays "" (`dispatch_url` may be unset); an
-// address that yields no scheme and host is `xxxxx` whole, never the raw string. The result is
-// composed from the parsed scheme, the userinfo mark, the host and EscapedPath, so a query or a
-// fragment never reaches the wire either: the loader refuses one on each of the four address keys,
-// and a plugin URL's pre-signed query (pluginSourceOf) is dropped here. runtime/sandbox's namedURL
-// is the same mask for a log line and keeps the host alone; this one keeps the path because a
-// setting is a value its reader acts on, where namedURL's result is only a name.
+// or, when the address carries userinfo, where the loader has NATS and Envoy credentials live (`use
+// URL userinfo or a secret for credentials`), the scheme, redact.URLWithCredentials in place of the
+// authority, and the path: nothing after the last "@" is shown, since a password holding an
+// unencoded "@" leaves its tail there, read as a host. An address with an "@" past its host
+// (natsurl.UserinfoPastHost), where a credential holding a "/", "?" or "#" written as the user
+// lands with its head read as the host, is its scheme and the mark alone, no path. "" stays ""
+// (`dispatch_url` may be unset); an address that yields no scheme and host is `xxxxx` whole,
+// never the raw string. The result is composed from the parsed scheme, the host or the mark, and
+// EscapedPath, so a query or a fragment never reaches the wire either: the loader refuses one on
+// each of the four address keys, and a plugin URL's pre-signed query (PluginSourceOf) is dropped
+// here. runtime/sandbox's namedURL is the same mask for a log line and keeps no path; this one
+// keeps the path because a setting is a value its reader acts on, where namedURL's result is only
+// a name.
 func endpointOf(address string) string {
 	if address == "" {
 		return ""
@@ -791,22 +848,53 @@ func endpointOf(address string) string {
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return "xxxxx"
 	}
-	endpoint := u.Scheme + "://"
-	if u.User != nil {
-		endpoint += "xxxxx@"
+	if natsurl.UserinfoPastHost(u) {
+		return u.Scheme + "://" + redact.URLWithCredentials
 	}
-	return endpoint + u.Host + u.EscapedPath()
+	if u.User != nil {
+		return u.Scheme + "://" + redact.URLWithCredentials + u.EscapedPath()
+	}
+	return u.Scheme + "://" + u.Host + u.EscapedPath()
 }
 
-// pluginSourceOf is one `runtime.kubernetes.plugins` source as the state shows it. The loader
+// PluginSourceOf is one `runtime.kubernetes.plugins` source as the state shows it, and as `legion
+// config check`'s plugins line and the boot's plugins log line print it. The loader
 // (internal/config/kubernetes.go, readPluginSource) admits an exact version, an absolute tarball
 // path, or an http(s) URL stored whole, so a private or pre-signed tarball URL carries its
 // credential in userinfo or in a query (`X-Amz-Signature`): the URL form, told by the loader's own
 // shape test, rides endpointOf, which masks the userinfo and drops the query and fragment; a
-// version and a path carry no credential and pass through unchanged, never `xxxxx`.
-func pluginSourceOf(source string) string {
-	if u, err := url.Parse(source); err == nil && u.IsAbs() && (u.Scheme == "http" || u.Scheme == "https") {
+// version and a path carry no credential and pass through unchanged, never `xxxxx`. The one "@"
+// the loader admits past a plugin URL's host is a path segment that is the plugins' scope
+// (runtime.PluginScope, a registry tarball URL's `/@sjawhar/pi-legion/-/…`): such a URL keeps its
+// path, where endpointOf, for which any "@" past the host is a credential's, would show the mark.
+func PluginSourceOf(source string) string {
+	u, err := url.Parse(source)
+	if err != nil || !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") {
+		return source
+	}
+	if !scopedOnly(u) {
 		return endpointOf(source)
 	}
-	return source
+	if u.User != nil {
+		return u.Scheme + "://" + redact.URLWithCredentials + u.EscapedPath()
+	}
+	return u.Scheme + "://" + u.Host + u.EscapedPath()
+}
+
+// scopedOnly reports whether u's every "@" past its host is a path segment that is the plugins'
+// scope, and at least one is: none in the query or the fragment, none elsewhere in the path.
+func scopedOnly(u *url.URL) bool {
+	if strings.Contains(u.RawQuery, "@") || strings.Contains(u.Fragment, "@") {
+		return false
+	}
+	scoped := false
+	for _, segment := range strings.Split(u.Path, "/") {
+		switch {
+		case segment == runtime.PluginScope:
+			scoped = true
+		case strings.Contains(segment, "@"):
+			return false
+		}
+	}
+	return scoped
 }

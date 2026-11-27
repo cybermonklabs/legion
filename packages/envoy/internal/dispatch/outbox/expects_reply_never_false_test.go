@@ -1,5 +1,7 @@
 package outbox
 
+//ci:reads packages/contracts/src/dispatch-api*.ts dispatchEventTypes globs ../../../../contracts/src/dispatch-api*.ts and reads each module the glob finds (the .test.ts files skips apart)
+
 import (
 	"encoding/json"
 	"fmt"
@@ -40,7 +42,9 @@ import (
 //     The read is of each file's syntax tree, so the constant named in a comment - as
 //     commentExpectsReply's and envelope()'s say what removes the workaround - is not a hit.
 func TestNoDispatchServerPathWritesExpectsReplyFalse(t *testing.T) {
+	t.Parallel()
 	t.Run("no envelope the outbox builds carries false", func(t *testing.T) {
+		t.Parallel()
 		types := dispatchEventTypes(t)
 		for _, eventType := range types {
 			for _, owner := range []struct {
@@ -53,6 +57,7 @@ func TestNoDispatchServerPathWritesExpectsReplyFalse(t *testing.T) {
 				}},
 			} {
 				t.Run(eventType+" "+owner.name, func(t *testing.T) {
+					t.Parallel()
 					event := owner.event
 					event.Type = eventType
 					event.CreatedAt = time.Now()
@@ -90,6 +95,7 @@ func TestNoDispatchServerPathWritesExpectsReplyFalse(t *testing.T) {
 	})
 
 	t.Run("no source under internal/dispatch names the value that marshals to false", func(t *testing.T) {
+		t.Parallel()
 		fileSet := token.NewFileSet()
 		err := filepath.WalkDir("..", func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {

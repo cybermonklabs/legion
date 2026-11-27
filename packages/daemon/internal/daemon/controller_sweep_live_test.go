@@ -9,7 +9,7 @@
 // reconciliation retried while the keeper launches the controller reads them, and the store holds
 // the controller's claim launching, as the supervisor stores it before the launch begins. What the
 // proof stands in for lies outside the sweep: the agent is a sleep stub (no model, Dispatch or
-// NATS), the App tokens are placeholders, and no repository is mapped.
+// NATS), the App tokens are placeholders, and no record names a repository.
 package daemon
 
 import (
@@ -77,6 +77,7 @@ type controllerSweepLive struct {
 // its volume once the claim is retired, and `deleted` for a sweep built without the fix (the
 // script's negative control), which must delete it.
 func TestTheControllerOrphanSweepLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	env := map[string]string{}
 	for _, name := range []string{"LEGION_E2E_KUBECONFIG", "LEGION_E2E_KUBE_CONTEXT", "LEGION_E2E_IMAGE", "LEGION_E2E_STREAM_HOST",

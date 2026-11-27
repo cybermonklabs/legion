@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"math"
 	"net"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -24,6 +23,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/pgdsn"
+
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
@@ -32,12 +33,16 @@ import (
 // turns on. The number is arbitrary and fixed: only agreement matters.
 const migrateLock int64 = 1208001
 
+// pingAfterIdle is how long a connection sits idle in the pool before an acquire pings it, which
+// is pgxpool's own default (pgx v5.13.0 pgxpool/pool.go:278-279). PoolConfig's ShouldPing keeps it
+// for every acquire but a bounded one, whose BEGIN is the check (Pool.BeginTx).
+const pingAfterIdle = time.Second
+
 // sessionResetBound bounds each step that ends apply's hold on a migration's connection: the reset
 // of the connection's session, and the close of a connection whose reset failed
-// (releaseMigrationConn). Five seconds, as for the state route's rollback (internal/api,
-// stateRollbackBound). Each step is one or two round trips to a server that has just answered. So
-// the bound stops only a wait for a server that no longer answers, and a longer bound would only
-// hold the boot.
+// (releaseMigrationConn). Five seconds. Each step is one or two round trips to a server that has
+// just answered. So the bound stops only a wait for a server that no longer answers, and a longer
+// bound would only hold the boot.
 const sessionResetBound = 5 * time.Second
 
 // idleBoundParam is the PostgreSQL setting that ends a connection sitting inside an open
@@ -88,7 +93,7 @@ type Store struct {
 func Open(ctx context.Context, dsn string) (*Store, error) {
 	config, err := PoolConfig(dsn)
 	if err != nil {
-		return nil, ConnectError(dsn, err)
+		return nil, pgdsn.ConnectError(DSNSetting, dsn, err)
 	}
 	if _, named := config.ConnConfig.RuntimeParams[idleBoundParam]; !named {
 		// Milliseconds with no unit, which is the unit this setting counts in: the one spelling
@@ -97,12 +102,12 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	}
 	raw, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
-		return nil, ConnectError(dsn, err)
+		return nil, pgdsn.ConnectError(DSNSetting, dsn, err)
 	}
 	pool := NewPool(raw)
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, ConnectError(dsn, err)
+		return nil, pgdsn.ConnectError(DSNSetting, dsn, err)
 	}
 	return &Store{pool: pool}, nil
 }
@@ -111,6 +116,16 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 // opens (registerStorableCodecs, its AfterConnect). Open builds the daemon's pool with it, and a
 // test that builds a pool of its own does too (testpg.ClonePool), so what the test writes passes
 // the rule the daemon's writes pass.
+//
+// It gives a bounded transaction's connection the bounds BoundAfterAcquire states. A dial such a
+// transaction waits for runs under the transaction's write bound: BeforeConnect lowers the connect
+// timeout pgxpool gives every dial (two minutes where dsn names none) to it, reading the bound
+// from the dial's context, which keeps the values of the acquiring one (puddle's constructor
+// context). And it pings no connection a bounded transaction is handed: that transaction's BEGIN,
+// under its write bound, is the check, and Pool.BeginTx replaces a connection the BEGIN finds the
+// server closed, as the ping would. Without these a database that stops answering in the middle of
+// a dial or a ping held such a transaction for the whole of its wait in the pool's queue. Every
+// other connection keeps pgxpool's own dial timeout and its ping after pingAfterIdle.
 //
 // It refuses a dsn whose default_query_exec_mode is exec or simple_protocol. The codec rule picks
 // the text rule or the JSON rule by the type of each parameter, and pgx learns that type from the
@@ -131,6 +146,15 @@ func PoolConfig(dsn string) (*pgxpool.Config, error) {
 		mode = "simple_protocol"
 	default:
 		config.AfterConnect = registerStorableCodecs
+		config.BeforeConnect = func(ctx context.Context, connConfig *pgx.ConnConfig) error {
+			if bound := afterAcquireOf(ctx); bound != nil && bound.write < connConfig.ConnectTimeout {
+				connConfig.ConnectTimeout = bound.write
+			}
+			return nil
+		}
+		config.ShouldPing = func(ctx context.Context, params pgxpool.ShouldPingParams) bool {
+			return afterAcquireOf(ctx) == nil && params.IdleDuration > pingAfterIdle
+		}
 		return config, nil
 	}
 	return nil, fmt.Errorf("default_query_exec_mode=%s is refused: the store's text rule needs the type "+
@@ -138,14 +162,9 @@ func PoolConfig(dsn string) (*pgxpool.Config, error) {
 		"and describe_exec", mode)
 }
 
-// ConnectError is a failure to reach the Postgres dsn names as an operator reads it: the address
-// it points at and the driver's detail, never dsn's password (connectError). Every connection Legion
-// opens reports its refusal this way, the daemon's own and Oh My Pi's session database's
-// (internal/ompsessions).
-func ConnectError(dsn string, err error) error {
-	address, password := target(dsn)
-	return &connectError{address: address, password: password, err: err}
-}
+// DSNSetting names the setting the daemon's own DSN comes from, as Open's refusal of a DSN pgx
+// cannot parse names it (pgdsn.ConnectError).
+const DSNSetting = "postgres_dsn (or LEGION_POSTGRES_DSN)"
 
 // OpenRetryable reports whether err, an error Open returned, is one the next attempt to open the
 // store can clear: the database gave no answer, or it answered with a code that tells the client
@@ -153,11 +172,11 @@ func ConnectError(dsn string, err error) error {
 // list, in this order, and never its text:
 //
 //   - A *pgconn.PgError anywhere in the chain — inside the *pgconn.ConnectError pgx wraps a refused
-//     connection in, and inside connectError — is the server's answer. A code of class 08
-//     (connection exception) can clear, and so can 53300 (too many connections), 57P01 (admin
-//     shutdown), 57P02 (crash shutdown) and 57P03 (cannot connect now). Every other code is an
-//     answer the next attempt gets again: a refused password (28P01), a connection pg_hba.conf
-//     does not admit (28000), a database that does not exist (3D000).
+//     connection in, and inside pgdsn.ConnectError's error — is the server's answer. A code of
+//     class 08 (connection exception) can clear, and so can 53300 (too many connections), 57P01
+//     (admin shutdown), 57P02 (crash shutdown) and 57P03 (cannot connect now). Every other code
+//     is an answer the next attempt gets again: a refused password (28P01), a connection
+//     pg_hba.conf does not admit (28000), a database that does not exist (3D000).
 //   - A *pgconn.ParseConfigError is a DSN pgx cannot read, which no attempt changes.
 //   - A TLS failure is not tried again: a certificate the client cannot verify, a peer that does
 //     not answer in TLS (tls.RecordHeaderError), and a TLS alert, on the handshake or on a later
@@ -225,18 +244,6 @@ func (s *Store) Pool() *Pool {
 	return s.pool
 }
 
-// Tx runs fn inside one transaction: committed when fn returns nil, rolled back
-// when it does not, and fn's own error is what the caller gets back.
-func (s *Store) Tx(ctx context.Context, fn func(pgx.Tx) error) error {
-	return pgx.BeginFunc(ctx, s.pool, fn)
-}
-
-// BeginTx begins a caller-owned transaction. The API uses it for its one read-only state
-// projection transaction; workflow intake uses Tx for its commit-or-rollback boundary.
-func (s *Store) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
-	return s.pool.BeginTx(ctx, options)
-}
-
 // Migrate applies every embedded migration this database has not recorded, in
 // version order, and reports how many it applied. A migration and its
 // schema_version row commit together, so a half-applied schema is not a state
@@ -271,7 +278,7 @@ func (s *Store) migrate(ctx context.Context, all []migrations.Migration) (int, e
 // one of the numbered migrations, or the 14-digit UTC timestamp of a migration
 // added since — and 0 for a database no daemon has migrated yet.
 func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
-	return schemaVersion(ctx, s.pool)
+	return ReadOnly(ctx, s.pool, "read schema_version", schemaVersion)
 }
 
 // SchemaVersionTx reads the schema version through the caller's transaction.
@@ -279,8 +286,8 @@ func (s *Store) SchemaVersionTx(ctx context.Context, tx pgx.Tx) (int, error) {
 	return schemaVersion(ctx, tx)
 }
 
-func schemaVersion(ctx context.Context, db queryRower) (int, error) {
-	recorded, err := schemaVersionExists(ctx, db)
+func schemaVersion(ctx context.Context, tx pgx.Tx) (int, error) {
+	recorded, err := schemaVersionExists(ctx, tx)
 	if err != nil {
 		return 0, err
 	}
@@ -291,7 +298,7 @@ func schemaVersion(ctx context.Context, db queryRower) (int, error) {
 	// has, so a connection that read the version before a timestamped migration
 	// widened it is not left with a cached plan whose result type changed.
 	var version int
-	if err := db.QueryRow(ctx, "select coalesce(max(version), 0)::bigint from schema_version").Scan(&version); err != nil {
+	if err := tx.QueryRow(ctx, "select coalesce(max(version), 0)::bigint from schema_version").Scan(&version); err != nil {
 		return 0, fmt.Errorf("read schema_version: %w", err)
 	}
 	return version, nil
@@ -302,10 +309,12 @@ func schemaVersion(ctx context.Context, db queryRower) (int, error) {
 // out; a row with no stopped_at is a boot that never shut down.
 func (s *Store) RecordBoot(ctx context.Context, project string, at time.Time) (int64, error) {
 	var id int64
-	err := s.pool.QueryRow(ctx,
-		"insert into daemon_boot (project, started_at) values ($1, $2) returning id",
-		project, at,
-	).Scan(&id)
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			"insert into daemon_boot (project, started_at) values ($1, $2) returning id",
+			project, at,
+		).Scan(&id)
+	})
 	if err != nil {
 		return 0, fmt.Errorf("record the boot of %s: %w", project, err)
 	}
@@ -315,11 +324,16 @@ func (s *Store) RecordBoot(ctx context.Context, project string, at time.Time) (i
 // StopBoot stamps the end of one boot. An id no row carries is refused rather
 // than ignored: the caller is stamping a boot that was never recorded.
 func (s *Store) StopBoot(ctx context.Context, id int64, at time.Time) error {
-	tag, err := s.pool.Exec(ctx, "update daemon_boot set stopped_at = $2 where id = $1", id, at)
+	var found bool
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, "update daemon_boot set stopped_at = $2 where id = $1", id, at)
+		found = tag.RowsAffected() != 0
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("stop boot %d: %w", id, err)
 	}
-	if tag.RowsAffected() == 0 {
+	if !found {
 		return fmt.Errorf("stop boot %d: no boot has that id", id)
 	}
 	return nil
@@ -329,7 +343,15 @@ func (s *Store) StopBoot(ctx context.Context, id int64, at time.Time) error {
 // them — the two durable facts a restart is proved by. A project that never
 // booted reads 0 and the zero time.
 func (s *Store) Boots(ctx context.Context, project string) (int, time.Time, error) {
-	return boots(ctx, s.pool, project)
+	type counted struct {
+		count int
+		first time.Time
+	}
+	read, err := ReadOnly(ctx, s.pool, "read the boots of "+project, func(ctx context.Context, tx pgx.Tx) (counted, error) {
+		count, first, err := boots(ctx, tx, project)
+		return counted{count: count, first: first}, err
+	})
+	return read.count, read.first, err
 }
 
 // BootsTx reads boot history through the caller's transaction.
@@ -337,10 +359,10 @@ func (s *Store) BootsTx(ctx context.Context, tx pgx.Tx, project string) (int, ti
 	return boots(ctx, tx, project)
 }
 
-func boots(ctx context.Context, db queryRower, project string) (int, time.Time, error) {
+func boots(ctx context.Context, tx pgx.Tx, project string) (int, time.Time, error) {
 	var count int
 	var firstBootAt *time.Time
-	err := db.QueryRow(ctx,
+	err := tx.QueryRow(ctx,
 		"select count(*), min(started_at) from daemon_boot where project = $1", project,
 	).Scan(&count, &firstBootAt)
 	if err != nil {
@@ -500,71 +522,10 @@ func versionRecorded(ctx context.Context, tx pgx.Tx, version int) (bool, error) 
 	return recorded, nil
 }
 
-// queryRower is the part of a pool and of a transaction this package reads
-// through.
-type queryRower interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
-// rowsQuerier is the part of a pool and of a transaction this package reads many rows through.
-// It is its own interface rather than queryRower, which carries QueryRow alone and so cannot
-// carry a read of more than one row; every read of rows in this package — claims, pod resumes —
-// takes this one, because the shape is the same wherever the rows come from.
-type rowsQuerier interface {
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-}
-
-// execer is the part of a pool and of a transaction this package writes through.
-type execer interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-}
-
-func schemaVersionExists(ctx context.Context, db queryRower) (bool, error) {
+func schemaVersionExists(ctx context.Context, tx pgx.Tx) (bool, error) {
 	var exists bool
-	if err := db.QueryRow(ctx, "select to_regclass('schema_version') is not null").Scan(&exists); err != nil {
+	if err := tx.QueryRow(ctx, "select to_regclass('schema_version') is not null").Scan(&exists); err != nil {
 		return false, fmt.Errorf("look for schema_version: %w", err)
 	}
 	return exists, nil
-}
-
-// connectError says where the daemon could not reach Postgres without saying
-// how it would have got in: an operator reads this in a boot refusal, and a
-// DSN's password has no business in a log line.
-type connectError struct {
-	address  string
-	password string
-	err      error
-}
-
-func (e *connectError) Error() string {
-	return fmt.Sprintf("connect to Postgres at %s: %s", e.address, redactPassword(e.err.Error(), e.password))
-}
-
-// redactPassword hides a password where a driver would print one: after the
-// password= of a keyword DSN, and between the : and @ of a URL. Only in those
-// positions — a password equal to the user or the database name is the
-// ordinary devbox DSN (postgres://legion:legion@…), and blanking every
-// occurrence would hide the fields an operator reads to diagnose a refusal.
-func redactPassword(detail, password string) string {
-	if password == "" {
-		return detail
-	}
-	detail = strings.ReplaceAll(detail, "password="+password, "password=xxxxx")
-	return strings.ReplaceAll(detail, ":"+password+"@", ":xxxxx@")
-}
-
-func (e *connectError) Unwrap() error { return e.err }
-
-// target reads the address a DSN points at and the password it carries. pgx
-// understands both the URL and the keyword/value forms; url.Parse answers for a
-// DSN pgx itself rejects, so even then the operator learns the host.
-func target(dsn string) (string, string) {
-	if config, err := pgconn.ParseConfig(dsn); err == nil && config.Host != "" {
-		return net.JoinHostPort(config.Host, strconv.Itoa(int(config.Port))), config.Password
-	}
-	if parsed, err := url.Parse(dsn); err == nil && parsed.Host != "" {
-		password, _ := parsed.User.Password()
-		return parsed.Host, password
-	}
-	return "the configured Postgres", ""
 }

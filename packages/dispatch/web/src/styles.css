@@ -24,6 +24,26 @@
    `not-refused:hover:` never lights a refused button, and no look has to be stated twice. */
 @custom-variant refused (&:is(:disabled, [aria-disabled="true"]));
 
+/* The end room of a scroller under the foot's floats (`hooks/useFootInset.ts` says what that is
+   and how a scroller takes it). Not inherited: a scroller holding no room of its own reads 0,
+   never the room of a scroller around it. */
+@property --foot-clearance {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+/* The spacer at the end of the content of a scroller marked `after`. A pseudo-element inherits
+   from its own element, and a property registered as not inherited reaches it only by an explicit
+   `inherit`: without it the spacer reads the initial 0px, whatever room its scroller holds. */
+[data-foot-clearance="after"]::after {
+  --foot-clearance: inherit;
+  content: "";
+  display: block;
+  flex: none;
+  height: var(--foot-clearance);
+}
+
 /* Dispatch has no theme toggle: every surface follows the OS `prefers-color-scheme`, which is
    exactly Tailwind v4's default `dark:` variant (a `@media (prefers-color-scheme: dark)` query,
    built into `@import "tailwindcss"` with no `@custom-variant` override here). Components import
@@ -606,6 +626,14 @@ html:has([data-issue-page]) {
   max-width: none;
 }
 
+/* A priority's description is drawn in the documents' editor (`PriorityDescription.tsx`), but it
+   is a short field of the priority and not a whole document, so it does not take a document's
+   24rem. The editor library's own `min-height` is unlayered, so a utility class on the
+   description cannot lower it; this rule (0,4,0) outranks the one above (0,3,0). */
+.dispatch-doc.dispatch-description .milkdown .editor {
+  min-height: 6rem;
+}
+
 /* A document's own headings are content, not the page's identity. `@legion/proof-editor` sizes
    `h1` at 2em, so an issue specification that opens with a heading repeating the issue title
    printed that title twice, the second time at nearly twice the size of the page title 40px
@@ -822,6 +850,58 @@ html:has([data-issue-page]) {
   margin-bottom: 0;
 }
 
+/* A block of the new issue page that takes typing says so: a row of the outline marked
+   `[data-editable]`, whose node takes typing (`useNodeEditing.ts`'s `nodeEditable`), and the box a
+   row's editor scrolls in, of the cue's one class, `dispatch-edit-cue` (`StagedDocument.tsx`'s
+   `EditorBox`), while the document in it takes typing, its article (`ProofDocument.tsx`'s
+   `.dispatch-doc`) marked `data-read-only="false"`. Under a pointer that hovers it draws the text
+   cursor and the page's faint pane behind it - for a row, behind its card, where its focus is
+   drawn too - and while the editor in it holds the focus, a 1 px rule in the page's ink, the rule
+   the page's own boxes for words draw while they hold the caret (`theme/classes.ts`'s `pageField`
+   and `pageComposer`). Both colours are the palette's, so each follows the scheme. The rule is an
+   outline 1 px inside the box, not a border: it takes no room, so the box keeps the height the row
+   holds it to and its words their width; no ancestor's overflow cuts it; and an outline is painted
+   over the box's content, where an inset shadow is painted under it and a code block scrolled to
+   the box's edge would cover it. Only a pointer that hovers draws the hover's part: a tap on a
+   touch screen would leave the tint on the row it touched. A node that takes no typing - a result,
+   an ask, a comment, a message, any block of a closed issue - carries no mark and draws neither,
+   and neither does the box of a document the editor admits read-only: a closed issue's, or one
+   this build's schema is out of date for. The box's `:has()` is cheap: its subject is the one
+   editor box the page draws, not `html`, so a change of what it matches recalculates the style of
+   that box and what it holds alone, where an `html:has()` ancestor recalculated the whole
+   document's; and what it looks for, one class and one attribute of the article, changes only as
+   the issue closes or the document's admission does. */
+@media (hover: hover) {
+  [data-issue-page] [data-node-row][data-editable]:hover,
+  [data-issue-page] .dispatch-edit-cue:has(.dispatch-doc[data-read-only="false"]):hover {
+    cursor: text;
+  }
+
+  [data-issue-page] [data-node-row][data-editable]:hover > [data-node-card],
+  [data-issue-page] .dispatch-edit-cue:has(.dispatch-doc[data-read-only="false"]):hover {
+    background-color: var(--color-page-pane);
+  }
+}
+
+[data-issue-page] .dispatch-edit-cue:has(.dispatch-doc[data-read-only="false"]):focus-within {
+  outline: 1px solid var(--color-page-ink);
+  outline-offset: -1px;
+}
+
+/* A control inside a block that takes typing keeps the cursor it had, since it takes none: the
+   text cursor above would reach it by inheritance. The rule is in the base layer, under
+   Tailwind's utilities, so a control's own cursor class (`cursor-pointer`) still wins. */
+@layer base {
+  [data-issue-page]
+    :is(
+      [data-node-row][data-editable],
+      .dispatch-edit-cue:has(.dispatch-doc[data-read-only="false"])
+    )
+    :is(button, select, summary, [role="button"]) {
+    cursor: auto;
+  }
+}
+
 /* A decision block is a card inside prose. Its first/last child would otherwise carry the
    prose paragraph margins into the card (a 20px gap under a 12px header). The repeated attribute
    selector lifts these rules to (0,5,0): a decision inside a reply drawn in another decision's
@@ -919,12 +999,30 @@ html:has([data-issue-page]) {
   display: none;
 }
 
-/* On touch screens the library docks the selection bar at the viewport bottom.
-   An expanded margin sheet owns that space, so it suppresses the bar. */
+/* While a margin sheet is expanded, the editor's selection bar stands on the sheet's top edge
+   rather than anywhere over it. The bar is `position: fixed` (`@legion/proof-editor`'s lib.css,
+   `z-index: 190`): beside the selection, or docked at the foot of a touch screen. Either place
+   can be the sheet's, which holds the foot and up to 85dvh of the screen - and today's issue
+   header, tall at a phone's width, pushes the document down, so a selection in it sits low. The
+   bar then took the taps meant for the sheet's own controls (`e2e/phone.e2e.ts`'s trap rows,
+   `e2e/margin-composer-hold.e2e.ts`). Hiding it is not the answer: a reader does select document
+   text while the review panel is open, and the bar's Comment is how that selection reaches the
+   margin's view (`e2e/deep-links.e2e.ts`). So while the panel is open the bar is docked, in the
+   one place that is neither over the sheet nor off the screen: 12 px above the sheet's top edge,
+   by the height the sheet publishes (`--margin-sheet-height`,
+   `features/margin/MarginSheet.tsx`). The sheet is a modal dialog, so it is no element of the
+   foot's layers (`hooks/useFootInset.ts`) and publishes its own height for this one reader.
+   `!important` beats the inline `top` and `left` the library writes beside a selection; the
+   docked styling is the library's own, for the bar that is already docked. */
 @media (max-width: 1279px) {
-  body:has([data-testid="margin-sheet"][data-expanded="true"])
-    .dispatch-action-bar[data-touch="true"] {
-    display: none;
+  body:has([data-testid="margin-sheet"][data-expanded="true"]) .dispatch-action-bar {
+    /* biome-ignore lint/complexity/noImportantStyles: the library writes `top` inline beside a selection, and only this beats it. */
+    top: auto !important;
+    bottom: calc(var(--margin-sheet-height, 0px) + 12px);
+    /* biome-ignore lint/complexity/noImportantStyles: the library writes `left` inline beside a selection, and only this beats it. */
+    left: 50% !important;
+    transform: translateX(-50%);
+    max-width: calc(100vw - 24px);
   }
 }
 
@@ -1031,7 +1129,7 @@ html:has([data-issue-page]) {
 }
 
 /* A block or a document a node's words cite is a chip in place, named as a tie's chip is
-   (`RowText.tsx`'s `chipName`, part G's R4): 12 px, in the row's muted grey, as the chips at the
+   (`row-references.ts`'s `rowReferenceWords`, part G's R4): 12 px, in the row's muted grey, as the chips at the
    end of the words are drawn. */
 [data-node-words] a[data-row-chip] {
   font-size: 12px;
@@ -1100,6 +1198,15 @@ html:has([data-issue-page]) {
   color: var(--tw-prose-links);
   font-weight: 500;
   text-decoration: underline;
+}
+
+/* A reference whose target Dispatch answered does not exist is its writer's words with no link
+   (`RefLink`'s `unlinkMissingReference`), so it reads as the text around it, not as Typography's
+   `a`. */
+.dispatch-markdown [data-dispatch-missing] {
+  color: inherit;
+  font-weight: inherit;
+  text-decoration: none;
 }
 
 /* A body's drawn Mermaid diagram (features/refs/mermaid-diagrams.ts). The SVG's inline style reads

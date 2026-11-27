@@ -31,17 +31,17 @@ const defaultBranchTTL = 10 * time.Minute
 //
 // A caller hands it a name a record or Dispatch carries, which after a configured rename's
 // transfer is the name the repository moved away from, on an installation that no longer covers
-// it. So the read is made of the repository GitHub holds that one under now (repos, the project's
-// mapping, through repositories.serving): the token is minted for that repository's owner and the
-// call addresses it. The mapping is read here, where the token is minted, so that no caller hands
-// an owner in and none can forget. A repository the mapping serves is its own serving repository,
-// so its read is the read it always was, and a nil mapping maps nothing — which only a test
-// passes, since the boot builds a mapping whatever the deployment configures (newRepositories, in
-// daemon.go's plan).
+// it. So the read is made of the repository GitHub holds that one under now (repos, the daemon's
+// repository state, through repositories.serving): the token is minted for that repository's
+// owner and the call addresses it. The rename rule is read here, where the token is minted, so
+// that no caller hands an owner in and none can forget. A repository the rule leaves as it is is
+// its own serving repository, so its read is the read it always was, and a nil repository state
+// serves every name as it is — which only a test passes, since the boot builds one whatever the
+// deployment configures (newRepositories, in daemon.go's plan).
 //
 // What is kept is keyed by the name the caller asked for, never the served one, since that is the
 // name the caller holds and asks Kept for; the answer itself carries GitHub's own spelling of the
-// repository it served, which is the name the record and the mapping compare against the pair.
+// repository it served, which is the name a record compares against the pair.
 type defaultBranches struct {
 	tokens    appauth.Tokens
 	repos     *repositories
@@ -49,8 +49,8 @@ type defaultBranches struct {
 	ttl       time.Duration
 	now       func() time.Time
 	// onHold, when set, is told of each read GitHub refused for its rate limit that Named answered
-	// from the branch it held instead (the workflow's heldThroughLimit, which says so and reads the
-	// mapping again once the limit has passed).
+	// from the branch it held instead (the workflow's heldThroughLimit, which says so and has the
+	// refresher read it again once the limit has passed).
 	onHold func(read limitedRead, held ghbranch.Repository)
 
 	mu      sync.Mutex
@@ -87,9 +87,9 @@ func newDefaultBranches(tokens appauth.Tokens, repos *repositories, githubAPI st
 // A read GitHub refuses for its rate limit (defaultBranchLimit) is answered from the last read of
 // repo, however old, when there is one: that answer then stands until the limit ends, so nothing
 // reads repo inside it, and onHold is told. The limit says nothing about the repository, so every
-// caller — an admission's preparation, the boot's reconciliation of its listing, a read of the
-// mapping — is served on the branch the daemon last read or held rather than failed by it. With no
-// read of repo held, the refusal is returned.
+// caller — an admission's preparation, a launch's, the refresher's — is served on the branch the
+// daemon last read or held rather than failed by it. With no read of repo held, the refusal is
+// returned.
 func (d *defaultBranches) Named(ctx context.Context, repo ghrepo.Repository) (ghbranch.Repository, error) {
 	key := strings.ToLower(repo.String())
 	d.mu.Lock()
@@ -120,7 +120,7 @@ func (d *defaultBranches) Named(ctx context.Context, repo ghrepo.Repository) (gh
 		if answer, wait, limited := defaultBranchLimit(err); limited {
 			until := d.now().Add(wait)
 			d.read[key] = defaultBranchRead{repository: kept.repository, at: until.Add(-d.ttl)}
-			held = &limitedRead{mapped: mappedRepository{Repo: repo}, answer: answer, err: err, wait: wait, until: until}
+			held = &limitedRead{repo: repo, answer: answer, err: err, wait: wait, until: until}
 			repository, err = kept.repository, nil
 		}
 	}

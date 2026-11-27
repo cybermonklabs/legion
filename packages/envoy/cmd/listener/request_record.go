@@ -40,6 +40,12 @@ const (
 	// two say different things about the claim behind it.
 	outcomeRoleUnclaimed requestOutcome = "role_unclaimed"
 	outcomeRoleLapsed    requestOutcome = "role_lapsed"
+	// outcomeRoleNoSourceSession belongs to the publish route alone: a role send that names no
+	// source session, to a role with no live holder, answered 404 with nothing kept, because a kept
+	// copy that expired would reach no sender (roleSend.noHolder). It is neither of the two above,
+	// which a send with keep: false or a keep that failed gets, so a log filter counts these
+	// refusals apart; the body's reason still names the state the resolution found.
+	outcomeRoleNoSourceSession requestOutcome = "role_no_source_session"
 	// outcomeRoleClaimUnreadable is the publish route's role claim record that the bus answered
 	// and no read can decode (store.ErrMalformedRoleClaim): a 500, not outcomeBusUnavailable,
 	// since the bus did answer and retrying reads the same record.
@@ -56,12 +62,34 @@ const (
 	// (bus.ErrStreamFull). It is not outcomeBusUnavailable: the bus answered, that the stream is
 	// full, so an operator reading the record looks at the stream's size, not for an outage.
 	outcomeStreamFull requestOutcome = "stream_full"
+	// outcomeStoredCopyUnreadable is a send, a topic publish or a role send whose message id the
+	// stream already knows, when the listener read no stored copy to answer (errStoredCopyUnread
+	// names the cases): the 503 with Retry-After: 1 under storedCopyUnreadablePrefix, and not
+	// outcomeBusUnavailable: the bus answered.
+	outcomeStoredCopyUnreadable requestOutcome = "stored_copy_unreadable"
 	// outcomeSenderRateLimited is a send or publish of an agent session whose count under the
 	// operator's sender limit was empty (sender_limit.go), answered 429 before the route read a
 	// session, resolved a role, reported a wake or stored anything, so no other record holds the
 	// message. It is not the 429 apiauth.go answers a broker token's check with, whose reason is
 	// rate_limited: this one is about how fast a session sends, not about its credential.
 	outcomeSenderRateLimited requestOutcome = "sender_rate_limited"
+	// outcomeNotInProject belongs to the publish route of an edge listener alone: a topic that is
+	// no role subject of the token's projects, refused 403 topic_not_published (project_scope.go,
+	// edgePublishRefusal). A send to a session of another project is outcomeNoLiveSession, since
+	// it is answered as one.
+	outcomeNotInProject requestOutcome = "not_in_project"
+	// outcomeEarlierAttemptInProcess is a send, a topic publish or a role send whose request
+	// ended while the stream was still storing an earlier publish or forward under the same
+	// message id (errEarlierAttemptInProcess), answered 503 maybe_stored. It is not
+	// outcomeBusUnavailable, nor a role send's outcomeDeliveryFailed: the bus answered, that the
+	// earlier attempt is in process, and the stream may store it yet.
+	outcomeEarlierAttemptInProcess requestOutcome = "earlier_attempt_in_process"
+	// outcomeSubjectNotDeployed is a send or publish whose message the bus refused before it sent
+	// anything, because the deployed stream does not capture a topic this build stores
+	// (bus.ErrSubjectNotDeployed, notSent), answered 503 under notSentPrefix. It is not
+	// outcomeBusUnavailable: the bus was never asked, so an operator reading the record looks at the
+	// stream's subjects, a hub move's quiesce or an edit of them, not for an outage.
+	outcomeSubjectNotDeployed requestOutcome = "subject_not_deployed"
 )
 
 // requestRecord is this listener's record of one inbound send or publish, and the only way either
@@ -91,8 +119,13 @@ type requestRecord struct {
 	lane    string
 	// item is the envelope the handler built, taken by pointer rather than copied, and nil on a
 	// request refused before the envelope exists (an undecodable body): that request still gets
-	// its line, with the envelope's four fields empty rather than no line at all.
+	// its line, with the envelope's four fields empty rather than no line at all. A route that
+	// answers a copy another request stored keeps the envelope it built in asked, whose source,
+	// source_session and payload_summary the line names, and that copy's event_id in held, which
+	// the line names whatever the answer carries (answerStored).
 	item   *contracts.Envelope
+	asked  *contracts.Envelope
+	held   string
 	holder string
 	// charge is the message's take from its sender's count (senderLimit.admit), nil for a message
 	// the limit does not count, and refused the refusal of a message whose count was empty. The
@@ -134,12 +167,17 @@ func (rec *requestRecord) refuseWith(w http.ResponseWriter, status int, outcome 
 // status it wrote implies: 413 is the caller's own oversized message, 400 the subject or key NATS
 // will not take however often it is sent, 403 the publish this listener's own grant denies, and
 // anything else the bus not answering. The status is read back from the write rather than
-// classified a second time here, so the pair cannot drift, with one exception: a full stream
-// (bus.ErrStreamFull) shares its 503 with the bus not answering, so the error tells it apart.
+// classified a second time here, so the pair cannot drift, with four exceptions that share their
+// 503 with the bus not answering, so the error tells them apart: a full stream (bus.ErrStreamFull),
+// a stored copy that could not be read back (errStoredCopyUnread), a request that ended while an
+// earlier publish under its message id was still in process (earlierAttemptInProcess), and a
+// message the bus refused before it sent anything (notSent).
 func (rec *requestRecord) refuseBusUnavailable(w http.ResponseWriter, err error) {
 	status := writeBusUnavailable(w, err)
 	outcome := outcomeBusUnavailable
 	switch {
+	case errors.Is(err, errStoredCopyUnread):
+		outcome = outcomeStoredCopyUnreadable
 	case errors.Is(err, bus.ErrStreamFull):
 		outcome = outcomeStreamFull
 	case status == http.StatusRequestEntityTooLarge:
@@ -148,6 +186,10 @@ func (rec *requestRecord) refuseBusUnavailable(w http.ResponseWriter, err error)
 		outcome = outcomeInvalidRequest
 	case status == http.StatusForbidden:
 		outcome = outcomePublishDenied
+	case earlierAttemptInProcess(err):
+		outcome = outcomeEarlierAttemptInProcess
+	case notSent(err):
+		outcome = outcomeSubjectNotDeployed
 	}
 	rec.write(status, outcome)
 }
@@ -174,6 +216,18 @@ func (rec *requestRecord) refuseRoleHolder(w http.ResponseWriter, role string, r
 	rec.write(http.StatusNotFound, outcome)
 }
 
+// refuseRoleNoSourceSession answers a role send that names no source session, to a role with no
+// live holder, with the 404 refuseRoleHolder writes (roleHolderRefusal), whose error also says that
+// nothing was kept and why (noSourceSessionNotKept), and records it under
+// outcomeRoleNoSourceSession, carrying a lapsed holder as refuseRoleHolder does.
+func (rec *requestRecord) refuseRoleNoSourceSession(w http.ResponseWriter, role string, result roles.Resolution) {
+	refusal := roleHolderRefusal(role, result)
+	refusal.Error += noSourceSessionNotKept
+	writeJSON(w, http.StatusNotFound, refusal)
+	rec.holder = result.Holder
+	rec.write(http.StatusNotFound, outcomeRoleNoSourceSession)
+}
+
 // refuseSenderRateLimited answers a message whose sender's count was empty (senderLimit.take)
 // with the 429: Retry-After and the body's retry_after_seconds name the same whole seconds,
 // until the count holds one message again. It records the request under outcomeSenderRateLimited
@@ -185,11 +239,19 @@ func (rec *requestRecord) refuseSenderRateLimited(w http.ResponseWriter, refusal
 }
 
 // write emits the one line, INFO for a request this listener took and WARN for one it refused.
+// Its event_id is the envelope the request was answered with (item), or the stored copy a route
+// answered for it (held), and its source, source_session and payload_summary are the request's own
+// (asked, where a route answered a copy another request stored), so a repeat of another sender's
+// key is logged as who made it.
 func (rec *requestRecord) write(status int, outcome requestOutcome) {
 	var eventID, source, sourceSession, payloadSummary string
 	if rec.item != nil {
 		eventID, source = rec.item.EventID, rec.item.Source
 		sourceSession, payloadSummary = rec.item.SourceSession, rec.item.PayloadSummary
+	}
+	if rec.asked != nil {
+		eventID = rec.held
+		source, sourceSession, payloadSummary = rec.asked.Source, rec.asked.SourceSession, rec.asked.PayloadSummary
 	}
 	attrs := make([]slog.Attr, 0, 9)
 	attrs = append(attrs,

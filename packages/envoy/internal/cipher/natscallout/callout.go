@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,9 +27,6 @@ const (
 	queueGroup = "envoy-auth"
 	// serverXKeyHeader carries the server's curve key on a request it sealed to the service's.
 	serverXKeyHeader = "Nats-Server-Xkey"
-	// globalAccount is the account every admitted user is placed in: the hub keeps one, the
-	// global account, and its streams and every static user's grant live there.
-	globalAccount = "$G"
 	// connectionName is the name the service's own connection carries in the server's listings.
 	connectionName = "envoy-broker-callout"
 )
@@ -136,8 +132,12 @@ type Settings struct {
 	// seals each request to, read by nkeys.FromSeed, which derives the curve key a curve seed
 	// names (nkeys.FromCurveSeed).
 	SeedFile, IssuerSeedFile, XKeySeedFile string
-	// Services are the services it admits by platform identity (ParseServices).
-	Services []ServiceEntry
+	// Services are the services it admits by platform identity (config.NATSCallout.Services).
+	Services []config.NATSService
+	// Account is the hub account every user it admits is placed in, the audience of each user
+	// JWT it answers (BROKER_NATS_ACCOUNT, config.ParseNATSAccount): the global account, $G, when
+	// empty.
+	Account string
 }
 
 // Service is the running auth service: one connection to the hub, subscribed to the authorization
@@ -224,7 +224,10 @@ func (s *Service) beatWhileTurning() {
 // once it has not, and 200 when service answers nil, a broker that runs no auth service or has
 // not started it yet, since nothing then can stall. A liveness probe that reads the status kills a
 // replica whose loop has stalled: its connection to the hub then resets and it leaves the queue
-// group, where a stalled replica would keep being sent requests it never answers.
+// group, where a stalled replica would keep being sent requests it never answers. It reads
+// nothing of that connection: a replica whose hub is away or refuses it stays live and keeps
+// redialling (Start), since a probe that killed it would only start the next replica in the same
+// place.
 func Livez(service func() *Service) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if s := service(); s != nil {
@@ -239,19 +242,24 @@ func Livez(service func() *Service) http.Handler {
 
 // decideFunc is how the service decides a request: Decide, unless a test replaces it to hand the
 // answer a grant of its own.
-type decideFunc func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error)
+type decideFunc func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error)
 
 // Start connects to the hub as the service's own user and answers every authorization request it
-// is sent, in the replicas' queue group, until Close. It reads the three seeds first, refusing a
-// file that is unreadable or holds a seed of the wrong kind (a user, an account, a curve key) by
-// the setting's own name and never the seed. The hub need not answer yet: the connection is made
-// in the background and retried, so a hub that is down or restarting when the broker starts is
-// answered once it is up.
+// is sent, in the replicas' queue group, until Close. It reads the account and the three seeds
+// first, refusing an account of no form (config.ParseNATSAccount), and a file that is unreadable
+// or holds a seed of the wrong kind (a user, an account, a curve key), each by the setting's own
+// name and never the seed. The hub need not answer yet: the connection is made in the background
+// and retried on a backoff capped at 2 s, so a hub that is down or restarting when the broker
+// starts, or refuses the service's user, is answered once it is up and admits it.
 func Start(ctx context.Context, settings Settings, deps Deps) (*Service, error) {
 	return start(ctx, settings, deps, Decide)
 }
 
 func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (*Service, error) {
+	account, err := config.ParseNATSAccount(settings.Account)
+	if err != nil {
+		return nil, err
+	}
 	issuer, err := config.ReadSeedFile("BROKER_NATS_ISSUER_SEED_FILE", settings.IssuerSeedFile, nkeys.PrefixByteAccount)
 	if err != nil {
 		return nil, err
@@ -275,18 +283,23 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 		}
 		return "", false
 	}
-	// WithImmediateReconnect: every other client of the hub waits on this one. A restart drops
-	// the service's own connection with theirs, and a client that comes back before the service
-	// has resubscribed is refused until it does, so the service retries at once where they wait a
-	// second (internal/bus).
+	// WithPromptReconnect: every other client of the hub waits on this one. A restart drops the
+	// service's own connection with theirs, and a client that comes back before the service has
+	// resubscribed is refused until it does, so the service redials at once where they wait a
+	// second, and then backs off, capped at 2 s, while the hub stays away or refuses it, as a hub
+	// does whose auth_callout does not list it yet (internal/bus).
 	conn, err := bus.Dial(connectionName, settings.URLs, lookup,
-		bus.WithConnectInBackground(), bus.WithSilentCutDetection(), bus.WithImmediateReconnect())
+		bus.WithConnectInBackground(), bus.WithSilentCutDetection(), bus.WithPromptReconnect())
 	if err != nil {
-		return nil, fmt.Errorf("natscallout: connect to %s: %w", strings.Join(settings.URLs, ","), err)
+		entries := fmt.Sprintf("%d BROKER_NATS_URLS entries", len(settings.URLs))
+		if len(settings.URLs) == 1 {
+			entries = "1 BROKER_NATS_URLS entry"
+		}
+		return nil, fmt.Errorf("natscallout: connect to the hub's %s: %w", entries, err)
 	}
 	s := &Service{
 		conn: conn,
-		answer: &answerer{issuer: issuer, xkey: xkey, deps: deps, services: settings.Services, decide: decide,
+		answer: &answerer{issuer: issuer, xkey: xkey, account: account, deps: deps, services: settings.Services, decide: decide,
 			drops: &drops{}, hub: newHubClock(), dropped: &tally{}, refusals: &tally{}, failures: &tally{}},
 		slots:      make(chan struct{}, concurrentDecisions),
 		delivered:  make(chan struct{}),
@@ -485,9 +498,12 @@ func (s *Service) Ready(ctx context.Context) error {
 // answerer answers one authorization request.
 type answerer struct {
 	issuer, xkey nkeys.KeyPair
-	deps         Deps
-	services     []ServiceEntry
-	decide       decideFunc
+	// account is the hub account every user it admits is placed in (Settings.Account), as
+	// config.ParseNATSAccount read it.
+	account  string
+	deps     Deps
+	services []config.NATSService
+	decide   decideFunc
 	// drops is the hand-off of what the service drops unanswered, which the counter moves into
 	// dropped (countDrops); dropped, refusals by label and failures, the answers it could not send,
 	// by step, are the tallies the reporter logs (reportWhileRunning). hub reads each hub server's
@@ -613,7 +629,7 @@ func (a *answerer) answer(msg *nats.Msg, received time.Time, settle settle) {
 	default:
 		decision, refused = settle(req)
 	}
-	user, refused := admit(req, decision, refused)
+	user, refused := admit(a.account, req, decision, refused)
 	if refused != nil && refusalWork != nil {
 		refusalWork()
 	}
@@ -678,10 +694,12 @@ func asRefusal(err error) *Refusal {
 }
 
 // admit is the verdict an answer carries, settled before it is counted: refused when the decision
-// refused, and otherwise the user decision admits, once the grant guard (guard) passes it. Every
-// answer the service sends passes here, whatever decided it, so this is the one place the guard
-// runs.
-func admit(req Request, decision Decision, refused *Refusal) (*jwt.UserClaims, *Refusal) {
+// refused, and otherwise the user decision admits, once the grant guard (guard) passes it, placed
+// in account, which the user's audience names: a hub in config mode places the client in the
+// account its user's audience names (nats-server server/auth_callout.go,
+// assignAccountAndPermissions). Every answer the service sends passes here, whatever decided it, so
+// this is the one place the guard runs and the one place the account is named.
+func admit(account string, req Request, decision Decision, refused *Refusal) (*jwt.UserClaims, *Refusal) {
 	if refused != nil {
 		return nil, refused
 	}
@@ -689,7 +707,7 @@ func admit(req Request, decision Decision, refused *Refusal) (*jwt.UserClaims, *
 		return nil, refused
 	}
 	user := jwt.NewUserClaims(req.UserNkey)
-	user.Audience = globalAccount
+	user.Audience = account
 	user.Name = decision.Name
 	user.Expires = decision.Expires.Unix()
 	user.Pub.Allow.Add(decision.Grant.Publish...)

@@ -40,7 +40,10 @@ var givingUpLines = []string{intakeHoldLost, durableDeliversElsewhere}
 // durable still delivers to the subject this intake bound, the hold is still this intake's, no line
 // says it stopped delivering, and a message published after the callback is handled by it.
 func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBind(t *testing.T) {
-	logs := captureLogs(t)
+	// Serial: bus.HoldFirstConnectForTest holds every background client's first connect in the
+	// process, and the row's two bind intervals are a quiet window. The row orders the intake's
+	// bind against its client's own "envoy nats connected" line, so both take the test's logger.
+	logs, logger := captureTestLogs(t)
 	_, uri := testnats.Start(t)
 	// A client that connects in the foreground creates the stream before the intake's client
 	// exists: the intake's client ensures nothing until its held callback runs. It also reads the
@@ -51,7 +54,7 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 	t.Cleanup(bus.HoldFirstConnectForTest(gate))
 	// The intake's client connects in the background, as every NATS client of envoy-dispatch does
 	// (cmd/dispatch serverBus).
-	client, err := bus.Connect([]string{uri}, bus.WithConnectInBackground())
+	client, err := bus.Connect([]string{uri}, bus.WithConnectInBackground(), bus.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("connect the intake's client in the background: %v", err)
 	}
@@ -68,7 +71,7 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	fetches, github := countingGitHub(t)
-	intake := newIntake(client, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	intake := newIntake(tuningFor(t), client, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	type firstBind struct {
 		subject string
 		landed  bool

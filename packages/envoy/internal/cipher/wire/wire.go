@@ -3,13 +3,31 @@
 // the shapes its relay routes answer. Dispatch relays them with relayBrokerResponse
 // (packages/envoy/internal/dispatch/api/credential_requests.go), which writes the broker's bytes
 // unparsed, so the shape a generated client is given has to be named from the broker's own
-// declaration rather than read off the relay.
+// declaration rather than read off the relay. It also holds how long the broker works on one
+// request (RequestDeadline, RequestWriteMargin), which cmd/cipherd serves by and a caller of the
+// broker can count on, so the two read one figure.
 //
 // It is a leaf: data and its doc comments, importing nothing of the broker's API package and
 // nothing holding a store, an OAuth client or a database.
 package wire
 
 import "time"
+
+// RequestDeadline is how long the broker lets one request's handler work: cmd/cipherd ends each
+// request's context this long after its handler starts (requestDeadline, withRequestDeadline), so
+// no write a handler makes under that context begins after it.
+const RequestDeadline = 45 * time.Second
+
+// RequestWriteMargin is the time past RequestDeadline that the broker's server gives a handler
+// that honours its context to finish what it already began and write its answer: cmd/cipherd's
+// http.Server WriteTimeout is the two together (writeTimeout). WriteTimeout bounds the writing of
+// that answer, not the broker's database: a COMMIT the handler sent before RequestDeadline is over
+// when that database completes it, which no deadline here ends, and a cancel does not undo a commit
+// the database already received. A caller may count on the broker's database completing such a
+// commit within this margin, and so on a write the broker began for a request being over within
+// RequestDeadline + RequestWriteMargin of the handler's start, whether or not that caller is still
+// waiting for the answer.
+const RequestWriteMargin = 15 * time.Second
 
 // PendingEntry is one undecided record in GET /v1/pending's answer: one a decision may still
 // settle, or one whose deadline passed before anybody decided it.
@@ -185,6 +203,63 @@ type PersonSignInRevokedResponse struct {
 	TokensEnded int `json:"tokens_ended"`
 }
 
+// RevokePersonSubjectRequest is POST /v1/person-subjects/revoke's body: Dispatch tells the broker
+// that one Google account no longer holds an address, which another account holds now. Every field
+// is required, and Subject differs from HolderSubject.
+type RevokePersonSubjectRequest struct {
+	// The address, a login as record.CanonicalLogin spells it.
+	Person string `json:"person"`
+	// The identity provider both accounts are of, as oidc.CanonicalIssuer spells it.
+	Issuer string `json:"issuer"`
+	// The `sub` of the account that no longer holds the address: every credential it holds under
+	// the address ends, and the broker refuses it any new one.
+	Subject string `json:"subject"`
+	// The `sub` of the account that holds the address now, which keeps every credential it holds
+	// and which the broker no longer refuses if an earlier revocation named it.
+	HolderSubject string `json:"holder_subject"`
+	// The address's session generation at Dispatch once the replacing sign-in committed (Dispatch's
+	// user_sessions.generation, which every recording of an account moves): the broker refuses a
+	// machine-login approval whose approver_session_generation is lower, since Dispatch checked
+	// that approver before this replacement, and answers a revoke below the greatest generation it
+	// applied at the address superseded. Required: the broker answers 400
+	// SESSION_GENERATION_REQUIRED without it. It is a pointer so that a body that leaves it out is
+	// told from one carrying 0. The route and the field came in one change, so no caller sends the
+	// route without it.
+	SessionGeneration *int64 `json:"session_generation,omitempty"`
+}
+
+// PersonSubjectRevokedResponse is POST /v1/person-subjects/revoke's answer.
+type PersonSubjectRevokedResponse struct {
+	// PersonSubjectRevoked: the replaced account holds no credential and no approval-page session
+	// under the address, and the broker refuses it any new one, whether this call or an earlier one
+	// ended them. PersonSubjectSuperseded: the revoke carried a session generation below the
+	// greatest one a revoke the broker applied at the address carried (SupersededBy), so a later
+	// replacement at the address has been applied since, and this one changed nothing; its caller
+	// can tell from it that its own generations for the address are below the broker's. The
+	// broker's migration 0047 says how such a revoke can arrive.
+	State string `json:"state" enum:"revoked,superseded"`
+	// The greatest session generation a revoke the broker applied at the address carried, which is
+	// above this revoke's; given with PersonSubjectSuperseded alone.
+	SupersededBy *int64 `json:"superseded_by,omitempty"`
+	// How many of the replaced account's sign-ins on a machine this call ended; 0 for a repeat
+	// and for a superseded revoke.
+	SignIns int `json:"signins"`
+	// How many of the replaced account's own machines' logins this call ended; 0 for a repeat and
+	// for a superseded revoke.
+	MachineLogins int `json:"machine_logins"`
+	// How many live access tokens those revokes ended with them.
+	TokensEnded int `json:"tokens_ended"`
+	// How many of the replaced account's sessions on the broker's own approval page this call
+	// ended; 0 for a repeat and for a superseded revoke.
+	ApprovalSessions int `json:"approval_sessions"`
+}
+
+// The states PersonSubjectRevokedResponse.State answers.
+const (
+	PersonSubjectRevoked    = "revoked"
+	PersonSubjectSuperseded = "superseded"
+)
+
 // RecordSessionResp is a credential request's two possibly-differing session ids, read
 // independently (LEGION-587): Enrollment is the id the requesting session's own enrollment
 // stated when it enrolled, Request is the id the request itself stated as an unsigned override
@@ -211,9 +286,12 @@ type RecordEnrollmentResp struct {
 	// The session's runtime: whatever names the session on its machine (the helper's
 	// host:pid:start time, a container's id), or a pod's UID.
 	RuntimeID string `json:"runtime_id"`
-	// The person the session runs for, as its enrollment row held it when the request was made.
-	// For a pod it is the person that a person's pod login (enroll.PersonPodLogin) carried when it
-	// enrolled the pod, and empty for any other pod.
+	// The person the session runs for. On a record it is as the enrollment row held it when the
+	// request was made: for a pod, the person that a person's pod login (enroll.PersonPodLogin)
+	// carried when it enrolled the pod, and empty for any other pod. On a grant list (GET
+	// /v1/grants and GET /v1/operator/grants) it is the person the enrollment acts for now, as the
+	// broker decides it (requests' operatorOf): empty for a person's pod that BROKER_POD_OPERATORS
+	// no longer maps.
 	Operator string `json:"operator"`
 	// The pod slot it holds; null for every enrollment without one.
 	Slot *string `json:"slot"`

@@ -1,7 +1,7 @@
-import { ID_AMBIGUOUS, isIdPrefix } from "@legion/contracts";
+import { isIdPrefix } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 
-import { ApiError, type ErrorCandidate } from "../../api/client";
+import { ApiError, ambiguousItems } from "../../api/client";
 import type { IDCandidate, IssueDetails } from "../../api/types";
 import { askQuery, commentQuery, messageQuery, useWholeRouteRead } from "../refs/reference-target";
 import {
@@ -39,21 +39,6 @@ export type ItemLanding =
 
 export function isItemRoute(route: IssueRoute): route is ItemRoute {
   return route.kind === "ask" || route.kind === "comment" || route.kind === "message";
-}
-
-/** The items an `ID_AMBIGUOUS` refusal listed, or undefined for any other failure and for a
- *  refusal that listed none, which there is no list to show for. The code is what says the
- *  entries are these and not a duplicate check's issues (`ErrorCandidate`). */
-export function ambiguousItems(error: unknown): readonly IDCandidate[] | undefined {
-  if (!(error instanceof ApiError) || error.code !== ID_AMBIGUOUS) {
-    return undefined;
-  }
-  const items = error.candidates?.filter(isIDCandidate) ?? [];
-  return items.length === 0 ? undefined : items;
-}
-
-function isIDCandidate(candidate: ErrorCandidate): candidate is IDCandidate {
-  return "id" in candidate && "kind" in candidate;
 }
 
 /**

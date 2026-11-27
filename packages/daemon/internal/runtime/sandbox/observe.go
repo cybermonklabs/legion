@@ -71,7 +71,10 @@ func (r *Runtime) Probe(ctx context.Context, loc runtime.Locator) (runtime.Obser
 
 // evaluate is one observation of loc's process from the stores: Uncertain while they cannot answer
 // (view), otherwise the verdict the mapping reads from them, said Displaced when the daemon's own
-// replacement of the recorded pod is what ended the process (displaced).
+// replacement of the recorded pod is what ended the process (displaced). Under
+// dispatch_token_broker, a verdict that saw the recorded generation running keeps for the claim
+// whether that generation's start carried a Dispatch token, as its address record says
+// (observeDispatchToken).
 //
 // The pod store and the Sandbox store are fed by two informers nothing orders, so a pod's end can
 // reach the runtime before the Suspended patch that named it does. A final verdict (ends) whose
@@ -139,6 +142,9 @@ func (r *Runtime) evaluate(ctx context.Context, loc runtime.Locator) runtime.Obs
 		obs.Displaced = true
 		obs.Detail += fmt.Sprintf("; the daemon replaced pod %s to launch another role there", loc.Sandbox.PodUID)
 	}
+	if obs.running {
+		r.observeDispatchToken(loc, obs.dispatchToken)
+	}
 	return obs.Observation
 }
 
@@ -155,9 +161,9 @@ func (r *Runtime) readSandbox(ctx context.Context, name string) (*sandbox, error
 }
 
 // observation is one verdict of the mapping: the runtime.Observation the caller receives, beside
-// the one classification only this package acts on. No runtime consumer reads it — the supervisor
-// reads Kind, Displaced, OutOfMemory and PodEnd beside the detail — so it stays here rather than on
-// the cross-runtime contract.
+// the classifications only this package acts on. No runtime consumer reads them — the supervisor
+// reads Kind, Displaced, OutOfMemory and PodEnd beside the detail — so they stay here rather than
+// on the cross-runtime contract.
 type observation struct {
 	runtime.Observation
 	// initFailed is a Gone whose process never started because an init container of its pod ended
@@ -170,6 +176,13 @@ type observation struct {
 	// was running — a non-zero termination of the daemon's own making, which read as a failed init
 	// would charge every role of that pod a death.
 	initFailed bool
+	// running is whether the verdict saw the recorded generation running, its launcher connected
+	// and reporting it, and dispatchToken, where it did, whether that generation's start carried
+	// DISPATCH_TOKEN, as the address record the verdict read for its addresses says
+	// (movedEnvironment). evaluate keeps the second for the claim (observeDispatchToken), which is
+	// how a restarted daemon counts the generations an earlier one started
+	// (Runtime.DispatchTokens).
+	running, dispatchToken bool
 }
 
 // ends reports whether obs is a final verdict the daemon's own replacement of a pod can account
@@ -315,16 +328,20 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 	// Kubernetes restarts it.
 	state, connected := r.launchers.state(loc.Claim, loc.Sandbox.PodUID)
 	if connected && state.Child != nil && state.Child.Generation == loc.Sandbox.Generation {
-		moved, err := r.movedEnvironment(v.sandbox, pod, role, loc.Sandbox.Generation)
-		if err != nil {
-			return observe(runtime.StaleAddress, "pod %s (uid %s) role %s runs generation %d, whose addresses cannot be compared: %v",
+		moved, carried, err := r.movedEnvironment(v.sandbox, pod, role, loc.Sandbox.Generation)
+		var obs observation
+		switch {
+		case err != nil:
+			obs = observe(runtime.StaleAddress, "pod %s (uid %s) role %s runs generation %d, whose addresses cannot be compared: %v",
 				name, pod.UID, role, state.Child.Generation, err)
-		}
-		if len(moved) > 0 {
-			return observe(runtime.StaleAddress, "pod %s (uid %s) role %s runs generation %d, started with addresses a generation started now is not handed: %s",
+		case len(moved) > 0:
+			obs = observe(runtime.StaleAddress, "pod %s (uid %s) role %s runs generation %d, started with addresses a generation started now is not handed: %s",
 				name, pod.UID, role, state.Child.Generation, describeMoved(moved))
+		default:
+			obs = observe(runtime.Alive, "pod %s (uid %s) role %s runs generation %d", name, pod.UID, role, state.Child.Generation)
 		}
-		return observe(runtime.Alive, "pod %s (uid %s) role %s runs generation %d", name, pod.UID, role, state.Child.Generation)
+		obs.running, obs.dispatchToken = true, carried
+		return obs
 	}
 	if ended := status.State.Terminated; ended != nil {
 		gone := observe(runtime.Gone, "pod %s (uid %s) container %s terminated (%s, exit code %d); last lines of %s:\n%s",
@@ -721,7 +738,11 @@ func rolePrefixed(line string) bool {
 }
 
 // events are the pod's events, "<type> <reason>: <message>" joined by " | ", or why they could
-// not be read.
+// not be read. A FailedMount on the providers volume naming a missing key is printed with the key
+// replaced by the settings that name it (providersMountedKeyShown); every other message is printed
+// as written. The kubelet's message quotes the key (`references non-existent secret key: <key>`),
+// and a provider_keys value is such a key and can be a provider's key pasted where its name goes;
+// these lines reach the daemon's log and its relaunch refusals.
 func (r *Runtime) events(ctx context.Context, pod *corev1.Pod) string {
 	events, err := r.podEvents(ctx, pod)
 	if err != nil {
@@ -729,12 +750,30 @@ func (r *Runtime) events(ctx context.Context, pod *corev1.Pod) string {
 	}
 	parts := make([]string, 0, len(events))
 	for _, event := range events {
-		parts = append(parts, fmt.Sprintf("%s %s: %s", event.Type, event.Reason, event.Message))
+		parts = append(parts, fmt.Sprintf("%s %s: %s", event.Type, event.Reason, r.providersMountedKeyShown(event)))
 	}
 	if len(parts) == 0 {
 		return "(none)"
 	}
 	return strings.Join(parts, " | ")
+}
+
+// providersMountedKeyShown is event's message as events prints it: for a FailedMount on the
+// providers volume that names a missing key, the message up to the kubelet's missingSecretKey
+// wording, then the settings whose key it is, or "one no setting names" (missingProvidersKey); any
+// other message as written.
+func (r *Runtime) providersMountedKeyShown(event corev1.Event) string {
+	if event.Reason != "FailedMount" || !strings.Contains(event.Message, `volume "`+providersVolume+`"`) {
+		return event.Message
+	}
+	before, setting, missing := r.missingProvidersKey(event.Message)
+	if !missing {
+		return event.Message
+	}
+	if setting == "" {
+		setting = "one no setting names"
+	}
+	return before + "references a key the Secret does not hold: the key of " + setting
 }
 
 // podEvents lists the events the API server holds for pod, this incarnation's only.

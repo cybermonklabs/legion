@@ -1,0 +1,19 @@
+# lean-no-widen: the model's check skips the kind's allow for a name whose binding has an
+# allow of its own, so a profile widens its kind. Caught by lake build: no_widen states that a
+# request check carries passes its kind's allowOK, and that proof no longer holds; check_ok
+# reads its allow conjuncts from no_widen, so no_widen is the theorem the build names.
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
++++ b/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
+@@ -482,7 +482,9 @@
+         .error "path has a parameter on a dot segment"
+       else if listed k b && hasDoubleEncoding r.path then
+         .error "path has a double-encoded character"
+-      else if !allowOK k.allow r then .error "not allowed by rule"
++      -- MUTANT: a name whose profile has an allow of its own skips its kind's allow, so a
++      -- profile row the kind does not allow widens the kind.
++      else if b.allow.isNone && !allowOK k.allow r then .error "not allowed by rule"
+       else if !allowOK b.allow r then .error "not allowed by the profile's rule"
+       else if listed k b && hasMethodOverride r then
+         .error "request carries a method override header"

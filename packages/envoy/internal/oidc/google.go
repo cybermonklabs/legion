@@ -14,10 +14,26 @@ const GoogleIssuer = "https://accounts.google.com"
 const googleSchemelessIssuer = "accounts.google.com"
 
 // namesIssuer reports whether iss is this verifier's issuer, taking Google's scheme-less spelling
-// as Google's, as the go-oidc verifier underneath does. Verify's classification and Issues both
-// read it, so a token Verify would accept is never called another issuer's.
-func (v *Verifier) namesIssuer(iss string) bool {
-	return iss == v.issuer || v.issuer == GoogleIssuer && iss == googleSchemelessIssuer
+// as Google's, as the go-oidc verifier underneath does. Verify's classification reads it, and
+// LazyVerifier.Issues reads the same rule (issuerNamed), so a token Verify would accept is never
+// called another issuer's.
+func (v *Verifier) namesIssuer(iss string) bool { return issuerNamed(v.issuer, iss) }
+
+// issuerNamed reports whether iss names issuer, Google's scheme-less spelling naming GoogleIssuer:
+// the one rule Verifier.namesIssuer and LazyVerifier.Issues read.
+func issuerNamed(issuer, iss string) bool {
+	return iss == issuer || issuer == GoogleIssuer && iss == googleSchemelessIssuer
+}
+
+// CanonicalIssuer is the one spelling of iss that a subject is recorded and compared under:
+// Google's scheme-less spelling is Google's issuer, as namesIssuer takes it, and every other
+// issuer is its own spelling. Dispatch names a replaced account by it and the broker records a
+// sign-in's and an approval's account by it, so the two compare one spelling.
+func CanonicalIssuer(iss string) string {
+	if iss == googleSchemelessIssuer {
+		return GoogleIssuer
+	}
+	return iss
 }
 
 // VerifyGoogleIdentity is Verify for a Google identity token, which names its caller by an

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // embeddingProjectKinds is every kind of embeddings row this release writes: the four window
@@ -33,6 +35,7 @@ var embeddingProjectKinds = []string{"comment_block", "document_block", "message
 // key would be as invisible to the project that owns it as a null one, and no count of nulls
 // would say so.
 func TestEveryWrittenEmbeddingRowCarriesItsProject(t *testing.T) {
+	t.Parallel()
 	const project = "LABL"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
@@ -104,6 +107,7 @@ func TestEveryWrittenEmbeddingRowCarriesItsProject(t *testing.T) {
 // one progress row and writes nothing. A pass that stopped at its first batch, or one whose
 // cursor did not move, fails on the rows it left null.
 func TestTheFillLabelsEveryEmbeddingRowStoredBeforeTheColumn(t *testing.T) {
+	t.Parallel()
 	const project = "FILL"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
@@ -184,6 +188,7 @@ func fillRetryEvery(t *testing.T, every time.Duration) {
 // lease at its next try, labels every row and returns for good: a fill nothing has to boot to
 // finish.
 func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolderDies(t *testing.T) {
+	// Not parallel: it writes the package variable embeddingProjectKeyFillRetry (fillRetryEvery).
 	const project = "LEAS"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
@@ -224,16 +229,12 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 	t.Cleanup(releaseHolder)
 	held := make(chan bool, 1)
 	go func() {
-		held <- duty.Exclusive(ctx, dyingLeases, embeddingProjectKeyFillLease, time.Time{}, 0, func(context.Context) {
+		held <- duty.Exclusive(ctx, nil, dyingLeases, embeddingProjectKeyFillLease, time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})
 	}()
-	select {
-	case <-taken:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the other process never took the embeddings-project-key-fill lease")
-	}
+	testwait.Receive(t, "the other process's take of the embeddings-project-key-fill lease", taken)
 
 	// This process, as the boot starts it.
 	leases := sweepLeases(t, database)
@@ -275,11 +276,7 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 	}
 	dying.Pool.Close()
 
-	select {
-	case <-returned:
-	case <-time.After(60 * time.Second):
-		t.Fatal("the process that skipped never took the lease the dead holder left, so the rows it did not label wait for the next boot")
-	}
+	testwait.Receive(t, "the process that skipped to take the lease the dead holder left, label the rows and return", returned)
 	if left := countRows(t, database,
 		"select count(*) from embeddings where kind = any($1) and project_key is null", embeddingProjectKinds); left != 0 {
 		t.Errorf("%d rows are still unlabelled after the fill that took the lease; want none", left)
@@ -310,6 +307,8 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 // intervals it writes one error line and no more. A loop that still tried would write one per
 // interval and never return.
 func TestTheEmbeddingProjectKeyFillStopsWhenItsProgressRowIsGone(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault) and writes the package variable
+	// embeddingProjectKeyFillRetry (fillStopsWhenItsProgressIsGone, fillRetryEvery).
 	fillStopsWhenItsProgressIsGone(t, "delete from embeddings_project_key_backfill")
 }
 
@@ -319,6 +318,8 @@ func TestTheEmbeddingProjectKeyFillStopsWhenItsProgressRowIsGone(t *testing.T) {
 // wants the same thing of both: nothing it can do brings either back. Until this was matched,
 // the loop stopped on the row and tried the table every interval for the life of the process.
 func TestTheEmbeddingProjectKeyFillStopsWhenItsProgressTableIsGone(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault) and writes the package variable
+	// embeddingProjectKeyFillRetry (fillStopsWhenItsProgressIsGone, fillRetryEvery).
 	fillStopsWhenItsProgressIsGone(t, "drop table embeddings_project_key_backfill")
 }
 
@@ -347,20 +348,32 @@ func fillStopsWhenItsProgressIsGone(t *testing.T, gone string) {
 		defer close(returned)
 		RunEmbeddingProjectKeyFill(fillCtx, database, leases)
 	}()
-	select {
-	case <-returned:
-	case <-time.After(20 * retry):
-		t.Fatalf("the fill kept trying after %q, so it takes the lease every interval for the life of the process", gone)
+	// The loop returns, or tries again: a loop that had not stopped writes an error line at each
+	// try, so a second line is the fact that it went on.
+	errorLines := func() []string {
+		var failures []string
+		for _, record := range records.Records() {
+			if record.Level >= slog.LevelError {
+				failures = append(failures, record.Message)
+			}
+		}
+		return failures
+	}
+	stopped := testwait.Until(t, fmt.Sprintf("the fill to return after %q, or to write a second error line as it tries again (whether it returned)", gone), func() (bool, bool) {
+		select {
+		case <-returned:
+			return true, true
+		default:
+			return false, len(errorLines()) > 1
+		}
+	})
+	if !stopped {
+		t.Fatalf("the fill wrote the error lines %v after %q and had not returned, so it takes the lease every interval for the life of the process", errorLines(), gone)
 	}
 
 	// Long enough for a loop that had not stopped to have tried again several times.
 	time.Sleep(10 * retry)
-	var failures []string
-	for _, record := range records.Records() {
-		if record.Level >= slog.LevelError {
-			failures = append(failures, record.Message)
-		}
-	}
+	failures := errorLines()
 	if len(failures) != 1 {
 		t.Errorf("the fill logged %d errors after %q, want the one line that says so: %v", len(failures), gone, failures)
 	}

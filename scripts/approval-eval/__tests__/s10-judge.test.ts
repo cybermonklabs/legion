@@ -3,7 +3,14 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE, type Registration, runDigestOf } from "../reserve";
+import {
+  CLAIM_RUN_VARIABLE,
+  REGISTRATION,
+  RESERVE_VARIABLE,
+  type Registration,
+  runDigestOf,
+} from "../reserve";
+import { ruleVerdictOf } from "../s10-analysis";
 import {
   INPUTS_VERSION,
   type InventoryLine,
@@ -20,6 +27,7 @@ import {
   judgedOutcomeOf,
   judgedStageOf,
   RULE_VERSIONS,
+  recordedAnswersOf,
   reportedOutcomesOf,
   STARTED_FILE,
   STARTED_REASON,
@@ -32,7 +40,9 @@ import {
  * directory's one `bun test` runs them: over an inputs stage written here and read back through
  * `s10-inputs-io.ts`'s parsers by the admission, which that suite judges; and every stage that
  * suite judges whole, that one among them, is read back here through `s10-judged-io.ts`, with the
- * constants both sides hold equal. That suite is handed this test's own Bun (`S10_BUN`), so its
+ * constants both sides hold equal, and the analysis's own recomputation of point 2's verdict from
+ * the answers each stage kept (`recordedAnswersOf`, `ruleVerdictOf`) is held to the verdict the
+ * driver recorded. That suite is handed this test's own Bun (`S10_BUN`), so its
  * read-back test runs `s10-judged-check.ts`. The rest test the admission the driver asks before it
  * reads anything (`s10-judge-admit.ts`), with a registration made for this test's own digest over
  * a bundle root of its own, as `s10-inputs.test.ts` makes one.
@@ -285,7 +295,8 @@ describe("s10_judge.py and the modules beside it", () => {
     }
     const outcomes = new Set<string>();
     const deviations = new Set<string>();
-    for (const stage of stages.values()) {
+    const recomputed = new Set<string>();
+    for (const [name, stage] of stages) {
       expect(stage.record.state).toBe("written");
       expect(stage.record.counts?.requests).toBe(stage.outcomes.size);
       for (const outcome of stage.outcomes.values()) {
@@ -298,8 +309,22 @@ describe("s10_judge.py and the modules beside it", () => {
           expect(outcome.judges.filter((one) => one.transcript !== null).length).toBe(5);
           expect(outcome.sandbox?.listing?.lines).toBeGreaterThan(0);
         }
+        // The analysis reads the five answers the driver kept and recomputes point 2's verdict
+        // from them: under every version of the rule that gave a verdict, the verdict recorded.
+        const given = RULE_VERSIONS.filter(
+          (version) => outcome.byRule[version].outcome === "verdict"
+        );
+        if (given.length === 0) continue;
+        const kept = await recordedAnswersOf(join(keep, "stages", name), stage, outcome);
+        const rule = "answers" in kept ? ruleVerdictOf(kept.answers) : kept;
+        for (const version of given) {
+          expect(rule).toMatchObject({ verdict: outcome.byRule[version].verdict });
+        }
+        if ("verdict" in rule) recomputed.add(rule.verdict);
       }
     }
+    // Every verdict the driver's suite judges a request to, recomputed: a shrink fails here.
+    expect([...recomputed].sort()).toEqual(["approve", "request_changes"]);
     expect([...outcomes].sort()).toEqual(["deviation", "hold", "verdict"]);
     expect([...deviations].sort()).toEqual([...DEVIATION_KINDS].sort());
     const kept = (test: string): JudgedStage => {
@@ -417,6 +442,26 @@ describe("s10_judge.py and the modules beside it", () => {
   }, 180_000);
 });
 
+describe("s10-judged-check.ts", () => {
+  const check = join(DIRECTORY, "s10-judged-check.ts");
+  const spawned = (args: string[], stdin: string) =>
+    Bun.spawnSync([process.execPath, check, ...args], { stdin: Buffer.from(stdin, "utf8") });
+
+  test("refuses more than one argument with its usage, exit 2, reading nothing", () => {
+    const run = spawned(["requests/a/outcome.json", "another"], "{}");
+    expect(run.exitCode).toBe(2);
+    expect(run.stdout.toString()).toBe("");
+    expect(run.stderr.toString()).toContain("usage: bun scripts/approval-eval/s10-judged-check.ts");
+  });
+
+  test("prints the parser's refusal of a text that is no outcome on one line of JSON, exit 0", () => {
+    const run = spawned(["requests/a/outcome.json"], "not an outcome\n");
+    expect(run.exitCode).toBe(0);
+    const { refused } = JSON.parse(run.stdout.toString()) as { refused: string | null };
+    expect(refused).toContain("requests/a/outcome.json");
+  });
+});
+
 describe("s10-judge-admit.ts", () => {
   test("admits the claim run's judging over its written inputs, each file by its sha256", async () => {
     const written = inputsFiles();
@@ -484,7 +529,7 @@ describe("s10-judge-admit.ts", () => {
     );
   });
 
-  test("refuses an --out that is relative or inside the repository, and a run claim.ts does not register", async () => {
+  test("refuses an --out that is relative or inside the repository, and any run once claim.ts records the reserve's end", async () => {
     await writeInputs(inputsFiles());
     const read = await registration();
     const relative = args(inputs, "relative/out");
@@ -507,7 +552,9 @@ describe("s10-judge-admit.ts", () => {
       if (saved === undefined) delete process.env[RESERVE_VARIABLE];
       else process.env[RESERVE_VARIABLE] = saved;
     }
-    expect(errors.join("\n")).toContain("This run's digest is");
+    // The checkout's claim.ts records the owner's release, so the real command judges no run.
+    expect(errors.join("\n")).toContain("the claim's judging runs only under its read");
+    expect(errors.join("\n")).toContain(`the reserve ended at ${REGISTRATION.ended}`);
   });
 
   test("judges only into its claim directory's s10-judged, over the inputs stage there", async () => {

@@ -1,0 +1,35 @@
+kind: Added
+body: |-
+  The secrets broker takes a Google group as a secret's owner and in its requesters, written
+  `group:` and the group's lowercase email (`agent-secrets secret create|retag --owner
+  group:<email> --requesters "group:<email>"`). Each member of an owner group decides the secret's
+  requests on the approval page, finds them in Dispatch's Inbox and dismisses them there once
+  expired, and gets its agent-tier secret at once; a member the group's last good read listed lists
+  and revokes the grants the group approved. A list, revoke or dismissal that names the group
+  itself as its approver is refused `400 APPROVER_IS_GROUP`. A group in `requesters` admits its
+  members' sessions. The broker reads each
+  group a served secret names with the Directory API's `members.list`, nested members included,
+  when the five-minute policy load first names it (again at the next load while its first read
+  has not succeeded) and once an hour after that, as the reader account `BROKER_DIRECTORY_ACCOUNT`
+  names (a service account holding Workspace's Groups Reader role, whose token the broker mints
+  with the one scope `admin.directory.group.member.readonly`); `BROKER_DIRECTORY_URL` names the
+  Directory API's base URL, an https URL, or http to a loopback host. A pod waits up to 15 seconds
+  for its first group reads before it serves. Each read logs `group members read`. A group not read
+  for 2 hours admits nobody, and every grant of a group's secret is checked again at each release
+  and reuse: a grant whose deciding member the group no longer admits releases nothing and logs
+  `group approval lapsed`, while a grant the model judge approved rests on no member and keeps
+  releasing as long as the secret's `judge` tag gives the judge that grant. A `requesters` entry naming a
+  group not read for 2 hours denies a new request `requester-group-unread`, pauses a live grant
+  without revoking it, and leaves an approval pending. The new secret type `anthropic-federation`
+  releases an Anthropic access token (`sk-ant-oat01-…`): the broker mints the Google identity token
+  of the account
+  `BROKER_SERVICE_ACCOUNT_SECRETS` binds the secret to, for the audience
+  `https://api.anthropic.com`, and trades it once at Anthropic's `POST /v1/oauth/token` with the
+  organization, federation rule, service account and optional workspace ids the stored value
+  holds. The federation rule's `token_lifetime_seconds` must be 3600 or less. Such a secret is
+  human tier alone (`type-human-tier`), a person approves every release of it (the model judge
+  decides none), it takes a `max-grant` of an hour or less, names its one owner, a person or a
+  group, in its `requesters`, and takes no `scopes`.
+time: 2026-11-21T00:42:46Z
+custom:
+    Issue: broker-group-owners

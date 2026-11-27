@@ -35,7 +35,9 @@
 // names the failure. The cut counts runes rather than bytes, so it can never make the text invalid
 // again by ending inside a character. Nothing of the far side's answer is lost this way, only
 // moved: LogWhole writes the whole text to the log, which has no store to refuse it, so an
-// operator who needs the megabyte reads it there.
+// operator who needs the megabyte reads it there. A text whose far side already cut its middle out
+// and kept its end for a note it puts there, as a workspace read's error is, keeps both ends
+// instead (FarSideErrorEnds).
 package storetext
 
 import (
@@ -253,6 +255,34 @@ func FarSideText(s string) string {
 // so a cut can never leave a part of a userinfo or a query behind.
 func FarSideError(s string) string {
 	return redact.Runes(FarSideText(s), FarSideErrorRunes)
+}
+
+// FarSideErrorEnds is a far side's error text as the daemon stores it where its end says as much as
+// its start: FarSideText, then, when that is more than FarSideErrorRunes runes, its first
+// FarSideErrorRunes/2-1 runes, "…", and its last FarSideErrorRunes/2 runes. The result is at most
+// FarSideErrorRunes runes, and a text of at most that many is kept whole. A workspace read's error
+// is such a text: the process that made the read cut it to one line by keeping its start, which
+// names the command and its exit, and its end, where workspace.RunCommand puts its note on a git
+// lock (shimwire.CutAnswerError), and FarSideError would keep the start alone. FarSideText reads
+// the text whole before the cut, as it does for FarSideError.
+func FarSideErrorEnds(s string) string {
+	text := FarSideText(s)
+	runes := utf8.RuneCountInString(text)
+	if runes <= FarSideErrorRunes {
+		return text
+	}
+	keep := FarSideErrorRunes / 2
+	head, tail, n := 0, 0, 0
+	for at := range text {
+		switch n {
+		case keep - 1:
+			head = at
+		case runes - keep:
+			tail = at
+		}
+		n++
+	}
+	return text[:head] + "…" + text[tail:]
 }
 
 // logPartBytes bounds one part of the text LogWhole writes. A JSON handler writes a character of a

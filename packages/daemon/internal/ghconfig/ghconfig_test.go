@@ -12,14 +12,17 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A pane can put anything at its gh directory's paths between two of the daemon's refreshes, and
 // Write never opens what is no regular file: a named pipe at config.yml or hosts.yml, which a read
 // would wait on until something wrote to it, stalling every pane's refresh behind it, and a
-// directory or a symbolic link there, are each removed and the rendered file written in its place,
-// promptly. Each write runs with a bound of its own, so a Write that opened the pipe fails the row
-// rather than hanging the test.
+// directory or a symbolic link there, are each removed and the rendered file written in its place.
+// Each write's answer is waited for with no span of its own (testwait.Receive), so a Write that
+// waits on the pipe fails the row by name before the test binary's deadline rather than hanging
+// it, and a Write that is merely slow passes.
 func TestWriteOpensNoFileThatIsNoRegularFile(t *testing.T) {
 	rendered := Render("ghs_fifo_token", "implement", time.Now().Add(time.Hour))
 	for _, tc := range []struct {
@@ -52,17 +55,8 @@ func TestWriteOpensNoFileThatIsNoRegularFile(t *testing.T) {
 				_, err := Write(dir, rendered)
 				done <- err
 			}()
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatalf("Write: %v", err)
-				}
-			case <-time.After(5 * time.Second):
-				// Unblock the stalled read, so the goroutine and the test end.
-				if f, err := os.OpenFile(filepath.Join(dir, tc.file), os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
-					_ = f.Close()
-				}
-				t.Fatalf("Write did not return within 5 s with %s", tc.name)
+			if err := testwait.Receive(t, "Write with "+tc.name, done); err != nil {
+				t.Fatalf("Write: %v", err)
 			}
 			for name, want := range map[string]string{ConfigFile: rendered.Config, HostsFile: rendered.Hosts} {
 				info, err := os.Lstat(filepath.Join(dir, name))
@@ -82,8 +76,9 @@ func TestWriteOpensNoFileThatIsNoRegularFile(t *testing.T) {
 // through ReadRegular, which never waits on a pipe whatever was at the path a moment before, and
 // writes only by renaming a file of its own over it. A check of the path followed by an open of
 // it blocked on the pipe within a few dozen Writes (the 53rd, measured by #4424's second review).
-// Each pipe keeps a hard link in a side directory, so a Write that did block is released by
-// opening every pipe there, which fails the test rather than hanging it.
+// Each Write's answer is waited for with no span of its own (testwait.Receive), so a Write that
+// blocked fails the row by name before the test binary's deadline. Each pipe keeps a hard link in a
+// side directory, and the row's end opens every pipe there, which releases such a Write.
 func TestWriteStallsOnNoPipeSwappedInWhileItRuns(t *testing.T) {
 	rendered := Render("ghs_race_token", "implement", time.Now().Add(time.Hour))
 	release := func(side string) {
@@ -132,20 +127,8 @@ func TestWriteStallsOnNoPipeSwappedInWhileItRuns(t *testing.T) {
 					_, err := Write(dir, rendered)
 					done <- err
 				}()
-				select {
-				case err := <-done:
-					if err != nil {
-						t.Fatalf("Write %d: %v", round, err)
-					}
-				case <-time.After(5 * time.Second):
-					for {
-						release(side)
-						select {
-						case <-done:
-							t.Fatalf("Write %d did not return within 5 s while a pipe was swapped onto %s", round, file)
-						case <-time.After(50 * time.Millisecond):
-						}
-					}
+				if err := testwait.Receive(t, "Write "+strconv.Itoa(round)+" while a pipe was swapped onto "+file, done); err != nil {
+					t.Fatalf("Write %d: %v", round, err)
 				}
 			}
 		})
@@ -210,6 +193,35 @@ func TestTokenFromHostsNamesTheMissingKey(t *testing.T) {
 	}
 	if _, err := TokenFromHosts([]byte("github.com: [not a mapping\n")); err == nil {
 		t.Fatal("TokenFromHosts(malformed YAML) = nil error, want a parse error")
+	}
+}
+
+// A hosts.yml yaml.v3 cannot decode is refused naming the file and the line, with no part of the
+// token: one where the token stands in place of github.com's mapping (yaml.v3's TypeError quotes
+// the scalar's head), one whose token is written after a "*" (its error names the unknown anchor),
+// and one that does not parse. The token is made up.
+func TestTokenFromHostsQuotesNoTokenOfAFileItCannotDecode(t *testing.T) {
+	const token = "ghs_madeUpHostsToken0123456789"
+	for name, tc := range map[string]struct{ data, want string }{
+		"the token where the mapping goes": {"github.com: " + token + "\n",
+			"parse hosts.yml: the YAML holds a value of another kind than the file takes at line 1"},
+		"the token after a star": {"github.com:\n    oauth_token: *" + token + "\n",
+			"parse hosts.yml: the YAML does not parse"},
+		"a file that does not parse": {"github.com:\n    oauth_token: [" + token + "\n",
+			"parse hosts.yml: the YAML does not parse at line 1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := TokenFromHosts([]byte(tc.data))
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("TokenFromHosts = %v, want %q", err, tc.want)
+			}
+			// Seven characters: the head of a scalar yaml.v3's TypeError quotes.
+			for i := 0; i+7 <= len(token); i++ {
+				if strings.Contains(err.Error(), token[i:i+7]) {
+					t.Fatalf("the refusal %q holds %q of the token", err, token[i:i+7])
+				}
+			}
+		})
 	}
 }
 

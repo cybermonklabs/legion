@@ -32,7 +32,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		// carries its reason to post on the issue before the status (workflow's moveReason).
 		OrdinaryStatusWrite("in_progress", "testing", "Legion moved this issue from testing back to implementing at the tester's request: the fix does not cover the empty list."),
 		PersonHandoverStatusWrite("todo", "triage"),
-		ReassertStatusWrite("in_progress", "done"),
+		ReassertStatusWrite("in_progress", "done", 7),
 		HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
 		MessagePost{Body: "Pull request checks are blocked."},
 		// The row an older daemon's rescue message queued, which still decodes and round-trips.
@@ -54,29 +54,63 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ControllerNotice{Kind: TreeStalledNotice, Reason: "LEGION-208 has stopped. The tree has been quiet for 7.0 hours."},
 		ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect,
 			Reason: ArchitectTookNothing.Words() + ": the task of phase entry 1 was first queued to the architect's claim of LEGION-208"},
+		ControllerNotice{Kind: MemoryGuardKillNotice, Role: claim.RoleController,
+			Reason: "The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: `python3` (pid 4242)"},
 		ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now,
 			Reason: "the model provider is down"}},
 		ControllerNotice{Kind: ProjectResumedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now.Add(time.Hour)}},
+		ControllerNotice{Kind: IntakeGaveUpNotice, Count: 3, GiveUps: []NoticeGiveUp{
+			{ID: 41, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.LEGION-208.issue.updated"},
+			{ID: 42, Consumer: "legion-go-LEGION-wake", Subject: "notifications.legion.LEGION.wake"}}},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Task: "Write the spec."},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, Phase: phase.Reviewing, News: true},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3, News: true},
+		DesignNewsReconcile{},
 		SuperviseRequest{Op: "pause_stop", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Pause: 7},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakePause, Pause: 7},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
+		PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", BasisVersion: 3, Ask: "ask-100",
+			Generation: 2, RegisteredAt: now.Add(-time.Hour + 123*time.Microsecond)},
+		ReparentSeed{Parent: "LEGION-301", Tree: "LEGION-300", Ran: "it ran as a tree of its own from 2026-11-01"},
+		Notice{Kind: "basis-changes-requested", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-100/spec", Reason: "name the rollback path"},
 		LingerClose{Generation: 7},
 		WorkspaceRemove{Linger: 3},
 		GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}},
-		DesignGatesPublish{Issue: "LEGION-208", Gates: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria"}, {Step: DesignStepSpec, ArtifactID: "artifact-208"}}},
+		DesignGatesPublish{Issue: "LEGION-208", Gates: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria", Holds: new(false)}, {Step: DesignStepSpec, ArtifactID: "artifact-208", Holds: new(true)}}},
 		RoleHoldersPublish{Issue: "LEGION-208"},
 		IssueBranch{Generation: 2},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
+		// A release's workspace check, and a left pod's close's, which names the roles it closes and
+		// the newest turn start of the pass that queued it (IssueWorkspaceCheck.TurnStart).
+		IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, Role: claim.RoleImplementer},
+		IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, Role: claim.RolePlanner,
+			CloseRoles: []claim.Role{claim.RolePlanner}, TurnStart: now.Add(-40 * time.Minute)},
+		// The stop and the Sandbox suspension that close queues after a clean read carry the same
+		// moment (SuperviseRequest.TurnStart, IssueSuspend.TurnStart), and the zero moment where no
+		// claim had had a turn: a fence any turn passes, which is no fence at all only where the row
+		// names none.
+		SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 3,
+			Reason: "LEGION-209 left the workflow", TurnStart: new(now.Add(-40 * time.Minute))},
+		SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 3,
+			Reason: "LEGION-209 left the workflow", TurnStart: new(time.Time{})},
+		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, TurnStart: new(now.Add(-40 * time.Minute))},
+		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, TurnStart: new(time.Time{})},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Task: "Production check of LEGION-208", CheckLook: 2, CheckOpenedAt: now},
-		CheckWakeDue{Look: 2, OpenedAt: now, Reason: "the tester's own wake"},
+		CheckWakeDue{Look: 2, OpenedAt: now, WakeAt: now.Add(2 * time.Hour), Reason: "the tester's own wake"},
 		CheckWakeDue{Look: 3, Reason: "a look nobody reported"},
 		CheckLook{Look: 2, OpenedAt: now},
 		CheckLook{Look: 1},
 		CheckBound{},
 		RoleMessage{Role: "legion.sjawhar-legion.LEGION-208.implementer", Body: "Pull request #42: CI settled at c0de: unit failed."},
+		PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren,
+			Reason: "the admission pass stopped the tester's testing phase, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo)"},
+		// The move dropped a merge forward that had not landed, which the message names.
+		PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren,
+			Reason:       "the admission pass stopped the tester's testing phase, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo)",
+			MergeForward: &DroppedMergeForward{Head: "c0de", Base: "main", Role: claim.RoleImplementer}},
+		SuperviseRequest{Op: "retire_task", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 2, Phase: phase.Implementing, Entry: 3},
 		HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing,
 			Count: 3, Counts: map[string]int{"testing-implementing": 1, "reviewing-implementing": 3},
 			PullRequest: "sjawhar/legion#42", Prompt: "Read the reviewer's thread before you write anything."},
@@ -88,8 +122,12 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MergeQueueRead{Number: 42, Head: "c0de"},
 		MergeQueueRemoval{Number: 42, Head: "c0de"},
 		MergeQueueRemoval{Number: 42, Head: "c0de", Unread: true},
+		MergeHoldsChanged{Project: "LEGION"},
 		ConflictConfirm{Number: 42, Head: "c0de", FirstReadAt: now.Add(-time.Minute)},
 		MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Implementing, PullRequest: 42, Why: ConflictCheckNotGreen},
+		// In merging the merger is asked (cybermonklabs/legion#4979); the hold to the merger above is a
+		// row a daemon before it queued, which still reads after the upgrade.
+		MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext},
 		MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext},
 		MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictRulesUnread},
 		MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Retro, PullRequest: 42},
@@ -131,6 +169,34 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 	}
 }
 
+func TestExpediteOutboxReportsWhetherItMovedARow(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	now := time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC)
+	row, err := NewOutboxRow("LEGION-208", MessagePost{Body: "A row to wake."}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("make the row: %v", err)
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		id, err := records.EnqueueID(ctx, tx, row)
+		must(t, err)
+		row.ID = id
+		moved, err := records.ExpediteOutbox(ctx, tx, row, now)
+		must(t, err)
+		if !moved {
+			t.Fatalf("first expedite of a row due at %s = not moved, want moved", row.NextAt)
+		}
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		moved, err := records.ExpediteOutbox(ctx, tx, row, now)
+		must(t, err)
+		if moved {
+			t.Fatalf("second expedite of the row at %s = moved, want not moved", now)
+		}
+	})
+}
+
 // Every kind of status row has a constructor of its own, and no constructor leaves Kind empty:
 // the kind is the one thing a row cannot be queued without (validateOutboxPayload refuses a write
 // without one), so a kind nothing builds has no way into the outbox at all. The table is read
@@ -140,7 +206,7 @@ func TestEveryStatusRowKindHasAConstructorThatSetsIt(t *testing.T) {
 	built := map[StatusRowKind]StatusWrite{
 		OrdinaryStatusRow:       OrdinaryStatusWrite("testing", "in_progress", ""),
 		PersonHandoverStatusRow: PersonHandoverStatusWrite("todo", "triage"),
-		ReassertStatusRow:       ReassertStatusWrite("in_progress", "done"),
+		ReassertStatusRow:       ReassertStatusWrite("in_progress", "done", 7),
 		HandOverStatusRow:       HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
 		CloseStatusRow:          CloseStatusWrite("done", "in_progress", "merged", 7),
 	}
@@ -236,12 +302,12 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 // both the count of lanes and the count of kinds.
 func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	every := []OutboxKind{OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindSupervise,
-		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
-		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
+		OutboxKindGateSeed, OutboxKindPendingBasisSeed, OutboxKindReparentSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
+		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
-		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindStepRecord, OutboxKindConflictConfirm,
-		OutboxKindMergeForward, OutboxKindPlanRecord}
-	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneLifecycle, LaneRecord, LaneRoleMessage}
+		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish,
+		OutboxKindMergeHoldsChanged, OutboxKindStepRecord, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord}
+	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
 	}
@@ -279,22 +345,37 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 // stop, a write to Dispatch, a controller's notice.
 func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 	decided := map[OutboxKind]string{
-		OutboxKindSupervise:         "op start",
-		OutboxKindNotice:            "every row",
-		OutboxKindHookPrompt:        "every row",
+		// Of the supervise ops only a start launches a role: a stop runs, and so does `retire_task`,
+		// which takes back a stopped phase's task and starts no turn (dispatch://INFRA-3320).
+		OutboxKindSupervise:  "op start",
+		OutboxKindNotice:     "every row",
+		OutboxKindHookPrompt: "every row",
+		// A phase-ended message goes to one role of the issue and wakes a released one, as a hook
+		// prompt does (dispatch://INFRA-3320).
+		OutboxKindPhaseEnded:        "every row",
 		OutboxKindRoleMessage:       "every row",
 		OutboxKindUpdateAsk:         "every row",
 		OutboxKindMergeQueueRemoval: "every row",
+		// The merger's message that the project's merge holds changed goes to the merger's own
+		// role topic and wakes a released merger, as the merge-queue removal's message does
+		// (#4065).
+		OutboxKindMergeHoldsChanged: "every row",
 		// A merge forward's message goes to one role of the issue and wakes a released one, as a
 		// hook prompt does (main's dispatch://INFRA-4374).
-		OutboxKindMergeForward:       "every row",
-		OutboxKindCheckWake:          "every row",
-		OutboxKindCheckLook:          "every row",
-		OutboxKindCheckBound:         "every row",
-		OutboxKindControllerNotice:   "",
-		OutboxKindDispatchStatus:     "",
-		OutboxKindDispatchMessage:    "",
-		OutboxKindGateSeed:           "",
+		OutboxKindMergeForward:     "every row",
+		OutboxKindCheckWake:        "every row",
+		OutboxKindCheckLook:        "every row",
+		OutboxKindCheckBound:       "every row",
+		OutboxKindControllerNotice: "",
+		OutboxKindDispatchStatus:   "",
+		OutboxKindDispatchMessage:  "",
+		OutboxKindGateSeed:         "",
+		// A pending-basis seed reads Dispatch and applies what it read as a fact, as the gate seed
+		// does, and starts no turn (dispatch://INFRA-3320).
+		OutboxKindPendingBasisSeed: "",
+		// A re-parent seed reads Dispatch for a root's new parent and starts no turn
+		// (dispatch://INFRA-3320).
+		OutboxKindReparentSeed:       "",
 		OutboxKindLingerClose:        "",
 		OutboxKindIssueSuspend:       "",
 		OutboxKindWorkspaceRemove:    "",
@@ -309,7 +390,9 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// forward its fact queues is held.
 		OutboxKindConflictConfirm: "",
 		// The role-holders publication writes Dispatch the sessions that hold an issue's roles and
-		// starts no turn, and a pause's stops change those holders, which Dispatch should show.
+		// starts no turn, so the pause lets it run: a claim that ends or changes its session while
+		// the project is paused changes those holders, which Dispatch should show. The pause's own
+		// stops suspend as released, which keeps each holder, so they queue none.
 		OutboxKindRoleHoldersPublish: "",
 		// A step record writes Dispatch one start or one end of a step of an issue
 		// (cybermonklabs/legion#4400) and starts no turn, so the pause lets it run as it does a
@@ -318,6 +401,11 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// A plan record writes Dispatch the plan one run of an issue carries out (main's plan
 		// ratings, contract 168) and starts no turn, so the pause lets it run as a step record.
 		OutboxKindPlanRecord: "",
+		// The reconcile of a tree's news of its approved design reads Dispatch and writes the news
+		// record, and starts no turn: the news reaches a role only through a news-only start, a
+		// supervise start the pause holds (op start above), so the pause lets the reconcile run,
+		// and at the resume each held start carries what it recorded.
+		OutboxKindDesignChanges: "",
 	}
 	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {
@@ -367,10 +455,24 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a tick notice for an architect", payload: Notice{Kind: TickNotice}, reason: "unknown notice kind"},
 		{name: "a parked-decision notice for an architect", payload: Notice{Kind: ParkedDecisionNotice}, reason: "unknown notice kind"},
 		{name: "a tree-stalled notice for an architect", payload: Notice{Kind: TreeStalledNotice}, reason: "unknown notice kind"},
+		// The two wakes the controller's skill said to do nothing on (#4065):
+		// the daemon writes neither kind any more, to anyone.
+		{name: "an unslotted notice to the controller", payload: ControllerNotice{Kind: "unslotted", Reason: "LEGION-208 was in_progress"}, reason: "unknown controller notice kind"},
+		{name: "an awaiting-person notice to the controller", payload: ControllerNotice{Kind: "awaiting-person", Reason: "LEGION-208 waits on a person"}, reason: "unknown controller notice kind"},
 		{name: "an architect-stalled notice for an architect", payload: Notice{Kind: ArchitectStalledNotice}, reason: "unknown notice kind"},
+		{name: "a memory-guard-kill notice for an architect", payload: Notice{Kind: MemoryGuardKillNotice, Role: claim.RoleController}, reason: "unknown notice kind"},
 		{name: "an architect-stalled notice naming no arm", payload: ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect}, reason: "carries the reason that names its arm"},
 		{name: "an actor on a phase-finished notice", payload: Notice{Kind: "phase-finished", Actor: "user:a"}, reason: "only a spec decision's does"},
 		{name: "a ref on a child-status notice", payload: Notice{Kind: "child-status", Ref: "dispatch://LEGION-1/spec"}, reason: "only a spec decision's does"},
+		{name: "a decision on a basis notice", payload: Notice{Kind: "basis-ended", Ref: "dispatch://LEGION-100/spec", Decision: DecisionDesignApproved}, reason: "only a parked-decision controller notice does"},
+		{name: "a pending-basis seed of no step", payload: PendingBasisSeed{ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", BasisVersion: 3, Ask: "ask-100", Generation: 2, RegisteredAt: now}, reason: "a pending-basis seed names"},
+		{name: "a pending-basis seed of no request", payload: PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", BasisVersion: 3, Generation: 2, RegisteredAt: now}, reason: "a pending-basis seed names"},
+		{name: "a pending-basis seed of no version", payload: PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", Ask: "ask-100", Generation: 2, RegisteredAt: now}, reason: "a pending-basis seed names"},
+		{name: "a pending-basis seed of no generation", payload: PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", BasisVersion: 3, Ask: "ask-100", RegisteredAt: now}, reason: "a pending-basis seed names"},
+		{name: "a pending-basis seed of no registration", payload: PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", BasisVersion: 3, Ask: "ask-100", Generation: 2}, reason: "a pending-basis seed names"},
+		{name: "a re-parent seed of no parent", payload: ReparentSeed{Tree: "LEGION-300", Ran: "it ran as a tree of its own"}, reason: "a re-parent seed names"},
+		{name: "a re-parent seed of no tree", payload: ReparentSeed{Parent: "LEGION-301", Ran: "it ran as a tree of its own"}, reason: "a re-parent seed names"},
+		{name: "a re-parent seed of no reason", payload: ReparentSeed{Parent: "LEGION-301", Tree: "LEGION-300"}, reason: "a re-parent seed names"},
 		{name: "a decision on an architect's notice", payload: Notice{Kind: "design-approved", Decision: DecisionDesignApproved}, reason: "only a parked-decision controller notice does"},
 		{name: "a root on an architect's notice", payload: Notice{Kind: "design-approved", Root: "LEGION-1"}, reason: "only a parked-decision controller notice does"},
 		{name: "a parked decision with no root", payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered, Ref: "dispatch://LEGION-1/ask/a", Actor: "user:a"}, reason: "a parked-decision notice needs"},
@@ -391,6 +493,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "an escalation's words on a worker-died notice", payload: Notice{Kind: "worker-died", Escalation: "a person should look at the runner"}, reason: "only a held notice of an escalation does"},
 		{name: "an escalation's words on a held notice of no escalation", payload: Notice{Kind: "held", Escalation: "a person should look at the runner"}, reason: "only a held notice of an escalation does"},
 		{name: "an escalation's words on a held notice to the controller of no escalation", payload: ControllerNotice{Kind: "held", Escalation: "a person should look at the runner"}, reason: "only a held notice of an escalation does"},
+		{name: "a stopper on a held notice", payload: Notice{Kind: "held", StoppedBy: "legion-legion-legion-208-architect"}, reason: "only a task-stopped notice does"},
+		{name: "a stopper on a held notice to the controller", payload: ControllerNotice{Kind: "held", StoppedBy: "legion-legion-legion-208-architect"}, reason: "only a task-stopped notice does"},
 		{name: "a tick notice carrying an update round", payload: ControllerNotice{Kind: TickNotice, Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "carries an update round only when it is one"},
 		{name: "an update-stalled notice carrying no update round", payload: ControllerNotice{Kind: UpdateStalledNotice}, reason: "carries an update round only when it is one"},
 		{name: "an update-stalled notice with no claims", payload: ControllerNotice{Kind: UpdateStalledNotice, Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "requires its round and the claims it waits on"},
@@ -417,8 +521,20 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a suspend naming a pause", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Pause: 7}, reason: "only a pause's stop and a start name one"},
 		{name: "a start naming a negative pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Pause: -7}, reason: "only a pause's stop and a start name one"},
 		{name: "a suspend naming a wake kind", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakeChecks}, reason: "only a start names one"},
+		{name: "a start fenced on a turn start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, TurnStart: new(now)}, reason: "only a left pod's close's suspend names one"},
+		{name: "a release's stop fenced on a turn start", payload: SuperviseRequest{Op: "release", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, TurnStart: new(now)}, reason: "only a left pod's close's suspend names one"},
 		{name: "a start naming no wake kind of the pods", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: "listener_ready"}, reason: "only a start names one"},
 		{name: "a pause's launch naming no pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: pods.WakePause}, reason: "names the pause that owed it"},
+		{name: "an intake-gave-up notice counting none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, GiveUps: noticeGiveUps(1)}, reason: "counts one give-up or more"},
+		{name: "an intake-gave-up notice naming none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1}, reason: "names between 1 and 1 of them, not 0"},
+		{name: "an intake-gave-up notice naming 101", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 150, GiveUps: noticeGiveUps(101)}, reason: "names between 1 and 100 of them, not 101"},
+		{name: "an intake-gave-up notice naming more than it counts", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: noticeGiveUps(2)}, reason: "names between 1 and 1 of them, not 2"},
+		{name: "an intake-gave-up notice naming a give-up with no id", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: []NoticeGiveUp{{Consumer: "legion-go-LEGION-dispatch"}}}, reason: "by its positive record id"},
+		{name: "an intake-gave-up notice to a role", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Role: claim.RoleArchitect, Count: 1, GiveUps: noticeGiveUps(1)}, reason: "carries no role"},
+		{name: "give-ups named on a tick", payload: ControllerNotice{Kind: TickNotice, GiveUps: noticeGiveUps(1)}, reason: "only an intake-gave-up notice does"},
+		{name: "a count on a tick", payload: ControllerNotice{Kind: TickNotice, Count: 1}, reason: "only an intake-gave-up notice does"},
+		{name: "a count on an architect's notice", payload: Notice{Kind: "phase-finished", Count: 1}, reason: "only an intake-gave-up notice does"},
+		{name: "an intake-gave-up notice for an architect", payload: Notice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: noticeGiveUps(1)}, reason: "unknown notice kind"},
 		{name: "unknown supervise operation", payload: SuperviseRequest{Op: "unknown"}, reason: "unknown supervise operation"},
 		{name: "a stop that is not a tree close", payload: SuperviseRequest{Op: "stop", Tree: "LEGION-208", Role: claim.RoleArchitect}, reason: "unknown supervise operation"},
 		{name: "an issue close naming a linger", payload: SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Linger: 7}, reason: "only a tree close"},
@@ -433,13 +549,31 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a check look on an architect's start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3, CheckLook: 1}, reason: checkLookRefusal},
 		{name: "a check look on a reviewer's start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, CheckLook: 1}, reason: checkLookRefusal},
 		{name: "a negative check look", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, CheckLook: -1}, reason: checkLookRefusal},
+		{name: "a news-only start with a task", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, Phase: phase.Reviewing, Task: "Review it.", News: true}, reason: newsOnlyRefusal},
+		{name: "a news-only start of an entry", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, Phase: phase.Reviewing, Entry: 2, News: true}, reason: newsOnlyRefusal},
+		{name: "a news-only start of a worker naming no phase", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, News: true}, reason: newsOnlyRefusal},
+		{name: "a news-only start of an architect naming a phase", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3, Phase: phase.Accepting, News: true}, reason: newsOnlyRefusal},
+		{name: "a news-only suspend", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, Phase: phase.Reviewing, News: true}, reason: newsOnlyRefusal},
+		{name: "a news-only boot resume", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, Phase: phase.Reviewing, RuleResume: true, News: true}, reason: newsOnlyRefusal},
 		{name: "a check wake without a look", payload: CheckWakeDue{Reason: "the tester's own wake"}, reason: "check wake requires the look it was named at"},
 		{name: "a check wake without a reason", payload: CheckWakeDue{Look: 1}, reason: "check wake requires the reason it wakes the check"},
+		{name: "a phase-ended message to an architect", payload: PhaseEnded{Role: claim.RoleArchitect, From: phase.Accepting, To: phase.AwaitingChildren, Reason: "LEGION-209 is open"}, reason: "never to an architect"},
+		{name: "a phase-ended message to no role", payload: PhaseEnded{From: phase.Testing, To: phase.AwaitingChildren, Reason: "LEGION-209 is open"}, reason: "never to an architect"},
+		{name: "a phase-ended message without the phase that ended", payload: PhaseEnded{Role: claim.RoleTester, To: phase.AwaitingChildren, Reason: "LEGION-209 is open"}, reason: "names the phase that ended and awaiting_children"},
+		{name: "a phase-ended message into another phase than the wait", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "LEGION-209 is open"}, reason: "names the phase that ended and awaiting_children"},
+		{name: "a phase-ended message out of the wait itself", payload: PhaseEnded{Role: claim.RoleImplementer, From: phase.AwaitingChildren, To: phase.AwaitingChildren, Reason: "LEGION-209 is open"}, reason: "names the phase that ended and awaiting_children"},
+		{name: "a phase-ended message without a reason", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren}, reason: "carries the open children"},
+		{name: "a phase-ended message whose dropped merge forward names no head", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: "LEGION-209 is open", MergeForward: &DroppedMergeForward{Base: "main"}}, reason: droppedMergeForwardRefusal},
+		{name: "a phase-ended message whose dropped merge forward names no base", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: "LEGION-209 is open", MergeForward: &DroppedMergeForward{Head: "c0de"}}, reason: droppedMergeForwardRefusal},
+		{name: "a phase-ended message whose dropped merge forward names no role", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: "LEGION-209 is open", MergeForward: &DroppedMergeForward{Head: "c0de", Base: "main"}}, reason: droppedMergeForwardRoleRefusal},
+		{name: "a phase-ended message whose dropped merge forward names a role no merge forward is asked of", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: "LEGION-209 is open", MergeForward: &DroppedMergeForward{Head: "c0de", Base: "main", Role: claim.RoleTester}}, reason: droppedMergeForwardRoleRefusal},
+		{name: "a task retirement that names no phase", payload: SuperviseRequest{Op: "retire_task", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 2}, reason: "names the role and the phase"},
+		{name: "a task retirement that carries a task", payload: SuperviseRequest{Op: "retire_task", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 2, Phase: phase.Implementing, Task: "implement"}, reason: "carries no task"},
 		{name: "a hook prompt with no hook", payload: HookPrompt{Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "carries the name of the hook that fired it"},
 		{name: "a hook prompt to an architect", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleArchitect, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
 		{name: "a hook prompt to no role", payload: HookPrompt{Hook: "back-to-implementing", From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
 		{name: "a hook prompt to the controller", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleController, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
-		{name: "a hook prompt on a move forward", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleReviewer, From: phase.Implementing, To: phase.Reviewing, Count: 1, Prompt: "Read the thread."}, reason: "is no move back"},
+		{name: "a hook prompt of a phase to itself", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleReviewer, From: phase.Reviewing, To: phase.Reviewing, Count: 1, Prompt: "Read the thread."}, reason: `a hook prompt names the move back that fired it; "reviewing" to "reviewing" is no move back`},
 		{name: "a hook prompt on a phase outside the forward line", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Held, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "is no move back"},
 		{name: "a hook prompt that counted nothing", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Prompt: "Read the thread."}, reason: "its count is one or more"},
 		{name: "a hook prompt counting backward", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: -1, Prompt: "Read the thread."}, reason: "its count is one or more"},
@@ -453,11 +587,14 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a merge-queue read with no head", payload: MergeQueueRead{Number: 42}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue removal of no pull request", payload: MergeQueueRemoval{Head: "c0de"}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
 		{name: "a merge-queue removal with no head", payload: MergeQueueRemoval{Number: 42, Unread: true}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
+		{name: "a merge-holds change of no project", payload: MergeHoldsChanged{}, reason: "a merge-holds change names the project"},
 		{name: "a conflict confirm of no pull request", payload: ConflictConfirm{Head: "c0de", FirstReadAt: now}, reason: "a conflict confirm names the pull request it reads again and the head"},
 		{name: "a conflict confirm with no head", payload: ConflictConfirm{Number: 42, FirstReadAt: now}, reason: "a conflict confirm names the pull request it reads again and the head"},
 		{name: "a conflict confirm with no time of the first read", payload: ConflictConfirm{Number: 42, Head: "c0de"}, reason: "a conflict confirm names when the first read it reads again was made"},
 		{name: "a merge-forward message of no step", payload: MergeForwardMessage{Role: claim.RoleImplementer, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen}, reason: "is an ask, a hold, a landed or a review"},
 		{name: "a merge-forward ask to the tester", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen}, reason: "a merge-forward ask goes to the implementer"},
+		{name: "a merge-forward ask to the merger in accepting", payload: MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Accepting, PullRequest: 42, Why: ConflictMergeNext}, reason: "a merge-forward ask goes to the merger only while the issue stands in merging"},
+		{name: "a merge-forward ask to the merger in retro", payload: MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Retro, PullRequest: 42, Why: ConflictMergeNext}, reason: "a merge-forward ask goes to the merger only while the issue stands in merging"},
 		{name: "a merge-forward hold to the implementer", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Retro, PullRequest: 42, Why: ConflictMergeNext}, reason: "a merge-forward ask goes to the implementer"},
 		{name: "a merge-forward hold to the architect", payload: MergeForwardMessage{Role: claim.RoleArchitect, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Accepting, PullRequest: 42, Why: ConflictMergeNext}, reason: "a merge-forward ask goes to the implementer"},
 		{name: "a merge-forward landed to the architect", payload: MergeForwardMessage{Role: claim.RoleArchitect, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Accepting, PullRequest: 42}, reason: "a merge-forward ask goes to the implementer"},
@@ -616,7 +753,7 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a check bound with a field", row: OutboxRow{ID: 41, Kind: OutboxKindCheckBound, Payload: json.RawMessage(`{"look":1}`)}, reason: "unknown field"},
 		{name: "a role message with no body", row: OutboxRow{ID: 48, Kind: OutboxKindRoleMessage, Payload: json.RawMessage(`{"role":"legion.sjawhar-legion.LEGION-208.architect"}`)}, reason: "role message requires body"},
 		{name: "a hook prompt to an architect", row: OutboxRow{ID: 55, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"architect","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread."}`)}, reason: "never to an architect"},
-		{name: "a hook prompt on a move forward", row: OutboxRow{ID: 56, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"reviewer","from":"implementing","to":"reviewing","count":1,"counts":{},"prompt":"Read the thread."}`)}, reason: "is no move back"},
+		{name: "a hook prompt of a phase to itself", row: OutboxRow{ID: 56, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"reviewer","from":"reviewing","to":"reviewing","count":1,"counts":{},"prompt":"Read the thread."}`)}, reason: `a hook prompt names the move back that fired it; "reviewing" to "reviewing" is no move back`},
 		{name: "a hook prompt with an unknown field", row: OutboxRow{ID: 57, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"implementer","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread.","cap":2}`)}, reason: "unknown field"},
 		{name: "an update ask with no round", row: OutboxRow{ID: 58, Kind: OutboxKindUpdateAsk, Payload: json.RawMessage(`{"role":"tester","pod":"9d3f0c7a","text":"Push your work."}`)}, reason: "names the round it asks for"},
 		{name: "an update ask with an unknown field", row: OutboxRow{ID: 59, Kind: OutboxKindUpdateAsk, Payload: json.RawMessage(`{"role":"tester","round":"pod:9d3f0c7a","pod":"9d3f0c7a","text":"Push your work.","reasons":"image a, now b"}`)}, reason: "unknown field"},
@@ -624,6 +761,8 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a merge-queue read of no pull request", row: OutboxRow{ID: 59, Kind: OutboxKindMergeQueueRead, Payload: json.RawMessage(`{"number":0,"head":"c0de"}`)}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue removal of no pull request", row: OutboxRow{ID: 60, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"head":"c0de"}`)}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
 		{name: "a merge-queue removal naming a role", row: OutboxRow{ID: 61, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"role":"merger","number":42,"head":"c0de"}`)}, reason: "unknown field"},
+		{name: "a merge-holds change of no project", row: OutboxRow{ID: 62, Kind: OutboxKindMergeHoldsChanged, Payload: json.RawMessage(`{}`)}, reason: "a merge-holds change names the project"},
+		{name: "a merge-holds change naming a role", row: OutboxRow{ID: 63, Kind: OutboxKindMergeHoldsChanged, Payload: json.RawMessage(`{"project":"LEGION","role":"merger"}`)}, reason: "unknown field"},
 		{name: "a conflict confirm with no head", row: OutboxRow{ID: 62, Kind: OutboxKindConflictConfirm, Payload: json.RawMessage(`{"number":42,"firstReadAt":"2026-09-23T00:59:00Z"}`)}, reason: "a conflict confirm names the pull request it reads again and the head"},
 		{name: "a conflict confirm with no time of the first read", row: OutboxRow{ID: 66, Kind: OutboxKindConflictConfirm, Payload: json.RawMessage(`{"number":42,"head":"c0de"}`)}, reason: "a conflict confirm names when the first read it reads again was made"},
 		{name: "a conflict confirm with an unknown field", row: OutboxRow{ID: 63, Kind: OutboxKindConflictConfirm, Payload: json.RawMessage(`{"number":42,"head":"c0de","firstReadAt":"2026-09-23T00:59:00Z","base":"main"}`)}, reason: "unknown field"},
@@ -636,6 +775,12 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a retro's stored rating without its reason", row: OutboxRow{ID: 63, Kind: OutboxKindStepRecord, Payload: json.RawMessage(`{"id":"` + stepRecordID +
 			`","task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-leg-leg-1-implementer","generation":1,"rating":3}`)},
 			reason: "its reason or neither"},
+		{name: "a pending-basis seed with an unknown field", row: OutboxRow{ID: 60, Kind: OutboxKindPendingBasisSeed, Payload: json.RawMessage(`{"step":"spec","artifactId":"artifact-208","basisArtifactId":"artifact-100","basisVersion":3,"ask":"ask-100","generation":2,"registeredAt":"2026-09-23T01:00:00Z","approver":"user:alice"}`)}, reason: "unknown field"},
+		{name: "a pending-basis seed of no request", row: OutboxRow{ID: 61, Kind: OutboxKindPendingBasisSeed, Payload: json.RawMessage(`{"step":"spec","artifactId":"artifact-208","basisArtifactId":"artifact-100","basisVersion":3,"generation":2,"registeredAt":"2026-09-23T01:00:00Z"}`)}, reason: "a pending-basis seed names"},
+		{name: "a pending-basis seed of no registration", row: OutboxRow{ID: 65, Kind: OutboxKindPendingBasisSeed, Payload: json.RawMessage(`{"step":"spec","artifactId":"artifact-208","basisArtifactId":"artifact-100","basisVersion":3,"ask":"ask-100","generation":2}`)}, reason: "a pending-basis seed names"},
+		{name: "a re-parent seed with an unknown field", row: OutboxRow{ID: 62, Kind: OutboxKindReparentSeed, Payload: json.RawMessage(`{"parent":"LEGION-301","tree":"LEGION-300","ran":"it ran as a tree of its own","told":true}`)}, reason: "unknown field"},
+		{name: "a re-parent seed of no tree", row: OutboxRow{ID: 63, Kind: OutboxKindReparentSeed, Payload: json.RawMessage(`{"parent":"LEGION-301","ran":"it ran as a tree of its own"}`)}, reason: "a re-parent seed names"},
+		{name: "a stored phase-ended row whose dropped merge forward names no role", row: OutboxRow{ID: 64, Kind: OutboxKindPhaseEnded, Payload: json.RawMessage(`{"role":"tester","from":"testing","to":"awaiting_children","reason":"LEGION-209 is open","mergeForward":{"head":"c0de","base":"main"}}`)}, reason: droppedMergeForwardRoleRefusal},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := DecodeOutboxPayload(tc.row)
@@ -650,11 +795,55 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 // of the implementer or the tester with no phase.
 const checkLookRefusal = "a supervise check look names a start of the implementer or the tester with no phase"
 
+// droppedMergeForwardRefusal is the validation's words for a phase-ended message that names a
+// dropped merge forward (PhaseEnded.MergeForward) with no head or no base: the message names both
+// to the worker it goes to.
+const droppedMergeForwardRefusal = "a phase-ended message that names a dropped merge forward names its head and its base"
+
+// droppedMergeForwardRoleRefusal is the validation's words for a phase-ended message whose
+// dropped merge forward names no role, or a role no merge forward is asked of: the role is the
+// one the message names the merge forward to, the implementer or the merger.
+const droppedMergeForwardRoleRefusal = "a phase-ended message that names a dropped merge forward names the role it was asked of, the implementer or the merger"
+
+// A phase_ended row decodes strictly (DecodeOutboxPayload) whether or not it names a merge
+// forward the move into awaiting_children dropped before it landed: a row a release before this
+// one wrote, or one that dropped none, carries no `mergeForward`, and a row that dropped one
+// carries its head, its base and the role it was asked of under that name.
+func TestAPhaseEndedRowDecodesWithAndWithoutADroppedMergeForward(t *testing.T) {
+	const reason = "the admission pass stopped the tester's testing phase, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo)"
+	ended := PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: reason}
+	dropped := ended
+	dropped.MergeForward = &DroppedMergeForward{Head: "c0de", Base: "main", Role: claim.RoleImplementer}
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    PhaseEnded
+	}{
+		{name: "a row that names no dropped merge forward", payload: `{"role":"tester","from":"testing","to":"awaiting_children","reason":"` + reason + `"}`,
+			want: ended},
+		{name: "a row that names a dropped merge forward", payload: `{"role":"tester","from":"testing","to":"awaiting_children","reason":"` + reason +
+			`","mergeForward":{"head":"c0de","base":"main","role":"implementer"}}`, want: dropped},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := OutboxRow{ID: 70, Kind: OutboxKindPhaseEnded, Issue: "LEGION-208", Payload: json.RawMessage(tc.payload)}
+			got, err := DecodeOutboxPayload(row)
+			if err != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("the row decodes as %#v, %v; want %#v", got, err, tc.want)
+			}
+		})
+	}
+}
+
+// newsOnlyRefusal is the validation's words for a supervise row marked a news-only start that is
+// not a start of no task and no entry naming the phase of the holder it tells, or none for an
+// architect.
+const newsOnlyRefusal = "a supervise start for news alone carries no task and no entry"
+
 // A hook prompt's message is three parts with a blank line between them: the daemon's header,
 // the hook's words exactly as the deployment wrote them, and the daemon's remaining facts. The
 // counts stand below the words, because the shipped hook's words point at them, and the header
 // stands above, because a worker knows a hook by the line it starts with. The counts are listed
-// in the order phase.BackwardPairs() gives, which is neither the map's own order nor
+// in the order phase.MovePairs() gives, which is neither the map's own order nor
 // alphabetical, so two readings of one row read alike. The pull-request sentence stands only for
 // an issue with a pull request, and the words of the hook come through whole: a prompt that
 // spells a word in angle brackets is published with it, since the daemon substitutes nothing
@@ -830,7 +1019,9 @@ func TestAParkedDecisionKeepsItsDecisionThroughTheRow(t *testing.T) {
 	}
 }
 
-// SpecDecision names the three notice kinds a person's spec decision writes, and no other.
+// SpecDecision names the three notice kinds a person's spec decision writes, and no other: the
+// three basis notices carry an actor and a ref too, and are no spec decision, so the backlog relay
+// passes none of them on.
 func TestSpecDecisionNamesTheThreeKindsAPersonsSpecDecisionWrites(t *testing.T) {
 	for kind, want := range map[NoticeKind]DecisionKind{
 		"design-approved":          DecisionDesignApproved,
@@ -839,6 +1030,9 @@ func TestSpecDecisionNamesTheThreeKindsAPersonsSpecDecisionWrites(t *testing.T) 
 		"child-status":             "",
 		"worker-died":              "",
 		ParkedDecisionNotice:       "",
+		"basis-ended":              "",
+		"basis-changes-requested":  "",
+		"resting-root":             "",
 	} {
 		got, ok := SpecDecision(kind)
 		if got != want || ok != (want != "") {
@@ -1012,8 +1206,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	answered := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
 	paced := answered.Add(time.Minute)
 	// One notice per kind, each as its own kind's requirements have it: a catch-up carries its
-	// account of the tree, the three spec decisions the person who decided and the reference,
-	// and no other kind carries either of those.
+	// account of the tree, the three spec decisions and the three basis notices the person who
+	// acted and the reference, and no other kind carries either of those.
 	// The pacing's two moments are a catch-up's alone (Notice.PacedAt), so that row alone carries
 	// them; the re-hold's restore of them below is a no-op on the rest, as it is in the daemon.
 	//
@@ -1039,7 +1233,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "worker-stalled", Role: claim.RoleImplementer,
 			Reason: "the daemon ended the implementer's turn and started a replacement in its place: its agent last stepped at 2026-11-08T08:00:00Z, past the bound this deployment gives the role, and its session was brought back on the replacement the daemon started"},
 		{Kind: "worker-silent", Role: claim.RoleTester, Phase: phase.Testing,
-			Reason: "LEGION-208's tester is a phase worker nothing will prompt: its process is up and between turns, it holds no task of testing, and its agent last stepped at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment gives a phase worker (worker_silence_minutes), so the daemon wrote the start row that sends the phase's task again, on phase entry 2 its phase row names and its claim was already given. A suspension an operator holds over the claim refuses that start when the outbox runs it."},
+			Reason: "LEGION-208's tester is a phase worker nothing will prompt: its process is up and between turns, it holds no task of testing, and its agent last stepped at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment gives a phase worker (worker_silence_minutes), so the daemon wrote the start row that sends the phase's task again, on phase entry 2 its phase row names and its claim was already given. A suspension the operator or the controller holds over the agent refuses that start when the outbox runs it."},
 		{Kind: "worker-background-stalled", Role: claim.RoleTester, Phase: phase.Testing,
 			Reason: "LEGION-208's tester is waiting on background work of its own that has stood too long: its session reports async-job running and last said so at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment sets (worker_background_hours). Nothing was sent to it and nothing will be: the daemon cannot tell a background job that hung from a long one, so this is yours to read."},
 		{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: string(HoldEscalated)},
@@ -1057,20 +1251,52 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec"},
 		{Kind: "design-changes-requested", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec", Reason: "name the rollback path"},
 		{Kind: "carried-gate-opened", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec", Reason: "the gate came with the hand-over"},
+		{Kind: "basis-ended", Role: claim.RoleArchitect, Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-100/spec",
+			Reason: "a person requested changes on version 3 of LEGION-100's spec, so the spec step of LEGION-208 no longer waits on it"},
+		{Kind: "basis-changes-requested", Role: claim.RoleArchitect, Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-100/spec",
+			Reason: "name the rollback path"},
+		{Kind: "resting-root", Role: claim.RoleArchitect, Version: 3, Ref: "dispatch://LEGION-100/spec",
+			Reason: "the spec step of LEGION-208 rests on version 3 of LEGION-100's spec"},
 		{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-209 is done"},
 		{Kind: "child-status", Role: claim.RoleArchitect, Reason: "LEGION-209 is todo; it runs again under LEGION-208"},
 		{Kind: "children-first", Role: claim.RoleArchitect, Reason: "LEGION-208 starts no phase of its own while LEGION-209 is open under it"},
+		{Kind: "awaiting-children", Role: claim.RoleArchitect, Phase: phase.Testing, Summary: "Tests passed", Verdict: "pass",
+			Reason: "LEGION-208 is in awaiting_children, holding the start of reviewing: the tester completed testing"},
 		{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: "LEGION-209 has waited for its release since 2026-11-08T09:00:00Z"},
 		{Kind: "child-not-recorded", Role: claim.RoleArchitect, Reason: "LEGION-209 was not recorded under your tree: the review App is not installed on acme/gadgets; the daemon said so on the issue. Set a repository both Legion Apps are installed on, spelled as GitHub spells it (dispatch issue-update --repo owner/name), then release it again."},
 		{Kind: "catch-up", Role: claim.RoleArchitect, PacedAt: paced, PacedFrom: answered,
 			Reason: "the tree of LEGION-208 at generation 3 as the daemon records it now; start or resume it as your role says",
 			CatchUp: &CatchUp{Generation: 3, Launch: 2,
-				Gates:  []CatchUpGate{{Step: DesignStepSpec, Gated: true, Artifact: "artifact-208", Version: 3, Approved: 3, Open: true}},
+				// The spec step on a person's approval, and two steps on an ancestor's basis, one
+				// open on its approval and one waiting on its request (dispatch://INFRA-3320, R2).
+				Gates: []CatchUpGate{
+					{Step: DesignStepSpec, Gated: true, Artifact: "artifact-208", Version: 3, Approved: 3, Open: true},
+					{Step: DesignStepCriteria, Gated: true, Artifact: "artifact-208-verification", Version: 2, Open: true,
+						Basis: &CatchUpBasis{Issue: "LEGION-100", Artifact: "artifact-100-verification", Version: 4, Approver: "user:alice", ApprovedAt: answered}},
+					{Step: DesignStepDecisions, Gated: true, Artifact: "artifact-208-decisions", Version: 1, Pending: true,
+						Basis: &CatchUpBasis{Issue: "LEGION-100", Artifact: "artifact-100-decisions", Version: 2, Ask: "ask-100"}},
+				},
 				Issues: []CatchUpIssue{{Key: "LEGION-208", Title: "The outbox's notices", Phase: phase.Implementing, Status: "in_progress"}}}},
 		{Kind: "checks-red", Role: claim.RoleArchitect, Phase: phase.Testing, Reason: "CI is red at head: pytest"},
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
+		{Kind: "merge-holds-changed", Role: claim.RoleArchitect, Reason: MergeHoldsChangedReason("LEGION")},
+		{Kind: ProviderErrorsNotice, Role: claim.RoleImplementer,
+			Reason: "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"},
+		{Kind: "task-stopped", Role: claim.RoleReviewer, Phase: phase.Reviewing, StoppedBy: "legion-legion-legion-208-architect",
+			Reason: "task a of LEGION-208 was stopped by its owner, the architect legion-legion-legion-208-architect"},
+		{Kind: "plan-not-taken", Role: claim.RoleArchitect,
+			Reason: "The first step of LEGION-209 took no plan of an earlier owner: version 1 of document 6a1f0c3e-2b7d-4e5a-9c81-3d4f5e6a7b80, given by legion-legion-legion-208-architect. It runs the default steps. To run a plan it did not take, give it again with register_plan as your own."},
+		{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro,
+			Reason: "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it; Legion starts the retro when the last one leaves. " +
+				StatusNotTakenYet + " " + EndChildRule},
+		{Kind: WorkspaceKeptNotice, Role: claim.RoleArchitect,
+			Reason: "The daemon did not delete the pod of LEGION-209 (pod pod-uid). No role process runs in this pod, so the pod's launcher read its workspace before the delete."},
+		{Kind: WorkspaceTakenNotice, Role: claim.RoleArchitect,
+			Reason: "The daemon replaced the pod of LEGION-209 (pod pod-uid). The read of the workspace before the replacement found one commit that no branch or tag on origin holds."},
+		{Kind: HookPromptUndeliveredNotice, Role: claim.RoleArchitect,
+			Reason: "Legion hook back-to-implementing's prompt to the implementer of LEGION-208 was not delivered, because the implementer's claim is failed."},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",
@@ -1168,5 +1394,98 @@ func TestARowsBackoffDoublesFromOneSecondUpToSixtyFourSeconds(t *testing.T) {
 	}
 	if RetryBackoffMost != 64*time.Second {
 		t.Errorf("RetryBackoffMost = %s, want 64s, the backoff of every count past six", RetryBackoffMost)
+	}
+}
+
+// A phase-ended message gives R10's words (dispatch://INFRA-3320 R10) in one of three forms, word
+// for word. Each says that the phase ended and no task follows, that a completion of it is
+// refused, and that the issue's next task comes once its children are finished, and ends with the
+// reason that names the open children.
+//
+//   - The plain form, where the move dropped no merge forward that had not landed: the worker
+//     commits and pushes what it has and does no more work on the phase. The implementer is told
+//     the same, so the role alone does not choose the form.
+//   - The asked role's form, where the move dropped one and the worker is the role it was asked
+//     of, here the implementer: the plain words, with the dropped merge forward named (the issue,
+//     the base and the head), the rule that a role that has begun the merge finishes it, pushes it
+//     and does nothing more and one that has not begun it begins none, and that the daemon does
+//     not ask for it again and the role merges the base forward only once GitHub reads the pull
+//     request CONFLICTING.
+//   - Any other worker's form, where the move dropped one: "Commit and push" gives way to writing
+//     and pushing nothing more, because the role it was asked of may be merging in the workspace
+//     they share, and putting what it found on the Dispatch issue.
+//
+// The same words are asserted by internal/admit's and internal/daemon's
+// TestParentWaitsHoldsEveryPhaseStart.
+func TestAPhaseEndedMessageIntoAwaitingChildrenGivesTheWaitsOwnWords(t *testing.T) {
+	const reason = "the admission pass stopped the %s's %s phase, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo), LEGION-210 (backlog)"
+	tested, implemented := fmt.Sprintf(reason, "tester", "testing"), fmt.Sprintf(reason, "implementer", "implementing")
+	dropped := &DroppedMergeForward{Head: "c0de", Base: "main", Role: claim.RoleImplementer}
+	for _, tc := range []struct {
+		name  string
+		ended PhaseEnded
+		want  string
+	}{
+		{name: "the plain form to the tester",
+			ended: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: tested},
+			want: "LEGION-208: the daemon ended your testing phase, and the issue is in awaiting_children now: it waits on its open Dispatch children, and no task of yours follows." +
+				" A completion of testing is refused (HANDOFF_NOT_CURRENT_PHASE)." +
+				" Commit and push what you have to the issue's branch, and do no more work on testing." +
+				" The daemon gives the issue its next task once its children are finished." +
+				" Nothing of yours is stopped: your turn, your jobs, your process and your session run on." +
+				" Reason: " + tested + "."},
+		{name: "the plain form to the implementer",
+			ended: PhaseEnded{Role: claim.RoleImplementer, From: phase.Implementing, To: phase.AwaitingChildren, Reason: implemented},
+			want: "LEGION-208: the daemon ended your implementing phase, and the issue is in awaiting_children now: it waits on its open Dispatch children, and no task of yours follows." +
+				" A completion of implementing is refused (HANDOFF_NOT_CURRENT_PHASE)." +
+				" Commit and push what you have to the issue's branch, and do no more work on implementing." +
+				" The daemon gives the issue its next task once its children are finished." +
+				" Nothing of yours is stopped: your turn, your jobs, your process and your session run on." +
+				" Reason: " + implemented + "."},
+		{name: "the implementer's form, under a merge forward the move dropped before it landed",
+			ended: PhaseEnded{Role: claim.RoleImplementer, From: phase.Implementing, To: phase.AwaitingChildren, Reason: implemented, MergeForward: dropped},
+			want: "LEGION-208: the daemon ended your implementing phase, and the issue is in awaiting_children now: it waits on its open Dispatch children, and no task of yours follows." +
+				" A completion of implementing is refused (HANDOFF_NOT_CURRENT_PHASE)." +
+				" Commit and push what you have to the issue's branch, and do no more work on implementing." +
+				" The daemon dropped the merge forward of main onto head c0de that it asked of you for LEGION-208: if you have begun that merge, finish it, push it and do nothing more; if you have not begun it, begin none." +
+				" The daemon does not ask for that merge forward again: in a later task of the issue, merge main forward only once GitHub reads its pull request CONFLICTING." +
+				" The daemon gives the issue its next task once its children are finished." +
+				" Nothing of yours is stopped: your turn, your jobs, your process and your session run on." +
+				" Reason: " + implemented + "."},
+		{name: "another worker's form, under a merge forward the move dropped before it landed",
+			ended: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: tested, MergeForward: dropped},
+			want: "LEGION-208: the daemon ended your testing phase, and the issue is in awaiting_children now: it waits on its open Dispatch children, and no task of yours follows." +
+				" A completion of testing is refused (HANDOFF_NOT_CURRENT_PHASE)." +
+				" Write and push nothing more, because the implementer may be merging in the workspace you share: put what you found on the Dispatch issue, and do no more work on testing." +
+				" The daemon gives the issue its next task once its children are finished." +
+				" Nothing of yours is stopped: your turn, your jobs, your process and your session run on." +
+				" Reason: " + tested + "."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.ended.Message("LEGION-208"); got != tc.want {
+				t.Fatalf("the message = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The review a landed merge forward asks of the reviewer tells it to report what it decided to
+// the architect and to the worker of the phase the issue stands in, which can act on a request for
+// changes there. A reviewer step that ran before a tester step is asked while the issue stands in
+// testing, so it tells the tester too. In accepting the architect holds the phase, so it alone is
+// told.
+func TestAMergeForwardReviewTellsTheArchitectAndTheWorkerOfThePhase(t *testing.T) {
+	pr := PullRequest{Repo: "sjawhar/legion"}
+	for at, want := range map[phase.Phase]string{
+		phase.Testing:   " Then tell the architect and the tester what you decided, each on its own role topic.",
+		phase.Accepting: " Then tell the architect what you decided, on its role topic.",
+		phase.Retro:     " Then tell the architect and the implementer what you decided, each on its own role topic.",
+		phase.Merging:   " Then tell the architect and the merger what you decided, each on its own role topic.",
+	} {
+		review := MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main",
+			Phase: at, PullRequest: 42}
+		if got := review.Message("LEGION-208", pr); !strings.HasSuffix(got, want) {
+			t.Errorf("the review in %s reads %q, want it to end %q", at, got, want)
+		}
 	}
 }

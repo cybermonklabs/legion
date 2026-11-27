@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -17,13 +18,22 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // DesignGate is the word `gates.design` took before it took a list of steps, and which it still
 // accepts in place of one: `root-issues` for the single step spec, `off` for no step at all.
+//
+// The steps a word names are the ones every root must register, which is not every step a root
+// can be held on. Under `root-issues` a root's architect may also register its Verification
+// document as the step criteria, and from then on that root's tree is held on it as on the spec
+// (record.TreeSteps); a root that registers none is held on the spec alone. Under `off` no step
+// holds a tree: a registration records spec whatever step it names, and a criteria row kept
+// from a deployment that gated spec holds nothing.
 type DesignGate string
 
 const (
@@ -57,11 +67,15 @@ type Gates struct {
 	Design []record.DesignStep
 }
 
-// Steps is the design-gate steps the deployment gates, in the order it named them. The daemon
-// keeps one gate record for each step, and every reader of the gate asks this list
-// (classify.RequiredSteps). A nil list is the unset field, which gates the single step spec as
-// the gate did before a deployment could name a list, so a Config built without its Gates field
-// gates rather than waves through; a non-nil empty list is `off` and gates no step.
+// Steps is the design-gate steps the deployment gates, in the order it named them: the steps
+// every root must register before its tree works. The daemon keeps one gate record for each step
+// a root registers, and every reader of the gate asks this list through record.TreeSteps, so a
+// list that names spec and not criteria also holds a tree on criteria once its root's architect
+// registers the Verification document as that step: a tree can be gated on one step more than
+// this list names, never fewer. A nil list is the unset field, which gates the single step spec
+// as the gate did before a deployment could name a list, so a Config built without its Gates
+// field gates rather than waves through; a non-nil empty list is `off` and gates no step, and no
+// step joins it.
 func (g Gates) Steps() []record.DesignStep {
 	if g.Design == nil {
 		return DesignGateRootIssues.Steps()
@@ -71,18 +85,17 @@ func (g Gates) Steps() []record.DesignStep {
 
 // Project is a Dispatch project prefix's configuration: the Slack channels whose @-mentions reach
 // its controller, and whether a merge that closes one of its issues opens a production check at
-// all. Dispatch's mapping (Settings → Repositories → Projects) names the project's default
-// repository and the repositories the daemon prepares before an issue names one. The daemon reads
-// that mapping at boot and when it changes, never this file.
+// all. It names no repository: the daemon takes each issue's repository from Dispatch, which
+// resolves it from the issue, its ancestors or the project, and never from this file.
 type Project struct {
 	// SlackChannels are `slack_channels`, the Slack channel ids whose app mentions the project's
 	// controller subscribes to, in the file's order; nil when the file names none.
 	SlackChannels []string
 	// CommitIssueTrailerRepos are `commit_issue_trailer_repos`, the repositories whose commits a
 	// pane stamps with the issue key, in the file's order, and nil when the file names none. A
-	// pane stamps the commit when its launch's repository is one of these names. The boot checks
-	// each name against Dispatch's mapping for this project alone, which catches a typo. That
-	// mapping decides no reach: an issue may name any repository.
+	// pane stamps the commit when its launch's repository is one of these names. The load checks
+	// each name's shape and refuses two names of one repository; nothing compares them with
+	// anything at boot, since a project works in each repository both role Apps reach.
 	CommitIssueTrailerRepos []ghrepo.Repository
 	// Memory is `memory`, the project's per-tree memory setting; its zero value is off, which a
 	// file that names no block leaves.
@@ -101,6 +114,36 @@ type Project struct {
 	// role the file named when it opened keeps that role, and moving the key to off ends no
 	// check that is already open.
 	ProductionCheck claim.Role
+	// DefaultSteps is `default_steps` as the file names it, nil when it names none. Every reader
+	// asks RunsByDefault, which resolves the unset field.
+	DefaultSteps []plan.Step
+}
+
+// defaultStepWords is `default_steps` for a project that names none, as the file would write it:
+// today's line up to the owner's acceptance. With the retro and the merge Legion runs after
+// them, that is today's seven phases. It is the one definition of the default steps.
+var defaultStepWords = []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
+
+// unsetDefaultSteps is defaultStepWords read as steps, once.
+var unsetDefaultSteps = func() []plan.Step {
+	steps, err := plan.ParseSteps(strings.Join(defaultStepWords, " "))
+	if err != nil {
+		panic("config: the default steps are outside the plan's grammar: " + err.Error())
+	}
+	return steps
+}()
+
+// RunsByDefault is the project's default steps: the steps a task whose plan block names neither
+// steps nor a sub-owner runs, and the steps of the one task `default` of an issue whose owner
+// gives no plan or whose experiment's group takes none. They are `default_steps`, or today's line
+// up to the owner's acceptance for a project that names none, and for a Project the loader never
+// read, so a configuration built without the field runs today's line rather than no step. The
+// answer is the caller's own.
+func (p Project) RunsByDefault() []plan.Step {
+	if p.DefaultSteps != nil {
+		return slices.Clone(p.DefaultSteps)
+	}
+	return slices.Clone(unsetDefaultSteps)
 }
 
 // ProductionCheckOff is the one word of `production_check` that takes the check away, which the
@@ -145,7 +188,6 @@ const missingDispatchTokenFile = "dispatch_token_file is required when dispatch_
 
 var (
 	projectKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*$`)
-	roleNamePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 	// slackChannelPattern is a Slack channel id: C for a public channel, G for a private one, then
 	// capital letters and digits. It is one NATS subject token of the mention topic the controller
 	// subscribes to (notifications.slack.<team>.<channel>.mention), so nothing else is taken.
@@ -167,6 +209,9 @@ func readProjects(value *yaml.Node, key string) (map[string]Project, []string, e
 		keyNode, entryNode := value.Content[index], value.Content[index+1]
 		name := keyNode.Value
 		if keyNode.Kind != yaml.ScalarNode || !projectKeyPattern.MatchString(name) {
+			if keyNode.Kind != yaml.ScalarNode || !keyShape(name) {
+				return nil, nil, fmt.Errorf("%s: a project's key must match ^[A-Z][A-Z0-9]*$", unknownKeyAt(keyNode, key))
+			}
 			return nil, nil, fmt.Errorf(`%s key %q must match ^[A-Z][A-Z0-9]*$`, key, name)
 		}
 		if _, exists := projects[name]; exists {
@@ -205,11 +250,14 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	fields, err := describedMembers(value, key, "projects.<KEY>")
 	var unknown unknownKeyError
 	if errors.As(err, &unknown) {
-		if unknown.name == "repo" {
-			return Project{}, nil, fmt.Errorf(`Unknown key %q: Dispatch holds the project's repository mapping (Settings → Repositories → Projects)`, key+".repo")
+		if unknown.node.Value == "repo" {
+			return Project{}, nil, fmt.Errorf(`Unknown key %q: the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project`, key+".repo")
+		}
+		if !keyShape(unknown.node.Value) {
+			return Project{}, nil, unknown
 		}
 		// The shipped loader's own words (validateProjectEntry, config.ts).
-		return Project{}, nil, fmt.Errorf(`Unknown key %q`, key+"."+unknown.name)
+		return Project{}, nil, fmt.Errorf(`Unknown key %q`, key+"."+unknown.node.Value)
 	}
 	if err != nil {
 		return Project{}, nil, err
@@ -242,7 +290,12 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 		// The block and `experiments.memory` are one experiment spelled two ways, and only here
 		// are both spellings in view: the memory member is read by the mapping's own key rather
 		// than by the block's value, so an empty block counts as written (checkExperimentMemory).
+		// The rules of `plan` come after it, so `plan` on `experiments.memory` gets that check's
+		// one refusal rather than the plan rules' advice to write `unit: issue`.
 		if err := checkExperimentMemory(project.Experiments, fields["memory"] != nil, key); err != nil {
+			return Project{}, nil, err
+		}
+		if err := checkExperimentPlans(project.Experiments, key); err != nil {
 			return Project{}, nil, err
 		}
 	}
@@ -264,7 +317,48 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 			return Project{}, nil, fmt.Errorf("%s.production_check must be %s or %s (got %q)", key, ProductionCheckOff, claim.RoleTester, word)
 		}
 	}
+	if steps := fields["default_steps"]; steps != nil {
+		if project.DefaultSteps, err = readDefaultSteps(steps, key+".default_steps"); err != nil {
+			return Project{}, nil, err
+		}
+	}
 	return project, warnings, nil
+}
+
+// readDefaultSteps is a project's `default_steps`: a list of steps, each entry one step in the
+// plan's grammar (plan.ParseSteps). The loader holds the list to the checks a plan of the one
+// task `default` with those steps passes (plan.Supported, then plan.Validate against Legion's own
+// roles), and refuses an empty list, so the steps a task with none runs are steps this release
+// carries out. A refusal names the key, then gives every reason of both checks.
+func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
+	words, err := readStrings(value, key)
+	if err != nil {
+		return nil, err
+	}
+	if len(words) == 0 {
+		return nil, fmt.Errorf("%s names no step", key)
+	}
+	steps := make([]plan.Step, 0, len(words))
+	for _, word := range words {
+		parsed, err := plan.ParseSteps(word)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", key, err)
+		}
+		if len(parsed) != 1 {
+			return nil, fmt.Errorf("%s names %q, which is not one step: each entry of the list is one step", key, word)
+		}
+		steps = append(steps, parsed[0])
+	}
+	task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
+	refusals := append(plan.Supported(task), plan.Validate(task, plan.Deployment{Roles: plan.BuiltinRoles()})...)
+	if len(refusals) > 0 {
+		reasons := make([]string, len(refusals))
+		for i, refusal := range refusals {
+			reasons[i] = refusal.Reason
+		}
+		return nil, fmt.Errorf("%s: %s", key, strings.Join(reasons, " "))
+	}
+	return steps, nil
 }
 
 // readSlackChannels is a project's `slack_channels`: Slack channel ids, each named once. An empty
@@ -527,18 +621,25 @@ func resolveGitHubApp(app GitHubApp, field string) (GitHubApp, error) {
 }
 
 // executePrivateKeyCommand runs command and returns its trimmed stdout. Its stderr goes to the
-// daemon's own stderr as it is written, so an operator sees what `agent-secrets` prints while it
-// waits for a person's grant (the request's id), and is kept for the failure's message.
+// daemon's own stderr a line at a time as it is written, so an operator sees what `agent-secrets`
+// prints while it waits for a person's grant (the request's id), and is kept for the failure's
+// message. Both print it by providerkeys.go's rule (keyCommandShown): a word of the command that
+// can be a secret's name, or the secret pasted in its place, stands as keyCommandWordShown, and a
+// line, or the whole stderr in the refusal, that still holds part of one, or a PEM block's first
+// line, is not printed, its length printed instead.
 func executePrivateKeyCommand(command, field string) (string, error) {
 	keyCommand := exec.Command("sh", "-c", command)
 	keyCommand.Env = runtime.WithoutNATSSeeds(os.Environ())
+	words := keyCommandWords(command)
 	var stderr strings.Builder
-	keyCommand.Stderr = io.MultiWriter(os.Stderr, &stderr)
+	live := &keyCommandLines{out: os.Stderr, field: field, words: words}
+	keyCommand.Stderr = io.MultiWriter(live, &stderr)
 	result, err := keyCommand.Output()
+	live.flush()
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			exit.Stderr = []byte(stderr.String())
+			exit.Stderr = []byte(keyCommandStderr(stderr.String(), words))
 		}
 		return "", commandError(field, err)
 	}
@@ -549,6 +650,96 @@ func executePrivateKeyCommand(command, field string) (string, error) {
 	return key, nil
 }
 
+// keyCommandWordShown stands for a word of private_key_command in what its stderr prints.
+const keyCommandWordShown = "[a word of the command]"
+
+// keyCommandWords are the words of command, the first included, of redact.HeldRun characters or
+// more, with any quote around them taken off, each shown as keyCommandWordShown: where an operator
+// names the secret the command reads (a secretsd key, a variable), where the key itself lands when
+// it is pasted into the command in its name's place, and the whole command when the key is pasted
+// in the command's place (`sh: 1: <key>: not found`).
+func keyCommandWords(command string) []redact.Word {
+	var words []redact.Word
+	for _, field := range strings.Fields(command) {
+		if word := strings.Trim(field, `'"`); len(word) >= redact.HeldRun {
+			words = append(words, redact.Word{Text: word, Shown: keyCommandWordShown})
+		}
+	}
+	return words
+}
+
+// keyCommandShown is text, private_key_command's stderr or a line of it, as the daemon prints it:
+// redact.Withheld's rule over words, the rule stderrShown prints a `secrets` command's stderr by,
+// and ok false, nothing of it to be printed, when what is left still holds a run of a word or a PEM
+// block's first line, which is the private key itself.
+func keyCommandShown(text string, words []redact.Word) (shown string, ok bool) {
+	if strings.Contains(text, "-----BEGIN") {
+		return "", false
+	}
+	return redact.Withheld(text, words)
+}
+
+// keyCommandStderr is private_key_command's whole stderr as its refusal quotes it
+// (keyCommandShown), or the words that say it is withheld.
+func keyCommandStderr(stderr string, words []redact.Word) string {
+	text := strings.TrimSpace(stderr)
+	if shown, ok := keyCommandShown(text, words); ok {
+		return shown
+	}
+	return fmt.Sprintf("its stderr (%d bytes) holds part of the command or a private key, so it is not printed", len(text))
+}
+
+// keyCommandLines writes private_key_command's stderr to out a line at a time, each line as
+// keyCommandShown prints it, or the words that say it is withheld; every line of a PEM block, its
+// first line to its last (`-----END`), is withheld, since only its first line says it is one. flush
+// writes what is left of a line the command did not end.
+type keyCommandLines struct {
+	out     io.Writer
+	field   string
+	words   []redact.Word
+	partial []byte
+	inPEM   bool
+}
+
+func (l *keyCommandLines) Write(p []byte) (int, error) {
+	l.partial = append(l.partial, p...)
+	for {
+		end := bytes.IndexByte(l.partial, '\n')
+		if end < 0 {
+			return len(p), nil
+		}
+		l.line(string(l.partial[:end]))
+		l.partial = l.partial[end+1:]
+	}
+}
+
+func (l *keyCommandLines) flush() {
+	if len(l.partial) > 0 {
+		l.line(string(l.partial))
+		l.partial = nil
+	}
+}
+
+func (l *keyCommandLines) line(text string) {
+	if strings.Contains(text, "-----BEGIN") {
+		l.inPEM = true
+	}
+	shown, ok := keyCommandShown(text, l.words)
+	if l.inPEM {
+		ok = false
+		l.inPEM = !strings.Contains(text, "-----END")
+	}
+	if ok {
+		fmt.Fprintln(l.out, shown)
+		return
+	}
+	fmt.Fprintf(l.out, "%s: a line of its stderr (%d bytes) holds part of the command or a private key, so it is not printed\n", l.field, len(text))
+}
+
+// resolvePrivateKeySecret is an App's private key read from the secretsd key name names. No refusal
+// names the key: it stands as keyNameShown, as provider_keys' do, since a key made only of letters,
+// digits and underscores passes as a name, so the name can be the key itself pasted where its name
+// goes. field names the setting.
 func resolvePrivateKeySecret(name, field string) (string, error) {
 	statusText, err := runAppSecretsGet(name, "--no-request", field)
 	if err != nil {
@@ -559,10 +750,10 @@ func resolvePrivateKeySecret(name, field string) (string, error) {
 		Tier string `json:"tier"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(statusText)), &status); err != nil || status.Key != name || status.Tier == "" {
-		return "", fmt.Errorf("%s: secrets get %s --no-request printed an unparsable status (expected {\"key\",\"tier\"})", field, name)
+		return "", fmt.Errorf(`%s: %s printed an unparsable status (expected {"key","tier"})`, field, shownCommand("--no-request"))
 	}
 	if status.Tier != "human" {
-		return "", fmt.Errorf("App private key %s is readable by agent-tier callers; move it to a daemon-only store", name)
+		return "", fmt.Errorf("%s: the App private key it names is readable by agent-tier callers; move it to a daemon-only store", field)
 	}
 	encoded, err := runAppSecretsGet(name, "--value", field)
 	if err != nil {
@@ -570,7 +761,7 @@ func resolvePrivateKeySecret(name, field string) (string, error) {
 	}
 	key, err := DecodePrivateKey(encoded)
 	if err != nil {
-		return "", fmt.Errorf("%s: %s did not decode to a PEM private key (expected base64 of a -----BEGIN block)", field, name)
+		return "", fmt.Errorf("%s: the secretsd key it names did not decode to a PEM private key (expected base64 of a -----BEGIN block)", field)
 	}
 	return key, nil
 }
@@ -614,19 +805,31 @@ func decodeBase64LikeNode(encoded string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(value)
 }
 
+// runAppSecretsGet runs `secrets get <name> <flag>`, returning its stdout. A failure names field
+// and the command with keyNameShown in place of name, and the child's stderr as stderrShown
+// prints it.
 func runAppSecretsGet(name, flag, field string) (string, error) {
 	args := []string{"get", name, flag}
 	environment := daemonEnvironment()
 	binary, ok := lookpath.On(pathValue(environment), "secrets")
 	if !ok {
-		return "", fmt.Errorf("%s: the secrets command is not on PATH, so %s cannot be read", field, name)
+		return "", fmt.Errorf("%s: the secrets command is not on PATH, so the secretsd key it names cannot be read", field)
 	}
 	command := exec.Command(binary, args...)
 	command.Env = environment
 	command.Stdin = os.Stdin
 	output, err := command.Output()
 	if err != nil {
-		return "", commandError(field+": secrets get "+name+" "+flag, err)
+		end := procgroup.Ended(err)
+		if !end.Ran() {
+			return "", fmt.Errorf("%s: could not run %s: %w", field, shownCommand(flag), err)
+		}
+		var exit *exec.ExitError
+		stderr := ""
+		if errors.As(err, &exit) {
+			stderr = string(exit.Stderr)
+		}
+		return "", fmt.Errorf("%s: %s failed (%s)%s", field, shownCommand(flag), end, stderrShown(stderr, name))
 	}
 	return string(output), nil
 }
@@ -654,6 +857,40 @@ func commandError(field string, err error) error {
 		return fmt.Errorf("%s failed (%s): %s", field, end, stderr)
 	}
 	return fmt.Errorf("%s failed (%s)", field, end)
+}
+
+// resolveDispatchTokenBroker settles `dispatch_token_broker` and `dispatch_token_transition_file`,
+// refusing each misuse with a message that names the key. resolve runs it before the runtime's own
+// required keys (checkKubernetesKeys), so a file that sets the broker without dispatch_url is told
+// about the broker and not only about the URL. The broker is the daemon's own pod identity, so
+// only `runtime: kubernetes` takes either key. It also needs the exchange audience, since a
+// launch then carries no Dispatch token and each role trades its pod's exchange identity for its
+// own. The transition file holds the shared token a pod built before the setting gets, so it is
+// taken only beside the setting. A `dispatch_token_broker: false` is the setting off, which every
+// runtime runs.
+func resolveDispatchTokenBroker(file fileConfig, configDir string, cfg *Config) error {
+	broker := file.DispatchTokenBroker != nil && *file.DispatchTokenBroker
+	switch {
+	case broker && file.Kubernetes == nil:
+		return errors.New("dispatch_token_broker is not used when runtime is tmux: a tmux daemon has no pod identity to trade at the secrets broker; remove dispatch_token_broker")
+	case file.DispatchTokenTransitionFile != nil && file.Kubernetes == nil:
+		return errors.New("dispatch_token_transition_file is not used when runtime is tmux: it holds the shared Dispatch token a pod built before dispatch_token_broker gets, and a tmux daemon starts no pod; remove dispatch_token_transition_file")
+	case file.DispatchTokenTransitionFile != nil && !broker:
+		return errors.New("dispatch_token_transition_file is set but dispatch_token_broker is not true: the file holds the shared Dispatch token a pod built before dispatch_token_broker gets, so the daemon reads it only under that setting")
+	case !broker:
+		return nil
+	case file.DispatchTokenFile != nil:
+		return errors.New("dispatch_token_file and dispatch_token_broker are both set: the daemon's Dispatch credential is the bearer a file holds or its own pod identity traded at the secrets broker, never both")
+	case file.DispatchURL == nil:
+		return errors.New("dispatch_token_broker is set but dispatch_url is not")
+	case file.Kubernetes.AgentSecrets == nil || file.Kubernetes.AgentSecrets.ExchangeAudience == "":
+		return errors.New("dispatch_token_broker needs runtime.kubernetes.agent_secrets.exchange_audience: under the setting a launch carries no Dispatch token, and each role trades its pod's exchange identity for its own, which no pod carries while exchange_audience is unset")
+	}
+	cfg.DispatchTokenBroker = true
+	if file.DispatchTokenTransitionFile != nil {
+		cfg.DispatchTokenTransitionFile = underConfig(*file.DispatchTokenTransitionFile, configDir)
+	}
+	return nil
 }
 
 func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
@@ -684,11 +921,13 @@ func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
 	if file.GitHubApps != nil {
 		cfg.GitHubApps = *file.GitHubApps
 	}
-	// A workflow boot needs its Dispatch bearer, its intake, and its own project; each is refused
-	// here, so `legion config check` never passes a file `legion start` refuses.
+	// A workflow boot needs its Dispatch credential, its intake, and its own project; each is
+	// refused here, so `legion config check` never passes a file `legion start` refuses.
+	// The credential is the bearer dispatch_token_file names, or, under dispatch_token_broker, the
+	// daemon's own pod identity (resolveDispatchTokenBroker).
 	if file.DispatchURL != nil {
 		switch _, ok := cfg.Projects[cfg.Project]; {
-		case cfg.DispatchTokenFile == "":
+		case cfg.DispatchTokenFile == "" && !cfg.DispatchTokenBroker:
 			return errors.New(missingDispatchTokenFile)
 		case len(cfg.NatsURLs) == 0:
 			return errors.New("nats_urls is required when dispatch_url is configured: the workflow's intake reads Envoy's notification stream")

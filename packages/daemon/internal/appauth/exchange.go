@@ -125,9 +125,10 @@ func (m *Manager) exchange(ctx context.Context, jwt, installation string, permis
 			// GitHub documents its rate limits on a 429 and a 403 (githubrest.RateLimited), but
 			// the headers or the secondary-limit text of a limit on a 422 are that limit too,
 			// and no verdict on what the request asked for: the same request may pass later, so
-			// it is GitHub's trouble and never the installation's permissions. Its answer is no
-			// rate limit githubrest names, so the daemon's start retries it as GitHub's trouble
-			// rather than waiting it out (internal/daemon's bootLimit).
+			// it is GitHub's trouble and never the installation's permissions. githubrest names
+			// no rate limit in it (RateLimited is false), so it is made a TransientError here,
+			// alone, which a mint's callers read as GitHub's trouble and never as a refusal of
+			// the narrowing (NarrowingRefused).
 			if githubrest.RateLimitSignals(response, body) {
 				return Lease{}, &TransientError{Err: refused}
 			}

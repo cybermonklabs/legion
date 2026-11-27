@@ -1084,7 +1084,7 @@ func (h heldInstallation) Strike(context.Context, string, time.Duration) (rateli
 // for, so it is in no count.
 func TestTheServersRateReadingCountsEachCallerUnderItsKind(t *testing.T) {
 	database := storetest.Open(t)
-	mapCIReconcileRepository(t, database)
+	seedCIReconcileDefault(t, database)
 	seedDeliverySettings(t, database)
 	started := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
 	if err := delivery.UpsertRun(t.Context(), database.Pool, delivery.DeliveryRun{

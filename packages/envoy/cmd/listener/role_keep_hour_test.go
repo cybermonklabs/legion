@@ -17,6 +17,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
@@ -76,6 +77,10 @@ type hourListener struct {
 	// lane is the role lane's handler over cfg: a raw role publish handed to it is one the lane
 	// took on its own subscription.
 	lane natsgo.MsgHandler
+	// sweepPasses counts the passes its sweep has ended (startSweeps), and sweepStarted says
+	// whether startSweeps has started that sweep.
+	sweepPasses  atomic.Int64
+	sweepStarted bool
 }
 
 func newHourRig(t *testing.T, sessionOptions ...session.SessionRegistryOption) *hourRig {
@@ -114,14 +119,30 @@ func (r *hourRig) setClock(at time.Time) { r.offset.Store(int64(time.Until(at)))
 // client is the first listener's connection, which the tests read the stream through.
 func (r *hourRig) client() *bus.Client { return r.listeners[0].harness.client }
 
-// startSweeps starts each listener's sweep of the kept lanes at an interval of one second, where
-// main.go starts it at five minutes, and stops both when the test ends, waiting for the pass each
-// loop has in flight.
+// hourSweepInterval is how often the rig's listeners sweep their kept lanes, where main.go sweeps
+// every roleWakeInterval. It is short because no row waits out an interval: letSweepsRun waits for
+// a count of passes, and every other wait polls for the state a pass makes.
+const hourSweepInterval = 200 * time.Millisecond
+
+// startSweeps starts each listener's sweep of the kept lanes, the loop startKeptRoleSweep runs over
+// its pool of roleKeepSweepHandovers slots, at hourSweepInterval and phase zero, so each pass falls
+// on a whole interval of the clock and the first within one interval of the start (untilPhase). It
+// counts each pass whose scan of the lanes has ended (sweepKeptRoleLanes returned), and stops both
+// when the test ends, waiting for the pass each loop has in flight. A count does not wait for the
+// handovers a pass started: a handover runs on, under roleKeepHandoverWindow (10 minutes), for as
+// long as its lane has a holder to give copies to, holding its role's guard and its slot, and a
+// pass after it passes that role over (roleKeepGuards.tryHold). A wait for that work would wait
+// for the window, not for the sweep.
 func (r *hourRig) startSweeps() {
 	ctx, cancel := context.WithCancel(context.Background())
 	var loops []<-chan struct{}
 	for _, l := range r.listeners {
-		loops = append(loops, startKeptRoleSweep(ctx, l.cfg, time.Second))
+		cfg, slots, passes := l.cfg, make(chan struct{}, roleKeepSweepHandovers), &l.sweepPasses
+		l.sweepStarted = true
+		loops = append(loops, startSweep(ctx, hourSweepInterval, 0, func(ctx context.Context) {
+			sweepKeptRoleLanes(ctx, cfg, slots)
+			passes.Add(1)
+		}))
 	}
 	r.t.Cleanup(func() {
 		cancel()
@@ -131,10 +152,25 @@ func (r *hourRig) startSweeps() {
 	})
 }
 
-// letSweepsRun lets each listener's one-second sweep make at least two more passes. It is the one
-// wait in these tests that does not poll for a state, because what it waits for is that nothing
-// more happens.
-func letSweepsRun() { time.Sleep(2500 * time.Millisecond) }
+// letSweepsRun waits until each listener's sweep has scanned its lanes twice more, in two passes
+// that began after the call (startSweeps). It is the wait these rows make for nothing more to
+// happen, which only the sweeps could still make happen, as the 2.5 s sleep it replaces was, and it
+// counts passes rather than waiting out a stretch of time.
+func (r *hourRig) letSweepsRun() {
+	r.t.Helper()
+	for i, l := range r.listeners {
+		if !l.sweepStarted {
+			r.t.Fatalf("listener %d's sweep was waited for before startSweeps started it", i)
+		}
+		// The pass in flight now may have begun before the call; the two after it did not. Three
+		// passes need about 600 ms (hourSweepInterval), so the package's own bound leaves this
+		// wait a hundred times what it needs, far past the ten times a wait of its own would take.
+		through := l.sweepPasses.Load() + 3
+		waitFor(r.t, fmt.Sprintf("two more passes of listener %d's kept-lane sweep", i), func() bool {
+			return l.sweepPasses.Load() >= through
+		})
+	}
+}
 
 // hourAnswer is the publish route's answer as these tests read it: the envelope it names and the
 // fields of a 202 kept.
@@ -226,7 +262,7 @@ func (r *hourRig) deregister(l *hourListener, sessionID string) {
 	if recorder.Code != http.StatusOK {
 		r.t.Fatalf("DELETE /v1/sessions/%s: status %d, body %s", sessionID, recorder.Code, recorder.Body.String())
 	}
-	waitFor(r.t, 10*time.Second, "both listeners read "+sessionID+" as not live", func() bool {
+	waitFor(r.t, "both listeners read "+sessionID+" as not live", func() bool {
 		for _, l := range r.listeners {
 			if _, state := l.harness.sessions.Lookup(sessionID); state == session.Live {
 				return false
@@ -418,7 +454,7 @@ func (r *hourRig) cursor(role string) bus.KeptRoleCursor {
 // for a copy it ended or forwarded, after the dead letter or the forward a test may already read.
 func (r *hourRig) waitPassed(role string, seq uint64) {
 	r.t.Helper()
-	waitFor(r.t, 20*time.Second, fmt.Sprintf("role %s's cursor passing its copy at %d", role, seq), func() bool {
+	waitFor(r.t, fmt.Sprintf("role %s's cursor passing its copy at %d", role, seq), func() bool {
 		return r.cursor(role).Kept >= seq
 	})
 }
@@ -427,7 +463,7 @@ func (r *hourRig) waitPassed(role string, seq uint64) {
 // subject.
 func (r *hourRig) waitDeadLetter(held laneCopy) {
 	r.t.Helper()
-	waitFor(r.t, 20*time.Second, "the dead letter of event "+held.item.EventID, func() bool {
+	waitFor(r.t, "the dead letter of event "+held.item.EventID, func() bool {
 		return len(r.deadLetters(held.item.SourceSession, held.item.EventID)) > 0
 	})
 }
@@ -479,17 +515,17 @@ func (r *hourRig) lines(name string, where map[string]any) []map[string]any {
 // subject once, which frames, its own subscription of that subject, receives once.
 func (r *hourRig) returnTo(holder, eventID string, frames <-chan contracts.Envelope) {
 	r.t.Helper()
-	letSweepsRun()
+	r.letSweepsRun()
 	if held := r.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 0 {
 		r.t.Fatalf("%s's agent subject holds %d messages while it is not live, want none", holder, len(held))
 	}
 	if err := r.listeners[1].harness.sessions.Put(holder, liveRoleActEntry); err != nil {
 		r.t.Fatalf("register %s again: %v", holder, err)
 	}
-	waitFor(r.t, 20*time.Second, "the kept copy reaching "+holder, func() bool {
+	waitFor(r.t, "the kept copy reaching "+holder, func() bool {
 		return len(r.envelopesOn(contracts.LegacyAgentSubject(holder))) > 0
 	})
-	letSweepsRun()
+	r.letSweepsRun()
 	if held := r.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 1 || held[0].EventID != eventID {
 		r.t.Fatalf("%s's agent subject holds %+v, want the kept copy of event %s once", holder, held, eventID)
 	}
@@ -500,9 +536,10 @@ func (r *hourRig) returnTo(holder, eventID string, frames <-chan contracts.Envel
 
 // assertDeadLetterOf fails unless letter is the dead letter of held, a copy of role's lane: from
 // Envoy on its sender's agent subject, naming the copy as its source event, with a summary that
-// names the role, and a text that names the role, the copy's event id and first line, the time
-// Envoy kept it, the time Envoy dropped it - no earlier than droppedAfter and no later than
-// droppedBy - and each of says.
+// names the role, and a text that names the role, the copy's event id, the time Envoy kept it, the
+// time Envoy dropped it - no earlier than droppedAfter and no later than droppedBy - and each of
+// says, and that gives the copy's first line for a copy from any source but dispatch and none of
+// its summary for a Dispatch frame (keptCopyNamed).
 func assertDeadLetterOf(t *testing.T, letter contracts.Envelope, role string, held laneCopy, droppedAfter, droppedBy time.Time, says ...string) {
 	t.Helper()
 	if letter.Source != "envoy" || letter.SourceSession != "" || letter.Topic != contracts.LegacyAgentSubject(held.item.SourceSession) || letter.SourceEventID != held.item.EventID {
@@ -512,10 +549,14 @@ func assertDeadLetterOf(t *testing.T, letter contracts.Envelope, role string, he
 		t.Fatalf("the dead letter's summary is %q, want it to name role %s", letter.PayloadSummary, role)
 	}
 	kept := "Envoy kept the message at " + held.stored.UTC().Format(time.RFC3339)
-	for _, want := range append([]string{role, held.item.EventID, held.item.PayloadSummary, kept}, says...) {
+	for _, want := range append([]string{role, held.item.EventID, kept}, says...) {
 		if !strings.Contains(letter.Payload, want) {
 			t.Fatalf("the dead letter's text does not say %q:\n%s", want, letter.Payload)
 		}
+	}
+	if quoted := strings.Contains(letter.Payload, held.item.PayloadSummary); quoted != (held.item.Source != "dispatch") {
+		t.Fatalf("the dead letter of a copy from source %s quotes its summary %q: %t, want %t:\n%s",
+			held.item.Source, held.item.PayloadSummary, quoted, !quoted, letter.Payload)
 	}
 	_, rest, found := strings.Cut(letter.Payload, "Envoy dropped the message at ")
 	stamp, _, _ := strings.Cut(rest, ".")
@@ -617,9 +658,10 @@ func (s *deadLetterSeam) assertTakenOver(t *testing.T, held laneCopy) []deadLett
 // rows (p), (q) and (r) for the parts of R1 and R3 no check covers: a kept copy is forwarded
 // within its hour or dropped at its end, its sender gets one dead letter where it is owed one, and
 // every outcome is counted and logged once however many listeners and sweeps reach the copy. Each
-// row runs two listeners on a stream of its own, sweeping every second where the row sweeps, and
+// row runs two listeners on a stream of its own, sweeping every hourSweepInterval where the row sweeps, and
 // moves their clock rather than waiting an hour.
 func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
+	t.Parallel()
 	t.Run("a a publish to a role with no claim is answered 202 with kept_until one hour after the keep", func(t *testing.T) {
 		rig := newHourRig(t)
 		const role = "hour-unclaimed"
@@ -654,7 +696,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		}
 		defer release()
 		rig.startSweeps()
-		letSweepsRun()
+		rig.letSweepsRun()
 		if forwards := rig.lines(hourForwardLine, map[string]any{"role": role}); len(forwards) != 0 {
 			t.Fatalf("the copy was forwarded with no claim: %v", forwards)
 		}
@@ -689,7 +731,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.startSweeps()
 		for _, by := range []time.Duration{0, 59 * time.Minute} {
 			rig.moveClock(by)
-			letSweepsRun()
+			rig.letSweepsRun()
 			if dropped, letters := rig.count(hourExpired), rig.deadLetters(sender, held.item.EventID); dropped != 0 || len(letters) != 0 {
 				t.Fatalf("with the clock %s on, inside the copy's hour, the sweeps counted %d drops and stored %d dead letters, want none", by, dropped, len(letters))
 			}
@@ -698,7 +740,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.moveClock(time.Hour + time.Minute)
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 		if dropped := rig.count(hourExpired); dropped != 1 {
 			t.Fatalf("envoy_role_kept_expired_total rose by %d, want one", dropped)
 		}
@@ -727,7 +769,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			held = append(held, rig.copyOf(role, answer.EventID))
 		}
 		rig.startSweeps()
-		letSweepsRun()
+		rig.letSweepsRun()
 		for i, sender := range senders {
 			if dropped, letters := rig.count(hourExpired), rig.deadLetters(sender, held[i].item.EventID); dropped != 0 || len(letters) != 0 {
 				t.Fatalf("inside the copies' hour, the sweeps counted %d drops and stored %d dead letters for %s, want none", dropped, len(letters), sender)
@@ -736,7 +778,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 
 		rig.moveClock(time.Hour + time.Minute)
 		rig.waitPassed(role, held[1].sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 		for i, sender := range senders {
 			letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 			if len(letters) != 1 {
@@ -752,18 +794,19 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	t.Run("e a copy that named no session and a copy the outbox wrote are counted and logged once with no dead letter", func(t *testing.T) {
 		rig := newHourRig(t)
 		const role = "hour-no-letter"
-		answer := rig.kept(rig.listeners[0], roleMessage(role, "", "a publish that names no session"))
-		unnamed := rig.copyOf(role, answer.EventID)
+		// A copy that names no session, as a listener before the publish route refused to keep one
+		// stored it: the route answers such a publish 404 now (roleSend.noHolder).
+		unnamed := rig.keep(role, listenerCopy(role, "", "a publish that names no session"))
 		outbox := rig.keep(role, outboxCopy(role, "ses_hour_outbox_sender", "a Dispatch event routed to the role"))
 		rig.startSweeps()
-		letSweepsRun()
+		rig.letSweepsRun()
 		if dropped, letters := rig.count(hourExpired)+rig.count(hourExpiredOutbox), rig.envoyLetters(); dropped != 0 || len(letters) != 0 {
 			t.Fatalf("inside the copies' hour, the sweeps counted %d drops and stored dead letters %+v, want none", dropped, letters)
 		}
 
 		rig.moveClock(time.Hour + time.Minute)
 		rig.waitPassed(role, outbox.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 		for _, tc := range []struct {
 			held   laneCopy
 			keptBy string
@@ -846,8 +889,8 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.startSweeps()
 		rig.moveClock(time.Hour + time.Minute)
 		rig.waitPassed(role, held[copies-1].sequence)
-		letSweepsRun()
-		letSweepsRun()
+		rig.letSweepsRun()
+		rig.letSweepsRun()
 
 		for _, each := range held {
 			event, sender := each.item.EventID, each.item.SourceSession
@@ -893,7 +936,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.startSweeps()
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		seam.assertTakenOver(t, held)
 		if letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender)); len(letters) != 1 {
@@ -965,7 +1008,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Capabilities: []string{"btw"}})
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 		if len(letters) != 1 {
@@ -991,7 +1034,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.moveClock(2*time.Hour + time.Minute)
 		rig.startSweeps()
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		if stale, fresh := rig.count(hourExpiredStale), rig.count(hourExpired); stale != 1 || fresh != 0 {
 			t.Fatalf("envoy_role_kept_expired_total counts %d stale and %d not stale, want one stale", stale, fresh)
@@ -1029,7 +1072,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.startSweeps()
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		seam.assertTakenOver(t, held)
 		if letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender)); len(letters) != 1 {
@@ -1061,7 +1104,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		}
 		held := rig.copyOf(role, answer.EventID)
 		rig.startSweeps()
-		letSweepsRun()
+		rig.letSweepsRun()
 		if dropped, letters := rig.count(hourExpired), rig.deadLetters(sender, held.item.EventID); dropped != 0 || len(letters) != 0 {
 			t.Fatalf("inside the copy's hour, the sweeps counted %d drops and stored %d dead letters, want none", dropped, len(letters))
 		}
@@ -1069,7 +1112,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.moveClock(time.Hour + time.Minute)
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 		if len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
@@ -1092,7 +1135,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		}
 		rig.startSweeps()
 		rig.waitPassed(role, ack.Sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		if ended := rig.count(hourUndecodable); ended != 1 {
 			t.Fatalf("envoy_role_kept_undecodable_total is %d, want one", ended)
@@ -1117,9 +1160,9 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		}
 		rig.moveClock(time.Hour + time.Minute)
 		rig.startSweeps()
-		waitFor(t, 60*time.Second, "every copy ended", func() bool { return rig.count(hourExpired) >= copies })
+		waitFor(t, "every copy ended", func() bool { return rig.count(hourExpired) >= copies })
 		rig.waitPassed(role, last.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		if dropped := rig.count(hourExpired); dropped != copies {
 			t.Fatalf("envoy_role_kept_expired_total rose by %d, want %d", dropped, copies)
@@ -1201,7 +1244,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Capabilities: []string{"btw"}})
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 		if len(letters) != 1 {
@@ -1249,7 +1292,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.startSweeps()
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		if calls := seam.made(); len(calls) < 2 {
 			t.Fatalf("the dead letter was published %d times, want the failed one and the one sent again: %+v", len(calls), calls)
@@ -1316,7 +1359,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Capabilities: []string{"btw"}})
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 
 		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 		if len(letters) != 1 {
@@ -1354,6 +1397,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 // is written under (keptRoleDrop.claimReason) back as that drop, so a claim taken over again and
 // again is judged as the first takeover judged it.
 func TestADeadLetterClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
+	t.Parallel()
 	stored := bus.StoredMessage{Sequence: 7, Time: time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)}
 	data, err := json.Marshal(contracts.Envelope{EventID: "evt_claimed", SourceSession: "ses_claim_sender", Payload: `{"delivery":{"mode":"steer"}}`})
 	if err != nil {
@@ -1460,11 +1504,191 @@ func TestADeadLetterClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
 	}
 }
 
+// TestADeadLetterNamesADispatchPostAndQuotesNoneOfIt holds the line a dead letter names its
+// message by (keptCopyNamed), and that the letter keeps every other line it had. A Dispatch
+// frame's summary is the head of what its event carries, a post's body included, and the letter
+// is written as late as the end of the copy's hour, after the post's author may have deleted the
+// post, so the letter of a Dispatch frame gives none of the summary. It names a comment or a
+// message by its id and its dispatch:// reference, and says that is because its author can edit
+// or delete it; it names any other Dispatch frame - an ask's, an issue's, a delivery receipt, one
+// that names no post - by the event id alone, with no such reason, since no author edits or
+// deletes those. A message from any other source keeps its first line. Each Dispatch frame is
+// built as the outbox builds one (internal/dispatch/outbox envelope), from the event types
+// Dispatch writes: the whole event as its payload, and the head of what it carries in its summary.
+func TestADeadLetterNamesADispatchPostAndQuotesNoneOfIt(t *testing.T) {
+	t.Parallel()
+	const (
+		role         = "letter-role"
+		sender       = "ses_letter_sender"
+		phrase       = "zephyr-quokka-7731 is what the author deleted"
+		messageID    = "0b5e7c1e-2f4a-4c0e-9d3b-6a1f8e2c4d71"
+		commentID    = "7d2c9a40-5b1e-4f3a-8c6d-1e9b0a7f3c52"
+		askID        = "3c8e1f5a-6b2d-4e9c-a7f0-5d1b8c3e2a96"
+		artifactID   = "4f1a6b2c-8d3e-4a5f-9b0c-2e7d1a3f6c84"
+		postUnquoted = "Envoy names a comment or a message from Dispatch by its ID and its reference and quotes none of it, because its author can edit or delete it."
+		unquoted     = "Envoy does not quote a message from Dispatch, and names this one by its event ID alone."
+	)
+	stored := bus.StoredMessage{Sequence: 11, Time: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)}
+	dropped := stored.Time.Add(time.Hour + time.Minute)
+	drop := keptRoleDrop{reason: deadLetterExpired}
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	body := phrase + "\n\nThe rest of the post."
+	// frame is the copy of event that the publish route kept from sender, with summary.
+	frame := func(t *testing.T, event model.Event, summary string) contracts.Envelope {
+		t.Helper()
+		payload, err := json.Marshal(event)
+		if err != nil {
+			t.Fatalf("encode event %d: %v", event.ID, err)
+		}
+		return contracts.Envelope{
+			EventID: fmt.Sprintf("dispatch-%d", event.ID), Source: "dispatch", SourceSession: sender, SourceEventID: fmt.Sprint(event.ID),
+			Topic: contracts.RoleTopicPrefix + role, DedupeKey: publishDedupePrefix + id.New(), PayloadSummary: summary, Payload: string(payload),
+		}
+	}
+	// named is the line of item's dead letter that names the message, and the letter. It fails t
+	// unless every other line of the letter, and its summary, are the ones every dead letter of an
+	// expired copy gives.
+	named := func(t *testing.T, item contracts.Envelope) (string, contracts.Envelope) {
+		t.Helper()
+		letter, _ := keptRoleDeadLetter(role, stored, item, dropped, drop)
+		lines := strings.Split(letter.Payload, "\n")
+		want := []string{
+			"Envoy dropped a message that you published to role " + role + ".",
+			"The event ID of the message is " + item.EventID + ".",
+			"",
+			"Envoy kept the message at 2026-11-20T09:00:00Z. Envoy dropped the message at 2026-11-20T10:01:00Z.",
+			drop.explanation(),
+		}
+		if len(lines) != len(want) {
+			t.Fatalf("the dead letter has %d lines, want %d:\n%s", len(lines), len(want), letter.Payload)
+		}
+		for i := range want {
+			if i != 2 && lines[i] != want[i] {
+				t.Fatalf("line %d of the dead letter is %q, want %q", i+1, lines[i], want[i])
+			}
+		}
+		if want := "Envoy dropped your message to role " + role + ": no session held the role in the hour that Envoy kept it."; letter.PayloadSummary != want {
+			t.Fatalf("the dead letter's summary is %q, want %q", letter.PayloadSummary, want)
+		}
+		return lines[2], letter
+	}
+	// quotesNothing fails t if letter gives any of the post's body.
+	quotesNothing := func(t *testing.T, letter contracts.Envelope) {
+		t.Helper()
+		if strings.Contains(letter.Payload, "zephyr") || strings.Contains(letter.PayloadSummary, "zephyr") {
+			t.Fatalf("the dead letter of a Dispatch frame quotes the post's body:\n%s\n%s", letter.PayloadSummary, letter.Payload)
+		}
+	}
+
+	t.Run("a a Dispatch message's dead letter names the message by its reference and its id and gives none of its body", func(t *testing.T) {
+		item := frame(t, model.Event{
+			ID: 41, IssueKey: new("CORE-12"), Type: "message.created", Actor: alice, Notify: true, CreatedAt: stored.Time,
+			Payload: model.MessageEventPayload{Message: model.Message{ID: messageID, IssueKey: new("CORE-12"), Author: alice, Body: body, CreatedAt: stored.Time}},
+		}, "CORE-12 message created: "+phrase+" The rest of the post.")
+		line, letter := named(t, item)
+		if want := "The message is Dispatch message " + messageID + ": dispatch://CORE-12/message/" + messageID + ". " + postUnquoted +
+			" Read the reference to see the message as it is now."; line != want {
+			t.Fatalf("the dead letter names the message as %q, want %q", line, want)
+		}
+		quotesNothing(t, letter)
+	})
+
+	t.Run("b a Dispatch comment's dead letter names the comment by its reference and its id and gives none of its body", func(t *testing.T) {
+		item := frame(t, model.Event{
+			ID: 42, IssueKey: new("CORE-12"), Type: "comment.created", Actor: alice, Notify: true, CreatedAt: stored.Time,
+			Payload: model.CommentEventPayload{Comment: model.Comment{ID: commentID, IssueKey: new("CORE-12"), Author: alice, Body: body, CreatedAt: stored.Time}},
+		}, "CORE-12 comment created: "+phrase+" The rest of the post.")
+		line, letter := named(t, item)
+		if want := "The message is Dispatch comment " + commentID + ": dispatch://CORE-12/comment/" + commentID + ". " + postUnquoted +
+			" Read the reference to see the comment as it is now."; line != want {
+			t.Fatalf("the dead letter names the comment as %q, want %q", line, want)
+		}
+		quotesNothing(t, letter)
+	})
+
+	t.Run("c a Dispatch comment on a project document is named by the document's reference to it", func(t *testing.T) {
+		item := frame(t, model.Event{
+			ID: 43, ArtifactID: new(artifactID), Project: "CORE", Type: "comment.created", Actor: alice, Notify: true, CreatedAt: stored.Time,
+			Payload: model.CommentEventPayload{
+				Comment:      model.Comment{ID: commentID, ArtifactID: new(artifactID), Author: alice, Body: body, CreatedAt: stored.Time},
+				ArtifactName: "notes.md", ProjectKey: "CORE", ArtifactSlug: "notes-md",
+			},
+		}, "CORE/notes-md comment created: "+phrase+" The rest of the post.")
+		line, letter := named(t, item)
+		if want := "The message is Dispatch comment " + commentID + ": dispatch://CORE/artifact/notes-md/comment/" + commentID + ". " + postUnquoted +
+			" Read the reference to see the comment as it is now."; line != want {
+			t.Fatalf("the dead letter names the comment as %q, want %q", line, want)
+		}
+		quotesNothing(t, letter)
+	})
+
+	t.Run("d a Dispatch frame that names no post is named by its event id alone, with no reason of an author's, and gives none of its body", func(t *testing.T) {
+		noEvent := frame(t, model.Event{ID: 44}, phrase)
+		noEvent.Payload = body
+		for _, tc := range []struct {
+			name string
+			item contracts.Envelope
+		}{
+			{"a frame whose payload is no event", noEvent},
+			{"a comment on a project document whose event, an older server's, names no slug", frame(t, model.Event{
+				ID: 45, ArtifactID: new(artifactID), Project: "CORE", Type: "comment.created", Actor: alice, Notify: true, CreatedAt: stored.Time,
+				Payload: model.CommentEventPayload{Comment: model.Comment{ID: commentID, ArtifactID: new(artifactID), Author: alice, Body: body, CreatedAt: stored.Time}},
+			}, "CORE/notes-md comment created: "+phrase)},
+			{"a comment's delivery receipt, whose payload names no post's id", frame(t, model.Event{
+				ID: 46, IssueKey: new("CORE-12"), Type: "comment.delivery", Actor: alice, CreatedAt: stored.Time,
+				Payload: model.CommentDeliveryEventPayload{CommentID: commentID, Target: "session:ses_letter_target", Attempt: 1, State: "sent"},
+			}, "CORE-12 comment delivery")},
+			{"an ask's frame", frame(t, model.Event{
+				ID: 48, IssueKey: new("CORE-12"), Type: "ask.opened", Actor: alice, Notify: true, CreatedAt: stored.Time,
+				Payload: model.AskEventPayload{Ask: model.Ask{ID: askID, IssueKey: new("CORE-12"), Author: alice, Kind: "question", Question: phrase + "?"}},
+			}, "CORE-12 ask opened: "+phrase+"?")},
+			{"an issue's frame", frame(t, model.Event{
+				ID: 49, IssueKey: new("CORE-12"), Type: "issue.created", Actor: alice, Notify: true, CreatedAt: stored.Time,
+				Payload: model.IssueEventPayload{Issue: model.Issue{Key: "CORE-12", Project: "CORE", Number: 12, Title: phrase, Status: "todo"}},
+			}, "CORE-12 issue created: "+phrase)},
+		} {
+			line, letter := named(t, tc.item)
+			if line != unquoted || strings.Contains(letter.Payload, "dispatch://") {
+				t.Fatalf("%s: the dead letter names the message as %q, want %q and no reference:\n%s", tc.name, line, unquoted, letter.Payload)
+			}
+			if strings.Contains(letter.Payload, "edit or delete") {
+				t.Fatalf("%s: the dead letter gives the reason of a post its author can edit or delete:\n%s", tc.name, letter.Payload)
+			}
+			quotesNothing(t, letter)
+		}
+	})
+
+	t.Run("e a raw role publish keeps its first line, whatever its payload holds", func(t *testing.T) {
+		event, err := json.Marshal(model.Event{
+			ID: 47, IssueKey: new("CORE-12"), Type: "message.created", Actor: alice, CreatedAt: stored.Time,
+			Payload: model.MessageEventPayload{Message: model.Message{ID: messageID, IssueKey: new("CORE-12"), Author: alice, Body: body}},
+		})
+		if err != nil {
+			t.Fatalf("encode the event: %v", err)
+		}
+		eventPayload := string(event)
+		for _, tc := range []struct {
+			name    string
+			payload *string
+		}{
+			{"a message of two lines", nil},
+			{"a message whose payload is a Dispatch event", &eventPayload},
+		} {
+			item := contracts.MessageEnvelope(contracts.Message{Source: "agent", SourceSession: sender, Text: phrase + "\nThe second line.", Payload: tc.payload},
+				contracts.RoleTopicPrefix+role, publishDedupePrefix+id.New())
+			if line, _ := named(t, item); line != "The first line of the message is: "+phrase {
+				t.Fatalf("%s: the dead letter names the message as %q, want its first line %q", tc.name, line, phrase)
+			}
+		}
+	})
+}
+
 // TestARepeatedKeepIsOneCopyUntilItEnds holds rows (k) and (l) of check k1: a publish that repeats
 // the dedupe key of a copy still on the lane inside its hour stores nothing and is answered with
 // that copy, and one that repeats the key of a copy that was forwarded or whose hour ended is kept
 // as a copy of its own, however many times.
 func TestARepeatedKeepIsOneCopyUntilItEnds(t *testing.T) {
+	t.Parallel()
 	t.Run("k a repeat inside the copy's hour is answered with the first copy and the lane holds one copy", func(t *testing.T) {
 		rig := newHourRig(t)
 		const (
@@ -1593,6 +1817,7 @@ func TestARepeatedKeepIsOneCopyUntilItEnds(t *testing.T) {
 // makes it live, so its registration would not read it as returning, and it is handed the copy
 // at that refresh though the claim is refused (roleSetHandler).
 func TestALapsedHolderIsKeptFor(t *testing.T) {
+	t.Parallel()
 	t.Run("a a publish to a role whose holder deleted its record is kept and reaches that session once it registers again", func(t *testing.T) {
 		rig := newHourRig(t)
 		const (
@@ -1625,10 +1850,10 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 		rig.reapClaim(role)
 		frames := startStandIn(t, rig.uri, successor)
 		rig.claim(rig.listeners[1], successor, role, liveRoleActEntry)
-		waitFor(t, 20*time.Second, "the kept copy reaching "+successor, func() bool {
+		waitFor(t, "the kept copy reaching "+successor, func() bool {
 			return len(rig.envelopesOn(contracts.LegacyAgentSubject(successor))) > 0
 		})
-		letSweepsRun()
+		rig.letSweepsRun()
 		if held := rig.envelopesOn(contracts.LegacyAgentSubject(successor)); len(held) != 1 || held[0].EventID != answer.EventID {
 			t.Fatalf("%s's agent subject holds %+v, want the kept copy of event %s once", successor, held, answer.EventID)
 		}
@@ -1722,7 +1947,7 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 		}
 
 		rig.register(rig.listeners[0], holder, "")
-		waitFor(t, 20*time.Second, "the kept copy reaching "+holder+" at its registration", func() bool {
+		waitFor(t, "the kept copy reaching "+holder+" at its registration", func() bool {
 			return len(rig.envelopesOn(contracts.LegacyAgentSubject(holder))) > 0
 		})
 		if held := rig.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 1 || held[0].EventID != answer.EventID {
@@ -1772,7 +1997,7 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 
 		// A new process resumes the session under the same id and registers, stating itself.
 		rig.register(first, holder, resumed)
-		waitFor(t, 20*time.Second, "the kept copy reaching "+holder+" at its resumed process's registration", func() bool {
+		waitFor(t, "the kept copy reaching "+holder+" at its resumed process's registration", func() bool {
 			return len(rig.envelopesOn(contracts.LegacyAgentSubject(holder))) > 0
 		})
 		if held := rig.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 1 || held[0].EventID != answer.EventID {
@@ -1812,7 +2037,7 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("claim %s for %s under process %s: %v", role, holder, stalled, err)
 		}
-		waitFor(t, 10*time.Second, "both listeners to read "+holder+" as unresponsive and the first to read its claim of "+role, func() bool {
+		waitFor(t, "both listeners to read "+holder+" as unresponsive and the first to read its claim of "+role, func() bool {
 			for _, l := range rig.listeners {
 				if _, state := l.harness.sessions.Lookup(holder); state != session.Unresponsive {
 					return false
@@ -1845,7 +2070,7 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 		if refused := linesIn(logs.String(), refusal, map[string]any{"role": role, "holder_client_instance_id": stalled, "client_instance_id": resumed}); len(refused) != 1 {
 			t.Fatalf("the claim route's lines are %s, want one refusal of process %s naming process %s as the holder", logs.String(), resumed, stalled)
 		}
-		waitFor(t, 20*time.Second, "the kept copy reaching "+holder+" after its resumed process's refused claim", func() bool {
+		waitFor(t, "the kept copy reaching "+holder+" after its resumed process's refused claim", func() bool {
 			return len(rig.envelopesOn(contracts.LegacyAgentSubject(holder))) > 0
 		})
 		if held := rig.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 1 || held[0].EventID != answer.EventID {
@@ -1939,6 +2164,7 @@ func (r *hourRig) keepWakes(role string) []string {
 // once in each 5-minute interval across both listeners. A copy that is taken, or whose hour has
 // ended, and a copy Dispatch's outbox wrote, wake nothing.
 func TestAKeptCopyWakesItsRoleUntilTaken(t *testing.T) {
+	t.Parallel()
 	t.Run("f a kept copy wakes its role once in each interval of its first forty minutes until it is taken or ends", func(t *testing.T) {
 		rig := newHourRig(t)
 		const (
@@ -1966,14 +2192,14 @@ func TestAKeptCopyWakesItsRoleUntilTaken(t *testing.T) {
 		waitForKeptRoleMessage(t, rig.client(), laned, item.EventID)
 		stored[laned] = rig.copyOf(laned, item.EventID)
 		stored[outbox] = rig.keep(outbox, outboxCopy(outbox, sender, "a Dispatch event routed to the role"))
-		waitFor(t, 20*time.Second, "the wake reports of the route's two keeps", func() bool {
+		waitFor(t, "the wake reports of the route's two keeps", func() bool {
 			return len(rig.keepWakes(routed)) == 1 && len(rig.keepWakes(taken)) == 1
 		})
 
 		kept := stored[routed].stored
 		for role, held := range stored {
 			if spread := held.stored.Sub(kept); spread < 0 || spread > 30*time.Second {
-				t.Fatalf("role %s's copy was stored %s after the first, want the four copies within 30s of each other", role, spread)
+				t.Fatalf("role %s's copy was stored %s after the first, want the four copies in time of each other", role, spread)
 			}
 		}
 		shift := wakeStepShift(t, kept)
@@ -1991,23 +2217,23 @@ func TestAKeptCopyWakesItsRoleUntilTaken(t *testing.T) {
 					continue
 				}
 				key := wakeKey(role, at)
-				waitFor(t, 20*time.Second, fmt.Sprintf("step %d's wake report of role %s", step, role), func() bool {
+				waitFor(t, fmt.Sprintf("step %d's wake report of role %s", step, role), func() bool {
 					return slices.Contains(rig.sweptWakes(role), key)
 				})
-				waitFor(t, 20*time.Second, fmt.Sprintf("a listener logging step %d's report of role %s as already stored", step, role), func() bool {
+				waitFor(t, fmt.Sprintf("a listener logging step %d's report of role %s as already stored", step, role), func() bool {
 					return len(rig.lines(hourWakeStoredLine, map[string]any{"role": role, "dedupe_key": key})) > 0
 				})
 				expected[role] = append(expected[role], key)
 				woken++
 			}
 			if woken == 0 {
-				letSweepsRun()
+				rig.letSweepsRun()
 			}
 			if step == 3 {
 				// A live session takes the copy, then leaves the role with no live holder: the
 				// lane holds nothing more that waits for one.
 				claimRoleWith(t, first.harness, taker, taken, liveRoleActEntry)
-				waitFor(t, 20*time.Second, "the copy reaching "+taker, func() bool {
+				waitFor(t, "the copy reaching "+taker, func() bool {
 					return len(rig.envelopesOn(contracts.LegacyAgentSubject(taker))) == 1
 				})
 				rig.waitPassed(taken, stored[taken].sequence)

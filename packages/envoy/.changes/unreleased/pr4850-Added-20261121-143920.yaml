@@ -1,0 +1,5 @@
+kind: Added
+body: '`envoy-infra:gcp:Dispatch` and `gcp:ClusteredNatsHub`''s listener (`listener` and `tailnet.listener`, type `gcp:ClusteredHubListener`) take two optional inputs. `consumerNames`, `fixed` or `fresh`, renders `ENVOY_CONSUMER_NAMES` on each container that creates JetStream consumers: the hub''s listener, and Dispatch''s `envoy-dispatch` and `envoy-listener`. Any other value is refused before anything registers, with an error that names the input and quotes the value. `replaceUnderHold: true` gives each of those Deployments `strategy: {type: Recreate}` with no `rollingUpdate` block, at any replica count, and the annotation `pulumi.com/skipAwait: "true"`, so under the writer hold every old pod stops before a new one starts and the apply does not wait for a pod that cannot become ready. Dispatch''s front door gets neither. With both unset, each component renders exactly what it rendered before.'
+time: 2026-11-21T14:39:20.21460096Z
+custom:
+    Issue: pr4850

@@ -7,9 +7,9 @@
 
 --- a/packages/envoy/internal/cipher/proxy/bound.go
 +++ b/packages/envoy/internal/cipher/proxy/bound.go
-@@ -268,7 +268,10 @@
+@@ -282,7 +282,10 @@
  		// client that wrote "API.example.com" in one of the three is not a mismatch. The fold
- 		// is fold.ASCII, ASCII-only for the reason the airlock package gives.
+ 		// is fold.ASCII, ASCII-only for the reason the proxyrules package gives.
  		SNI:        fold.ASCII(sniOf(r)),
 -		HostHeader: fold.ASCII(hostHeaderOf(r.Host)),
 +		// MUTANT: the Host the decision reads is the request's host header field, which
@@ -18,4 +18,4 @@
 +		HostHeader: fold.ASCII(hostHeaderOf(r.Header.Get("Host"))),
  		Method:     r.Method,
  		Path:       r.URL.Path,
- 		Headers:    headersOf(r.Header),
+ 		// The path as the command sent it, percent-encoding kept, which is the one form that

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -21,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -35,6 +38,7 @@ import (
 // they would leave the claims running, the reservation unconfirmed, and the tree waiting for
 // admission forever.
 func TestAReservedTreeCloseFinishesItsCleanupAfterReadmission(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name           string
 		withChild      bool
@@ -168,6 +172,7 @@ func TestAReservedTreeCloseFinishesItsCleanupAfterReadmission(t *testing.T) {
 // runtime, which provisions each issue's workspace in a pod, it is in the session database the
 // deployment's session_store names, which every tree's pods read.
 func TestAnOrphansClaimsLeaveTheirOldTreeAndStartInTheirOwn(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		inPod bool
@@ -220,7 +225,7 @@ func TestAnOrphansClaimsLeaveTheirOldTreeAndStartInTheirOwn(t *testing.T) {
 			}
 
 			runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: st, tokens: outboxTokens{},
-				project: "legion", stateDir: t.TempDir(),
+				project: "legion", stateDir: t.TempDir(), now: time.Now,
 				provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
 					return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-209"}, nil
 				},
@@ -251,6 +256,7 @@ func TestAnOrphansClaimsLeaveTheirOldTreeAndStartInTheirOwn(t *testing.T) {
 // absent lifecycle, and every close row retried on its backoff forever, logged as a failure each
 // time.
 func TestANeverOpenedTreesLingerClosesFinishWithoutRetrying(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -304,5 +310,454 @@ func TestANeverOpenedTreesLingerClosesFinishWithoutRetrying(t *testing.T) {
 	}
 	if failed := strings.Count(logs.String(), `"msg":"outbox row failed"`); failed != 0 {
 		t.Errorf("%d close attempts were logged as failed, want none", failed)
+	}
+}
+
+type carryFixture struct {
+	ctx       context.Context
+	pool      *store.Pool
+	records   record.Store
+	trees     *store.Store
+	sup       *supervisor
+	rt        *fake.Runtime
+	engine    *workflow.Engine
+	admission *admit.Admission
+	runner    *outbox
+	clock     time.Time
+}
+
+func newCarryFixture(t *testing.T, now time.Time, root, child record.Issue, roots ...string) *carryFixture {
+	t.Helper()
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	putOutboxIssue(t, pool, records, root)
+	putOutboxIssue(t, pool, records, child)
+	trees := outboxTreeStore(t, pool, roots...)
+	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+	sup.deps.Store = trees
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour}, quietLogger())
+	admission := admit.New(records, engine, 2, "legion", quietLogger())
+	fixture := &carryFixture{ctx: ctx, pool: pool, records: records, trees: trees, sup: sup, rt: rt, engine: engine, admission: admission, clock: now}
+	fixture.runner = &outbox{
+		dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: trees,
+		tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+		githubAPI: newBranchGitHub(t, nil, branchExists).url, notices: &outboxPublisher{},
+		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: child.Key, Status: "todo", HandedOver: true, Labels: []string{"legion"}}},
+		handlers: []intake.Handler{engine, admission}, now: func() time.Time { return fixture.clock }, log: quietLogger(),
+		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
+			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/" + child.Key}, nil
+		},
+		remove: func(context.Context, workspace.Workspace, sync.Locker) error { return nil },
+	}
+	return fixture
+}
+
+func (f *carryFixture) run(t *testing.T, what string, attempts int) {
+	t.Helper()
+	for range attempts {
+		if err := f.runner.RunOnce(f.ctx); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		f.clock = f.clock.Add(5 * time.Minute)
+	}
+}
+
+// A done root's linger suspends every claim of its tree, and the hand-over at the linger's expiry
+// carries an unfinished child into a tree of its own at its next generation, which every row of
+// the old tree then serves an earlier one of. The child's own suspend can run only after the
+// hand-over has moved it, and a child its new tree holds (on a blocker, behind the admission cap)
+// is not started there, so nothing re-points its role, which still runs in the old tree. The old
+// tree's cleanup waits on every claim still running in its tree, and the old root's next run waits
+// on that cleanup. So the old tree's stop rows still stop the role while it stands in the old
+// tree, as the daemon and keeping its session, as the new tree's start does. Neither the child's
+// row nor its new tree's start releases anything of the old tree on the child's lane: each makes
+// the old tree's waiting close due at once, and that close confirms the cleanup on its own issue's
+// lane at the same moment, not at its backoff's retry. A role the new tree has re-pointed and
+// started is that tree's, and the old tree's rows leave it running.
+func TestTheOldTreesStopsReachACarriedRoleItsLingerSuspendMissed(t *testing.T) {
+	t.Parallel()
+	const rootKey, childKey = "LEGION-207", "LEGION-208"
+	for _, tc := range []struct {
+		name string
+		// op is the row of the child's planner that runs after the hand-over: the linger's
+		// suspend, or the close at the linger's expiry, of the old tree, or the new tree's start.
+		op record.SuperviseOp
+		// repointed is a planner the new tree has already re-pointed and started.
+		repointed bool
+	}{
+		{name: "the linger's suspend", op: "suspend"},
+		{name: "the close at the linger's expiry", op: "tree_close"},
+		{name: "the new tree's start", op: "start"},
+		{name: "a role its new tree re-pointed", op: "tree_close", repointed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := time.Now().UTC().Truncate(time.Second)
+			until := clock.Add(-time.Minute)
+			root := record.Issue{Key: rootKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+				Tree: rootKey, Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LingerUntil: &until}
+			// The hand-over carried the child: a tree of its own at generation 2, held at admitted,
+			// or, where its new tree starts it, planning.
+			carried := record.Issue{Key: childKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+				Tree: childKey, Title: "child", Phase: phase.Admitted, Generation: 2, Status: "todo", Rank: "B", HandedOver: true}
+			if tc.op == "start" {
+				carried.Phase, carried.Status = phase.Planning, "in_progress"
+			}
+			fixture := newCarryFixture(t, clock, root, carried, rootKey, childKey)
+			ctx, pool, st, records, sup, rt, runner := fixture.ctx, fixture.pool, fixture.trees, fixture.records, fixture.sup, fixture.rt, fixture.runner
+			architect := launchedClaim(t, sup, rootKey, rootKey, claim.RoleArchitect)
+			plannerTree := rootKey
+			if tc.repointed {
+				plannerTree = childKey
+			}
+			planner := launchedClaim(t, sup, plannerTree, childKey, claim.RolePlanner)
+			cleaned := func() bool {
+				t.Helper()
+				live, err := st.TreeLive(ctx, "legion", rootKey)
+				if err != nil {
+					t.Fatalf("read the lifecycle of %s: %v", rootKey, err)
+				}
+				return !live
+			}
+			releases := func() int { return len(rt.CallsOf("CleanupTree")) }
+			stopRow := func(issue string, op record.SuperviseOp, role claim.Role, generation uint64) record.OutboxRow {
+				payload := record.SuperviseRequest{Op: op, Tree: rootKey, Role: role, Generation: generation}
+				switch op {
+				case "tree_close":
+					payload.Linger = 1
+				case "start":
+					payload.Tree, payload.Generation, payload.Phase, payload.Task = childKey, 2, phase.Planning, "Plan it."
+				default:
+					payload.Reason = "the tree of " + rootKey + " lingers"
+				}
+				return mustOutboxRow(t, issue, payload, clock)
+			}
+
+			// The root's architect closes first, which reserves the old tree's cleanup and retires it.
+			enqueueOutbox(t, pool, records, stopRow(rootKey, "tree_close", claim.RoleArchitect, 1))
+			if err := runner.RunOnce(ctx); err != nil {
+				t.Fatalf("run the root's close: %v", err)
+			}
+			if machine, _ := sup.Machine(architect); machine.Claim().State != supervise.StateRetired {
+				t.Fatalf("the root's architect after its close = %s, want retired", machine.Claim().State)
+			}
+			var waiting string
+			if err := pool.QueryRow(ctx, `select coalesce(max(last_error), '') from outbox where issue = $1`, rootKey).Scan(&waiting); err != nil {
+				t.Fatalf("read the root's close: %v", err)
+			}
+			if tc.repointed {
+				if waiting != "" || !cleaned() || releases() != 1 {
+					t.Fatalf("the root's close with the planner in its new tree waits on %q, confirmed %t after %d releases; want the cleanup confirmed",
+						waiting, cleaned(), releases())
+				}
+			} else if !strings.Contains(waiting, string(planner)+":ready") || cleaned() || releases() != 0 {
+				t.Fatalf("the root's close waits on %q, confirmed %t after %d releases; want the cleanup waiting on the carried planner, still ready in %s",
+					waiting, cleaned(), releases(), rootKey)
+			}
+
+			// The child's own row of the old tree, or its new tree's start, runs after the hand-over
+			// moved it.
+			if err := runner.execute(ctx, stopRow(childKey, tc.op, claim.RolePlanner, 1)); err != nil {
+				t.Fatalf("the %s of the carried planner: %v", tc.op, err)
+			}
+			machine, _ := sup.Machine(planner)
+			got := machine.Claim()
+			suspends := 0
+			for _, call := range rt.CallsOf("Suspend") {
+				if call.Locator.Claim == planner {
+					suspends++
+				}
+			}
+			switch {
+			case tc.repointed:
+				if got.State != supervise.StateReady || got.Tree != childKey || suspends != 0 {
+					t.Fatalf("the re-pointed planner after the old tree's close = %s in %s, suspended %d times; want it running in %s, untouched",
+						got.State, got.Tree, suspends, childKey)
+				}
+				return
+			case tc.op == "start":
+				// The start stopped the planner in the old tree, re-pointed it and resumed its session
+				// in the new one.
+				resumes := resumesOf(rt, planner)
+				if suspends != 1 || got.Tree != childKey || len(resumes) != 1 || resumes[0].Spec.Tree != childKey ||
+					resumes[0].Spec.ResumeSessionFile != "/tmp/planner.jsonl" {
+					t.Fatalf("the carried planner after its new tree's start = %s in %s, suspended %d times, resumed %+v; "+
+						"want it suspended once in %s, then its session resumed once in %s", got.State, got.Tree, suspends, resumes, rootKey, childKey)
+				}
+			default:
+				if got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByDaemon || got.Tree != rootKey ||
+					got.Session != "ses-planner" || got.SessionFile != "/tmp/planner.jsonl" || suspends != 1 {
+					t.Fatalf("the carried planner after the old tree's %s = %s by %q in %s, session %q at %q, suspended %d times; "+
+						"want it suspended once by the daemon in %s, its session kept", tc.op, got.State, got.SuspendedBy, got.Tree, got.Session,
+						got.SessionFile, suspends, rootKey)
+				}
+			}
+			if cleaned() || releases() != 0 {
+				t.Fatalf("the child's %s confirmed the old tree's cleanup %t after %d releases; want the old tree's resources left to its own close",
+					tc.op, cleaned(), releases())
+			}
+			// The root's close is due again now, though its backoff named a later retry, and confirms
+			// the cleanup in the same moment the planner stopped.
+			if err := runner.RunOnce(ctx); err != nil {
+				t.Fatalf("run the root's close once the carried planner stopped: %v", err)
+			}
+			if !cleaned() || releases() != 1 {
+				t.Fatalf("the root's close once the carried planner stopped: confirmed %t after %d releases, the clock unmoved; "+
+					"want the cleanup confirmed once, without waiting out the close's backoff", cleaned(), releases())
+			}
+		})
+	}
+}
+
+func TestAStartThatFindsAnAlreadySuspendedCarriedClaimDoesNotWakeAnOldTreeClose(t *testing.T) {
+	t.Parallel()
+	const rootKey, childKey = "LEGION-207", "LEGION-208"
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	until := now.Add(-time.Minute)
+	root := record.Issue{Key: rootKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+		Tree: rootKey, Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LingerUntil: &until}
+	child := record.Issue{Key: childKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+		Tree: childKey, Title: "child", Phase: phase.Planning, Generation: 2, Status: "in_progress", Rank: "B", HandedOver: true}
+	fixture := newCarryFixture(t, now, root, child, rootKey, childKey)
+	planner := launchedClaim(t, fixture.sup, rootKey, childKey, claim.RolePlanner)
+	machine, _ := fixture.sup.Machine(planner)
+	if err := machine.Handle(fixture.ctx, supervise.RequestSuspend{Claim: planner, By: supervise.SuspendedByDaemon}); err != nil {
+		t.Fatalf("suspend the old-tree planner: %v", err)
+	}
+	future := now.Add(time.Hour)
+	enqueueOutbox(t, fixture.pool, fixture.records, mustOutboxRow(t, rootKey, record.SuperviseRequest{Op: "tree_close", Tree: rootKey,
+		Role: claim.RoleArchitect, Generation: 1, Linger: 1}, future))
+	start := mustOutboxRow(t, childKey, record.SuperviseRequest{Op: "start", Tree: childKey, Role: claim.RolePlanner,
+		Generation: 2, Phase: phase.Planning, Task: "Plan it."}, now)
+	if err := fixture.runner.execute(fixture.ctx, start); err != nil {
+		t.Fatalf("start the child with its planner already suspended in the old tree: %v", err)
+	}
+	var nextAt time.Time
+	if err := fixture.pool.QueryRow(fixture.ctx, `select next_at from outbox where issue = $1 and kind = 'supervise'`, rootKey).Scan(&nextAt); err != nil {
+		t.Fatalf("read the future close: %v", err)
+	}
+	if !nextAt.Equal(future) {
+		t.Fatalf("the start moved the future old-tree close from %s to %s, want it left at %s", future, nextAt, future)
+	}
+}
+
+// A left-tree stop waits only when its claim still may run in that tree. A stored claim with no
+// machine can belong to another daemon during a rolling restart, a machine can already stand in a
+// third tree, and an old close with no claim has nothing to stop.
+func TestALeftTreeStopWaitsForTheMachineOfAStoredClaimInItsTree(t *testing.T) {
+	t.Parallel()
+	const rootKey, childKey, thirdTree = "LEGION-207", "LEGION-208", "LEGION-999"
+	for _, tc := range []struct {
+		name string
+		// tree and state are the stored claim's; machineTree launches its claim here instead.
+		tree, state, machineTree string
+		op                       record.SuperviseOp
+		waits, closeUnmoved      bool
+	}{
+		{name: "a claim that may still run in the old tree", tree: rootKey, state: "ready", op: "suspend", waits: true},
+		{name: "a claim that runs nothing in the old tree", tree: rootKey, state: "suspended", op: "suspend"},
+		{name: "a claim its new tree re-pointed", tree: childKey, state: "ready", op: "suspend"},
+		{name: "a machine in a third tree", machineTree: thirdTree, op: "suspend"},
+		{name: "a machine already suspended in the old tree", machineTree: rootKey, op: "suspend", closeUnmoved: true},
+		{name: "a close with no claim", op: "tree_close"},
+		{name: "no claim", op: "suspend"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			until := now.Add(-time.Minute)
+			root := record.Issue{Key: rootKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+				Tree: rootKey, Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LingerUntil: &until}
+			child := record.Issue{Key: childKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+				Tree: childKey, Title: "child", Phase: phase.Admitted, Generation: 2, Status: "todo", Rank: "B", HandedOver: true}
+			fixture := newCarryFixture(t, now, root, child, rootKey, childKey, thirdTree)
+			ctx, pool, records, sup, rt, runner := fixture.ctx, fixture.pool, fixture.records, fixture.sup, fixture.rt, fixture.runner
+			planner := mustClaimToken(t, childKey, claim.RolePlanner)
+			if tc.tree != "" {
+				// Stored, as another daemon of a rolling restart stored it, with no machine here.
+				if _, err := pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+					state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+					values ($1, 'legion', $2, $3, 'planner', 1, 'ses-planner', '/tmp/planner.jsonl', $4, 0, 0, 0, 0)`,
+					string(planner), tc.tree, childKey, tc.state); err != nil {
+					t.Fatalf("store the planner's claim: %v", err)
+				}
+			}
+			if tc.machineTree == "" {
+				if _, found := sup.Machine(planner); found {
+					t.Fatalf("the supervisor holds a machine for %s; want none", planner)
+				}
+			} else {
+				planner = launchedClaim(t, sup, tc.machineTree, childKey, claim.RolePlanner)
+				if tc.closeUnmoved {
+					machine, _ := sup.Machine(planner)
+					if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: planner, By: supervise.SuspendedByDaemon}); err != nil {
+						t.Fatalf("suspend the old-tree planner before its stale stop: %v", err)
+					}
+				}
+			}
+			payload := record.SuperviseRequest{Op: tc.op, Tree: rootKey, Role: claim.RolePlanner, Generation: 1,
+				Reason: childKey + " left tree " + rootKey}
+			if tc.op == "tree_close" {
+				payload.Linger = 1
+			}
+			var futureClose time.Time
+			if tc.closeUnmoved {
+				futureClose = now.Add(time.Hour)
+				enqueueOutbox(t, pool, records, mustOutboxRow(t, rootKey, record.SuperviseRequest{Op: "tree_close", Tree: rootKey,
+					Role: claim.RoleArchitect, Generation: 1, Linger: 1}, futureClose))
+			}
+			err := runner.execute(ctx, mustOutboxRow(t, childKey, payload, time.Now()))
+			if tc.waits {
+				if !errors.Is(err, wait.ErrWaiting) || !strings.Contains(err.Error(), "supervising machine of its stored claim "+string(planner)) {
+					t.Fatalf("the old tree's suspend with no machine for the stored %s claim in %s = %v; want a wait for its machine", tc.state, tc.tree, err)
+				}
+			} else if err != nil {
+				t.Fatalf("the old tree's %s with the stored claim %q in %q = %v; want it finished, with nothing to stop", tc.op, tc.state, tc.tree, err)
+			}
+			if tc.machineTree == thirdTree {
+				machine, found := sup.Machine(planner)
+				if !found {
+					t.Fatalf("the supervisor holds no machine for the third-tree planner")
+				}
+				if got := machine.Claim(); got.Tree != thirdTree || got.State != supervise.StateReady {
+					t.Fatalf("the third-tree planner after the old tree's stop = %+v; want it ready in %s", got, thirdTree)
+				}
+				for _, call := range rt.CallsOf("Suspend") {
+					if call.Locator.Claim == planner {
+						t.Fatalf("the old tree's stop suspended the third-tree planner")
+					}
+				}
+			}
+			if tc.closeUnmoved {
+				var nextAt time.Time
+				if err := pool.QueryRow(ctx, `select next_at from outbox where issue = $1 and kind = 'supervise'`, rootKey).Scan(&nextAt); err != nil {
+					t.Fatalf("read the future close: %v", err)
+				}
+				if !nextAt.Equal(futureClose) {
+					t.Fatalf("the stale stop moved the future close from %s to %s, want it left at %s", futureClose, nextAt, futureClose)
+				}
+			}
+		})
+	}
+}
+
+// A role of a lingering tree's member can still run in that tree with no stop row of the tree left
+// to reach it. The linger's suspend of it can be superseded by a newer start, as a production
+// check's look start is, the one start a lingering tree runs, and finish without acting; or that
+// look's start, already past its fences when the move commits, can bring the claim up only after
+// the move has read the claims. A person sets the merged child back to todo while its look runs,
+// and admission carries it into a tree of its own (an orphan), held there on an unfinished blocker,
+// so its new tree starts nothing that would stop the role. When the old root's linger expires, the
+// old tree's cleanup waits on the role still running in it. The move itself queues the old tree's
+// stop of every role of the issue, so the role is stopped, its session kept, and the old tree's
+// cleanup confirms while the child still waits on its blocker.
+func TestAMoveStopsTheCarriedRoleNoStopRowOfItsOldTreeStillReaches(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// afterMove is a claim the look's in-flight start brings up only once the move has read the
+		// claims; otherwise the claim runs before the move, its linger suspend superseded.
+		afterMove bool
+	}{
+		{name: "the linger's suspend superseded by the look's start"},
+		{name: "the look's in-flight start brings the claim up after the move", afterMove: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			movedCarriedRole(t, tc.afterMove)
+		})
+	}
+}
+
+// movedCarriedRole runs one case of TestAMoveStopsTheCarriedRoleNoStopRowOfItsOldTreeStillReaches.
+func movedCarriedRole(t *testing.T, afterMove bool) {
+	const rootKey, childKey, blockerKey = "LEGION-207", "LEGION-208", "LEGION-300"
+	start := time.Now().UTC().Truncate(time.Second)
+	until := start.Add(time.Hour)
+	parent := rootKey
+	root := record.Issue{Key: rootKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: rootKey, Project: "LEGION",
+		Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1}
+	child := record.Issue{Key: childKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: rootKey, Project: "LEGION",
+		Title: "child", Parent: &parent, Phase: phase.Done, Generation: 1, Status: "done", Rank: "B", LastDispatchSeq: 1}
+	fixture := newCarryFixture(t, start, root, child, rootKey)
+	ctx, pool, records, trees, sup, rt, engine, admission := fixture.ctx, fixture.pool, fixture.records, fixture.trees, fixture.sup, fixture.rt, fixture.engine, fixture.admission
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		for _, put := range []error{
+			records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: childKey, Project: "LEGION", Seq: 1,
+				Status: record.Carry("done"), Parent: record.Carry(""), Blockers: record.Carry([]string{blockerKey})}),
+			records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: blockerKey, Project: "LEGION", Seq: 1,
+				Status: record.Carry("todo"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)}),
+		} {
+			if put != nil {
+				return put
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed the child's blocker: %v", err)
+	}
+	run := func(what string) { fixture.run(t, what, 4) }
+
+	var machine *supervise.Machine
+	if !afterMove {
+		// The child's tester runs in the old tree from a start newer than the linger's suspend of it.
+		tester := launchedClaim(t, sup, rootKey, childKey, claim.RoleTester)
+		machine, _ = sup.Machine(tester)
+		enqueueOutbox(t, pool, records, mustOutboxRow(t, childKey, record.SuperviseRequest{Op: "suspend", Tree: rootKey, Role: claim.RoleTester,
+			Generation: 1, Reason: "the tree of " + rootKey + " lingers"}, fixture.clock))
+		var suspendRow int64
+		if err := pool.QueryRow(ctx, `select id from outbox where issue = $1 and kind = 'supervise'`, childKey).Scan(&suspendRow); err != nil {
+			t.Fatalf("read the linger's suspend row: %v", err)
+		}
+		if err := machine.StartedBy(ctx, suspendRow+1, nil); err != nil {
+			t.Fatalf("record the look's start: %v", err)
+		}
+		run("the linger's suspend, superseded by the look's start")
+		if got := machine.Claim(); got.State != supervise.StateReady || got.Tree != rootKey {
+			t.Fatalf("the tester after its superseded suspend = %s in %s; want it still ready in %s", got.State, got.Tree, rootKey)
+		}
+	}
+
+	// A person sets the merged child back to todo: an orphan, a tree of its own held on its blocker.
+	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "person-sets-the-child-todo", intake.DispatchIssue{Key: childKey, ResolvedRepo: "acme/widgets",
+		Seq: 2, Type: "issue.updated", Status: "todo", Title: "child", Parent: rootKey, Rank: "B", HandedOver: true, Blockers: []string{blockerKey}},
+		engine, admission); err != nil {
+		t.Fatalf("apply the child's todo: %v", err)
+	}
+	var carried *record.Issue
+	if err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		carried, err = records.Issue(ctx, tx, childKey)
+		return err
+	}); err != nil || carried == nil || carried.Tree != childKey || carried.Generation != 2 || carried.Phase != phase.Admitted {
+		t.Fatalf("the carried child = %+v, %v; want its own tree at generation 2, admitted", carried, err)
+	}
+	if afterMove {
+		// The look's start, past its fences before the move, brings its claim up in the old tree now.
+		tester := launchedClaim(t, sup, rootKey, childKey, claim.RoleTester)
+		machine, _ = sup.Machine(tester)
+	}
+	run("the carry's rows while the child waits on its blocker")
+
+	// The old root's linger expires, and its close reserves the old tree's cleanup.
+	fixture.clock = until.Add(time.Minute)
+	if _, err := intake.ApplyFact(ctx, pool, "outbox", "linger-expired", intake.LingerExpired{Issue: rootKey, Generation: 1}, engine, admission); err != nil {
+		t.Fatalf("expire the old root's linger: %v", err)
+	}
+	run("the old tree's close")
+
+	got := machine.Claim()
+	if got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByDaemon || got.Tree != rootKey ||
+		got.Session != "ses-tester" || got.SessionFile != "/tmp/tester.jsonl" {
+		t.Errorf("the carried tester = %s by %q in %s, session %q at %q; want it suspended by the daemon in %s, its session kept",
+			got.State, got.SuspendedBy, got.Tree, got.Session, got.SessionFile, rootKey)
+	}
+	if live, err := trees.TreeLive(ctx, "legion", rootKey); err != nil || live {
+		var lastError string
+		_ = pool.QueryRow(ctx, `select coalesce(max(last_error), '') from outbox where issue = $1 and payload->>'op' = 'tree_close'`, rootKey).Scan(&lastError)
+		t.Errorf("the old tree's cleanup once its root's linger expired: live %t, %v, its close last waiting on %q; want it confirmed", live, err, lastError)
+	}
+	for _, call := range append(rt.CallsOf("Spawn"), rt.CallsOf("Resume")...) {
+		if call.Spec.Tree == childKey {
+			t.Errorf("the child's new tree launched %s while the child waits on %s; want nothing launched", call.Spec.Claim, blockerKey)
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -13,13 +14,16 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -32,9 +36,15 @@ var _ supervise.Specs = specs{}
 // provisions workspaces itself (a Sandbox pod's init containers) provisions the issue's workspace
 // from them, and under any other the daemon makes sure the workspace is on its own host first.
 type specs struct {
-	stateDir     string
-	project      string
+	stateDir string
+	project  string
+	// instructions is the path of the daemon's copy of the deployment's instructions, "" when the
+	// configuration names none, and copies every copy of an instructions file, which SpawnSpec
+	// reads again before it builds a launch (instructionsCopies.refresh), so an edited file
+	// reaches the next launch. Boot always sets copies; it is nil only in a test whose specs
+	// literal leaves it out, and such a specs launches on whatever the copies hold.
 	instructions string
+	copies       *instructionsCopies
 	secrets      map[string]string
 	prompts      *prompts.Composer
 	// variants is every arm of a declared experiment the claim's unit was drawn into and that
@@ -47,6 +57,10 @@ type specs struct {
 	// gates them, which a tree's root architect is told after its addressing
 	// (DesignGateFragment); empty for a deployment that gates no step.
 	designSteps []record.DesignStep
+	// productionCheck is the project's `production_check` (config.Project.ProductionCheck): every
+	// architect is told it after its addressing (ProductionCheckFragment). The empty role, a
+	// test's zero value, reads `off`.
+	productionCheck claim.Role
 	// slackChannels is the project's slack_channels, which the controller is told after the
 	// design gate steps (SlackChannelsFragment); its LEGION_SLACK_CHANNELS is the runtime's to set.
 	slackChannels []string
@@ -54,8 +68,8 @@ type specs struct {
 	// commits a pane stamps with its issue key (runtime.SpawnSpec.IssueTrailer); nil for a
 	// project that names none, whose panes stamp nothing.
 	commitIssueTrailerRepos []ghrepo.Repository
-	// same is whether two repository names name one repository: the daemon's one equivalence,
-	// the project's mapping's (repositories.same) — the same name compared without case, or the
+	// same is whether two repository names name one repository: the daemon's one equivalence
+	// (repositories.same) — the same name compared without case, or the
 	// two names of a configured rename (repository_renames) — which issueTrailer compares
 	// commit_issue_trailer_repos against, so a launch on the name a transfer moved a repository
 	// away from stamps exactly as one on the name the project wrote. Boot always sets it; it is
@@ -64,12 +78,22 @@ type specs struct {
 	same func(a, b string) bool
 	// identity is the role's App bot identity every pane commits as, minted for the owner whose
 	// installation holds the repository the launch works — the record's name over a transfer, the
-	// mint's owner its serving one (workflowRuntime.identity); nil for a daemon with no GitHub
-	// Apps.
+	// mint's owner its serving one (workflowRuntime.identity). A worker's launch asks it for its
+	// own role, and for one role of the other App when knownIdentity knows none of that App's, so
+	// one call per App, its own first (roleIdentities). nil for a daemon with no GitHub Apps.
 	identity func(ctx context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
-	// repository is the repository an issue works and its default branch
-	// (workflowRuntime.issueRepository: its record's, or the project's default for an issue the
-	// workflow does not record); nil for a daemon with no workflow, whose launches work no
+	// knownIdentity is the bot identity of role's App that the daemon already holds, read with no
+	// mint (workflowRuntime.knownIdentity), which a worker's launch reads for the other App's roles
+	// before it asks identity; nil for a daemon with no workflow and in a test whose specs literal
+	// leaves it out, whose launches read every identity through identity.
+	knownIdentity func(role claim.Role) (runtime.GitIdentity, bool)
+	// log is where a launch says what it carries less of than it would (roleIdentities); nil logs
+	// to slog.Default, as a test's specs literal does.
+	log *slog.Logger
+	// repository is the repository an issue works and its default branch, as every launch reads it
+	// (workflowRuntime.launchRepository: its record's, or, for an issue the workflow does not
+	// record, the one Dispatch resolves it to, read and prepared at its first launch and kept while
+	// the issue holds its workspace); nil for a daemon with no workflow, whose launches work no
 	// repository.
 	repository func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
 	// appOwners is the owner accounts the role's own GitHub App is installed on AND the role's gh
@@ -82,14 +106,11 @@ type specs struct {
 	// POD's (sandbox.PodAppRoles): an issue pod projects only the directories both Apps' bundles
 	// hold, so an owner one App alone reaches is in no container of that pod and `legion gh`
 	// refuses it there, while a tmux pane holds the role's own bundle and reads that App alone.
-	// The daemon answers it from
-	// what the last gh bundle of that App read from GitHub (appauth.Installed, plan.appOwners),
-	// which costs no read of its own on a launch; a role whose App no bundle has been built for
-	// yet — the first launch of a daemon that has built none — is answered the owners of the
-	// repositories the project is mapped, every one of which has both Apps installed, so the
-	// clause names a true part of the reach and never more than it. The daemon sets it at boot
-	// whether or not a workflow is configured; a nil one names no owner, as an App installed
-	// nowhere does.
+	// The daemon answers it from what GitHub last answered of that App's installations
+	// (appauth.Installed, plan.appOwners): the boot's proof of the App's key first, then the last
+	// gh bundle of it, which costs no read of its own on a launch. The daemon sets it at boot
+	// whether or not a workflow is configured; a nil one, and a daemon with no GitHub Apps, names
+	// no owner, as an App installed nowhere does.
 	appOwners func(role claim.Role) []string
 	// owner is the architect that owns a claim on an issue that is not its tree's root, as the
 	// store records the architect claims of the issue's tree at the launch
@@ -131,11 +152,12 @@ func (s specs) ownersOf(role claim.Role) []string {
 	return s.appOwners(role)
 }
 
-// SpawnSpec is the launch's secrets (launchSecrets: the Envoy bearer and the NATS nkey seed, each
-// when the daemon has one), its prompt — the role prompt parts, the addressing sentence, the
-// deployment instructions and the instructions of each arm the claim's unit was drawn into
-// — and its repository with that repository's default branch, whose workspace is on the daemon's
-// host by then when the runtime leaves workspaces to the daemon
+// SpawnSpec is the launch's secrets (launchSecrets: the Envoy bearer, the deployment's private-name
+// rule file and the NATS nkey seed, each when the daemon has one), its prompt — the role prompt
+// parts, the addressing sentence, the deployment instructions and the instructions of each arm the
+// claim's unit was drawn into, each file read again first (copies), so a launch carries what the
+// operator's files hold now — and its repository with that repository's default branch, whose
+// workspace is on the daemon's host by then when the runtime leaves workspaces to the daemon
 // (ensureWorkspace). The controller's launch (controllerSpawnSpec) is its own. Both name the
 // backend the role runs on and are told its prompt part after the role's parts (launchBackend).
 // Plugins carries the plugin pair a stale-plugin relaunch installs (stalePluginInstall), set the
@@ -144,6 +166,7 @@ func (s specs) ownersOf(role claim.Role) []string {
 // Env carries the stall limits the daemon's own environment holds, merged after the fork
 // (stallLimitVariables), so the controller's launch is told them exactly as a worker's is.
 func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
+	s.copies.refresh(ctx)
 	var spec runtime.SpawnSpec
 	var err error
 	if c.Role == claim.RoleController {
@@ -227,6 +250,9 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
 		addressing += " " + DesignGateFragment(s.designSteps)
 	}
+	if c.Role == claim.RoleArchitect {
+		addressing += " " + ProductionCheckFragment(s.productionCheck)
+	}
 	spec.Prompt = runtime.PromptParts{
 		RolePromptPaths:            promptPaths,
 		Addressing:                 addressing,
@@ -247,18 +273,88 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		}
 		spec.Variants, spec.Prompt.VariantInstructionsPaths = arms.Variants, arms.Instructions
 	}
+	// The claim's own identity is the six variables its commits carry (GitIdentity.Env), and a
+	// failed mint of it fails the launch. Every role's of claim.Roles is the table the push step of
+	// `legion jj` reads to set the author of a commit a push sends from the role its Legion-Role
+	// trailer names, where the step's rules let it (runtime.RoleIdentitiesVariable): an issue's
+	// roles share one working copy, so a commit's author may be another role's App. The table is
+	// built with the claim's own identity for its own App's roles and with one resolution of the
+	// other App's (roleIdentities); when the other App's identity cannot be resolved, the launch
+	// goes on with a table of its own App's roles alone, and a commit whose trailer names a role
+	// left out keeps its author. A launch whose context ended during that resolution fails, as one
+	// whose context ended during the claim's own mint does: that is no failure of the other App.
+	// The controller's launch (controllerSpawnSpec) asks for no identity and carries no table.
 	if s.identity != nil {
 		id, err := s.identity(ctx, c.Role, spec.Repository)
 		if err != nil {
 			return runtime.SpawnSpec{}, fmt.Errorf("the git identity of %s: %w", c.Token, err)
 		}
+		identities, err := s.roleIdentities(ctx, c, spec.Repository, id)
+		if err != nil {
+			return runtime.SpawnSpec{}, fmt.Errorf("the role identities of %s: %w", c.Token, err)
+		}
 		spec.Env = id.Env()
+		spec.Env[runtime.RoleIdentitiesVariable] = runtime.RoleIdentities(identities)
 	}
 	// After the git identity, which replaces spec.Env rather than merging into it: the refusal
 	// cooldowns are merged into whatever map the launch holds by then. The stall limits are
 	// merged after the fork, onto every launch (SpawnSpec).
 	passthrough(spec.Env, refusalCooldownVariables...)
 	return spec, nil
+}
+
+// roleIdentities is the table of every role's identity a launch of c carries
+// (runtime.RoleIdentitiesVariable), given own, c's own identity. A role of c's own App takes own,
+// since one App commits as one identity, and asks nothing more. The other App's roles take that
+// App's identity, resolved once for all of them (otherAppIdentity). When it cannot be resolved,
+// the table leaves them out and the daemon logs one warning naming c, that App and the error, so
+// a failed mint of one App's lease fails no launch of the other App's role, and the push step
+// leaves the author of a commit whose trailer names a role left out as it is. A resolution that
+// failed once ctx had ended is the launch's own end rather than the other App's failure: it is
+// the error, and nothing is logged.
+func (s specs) roleIdentities(ctx context.Context, c supervise.Claim, repository ghrepo.Repository, own runtime.GitIdentity) (map[claim.Role]runtime.GitIdentity, error) {
+	app := appauth.AppRoleFor(c.Role)
+	identities := make(map[claim.Role]runtime.GitIdentity, len(claim.Roles))
+	var others []claim.Role
+	for _, role := range claim.Roles {
+		if appauth.AppRoleFor(role) == app {
+			identities[role] = own
+		} else {
+			others = append(others, role)
+		}
+	}
+	if len(others) == 0 {
+		return identities, nil
+	}
+	other, err := s.otherAppIdentity(ctx, others[0], repository)
+	switch {
+	case err == nil:
+		for _, role := range others {
+			identities[role] = other
+		}
+	case ctx.Err() != nil:
+		return nil, fmt.Errorf("the git identity of the %s App: %w", appauth.AppRoleFor(others[0]), err)
+	default:
+		log := s.log
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Warn("legion launch carries no identity of the other App's roles: its role identities hold its own App's roles alone",
+			"claim", c.Token, "app", appauth.AppRoleFor(others[0]), "error", err)
+	}
+	return identities, nil
+}
+
+// otherAppIdentity is the identity of role's App, the App other than the claim's own: first the
+// one the daemon already holds (knownIdentity), which costs no mint, and only when it holds none
+// a lease's (identity, which reuses that App's cached lease: workflowRuntime.identity).
+func (s specs) otherAppIdentity(ctx context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error) {
+	if s.knownIdentity != nil {
+		if id, known := s.knownIdentity(role); known {
+			return id, nil
+		}
+	}
+	return s.identity(ctx, role, repository)
 }
 
 // ownerOf is the architect c's addressing names (addressingFragment), read again at each launch:
@@ -291,7 +387,7 @@ func (w *workflowRuntime) owningArchitect(ctx context.Context, project string, c
 	if err != nil {
 		return "", err
 	}
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := w.records.Issue(ctx, tx, c.Issue)
 		if err != nil || issue == nil {
 			return err
@@ -324,7 +420,7 @@ func passthrough(env map[string]string, names ...string) {
 // (runtime.SpawnSpec.IssueTrailer, which each runtime tells its agent as LEGION_ISSUE_TRAILER):
 // the claim's own issue when the project names that repository in commit_issue_trailer_repos, and
 // "" for every other repository and for a launch that works none. The two names are compared as
-// every repository comparison of the daemon is, the mapping's own equivalence (s.same): without
+// every repository comparison of the daemon is, by the daemon's one equivalence (s.same): without
 // case and through the deployment's configured renames, so a claim on the name a transfer moved
 // a repository away from stamps exactly as one on the name the project wrote. A specs with no
 // equivalence stamps nothing.
@@ -398,7 +494,7 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 	if runtime.Of(backend) == runtime.BackendClaude {
 		return nil
 	}
-	if s.runtimeName != "kubernetes" || c.Session == "" || c.PluginContract == api.DaemonAPIVersion || s.plugins == nil {
+	if s.runtimeName != "kubernetes" || c.Session == "" || c.PluginContract == api.DaemonAPIVersion() || s.plugins == nil {
 		return nil
 	}
 	install := *s.plugins
@@ -408,15 +504,17 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 // controllerSpawnSpec is the daemon's controller's launch (`controller: daemon`): its role part and
 // the headless part; as its addressing the design-gate steps the project gates, then the reach
 // its GitHub App gives it as a sentence of its own (RepositoriesSentence, which also says when
-// its App is installed on no owner) and, when it names any, its Slack channels; then the
-// deployment instructions and the launch secrets. The operator's controller (`legion controller
-// start`) is told the steps and the reach the same way, never channels, since only the daemon's may
-// have channels (config.checkSlackChannels). The channels reach its environment as
-// LEGION_SLACK_CHANNELS from the runtime (sandbox.Options.ControllerSlackChannels), which
-// compares them with the list a running controller was launched under and relaunches it when
-// they change; a spec cannot set that variable.
-// It has no repository and no git identity: the controller works Dispatch, never a checkout, and
-// commits nothing, so it stamps no issue key into one either (runtime.SpawnSpec.IssueTrailer,
+// its App is installed on no owner, so that it has no GitHub owner) and, when it names any, its
+// Slack channels; then the deployment instructions and the launch secrets. The operator's
+// controller (`legion controller start`) is told the steps and the reach the same way, never
+// channels, since only the daemon's may have channels (config.checkSlackChannels). The channels
+// reach its environment as LEGION_SLACK_CHANNELS from the runtime
+// (sandbox.Options.ControllerSlackChannels), which compares them with the list a running
+// controller was launched under and relaunches it when they change; a spec cannot set that
+// variable.
+// It has no repository and no git identity, nor the table of every role's identity
+// (runtime.RoleIdentitiesVariable): the controller works Dispatch, never a checkout, and commits
+// and pushes nothing, so it stamps no issue key into a commit either (runtime.SpawnSpec.IssueTrailer,
 // which validateControllerShape refuses on a controller's spec). It runs in no experiment and is
 // told no variant instructions whatever the modes are: an experiment's unit is a tree or an
 // issue of one, and the controller runs in neither.
@@ -472,9 +570,9 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 // AddressingFragment is addressingFragment for a claim whose owner is its tree's architect, a pane
 // on its tree's root: it names the tree's architect, spelled from project and c.Tree. It is
 // exported for the rigs under packages/pi-legion/scripts, which tell a worker what a pane is told.
-// Its last parameter became the owners the role's App reaches with INFRA-2543, where it was the
-// project's mapping view before, so a label checked out before that change does not build against
-// a rig that passes owners.
+// Its last parameter became the owners the role's App reaches with INFRA-2543, where it was a view
+// of the project's repositories before, so a label checked out before that change does not build
+// against a rig that passes owners.
 func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repository, defaultBranch string, owners []string) (string, error) {
 	architect, err := claim.NewToken(project, c.Tree, claim.RoleArchitect)
 	if err != nil {
@@ -553,9 +651,9 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 // full stop and starts in lower case, to follow a worker's `; `: "your role's GitHub App is
 // installed on the owners a, b, and its token reaches every repository of those owners." owners
 // are the owner accounts of the role's own App, lowercased and sorted (specs.appOwners), and not
-// the owners of the repositories the project is mapped: since INFRA-2543 a role's reach is its
-// App's installations and the mapping bounds none of it, so naming the mapping's owners told an
-// agent its reach was smaller than it is wherever the App reaches an owner the project maps
+// the owners of any list of the project's repositories: since INFRA-2543 a role's reach is its
+// App's installations and no repository list bounds any of it, so naming such a list's owners
+// told an agent its reach was smaller than it is wherever the App reaches an owner the list held
 // nothing of — the case cmd/legion's own gh tests pin, where a repository of such an owner is
 // answered from that owner's directory.
 //
@@ -567,10 +665,13 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 // bundle holds a directory per owner.
 //
 // An App installed on no owner, which a deployment with no installation has, is told so
-// plainly: a clause that named nothing would read as one the daemon failed to fill.
+// plainly, with the GitHub owner the role has, none: a clause that named nothing would read as one
+// the daemon failed to fill, and a controller whose review App is installed on no account is
+// launched on an empty gh bundle (runtime.ErrNoGitHubOwner), so this clause is what tells it that
+// its gh acts as nobody (dispatch://INFRA-4401 A3).
 func RepositoriesClause(owners []string) string {
 	if len(owners) == 0 {
-		return "your role's GitHub App is installed on no owner, so its token reaches no repository."
+		return "your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."
 	}
 	if len(owners) == 1 {
 		return "your role's GitHub App is installed on the owner " + owners[0] + ", and its token reaches every repository of that owner."
@@ -593,6 +694,11 @@ func RepositoriesSentence(owners []string) string {
 // nothing would read as a line the daemon failed to fill. What each step asks of the architect,
 // and which document each records, is in its role parts (prompts/roles/architect-root.md and
 // prompts/go/architect-root.md).
+//
+// The steps the line names are the ones every root must register. A deployment that gates spec
+// and not criteria holds a root on criteria too once its architect registers the Verification
+// document as that step (record.TreeSteps), so its line says that as a sentence of its own: a
+// step no root must register, and that holds the root that registers it.
 func DesignGateFragment(steps []record.DesignStep) string {
 	if len(steps) == 0 {
 		return "Design gate steps: none."
@@ -601,7 +707,26 @@ func DesignGateFragment(steps []record.DesignStep) string {
 	for i, step := range steps {
 		quoted[i] = "`" + string(step) + "`"
 	}
-	return fmt.Sprintf("Design gate steps: %s.", strings.Join(quoted, ", "))
+	line := fmt.Sprintf("Design gate steps: %s.", strings.Join(quoted, ", "))
+	if record.JoinsByRegistration(steps, record.DesignStepCriteria) {
+		line += " A root that registers its Verification document as `criteria` is held on that step too."
+	}
+	return line
+}
+
+// ProductionCheckFragment is the sentence every architect, the root's and a sub-architect's alike,
+// is told last in its addressing: the project's `production_check` (check) as the file writes it
+// (config.Project.ProductionCheckWord), the role that works the production check a merge closing
+// one of the project's issues opens, or `off` for the empty role. It is the "Production check" line
+// the architect prompts read (prompts/roles/architect-root.md, prompts/roles/architect.md and
+// prompts/go/architect-common.md): where it names a role, the architect writes one `after_merge`
+// check for that check in each Verification document it writes, while the issue is open, since a
+// closed issue takes no new document; where it reads `off`, it writes none (dispatch://INFRA-175
+// R7). A root architect is told it after the design gate steps, and a sub-architect, which is
+// told no steps, after its addressing. The controller writes no Verification document and is
+// told nothing of it.
+func ProductionCheckFragment(check claim.Role) string {
+	return "Production check: " + config.Project{ProductionCheck: check}.ProductionCheckWord() + "."
 }
 
 // SlackChannelsFragment names the project's Slack channels, the list the controller answers

@@ -1,8 +1,8 @@
 package bus
 
 import (
-	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // leaderReadBucket opens bucket on a connection of its own and answers the server's URL with it,
@@ -36,7 +37,10 @@ func leaderReadBucket(t *testing.T, bucket string) (string, KeyValue) {
 
 // requestFor is the next message the subscription holds whose subject names stream, waited for up
 // to wait, and nil where none came: the requests of the other rows sharing this server, and of
-// this row's own setup, name another stream and are passed over.
+// this row's own setup, name another stream and are passed over. A row waiting for a request that
+// must come gives the test binary's deadline less testwait's margin (testwait.Remaining), so a
+// request a loaded machine sends late is still read; one showing a request is absent gives
+// noRequestFor.
 func requestFor(t *testing.T, sub *nats.Subscription, stream string, wait time.Duration) *nats.Msg {
 	t.Helper()
 	deadline := time.Now().Add(wait)
@@ -73,6 +77,7 @@ const noRequestFor = 500 * time.Millisecond
 // a direct get for a key it has not applied yet. Who answers each request is nats-server's, and
 // it turns on nothing but the subject the request was sent to.
 func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testing.T) {
+	t.Parallel()
 	const bucket = "kv_leader_wire"
 	const key = "ses_live"
 	stream := "KV_" + bucket
@@ -101,7 +106,7 @@ func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testi
 	if _, err := kv.Get(key); err != nil {
 		t.Fatalf("Get(%s): %v", key, err)
 	}
-	direct := requestFor(t, directGets, stream, 5*time.Second)
+	direct := requestFor(t, directGets, stream, testwait.Remaining(t, 30*time.Second))
 	if direct == nil {
 		t.Fatalf("Get(%s) sent no direct get of %s; this read is the one the leader need not answer", key, stream)
 	}
@@ -112,12 +117,12 @@ func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testi
 		t.Errorf("Get(%s) sent %s too, want the direct get alone", key, sent.Subject)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	if _, err := kv.GetFromLeader(ctx, key); err != nil {
 		t.Fatalf("GetFromLeader(%s): %v", key, err)
 	}
-	leader := requestFor(t, streamMsgGets, stream, 5*time.Second)
+	leader := requestFor(t, streamMsgGets, stream, testwait.Remaining(t, 30*time.Second))
 	if leader == nil {
 		t.Fatalf("GetFromLeader(%s) sent no stream message get of %s; a direct get would be answered by a copy that is behind", key, stream)
 	}
@@ -137,10 +142,11 @@ func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testi
 // marker are nats.ErrKeyNotFound, and a key no read may name is refused with the error Get
 // refuses it with, word for word, before anything is sent.
 func TestTheLeaderReadAnswersAKeyAsGetDoes(t *testing.T) {
+	t.Parallel()
 	const bucket = "kv_leader_answers"
 	_, kv := leaderReadBucket(t, bucket)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 
 	revision, err := kv.Put("ses_live", []byte("live"))
 	if err != nil {
@@ -190,5 +196,78 @@ func TestTheLeaderReadAnswersAKeyAsGetDoes(t *testing.T) {
 	}
 	if getErr == nil || leaderErr == nil || leaderErr.Error() != getErr.Error() {
 		t.Errorf("GetFromLeader(ses:bad) = %v, want the refusal Get answers, %v", leaderErr, getErr)
+	}
+}
+
+// The newest-message read answers a key's markers where GetFromLeader answers not found: a delete
+// or a purge marker, as its operation, at the sequence the stream stores it at. That includes a
+// marker the server stored as its answer to a direct get of another key's marker, which carries
+// that marker's Nats-Sequence header ahead of its own: a direct get of the copy reports the
+// source's sequence, the control here, and a write fenced on that is refused at every attempt. A
+// put is answered as GetFromLeader answers it, and a key the stream holds no message for is
+// nats.ErrKeyNotFound.
+func TestTheNewestLeaderReadAnswersAMarkerAtTheSequenceItIsStoredAt(t *testing.T) {
+	t.Parallel()
+	const bucket = "kv_leader_newest"
+	_, kv := leaderReadBucket(t, bucket)
+	conn := kv.Streams().Conn()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
+
+	put, err := kv.Put("ses_live", []byte("live"))
+	if err != nil {
+		t.Fatalf("put ses_live: %v", err)
+	}
+	for _, key := range []string{"ses_deleted", "ses_purged", "ses_source"} {
+		if _, err := kv.Put(key, []byte("gone")); err != nil {
+			t.Fatalf("put %s: %v", key, err)
+		}
+	}
+	for key, mark := range map[string]func(string, ...nats.DeleteOpt) error{"ses_deleted": kv.Delete, "ses_purged": kv.Purge, "ses_source": kv.Delete} {
+		if err := mark(key); err != nil {
+			t.Fatalf("mark %s: %v", key, err)
+		}
+	}
+	source := testnats.LastSequence(t, conn, bucket, "ses_source")
+	copied := testnats.ServerCopiesKey(t, conn, bucket, "ses_copied", bucket, "ses_source")
+
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	direct, err := js.GetLastMsg("KV_"+bucket, testnats.KVSubject(bucket, "ses_copied"), nats.DirectGet())
+	if err != nil {
+		t.Fatalf("direct get of ses_copied: %v", err)
+	}
+	if reported, err := strconv.ParseUint(direct.Header.Get(nats.JSSequence), 10, 64); err != nil || reported != source || reported == copied {
+		t.Fatalf("a direct get of the copy reports sequence %q (%v), want the source marker's %d and not the copy's own %d: the control shows nothing to correct", direct.Header.Get(nats.JSSequence), err, source, copied)
+	}
+
+	for _, want := range []struct {
+		key      string
+		op       nats.KeyValueOp
+		revision uint64
+	}{
+		{"ses_live", nats.KeyValuePut, put},
+		{"ses_deleted", nats.KeyValueDelete, testnats.LastSequence(t, conn, bucket, "ses_deleted")},
+		{"ses_purged", nats.KeyValuePurge, testnats.LastSequence(t, conn, bucket, "ses_purged")},
+		{"ses_copied", nats.KeyValueDelete, copied},
+	} {
+		entry, err := kv.NewestFromLeader(ctx, want.key)
+		if err != nil {
+			t.Errorf("NewestFromLeader(%s): %v", want.key, err)
+			continue
+		}
+		if entry.Key() != want.key || entry.Operation() != want.op || entry.Revision() != want.revision {
+			t.Errorf("NewestFromLeader(%s) = %s, %v at revision %d; want %s, %v at revision %d", want.key, entry.Key(), entry.Operation(), entry.Revision(), want.key, want.op, want.revision)
+		}
+		if want.op != nats.KeyValuePut {
+			if _, err := kv.GetFromLeader(ctx, want.key); !errors.Is(err, nats.ErrKeyNotFound) {
+				t.Errorf("GetFromLeader(%s) = %v, want %v for its marker", want.key, err, nats.ErrKeyNotFound)
+			}
+		}
+	}
+	if _, err := kv.NewestFromLeader(ctx, "ses_missing"); !errors.Is(err, nats.ErrKeyNotFound) {
+		t.Errorf("NewestFromLeader(ses_missing) = %v, want %v", err, nats.ErrKeyNotFound)
 	}
 }

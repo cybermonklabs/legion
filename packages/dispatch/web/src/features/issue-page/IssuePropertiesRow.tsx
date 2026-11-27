@@ -2,7 +2,6 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { api } from "../../api/client";
 import {
   artifactBlocksQuery,
   issueCoverageQuery,
@@ -30,12 +29,12 @@ import { issueDecisionsQuery } from "../doc/spec-marks";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
-import { gatedStepEntries } from "../issue/gated-steps";
+import { gatedStepEntries, isProjectRoot } from "../issue/gated-steps";
 import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
-import { wordsOf } from "../refs/tree-fragment";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { APPROVAL_CHIP } from "./approval-chip-box";
 import { decisionsDocumentId } from "./decision-review";
 import { presetPath } from "./issue-address";
@@ -43,9 +42,9 @@ import { statusGlyph, statusTone } from "./issue-status";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
-import { treeContext } from "./tree-drafts";
+import { nodeIdOf as issueNodeIdOf } from "./tree-drafts";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
-import { EVENT_FRESH } from "./useIssueTree";
+import { issueCommentsQuery } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
 /**
@@ -91,7 +90,7 @@ export function IssuePropertiesRow({
   // What the count counts, read from what the outline already reads under the same keys - the
   // reader's login, the decisions, the coverage's statements, the comments a Change is written
   // as, and the decisions document's blocks, whose sections say which decision a Change's anchor
-  // belongs to - and kept fresh by the outline's own rule (`useIssueTree.ts`'s `EVENT_FRESH`):
+  // belongs to - and kept fresh by the outline's own rule (`reference-target.ts`'s `EVENT_FRESH`):
   // events refresh them, never their age (decision 180). Staleness is per observer, so each read
   // here takes that rule too, and the count costs no request of its own (`waiting.ts`). Until
   // those blocks answer the count reads the Changes by their quotes, as `decision-review.ts` does
@@ -100,8 +99,7 @@ export function IssuePropertiesRow({
   const decisions = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const comments = useQuery({
-    queryFn: () => api.listComments(issue.key),
-    queryKey: ["comments", issue.key],
+    ...issueCommentsQuery(issue.key),
     ...EVENT_FRESH,
   });
   const decisionsDocument = decisionsDocumentId(issue.artifacts, decisions.data);
@@ -117,7 +115,7 @@ export function IssuePropertiesRow({
         : [{ artifactId: decisionsDocument, blocks: decisionsBlocks }],
     [decisionsDocument, decisionsBlocks]
   );
-  const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
+  const nodeIdOf = useMemo(() => issueNodeIdOf(issue), [issue]);
   const statements = useMemo(
     () => new Set((coverage.data?.requirements ?? []).map((one) => nodeIdOf(one.ref))),
     [coverage.data, nodeIdOf]
@@ -140,11 +138,11 @@ export function IssuePropertiesRow({
   const agentsTurn = openAsks.length - waitingOnHuman(openAsks).length;
   // The one shared read of the projects, under the key the shell's sidebar and the search
   // palette already hold, kept fresh by the feed's events as the count's reads are
-  // (`EVENT_FRESH`), so a header mounted again does not send it a second time. Only a root issue
-  // has gated steps at all (`gatedStepEntries`), so a child does not ask for the list, and while
-  // the read is pending or failed the issue draws its one chip rather than claiming a gate it has
-  // not read.
-  const projects = useQuery({ ...projectsQuery(), ...EVENT_FRESH, enabled: issue.parent === null });
+  // (`EVENT_FRESH`), so a header mounted again does not send it a second time. Only a root of the
+  // issue's project has gated steps at all (`isProjectRoot`: no parent, or a parent of another
+  // project), so a child does not ask for the list, and while the read is pending or failed the
+  // issue draws its one chip rather than claiming a gate it has not read.
+  const projects = useQuery({ ...projectsQuery(), ...EVENT_FRESH, enabled: isProjectRoot(issue) });
   const projectRow = projects.data?.find((candidate) => candidate.key === issue.project);
   const entries = gatedStepEntries(projectRow, issue);
   // Which document a step reviews is `gated-steps.ts`'s to say, so the chip asks the drawn

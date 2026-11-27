@@ -60,17 +60,16 @@ func fetchSignInStatus(t *testing.T, base string) (signInStatus, string) {
 }
 
 // awaitClientCheck waits for the boot pass of a broker's client check to reach the row, and
-// answers the status it then reads.
+// answers the status it then reads. Each read spends the bucket GET /signin/status shares with
+// the approval page's routes, so it is asked every tenth of a second.
 func awaitClientCheck(t *testing.T, base string) (signInStatus, string) {
 	t.Helper()
 	var status signInStatus
-	var body string
-	if !testwait.Holds(awaitTimeout, listeningPoll, func() bool {
-		status, body = fetchSignInStatus(t, base)
-		return status.ClientCheck != nil
-	}) {
-		t.Fatalf("the broker took no client check within %s: %s", awaitTimeout, body)
-	}
+	body := testwait.UntilPolling(t, 100*time.Millisecond, "the broker's boot pass of its client check", func() (string, bool) {
+		var read string
+		status, read = fetchSignInStatus(t, base)
+		return read, status.ClientCheck != nil
+	})
 	return status, body
 }
 
@@ -199,6 +198,42 @@ func TestClientCheckLogsAChangeOfStateNotEachPass(t *testing.T) {
 	})
 }
 
+// TestClientCheckLogsNoCredentialOfTheIssuer holds the check's lines to an issuer that carries a
+// credential: BROKER_SIGNIN_ISSUER takes any https URL, or http to a loopback host, userinfo and
+// all, so a token written as its user name reaches the check. The line that names a provider
+// nothing answers for holds no 10-character run of the token, in the issuer or in the error. The
+// token is made up.
+func TestClientCheckLogsNoCredentialOfTheIssuer(t *testing.T) {
+	const token = "madeUpIssuerToken0123456789"
+	st := storetest.Open(t)
+	issuer := oidctest.New(t)
+	signIn := ciphertest.SignIn(issuer, issuer.PublishKey(t, "signin-key"))
+	signIn.Issuer = strings.Replace(unreachableIssuer(t), "http://", "http://"+token+"@", 1)
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	var logged clientCheckLog
+	checkSignInClient(context.Background(), signIn, st, &logged)
+	var lines []string
+	for _, r := range capture.Records() {
+		line := r.Level.String() + " " + r.Message
+		r.Attrs(func(a slog.Attr) bool {
+			line += " " + a.Key + "=" + a.Value.String()
+			return true
+		})
+		lines = append(lines, line)
+	}
+	if !slices.ContainsFunc(lines, func(line string) bool { return strings.HasPrefix(line, "WARN "+clientCheckFailedMessage+" ") }) {
+		t.Fatalf("the check logged %q, want its WARN line", lines)
+	}
+	for _, line := range lines {
+		for i := 0; i+10 <= len(token); i++ {
+			if strings.Contains(line, token[i:i+10]) {
+				t.Fatalf("the line %q holds %q of the issuer's token", line, token[i:i+10])
+			}
+		}
+	}
+}
+
 // TestClientCheckLogsAFailedWriteOnceUntilItWritesAgain holds the check's write to the same rule:
 // a pass whose write fails writes clientCheckUnwrittenMessage once, a second pass whose write
 // fails writes nothing, and the first pass that writes again writes clientCheckWrittenMessage
@@ -286,7 +321,7 @@ func TestTheBinaryAnswersSignInStatusFromPostgres(t *testing.T) {
 	// And after a restart: both processes gone, a third started on the same database.
 	for _, process := range []*brokerProcess{first, second} {
 		process.Terminate(t)
-		if err := process.AwaitExit(t, stopTimeout); err != nil {
+		if err := process.AwaitExit(t); err != nil {
 			t.Fatalf("a broker exited with %v, want 0:\n%s", err, process.Log())
 		}
 	}

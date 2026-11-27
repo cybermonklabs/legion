@@ -22,6 +22,7 @@ import (
 // newer than its latest version, so the route refuses it without deleting any history. The route
 // needs the person scope, which the deployment's shared token does not hold.
 func TestRebuildArtifactRouteNeedsThePersonScopeAndRefusesADocumentThatLoads(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createArtifactIssue(t, handler)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
@@ -127,6 +128,7 @@ func newBrokenTestServer(t *testing.T) (http.Handler, *store.Store, *invalidLoad
 // answers; the dashboard offers its rebuild on that code alone. The room it failed recovers, and
 // once the history loads the same read answers the document.
 func TestAHistoryThatCannotLoadReadsAsDocumentUnloadable(t *testing.T) {
+	t.Parallel()
 	handler, _, broken := newBrokenTestServer(t)
 	issue := createArtifactIssue(t, handler)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
@@ -155,6 +157,7 @@ func TestAHistoryThatCannotLoadReadsAsDocumentUnloadable(t *testing.T) {
 // waits on its agent. Omitting markdown intentionally keeps the latest-version rebuild behavior,
 // including its existing version and approval state.
 func TestRebuildArtifactVersionsSuppliedMarkdownButNotTheLatestVersionSource(t *testing.T) {
+	t.Parallel()
 	handler, database, broken := newBrokenTestServer(t)
 	issue := createArtifactIssue(t, handler)
 	createBrokenDocument := func(t *testing.T, name, markdown string) model.Artifact {
@@ -237,6 +240,8 @@ func TestRebuildArtifactVersionsSuppliedMarkdownButNotTheLatestVersionSource(t *
 // INVALID_MARKDOWN. A version holding an element this build reads but may not create yet rebuilds:
 // the seed only puts back content the document stored.
 func TestARebuildFromTheLatestVersionAnswersForWhatThatVersionHolds(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest).
 	restore, err := pmdoc.UseStagedBlockForTest("staged", false)
 	if err != nil {
 		t.Fatalf("stage a typed block this build reads and may not create: %v", err)
@@ -287,6 +292,7 @@ func TestARebuildFromTheLatestVersionAnswersForWhatThatVersionHolds(t *testing.T
 // process (migration 20261101181500's trigger, which room sync hears), so the rebuild that follows
 // meets no live room and is refused for the closed issue alone.
 func TestClosedIssueRebuildRefusesBeforeChangingTheDocument(t *testing.T) {
+	t.Parallel()
 	var broken *invalidLoadOnceStore
 	handler, database, deps := newTestServer(t, testServerOptions{
 		settle: time.Hour,
@@ -307,11 +313,9 @@ func TestClosedIssueRebuildRefusesBeforeChangingTheDocument(t *testing.T) {
 	if closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 		t.Fatalf("close issue: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	for deadline := time.Now().Add(10 * time.Second); slices.Contains(documentService.ResidentRooms(), artifact.ID); time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the closed issue's document room stayed resident after the close")
-		}
-	}
+	waitUntil(t, "the closed issue's document room to leave residency after the close", func() bool {
+		return !slices.Contains(documentService.ResidentRooms(), artifact.ID)
+	})
 	broken.failNextLoad(artifact.ID)
 	rebuilt := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifact.ID+"/rebuild", map[string]any{"markdown": "changed\n"}, "alice")
 	if rebuilt.Code != http.StatusConflict || !strings.Contains(rebuilt.Body.String(), `"code":"ISSUE_CLOSED"`) {
@@ -327,6 +331,7 @@ func TestClosedIssueRebuildRefusesBeforeChangingTheDocument(t *testing.T) {
 // and before the version is written leaves the document's history, versions and events as they
 // were.
 func TestSuppliedRebuildThatFailsBeforeItsVersionLeavesTheDocument(t *testing.T) {
+	t.Parallel()
 	handler, database, broken := newBrokenTestServer(t)
 	issue := createArtifactIssue(t, handler)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{

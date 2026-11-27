@@ -25,6 +25,7 @@ import (
 // The bus reads that run as superseded, and the hook must not WARN about it either. A move that
 // fails on a live run, against a bucket deleted under the store, is still the hook's WARN.
 func TestTheKnownSessionHookLogsNothingForARunThatIsOver(t *testing.T) {
+	t.Parallel()
 	const moveFailed = "the known-session cache did not move to the recovered connection"
 	for _, tc := range []struct {
 		name string
@@ -36,8 +37,8 @@ func TestTheKnownSessionHookLogsNothingForARunThatIsOver(t *testing.T) {
 			name: "the connection is reconnecting and the context is live",
 			arrange: func(t *testing.T, srv *testnats.Server, client *bus.Client) context.Context {
 				srv.Stop(t)
-				if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool { return client.Conn.Status() == nats.RECONNECTING }) {
-					t.Fatalf("the connection reads %v 10s after its server stopped, want RECONNECTING", client.Conn.Status())
+				if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool { return client.Conn.Status() == nats.RECONNECTING }) {
+					t.Fatalf("the connection still reads %v the time this package gives a wait after its server stopped, want RECONNECTING", client.Conn.Status())
 				}
 				return context.Background()
 			},

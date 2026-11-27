@@ -41,6 +41,7 @@ var priorityTupleEnds = []string{
 }
 
 func TestPriorityNode(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 
@@ -247,9 +248,9 @@ func TestPriorityNode(t *testing.T) {
 		t.Fatalf("the priority the shared token wrote is not listed: %v", order)
 	}
 
-	// The two credential refusals the write class brings: a credential held to one project may
-	// not write a priority, which belongs to none, and a token naming a service and no person
-	// may write nothing at all.
+	// The two credential refusals the write class brings: a credential that names one project may
+	// not write a priority, which belongs to no project and is the deployment's, and the token of a
+	// machine nobody signed in on, which names a service and no person, may write nothing at all.
 	refuseScopedCredentials(t)
 }
 
@@ -259,6 +260,7 @@ func TestPriorityNode(t *testing.T) {
 // delete answered as a success writes history nobody can see and tells the caller a deleted
 // priority was changed.
 func TestPriorityGoneTakesNoWrite(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	createTestPriority(t, handler, map[string]any{"id": "retired-goal", "title": "Retired goal"}, "alice")
@@ -294,6 +296,7 @@ func TestPriorityGoneTakesNoWrite(t *testing.T) {
 // since a priority belongs to no project, and `notify` false, so it wakes nobody. A write the
 // route refuses rolls its transaction back and appends none.
 func TestPriorityWriteAppendsOneQuietOwnerlessEvent(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	var cursor int64
@@ -382,84 +385,81 @@ func TestPriorityWriteAppendsOneQuietOwnerlessEvent(t *testing.T) {
 	none("a second delete", dispatchRequest(t, handler, http.MethodDelete, "/api/v1/priorities/fix-the-rail", nil, "alice"))
 }
 
-// TestPriorityIDRefusesTheNoneKeyword reads that no priority takes the id `none`, given or
-// derived from its title: the issue listing reads `advances=none` as the work under no priority
-// (parseAdvancesFilter), so a priority of that id would have its own page and row list the work
-// under no priority, and no filter could ask for the work under it. An id that merely begins
-// with the word is a slug like any other and is written.
+// TestPriorityIDRefusesTheNoneKeyword reads that no priority takes the id `none`: the issue
+// listing reads `advances=none` as the work under no priority (parseAdvancesFilter), so a
+// priority of that id would have its own page and row list the work under no priority, and no
+// filter could ask for the work under it. A body naming the id is refused; a title whose slug is
+// the word takes the hashed id instead (priorityIDFromTitle), trimmed title and all. An id that
+// merely begins with the word is a slug like any other and is written.
 func TestPriorityIDRefusesTheNoneKeyword(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
-	ctx := context.Background()
-	for name, body := range map[string]map[string]any{
-		"named in id":            {"id": noAdvancesFilter, "title": "Whatever is left"},
-		"derived from the title": {"title": "None"},
-		"derived from a title in capitals and spaces": {"title": "  NONE  "},
-	} {
-		refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities", body, "alice")
-		code, text := refusalOf(t, refused)
-		if refused.Code != http.StatusBadRequest || code != codePriorityInput {
-			t.Fatalf("a create whose id is %q, %s: status=%d code=%s error=%q, want 400 %s",
-				noAdvancesFilter, name, refused.Code, code, text, codePriorityInput)
-		}
-		if !strings.Contains(text, "advances="+noAdvancesFilter) {
-			t.Fatalf("the refusal of the id %q, %s, says %q, want it to name the filter keyword", noAdvancesFilter, name, text)
-		}
-	}
-	var written int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from priority_nodes where kind = $1 and id = $2`,
-		prioritystore.KindPriority, noAdvancesFilter).Scan(&written); err != nil {
-		t.Fatalf("count the priorities of the id %q: %v", noAdvancesFilter, err)
-	}
-	if written != 0 {
-		t.Fatalf("the refused creates wrote %d priorities of the id %q, want none", written, noAdvancesFilter)
-	}
-	if made := createTestPriority(t, handler, map[string]any{"title": "None left behind"}, "alice"); made.ID != "none-left-behind" {
-		t.Fatalf("a title beginning with the word derives the id %q, want %q", made.ID, "none-left-behind")
-	}
+	t.Parallel()
+	assertPriorityKeywordID(t, noAdvancesFilter, "Whatever is left", map[string]string{
+		"None":     "priority-dc937b598926",
+		"  NONE  ": "priority-c627c09c14e5",
+	}, "None left behind", "none-left-behind")
 }
 
-// TestPriorityIDRefusesTheAnyKeyword reads that no priority takes the id `any`, given or derived
-// from its title, for the reason it takes no `none`: the issue listing reads `advances=any` as
-// the work under any live priority (parseAdvancesFilter), so a priority of that id would have its
-// own page and row list the work under every priority, and no filter could ask for the work
-// under it. An id that merely begins with the word is a slug like any other and is written.
+// TestPriorityIDRefusesTheAnyKeyword reads that no priority takes the id `any`, for the reason it
+// takes no `none`: the issue listing reads `advances=any` as the work under any live priority
+// (parseAdvancesFilter), so a priority of that id would have its own page and row list the work
+// under every priority, and no filter could ask for the work under it. A body naming the id is
+// refused; a title whose slug is the word takes the hashed id instead. An id that merely begins
+// with the word is a slug like any other and is written.
 func TestPriorityIDRefusesTheAnyKeyword(t *testing.T) {
+	t.Parallel()
+	assertPriorityKeywordID(t, anyAdvancesFilter, "Whatever matters", map[string]string{
+		"Any":     "priority-2b505597daa7",
+		"  ANY  ": "priority-618c79503a3d",
+	}, "Any other business", "any-other-business")
+}
+
+// assertPriorityKeywordID holds the create to one keyword of the issue listing: a body naming it
+// in id is 400 PRIORITY_INPUT naming the filter keyword and writes nothing; each title of hashed
+// is written under the id beside it, the rule's hash of the trimmed title; and the title begun
+// with the word is written under its own slug.
+func assertPriorityKeywordID(t *testing.T, keyword, namedTitle string, hashed map[string]string, begunTitle, begunID string) {
+	t.Helper()
 	handler, database := newTestHandlerWithStore(t)
-	ctx := context.Background()
-	for name, body := range map[string]map[string]any{
-		"named in id":            {"id": anyAdvancesFilter, "title": "Whatever matters"},
-		"derived from the title": {"title": "Any"},
-		"derived from a title in capitals and spaces": {"title": "  ANY  "},
-	} {
-		refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities", body, "alice")
-		code, text := refusalOf(t, refused)
-		if refused.Code != http.StatusBadRequest || code != codePriorityInput {
-			t.Fatalf("a create whose id is %q, %s: status=%d code=%s error=%q, want 400 %s",
-				anyAdvancesFilter, name, refused.Code, code, text, codePriorityInput)
-		}
-		if !strings.Contains(text, "advances="+anyAdvancesFilter) {
-			t.Fatalf("the refusal of the id %q, %s, says %q, want it to name the filter keyword", anyAdvancesFilter, name, text)
-		}
+	refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities",
+		map[string]any{"id": keyword, "title": namedTitle}, "alice")
+	code, text := refusalOf(t, refused)
+	if refused.Code != http.StatusBadRequest || code != codePriorityInput {
+		t.Fatalf("a create naming the id %q: status=%d code=%s error=%q, want 400 %s",
+			keyword, refused.Code, code, text, codePriorityInput)
+	}
+	if !strings.Contains(text, "advances="+keyword) {
+		t.Fatalf("the refusal of the id %q says %q, want it to name the filter keyword", keyword, text)
 	}
 	var written int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from priority_nodes where kind = $1 and id = $2`,
-		prioritystore.KindPriority, anyAdvancesFilter).Scan(&written); err != nil {
-		t.Fatalf("count the priorities of the id %q: %v", anyAdvancesFilter, err)
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from priority_nodes where kind = $1 and id = $2`,
+		prioritystore.KindPriority, keyword).Scan(&written); err != nil {
+		t.Fatalf("count the priorities of the id %q: %v", keyword, err)
 	}
 	if written != 0 {
-		t.Fatalf("the refused creates wrote %d priorities of the id %q, want none", written, anyAdvancesFilter)
+		t.Fatalf("the refused create wrote %d priorities of the id %q, want none", written, keyword)
 	}
-	if made := createTestPriority(t, handler, map[string]any{"title": "Any other business"}, "alice"); made.ID != "any-other-business" {
-		t.Fatalf("a title beginning with the word derives the id %q, want %q", made.ID, "any-other-business")
+	for title, id := range hashed {
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities", map[string]any{"title": title}, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("a create of the title %q: status=%d body=%s, want 201 under %q", title, response.Code, response.Body.String(), id)
+		}
+		if made := decodeBody[model.Priority](t, response); made.ID != id {
+			t.Fatalf("the title %q is written under the id %q, want %q", title, made.ID, id)
+		}
+	}
+	if made := createTestPriority(t, handler, map[string]any{"title": begunTitle}, "alice"); made.ID != begunID {
+		t.Fatalf("a title beginning with the word derives the id %q, want %q", made.ID, begunID)
 	}
 }
 
 // TestPriorityTitleAndIDAreBounded reads the two bounds a priority write holds its text to. The
 // title is at most contracts.IssueTitleMax, as an issue title is, on a create and a rename alike.
-// The id is at most priorityIDMax, whether given or derived from the title: it is a btree key, so
-// an id with no bound reached the insert and failed it as a 500. Each is refused 400
-// PRIORITY_INPUT naming its bound, and a refused write leaves the store as it was.
+// The id is at most priorityIDMax: it is a btree key, so an id with no bound reached the insert
+// and failed it as a 500. Each is refused 400 PRIORITY_INPUT naming its bound, and a refused
+// write leaves the store as it was. An id derived from a longer title is cut to the bound, so
+// that create is written.
 func TestPriorityTitleAndIDAreBounded(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	refuse := func(what string, response *httptest.ResponseRecorder, bound int) {
@@ -488,8 +488,8 @@ func TestPriorityTitleAndIDAreBounded(t *testing.T) {
 		t.Fatalf("the refused rename left a title of %d characters, want the %d it had", len(got.Title), contracts.IssueTitleMax)
 	}
 
-	// An id at the bound is written. One past it, one far past the btree's own bound, and one
-	// derived from a title past it are each refused, and none is a 500.
+	// An id at the bound is written. One past it and one far past the btree's own bound are each
+	// refused, and neither is a 500. A title past it derives an id cut to the bound and is written.
 	if atBound := strings.Repeat("b", priorityIDMax); createTestPriority(t, handler,
 		map[string]any{"id": atBound, "title": "At the bound"}, "alice").ID != atBound {
 		t.Fatalf("the id of %d characters was not written as it was sent", priorityIDMax)
@@ -498,16 +498,22 @@ func TestPriorityTitleAndIDAreBounded(t *testing.T) {
 		map[string]any{"id": strings.Repeat("c", priorityIDMax+1), "title": "One past"}, "alice"), priorityIDMax)
 	refuse("a create whose id is past the btree's bound", dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities",
 		map[string]any{"id": strings.Repeat("d", 3000), "title": "Far past"}, "alice"), priorityIDMax)
-	refuse("a create whose title derives an id past the bound", dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities",
-		map[string]any{"title": strings.Repeat("e", priorityIDMax+1)}, "alice"), priorityIDMax)
+	pastBound := strings.Repeat("e", priorityIDMax+1)
+	cut := strings.Repeat("e", priorityIDMax)
+	if derived := createTestPriority(t, handler, map[string]any{"title": pastBound}, "alice"); derived.ID != cut {
+		t.Fatalf("a title of %d letters derives an id of %d characters, want its first %d", len(pastBound), len(derived.ID), priorityIDMax)
+	}
+	if got := readTestPriority(t, handler, cut); got.Title != pastBound {
+		t.Fatalf("the priority under the cut id has a title of %d characters, want the %d it was sent", len(got.Title), len(pastBound))
+	}
 
 	var written int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from priority_nodes where kind = $1`,
 		prioritystore.KindPriority).Scan(&written); err != nil {
 		t.Fatalf("count the priorities: %v", err)
 	}
-	if written != 2 {
-		t.Fatalf("the store holds %d priorities, want the 2 within the bounds", written)
+	if written != 3 {
+		t.Fatalf("the store holds %d priorities, want the 3 within the bounds", written)
 	}
 }
 

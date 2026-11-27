@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // stateServer is a daemon stand-in answering GET /legion/v1/state with body, and anything else
@@ -25,12 +27,13 @@ func stateServer(t *testing.T, body string) *httptest.Server {
 	return server
 }
 
-// TestTheStateReadIsBoundedByTheRequestTimeout: the window is the plan's D14, twenty seconds, and
-// New gives it to every client it builds, so a daemon that accepts a connection and never answers
-// ends one pass rather than holding the minute's loop for good.
+// TestTheStateReadIsBoundedByTheRequestTimeout: the window is sixty seconds, room for a full read
+// of the INFRA daemon's state (10.9 to 11.9 s on 2026-11-21, about 3.4 ms more with each issue),
+// and New gives it to every client it builds, so a daemon that accepts a connection and never
+// answers ends one pass rather than holding the minute's loop for good.
 func TestTheStateReadIsBoundedByTheRequestTimeout(t *testing.T) {
-	if RequestTimeout != 20*time.Second {
-		t.Fatalf("RequestTimeout = %s, want the 20s of the plan's D14", RequestTimeout)
+	if RequestTimeout != 60*time.Second {
+		t.Fatalf("RequestTimeout = %s, want 60s", RequestTimeout)
 	}
 	if window := New("http://daemon.internal.example").http.Timeout; window != RequestTimeout {
 		t.Fatalf("New gives a client a %s window, want RequestTimeout (%s)", window, RequestTimeout)
@@ -41,7 +44,7 @@ func TestTheStateReadIsBoundedByTheRequestTimeout(t *testing.T) {
 	defer silent.Close()
 
 	// The client's window is what ends the read, shrunk here so the test does not wait the
-	// production twenty seconds out.
+	// production sixty seconds out.
 	client := New(silent.URL, WithTimeout(150*time.Millisecond))
 
 	started := time.Now()
@@ -57,33 +60,59 @@ func TestTheStateReadIsBoundedByTheRequestTimeout(t *testing.T) {
 	}
 }
 
-// TestABodyOverTheCapIsAFailedRead: a daemon answering more than ResponseLimit is a failed read,
-// never a parse of the first 8 MiB. A body exactly at the cap is read, so the bound refuses only
-// what is over it.
+// stateOfSize is a state document of exactly size bytes, valid JSON throughout, so what refuses
+// one is the cap and not the decode.
+func stateOfSize(size int) string {
+	const head, tail = `{"issues":{},"pad":"`, `"}`
+	return head + strings.Repeat("a", size-len(head)-len(tail)) + tail
+}
+
+// TestABodyOverTheCapIsAFailedRead: a daemon answering more than ResponseLimit, 32 MiB, is a
+// failed read, never a parse of the first 32 MiB, and the refusal names the cap it passed. A body
+// exactly at the cap is read, so the bound refuses only what is over it.
 func TestABodyOverTheCapIsAFailedRead(t *testing.T) {
-	// Valid JSON throughout, so what refuses it is the cap and not the decode.
-	envelope := `{"issues":{},"pad":"` + `"}`
-	padding := strings.Repeat("a", ResponseLimit+1-len(envelope))
-	over := stateServer(t, `{"issues":{},"pad":"`+padding+`"}`)
+	if ResponseLimit != 32<<20 {
+		t.Fatalf("ResponseLimit = %d, want 32 MiB (%d)", ResponseLimit, 32<<20)
+	}
+	over := stateServer(t, stateOfSize(32<<20+1))
 
 	_, bytes, err := New(over.URL).State(t.Context())
 	if !errors.Is(err, ErrResponseTooLarge) || !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("a read of a body over the cap: err = %v, want one wrapping both ErrResponseTooLarge and ErrUnavailable", err)
 	}
-	if bytes != ResponseLimit+1 {
-		t.Errorf("bytes = %d, want the point the read stopped (%d)", bytes, ResponseLimit+1)
+	if !strings.Contains(err.Error(), "33554432-byte cap") {
+		t.Errorf("the refusal = %q, want it to name the 33554432-byte cap", err)
+	}
+	if bytes != 32<<20+1 {
+		t.Errorf("bytes = %d, want the point the read stopped (%d)", bytes, 32<<20+1)
 	}
 
-	atTheCap := stateServer(t, `{"issues":{},"pad":"`+padding[:len(padding)-1]+`"}`)
+	atTheCap := stateServer(t, stateOfSize(32<<20))
 	state, bytes, err := New(atTheCap.URL).State(t.Context())
 	if err != nil {
 		t.Fatalf("a read of a body exactly at the cap: %v", err)
 	}
-	if bytes != ResponseLimit {
-		t.Errorf("bytes = %d, want the cap (%d)", bytes, ResponseLimit)
+	if bytes != 32<<20 {
+		t.Errorf("bytes = %d, want the cap (%d)", bytes, 32<<20)
 	}
 	if len(state.Issues) != 0 {
 		t.Errorf("issues = %v, want none", state.Issues)
+	}
+}
+
+// TestANineMiBStateIsReadWhole: a state past the 8 MiB the cap was before, as the INFRA daemon's
+// will be from about 2026-11-23, is read whole and parsed, not refused.
+func TestANineMiBStateIsReadWhole(t *testing.T) {
+	server := stateServer(t, stateOfSize(9<<20))
+	state, bytes, err := New(server.URL).State(t.Context())
+	if err != nil {
+		t.Fatalf("a read of a 9 MiB state: %v, want it read whole", err)
+	}
+	if bytes != 9<<20 {
+		t.Errorf("bytes = %d, want the whole body (%d)", bytes, 9<<20)
+	}
+	if state.Issues == nil {
+		t.Errorf("the 9 MiB state parsed to no issues map, want the empty map it sent")
 	}
 }
 
@@ -169,6 +198,56 @@ func TestAStateFromTodaysDaemonParses(t *testing.T) {
 	}
 }
 
+// TestTheStateReadStatesNoContractAndKeepsP0Holders: the sampler's read states no plugin
+// contract, so a daemon places it in no pod and serves it the body of the daemon's own contract,
+// which carries `admission.p0Holders` (the daemon's api.contractsFor; the daemon's own row,
+// TestACallerInNoPodStatingNoContractIsServedTheP0Holders, pins that side). The decode keeps the
+// number and the read's admission observation records it, which is what the board's header
+// copies (dispatch://INFRA-5636). A read that stated a contract below the P0 start's entry would
+// be served no number, and every board would give null.
+func TestTheStateReadStatesNoContractAndKeepsP0Holders(t *testing.T) {
+	const body = `{"admission":{"cap":2,"p0Holders":3,"active":["ACME-1","ACME-2","ACME-3","ACME-4","ACME-5"]},
+	  "issues":{"ACME-1":{"key":"ACME-1","phase":"implementing","slot":{"index":0}}}}`
+	asked := make(chan http.Header, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case asked <- r.Header.Clone():
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	state, _, err := New(server.URL).State(t.Context())
+	if err != nil {
+		t.Fatalf("read a state carrying admission.p0Holders: %v", err)
+	}
+	var header http.Header
+	select {
+	case header = <-asked:
+	default:
+		t.Fatal("the daemon was asked nothing, so this test proves nothing")
+	}
+	// The daemon's pluginContractHeader (packages/daemon/internal/api/shaping.go).
+	if stated := header.Values("Legion-Plugin-Contract"); len(stated) != 0 {
+		t.Errorf("the read states Legion-Plugin-Contract %v, want none: the daemon serves its own body, P0 holders included, to a caller in no pod that states none", stated)
+	}
+	if state.Admission == nil || state.Admission.P0Holders == nil || *state.Admission.P0Holders != 3 {
+		t.Fatalf("the decoded admission = %+v, want the daemon's 3 P0 holders", state.Admission)
+	}
+	for _, observation := range state.Observations() {
+		if observation.IssueKey != AdmissionKey || observation.Field != FieldAdmission {
+			continue
+		}
+		if recorded := AdmissionOf(observation.Value); recorded == nil || recorded.P0Holders == nil || *recorded.P0Holders != 3 {
+			t.Errorf("the read records the admission block %s, want the daemon's 3 P0 holders in it", observation.Value)
+		}
+		return
+	}
+	t.Fatal("the read records no admission block, so the board has no number to copy")
+}
+
 // TestAMalformedOrRefusedAnswerIsAFailedRead: a body that is not the route's JSON, and a status
 // that is not 200, are each a failed read, so the sampler records the failure and leaves the last
 // good observations standing.
@@ -217,11 +296,10 @@ func TestAStateReadFollowsNoRedirect(t *testing.T) {
 // is the transport's reason without the URL net/http's *url.Error carries or the host and port
 // its *net.OpError names.
 func TestAFailedCallNamesNoAddress(t *testing.T) {
-	// A port nothing listens on: the dial fails, which is the failure a daemon that is down
-	// gives, and the one whose text names the address.
-	closed := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	address := strings.TrimPrefix(closed.URL, "http://")
-	closed.Close()
+	// A port that refuses every dial: the dial fails, which is the failure a daemon that is down
+	// gives, and the one whose text names the address. The test holds the port until it ends; a
+	// closed server's port is any process's to take, and one that takes it answers.
+	address := testport.Refused(t)
 
 	_, _, err := New("http://" + address).State(t.Context())
 	if !errors.Is(err, ErrUnavailable) {

@@ -24,8 +24,10 @@ const approvalDir = envoyDir + "/internal/cipher/approval"
 const varies = "(varies)"
 
 // refusalWriters is each API function that answers a refusal, called (w, status, code, message,
-// …), with the type of the body it answers when that body carries more than code and error.
-var refusalWriters = map[string]string{"writeError": "", "writePageRefusal": "pageRefusal"}
+// …), with the type of the body it answers when that body carries more than code and error. The
+// NATS writer hold's routes answer every refusal through writeHoldRefusal, whose body names its
+// code in error, as the operator's client reads it.
+var refusalWriters = map[string]string{"writeError": "", "writePageRefusal": "pageRefusal", "writeHoldRefusal": "holdRefusal"}
 
 // pageAnswerers is each method of another of the broker's packages that answers a request the
 // API package is serving, with the directory of the package declaring it. A table is needed
@@ -129,7 +131,8 @@ func handlerDir(file *ast.File, handler *ast.SelectorExpr) (string, bool) {
 }
 
 // authClass is one route adapter: the credential its routes need and the refusals
-// server.authenticate answers for it.
+// server.authenticate answers for it, with those of the adapter's hold step (its routeHandler's
+// hold), which server.handle runs after authenticate.
 type authClass struct {
 	Wrapper, Label, Doc string
 	Refusals            []outcome
@@ -138,17 +141,23 @@ type authClass struct {
 // credentialLabels names, for a reader, the credential each adapter accepts. refgen refuses an
 // adapter missing here, so a new one cannot reach the page under its Go name.
 var credentialLabels = map[string]string{
-	"public":       "None",
-	"sessionAuth":  "Session proof",
-	"renewAuth":    "Renewal session proof",
-	"launcherAuth": "Machine credential",
-	"accountAuth":  "Caller ServiceAccount token",
-	"serviceAuth":  "Service login ServiceAccount token",
-	"signInAuth":   "Broker sign-in session",
+	"public":           "None",
+	"sessionAuth":      "Session proof",
+	"sessionEndAuth":   "Session proof, a held person's too",
+	"renewAuth":        "Renewal session proof",
+	"launcherAuth":     "Machine credential",
+	"launcherEndAuth":  "Machine credential, a held person's too",
+	"accountAuth":      "Caller ServiceAccount token",
+	"serviceAuth":      "Service login ServiceAccount token",
+	"edgeListenerAuth": "Edge listener identity token",
+	"signInAuth":       "Broker sign-in session",
+	"operatorAuth":     "NATS writer hold operator's platform token",
 }
 
 // readAuthClasses reads each adapter a route uses: its doc comment, the routeAuth constant it
-// builds its routeHandler with, and what authenticate's case for that constant can refuse.
+// builds its routeHandler with, and what authenticate's case for that constant can refuse; and,
+// for an adapter that sets its routeHandler's hold to a method of the server, what that method
+// can refuse.
 func (g *graph) readAuthClasses(routes []route) ([]authClass, error) {
 	authenticate, err := g.funcs.decl("authenticate")
 	switch {
@@ -194,17 +203,36 @@ func (g *graph) readAuthClasses(routes []route) ([]authClass, error) {
 		if !ok {
 			return nil, fmt.Errorf("%s: adapter %s has no reader label in refgen's credentialLabels", r.At, r.Wrapper)
 		}
-		constant := ""
+		constant, holdStep := "", ""
+		var holdErr error
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			if kv, ok := n.(*ast.KeyValueExpr); ok {
-				if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "auth" {
-					if v, ok := kv.Value.(*ast.Ident); ok {
-						constant = v.Name
-					}
-				}
+			kv, ok := n.(*ast.KeyValueExpr)
+			if !ok {
+				return true
 			}
-			return constant == ""
+			switch key, _ := kv.Key.(*ast.Ident); {
+			case key == nil:
+			case key.Name == "auth":
+				if v, ok := kv.Value.(*ast.Ident); ok {
+					constant = v.Name
+				}
+			case key.Name == "hold":
+				method, ok := kv.Value.(*ast.SelectorExpr)
+				dir, server := "", false
+				if ok {
+					dir, server = handlerDir(g.src.fileOf(fn), method)
+				}
+				if !ok || !server || dir != apiDir {
+					holdErr = fmt.Errorf("%s: %s's hold is %s, not a method expression (*server).name", g.src.at(kv), r.Wrapper, g.src.text(kv.Value))
+					return false
+				}
+				holdStep = method.Sel.Name
+			}
+			return false
 		})
+		if holdErr != nil {
+			return nil, holdErr
+		}
 		cc, ok := cases[constant]
 		if !ok {
 			return nil, fmt.Errorf("%s: authenticate has no case for %s, %s's authentication", g.src.at(authenticate), constant, r.Wrapper)
@@ -217,9 +245,32 @@ func (g *graph) readAuthClasses(routes []route) ([]authClass, error) {
 		if err != nil {
 			return nil, err
 		}
+		if holdStep != "" {
+			held, err := g.stepRefusals(holdStep)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %s's hold step: %w", r.At, r.Wrapper, err)
+			}
+			refusals = append(refusals, held...)
+		}
 		out = append(out, authClass{Wrapper: r.Wrapper, Label: label, Doc: prose(fn.Doc), Refusals: refusals})
 	}
 	return out, nil
+}
+
+// stepRefusals is everything the API package's method name can refuse, read as a handler is.
+func (g *graph) stepRefusals(name string) ([]outcome, error) {
+	fn, err := g.funcs.decl(name)
+	switch {
+	case err != nil:
+		return nil, err
+	case fn == nil:
+		return nil, fmt.Errorf("%s declares no %s", apiDir, name)
+	}
+	info, err := g.collect(g.src.fileOf(fn), fn.Body, fn.Type.Params)
+	if err != nil {
+		return nil, err
+	}
+	return g.resolve(info, map[string][]string{}, map[string]bool{name: true})
 }
 
 // graph is one of the broker's packages' functions, read for what each one can answer: the API
@@ -434,7 +485,7 @@ func (g *graph) collect(file *ast.File, body ast.Node, params *ast.FieldList) (f
 				}
 			case g.funcs.declares(fun.Name):
 				s.kind, s.callee = siteCall, fun.Name
-				if (fun.Name == "readJSON" || fun.Name == "readCarriedBody") && len(call.Args) > 2 {
+				if (fun.Name == "readJSON" || fun.Name == "readCarriedBody" || fun.Name == "readHoldBody") && len(call.Args) > 2 {
 					if u, ok := call.Args[2].(*ast.UnaryExpr); ok {
 						if id, ok := u.X.(*ast.Ident); ok {
 							s.bodyType = locals[id.Name]

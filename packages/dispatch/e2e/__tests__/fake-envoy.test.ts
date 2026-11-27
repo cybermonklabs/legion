@@ -18,13 +18,16 @@ import { withoutHarnessPort } from "../harness-ports";
 // loads no preload and registers no DOM, so nothing puts happy-dom's `fetch` on globalThis.
 const fakeEnvoyModule = fileURLToPath(new URL("../fake-envoy.ts", import.meta.url));
 
-/** A fake Envoy of the test's own, listening, and the way to stop it. */
+/** A fake Envoy of the test's own, listening, and the way to stop it. It is started with no bus,
+ *  whatever the shell running the tests exported, so no claim a test asks for reaches a NATS
+ *  server another stack's Dispatch reads. */
 async function startFakeEnvoy(): Promise<{
   origin: string;
   port: number;
   stop: () => Promise<void>;
 }> {
   const env = withoutHarnessPort("fakeEnvoy");
+  delete env.DISPATCH_E2E_NATS_URLS;
   const fake = spawn("bun", [fakeEnvoyModule], { env, stdio: ["ignore", "pipe", "inherit"] });
   const exited = once(fake, "exit");
   const stop = async () => {
@@ -253,6 +256,48 @@ test("a registry state other than ok refuses all three registry reads, and ok re
   }
 });
 
+// The refilling answer carries the real listener's `Retry-After: 5` (writeListRefilling) unless a
+// test sets its own with the state: a row that waits through several refilling reads waits each
+// one's two retries, and only the row pinning what Dispatch passes on needs the listener's 5. The
+// figure outlives a session reseed, as the state does, and a value no header can carry is refused.
+test("the refilling list answer carries Retry-After 5 unless a test set its own", async () => {
+  const { origin, stop } = await startFakeEnvoy();
+  const reads = () =>
+    Promise.all([Bun.fetch(`${origin}/v1/sessions`), Bun.fetch(`${origin}/v1/interests/`)]);
+  try {
+    expect((await putFixture(origin, "/__fixture/lists", { state: "refilling" })).status).toBe(200);
+    const listener = await reads();
+    expect(listener.map((answer) => answer.status)).toEqual([503, 503]);
+    expect(listener.map((answer) => answer.headers.get("Retry-After"))).toEqual(["5", "5"]);
+    expect(await listener[0].json()).toMatchObject({ code: "refilling" });
+
+    const set = await putFixture(origin, "/__fixture/lists", {
+      retry_after_seconds: 1,
+      state: "refilling",
+    });
+    expect(await set.json()).toEqual({ retry_after_seconds: 1, state: "refilling" });
+    expect((await reads()).map((answer) => answer.headers.get("Retry-After"))).toEqual(["1", "1"]);
+    const sessions: FakeSession[] = [{ session_id: "planner", title: "Planner" }];
+    expect((await putFixture(origin, "/__fixture/sessions", sessions)).status).toBe(200);
+    expect((await reads()).map((answer) => answer.headers.get("Retry-After"))).toEqual(["1", "1"]);
+
+    for (const refused of [0, 1.5, -1, "1"]) {
+      const answer = await putFixture(origin, "/__fixture/lists", {
+        retry_after_seconds: refused,
+        state: "refilling",
+      });
+      expect(answer.status).toBe(400);
+    }
+    expect((await reads()).map((answer) => answer.headers.get("Retry-After"))).toEqual(["1", "1"]);
+
+    // Set back to the listener's own figure by a state that names none.
+    expect((await putFixture(origin, "/__fixture/lists", { state: "refilling" })).status).toBe(200);
+    expect((await reads()).map((answer) => answer.headers.get("Retry-After"))).toEqual(["5", "5"]);
+  } finally {
+    await stop();
+  }
+});
+
 /** A send to `target` as Dispatch's listener client writes one, under `key`, asking for a
  *  session that is running now when `connectedOnly` is set. */
 function send(origin: string, target: string, key: string, connectedOnly = false) {
@@ -339,6 +384,41 @@ test("a stopped session is read only with stopped in include=, and a send to it 
     const sent = await send(origin, "stopped", "key-5", true);
     expect(sent.status).toBe(200);
     expect(await sent.json()).toMatchObject({ recipient_state: "live", state: "connected" });
+  } finally {
+    await stop();
+  }
+});
+
+test("a role claim on the bus names the live holder the role lookup answers, and a listener with no bus writes none", async () => {
+  const { origin, stop } = await startFakeEnvoy();
+  try {
+    const sessions: FakeSession[] = [
+      { capabilities: ["steer"], roles: ["shared"], session_id: "first", title: "First" },
+      { capabilities: ["steer"], roles: ["shared"], session_id: "second", title: "Second" },
+    ];
+    expect((await putFixture(origin, "/__fixture/sessions", sessions)).status).toBe(200);
+    const claim = (role: string, method: "PUT" | "DELETE" = "PUT") =>
+      Bun.fetch(`${origin}/__fixture/role-claims/${role}`, { method });
+    const lookup = async () => (await Bun.fetch(`${origin}/v1/roles/shared`)).json();
+
+    // A role no running session holds has no holder to claim it for, bus or none.
+    const unheld = await claim("nobody-holds");
+    expect(unheld.status).toBe(404);
+    expect(await unheld.json()).toEqual({ error: "no live holder for role nobody-holds" });
+    // A held role is refused without a bus, writing nothing, and the lookup answers as before.
+    const noBus = { error: "this listener has no bus: DISPATCH_E2E_NATS_URLS is unset" };
+    const refused = await claim("shared");
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual(noBus);
+    expect(await lookup()).toMatchObject({ holder: "first" });
+    // The holder a claim names is the one the lookup answers, which moves once the first stops.
+    expect(
+      (await putFixture(origin, "/__fixture/sessions/first", { live: false }, "PATCH")).status
+    ).toBe(200);
+    expect(await lookup()).toMatchObject({ holder: "second" });
+    const release = await claim("shared", "DELETE");
+    expect(release.status).toBe(409);
+    expect(await release.json()).toEqual(noBus);
   } finally {
     await stop();
   }

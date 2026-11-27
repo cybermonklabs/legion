@@ -9,10 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -26,13 +28,6 @@ const cacheURLEnv = "LEGION_REPOSITORY_CACHE_URL"
 // RecordedDefault); unset or empty, there is none.
 const defaultBranchEnv = "LEGION_DEFAULT_BRANCH"
 
-// fetchClock is the time the fetch's clone retries read and wait on; a test replaces it.
-var fetchClock workspace.Clock = workspace.WallClock{}
-
-// fetchBound is the fetch's workspace.FetchRequest.Bound, the time each clocked stage of the fetch
-// gets. Zero is workspace.FetchTimeout. A test makes it short, so an attempt runs out of its time.
-var fetchBound time.Duration
-
 // workspaceFetch fills the feed, the container's own directory on the issue's volume: from the
 // repository cache when one is named, presenting the token LEGION_REPOSITORY_CACHE_TOKEN_FILE
 // holds, then from GitHub the default branch, the issue's recorded default and the Legion issue
@@ -45,8 +40,12 @@ var fetchBound time.Duration
 // volume (workspace.ErrOutsideVolume), and so do the failures workspace.Fetch reads as such. A
 // transfer that fails transiently is run again (workspace.Fetch), each retried failure one line
 // on stdout, and the last line says where the feed came from and the bytes each source brought.
-func workspaceFetch(ctx context.Context, repo, feed, cacheURL string, stdout io.Writer) error {
-	inputs, err := fetchInputs(repo, feed, cacheURL)
+// A fresh feed filled from a cache says first which of the cache's sources filled it
+// (printSource), and says so whatever failed after.
+// What it reads of its process — each variable, the PATH, TMPDIR, the clock and the bound — it
+// reads from ws.
+func workspaceFetch(ctx context.Context, ws workspaceProcess, repo, feed, cacheURL string, stdout io.Writer) error {
+	inputs, err := fetchInputs(ws, repo, feed, cacheURL)
 	if err != nil {
 		// Every check before the first write to the volume is fetchInputs', so this one mark
 		// covers each of them, and a check added there later too (issuePodInitExit).
@@ -55,24 +54,50 @@ func workspaceFetch(ctx context.Context, repo, feed, cacheURL string, stdout io.
 	if err := os.MkdirAll(feed, 0o700); err != nil {
 		return fmt.Errorf("create the feed directory %s: %w", feed, err)
 	}
-	report, err := workspace.Fetch(ctx, workspace.NewRunner(workspace.CommandTimeout, inputs.tools), workspace.FetchRequest{
-		Repo: inputs.repository, Token: inputs.token, CredentialDir: os.TempDir(), Feed: feed,
-		Log: func(line string) { fmt.Fprintln(stdout, "workspace-init fetch: "+line) }, Clock: fetchClock, Bound: fetchBound, CacheURL: cacheURL, CacheToken: inputs.cacheToken,
-		RecordedDefault: os.Getenv(defaultBranchEnv),
+	report, err := workspace.Fetch(ctx, ws.runner(programbound.Of(&commandBudget), inputs.tools), workspace.FetchRequest{
+		Repo: inputs.repository, Token: inputs.token, CredentialDir: ws.tempDir(), Feed: feed,
+		Log: func(line string) { fmt.Fprintln(stdout, "workspace-init fetch: "+line) }, Clock: ws.clock, Bound: ws.fetchBound, CacheURL: cacheURL, CacheToken: inputs.cacheToken,
+		RecordedDefault: ws.getenv(defaultBranchEnv),
 	})
+	printSource(stdout, report)
 	if err != nil {
 		return err
 	}
 	switch {
-	case report.CacheBytes > 0:
+	case report.Source == workspace.SourceBucket || report.CacheBytes > 0:
+		cache, size, took := cacheURL, report.CacheBytes, report.CacheDuration
+		if report.Source == workspace.SourceBucket {
+			cache, size, took = cacheURL+" (bucket)", report.BucketBytes, report.BucketDuration
+		}
 		fmt.Fprintf(stdout, "workspace-init fetch: %s bytes from the repository cache %s in %s, its history verified in %s; %s bytes from GitHub for the delta (%s)\n",
-			groupedBytes(report.CacheBytes), cacheURL, report.CacheDuration.Round(time.Millisecond), report.VerifyDuration.Round(time.Millisecond), groupedBytes(report.GitHubBytes), refCount(report.Refs))
+			groupedBytes(size), cache, took.Round(time.Millisecond), report.VerifyDuration.Round(time.Millisecond), groupedBytes(report.GitHubBytes), refCount(report.Refs))
 	case report.Cloned:
 		fmt.Fprintf(stdout, "workspace-init fetch: no repository cache named: cloned %s from GitHub (%s bytes)\n", inputs.repository, groupedBytes(report.GitHubBytes))
 	default:
 		fmt.Fprintf(stdout, "workspace-init fetch: the feed holds %s already: %s bytes from GitHub for the delta (%s)\n", inputs.repository, groupedBytes(report.GitHubBytes), refCount(report.Refs))
 	}
 	return nil
+}
+
+// printSource says which of the repository cache's sources filled a fresh feed, once workspace.Fetch
+// chose one, before the summary line or the failure: `source=bucket`, then one line for each pack
+// and index downloaded and verified, `bucket object=<name> size=<bytes> sha256=<hex>`, the object's
+// name as the cache's manifest named it, its exact size and the SHA-256 the fetch computed of it,
+// which matched the manifest's, for a reader to compare with the bucket's own listing; or
+// `source=/tar reason=<why the bucket was not used>`, `/packs is not served` for a cache with no
+// bucket or of a release before it. A reason is one line, and names no signed address, query,
+// token or ref's contents (workspace.FetchReport.TarReason). A feed with no cache named, or one
+// that held the repository already, says nothing here.
+func printSource(stdout io.Writer, report workspace.FetchReport) {
+	switch report.Source {
+	case workspace.SourceBucket:
+		fmt.Fprintln(stdout, "workspace-init fetch: source=bucket")
+		for _, object := range report.Objects {
+			fmt.Fprintf(stdout, "workspace-init fetch: bucket object=%s size=%d sha256=%s\n", object.Name, object.Size, object.SHA256)
+		}
+	case workspace.SourceTar:
+		fmt.Fprintf(stdout, "workspace-init fetch: source=/tar reason=%s\n", strings.Join(strings.Fields(report.TarReason), " "))
+	}
 }
 
 // fetchInput is what `fetch` reads before it touches the volume: the repository, the cache's
@@ -88,7 +113,7 @@ type fetchInput struct {
 // read: --repo before anything else, then --feed, --cache-url and its token, a readable
 // provisioning token, and git alone on PATH. It writes nothing, so no refusal of it has a cause
 // on the volume.
-func fetchInputs(repo, feed, cacheURL string) (fetchInput, error) {
+func fetchInputs(ws workspaceProcess, repo, feed, cacheURL string) (fetchInput, error) {
 	repository, err := ghrepo.Parse("--repo", repo)
 	if err != nil {
 		return fetchInput{}, err
@@ -101,7 +126,7 @@ func fetchInputs(repo, feed, cacheURL string) (fetchInput, error) {
 		if parsed, err := url.Parse(cacheURL); err != nil || parsed.Scheme != "http" || parsed.Host == "" {
 			return fetchInput{}, fmt.Errorf("--cache-url must be an http:// URL (got %q)", cacheURL)
 		}
-		tokenFile, set := os.LookupEnv(repocache.CacheTokenFileEnv)
+		tokenFile, set := ws.lookup(repocache.CacheTokenFileEnv)
 		if !set {
 			return fetchInput{}, errors.New(repocache.CacheTokenFileEnv + " is not set: a repository cache needs its token")
 		}
@@ -109,12 +134,12 @@ func fetchInputs(repo, feed, cacheURL string) (fetchInput, error) {
 			return fetchInput{}, err
 		}
 	}
-	tokenFile, err := secretFileFromEnv(provisionTokenFileEnv)
+	tokenFile, err := ws.secretFile(provisionTokenFileEnv)
 	if err != nil {
 		return fetchInput{}, err
 	}
 	inputs.token = func() (string, error) { return config.ReadSecretPointer(provisionTokenFileEnv, tokenFile) }
-	if inputs.tools, err = provisioningTools("git"); err != nil {
+	if inputs.tools, err = ws.tools("git"); err != nil {
 		return fetchInput{}, err
 	}
 	return inputs, nil

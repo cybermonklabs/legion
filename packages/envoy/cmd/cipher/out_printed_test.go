@@ -14,6 +14,7 @@ import (
 // Control: an --out holding the secret that is made fine, with the refusal elsewhere (the token
 // file is missing), prints no part of it.
 func TestEnrollPodNeverPrintsTheOutDirectory(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	const secret = "hunter2outdir5e"
 	dir := t.TempDir()
@@ -48,6 +49,7 @@ func TestEnrollPodNeverPrintsTheOutDirectory(t *testing.T) {
 // variable and the system's reason, never by its path. Control: the same run with a directory it
 // can make goes on to ask the helper, and fails there instead, naming no directory.
 func TestEnrollHelperNeverPrintsTheKeyDirectory(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	const secret = "hunter2keydir-helper-4d1a"
 	dir := t.TempDir()
@@ -71,6 +73,7 @@ func TestEnrollHelperNeverPrintsTheKeyDirectory(t *testing.T) {
 // pasted in the wrong place shows up, so enroll, unenroll and the machine forms refuse it without
 // printing it. Control: the refusal still says what was wrong, and exits as a usage error.
 func TestAnArgumentAFormDoesNotTakeIsNotEchoed(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	const secret = "hunter2pw-posarg-61c2"
 	sock := filepath.Join(t.TempDir(), "none.sock")
@@ -85,5 +88,32 @@ func TestAnArgumentAFormDoesNotTakeIsNotEchoed(t *testing.T) {
 		if exit != exitUsageError || strings.Contains(stderr, secret) || !strings.Contains(stderr, "unexpected argument") {
 			t.Errorf("agent-secrets %s: exit %d, stderr %q; want a usage error naming the unexpected argument and not printing it", strings.Join(args[:len(args)-1], " "), exit, stderr)
 		}
+	}
+}
+
+// TestAProjectsListThatIsNoListIsNotEchoed: --projects is the flag form of AGENT_SECRETS_PROJECTS,
+// and a value it cannot hold is where a credential pasted in the wrong place shows up, so enroll
+// --helper and register refuse it naming the flag and the rule, and never the value, as
+// cipherclient.TradeProjects does for the variable (whose own test holds that).
+func TestAProjectsListThatIsNoListIsNotEchoed(t *testing.T) {
+	t.Parallel()
+	binary := buildAgentSecrets(t)
+	const secret = "hunter2pw-projects-9b3e"
+	sock := filepath.Join(t.TempDir(), "none.sock")
+	for _, row := range []struct {
+		name, setting string
+		env, args     []string
+	}{
+		{"enroll --helper --projects", "--projects", nil, []string{"enroll", "--helper", "--runtime-id", "r1", "--thumbprint", "tp1", "--projects", secret}},
+		{"register --projects", "--projects", nil, []string{"register", "--projects", secret}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			env := append([]string{"AGENT_SECRETS_HELPER_SOCK=" + sock, "AGENT_SECRETS_KEY_DIR=" + t.TempDir()}, row.env...)
+			_, stderr, exit := runAgentSecrets(t, binary, "http://unused", t.TempDir(), env, row.args...)
+			if exit == 0 || !strings.Contains(stderr, "not a list of project keys") {
+				t.Fatalf("exit %d, stderr %q; want a refusal naming the rule", exit, stderr)
+			}
+			wantNamedNotPrinted(t, "stderr", stderr, []string{row.setting}, secret)
+		})
 	}
 }

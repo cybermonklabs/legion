@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -69,13 +70,14 @@ func requireDuplicateRefusal(t *testing.T, response *httptest.ResponseRecorder) 
 }
 
 // nearCopyVerdictBound is the near-copy gate's bound on a server whose case reads the gate's
-// verdict: the wait Envoy's tests give a step they cannot hurry (testwait.Bounded: a minute, or
-// what the test binary's deadline leaves less a second), not production's duplicateGateTimeout.
-// Under production's bound a read on a loaded machine ran out of it and the create went
-// in unchecked, so a case wanting a refusal failed on the machine's speed, and a case wanting a
-// create passed whatever the gate would have said.
+// verdict: what the test binary's deadline leaves less testwait's margin (30 s), the moment
+// testwait's own waits give up, and under -timeout 0 no bound (testwait.Bounded of the longest
+// duration there is), not production's duplicateGateTimeout. Under production's bound a read on
+// a loaded machine ran out of it and the create went in unchecked, so a case wanting a refusal
+// failed on the machine's speed, and a case wanting a create passed whatever the gate would have
+// said; a bound of a minute did the same on a machine slower still.
 func nearCopyVerdictBound(t *testing.T) time.Duration {
-	return testwait.Bounded(t, time.Minute, time.Second)
+	return testwait.Bounded(t, math.MaxInt64, 30*time.Second)
 }
 
 // newDuplicateTestHandler is the server a near-copy case drives: its gate runs under
@@ -120,6 +122,7 @@ const (
 )
 
 func TestCreateIssueDuplicateRefusesANearCopyOfAnOpenIssue(t *testing.T) {
+	t.Parallel()
 	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
@@ -159,6 +162,7 @@ func TestCreateIssueDuplicateRefusesANearCopyOfAnOpenIssue(t *testing.T) {
 }
 
 func TestCreateIssueDuplicateCreatesACopyOfADoneIssue(t *testing.T) {
+	t.Parallel()
 	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
@@ -182,6 +186,7 @@ func TestCreateIssueDuplicateCreatesACopyOfADoneIssue(t *testing.T) {
 }
 
 func TestCreateIssueDuplicateCreatesACopyOfAnAncestor(t *testing.T) {
+	t.Parallel()
 	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
@@ -214,6 +219,7 @@ func TestCreateIssueDuplicateCreatesACopyOfAnAncestor(t *testing.T) {
 }
 
 func TestCreateIssueDuplicateCreatesATextSharingOnlyCommonWords(t *testing.T) {
+	t.Parallel()
 	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
@@ -233,6 +239,7 @@ func TestCreateIssueDuplicateCreatesATextSharingOnlyCommonWords(t *testing.T) {
 }
 
 func TestCreateIssueDuplicateForcePassesTheGate(t *testing.T) {
+	t.Parallel()
 	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
@@ -250,6 +257,7 @@ func TestCreateIssueDuplicateForcePassesTheGate(t *testing.T) {
 }
 
 func TestCreateIssueDuplicateIgnoresACitedIssueKey(t *testing.T) {
+	t.Parallel()
 	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
@@ -270,6 +278,7 @@ func TestCreateIssueDuplicateIgnoresACitedIssueKey(t *testing.T) {
 }
 
 func TestCreateIssueDuplicateCreatesATitleThatNamesAnotherIssue(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
@@ -310,6 +319,7 @@ func TestCreateIssueDuplicateCreatesATitleThatNamesAnotherIssue(t *testing.T) {
 }
 
 func TestCreateIssueDuplicateRefusesACopyWhoseTitleNamesTheCandidate(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
@@ -330,6 +340,7 @@ func TestCreateIssueDuplicateRefusesACopyWhoseTitleNamesTheCandidate(t *testing.
 }
 
 func TestCreateIssueDuplicateRefusesAKeyedCopyOfATitleThatNamesNoIssue(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
@@ -350,6 +361,7 @@ func TestCreateIssueDuplicateRefusesAKeyedCopyOfATitleThatNamesNoIssue(t *testin
 }
 
 func TestCreateIssueDuplicateKeepsACopyThatTemplateIssuesWouldCrowdOut(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
@@ -376,6 +388,7 @@ func TestCreateIssueDuplicateKeepsACopyThatTemplateIssuesWouldCrowdOut(t *testin
 }
 
 func TestCreateIssueDuplicateScopesTheGateToTheProjectAndSkipsExternal(t *testing.T) {
+	t.Parallel()
 	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 	createDuplicateTestProject(t, handler, "OTHER")
@@ -391,14 +404,8 @@ func TestCreateIssueDuplicateScopesTheGateToTheProjectAndSkipsExternal(t *testin
 	if other.Key != "OTHER-1" {
 		t.Fatalf("cross-project issue key = %q, want OTHER-1", other.Key)
 	}
-	mapping := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": "TEST",
-	}, "alice")
-	if mapping.Code != http.StatusOK {
-		t.Fatalf("map external repository: status=%d body=%s", mapping.Code, mapping.Body.String())
-	}
 	external := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
-		"external": "owner/repo#41", "title": "Astrolabe calibration drifts after a reseat",
+		"external": "owner/repo#41", "project": "TEST", "title": "Astrolabe calibration drifts after a reseat",
 		"spec": duplicateSpecAstrolabe,
 	}))
 	if external.Key != "TEST-2" {
@@ -407,6 +414,7 @@ func TestCreateIssueDuplicateScopesTheGateToTheProjectAndSkipsExternal(t *testin
 }
 
 func TestCreateIssueDuplicateOrdersCandidatesByScore(t *testing.T) {
+	t.Parallel()
 	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "ORDER")
 
@@ -461,6 +469,7 @@ func TestCreateIssueDuplicateOrdersCandidatesByScore(t *testing.T) {
 // which is this case and that pair, and a title differing in one meaning word does not, which is
 // TestCreateIssueDuplicateCreatesTwoTitlesThatDifferInTheirOneMeaningWord.
 func TestCreateIssueDuplicateRefusesACopiedTitleWhoseWordsAreCommon(t *testing.T) {
+	t.Parallel()
 	handler, database := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "COMMON")
 	// Twelve issues holding the three words of the title below, so each word's document
@@ -504,6 +513,7 @@ func TestCreateIssueDuplicateRefusesACopiedTitleWhoseWordsAreCommon(t *testing.T
 // These two titles are the seed of packages/dispatch/e2e/agent-name.e2e.ts, whose ten browser
 // tests fail at this head with `POST /api/v1/issues failed: 409` on the second create.
 func TestCreateIssueDuplicateCreatesTwoTitlesThatDifferInTheirOneMeaningWord(t *testing.T) {
+	t.Parallel()
 	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "AGT")
 
@@ -524,6 +534,7 @@ func TestCreateIssueDuplicateCreatesTwoTitlesThatDifferInTheirOneMeaningWord(t *
 // `1.` `1.` holds no `2` where the row it copies holds one, and the exact copy R2 refuses was
 // created.
 func TestCreateIssueDuplicateRefusesACopiedSpecWhoseListIsRenumbered(t *testing.T) {
+	t.Parallel()
 	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "LIST")
 
@@ -550,8 +561,9 @@ func TestCreateIssueDuplicateRefusesACopiedSpecWhoseListIsRenumbered(t *testing.
 // gateBoundStandIn is a near-copy read that never answers on its own (server.beforeDuplicateRead):
 // it blocks until the context the gate gives it ends, and records the deadline that context
 // carried, when the read began and why it ended, so a case can tell what ended it. wait is the
-// case's own bound on the block, so a gate whose bound is gone fails the case by name rather
-// than holding it to the test binary's deadline.
+// case's own bound on the block, the test binary's deadline less testwait's margin
+// (nearCopyVerdictBound), so a gate whose bound is gone fails the case by name before go test's
+// alarm rather than holding it to the binary's deadline.
 type gateBoundStandIn struct {
 	wait time.Duration
 
@@ -588,6 +600,7 @@ func (s *gateBoundStandIn) read(ctx context.Context) error {
 // (newDuplicateTestHandler), and nothing in it waits on the machine's speed: the read never
 // answers, however fast the machine is.
 func TestCreateIssueGoesInUncheckedWhenTheGateRunsPastItsBound(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault).
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "BOUND")
 	const title = "Astrolabe calibration drifts after a reseat"

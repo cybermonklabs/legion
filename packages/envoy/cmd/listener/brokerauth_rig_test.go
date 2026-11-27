@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -143,6 +145,7 @@ func (r *brokerRig) call(t *testing.T, handler http.Handler, method, token, path
 // credential existed. R9 is here too: the same routes behind a listener given no broker setting
 // serve that very presentation and read no credential out of it (rig.open).
 func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerRig(t)
 	const (
 		bound    = "ses_rig_bound"
@@ -327,106 +330,158 @@ func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
 
 // v1RoutePatterns is how many patterns registerV1Routes registers today, each of which the walk
 // below must visit at least once.
-const v1RoutePatterns = 15
+const v1RoutePatterns = 16
 
-// R4 on a real bus, with no change to the listener's own code: a read-only token — the project
-// scope none beside the one scope read, which a read entry mints for Dispatch's read list — is
-// answered 401 not_a_session on every path registerV1Routes registers, because the verifier
-// brokerTokens.open builds leaves the read-only switch unset (ciphertoken.Options.ServesReadOnly)
-// and so refuses the token as a build before the switch refuses it. A token of a named project,
-// the same kind of token but for its project scope, its project and its scope, is answered
-// anything but 401 on each of the same requests, and its presentation writes no rejection line,
-// so the refusal is the scope's and not the route's.
-//
-// The listener has no route table, so the list below is this test's own: every path
-// registerV1Routes registers, under each method its handler serves (a handler that serves two is
-// walked under both). Each is first resolved through the rig's own mux to the pattern the list
-// names, so an entry that no longer reaches its registered pattern — one the catch-all would
-// swallow, say — fails rather than walking the wrong handler. A path and a body name the session
-// the presenting token names, so the session binding refuses none of these requests and a 401
-// can only be the credential's. A path registerV1Routes gains later is behind apiAuth all the
-// same, since apiAuth wraps the whole of /v1 once (main.go); TestAPIAuthBrokerToken holds that
-// apiAuth refuses the token before any handler runs.
+// walkSession is where a walk request's path or body names the session its token names.
+const walkSession = "<session>"
+
+// v1Walk is every path registerV1Routes registers, under each method its handler serves (a
+// handler that serves two is walked under both), with the pattern it must resolve to and its
+// body. The listener has no route table, so the list is the walk's own. Each request is first
+// resolved through the rig's own mux to the pattern the list names, so an entry that no longer
+// reaches its registered pattern — one the catch-all would swallow, say — fails rather than
+// walking the wrong handler. A path and a body name the session the presenting token names, so
+// the session binding refuses none of these requests and a 401 can only be the credential's. A
+// path registerV1Routes gains later is behind apiAuth all the same, since apiAuth wraps the whole
+// of /v1 once (main.go); TestAPIAuthBrokerToken holds that apiAuth refuses the token before any
+// handler runs.
+var v1Walk = []struct {
+	method  string
+	path    string
+	pattern string
+	body    string
+}{
+	{http.MethodPost, "/v1/interests/subscribe", "/v1/interests/subscribe",
+		`{"session_id":"<session>","topics":["notifications.github.rig"],"delivery":{"consumer":true,"epoch":"rig"}}`},
+	{http.MethodPost, "/v1/interests/unsubscribe", "/v1/interests/unsubscribe",
+		`{"session_id":"<session>","topics":["notifications.github.rig"]}`},
+	{http.MethodPost, "/v1/roles/set", "/v1/roles/set", `{"session_id":"<session>","role":"rig-walk-role"}`},
+	{http.MethodGet, "/v1/roles/rig-walk-role", "/v1/roles/", ""},
+	{http.MethodGet, "/v1/registry/<session>", "/v1/registry/", ""},
+	{http.MethodGet, "/v1/legion/agents?issue=INFRA-3825", "/v1/legion/agents", ""},
+	{http.MethodPut, "/v1/legion/agents", "/v1/legion/agents", `{"entries":[]}`},
+	{http.MethodGet, "/v1/legion/agents/sessions/<session>", "/v1/legion/agents/sessions/", ""},
+	{http.MethodPut, "/v1/legion/agents/sessions/<session>", "/v1/legion/agents/sessions/", `{"session_id":"<session>"}`},
+	{http.MethodGet, "/v1/legion/agents/roles/legion-infra-infra-3825-tester", "/v1/legion/agents/roles/", ""},
+	{http.MethodGet, "/v1/interests/<session>", "/v1/interests/", ""},
+	{http.MethodDelete, "/v1/interests/<session>", "/v1/interests/", ""},
+	{http.MethodGet, "/v1/sessions", "/v1/sessions", ""},
+	{http.MethodPost, "/v1/messages/send", "/v1/messages/send",
+		`{"target_session":"<session>","source_session":"<session>","message":"a message of the walk"}`},
+	{http.MethodPost, "/v1/messages/publish", "/v1/messages/publish",
+		`{"topic":"notifications.github.rig","source_session":"<session>","message":"a message of the walk"}`},
+	{http.MethodDelete, "/v1/sessions/<session>", "/v1/sessions/", ""},
+	{http.MethodGet, "/v1/sessions/<session>/relay", relaySocketPattern, ""},
+	{http.MethodGet, "/v1", "/v1", ""},
+	{http.MethodGet, "/v1/no-such-route", "/v1/", ""},
+}
+
+// walkToken is a token a walk presents, by what it is, and the session it names.
+type walkToken struct {
+	what    string
+	token   string
+	session string
+}
+
+// walkEveryV1Route sends each request of v1Walk under each token of refused and then under
+// control, each naming its own token's session. Every refused token is answered 401 and writes
+// one rejection line of the class not_a_session; control is answered anything but 401 and writes
+// no rejection line, so each refusal is the token's and not the route's. A request is counted
+// once its assertions have run, and the walk is held to every request and every pattern
+// registerV1Routes registers.
+func walkEveryV1Route(t *testing.T, rig *brokerRig, refused []walkToken, control walkToken) {
+	t.Helper()
+	walked, patterns := 0, map[string]bool{}
+	for _, route := range v1Walk {
+		t.Run(route.method+" "+route.pattern, func(t *testing.T) {
+			as := func(id string) (string, string) {
+				return strings.ReplaceAll(route.path, walkSession, id), strings.ReplaceAll(route.body, walkSession, id)
+			}
+			path, _ := as(control.session)
+			if _, pattern := rig.routes.Handler(httptest.NewRequest(route.method, path, nil)); pattern != route.pattern {
+				t.Fatalf("%s %s resolves to the pattern %q, want %q: the list no longer names what registerV1Routes registers",
+					route.method, path, pattern, route.pattern)
+			}
+
+			for _, presented := range refused {
+				path, body := as(presented.session)
+				before := rig.logs.Len()
+				answered := rig.call(t, rig.handler, route.method, presented.token, path, body)
+				if answered.Code != http.StatusUnauthorized {
+					t.Fatalf("%s %s under %s: status = %d, want 401; body = %s", route.method, path, presented.what, answered.Code, answered.Body.String())
+				}
+				assertBrokerRejectionLog(t, rig.logs.String()[before:], "not_a_session", presented.token, "")
+			}
+
+			path, body := as(control.session)
+			before := rig.logs.Len()
+			admitted := rig.call(t, rig.handler, route.method, control.token, path, body)
+			if admitted.Code == http.StatusUnauthorized {
+				t.Fatalf("%s %s under %s: status = 401, want anything but; body = %s", route.method, path, control.what, admitted.Body.String())
+			}
+			assertBrokerRejectionLog(t, rig.logs.String()[before:], "", control.token, "")
+			t.Logf("%s %s: %d refused tokens 401, %s %d", route.method, path, len(refused), control.what, admitted.Code)
+			walked++
+			patterns[route.pattern] = true
+		})
+	}
+	t.Logf("walked %d requests over %d patterns", walked, len(patterns))
+	if walked != len(v1Walk) || len(patterns) != v1RoutePatterns {
+		t.Fatalf("walked %d of %d requests over %d of the %d patterns registerV1Routes registers", walked, len(v1Walk), len(patterns), v1RoutePatterns)
+	}
+}
+
+// On a real bus, with no change to the listener's own code: a read-only token — the project
+// scope none beside the one scope read, which a read entry mints for Dispatch's read class — is
+// answered 401 not_a_session on every path registerV1Routes registers (v1Walk), because the
+// verifier brokerTokens.open builds leaves the read-only switch unset
+// (ciphertoken.Options.ServesReadOnly) and so refuses the token as a build before the switch
+// refuses it. A token of a named project, the same kind of token but for its project scope, its
+// project and its scope, is answered anything but 401 on each of the same requests, and its
+// presentation writes no rejection line, so the refusal is the scope's and not the route's.
 func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerRig(t)
 	const (
 		reader        = "ses_rig_reader"
 		named         = "ses_rig_named"
 		readOnlyToken = "access-token-that-only-reads"
 		namedToken    = "access-token-of-a-named-project"
-		// session is where a path or a body names the session its token names.
-		session = "<session>"
 	)
 	rig.broker.Says(readOnlyToken, readOnlyAnswer(reader, "example-reader", rig.caller.JKT()))
 	rig.broker.Says(namedToken, serviceAnswer(named, "example-fleet", rig.caller.JKT()))
 	rig.register(t, reader)
 	rig.register(t, named)
+	walkEveryV1Route(t, rig, []walkToken{{"a read-only token", readOnlyToken, reader}},
+		walkToken{"a named project's token", namedToken, named})
+}
 
-	routes := []struct {
-		method  string
-		path    string
-		pattern string
-		body    string
-	}{
-		{http.MethodPost, "/v1/interests/subscribe", "/v1/interests/subscribe",
-			`{"session_id":"<session>","topics":["notifications.github.rig"],"delivery":{"consumer":true,"epoch":"rig"}}`},
-		{http.MethodPost, "/v1/interests/unsubscribe", "/v1/interests/unsubscribe",
-			`{"session_id":"<session>","topics":["notifications.github.rig"]}`},
-		{http.MethodPost, "/v1/roles/set", "/v1/roles/set", `{"session_id":"<session>","role":"rig-walk-role"}`},
-		{http.MethodGet, "/v1/roles/rig-walk-role", "/v1/roles/", ""},
-		{http.MethodGet, "/v1/registry/<session>", "/v1/registry/", ""},
-		{http.MethodGet, "/v1/legion/agents?issue=INFRA-3825", "/v1/legion/agents", ""},
-		{http.MethodPut, "/v1/legion/agents", "/v1/legion/agents", `{"entries":[]}`},
-		{http.MethodGet, "/v1/legion/agents/sessions/<session>", "/v1/legion/agents/sessions/", ""},
-		{http.MethodPut, "/v1/legion/agents/sessions/<session>", "/v1/legion/agents/sessions/", `{"session_id":"<session>"}`},
-		{http.MethodGet, "/v1/legion/agents/roles/legion-infra-infra-3825-tester", "/v1/legion/agents/roles/", ""},
-		{http.MethodGet, "/v1/interests/<session>", "/v1/interests/", ""},
-		{http.MethodDelete, "/v1/interests/<session>", "/v1/interests/", ""},
-		{http.MethodGet, "/v1/sessions", "/v1/sessions", ""},
-		{http.MethodPost, "/v1/messages/send", "/v1/messages/send",
-			`{"target_session":"<session>","source_session":"<session>","message":"a message of the walk"}`},
-		{http.MethodPost, "/v1/messages/publish", "/v1/messages/publish",
-			`{"topic":"notifications.github.rig","source_session":"<session>","message":"a message of the walk"}`},
-		{http.MethodDelete, "/v1/sessions/<session>", "/v1/sessions/", ""},
-		{http.MethodGet, "/v1", "/v1", ""},
-		{http.MethodGet, "/v1/no-such-route", "/v1/", ""},
+// A token narrowed to reading, of every kind of trade the broker narrows, is refused on every
+// path registerV1Routes registers (v1Walk) as the read entry's token is: each answer of the
+// golden file the broker's own test holds its narrowed answers to is answered 401 with one
+// not_a_session line, since the verifier brokerTokens.open builds leaves the read-only switch
+// unset (ciphertoken.Options.ServesReadOnly), and no code of the listener's own names a narrowed
+// token. A token of a named project is answered anything but 401 on each of the same requests
+// and writes no rejection line, so each refusal is the token's and not the route's.
+func TestAPIAuthRefusesANarrowedTokenOfEveryKindOnEveryV1Route(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerRig(t)
+	const (
+		narrowedSession = "ses_rig_narrowed"
+		named           = "ses_rig_named"
+		namedToken      = "access-token-of-a-named-project"
+	)
+	answers := ciphertokentest.NarrowedAnswers(t, rig.caller.JKT(), narrowedSession, time.Now().Add(time.Hour).Unix())
+	var refused []walkToken
+	for _, kind := range slices.Sorted(maps.Keys(answers)) {
+		token := "access-token-narrowed-from-a-" + kind
+		rig.broker.Says(token, answers[kind])
+		refused = append(refused, walkToken{"a token narrowed from a " + kind, token, narrowedSession})
 	}
-
-	walked, patterns := 0, map[string]bool{}
-	for _, route := range routes {
-		t.Run(route.method+" "+route.pattern, func(t *testing.T) {
-			as := func(id string) (string, string) {
-				return strings.ReplaceAll(route.path, session, id), strings.ReplaceAll(route.body, session, id)
-			}
-			path, body := as(reader)
-			if _, pattern := rig.routes.Handler(httptest.NewRequest(route.method, path, nil)); pattern != route.pattern {
-				t.Fatalf("%s %s resolves to the pattern %q, want %q: the list no longer names what registerV1Routes registers",
-					route.method, path, pattern, route.pattern)
-			}
-
-			before := rig.logs.Len()
-			refused := rig.call(t, rig.handler, route.method, readOnlyToken, path, body)
-			if refused.Code != http.StatusUnauthorized {
-				t.Fatalf("%s %s under a read-only token: status = %d, want 401; body = %s", route.method, path, refused.Code, refused.Body.String())
-			}
-			assertBrokerRejectionLog(t, rig.logs.String()[before:], "not_a_session", readOnlyToken, "")
-
-			path, body = as(named)
-			before = rig.logs.Len()
-			admitted := rig.call(t, rig.handler, route.method, namedToken, path, body)
-			if admitted.Code == http.StatusUnauthorized {
-				t.Fatalf("%s %s under a named project's token: status = 401, want anything but; body = %s", route.method, path, admitted.Body.String())
-			}
-			assertBrokerRejectionLog(t, rig.logs.String()[before:], "", namedToken, "")
-			t.Logf("%s %s: the read-only token 401, the named project's token %d", route.method, path, admitted.Code)
-			walked++
-			patterns[route.pattern] = true
-		})
-	}
-	t.Logf("walked %d requests over %d patterns", walked, len(patterns))
-	if walked != len(routes) || len(patterns) != v1RoutePatterns {
-		t.Fatalf("walked %d of %d requests over %d of the %d patterns registerV1Routes registers", walked, len(routes), len(patterns), v1RoutePatterns)
-	}
+	rig.broker.Says(namedToken, serviceAnswer(named, "example-fleet", rig.caller.JKT()))
+	rig.register(t, narrowedSession)
+	rig.register(t, named)
+	walkEveryV1Route(t, rig, refused, walkToken{"a named project's token", namedToken, named})
 }
 
 // The spent-proof bucket is the record two listeners of one deployment share: the first create of
@@ -434,6 +489,7 @@ func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
 // proof presented to the replica that never saw it. Two handles on one bucket stand in for the
 // two listeners.
 func TestSpentProofsRefuseAProofTheBucketAlreadyHolds(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	js, err := client.Conn.JetStream()
 	if err != nil {
@@ -482,6 +538,7 @@ func TestSpentProofsRefuseAProofTheBucketAlreadyHolds(t *testing.T) {
 // memory — would let a proof captured from one replica be presented to another, so there is no
 // fallback to refuse into.
 func TestBrokerTokensRefuseABusWithNoJetStream(t *testing.T) {
+	t.Parallel()
 	// A server of this test's own with no -js, connected to directly: testnats.Connect waits for
 	// JetStream, which this one will never have.
 	_, uri := testnats.StartConfig(t, "", nil, true)

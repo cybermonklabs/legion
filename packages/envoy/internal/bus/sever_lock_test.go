@@ -1,0 +1,164 @@
+package bus
+
+import (
+	"errors"
+	"io"
+	"net"
+	"os"
+	"runtime"
+	"testing"
+	"time"
+
+	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
+)
+
+// Sever does not wait for the client's own lock. A caller of Client.Connected holds that lock
+// while it reads nats.go's status, which waits for nats.go's lock: an intake's stop leaves such
+// reads running (its drain wait and mayHandBack) once a write holds nats.go's lock. A Sever that took
+// the client's lock to find the connection waited behind that read for as long as the write held,
+// and once the link moved, the publish that waited behind the write went out before the sever.
+// Two subtests: with no such read (the control), and with one left waiting for nats.go's lock, which
+// the row waits for until the client's lock stays taken. Each requires that Sever returns while the
+// write still holds the lock, and that the publish that waited behind the write never reaches the
+// server: once the client has a connection of its own again, a second marker published and flushed
+// on it is the first the subscriber receives.
+func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
+	testnats.RequireSocketQueues(t)
+	const subject = "testbus.sever.locked-marker"
+	for _, withRead := range []bool{false, true} {
+		name := "no read of the connection waits"
+		if withRead {
+			name = "a Connected read waits for nats.go's lock"
+		}
+		t.Run(name, func(t *testing.T) {
+			client, hold := heldHandshakeClient(t)
+			subscriber := testnats.Connect(t, testnats.URL(t))
+			received := make(chan *nats.Msg, 16)
+			if _, err := subscriber.ChanSubscribe(subject, received); err != nil {
+				t.Fatalf("subscribe to the marker: %v", err)
+			}
+			if err := subscriber.Flush(); err != nil {
+				t.Fatalf("flush the marker's subscription: %v", err)
+			}
+			conn := client.Connection()
+			thaw := hold.HoldStalledWrite(t, conn)
+			go func() { _ = conn.Publish(subject, []byte("before")) }()
+			testnats.RequireLockHeld(t, conn)
+			if withRead {
+				read := make(chan struct{})
+				go func() {
+					client.Connected()
+					close(read)
+				}()
+				// The read holds the client's lock while it waits for nats.go's. The row polls until
+				// the lock stays taken across three polls, which no caller that holds it only briefly
+				// does, so Sever runs once the read holds it.
+				taken := 0
+				testwait.UntilPolling(t, 5*time.Millisecond, "the Connected read holding the client's lock (the last read is across how many polls in a row it was taken)", func() (int, bool) {
+					select {
+					case <-read:
+						t.Fatal("control: Connected answered while a write held nats.go's lock")
+					default:
+					}
+					if client.mu.TryLock() {
+						client.mu.Unlock()
+						taken = 0
+						return taken, false
+					}
+					taken++
+					return taken, taken >= 3
+				})
+			}
+			severed := make(chan struct{})
+			go func() {
+				client.Sever()
+				close(severed)
+			}()
+			// A Sever that waits for the client's lock waits until the write is thawed, which only
+			// the test's end does (HoldStalledWrite's cleanup), so the wait names it.
+			testwait.Receive(t, "Sever to return while the write holds nats.go's lock", severed)
+			thaw()
+			testwait.Until(t, "the client's connection of its own after the sever", func() (bool, bool) {
+				own := client.Connected() && client.Connection() != conn
+				return own, own
+			})
+			replacement := client.Connection()
+			if err := replacement.Publish(subject, []byte("after")); err != nil {
+				t.Fatalf("publish the second marker on the replacement connection: %v", err)
+			}
+			if err := replacement.Flush(); err != nil {
+				t.Fatalf("flush the replacement connection: %v", err)
+			}
+			if msg := testwait.Receive(t, "control: the second marker to reach the subscriber", received); string(msg.Data) != "after" {
+				t.Fatalf("the subscriber received %q before the second marker: the severed connection sent the publish that waited behind the held write", msg.Data)
+			}
+		})
+	}
+}
+
+// A socket nats.go drops without closing it -- as it drops the socket of a reconnect whose
+// handshake failed, which a refused credential makes on every attempt -- is not kept open by the
+// bus's dialer: the garbage collector's finalizer closes it, and its peer reads the end of the
+// stream. A dialer that kept every socket until nats.go closed it kept these for the life of the
+// process, one descriptor per refused attempt.
+func TestASeverableDialerKeepsNoSocketItsConnectionDropped(t *testing.T) {
+	listener, err := testport.ListenLoopback()
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	const dropped = 8
+	accepted := make(chan net.Conn, dropped)
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- conn
+		}
+	}()
+	dialer := newSeverableDialer((&net.Dialer{}).DialContext)
+	dialAndDrop := func() {
+		if _, err := dialer.Dial("tcp", listener.Addr().String()); err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+	}
+	for range dropped {
+		dialAndDrop()
+	}
+	peers := make([]net.Conn, 0, dropped)
+	for range dropped {
+		conn := testwait.Receive(t, "control: the listener to accept every dial", accepted)
+		t.Cleanup(func() { _ = conn.Close() })
+		peers = append(peers, conn)
+	}
+	ended := make([]bool, dropped)
+	testwait.UntilPolling(t, 50*time.Millisecond, "every dropped socket closed by the garbage collector (the last read is which peers had read the end)", func() ([]bool, bool) {
+		runtime.GC()
+		all := true
+		for i, peer := range peers {
+			if ended[i] {
+				continue
+			}
+			_ = peer.SetReadDeadline(time.Now().Add(5 * time.Millisecond))
+			_, err := peer.Read(make([]byte, 1))
+			switch {
+			case errors.Is(err, io.EOF):
+				ended[i] = true
+			case errors.Is(err, os.ErrDeadlineExceeded):
+				all = false
+			default:
+				t.Fatalf("read the peer of a dropped socket: %v", err)
+			}
+		}
+		return ended, all
+	})
+	// The connection keeps its dialer for its whole life (nats.Options.CustomDialer), so the row
+	// keeps it too: a dialer the collector frees takes everything it holds with it.
+	runtime.KeepAlive(dialer)
+}

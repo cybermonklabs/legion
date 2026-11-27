@@ -73,6 +73,7 @@ func (rig *sessionConsumerReapRig) requireNoConsumer(t *testing.T, sessionID, wh
 // behind would stand for the whole of the stream's inactive threshold with no session to deliver
 // to. Another session's consumer is untouched: the stop names one session.
 func TestACleanStopDeletesTheStoppedSessionsConsumer(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerReapRig(t)
 	rig.register(t, "ses_clean_stop")
 	rig.register(t, "ses_still_here")
@@ -101,6 +102,7 @@ func TestACleanStopDeletesTheStoppedSessionsConsumer(t *testing.T) {
 // under is what keeps a WARN off the ordinary end of a session: one logged here would have an
 // operator look for messages lost to an older row's filter on every session that ever stopped.
 func TestACleanStopReportsNoFilterLeftOnTheSessionItTookAway(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_clean_stop_restore"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", "notifications.dispatch.issue.CLEANSTOPRESTORE.>"))
@@ -122,6 +124,7 @@ func TestACleanStopReportsNoFilterLeftOnTheSessionItTookAway(t *testing.T) {
 // session is receiving through, while a stop whose moment the stored registration is covered by
 // takes both.
 func TestAConditionalStopDeletesTheConsumerOnlyWhenItDeletesTheRecord(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerReapRig(t)
 	rig.register(t, "ses_relaunched")
 	registered, err := rig.sessions.Get("ses_relaunched")
@@ -185,6 +188,7 @@ const keptStopSilence = 4 * relayRetryFirst
 // the sequence after the ack floor, so every frame the session holds unacked is sent to it
 // again, and the relay pulling the consumer that went relays nothing until its retry.
 func TestAConditionalStopThatKeepsTheRecordLeavesTheConsumerAlone(t *testing.T) {
+	t.Parallel()
 	const storedInstance = "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a"
 	const stoppingInstance = "0b7a4c1e9d3f5a2b0b7a4c1e9d3f5a2b"
 	for _, kept := range []struct {
@@ -256,6 +260,7 @@ func TestAConditionalStopThatKeepsTheRecordLeavesTheConsumerAlone(t *testing.T) 
 // the lock only once the handler has deleted the record, and the request's context is cancelled
 // there, between the record delete and the consumer delete the route exists to make.
 func TestACleanStopDeletesTheConsumerOfACallerThatHungUpOnceItsRecordWasGone(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerReapRig(t)
 	const sessionID = "ses_hung_up"
 	rig.register(t, sessionID)
@@ -301,6 +306,7 @@ func TestACleanStopDeletesTheConsumerOfACallerThatHungUpOnceItsRecordWasGone(t *
 // unqualified promise of a further delivery from the whole log, and the consumer after the stop,
 // which is the fact behind the half of the line this case falls on.
 func TestACleanStopsRelayHandOverNeverPromisesAFurtherDelivery(t *testing.T) {
+	t.Parallel()
 	rig, sessionID, _, _ := relayHoldingOneMessage(t, "ses_stopped_handover_")
 
 	stopSession(t, rig.mux, sessionID, "")

@@ -51,7 +51,12 @@ func (s *server) drainTime() time.Duration {
 // connection of its own (a test's recorder) bounds nothing.
 func (s *server) readFor(w http.ResponseWriter) (lift func()) {
 	controller := http.NewResponseController(w)
-	if err := controller.SetReadDeadline(time.Now().Add(s.drainTime())); err != nil {
+	began := time.Now()
+	deadline := began.Add(s.drainTime())
+	if s.drainDeadlineSet != nil {
+		s.drainDeadlineSet(began, deadline)
+	}
+	if err := controller.SetReadDeadline(deadline); err != nil {
 		return func() {}
 	}
 	return func() { _ = controller.SetReadDeadline(time.Time{}) }
@@ -65,8 +70,8 @@ func expectsContinue(r *http.Request) bool {
 }
 
 // errUploadTooLarge is an upload route's answer to a body past its limit, errHandoffTooLarge the
-// handoff write's, errMarkdownRoundTripTooLarge the markdown round trip's, and errJSONTooLarge
-// every other route's (routeBody, decodeJSON).
+// handoff write's, errMarkdownRoundTripTooLarge and errFileRoundTripTooLarge the two round trips',
+// and errJSONTooLarge every other route's (routeBody, decodeJSON).
 var (
 	errUploadTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "artifact blob exceeds 25 MB")
 	errJSONTooLarge   = errorf(http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "request body exceeds %d bytes", maxJSONRequestBytes)

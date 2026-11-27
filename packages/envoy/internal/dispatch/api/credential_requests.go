@@ -21,9 +21,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 
+	"github.com/sjawhar/envoy/fileerr"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -62,8 +64,10 @@ func (s *server) requireAgentSecrets(w http.ResponseWriter) (*cipher.Client, boo
 // and code, e.g. 409 RECORD_TERMINAL — Dispatch never re-wraps it), 500
 // AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE for a call that stopped at Dispatch's own ServiceAccount
 // token, or 503 AGENT_SECRETS_UNAVAILABLE for anything else (a transport failure). The token
-// gets its own code because the broker was never asked: the fix is in Dispatch's deployment, and
-// the log line naming the file is the operator's only pointer to it.
+// gets its own code because the broker was never asked: the fix is in Dispatch's deployment. The
+// log line names the setting that holds the file, DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, and
+// why it could not be read, never the path, which can be a token pasted where the path goes: the
+// operator reads the path from Dispatch's own configuration by that name.
 func relayBrokerResponse(w http.ResponseWriter, body json.RawMessage, err error) {
 	if err != nil {
 		var brokerErr *cipher.Error
@@ -75,7 +79,12 @@ func relayBrokerResponse(w http.ResponseWriter, body json.RawMessage, err error)
 		}
 		var tokenErr *cipher.AccountTokenError
 		if errors.As(err, &tokenErr) {
-			slog.Error("dispatch: cannot read its ServiceAccount token for the secrets broker", "path", tokenErr.Path, "error", tokenErr.Err)
+			reason := tokenErr.Err.Error()
+			var pathErr *fs.PathError
+			if errors.As(tokenErr.Err, &pathErr) {
+				reason = fileerr.Class(tokenErr.Err)
+			}
+			slog.Error("dispatch: cannot read its ServiceAccount token for the secrets broker", "setting", tokenErr.Setting, "reason", reason)
 			writeError(w, "AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE", http.StatusInternalServerError, "Dispatch cannot read its own ServiceAccount token for the secrets broker")
 			return
 		}
@@ -267,8 +276,10 @@ func (s *server) listCredentialGrants(w http.ResponseWriter, r *http.Request) {
 }
 
 // revokeCredentialGrant ends a grant as the caller: the broker allows it only when the caller's
-// login is the grant's approver or its enrollment's operator. The browser's body carries nothing
-// Dispatch reads.
+// login is the grant's approver or the person its enrollment acts for (an unmapped person's pod
+// acts for no one), or, for a grant the model judge approved in anyone's stead, anyone who may see
+// it; and, as an approver, only for a person Dispatch does not call a restricted member. The
+// browser's body carries nothing Dispatch reads.
 func (s *server) revokeCredentialGrant(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {

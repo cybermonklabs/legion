@@ -20,8 +20,7 @@
 #            every --patch-path passed through. Without such a tag the release
 #            line has not started, which is an error, unless --first-npm names
 #            the npm package whose published version (0.0.0 when npm has none)
-#            stands in for the tag, over the whole history. release-bump.sh's
-#            `empty` (no commit in the paths) and `none` (no version-bumping
+#            stands in for the tag, over the whole history. `.github/scripts/release-bump.sh#empty` (no commit in the paths) and `none` (no version-bumping
 #            commit: a ::notice and a job-summary line) both give skip=true.
 #            --expect <X.Y.Z> is for a publish job checking what its build job
 #            handed it. When the tags now give another version, or nothing to
@@ -133,6 +132,14 @@
 #            stand over nothing: either is an ::error:: naming it, with nothing
 #            written. It runs gh, awk, the shell and the leak guard below
 #            alone, as every caller is a job holding a credential.
+# Every GitHub call of `restart`, `release` and `release-section` goes
+#            through gh_wait_reset of gh-read.sh, beside this file, which
+#            waits out a spent API budget within the step's
+#            JOB_TIMEOUT_MINUTES and fails by name past it; it runs gh, the
+#            shell, mktemp, cat, rm, grep, head, date, sleep, timeout, awk and
+#            getconf, reads /proc, and sources nothing. A `release` create
+#            GitHub refuses after gh created the draft leaves the draft, which
+#            the step's re-run publishes, as any other failed upload does.
 # push-tag:  push the local tag <tag> to $GITHUB_REPOSITORY on GitHub over SSH
 #            with the deploy key in $DEPLOY_KEY, for a job whose checkout keeps
 #            no credential. The key and GitHub's host keys, pinned below, go
@@ -260,9 +267,10 @@
 #            fix merges. The fragments and their refusals are fold-notes', and
 #            each <package-dir> is one of fold-orphans'. changie is what
 #            renders them, so the command looks for it before anything else
-#            and refuses naming it where it is not on PATH. ci.yaml's test job
-#            runs it over .github/changelog-packages, beside the changie its
-#            release-push.test.sh cases need.
+#            and refuses naming it where it is not on PATH. ci.yaml's
+#            tooling-checks job runs it over .github/changelog-packages, with
+#            the changie it installs as the test job does for the
+#            release-push.test.sh cases that need it.
 # leak guard: every write this script makes to a public GitHub repository
 #            passes this repository's own private-name rules before it is made,
 #            and is refused when they match: `release`'s create, its upload to
@@ -339,7 +347,7 @@ leak_engine=''
 # leak_guard <write> [<asset>...] -- <text>...: refuse <write>, and with it the
 # command, unless every <text> and every <asset> passes this repository's own
 # private-name rules, the rule file
-# packages/daemon/internal/leakguard/private-names.toml as this checkout holds
+# .github/private-names.toml as this checkout holds
 # it. That rule file alone is run, and no shared check: this job holds no
 # credential for the private repository that publishes the shared one and needs
 # none, since every refusal of the measured window was of this repository's own
@@ -376,9 +384,9 @@ leak_guard() {
     esac
   done
   if [ -z "$leak_engine" ]; then
-    leak_rules="$(dirname -- "${BASH_SOURCE[0]}")/../../packages/daemon/internal/leakguard/private-names.toml"
+    leak_rules="$(dirname -- "${BASH_SOURCE[0]}")/../private-names.toml"
     [ -f "$leak_rules" ] ||
-      fail_error "$setup the rule file packages/daemon/internal/leakguard/private-names.toml is not in this checkout"
+      fail_error "$setup the rule file .github/private-names.toml is not in this checkout"
     if [ -n "${RELEASE_PUSH_LEAK_ENGINE:-}" ]; then
       leak_engine=$RELEASE_PUSH_LEAK_ENGINE
     else
@@ -402,7 +410,7 @@ leak_guard() {
         --ignore-gitleaks-allow --exit-code "$leak_found" > /dev/null 2>&1 ||
       status=$?
     [ "$status" = 0 ] ||
-      fail_error "$setup gitleaks exited $status over a text no rule matches, so the rule file packages/daemon/internal/leakguard/private-names.toml does not parse, or this gitleaks refused it"
+      fail_error "$setup gitleaks exited $status over a text no rule matches, so the rule file .github/private-names.toml does not parse, or this gitleaks refused it"
   fi
   for asset in "${texts[@]}"; do material+=$asset$'\n'; done
   for asset in "${assets[@]}"; do
@@ -903,7 +911,7 @@ case "$command" in
         prev_version=$(npm view "$first_npm" version 2>/dev/null || echo 0.0.0)
         range=HEAD
       else
-        echo "::error::release-push.sh version: no $prefix* tag; a release line starts from a tag (push ${prefix}0.0.0 on the commit before its first release)" >&2
+        echo "::error::release-push.sh version: no $prefix* tag; a release line starts from a tag (push ${prefix}0.0.0 on the first release's parent commit)" >&2
         exit 1
       fi
       # release-bump.sh refuses a previous version that is not X.Y.Z (the
@@ -980,9 +988,11 @@ case "$command" in
       exit 2
     fi
     head=$(git rev-parse HEAD)
+    # shellcheck source=.github/scripts/gh-read.sh
+    source "$(dirname -- "${BASH_SOURCE[0]}")/gh-read.sh"
     # Each in a command substitution, so a gh or jq failure fails the command.
-    runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --branch "$branch" \
-      --limit 50 --json databaseId,number,headSha,status)
+    runs=$(gh_wait_reset gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" \
+      --branch "$branch" --limit 50 --json databaseId,number,headSha,status)
     later=$(jq -r --argjson self "$GITHUB_RUN_NUMBER" \
       '.[] | select(.status != "completed" and .number > $self) | "\(.databaseId) \(.headSha)"' <<< "$runs")
     # The branch is fetched after the list, so every run the list names has its commit here; a
@@ -1004,7 +1014,8 @@ case "$command" in
     # there: its whole payload is lost_races, the count of 0 to 99 checked
     # above, and nothing of this checkout reaches the run it starts.
     # gh prints the new run's URL: gh 2.102.0 on ubuntu-24.04 did on 2026-10-25.
-    started=$(gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$branch" -f "lost_races=$next")
+    started=$(gh_wait_reset gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$branch" \
+      -f "lost_races=$next")
     echo "::notice title=Release run started::another run took this run's version first, so a new run on $branch, ${started:-the newest run of $workflow}, releases this commit (lost_races $next)" >&2
     ;;
   release)
@@ -1034,32 +1045,54 @@ case "$command" in
     tag=$1 title=$2
     shift 2
     repo=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository as owner/repo}
-    if ! is_draft=$(gh release view "$tag" --repo "$repo" --json isDraft -q .isDraft 2>/dev/null); then
+    # shellcheck source=.github/scripts/gh-read.sh
+    source "$(dirname -- "${BASH_SOURCE[0]}")/gh-read.sh"
+    # The release, in one request gh-read.sh can read at a time. GitHub's REST route for a tag
+    # answers a published release alone (docs.github.com, REST API, "Get a release by tag name"),
+    # on the core budget, so a re-run of a published release needs no graphql budget. Where it
+    # answers anything else (a 404 for a draft or for no release, or a refusal), the GraphQL
+    # lookup gh release view makes for a draft tells a draft from no release, both answered with
+    # HTTP 200. gh release view itself sends both requests at once, so gh-read.sh could read
+    # neither answer.
+    is_draft=$(gh_wait_reset --stderr /dev/null gh api "repos/$repo/releases/tags/$tag" --jq .draft) &&
+      viewed=0 || viewed=$?
+    # A spent budget the view could not wait for says nothing of the release, and the create
+    # would meet the same budget: gh-read.sh has named it, and nothing is written.
+    [ "$viewed" -ne 75 ] || exit 1
+    if [ "$viewed" -ne 0 ]; then
+      is_draft=$(gh_wait_reset --stderr /dev/null gh api graphql \
+        -f query='query($owner: String!, $name: String!, $tag: String!) { repository(owner: $owner, name: $name) { release(tagName: $tag) { isDraft } } }' \
+        -f owner="${repo%%/*}" -f name="${repo#*/}" -f tag="$tag" \
+        --jq '.data.repository.release | if . == null then "none" else .isDraft end') && viewed=0 || viewed=$?
+      [ "$viewed" -ne 75 ] || exit 1
+    fi
+    if [ "$viewed" -ne 0 ] || [ "$is_draft" = none ]; then
       # What the create publishes: the tag, the assets, the title, and the notes
       # where this lane wrote them itself. Where it passes --generate-notes,
       # GitHub composes that body server-side from the merged pull requests'
       # titles after this call, so no read before the create can see it, and
       # .github/scripts/check-pr-text.sh at the merge is what holds that half.
       leak_guard 'the release create' "$@" -- "$tag" "$title" "${notes[@]}"
-      gh release create "$tag" "$@" --repo "$repo" --title "$title" "${notes[@]}" --verify-tag
+      gh_wait_reset gh release create "$tag" "$@" --repo "$repo" --title "$title" "${notes[@]}" \
+        --verify-tag
       exit 0
     fi
     case $is_draft in
       true)
         leak_guard 'the asset upload to the draft release' "$@" --
-        gh release upload "$tag" "$@" --repo "$repo" --clobber || {
+        gh_wait_reset gh release upload "$tag" "$@" --repo "$repo" --clobber || {
           echo "::error::Uploading this run's assets to the draft release $tag failed; the draft is left unpublished."
           exit 1
         }
         # The draft as GitHub holds it now, which publishing it makes public: an
         # earlier attempt wrote that title and body, and this run has not read
         # them before.
-        draft=$(gh release view "$tag" --repo "$repo" --json name,body -q '.name, .body') || {
+        draft=$(gh_wait_reset gh release view "$tag" --repo "$repo" --json name,body -q '.name, .body') || {
           echo "::error::Reading the draft release $tag back before publishing it failed; it is left unpublished."
           exit 1
         }
         leak_guard 'the draft release publish' -- "$draft"
-        gh release edit "$tag" --repo "$repo" --draft=false || {
+        gh_wait_reset gh release edit "$tag" --repo "$repo" --draft=false || {
           echo "::error::Publishing the draft release $tag failed; it holds this run's assets and is still a draft."
           exit 1
         }
@@ -1068,7 +1101,7 @@ case "$command" in
       false)
         if [ "$upload_to_published" = true ]; then
           leak_guard 'the asset upload to the published release' "$@" --
-          gh release upload "$tag" "$@" --repo "$repo" --clobber || {
+          gh_wait_reset gh release upload "$tag" "$@" --repo "$repo" --clobber || {
             echo "::error::Uploading this run's assets to the published release $tag failed."
             exit 1
           }
@@ -1079,7 +1112,7 @@ case "$command" in
         ;;
       *)
         printf -v shown '%q' "$is_draft"
-        echo "::error::gh release view $tag printed $shown for isDraft, not true or false"
+        echo "::error::GitHub's release lookup for $tag answered $shown for isDraft, not true or false"
         exit 1
         ;;
     esac
@@ -1114,7 +1147,9 @@ case "$command" in
     [ -s "$content" ] ||
       fail_error "nothing to write into the $heading section of release $tag: $shown holds no content"
     body=$section_dir/body.md new=$section_dir/new-body.md
-    gh release view "$tag" --repo "$repo" --json body -q .body > "$body"
+    # shellcheck source=.github/scripts/gh-read.sh
+    source "$(dirname -- "${BASH_SOURCE[0]}")/gh-read.sh"
+    gh_wait_reset gh release view "$tag" --repo "$repo" --json body -q .body > "$body"
     # Every other line of the body is kept in its order; the section runs to the
     # next heading of level 1 or 2. The heading goes to awk through the
     # environment, which passes it as it is, where -v would read a backslash in
@@ -1138,7 +1173,7 @@ case "$command" in
     fi
     # The bytes of $new are the release's public body after this edit.
     leak_guard 'the release-section body write' -- "$(<"$new")"
-    gh release edit "$tag" --repo "$repo" --notes-file "$new"
+    gh_wait_reset gh release edit "$tag" --repo "$repo" --notes-file "$new"
     echo "Wrote the $heading section into the body of release $tag"
     ;;
   push-tag)
