@@ -2596,9 +2596,18 @@ func NewAskEventPayload(ask Ask, changes ReferenceChanges) AskEventPayload {
 // AskAnsweredEventPayload is an ask.answered payload. PreviousAnswer is set only when a human
 // replaces their earlier answer; the asker and every follower receive it through the same event
 // path as the first answer.
+//
+// NamedTargets is the route of each agent (`session:<id>`) and each role (`role:<token>`) the
+// answer's text names, each once and in the order the text names them, read by the rules of a
+// comment's body (api.answerPartiesOf): a reference inside code names nobody, a person is not
+// told, and a reference no route reads names nobody. The outbox sends the event to each of them
+// as it sends it to a follower (outbox.addAnswerParties). Only the answer route records them, so
+// the review route's answer of an approval request, a settlement's restored answer and a carried
+// approval tell no party their text names. Absent when the answer names nobody.
 type AskAnsweredEventPayload struct {
 	AskEventPayload
 	PreviousAnswer *AskAnswer `json:"previous_answer,omitempty"`
+	NamedTargets   []string   `json:"named_targets,omitempty"`
 }
 
 // IssueEventPayload is the wire payload of every `issue.*` event: the issue's own fields, flat,

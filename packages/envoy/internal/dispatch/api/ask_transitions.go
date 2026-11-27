@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
@@ -45,12 +46,16 @@ type answerRevision struct {
 
 // answerOptions are what an answer write carries beyond its selection and text, each optional:
 // Revision is the question revision the human reviewed (the answer route always sends one),
-// ReplacesAnswer the `at` of the current answer a change replaces, and WriteBlock writes a block
-// ask's answer into its document.
+// ReplacesAnswer the `at` of the current answer a change replaces, WriteBlock writes a block
+// ask's answer into its document, and NamedTargets are the routes of the agents and roles the
+// answer's text names (answerPartiesOf), which the ask.answered event records for the outbox to
+// send it to (model.AskAnsweredEventPayload.NamedTargets). Only the answer route reads them: the
+// review route's answer of an approval request records none.
 type answerOptions struct {
 	Revision       *answerRevision
 	ReplacesAnswer *time.Time
 	WriteBlock     func(context.Context, pgx.Tx, model.Ask, model.AskAnswer) error
+	NamedTargets   []string
 }
 
 // answerTransition records a human answer. Approval asks have their review options and always name
@@ -143,6 +148,7 @@ func answerTransition(actor model.Actor, selected []string, text *string, option
 			return model.AskAnsweredEventPayload{
 				AskEventPayload: payload,
 				PreviousAnswer:  previousAnswer,
+				NamedTargets:    options.NamedTargets,
 			}
 		},
 	}
@@ -232,9 +238,17 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The agents and roles the answer's text names, each of whom the outbox sends the answer to
+	// beside whoever asked and each follower, read from the text as the ask stores it
+	// (answerTransition's line feeds). Nothing they name refuses the answer.
+	var named []string
+	if input.Text != nil {
+		named = answerPartiesOf(pmdoc.LineFeeds(*input.Text), s.deps.ServerURL)
+	}
 	transition := answerTransition(actor, input.Selected, input.Text, answerOptions{
 		Revision:       &answerRevision{EditedAt: expectedEditedAt},
 		ReplacesAnswer: replacesAnswer,
+		NamedTargets:   named,
 		WriteBlock: func(ctx context.Context, tx pgx.Tx, ask model.Ask, answer model.AskAnswer) error {
 			if ask.BlockID == nil {
 				return nil
@@ -320,6 +334,18 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+}
+
+// answerPartiesOf is the route of each agent and each role an answer's text names, each once and
+// in the order the text names them, read with the shared reader (text.ExtractAt) by the rules a
+// comment's body is read by (readBodyParties): a reference inside code names nobody and a named
+// person is not told. Unlike a comment, an answer is refused for nothing it names: a reference
+// whose route model.ParseRoute cannot read names nobody, and the routes take no cap, as an ask's
+// followers take none. Nil for a text that names no agent and no role.
+func answerPartiesOf(answer, serverURL string) []string {
+	var parties commentParties
+	readBodyParties(&parties, map[string]struct{}{}, text.ExtractAt(answer, serverURL))
+	return parties.targets
 }
 
 // resolveAskInput is the body of POST /api/v1/asks/{id}/resolve.

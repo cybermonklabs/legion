@@ -28,6 +28,7 @@ import {
   MessageDeliveryEventPayloadSchema as MessageDeliveryPayloadSchema,
   MessageEventPayloadSchema as MessagePayloadSchema,
   type MessageRead,
+  ROLE_TOPIC_PREFIX,
   readDispatchPayload,
   type SessionAnswerRelation,
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
@@ -674,6 +675,30 @@ function dispatchCommentReplyWith(
   const thread =
     reply === undefined || reply === null || reply === "" ? "reply_to" : "reply_to_ask";
   const threadID = thread === "reply_to" ? comment.id : String(reply);
+  return threadReplyWith(
+    event,
+    topic,
+    thread,
+    threadID,
+    comment.project_key,
+    comment.artifact_slug
+  );
+}
+
+/**
+ * The `dispatch comment` command that replies in a thread: under the comment `reply_to` names, or
+ * under the ask `reply_to_ask` names, on the event's issue, else on the document `project` and
+ * `artifact` name, read from the topic's document where they do not. Undefined where neither names
+ * a document.
+ */
+function threadReplyWith(
+  event: DispatchEvent,
+  topic: string | undefined,
+  thread: "reply_to" | "reply_to_ask",
+  threadID: string,
+  project: string | undefined,
+  artifact: string | undefined
+): ReplyHint | undefined {
   if (event.issue_key !== null) {
     return {
       command: commandLine("dispatch_comment", {
@@ -684,8 +709,6 @@ function dispatchCommentReplyWith(
     };
   }
 
-  let project = comment.project_key;
-  let artifact = comment.artifact_slug;
   if (project === undefined || project === "" || artifact === undefined || artifact === "") {
     [project, artifact] = dispatchOwner(event, topic).split(" / ", 2);
   }
@@ -698,6 +721,44 @@ function dispatchCommentReplyWith(
       [thread]: threadID,
       body: "...",
     }),
+  };
+}
+
+/**
+ * What an `ask.answered` frame is to a session the answer's text named: the party it named it as -
+ * its own `session:<id>` among the parties the answer names (`named_targets`), or the role whose
+ * topic carried the frame, which Dispatch forwards to that role's holder - and the command that
+ * replies in the ask's thread, as a reply on the ask's own card gives it. Undefined for any other
+ * frame, and for whoever asked and each follower the answer does not name, whose card stays as it
+ * was. `envelopeTopic` is the topic the frame was published on, which names the role a forward
+ * carries; `topic` is the one the card reads the owner from.
+ */
+function answerNaming(
+  event: DispatchEvent,
+  sessionID: string,
+  envelopeTopic: string | undefined,
+  topic: string | undefined
+): { readonly party: string; readonly reply: ReplyHint | undefined } | undefined {
+  if (event.type !== "ask.answered") return undefined;
+  const ask = AskPayloadSchema.safeParse(event.payload);
+  if (!ask.success || ask.data.id === undefined) return undefined;
+  const named = ask.data.named_targets ?? [];
+  const roles = (envelopeTopic === undefined ? [] : topicForms(envelopeTopic))
+    .filter((form) => form.startsWith(ROLE_TOPIC_PREFIX))
+    .map((form) => `role:${form.slice(ROLE_TOPIC_PREFIX.length)}`);
+  const party = [`session:${sessionID}`, ...roles].find((candidate) => named.includes(candidate));
+  if (party === undefined) return undefined;
+  const document = ask.data.anchor_artifact;
+  return {
+    party,
+    reply: threadReplyWith(
+      event,
+      topic,
+      "reply_to_ask",
+      ask.data.id,
+      document?.project,
+      document?.slug
+    ),
   };
 }
 
@@ -891,9 +952,11 @@ function dispatchPayload(event: DispatchEvent): unknown {
  * The fields of a Dispatch payload that are Dispatch's own bookkeeping, which its outbox and its
  * web clients read and an agent has no use for: the delivery attempts of a comment's mentions,
  * the routes a comment's mentions took a copy from (`model.CommentEventPayload`'s route
- * suppression), the Inboxes a write moved (`thread_logins`), the backlink counts it moved
- * (`references_changed` and its truncation marks), and an issue's place on the board (`rank`, a
- * key of some hundred characters that only sorts).
+ * suppression), the routes an answer's text named (`named_targets`, which the outbox sent the
+ * answer to, and which the card of a session among them says in words, `answerNaming`), the
+ * Inboxes a write moved (`thread_logins`), the backlink counts it moved (`references_changed` and
+ * its truncation marks), and an issue's place on the board (`rank`, a key of some hundred
+ * characters that only sorts).
  */
 const DISPATCH_BOOKKEEPING: ReadonlySet<string> = new Set([
   "deliveries",
@@ -902,6 +965,7 @@ const DISPATCH_BOOKKEEPING: ReadonlySet<string> = new Set([
   "suppressed_route",
   "suppressed_route_session_id",
   "suppressed_authors",
+  "named_targets",
   "thread_logins",
   "references_changed",
   "references_changed_truncated",
@@ -1490,6 +1554,11 @@ export function renderInbound(
                 repliedAskRelation(frame.event, commentPayload, ownsAsk, mentioned)
               );
         if (ownsAsk === false && !mentioned) dispatchReply = undefined;
+        // An answer reaches each agent and role its text names, beside whoever asked and each
+        // follower: the card of a session it named says so, and carries the command that replies
+        // in the ask's thread, which a reply there makes that session a follower of the ask.
+        const naming = answerNaming(frame.event, sessionID, envelope.topic, topic);
+        if (naming !== undefined) dispatchReply = naming.reply;
         // `owner` is the issue key, or `PROJECT / slug` for a document (the artifact id when
         // no document topic names it); nothing else in the block restates where the event is.
         // A compact ask record names its ask exactly once: through `re:` when the envelope is
@@ -1528,6 +1597,7 @@ export function renderInbound(
           type: frame.event.type,
           actor,
           ...(relation === undefined ? {} : { relation }),
+          ...(naming === undefined ? {} : { named: `the answer names you (${naming.party})` }),
           // A payload left with no field says nothing, so the card prints no `payload:` for it.
           ...(compactRecord ??
             (isObject(payload) && Object.keys(payload).length === 0 ? {} : { payload })),

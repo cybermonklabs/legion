@@ -1,0 +1,5 @@
+kind: Added
+body: The card of an answered ask that reached a session because the answer's text named it, by its own session or by the role whose topic carried it, says `named: the answer names you (<route>)` and carries the `dispatch comment ... --reply-to-ask <ask>` command that replies in the ask's thread. The asker's and a follower's card are unchanged, and `named_targets` is bookkeeping the card does not print.
+time: 2026-11-27T10:53:25.000000000Z
+custom:
+    Issue: pr2697

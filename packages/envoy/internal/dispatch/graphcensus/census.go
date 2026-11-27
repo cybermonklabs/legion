@@ -295,7 +295,7 @@ var projections = []projection{{
 	nodeKind: graphstore.KindRole,
 	table:    "comment_deliveries.target, messages.target, issues.route, events.payload",
 	note: "no table projects a role, so the row side is the roles those tables address now and every role" +
-		" an issue event's route, a message event's target or a new comment's mention ever named",
+		" an issue event's route, a message event's target, a new comment's mention or an answer's text ever named",
 	rows: `
 		select 'role ' || r.name, '` + graphstore.KindRole + `', r.name, ''
 		from unnest($1::text[]) r (name) where octet_length(r.name) <= ` + addressBound,
@@ -514,7 +514,8 @@ var recordedSessions = `
 // addressed (R19), each once, with the first event that named it, null for a role only a row
 // names. The rows are a comment mention's target, a message's target and an issue's route as they
 // stand now. The events are the route every issue event recorded the issue under, the target
-// every message event recorded, and the target of each mention a new comment's event named. A
+// every message event recorded, the target of each mention a new comment's event named, and each
+// role an answer's text named (an ask.answered event's named_targets), which no row holds. A
 // node is history and never goes, so an issue routed to one role and then re-routed to another
 // still owes the first its node and its page: issues.route names only the second, and the
 // issue's own events name both.
@@ -527,7 +528,7 @@ var recordedSessions = `
 // the two sides agree once the outbox has read the log; a role named by an event the outbox has
 // not read yet is a row with no node until it does.
 //
-// It reads every event of six types, which no index narrows, so a census reads it once and binds
+// It reads every event of seven types, which no index narrows, so a census reads it once and binds
 // the names into every statement that reads the role and page rows (projection.names).
 const addressedRoles = `
 	select name, min(event) as event from (
@@ -549,9 +550,14 @@ const addressedRoles = `
 			from jsonb_array_elements(case when e.type = 'comment.created'
 			                                and jsonb_typeof(e.payload->'mentions') = 'array'
 			                               then e.payload->'mentions' end) mention
+			union all
+			select named.target
+			from jsonb_array_elements_text(case when e.type = 'ask.answered'
+			                                     and jsonb_typeof(e.payload->'named_targets') = 'array'
+			                                    then e.payload->'named_targets' end) named (target)
 		) addressed (target)
 		where e.type in ('issue.created', 'issue.updated', 'issue.closed',
-		                 'message.created', 'message.answered', 'comment.created')
+		                 'message.created', 'message.answered', 'comment.created', 'ask.answered')
 		  and addressed.target like 'role:%'
 	) roles
 	where name <> ''

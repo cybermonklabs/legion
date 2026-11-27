@@ -274,6 +274,40 @@ func (w addressingWrites) settleMention(t *testing.T, key, commentID, role, read
 	})
 }
 
+// answerNamingRole answers an ask on issue key as the API's answerAsk writes the answer: the ask's
+// row answered, and the ask.answered event recording the role its text names among the parties it
+// names (model.AskAnsweredEventPayload.NamedTargets), whom the outbox sends the answer to. No row
+// holds that role: only the event names it.
+func (w addressingWrites) answerNamingRole(t *testing.T, key, role string, by model.Actor) model.Event {
+	t.Helper()
+	return w.write(t, func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
+		author, err := json.Marshal(by)
+		if err != nil {
+			return model.Event{}, err
+		}
+		text := "[@Reviewer](dispatch://role/" + role + ") please confirm the first region."
+		answer := model.AskAnswer{User: by.ID, Selected: []string{}, Text: &text, At: time.Now().UTC()}
+		encoded, err := json.Marshal(answer)
+		if err != nil {
+			return model.Event{}, err
+		}
+		ask := model.Ask{IssueKey: new(key), Author: by, Question: "Which region goes first?", State: "answered", Answer: &answer}
+		if err := tx.QueryRow(ctx, `
+			insert into asks (issue_key, author, question, state, answer) values ($1, $2, $3, 'answered', $4)
+			returning id::text
+		`, key, author, ask.Question, encoded).Scan(&ask.ID); err != nil {
+			return model.Event{}, err
+		}
+		return model.Event{
+			IssueKey: new(key), Type: "ask.answered", Actor: by,
+			Payload: model.AskAnsweredEventPayload{
+				AskEventPayload: model.NewAskEventPayload(ask, model.ReferenceChanges{}),
+				NamedTargets:    []string{"role:" + role},
+			},
+		}, nil
+	})
+}
+
 // roleCensusRig is addressingWrites with the real outbox running over its database and broker
 // (outbox.New, Run), which writes what each event it publishes states about the people and agents
 // of the store (the outbox's deliveredGraph).
@@ -337,7 +371,7 @@ func (rig *roleCensusRig) published(t *testing.T) {
 // The store census holds the people and agents of the store to every role a row addresses now and
 // every role an event of the log ever addressed (R19), and the outbox writes a role's node and its
 // page for every role an event it publishes addresses. A node is history and never goes, so this
-// drives the four ways a role is addressed through the writes that address it, and requires the
+// drives the five ways a role is addressed through the writes that address it, and requires the
 // census to read zero differences over the roles and pages they named, and each of those roles
 // and pages to stand in the store.
 //
@@ -352,6 +386,8 @@ func (rig *roleCensusRig) published(t *testing.T) {
 //     names the role, and so does the comment.created event's mention.
 //   - A route an agent's session sets, whose event wakes nobody (events.Broker.Notify), so the
 //     outbox routes nothing to it: issues.route names the role, and so does the event.
+//   - An answer whose text names a role: the outbox sends the answer to it (addAnswerParties) and
+//     so writes its node, and no row names the role, only the ask.answered event's named_targets.
 //
 // The rows and events are written as the API's handlers write them (addressingWrites), since this
 // package cannot run the API; the events are published by the real outbox (outbox.New, Run). A
@@ -364,6 +400,7 @@ func TestTheRoleCensusReadsEveryRoleTheLogEverAddressed(t *testing.T) {
 		messaged    = "census-message-target"
 		mentioned   = "census-comment-mention"
 		agentRouted = "census-agent-route"
+		answered    = "census-answer-named"
 		// reader is the session the comment's mention of its role was sent to.
 		reader = "ses_census_mention_reader"
 	)
@@ -382,6 +419,7 @@ func TestTheRoleCensusReadsEveryRoleTheLogEverAddressed(t *testing.T) {
 	rig.targetMessage(t, "CENS-1", messaged, alice)
 	commentID, _ := rig.mentionRole(t, "CENS-1", mentioned, reader, alice)
 	rig.settleMention(t, "CENS-1", commentID, mentioned, reader, alice)
+	rig.answerNamingRole(t, "CENS-1", answered, alice)
 
 	// A route an agent's session sets on an issue of its own.
 	rig.createIssue(t, "CENS-2", 2, "V", alice)
@@ -395,7 +433,8 @@ func TestTheRoleCensusReadsEveryRoleTheLogEverAddressed(t *testing.T) {
 		t.Fatalf("backfill the comment's node: %v", err)
 	}
 	requireRoleHistoryOnly(t, rig.database, routedFirst)
-	requireTheRoleCensusAgrees(t, rig.database, routedFirst, routedNow, messaged, mentioned, agentRouted)
+	requireRoleHistoryOnly(t, rig.database, answered)
+	requireTheRoleCensusAgrees(t, rig.database, routedFirst, routedNow, messaged, mentioned, agentRouted, answered)
 }
 
 // requireRoleHistoryOnly fails unless no row of the store names role now, so that only the event

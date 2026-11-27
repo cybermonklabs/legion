@@ -244,6 +244,52 @@ describe("renderInbound dispatch events", () => {
     });
   });
 
+  // R14: an answer reaches each agent and role its text names, beside whoever asked. The card of a
+  // session the answer named - by its own session, or by the role whose topic carried the frame -
+  // says so and gives the command that replies in the ask's thread. The asker's card is the card
+  // the same frame drew before the answer recorded whom it named: no such line and no command.
+  test("an answer's card says it named the reading session and gives the reply in the ask's thread", () => {
+    const roleHolder = "01a02222-3333-7444-5555-666666666666";
+    const asker = "01a03333-4444-7555-6666-777777777777";
+    const person = { kind: "user", id: "sami" };
+    const named = {
+      ...answeredAsk,
+      answer: {
+        ...answeredAsk.answer,
+        text: `Use JSON HTTP. [@Reader](dispatch://agent/${reader}) and [@Reviewer](dispatch://role/legion-reviewer) take it.`,
+      },
+    };
+    const frameOn = (topic: string, payload: object): string =>
+      JSON.stringify({ ...JSON.parse(dispatchEvent("ask.answered", payload, person)), topic });
+    const cardOf = (raw: string, session: string, subject: string) =>
+      decode(renderInbound(raw, session, subject).content) as {
+        envoy: { reply_with?: unknown; dispatch: Record<string, unknown> };
+      };
+    const withParties = { ...named, named_targets: [`session:${reader}`, "role:legion-reviewer"] };
+    const reply = { command: "dispatch comment --issue DSP-1 --body ... --reply-to-ask ask-1" };
+
+    const own = `notifications.agent.${reader}`;
+    const namedCard = cardOf(frameOn(own, withParties), reader, own);
+    expect(namedCard.envoy.dispatch.named).toBe(`the answer names you (session:${reader})`);
+    expect(namedCard.envoy.reply_with).toEqual(reply);
+    expect(namedCard.envoy.dispatch.named_targets).toBeUndefined();
+
+    // A role's copy reaches its holder on the holder's own subject, its topic still the role's.
+    const roleCard = cardOf(
+      frameOn("notifications.role.legion-reviewer", withParties),
+      roleHolder,
+      `notifications.agent.${roleHolder}`
+    );
+    expect(roleCard.envoy.dispatch.named).toBe("the answer names you (role:legion-reviewer)");
+    expect(roleCard.envoy.reply_with).toEqual(reply);
+
+    const askers = `notifications.agent.${asker}`;
+    const askerCard = cardOf(frameOn(askers, withParties), asker, askers);
+    expect(askerCard.envoy.dispatch.named).toBeUndefined();
+    expect(askerCard.envoy.reply_with).toBeUndefined();
+    expect(askerCard).toEqual(cardOf(frameOn(askers, named), asker, askers));
+  });
+
   test("preserves an anchor document in delivered ask events", () => {
     const anchorArtifact = { name: "Spec", primary: true, project: "DSP", slug: "spec" };
     const rendered = renderInbound(

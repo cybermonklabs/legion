@@ -102,7 +102,8 @@ func askReplyTurn(actor model.Actor, requested *string) string {
 //
 // A person is in people and never in targets: a person reads the record, receives no delivery
 // and does not count toward the cap. Either a target or a person makes named true, which is what
-// makes a typed /btw the command it looks like (validateCommentMentions).
+// makes a typed /btw the command it looks like (validateCommentMentions). An answer's text is read
+// into the same set (answerPartiesOf), of which an answer delivers to the targets alone.
 type commentParties struct {
 	targets []string
 	people  []string
@@ -135,17 +136,10 @@ func checkMentionRoute(target string) error {
 
 // commentPartiesOf is the party set of one comment: the targets the request's `mentions` array
 // carries, as it wrote them, and then the parties its body names (R4), read with the shared
-// reader. A party both name, and one the body names twice, is one party: the repeat is dropped
-// here, before any rule reads the set. A target of a form no delivery route takes refuses the
-// write (checkMentionRoute), however the caller names it. Only the array rejects repeats.
-//
-// A party reference a code context holds names nobody (text.Located.InCode): a body that writes
-// one inside a fenced block, an indented block or a code span is showing the address rather than
-// naming its party, which is how every renderer of the record draws it, so the party is not
-// delivered to, not listed and not counted toward the cap. It is still a reference the graph
-// indexes. The same party the body also names outside code is named by that occurrence, and a
-// mention's address is no code context at all: the mention is `[@Name](address)`
-// (`[@Planner](dispatch://agent/...)`), and only its address is read here, never its words.
+// reader by the rules every body's parties are read by (readBodyParties). A party both name, and
+// one the body names twice, is one party: the repeat is dropped here, before any rule reads the
+// set. A target of a form no delivery route takes refuses the write (checkMentionRoute), however
+// the caller names it. Only the array rejects repeats.
 func commentPartiesOf(input commentInput, body []text.Located) (commentParties, error) {
 	parties := commentParties{targets: make([]string, 0, len(input.Mentions)+len(body))}
 	seen := make(map[string]struct{}, len(input.Mentions)+len(body))
@@ -160,6 +154,28 @@ func commentPartiesOf(input commentInput, body []text.Located) (commentParties, 
 		parties.targets = append(parties.targets, mention.Target)
 	}
 	parties.named = len(parties.targets) > 0
+	// A party other than a person must name a route, not just a valid reference address.
+	if unroutable := readBodyParties(&parties, seen, body); len(unroutable) > 0 {
+		return commentParties{}, checkMentionRoute(unroutable[0])
+	}
+	return parties, nil
+}
+
+// readBodyParties adds to parties the parties body names, by the rules every party read of a body
+// follows, a comment's (commentPartiesOf) and an answer's (answerPartiesOf) alike, and answers each
+// route the body names that model.ParseRoute cannot read, in the order it names them, adding it
+// nowhere: what such a route costs is the caller's, a comment's refusal or an answer's nobody.
+// seen holds what parties already names, each route as written and each person under a
+// `person:` key no route is written as, and takes what this adds, so a party named twice is one.
+//
+// A party reference a code context holds names nobody (text.Located.InCode): a body that writes
+// one inside a fenced block, an indented block or a code span is showing the address rather than
+// naming its party, which is how every renderer of the record draws it, so the party is not
+// delivered to, not listed and not counted toward a comment's cap. It is still a reference the
+// graph indexes. The same party the body also names outside code is named by that occurrence, and
+// a mention's address is no code context at all: the mention is `[@Name](address)`
+// (`[@Planner](dispatch://agent/...)`), and only its address is read here, never its words.
+func readBodyParties(parties *commentParties, seen map[string]struct{}, body []text.Located) (unroutable []string) {
 	for _, located := range body {
 		if located.InCode || !located.IsParty() {
 			continue
@@ -178,10 +194,10 @@ func commentPartiesOf(input commentInput, body []text.Located) (commentParties, 
 			}
 			continue
 		}
-		// A party other than a person must name a route, not just a valid reference address.
 		target := partyTarget(located.Ref)
-		if err := checkMentionRoute(target); err != nil {
-			return commentParties{}, err
+		if _, err := model.ParseRoute(target); err != nil {
+			unroutable = append(unroutable, target)
+			continue
 		}
 		if _, repeated := seen[target]; repeated {
 			continue
@@ -189,7 +205,7 @@ func commentPartiesOf(input commentInput, body []text.Located) (commentParties, 
 		seen[target] = struct{}{}
 		parties.targets = append(parties.targets, target)
 	}
-	return parties, nil
+	return unroutable
 }
 
 // validateCommentMentions is the comment's delivery mode and its delivering targets, or the

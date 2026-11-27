@@ -288,9 +288,21 @@ export const WrittenAskEventPayloadSchema = z.strictObject(askEventPayloadFields
 export type AskEventPayload = z.output<typeof WrittenAskEventPayloadSchema>;
 
 /** An `ask.answered` payload. `previous_answer` is present when the answer replaced an earlier
- *  one; the asker and every follower receive it as they received the first. */
+ *  one; the asker and every follower receive it as they received the first, and so does each
+ *  agent and role its text names. */
 export const AskAnsweredEventPayloadSchema = z
-  .strictObject({ ...askEventPayloadFields, previous_answer: AskAnswerSchema.optional() })
+  .strictObject({
+    ...askEventPayloadFields,
+    previous_answer: AskAnswerSchema.optional(),
+    /** The route of each agent (`session:<id>`) and each role (`role:<token>`) the answer's text
+     *  names, each once and in the order the text names them, read by a comment's rules: a
+     *  reference inside code names nobody, a named person is not told, and a reference no route
+     *  reads names nobody. Dispatch's outbox sends the event to each of them as to a follower.
+     *  Only the answer route (`POST /api/v1/asks/{id}/answer`) records them, so the review
+     *  route's answer of an approval request, a restored answer and a carried approval name
+     *  none; absent when the answer names nobody. */
+    named_targets: z.array(z.string()).optional(),
+  })
   .readonly();
 
 export type AskAnsweredEventPayload = z.output<typeof AskAnsweredEventPayloadSchema>;
@@ -355,6 +367,10 @@ const inboundAskEventPayloadFields = {
       at: askAnswerFields.at.optional(),
     })
     .nullish(),
+  // Whom the answer's text names, as routes: a reader that finds its own session there, or the
+  // role whose topic carried the frame, was sent the answer because the answer named it. A
+  // reader built before the field strips it, as this object strips every key it does not declare.
+  named_targets: z.array(z.string()).optional(),
   restored: askEventPayloadFields.restored,
   anchor: z
     .object({

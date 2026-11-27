@@ -25,8 +25,8 @@ type roleRow struct {
 // holds no node of, its page and the page's part_of the role, as the publisher writes them for a
 // role an event it publishes names (outbox.deliveredGraph). Its input is addressedRoles, the
 // census's own role row side, so the roles this gives a node are exactly the roles the census
-// holds to one: every route, message target and comment mention a database written before the
-// publisher wrote them holds, in a row now or in an event.
+// holds to one: every route, message target, comment mention and role an answer's text named that
+// a database written before the publisher wrote them holds, in a row now or in an event.
 //
 // A role, its page and that part_of have no projection row, so there is no row to name the node
 // on and no fence to take. A role the store already holds both nodes of is left alone, and the

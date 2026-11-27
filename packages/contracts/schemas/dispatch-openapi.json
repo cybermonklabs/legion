@@ -2752,7 +2752,7 @@
     },
     "/api/v1/asks/{id}/answer": {
       "post": {
-        "description": "Answer an ask with selected options and/or text.",
+        "description": "Answer an ask with selected options and/or text. The answer's ask.answered event reaches whoever asked, each follower of the ask, and each agent and role the text names, recorded on the event as named_targets: a reference inside code names nobody, a named person is not told, and nothing the text names refuses the answer.",
         "operationId": "postApiV1AsksByIdAnswer",
         "parameters": [
           {

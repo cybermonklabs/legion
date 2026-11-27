@@ -5763,6 +5763,12 @@ Each item below names a path with its method and identity, then its purpose.
   where they would leave the document's markdown longer than 1 MiB and longer than it was, or making more than 65,536 elements and more than it did, the ask still takes the whole answer and the block is written without them, saying who answered and when.
   The answer's state and who gave it and when are not weighed, so the asks of a document already past those limits can still be answered.
   The answer is kept on the ask as well: a block that leaves the document and returns gets it back at settlement, which weighs each returning answer on its own in document order and keeps one on the ask alone, the block saying who answered and when, while writing it back would take the document past those limits and make it bigger.
+  The answer's `ask.answered` reaches whoever asked, each session following the ask, and each agent and each role its text names:
+  the route reads the text's references as a comment's body is read (`text.ExtractAt`, `readBodyParties`) and records the route of each agent (`session:<id>`) and each role (`role:<token>`) on the event as `named_targets`, each once and in the order the text names them, absent when it names none.
+  A reference inside code names nobody, a named person is not told, and a reference no route reads names nobody; nothing the text names refuses the answer, and there is no cap on how many it names.
+  The outbox sends the event to each named agent on its own topic and to each named role on its role topic, forwarded to the role's holder, as it sends it to a follower: one copy to a party that also asked or follows, recorded in `published_destinations` and retried with the outbox's back-off.
+  A role no session holds has its copy kept on the role's kept lane for the session that claims it next, an hour at a time and three times at most, after which the event is recorded undelivered (`role.undelivered`); a role whose holder is not answering keeps the event pending until it answers.
+  A changed answer goes to the parties its new text names; the review route's answer of an approval request, a settlement's restored answer and a carried approval record none.
 
 - `/api/v1/asks/{id}/resolve` (POST; cookie, trusted header, or bearer)
 
