@@ -145,7 +145,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/block-links":          {target: "/api/v1/block-links?from=$decisionsRef&to=$specRef", statement: statementOf(`\bblock_refs\b`)},
 	"GET /api/v1/issues/{key}/subscribers": {target: "/api/v1/issues/$issue/subscribers",
 		fromMemory: "it lists the listener's interests and sessions, and reads no row"},
-	"GET /api/v1/issues/{key}/artifacts": {target: "/api/v1/issues/$issue/artifacts", statement: statementOf(`\bfrom\s+artifacts\s+where\s+issue_key\s*=\s*\$1\s+order\s+by\b`)},
+	"GET /api/v1/issues/{key}/artifacts": {target: "/api/v1/issues/$issue/artifacts", statement: statementOf(`\bfrom\s+artifacts\s+where\s+issue_key\s*=\s*\$1\s+and\b.*\border\s+by\s+created_at\b`)},
 	// The after_merge and default_branch checks' read of whether a commit is on their branch.
 	"GET /api/v1/issues/{key}/results": {target: "/api/v1/issues/$issue/results", statement: statementOf(`\bfrom\s+branch_commits\s+where\s+repo\b`),
 		volatile: []volatileMember{

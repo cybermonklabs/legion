@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -8,7 +9,9 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -87,8 +90,9 @@ type issueDesignGatesInput struct {
 // beside it. A list naming anything but the three steps is refused before the database's own
 // check would raise, a step named twice is refused as the project's own publish refuses it (one
 // record per step is all the gate keeps), and a gate naming no document is refused because the
-// document is what the row is about. Each entry's holds is stored as it was given, and an entry
-// that gives none is stored as null.
+// document is what the row is about. A gate naming a document its writer may not see is refused
+// in the same words (refuseUnseenGateDocuments). Each entry's holds is stored as it was given,
+// and an entry that gives none is stored as null.
 func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	var input issueDesignGatesInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -121,8 +125,7 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if gate.ArtifactID == "" {
-			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, fmt.Sprintf(
-				"%q names no document: artifact_id is the document that step's gate recorded", gate.Step))
+			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, gateNamesNoDocument(gate.Step))
 			return
 		}
 		gates = append(gates, gate)
@@ -142,6 +145,19 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 		holds[index] = gate.Holds
 	}
 
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	refused, err := s.refuseUnseenGateDocuments(r.Context(), who, gates)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if refused != "" {
+		writeError(w, "INVALID_ISSUE", http.StatusBadRequest, gateNamesNoDocument(refused))
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -157,17 +173,20 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	// exclusive and held to the commit, so a second publish of the same issue waits for it and the
 	// two replace the set one after the other: the stored set is always one whole set, the set of
 	// the one that finishes last (TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet). The
-	// code is written here rather than taken from loadIssue, which answers the package's plain
-	// NOT_FOUND: the daemon must tell a Dispatch that knows no such issue from a Dispatch that does
-	// not serve this route at all, and that one answers the router's own `404 {"code":"NOT_FOUND"}`
-	// (routes/router.go), which is the plain code loadIssue would give here too. The daemon ends a
-	// publication on this code alone, so the two must differ: with loadIssue's code every
-	// publication against a Dispatch older than the route would be dropped as a refusal no retry
-	// repairs.
+	// row is read as the caller reads it: an issue of a project it does not see is one no row
+	// holds, and it is read so once before the lock is asked for (lockOwnerOnceFound), so a hidden
+	// issue is refused without waiting behind its project's writers, as a key no issue holds is.
+	// The code is written here rather than taken from loadIssue, which answers the package's
+	// plain NOT_FOUND: the daemon must tell a Dispatch that knows no such issue from a Dispatch that
+	// does not serve this route at all, and that one answers the router's own
+	// `404 {"code":"NOT_FOUND"}` (routes/router.go), which is the plain code loadIssue would give
+	// here too. The daemon ends a publication on this code alone, so the two must differ: with
+	// loadIssue's code every publication against a Dispatch older than the route would be dropped
+	// as a refusal no retry repairs.
 	var issue string
-	if err := store.LockOwnerAndRead(r.Context(), tx, store.IssueOwner(r.PathValue("key")), `
-		select key from issues where key = $1
-	`, []any{r.PathValue("key")}, &issue); err != nil {
+	if err := lockOwnerOnceFound(r.Context(), tx, store.IssueOwner(r.PathValue("key")), `
+		select key from issues where key = $1 and `+access.ProjectClause("project_key", "$2")+`
+	`, []any{r.PathValue("key"), refs.VisibilityArg(who)}, &issue); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", r.PathValue("key")))
 			return
@@ -204,4 +223,51 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, issueDesignGates{Issue: issue, Gates: gates})
+}
+
+// gateNamesNoDocument is the refusal of a design gate whose step names no document: an empty
+// artifact_id, or one naming a document its writer may not see (refuseUnseenGateDocuments).
+func gateNamesNoDocument(step string) string {
+	return fmt.Sprintf("%q names no document: artifact_id is the document that step's gate recorded", step)
+}
+
+// gateDocumentsSeen answers, of the document ids $1, those the viewer $2 binds may see
+// (access.DocumentClause): an id no document holds, and one that is no uuid, is none of them.
+var gateDocumentsSeen = `
+	select named.id from unnest($1::text[]) as named(id)
+	where exists (
+		select 1 from artifacts a
+		where a.id = ` + store.CastableUUID("named.id") + ` and ` + access.DocumentClause("a", "$2") + `
+		offset 0)`
+
+// refuseUnseenGateDocuments answers the step of the first of gates, in the order they are stored,
+// whose document who may not see, or "" when it sees every one: a gate naming a document its
+// writer may not see is refused as one naming no document, so the refusal says nothing of whether
+// the document exists, and no row records a document of a project its writer cannot read. A
+// writer that sees every object (seesEveryObject) - an open one of a deployment that holds no
+// private project - reads nothing, and the route stores what it names as before (R9), whether or
+// not a document holds the id. The read runs on the pool before the transaction opens, so it
+// holds no lock of the issue.
+func (s *server) refuseUnseenGateDocuments(ctx context.Context, who model.Actor, gates []issueDesignGate) (string, error) {
+	if len(gates) == 0 || seesEveryObject(who) {
+		return "", nil
+	}
+	named := make([]string, len(gates))
+	for index, gate := range gates {
+		named[index] = gate.ArtifactID
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, gateDocumentsSeen, named, refs.VisibilityArg(who))
+	if err != nil {
+		return "", err
+	}
+	seen, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return "", err
+	}
+	for _, gate := range gates {
+		if !slices.Contains(seen, gate.ArtifactID) {
+			return gate.Step, nil
+		}
+	}
+	return "", nil
 }

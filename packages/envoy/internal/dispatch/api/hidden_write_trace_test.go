@@ -90,3 +90,11 @@ func (r *existenceTrace) take() []string {
 	r.generation++
 	return taken
 }
+
+// walkListenerCalls keeps every request the walk's fake Envoy listener was sent, as "METHOD path",
+// in the order it was sent them. It is not listenerCalls (listener_takeover_test.go), the count a
+// stand-in listener keeps of the calls it serves and holds.
+type walkListenerCalls struct {
+	mu    sync.Mutex
+	calls []string
+}

@@ -142,3 +142,9 @@ func assertPlanAvoidsSequentialRelation(t *testing.T, ctx context.Context, tx qu
 		t.Fatalf("query plan sequentially scans %s; want an index scan:\n%s", relation, planJSON)
 	}
 }
+
+// planViewer is the viewer a plan test binds where a statement reads through the project clause:
+// an open full member of a deployment that holds a private project, who sees one project (the
+// visibility argument, refs.VisibilityArg), so every arm of the clause is planned rather than
+// folded away as the server's own viewer would fold it.
+var planViewer = []byte(`{"author": null, "person": "alice", "sees": ["TEST"], "open": true, "all": false, "private": true}`)

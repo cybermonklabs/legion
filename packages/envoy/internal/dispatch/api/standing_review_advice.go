@@ -144,7 +144,9 @@ func newestSpecVersion(ctx context.Context, q queryer, ledger *docs.Ledger, arti
 	if number, queued := ledger.PendingVersionNumber(artifactID); queued {
 		return &number, nil
 	}
-	return latestVersionNumber(ctx, q, artifactID)
+	// Slice bridge, deleted by S3c-issues: the server's own reader, which sees every version, until
+	// S3c-issues passes the asker's.
+	return latestVersionNumber(ctx, q, model.ServerReader, artifactID)
 }
 
 // firstCharacters is text cut to the first count characters, whole: a cut between two bytes of

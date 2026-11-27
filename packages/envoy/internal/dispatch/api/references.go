@@ -17,6 +17,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -131,7 +133,11 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		if query.Direction == "out" && ref.Kind == "artifact" {
-			if err := s.deps.Store.Pool.QueryRow(r.Context(), `select id::text from artifacts where ref_key = $1`, query.ID).Scan(&query.ID); err != nil {
+			// A document its reader may not read is a ref_key no row holds (access.DocumentClause),
+			// so it answers exactly as a missing one: the same refusal, naming the reference the
+			// caller wrote rather than the id the row holds, and the same one statement.
+			if err := s.deps.Store.Pool.QueryRow(r.Context(), `select id::text from artifacts where ref_key = $1 and `+
+				access.DocumentClause("artifacts", "$2"), query.ID, refs.VisibilityArg(who)).Scan(&query.ID); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
 					s.writeHandlerError(w, errorf(http.StatusNotFound, "NOT_FOUND", "no document at %s", query.ID))
 					return
@@ -566,7 +572,8 @@ func pinsAMessageBlock(raw string, origins text.Origins) bool {
 }
 
 // parseRequestRef reads one reference a request names - a ?to= or ?from=, or one ?ref= of the
-// batched read - by text.ParseRef, so a node is read whatever the length of its name: the target
+// batched read - by text.ParseRef under the server's origins, so a node is read whatever the
+// length of its name and whichever of the server's origins a dashboard link names: the target
 // bound decides only what text indexes, and a node no index holds an edge to simply has fewer
 // edges. Anything else is 400 INVALID_REFERENCE naming the value, with its own sentence for a
 // pinned block of a message, which the grammar reads as no reference at all. So is a party - an
@@ -704,6 +711,7 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Slice bridge, deleted by S3c-issues: loadIssue reads no reader until S3c-issues threads one.
 	issue, err := s.loadIssue(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, err)

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -143,5 +144,9 @@ func (s *server) listAgentArtifacts(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeArtifactList(w, r, agentArtifactsSQL, session, agentArtifactsListMax)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	s.writeArtifactList(w, r, who, agentArtifactsSQL, session, agentArtifactsListMax)
 }

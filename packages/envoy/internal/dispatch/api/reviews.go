@@ -11,13 +11,16 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -39,18 +42,20 @@ var approvalAskOptions = []model.AskOption{
 	{Label: docs.ApprovalOptionRequestChanges, Description: "Say what must change before it can be approved."},
 }
 
-// latestVersionNumber is the newest version an artifact has, nil when it has none.
-func latestVersionNumber(ctx context.Context, q queryer, artifactID string) (*int, error) {
+// latestVersionNumber is the newest version an artifact has, nil when it has none or when who may
+// not read the document (documentVisible).
+func latestVersionNumber(ctx context.Context, q queryer, who model.Actor, artifactID string) (*int, error) {
 	var latest *int
-	if err := q.QueryRow(ctx, `select max(number) from artifact_versions where artifact_id = $1`, artifactID).Scan(&latest); err != nil {
+	if err := q.QueryRow(ctx, `select max(number) from artifact_versions where artifact_id = $1 and `+documentVisible("$1", "$2"),
+		artifactID, refs.VisibilityArg(who)).Scan(&latest); err != nil {
 		return nil, fmt.Errorf("latest artifact version: %w", err)
 	}
 	return latest, nil
 }
 
 // settledVersionNumber is latestVersionNumber for the callers that read a missing version as 0.
-func settledVersionNumber(ctx context.Context, q queryer, artifactID string) (int, error) {
-	latest, err := latestVersionNumber(ctx, q, artifactID)
+func settledVersionNumber(ctx context.Context, q queryer, who model.Actor, artifactID string) (int, error) {
+	latest, err := latestVersionNumber(ctx, q, who, artifactID)
 	if err != nil || latest == nil {
 		return 0, err
 	}
@@ -58,9 +63,10 @@ func settledVersionNumber(ctx context.Context, q queryer, artifactID string) (in
 }
 
 // loadReviews is every review of the document, newest first in the order its events committed
-// (docs.ReviewOrder).
-func (s *server) loadReviews(ctx context.Context, q queryer, artifactID string) ([]model.ArtifactReview, error) {
-	rows, err := q.Query(ctx, `select `+docs.ReviewColumns+` from artifact_reviews where artifact_id = $1 order by `+docs.ReviewOrder, artifactID)
+// (docs.ReviewOrder), read only where who may read the document (documentVisible).
+func (s *server) loadReviews(ctx context.Context, q queryer, who model.Actor, artifactID string) ([]model.ArtifactReview, error) {
+	rows, err := q.Query(ctx, `select `+docs.ReviewColumns+` from artifact_reviews where artifact_id = $1 and `+
+		documentVisible("artifact_reviews.artifact_id", "$2")+` order by `+docs.ReviewOrder, artifactID, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}
@@ -75,24 +81,34 @@ func (s *server) loadReviews(ctx context.Context, q queryer, artifactID string) 
 }
 
 // latestReviewsStatement reads the newest review of every document in $1, one row each
-// (docs.ReviewOrder decides which); scanLatestReviews reads its rows.
-const latestReviewsStatement = `
+// (docs.ReviewOrder decides which), of the documents the reader whose visibility argument is $2
+// may read; scanLatestReviews reads its rows.
+var latestReviewsStatement = `
 		select distinct on (artifact_id) ` + docs.ReviewColumns + `
-		from artifact_reviews where artifact_id = any($1::uuid[])
+		from artifact_reviews where artifact_id = any($1::uuid[]) and ` + documentVisible("artifact_reviews.artifact_id", "$2") + `
 		order by artifact_id, ` + docs.ReviewOrder + `
 	`
 
 // openApprovalAsksStatement reads the open approval requests naming any document in $1, with the
 // turn waitingOnExpression gives each; scanOpenApprovalRequests reads its rows. One row per
 // document of each open request naming one of these documents, so a request that covers a spec
-// and its Verification document is found by either and reported on both.
-const openApprovalAsksStatement = `
+// and its Verification document is found by either and reported on both. A row is read only for
+// a document the reader whose visibility argument is $2 may read: the document is one of $1, by
+// the uuid index, and the one the row names. The request itself is read only where that reader
+// may read it as the ask of its own issue or document (access.ItemOwnerClause), and its newest
+// reply through it: a request a store holds naming a document of another project names nothing
+// on that document to a reader who may not see the request's own.
+var openApprovalAsksStatement = `
 		select a.id::text, a.author, document ->> 'artifact_id', a.approval -> 'documents', ` + waitingOnExpression + `
 		from asks a` + lastReplyJoin + `
 		cross join lateral jsonb_array_elements(a.approval -> 'documents') document
 		where a.kind = 'approval' and a.state = 'open'
 		  and ` + docs.ApprovalDocumentsJSONPath + ` ?| $1::text[]
 		  and document ->> 'artifact_id' = any($1::text[])
+		  and ` + access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$2") + `
+		  and exists (select 1 from artifacts named_document
+		              where named_document.id = any($1::text[]::uuid[]) and named_document.id::text = document ->> 'artifact_id'
+		                and ` + access.DocumentClause("named_document", "$2") + `)
 	`
 
 // openApprovalRequest is one document's open approval request: who asked, whose turn it is, and
@@ -225,17 +241,18 @@ func applyApprovals(
 // The apply reads each document's Versions (applyApprovals), so a caller that queues those too
 // applies them first (queueArtifactDetails). No document queues nothing and its apply fills
 // nothing.
-func queueApprovals(b *pgx.Batch, artifacts []*model.Artifact) func() {
+func queueApprovals(b *pgx.Batch, who model.Actor, artifacts []*model.Artifact) func() {
 	ids, byID := approvalTargets(artifacts)
 	if len(ids) == 0 {
 		return func() {}
 	}
 	latestReviews := map[string]model.ArtifactReview{}
 	requests := map[string]openApprovalRequest{}
-	b.Queue(latestReviewsStatement, ids).Query(func(rows pgx.Rows) error {
+	seen := refs.VisibilityArg(who)
+	b.Queue(latestReviewsStatement, ids, seen).Query(func(rows pgx.Rows) error {
 		return scanLatestReviews(rows, latestReviews)
 	})
-	b.Queue(openApprovalAsksStatement, ids).Query(func(rows pgx.Rows) error {
+	b.Queue(openApprovalAsksStatement, ids, seen).Query(func(rows pgx.Rows) error {
 		return scanOpenApprovalRequests(rows, requests)
 	})
 	return func() { applyApprovals(byID, latestReviews, requests) }
@@ -245,9 +262,9 @@ func queueApprovals(b *pgx.Batch, artifacts []*model.Artifact) func() {
 // statements as a batch of their own on q (as loadArtifactDetails sends the whole detail batch),
 // so a read that wants the approval alone costs one round trip. A list holding no document
 // queues nothing and reads nothing.
-func (s *server) attachApprovals(ctx context.Context, q queryer, artifacts []*model.Artifact) error {
+func (s *server) attachApprovals(ctx context.Context, q queryer, who model.Actor, artifacts []*model.Artifact) error {
 	batch := &pgx.Batch{}
-	apply := queueApprovals(batch, artifacts)
+	apply := queueApprovals(batch, who, artifacts)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -258,8 +275,8 @@ func (s *server) attachApprovals(ctx context.Context, q queryer, artifacts []*mo
 	return nil
 }
 
-func (s *server) attachApproval(ctx context.Context, q queryer, artifact *model.Artifact) error {
-	return s.attachApprovals(ctx, q, []*model.Artifact{artifact})
+func (s *server) attachApproval(ctx context.Context, q queryer, who model.Actor, artifact *model.Artifact) error {
+	return s.attachApprovals(ctx, q, who, []*model.Artifact{artifact})
 }
 
 // reviewFromAnswer maps an approval ask's answer to a review state and reason.
@@ -296,7 +313,7 @@ func (s *server) listArtifactReviews(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	reviews, err := s.loadReviews(r.Context(), s.deps.Store.Pool, artifact.ID)
+	reviews, err := s.loadReviews(r.Context(), s.deps.Store.Pool, who, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -410,7 +427,7 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 		s.writeHandlerError(w, err)
 		return
 	}
-	version, err := settledVersionNumber(r.Context(), tx, artifact.ID)
+	version, err := settledVersionNumber(r.Context(), tx, who, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -645,7 +662,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 			"include_verification asks for the issue's spec and its Verification document together, and this document is not the issue's spec: request approval of it alone")
 		return
 	}
-	version, err := settledVersionNumber(r.Context(), tx, artifact.ID)
+	version, err := settledVersionNumber(r.Context(), tx, who, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -672,7 +689,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	trees := wantsDisplayTrees(r)
-	if err := s.attachApproval(r.Context(), tx, &artifact); err != nil {
+	if err := s.attachApproval(r.Context(), tx, who, &artifact); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1140,7 +1157,7 @@ func (s *server) verificationDocumentFor(ctx context.Context, q queryer, who mod
 	if !held {
 		return model.AskApprovalDocument{}, errorf(http.StatusConflict, "NO_VERIFICATION_DOCUMENT", "%s", noVerification)
 	}
-	version, err := settledVersionNumber(ctx, q, verification.ID)
+	version, err := settledVersionNumber(ctx, q, who, verification.ID)
 	if err != nil {
 		return model.AskApprovalDocument{}, err
 	}
@@ -1203,7 +1220,7 @@ func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request
 		s.writeHandlerError(w, err)
 		return
 	}
-	latest, err := settledVersionNumber(r.Context(), tx, artifact.ID)
+	latest, err := settledVersionNumber(r.Context(), tx, who, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -768,7 +769,9 @@ type nearCopyOutcome struct {
 func (s *server) runNearCopyGate(
 	ctx context.Context, project, title, spec string, ancestors []string, force bool,
 ) nearCopyOutcome {
-	gate := s.duplicateGate(ctx, project, title, spec, ancestors)
+	// Slice bridge, deleted by S3c-issues: the near-copy gate reads as the server's own reader here,
+	// which sees every object, so it answers as it did before; S3c-issues passes the creator's.
+	gate := s.duplicateGate(ctx, model.ServerReader, project, title, spec, ancestors)
 	refusals := gate.refusals()
 	check := &nearCopyCheck{force: force, candidates: gate.Candidates, readMS: gate.ReadMS, readStage: gate.ReadStage}
 	switch {

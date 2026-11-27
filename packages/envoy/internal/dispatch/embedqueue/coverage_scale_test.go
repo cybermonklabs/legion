@@ -697,7 +697,9 @@ type scaleQuerier interface {
 func timeCoverageStatements(t *testing.T, conn *pgx.Conn, stage, identity string) (head, base []time.Duration) {
 	t.Helper()
 	const baseName, headName = "base (mainCoverageQuery)", "head (coverageQuery, under planCoverage's settings)"
-	warm := func(q scaleQuerier, statement string) { mustExec(t, q, statement, identity) }
+	warm := func(q scaleQuerier, statement string) {
+		mustExec(t, q, statement, statementArgs(statement, identity)...)
+	}
 	warm(conn, mainCoverageQuery)
 	runHead(t, conn, warm)
 	for range coverageScaleRuns {
@@ -711,6 +713,16 @@ func timeCoverageStatements(t *testing.T, conn *pgx.Conn, stage, identity string
 	logTextPlan(t, conn, stage, baseName, mainCoverageQuery, identity)
 	runHead(t, conn, func(q scaleQuerier, statement string) { logTextPlan(t, q, stage, headName, statement, identity) })
 	return head, base
+}
+
+// statementArgs is what statement binds for identity: main's statement takes identity ($1) alone,
+// and the coverage statement takes the reader's visibility argument as $2 beside it, read here as
+// everyProject's, the server's own reader, as Coverage's own tests read the report.
+func statementArgs(statement, identity string) []any {
+	if statement == coverageQuery {
+		return []any{identity, everyProjectArg}
+	}
+	return []any{identity}
 }
 
 // runHead runs the head on conn as Coverage runs it: in a read-only transaction,
@@ -736,7 +748,7 @@ func runHead(t *testing.T, conn *pgx.Conn, do func(q scaleQuerier, statement str
 // BUFFERS) of its own.
 func logTextPlan(t *testing.T, q scaleQuerier, stage, name, statement, identity string) {
 	t.Helper()
-	rows, err := q.Query(context.Background(), "explain (analyze, buffers) "+statement, identity)
+	rows, err := q.Query(context.Background(), "explain (analyze, buffers) "+statement, statementArgs(statement, identity)...)
 	if err != nil {
 		t.Fatalf("%s: explain the %s: %v", stage, name, err)
 	}
@@ -765,7 +777,7 @@ func coverageNegativeControl(t *testing.T, conn *pgx.Conn, stage, identity strin
 func explainedRun(t *testing.T, q querier, name, statement, identity string) (time.Duration, json.RawMessage) {
 	t.Helper()
 	var raw []byte
-	if err := q.QueryRow(context.Background(), "explain (analyze, buffers, format json) "+statement, identity).Scan(&raw); err != nil {
+	if err := q.QueryRow(context.Background(), "explain (analyze, buffers, format json) "+statement, statementArgs(statement, identity)...).Scan(&raw); err != nil {
 		t.Fatalf("explain the %s: %v", name, err)
 	}
 	var explained []struct {

@@ -96,7 +96,7 @@ func TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap(t 
 		t.Fatalf("plan the report as Coverage does: %v", err)
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, `explain (analyze, format json) `+coverageQuery, configuredIdentity).Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, `explain (analyze, format json) `+coverageQuery, configuredIdentity, everyProjectArg).Scan(&raw); err != nil {
 		t.Fatalf("explain the coverage statement: %v", err)
 	}
 	explained := explaintest.OnePlan(t, raw)

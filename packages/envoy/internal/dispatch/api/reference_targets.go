@@ -69,7 +69,7 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // refuse a whole batch: the page reads its batches together, so one refusal would blank the
 // name of every reference in the batch.
 //
-// It answers for the acting reader (actingReader), as every read of the graph does: a target the
+// It answers for the caller's reader (readerOf), as every read of the graph does: a target the
 // reader may not see is answered gone, as a target nothing addresses is (refs.TargetNames), and a
 // short id is resolved among the items the reader may see alone (refs.ResolvePrefixes), so an
 // item the reader may not see makes no short id ambiguous and names none.

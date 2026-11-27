@@ -14,8 +14,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 const duplicateHeadlineOptions = "StartSel=" + markStart + ", StopSel=" + markEnd + ", HighlightAll=true"
@@ -148,15 +150,23 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 //
 // The statement drives from term_weights, one row per picked lexeme and its idf, into
 // issues.search and into document_search (migration 20261101182447, one row per document holding
-// its latest version's vector), so each term is one probe of a GIN index and no candidate's spec
-// vector is read more than once per term. project_key, the status and the ancestors are filters
-// on the rows those index scans produced, never the driving predicate.
+// its latest version's vector). The plan Postgres makes for its arguments (duplicateScoreArguments)
+// reads no text-search index: each arm is a nested loop over the terms whose inner side is the
+// project's open issues, read once by a sequential scan and held in memory (the spec arm hashes
+// document_search to artifacts and to those issues), so each term is tested against every open
+// issue's title vector and spec vector. project_key, the status and the ancestors filter what that
+// scan reads. So the cost grows with the project's open issues times the terms, at most
+// relatedTermLimit; relatedMatchBudget bounds the hits, not the tests. That is the plan read on
+// the production corpus and on a synthetic project of 3,000 issues (PostgreSQL 18.6, 2026-11-23).
 //
-// Not the obvious shape - one tsquery to find the candidates, then relatedCoordinationRank's
-// per-candidate `sum(idf) from term_weights where search @@ tq` - because that tests each
-// candidate's spec vector once per term, so its cost grows with the length of every candidate's
-// spec, and a project's specs are long. The per-term join does its work inside the index and is
-// bounded by the picker's own relatedMatchBudget.
+// The obvious shape is one tsquery to find the candidates, then relatedCoordinationRank's
+// per-candidate `sum(idf) from term_weights where search @@ tq`, which tests each candidate's
+// spec vector once per term. The reason recorded when this shape was written instead is that the
+// obvious shape's cost grows with the length of every candidate's spec, while this shape's
+// per-term join would do its work inside a GIN index. The plan above reads no such index and
+// tests each open issue's title and spec vector once per term, so both shapes test each spec
+// vector once per term and that reason does not hold. No other reason was recorded, and neither
+// shape has been timed against the other, so which of the two costs less is open.
 //
 // A term that matches both a candidate's title and its spec counts once: the two arms are joined
 // with `union`, which takes distinct (key, lexeme, idf) before the sum, and idf is a function of
@@ -169,7 +179,26 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 // (duplicateNamesAnotherIssue).
 //
 // Parameters: $1 project, $2 the picked lexemes, $3 their idf, $4 the new issue's ancestors,
-// $5 the lowest score to return, $6 the headline options, $7 the new title.
+// $5 the lowest score to return, $6 the headline options, $7 the new title, $8 the creator's
+// viewer, whose project clause holds every issue of a project it does not see out of both arms:
+// such a project's gate finds nothing, as a project no row holds finds nothing.
+//
+// The clause tests $1 rather than each row's project_key: every row of both arms is of $1, so the
+// two say the same, and over the parameter alone the clause holds no column, so Postgres decides
+// it once per execution (a One-Time Filter) and counts it in no estimate. Over the row's column it
+// is a filter of every issue whose share a generic plan - the plan a pooled connection runs from
+// its sixth execution of the statement - has to guess, the viewer being a parameter it cannot
+// read; that guess halved the open issues each arm expects and moved the document arm to another
+// join order than the same statement without a viewer gets
+// (TestTheNearCopyGateDecidesItsViewerOncePerStatement).
+//
+// The gate sends it to be planned for its own arguments on every run (duplicateScoreArguments).
+// Its best plan turns on how many terms were picked and how rare they are, and a generic plan
+// sees neither: it plans unnest of a parameter array at 10 rows whatever the array holds. On a
+// synthetic project of 3,000 issues the generic plan Postgres settles on from a connection's
+// sixth run took about twice the plan made for the arguments (203 against 100 ms, PostgreSQL
+// 18.6, 2026-11-23), and planning it for its arguments took about 1 ms of those 100
+// (TestTheNearCopyScoreIsPlannedForItsArgumentsOnEveryRun).
 var duplicateScoreQuery = `
 with term_weights as (
   select quote_literal(w.lexeme)::tsquery as tq, w.lexeme, w.idf
@@ -180,14 +209,14 @@ hits as (
   select i.key, w.lexeme, w.idf
     from term_weights w
     join issues i on i.search @@ w.tq
-   where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[])
+   where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[]) and ` + access.ProjectClause("$1", "$8") + `
   union
   select i.key, w.lexeme, w.idf
     from term_weights w
     join document_search d on d.search @@ w.tq
     join artifacts a on a.id = d.artifact_id and a.kind = 'doc' and a.is_primary
     join issues i on i.key = a.issue_key
-   where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[])
+   where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[]) and ` + access.ProjectClause("$1", "$8") + `
 ),
 scored as (
   select h.key, sum(h.idf) / nullif((select weight from picked), 0) as score,
@@ -237,7 +266,9 @@ select s.key, i.title, i.status, s.shared, s.score,
 // name different keys hold the same lexemes only when each also writes the other's key.
 //
 // Parameters: $1 project, $2 the new title, $3 the new spec as it would be stored, $4 the new
-// issue's ancestors, $5 the headline options.
+// issue's ancestors, $5 the headline options, $6 the creator's viewer, whose project clause holds
+// every issue of a project it does not see out, tested once per execution over $1 as
+// duplicateScoreQuery's is.
 var duplicateEqualLexemesQuery = `
 with new_text as (
   select title_lexemes($2) as title_lex,
@@ -248,7 +279,7 @@ select i.key, i.title, i.status, cardinality(n.title_lex)::int as shared, 1::flo
          to_tsquery('simple', (select string_agg(quote_literal(x), ' | ') from unnest(n.title_lex) x)), $5) as headline
   from new_text n
   join issues i
-    on i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[])
+    on i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[]) and ` + access.ProjectClause("$1", "$6") + `
    and i.title_lexemes = n.title_lex
   left join artifacts a on a.issue_key = i.key and a.kind = 'doc' and a.is_primary
   left join document_search d on d.artifact_id = a.id
@@ -368,8 +399,9 @@ func duplicateGateText(title, spec string) string {
 }
 
 // duplicateGate scores the project's open issues, other than the new issue's ancestors, against
-// its title and spec. Both paths of a create run it, so the record of what a forced create went
-// past is the refusal an unforced one would have met.
+// its title and spec, as who reads them: a project who does not see holds no candidate. Both paths
+// of a create run it, so the record of what a forced create went past is the refusal an unforced
+// one would have met.
 //
 // It runs in a read transaction of its own, bounded by duplicateGateBound on the context and by
 // statement_timeout inside it, because the create waits on it. One bound for both paths: with
@@ -381,14 +413,14 @@ func duplicateGateText(title, spec string) string {
 // failure of the read itself are told apart there and in the log, because the second is the
 // server's own fault - before this gate it was a visible 500 - and happens whatever the bound is.
 func (s *server) duplicateGate(
-	ctx context.Context, project, title, spec string, ancestors []string,
+	ctx context.Context, who model.Actor, project, title, spec string, ancestors []string,
 ) duplicateGateResult {
 	bound := s.duplicateGateBound()
 	// The clock starts before the bound does, so a read the bound ends records at least the bound.
 	start := time.Now()
 	gateCtx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
-	candidates, err := s.readDuplicateCandidates(gateCtx, project, title, spec, ancestors, bound, duplicateNudgeScore)
+	candidates, err := s.readDuplicateCandidates(gateCtx, who, project, title, spec, ancestors, bound, duplicateNudgeScore)
 	readMS, stage := milliseconds(time.Since(start)), nearCopyReadStage(err)
 	switch {
 	case err == nil:
@@ -430,11 +462,11 @@ func nearCopyReadStage(err error) string {
 }
 
 // readDuplicateCandidates picks the new text's rarest words and scores the project's open issues
-// against them, in one read transaction, answering those at or above floor, best score first.
-// The gate's floor is duplicateNudgeScore, the lowest score it ever names; the replay that sets
-// the two bars reads from zero, so the whole distribution is visible to it.
+// who sees against them, in one read transaction, answering those at or above floor, best score
+// first. The gate's floor is duplicateNudgeScore, the lowest score it ever names; the replay that
+// sets the two bars reads from zero, so the whole distribution is visible to it.
 func (s *server) readDuplicateCandidates(
-	ctx context.Context, project, title, spec string, ancestors []string, bound time.Duration, floor float64,
+	ctx context.Context, who model.Actor, project, title, spec string, ancestors []string, bound time.Duration, floor float64,
 ) (candidates []scoredDuplicate, err error) {
 	// Every error names the step the read was in (nearCopyReadError), set before each step starts.
 	stage := nearCopyStageConnect
@@ -470,7 +502,7 @@ func (s *server) readDuplicateCandidates(
 	}
 	// The new issue does not exist yet, so nothing of it is left out of the word statistics.
 	stage = nearCopyStageTerms
-	picked, err := s.pickRelatedTerms(ctx, tx, project, duplicateGateText(title, spec), title, relatedExclusion{}, priceUnknownTerms)
+	picked, err := s.pickRelatedTerms(ctx, tx, who, project, duplicateGateText(title, spec), title, relatedExclusion{}, priceUnknownTerms)
 	if err != nil {
 		return nil, err
 	}
@@ -493,14 +525,14 @@ func (s *server) readDuplicateCandidates(
 		// whose spec mentions a stopped one. Its answer is an equality rather than a score, so
 		// floor does not apply to it - a match is 1 and nothing else is answered.
 		rows, err := tx.Query(ctx, duplicateEqualLexemesQuery,
-			project, title, storedMarkdown(spec), ancestors, duplicateHeadlineOptions)
+			project, title, storedMarkdown(spec), ancestors, duplicateHeadlineOptions, refs.VisibilityArg(who))
 		if err != nil {
 			return nil, err
 		}
 		return scanDuplicateCandidates(rows)
 	}
 	rows, err := tx.Query(ctx, duplicateScoreQuery,
-		project, lexemes, weights, ancestors, floor, duplicateHeadlineOptions, title)
+		duplicateScoreArguments(project, lexemes, weights, ancestors, floor, title, who)...)
 	if err != nil {
 		return nil, err
 	}
@@ -545,6 +577,18 @@ func nearCopyScoreTerms(picked relatedTerms, keyLexemes map[string]bool) ([]stri
 		weights = append(weights, term.IDF)
 	}
 	return lexemes, weights
+}
+
+// duplicateScoreArguments is what duplicateScoreQuery is sent with, by the gate and by the replay
+// that times it: pgx.QueryExecModeDescribeExec, so that Postgres plans each run for its own
+// arguments rather than settling on a generic plan (duplicateScoreQuery says why), then $1 to $8.
+func duplicateScoreArguments(
+	project string, lexemes []string, weights []float64, ancestors []string, floor float64, title string, who model.Actor,
+) []any {
+	return []any{
+		pgx.QueryExecModeDescribeExec,
+		project, lexemes, weights, ancestors, floor, duplicateHeadlineOptions, title, refs.VisibilityArg(who),
+	}
 }
 
 // nearCopyBoundHit says whether the gate's read ended at its bound. The bound is on the context

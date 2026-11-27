@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -36,10 +37,10 @@ import (
 // hit's snippet is cut and marked into beside its text (scanSearchRows); the answerer's own
 // search reads a hit's title and href alone and asks for none.
 //
-// who is the credential the search acts for, which every statement binds last
-// (searchQueryArguments) so that no read answers a node that credential may not see
-// (refs.VisibilityArg). The zero actor proves no author, which is what the answerer's own
-// search and the package's tests read as.
+// who is the reader the search acts for, with its viewer (readerOf), which every statement binds
+// (searchQueryArguments, searchOwnIssueKeys, searchRarestWords) so that no read answers a node that
+// reader may not see, nor a row of a project it does not see (refs.VisibilityArg). A reader with
+// no viewer is the closed viewer, which sees nothing.
 //
 // reading is text read as the words a person wrote and the operators around them
 // (readSearchQuery), taken once by whoever builds the parameters and handed to every reader of
@@ -221,12 +222,13 @@ func searchKeyForms(q string) (key string, number int) {
 
 // searchOwnIssueKeys is the issues the query names by key, which lead the page
 // (searchOwnKeyLead). A key form names one issue and needs no read of its own: the issue arm
-// matches the key it is given, and matches nothing when no issue holds it. A number alone names
-// the issue of that number in each project, which only this one read can answer, and only a
-// query that is a bare number ever pays for it; scope is the project it is read in
-// (numberScope), which names that project's issue alone, and without one every matching issue,
-// in project order.
-func (s *server) searchOwnIssueKeys(ctx context.Context, q, scope string) ([]string, error) {
+// matches the key it is given, and matches nothing when no issue holds it or the reader does not
+// see its project. A number alone names the issue of that number in each project the reader sees,
+// which only this one read can answer, and only a query that is a bare number ever pays for it;
+// scope is the project it is read in (numberScope), which names that project's issue alone, and
+// without one every matching issue, in project order. A project the reader does not see names no
+// issue here, as a project no row holds names none.
+func (s *server) searchOwnIssueKeys(ctx context.Context, q, scope string, who model.Actor) ([]string, error) {
 	key, number := searchKeyForms(q)
 	if key != "" {
 		return []string{key}, nil
@@ -235,7 +237,9 @@ func (s *server) searchOwnIssueKeys(ctx context.Context, q, scope string) ([]str
 		return []string{}, nil
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx,
-		`select key from issues where number = $1 and ($2 = '' or project_key = $2) order by project_key`, number, scope)
+		`select key from issues where number = $1 and ($2 = '' or project_key = $2) and `+
+			access.ProjectClause("project_key", "$3")+` order by project_key`,
+		number, scope, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +302,8 @@ func searchMeaningQueryArguments(parameters searchParameters, vector []float32, 
 // configuration every search column is built with ('english'), so the word a person wrote and
 // the lexeme the statistics count are the same thing; the lexemes of one query are matched once
 // each (distinct on), and the df is summed over the projects in scope - one when the search names
-// a project ($2), every project when it names none.
+// a project ($2), every project when it names none - of the projects the reader sees ($4, its
+// viewer), so a project the reader does not see weighs no word of its search.
 //
 // The statistics are search_term_stats, the per-project document frequencies the related-terms
 // refresh keeps up to date through search_term_queue and the snapshot beside its totals
@@ -315,7 +320,7 @@ func searchMeaningQueryArguments(parameters searchParameters, vector []float32, 
 // ones run out, which is what broadens a query on a database whose statistics have never been
 // built: every word unknown, the order is the query's own and the bound is all that is left of
 // the pick.
-const searchRarestWordsSQL = `
+var searchRarestWordsSQL = `
 with words as (
   select distinct on (w.lexeme) w.word, w.at, w.lexeme
     from (select t.word, t.at,
@@ -328,6 +333,7 @@ df as (
   select s.lexeme, sum(s.ndoc) as ndoc
     from search_term_stats s
    where s.lexeme in (select lexeme from words) and ($2 = '' or s.project_key = $2)
+     and ` + access.ProjectClause("s.project_key", "$4") + `
    group by s.lexeme
 )
 select w.word from words w left join df on df.lexeme = w.lexeme
@@ -345,7 +351,8 @@ func (s *server) searchRarestWords(ctx context.Context, parameters searchParamet
 	if len(words) < 2 {
 		return nil, nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, searchRarestWordsSQL, words, parameters.project, searchBroadenWords)
+	rows, err := s.deps.Store.Pool.Query(ctx, searchRarestWordsSQL, words, parameters.project, searchBroadenWords,
+		refs.VisibilityArg(parameters.who))
 	if err != nil {
 		return nil, err
 	}

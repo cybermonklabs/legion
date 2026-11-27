@@ -137,7 +137,7 @@ func artifactReference(document model.Artifact) string {
 // who reads it. An issue with none, an issue that does not exist and an issue who does not see
 // answer found false: the view is a read, and an issue with no spec simply holds no decision link.
 func (s *server) issueSpecDocument(ctx context.Context, who model.Actor, key string) (model.Artifact, bool, error) {
-	artifact, err := s.loadArtifactRow(ctx, s.deps.Store.Pool, s.deps.Store.Pool.QueryRow(ctx, `
+	artifact, err := s.loadArtifactRow(ctx, s.deps.Store.Pool, who, s.deps.Store.Pool.QueryRow(ctx, `
 		select `+artifactColumns+`
 		from artifacts where issue_key = $1 and is_primary and kind = 'doc' and `+access.DocumentClause("artifacts", "$2")+`
 	`, key, refs.VisibilityArg(who)))

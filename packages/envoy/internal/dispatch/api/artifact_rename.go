@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -94,7 +95,7 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	// The row as it now is, with the versions and the approval every artifact read carries, is
 	// what GET /api/v1/artifacts/{id} answers and what this route answers too.
-	if err := loadArtifactDetails(r.Context(), tx, []*model.Artifact{&renamed}); err != nil {
+	if err := loadArtifactDetails(r.Context(), tx, who, []*model.Artifact{&renamed}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

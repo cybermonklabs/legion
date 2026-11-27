@@ -236,7 +236,9 @@ func (f documentSearchFixture) statements() []documentSearchStatement {
 			name:      "the related-terms probe",
 			statement: relatedProbeSQL,
 			oracle:    mainRelatedProbeSQL,
-			arguments: []any{f.project, probeLexemes, "", (*string)(nil)},
+			arguments: []any{f.project, probeLexemes, "", (*string)(nil), relatedViewer(everyReader)},
+			// main's text binds no viewer.
+			oracleArguments: []any{f.project, probeLexemes, "", (*string)(nil)},
 			// The probe declares no order, so its answer is a set.
 			sorted: true,
 			// Only documents hold documentSearchDocumentWord, so answering it is the document
