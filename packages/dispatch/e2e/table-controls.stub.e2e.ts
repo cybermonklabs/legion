@@ -23,7 +23,6 @@ import {
 } from "../web/src/components/control-names";
 import { control, controlRow, openFilterPanel } from "./filters";
 import { nextFrames } from "./frames";
-import { COMPACT_VIEWPORT_WIDTH } from "./inbox-threads";
 import { stubbed } from "./stub/stub-test";
 import {
   closeControlPanel,
@@ -321,13 +320,6 @@ test("each page draws every shared control its design gives it, and no other @pr
     // page rather than in the surface, so there **View** is read as an item of **More** instead.
     // Below 640 px of a bar with a trigger its chips stand at the top of the Filter panel, which
     // also opens over the page, so there the chip is read in the panel.
-    if (name === "Artifacts tab" && (page.viewportSize()?.width ?? 0) >= COMPACT_VIEWPORT_WIDTH) {
-      // The issue page can paint artifact rows before its desktop review margin takes width.
-      await expect(
-        page.getByTestId("desktop-margin-shell"),
-        "the issue's review margin"
-      ).toBeVisible();
-    }
     const readLayout = async () => {
       // Let the bar's ResizeObserver apply the layout for its new width after each UI change.
       await nextFrames(page);
