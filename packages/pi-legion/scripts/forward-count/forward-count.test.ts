@@ -1307,7 +1307,7 @@ describe("a return that rests on a person's request", () => {
     kind?: string;
     at?: string;
   }): { get: <T>(path: string) => Promise<T> } => ({
-    get: async <T,>() =>
+    get: async <T>() =>
       [
         {
           message: {
@@ -1359,7 +1359,13 @@ describe("a return that rests on a person's request", () => {
     expect(ret.causes).toContainEqual({ cause: "person-request", state: "absent", step: null });
     expect(
       resolveReturn(ret, [
-        { return: ret.id, reader: "1", model: "m", own: false, confirmed: { "person-request": true } },
+        {
+          return: ret.id,
+          reader: "1",
+          model: "m",
+          own: false,
+          confirmed: { "person-request": true },
+        },
       ]).class
     ).toBe("unexplained");
   });
@@ -1373,7 +1379,13 @@ describe("a return that rests on a person's request", () => {
     expect(ret.causes).toContainEqual({ cause: "person-request", state: "absent", step: null });
     expect(
       resolveReturn(ret, [
-        { return: ret.id, reader: "1", model: "m", own: false, confirmed: { "person-request": true } },
+        {
+          return: ret.id,
+          reader: "1",
+          model: "m",
+          own: false,
+          confirmed: { "person-request": true },
+        },
       ]).class
     ).toBe("unexplained");
   });
@@ -1409,7 +1421,13 @@ describe("a return that rests on a person's request", () => {
     expect(ret.causes).toContainEqual({ cause: "person-request", state: "unread", step: null });
     expect(
       resolveReturn(ret, [
-        { return: ret.id, reader: "1", model: "m", own: false, confirmed: { "person-request": true } },
+        {
+          return: ret.id,
+          reader: "1",
+          model: "m",
+          own: false,
+          confirmed: { "person-request": true },
+        },
       ]).class
     ).toBe("pending");
   });

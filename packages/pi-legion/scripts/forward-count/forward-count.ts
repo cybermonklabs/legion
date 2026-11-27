@@ -636,7 +636,9 @@ export async function requestRead(
     asksForReturn: null,
   };
   if (ref === null) return none;
-  const parts = /^dispatch:\/\/([A-Z][A-Z0-9]*-\d+)(?:\/(comment|message)\/([0-9a-f-]+))?$/.exec(ref);
+  const parts = /^dispatch:\/\/([A-Z][A-Z0-9]*-\d+)(?:\/(comment|message)\/([0-9a-f-]+))?$/.exec(
+    ref
+  );
   if (parts === null || parts[2] === undefined) return none;
   const [, key, what, id] = parts;
   if (key !== issue) return none;
@@ -656,8 +658,7 @@ export async function requestRead(
     state: "read",
     authorKind: authorKindOf(found.author?.kind ?? ""),
     at: found.created_at === "" ? null : found.created_at,
-    asksForReturn:
-      namesWord(body, issue) && RETURN_WORDS.some((word) => namesWord(body, word)),
+    asksForReturn: namesWord(body, issue) && RETURN_WORDS.some((word) => namesWord(body, word)),
   };
 }
 
