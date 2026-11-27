@@ -108,7 +108,8 @@ legs = yaml.safe_load(open(".github/go-legs.yaml"))
 nested = set(yaml.safe_load(open(".github/lane-packages.yaml"))["nested"])
 mods = {f.rsplit("/", 1)[0] for f in subprocess.run(["git", "ls-files", "*go.mod"], capture_output=True, text=True,
         check=True).stdout.split()}
-inside = {m for m in mods for module in legs if m.startswith(module + "/")}
+inside = {m for m in mods for module in legs
+          if m.startswith(module + "/") and "/testdata/" not in m + "/"}
 print(" ".join(sorted(inside ^ nested)) or "same")
 print(len(inside))
 ')

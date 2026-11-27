@@ -31,7 +31,9 @@
 # step) is listed under `packages`; lane-packages.test.sh fails a lane workflow's go test package
 # that this file does not give its job.
 
-# The module directories inside a go-legs.yaml module, whose packages are no package of it.
+# The module directories inside a go-legs.yaml module, whose packages are no package of it. A
+# go.mod under a testdata/ tree is a fixture of a test, not a module of this repository, and is
+# neither listed here nor read as one.
 nested:
   - packages/envoy/infra
 
@@ -60,6 +62,7 @@ jobs:
       - packages/envoy/agentloop
       - packages/envoy/cmd/cipher
       - packages/envoy/cmd/dispatch
+      - packages/envoy/cmd/dispatch-route-adopt
       - packages/envoy/cmd/listener
       - packages/envoy/internal/bus
       - packages/envoy/internal/cipher/api

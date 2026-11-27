@@ -1264,7 +1264,13 @@ def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, s
         holds it to: `||` yields the first truthy operand, so one whose own last conjunct is
         the literal `'true'` either falls through to the reference or hands the job 'true',
         and the filter's match reaches the job's `if:` unnarrowed either way, whatever the
-        <term> reads (ci.yaml's reads another step's output, `steps.scope.outputs.every_job`).
+        <term> reads - another step's output (ci.yaml's `steps.scope.outputs.every_job`), or
+        ANOTHER paths filter's verdict, as the own-packages term of ci.yaml's slow suites reads
+        `steps.own.outputs.x == 'true'`: a widening disjunct runs the job on more changes than
+        its filter selects, never fewer, so it is no gate and the reference below is still the
+        one this check reads. A widening disjunct reading the SAME step as the reference is
+        refused all the same: the step would hand the job two filters' verdicts, and which
+        decides it is then a reading of that step's own file this check does not make.
         The term is "".
       * NARROWED, the reference being the LAST conjunct of its disjunct:
         `${{ <term> && steps.filter.outputs.x || 'false' }}`, the shape of the
@@ -1290,7 +1296,15 @@ def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, s
     disjuncts = [unwrap(part) for part in split_top(unwrap(expression), "||")]
     holders = [index for index, part in enumerate(disjuncts) if filter_reference(part)]
     if len(holders) != 1:
-        return None
+        # A widening disjunct may read another paths-filter step: it hands the job 'true' or
+        # falls through, so the reference below still decides. One of its own step is refused.
+        wide = [index for index in holders if widening(disjuncts[index])]
+        holders = [index for index in holders if index not in wide]
+        if len(holders) != 1:
+            return None
+        steps_of_holder = {m.group(1) for m in STEP_OUTPUT.finditer(disjuncts[holders[0]])}
+        if any({m.group(1) for m in STEP_OUTPUT.finditer(disjuncts[index])} & steps_of_holder for index in wide):
+            return None
     index = holders[0]
     if not all(widening(part) for part in disjuncts[:index]):
         return None
