@@ -24,7 +24,7 @@ work=$(mktemp -d)
 # The module cache is read-only as go leaves it, and GOFLAGS=-modcacherw below makes it writable.
 trap 'chmod -R u+w "$work" 2> /dev/null; rm -rf "$work"' EXIT
 
-export GOPROXY="file://$work/proxy" GOTOOLCHAIN=local GOFLAGS=-modcacherw GOWORK= GOENV=off GONOSUMDB= GOPRIVATE=
+export GOPROXY="file://$work/proxy" GOTOOLCHAIN=local GOFLAGS=-modcacherw GOWORK='' GOENV=off GONOSUMDB='' GOPRIVATE=''
 
 # The proxy: example.com/dep v1.0.0, one package, laid out as a module proxy serves it.
 mkdir -p "$work/proxy/example.com/dep/@v"
