@@ -175,6 +175,9 @@ func (e *Engine) fixFailure(ctx context.Context, tx pgx.Tx, pass *fixPass, state
 	case pass.open != nil:
 		return e.joinFix(ctx, tx, pass, state, row, failure)
 	case record.StandsIn(issue, phase.Retro, phase.Merging) && !atTaskEnd(issue):
+		if first, ok := firstImplementation(w); ok && w.Stored && pass.fixesCI && row == nil && record.StandsIn(issue, phase.Merging) {
+			return e.openFix(ctx, tx, pass, state.Check, first, failure, nil)
+		}
 		if row != nil {
 			return nil
 		}
