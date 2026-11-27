@@ -57,3 +57,8 @@ export const issueStatusSelectClassName =
  *  the row wraps at a phone width, so the space draws the word at this size too. */
 export const issueStateButtonClassName =
   "min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2";
+
+/** The whose-turn line's pill (`whoseTurnWords`), which the space repeats with the same words, so
+ *  the Attention group's line on a phone stands in it too. */
+export const issueWhoseTurnClassName =
+  "inline-flex shrink-0 items-center rounded-full border px-3 py-1 text-xs font-semibold";

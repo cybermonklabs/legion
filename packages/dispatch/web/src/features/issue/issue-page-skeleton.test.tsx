@@ -45,9 +45,41 @@ test("the header's space draws the key and the title as held words, in no one's 
   const held = [...box.querySelectorAll("[data-words]")].map((node) =>
     node.getAttribute("data-words")
   );
-  expect(held).toEqual(["CORE-1", "Local testing workflow for Dispatch"]);
+  // The key and the title, then Close's two words on the last line (the row below).
+  expect(held).toEqual(["CORE-1", "Local testing workflow for Dispatch", "Close", "Close issue"]);
   expect(screen.queryByText("Local testing workflow for Dispatch")).toBeNull();
   expect(box.querySelector("h1 [data-words]")?.getAttribute("aria-hidden")).toBe("true");
+});
+
+// The header draws Close at the right end of its last line, with the labels and Details
+// (`HeaderDetails`, dispatch://INFRA-5200), so the space does too: a Close held in the state row
+// wrapped onto a line of its own at 390 px, the space stood 17 px taller than the header there, and
+// the document's first block moved up by that as the header landed (dispatch://INFRA-341, R11).
+test("the header's space holds Close on its last line, as the header draws it, and none on a closed issue", () => {
+  const open = render(
+    <IssueHeaderSkeleton
+      issueKey="CORE-1"
+      state={<span data-testid="held-state" />}
+      title="A document"
+    />
+  );
+  const box = screen.getByTestId("issue-header-box");
+  const close = [...box.querySelectorAll("[data-words]")].filter(
+    (node) => node.getAttribute("data-words") === "Close"
+  );
+  expect(close).toHaveLength(1);
+  const stateRow = screen.getByTestId("held-state").parentElement;
+  expect(stateRow?.contains(close[0] ?? null)).toBe(false);
+  expect(box.lastElementChild?.lastElementChild?.contains(close[0] ?? null)).toBe(true);
+  open.unmount();
+
+  render(<IssueHeaderSkeleton isClosed issueKey="CORE-1" title="A document" />);
+  const closed = screen.getByTestId("issue-header-box");
+  expect(
+    [...closed.querySelectorAll("[data-words]")].some(
+      (node) => node.getAttribute("data-words") === "Close"
+    )
+  ).toBe(false);
 });
 
 // With nothing to trail, the strip draws no toolbar and the space keeps no row for one.

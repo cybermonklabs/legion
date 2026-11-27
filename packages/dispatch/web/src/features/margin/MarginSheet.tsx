@@ -32,6 +32,7 @@ import {
 } from "./CommentsTab";
 import { marginReplySendKey, useDetailsDrawsConversation, useMargin } from "./margin-context";
 import { PinnedTab } from "./PinnedTab";
+import { publishReviewSheetSlots } from "./review-sheet-slots";
 import { ThreadCard } from "./ThreadCard";
 import type { CommentActionFailure } from "./useCommentActionQueue";
 import type {
@@ -248,7 +249,8 @@ export function MarginSheet({
   // has named a card in and the reader has not opened, or a phone margin thread.
   //
   // A shut compact sheet is what a reader opening a document meets. Its tabs are
-  // `display: none` there - the sheet is 64 px of `Review (N)` until it is dragged up - and
+  // `display: none` there - the sheet is 64 px of `Review (N)`, 44 on a phone, until it is
+  // dragged up - and
   // the cards behind them cost what a card costs: a read of every ask's thread
   // (`GET /asks/{id}`, one each), and every ask and comment body drawn through the headless
   // engine, on the thread the document beside them is waiting for. On a phone opening a
@@ -321,6 +323,53 @@ export function MarginSheet({
       root.style.removeProperty("--margin-sheet-height");
     };
   }, [dialog.containerRef, modalSheet]);
+  // A phone's sheet on an issue's page holds the document's own chrome (`review-sheet-slots.ts`):
+  // the toolbar's controls and the open-decisions bar in its body, and the version the page shows
+  // and the count of open decisions in its collapsed bar. Only there: the issue's header and tab
+  // strip stand above the document there, and the first block stood under the sheet. A project
+  // document's page has neither above its document, and keeps its toolbar and bar where they are.
+  const phoneSheet = compactSheet && isPhoneViewport && owner?.kind === "issue";
+  const versionSlot = useRef<HTMLSpanElement>(null);
+  const countSlot = useRef<HTMLSpanElement>(null);
+  const controlsSlot = useRef<HTMLDivElement>(null);
+  const decisionsSlot = useRef<HTMLDivElement>(null);
+  // A control in the sheet that takes the reader into the document (`leave`): its move waits for
+  // the sheet to shut. The dialog gives the focus back to the toggle in its passive cleanup
+  // (`useDialog`), which runs before this effect of the same commit, so the move's own scroll
+  // and focus are the last the reader is given rather than the toggle's.
+  const sheetRef = useRef(sheet);
+  sheetRef.current = sheet;
+  const pendingMove = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => {
+    if (sheet.expanded) return;
+    const move = pendingMove.current;
+    pendingMove.current = undefined;
+    move?.();
+  }, [sheet.expanded]);
+  useLayoutEffect(() => {
+    const version = versionSlot.current;
+    const count = countSlot.current;
+    const controls = controlsSlot.current;
+    const decisions = decisionsSlot.current;
+    if (
+      !phoneSheet ||
+      version === null ||
+      count === null ||
+      controls === null ||
+      decisions === null
+    ) {
+      return;
+    }
+    const leave = (move: () => void) => {
+      if (!sheetRef.current.expanded) {
+        move();
+        return;
+      }
+      pendingMove.current = move;
+      sheetRef.current.toggle(false);
+    };
+    return publishReviewSheetSlots({ controls, count, decisions, leave, version });
+  }, [phoneSheet]);
 
   return (
     <>
@@ -343,7 +392,10 @@ export function MarginSheet({
                   ? "hidden"
                   : sheet.expanded
                     ? "max-h-[85dvh] overflow-y-auto p-4"
-                    : "h-16 overflow-hidden"
+                    : // 64 px, and 44 px on a phone: a touch target's floor, which leaves the
+                      // document's first block whole above the sheet at 390 by 664 px
+                      // (`review-sheet-slots.ts`).
+                      "h-16 overflow-hidden max-md:h-11"
               } xl:sticky xl:top-0 xl:block xl:h-dvh xl:max-h-dvh xl:w-full xl:overflow-y-auto xl:border-t-0 xl:border-l xl:p-4 xl:shadow-none`
         }
         data-expanded={sheet.expanded ? "true" : "false"}
@@ -357,14 +409,20 @@ export function MarginSheet({
       >
         {compactSheet ? (
           <>
+            {/* On a phone the collapsed bar is the toggle's 44 px alone, so the handle stands
+                over the top of the toggle rather than above it. */}
             <div
               aria-hidden="true"
-              className={`mx-auto mb-1 h-1 w-10 rounded-full ${dragHandleBg}`}
+              className={`mx-auto mb-1 h-1 w-10 rounded-full ${dragHandleBg} ${
+                sheet.expanded
+                  ? ""
+                  : "max-md:pointer-events-none max-md:absolute max-md:inset-x-0 max-md:top-1 max-md:mb-0"
+              }`}
             />
             <button
               aria-expanded={sheet.expanded}
               aria-label={reviewToggleLabel}
-              className={`flex h-16 w-full items-center justify-between px-4 text-left text-sm font-semibold ${textPrimaryOnSurface}`}
+              className={`flex h-16 w-full items-center justify-between gap-3 px-4 text-left text-sm font-semibold max-md:h-11 ${textPrimaryOnSurface}`}
               onClick={() => {
                 if (sheetDragMoved.current) {
                   sheetDragMoved.current = false;
@@ -386,8 +444,25 @@ export function MarginSheet({
               }}
               type="button"
             >
-              <span>Review ({openAskCount})</span>
+              <span className="shrink-0">Review ({openAskCount})</span>
+              {/* The version the page shows and the count of open decisions, which the document
+                  draws here on a phone (`review-sheet-slots.ts`): words of the bar, which a cut
+                  version name ends in an ellipsis of. */}
+              {phoneSheet ? (
+                <span className="flex min-w-0 items-center gap-2 text-xs font-medium">
+                  <span className="min-w-0 truncate" ref={versionSlot} />
+                  <span className="shrink-0" ref={countSlot} />
+                </span>
+              ) : null}
             </button>
+            {/* The document's toolbar controls and its open-decisions bar, on a phone, in the
+                order the page draws them beside the document at every other width. */}
+            {phoneSheet ? (
+              <div className="space-y-3 px-4 pb-3" hidden={!sheet.expanded}>
+                <div ref={controlsSlot} />
+                <div ref={decisionsSlot} />
+              </div>
+            ) : null}
           </>
         ) : null}
         {/* The tabs and what they show. Mounted under a phone margin thread and under the

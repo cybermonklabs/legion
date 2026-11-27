@@ -17,6 +17,7 @@ import type { ConnectionState } from "../doc/connection";
 import { theFirstBatchIsAwaited } from "../doc/first-batch";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import type { PendingState } from "../doc/pending-sync";
+import { publishReviewSheetSlots } from "../margin/review-sheet-slots";
 import { ArtifactHeader } from "./ArtifactHeader";
 
 afterEach(() => {
@@ -158,4 +159,45 @@ test("the landing highlight's two seconds run from the chrome, not from the box 
       view.unmount();
     }
   });
+});
+
+// On a phone the Review sheet holds the toolbar's controls and names the version the page shows
+// in its collapsed bar (`review-sheet-slots.ts`), so the document's first block stands whole
+// above the sheet at 390 by 664 px (dispatch://INFRA-341/comment/f326cd35-b653-4840-9b18-339af013e758).
+// The connection dot stays on the title line: it says whether the reader's edits reach anyone,
+// which is no control to open a sheet for.
+test("with a phone's Review sheet on the page, the toolbar's controls stand in it and the dot stays in the header", () => {
+  const boxes = {
+    controls: document.createElement("div"),
+    count: document.createElement("span"),
+    decisions: document.createElement("div"),
+    version: document.createElement("span"),
+  };
+  for (const box of Object.values(boxes)) document.body.append(box);
+  const withdraw = publishReviewSheetSlots(boxes);
+  const view = renderHeader(artifact, toolbarWith("connected", undefined));
+
+  try {
+    const header = screen.getByTestId("artifact-header");
+    const picker = screen.getByRole("combobox", { name: "Version" });
+    const name = screen.getByRole("button", { name: "Name version" });
+    expect(boxes.controls.contains(picker)).toBe(true);
+    expect(boxes.controls.contains(name)).toBe(true);
+    expect(header.contains(picker)).toBe(false);
+    expect(boxes.version.textContent).toBe("Current");
+    const dots = screen.getAllByRole("status");
+    expect(dots).toHaveLength(1);
+    expect(header.contains(dots[0] ?? null)).toBe(true);
+
+    // The sheet gone - 768 px and wider, or a page with no margin - the controls are the
+    // header's again.
+    act(() => withdraw());
+    expect(header.contains(screen.getByRole("combobox", { name: "Version" }))).toBe(true);
+    expect(boxes.version.textContent).toBe("");
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+  } finally {
+    withdraw();
+    view.unmount();
+    for (const box of Object.values(boxes)) box.remove();
+  }
 });

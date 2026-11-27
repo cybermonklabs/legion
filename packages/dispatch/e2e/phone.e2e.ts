@@ -21,6 +21,7 @@ import {
   documentEditor,
   needsYouCards,
   selectEditorText,
+  setSheet,
 } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
 import { openIssueDetails } from "./issue-details";
@@ -946,11 +947,17 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
     // In a row of Details the address is capped at the cell as well as at 32ch, so it ends in an
     // ellipsis there rather than running past its row (dispatch://INFRA-5200).
     await expectEllipsis(page.getByRole("link", { name: longUrl }));
+    // On a phone the open-decisions bar stands in the Review sheet: under the issue's header
+    // and its wrapping tab strip it stood between them and the document, and the document's
+    // first block was under the sheet (`review-sheet-slots.ts`, dispatch://INFRA-341/comment/f326cd35-b653-4840-9b18-339af013e758).
+    // So the row opens the sheet, as a reader does, reads the link there, and shuts it again.
+    await setSheet(page, testInfo.project.name, true);
     await expectEllipsis(
       page
         .getByRole("navigation", { name: "Open decisions" })
         .getByRole("link", { name: longQuestion })
     );
+    await setSheet(page, testInfo.project.name, false);
     // A button that is inline-flex by its own classes is the same case as a link below 1280 px.
     await expectEllipsis(page.locator(`button[title="${longRoute}"]`));
 

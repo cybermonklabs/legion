@@ -82,8 +82,14 @@ import {
   issueStatusSelectClassName,
   issueTitleBoxClassName,
   issueTitleTextClassName,
+  issueWhoseTurnClassName,
 } from "./issue-header-classes";
-import { closeIssueWords, releaseClaimWords, selectableStatuses } from "./issue-header-words";
+import {
+  closeIssueWords,
+  releaseClaimWords,
+  selectableStatuses,
+  whoseTurnWords,
+} from "./issue-header-words";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
 import { IssueStatusNotes } from "./parent-status/IssueStatusNotes";
@@ -313,14 +319,11 @@ export function IssueHeader({
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);
-  const waitingForHuman = waitingOnHuman(openAsks);
-  const waitingOnAgents = openAsks.length - waitingForHuman.length;
-  const whoseTurn =
-    openAsks.length === 0 || !knowsWhoseTurn
-      ? null
-      : waitingForHuman.length > 0
-        ? `Waiting on you (${waitingForHuman.length})`
-        : `Waiting on agents (${waitingOnAgents})`;
+  const whoseTurn = whoseTurnWords(
+    openAsks.length,
+    waitingOnHuman(openAsks).length,
+    knowsWhoseTurn
+  );
   const approvalRequestOpen = openAsks.some((ask) => ask.kind === "approval");
   // The one shared read of the projects, under the key the shell's sidebar and the search
   // palette already hold, so the daemon's `project.updated` publish refreshes these steps with
@@ -727,7 +730,7 @@ export function IssueHeader({
           <div className={`${headerGroup} empty:hidden`} data-testid="issue-attention">
             {whoseTurn === null ? null : (
               <span
-                className={`inline-flex shrink-0 items-center rounded-full border px-3 py-1 text-xs font-semibold ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
+                className={`${issueWhoseTurnClassName} ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
                 data-testid="issue-whose-turn"
               >
                 {whoseTurn}

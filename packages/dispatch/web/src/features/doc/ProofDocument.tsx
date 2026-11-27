@@ -51,6 +51,7 @@ import {
   useArtifactUpload,
 } from "../artifacts/ArtifactUpload";
 import { useMargin } from "../margin/margin-context";
+import { useReviewSheetSlots } from "../margin/review-sheet-slots";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
 import { TextAskCard } from "../refs/markdown-cards";
@@ -1601,6 +1602,94 @@ export function ProofDocument({
     }
   }, [highlightTerm, page]);
 
+  // On a phone the Review sheet holds the open-decisions bar, and its collapsed bar the count of
+  // them, so a reader is told decisions wait without opening it (`review-sheet-slots.ts`); the
+  // bar stands here everywhere else.
+  const reviewSheet = useReviewSheetSlots();
+  const openDecisionsCount =
+    openBlockAsks.length === 1 ? "1 open decision" : `${openBlockAsks.length} open decisions`;
+  const decisionsBar =
+    page && version === undefined && openDecision !== undefined ? (
+      <nav
+        aria-label="Open decisions"
+        className={`flex min-h-11 items-center gap-2 ${tooltips ? "md:h-7 md:min-h-0" : "md:min-h-7"}`}
+      >
+        <span
+          className={`inline-flex h-6 shrink-0 items-center rounded-full px-2 text-xs font-semibold ${countChip}`}
+        >
+          {openDecisionsCount}
+        </span>
+        {/* A link's words and its `title` hold no markup, so the question is read as its plain
+              words: the reading list's `document-open-decision` (`DISPATCH_READING_SURFACES`).
+              The question is an ask block of this document, so a `#id` in it names a question
+              of this document. */}
+        <PlainText
+          markdown={openDecision.question}
+          source={textSource}
+          surface="document-open-decision"
+          tree={openDecision.question_tree}
+        >
+          {(question) => (
+            <a
+              className={`block min-w-0 max-w-[90ch] ${tooltips ? "truncate" : "[overflow-wrap:anywhere]"} text-sm font-medium underline ${tooltips ? `${linkText} ${linkHoverText}` : pageInkText}`}
+              href={blockFragment(openDecision.block_id ?? "")}
+              onClick={(event) => {
+                event.preventDefault();
+                const blockID = openDecision.block_id;
+                if (blockID === undefined || blockID === null) {
+                  return;
+                }
+                const goToTheDecision = () => {
+                  window.location.hash = blockFragment(blockID);
+                  focusInEditor(() => editorRef.current?.focusBlock(blockID));
+                };
+                if (reviewSheet === null) {
+                  goToTheDecision();
+                  return;
+                }
+                // In a phone's Review sheet (`review-sheet-slots.ts`) the link shuts the sheet
+                // first, and the reader lands on the decision with the focus on its first
+                // control: the link they pressed went with the sheet, and a focus left in the
+                // shut sheet, or given back to its toggle, is a reader somewhere they did not go.
+                reviewSheet.leave(() => {
+                  goToTheDecision();
+                  editorRef.current?.view.dom
+                    .querySelector(`[data-block-id="${CSS.escape(blockID)}"]`)
+                    ?.querySelector<HTMLElement>(
+                      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+                    )
+                    ?.focus({ preventScroll: true });
+                });
+              }}
+              // Until the engine has answered, the question as written, so the link is never
+              // left with no words: the reading list's `document-open-decision`.
+              title={tooltips ? (question ?? openDecision.question) : undefined}
+            >
+              {tooltips ? (
+                // The same load state: the reading list's `document-open-decision`.
+                <TruncatedText>{question ?? openDecision.question}</TruncatedText>
+              ) : (
+                // The same, uncut: the reading list's `document-open-decision`.
+                (question ?? openDecision.question)
+              )}
+            </a>
+          )}
+        </PlainText>
+        {openBlockAsks.length > 1 ? (
+          <button
+            aria-label="Next open decision"
+            className={`ml-auto flex min-h-11 min-w-11 items-center justify-center rounded-full md:min-h-7 md:min-w-7 ${tooltips ? `${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonText}` : controlOnPage}`}
+            onClick={() => setOpenDecisionIndex((current) => (current + 1) % openBlockAsks.length)}
+            type="button"
+          >
+            <svg aria-hidden="true" className="h-3 w-3" fill="none" viewBox="0 0 16 16">
+              <path d="m6 3 5 5-5 5" stroke="currentColor" strokeWidth="1.5" />
+            </svg>
+          </button>
+        ) : null}
+      </nav>
+    ) : null;
+
   return (
     <section aria-label="Document editor" className="space-y-4">
       <NameVersionDialog
@@ -1686,71 +1775,19 @@ export function ProofDocument({
       {/* The Open-decisions navigator walks the page's own document; a pane leaves it to the
           list beside it. Inside `NoTooltips` no title gives back what an ellipsis cut, and the
           question is a value, so it breaks anywhere and the row grows to hold it. */}
-      {page && version === undefined && openDecision !== undefined ? (
-        <nav
-          aria-label="Open decisions"
-          className={`flex min-h-11 items-center gap-2 ${tooltips ? "md:h-7 md:min-h-0" : "md:min-h-7"}`}
-        >
-          <span
-            className={`inline-flex h-6 shrink-0 items-center rounded-full px-2 text-xs font-semibold ${countChip}`}
-          >
-            {openBlockAsks.length === 1
-              ? "1 open decision"
-              : `${openBlockAsks.length} open decisions`}
-          </span>
-          {/* A link's words and its `title` hold no markup, so the question is read as its plain
-              words: the reading list's `document-open-decision` (`DISPATCH_READING_SURFACES`).
-              The question is an ask block of this document, so a `#id` in it names a question
-              of this document. */}
-          <PlainText
-            markdown={openDecision.question}
-            source={textSource}
-            surface="document-open-decision"
-            tree={openDecision.question_tree}
-          >
-            {(question) => (
-              <a
-                className={`block min-w-0 max-w-[90ch] ${tooltips ? "truncate" : "[overflow-wrap:anywhere]"} text-sm font-medium underline ${tooltips ? `${linkText} ${linkHoverText}` : pageInkText}`}
-                href={blockFragment(openDecision.block_id ?? "")}
-                onClick={(event) => {
-                  event.preventDefault();
-                  const blockID = openDecision.block_id;
-                  if (blockID === undefined || blockID === null) {
-                    return;
-                  }
-                  window.location.hash = blockFragment(blockID);
-                  focusInEditor(() => editorRef.current?.focusBlock(blockID));
-                }}
-                // Until the engine has answered, the question as written, so the link is never
-                // left with no words: the reading list's `document-open-decision`.
-                title={tooltips ? (question ?? openDecision.question) : undefined}
-              >
-                {tooltips ? (
-                  // The same load state: the reading list's `document-open-decision`.
-                  <TruncatedText>{question ?? openDecision.question}</TruncatedText>
-                ) : (
-                  // The same, uncut: the reading list's `document-open-decision`.
-                  (question ?? openDecision.question)
-                )}
-              </a>
-            )}
-          </PlainText>
-          {openBlockAsks.length > 1 ? (
-            <button
-              aria-label="Next open decision"
-              className={`ml-auto flex min-h-11 min-w-11 items-center justify-center rounded-full md:min-h-7 md:min-w-7 ${tooltips ? `${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonText}` : controlOnPage}`}
-              onClick={() =>
-                setOpenDecisionIndex((current) => (current + 1) % openBlockAsks.length)
-              }
-              type="button"
+      {decisionsBar === null || reviewSheet === null
+        ? decisionsBar
+        : createPortal(decisionsBar, reviewSheet.decisions)}
+      {decisionsBar === null || reviewSheet === null
+        ? null
+        : createPortal(
+            <span
+              className={`inline-flex h-6 items-center rounded-full px-2 text-xs font-semibold ${countChip}`}
             >
-              <svg aria-hidden="true" className="h-3 w-3" fill="none" viewBox="0 0 16 16">
-                <path d="m6 3 5 5-5 5" stroke="currentColor" strokeWidth="1.5" />
-              </svg>
-            </button>
-          ) : null}
-        </nav>
-      ) : null}
+              {openDecisionsCount}
+            </span>,
+            reviewSheet.count
+          )}
       {specMarks.changed === undefined ? null : (
         <p className={`text-sm ${tooltips ? textSecondaryOnCanvas : pageMutedText}`} role="status">
           {readLineText(specMarks.changed)}

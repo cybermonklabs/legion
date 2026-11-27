@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
 
 import type { Artifact, Version } from "../../api/types";
@@ -23,6 +24,7 @@ import { ChromeAfterTheFirstBatch } from "../doc/AfterTheFirstBatch";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
 import type { DocumentToolbar } from "../doc/ProofDocument";
+import { useReviewSheetSlots } from "../margin/review-sheet-slots";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import {
@@ -184,9 +186,141 @@ export function ArtifactHeader({
         Name version
       </button>
     );
+  // On a phone the Review sheet holds the toolbar's controls, and its collapsed bar names the
+  // version shown (`review-sheet-slots.ts`); the connection dot stays on the title line, since it
+  // says whether the reader's edits are reaching anyone. Everywhere else they stand here.
+  const slots = useReviewSheetSlots();
+  const toolbarRow =
+    showVersionPicker || toolbar !== undefined ? (
+      <div className="flex min-w-0 flex-wrap items-center gap-3">
+        {showVersionPicker ? (
+          <label
+            className={`flex min-h-11 min-w-0 items-center gap-2 text-sm font-medium ${textSecondaryOnSurface}`}
+          >
+            Version
+            <select
+              aria-label="Version"
+              className={`min-h-11 min-w-0 max-w-56 truncate rounded border px-2 py-2 font-normal ${inputClasses(true)}`}
+              onChange={(event) => {
+                // Both path builders read `version: undefined` as the unversioned route.
+                const picked = event.target.value === "" ? undefined : Number(event.target.value);
+                navigate(
+                  agentSession !== undefined
+                    ? buildReferencePath(documentRoute(artifact, picked))
+                    : artifact.issue_key === null
+                      ? buildProjectPath({
+                          kind: "document",
+                          project: artifact.project,
+                          slug: artifact.slug,
+                          version: picked,
+                        })
+                      : buildIssuePath({
+                          key: artifact.issue_key,
+                          kind: "artifact",
+                          slug: artifact.slug,
+                          version: picked,
+                        })
+                );
+              }}
+              value={version ?? ""}
+            >
+              <option value="">Current</option>
+              {versions.map((item) => (
+                <option key={item.number} value={item.number}>
+                  {versionLabel(item)}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+        {toolbar === undefined ? null : (
+          // The document's own actions stand in this row and in no box of their own, so
+          // each of them takes the room there is beside the control before it and only
+          // the one that does not fit starts a line. A box of their own wraps whole: at
+          // 390 px it fitted neither beside the version picker nor, once on a line of
+          // its own, inside the card, so the picker, the two way-back controls and Name
+          // version took three lines of 44 px touch target (`web/src/styles.css`), the
+          // header stood 224 px tall, and the first block of the server's own drawn
+          // first screen stood at 646..672 px of a 664 px viewport - the reader's first
+          // line of their document cut by the fold, which is the one thing that draw
+          // exists to prevent (dispatch://INFRA-341 R11; the row `a reader who opens a
+          // document has its first block inside the viewport, unscrolled` in
+          // `e2e/large-documents-fold.e2e.ts`). Packed into this row they take
+          // two lines, the header is 168 px and the block stands at 590..616, whole and
+          // above the fold. At every width with room for the row on one line - 528 px
+          // of header card at 1280, measured - this lays out exactly as the box did,
+          // the items and the gaps between them being the same.
+          //
+          // The dot keeps the one box that is left, which does not wrap: the dot says
+          // whether this page is live on the document these actions write to, so it
+          // shares that box with the action beside it - the diff button on a version
+          // view, Name version where there is none - and travels with it instead of
+          // wrapping onto a line of its own.
+          <>
+            {!correctionIsOffered(artifact) ? null : (
+              // Keyed by the document, as Remove is below: the form holds the title typed
+              // into it and what became of its last Save, both that document's alone. The
+              // key names the control too: Remove beside it is keyed by the same document,
+              // and siblings are told apart by their keys.
+              <CorrectTitle
+                artifact={artifact}
+                key={`correction:${artifact.id}`}
+                refusal={isClosed ? CLOSED_ISSUE_RENAME_REFUSAL : null}
+              />
+            )}
+            {issueKey === null || !removalIsOffered(artifact) ? null : (
+              // Keyed by the document: the issue's page draws this header for one document
+              // after another as its route moves, and the control holds the removal it
+              // made - `Removing…`, a refusal and its Retry - so each document is drawn
+              // with a Remove of its own, never under another document's refusal with that
+              // document's removal as its Retry.
+              <RemoveDocument
+                artifact={artifact}
+                key={artifact.id}
+                onRemoved={(removed) => {
+                  // The route stays on the document the issue no longer holds, so the
+                  // artifacts panel's own branch says it is gone rather than failing to
+                  // load. A version route is normalised away first: the version the
+                  // person was reading went with the document. That is the way back only
+                  // while the route is still the removed document's (`drawn`): a removal
+                  // that lands after the reader moved on leaves them on the page they
+                  // moved to.
+                  if (drawn.current === removed.id) {
+                    navigate(
+                      buildIssuePath({ key: issueKey, kind: "artifact", slug: removed.slug })
+                    );
+                  }
+                }}
+                refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
+              />
+            )}
+            {version === undefined ? null : nameVersion}
+            <div className="flex items-center gap-3">
+              {version === undefined ? (
+                nameVersion
+              ) : (
+                <button
+                  className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+                  onClick={() => onShowDiffChange?.(!showDiff)}
+                  type="button"
+                >
+                  {showDiff ? "Show version" : "Diff vs current"}
+                </button>
+              )}
+              {slots === null ? (
+                <ConnectionDot connection={toolbar.connection} pending={toolbar.pending} />
+              ) : null}
+            </div>
+          </>
+        )}
+      </div>
+    ) : null;
+  const shownVersion = versions.find((item) => item.number === version);
 
   return (
-    <section className="space-y-4">
+    // The gap under the card is 8 px where a phone's sheet holds the toolbar: every pixel above
+    // the document's first block counts there (`review-sheet-slots.ts`).
+    <section className={slots === null ? "space-y-4" : "space-y-2"}>
       {/* The artifact's own chrome - its name, the version picker, the document's actions -
           stands over the document, and none of it is what a reader who opened that document is
           waiting for, so on a document address it is drawn after the editor's first batch
@@ -215,7 +349,11 @@ export function ArtifactHeader({
             <h2 className={`min-w-0 break-words text-lg font-semibold ${textPrimaryOnSurface}`}>
               {artifact.name}
             </h2>
-            <div className="flex min-h-11 flex-wrap items-center gap-3">
+            {/* The toolbar's 44 px row is the header's on a wide screen; on a phone the sheet
+                holds it and the header is its title line, so the space keeps no 44 px for it. */}
+            <div
+              className={`flex flex-wrap items-center gap-3 ${slots === null ? "min-h-11" : ""}`}
+            >
               <ApprovalChip artifact={artifact} asText variant="header" />
               {toolbar === undefined ? null : (
                 <ConnectionDot connection={toolbar.connection} pending={toolbar.pending} />
@@ -258,6 +396,11 @@ export function ArtifactHeader({
                 className="-my-2 md:-my-0.5"
                 route={documentRoute(artifact, version)}
               />
+              {slots === null || toolbar === undefined ? null : (
+                <span className="flex h-7 shrink-0 items-center pl-1">
+                  <ConnectionDot connection={toolbar.connection} pending={toolbar.pending} />
+                </span>
+              )}
             </div>
             {artifact.approval === undefined ? null : (
               <div className="mt-1">
@@ -268,129 +411,19 @@ export function ArtifactHeader({
               </div>
             )}
           </div>
-          {showVersionPicker || toolbar !== undefined ? (
-            <div className="flex min-w-0 flex-wrap items-center gap-3">
-              {showVersionPicker ? (
-                <label
-                  className={`flex min-h-11 min-w-0 items-center gap-2 text-sm font-medium ${textSecondaryOnSurface}`}
-                >
-                  Version
-                  <select
-                    aria-label="Version"
-                    className={`min-h-11 min-w-0 max-w-56 truncate rounded border px-2 py-2 font-normal ${inputClasses(true)}`}
-                    onChange={(event) => {
-                      // Both path builders read `version: undefined` as the unversioned route.
-                      const picked =
-                        event.target.value === "" ? undefined : Number(event.target.value);
-                      navigate(
-                        agentSession !== undefined
-                          ? buildReferencePath(documentRoute(artifact, picked))
-                          : artifact.issue_key === null
-                            ? buildProjectPath({
-                                kind: "document",
-                                project: artifact.project,
-                                slug: artifact.slug,
-                                version: picked,
-                              })
-                            : buildIssuePath({
-                                key: artifact.issue_key,
-                                kind: "artifact",
-                                slug: artifact.slug,
-                                version: picked,
-                              })
-                      );
-                    }}
-                    value={version ?? ""}
-                  >
-                    <option value="">Current</option>
-                    {versions.map((item) => (
-                      <option key={item.number} value={item.number}>
-                        {versionLabel(item)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
-              {toolbar === undefined ? null : (
-                // The document's own actions stand in this row and in no box of their own, so
-                // each of them takes the room there is beside the control before it and only
-                // the one that does not fit starts a line. A box of their own wraps whole: at
-                // 390 px it fitted neither beside the version picker nor, once on a line of
-                // its own, inside the card, so the picker, the two way-back controls and Name
-                // version took three lines of 44 px touch target (`web/src/styles.css`), the
-                // header stood 224 px tall, and the first block of the server's own drawn
-                // first screen stood at 646..672 px of a 664 px viewport - the reader's first
-                // line of their document cut by the fold, which is the one thing that draw
-                // exists to prevent (dispatch://INFRA-341 R11; the row `a reader who opens a
-                // document has its first block inside the viewport, unscrolled` in
-                // `e2e/large-documents-fold.e2e.ts`). Packed into this row they take
-                // two lines, the header is 168 px and the block stands at 590..616, whole and
-                // above the fold. At every width with room for the row on one line - 528 px
-                // of header card at 1280, measured - this lays out exactly as the box did,
-                // the items and the gaps between them being the same.
-                //
-                // The dot keeps the one box that is left, which does not wrap: the dot says
-                // whether this page is live on the document these actions write to, so it
-                // shares that box with the action beside it - the diff button on a version
-                // view, Name version where there is none - and travels with it instead of
-                // wrapping onto a line of its own.
-                <>
-                  {!correctionIsOffered(artifact) ? null : (
-                    // Keyed by the document, as Remove is below: the form holds the title typed
-                    // into it and what became of its last Save, both that document's alone. The
-                    // key names the control too: Remove beside it is keyed by the same document,
-                    // and siblings are told apart by their keys.
-                    <CorrectTitle
-                      artifact={artifact}
-                      key={`correction:${artifact.id}`}
-                      refusal={isClosed ? CLOSED_ISSUE_RENAME_REFUSAL : null}
-                    />
-                  )}
-                  {issueKey === null || !removalIsOffered(artifact) ? null : (
-                    // Keyed by the document: the issue's page draws this header for one document
-                    // after another as its route moves, and the control holds the removal it
-                    // made - `Removing…`, a refusal and its Retry - so each document is drawn
-                    // with a Remove of its own, never under another document's refusal with that
-                    // document's removal as its Retry.
-                    <RemoveDocument
-                      artifact={artifact}
-                      key={artifact.id}
-                      onRemoved={(removed) => {
-                        // The route stays on the document the issue no longer holds, so the
-                        // artifacts panel's own branch says it is gone rather than failing to
-                        // load. A version route is normalised away first: the version the
-                        // person was reading went with the document. That is the way back only
-                        // while the route is still the removed document's (`drawn`): a removal
-                        // that lands after the reader moved on leaves them on the page they
-                        // moved to.
-                        if (drawn.current === removed.id) {
-                          navigate(
-                            buildIssuePath({ key: issueKey, kind: "artifact", slug: removed.slug })
-                          );
-                        }
-                      }}
-                      refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
-                    />
-                  )}
-                  {version === undefined ? null : nameVersion}
-                  <div className="flex items-center gap-3">
-                    {version === undefined ? (
-                      nameVersion
-                    ) : (
-                      <button
-                        className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-                        onClick={() => onShowDiffChange?.(!showDiff)}
-                        type="button"
-                      >
-                        {showDiff ? "Show version" : "Diff vs current"}
-                      </button>
-                    )}
-                    <ConnectionDot connection={toolbar.connection} pending={toolbar.pending} />
-                  </div>
-                </>
+          {toolbarRow === null || slots === null
+            ? toolbarRow
+            : createPortal(toolbarRow, slots.controls)}
+          {slots === null || !showVersionPicker
+            ? null
+            : createPortal(
+                version === undefined
+                  ? "Current"
+                  : shownVersion === undefined
+                    ? `Version ${version}`
+                    : versionLabel(shownVersion),
+                slots.version
               )}
-            </div>
-          ) : null}
         </LandingHighlightHeader>
       </ChromeAfterTheFirstBatch>
       {children}

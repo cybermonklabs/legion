@@ -40,6 +40,22 @@ export function assigneeBadgeWords(assignee: string | null): string {
 /** The Release button's word, on an issue an agent has claimed. */
 export const releaseClaimWords = "Release";
 
+/** Whose turn the header's Attention group says it is, from the issue's open asks: "Waiting on
+ *  you" while any of them waits on a person, else "Waiting on agents", each with its count; null
+ *  with none open, or with one whose turn the read does not say, so the line is left out rather
+ *  than drawn wrong. The space the page keeps for the header draws the same line (`IssuePage.tsx`),
+ *  since on a phone it is a line of the header of its own. */
+export function whoseTurnWords(
+  openAsks: number,
+  waitingOnPeople: number,
+  knowsWhoseTurn: boolean
+): string | null {
+  if (openAsks === 0 || !knowsWhoseTurn) return null;
+  return waitingOnPeople > 0
+    ? `Waiting on you (${waitingOnPeople})`
+    : `Waiting on agents (${openAsks - waitingOnPeople})`;
+}
+
 /** Close's word at each width: the short one below `sm` and the full one from `sm` up, each in
  *  the span that shows it only there. The button is as wide as the word it shows. */
 export const closeIssueWords: readonly { className: string; words: string }[] = [

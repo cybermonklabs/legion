@@ -22,9 +22,11 @@ import {
   issueHeaderFrameClassName,
   issueKeyBadgeClassName,
   issueKeyTextClassName,
+  issueStateButtonClassName,
   issueTitleBoxClassName,
   issueTitleTextClassName,
 } from "./issue-header-classes";
+import { closeIssueWords } from "./issue-header-words";
 import { issueTabs } from "./issue-tab-list";
 
 /**
@@ -178,12 +180,22 @@ export function IssueHeaderSkeleton({
         <div className="flex min-h-11 w-full min-w-0 flex-wrap items-center gap-2 md:min-h-8 md:w-auto">
           {state}
         </div>
-        {/* The details line's row. The header's own never wraps - it scrolls sideways instead
-            (`flex-nowrap overflow-x-auto`) - so its height is its controls' and nothing else:
-            44 px, and 28 px from md, where `md:[&_button]:min-h-7` takes over. */}
+        {/* The details line's row: the labels, then Close at its right end, as the header's
+            last line draws them (`HeaderDetails`). Close stood in the state row until the
+            header's groups moved it here (dispatch://INFRA-5200), and there it wrapped onto a
+            line of its own at 390 px that the header does not draw. 44 px, and 28 px from md. */}
         <div className="flex h-11 w-full items-center gap-2 md:h-7">
           <span className={`h-4 w-28 animate-pulse rounded ${skeletonBg}`} />
           <span className={`h-4 w-40 animate-pulse rounded ${skeletonBg}`} />
+          {isClosed ? null : (
+            <span className={`${issueStateButtonClassName} ml-auto inline-flex items-center`}>
+              {closeIssueWords.map(({ className, words }) => (
+                <span className={className} key={words}>
+                  <HeldWords words={words} />
+                </span>
+              ))}
+            </span>
+          )}
         </div>
       </div>
     </header>

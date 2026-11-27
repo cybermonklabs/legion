@@ -26,8 +26,14 @@
 // share.
 import { type BrowserContext, expect, type Page, test } from "@playwright/test";
 
-import { documentEditor } from "./editor";
-import { aDrawWithinMs, seedDocument, shortDocument } from "./large-documents-rows";
+import { documentEditor, setSheet } from "./editor";
+import { largeDocument } from "./large-documents";
+import {
+  aDrawWithinMs,
+  aLongDrawWithinMs,
+  seedDocument,
+  shortDocument,
+} from "./large-documents-rows";
 import { asUser } from "./users";
 
 // The row's two waits, for the document's header and for its editor to hold the document, are
@@ -113,8 +119,17 @@ test("a reader who opens a document has its first block inside the viewport, uns
     // leaves the first block is the place the reader is left in.
     const header = page.getByTestId("artifact-header");
     await expect(header).toBeVisible({ timeout: aDrawWithinMs });
-    await expect(header.getByRole("button", { exact: true, name: "Correct title" })).toBeVisible();
-    await expect(header.getByRole("button", { exact: true, name: "Remove" })).toBeVisible();
+    // On a phone the Review sheet holds the document's toolbar under the issue's header and tab
+    // strip (`review-sheet-slots.ts`, dispatch://INFRA-341/comment/6cf1eeaf-0ea5-4e81-a640-d28bed8fd376),
+    // so the row opens the sheet, reads both controls there, and shuts it before it measures.
+    const project = test.info().project.name;
+    const controls = project === "iphone" ? page.getByTestId("margin-sheet") : header;
+    await setSheet(page, project, true);
+    await expect(
+      controls.getByRole("button", { exact: true, name: "Correct title" })
+    ).toBeVisible();
+    await expect(controls.getByRole("button", { exact: true, name: "Remove" })).toBeVisible();
+    await setSheet(page, project, false);
     await expect(documentEditor(page)).toContainText("The lease ledger", {
       timeout: aDrawWithinMs,
     });
@@ -140,6 +155,50 @@ test("a reader who opens a document has its first block inside the viewport, uns
         "document is so tall that the fold cuts the first block of the server's own drawn " +
         `first screen. ${reading}`
     ).toBeLessThanOrEqual(opened.innerHeight);
+  } finally {
+    await alice.close();
+  }
+});
+
+// On a phone the open-decisions bar stands in the Review sheet (`review-sheet-slots.ts`,
+// dispatch://INFRA-341/comment/f326cd35-b653-4840-9b18-339af013e758), and its link takes the
+// reader to the decision as the bar's link does beside the document at every other width: the
+// tap shuts the sheet, and the reader is left on the decision, its block on the screen above the
+// shut sheet and the focus on the decision's own first control. Before that the link scrolled the
+// block under the open sheet and left the sheet, a modal, over it.
+test("a decision link in a phone's Review sheet shuts the sheet and takes the reader to the decision @phone @phone-only", async ({
+  browser,
+}) => {
+  test.setTimeout(300_000);
+  const { path } = await seedDocument("specs-large.md", largeDocument);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(path);
+    await expect(documentEditor(page)).toBeVisible({ timeout: aLongDrawWithinMs });
+    const sheet = page.getByTestId("margin-sheet");
+    await setSheet(page, test.info().project.name, true);
+    const link = sheet.getByRole("navigation", { name: "Open decisions" }).getByRole("link");
+    const question = ((await link.textContent()) ?? "").trim();
+    expect(question, "the bar's link names no question").not.toBe("");
+    const block = documentEditor(page)
+      .locator("[data-dispatch-ask-block]", { hasText: question })
+      .first();
+
+    await link.click();
+    await expect(sheet).toHaveAttribute("data-expanded", "false");
+    await expect(block).toBeInViewport();
+    const [blockBox, sheetBox] = await Promise.all([block.boundingBox(), sheet.boundingBox()]);
+    expect(
+      blockBox?.y ?? Number.POSITIVE_INFINITY,
+      "the decision's block starts under the shut sheet"
+    ).toBeLessThan(sheetBox?.y ?? Number.NEGATIVE_INFINITY);
+    await expect
+      .poll(() => block.evaluate((node) => node.contains(document.activeElement)), {
+        message: "the focus is not on the decision the reader went to",
+      })
+      .toBe(true);
   } finally {
     await alice.close();
   }

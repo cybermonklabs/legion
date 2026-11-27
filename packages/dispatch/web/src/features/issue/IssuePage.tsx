@@ -19,6 +19,9 @@ import { tabButtonId } from "../../components/Tabs";
 import {
   bgTransparent,
   borderDefault,
+  calloutWarningBg,
+  calloutWarningBorder,
+  calloutWarningText,
   dangerText,
   linkHoverText,
   linkText,
@@ -35,6 +38,7 @@ import { afterTheFirstBatch } from "../doc/first-batch";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { putTheBoxAt, whatScrolls, whereTheReaderIs } from "../doc/readers-place";
 import { outsideAskCard } from "../inbox/ask-card";
+import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { statusLabel, statusText } from "../project/board-model";
 import {
   buildReferencePath,
@@ -53,13 +57,14 @@ import {
   issueStatusPillClassName,
   issueStatusPillDotClassName,
   issueStatusSelectClassName,
+  issueWhoseTurnClassName,
 } from "./issue-header-classes";
 import {
   assigneeBadgeWords,
-  closeIssueWords,
   priorityBadgeWords,
   releaseClaimWords,
   selectableStatuses,
+  whoseTurnWords,
 } from "./issue-header-words";
 import { HeldWords, IssueHeaderSkeleton, IssueTabsSkeleton } from "./issue-page-skeleton";
 import { issuePriority } from "./issue-priority";
@@ -236,6 +241,12 @@ function WhatTheHeaderWouldSay({
 }): ReactNode {
   const isClosed = issue.closed_at !== null;
   const priority = issuePriority(issue.priority);
+  const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
+  const whoseTurn = whoseTurnWords(
+    openAsks.length,
+    waitingOnHuman(openAsks).length,
+    openAsks.every((ask) => ask.waiting_on !== undefined)
+  );
   return (
     <>
       {/* The status pill at the size the header's own pick stands at, from the one place both
@@ -276,13 +287,15 @@ function WhatTheHeaderWouldSay({
           <HeldWords words={releaseClaimWords} />
         </span>
       )}
-      {isClosed ? null : (
-        <span className={`${issueStateButtonClassName} inline-flex items-center`}>
-          {closeIssueWords.map(({ className, words }) => (
-            <span className={className} key={words}>
-              <HeldWords words={words} />
-            </span>
-          ))}
+      {/* The whose-turn line, the Attention group's, which takes a line of its own on a phone:
+          its words are the header's own (`whoseTurnWords`), in its own pill, so the space stands
+          at the header's height there. Close is on the space's last line, as it is on the
+          header's (`issue-page-skeleton.tsx`). */}
+      {whoseTurn === null ? null : (
+        <span
+          className={`${issueWhoseTurnClassName} ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
+        >
+          <HeldWords words={whoseTurn} />
         </span>
       )}
     </>
