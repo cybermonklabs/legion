@@ -9,11 +9,15 @@ import (
 )
 
 // A read of a file that readFile kept gives what the first read gave, and what a caller does to
-// the layout it got changes no later read. The row changes, in place, the list of a statement
-// (About), the list of an interface (Joins) and the test part of a check, which the fixture's files
-// hold, and places a new term into the layout, as print does. A later read is the read from before
-// the changes, byte for byte as JSON. The control is a read handed out as it was kept, sharing its
-// lists, its test parts and its documents with the cache: the later read then holds the changes.
+// the layout it got changes no later read. The row reads the fixture's files three times: the
+// first read stores what it read, the second is answered from the cache, and the third is read
+// after the row changed the first two. In each of the first two it changes, in place, the list of
+// a statement (About), the list of an interface (Joins) and the test part of a check, which the
+// fixture's files hold, and the text of each existing document; in the first it also places a new
+// term, as print does. The third read is the read from before the changes, byte for byte as JSON.
+// The controls: the stored read kept as readFile made it, or the cache's read handed out as it is
+// kept, each sharing its lists, its test parts and its documents with the cache; with either, the
+// third read holds the changes.
 func TestAReadOfAKeptFileIsTheReadBeforeAnyCallerChangedIt(t *testing.T) {
 	t.Parallel()
 	files := readFiles(t, "testdata/compare/approved-text/spec")
@@ -29,27 +33,30 @@ func TestAReadOfAKeptFileIsTheReadBeforeAnyCallerChangedIt(t *testing.T) {
 	if after, err := json.Marshal(first); err != nil || string(after) != string(before) {
 		t.Fatalf("two reads of the same files differ (%v):\n%s\n%s", err, after, before)
 	}
-	changed := map[string]bool{}
-	for _, documents := range first.Files {
-		for _, d := range documents {
-			switch n := d.Node.(type) {
-			case Statement:
-				if len(n.About) > 0 {
-					n.About[0], changed["about"] = "changed-by-a-caller", true
+	for name, l := range map[string]Layout{"the first read": first, "the second read": second} {
+		changed := map[string]bool{}
+		for _, documents := range l.Files {
+			for i := range documents {
+				switch n := documents[i].Node.(type) {
+				case Statement:
+					if len(n.About) > 0 {
+						n.About[0], changed["about"] = "changed-by-a-caller", true
+					}
+				case Component:
+					if len(n.Joins) > 0 {
+						n.Joins[0], changed["joins"] = "changed-by-a-caller", true
+					}
+				case Check:
+					if n.Test != nil {
+						n.Test.Selector, changed["test"] = "example.com/acme/changed TestChangedByACaller", true
+					}
 				}
-			case Component:
-				if len(n.Joins) > 0 {
-					n.Joins[0], changed["joins"] = "changed-by-a-caller", true
-				}
-			case Check:
-				if n.Test != nil {
-					n.Test.Selector, changed["test"] = "example.com/acme/changed TestChangedByACaller", true
-				}
+				documents[i].Text, changed["text"] = "changed by a caller\n", true
 			}
 		}
-	}
-	if len(changed) != 3 {
-		t.Fatalf("the fixture gave the row %v to change; want about, joins and test, or the row proves less than it says", changed)
+		if len(changed) != 4 {
+			t.Fatalf("the fixture gave the row %v to change in %s; want about, joins, test and text, or the row proves less than it says", changed, name)
+		}
 	}
 	term := Term{ID: "a-placed-term", Name: "placed term", Definition: "A placed term is a term that a caller placed."}
 	if _, err := first.Place(term, notes.MaxFileSize); err != nil {
