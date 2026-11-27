@@ -13,6 +13,7 @@ import { messageFor } from "../errors";
 import { isNoAnswersRoute, renderSessionAnswersList } from "../session-answers";
 import type { DispatchToolResult, SessionContext } from "./context";
 import { dispatchAnswered, refusalWithCode } from "./failures";
+import { priorityText } from "./render-issue";
 
 /**
  * `dispatch answers`: the answers this session's asks have been given since it last read them.
@@ -221,9 +222,12 @@ function inboxAskOwner(row: InboxRow): { readonly label: string; readonly ref: s
   return { label: row.id, ref: row.id };
 }
 
+/** One ask of the Inbox: its owner, the priority its issue works at with the issue it takes it
+ *  from where that is another (`priorityText`), or `P-` for none, its kind, the head of its
+ *  question and its `dispatch://` address. */
 function inboxAskLine(row: InboxRow): string {
   const { label, ref } = inboxAskOwner(row);
-  const priority = row.priority === null ? "P-" : `P${row.priority}`;
+  const priority = priorityText(row) ?? "P-";
   return `- ${label} · ${priority} · ${row.kind} · ${textHead(row.question, INBOX_QUESTION_HEAD)} · ${ref}`;
 }
 

@@ -21,6 +21,7 @@ import type { ResolvedArtifact } from "./context";
 import { dispatchAnswered } from "./failures";
 import { linkFor } from "./links";
 import { edgeLine, graphSectionLines } from "./render-graph";
+import { priorityText } from "./render-issue";
 
 /**
  * An ask's read. Each option and the answer is a part of the ask in the reference graph, so each
@@ -175,10 +176,12 @@ export function waitsOnPerson(ask: { readonly waiting_on_person?: string }): str
  *  is the ask card's own, `asked of`, rather than `waiting on`, because a row under `Waiting on
  *  agent (N):` waits on the agent - the next move there is the agent's, and naming the person
  *  must not claim otherwise. A Dispatch older than that rule answers no person, and the row
- *  then says nobody rather than printing an empty name (`waitsOnPerson`). */
+ *  then says nobody rather than printing an empty name (`waitsOnPerson`). The priority is the one
+ *  the ask's issue works at, with the issue it takes it from where that is another
+ *  (`priorityText`); an ask on a project document has none. */
 function openAskLine(ask: OpenAsk, linkBase: string | undefined): string {
-  const priority = ask.priority === null ? "" : `P${ask.priority} · `;
-  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${waitsOnPerson(ask) ?? "nobody"} · ${ask.question} · ${linkFor(ask.ref, linkBase)}`;
+  const priority = priorityText(ask);
+  return `- ${openAskAge(ask.age_seconds)} · ${priority === undefined ? "" : `${priority} · `}${ownerTitle(ask.owner)} · asked of ${waitsOnPerson(ask) ?? "nobody"} · ${ask.question} · ${linkFor(ask.ref, linkBase)}`;
 }
 
 /** `dispatch open-asks` as text, each ask linked against `linkBase`, the base `linkBaseOf`

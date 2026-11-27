@@ -49,7 +49,10 @@ export interface AuthenticatedUser {
  *  older than the field leaves it out for every credential, and refuses a job's token outright.
  *
  *  `scopes` is the OAuth scopes the caller's own credential holds, which decide the routes it may
- *  call and whether it may make an issue's own priority 0: all three (`person`, `approve`, `p0`)
+ *  call and whether it may make work P0 (`DISPATCH_SCOPES`): an issue's own priority 0, a move or
+ *  a clear that makes an issue P0 by the priority it takes from an issue above it, and a new issue
+ *  with no priority under a parent that reads P0, which that parent's architect may file without
+ *  it. All three (`person`, `approve`, `p0`)
  *  for a person at a browser, the set its row names for a personal token, `["person"]` for a
  *  broker-issued token acting for its person, and `[]` for the shared token, a verified service
  *  token and every other broker-issued token. A read-only

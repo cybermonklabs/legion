@@ -109,7 +109,18 @@ export const issueFields = {
   number: z.number().int(),
   title: z.string(),
   status: z.string(),
+  /** The issue's own priority, null where it sets none. */
   priority: IssuePrioritySchema.nullable(),
+  /** The priority the issue works at: its own `priority`, else that of the nearest issue above it
+   *  on its parent chain that has one, in any project and within 32 links, else null. Dispatch
+   *  orders, filters and counts issues by it, and a write that makes it P0 can need the `p0`
+   *  scope (`DISPATCH_SCOPES` says when). The server writes it on every issue read and on the
+   *  issue of every `issue.*` event, null included; it is absent from a Dispatch older than that
+   *  walk, whose readers take the issue's own `priority` instead. */
+  resolved_priority: IssuePrioritySchema.nullable().optional(),
+  /** The key of the issue `resolved_priority` comes from, of any project; null where the priority
+   *  is the issue's own or there is none. Absent from a Dispatch older than that walk. */
+  priority_from: z.string().nullable().optional(),
   rank: z.string(),
   labels: z.array(z.string()),
   parent: z.string().nullable(),
@@ -206,9 +217,14 @@ export type CollaboratorReason = NonNullable<IssueCollaboratorPerson["reasons"]>
  *  before the fields existed, which a reader takes as "anything may have changed". */
 export const issueEventChangesFields = {
   /** Each field whose value the write moved, of `title`, `status`, `closed_at` (for a close or a
-   *  reopen), `rank`, `priority`, `assignee`, `parent`, `labels`, `route`, `repo`, `components`,
-   *  `advances`, `blocked_by` and `external_links`; for `issue.created`, every field the new
-   *  issue holds a value in. */
+   *  reopen), `rank`, `priority`, `resolved_priority`, `priority_from`, `assignee`, `parent`,
+   *  `labels`, `route`, `repo`, `components`, `advances`, `blocked_by` and `external_links`; for
+   *  `issue.created`, every field the new issue holds a value in. `resolved_priority` and
+   *  `priority_from` move with the priority the issue takes and the issue it takes it from, which
+   *  a write of its own priority or of its parent can move, together or either alone. A write that
+   *  moves them on the issues under the written one, in any project, also appends one
+   *  `issue.updated` on each of those issues whose `changed` names only those of the two that
+   *  moved; such an event is quiet, and wakes no session. */
   changed: z.array(z.string()).optional(),
   /** The issue's parent chain after the write, parent first up to the root; `[]` for a root. */
   ancestors: z.array(z.string()).optional(),
@@ -240,7 +256,7 @@ export const WrittenIssueEventPayloadSchema = z
 export type IssueEventPayload = z.output<typeof WrittenIssueEventPayloadSchema>;
 
 /**
- * What a reader of the bus makes of an `issue.*` payload: the ten fields Dispatch clients read
+ * What a reader of the bus makes of an `issue.*` payload: the twelve fields Dispatch clients read
  * today, each optional because an event retained from before a field existed carries none, and
  * everything else dropped. A frame is untrusted, so a malformed display field must not discard a
  * valid event header, and `forced` is read loosely for the same reason.
@@ -250,6 +266,8 @@ export const IssueEventPayloadSchema = z.object({
   labels: issueFields.labels.optional(),
   status: issueFields.status.optional(),
   priority: issueFields.priority.optional(),
+  resolved_priority: issueFields.resolved_priority,
+  priority_from: issueFields.priority_from,
   rank: issueFields.rank.optional(),
   route: issueFields.route.optional(),
   changed: issueEventChangesFields.changed,

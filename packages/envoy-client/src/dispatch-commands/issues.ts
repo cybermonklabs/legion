@@ -47,7 +47,14 @@ import {
   writeMayHaveLanded,
 } from "./failures";
 import { linkFor } from "./links";
-import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
+import {
+  claimText,
+  holdsSession,
+  liveAgents,
+  priorityText,
+  progressText,
+  routeText,
+} from "./render-issue";
 import { formatCheckResults } from "./render-results";
 import { notSubscribed } from "./results";
 import { issuesBeforeStatusChange, statusChangeCommand } from "./status-change";
@@ -683,6 +690,10 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
     title: row.title,
     status: row.status,
     priority: row.priority,
+    // The priority the issue works at and the issue it takes it from, as Dispatch served them: a
+    // Dispatch older than that walk sends neither, and the JSON row then carries neither.
+    resolved_priority: row.resolved_priority,
+    priority_from: row.priority_from,
     parent: row.parent,
     labels: row.labels ?? [],
     open_asks: row.open_asks,
@@ -717,8 +728,9 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
               (isPartial ? ` (${showing})` : ""),
             ...rows.map((row) => {
               const progress = progressText(row.progress, " · ");
+              const priority = priorityText(row);
               return (
-                `${row.key} [${row.status}]${row.priority === null ? "" : ` P${row.priority}`} ` +
+                `${row.key} [${row.status}]${priority === undefined ? "" : ` ${priority}`} ` +
                 rowPart(row.title) +
                 // The help says each row carries its parent and labels: a root names no parent, so
                 // a reader of the text tells the open roots from their children.
