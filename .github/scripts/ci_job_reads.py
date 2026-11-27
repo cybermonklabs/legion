@@ -673,14 +673,15 @@ go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
 edge=$(../../{TAGGED_TESTS} natslive ./cmd/listener)
 go test -count=1 -timeout 10m -tags natslive -run "$edge" -v ./cmd/listener/"""
 # One call per package, never one union -run over the three: a name an untagged test of one
-# package shares with a natslive test of another would then run a second time unremarked.
+# package shares with a natslive test of another would then run a second time unremarked. The
+# step runs the three at once through scripts/natslive.sh, which takes them as its arguments, so
+# the pin below holds the step's packages as it held them when the step ran them itself; the
+# script's own text is pinned by its SHA-256 in audited_scripts.AUDITED_SCRIPTS, and both readers
+# of what this step runs take that entry's reading
+# (.github/ci-notes/ci.md#the-envoy-infra-module-its-own-workspace-and-its-live-tests).
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
 INFRA_NATSLIVE_PACKAGES = ["./core", "./seed", "./gcp"]
-INFRA_NATSLIVE_SCRIPT = f"""\
-for pkg in {" ".join(INFRA_NATSLIVE_PACKAGES)}; do
-  pattern=$(../../../{TAGGED_TESTS} natslive "$pkg")
-  go test -count=1 -timeout 30m -tags natslive -run "$pattern" "$pkg"
-done"""
+INFRA_NATSLIVE_SCRIPT = f"scripts/natslive.sh {' '.join(INFRA_NATSLIVE_PACKAGES)}"
 MEMORY_STEP = "Memory tests of the Dispatch server"
 MEMORY_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} memory ./cmd/dispatch)
@@ -1596,8 +1597,8 @@ UNIT_TEST_TIMEOUT = "20m"
 # (the verification's check c8). It runs them in envoy-go-skips, with the job's env, no -tags and
 # no -race, the build the unit legs run cmd/cipher and internal/cipher/api in, so a second run in
 # a leg asked nothing the count does not: the legs skip them by name, and the count is their one
-# run (O15 of dispatch://INFRA-1408, which
-# go-test-step-expansion.py's duplicate verdict reads; its BACKEND_COUNT_TESTS is this list).
+# run (O15 of dispatch://INFRA-1408, which go-test-step-expansion.py's duplicate verdict reads;
+# .github/scripts/audited_scripts.py's BACKEND_COUNT_TESTS is this list).
 BACKEND_COUNT_AGENT_SECRETS = "cmd/cipher"
 BACKEND_COUNT_BROKER_API = f"{DATABASE_SKIPS_TREE}/api"
 BACKEND_COUNT_TESTS = {

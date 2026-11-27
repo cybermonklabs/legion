@@ -526,6 +526,13 @@ func TestPrintRemovesWhatAKilledRunLeft(t *testing.T) {
 			t.Errorf("the parent holds %q, want spec alone", names)
 		}
 	})
+	// An entry of the name that print builds whose number is neither the inode of dir nor its own
+	// inode, which no run on dir made, and a kept directory that holds an entry: print passes over
+	// both. A name whose number is the entry's own inode is the old directory that a killed run
+	// exchanged out (cleanLeftovers, case made == inode(info)), so the row does not let the system
+	// choose that number: it makes the entry under another name, reads its inode, and renames it,
+	// which keeps the inode. In merge-group run 46063610275 the system gave the entry the inode of
+	// dir plus one, the number that the row named it by, and print kept it.
 	t.Run("an entry that no run on the directory made, and a directory that print kept", func(t *testing.T) {
 		t.Parallel()
 		root := t.TempDir()
@@ -534,12 +541,23 @@ func TestPrintRemovesWhatAKilledRunLeft(t *testing.T) {
 			t.Fatal(err)
 		}
 		writeFile(t, filepath.Join(dir, "terms.yaml"), []byte(term))
-		other := filepath.Join(root, ".spec"+stagingInfix+strconv.FormatUint(inodeOf(t, dir)+1, 10))
+		made := filepath.Join(root, "made")
+		if err := os.Mkdir(made, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		number := inodeOf(t, dir) + 1
+		if number == inodeOf(t, made) {
+			number++
+		}
+		other := filepath.Join(root, ".spec"+stagingInfix+strconv.FormatUint(number, 10))
+		if err := os.Rename(made, other); err != nil {
+			t.Fatal(err)
+		}
 		kept := stagingPath(dir, inodeOf(t, dir)) + "-kept-1"
+		if err := os.Mkdir(kept, 0o755); err != nil {
+			t.Fatal(err)
+		}
 		for _, path := range []string{other, kept} {
-			if err := os.Mkdir(path, 0o755); err != nil {
-				t.Fatal(err)
-			}
 			writeFile(t, filepath.Join(path, "terms.yaml"), []byte(term))
 		}
 		code, stderr := run(t, dir)

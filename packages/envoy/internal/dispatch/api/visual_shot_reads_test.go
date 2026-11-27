@@ -219,6 +219,7 @@ func shotReadPaths(c shotCorpus) map[string]string {
 		"/api/v1/issues/{key}/coverage":               "/api/v1/issues/" + c.issue + "/coverage",
 		"/api/v1/issues/{key}/decisions":              "/api/v1/issues/" + c.issue + "/decisions",
 		"/api/v1/issues/{key}/events":                 "/api/v1/issues/" + c.issue + "/events",
+		"/api/v1/issues/{key}/handoffs":               "/api/v1/issues/" + c.issue + "/handoffs",
 		"/api/v1/issues/{key}/references":             "/api/v1/issues/" + c.issue + "/references?versions=latest",
 		"/api/v1/issues/{key}/results":                "/api/v1/issues/" + c.issue + "/results",
 		"/api/v1/issues/{key}/subscribers":            "/api/v1/issues/" + c.issue + "/subscribers",
@@ -394,14 +395,16 @@ func buildShotCorpus(t *testing.T, handler http.Handler) shotCorpus {
 // shotLiveViews is the view this test subscribes for each live view kind the list names, over
 // its pipeline fixture, in the shape the shot pages send it: the Delivery page's timeline and
 // measures over the custom window its URL names and no facet, the Pipeline page pinned to an at,
-// and the event feed every page of the shell subscribes, from its start.
-func shotLiveViews() map[string]LiveView {
+// the event feed every page of the shell subscribes, from its start, and the Legion state of
+// issue, which an issue's Dashboard tab subscribes (packages/dispatch/web/src/api/legion-issue.ts).
+func shotLiveViews(issue string) map[string]LiveView {
 	from, to := pipelineFixtureTime(26, 0, 0), pipelineFixtureTime(33, 0, 0)
 	at := pipelineFixtureTime(32, 12, 0)
 	return map[string]LiveView{
 		deliveryLiveTimeline: {DeliveryLiveView: timelineRange(from, to, "")},
 		deliveryLiveMeasures: {DeliveryLiveView: measuresRange(from, to, "")},
 		deliveryLivePipeline: {DeliveryLiveView: livePipelineView(&at)},
+		legionIssueView:      {DeliveryLiveView: DeliveryLiveView{Kind: legionIssueView, Issue: issueMember(issue)}},
 		liveEventsView:       eventsView(),
 	}
 }
@@ -489,7 +492,7 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 	})
 	corpus := buildShotCorpus(t, asShotPerson(t, handler, cookie))
 	paths := shotReadPaths(corpus)
-	views := shotLiveViews()
+	views := shotLiveViews(corpus.issue)
 
 	listed := visualShotReads(t)
 	for _, pattern := range listed.Reads {

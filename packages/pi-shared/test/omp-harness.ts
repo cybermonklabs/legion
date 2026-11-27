@@ -17,6 +17,7 @@ import {
 import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { loopbackHost } from "@legion/test-fixtures/loopback-host";
 import { readStandinBody } from "@legion/test-fixtures/standin-body";
@@ -591,7 +592,9 @@ function ompFlags(options: {
 const OMP_POOL_THREADS = "4";
 
 /** The environment `spawnRpc` and `spawnInteractive` start omp with: `home` as HOME, `bin` first
- * on PATH, and each of omp's thread pools at `OMP_POOL_THREADS`. Left to itself, omp sizes each
+ * on PATH, Bun's transpiler cache off, since omp transpiles each extension it loads and would
+ * otherwise keep every one under `home` (408 files in one run of `dispatch-first-omp.test.ts`),
+ * and each of omp's thread pools at `OMP_POOL_THREADS`. Left to itself, omp sizes each
  * pool to the machine's CPU count: its natives' Tokio runtime (`TOKIO_WORKER_THREADS`), Rayon's
  * global pool (`RAYON_NUM_THREADS`), the directory walker's workers (`PI_WALK_WORKERS`) and Bun's
  * work pool (`UV_THREADPOOL_SIZE`). One omp on a 288-CPU machine held 1,333 threads, so a suite
@@ -599,6 +602,7 @@ const OMP_POOL_THREADS = "4";
  * fixed, the threads a test's omp starts are the same on every machine. */
 function ompEnv(options: { readonly home: string; readonly bin?: string }): Record<string, string> {
   return {
+    ...bunCacheOff,
     HOME: options.home,
     PATH: [options.bin, "/usr/local/bin:/usr/bin:/bin"].filter(Boolean).join(":"),
     TOKIO_WORKER_THREADS: OMP_POOL_THREADS,
