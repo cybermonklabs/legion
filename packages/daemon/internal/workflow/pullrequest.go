@@ -454,13 +454,21 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
 	}
-	if _, err := e.store.PutMergeSnapshot(ctx, tx, pr.Issue, record.Merge{Number: pr.Number, Head: pr.HeadSHA, SHA: fact.MergeSHA, Base: pr.Base,
-		Repo: fact.Repo, MergedAt: fact.MergedAt.UTC()}); err != nil {
+	merge := record.Merge{Number: pr.Number, Head: pr.HeadSHA, SHA: fact.MergeSHA, Base: pr.Base, Repo: fact.Repo, MergedAt: fact.MergedAt.UTC()}
+	written, err := e.store.PutMergeSnapshot(ctx, tx, pr.Issue, merge)
+	if err != nil {
 		return intake.Result{}, err
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
+	}
+	// The merge of the issue's current pull request is its newest (PutMergeSnapshot's one case), so
+	// a snapshot that refuses it and names another merge is a record this release cannot judge the
+	// close on: the close would read the checks at that other merge commit. Say so rather than go on.
+	if !written && (issue.Merge.Number != pr.Number || issue.Merge.SHA != fact.MergeSHA) {
+		return intake.Result{}, fmt.Errorf("record the merge of %s's pull request #%d at %s: the snapshot of #%d at %s refused it",
+			issue.Key, pr.Number, fact.MergeSHA, issue.Merge.Number, issue.Merge.SHA)
 	}
 	if awaitsMerge(*issue) {
 		return intake.Result{}, e.closeMerged(ctx, tx, *issue, pr)
