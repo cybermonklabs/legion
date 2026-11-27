@@ -3078,7 +3078,9 @@ export const LegionDefectReportResponse = z.object({
  * change carries (`DEFECT_IN_MERGED_CHANGE`), with no reason (`DEFECT_REASON_REQUIRED`), and with a
  * reason too long or one that holds a decision block (`DEFECT_REASON_TOO_LONG`,
  * `DEFECT_REASON_DECISION_BLOCK`), and for a key that is no issue key or an issue it has not
- * recorded (`INVALID_ISSUE`, `ISSUE_NOT_FOUND`). */
+ * recorded (`INVALID_ISSUE`, `ISSUE_NOT_FOUND`). From the defect-request-of-a-person entry on, it
+ * also refuses a request for new work a person made (`DEFECT_REQUEST_OF_A_PERSON`): only that
+ * person ends it with no pull request, by setting the issue done. */
 export const LegionDefectWithdrawRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

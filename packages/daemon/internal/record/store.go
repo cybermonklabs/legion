@@ -894,6 +894,14 @@ func (s *Postgres) PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string
 	if !merge.Merged() {
 		return false, fmt.Errorf("record the merge of %s: a merge names the pull request that merged", issue)
 	}
+	// A merge is positive evidence, and positive evidence wins over a person's confirmation that
+	// the work never merged: the confirmation goes, whether or not this merge replaces the stored
+	// one (ConsumeNeverMergedConfirmation).
+	cleared, err := tx.Exec(ctx, `update issues set never_merged_confirmed = false where key = $1 and never_merged_confirmed`, issue)
+	if err != nil {
+		return false, fmt.Errorf("record the merge of %s: take its never-merged confirmation: %w", issue, err)
+	}
+	noteRowsWritten(ctx, cleared)
 	var mergedAt any
 	if !merge.MergedAt.IsZero() {
 		mergedAt = merge.MergedAt
@@ -917,6 +925,32 @@ func (s *Postgres) PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string
 		return false, fmt.Errorf("record the merge of %s: the issue has no record", issue)
 	}
 	return false, nil
+}
+
+// ConfirmNeverMerged records, on issue key's row, that a person confirmed its work never merged
+// (issues.never_merged_confirmed), and refuses a key the record holds no issue of.
+func (s *Postgres) ConfirmNeverMerged(ctx context.Context, tx pgx.Tx, key string) error {
+	tag, err := tx.Exec(ctx, `update issues set never_merged_confirmed = true where key = $1`, key)
+	if err != nil {
+		return fmt.Errorf("confirm that the work of %s never merged: %w", key, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("confirm that the work of %s never merged: the issue has no record", key)
+	}
+	noteRowsWritten(ctx, tag)
+	return nil
+}
+
+// ConsumeNeverMergedConfirmation takes issue key's confirmation that its work never merged, in one
+// statement, and answers whether one stood: the statement that finds it true sets it false, so
+// one confirmation allows one rerun.
+func (s *Postgres) ConsumeNeverMergedConfirmation(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
+	tag, err := tx.Exec(ctx, `update issues set never_merged_confirmed = false where key = $1 and never_merged_confirmed`, key)
+	if err != nil {
+		return false, fmt.Errorf("take the never-merged confirmation of %s: %w", key, err)
+	}
+	noteRowsWritten(ctx, tag)
+	return tag.RowsAffected() == 1, nil
 }
 
 // phaseColumns is the columns of a phases row as scanPhase reads them, in its order.
@@ -1386,10 +1420,28 @@ func (s *Postgres) PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []strin
 	return requests, nil
 }
 
+// PutPullRequest writes pr as its issue's one pull request row. A later pull request opened from
+// the issue's branch replaces the stored row with no clear: where the stored row is merged and pr
+// names another number, the stored row's merge is saved as the issue's snapshot first
+// (PutMergeSnapshot), as a clear saves it (clearPullRequests), so the merge outlives the row.
 func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error {
 	if pr.readBy != "" {
 		return fmt.Errorf("put pull request for %s: the record was read by %s, which loads none of what the pull request remembers of its settled heads; "+
 			"only PullRequest, PullRequestByNumber and PullRequestByBranch load the fence memory a write keeps", pr.Issue, pr.readBy)
+	}
+	var (
+		stored      Merge
+		storedState PullRequestState
+	)
+	switch err := tx.QueryRow(ctx, `select state, number, head_sha, merge_sha, base, repo from pull_requests where issue = $1 for update`, pr.Issue).
+		Scan(&storedState, &stored.Number, &stored.Head, &stored.SHA, &stored.Base, &stored.Repo); {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		return fmt.Errorf("put pull request for %s: read the row it replaces: %w", pr.Issue, err)
+	case storedState == PullRequestMerged && stored.Number != pr.Number:
+		if _, err := s.PutMergeSnapshot(ctx, tx, pr.Issue, stored); err != nil {
+			return fmt.Errorf("put pull request for %s: keep the merge of the row it replaces: %w", pr.Issue, err)
+		}
 	}
 	failing, err := json.Marshal(pr.Failing)
 	if err != nil {
@@ -2192,7 +2244,10 @@ func queuedChanges(ctx context.Context, tx pgx.Tx, where, key string) ([]QueuedC
 // where it merges the moved row into one the new name already holds, that row names the moved
 // row's issue (RenameIssueRepository).
 func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, describe string) ([]string, error) {
-	if err := clearPullRequests(ctx, tx, where, key, describe); err != nil {
+	if err := s.clearPullRequests(ctx, tx, where, key, describe); err != nil {
+		return nil, err
+	}
+	if err := clearNeverMergedConfirmations(ctx, tx, where, key, describe); err != nil {
 		return nil, err
 	}
 	// What each holder took of the approved design goes with the gate it was taken from: the
@@ -2229,7 +2284,10 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, d
 // task and its counts are of a run that goes on. It touches no other issue's rows.
 func (s *Postgres) ClearChangeGeneration(ctx context.Context, tx pgx.Tx, issue string) error {
 	describe := fmt.Sprintf("clear the generation of %s for its next change", issue)
-	if err := clearPullRequests(ctx, tx, clearedIssue, issue, describe); err != nil {
+	if err := s.clearPullRequests(ctx, tx, clearedIssue, issue, describe); err != nil {
+		return err
+	}
+	if err := clearNeverMergedConfirmations(ctx, tx, clearedIssue, issue, describe); err != nil {
 		return err
 	}
 	phases := clearedIssue + " and not (role = '" + string(claim.RoleArchitect) +
@@ -2249,15 +2307,67 @@ func runClearStatements(ctx context.Context, tx pgx.Tx, statements []string, key
 	return nil
 }
 
+// clearNeverMergedConfirmations resets the never-merged confirmation of each issue where selects,
+// with key as $1: a clear starts a generation, and a confirmation given for the one it leaves
+// authorizes nothing of the next (ConsumeNeverMergedConfirmation). where reads the issue column,
+// as every other statement of a clear does, so the issues table is read under that name.
+func clearNeverMergedConfirmations(ctx context.Context, tx pgx.Tx, where, key, describe string) error {
+	tag, err := tx.Exec(ctx, `update issues set never_merged_confirmed = false where never_merged_confirmed
+		and key in (select issue from (select key as issue from issues) covered where `+where+`)`, key)
+	if err != nil {
+		return fmt.Errorf("%s: reset the never-merged confirmation: %w", describe, err)
+	}
+	noteRowsWritten(ctx, tag)
+	return nil
+}
+
 // clearPullRequests deletes the pull requests of the issues where selects, with key as $1, that
-// are not open, and keeps each deleted row's clock, in one statement. It is the one writer of a
-// clear's clocks, so the clock of a deleted row is recorded one way whichever clear deleted it,
-// and the clear of a whole generation (clearGeneration) and the clear a next change makes
-// (ClearChangeGeneration) read one rule. The issue's merge snapshot is on its own row
-// (Issue.Merge), which no clear touches, so the merge outlives the row this deletes.
-func clearPullRequests(ctx context.Context, tx pgx.Tx, where, key, describe string) error {
+// are not open, and keeps each deleted row's clock, in the caller's transaction. It is the one
+// writer of a clear's clocks, so the clock of a deleted row is recorded one way whichever clear
+// deleted it, and the clear of a whole generation (clearGeneration) and the clear a next change
+// makes (ClearChangeGeneration) read one rule.
+//
+// Before the delete it locks those rows and saves the merge of each merged one as its issue's
+// snapshot (PutMergeSnapshot): the row's number, repository, merge commit, base and final head,
+// with no merged_at, which the row never held, so it writes only where no snapshot stands. The
+// snapshot is on the issue's own row (Issue.Merge), which no clear touches, so the merge outlives
+// the row this deletes and the issue keeps its positive evidence (MergeHistoryOf).
+func (s *Postgres) clearPullRequests(ctx context.Context, tx pgx.Tx, where, key, describe string) error {
+	selects := where + " and state <> 'open'"
+	rows, err := tx.Query(ctx, `select issue, state, number, head_sha, merge_sha, base, repo from pull_requests
+		where `+selects+` order by issue for update`, key)
+	if err != nil {
+		return fmt.Errorf("%s: read the pull requests to delete: %w", describe, err)
+	}
+	type mergedRow struct {
+		issue string
+		merge Merge
+	}
+	var merged []mergedRow
+	for rows.Next() {
+		var (
+			row   mergedRow
+			state PullRequestState
+		)
+		if err := rows.Scan(&row.issue, &state, &row.merge.Number, &row.merge.Head, &row.merge.SHA, &row.merge.Base, &row.merge.Repo); err != nil {
+			rows.Close()
+			return fmt.Errorf("%s: read the pull requests to delete: %w", describe, err)
+		}
+		if state == PullRequestMerged {
+			merged = append(merged, row)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("%s: read the pull requests to delete: %w", describe, err)
+	}
+	for _, row := range merged {
+		if _, err := s.PutMergeSnapshot(ctx, tx, row.issue, row.merge); err != nil {
+			return fmt.Errorf("%s: keep the merge of the pull request to delete: %w", describe, err)
+		}
+	}
 	tag, err := tx.Exec(ctx, `with cleared as (
-			delete from pull_requests where `+where+` and state <> 'open' returning issue, repo, number, head_updated_at)
+			delete from pull_requests where `+selects+` returning issue, repo, number, head_updated_at)
 		insert into cleared_pull_requests (repo, number, issue, head_updated_at, cleared_at)
 		select distinct on (repo, number) repo, number, issue, head_updated_at, now() from cleared order by repo, number, head_updated_at desc
 		on conflict (repo, number) do update set issue = excluded.issue,

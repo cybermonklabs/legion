@@ -381,6 +381,13 @@ func TestCloseWaitOfEachCase(t *testing.T) {
 		{name: "row 33: a check of generation 0 recorded at the newest merge, on an issue of generation 2",
 			facts: with(passing(allPass), withProduction(cwProduction(0, cwMergeSHA, CheckRecorded))),
 			want:  CloseWait{Production: ProductionOpening}},
+		// The kind is written as its text, so the row needs no name of the record's to compile.
+		{name: "row 34: one open request for new work, listed apart from the defects",
+			facts: with(passing(allPass), func(f *CloseFacts) {
+				f.Defects = []Defect{{ID: 44, Issue: "ACME-1", Generation: cwGeneration, Kind: DefectKind("request"),
+					Text: "Reopened after an early close: the export drops its header", Role: "person", ReportedAt: cwEntered}}
+			}),
+			want: CloseWait{Requests: []string{"44"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := CloseWaitOf(tc.facts)

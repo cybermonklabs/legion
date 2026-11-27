@@ -478,6 +478,16 @@ const testerVerdictLabel = "Tester's verdict"
 func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role, told func(Standing) string,
 	from phase.Phase, movedBack bool,
 ) error {
+	return e.startFrom(ctx, tx, issue, w, role, told, from, movedBack, nil)
+}
+
+// startFrom is start whose phase worker's start names where the working copy starts
+// (record.SuperviseRequest.StartAt), nil for none: a next change's first start, which the gate's
+// opening makes (transition, firstStartAt), moves the working copy to the branch its merge moved
+// before the task reaches the worker. Every other start names none.
+func (e *Engine) startFrom(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role, told func(Standing) string,
+	from phase.Phase, movedBack bool, startAt *record.StartAt,
+) error {
 	if role == "" {
 		return nil
 	}
@@ -495,7 +505,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, sent, entry, startMarks{stored: true})
+	return e.started(ctx, tx, issue, role, sent, entry, startMarks{stored: true, startAt: startAt})
 }
 
 // startStandingStep starts the step issue stands in on w, the walk of its run (standingStep),
@@ -861,6 +871,10 @@ type startMarks struct {
 	// raising the entry it hands (enter), and the held phase's retry, which an architect's or an
 	// operator's own request brings (restart).
 	reasserts bool
+	// startAt is where the working copy of a next change starts before the task reaches its
+	// worker (record.SuperviseRequest.StartAt): the first start of that change's generation alone
+	// carries it (startFrom), nil for every other start.
+	startAt *record.StartAt
 }
 
 // started enqueues the start each of its six callers makes, each of which has held role to one
@@ -896,7 +910,7 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
 		Generation: issue.GenerationOf("start", role), Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, Decided: marks.decided,
 		ResumeTask: marks.resumeTask, RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume,
-		FreshSession: marks.freshSession}, e.now(), move)
+		FreshSession: marks.freshSession, StartAt: marks.startAt}, e.now(), move)
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks

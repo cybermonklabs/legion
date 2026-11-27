@@ -3223,6 +3223,13 @@ func (a *Admission) unslotted(issue record.Issue, live map[string]struct{}, wait
 	if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() || !record.InWorkflow(issue) || issue.AwaitingPerson() {
 		return false
 	}
+	// An issue whose close waits in verifying, and one whose next change runs, wait by design:
+	// the daemon itself started that wait and that change, and only its own checks or a person
+	// close it (D16, row 9). A release would take it out of the workflow, where nothing closes it
+	// at all.
+	if issue.Phase == phase.Verifying || record.OnNextChange(issue) {
+		return false
+	}
 	switch issue.Status {
 	case "in_progress", "testing", "needs_review", "retro":
 	default:

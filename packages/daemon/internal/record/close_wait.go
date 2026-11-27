@@ -67,8 +67,12 @@ type CloseWait struct {
 	// Production is what the production term waits for, read only from a check of the issue's
 	// generation at its newest merge: "" for nothing, or one of the Production values.
 	Production string
-	// Defects is the id of each reported defect, or request, that holds the close.
+	// Defects is the id of each reported defect that holds the close.
 	Defects []string
+	// Requests is the id of each open request for new work (DefectKindRequest) that holds the
+	// close, listed apart from the defects: a request is no defect of the change, and the wait names
+	// it as a request.
+	Requests []string
 	// OpenChange says that an open next change of the issue holds the close.
 	OpenChange bool
 }
@@ -170,9 +174,10 @@ const (
 //     (unapprovedSince).
 //   - The production term reads only the check of the issue's generation at its newest merge
 //     (productionTerm).
-//   - Defects is each open defect that is no check's reason and no production check's reason:
-//     the read answers a check's reason, and the production term a production reason, so neither
-//     holds the close as a defect.
+//   - Defects is each open defect that is no check's reason, no production check's reason and no
+//     request: the read answers a check's reason, and the production term a production reason, so
+//     neither holds the close as a defect. Requests is each open request for new work, listed
+//     apart, since it is no defect of the change.
 //   - OpenChange is taken as the facts give it.
 func CloseWaitOf(f CloseFacts) CloseWait {
 	wait := CloseWait{Production: productionTerm(f), OpenChange: f.OpenChange}
@@ -183,7 +188,11 @@ func CloseWaitOf(f CloseFacts) CloseWait {
 		wait.OpenChildren = f.OpenChildren
 	}
 	for _, defect := range f.Defects {
-		if defect.Open() && defect.Kind != DefectKindCheck && defect.Kind != DefectKindProduction {
+		switch {
+		case !defect.Open() || defect.Kind == DefectKindCheck || defect.Kind == DefectKindProduction:
+		case defect.Kind == DefectKindRequest:
+			wait.Requests = append(wait.Requests, strconv.FormatInt(defect.ID, 10))
+		default:
 			wait.Defects = append(wait.Defects, strconv.FormatInt(defect.ID, 10))
 		}
 	}
@@ -208,7 +217,7 @@ func CloseWaitOf(f CloseFacts) CloseWait {
 // Done says that the close waits for nothing: no term is listed and the read is not unread.
 func (w CloseWait) Done() bool {
 	return len(w.Beneath) == 0 && len(w.OpenChildren) == 0 && len(w.Checks) == 0 && !w.Unapproved && !w.Unread &&
-		w.Production == "" && len(w.Defects) == 0 && !w.OpenChange
+		w.Production == "" && len(w.Defects) == 0 && len(w.Requests) == 0 && !w.OpenChange
 }
 
 // CloseCheckOf is the one mapping of Dispatch's computed answer for a check to the close's state

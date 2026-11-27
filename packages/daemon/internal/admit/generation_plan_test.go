@@ -237,7 +237,7 @@ func ownTodoOnChild(t *testing.T, pool *pgxpool.Pool, admission *Admission, rout
 	parent := pathsRoot
 	written := dispatch.Issue{Key: pathsChild, Project: testProject, Title: "child", Status: "todo", Parent: &parent, Rank: "B",
 		LastSeq: 3, ResolvedRepo: "acme/widgets"}
-	event := intake.OwnStatusWrite(written)
+	event := intake.OwnStatusWrite(written, "", "")
 	fact := intake.ObservedIssue(written)
 	fact.Delivered = &event
 	if _, err := intake.ApplyFact(context.Background(), pool, "api", "status/own-write/"+route, fact, admission.engine, admission); err != nil {

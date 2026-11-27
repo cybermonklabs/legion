@@ -356,32 +356,24 @@ func (e *Engine) judgeCheckIssue(ctx context.Context, tx pgx.Tx, key string) err
 }
 
 // productionFail is a production check's fail on an issue in verifying (D6): a reason of the next
-// change, of kind production, carrying the report's summary, and the next change it starts
-// (Engine.nextChange). The look's task sends the defect to no controller. A fail on an issue that
-// does not wait in verifying records the check's outcome alone, as it did.
+// change, of kind production, carrying the report's summary, and the next change it starts where
+// that change's moment has come (startChangeIfDue, StartNextChange). The look's task sends the
+// defect to no controller. A fail on an issue that does not wait in verifying records the check's
+// outcome alone, as it did.
 func (e *Engine) productionFail(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, summary string) error {
 	issue, err := e.store.Issue(ctx, tx, check.Issue)
 	if err != nil || issue == nil || issue.Phase != phase.Verifying {
 		return err
 	}
-	reason := record.Defect{Issue: issue.Key, Generation: issue.Generation, Kind: record.DefectKindProduction, Text: summary,
-		Role: check.Role, Head: check.MergeSHA, ReportedAt: e.now()}
-	id, err := e.store.PutDefect(ctx, tx, reason)
+	id, err := e.store.PutDefect(ctx, tx, record.Defect{Issue: issue.Key, Generation: issue.Generation, Kind: record.DefectKindProduction,
+		Text: summary, Role: check.Role, Head: check.MergeSHA, ReportedAt: e.now()})
 	if err != nil {
 		return err
 	}
-	reason.ID = id
 	e.logOnCommit(ctx, "workflow: a production check's fail is a reason of the next change", "issue", issue.Key,
 		"generation", issue.Generation, "mergeCommit", check.MergeSHA, "defect", id)
-	return e.nextChange(ctx, tx, *issue, reason)
-}
-
-// nextChangeDue is the seam a reason of the next change calls until the next change's opener is
-// built: it logs that the change is due, and the reason waits in the stored wait.
-func (e *Engine) nextChangeDue(ctx context.Context, _ pgx.Tx, issue record.Issue, reason record.Defect) error {
-	e.logOnCommit(ctx, "workflow: the next change of an issue is due", "issue", issue.Key, "generation", issue.Generation,
-		"reason", reason.ID, "kind", reason.Kind)
-	return nil
+	_, err = e.startChangeIfDue(ctx, tx, issue.Key)
+	return err
 }
 
 // endLook ends the open look of a check nobody reported — its bound came due, the outbox met a

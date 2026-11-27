@@ -87,6 +87,15 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 			StartAt: &StartAt{Bookmark: "legion/LEGION-208", Base: "main"}},
 		CloseRead{Generation: 3},
 		CloseWaitPublish{Generation: 3},
+		MergeRead{Issue: "LEGION-208", Generation: 3, Requester: RequesterPerson, Request: "issue.updated todo by user:a-person"},
+		MergeRead{Issue: "LEGION-208", Generation: 3, Requester: claim.RoleController, Request: "set_status todo",
+			Progress: MergeReadProgress{Stage: MergeReadStageCandidates, Cursor: "https://api.github.com/repositories/1/commits/c0de/pulls?page=2",
+				Links: []string{"https://github.com/acme/widgets/pull/41"},
+				Bases: []MergeReadBase{{Repo: "acme/widgets", SHA: "c0de", Source: MergeReadSourceResults, Done: true}},
+				Candidates: []MergeReadCandidate{{Repo: "acme/widgets", Number: 41, Source: MergeReadSourceLink,
+					Answer: &MergeReadAnswer{Merged: true, Names: true, Head: "h1", SHA: "c0de", Base: "main", MergedAt: now}}},
+				Attempts: 4, Failures: 1, Cause: "502 Bad Gateway", RetryAt: now.Add(time.Minute), Reserved: true, Uncertain: 1,
+				MetadataReads: 1, Refresh: true}},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
 		// A release's workspace check, and a left pod's close's, which names the roles it closes and
@@ -357,7 +366,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish,
 		OutboxKindMergeHoldsChanged, OutboxKindStepRecord, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord,
-		OutboxKindCloseRead, OutboxKindCloseWaitPublish,
+		OutboxKindCloseRead, OutboxKindCloseWaitPublish, OutboxKindMergeRead,
 		OutboxKindStateChange, OutboxKindStateAdmission, OutboxKindStateBoot}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage, LaneState}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
@@ -463,6 +472,9 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// both run, as it lets a status write.
 		OutboxKindCloseRead:        "",
 		OutboxKindCloseWaitPublish: "",
+		// The read of whether a closed issue's work merged reads Dispatch and GitHub and applies
+		// what it read as a fact, as the close read does, and starts no turn.
+		OutboxKindMergeRead: "",
 		// The state events tell Dispatch what the daemon observes (dispatch://INFRA-3931) and
 		// start no turn. A pause's own claim moves are state changes Dispatch must see, so the
 		// pause holds none of them, and a paused project's state lane keeps publishing.
@@ -536,6 +548,20 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a re-parent seed of no parent", payload: ReparentSeed{Tree: "LEGION-300", Ran: "it ran as a tree of its own"}, reason: "a re-parent seed names"},
 		{name: "a re-parent seed of no tree", payload: ReparentSeed{Parent: "LEGION-301", Ran: "it ran as a tree of its own"}, reason: "a re-parent seed names"},
 		{name: "a re-parent seed of no reason", payload: ReparentSeed{Parent: "LEGION-301", Tree: "LEGION-300"}, reason: "a re-parent seed names"},
+		{name: "a merge read of another issue", payload: MergeRead{Issue: "LEGION-209", Generation: 3, Requester: RequesterPerson, Request: "todo"}, reason: "names its row's issue"},
+		{name: "a merge read of no generation", payload: MergeRead{Issue: "LEGION-208", Requester: RequesterPerson, Request: "todo"}, reason: "names the generation"},
+		{name: "a merge read asked by a reviewer", payload: MergeRead{Issue: "LEGION-208", Generation: 3, Requester: claim.RoleReviewer, Request: "todo"}, reason: "asked by a person, the controller or an architect"},
+		{name: "a merge read of no request", payload: MergeRead{Issue: "LEGION-208", Generation: 3, Requester: RequesterPerson, Request: " "}, reason: "carries the text of the request"},
+		{name: "a merge read at no stage it runs", payload: MergeRead{Issue: "LEGION-208", Generation: 3, Requester: RequesterPerson, Request: "todo",
+			Progress: MergeReadProgress{Stage: "guess"}}, reason: "stands at no stage it runs"},
+		{name: "a merge read in no state it knows", payload: MergeRead{Issue: "LEGION-208", Generation: 3, Requester: RequesterPerson, Request: "todo",
+			Progress: MergeReadProgress{State: "done"}}, reason: "is in no state it knows"},
+		{name: "a merge read past its third failure", payload: MergeRead{Issue: "LEGION-208", Generation: 3, Requester: RequesterPerson, Request: "todo",
+			Progress: MergeReadProgress{Failures: 4}}, reason: "counts 4 failed attempts"},
+		{name: "a merge read's base of no commit", payload: MergeRead{Issue: "LEGION-208", Generation: 3, Requester: RequesterPerson, Request: "todo",
+			Progress: MergeReadProgress{Bases: []MergeReadBase{{Repo: "acme/widgets", Source: MergeReadSourceResults}}}}, reason: "base names its repository"},
+		{name: "a merge read's candidate of pull request 0", payload: MergeRead{Issue: "LEGION-208", Generation: 3, Requester: RequesterPerson, Request: "todo",
+			Progress: MergeReadProgress{Candidates: []MergeReadCandidate{{Repo: "acme/widgets", Source: MergeReadSourceLink}}}}, reason: "candidate names its repository"},
 		{name: "a decision on an architect's notice", payload: Notice{Kind: "design-approved", Decision: DecisionDesignApproved}, reason: "only a parked-decision controller notice does"},
 		{name: "a root on an architect's notice", payload: Notice{Kind: "design-approved", Root: "LEGION-1"}, reason: "only a parked-decision controller notice does"},
 		{name: "a review's document on a phase-finished notice",

@@ -752,9 +752,9 @@ export async function executePhaseOp(
           };
     }
     case "report_defect":
-      // A report moves no phase, so it answers the daemon's answer and the host closes nothing
-      // (phaseInputAfter). The claim's grant serves its own issue, an architect's its whole tree;
-      // which issue a role may report on is the daemon's to hold.
+      // A report moves no phase, so it answers the daemon's answer and nothing closes the
+      // session's phase input. The claim's grant serves its own issue, an architect's its whole
+      // tree; which issue a role may report on is the daemon's to hold.
       return daemon.reportDefect({
         grantId: await mintClaimGrant(daemon, claim),
         issue: args.issue,

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -26,8 +27,9 @@ import (
 //
 // The columns are every one the migrations give the repository an issue or its work is on now:
 // issues.repo and issues.github_repo (0047, 0048), pull_requests.repo (0004),
-// cleared_pull_requests.repo (20261120144241), production_checks.repo (0049) and
-// repo_notes.resolved_repo (0047). No other column holds one the pass writes. The claims' and
+// cleared_pull_requests.repo (20261120144241), production_checks.repo (0049),
+// repo_notes.resolved_repo (0047) and the merge snapshot's issues.merge_repo (20261126223725). No
+// other column holds one the pass writes. The claims' and
 // claim capabilities' locators name a tmux pane or a Sandbox, the outbox's payloads carry no
 // repository, and processed_events.event_id only embeds one in a dedupe key. Four more columns hold
 // a name the pass leaves as it is: issues.repo_before, the repository a correction moved the issue
@@ -54,12 +56,16 @@ const (
 	RenameTableClearedPullRequests RenameTable = "cleared_pull_requests"
 	RenameTableProductionChecks    RenameTable = "production_checks"
 	RenameTableRepoNotes           RenameTable = "repo_notes"
+	// RenameTableMergeSnapshot is the issue's merge snapshot, issues.merge_repo: a column of the
+	// issues table, counted apart from the record's repository since a snapshot is written of its
+	// own (PutMergeSnapshot).
+	RenameTableMergeSnapshot RenameTable = "merge_snapshot"
 )
 
 // RenameTables are the tables whose columns hold a repository name, in the order the rename pass
 // writes and logs them.
 var RenameTables = []RenameTable{RenameTableIssues, RenameTablePullRequests, RenameTableClearedPullRequests, RenameTableProductionChecks,
-	RenameTableRepoNotes}
+	RenameTableRepoNotes, RenameTableMergeSnapshot}
 
 // RenameCandidate is one issue whose stored rows name a rename's old name: Rows is how many rows
 // of each table (RenameTables) do, which is what its write changes, and Spellings each spelling
@@ -96,6 +102,10 @@ func RenameCandidates(ctx context.Context, tx pgx.Tx, project, from string, keys
 		{RenameTableRepoNotes, `select n.issue, n.resolved_repo, ''::text from repo_notes n
 			where lower(n.resolved_repo) = lower($2) and ($3::text[] is null or n.issue = any($3))
 			and (starts_with(n.issue, $1 || '-') or n.issue in (select key from issues where project = $1))`},
+		// A merge snapshot's repository is the merge fact's spelling, which names no workspace
+		// directory, so it adds no spelling.
+		{RenameTableMergeSnapshot, `select key, ''::text, ''::text from issues
+			where project = $1 and lower(merge_repo) = lower($2) and ($3::text[] is null or key = any($3))`},
 	} {
 		rows, err := tx.Query(ctx, read.sql, project, from, keys)
 		if err != nil {
@@ -157,16 +167,20 @@ type RenameCollision struct {
 
 // RenameIssueRepository writes to over from, compared without case, on each column of issue's
 // rows that holds a repository name: its record's repository and GitHub's spelling of it, its pull
-// request, the pull requests a new generation of it cleared, its production check and its
-// repository note. It runs in the caller's transaction, so the rows of one issue are written
-// together or not at all, and a write of rows that name to already changes nothing.
+// request, the pull requests a new generation of it cleared, its production check, its
+// repository note and its merge snapshot. It runs in the caller's transaction, so the rows of one
+// issue are written together or not at all, and a write of rows that name to already changes
+// nothing.
 //
 // Its pull request row is deleted instead where the new name would make it a second row of one
 // repository and branch: pull_requests_repo_branch (0004) is unique on (repo, branch), and the
 // reads that key the table on its repository compare the name without case (PullRequestByBranch),
 // so another issue's row on the new name in any spelling and on the same branch already holds that
 // key. The row under the new name stays, and the deletion is returned for the pass to log, naming
-// both issues.
+// both issues. The deletion is the one clear writer's, in whatever state the row is
+// (clearPullRequests): a merged row's merge is saved as the issue's snapshot, and the row's clock
+// is kept, so the evidence of the issue's merge outlives the row (MergeHistoryOf). The writes
+// below then move both to the new name.
 //
 // A cleared pull request's row is merged into the row to already holds for the same number, where
 // there is one, since cleared_pull_requests is keyed on (repo, number): the merged row keeps the
@@ -201,7 +215,11 @@ func RenameIssueRepository(ctx context.Context, tx pgx.Tx, issue, from, to strin
 	case err != nil:
 		return RenameWrite{}, fmt.Errorf("read whether the pull request of %s would hold %s twice: %w", issue, to, err)
 	default:
-		if _, err := tx.Exec(ctx, "delete from pull_requests where issue = $1 and lower(repo) = lower($2)", issue, from); err != nil {
+		var now time.Time
+		if err := tx.QueryRow(ctx, "select now()").Scan(&now); err != nil {
+			return RenameWrite{}, fmt.Errorf("read the time of the clear of the pull request of %s: %w", issue, err)
+		}
+		if err := NewStore().clearPullRequests(ctx, tx, now, "issue = $1 and lower(repo) = lower($2)", issue, from); err != nil {
 			return RenameWrite{}, fmt.Errorf("delete the pull request of %s, which %s holds on %s: %w", issue, collision.Holder, to, err)
 		}
 		collision.Issue = issue
@@ -229,6 +247,7 @@ func RenameIssueRepository(ctx context.Context, tx pgx.Tx, issue, from, to strin
 	}{
 		{RenameTableProductionChecks, "update production_checks set repo = $3 where issue = $1 and lower(repo) = lower($2)"},
 		{RenameTableRepoNotes, "update repo_notes set resolved_repo = $3 where issue = $1 and lower(resolved_repo) = lower($2)"},
+		{RenameTableMergeSnapshot, "update issues set merge_repo = $3 where key = $1 and lower(merge_repo) = lower($2)"},
 	} {
 		tag, err := tx.Exec(ctx, write.sql, issue, from, to)
 		if err != nil {

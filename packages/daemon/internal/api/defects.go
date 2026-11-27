@@ -136,7 +136,8 @@ func (s *server) reportDefect(w http.ResponseWriter, r *http.Request) {
 // (workflow's defectWithdrawal). The route refuses a blank reason (DEFECT_REASON_REQUIRED), one
 // close-wait.md could not carry, by the rule the defect's text is held to (DEFECT_REASON_TOO_LONG,
 // DEFECT_REASON_DECISION_BLOCK), an id that is no number (DEFECT_NOT_FOUND) and a grant that is no
-// architect's (DEFECT_WITHDRAW_NOT_OWNER); the workflow judges the rest under the fact lock.
+// architect's (DEFECT_WITHDRAW_NOT_OWNER); the workflow judges the rest under the fact lock, the
+// refusal of a request a person made among them (DEFECT_REQUEST_OF_A_PERSON).
 func (s *server) withdrawDefect(w http.ResponseWriter, r *http.Request) {
 	var req DefectWithdrawRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) ||

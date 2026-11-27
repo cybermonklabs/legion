@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/dispatchbody"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -68,6 +69,34 @@ func setIssueColumns(t *testing.T, h *harness, key, set string, args ...any) {
 	t.Helper()
 	if _, err := h.store.Pool().Exec(context.Background(), "update issues set "+set+" where key = $1", append([]any{key}, args...)...); err != nil {
 		t.Fatalf("set %s of %s: %v", set, key, err)
+	}
+}
+
+// mergedWithItsMergerAtWork stands statusRoot in verifying through the merge itself: its merger at
+// work on the entry its start raised, its pull request open at defectHead, and GitHub's merge of
+// that pull request applied through the daemon's own handlers. So the issue's record says the
+// merger's completion of the merged generation is owed because the merge said so, and no statement
+// of this test wrote it.
+func mergedWithItsMergerAtWork(t *testing.T, h *harness, handlers []intake.Handler, merger claim.Token) {
+	t.Helper()
+	acceptPhase(t, h, statusRoot, phase.Merging)
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: statusRoot, Role: claim.RoleMerger, Claim: merger,
+			EntryTask: "Merge pull request #42.", Entry: 1}); err != nil {
+			return err
+		}
+		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: statusRoot, Repo: "acme/widgets",
+			Number: 42, Branch: "legion/" + statusRoot, Base: "main", HeadSHA: defectHead, Failing: []string{}})
+	}); err != nil {
+		t.Fatalf("stand %s at its merge: %v", statusRoot, err)
+	}
+	if _, err := intake.ApplyFact(context.Background(), h.store.Pool(), "github", "merged-"+statusRoot, intake.PullRequestMerged{
+		Repo: "acme/widgets", Number: 42, MergeSHA: strings.Repeat("c", 40), HeadSHA: defectHead,
+		MergedAt: time.Date(2026, 11, 27, 6, 0, 0, 0, time.UTC)}, handlers...); err != nil {
+		t.Fatalf("merge the pull request of %s: %v", statusRoot, err)
+	}
+	if at := issuePhaseOf(t, h, statusRoot); at != phase.Verifying {
+		t.Fatalf("%s after its merge stands in %s, want verifying", statusRoot, at)
 	}
 }
 
@@ -219,9 +248,9 @@ func TestReportDefectAnswersEachCase(t *testing.T) {
 
 	t.Run("the merger in verifying before its completion lands records the defect", func(t *testing.T) {
 		t.Parallel()
-		h, _, _ := statusHarness(t)
-		setIssueColumns(t, h, statusRoot, "phase = 'verifying', status = 'testing', merger_completion_owed = true")
+		h, handlers, _ := statusHarness(t)
 		merger := newLiveClaim(t, h, statusRoot, claim.RoleMerger)
+		mergedWithItsMergerAtWork(t, h, handlers, merger.token)
 		if answer := answeredDefect(t, reportDefectAs(h, merger.grant(t), statusRoot, defectText, defectHead, "")); answer.State != "recorded" {
 			t.Fatalf("answer = %+v, want recorded", answer)
 		}
@@ -235,9 +264,14 @@ func TestReportDefectAnswersEachCase(t *testing.T) {
 
 	t.Run("the merger in verifying after its completion landed is refused", func(t *testing.T) {
 		t.Parallel()
-		h, _, _ := statusHarness(t)
-		setIssueColumns(t, h, statusRoot, "phase = 'verifying', status = 'testing', merger_completion_owed = false")
+		h, handlers, _ := statusHarness(t)
 		merger := newLiveClaim(t, h, statusRoot, claim.RoleMerger)
+		mergedWithItsMergerAtWork(t, h, handlers, merger.token)
+		result, err := intake.ApplyFact(context.Background(), h.store.Pool(), "api", "merger-completion", intake.HandoffComplete{
+			Generation: 1, Issue: statusRoot, Role: claim.RoleMerger, Claim: merger.token, Summary: "merged", Commit: defectHead}, handlers...)
+		if err != nil || result.Refusal != nil {
+			t.Fatalf("the merger's completion in verifying = %+v, %v; want it recorded", result.Refusal, err)
+		}
 		refused(t, reportDefectAs(h, merger.grant(t), statusRoot, defectText, defectHead, ""), http.StatusForbidden, "DEFECT_CALLER_NOT_ALLOWED")
 		if rows := defectRows(t, h, statusRoot); len(rows) != 0 {
 			t.Fatalf("defects = %+v, want none", rows)
@@ -405,9 +439,8 @@ func TestReportDefectAnswersEachCase(t *testing.T) {
 
 // withdraw_defect answers each case of the shared contract: the owning architect withdraws a
 // reported defect with a reason, which close-wait.md's next version names; anyone else, an id the
-// issue does not hold, a check's or a production check's reason and a defect a merged change
-// carried are refused, and every refusal changes nothing. 409 DEFECT_REQUEST_OF_A_PERSON is not
-// here: it refuses a request of a person, a kind of reason Task 13 adds, which no code writes yet.
+// issue does not hold, a check's or a production check's reason, a defect a merged change
+// carried, and a request a person made are refused, and every refusal changes nothing.
 func TestWithdrawDefectAnswersEachCase(t *testing.T) {
 	t.Parallel()
 
@@ -531,6 +564,22 @@ func TestWithdrawDefectAnswersEachCase(t *testing.T) {
 		}
 		architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
 		refused(t, withdrawDefectAs(h, architect.grant(t), statusRoot, strconv.FormatInt(id, 10), "fixed"), http.StatusConflict, "DEFECT_IN_MERGED_CHANGE")
+	})
+
+	// A request for new work a person made ends with no pull request only on that person's word:
+	// the owning architect asks the person, whose done closes the issue.
+	t.Run("a request of a person is refused DEFECT_REQUEST_OF_A_PERSON", func(t *testing.T) {
+		t.Parallel()
+		h, _, _ := statusHarness(t)
+		setIssueColumns(t, h, statusRoot, "phase = 'verifying', status = 'testing'")
+		id := seedDefect(t, h, record.Defect{Issue: statusRoot, Generation: 1, Kind: record.DefectKindRequest, Text: "issue.updated: todo",
+			Role: record.RequesterPerson, ReportedAt: time.Date(2026, 11, 27, 5, 0, 0, 0, time.UTC)})
+		architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
+		refused(t, withdrawDefectAs(h, architect.grant(t), statusRoot, strconv.FormatInt(id, 10), "the work is done"), http.StatusConflict,
+			"DEFECT_REQUEST_OF_A_PERSON")
+		if rows := defectRows(t, h, statusRoot); len(rows) != 1 || rows[0].withdrawn {
+			t.Fatalf("defects = %+v, want the person's request still open", rows)
+		}
 	})
 
 	t.Run("a blank reason is refused DEFECT_REASON_REQUIRED", func(t *testing.T) {

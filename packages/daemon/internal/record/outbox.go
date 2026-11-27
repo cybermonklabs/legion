@@ -108,6 +108,10 @@ const (
 	// onto its document close-wait.md (CloseWaitPublish).
 	OutboxKindCloseRead        OutboxKind = "close_read"
 	OutboxKindCloseWaitPublish OutboxKind = "close_wait_publish"
+	// OutboxKindMergeRead reads, outside the fact transaction, whether the work of a closed issue
+	// whose record shows no merge (MergeHistoryPartial, MergeHistoryNone) merged, for the request
+	// for new work that waits on it (MergeRead).
+	OutboxKindMergeRead OutboxKind = "merge_read"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on six lanes side by
@@ -148,7 +152,9 @@ const (
 // root behind it, and on the board lane it would wait behind a notice that waits as long as its
 // architect holds no role, while the news it sends is owed to every holder of the tree. It also
 // runs the read of an issue's checks for the judge of its close (close_read), a read of Dispatch
-// that writes nothing there and must not wait behind such a notice either. The document that says
+// that writes nothing there and must not wait behind such a notice either, and the read of whether
+// a closed issue's work merged (merge_read), which reads Dispatch and GitHub and applies what it
+// read as a fact, as the close read does. The document that says
 // what the close waits for (close_wait_publish) is a write of the issue's Dispatch row, so it runs
 // on the board lane among the issue's other writes, ahead of the status write of its close.
 // The record lane runs the writes of the records of the issue's work — each step's record and the
@@ -188,7 +194,7 @@ var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish, OutboxKindCloseWaitPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
-	LaneDocuments:   {OutboxKindDesignChanges, OutboxKindCloseRead},
+	LaneDocuments:   {OutboxKindDesignChanges, OutboxKindCloseRead, OutboxKindMergeRead},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
 	LaneState:       {OutboxKindStateChange, OutboxKindStateAdmission, OutboxKindStateBoot},
 }
@@ -2127,6 +2133,122 @@ type CloseWaitPublish struct {
 
 func (CloseWaitPublish) OutboxKind() OutboxKind { return OutboxKindCloseWaitPublish }
 
+// MergeRead reads whether the work of the row's issue merged, for the request for new work that
+// waits on it: the issue's record shows no positive merge (MergeHistoryPartial or MergeHistoryNone),
+// so the door queued this read instead of a next change. Issue and Generation are the issue and
+// the generation the request was taken at. Requester is who asked (RequesterPerson,
+// claim.RoleController or claim.RoleArchitect), and Request the request's text. A later request by
+// a person writes its asker and its text over the row's; the apply of the read's fact reads both
+// from the row as it stands then. Progress is the read's saved stage, written by the executor
+// alone. One row stands for an issue at a time.
+type MergeRead struct {
+	Issue      string            `json:"issue"`
+	Generation uint64            `json:"generation"`
+	Requester  claim.Role        `json:"requester"`
+	Request    string            `json:"request"`
+	Progress   MergeReadProgress `json:"progress"`
+}
+
+func (MergeRead) OutboxKind() OutboxKind { return OutboxKindMergeRead }
+
+// The stages of a merge read, in the order the executor runs them (MergeReadProgress.Stage). The
+// empty stage is a read not started.
+const (
+	MergeReadStageLinks      = "links"
+	MergeReadStageResults    = "results"
+	MergeReadStageBases      = "bases"
+	MergeReadStageCandidates = "candidates"
+	MergeReadStageMetadata   = "metadata"
+)
+
+// The states of a merge read beside the stage it stands at (MergeReadProgress.State). The empty
+// state is a read still reading.
+const (
+	// MergeReadStateUnread is a search that completed and found no candidate that answers.
+	MergeReadStateUnread = "unread"
+	// MergeReadStateStopped is a stage whose third attempt failed: no automatic attempt follows.
+	MergeReadStateStopped = "stopped"
+)
+
+// MergeReadMaxFailures is the failed attempts one stage of a merge read may count: after the third
+// it stops (MergeReadStateStopped).
+const MergeReadMaxFailures = 3
+
+// MergeReadProgress is the saved stage of one merge read, which a later turn resumes from. Each
+// field is optional and its zero value is a read not started. Stage is the stage the read stands
+// at, State whether it reads, ended unread or stopped. Cursor is the next page, or the deferred
+// redirect, of the current base's commits/{sha}/pulls listing, empty for its first page. Links are
+// the external links the last links read found. Bases are the merge commits whose pull requests the
+// read lists, and Candidates the pull requests it reads. Attempts counts every GET attempt
+// reserved, retries and redirects included, and Failures the failed attempts of the current stage,
+// with Cause the last failure's text and RetryAt the stage's next attempt after it. Reserved is an
+// attempt reserved whose answer is not saved yet, and Uncertain counts such attempts a crash left.
+// MetadataReads counts the pull-request reads of missing branch metadata of a known merge. Refresh
+// is a door's ask for one links read, which the executor clears once it ran it. No token or
+// credential is kept here.
+type MergeReadProgress struct {
+	Stage         string               `json:"stage,omitempty"`
+	State         string               `json:"state,omitempty"`
+	Cursor        string               `json:"cursor,omitempty"`
+	Links         []string             `json:"links,omitempty"`
+	Bases         []MergeReadBase      `json:"bases,omitempty"`
+	Candidates    []MergeReadCandidate `json:"candidates,omitempty"`
+	Attempts      int                  `json:"attempts,omitempty"`
+	Failures      int                  `json:"failures,omitempty"`
+	Cause         string               `json:"cause,omitempty"`
+	RetryAt       time.Time            `json:"retryAt,omitzero"`
+	Reserved      bool                 `json:"reserved,omitempty"`
+	Uncertain     int                  `json:"uncertain,omitempty"`
+	MetadataReads int                  `json:"metadataReads,omitempty"`
+	Refresh       bool                 `json:"refresh,omitempty"`
+}
+
+// The sources of a merge read's base (MergeReadBase.Source): Dispatch's results read, or the
+// issue's production check.
+const (
+	MergeReadSourceResults    = "results"
+	MergeReadSourceProduction = "production"
+)
+
+// The sources of a merge read's candidate beside those two (MergeReadCandidate.Source): an
+// external link of the issue, a clock a clear kept, and the issue's retained pull request row.
+const (
+	MergeReadSourceLink     = "link"
+	MergeReadSourceCleared  = "cleared"
+	MergeReadSourceRetained = "retained"
+)
+
+// MergeReadBase is one merge commit whose pull requests a merge read lists
+// (GET /repos/{repo}/commits/{sha}/pulls): its repository, its commit, where it was found, and
+// whether every page of its listing was read.
+type MergeReadBase struct {
+	Repo   string `json:"repo"`
+	SHA    string `json:"sha"`
+	Source string `json:"source"`
+	Done   bool   `json:"done,omitempty"`
+}
+
+// MergeReadCandidate is one pull request a merge read reads (GET /repos/{repo}/pulls/{n}): its
+// repository and number, where it was found, and its answer, nil until that read answered.
+type MergeReadCandidate struct {
+	Repo   string           `json:"repo"`
+	Number int              `json:"number"`
+	Source string           `json:"source"`
+	Answer *MergeReadAnswer `json:"answer,omitempty"`
+}
+
+// MergeReadAnswer is what GitHub answered of one candidate: whether it merged, whether it names
+// the issue (its branch or its body), so it may answer the read, and its final head, merge commit,
+// base and merged_at where it merged.
+type MergeReadAnswer struct {
+	Merged   bool      `json:"merged"`
+	Names    bool      `json:"names"`
+	Head     string    `json:"head,omitempty"`
+	SHA      string    `json:"sha,omitempty"`
+	Base     string    `json:"base,omitempty"`
+	MergedAt time.Time `json:"mergedAt,omitzero"`
+}
+
 // CheckWakeDue is the one row that can start a production check's next look beside the check's
 // own bound (CheckBound): the wake the checking agent named for itself on a pending report
 // (ProductionCheck.WakeAt), or the retry of a look nobody reported. It is enqueued at the end of a
@@ -3073,6 +3195,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindMergeRead:
+		value := MergeRead{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindDesignChanges:
 		value := DesignNewsReconcile{}
 		if err := decoder.Decode(&value); err != nil {
@@ -3161,6 +3289,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Generation == 0 {
 			return fmt.Errorf("a publish of the close's wait names the generation whose wait it writes")
 		}
+	case MergeRead:
+		return validMergeRead(issue, value)
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
@@ -3589,6 +3719,57 @@ func carriesReview(n Notice) bool {
 // the review's mark and document (carriesReview).
 func designReview(decision DecisionKind) bool {
 	return decision == DecisionDesignApproved || decision == DecisionDesignChangesRequested
+}
+
+// mergeReadRequesters are who may ask for the request a merge read waits on.
+var mergeReadRequesters = []claim.Role{RequesterPerson, claim.RoleController, claim.RoleArchitect}
+
+// validMergeRead refuses a merge read no row may carry: one of another issue than the row's, of no
+// generation, of an asker who cannot ask, or of no request's text, and a saved stage the executor
+// could not resume (validMergeReadProgress).
+func validMergeRead(issue string, value MergeRead) error {
+	switch {
+	case value.Issue == "" || value.Issue != issue:
+		return fmt.Errorf("a merge read names its row's issue %s. It names %q", issue, value.Issue)
+	case value.Generation == 0:
+		return fmt.Errorf("a merge read names the generation its request was taken at")
+	case !slices.Contains(mergeReadRequesters, value.Requester):
+		return fmt.Errorf("a merge read's request was asked by a person, the controller or an architect, not %q", value.Requester)
+	case strings.TrimSpace(value.Request) == "":
+		return fmt.Errorf("a merge read carries the text of the request it waits on")
+	}
+	return validMergeReadProgress(value.Progress)
+}
+
+// validMergeReadProgress refuses a saved stage of a merge read that names a stage, a state or a
+// source the executor does not know, more failed attempts than a stage may count, a count below
+// zero, or a base or a candidate that names no pull request it can read.
+func validMergeReadProgress(progress MergeReadProgress) error {
+	stages := []string{"", MergeReadStageLinks, MergeReadStageResults, MergeReadStageBases, MergeReadStageCandidates, MergeReadStageMetadata}
+	switch {
+	case !slices.Contains(stages, progress.Stage):
+		return fmt.Errorf("a merge read stands at no stage it runs: %q", progress.Stage)
+	case !slices.Contains([]string{"", MergeReadStateUnread, MergeReadStateStopped}, progress.State):
+		return fmt.Errorf("a merge read is in no state it knows: %q", progress.State)
+	case progress.Failures < 0 || progress.Failures > MergeReadMaxFailures:
+		return fmt.Errorf("a merge read's stage counts %d failed attempts, not 0 to %d", progress.Failures, MergeReadMaxFailures)
+	case progress.Attempts < 0 || progress.Uncertain < 0 || progress.MetadataReads < 0:
+		return fmt.Errorf("a merge read counts no attempt below zero")
+	}
+	for _, base := range progress.Bases {
+		if base.Repo == "" || base.SHA == "" || !slices.Contains([]string{MergeReadSourceResults, MergeReadSourceProduction}, base.Source) {
+			return fmt.Errorf("a merge read's base names its repository, its merge commit and its source, results or production. It names %q, %q and %q",
+				base.Repo, base.SHA, base.Source)
+		}
+	}
+	sources := []string{MergeReadSourceLink, MergeReadSourceCleared, MergeReadSourceRetained, MergeReadSourceProduction, MergeReadSourceResults}
+	for _, candidate := range progress.Candidates {
+		if candidate.Repo == "" || candidate.Number <= 0 || !slices.Contains(sources, candidate.Source) {
+			return fmt.Errorf("a merge read's candidate names its repository, a pull request number above 0 and a source it knows. It names %q, #%d and %q",
+				candidate.Repo, candidate.Number, candidate.Source)
+		}
+	}
+	return nil
 }
 
 // validNoticeKinds is every notice kind the daemon publishes, which is also every kind a row may
