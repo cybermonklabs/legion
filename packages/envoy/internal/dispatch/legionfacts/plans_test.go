@@ -170,8 +170,8 @@ func TestTheOtherBuildsFilingsReadReadsTheWrittenBuildIndex(t *testing.T) {
 // another, and a key no row holds; a board that names no card answers the open rows alone.
 //
 // Every plan is taken in readByIndex's transaction, the one each read runs its statement in, and
-// under no setting of the test's own but the plan cache's mode: with the values, as the planner
-// prices them, for both boards; and as the generic plan pgx's cached statement settles on, which
+// under no setting of the test's own: with the values, as an EXPLAIN that binds them plans the
+// statement, for both boards; and as the generic plan the reads run (BoardReadSettings), which
 // knows no value of the lists.
 func TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone(t *testing.T) {
 	ctx := t.Context()
@@ -315,8 +315,8 @@ func TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone(t *testing.T) {
 			return fmt.Errorf("explain the board's read of the open rows as text: %w", err)
 		}
 		// The generic plans, in this transaction, so under readByIndex's settings and no setting
-		// of the test's own: GenericPlan forces the mode, since a test never executes a statement
-		// often enough to reach it.
+		// of the test's own: GenericPlan prepares each statement and explains its EXECUTE under
+		// the generic plan, which BoardReadSettings forces for the reads too.
 		plans["open"]["under the generic plan"] = explaintest.GenericPlan(t, ctx, tx, "board_open_facts", openStatement,
 			[]string{"text"}, []string{"'FC'"})
 		plans["closed"]["under the generic plan"] = explaintest.GenericPlan(t, ctx, tx, "board_closed_facts", closedStatement,

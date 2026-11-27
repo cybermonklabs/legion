@@ -557,27 +557,21 @@ func readBoardRows(ctx context.Context, pool *store.Pool, project string, at tim
 	return rows, time.Since(closing), nil
 }
 
-// readByIndex runs read in a read-only transaction of its own on pool whose first statement turns
-// the planner's sequential scans off and has it plan each statement with its values for that
-// transaction alone (`set local`), so nothing of it is left on the pooled connection once the
-// transaction ends. It is the transaction of each of the board's reads (readBoardRows), and the
-// one their plan test takes the board's plans in, so the plans the test judges are the ones the
-// reads run. It takes one connection and holds no lock another read waits on, so it is one of the
-// reads the board runs side by side (store.ReadSideBySide), as the board's snapshot read is.
-//
-// The plan with the values (`plan_cache_mode = force_custom_plan`) is the one a statement pgx
-// caches would otherwise leave after its fifth run for a generic plan, where `= any` over a
-// parameter scans the array for each row it tests rather than hashing it. openWhere tests no
-// array, so it costs a generic plan little, and the setting keeps the arms of shownClosedWhere,
-// which do test one (each bounded by the board's cards), on the values as well.
+// readByIndex runs read in a read-only transaction of its own on pool whose first statement is
+// BoardReadSettings, which holds for that transaction alone (`set local`), so nothing of it is
+// left on the pooled connection once the transaction ends. It is the transaction of each of the
+// board's reads (readBoardRows), and the one their plan test takes the board's plans in, so the
+// plans the test judges are the ones the reads run. It takes one connection and holds no lock
+// another read waits on, so it is one of the reads the board runs side by side
+// (store.ReadSideBySide), as the board's snapshot read is.
 func readByIndex(ctx context.Context, pool *store.Pool, read func(tx pgx.Tx) error) error {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return fmt.Errorf("begin the board's read of the Legion facts: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local enable_seqscan = off; set local plan_cache_mode = force_custom_plan`); err != nil {
-		return fmt.Errorf("turn sequential scans and generic plans off for the board's read of the Legion facts: %w", err)
+	if _, err := tx.Exec(ctx, BoardReadSettings); err != nil {
+		return fmt.Errorf("turn sequential scans off and force the generic plan for the board's read of the Legion facts: %w", err)
 	}
 	if err := read(tx); err != nil {
 		return err
@@ -588,6 +582,23 @@ func readByIndex(ctx context.Context, pool *store.Pool, read func(tx pgx.Tx) err
 	return nil
 }
 
+// BoardReadSettings is the first statement of each of the board's reads of the stored rows
+// (readByIndex), and the one api's plan tests of those reads explain their statements under, so
+// a test and a read cannot differ in it: sequential scans off, for the reason ReadOpen's doc
+// gives, and the generic plan from a statement's first run.
+//
+// The open rows and the closed rows are reads of their own, so no arm tests a list on every open
+// row (openWhere, shownClosedWhere), and the generic plan reads each arm through its index as the
+// plan with the values does. A plan with the values is made again at every run, and over the
+// closed read's lists it cost more than the read: with lists of 1,000 and 746 elements, on
+// Postgres 18, planning with the values took about 7.5 ms of each read, where the generic plan
+// took 0.22 ms to plan and ran in 1.6 ms, and a statement pgx caches keeps its generic plan from
+// one run to the next. TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone holds every arm to its own
+// index under both plans, and api's TestTheBoardsFactsReadIsAnIndexReadOfIssueFacts and
+// TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget, and legionbench's
+// TestFarmBoardFactsRead at root R14's size, explain the statements the board ran under them.
+const BoardReadSettings = `set local enable_seqscan = off; set local plan_cache_mode = force_generic_plan`
+
 // openWhere and shownClosedWhere are the clauses of the board's two reads, ReadOpen's and
 // ReadShownClosed's, each completing boardSelect: three reads of the project's rows that share no
 // row, keyed on closed_at. The open rows are the range of issue_facts_closed (project_key,
@@ -597,12 +608,12 @@ func readByIndex(ctx context.Context, pool *store.Pool, read func(tx pgx.Tx) err
 // keys given whose root is none of those trees, each a probe of the primary key (project_key,
 // issue_key). Both indexes are migration 20261117100000's. The three answer the open rows, the
 // trees' rows and the cards' rows, each once, and only the last tests a list on the rows it reads,
-// the roots on each closed card's, which the cards bound. No arm tests a list on every open row:
-// under the generic plan a statement pgx caches can settle on, `<> all($n)` scans the list for each
-// row rather than hashing it, and over 15,803 rows of one project, 4,300 of them open, a read that
-// tested the cards and the trees on every open row took 119 to 168 ms with 200 cards in 60 trees
-// and 417 to 482 ms with 1,000 cards in 300 trees, where the three arms in one statement took 7 to
-// 9 ms and 11 to 16 ms under either plan.
+// the roots on each closed card's, which the cards bound. No arm tests a list on every open row,
+// which is what lets the reads run the generic plan (BoardReadSettings): under it `<> all($n)`
+// scans the list for each row rather than hashing it, and over 15,803 rows of one project, 4,300
+// of them open, a read that tested the cards and the trees on every open row took 119 to 168 ms
+// with 200 cards in 60 trees and 417 to 482 ms with 1,000 cards in 300 trees, where the three arms
+// in one statement took 7 to 9 ms and 11 to 16 ms under either plan.
 // TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget holds the two reads to 20 ms.
 //
 // The planner keeps the open arm on the index only because ReadOpen runs it with sequential scans

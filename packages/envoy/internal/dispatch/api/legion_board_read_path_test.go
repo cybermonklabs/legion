@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
@@ -94,7 +95,9 @@ type explainedBoardRead struct {
 }
 
 // explainBoardRead runs one statement under `explain (analyze, buffers)` twice, once as JSON for
-// the checks and once as text for the record, in a transaction it rolls back.
+// the checks and once as text for the record, in a transaction it rolls back, under the settings
+// each of the board's reads of the stored facts runs with (legionfacts.BoardReadSettings), so the
+// test and the read cannot differ in them.
 func explainBoardRead(t *testing.T, database *store.Store, ran ranStatement) explainedBoardRead {
 	t.Helper()
 	ctx := t.Context()
@@ -103,6 +106,9 @@ func explainBoardRead(t *testing.T, database *store.Store, ran ranStatement) exp
 		t.Fatalf("begin the explain: %v", err)
 	}
 	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, legionfacts.BoardReadSettings); err != nil {
+		t.Fatalf("set the board read's settings: %v", err)
+	}
 	var planJSON []byte
 	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+ran.sql, ran.args...).Scan(&planJSON); err != nil {
 		t.Fatalf("explain %s: %v", ran.sql, err)
@@ -286,19 +292,20 @@ func planMilliseconds(t *testing.T, plan json.RawMessage) float64 {
 	return node.Total
 }
 
-// customBoardRead runs the statement the board's request ran with its arguments, planned with
-// them (plan_cache_mode force_custom_plan) under the settings the read runs with
-// (legionfacts.readByIndex), analyzed, and answers its plan.
+// customBoardRead runs the statement the board's request ran with its arguments under the
+// settings the read runs with (legionfacts.BoardReadSettings), analyzed, and answers its plan. An
+// EXPLAIN that binds its own arguments is planned for their values whatever the plan cache's mode,
+// so this is the plan with the values, beside the generic plan the read itself runs.
 func customBoardRead(t *testing.T, database *store.Store, ran ranStatement) json.RawMessage {
 	t.Helper()
 	ctx := t.Context()
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin the custom plan's transaction: %v", err)
+		t.Fatalf("begin the plan with the values' transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local enable_seqscan = off; set local plan_cache_mode = force_custom_plan`); err != nil {
-		t.Fatalf("set the custom plan's settings: %v", err)
+	if _, err := tx.Exec(ctx, legionfacts.BoardReadSettings); err != nil {
+		t.Fatalf("set the board read's settings: %v", err)
 	}
 	var raw []byte
 	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+ran.sql, ran.args...).Scan(&raw); err != nil {
@@ -336,17 +343,16 @@ func boardReadLiterals(t *testing.T, database *store.Store, args []any) (types, 
 // TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget: the board's two reads of the
 // stored facts, the statements its request runs with their own arguments, the read of the open
 // rows and the read of the closed rows of what it shows, take at most boardReadGenericBudget
-// together at INFRA's size under the generic plan a statement pgx caches can settle on after its
-// fifth run, as under the plan with its values. The reads set that plan themselves
-// (legionfacts.readByIndex), and this holds the statements to their budget without the setting:
-// an earlier shape left the rows of the cards and the trees out of the open rows, which tested
-// both lists on every open row, and a generic plan scans a list for each row it tests rather than
-// hashing it. The two are held together, as the one read they were split from was, though the
-// board runs the open rows' read beside its card reads.
+// together at INFRA's size under the generic plan, the plan the reads run
+// (legionfacts.BoardReadSettings forces it), and are recorded under the plan with their values
+// beside it. An earlier shape left the rows of the cards and the trees out of the open rows, which
+// tested both lists on every open row, and a generic plan scans a list for each row it tests
+// rather than hashing it. The two are held together, as the one read they were split from was,
+// though the board runs the open rows' read beside its card reads.
 //
-// Each read runs boardReadRuns times under each mode, under the reads' own settings, and its
-// median execution is what is held and recorded with the plan, so the record of each run says
-// whether the plan mode moves a read's cost.
+// Each read runs boardReadRuns times under each mode, under the reads' own settings
+// (legionfacts.BoardReadSettings), and its median execution is what is held and recorded with the
+// plan, so the record of each run says whether the plan mode moves a read's cost.
 func TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget(t *testing.T) {
 	log := &statementLog{}
 	handler, database, fixture := boardAtInfraSize(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), log)})
@@ -387,7 +393,7 @@ func TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget(t *testing.T) {
 			{"custom", func(int) json.RawMessage { return customBoardRead(t, database, read) }},
 			{"generic", func(run int) json.RawMessage {
 				return explaintest.AnalyzedGenericPlan(t, ctx, connection, fmt.Sprintf("board_facts_read_%d_%d", index, run), read.sql,
-					types, literals, "set local enable_seqscan = off")
+					types, literals, legionfacts.BoardReadSettings)
 			}},
 		} {
 			taken := make([]float64, 0, boardReadRuns)

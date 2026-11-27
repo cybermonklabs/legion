@@ -468,7 +468,7 @@ type legionBoardPopulation struct {
 	// read has recorded one.
 	settings map[string]json.RawMessage
 	// issues is every issue the newest good read reported, by key, with what Dispatch holds of it
-	// beside the observations (readCurrent): the issues the board may show a card of.
+	// beside the observations (readCurrent, describe): the issues the board may show a card of.
 	issues map[string]*legionBoardIssue
 	// reported is legion.ReadCurrent's Reported: the daemon's half of treeNode's rule.
 	reported map[string]string
@@ -502,25 +502,28 @@ type legionBoardPopulation struct {
 // the live hub's recompute line reports beside its read stage (deliveryRecomputeTimes), so a run
 // whose reads slowed says which part the time went to:
 //
-//   - cards, the reads of the project's Legion setting, the daemon's newest read and observations,
-//     the project's issues and the phase work the tree walk climbs onto, and the placing of the
-//     cards and their trees from them: the board's reads before its read of the closed rows;
+//   - cards, the read of the project's Legion setting, the longer of the two reads the cards are
+//     placed from, the daemon's newest read and observations (readRecorded) and the project's
+//     issues (readIssues), which run side by side, and then the read of the phase work the tree
+//     walk climbs onto and the placing of the cards and their trees: the board's reads before its
+//     read of the closed rows;
 //   - facts, the read of the closed rows of the trees and the cards the board shows
 //     (legionfacts.ReadShownClosed), its statement and the scan of its rows, less its close of the
 //     rows, which runs once the cards are placed;
 //   - grow, that close, each closed row grown to the read's clock (legionfacts.Row.At), which
 //     moves the slot hours of a slot a closed issue never gave up;
 //   - open and openGrow, the same two parts of the read of the project's open rows
-//     (legionfacts.ReadOpen), which names no card and so runs beside the others from the first;
-//   - cursor, the read of the facts consumer's cursor age, which runs beside the others too;
+//     (legionfacts.ReadOpen), which names no card and so runs beside the two card reads;
+//   - cursor, the read of the facts consumer's cursor age, which runs beside them too;
 //   - wait, the time every acquire of the shared pool that ended while those reads ran took in all
 //     (pgxpool's AcquireDuration): each read's connections, the board's and any other caller's
 //     in that span, so it bounds the board's own wait for its connections from above, and it lies
 //     inside the other parts' times rather than beside them.
 //
-// cards, facts and grow run one after the other, and open with openGrow, and cursor, run beside
-// them, so the read lasts as long as the longest of the three, and the recompute line reports
-// every part rather than a sum of parts that overlap. A part the read did not reach is 0.
+// The two card reads, open with openGrow, and cursor run side by side, and the rest of cards,
+// then facts and grow, run one after the other once all four have answered, so the read lasts as
+// long as the longest of the four and the rest after it, and the recompute line reports every
+// part rather than a sum of parts that overlap. A part the read did not reach is 0.
 type legionBoardReadTimes struct {
 	cards, facts, grow, open, openGrow, cursor, wait time.Duration
 }
@@ -575,39 +578,35 @@ func (s *server) readLegionBoard(ctx context.Context, project string, now time.T
 		project: project, issues: map[string]*legionBoardIssue{}, parents: map[string]string{},
 	}
 	setting := time.Since(started)
-	// The header's read of the daemon with its legion_current in one snapshot (readRecorded: the
-	// header, the cards and the issues the daemon reports), the project's issues, the phase work
-	// the tree walk climbs onto and the closed rows the board shows are one chain: the walk climbs
-	// the issues the daemon reports and the project's issues name, the cards stand in the trees
-	// that walk places them in, and the cards name the trees whose closed rows the answer carries.
-	// The project's open rows, which the answer carries whatever the cards are, and the age of the
-	// consumer's oldest cursor, which says how recently it read its feeds, depend on nothing before
-	// them, so the three run side by side (store.ReadSideBySide), as the delivery population's
-	// independent reads do (delivery.go). The snapshot's transaction is the chain's own, and it
-	// commits before the chain reads anything else; each read of the facts opens a read-only
-	// transaction of its own (legionfacts.ReadOpen, legionfacts.ReadShownClosed), never the
-	// snapshot's, and the chain's opens once every earlier read of the chain has let its
-	// connection go. Each times its own parts (legionBoardReadTimes), into fields of its own.
+	// Four reads depend on nothing before them, so they run side by side (store.ReadSideBySide),
+	// as the delivery population's independent reads do (delivery.go): the header's read of the
+	// daemon with its legion_current in one snapshot (readRecorded: the header, the cards and the
+	// issues the daemon reports), the project's issues (readIssues), the project's open rows,
+	// which the answer carries whatever the cards are, and the age of the consumer's oldest
+	// cursor, which says how recently it read its feeds. Each writes only what is its own, its
+	// time among it: the snapshot fills the issues the daemon reports, and the read of the
+	// project's issues answers what Dispatch holds of each beside them (holds), which describe
+	// puts on the daemon's issues once both have answered. The rest is one chain after the four:
+	// the phase work the tree walk climbs onto, since the walk climbs the issues the daemon
+	// reports and the project's issues name; the cards, which stand in the trees that walk places
+	// them in; and the closed rows of the trees and the cards the board shows. The snapshot's
+	// transaction is its own, and each read of the facts opens a read-only transaction of its own
+	// (legionfacts.ReadOpen, legionfacts.ReadShownClosed), never the snapshot's.
 	acquired := pool.Stat().AcquireDuration()
-	var open, closed map[string]legionfacts.Row
+	var recorded, listed time.Duration
+	var holds []legionBoardHeld
+	var open map[string]legionfacts.Row
 	if err := store.ReadSideBySide(ctx,
-		func(ctx context.Context) (err error) {
-			placing := time.Now()
-			if err := population.readRecorded(ctx, pool); err != nil {
-				return err
-			}
-			if err := population.readIssues(ctx, pool); err != nil {
-				return err
-			}
-			if err := population.readPhaseWork(ctx, pool); err != nil {
-				return err
-			}
-			population.cards = population.placeCards()
-			keys, roots := population.shown()
-			population.times.cards = setting + time.Since(placing)
+		func(ctx context.Context) error {
 			reading := time.Now()
-			closed, population.times.grow, err = legionfacts.ReadShownClosed(ctx, pool, project, keys, roots, now)
-			population.times.facts = time.Since(reading) - population.times.grow
+			err := population.readRecorded(ctx, pool)
+			recorded = time.Since(reading)
+			return err
+		},
+		func(ctx context.Context) (err error) {
+			reading := time.Now()
+			holds, err = population.readIssues(ctx, pool)
+			listed = time.Since(reading)
 			return err
 		},
 		func(ctx context.Context) (err error) {
@@ -630,6 +629,20 @@ func (s *server) readLegionBoard(ctx context.Context, project string, now time.T
 	); err != nil {
 		return nil, err
 	}
+	placing := time.Now()
+	population.describe(holds)
+	if err := population.readPhaseWork(ctx, pool); err != nil {
+		return nil, err
+	}
+	population.cards = population.placeCards()
+	keys, roots := population.shown()
+	population.times.cards = setting + max(recorded, listed) + time.Since(placing)
+	reading := time.Now()
+	closed, grow, err := legionfacts.ReadShownClosed(ctx, pool, project, keys, roots, now)
+	if err != nil {
+		return nil, err
+	}
+	population.times.grow, population.times.facts = grow, time.Since(reading)-grow
 	population.facts = legionfacts.Join(open, closed)
 	population.times.wait = pool.Stat().AcquireDuration() - acquired
 	return population, nil
@@ -736,12 +749,19 @@ func (p *legionBoardPopulation) observeProject(field string, value []byte) {
 	}
 }
 
+// legionBoardHeld is what Dispatch holds of one of the project's issues that its card shows
+// beside the daemon's observations: its title and its priority.
+type legionBoardHeld struct {
+	title    string
+	priority *int
+}
+
 // readIssues reads the project's issues in Dispatch's rank order, records the parent of every one
-// of them — the chain the tree walk climbs, whatever the daemon reports of each — and fills the
-// title, priority and parent of every issue the daemon reported. An issue the daemon reports that
-// Dispatch does not hold keeps an empty title: the board shows what the daemon says, and a card
-// with no title is better than a card the reader never sees.
-func (p *legionBoardPopulation) readIssues(ctx context.Context, pool *store.Pool) error {
+// of them — the chain the tree walk climbs, whatever the daemon reports of each — and answers what
+// Dispatch holds of each, in that order (describe). It runs beside readRecorded, which fills
+// p.issues, so it reads nothing of p.issues and writes only p.ranked and p.parents, which no read
+// beside it touches.
+func (p *legionBoardPopulation) readIssues(ctx context.Context, pool *store.Pool) ([]legionBoardHeld, error) {
 	rows, err := pool.Query(ctx, `
 		select key, title, priority, coalesce(parent_key, '')
 		from issues
@@ -749,22 +769,33 @@ func (p *legionBoardPopulation) readIssues(ctx context.Context, pool *store.Pool
 		order by rank asc, created_at asc, key asc
 	`, p.project)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer rows.Close()
+	var held []legionBoardHeld
 	for rows.Next() {
-		var key, title, parent string
-		var priority *int
-		if err := rows.Scan(&key, &title, &priority, &parent); err != nil {
-			return err
+		var key, parent string
+		var issue legionBoardHeld
+		if err := rows.Scan(&key, &issue.title, &issue.priority, &parent); err != nil {
+			return nil, err
 		}
 		p.ranked = append(p.ranked, key)
 		p.parents[key] = parent
+		held = append(held, issue)
+	}
+	return held, rows.Err()
+}
+
+// describe puts on every issue the daemon reported the title and priority Dispatch holds of it:
+// held is readIssues' answer, in p.ranked's order. An issue the daemon reports that Dispatch does
+// not hold keeps an empty title: the board shows what the daemon says, and a card with no title is
+// better than a card the reader never sees.
+func (p *legionBoardPopulation) describe(held []legionBoardHeld) {
+	for index, key := range p.ranked {
 		if issue := p.issues[key]; issue != nil {
-			issue.title, issue.priority = title, priority
+			issue.title, issue.priority = held[index].title, held[index].priority
 		}
 	}
-	return rows.Err()
 }
 
 // readPhaseWork reads which of the issues the tree walk can climb onto carry Legion phase work:
