@@ -1232,14 +1232,13 @@ machine with no container.
 A third layer holds every page to the layout rule of `web/src/AGENTS.md` ("Layout"), and
 `bun run e2e:layout` runs all of it. It reads the routes of `e2e/layout-routes.ts` - every
 reviewed route, the excluded ones whose reason argues only against a shot or a scan, two pages a
-reader's choice in this browser draws another way (the new issue page, the project's board),
-today's issue page on its Dashboard tab, which no review route opens, and the project page and its
-Architecture tab, which a project with an architecture source draws -
+reader's choice in this browser draws another way (the new issue page, the project's board), and
+the project page and its Architecture tab, which a project with an architecture source draws -
 over the review corpus and a stress layer that writes
 production's lengths (`e2e/layout-seed.ts`), at 360, 900, 1280, 1440 and 1920 px, and again in
 each state a route names (the Peek drawer open, rows or agents selected, the issues table searched
-for the stress issue, whose row the plain load's window does not draw). At each width
-`e2e/layout-check.ts` loads the page fresh, waits for `waitForRouteSettled`, and runs
+for the stress issue, whose row the plain load's window does not draw, Dashboard's tiles opened).
+At each width `e2e/layout-check.ts` loads the page fresh, waits for `waitForRouteSettled`, and runs
 `measureLayout` (`e2e/layout-measure.ts`) in the page: a page that scrolls sideways, a box that
 does for anything but a code block, one picture wider than the box, a data table or a board's
 lanes, something cut off at a side with no ellipsis (a code block's text, a picture and a fixed
