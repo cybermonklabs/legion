@@ -174,7 +174,8 @@ test("with a phone's Review sheet on the page, the toolbar's controls stand in i
     version: document.createElement("span"),
   };
   for (const box of Object.values(boxes)) document.body.append(box);
-  const withdraw = publishReviewSheetSlots(boxes);
+  // A sheet that is shut already runs a control's move at once (`ReviewSheetSlots.leave`).
+  const withdraw = publishReviewSheetSlots({ ...boxes, leave: (move) => move() });
   const view = renderHeader(artifact, toolbarWith("connected", undefined));
 
   try {
