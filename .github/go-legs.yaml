@@ -365,6 +365,7 @@ packages/envoy:
       - internal/stacktest
       - internal/redact
       - natsgrant
+      - awsbody
       - internal/oauthrefusal
       - internal/pgmigrate/pgmigratetest
       - internal/ratelimit

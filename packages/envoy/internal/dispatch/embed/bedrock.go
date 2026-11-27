@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/smithy-go/logging"
 
+	"github.com/sjawhar/envoy/awsbody"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 )
 
@@ -90,7 +91,8 @@ func NewBedrock(ctx context.Context, opts ...BedrockOption) (*BedrockClient, err
 // NewBedrockWithConfig builds a BedrockClient directly from an already-loaded AWS configuration,
 // skipping NewBedrock's region check and credential-chain loading - a test supplies its own
 // static, fake credentials and WithBaseEndpoint rather than touching the real AWS SDK default
-// chain.
+// chain. Its HTTP client goes through awsbody.Client, so an answered InvokeModel is not failed by
+// smithy-go closing the request body before net/http has finished with it (package awsbody).
 func NewBedrockWithConfig(cfg aws.Config, opts ...BedrockOption) *BedrockClient {
 	c := &BedrockClient{model: BedrockModel}
 	for _, opt := range opts {
@@ -100,6 +102,7 @@ func NewBedrockWithConfig(cfg aws.Config, opts ...BedrockOption) *BedrockClient 
 		if c.endpoint != "" {
 			o.BaseEndpoint = aws.String(c.endpoint)
 		}
+		o.HTTPClient = awsbody.Client(o.HTTPClient)
 	})
 	return c
 }
