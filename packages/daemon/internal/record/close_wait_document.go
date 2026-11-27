@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // CloseWaitDocumentName is the name of the issue's Dispatch document that says what its close
@@ -23,20 +25,26 @@ const (
 // when the issue waits is the row's own column (Issue.CloseWaitSince), so it is not kept here
 // twice. Each item says since when it stands. Entered is the time of the issue's newest entry
 // into verifying, after which alone a read of the checks counts. Ended is the change that ended
-// last, said once in the version written when it ended. Closed is when the issue closed, set in
-// the last version only.
+// last, said once in the version written when it ended. Withdrawn is each reported defect the
+// owning architect withdrew in the write that stores it, with the reason, said once in the version
+// written for that withdrawal. Closed is when the issue closed, set in the last version only.
+//
+// A report of a defect in retro or merging (workflow's defectReport) stores the wait as well, so
+// close-wait.md names the defect before the merge: there the wait holds the reported defects, and
+// whatever an earlier entry into verifying left.
 type StoredWait struct {
-	Entered      time.Time       `json:"entered"`
-	Checks       []WaitCheck     `json:"checks,omitempty"`
-	Production   *WaitProduction `json:"production,omitempty"`
-	Beneath      []WaitIssue     `json:"beneath,omitempty"`
-	OpenChildren []WaitIssue     `json:"openChildren,omitempty"`
-	Defects      []WaitReason    `json:"defects,omitempty"`
-	NextChange   *WaitChange     `json:"nextChange,omitempty"`
-	Unread       *WaitUnread     `json:"unread,omitempty"`
-	Unapproved   *WaitUnapproved `json:"unapproved,omitempty"`
-	Ended        *WaitChangeEnd  `json:"ended,omitempty"`
-	Closed       *time.Time      `json:"closed,omitempty"`
+	Entered      time.Time        `json:"entered"`
+	Checks       []WaitCheck      `json:"checks,omitempty"`
+	Production   *WaitProduction  `json:"production,omitempty"`
+	Beneath      []WaitIssue      `json:"beneath,omitempty"`
+	OpenChildren []WaitIssue      `json:"openChildren,omitempty"`
+	Defects      []WaitReason     `json:"defects,omitempty"`
+	NextChange   *WaitChange      `json:"nextChange,omitempty"`
+	Unread       *WaitUnread      `json:"unread,omitempty"`
+	Unapproved   *WaitUnapproved  `json:"unapproved,omitempty"`
+	Ended        *WaitChangeEnd   `json:"ended,omitempty"`
+	Withdrawn    []WaitWithdrawal `json:"withdrawn,omitempty"`
+	Closed       *time.Time       `json:"closed,omitempty"`
 }
 
 // WaitCheck is one check of the issue's Verification document whose state is not a pass: its
@@ -71,13 +79,25 @@ type WaitIssue struct {
 }
 
 // WaitReason is one reason of a next change, or a reported defect that holds the close: its id,
-// its kind, its text, and the check it is about, where it names one.
+// its kind, its text, the check it is about, where it names one, and, for a reported defect, the
+// role that reported it and the head of the pull request it saw the defect at.
 type WaitReason struct {
 	ID    int64      `json:"id"`
 	Kind  DefectKind `json:"kind"`
 	Text  string     `json:"text"`
 	Check string     `json:"check,omitempty"`
+	Role  claim.Role `json:"role,omitempty"`
+	Head  string     `json:"head,omitempty"`
 	Since time.Time  `json:"since"`
+}
+
+// WaitWithdrawal is a reported defect the owning architect withdrew (withdraw_defect): its id, its
+// text, the withdrawal's reason and when it was made.
+type WaitWithdrawal struct {
+	ID     int64     `json:"id"`
+	Text   string    `json:"text"`
+	Reason string    `json:"reason"`
+	At     time.Time `json:"at"`
 }
 
 // WaitChange is the next change of the issue that is open: its generation and each reason it

@@ -1009,6 +1009,12 @@ type Issue struct {
 	// issue of the body the route serves a caller below podHoldContract (shapeIssue,
 	// withoutPodHold).
 	PodHold *PodHoldView `json:"podHold,omitempty"`
+	// CloseWait is what the issue's close waits for (CloseWaitView): present for an issue in
+	// verifying, and for one in retro or merging, or held from either, that holds a reported
+	// defect (report_defect). It is the issue's stored wait, which close-wait.md renders
+	// (record.StoredWait), read in this state's own snapshot. Absent from every issue of the body
+	// served a caller below the defect-calls entry (withoutCloseWait).
+	CloseWait *CloseWaitView `json:"closeWait,omitempty"`
 }
 
 // PodHoldView is one pod's standing hold as the state shows it (store.PodHold): Reason, the idle
@@ -1041,6 +1047,83 @@ func PodHoldViewOf(hold store.PodHold) *PodHoldView {
 		chars++
 	}
 	return &PodHoldView{Reason: hold.Reason, FirstAt: hold.FirstAt, At: hold.At, Detail: detail}
+}
+
+// CloseWaitView is what an issue's close waits for, as the state shows it (record.StoredWait):
+// since when the issue waits (the merge's time, absent before a merge), each issue beneath it in
+// the workflow and each open child Dispatch holds, each check of its Verification document with
+// no pass, its production check where it holds the close, each reported defect, the count of the
+// next changes the issue has started, the checks a person must approve and a read of the checks
+// that does not count. Each item says since when it stands. An issue in retro or merging carries
+// only its reported defects, `since` and `nextChanges`: nothing else of the close is read before
+// the merge. No plugin code reads a member of it, so none is enumerated: each word is the daemon's
+// own, as close-wait.md writes it.
+type CloseWaitView struct {
+	Since        *time.Time               `json:"since,omitempty"`
+	Beneath      []CloseWaitIssueView     `json:"beneath,omitempty"`
+	OpenChildren []CloseWaitIssueView     `json:"openChildren,omitempty"`
+	Checks       []CloseWaitCheckView     `json:"checks,omitempty"`
+	Production   *CloseWaitProductionView `json:"production,omitempty"`
+	Defects      []CloseWaitDefectView    `json:"defects,omitempty"`
+	NextChanges  int                      `json:"nextChanges"`
+	Unapproved   *CloseWaitUnapprovedView `json:"unapproved,omitempty"`
+	Unread       *CloseWaitUnreadView     `json:"unread,omitempty"`
+}
+
+// CloseWaitIssueView is an issue the close waits for, with its status (record.WaitIssue).
+type CloseWaitIssueView struct {
+	Key    string    `json:"key"`
+	Status string    `json:"status"`
+	Since  time.Time `json:"since"`
+}
+
+// CloseWaitCheckView is a check with no pass: its block id, its `when`, and Dispatch's answer and
+// reason (record.WaitCheck).
+type CloseWaitCheckView struct {
+	ID     string    `json:"id"`
+	When   string    `json:"when"`
+	Answer string    `json:"answer"`
+	Reason string    `json:"reason,omitempty"`
+	Since  time.Time `json:"since"`
+}
+
+// CloseWaitProductionView is the production check where it holds the close: its state as the
+// close reads it, its generation and merge commit, and its outcome or its next look
+// (record.WaitProduction).
+type CloseWaitProductionView struct {
+	State      string     `json:"state"`
+	Generation uint64     `json:"generation"`
+	Merge      string     `json:"merge,omitempty"`
+	Outcome    string     `json:"outcome,omitempty"`
+	NextLookAt *time.Time `json:"nextLookAt,omitempty"`
+	Since      time.Time  `json:"since"`
+}
+
+// CloseWaitDefectView is a reported defect that holds the close: its id as report_defect answers
+// it, its kind, the role that reported it, its text, the head it was seen at and the check it
+// names, where it names one (record.WaitReason).
+type CloseWaitDefectView struct {
+	ID    string    `json:"id"`
+	Kind  string    `json:"kind"`
+	Role  string    `json:"role,omitempty"`
+	Text  string    `json:"text"`
+	Head  string    `json:"head,omitempty"`
+	Check string    `json:"check,omitempty"`
+	Since time.Time `json:"since"`
+}
+
+// CloseWaitUnapprovedView names each check changed since the approved Verification document,
+// which a person must approve (record.WaitUnapproved).
+type CloseWaitUnapprovedView struct {
+	Checks []string  `json:"checks"`
+	Since  time.Time `json:"since"`
+}
+
+// CloseWaitUnreadView says the newest read of the checks does not count, and why
+// (record.WaitUnread).
+type CloseWaitUnreadView struct {
+	Cause string    `json:"cause"`
+	Since time.Time `json:"since"`
 }
 
 // AssignmentView is one experiment's answer for an issue as the state shows it
