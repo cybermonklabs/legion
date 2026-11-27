@@ -328,12 +328,15 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 	}
 	if !marked {
 		w.log.Debug("unowned release: the pod is kept", "issue", issue, "hold", decision.Hold.String())
-		// A suspension the operator or the controller holds keeps a pod a role's start waits for,
-		// a wait nothing ends until one of them acts: the controller is told once for each streak
-		// of the hold, at the pass that opens it (HeldFor names no streak of it yet), before it is
-		// recorded.
+		// A suspension the operator or the controller holds keeps a pod a role's start waits for
+		// (main's IdleHoldUnownedSuspensionHolds, which either holder's suspension sets). The
+		// controller is told of the operator's alone, once for each streak of the hold, at the
+		// pass that opens it (HeldFor names no streak of it yet), before it is recorded: a
+		// suspension the controller holds is its own act, and the notice's words name the operator
+		// and the claims it suspended (podWaitHeldWords, operatorSuspended), so a hold with none
+		// of those would tell the controller of an empty list.
 		if decision.Hold == workflow.IdleHoldUnownedSuspensionHolds && quiet && len(waiting) > 0 &&
-			heldFor != workflow.IdleHoldUnownedSuspensionHolds.String() {
+			len(suspended) > 0 && heldFor != workflow.IdleHoldUnownedSuspensionHolds.String() {
 			notice := record.ControllerNotice{Kind: record.PodWaitHeldNotice, Role: waiting[0],
 				Reason: podWaitHeldWords(issue, waiting, suspended, w.idlePeriod)}
 			if _, err := w.enqueueOutbox(ctx, issue, notice); err != nil {
