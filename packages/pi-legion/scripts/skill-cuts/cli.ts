@@ -320,9 +320,15 @@
  * answered round still only reads skill files, or reads them beside only preparation, gets no
  * verdict and is run again, its reason beginning `reads-past-last-round`; each case's
  * line and `report` count such runs by arm, and a stage left unscreened by an arm with such runs
- * drops its case under that reason, with the counts. A stage left unscreened in which the provider
- * refused, on a content policy (a stream error whose type ends in `_policy`, as `cyber_policy`),
- * every replay that got no verdict in each arm that lacks its judged runs can never be judged, and
+ * drops its case under that reason, with the counts. A stage whose arms short of their runs hold
+ * no run with no verdict but undecided ones (`mixed-undecided`, `reads-past-last-round`), and
+ * whose outcome the registered rule gives alike under every way they can end, is counted,
+ * bounded (score.ts's `stageOutcome`): it starts no run and drops no case, its line gives each
+ * bounded arm's range and ends `(bounded over <k> undecided runs)`, and `report` reads a saved
+ * `reads-past-last-round` drop of such a stage as no drop (`boundUndoesDrop`). A stage left
+ * unscreened in which the provider refused, on a content policy (a stream error whose type ends
+ * in `_policy`, as `cyber_policy`), every replay that got no verdict in each arm that lacks its
+ * judged runs can never be judged, and
  * drops its case as `provider-refused: provider refused every replay of <arms> (<policy>): <n>
  * refusals (<arm> <count>, ...)`, the refused arms joined by ` and `, and none named where every
  * arm of the stage is refused; an arm with its judged runs blocks nothing. A stage saved unscreened
@@ -553,9 +559,11 @@ import {
   type CaseDrop,
   type CaseFacts,
   type CaseScore,
+  type ConfirmBound,
   FLAG_GAP,
   FRESH_RUNS,
   FURTHER_ROUND_LIMIT,
+  gapRange,
   INFORMATIVE_GAP,
   isControlLoss,
   isFalseLoss,
@@ -573,14 +581,18 @@ import {
   MIN_INFORMATIVE_CASES,
   outsideListing,
   outsideListingWords,
+  type Passes,
   POOLED_CONFIRMS,
+  passRanges,
   RunRecord,
+  rangeWords,
   SCREEN_RUNS,
   Arm as ScoreArm,
   type SkillScore,
   STAGE_ARMS,
   STAGE_RUNS,
   Stage,
+  type StageBound,
   StageState,
   scoreSkill,
   screeningDone,
@@ -1426,6 +1438,26 @@ export function falseLossChance(passes: { old: number; new: number; none: number
   return lossChance({ old: p, cut: p, none: q });
 }
 
+/** falseLossChance of a counted screen's passes; of a bounded screen (score.ts's StageBound), the
+ *  largest over every count of its arms' ranges, so the estimate holds however its undecided
+ *  runs end. */
+function screenFalseLossChance(screen: {
+  readonly passes: Passes<"screen">;
+  readonly bound?: StageBound<"screen">;
+}): number {
+  if (screen.bound === undefined) return falseLossChance(screen.passes);
+  const { old, new: cut, none } = screen.bound.ranges;
+  let largest = 0;
+  for (let o = old.low; o <= old.high; o += 1) {
+    for (let n = cut.low; n <= cut.high; n += 1) {
+      for (let z = none.low; z <= none.high; z += 1) {
+        largest = Math.max(largest, falseLossChance({ old: o, new: n, none: z }));
+      }
+    }
+  }
+  return largest;
+}
+
 /** The report's sensitivity table: the old text's pass rates, the drops of the cut's text from
  *  them, and the no-skill pass rate. */
 const SENSITIVITY = { old: [0.9, 0.7], drops: [0.1, 0.2, 0.3, 0.4], none: 0.1 } as const;
@@ -1710,12 +1742,32 @@ function pathFormDrop(c: Case, dirs: ArmDirs): string | undefined {
   return found === undefined ? undefined : `${PATH_FORM}: ${found.arm}: ${found.fault}`;
 }
 
+/** Whether the saved drop of `result` is one the bound undoes: a `reads-past-last-round` drop
+ *  (`readsPastDrop`, which drops a case only at a stage left unscreened) of a stage kind whose
+ *  stages in `result` score.ts's `stageOutcome` now counts, one of them bounded. runStage drops
+ *  no bounded stage, so a result reads the same whether its drop was saved before the bound or
+ *  not; where the bound does not decide the stage, the drop stands. */
+function boundUndoesDrop(result: CaseResult): boolean {
+  if (result.dropped?.startsWith(`${READS_PAST_LAST_ROUND}: `) !== true) return false;
+  const stage = dropStage(result);
+  const held = stage === "confirm" ? confirmStages(result) : [result.stages[stage]];
+  const outcomes = held.flatMap((each) =>
+    each === undefined ? [] : [stageOutcome(each.runs, result.caseId, stage)]
+  );
+  return (
+    outcomes.length > 0 &&
+    outcomes.every((outcome) => outcome.state === "counted") &&
+    outcomes.some((outcome) => outcome.state === "counted" && outcome.bound !== undefined)
+  );
+}
+
 /** The drop score.ts reads of case `c`, whose result is `result` (undefined when it has none):
- *  the drop its result records (`dropStage`), else its listing measure's (score.ts's
- *  `listingStanding`), else its block its arms cannot rebuild (`injectionDrop`), at screen; or
- *  undefined when it has none. */
+ *  the drop its result records (`dropStage`), but a saved `reads-past-last-round` drop the bound
+ *  undoes (`boundUndoesDrop`), else its listing measure's (score.ts's `listingStanding`), else
+ *  its block its arms cannot rebuild (`injectionDrop`), at screen; or undefined when it has
+ *  none. */
 function caseDrop(c: Case, result: CaseResult | undefined): CaseDrop | undefined {
-  if (result !== undefined && result.dropped !== null) {
+  if (result !== undefined && result.dropped !== null && !boundUndoesDrop(result)) {
     return { stage: dropStage(result), reason: result.dropped };
   }
   const listing = listingStanding(c.evidence);
@@ -1789,9 +1841,10 @@ function screened(
 
 /** Why a skill whose screen is finished can get no verdict, whatever its confirm runs show, or
  *  undefined: too few informative cases; no informative case left to be the control case, each
- *  one dropped; or a control whose runs are made and whose planted-loss control is no loss or
- *  whose false-loss control is a loss (score.ts's `skillVerdict`, and its reason). Exported for
- *  cli.test.ts. */
+ *  one dropped, or none determined, the undecided runs of bounded screens leaving more than one
+ *  that can come first (score.ts's `noControl`); or a control whose runs are made and whose
+ *  planted-loss control is no loss or whose false-loss control is a loss (score.ts's
+ *  `skillVerdict`, and its reason). Exported for cli.test.ts. */
 export function noVerdict(score: SkillScore): string | undefined {
   const control = score.control;
   const counted = control?.state === "counted" ? control.passes : undefined;
@@ -2665,9 +2718,10 @@ async function confirmCommand(r: Runner): Promise<void> {
 /** `behaviour control`. None runs while the skill has fewer than MIN_INFORMATIVE_CASES informative
  *  cases, unless `--control-informative` is given: then the control case's control runs all the
  *  same, so a loss of one case has its control, and report gives no skill verdict over it
- *  (`caseResultOnly`). A skill with no case to be the control case (`noControl`, or no informative
- *  case at all) gets none either way. The control case's saved control of another runner refuses
- *  the command before any model call (`checkRunners`), as does a saved control still running whose
+ *  (`caseResultOnly`). A skill with no case to be the control case (`noControl`: each informative
+ *  case dropped, or none determined over bounded screens; or no informative case at all) gets
+ *  none either way. The control case's saved control of another runner refuses the command
+ *  before any model call (`checkRunners`), as does a saved control still running whose
  *  saved capture of an arm it holds runs of is not the one they were made with
  *  (`checkHeldCaptures`). */
 async function controlStageCommand(r: Runner): Promise<void> {
@@ -2869,10 +2923,10 @@ function stageLine(
   const extra = unjudged === 0 ? "" : ` (${unjudged} runs with no verdict, run again${pastWords})`;
   switch (outcome.state) {
     case "counted": {
-      const passes = Object.entries(outcome.passes)
-        .map(([arm, count]) => `${arm} ${count}/${STAGE_RUNS[stage]}`)
+      const passes = Object.entries(passRanges(outcome))
+        .map(([arm, range]) => `${arm} ${rangeWords(range)}/${STAGE_RUNS[stage]}`)
         .join(", ");
-      return `${label}: ${passes}: ${stageVerdict(stage, outcome.passes)}${extra}`;
+      return `${label}: ${passes}: ${stageVerdict(stage, outcome.passes)}${extra}${boundedWords(outcome.bound)}`;
     }
     case "unscreened":
       return `${label}: unscreened: an arm lacks its ${STAGE_RUNS[stage]} judged runs after ${MAX_EXTRA_RUNS} extra runs${extra}`;
@@ -2889,11 +2943,23 @@ function stageLine(
   }
 }
 
+/** The words that end a line of a bounded stage or confirms (score.ts's StageBound,
+ *  ConfirmBound), or none for one that is not bounded. */
+function boundedWords(bound: { readonly undecided: number } | undefined): string {
+  return bound === undefined ? "" : ` (bounded over ${counted(bound.undecided, "undecided run")})`;
+}
+
 /** A case's pooled confirms (score.ts's `confirmScore`, counted with `pooled`) in words: the
- *  pooled passes of each arm, the gap, and whether it is a loss. */
-function pooledWords(pooled: { old: number; new: number }, loss: boolean): string {
+ *  pooled passes of each arm, the gap, and whether it is a loss; where a confirm is bounded
+ *  (`bound`), the pooled ranges and the gap's. */
+function pooledWords(
+  pooled: Passes<"confirm">,
+  loss: boolean,
+  bound: ConfirmBound | undefined
+): string {
   const runs = FRESH_RUNS * POOLED_CONFIRMS;
-  return `old ${pooled.old}/${runs}, new ${pooled.new}/${runs}, ${pooled.old - pooled.new} fewer: ${loss ? "a loss" : "no loss"}`;
+  const { old, new: cut } = bound?.pooled ?? passRanges<"confirm">({ passes: pooled });
+  return `old ${rangeWords(old)}/${runs}, new ${rangeWords(cut)}/${runs}, ${rangeWords(gapRange(old, cut))} fewer: ${loss ? "a loss" : "no loss"}${boundedWords(bound)}`;
 }
 
 /** Case `result`'s stages as its report line gives them (`stageLine`), each stage it ran; a case
@@ -2921,7 +2987,7 @@ function caseStageLines(result: CaseResult, score: CaseScore | undefined): strin
     }
     const confirm = score?.confirm;
     if (confirm?.state === "counted" && confirm.pooled !== undefined) {
-      lines.push(`pooled: ${pooledWords(confirm.pooled, confirm.loss)}`);
+      lines.push(`pooled: ${pooledWords(confirm.pooled, confirm.loss, confirm.bound)}`);
     } else if (confirm?.state === "running" && confirm.third) {
       lines.push("a third confirm is due, since two on one runner disagree (behaviour confirm)");
     }
@@ -3652,13 +3718,14 @@ function reportCommand(b: Behaviour, requestLog: string): void {
   lines.push(...runsByStage.flatMap(([stage, runs]) => routingLines(stage, runs)));
   // What `behaviour continue-mixed` made of the stages it wrote, and what that cost.
   lines.push(...continuedLines(results));
-  const pooled = score.cases.flatMap(({ caseId, confirm }) =>
-    confirm?.state === "counted" && confirm.pooled !== undefined
-      ? [
-          `${caseId} (confirms of old ${confirm.counted.map((each) => each.old).join(", ")} and new ${confirm.counted.map((each) => each.new).join(", ")} of ${FRESH_RUNS} each; pooled ${pooledWords(confirm.pooled, confirm.loss)})`,
-        ]
-      : []
-  );
+  const pooled = score.cases.flatMap(({ caseId, confirm }) => {
+    if (confirm?.state !== "counted" || confirm.pooled === undefined) return [];
+    const each =
+      confirm.bound?.counted ?? confirm.counted.map((passes) => passRanges<"confirm">({ passes }));
+    return [
+      `${caseId} (confirms of old ${each.map((ranges) => rangeWords(ranges.old)).join(", ")} and new ${each.map((ranges) => rangeWords(ranges.new)).join(", ")} of ${FRESH_RUNS} each; pooled ${pooledWords(confirm.pooled, confirm.loss, confirm.bound)})`,
+    ];
+  });
   if (pooled.length > 0) {
     lines.push(
       `pooled confirms (two confirms at one case's texts on one runner disagreed, so a third ran, and the case is a loss when the cut's text passes at least ${LOSS_GAP * POOLED_CONFIRMS} fewer of the ${FRESH_RUNS * POOLED_CONFIRMS} pooled runs than the old text): ${pooled.join("; ")}`
@@ -3680,9 +3747,9 @@ function reportCommand(b: Behaviour, requestLog: string): void {
   );
   const control = score.control;
   if (control?.state === "counted") {
-    const { old, minus, twin } = control.passes;
+    const { old, minus, twin } = passRanges<"control">(control);
     lines.push(
-      `controls, scored by the confirm rule (a loss when the other arm passes at least ${LOSS_GAP} fewer of ${FRESH_RUNS} fresh runs than old): old ${old}/${FRESH_RUNS}, minus ${minus}/${FRESH_RUNS}, twin ${twin}/${FRESH_RUNS}; the planted-loss control (old less minus, ${old - minus}) is ${isControlLoss(control.passes) ? "a loss, as it must be" : "no loss, so the skill gets no verdict"}; the false-loss control (old less twin, the same text twice, ${old - twin}) is ${isFalseLoss(control.passes) ? "a loss, so the skill gets no verdict" : "no loss, as it must be"}`
+      `controls, scored by the confirm rule (a loss when the other arm passes at least ${LOSS_GAP} fewer of ${FRESH_RUNS} fresh runs than old): old ${rangeWords(old)}/${FRESH_RUNS}, minus ${rangeWords(minus)}/${FRESH_RUNS}, twin ${rangeWords(twin)}/${FRESH_RUNS}; the planted-loss control (old less minus, ${rangeWords(gapRange(old, minus))}) is ${isControlLoss(control.passes) ? "a loss, as it must be" : "no loss, so the skill gets no verdict"}; the false-loss control (old less twin, the same text twice, ${rangeWords(gapRange(old, twin))}) is ${isFalseLoss(control.passes) ? "a loss, so the skill gets no verdict" : "no loss, as it must be"}${boundedWords(control.bound)}`
     );
   } else if (control !== undefined) {
     lines.push(
@@ -3706,12 +3773,18 @@ function reportCommand(b: Behaviour, requestLog: string): void {
 
   const chances = score.cases.flatMap((each) =>
     each.informative && each.screen.state === "counted"
-      ? [{ id: each.caseId, chance: falseLossChance(each.screen.passes) }]
+      ? [
+          {
+            id: each.caseId,
+            chance: screenFalseLossChance(each.screen),
+            bounded: each.screen.bound !== undefined,
+          },
+        ]
       : []
   );
   const rate = 1 - chances.reduce((none, { chance }) => none * (1 - chance), 1);
   lines.push(
-    `false-loss rate at the cases run (an estimate): ${percent(rate)}, the chance that the registered rule calls a loss in one of the ${chances.length} informative cases when the cut's text is the old text; each case's chance is exact binomial given that it is informative, with the old and the cut's texts both passing at (old + new + 1)/${2 * SCREEN_RUNS + 2} of their runs and no skill at (none + 1)/${SCREEN_RUNS + 2}, from its screen passes, and the cases are combined as independent, 1 − Π(1 − chance)${chances.length === 0 ? "" : ` (${chances.map(({ id, chance }) => `${id} ${percent(chance)}`).join(", ")})`}`
+    `false-loss rate at the cases run (an estimate): ${percent(rate)}, the chance that the registered rule calls a loss in one of the ${chances.length} informative cases when the cut's text is the old text; each case's chance is exact binomial given that it is informative, with the old and the cut's texts both passing at (old + new + 1)/${2 * SCREEN_RUNS + 2} of their runs and no skill at (none + 1)/${SCREEN_RUNS + 2}, from its screen passes, and the cases are combined as independent, 1 − Π(1 − chance)${chances.length === 0 ? "" : ` (${chances.map(({ id, chance, bounded }) => `${id} ${percent(chance)}${bounded ? " (the largest over its bounded screen's counts)" : ""}`).join(", ")})`}`
   );
 
   const notes = new Map<string, z.infer<typeof CaptureNote>>();

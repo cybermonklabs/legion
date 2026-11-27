@@ -5042,6 +5042,95 @@ describe("behaviour: a case the provider refuses on every replay", () => {
   }, 60_000);
 });
 
+// The bound (INFRA-323's architect and INFRA-4676's, 2026-11-27): a stage an arm leaves short of
+// its judged runs with only undecided runs among those with no verdict, whose outcome the
+// registered rule gives alike under every way they end, is counted and drops no case. So report
+// reads a case saved as dropped reads-past-last-round at such a stage as not dropped, as a stage
+// command would leave it now; where the bound does not decide the stage, the drop stands.
+describe("behaviour report: a saved reads-past-last-round drop and the bound", () => {
+  const SIX = ["c01", "c02", "c03", "c04", "c05", "c06"];
+  /** Plants c06 dropped at screen as `reason`, its screen saved unscreened: old `old` and new
+   *  `cut` passes of 10 judged runs, and its none arm's runs one per letter of `none` in run
+   *  order, `f` a fail and `r` a run that read skill files past the last answered round. */
+  const plantReadsPast = (s: Scenario, old: number, cut: number, none: string, reason: string) => {
+    const judged = plantedStage(s, "c06", "screen", { old, new: cut });
+    plantResult(s, "c06", {
+      dropped: reason,
+      droppedAt: "screen",
+      stages: {
+        screen: {
+          ...judged,
+          state: "unscreened",
+          runs: [
+            ...(judged.runs as Record<string, unknown>[]),
+            ...[...none].map((kind, n) =>
+              kind === "f"
+                ? plantedRun("c06", "none", "screen", n, "fail", "planted")
+                : plantedRun("c06", "none", "screen", n, null, `${READS_PAST_LAST_ROUND}: planted`)
+            ),
+          ],
+        },
+      },
+    });
+  };
+  /** The drop readsPastDrop gives a screen whose none arm has `judged` of its judged runs after
+   *  its 15 runs, `past` of them read past the last round. */
+  const readsPastReason = (judged: number, past: number) =>
+    `${READS_PAST_LAST_ROUND}: the none arm has ${judged} of its ${SCREEN_RUNS} judged runs after ${SCREEN_RUNS + MAX_EXTRA_RUNS} runs, ${past} of which still read skill files after the last answered round, alone or beside calls that only prepare (runs that read past the last round: old 0, new 0, none ${past})`;
+
+  // Catches: a saved drop kept where the bound now counts its stage, so a result read differently
+  // as its drop was saved before the bound or made now.
+  test("a case saved as dropped at a screen the bound now counts (none 0 to 3 of 10 against old 10) is read as not dropped: its screen line gives the range, and it is informative", async () => {
+    const s = scenario(
+      "reads-past-bounded",
+      LOSS_SKILL(),
+      SIX.map((id) => ({ id }))
+    );
+    plantSix(s, SIX.slice(0, 5), "c01");
+    plantReadsPast(s, SCREEN_RUNS, SCREEN_RUNS, "fffffffrrrfrrrr", readsPastReason(8, 7));
+    const ran = await cli(report(s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = ran.stdout.split("\n");
+    expect(lines).toContain(
+      `case c06: screen: old 10/10, new 10/10, none 0 to 3/10: informative, not flagged (7 runs with no verdict, run again; ${READS_PAST_LAST_ROUND}: old 0, new 0, none 7) (bounded over 7 undecided runs)`
+    );
+    expect(lines).toContain(
+      `cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 0 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, ${NO_LEGION_TOOL}, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
+    );
+    expect(lines).toContain(
+      `verdict: no loss detected by the registered rule: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c01) is a loss and its false-loss control is no loss${unmeasured(6, 6)}`
+    );
+    // Its false-loss chance is the largest over its none arm's range.
+    const largest = Math.max(
+      ...[0, 1, 2, 3].map((none) => falseLossChance({ old: 10, new: 10, none }))
+    );
+    expect(ran.stdout).toContain(
+      `c06 ${(100 * largest).toFixed(2)}% (the largest over its bounded screen's counts)`
+    );
+  }, 60_000);
+
+  // Catches: a saved drop undone where the bound leaves the stage's outcome open.
+  test("a case saved as dropped at a screen whose outcome the bound leaves open (old 6 of 10 against none 0 to 6: informative or not) keeps its drop", async () => {
+    const s = scenario(
+      "reads-past-open",
+      LOSS_SKILL(),
+      SIX.map((id) => ({ id }))
+    );
+    plantSix(s, SIX.slice(0, 5), "c01");
+    const reason = readsPastReason(7, 8);
+    plantReadsPast(s, 6, 9, "ffffrrrrrrrrfff", reason);
+    const ran = await cli(report(s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = ran.stdout.split("\n");
+    expect(lines).toContain(
+      `case c06: dropped at screen: ${reason}; screen: unscreened: an arm lacks its ${SCREEN_RUNS} judged runs after ${MAX_EXTRA_RUNS} extra runs (8 runs with no verdict, run again; ${READS_PAST_LAST_ROUND}: old 0, new 0, none 8)`
+    );
+    expect(lines).toContain(
+      `cases: 5 screened, 5 informative, 0 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, ${NO_LEGION_TOOL}, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, 1 ${READS_PAST_LAST_ROUND}, ${NO_REFUSED}), 0 unscreened, 0 not run`
+    );
+  }, 60_000);
+});
+
 // A stage started again over the runs it saved (a screen stopped mid-case on a pod since replaced,
 // whose captures did not come along, say): its further runs of an arm replay the capture its saved
 // runs of that arm replayed, or none are made. A capture made again over saved runs sends the

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { MIXED_UNDECIDED, READS_PAST_LAST_ROUND } from "./replay";
 import {
   type Arm,
   type CaseFacts,
@@ -30,6 +31,7 @@ import {
   skillVerdict,
   stageOutcome,
   taskFault,
+  UNDECIDED_REASONS,
   walk,
 } from "./score";
 
@@ -62,6 +64,28 @@ function unjudged(caseId: string, stage: Stage, arm: Arm, count: number): RunRec
 function waiting(caseId: string, stage: Stage, arm: Arm): RunRecord {
   return { caseId, stage, arm, verdict: null, reason: `${FURTHER_ROUND_LIMIT}: planted` };
 }
+/** The verdict and reason of a run of each letter `inOrder` reads. */
+const RUN_KINDS: Record<string, Pick<RunRecord, "verdict" | "reason">> = {
+  p: { verdict: "pass", reason: "judged" },
+  f: { verdict: "fail", reason: "judged" },
+  u: { verdict: null, reason: `${MIXED_UNDECIDED}: planted` },
+  r: { verdict: null, reason: `${READS_PAST_LAST_ROUND}: planted` },
+  q: { verdict: null, reason: "the replay failed: the gateway answered 429 Too Many Requests" },
+};
+/** Run records of one case, stage and arm, one per letter of `kinds`, in its order and so by run
+ *  number: `p` a pass, `f` a fail, `u` a run whose mixed reply the rule leaves undecided
+ *  (replay.ts's MIXED_UNDECIDED), `r` one whose reply still read skill files past the last
+ *  answered round (READS_PAST_LAST_ROUND), `q` one whose replay the gateway answered 429. */
+function inOrder(caseId: string, stage: Stage, arm: Arm, kinds: string): RunRecord[] {
+  return [...kinds].map((kind) => {
+    const run = RUN_KINDS[kind];
+    if (run === undefined) throw new Error(`no run kind ${kind}`);
+    return { caseId, stage, arm, ...run };
+  });
+}
+/** The passes an arm of a bounded stage can have, from `low` to `high`; `exact` one count. */
+const range = (low: number, high: number) => ({ low, high });
+const exact = (count: number) => range(count, count);
 /** A case's 10 screen runs in each arm, with these passes. */
 const screen = (caseId: string, old: number, cut: number, none: number): RunRecord[] => [
   ...runs(caseId, "screen", "old", old, 10),
@@ -88,6 +112,43 @@ const sixCases = (minus: number, twin = 30): RunRecord[] => [
   ...["c1", "c2", "c3", "c4", "c5", "c6"].flatMap((id) => screen(id, 8, 8, 5)),
   ...fresh("c1", "control", 30, minus, twin),
 ];
+/** Case c7's confirm whose new arm lacks its judged runs after its extra runs: old 40 passes of
+ *  40; new 0 passes, 25 fails and 20 undecided runs of 45, its first 40 a fail and an undecided
+ *  run in turn. */
+const BOUNDED_CONFIRM: RunRecord[] = [
+  ...runs("c7", "confirm", "old", 40, 40),
+  ...inOrder("c7", "confirm", "new", `${"fu".repeat(20)}fffff`),
+];
+/** Case c1's control whose minus arm lacks its judged runs after its extra runs: old 40 of 40;
+ *  twin 40 of 40; minus 8 passes, 26 fails and 11 undecided runs of 45 (6 undecided at a mixed
+ *  reply, 5 read past the last round), its first 40 the 8 passes, the 11 undecided and 21 fails. */
+const BOUNDED_CONTROL: RunRecord[] = [
+  ...runs("c1", "control", "old", 40, 40),
+  ...inOrder("c1", "control", "minus", `${"p".repeat(8)}uuuuuurrrrr${"f".repeat(26)}`),
+  ...runs("c1", "control", "twin", 40, 40),
+];
+/** The screens of c2 to c6, each informative and not flagged (old 8, new 8, none 5 of 10: a gap
+ *  of 3). */
+const FIVE_SCREENS: RunRecord[] = ["c2", "c3", "c4", "c5", "c6"].flatMap((id) =>
+  screen(id, 8, 8, 5)
+);
+/** Case c1's screen of old 10 and new 10 of 10 whose none arm lacks its judged runs after its
+ *  extra runs, its runs `none` (inOrder). */
+const noneBounded = (none: string): RunRecord[] => [
+  ...runs("c1", "screen", "old", 10, 10),
+  ...runs("c1", "screen", "new", 10, 10),
+  ...inOrder("c1", "screen", "none", none),
+];
+/** A third confirm of c7 on r1 at the texts "t1 t2": old 40 of 40, new the runs `cut` (inOrder). */
+const boundedThird = (cut: string): MadeConfirm => ({
+  runner: "r1",
+  texts: "t1 t2",
+  outcome: stageOutcome(
+    [...runs("c7", "confirm", "old", 40, 40), ...inOrder("c7", "confirm", "new", cut)],
+    "c7",
+    "confirm"
+  ),
+});
 /** The facts of cases `ids`, each dropped at `stage` for a made-up unreadable directory. */
 const droppedAt = (stage: Stage, ...ids: string[]): Map<string, CaseFacts> =>
   new Map(
@@ -271,6 +332,240 @@ const rows: [string, () => unknown, unknown][] = [
         "screen"
       ),
     { state: "running", toStart: { old: 1, new: 0, none: 0 } },
+  ],
+
+  // The bound (INFRA-323's architect and INFRA-4676's, 2026-11-27): a stage an arm leaves short
+  // of its judged runs after its extra runs, where each run of that arm with no verdict is
+  // undecided, takes the outcome the registered rule gives under every way those runs can end:
+  // the arm's passes run from its passes among its first N runs to those plus its undecided runs
+  // among them. Where the outcome differs between those ends, or a run with no verdict is not
+  // undecided, the stage stays unscreened.
+  [
+    "the undecided reasons are replay.ts's",
+    () => UNDECIDED_REASONS,
+    [MIXED_UNDECIDED, READS_PAST_LAST_ROUND],
+  ],
+  [
+    "a confirm of old 40 of 40 against new 0 passes, 25 fails and 20 undecided runs of 45 is counted as a loss, new bounded from 0 to 20 over 20 undecided runs",
+    () => {
+      const outcome = stageOutcome(BOUNDED_CONFIRM, "c7", "confirm");
+      return [outcome, outcome.state === "counted" && isLoss(outcome.passes)];
+    },
+    [
+      {
+        state: "counted",
+        passes: { old: 40, new: 20 },
+        bound: { ranges: { old: exact(40), new: range(0, 20) }, undecided: 20 },
+      },
+      true,
+    ],
+  ],
+  [
+    "a flagged case whose bounded confirm is a loss gives its skill loss",
+    () => scoreSkill([...sixCases(20), ...screen("c7", 8, 6, 5), ...BOUNDED_CONFIRM]).outcome,
+    loss,
+  ],
+  [
+    "a control of old 40 and twin 40 of 40 against minus 8 passes, 26 fails and 11 undecided runs of 45 is counted, minus bounded from 8 to 19 over 11 undecided runs: the planted-loss control a loss, the false-loss control no loss",
+    () => {
+      const outcome = stageOutcome(BOUNDED_CONTROL, "c1", "control");
+      return outcome.state === "counted"
+        ? [outcome, isControlLoss(outcome.passes), isFalseLoss(outcome.passes)]
+        : [outcome];
+    },
+    [
+      {
+        state: "counted",
+        passes: { old: 40, minus: 19, twin: 40 },
+        bound: { ranges: { old: exact(40), minus: range(8, 19), twin: exact(40) }, undecided: 11 },
+      },
+      true,
+      false,
+    ],
+  ],
+  [
+    "six informative cases whose control is bounded so keep",
+    () => {
+      const score = scoreSkill([...screen("c1", 8, 8, 5), ...FIVE_SCREENS, ...BOUNDED_CONTROL]);
+      return [score.controlCase, score.outcome];
+    },
+    ["c1", keeps],
+  ],
+  [
+    "a confirm whose new arm could end a loss or no loss stays unscreened: new 25 to 35 of 40 against old 40",
+    () =>
+      stageOutcome(
+        [
+          ...runs("c7", "confirm", "old", 40, 40),
+          ...inOrder("c7", "confirm", "new", `${"p".repeat(25)}${"u".repeat(10)}fffffuuuuu`),
+        ],
+        "c7",
+        "confirm"
+      ),
+    { state: "unscreened" },
+  ],
+  [
+    "an arm with one run the gateway answered 429 among its runs with no verdict stays unscreened, though its undecided runs alone would bound it a loss",
+    () =>
+      stageOutcome(
+        [
+          ...runs("c7", "confirm", "old", 40, 40),
+          ...inOrder("c7", "confirm", "new", `fq${"fu".repeat(19)}fffff`),
+        ],
+        "c7",
+        "confirm"
+      ),
+    { state: "unscreened" },
+  ],
+  [
+    "a stage one of whose arms can still start runs stays unscreened beside an arm the bound would count",
+    () =>
+      stageOutcome(
+        [
+          ...runs("c7", "confirm", "old", 39, 39),
+          ...inOrder("c7", "confirm", "new", `${"fu".repeat(20)}fffff`),
+        ],
+        "c7",
+        "confirm"
+      ),
+    { state: "unscreened" },
+  ],
+  [
+    "a screen whose new arm is bounded from 0 to 5 of 10 against old 10 and none 0 is counted, informative and flagged",
+    () => {
+      const outcome = stageOutcome(
+        [
+          ...runs("c7", "screen", "old", 10, 10),
+          ...inOrder("c7", "screen", "new", "fffffuuuuuffuuu"),
+          ...runs("c7", "screen", "none", 0, 10),
+        ],
+        "c7",
+        "screen"
+      );
+      return outcome.state === "counted"
+        ? [outcome, isInformative(outcome.passes), isFlagged(outcome.passes)]
+        : [outcome];
+    },
+    [
+      {
+        state: "counted",
+        passes: { old: 10, new: 5, none: 0 },
+        bound: { ranges: { old: exact(10), new: range(0, 5), none: exact(0) }, undecided: 8 },
+      },
+      true,
+      true,
+    ],
+  ],
+  [
+    "a screen whose old arm is bounded from 1 to 6 of 10 (2 passes, the second after its first 10 runs) against none 8 is counted, not informative",
+    () => {
+      const outcome = stageOutcome(
+        [
+          ...inOrder("c7", "screen", "old", "pffffuuuuupfuuu"),
+          ...runs("c7", "screen", "new", 5, 10),
+          ...runs("c7", "screen", "none", 8, 10),
+        ],
+        "c7",
+        "screen"
+      );
+      return outcome.state === "counted"
+        ? [outcome, isInformative(outcome.passes), isFlagged(outcome.passes)]
+        : [outcome];
+    },
+    [
+      {
+        state: "counted",
+        passes: { old: 1, new: 5, none: 8 },
+        bound: { ranges: { old: range(1, 6), new: exact(5), none: exact(8) }, undecided: 8 },
+      },
+      false,
+      false,
+    ],
+  ],
+  [
+    "a flagged case whose screen is bounded (new 0 to 5 against old 10 and none 8) waits for its confirm runs",
+    () => {
+      const score = scoreSkill([
+        ...sixCases(20),
+        ...runs("c7", "screen", "old", 10, 10),
+        ...inOrder("c7", "screen", "new", "fffffuuuuuffuuu"),
+        ...runs("c7", "screen", "none", 8, 10),
+      ]);
+      const c7 = score.cases.find((c) => c.caseId === "c7");
+      return [c7?.screen.state, c7?.flagged, score.controlCase, score.outcome];
+    },
+    ["counted", true, "c1", undefined],
+  ],
+  [
+    "a bounded screen whose least gap (old less none 4 to 7) beats every other case's (3) is the control case",
+    () => {
+      const score = scoreSkill([
+        ...noneBounded("pppffffuuufuuuu"),
+        ...FIVE_SCREENS,
+        ...fresh("c1", "control", 30, 20),
+      ]);
+      return [score.controlCase, score.outcome];
+    },
+    ["c1", keeps],
+  ],
+  [
+    "a bounded screen (old less none 2 to 5) that could come before or after the next case (3) leaves the control case open: no verdict, naming its case and the cases that could come first",
+    () => {
+      const score = scoreSkill([
+        ...noneBounded("pppppffuuufuuuu"),
+        ...FIVE_SCREENS,
+        ...fresh("c1", "control", 30, 20),
+      ]);
+      return [score.informative, score.controlCase, score.control, score.outcome];
+    },
+    [
+      6,
+      undefined,
+      undefined,
+      {
+        verdict: null,
+        reason:
+          "the control case is open: the undecided screen runs of c1 leave c1 (old less none 2 to 5) or c2 (old less none 3) first in the control rule's order",
+      },
+    ],
+  ],
+  [
+    "three confirms on one runner, the third bounded (new 20 to 28 of 40), pool as a loss over the summed ranges: 31 to 39 fewer of 120",
+    () =>
+      confirmScore("c7", [
+        confirmOn("r1", 40, 30),
+        confirmOn("r1", 40, 31),
+        boundedThird(`${"p".repeat(20)}${"f".repeat(12)}uuuuuuuufffuu`),
+      ]),
+    {
+      state: "counted",
+      loss: true,
+      counted: [
+        { old: 40, new: 30 },
+        { old: 40, new: 31 },
+        { old: 40, new: 28 },
+      ],
+      pooled: { old: 120, new: 89 },
+      bound: {
+        counted: [
+          { old: exact(40), new: exact(30) },
+          { old: exact(40), new: exact(31) },
+          { old: exact(40), new: range(20, 28) },
+        ],
+        pooled: { old: exact(120), new: range(81, 89) },
+        undecided: 10,
+      },
+    },
+  ],
+  [
+    "three confirms on one runner whose bounded third (new 28 to 30, a loss alone) leaves the pool 29 to 31 fewer of 120 are unscreened",
+    () =>
+      confirmScore("c7", [
+        confirmOn("r1", 40, 30),
+        confirmOn("r1", 40, 31),
+        boundedThird(`${"p".repeat(28)}${"f".repeat(10)}uufuuuu`),
+      ]),
+    { state: "unscreened" },
   ],
 
   // informative: old passes - none passes >= 2, of 10 each.

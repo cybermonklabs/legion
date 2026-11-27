@@ -7,8 +7,13 @@
  * A run record is one JSON line per run (RunRecord). Counts are of judged runs only: a run whose
  * verdict is `pass` or `fail`. A run that errored, timed out or whose judgement did not parse has
  * a null verdict; it is no fail, and it is run again, at most MAX_EXTRA_RUNS extra times per
- * case, stage and arm. A case whose arm still lacks its judged runs is "unscreened" and is not
- * counted (stageOutcome).
+ * case, stage and arm. A case whose arm still lacks its judged runs after them is "unscreened" and
+ * is not counted, unless each of that arm's runs with no verdict is undecided and the registered
+ * rule says the same of the stage under every way those runs can end: the stage then takes that
+ * outcome, its arms bounded (stageOutcome, StageBound; INFRA-323's architect and INFRA-4676's,
+ * 2026-11-27). This changes no pass rule, and every rule that reads a bounded stage's passes
+ * beyond what the rule says of them reads its bound, and decides only what holds under every
+ * such way (confirmScore, scoreSkill's control case).
  *
  * The control stage holds a skill's two controls on its control case, their arms' runs sent in
  * one interleaved order: the planted-loss control (`old` against `minus`, the old text less the
@@ -128,13 +133,37 @@ export const STAGE_RUNS: Record<Stage, number> = {
 export type StageArm<S extends Stage> = (typeof STAGE_ARMS)[S][number];
 /** Passes of each arm of a stage, each of that stage's runs. */
 export type Passes<S extends Stage> = Record<StageArm<S>, number>;
-/** Where a case stands in a stage: every arm has its judged runs (`counted`, with each arm's
- *  passes); some arm can still start the runs it lacks, or holds a run that waits
- *  (FURTHER_ROUND_LIMIT), with how many to start per arm (`running`; none to start anywhere is a
- *  stage that only waits); or some arm lacks its runs and has used its extra runs
- *  (`unscreened`). */
+/** How the reason begins of a run with no verdict whose reply could have been judged either way:
+ *  replay.ts's MIXED_UNDECIDED (a mixed reply the rule sorts neither as the act nor as
+ *  preparation) and READS_PAST_LAST_ROUND (a reply that still read skill files after the last
+ *  answered round). replay.ts imports this file, so they are written here again, and
+ *  score.test.ts checks them against replay.ts's. A run with no verdict for any other reason (a
+ *  gateway refusal, a 429, a timeout, a budget stop, a wait at FURTHER_ROUND_LIMIT) is not
+ *  undecided. */
+export const UNDECIDED_REASONS = ["mixed-undecided", "reads-past-last-round"] as const;
+/** The passes an arm of a bounded stage can have: each count from `low` to `high` of the stage's
+ *  runs; an arm with its judged runs has its one count as both. */
+export interface PassRange {
+  readonly low: number;
+  readonly high: number;
+}
+export type PassRanges<S extends Stage> = Record<StageArm<S>, PassRange>;
+/** How a counted stage is bounded where an arm lacked its judged runs after its extra runs and
+ *  each of that arm's runs with no verdict was undecided (stageOutcome): each arm's range of
+ *  passes, and how many undecided runs those arms hold. */
+export interface StageBound<S extends Stage> {
+  readonly ranges: PassRanges<S>;
+  readonly undecided: number;
+}
+/** Where a case stands in a stage: every arm has its judged runs, or the stage is bounded
+ *  (`counted`, with each arm's passes, and for a bounded stage its bound: its `passes` are then
+ *  the count, within the ranges, of old's fewest passes and each other arm's most, at which the
+ *  registered rule says what it says at every count of them); some arm can still start the runs
+ *  it lacks, or holds a run that waits (FURTHER_ROUND_LIMIT), with how many to start per arm
+ *  (`running`; none to start anywhere is a stage that only waits); or some arm lacks its runs and
+ *  has used its extra runs, and the stage is not bounded (`unscreened`). */
 export type StageOutcome<S extends Stage> =
-  | { state: "counted"; passes: Passes<S> }
+  | { state: "counted"; passes: Passes<S>; bound?: StageBound<S> }
   | { state: "running"; toStart: Record<StageArm<S>, number> }
   | { state: "unscreened" };
 
@@ -145,11 +174,25 @@ export type StageOutcome<S extends Stage> =
  *  while it waits (`stageOutcome`). */
 export const FURTHER_ROUND_LIMIT = "further-round-limit";
 
-/** Where case `caseId` stands in `stage`, from the run records so far (StageOutcome). A run that
- *  waits (its reason begins FURTHER_ROUND_LIMIT) is counted among its arm's runs, as any run, but
- *  is not a run the extra-run rule replaces: it holds a slot of its arm's judged runs, and keeps
- *  its stage running. An arm with more judged runs than the stage runs is the runner's fault, and
- *  throws. */
+/**
+ * Where case `caseId` stands in `stage`, from the run records so far (StageOutcome), each arm's
+ * records in the order of its run numbers. A run that waits (its reason begins FURTHER_ROUND_LIMIT)
+ * is counted among its arm's runs, as any run, but is not a run the extra-run rule replaces: it
+ * holds a slot of its arm's judged runs, and keeps its stage running. An arm with more judged
+ * runs than the stage runs is the runner's fault, and throws.
+ *
+ * A stage some arm leaves short of its N judged runs (STAGE_RUNS) after its extra runs is
+ * bounded where each such arm's runs with no verdict are all undecided (UNDECIDED_REASONS) and
+ * every other arm has its judged runs and no run that waits. Each such arm's passes are bounded
+ * by the hull, within [0, N], of its first N runs' passes to those plus their undecided runs, and
+ * of its judged passes to N less its judged fails. The second lies within the first, so the bound
+ * is the first: each of the first N runs is a pass, a fail or undecided, so their passes and
+ * undecided runs are N less their fails, at least N less the arm's fails, and their passes are
+ * no more than the arm's. Each rule of the stage (stageRule) can only turn true as old passes
+ * more, and only turn false as another arm passes more: where each says the same at old's fewest
+ * passes with each other arm's most and at the reverse, it says that at every count of the
+ * ranges, and the stage is counted, bounded; else it is unscreened.
+ */
 export function stageOutcome<S extends Stage>(
   records: readonly RunRecord[],
   caseId: string,
@@ -159,15 +202,19 @@ export function stageOutcome<S extends Stage>(
   const arms: readonly StageArm<S>[] = STAGE_ARMS[stage];
   const passes = {} as Passes<S>;
   const toStart = {} as Record<StageArm<S>, number>;
+  const ranges = {} as PassRanges<S>;
   let running = false;
+  let short = false;
+  let bounded = true;
+  let undecided = 0;
   for (const arm of arms) {
-    let attempts = 0;
+    const own = records.filter(
+      (record) => record.caseId === caseId && record.stage === stage && record.arm === arm
+    );
     let judged = 0;
     let passed = 0;
     let waiting = 0;
-    for (const record of records) {
-      if (record.caseId !== caseId || record.stage !== stage || record.arm !== arm) continue;
-      attempts++;
+    for (const record of own) {
       if (record.verdict !== null) judged++;
       else if (record.reason.startsWith(FURTHER_ROUND_LIMIT)) waiting++;
       if (record.verdict === "pass") passed++;
@@ -177,13 +224,78 @@ export function stageOutcome<S extends Stage>(
         `case ${caseId}: the ${stage} arm ${arm} holds ${judged} judged runs, more than its ${required}`
       );
     const lacking = required - judged - waiting;
-    const left = required + MAX_EXTRA_RUNS - attempts;
-    if (lacking > 0 && left <= 0) return { state: "unscreened" };
+    const left = required + MAX_EXTRA_RUNS - own.length;
     passes[arm] = passed;
     toStart[arm] = lacking > 0 ? Math.min(lacking, left) : 0;
+    ranges[arm] = { low: passed, high: passed };
+    if (lacking > 0 && left <= 0) {
+      short = true;
+      const unjudged = own.filter((record) => record.verdict === null);
+      if (!unjudged.every((record) => UNDECIDED_REASONS.some((u) => record.reason.startsWith(u)))) {
+        bounded = false;
+        continue;
+      }
+      const first = own.slice(0, required);
+      const low = first.filter((record) => record.verdict === "pass").length;
+      ranges[arm] = { low, high: low + first.filter((record) => record.verdict === null).length };
+      undecided += unjudged.length;
+      continue;
+    }
     running ||= lacking > 0 || waiting > 0;
   }
-  return running ? { state: "running", toStart } : { state: "counted", passes };
+  if (!short) return running ? { state: "running", toStart } : { state: "counted", passes };
+  if (!bounded || running) return { state: "unscreened" };
+  const fewest = {} as Passes<S>;
+  const most = {} as Passes<S>;
+  for (const arm of arms) {
+    const { low, high } = ranges[arm];
+    fewest[arm] = arm === "old" ? low : high;
+    most[arm] = arm === "old" ? high : low;
+  }
+  const atFewest = stageRule(stage, fewest as Passes<Stage>);
+  const atMost = stageRule(stage, most as Passes<Stage>);
+  if (atFewest.some((holds, n) => holds !== atMost[n])) return { state: "unscreened" };
+  return { state: "counted", passes: fewest, bound: { ranges, undecided } };
+}
+
+/** What the registered rule says of a stage's counted passes: a screen's informative and flagged
+ *  (isInformative, isFlagged), a confirm's loss (isLoss), and a control's planted-loss and
+ *  false-loss controls (isControlLoss, isFalseLoss). Each is a gap of old over another arm at
+ *  least a bound, or two such. */
+function stageRule(stage: Stage, passes: Passes<Stage>): boolean[] {
+  switch (stage) {
+    case "screen":
+      return [isInformative(passes), isFlagged(passes)];
+    case "confirm":
+      return [isLoss(passes)];
+    case "control":
+      return [isControlLoss(passes), isFalseLoss(passes)];
+  }
+}
+
+/** Each arm's range of passes of a counted stage (StageOutcome): its bound's, or for a stage with
+ *  no bound, each arm's one count. */
+export function passRanges<S extends Stage>(counted: {
+  readonly passes: Passes<S>;
+  readonly bound?: StageBound<S>;
+}): PassRanges<S> {
+  if (counted.bound !== undefined) return counted.bound.ranges;
+  const ranges = {} as PassRanges<S>;
+  for (const [arm, count] of Object.entries(counted.passes) as [StageArm<S>, number][]) {
+    ranges[arm] = { low: count, high: count };
+  }
+  return ranges;
+}
+
+/** How many more passes `old` has than `other`, from the fewest (old's fewest less other's most)
+ *  to the most. */
+export function gapRange(old: PassRange, other: PassRange): PassRange {
+  return { low: old.low - other.high, high: old.high - other.low };
+}
+
+/** A range in words: its one count, or `<low> to <high>`. */
+export function rangeWords(range: PassRange): string {
+  return range.low === range.high ? `${range.low}` : `${range.low} to ${range.high}`;
 }
 
 /** Refuses a count that is not a count of `runs` runs, so a rule of 10 runs never reads the passes
@@ -231,11 +343,21 @@ export interface MadeConfirm {
   readonly outcome: StageOutcome<"confirm">;
 }
 
+/** How a counted case's confirms are bounded where one of them is (StageBound): each confirm's
+ *  ranges of passes, in the order of `counted`, their pooled ranges when there are three, and the
+ *  undecided runs of all of them. */
+export interface ConfirmBound {
+  readonly counted: PassRanges<"confirm">[];
+  readonly pooled: PassRanges<"confirm"> | undefined;
+  readonly undecided: number;
+}
+
 /** Where a flagged case's confirm stands: runs to make, of its last confirm or of a third one that
- *  two disagreeing confirms call for (`running`, `third`); its last confirm unscreened; dropped
- *  before a confirm that counts, so it can never be confirmed (`dropped`, with the drop's
- *  reason); or counted, with the passes of each confirm that counts, their pooled passes when
- *  there are three, and whether it is a loss. */
+ *  two disagreeing confirms call for (`running`, `third`); its last confirm unscreened, or three
+ *  pooled whose pooled rule a bounded confirm leaves open (`unscreened`); dropped before a
+ *  confirm that counts, so it can never be confirmed (`dropped`, with the drop's reason); or
+ *  counted, with the passes of each confirm that counts, their pooled passes when there are
+ *  three, whether it is a loss, and their bound where one is bounded. */
 export type ConfirmScore =
   | { state: "running"; third: boolean }
   | { state: "unscreened" }
@@ -245,6 +367,7 @@ export type ConfirmScore =
       loss: boolean;
       counted: Passes<"confirm">[];
       pooled: Passes<"confirm"> | undefined;
+      bound?: ConfirmBound;
     };
 
 /**
@@ -252,7 +375,10 @@ export type ConfirmScore =
  * runner and at the texts of the last one count: one made before a fix of the runner, or at other
  * texts, is not pooled with it, and the last one counts as it is. One confirm that counts is a
  * loss by isLoss, and two that agree are what both say; two that disagree call for a third
- * (`running`, `third`), and three are pooled (isPooledLoss). A last confirm still running, or
+ * (`running`, `third`), and three are pooled (isPooledLoss). A bounded confirm's isLoss holds at
+ * every count of its ranges (stageOutcome); three pooled with one bounded are pooled over their
+ * summed ranges, and where isPooledLoss differs between those ranges' ends the confirms are
+ * unscreened, since no confirm runs after the third. A last confirm still running, or
  * unscreened, is that. More than POOLED_CONFIRMS confirms that count throw, naming the case: the
  * rule runs no fourth.
  */
@@ -262,28 +388,54 @@ export function confirmScore(caseId: string, confirms: readonly MadeConfirm[]): 
     return { state: "running", third: false };
   }
   if (last.outcome.state === "unscreened") return { state: "unscreened" };
-  const counted = confirms.flatMap(({ runner, texts, outcome }) =>
-    runner === last.runner && texts === last.texts && outcome.state === "counted"
-      ? [outcome.passes]
-      : []
+  const outcomes = confirms.flatMap(({ runner, texts, outcome }) =>
+    runner === last.runner && texts === last.texts && outcome.state === "counted" ? [outcome] : []
   );
-  if (counted.length > POOLED_CONFIRMS) {
+  if (outcomes.length > POOLED_CONFIRMS) {
     throw new Error(
-      `case ${caseId} holds ${counted.length} confirms at the same texts on one runner: the pooled rule takes ${POOLED_CONFIRMS}, and no confirm runs after them`
+      `case ${caseId} holds ${outcomes.length} confirms at the same texts on one runner: the pooled rule takes ${POOLED_CONFIRMS}, and no confirm runs after them`
     );
   }
+  const counted = outcomes.map((outcome) => outcome.passes);
+  const ranges = outcomes.map((outcome) => passRanges(outcome));
+  const bounded = outcomes.some((outcome) => outcome.bound !== undefined);
+  const undecided = outcomes.reduce((sum, outcome) => sum + (outcome.bound?.undecided ?? 0), 0);
   if (counted.length === POOLED_CONFIRMS) {
     const pooled = {
       old: counted.reduce((sum, each) => sum + each.old, 0),
       new: counted.reduce((sum, each) => sum + each.new, 0),
     };
-    return { state: "counted", loss: isPooledLoss(pooled), counted, pooled };
+    const summed = { old: { low: 0, high: 0 }, new: { low: 0, high: 0 } };
+    for (const each of ranges) {
+      for (const arm of ["old", "new"] as const) {
+        summed[arm].low += each[arm].low;
+        summed[arm].high += each[arm].high;
+      }
+    }
+    // isPooledLoss can only turn true as old passes more and new fewer.
+    const atFewest = isPooledLoss({ old: summed.old.low, new: summed.new.high });
+    if (atFewest !== isPooledLoss({ old: summed.old.high, new: summed.new.low })) {
+      return { state: "unscreened" };
+    }
+    return {
+      state: "counted",
+      loss: isPooledLoss(pooled),
+      counted,
+      pooled,
+      ...(bounded ? { bound: { counted: ranges, pooled: summed, undecided } } : {}),
+    };
   }
   const [first, second] = counted;
   if (first !== undefined && second !== undefined && isLoss(first) !== isLoss(second)) {
     return { state: "running", third: true };
   }
-  return { state: "counted", loss: isLoss(last.outcome.passes), counted, pooled: undefined };
+  return {
+    state: "counted",
+    loss: isLoss(last.outcome.passes),
+    counted,
+    pooled: undefined,
+    ...(bounded ? { bound: { counted: ranges, pooled: undefined, undecided } } : {}),
+  };
 }
 
 /** Whether a skill's control case is a loss by the same rule as isLoss, with the old text less the
@@ -301,18 +453,47 @@ export function isFalseLoss(passes: Passes<"control">): boolean {
   return passes.old - passes.twin >= LOSS_GAP;
 }
 
-/** The informative cases of `cases` in the control rule's order: the one whose old text passes
- *  most more often than no skill first, a tie going to the lower id in string order. A skill's
- *  control case is the first of them that was not dropped (scoreSkill). */
-export function controlOrder(
-  cases: readonly { caseId: string; passes: Passes<"screen"> }[]
-): string[] {
+/** A screened case as the control rule reads it: its id, its screen's passes and, where its
+ *  screen is bounded, its bound (StageOutcome). */
+export interface ScreenedCase {
+  readonly caseId: string;
+  readonly passes: Passes<"screen">;
+  readonly bound?: StageBound<"screen">;
+}
+
+/** The informative cases of `cases` with how many more of their screen runs the old text passes
+ *  than no skill (`gap`, a range for a bounded screen), in the control rule's order: the largest
+ *  gap first, a tie going to the lower id in string order; a bounded screen by the most its gap
+ *  can be, so that a case that comes before another under every way their undecided runs end
+ *  comes before it here. */
+function controlRanking(
+  cases: readonly ScreenedCase[]
+): { caseId: string; gap: PassRange; bounded: boolean }[] {
   return cases
-    .flatMap(({ caseId, passes }) =>
-      isInformative(passes) ? [{ caseId, gap: passes.old - passes.none }] : []
-    )
-    .sort((a, b) => b.gap - a.gap || (a.caseId < b.caseId ? -1 : a.caseId > b.caseId ? 1 : 0))
-    .map((each) => each.caseId);
+    .flatMap((each) => {
+      const ranges = passRanges(each);
+      return isInformative(each.passes)
+        ? [
+            {
+              caseId: each.caseId,
+              gap: gapRange(ranges.old, ranges.none),
+              bounded: each.bound !== undefined,
+            },
+          ]
+        : [];
+    })
+    .sort(
+      (a, b) => b.gap.high - a.gap.high || (a.caseId < b.caseId ? -1 : a.caseId > b.caseId ? 1 : 0)
+    );
+}
+
+/** The informative cases of `cases` in the control rule's order: the one whose old text passes
+ *  most more often than no skill first, a tie going to the lower id in string order (a bounded
+ *  screen by the most its gap can be: controlRanking). A skill's control case is the first of
+ *  them that was not dropped, where it comes first under every way the undecided runs of bounded
+ *  screens end (scoreSkill). */
+export function controlOrder(cases: readonly ScreenedCase[]): string[] {
+  return controlRanking(cases).map((each) => each.caseId);
 }
 
 /** A skill that gets no verdict, and why. */
@@ -378,11 +559,12 @@ export interface CaseScore {
 }
 /** A skill's cases and verdict, from the run records of its cases. `screened` counts the cases
  *  whose screen runs are counted and that were not dropped at screen (the case cap's count);
- *  `controlCase` is the first case of the control rule's order that was not dropped, and
- *  `replacedControls` the dropped ones before it in that order; `noControl` says why no case is
- *  left to be the control, when each informative case was dropped; `control` is the control
- *  case's control stage. `outcome` is undefined while a stage the verdict waits on can still start
- *  runs. */
+ *  `controlCase` is the first case of the control rule's order that was not dropped, where it
+ *  comes first under every way the undecided runs of bounded screens end, and `replacedControls`
+ *  the dropped ones that come before it under every such way; `noControl` says why no case is
+ *  the control case: each informative case was dropped, or the undecided runs of bounded screens
+ *  leave more than one case that can come first; `control` is the control case's control stage.
+ *  `outcome` is undefined while a stage the verdict waits on can still start runs. */
 export interface SkillScore {
   cases: CaseScore[];
   screened: number;
@@ -402,7 +584,11 @@ export interface SkillScore {
  * its screen did not flag cannot be, since only flagged cases are confirmed, and throws, naming
  * it. The control case is the first case of the control rule's order that was not dropped, so a
  * dropped one gives its place to the next; with none left, the skill gets no verdict, and the
- * reason names each dropped one.
+ * reason names each dropped one. Where a bounded screen's gap (old less none) leaves the cases
+ * not dropped in more than one order, the control case is the one that comes first under every
+ * way their undecided runs end; where more than one can come first, the skill gets no verdict,
+ * and the reason names the cases whose undecided runs leave it open and each that can come
+ * first. A control made on a case that is not the control case is no control of it.
  *
  * The verdict waits for every case's screen runs; with enough informative cases, for the control's
  * runs (its planted-loss and false-loss controls are one stage); and when the planted-loss control
@@ -453,25 +639,42 @@ export function scoreSkill(
   });
   const screenedCases = cases.flatMap(({ caseId, screen, drop }) =>
     screen.state === "counted" && drop?.stage !== "screen"
-      ? [{ caseId, passes: screen.passes }]
+      ? [{ caseId, passes: screen.passes, bound: screen.bound }]
       : []
   );
   const informative = cases.filter((c) => c.informative).length;
-  const replacedControls: string[] = [];
-  let chosen: string | undefined;
-  for (const caseId of controlOrder(screenedCases)) {
-    if (facts.get(caseId)?.drop === undefined) {
-      chosen = caseId;
-      break;
-    }
-    replacedControls.push(caseId);
-  }
+  const ranked = controlRanking(screenedCases);
+  const standing = ranked.filter((each) => facts.get(each.caseId)?.drop === undefined);
+  // Whether case `a` at gap `x` comes before case `b` at gap `y` in the control rule's order.
+  const before = (a: string, x: number, b: string, y: number) => x > y || (x === y && a < b);
+  // The cases not dropped that come first under some way the undecided runs end: each at its
+  // most gap, before every other at its least.
+  const first = standing.filter((x) =>
+    standing.every((y) => y === x || before(x.caseId, x.gap.high, y.caseId, y.gap.low))
+  );
+  const chosen = first.length === 1 ? first[0]?.caseId : undefined;
+  const replacedControls = ranked
+    .filter(
+      (d) =>
+        facts.get(d.caseId)?.drop !== undefined &&
+        first.every((x) => before(d.caseId, d.gap.low, x.caseId, x.gap.high))
+    )
+    .map((d) => d.caseId);
+  const openBy = first
+    .filter((x) => x.bounded)
+    .map((x) => x.caseId)
+    .join(" and ");
+  const firstWords = first.map((x) => `${x.caseId} (old less none ${rangeWords(x.gap)})`);
+  const open =
+    first.length > 1
+      ? `the control case is open: the undecided screen runs of ${openBy} leave ${firstWords.slice(0, -1).join(", ")} or ${firstWords.at(-1)} first in the control rule's order`
+      : undefined;
   const noControl =
-    chosen === undefined && replacedControls.length > 0
+    standing.length === 0 && replacedControls.length > 0
       ? `no informative case is left to be the control case: each is dropped (${replacedControls
           .map((caseId) => `${caseId} at ${facts.get(caseId)?.drop?.stage}`)
           .join(", ")})`
-      : undefined;
+      : open;
   const control = chosen === undefined ? undefined : stageOutcome(records, chosen, "control");
   const score = {
     cases,

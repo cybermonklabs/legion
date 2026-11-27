@@ -209,7 +209,29 @@ skill's cases (`cases.ts`), one JSON object per line.
   unscreened in that shape with no drop, from before this rule, is dropped when `screen`,
   `confirm` or `control` reaches its case again, from its saved runs and with no model call. A
   stage where an arm that lacks its runs has a run with no verdict for another reason stays
-  unscreened. Each drop records the stage that made it (`droppedAt`; a result written
+  unscreened. A stage an arm leaves short of its judged runs after its extra runs is bounded
+  instead (INFRA-323's architect and INFRA-4676's, 2026-11-27) where each run with no verdict of
+  each such arm is undecided (its reason begins `mixed-undecided` or `reads-past-last-round`; a
+  gateway refusal, a 429, a timeout, a budget stop or a wait at the further-round limit is not)
+  and every other arm has its judged runs. Each such arm's passes, of the stage's N runs (10 in a
+  screen, 40 in a confirm or a control), are bounded by the hull, within 0 to N, of two ranges:
+  its passes among its first N runs by run number, to those plus its undecided runs among them;
+  and its judged passes, to N less its judged fails (which lies within the first). An arm with
+  its judged runs is its count. Where the registered rule gives the stage one outcome at every
+  count of those ranges, the stage takes it: it is counted, starts no run and drops no case, and
+  its line prints each arm's count, each bounded arm as its range (`new 0 to 20/40`), and ends
+  `(bounded over <k> undecided runs)`. Where the outcome differs between those counts, the stage
+  stays unscreened. This changes no pass rule: it applies the registered rule to every way the
+  undecided runs can end. A rule that reads a bounded stage's passes beyond its outcome decides
+  only what holds under every such way: the control case is the informative case not dropped
+  that comes first under every way, and where more than one can come first the skill gets no
+  verdict, `the control case is open: ...`, naming the cases whose undecided runs leave it open
+  and each that can come first; three pooled confirms with a bounded one are pooled over the
+  summed ranges, and are unscreened where the pooled rule differs between them; and the report's
+  false-loss estimate takes a bounded case's largest chance over its ranges, and says so. `report`
+  reads a case saved as dropped `reads-past-last-round` at a stage the bound now counts as not
+  dropped, as a stage command would leave it now; where the bound does not decide that stage, the
+  drop stands. Each drop records the stage that made it (`droppedAt`; a result written
   before that field is read as dropped at screen when its screen runs are not counted, else at
   confirm when its screen flagged it and it has no confirm runs, else at control). No dropped case
   leaves the score (the architect, 2026-11-22): a case dropped at screen is not informative; a case
