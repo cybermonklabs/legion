@@ -2398,6 +2398,7 @@ func TestALaunchThatWaitedOutAPendingPodReportsItsEvents(t *testing.T) {
 // the same wording, whose key matches a providers key, is printed as written, as is the event's
 // type and reason.
 func TestAPendingPodsEventsNameTheSettingOfAMissingProvidersKey(t *testing.T) {
+	t.Parallel()
 	const pasted = "MadeUpProviderKey0123456789abcdefXYZ"
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": "ANTHROPIC", "OPENAI_API_KEY": pasted, "GEMINI_API_KEY": "token"}

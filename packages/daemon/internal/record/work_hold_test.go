@@ -301,7 +301,8 @@ func TestWorkHoldRecordGoesWithItsTreesGeneration(t *testing.T) {
 		}
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.ClearTreeGeneration(ctx, tx, root.Key, closedAt))
+		_, err := records.ClearTreeGeneration(ctx, tx, root.Key, forgetNothing)
+		must(t, err)
 	})
 	inTx(t, st, func(tx pgx.Tx) {
 		if read, err := records.LockWorkHold(ctx, tx, root.Key); err != nil || read != nil {

@@ -345,7 +345,7 @@ func (r *approvalRig) relayKept() {
 			return errors.Join(err, fmt.Errorf("no record of the root %s", ownRoot))
 		}
 		outcome, err := record.RelayParkedDecision(context.Background(), tx, r.records, row.Issue, *root, true,
-			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: relayedAt}, notice.Version, notice.Reason, specGated)
+			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: relayedAt}, notice, specGated)
 		if err == nil && outcome != record.RelaySent {
 			err = fmt.Errorf("the relay of %s's design-approved notice = outcome %d, want it sent to the controller and kept", ownRoot, outcome)
 		}

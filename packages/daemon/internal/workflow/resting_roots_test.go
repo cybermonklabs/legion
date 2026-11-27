@@ -158,6 +158,7 @@ const restingMover = "Each is a tree of its own: its own architect, or a person,
 // to rest on it and when it closes or leaves the workflow, at its start when the daemon recorded it
 // in no live tree then, and in each catch-up (k10, dispatch://INFRA-3320 R8).
 func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
+	t.Parallel()
 	t.Run("a resting root holds the sign-off until it is done, and the merge then closes the ancestor", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := testEngine(config.DesignGateRootIssues, nil)
@@ -472,7 +473,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		var narrowed string
 		seedRecord(t, pool, func(tx pgx.Tx) error {
 			read, err := ArchitectStartOf(t.Context(), tx, engine.store, engine.GatedSteps(), ancestor)
-			narrowed = NarrowRootTask(read, start.Entry, record.KeptDecisions{})
+			narrowed = NarrowRootTask(read, start.Entry, "")
 			return err
 		})
 		if narrowed != start.Task {
@@ -513,6 +514,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 // table does not name refuses both with its own code and the issues it names rather than letting
 // either through, and no hold refuses nothing.
 func TestEveryAcceptanceHoldRefusesBothActs(t *testing.T) {
+	t.Parallel()
 	acts := []architectAct{actSignOff, actCloseRoot}
 	for _, code := range []string{signOffChildInWorkflow, signOffRestingRoot, signOffChildOpen} {
 		if _, named := acceptanceHolds[code]; !named {
@@ -547,6 +549,7 @@ func TestEveryAcceptanceHoldRefusesBothActs(t *testing.T) {
 // and the owner's acceptance goes back to reviewing, and one of an implementer and the owner's
 // acceptance alone to accepting, the start it held, with no step named.
 func TestASignOffRefusalNamesTheStepAHeldAcceptanceGoesBackTo(t *testing.T) {
+	t.Parallel()
 	held := acceptanceHold{code: signOffChildOpen, names: "LEGION-209 (todo)"}
 	for _, tc := range []struct {
 		name string

@@ -1115,7 +1115,7 @@ func TestWorkHoldGivesWayToANewerGeneration(t *testing.T) {
 		rig := newHoldRig(t)
 		rig.close(rig.engine(config.HoldWork), 4)
 		seedRecord(t, rig.pool, func(tx pgx.Tx) error {
-			return record.NewStore().ClearTreeGeneration(t.Context(), tx, "LEGION-208", holdNow)
+			return rig.engine(config.HoldWork).ClearTreeGeneration(t.Context(), tx, "LEGION-208", holdNow)
 		})
 		if hold := workHoldOf(t, rig.pool, "LEGION-208"); hold != nil {
 			t.Fatalf("after the tree's new generation the record holds %+v, want none", hold)

@@ -446,7 +446,11 @@ const legionMergeState = z.enum([
  * repository requires holds the head. `fixAttempts` counted the heads pushed onto a red verdict
  * until contract 59 removed the count. */
 const legionPullRequestView = z.object({
-  /** The repository (`owner/name`) the pull request is in, its issue's (contract 31). */
+  /** The repository (`owner/name`) the pull request is in (contract 31), which is the issue's own
+   * until a correction of the issue's repository leaves it behind: the correction moves the
+   * issue's record alone, so this keeps the repository the pull request was opened on. Where this
+   * and the issue's `repo` name two repositories, the issue has work on a repository it has left,
+   * and the daemon applies no GitHub event of that pull request to the issue any more. */
   repo: nonEmptyString.optional(),
   number: z.number().int().positive().optional(),
   head: nonEmptyString.optional(),
@@ -864,10 +868,25 @@ const legionIssue = z.object({
    * (`api.stateFor`, `withoutGateBasis`), which is why a reader takes it as optional. */
   treeRuns: z.boolean().optional(),
   /** The repository (`owner/name`) the issue targets and that repository's default branch, taken
-   * when the daemon first recorded the issue and never changed after; absent on an issue the
-   * workflow does not record (phase `unrecorded`, an operator's claim) (contract 31). */
+   * when the daemon first recorded the issue and kept after, except that a correction of the
+   * issue's repository moves both (`repoBefore` below); absent on an issue the workflow does not
+   * record (phase `unrecorded`, an operator's claim) (contract 31). */
   repo: nonEmptyString.optional(),
   defaultBranch: nonEmptyString.optional(),
+  /** The repository the record held before the newest correction of the issue's repository, and
+   * the instant the daemon applied that correction. The daemon writes the two together, and
+   * writes neither for an issue no correction has reached, but the schema takes each as optional
+   * and does not check the pair. The issue's branch and its pull request are on `repoBefore`, and
+   * `repo` above is the repository the issue works now. */
+  repoBefore: nonEmptyString.optional(),
+  repoCorrectedAt: timestamp.optional(),
+  /** A repository Dispatch has named for the issue that the daemon has not applied to its record,
+   * and why it has not. The daemon writes the two together, and writes neither while nothing
+   * waits, but the schema takes each as optional and does not check the pair. While they are
+   * there, `repo` above still names the repository the issue works: a reader of a record that
+   * names the old repository reads here why it does. */
+  repoChangePending: nonEmptyString.optional(),
+  repoChangeReason: nonEmptyString.optional(),
   /** Why a held issue is held, when its hold has one: `escalated` once its architect sent it to
    * the controller; and from contract 219 `task-stopped` once its owner stopped its task with
    * stop_task, and `children` while a parent whose task's last step is not the owner's acceptance
@@ -2002,6 +2021,45 @@ export const LegionActivityRequest = z.strictObject({
 
 export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
 
+/** `api.OwedRequest`, the body of `POST /legion/v1/claims/owed` (contract entry 20261125181104):
+ * a live role's session asking, at the end of its turn, what its claim owes now. It carries what
+ * `claims/activity` carries — the claim, the session the claim records, and the registration's
+ * secret — and no generation, since the question changes nothing. A token the daemon does not
+ * hold, a wrong secret and a session the claim does not record are each refused 403 with
+ * `Invalid session secret`, with one exception: a claim the daemon holds failed, asked from the
+ * session the claim records (from any session when it records none), is answered 200 with
+ * `owes` false whatever the secret, since a failed claim holds no secret any more. */
+export const LegionOwedRequest = z.strictObject({
+  claimToken: nonEmptyString,
+  sessionId: nonEmptyString,
+  secret: nonEmptyString,
+});
+
+export type LegionOwedRequestBody = z.output<typeof LegionOwedRequest>;
+
+/** `api.OwedResponse`, the body `POST /legion/v1/claims/owed` answers: whether the claim owes work
+ * now, and what that work is called as a person reads it in a reminder — `the testing phase of
+ * LEGION-208`, `the production check of LEGION-208`. The daemon reads it from the issue's record,
+ * so a role whose phase has finished owes nothing whatever its process remembers, and a role
+ * whose phase is open owes it. `work` is empty exactly when `owes` is false; a reminder renders
+ * the phrase it is given and names no work of its own. `architect` is the architect claim that
+ * owns the claim now, the end of the owner walk the daemon's own notices of the issue take: the
+ * issue's own architect while its claim holds its role, else the nearest one above it that does,
+ * else the tree root's. It is named for a phase worker whose issue the daemon records, owed or
+ * not, and absent for an architect, the controller, a failed claim and an unrecorded issue; the
+ * reminder's architect notice and the stall watch's notice go to it. */
+export const LegionOwedResponse = z
+  .object({
+    owes: z.boolean(),
+    work: z.string(),
+    architect: nonEmptyString.optional(),
+  })
+  .refine((body) => body.owes === (body.work !== ""), {
+    message: "work names the owed work exactly when owes is true",
+  });
+
+export type LegionOwed = z.output<typeof LegionOwedResponse>;
+
 /** `api.ReleaseRecord` — one issue pod the daemon released: the run it released, the roles whose
  * claims it suspended (sorted, as the store holds them), when the release completed, and the size
  * of the git bundle of unpushed work it saved, zero when the workspace held none. `roles` is
@@ -2947,7 +3005,6 @@ export const LegionTaskStopRequest = z.strictObject({
 });
 /** What plugin code takes the value of in one issue's record: `legion-phase-ops.ts` reads the
  * issue's phase for a fieldless `handoff_complete`; a named check report reads no record.
- * `phase-reminder.ts` and `pi-legion/src/stall-evidence.ts` read the architect's claim state.
  * The controller's `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold
  * reason, slot and design gate, and the spec step's entry in its gated steps (its step, status and
  * basis). It also reads the state and both turn times of the architect's claim and every worker's
@@ -3038,11 +3095,12 @@ const ISSUE_RECORD_READS = [
  * as any read is.
  */
 export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = {
-  // The three readers of an issue's record ask the record route for it (dispatch://INFRA-2694),
-  // and the controller's `read_state` summary reads the project's admission line, its
-  // capability report and each issue's own fields. `daemon` and `daemon.project` stood
-  // here until the controller's boot check read the project from the health answer instead
-  // (`pi-legion/src/controller-session.ts`), and both are optional above.
+  // The record route's readers, `legion-phase-ops.ts`'s `read_record` and `handoff_complete`, ask
+  // it for an issue's record (dispatch://INFRA-2694), and the controller's `read_state` summary
+  // reads the project's admission line, its capability report and each issue's own fields.
+  // `daemon` and `daemon.project` stood here until the controller's boot check read the project
+  // from the health answer instead (`pi-legion/src/controller-session.ts`), and both are optional
+  // above.
   LegionStateResponse: [
     "issues",
     ...ISSUE_RECORD_READS.map((field) => `issues{}.${field}`),
@@ -3230,4 +3288,8 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "approval.version",
     "approval.message",
   ],
+  // `pi-shared/src/phase-reminder.ts` decides whether a due reminder goes out by `owes`, names
+  // the work it gives by `work`, and sends the architect notice to `architect`, as the stall
+  // watch's notice does (`pi-legion/src/stall-evidence.ts`, contract entry 20261125181104).
+  LegionOwedResponse: ["owes", "work", "architect"],
 };

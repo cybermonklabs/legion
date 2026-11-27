@@ -83,9 +83,10 @@ func (h *heldRoundRig) attach() {
 	h.s = &supervision{
 		cfg: config.Config{Project: h.tree.project, Runtime: config.Runtime{Name: "kubernetes"},
 			PodUpdateGrace: heldRoundGrace, WorkerSilence: podUpdateSilence},
-		log:     slog.New(slog.NewJSONHandler(h.logs, nil)),
-		plan:    plan{clock: h.clock, project: h.tokenProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
-		runtime: h.rt, supervisor: h.sup, enqueue: w.enqueueOutbox, refreshGate: supervise.NewRefreshGate(0),
+		log: slog.New(slog.NewJSONHandler(h.logs, nil)),
+		plan: plan{clock: h.clock, project: h.tokenProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval,
+			enqueue: w.enqueueOutbox},
+		runtime: h.rt, supervisor: h.sup, refreshGate: supervise.NewRefreshGate(0),
 	}
 	h.rt.RoundPodEnds = h.s.roundPodEndsAtLaunch
 }

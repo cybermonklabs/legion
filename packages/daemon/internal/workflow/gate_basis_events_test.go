@@ -156,6 +156,7 @@ func registeredPending(t *testing.T) (*pgxpool.Pool, *Engine, func(string, intak
 // the basis, the ancestor's architect the root's first rest, and the gate seed is queued. The same
 // approval delivered again tells nobody anything new, and admission's pass then starts the tree.
 func TestAPendingBasisOpensOnThePersonsApprovalOfTheAncestorsVersion(t *testing.T) {
+	t.Parallel()
 	pool, engine, apply := registeredPending(t)
 	approved := ancestorReview(intake.DispatchArtifactApproved, 4, 60, "")
 
@@ -217,6 +218,7 @@ func TestAPendingBasisOpensOnThePersonsApprovalOfTheAncestorsVersion(t *testing.
 // whose tree lingers once the seed reads. An ancestor the daemon records no tree of is told
 // nothing, of the registration or of the end.
 func TestEachActOnAPendingBasisEndsItWithABasisEndedNotice(t *testing.T) {
+	t.Parallel()
 	session := dispatch.Actor{Kind: "session", ID: "session-other"}
 	closed := func(actor dispatch.Actor) intake.DispatchAskClosed {
 		return intake.DispatchAskClosed{Key: basisAncestor, Ask: "ask-100", Kind: record.AskApproval, Artifact: basisDoc, State: "resolved",
@@ -342,6 +344,7 @@ func TestEachActOnAPendingBasisEndsItWithABasisEndedNotice(t *testing.T) {
 // seed's read of Dispatch that shows either, as one queued before the deployment changed reads it,
 // leaves the wait as it is and tells nobody.
 func TestAPendingBasisOfAStepTheDeploymentDoesNotGateTakesNoEvent(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		fact intake.Fact
@@ -383,6 +386,7 @@ func TestAPendingBasisOfAStepTheDeploymentDoesNotGateTakesNoEvent(t *testing.T) 
 // its request as R1's first condition ends it. No registration on an ancestor in retro records a
 // basis (acceptedBasis), so the step's wait is written as it stands.
 func TestTheAncestorsMoveIntoMergingEndsAPendingBasis(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
@@ -415,6 +419,7 @@ func TestTheAncestorsMoveIntoMergingEndsAPendingBasis(t *testing.T) {
 // design-approved from the approval, and basis-ended, whose reason says the person's approval of
 // the root's own document at that version opened the step and ended the wait.
 func TestAPersonsApprovalOfTheRootsOwnDocumentEndsAPendingBasisWithBothNotices(t *testing.T) {
+	t.Parallel()
 	pool, _, apply := registeredPending(t)
 
 	apply("own-approval", stepApproval(gatedRoot, gateDoc, 4, askSeq(9)))
@@ -444,6 +449,7 @@ func TestAPersonsApprovalOfTheRootsOwnDocumentEndsAPendingBasisWithBothNotices(t
 // approval of the root's own document answers it too, and sends neither notice. The ancestor's
 // architect is told the end as ever.
 func TestAPendingBasisAnswersARootAwaitingAPersonWithNoNotice(t *testing.T) {
+	t.Parallel()
 	for _, wait := range []struct {
 		name    string
 		waiting record.Awaiting
@@ -524,6 +530,7 @@ func TestAPendingBasisAnswersARootAwaitingAPersonWithNoNotice(t *testing.T) {
 // version delivered again changes nothing. None of these is a wait's end, so no basis-ended notice
 // goes.
 func TestTheRootsOwnDocumentMovesAnOpenBasisStepAsAnApprovedStep(t *testing.T) {
+	t.Parallel()
 	personal := record.EventMark{Seq: 3, At: basisApprovedAt.Add(-time.Hour)}
 	for _, tc := range []struct {
 		name     string
@@ -584,6 +591,7 @@ func TestTheRootsOwnDocumentMovesAnOpenBasisStepAsAnApprovedStep(t *testing.T) {
 // pending-basis seed as well, whose read of that approval opens the step: the ancestor's steps are
 // read apart from the handover's branch.
 func TestAPendingBasisOpensOnTheApprovalThatReadmitsAnAncestorOnTheBacklog(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
@@ -616,6 +624,7 @@ func TestAPendingBasisOpensOnTheApprovalThatReadmitsAnAncestorOnTheBacklog(t *te
 // on the same version is told as well. A changes request Dispatch recorded before the approval is
 // none the step passes on.
 func TestAnOpenBasisPassesOnOnlyAPersonsChangesRequestOnItsVersion(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
@@ -687,6 +696,7 @@ func TestAnOpenBasisPassesOnOnlyAPersonsChangesRequestOnItsVersion(t *testing.T)
 // legion label: the wait ends instead. A read of a wait that has ended since, or of another
 // generation, request or registration, changes nothing.
 func TestThePendingBasisReadOpensOrEndsOnlyAStepStillPendingOnIt(t *testing.T) {
+	t.Parallel()
 	approvedAt, sentBackAt := basisApprovedAt.Add(24*time.Hour), basisApprovedAt.Add(25*time.Hour)
 	approved := dispatch.Approval{IssueKey: basisAncestor, State: "approved", LatestVersion: 4, Version: new(4), At: approvedAt, Seq: 60, By: basisPerson}
 	sentBack := dispatch.Approval{IssueKey: basisAncestor, State: "changes_requested", LatestVersion: 4, Version: new(4), Reason: new("name the rollback path"),
@@ -771,6 +781,7 @@ func TestThePendingBasisReadOpensOrEndsOnlyAStepStillPendingOnIt(t *testing.T) {
 // ends instead, with the root's architect told why and the step closed on the root's own document
 // with no basis.
 func TestThePendingBasisReadOpensNoStepOnAnAcceptedAncestor(t *testing.T) {
+	t.Parallel()
 	approved := dispatch.Approval{IssueKey: basisAncestor, State: "approved", LatestVersion: 4, Version: new(4), At: basisApprovedAt.Add(24 * time.Hour),
 		Seq: 60, By: basisPerson}
 	for _, tc := range []struct {
@@ -812,6 +823,7 @@ func TestThePendingBasisReadOpensNoStepOnAnAcceptedAncestor(t *testing.T) {
 // instead, with the root's architect told why and the step closed on the root's own document with
 // no basis.
 func TestAnApprovalEventOpensNoPendingStepOnAnAncestorThatLeftR1(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		leave    func(t *testing.T, pool *pgxpool.Pool)
@@ -856,6 +868,7 @@ func TestAnApprovalEventOpensNoPendingStepOnAnAncestorThatLeftR1(t *testing.T) {
 // pending-basis seed of the step still pending on the request, and none for the moved row, and
 // the seed's read opens that step, while the moved row stays as the earlier release left it.
 func TestAPendingBasisOpensBesideARowAnEarlierReleaseMoved(t *testing.T) {
+	t.Parallel()
 	pool, _, apply := registeredPending(t)
 	// LEGION-207 sorts before LEGION-208, whose step waits on ask-100.
 	const moved = "LEGION-207"

@@ -1156,7 +1156,7 @@ func (r *pathRig) relay(key string, kind record.NoticeKind) {
 			return errors.Join(err, fmt.Errorf("no record of the root %s", tree))
 		}
 		outcome, err := record.RelayParkedDecision(r.ctx, tx, r.records, row.Issue, *root, true,
-			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: decidedAt}, notice.Version, notice.Reason, pathSteps)
+			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: decidedAt}, notice, pathSteps)
 		if err == nil && outcome != record.RelaySent {
 			err = fmt.Errorf("the relay of %s's %s = outcome %d, want it sent to the controller and kept", key, kind, outcome)
 		}
@@ -1388,25 +1388,38 @@ func (r *pathRig) roleMessageEntry(key string) string {
 	return payload.(record.RoleMessage).Body
 }
 
-// startRow is the newest start of key's architect that carries a task, and whether there is one.
+// startRow is the newest start of key's architect that carries a task, or the wait a resume task
+// answers (record.SuperviseRequest.Awaiting), whose text its send writes from the record, and
+// whether there is one.
 func (r *pathRig) startRow(key string) (record.OutboxRow, record.SuperviseRequest, bool) {
 	r.t.Helper()
 	row, payload, found := r.newestRow(`kind = $1 and issue = $2 and payload->>'op' = 'start' and payload->>'role' = $3
-		and coalesce(payload->>'task', '') <> ''`, string(record.OutboxKindSupervise), key, string(claim.RoleArchitect))
+		and (coalesce(payload->>'task', '') <> '' or payload->'awaiting' is not null)`, string(record.OutboxKindSupervise), key, string(claim.RoleArchitect))
 	if !found {
 		return record.OutboxRow{}, record.SuperviseRequest{}, false
 	}
 	return row, payload.(record.SuperviseRequest), true
 }
 
-// startTaskEntry is the task of the newest start of key's architect.
+// startTaskEntry is the task of the newest start of key's architect: a resume carries the wait it
+// answers and no text, and its send writes it from the record (the daemon's rootTask,
+// workflow.ResumeAwaitedRootTask), so it is written here from the record as it stands now.
 func (r *pathRig) startTaskEntry(key string) string {
 	r.t.Helper()
 	_, start, found := r.startRow(key)
 	if !found {
 		r.t.Fatalf("no architect start of %s carries a task", key)
 	}
-	return start.Task
+	if start.Awaiting == nil {
+		return start.Task
+	}
+	var task string
+	r.write(func(tx pgx.Tx) error {
+		var err error
+		task, err = workflow.ResumeAwaitedRootTask(r.ctx, tx, r.records, key, *start.Awaiting, pathSteps)
+		return err
+	})
+	return task
 }
 
 // keptTask is what the next start or catch-up of key's tree names of the decisions kept while

@@ -1,2 +1,2 @@
 design-approved on ACME-2694
-{"kind":"design-approved","version":46,"actor":"user:person@example.com","ref":"dispatch://ACME-2694/spec"}
+{"kind":"design-approved","version":46,"actor":"user:person@example.com","ref":"dispatch://ACME-2694/spec","review":{"Seq":1457,"At":"2026-11-18T16:57:23.006998Z"},"artifact":"aec8fb48-fd46-458a-99a3-a1b199a46b38"}

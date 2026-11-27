@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.4.11/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
   "vcs": {
     "enabled": true,
     "clientKind": "git",
@@ -16,6 +16,7 @@
       "!!packages/contracts/fixtures/dispatch-frame-property.json",
       "!!packages/contracts/fixtures/dispatch-frame-verdicts.json",
       "!!packages/contracts/schemas/dispatch-frame.schema.json",
+      "!!packages/contracts/src/dispatch-api.generated.ts",
       "!!packages/dispatch/e2e/__recordings__",
       "!!packages/pi-legion/test/fixtures/approval-context",
       "!!packages/daemon/internal/runtime/sandbox/testdata/golden",
@@ -57,7 +58,7 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true,
+      "preset": "recommended",
       "suspicious": {
         "noImportCycles": "error"
       },

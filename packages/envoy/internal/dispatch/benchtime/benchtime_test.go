@@ -111,3 +111,35 @@ func TestTheGateIsTheBenchDatabaseURL(t *testing.T) {
 		t.Fatalf("the gate is %q, which is not the bench database variable CI leaves unset", DatabaseURLEnv)
 	}
 }
+
+// The generic plan's EXECUTE takes each argument as a literal of the type the statement is
+// prepared with, so the generic plan is read for the values the plan for its values binds: a quote
+// in a string is doubled, an array keeps its order and may be empty, a time keeps its
+// microseconds, in UTC, and a time that is nil is null of the type a time takes. A value of any
+// other type is refused rather than written as a guess.
+func TestTheGenericPlanBindsTheArgumentsAsLiterals(t *testing.T) {
+	at := time.Date(2026, 12, 29, 1, 2, 3, 456789000, time.FixedZone("", 3600))
+	for _, want := range []struct {
+		argument         any
+		parameter, value string
+	}{
+		{"it's", "text", `'it''s'`},
+		{[]string{"SEED1-1", "o'clock"}, "text[]", `array['SEED1-1', 'o''clock']::text[]`},
+		{[]string{}, "text[]", `array[]::text[]`},
+		{at, "timestamptz", `'2026-12-29T00:02:03.456789Z'::timestamptz`},
+		{&at, "timestamptz", `'2026-12-29T00:02:03.456789Z'::timestamptz`},
+		{(*time.Time)(nil), "timestamptz", `null::timestamptz`},
+		{true, "boolean", `true`},
+		{false, "boolean", `false`},
+		{[]int16{0, 3}, "smallint[]", `array[0, 3]::smallint[]`},
+		{[]int16{}, "smallint[]", `array[]::smallint[]`},
+	} {
+		parameter, value, err := sqlLiteral(want.argument)
+		if err != nil || parameter != want.parameter || value != want.value {
+			t.Errorf("sqlLiteral(%#v) = %q, %q, %v, want %q, %q", want.argument, parameter, value, err, want.parameter, want.value)
+		}
+	}
+	if _, _, err := sqlLiteral(42); err == nil {
+		t.Error("sqlLiteral(42) answers a literal, want a refusal of an int")
+	}
+}

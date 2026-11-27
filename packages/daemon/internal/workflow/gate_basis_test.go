@@ -120,6 +120,7 @@ const basisOpenedBody = "Design gate opened on an ancestor's approval.\n" +
 // written, and admission's pass starts the tree. A second registration of the same reads tells
 // nobody anything again.
 func TestARegistrationOnAnApprovedBasisOpensTheStepAndRecordsIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
@@ -197,6 +198,7 @@ func TestARegistrationOnAnApprovedBasisOpensTheStepAndRecordsIt(t *testing.T) {
 // open step again, at a later sequence and a later time of the daemon's clock. The same holds for a
 // step that waits on the same request of the ancestor.
 func TestARegistrationOfAnOpenBasisStepAgainKeepsTheMomentItOpened(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		basis func() *record.GateBasis
@@ -237,6 +239,7 @@ func TestARegistrationOfAnOpenBasisStepAgainKeepsTheMomentItOpened(t *testing.T)
 // TestRestingRootsHoldTheAncestorSignOff's: the registration first, and the sign-off refused while
 // the root rests on the ancestor.
 func TestARegistrationOnAnAncestorAcceptedSinceItsReadIsRefused(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
@@ -281,6 +284,7 @@ func refusedRegistrationLeftNothing(t *testing.T, pool *pgxpool.Pool, event stri
 // and its event is left unmarked. TestARegistrationOnAnAncestorAcceptedSinceItsReadIsRefused is
 // the same race with the ancestor's sign-off.
 func TestARegistrationOnAnAncestorClosedSinceItsReadIsRefused(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
@@ -307,6 +311,7 @@ func TestARegistrationOnAnAncestorClosedSinceItsReadIsRefused(t *testing.T) {
 // the root at admitted in its slot. It queues the pending-basis seed and the resting-root notice of
 // the pending registration, and tells the root's architect nothing and posts nothing.
 func TestARegistrationOnAPendingBasisLeavesTheStepClosed(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
@@ -354,6 +359,7 @@ func TestARegistrationOnAPendingBasisLeavesTheStepClosed(t *testing.T) {
 // the registration left the step: an opened step's answer stands, and a pending step's wait is
 // answered by the close, since nothing else of it is with the person.
 func TestARegistrationOnABasisAnswersAWaitingRootAsItLeavesTheStep(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		basis    *record.GateBasis
@@ -400,6 +406,7 @@ func TestARegistrationOnABasisAnswersAWaitingRootAsItLeavesTheStep(t *testing.T)
 // the root's own opening is told as ever. Nothing is recorded as told then, so a registration once
 // the ancestor's tree runs tells its architect.
 func TestABasisOnAnAncestorInNoLiveTreeQueuesNoRestingRoot(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		seed func(t *testing.T, pool *pgxpool.Pool)
@@ -436,6 +443,7 @@ func TestABasisOnAnAncestorInNoLiveTreeQueuesNoRestingRoot(t *testing.T) {
 // and still rests on the ancestor for the generation (R8); a pending step stops waiting and rests on
 // nothing, and the ancestor's architect is told that wait ended.
 func TestARegistrationWithNoBasisAfterABasisLeavesNoneBehind(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		basis   *record.GateBasis
@@ -480,6 +488,7 @@ func TestARegistrationWithNoBasisAfterABasisLeavesNoneBehind(t *testing.T) {
 // keeps while a basis stands, and the one a later registration carries: never the version the
 // basis opened the step at, which no person approved.
 func TestARegistrationCarriesThePersonsApprovalNotTheBasisVersion(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
@@ -507,6 +516,7 @@ func TestARegistrationCarriesThePersonsApprovalNotTheBasisVersion(t *testing.T) 
 // Each registration of the spec step writes the view fact it carries, the newest one standing,
 // and a registration of another step leaves it as it is.
 func TestEachRegistrationOfTheSpecStepWritesItsViewFact(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepsEngine(twoSteps(), nil)
 	apply := applyFacts(t, pool, engine)
@@ -535,6 +545,7 @@ func TestEachRegistrationOfTheSpecStepWritesItsViewFact(t *testing.T) {
 // with the person's approval of the root's own earlier version it holds and the request beside
 // it. Once the wait ends, the step reads as registered on the root's own document, with no basis.
 func TestACatchUpStatesAStepOnABasisAsItStands(t *testing.T) {
+	t.Parallel()
 	personal := 2
 	own := record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: gateDoc, LatestVersion: 4,
 		ApprovedVersion: &personal, ApprovedMark: record.EventMark{Seq: 3, At: basisApprovedAt.Add(-time.Hour)}}

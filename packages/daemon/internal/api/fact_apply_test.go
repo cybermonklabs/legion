@@ -130,6 +130,7 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"POST /legion/v1/claims/exit":                  {none: "the claim's report to its own machine; " + noFact},
 		"POST /legion/v1/claims/turn-outcome":          {none: "the claim's report to its own machine; " + noFact},
 		"POST /legion/v1/claims/activity":              {none: "the claim's report to its own machine; " + noFact},
+		"POST /legion/v1/claims/owed":                  {none: "a read of what the claim owes, from the record; " + noFact},
 		"POST /legion/v1/claims/release-records":       {none: "a read of the claim's release records; " + noFact},
 		"POST /legion/v1/claims/approval":              {none: "a read of the claim's standing approval; " + noFact},
 		"POST /legion/v1/grants":                       {none: "a grant's mint; " + noFact},

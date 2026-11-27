@@ -445,6 +445,7 @@ func TestTheRootArchitectsSummaryNamesAMemberOutOfTheWorkflowAsToldNothing(t *te
 // (record.UntoldAwaitingChildren), and the root architect's summary names it told nothing for that
 // reason: the admission pass's return brings it back, not a restart, as it does a member in held.
 func TestTheRootArchitectsSummaryNamesAParentAwaitingChildrenAsToldNothing(t *testing.T) {
+	t.Parallel()
 	r := newNewsRig(t)
 	r.inTx(func(tx pgx.Tx) error {
 		tested, err := r.records.Issue(r.ctx, tx, newsTested)

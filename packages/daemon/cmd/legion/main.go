@@ -485,11 +485,8 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 	}
 	// The state directory is where the worker stream socket, the panes' secret files, and their
 	// home live; the registry refuses a second live legion on it, which only holds if every
-	// start names it the same way.
-	if cfg.StateDir, err = filepath.Abs(cfg.StateDir); err != nil {
-		printRefusal(stderr, "legion start: resolve state_dir", err)
-		return 1
-	}
+	// start names it the same way. The load makes it absolute (config's resolve), so every start
+	// names it so.
 	legions, err := registryPath()
 	if err != nil {
 		printRefusal(stderr, "legion start", err)

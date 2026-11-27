@@ -222,7 +222,9 @@ func TestALastStartFailureCarriesItsTimeUntilReady(t *testing.T) {
 // implementer, so the band is read on a worker's view as well as the architect's (it narrows
 // each through withEachClaimView). The worker is given it here rather than in the golden state:
 // a worker's lastDeathCause there would be a key no record of a contract below this one holds.
-// The daemon's log names what the narrowed body lost.
+// The daemon's log names what the narrowed body lost: one line for each band above the caller's
+// contract (narrowingsExpected), the cause times' first, since the table is applied lowest
+// contract first; a later band's own line is that band's test's to name.
 func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 	state := populatedState(t)
 	architect := state.Issues[recordGoldenIssue].Architect
@@ -302,4 +304,8 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 			narrowings, causeTimesContract-1, dropped, "dispatchCredential")
 	}
 	wantNarrowings(t, narrowings, causeTimesContract-1, narrowingsExpected(carried, causeTimesContract-1))
+	if len(narrowings) > 0 && narrowings[0].PluginContract != causeTimesContract-1 {
+		t.Errorf("the line that dropped %q names contract %d, want the caller's %d",
+			dropped, narrowings[0].PluginContract, causeTimesContract-1)
+	}
 }

@@ -1833,35 +1833,33 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 	return gate
 }
 
-// ApprovalFollows reports whether the gate records a person's approval given after a review of
-// version at mark: an approval of a later version, or one of that version the review does not
-// come after (record.EventMark.After). A changes request that such an approval followed was
-// answered by the person's own approval, so nothing of it is left to tell. The approval read is
-// the person's (record.DesignGate.ApprovedByPerson): a basis's version is no answer a person
-// gave.
-func ApprovalFollows(gate record.DesignGate, version int, mark record.EventMark) bool {
+// ReviewSuperseded is the changes-request rule of the one answer to "is this recorded decision
+// still the person's current word": it reports whether gate records a person's approval given
+// after a review of version at mark — an approval of a later version, or one of that version the
+// review does not come after (record.EventMark.After). Such an approval is the person's decision
+// in the review's place, whichever approval request carried it, so nothing of the review is left
+// to tell or to act on. The approval read is the person's (record.DesignGate.ApprovedByPerson): a
+// basis's version is no answer a person gave. Every sender of a task or a notice about a person's
+// recorded decision, the news of an approved version included, reaches this rule through one
+// predicate, workflow's SupersedingApproval, which holds the rule for an approval itself and is
+// asked from the gates as the record holds them at that moment. That predicate's doc lists the
+// guards that choose which of the two rules is asked of a decision.
+//
+// An approval request the ask mirror holds is asked the same way (workflow's requestStands, the
+// one other caller, since a request is the architect's and no person's decision): the mirror
+// records no version for a request, and Dispatch moves an open request to each new version of its
+// document at that version's own place in the log (ask.edited), so a request whose newest event
+// the approval does not follow asked for no version above the approved one, and is asked at the
+// approved version and that event's mark. So when two requests are made for one version and the
+// approval lands on the second, the first, still open on the mirror, is answered by it. A changes
+// request a daemon of an earlier release kept records no version either, and is asked the same
+// way, at the approved version and its own mark (workflow's SupersedingApproval).
+func ReviewSuperseded(gate record.DesignGate, version int, mark record.EventMark) bool {
 	approval := gate.ApprovedByPerson()
 	if approval == nil {
 		return false
 	}
 	return approval.Version > version || approval.Version == version && !mark.After(approval.Mark)
-}
-
-// DesignApprovalStands reports whether the approval a news item names, of version to of the
-// document artifact, still stands: the gate's row for the item's step holds that document, and its
-// approved version is to. That approval is either kind the row records there: a person's, or the
-// ancestor's approval a basis opened the step on at the version the root registered
-// (record.OpenOnBasis). It is the approval case of the question ApprovalFollows answers for a
-// review — is this recorded decision still the word that stands on the version — asked when a task
-// that names the decision is sent, not when it was composed. Where the step now records another
-// document (a registration that named one since), a later approval has replaced the one the item
-// names, a changes request has cleared it (ApplyDesignGateEvent), or a basis that opened it has
-// ended (record.CloseBasis), the item would tell the holder of a version that no approval stands
-// on any more. A new version that closed the gate since leaves a person's approval standing: the
-// gate keeps it as the version a person approved below the latest. It is named for the design gate
-// because ApprovalStands already answers the pull request's question of a review.
-func DesignApprovalStands(gate record.DesignGate, artifact string, to int) bool {
-	return gate.ArtifactID == artifact && gate.ApprovedVersion != nil && *gate.ApprovedVersion == to
 }
 
 // DesignGateOpen reports whether an approval stands on the gate's current document version: a
@@ -1937,7 +1935,7 @@ func FirstClosedStep(configured []record.DesignStep, gates map[record.DesignStep
 //
 // Everything a root's wait is built from reads this one rule: the document its approval requests
 // are counted on (workflow's gateRequestArtifact), the wait it records (waitSubject) and the step
-// its resume speaks of (gateInQuestion).
+// its resume speaks of (stepInQuestion).
 //
 // It is record.TreeGate.Standing over the same steps and rows, where the rule lives because the
 // readers that hold a tree's gate as a record.TreeGate ask it there too (the outbox's fences of

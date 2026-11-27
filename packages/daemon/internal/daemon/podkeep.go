@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -29,10 +30,12 @@ import (
 // next pod mounts is no exception: R7 keeps such a pod as it keeps any other, since a replacement
 // would stop the turn that runs at the bound and its subagents although the volume keeps the files.
 // A round over a drift that breaks the pod does not take this R7 keep path. Today such a drift
-// is a change of the pod's service account, or an exchange identity change that prevents launches
-// into the pod. The round may replace the pod even if the read finds work or fails, unless the
-// work hold keeps the round open (replaceForRound, roundPodEndsAtLaunch). The architect is told
-// what a replacement took (roundReplaced). A round is read by the reasons it recorded at its
+// is a change of the pod's service account, an exchange identity change that prevents launches
+// into the pod, or a pod built from a repository the issue's record has left, which the daemon
+// marks (repositoryReason, R3 of #3712). The round may replace the pod even if the read finds work
+// or fails, unless the work hold keeps the round open (replaceForRound, roundPodEndsAtLaunch). The
+// architect is told what a replacement took (roundReplaced). A round is read by the reasons it
+// recorded at its
 // open: a drift that breaks the pod and comes while a round is open is the next round's, which the
 // keep of this round's read holds back no more than any other (podKeptForWork).
 func roundKeeps(reasons string, read workspaceRead) bool {
@@ -154,10 +157,11 @@ func openPhaseWorker(group []supervise.Claim, round string, issuePhase phase.Pha
 // snapshot, group (due; keptPodReadDue). The keep is the issue's decline row naming pod
 // (keptDeclineOf). reasons is the drift this sweep read of the pod, as a round would record it
 // (runtime.RoundReasons). A drift that breaks the pod (runtime.Breaks: today a drift of the pod's
-// service account, or one of its exchange identity where a launch into the pod is refused until
-// its round replaces it) is held back by no earlier decline (spec v23 and v26): the round over it
-// can open and make its own decision after a new read. A store that cannot be read keeps the pod
-// for this sweep: a reading nobody took may not open a round that deletes a disk.
+// service account, one of its exchange identity where a launch into the pod is refused until its
+// round replaces it, or a pod built from a repository the issue's record has left,
+// repositoryReason) is held back by no earlier decline (spec v23 and v26, and R3 of #3712): the
+// round over it can open and make its own decision after a new read. A store that cannot be read
+// keeps the pod for this sweep: a reading nobody took may not open a round that deletes a disk.
 //
 // The keep holds back the walk alone. The project's controller's request (requestPodUpdate) reads
 // no keep and still opens a round over the pod, and that round's own read before its replacement
@@ -402,24 +406,39 @@ func keptEnded(stays, reasons string, again bool) string {
 // working under replaces the pod only over its own clean read (roundKeeps), whatever the disk, so
 // where such a round's notice tells of work or of a failed read, that read is another act's on the
 // same pod, which the round's finish took with its own (tellingRecord), and the notice says so.
+//
+// moved is the repository the round's pod was built from against the one the issue's record holds
+// when the notice is queued (roundMove). Where it is a move, or the record could not be read
+// (repositoryMove.unread), "at origin" would send a role to the wrong place: the read ran in the
+// round's pod, whose origin was the repository the pod was built from, and every push a role made
+// before the replacement is on that repository's issue branch, while the new pod's origin is the
+// record's repository. So each sentence that names the work no branch holds names it by the pod's
+// repository (podOrigin), what the notice says of a kept volume names that repository's workspace
+// (keptDiskMessage), and the sentence of the pushed work names both repositories
+// (pushedWorkMessage), as the message on a gone pod does (podWentMessage). No move leaves every
+// sentence as it reads for an issue that never moved.
+//
 // The architect reads it in its session and people read it in its history, so it follows
 // ASD-STE100. The read's error is the far side's text as the daemon keeps it (readError).
-func workspaceTakenMessage(issue, round, pod, reasons string, named []supervise.Claim, work runtime.WorkspaceWork, failed error, kept bool) string {
+func workspaceTakenMessage(issue, round, pod, reasons string, named []supervise.Claim, work runtime.WorkspaceWork, failed error, kept bool,
+	moved repositoryMove) string {
+	unpushed := "Work that is not on a branch " + podOrigin(moved)
 	why := "The round was over a drift that breaks the pod, so no role could keep working in the pod."
 	if !runtime.Breaks(reasons) {
-		why = "The round was over a drift that the roles can keep working under. The read that the round made found nothing that is not on a branch at origin, so the round replaced the pod. The read that this notice tells of was made for another act on the same pod."
+		why = "The round was over a drift that the roles can keep working under. The read that the round made found nothing that is not on a branch " +
+			podOrigin(moved) + ", so the round replaced the pod. The read that this notice tells of was made for another act on the same pod."
 	}
-	gone, lost := "The pod and its disk are gone.", "Work that is not on a branch at origin is lost."
+	gone, lost := "The pod and its disk are gone.", unpushed+" is lost."
 	if kept {
 		gone = "The pod is gone. Its disk is a kept volume, and the volume is still there."
-		lost = "Work that is not on a branch at origin is on that volume. The next pod of this issue mounts the volume."
+		lost = keptDiskMessage(issue, unpushed, moved)
 	}
 	parts := []string{fmt.Sprintf("The daemon replaced the pod of %s (pod %s) for the update round %s. %s %s %s", issue, pod, round, roundOpenedFor(reasons), why, gone)}
 	if len(named) > 0 {
 		parts = append(parts, "These roles had not answered the round, and no process of these roles ran in the pod: "+roleStates(named)+".")
 	}
-	parts = append(parts, readFound(work, failed), lost,
-		"Each role must read its issue branch at origin to see the work that it pushed. You are told this once for this replacement.")
+	parts = append(parts, readFound(work, failed, podOrigin(moved)), lost,
+		pushedWorkMessage(moved)+" You are told this once for this replacement.")
 	return strings.Join(parts, " ")
 }
 
@@ -429,9 +448,8 @@ func workspaceTakenMessage(issue, round, pod, reasons string, named []supervise.
 // Sandbox, named by its uid, and the kept volume it owned, with the live pod of that Sandbox that
 // went with them, for an act that took that pod too (runtime.TakenPod.WithPod), or else the last
 // pod known to have used the volume where there is one — what the read of its workspace through
-// the pod's launcher found before the replacement, or why no read could be made, and, once, that
-// work no branch at origin holds is lost (the Legion reviewer's Minor on #5285 at 7da847c0). The
-// architect reads it in its session and people read it in its history, so it follows ASD-STE100.
+// the pod's launcher found before the replacement, or why no read could be made. The notice
+// directs roles to the replaced pod's repository, not to the origin of a later workspace.
 func launchTakenMessage(taken runtime.TakenPod) string {
 	role := string(taken.Claim)
 	if named, ok := taken.Claim.Role(); ok {
@@ -453,25 +471,33 @@ func launchTakenMessage(taken runtime.TakenPod) string {
 			took += fmt.Sprintf(" The last pod that used the volume was pod %s.", taken.PodUID)
 		}
 	}
+	origin := "of the replaced workspace's repository"
+	if repo, err := ghrepo.Parse("pod repository", taken.Repository); err == nil {
+		origin = "of the repository `" + repo.String() + "`"
+	}
 	return strings.Join([]string{
 		took,
-		readFound(taken.Work, taken.Err),
-		"Work that is not on a branch at origin is lost. Each role must read its issue branch at origin to see the work that it pushed. You are told this once for this replacement.",
+		readFound(taken.Work, taken.Err, origin),
+		"Work that is not on a branch " + origin + " is lost.",
+		"To find pushed work, read the issue branch " + origin + ".",
+		"You are told this once for this replacement.",
 	}, " ")
 }
 
 // readFound is what a workspace-taken notice says the read before the replacement found
 // (workspaceTakenMessage, launchTakenMessage): the error it failed with, or that no read could be
-// made and why, or what the workspace held, in workSentences's sentences.
-func readFound(work runtime.WorkspaceWork, failed error) string {
+// made and why, or what the workspace held, in workSentences's sentences. origin names the
+// remote whose branches and tags the read checked.
+func readFound(work runtime.WorkspaceWork, failed error, origin string) string {
+	held := "that no branch or tag " + origin + " holds"
 	if failed != nil {
 		// The notice is stored and read by the issue's architect, and in its place by the
 		// controller, so the read's error, which the shim's or the launcher's jj wrote, is kept in it
 		// as the daemon keeps a read's error: bounded, and quoted as data (readError).
-		return fmt.Sprintf("No read of the workspace could be made before the replacement. The error of the read, in quotes, is: %s. The daemon does not know if the workspace held work that no branch or tag at origin holds.",
-			readError(failed))
+		return fmt.Sprintf("No read of the workspace could be made before the replacement. The error of the read, in quotes, is: %s. The daemon does not know if the workspace held work %s.",
+			readError(failed), held)
 	}
-	found := append([]string{"Before the replacement, the daemon read the issue workspace. The read found work that no branch or tag at origin holds."},
-		workSentences(work, "held", "that no branch or tag at origin holds")...)
+	found := append([]string{"Before the replacement, the daemon read the issue workspace. The read found work " + held + "."},
+		workSentences(work, "held", held)...)
 	return strings.Join(found, " ")
 }
