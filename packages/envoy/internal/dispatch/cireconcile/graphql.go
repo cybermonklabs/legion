@@ -295,9 +295,10 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 	if repository.statuses {
 		document = headsQueryWithStatuses
 	}
-	started := r.pacingNow()
+	clk := r.deadlineClock()
+	started := clk.Now()
 	body, status, _, err := r.GitHub.GraphQL(ctx, repository.token, document, variables)
-	c.graphQLTook = r.pacingSince(started)
+	c.graphQLTook = clk.Now().Sub(started)
 	c.queries++
 	if err != nil {
 		return queryPage{}, err

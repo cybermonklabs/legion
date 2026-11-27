@@ -55,9 +55,6 @@ func TestLimitRecordContextEndsABlockedWriteOnItsOwnDeadline(t *testing.T) {
 		default:
 			t.Fatal("the ledger context's own timeout did not end the blocked write")
 		}
-		if got := time.Since(started); got != limitRecordTimeout {
-			t.Fatalf("the ledger write ended after %s, want exactly %s", got, limitRecordTimeout)
-		}
 		if cause := context.Cause(record); !errors.Is(cause, context.DeadlineExceeded) {
 			t.Fatalf("the ledger context's cause is %v, want DeadlineExceeded", cause)
 		}

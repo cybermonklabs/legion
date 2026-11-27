@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -280,7 +279,7 @@ func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T)
 	if _, err := settlements.NextMsgWithContext(testwait.Context(t)); err != nil {
 		t.Fatalf("the webhooks published no settlement: %v", err)
 	}
-	before := capturedRevision(t, h)
+	_, before := h.settledRecordAt(capturedRepository, capturedNumber, capturedSHA, 50*time.Millisecond)
 
 	h.pass()
 
@@ -301,21 +300,6 @@ func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T)
 	if got := number(t, h.passLine(), "records"); got != 0 {
 		t.Fatalf("the pass changed %d records, want none: %v", got, h.passLine())
 	}
-}
-
-// capturedRevision is the head's record revision once the summary loop has stopped writing it:
-// publishing a settlement is itself two writes of the record, so a revision read the moment a
-// settlement arrives still moves afterwards.
-func capturedRevision(t *testing.T, h *harness) uint64 {
-	t.Helper()
-	var revision uint64
-	testwait.UntilPolling(t, 50*time.Millisecond, "the captured head's settled record with a stable revision", func() (*cistore.State, bool) {
-		state, next := h.recordAt(capturedRepository, capturedNumber, capturedSHA)
-		settled := state != nil && state.SettledEmitted && state.Claim == nil && next == revision
-		revision = next
-		return state, settled
-	})
-	return revision
 }
 
 // capturedWebhook is one GitHub webhook body carrying a captured object as its event, named for

@@ -281,8 +281,8 @@ func TestAPassOverRecordedChecksChangesNothing(t *testing.T) {
 	if asked := h.queriesFor(gitHubRepository); asked != 1 {
 		t.Fatalf("the repository was queried %d times, want once: the pass must read GitHub", asked)
 	}
-	// The summary loop settles on its own clock, so the record is given the same room a second
-	// settlement would have needed before its revision is read again.
+	// Wait for completed scheduling decisions matching every durable record of this pull
+	// request, then check that the real subscription holds no second settlement.
 	h.noSettlement(settlements, "after a pass over what the webhooks recorded")
 	_, after, ok := h.record()
 	if !ok {

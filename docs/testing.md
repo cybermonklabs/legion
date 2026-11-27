@@ -819,11 +819,10 @@ server. A test that needs to advance a deadline or pacing wait gives the reconci
 `clocktest.Fake` through its unexported `clock.Clock` field.
 The harness's wrapper checks the configured `PassTimeout`; the fake preserves
 `context.DeadlineExceeded`. Pacing tests use the same clock for query durations, request gaps and
-pass deadlines, and check the exact production gaps. Settlement tests request a fresh summary
-pass, match its decisions to every durable SHA on the pull request's subject, and wait for each
-pass to finish before checking NATS. Filing alone precedes verify-mode publication and is not an
-absence witness. These tests
-run beside the others. One deadline control keeps the real timer and stays serial.
+pass deadlines, and check the exact production gaps. Settlement tests wait for a scheduling
+decision from a completed pass that matches each durable record of the pull request's subject,
+then check NATS. Filing alone precedes verify-mode publication and is not an absence witness.
+These tests run beside the others. One deadline control keeps the real timer and stays serial.
 
 A test stays serial when it, or a helper it calls, changes something the whole test process
 shares: the environment (`t.Setenv`, and the S3 helpers `filestest.ServeS3` and `tests3.Start`

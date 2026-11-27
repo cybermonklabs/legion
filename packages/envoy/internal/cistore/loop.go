@@ -24,6 +24,15 @@ type Publisher interface {
 	Publish(contracts.Envelope) error
 }
 
+// SummaryObserver receives scheduling decisions and completion on the summary-loop goroutine.
+// SummaryScheduled precedes any resulting publication; only SummaryPassEnded witnesses that
+// the whole pass, including verification and publication, finished. Callbacks must not block
+// or change state, whose maps belong to the store. WithSummaryObserver opts a store in.
+type SummaryObserver interface {
+	SummaryScheduled(key string, state State, reason string)
+	SummaryPassEnded()
+}
+
 // StartSummaryLoop runs the summary loop in a background goroutine until ctx is
 // cancelled. Each pass emits one `pr.<n>.checks` envelope, carrying its SHA, for
 // each commit of a pull request that has been quiet, none of whose recorded
@@ -59,17 +68,7 @@ func StartSummaryLoop(ctx context.Context, store *Store, pub Publisher, debounce
 	wake := store.attachSummary()
 	start := time.Now()
 	z := newSummarizer(store, debounce)
-	var requests chan chan struct{}
-	// A test publisher can observe the scheduler's actual decisions without waiting for silence.
-	if observer, ok := pub.(interface {
-		SummaryScheduled(uint64, string, State, string, int64)
-		SummaryPassEnded(uint64)
-		SummaryScheduleRequests() chan chan struct{}
-	}); ok {
-		z.scheduled = observer.SummaryScheduled
-		z.completed = observer.SummaryPassEnded
-		requests = observer.SummaryScheduleRequests()
-	}
+	z.observer = store.summaryObserver
 	backlog := &backlogHeld{gauge: held}
 	go func() {
 		// armed is the k of the instant start + k*tick the timer is set for, 0 while it is stopped.
@@ -89,18 +88,6 @@ func StartSummaryLoop(ctx context.Context, store *Store, pub Publisher, debounce
 				if k := int64(time.Since(start)/tick) + 1; armed == 0 || k < armed {
 					arm(k)
 				}
-			case done := <-requests:
-				// A test asks for a fresh normal pass, including when the cache is empty.
-				// Do not reload the cache or refile unchanged records just to witness them.
-				count, next, ok := z.pass(pub, logger, time.Now().UnixMilli())
-				backlog.observe(count, logger)
-				if ok {
-					k := max(int64(time.Since(start)/tick)+1, gridIndexAtOrAfter(start, tick, next))
-					if armed == 0 || k < armed {
-						arm(k)
-					}
-				}
-				close(done)
 			case <-timer.C:
 				passed := armed
 				armed = 0
@@ -184,6 +171,8 @@ const (
 	verdictAttempt
 )
 
+// scheduleReason is why a record is idle, waiting, held, stuck or attempted. Its verdict is
+// derived in one place so the observer cannot report a reason inconsistent with the action.
 type scheduleReason uint8
 
 const (
@@ -197,6 +186,23 @@ const (
 	reasonVerify
 	reasonAttempt
 )
+
+func (r scheduleReason) verdict() verdict {
+	switch r {
+	case reasonIdle:
+		return verdictIdle
+	case reasonRetry, reasonNotReady, reasonDebounce, reasonClaim, reasonVerify:
+		return verdictWait
+	case reasonHeld:
+		return verdictHeld
+	case reasonStuck:
+		return verdictStuck
+	case reasonAttempt:
+		return verdictAttempt
+	default:
+		panic("cistore: unknown scheduling reason")
+	}
+}
 
 func (r scheduleReason) String() string {
 	switch r {
@@ -222,35 +228,36 @@ func (r scheduleReason) String() string {
 	return "unknown"
 }
 
-// schedule returns the verdict on st at now, in wall-clock milliseconds, and for verdictWait the
-// first millisecond at which the verdict changes. A record is attempted exactly when it is due
-// and carries no fresh claim, held exactly when it is unsettled, ready and legacyBacklog holds
-// it, and stuck exactly when it is unsettled, not ready and quiet for heldAfter (heldLineAt); an
+// schedule returns the reason for st's scheduling decision at now, in wall-clock milliseconds,
+// and, for a reason whose verdict is verdictWait, the first millisecond the decision changes.
+// A record is attempted exactly when it is due and carries no fresh claim, held exactly when
+// unsettled, ready and legacyBacklog holds it, and stuck when unsettled, not ready and quiet
+// for heldAfter (heldLineAt); an
 // unsettled record that is not ready waits until then, and so does one given up (verifyStopped)
 // until its backoff runs out.
-func schedule(st State, now int64, debounce time.Duration) (verdict, int64, scheduleReason) {
+func schedule(st State, now int64, debounce time.Duration) (scheduleReason, int64) {
 	if st.SettledEmitted {
-		return verdictIdle, 0, reasonIdle
+		return reasonIdle, 0
 	}
 	if verifyStopped(st, now) {
 		// The settlement episode was given up unanswered (giveUp): the next starts once its
 		// backoff runs out, and after a give-up for good only a change of the record starts one.
 		if st.VerifyRetryAt == 0 {
-			return verdictIdle, 0, reasonIdle
+			return reasonIdle, 0
 		}
-		return verdictWait, st.VerifyRetryAt, reasonRetry
+		return reasonRetry, st.VerifyRetryAt
 	}
 	if !settlementReady(st) {
 		if at := heldLineAt(st); now < at {
-			return verdictWait, at, reasonNotReady
+			return reasonNotReady, at
 		}
-		return verdictStuck, 0, reasonStuck
+		return reasonStuck, 0
 	}
 	if d := st.LastEventAt + debounce.Milliseconds(); now < d {
-		return verdictWait, d, reasonDebounce
+		return reasonDebounce, d
 	}
 	if legacyBacklog(st, now, debounce) {
-		return verdictHeld, 0, reasonHeld
+		return reasonHeld, 0
 	}
 	if claimFresh(st, now, debounce) {
 		at := st.Claim.ClaimedAt + claimWindow(st.Claim, debounce).Milliseconds() + 1
@@ -258,11 +265,11 @@ func schedule(st State, now int64, debounce time.Duration) (verdict, int64, sche
 			at = g
 		}
 		if st.Claim.Verify {
-			return verdictWait, at, reasonVerify
+			return reasonVerify, at
 		}
-		return verdictWait, at, reasonClaim
+		return reasonClaim, at
 	}
-	return verdictAttempt, 0, reasonAttempt
+	return reasonAttempt, 0
 }
 
 // queueEntry is a record's entry in the summarizer's queue: the pass at or after at (wall-clock
@@ -331,11 +338,8 @@ func (q *deadlineQueue) remove(key string) {
 type summarizer struct {
 	store    *Store
 	debounce time.Duration
-	// The test observer sees the production verdict and the pass that made it.
-	// Nil observers leave the production path unchanged.
-	scheduled func(uint64, string, State, string, int64)
-	completed func(uint64)
-	passID    uint64
+	// Nil leaves the production scheduling path unobserved.
+	observer SummaryObserver
 
 	// mu guards the fields below. No pass holds it, or the store's lock, while it settles a record.
 	mu    sync.Mutex
@@ -387,9 +391,8 @@ func newSummarizer(store *Store, debounce time.Duration) *summarizer {
 // (verdictHeld) and, when the queue or a verify wait is not empty, the earliest millisecond it has
 // to run again.
 func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (held int, next int64, ok bool) {
-	if z.scheduled != nil {
-		z.passID++
-		defer z.completed(z.passID)
+	if z.observer != nil {
+		defer z.observer.SummaryPassEnded()
 	}
 	z.mu.Lock()
 	keys, reset := z.store.takeChanges()
@@ -469,11 +472,11 @@ func (z *summarizer) fileLocked(logger *logging.Logger, key string, now int64) (
 		delete(z.heldLogged, key)
 		return State{}, false
 	}
-	v, at, reason := schedule(st, now, z.debounce)
-	if z.scheduled != nil {
-		z.scheduled(z.passID, key, st, reason.String(), at)
+	reason, at := schedule(st, now, z.debounce)
+	if z.observer != nil {
+		z.observer.SummaryScheduled(key, st, reason.String())
 	}
-	switch v {
+	switch reason.verdict() {
 	case verdictIdle:
 		delete(z.heldLogged, key)
 	case verdictWait:

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -29,17 +30,17 @@ type scheduledRecord struct {
 // summaryWitness receives actual scheduling decisions from the real summary loop. Publish still
 // goes through the real bus. The buffered wake is a change notification, not a clock tick.
 type summaryWitness struct {
-	cistore.Publisher
 	mu        sync.Mutex
 	records   map[string]scheduledRecord
 	wake      chan struct{}
-	requests  chan chan struct{}
 	completed uint64
 }
 
-func (p *summaryWitness) SummaryScheduled(pass uint64, key string, state cistore.State, kind string, _ int64) {
+var _ cistore.SummaryObserver = (*summaryWitness)(nil)
+
+func (p *summaryWitness) SummaryScheduled(key string, state cistore.State, kind string) {
 	p.mu.Lock()
-	p.records[key] = scheduledRecord{state: state, kind: kind, pass: pass}
+	p.records[key] = scheduledRecord{state: state, kind: kind, pass: p.completed + 1}
 	p.mu.Unlock()
 	select {
 	case p.wake <- struct{}{}:
@@ -47,17 +48,15 @@ func (p *summaryWitness) SummaryScheduled(pass uint64, key string, state cistore
 	}
 }
 
-func (p *summaryWitness) SummaryPassEnded(pass uint64) {
+func (p *summaryWitness) SummaryPassEnded() {
 	p.mu.Lock()
-	p.completed = pass
+	p.completed++
 	p.mu.Unlock()
 	select {
 	case p.wake <- struct{}{}:
 	default:
 	}
 }
-
-func (p *summaryWitness) SummaryScheduleRequests() chan chan struct{} { return p.requests }
 
 func (p *summaryWitness) record(key string) (scheduledRecord, bool, uint64) {
 	p.mu.Lock()
@@ -68,42 +67,31 @@ func (p *summaryWitness) record(key string) (scheduledRecord, bool, uint64) {
 
 // noSettlementAt covers every durable SHA on the pull request's subject, as the subscription
 // does. It waits for completed, matching decisions and rejects transient debounce/claim waits.
-// A fresh pass and an acknowledged key listing also witness an empty subject. Transport
-// errors are failures, never absence.
+// An acknowledged key listing witnesses an empty subject. Transport errors are failures.
 func (h *harness) noSettlementAt(sub *nats.Subscription, why, owner, repo, number string) {
 	h.t.Helper()
-	if err := h.waitForNoSettlement(sub, why, owner, repo, number); err != nil {
+	if _, err := h.waitForNoSettlement(sub, why, owner, repo, number); err != nil {
 		h.t.Fatal(err)
 	}
 }
 
-// waitForNoSettlement returns its observation so a regression can prove the assertion rejects
-// an extra SHA without making an intentionally failing test part of the normal suite.
-func (h *harness) waitForNoSettlement(sub *nats.Subscription, why, owner, repo, number string) error {
+// waitForNoSettlement returns the keys whose matching, completed decisions it judged. The
+// regression test checks this evidence even if an unwanted settlement is already queued.
+func (h *harness) waitForNoSettlement(sub *nats.Subscription, why, owner, repo, number string) ([]string, error) {
 	h.t.Helper()
 	kv, err := h.bus.JS().KeyValue(bus.CIStateBucket)
 	if err != nil {
-		return fmt.Errorf("%s: open the CI bucket: %w", why, err)
+		return nil, fmt.Errorf("%s: open the CI bucket: %w", why, err)
 	}
 	prefix := cistore.Key(owner, repo, number, "")
 	ctx := testwait.Context(h.t)
-	done := make(chan struct{})
-	select {
-	case h.summary.requests <- done:
-	case <-ctx.Done():
-		return fmt.Errorf("%s: the summary loop never accepted the fresh-pass request: %w", why, ctx.Err())
-	}
-	select {
-	case <-done:
-	case <-ctx.Done():
-		return fmt.Errorf("%s: the summary loop never finished the requested fresh pass: %w", why, ctx.Err())
-	}
 	for {
 		keys, err := kv.Keys(nats.Context(ctx))
 		if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
-			return fmt.Errorf("%s: list the CI records: %w", why, err)
+			return nil, fmt.Errorf("%s: list the CI records: %w", why, err)
 		}
 		decisive := true
+		var judged []string
 		for _, key := range keys {
 			if !strings.HasPrefix(key, prefix) {
 				continue
@@ -115,7 +103,7 @@ func (h *harness) waitForNoSettlement(sub *nats.Subscription, why, owner, repo, 
 				continue
 			}
 			if err != nil {
-				return fmt.Errorf("%s: read CI record %s: %w", why, key, err)
+				return judged, fmt.Errorf("%s: read CI record %s: %w", why, key, err)
 			}
 			if !reported {
 				decisive = false
@@ -123,38 +111,39 @@ func (h *harness) waitForNoSettlement(sub *nats.Subscription, why, owner, repo, 
 			}
 			var durable cistore.State
 			if err := json.Unmarshal(entry.Value(), &durable); err != nil {
-				return fmt.Errorf("%s: decode CI record %s: %w", why, key, err)
+				return judged, fmt.Errorf("%s: decode CI record %s: %w", why, key, err)
 			}
 			want, err := json.Marshal(durable)
 			if err != nil {
-				return err
+				return judged, err
 			}
 			got, err := json.Marshal(note.state)
 			if err != nil {
-				return err
+				return judged, err
 			}
 			if !bytes.Equal(got, want) || completed < note.pass {
 				decisive = false
 				continue
 			}
+			judged = append(judged, key)
 			switch note.kind {
 			case "attempt":
-				return fmt.Errorf("%s: the summary loop scheduled a settlement of the durable record: %+v: %w", why, durable, errUnexpectedSettlement)
+				return judged, fmt.Errorf("%s: the summary loop scheduled a settlement of the durable record: %+v: %w", why, durable, errUnexpectedSettlement)
 			case "debounce", "claim":
 				decisive = false
 			case "verify", "idle", "not-ready", "retry", "held", "stuck":
 				// A matching decision from a completed pass cannot publish without new evidence.
 			default:
-				return fmt.Errorf("%s: unknown scheduler verdict %q", why, note.kind)
+				return judged, fmt.Errorf("%s: unknown scheduler verdict %q", why, note.kind)
 			}
 		}
 		if decisive {
-			return h.queuedSettlementError(sub, why)
+			return judged, h.queuedSettlementError(sub, why)
 		}
 		select {
 		case <-h.summary.wake:
 		case <-ctx.Done():
-			return fmt.Errorf("%s: the summary loop never completed decisive passes for %s; last keys: %v: %w", why, prefix, keys, ctx.Err())
+			return judged, fmt.Errorf("%s: the summary loop never completed decisive passes for %s; last keys: %v: %w", why, prefix, keys, ctx.Err())
 		}
 	}
 }
@@ -191,7 +180,19 @@ func TestTheAbsenceWitnessRejectsAnotherSHAOnTheSamePullRequestSubject(t *testin
 	if state, _ := h.recordAt(gitHubRepository, 7, other.sha); state == nil {
 		t.Fatal("the webhook did not create the second durable SHA on the same pull request")
 	}
-	err := h.waitForNoSettlement(settlements, "the whole PR subject", gitHubOwner, gitHubName, pullNumber)
+	// Exercise the old helper's blind case even on a fast runner: the message is already
+	// queued, so only the judged-key evidence distinguishes a one-commit helper.
+	testwait.Until(t, "the second SHA's queued settlement before the absence assertion", func() (int, bool) {
+		pending, _, err := settlements.Pending()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pending, pending > 0
+	})
+	judged, err := h.waitForNoSettlement(settlements, "the whole PR subject", gitHubOwner, gitHubName, pullNumber)
+	if key := cistore.Key(gitHubOwner, gitHubName, pullNumber, other.sha); !slices.Contains(judged, key) {
+		t.Fatalf("the subject-wide assertion judged keys %v, want it to include the second SHA %s", judged, key)
+	}
 	if !errors.Is(err, errUnexpectedSettlement) {
 		t.Fatalf("the subject-wide assertion returned %v, want the second SHA's unexpected settlement", err)
 	}

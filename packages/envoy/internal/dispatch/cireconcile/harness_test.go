@@ -273,7 +273,8 @@ func (w *holdingWriter) RecordRuns(ctx context.Context, observations []contracts
 // to make this listener settle, and a record alone does not prove that.
 func (h *harness) startListener() {
 	h.t.Helper()
-	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithVerify(h.verify))
+	h.summary = &summaryWitness{records: map[string]scheduledRecord{}, wake: make(chan struct{}, 1)}
+	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithVerify(h.verify), cistore.WithSummaryObserver(h.summary))
 	if err != nil {
 		h.t.Fatalf("open the listener's CI store: %v", err)
 	}
@@ -283,8 +284,7 @@ func (h *harness) startListener() {
 	loop, endLoop := context.WithCancel(h.ctx)
 	h.t.Cleanup(endLoop)
 	h.loopLogs = &syncBuffer{}
-	h.summary = &summaryWitness{Publisher: h.bus, records: map[string]scheduledRecord{}, wake: make(chan struct{}, 1), requests: make(chan chan struct{})}
-	cistore.StartSummaryLoop(loop, listener, h.summary, summaryDebounce, 20*time.Millisecond,
+	cistore.StartSummaryLoop(loop, listener, h.bus, summaryDebounce, 20*time.Millisecond,
 		metrics.New().NewGauge("held", ""), logging.NewWithWriter("loop", h.loopLogs))
 	h.listener = listener
 	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.verdict, h.bus, listener, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
@@ -460,15 +460,20 @@ func (h *harness) noSettlement(sub *nats.Subscription, why string) {
 // test comparing revisions across a pass has to start from one that has stopped.
 func (h *harness) settledRecord() (cistore.State, uint64) {
 	h.t.Helper()
-	var state cistore.State
+	return h.settledRecordAt(gitHubRepository, 7, headSHA, testwait.Poll)
+}
+
+// settledRecordAt waits for the named head's settled record and a revision stable over poll.
+func (h *harness) settledRecordAt(repository string, number int64, sha string, poll time.Duration) (cistore.State, uint64) {
+	h.t.Helper()
 	var revision uint64
-	testwait.Until(h.t, "the head's settled record with a stable revision", func() (cistore.State, bool) {
-		next, nextRevision, ok := h.record()
-		settled := ok && next.SettledEmitted && next.Claim == nil && nextRevision == revision
-		state, revision = next, nextRevision
+	state := testwait.UntilPolling(h.t, poll, "the head's settled record with a stable revision", func() (*cistore.State, bool) {
+		next, nextRevision := h.recordAt(repository, number, sha)
+		settled := next != nil && next.SettledEmitted && next.Claim == nil && nextRevision == revision
+		revision = nextRevision
 		return next, settled
 	})
-	return state, revision
+	return *state, revision
 }
 
 // record is the head's record as the bucket holds it, with its revision, and ok false when the

@@ -76,6 +76,7 @@ func starveFirstPass(t *testing.T, h *harness) {
 		t.Fatalf("the pass that listed both heads and reached neither reads deadline_reached %v, want its bound to end it: nothing here is tested: %v", line["deadline_reached"], line)
 	}
 	h.github.stall(runsOf(head(7)), 0)
+	h.github.atStall(nil)
 	h.reconciler.PassTimeout = 5 * time.Second
 }
 
@@ -179,9 +180,10 @@ func TestAPassThatReachesAHeadAndThenEndsOnItsBoundClearsTheFloor(t *testing.T) 
 	starveFirstPass(t, h)
 	h.requireWaits(clock, 100*time.Millisecond)
 
-	// The pass at the floor reads the first head whole, and GitHub holds the second head's check
-	// runs until the pass's own bound gives the request up.
+	// The pass at the floor reads the first head whole. End its bound when GitHub holds the
+	// second head's check runs, independently of the hook starveFirstPass already cleared.
 	h.github.stall(runsOf(head(8)), time.Minute)
+	h.github.atStall(h.endBound)
 	h.pass()
 	h.requireWaits(clock, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond)
 	line := h.passLine()
@@ -273,14 +275,12 @@ func TestALimitGitHubAnswersAsTheBoundFallsLeavesThePaceAsItWas(t *testing.T) {
 		Limits: ratelimit.New(h.pool), t: t, falls: h.endBound, refuse: context.DeadlineExceeded,
 	})
 	h.github.rateLimitNext(runsOf(head(7)))
-	h.reconciler.PassTimeout = 4 * time.Second
 	h.pass()
 	h.requireWaits(clock, 500*time.Millisecond)
 	if line := h.passLine(); line["rate_limited"] != true || number(t, line, "heads") != 0 {
 		t.Fatalf("the pass reads rate_limited %v and %v heads reached, want GitHub's limit to end it before it reached a head: nothing here is tested: %v",
 			line["rate_limited"], line["heads"], line)
 	}
-	h.reconciler.PassTimeout = 5 * time.Second
 
 	// The limit's record failed, so the ledger holds no limit and this pass reads GitHub.
 	h.pass()

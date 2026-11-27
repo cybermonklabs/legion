@@ -535,11 +535,10 @@ func TestARateLimitLeavesTheCursorAtTheHeadItCutShort(t *testing.T) {
 	requireConditional(t, h, sentBefore, h.passLine())
 }
 
-// boundRecordLimits is a shared ledger whose write of a limit GitHub answered ends the pass's own
-// bound (falls) and waits until the pass that met the limit has run out of it, which is a busy
-// database or a pass already near its end. It takes the pass's context from the ledger read the
-// client makes before each request (githubapp.Client.send), which is given the caller's own
-// context; the write is given whatever context the client chose for it.
+// boundRecordLimits ends the pass's own bound when a REST limit is recorded, using the caller
+// context captured by Wait. Record checks that the client detached and bounded the ledger write.
+// With refuse set it returns that error without touching the ledger; otherwise it records the
+// limit through the real shared ledger.
 type boundRecordLimits struct {
 	githubapp.Limits
 	t      *testing.T
@@ -567,6 +566,14 @@ func (l *boundRecordLimits) Record(ctx context.Context, scope string, wait time.
 		testwait.Receive(l.t, "the pass deadline inside the rate-limit write", pass.Done())
 	}
 	if l.refuse != nil {
+		deadline, bounded := ctx.Deadline()
+		remaining := time.Until(deadline)
+		if !bounded || remaining <= 0 || remaining > 5*time.Second {
+			l.t.Fatalf("the REST ledger write has deadline %v (bounded=%v, remaining=%s), want a live bound no later than 5s", deadline, bounded, remaining)
+		}
+		if err := ctx.Err(); err != nil {
+			l.t.Fatalf("the REST ledger write inherited the ended pass's context: %v", err)
+		}
 		return l.refuse
 	}
 	return l.Limits.Record(ctx, scope, wait)

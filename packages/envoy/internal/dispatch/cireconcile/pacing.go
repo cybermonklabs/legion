@@ -116,14 +116,6 @@ func (r *Reconciler) pace(ctx context.Context, c *counts) {
 	r.waitForPace(ctx, c.pace)
 }
 
-func (r *Reconciler) pacingNow() time.Time {
-	return r.deadlineClock().Now()
-}
-
-func (r *Reconciler) pacingSince(started time.Time) time.Duration {
-	return r.deadlineClock().Now().Sub(started)
-}
-
 func (r *Reconciler) waitForPace(ctx context.Context, wait time.Duration) {
 	_ = r.deadlineClock().Sleep(ctx, wait)
 }

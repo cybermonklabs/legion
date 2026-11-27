@@ -349,6 +349,8 @@ func (r *Reconciler) clock() time.Time {
 	return time.Now()
 }
 
+// deadlineClock supplies pass deadlines, pacing gaps and query durations. A test can set
+// passClock to advance them together; nil preserves the real clock and its timer semantics.
 func (r *Reconciler) deadlineClock() clock.Clock {
 	if r.passClock != nil {
 		return r.passClock
