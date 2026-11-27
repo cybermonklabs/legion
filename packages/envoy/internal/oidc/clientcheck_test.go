@@ -38,7 +38,7 @@ func TestCheckClientReadsTheIssuersAnswerAboutTheClient(t *testing.T) {
 		{"the client id with the wrong secret", checkClientID, "not-the-secret", ClientCheckRejected, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			check, err := CheckClient(ctx, issuer.URL(), c.clientID, c.secret)
+			check, err := CheckClient(ctx, issuer.URL(), c.clientID, c.secret, WithWaitArm(testwait.BoundArm(t)))
 			if check != c.want || (err != nil) != c.wantErr {
 				t.Fatalf("CheckClient = (%q, %v), want %q with an error: %t", check, err, c.want, c.wantErr)
 			}
@@ -107,7 +107,7 @@ func TestCheckClientIsOneTokenRequest(t *testing.T) {
 			if c.methods != nil {
 				issuer.AdvertiseTokenAuthMethods(c.methods...)
 			}
-			if check, err := CheckClient(context.Background(), issuer.URL(), checkClientID, c.secret); check != c.want {
+			if check, err := CheckClient(context.Background(), issuer.URL(), checkClientID, c.secret, WithWaitArm(testwait.BoundArm(t))); check != c.want {
 				t.Fatalf("CheckClient = (%q, %v), want %q", check, err, c.want)
 			}
 			if got := issuer.TokenRequests(); !slices.Equal(got, []string{c.sent}) {
@@ -137,7 +137,7 @@ func TestCheckClientSpendsNoCodeOfItsOwnIssuer(t *testing.T) {
 		t.Fatal("the issuer issued no code")
 	}
 
-	if check, err := CheckClient(ctx, issuer.URL(), checkClientID, checkClientSecret); check != ClientCheckReady || err != nil {
+	if check, err := CheckClient(ctx, issuer.URL(), checkClientID, checkClientSecret, WithWaitArm(testwait.BoundArm(t))); check != ClientCheckReady || err != nil {
 		t.Fatalf("CheckClient = (%q, %v), want ready", check, err)
 	}
 	if _, err := flow.OnlineExchange(ctx, redirectURL, code, signIn); err != nil {

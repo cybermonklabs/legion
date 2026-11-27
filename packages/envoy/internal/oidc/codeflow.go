@@ -97,12 +97,7 @@ func NewCodeFlow(issuer, clientID, clientSecret, hostedDomain string, opts ...Op
 	}
 	if arm := collectOptions(opts).waitArm; arm != nil {
 		flow.discovery.armWith(arm)
-		base := flow.http.Transport
-		if base == nil {
-			base = http.DefaultTransport
-		}
-		flow.http.Timeout = 0
-		flow.http.Transport = armedTransport{base: base, arm: arm, bound: TokenTimeout}
+		armClient(flow.http, arm)
 	}
 	return flow
 }
@@ -159,6 +154,17 @@ func (a armedTransport) RoundTrip(request *http.Request) (*http.Response, error)
 	}
 	response.Body = cancelOnClose{ReadCloser: response.Body, cancel: cancel}
 	return response, nil
+}
+
+// armClient bounds each request of client by what arm gives for TokenTimeout, read when the
+// request starts, in place of the client's own Timeout (armedTransport).
+func armClient(client *http.Client, arm WaitArm) {
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	client.Timeout = 0
+	client.Transport = armedTransport{base: base, arm: arm, bound: TokenTimeout}
 }
 
 // cancelOnClose is a response body that releases its request's bound when it is closed.
