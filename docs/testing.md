@@ -1151,6 +1151,23 @@ rather than beside the module's other Postgres-backed packages: together they sh
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
+`packages/envoy/internal/dispatch/legion`, the Legion state intake, took 489 s alone on an issue
+pod's two shared CPUs, and ran go test's ten minutes out with another test run beside it. Its
+seeded test of the read rule
+(`TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndReadsOnceAMinute`)
+takes 226 s of that: where a row ends with a message handed back with a delay, the row waits in
+real time for its redelivery, up to `ReadRetryAfter`, a minute (seed 12's row waits 59 s of its
+92 s).
+CI's `envoy-go` unit step runs it with `-timeout 20m` (`.github/workflows/ci-job-envoy-go.yaml`),
+and a command that runs the whole package passes the same:
+
+```sh
+cd packages/envoy
+go test -timeout 20m ./internal/dispatch/legion/
+```
+
+A Legion issue pod does not run that whole package either: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
+
 Every package of `packages/daemon` and of `packages/envoy` runs in CI in exactly one leg that
 `.github/go-legs.yaml` names for it, or, as `internal/daemon` and `cmd/listener` do, in a group of
 its tests in each of several legs of one job (or under `elsewhere`, with the job that runs it). A

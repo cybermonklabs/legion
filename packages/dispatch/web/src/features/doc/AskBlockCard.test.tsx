@@ -252,65 +252,71 @@ test.each([
   ["high", "High"],
   ["med", "Medium"],
   ["low", "Low"],
-] as const)("an open %s decision names its urgency in the block header and hosts the shared ask card, which names who asked", async (urgency, label) => {
-  const card = renderCard({ ask: askedThreeMinutesAgo({ urgency }), node: askNode({ urgency }) });
-  try {
-    const pill = card.section.querySelector("[data-dispatch-ask-pill]");
-    expect(pill?.textContent).toBe(label);
-    expect(pill).toHaveAttribute("data-dispatch-ask-pill", urgency);
-    expect(card.header.getByText("Decision")).toBeDefined();
-    // The card, not the header, says who asked and when — once, not twice.
-    expect(card.section.querySelector("[data-dispatch-ask-asked]")).toBeNull();
-    const hosted = card.footer.getByRole("article", { name: `Urgency: ${label}` });
-    expect(hosted.dataset.testid).toBe("ask-ask-1");
-    // The asker's button holds its name, its attribution follows, and its live link sits beside
-    // the button rather than inside it.
-    const asker = within(hosted).getByRole("button", { name: "Architect for CORE-1" });
-    const agent = asker.closest<HTMLElement>("[data-agent-name]");
-    expect(agent?.textContent).toContain("Architect for CORE-1 (for sjawhar)");
-    const live = within(agent as HTMLElement).getByRole("link", {
-      name: "Open live conversation with Architect for CORE-1 (for sjawhar)",
-    });
-    expect(asker.contains(live)).toBe(false);
-    await waitFor(() =>
-      expect(within(hosted).getByText("3 minutes ago", { exact: false })).toBeDefined()
-    );
-    // The editor's content is the question; the card does not repeat it.
-    expect(within(hosted).queryByText("Should we ship?")).not.toBeInTheDocument();
-    // The reference copy control lives in the card's metadata line, once.
-    expect(card.section.querySelectorAll('[aria-label^="Copy reference"]')).toHaveLength(1);
-    expect(within(hosted).getByRole("button", { name: /^Copy reference/ })).toBeDefined();
-  } finally {
-    card.unmount();
+] as const)(
+  "an open %s decision names its urgency in the block header and hosts the shared ask card, which names who asked",
+  async (urgency, label) => {
+    const card = renderCard({ ask: askedThreeMinutesAgo({ urgency }), node: askNode({ urgency }) });
+    try {
+      const pill = card.section.querySelector("[data-dispatch-ask-pill]");
+      expect(pill?.textContent).toBe(label);
+      expect(pill).toHaveAttribute("data-dispatch-ask-pill", urgency);
+      expect(card.header.getByText("Decision")).toBeDefined();
+      // The card, not the header, says who asked and when — once, not twice.
+      expect(card.section.querySelector("[data-dispatch-ask-asked]")).toBeNull();
+      const hosted = card.footer.getByRole("article", { name: `Urgency: ${label}` });
+      expect(hosted.dataset.testid).toBe("ask-ask-1");
+      // The asker's button holds its name, its attribution follows, and its live link sits beside
+      // the button rather than inside it.
+      const asker = within(hosted).getByRole("button", { name: "Architect for CORE-1" });
+      const agent = asker.closest<HTMLElement>("[data-agent-name]");
+      expect(agent?.textContent).toContain("Architect for CORE-1 (for sjawhar)");
+      const live = within(agent as HTMLElement).getByRole("link", {
+        name: "Open live conversation with Architect for CORE-1 (for sjawhar)",
+      });
+      expect(asker.contains(live)).toBe(false);
+      await waitFor(() =>
+        expect(within(hosted).getByText("3 minutes ago", { exact: false })).toBeDefined()
+      );
+      // The editor's content is the question; the card does not repeat it.
+      expect(within(hosted).queryByText("Should we ship?")).not.toBeInTheDocument();
+      // The reference copy control lives in the card's metadata line, once.
+      expect(card.section.querySelectorAll('[aria-label^="Copy reference"]')).toHaveLength(1);
+      expect(within(hosted).getByRole("button", { name: /^Copy reference/ })).toBeDefined();
+    } finally {
+      card.unmount();
+    }
   }
-});
+);
 
 test.each([
   ["open", "open there"],
   ["answered", "answered there"],
   ["resolved", "resolved there"],
-] as const)("a block copied from a %s ask names its source's document and state from its own attributes", (state, there) => {
-  const card = renderCard({
-    indexed: false,
-    node: askNode({
-      copied_from: "ask-source",
-      copied_from_document: "dispatch://CORE-1/artifact/plan",
-      state,
-    }),
-  });
-  try {
-    const link = card.header.getByRole("link", { name: "CORE-1 plan" });
-    expect(link).toHaveAttribute("href", "/issues/CORE-1/artifacts/plan#b-b-1");
-    expect(card.header.getByText(/Copied from/).textContent).toBe(
-      `Copied from CORE-1 plan, ${there}`
-    );
-    // No ask of its own: no composer, the block's attributes record what its source shows.
-    expect(card.footer.queryByLabelText("Your answer")).not.toBeInTheDocument();
-    expect(getAsk).not.toHaveBeenCalled();
-  } finally {
-    card.unmount();
+] as const)(
+  "a block copied from a %s ask names its source's document and state from its own attributes",
+  (state, there) => {
+    const card = renderCard({
+      indexed: false,
+      node: askNode({
+        copied_from: "ask-source",
+        copied_from_document: "dispatch://CORE-1/artifact/plan",
+        state,
+      }),
+    });
+    try {
+      const link = card.header.getByRole("link", { name: "CORE-1 plan" });
+      expect(link).toHaveAttribute("href", "/issues/CORE-1/artifacts/plan#b-b-1");
+      expect(card.header.getByText(/Copied from/).textContent).toBe(
+        `Copied from CORE-1 plan, ${there}`
+      );
+      // No ask of its own: no composer, the block's attributes record what its source shows.
+      expect(card.footer.queryByLabelText("Your answer")).not.toBeInTheDocument();
+      expect(getAsk).not.toHaveBeenCalled();
+    } finally {
+      card.unmount();
+    }
   }
-});
+);
 
 test("a block copied from an issue's spec links to the spec", () => {
   const card = renderCard({

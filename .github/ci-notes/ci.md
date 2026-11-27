@@ -2107,11 +2107,50 @@ counts only the diagnostics the level keeps, so with `--diagnostic-level=error
 level exits 1.
 
 Lint's whole-tree check runs .github/scripts/check-biome-tree.sh, which passes
-`--max-diagnostics=none` and keeps the infos. It must: Biome does not read a file of its
-`files.maxSize` or more and says so only in an info, and the script fails naming each such file
-from that info. `--files-max-size` would not stand in for the info: it does not change the limit
-of a nested biome.json that sets none (packages/claude-envoy's), which stays at Biome's default of
-1 MiB.
+`--max-diagnostics=none` and no `--error-on-warnings`. Biome does not read a file of its
+`files.maxSize` or more and says so in one diagnostic, a warning from Biome 2.4.12 (an info
+before), while it exits 0; the script fails naming each such file from that diagnostic, whatever
+its severity mark. `--files-max-size` would not stand in for it: it does not change the limit of a
+nested biome.json that sets none (packages/claude-envoy's), which stays at Biome's default of
+1 MiB. With the mark read as one exact letter, the pinned Biome's `!` made the script blind to
+every skipped file: .github/scripts/check-biome-tree.test.sh's size cases are what failed.
+
+## Why Biome is pinned
+
+Every package.json that names `@biomejs/biome` names it as `2.5.15` exactly, so bun.lock holds one
+Biome and no install moves it. These facts set the pin, and a move of it reads each again.
+
+- 2.4.x has a race in the workspace's file sources (biomejs/biome#10268, fixed by #10774 in
+  2.5.2). `insert_source` takes a file source's index from `boxcar::Vec::iter().position()`, which
+  skips slots other threads are still writing and so counts a wrong index; the lookup that follows
+  finds nothing. A scan that indexes the three biome.json files at once then fails with "The file
+  …/biome.json does not exist in the workspace" and "the configuration resulted in errors": 1 of
+  3,841 Biome steps in 1,000 CI runs (tooling-checks, run 45831764910), and 33 of 1,339,721 runs of
+  that step's command on a tree of only the configs at 2.4.11, against 0 of 1,339,711 at 2.5.15.
+  The same miss on any other file the scanner indexes is a warning the scanner drops unless
+  `--verbose`, so that file leaves the module graph for the run, and `noImportCycles` and
+  `noFloatingPromises` read less than the tree: two tsconfig.json files did so in one of 336,000
+  runs with `--verbose`.
+- 2.5.2 to 2.5.4 can deadlock when a type-aware rule is on (#10931, fixed in 2.5.5), and
+  `noFloatingPromises` is one.
+- From 2.5.14 Biome stops type inference at 200,000 types and says so in an internal warning.
+  packages/contracts/src/dispatch-api.generated.ts, which `bun install`'s postinstall writes, is
+  past it. The file is in .gitignore, but Biome still reads it as a module the checked files
+  import, so biome.json leaves it out with `!!`; the whole tree's diagnostics are the same with
+  and without it, less that warning.
+- 2.5.15 panics ("path is expected to be under the root") on a file symlink that points outside
+  the project while `vcs.useIgnoreFile` is on (biomejs/biome#12984, fixed in 2.6.9). No tracked
+  file is such a link, so the panic is loud where it can happen: a change that adds one fails
+  every Biome step until it goes or the pin moves to 2.6.9. For this reason
+  .github/scripts/check-biome-tree.test.sh copies the script into its fixtures rather than linking
+  it. 2.6.9 is not the pin yet: on this tree it checks 6,740 files in place of 3,155 and reports
+  2,787 errors.
+- From 2.4.12 the diagnostic for a file over `files.maxSize` is a warning (`!`), not an info
+  (`i`) (biomejs/biome#9980), which .github/scripts/check-biome-tree.sh reads
+  (.github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error).
+
+A change of the pin runs `biome migrate --write` and `biome format --write .` over the tree, and
+names the open pull requests whose own lines the new formatter rewrites.
 
 ## What the ci-images job copies, and why the order is the point
 

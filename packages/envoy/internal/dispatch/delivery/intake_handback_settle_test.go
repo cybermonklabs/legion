@@ -157,7 +157,7 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 		t.Fatal("the holder's stop did not return within 30 s of its context's end")
 	}
 
-	if heldPastTheStop && !holdLive(t, pool) {
+	if heldPastTheStop && !holdLive(t, pool, durable.holder) {
 		// The stop released its hold with the callback's hand-back still to be decided: the standby
 		// takes the durable over and starts the message, and only then does the hand-back go on.
 		waitFor(t, 30*time.Second, func() bool { return standby.fetches(number) == 1 }, func() string {
@@ -244,7 +244,7 @@ func TestAHandBackPendingWhenTheHoldIsLostNeverReachesTheStandbysDurable(t *test
 			if !row.handBackPending() {
 				t.Fatal("control: the stop's hand-back reached NATS while the write was held")
 			}
-			if !holdLive(t, row.pool) {
+			if !holdLive(t, row.pool, row.holder.intake.holder) {
 				t.Fatal("control: the stop released its hold with its hand-back pending")
 			}
 			if !tc.lose {

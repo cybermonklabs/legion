@@ -1428,42 +1428,45 @@ test.each([
   // Created leaves rows of one timestamp as they came.
   ["the default Queue sort", "", ["CORE-2", "CORE-4", "CORE-1", "CORE-3"]],
   ["Created ascending", "?sort=created", ["CORE-1", "CORE-2", "CORE-3", "CORE-4"]],
-])("a grouping picked from the toolbar orders its headings under %s", async (_name, search, ungrouped) => {
-  const user = userEvent.setup();
-  table(
-    [
-      issue("CORE-1", { labels: ["legion"], priority: 0, rank: "a", status: "needs_review" }),
-      issue("CORE-2", { labels: ["legion"], priority: 1, rank: "b", status: "todo" }),
-      issue("CORE-3", { labels: ["legion"], priority: 3, rank: "c", status: "in_progress" }),
-      issue("CORE-4", { labels: ["legion"], priority: 2, rank: "d", status: "todo" }),
-    ],
-    search
-  );
-  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  const groupBy = screen.getByRole("combobox", { name: "Group by" });
-  await user.selectOptions(groupBy, "priority");
-  await waitFor(() =>
-    expect(headings().map((text) => text.match(/P\d/)?.[0])).toEqual(["P0", "P1", "P2", "P3"])
-  );
-  await user.selectOptions(groupBy, "status");
-  await waitFor(() =>
-    expect(
-      headings().map((text) =>
-        ["Todo", "In progress", "Needs review"].find((name) => text.includes(name))
-      )
-    ).toEqual(["Todo", "In progress", "Needs review"])
-  );
-  // Ungrouped again, the rows follow the reader's sort alone: no grouping order survives it.
-  await user.selectOptions(groupBy, "");
-  await waitFor(() => expect(headings()).toEqual([]));
-  await waitFor(() =>
-    expect(
-      [...document.querySelectorAll("[data-issue-row]")].map((row) =>
-        row.getAttribute("data-issue-row")
-      )
-    ).toEqual(ungrouped)
-  );
-});
+])(
+  "a grouping picked from the toolbar orders its headings under %s",
+  async (_name, search, ungrouped) => {
+    const user = userEvent.setup();
+    table(
+      [
+        issue("CORE-1", { labels: ["legion"], priority: 0, rank: "a", status: "needs_review" }),
+        issue("CORE-2", { labels: ["legion"], priority: 1, rank: "b", status: "todo" }),
+        issue("CORE-3", { labels: ["legion"], priority: 3, rank: "c", status: "in_progress" }),
+        issue("CORE-4", { labels: ["legion"], priority: 2, rank: "d", status: "todo" }),
+      ],
+      search
+    );
+    await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+    const groupBy = screen.getByRole("combobox", { name: "Group by" });
+    await user.selectOptions(groupBy, "priority");
+    await waitFor(() =>
+      expect(headings().map((text) => text.match(/P\d/)?.[0])).toEqual(["P0", "P1", "P2", "P3"])
+    );
+    await user.selectOptions(groupBy, "status");
+    await waitFor(() =>
+      expect(
+        headings().map((text) =>
+          ["Todo", "In progress", "Needs review"].find((name) => text.includes(name))
+        )
+      ).toEqual(["Todo", "In progress", "Needs review"])
+    );
+    // Ungrouped again, the rows follow the reader's sort alone: no grouping order survives it.
+    await user.selectOptions(groupBy, "");
+    await waitFor(() => expect(headings()).toEqual([]));
+    await waitFor(() =>
+      expect(
+        [...document.querySelectorAll("[data-issue-row]")].map((row) =>
+          row.getAttribute("data-issue-row")
+        )
+      ).toEqual(ungrouped)
+    );
+  }
+);
 
 // Start all its queued issues next is Start next over an epic's queued children: it moves them
 // and says so, rather than leaving the reader to guess whether anything happened.
@@ -1880,20 +1883,19 @@ test("a resumed merge whose discarded reason never landed posts it before closin
 
 // B1: a status the bundle does not know — a bookmark in another casing, a deploy window — is a
 // filter that matches nothing, not a page the reader loses.
-test.each([
-  "bogus",
-  "Done",
-  "in-progress",
-])("an unknown ?status=%s leaves the table standing, with the value in the filter", async (status) => {
-  const user = userEvent.setup();
-  table([issue("CORE-1"), issue("CORE-2")], `?status=${status}`);
-  expect(await screen.findByRole("table", { name: "Project issues table" })).toBeDefined();
-  expect(screen.getByRole("searchbox", { name: "Search issues" })).toBeDefined();
-  await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
-  expect(screen.getAllByRole("option", { name: new RegExp(`^${status}`) }).length).toBeGreaterThan(
-    0
-  );
-});
+test.each(["bogus", "Done", "in-progress"])(
+  "an unknown ?status=%s leaves the table standing, with the value in the filter",
+  async (status) => {
+    const user = userEvent.setup();
+    table([issue("CORE-1"), issue("CORE-2")], `?status=${status}`);
+    expect(await screen.findByRole("table", { name: "Project issues table" })).toBeDefined();
+    expect(screen.getByRole("searchbox", { name: "Search issues" })).toBeDefined();
+    await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
+    expect(
+      screen.getAllByRole("option", { name: new RegExp(`^${status}`) }).length
+    ).toBeGreaterThan(0);
+  }
+);
 
 // B2: a closed `<select>` commits on an arrow key in Chrome on Linux. Neither of the table's
 // two destructive selects may write on one, so each stages a value for a button to commit.
@@ -2748,38 +2750,43 @@ test.each(quietActions)("$action with no issue in work sends no dry run", async 
 test.each([
   ["the open listing", ""],
   ["every issue", "?nofilter=1"],
-])("Move to epic into an epic closed since it was picked asks to reopen it, over %s", async (_listing, search) => {
-  const user = userEvent.setup();
-  const sent = answerEpicWrites([epicIssue("CORE-9", "Platform", "done")]);
-  // The listing answers from this array, so the epic's close below reaches the table's next read.
-  const rows = [
-    issue("CORE-1", { status: "backlog" }),
-    issue("CORE-9", { labels: ["epic"], status: "backlog", title: "Platform" }),
-  ];
-  const { client } = table(rows, search);
-  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
-  const pick = screen.getByRole("combobox", { name: "Move to epic" });
-  await user.selectOptions(pick, "CORE-9");
-  // The epic closes while it is picked, and the select offers it no more.
-  rows[1] = issue("CORE-9", { labels: ["epic"], status: "done", title: "Platform" });
-  await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
-  await waitFor(() => expect(within(pick).queryByRole("option", { name: "Platform" })).toBeNull());
-  await user.click(screen.getByRole("button", { name: "Move" }));
-  const dialog = await screen.findByRole("dialog", { name: "Reopen CORE-9 too?" });
-  expect(dialog.textContent).toContain(
-    "The epic CORE-9 “Platform” is done. A done epic holds no open issue. Before the move, Dispatch makes these changes:"
-  );
-  expect(within(dialog).getByRole("list", { name: "Changes" }).textContent).toBe(
-    "CORE-9 “Platform” moves to In progress"
-  );
-  await user.click(within(dialog).getByRole("button", { name: "Reopen it too" }));
-  await noticeOnceDone("Moved CORE-1 “Work CORE-1” to the epic");
-  expect(sent).toEqual([
-    ["status-change", "CORE-9", intoWorkDryRun],
-    ["status-change", "CORE-9", intoWork],
-    ["PATCH", "CORE-1", { parent: "CORE-9" }],
-  ]);
-});
+])(
+  "Move to epic into an epic closed since it was picked asks to reopen it, over %s",
+  async (_listing, search) => {
+    const user = userEvent.setup();
+    const sent = answerEpicWrites([epicIssue("CORE-9", "Platform", "done")]);
+    // The listing answers from this array, so the epic's close below reaches the table's next read.
+    const rows = [
+      issue("CORE-1", { status: "backlog" }),
+      issue("CORE-9", { labels: ["epic"], status: "backlog", title: "Platform" }),
+    ];
+    const { client } = table(rows, search);
+    await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+    const pick = screen.getByRole("combobox", { name: "Move to epic" });
+    await user.selectOptions(pick, "CORE-9");
+    // The epic closes while it is picked, and the select offers it no more.
+    rows[1] = issue("CORE-9", { labels: ["epic"], status: "done", title: "Platform" });
+    await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+    await waitFor(() =>
+      expect(within(pick).queryByRole("option", { name: "Platform" })).toBeNull()
+    );
+    await user.click(screen.getByRole("button", { name: "Move" }));
+    const dialog = await screen.findByRole("dialog", { name: "Reopen CORE-9 too?" });
+    expect(dialog.textContent).toContain(
+      "The epic CORE-9 “Platform” is done. A done epic holds no open issue. Before the move, Dispatch makes these changes:"
+    );
+    expect(within(dialog).getByRole("list", { name: "Changes" }).textContent).toBe(
+      "CORE-9 “Platform” moves to In progress"
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Reopen it too" }));
+    await noticeOnceDone("Moved CORE-1 “Work CORE-1” to the epic");
+    expect(sent).toEqual([
+      ["status-change", "CORE-9", intoWorkDryRun],
+      ["status-change", "CORE-9", intoWork],
+      ["PATCH", "CORE-1", { parent: "CORE-9" }],
+    ]);
+  }
+);
 
 // An action a reload cut off, finished later: the epic it moves issues under may have left work or
 // closed meanwhile. Finish asks the action's own question before it moves a not-in-work epic into
@@ -3330,29 +3337,25 @@ const finishingActions = [
   },
 ];
 
-test.each(
-  finishingActions
-)("Finish of a $action whose epic is not in work, its question cancelled, writes nothing and keeps the action", async ({
-  epic,
-  question,
-  record,
-  rows,
-}) => {
-  const user = userEvent.setup();
-  const sent = answerEpicWrites([epic]);
-  interruptedBy(record);
-  table(rows());
-  await pressFinish(user);
-  const dialog = await screen.findByRole("dialog", { name: question });
-  await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-  expect(screen.queryByRole("dialog")).toBeNull();
-  // The action stays to be finished, and the dry run is the one request Finish sent.
-  expect(await screen.findByRole("region", { name: "Interrupted table action" })).toBeDefined();
-  expect(sent).toEqual([["status-change", epic.key, intoWorkDryRun]]);
-  expect(
-    within(screen.getByRole("region", { name: "Project issues" })).queryByRole("status")
-  ).toBeNull();
-});
+test.each(finishingActions)(
+  "Finish of a $action whose epic is not in work, its question cancelled, writes nothing and keeps the action",
+  async ({ epic, question, record, rows }) => {
+    const user = userEvent.setup();
+    const sent = answerEpicWrites([epic]);
+    interruptedBy(record);
+    table(rows());
+    await pressFinish(user);
+    const dialog = await screen.findByRole("dialog", { name: question });
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // The action stays to be finished, and the dry run is the one request Finish sent.
+    expect(await screen.findByRole("region", { name: "Interrupted table action" })).toBeDefined();
+    expect(sent).toEqual([["status-change", epic.key, intoWorkDryRun]]);
+    expect(
+      within(screen.getByRole("region", { name: "Project issues" })).queryByRole("status")
+    ).toBeNull();
+  }
+);
 
 // The table going away while Finish's question is open ends the Finish, as a Cancel does: nothing
 // more is written, and nothing is left waiting on a dialog nobody can see.
