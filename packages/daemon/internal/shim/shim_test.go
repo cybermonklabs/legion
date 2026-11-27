@@ -1121,7 +1121,10 @@ func fakeJJ(t *testing.T) (record string) {
 	t.Helper()
 	record = filepath.Join(t.TempDir(), "jj-invocation")
 	bin := t.TempDir()
+	// CONTROL COMMIT, never for merge: every jj but the hanging one is held 11 s in its own run,
+	// as a loaded machine can hold it.
 	script := `#!/bin/sh
+[ "$FAKE_JJ_MODE" = hang ] || sleep 11
 printf '%s\n' "$@" >> "$FAKE_JJ_RECORD"
 printf 'JJ_USER=%s\nJJ_EMAIL=%s\n' "$JJ_USER" "$JJ_EMAIL" >> "$FAKE_JJ_RECORD"
 case "$FAKE_JJ_MODE" in
@@ -1411,7 +1414,7 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 			// wrapper looking jj up on PATH never finds this one again.
 			record := filepath.Join(t.TempDir(), "jj-commands")
 			bin := t.TempDir()
-			if err := os.WriteFile(filepath.Join(bin, "jj"), []byte("#!/bin/sh\nprintf '%s\\n' \"$1\" >> "+record+"\nPATH=\"${PATH#*:}\" exec "+jj+" \"$@\"\n"), 0o700); err != nil {
+			if err := os.WriteFile(filepath.Join(bin, "jj"), []byte("#!/bin/sh\nsleep 11\nprintf '%s\\n' \"$1\" >> "+record+"\nPATH=\"${PATH#*:}\" exec "+jj+" \"$@\"\n"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
