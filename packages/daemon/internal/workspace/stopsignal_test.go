@@ -356,16 +356,25 @@ func waitInto(name, proc string) string {
 
 // markWaited is shell that records, at the file the shell word at names, a moment of a stand-in's
 // run, as testexec.MarkNow does, and, at the file named the same with .waits added, the
-// /proc/<pid>/schedstat line of the process proc names (waitInto), then the shell words more, one
-// a line (readWaited). The line is read before the moment, so the wait it counts all comes before
-// it.
+// /proc/<pid>/schedstat line of the process proc names (waitInto) as it stood at that moment, then
+// the shell words more, one a line (readWaited). The kernel adds a wait to the line when the
+// process gets a CPU back, so the line is read just before the moment and again just after it,
+// and the pair stands only where both count the same wait: the machine did not send the process
+// back to a run queue between the two reads, so the line counts every wait before the moment and
+// none after it. A process the machine keeps sending back there is read again, up to 100 times,
+// and after that the last line read before its moment stands, which counts less than the wait up
+// to that moment, so the row takes less off.
 func markWaited(proc, at string, more ...string) string {
 	words := `"$waited"`
 	for _, word := range more {
 		words += " " + word
 	}
-	return waitInto("waited", proc) + `; read -r up </proc/uptime; printf '%s\n' "$up" >` + at +
-		`; printf '` + strings.Repeat(`%s\n`, 1+len(more)) + `' ` + words + ` >` + at + `.waits`
+	schedstat := `/proc/` + proc + `/schedstat`
+	return `waited=; tries=0; while [ "$tries" -lt 100 ]; do tries=$((tries+1)); ` +
+		`if [ ! -r ` + schedstat + ` ]; then waited=; read -r up </proc/uptime; break; fi; ` +
+		`read -r waited <` + schedstat + `; read -r up </proc/uptime; read -r again <` + schedstat + `; ` +
+		`w=${waited#* }; a=${again#* }; [ "${w%% *}" = "${a%% *}" ] && break; done; ` +
+		`printf '%s\n' "$up" >` + at + `; printf '` + strings.Repeat(`%s\n`, 1+len(more)) + `' ` + words + ` >` + at + `.waits`
 }
 
 // readWaited reads what markWaited recorded at path: the moment, as a time since boot, and the
