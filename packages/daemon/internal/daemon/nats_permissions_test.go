@@ -253,7 +253,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				var serverLogErr error
 				testwait.Eventually(t, "the server log naming the refused write", func() bool {
 					var serverLog string
-					serverLog, serverLogErr = readDaemonGrantServerLogs(server)
+					serverLog, serverLogErr = server.Logs(context.Background())
 					serverLine = matchingLogLine(serverLog, "Publish Violation", denied)
 					return serverLine != ""
 				})

@@ -7,7 +7,7 @@
 // (packages/envoy/cmd/listener) on that nats-server, naming it in LEGION_E2E_ENVOY_URL.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// whole-daemon harness (startDaemonWithin), with its own task bucket (legion_tasks) on the run's
+// whole-daemon harness (startDaemonLogging), with its own task bucket (legion_tasks) on the run's
 // NATS — the real configuration, store and migrations, HTTP API, claim supervision and worker
 // stream, openWorkflow, JetStream consumers, outbox lanes, task bucket and its watch, and idle
 // release. The claim's worker is driven as a pod runs it: each process of it says hello on the
@@ -308,7 +308,7 @@ func (r *taskTakeLive) boot() {
 	if file := r.logFile(); file != nil {
 		out = io.MultiWriter(r.logs, file)
 	}
-	r.d = startDaemonWithin(r.t, r.cfg, r.o, slog.New(slog.NewJSONHandler(out, &slog.HandlerOptions{Level: slog.LevelDebug})), 90*time.Second)
+	r.d = startDaemonLogging(r.t, r.cfg, r.o, slog.New(slog.NewJSONHandler(out, &slog.HandlerOptions{Level: slog.LevelDebug})))
 }
 
 // Step 1. The boot relaunches the seeded implementer, and the driver brings that launch up as its
