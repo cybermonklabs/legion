@@ -40,6 +40,7 @@ import { statusGlyph, statusTone } from "./issue-status";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
+import { treeRead } from "./spec-filter/tree-read";
 import { coverageStatements } from "./tree-drafts";
 import { useDecisionsView, useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
