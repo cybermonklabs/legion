@@ -335,7 +335,8 @@ func (opts Options) check() error {
 // the cache going unready and the listed set dropped or replaced take its write side (lockPacks).
 // It is no lock /tar or a refresh holds otherwise, so /packs answers 503 during a repack rather
 // than wait for it. packsWrite is the write deadline of each /packs answer (packsWriteBound, a
-// test's shorter one), which bounds how long an answer holds the read side. packsChecked and
+// test's shorter one), which bounds how long an answer holds the read side; an answer that cannot
+// set it is 503 before it writes. packsChecked and
 // packsGateBlocked are a test's seams, nil outside tests: the first runs in an answer after its
 // last check, holding the read side, before its write; the second runs where a change finds the
 // gate held.
