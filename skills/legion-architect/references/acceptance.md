@@ -14,11 +14,11 @@ answer it on its role topic from the deployment instructions, or open a `dispatc
 Only a task whose steps name `acceptance:owner` enters `accepting`.
 Read, against the goal, every check and every requirement:
 
-1. where a tester step comes before your acceptance, the handoff of each such step: `dispatch handoff-read --issue <issue> --phase test` reads the newest, and `--version <n>` an earlier step's;
+1. where a tester step comes before your acceptance, the handoff of each such step: `dispatch handoff-read --issue <issue> --phase test` (*Two steps of one role* in acceptance-steps.md);
 
 2. `dispatch results --issue <issue>`: whether a pass stands for each `before_merge` check at the head the step before your acceptance passed;
 
-3. where a reviewer step comes before your acceptance, the approval of the last such step, read by the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), and each claim in the review of each such step, against the code at that head; no reviewer step approved the commits of an implementer step between that step and your acceptance (`implementer:a reviewer implementer:a acceptance:owner`);
+3. where a reviewer step comes before your acceptance, the approval of the last such step, read by the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), and each claim in the review of each such step, against the code at that head (*Two steps of one role* in acceptance-steps.md);
 
 4. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head whose checks passed is accepted as any other (*A conflicting head*, below).
 
@@ -58,13 +58,7 @@ The last round merges the base only on a trigger every pull request has: GitHub 
 A child's merge while the parent waits needs no move of its own:
 the last round tests them all, and the daemon answers a conflict on its head (*A conflicting head*, below).
 If the pull request merged before its last round, move nothing back.
-Once the children close:
-
-1. Run each check with no `ci_check` on the default branch and record each result, yourself or by a subagent you dispatch; `wait` for a subagent's report.
-
-2. Read each `ci_check` result in `dispatch results`.
-
-3. Post the results in the acceptance comment, then `sign_off`.
+Once the children close, take the steps of "The last round's close" in acceptance-steps.md.
 
 ## After your sign-off
 
