@@ -38,6 +38,7 @@ import (
 // pair that merges only through one topic's new form (contracts.TopicForms) goes, while a third
 // wildcard the merged subject contains, which fed no merge, stays.
 func TestAFilterWhoseTopicsReduceToAnotherSessionsSubjectsLeavesThemOut(t *testing.T) {
+	t.Parallel()
 	const (
 		session = "ses_reduction"
 		// The chain: chainA and chainB merge into the GitHub exception lanes, which reach no

@@ -17,6 +17,7 @@ import (
 // (brokerTokenActor, optionalActor), so no request through the server can tell the error check
 // from its absence, and this reads the decision on the context directly.
 func TestARefusedCallerIsNeitherReadOnlyNorApproveOnly(t *testing.T) {
+	t.Parallel()
 	readOnly := &model.Credential{ReadOnly: true}
 	approveOnly := &model.Credential{ApproveOnly: true}
 	refusal := errorf(http.StatusUnauthorized, "BROKER_TOKEN_NOT_ACTIVE", "the secrets broker does not hold this access token as live")

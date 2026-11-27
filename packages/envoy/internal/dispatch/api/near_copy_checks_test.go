@@ -698,6 +698,7 @@ func TestNearCopyChecksAWriteThatFindsItsOwnRowHasLanded(t *testing.T) {
 // A create's row that cannot be written for a reason no retry cures is logged and dropped: the
 // create still answers 201 and stands, with no row and no retry.
 func TestNearCopyChecksARowThatCannotBeWrittenIsLoggedAndTheCreateStands(t *testing.T) {
+	// Not parallel: it swaps the default logger (slog.SetDefault).
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "TEST")
 	for _, statement := range []string{

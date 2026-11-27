@@ -32,6 +32,9 @@ import (
 // Before, both places skipped the session as one whose consumer relays the message, with no word,
 // while its consumer's filter did not carry the topic.
 func TestAFanOutThatMatchesAnEarlierBuildsRowThroughALeftOutTopicLogsIt(t *testing.T) {
+	// Not parallel: it swaps the clock and the memory of fanoutLeftOutLogs, the one limiter every
+	// handler of the process shares (leftOutLogLimiter.isolate), and asserts on the lines it
+	// lets through.
 	const leftLine = "listener left a topic out of the session's consumer filter"
 	// The limiter's clock runs offset ahead of the wall clock; it is set before the durable starts
 	// and put back after it stops, so no handler reads it in between.

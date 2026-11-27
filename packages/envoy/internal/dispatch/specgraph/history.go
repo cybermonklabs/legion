@@ -218,7 +218,6 @@ func (g GitHistory) dirFault() error {
 // gitDiffArgs are the arguments of git that Changed runs before its two commits, each one there so
 // that no setting of the clone or of the machine changes the answer (TestGitHistoryIsTheSameUnderEachSetting):
 //
-//   - --no-replace-objects: a replace ref would put another commit, and its tree, in the place of one;
 //   - --no-renames: with diff.renames, a move would give its new path alone;
 //   - --ignore-submodules=none: ignore = all for a submodule in .gitmodules or in the config, or
 //     diff.ignoreSubmodules, would leave out a moved submodule;
@@ -229,16 +228,16 @@ func (g GitHistory) dirFault() error {
 //   - --end-of-options: an id that starts with "-" is a revision, never an option.
 //
 // It passes no flag for diff.external, a textconv of .gitattributes or color: git runs none of them
-// for a list of names, which a row of the test holds. Changed also runs git with no variable GIT_*
-// of the environment that it would inherit (exec.Cmd.Environ), such as GIT_DIR, which would make git
-// read another clone than Dir.
-var gitDiffArgs = []string{"--no-replace-objects", "diff", "--no-renames", "--ignore-submodules=none", "--no-relative",
+// for a list of names, which a row of the test holds. Changed runs git through command, which adds
+// --no-replace-objects and runs git with no variable GIT_* of the environment.
+var gitDiffArgs = []string{"diff", "--no-renames", "--ignore-submodules=none", "--no-relative",
 	"--name-only", "-z", "--end-of-options"}
 
-// Changed gives the paths that `git -C <Dir> <gitDiffArgs> <from> <to> --` lists, sorted, once the
-// clone holds a commit of each of the two ids (holds). ok is false, and err nil, when it does not,
-// as for a commit beyond the depth of a shallow clone. err names Dir and git's own reason when git
-// cannot answer, as for a directory that is no clone: such a history has not read two equal trees.
+// Changed gives the paths that `git -C <Dir> --no-replace-objects <gitDiffArgs> <from> <to> --`
+// lists, sorted, once the clone holds a commit of each of the two ids (holds). ok is false, and
+// err nil, when it does not, as for a commit beyond the depth of a shallow clone. err names Dir and
+// git's own reason when git cannot answer, as for a directory that is no clone: such a history has
+// not read two equal trees.
 // The check comes first because git diff outside a clone runs in its no-index mode, which reads
 // two paths of the directory and not two commits, so only a clone is asked for a diff.
 func (g GitHistory) Changed(from, to string) ([]string, bool, error) {
@@ -277,7 +276,7 @@ func (g GitHistory) holds(ids ...string) (bool, error) {
 		input.WriteString(id)
 		input.WriteString("^{commit}\n")
 	}
-	out, err := g.git(input.String(), "--no-replace-objects", "cat-file", "--batch-check")
+	out, err := g.git(input.String(), "cat-file", "--batch-check")
 	if err != nil {
 		return false, err
 	}
@@ -293,11 +292,24 @@ func (g GitHistory) holds(ids ...string) (bool, error) {
 	return true, nil
 }
 
-// git runs `git -C <Dir> <args>` with stdin as its input and no variable GIT_* of the environment
-// that it would inherit (exec.Cmd.Environ), and gives its output.
-func (g GitHistory) git(stdin string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", append([]string{"-C", g.Dir}, args...)...)
+// command is `git -C <Dir> --no-replace-objects <args>`, run with the environment that it would
+// inherit (exec.Cmd.Environ) less each variable GIT_*. Each git command of this package runs
+// through it, so no setting of the process changes which objects git reads:
+//
+//   - --no-replace-objects: a replace ref would put another commit, and its tree, in the place of
+//     one, in what git diff, cat-file, ls-tree and read-tree read;
+//   - no variable GIT_*: a variable such as GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE or
+//     GIT_OBJECT_DIRECTORY would make git read another clone, another tree or another index than
+//     the one that its command names, and GIT_CONFIG_* other settings.
+func (g GitHistory) command(args ...string) *exec.Cmd {
+	cmd := exec.Command("git", append([]string{"-C", g.Dir, "--no-replace-objects"}, args...)...)
 	cmd.Env = slices.DeleteFunc(cmd.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_") })
+	return cmd
+}
+
+// git runs command(args) with stdin as its input, and gives its output.
+func (g GitHistory) git(stdin string, args ...string) ([]byte, error) {
+	cmd := g.command(args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	return cmd.Output()
 }

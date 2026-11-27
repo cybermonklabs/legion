@@ -6,11 +6,7 @@ GATE = harness("ci_ok_test", "Test ci-ok's verdict", f"{SCRIPTS}/ci-ok.test.sh",
      "`.github/scripts/ci-ok.sh#$script_dir/runner-shutdown.sh` sources it, and the harness drives it with a stand-in gh: it is what reads "
      "a failure the platform caused off this run's check runs"),
     (f"{SCRIPTS}/gh-read.sh", "`.github/scripts/runner-shutdown.sh#pwd)/gh-read.sh` sources it for its bounded gh reads"),
-    (".github/workflows/ci-job-daemon-go.yaml",
-     "its last case reads the two steps that restate their legs' result, which must write the words "
-     "`.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED` holds"),
-    (".github/workflows/ci-job-envoy-go.yaml",
-     "its last case reads envoy-go's step that restates its legs' result, which must write those words"),
-    (".github/workflows/ci-job-envoy-go-race.yaml",
-     "its last case reads envoy-go-race's step that restates its legs' result, which must write those words"),
+    (".github/workflows/*.yaml",
+     "its restating-steps case reads every workflow for a step named `Pass only when every leg passed`, "
+     "which must write the words `.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED` holds"),
 ])

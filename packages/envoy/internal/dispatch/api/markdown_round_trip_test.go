@@ -51,6 +51,8 @@ func markdownCorpus(t *testing.T) []string {
 // is the same parse, so it mints the same ids in the same order, and the two renderings are
 // comparable byte for byte.
 func TestMarkdownRoundTripAnswersWhatTheStoreWouldHold(t *testing.T) {
+	// Not parallel: it sets pmdoc's block ID generator for the whole process
+	// (pmdoc.SetBlockIDGenerator).
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
@@ -525,6 +527,7 @@ var roundTripDeclaredRefusal = regexp.MustCompile(`\b[0-9]{3} [A-Z][A-Z0-9_]*\b`
 // the refusal of text past the bytes one document holds, which the description names too and rows
 // prove.
 func TestEveryRefusalTheRoundTripsDeclareHasATextRefusalRow(t *testing.T) {
+	t.Parallel()
 	held := map[string]bool{}
 	for _, refusal := range roundTripRefusals(t) {
 		held[fmt.Sprintf("%d %s", refusal.status, refusal.code)] = true
@@ -591,6 +594,7 @@ func roundTripOf(t *testing.T, handler http.Handler, kind, text string, newDocum
 // without it, which the upload then stores, and text of whitespace alone that the seed takes is
 // answered "" either way.
 func TestMarkdownRoundTripRefusesWhatAnUploadRefusesForItsText(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	uploads := "/api/v1/issues/" + issue.Key + "/artifacts"
@@ -735,6 +739,7 @@ func requireReplacementAnswer(t *testing.T, kind string, test roundTripRefusal, 
 // that client compares it with what it holds and sends it, and the upload naming the document's
 // token stores it.
 func TestMarkdownRoundTripWithoutNewDocumentAnswersAReplacementTheUploadStores(t *testing.T) {
+	t.Parallel()
 	documentService, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A replacement over a browser's ask", "The spec.\n")
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "Intro.\n")
@@ -791,6 +796,7 @@ func TestMarkdownRoundTripWithoutNewDocumentAnswersAReplacementTheUploadStores(t
 // round trip's answer with its text refuses every such replacement for its spelling, where main
 // answered the text itself and the store respelled it.
 func TestMarkdownRoundTripWithoutNewDocumentAnswersAReplacementOverARepeatedBlockID(t *testing.T) {
+	t.Parallel()
 	documentService, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A replacement over a repeated block id", "The spec.\n")
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "Intro.\n")
@@ -857,6 +863,8 @@ func TestMarkdownRoundTripWithoutNewDocumentAnswersAReplacementOverARepeatedBloc
 // comparing the two passes, and the replacement stores it as written; a text the store respells
 // is answered respelled, which such a client refuses, and the replacement stores that spelling.
 func TestMarkdownRoundTripWithoutNewDocumentAnswersTheRenderingOfAnElementThisBuildCannotCreate(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest).
 	restore, err := pmdoc.UseStagedBlockForTest("staged", false)
 	if err != nil {
 		t.Fatalf("stage a typed block this build reads and may not create: %v", err)
