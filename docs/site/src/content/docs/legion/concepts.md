@@ -457,11 +457,11 @@ document's header or from the approval question in your Dispatch Inbox; **Reques
 it back with your reason.
 
 Approval is pinned to a version: a later edit to the spec closes the gate again until someone approves the new version.
-Your answer to an ask block writes one version.
-When your answer is that version's whole change, the version changes only the block's `state`, answerer and time, and Dispatch records that version as approved in your name, so the gate stays open.
-The version carries an approval only when the person's answer, resolve or decline is its whole change.
+Your answer to an ask block writes one version, which changes only the block's `state`, answerer and time.
+Dispatch carries an approval that already stands: an answer never approves a spec that is not approved.
+When an answer, resolve or decline is the whole change since the approved version, Dispatch records the new version as approved in the approver's name, so the gate stays open.
 If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.
-When the architect adds an ask to an approved spec, that version closes the gate, and your answer's version opens it again when the answer is that version's whole change.
+When the architect adds an ask to the spec you approved, that version closes the gate; your own answer to it, given in the browser or under a credential with the approve scope, records your approval again when it is the whole change since the version you approved, and the gate opens again.
 When your answer means the spec's text must change outside the ask block, the architect writes that change and asks you to approve again, naming what changed since your approval.
 Work already in flight carries on while the gate is closed, and of that work only the merge waits until you approve the new version.
 When you approve it, each worker that holds an affected issue gets a task that names the sections and checks that changed, and decides whether its work still matches.

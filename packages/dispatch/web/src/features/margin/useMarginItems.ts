@@ -343,8 +343,10 @@ export function useMarginItems(
      *  in the list it was in, open or resolved, whoever resolves or reopens it meanwhile: moving
      *  it between them would remount its card, and the composer and what it holds with it. */
     readonly held?: ReadonlySet<string>;
-    /** The issue read of the margin's issue, whose documents a decision the Decisions read names
-     *  no document for is found among (`decisionDocumentId`); undefined until it answers. */
+    /** The fields of the margin's issue read by which `decisionDocumentId` finds the document of
+     *  a decision the Decisions read names none for, as only a server of the release before
+     *  answers one; undefined until the read answers. */
+    // kept for one release: compat-objects
     readonly issue?: DecisionDocuments;
   } = {}
 ) {
@@ -538,12 +540,15 @@ export function useMarginItems(
           nodes.set(link.to.id, blockId);
         }
       }
+      // `issue` finds the document of an entry a server of the release before names none for.
+      // kept for one release: compat-objects
+      const documentId = decisionDocumentId(issue, decision);
       return [...nodes]
         .filter(([, blockId]) => blockFilterId === undefined || blockId === blockFilterId)
         .map(([node, blockId]) => ({
           blockId,
           decision,
-          documentId: decisionDocumentId(issue, decision),
+          documentId,
           id: `decision:${decision.node.id}:${node}`,
           kind: "decision" as const,
         }));

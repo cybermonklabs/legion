@@ -46,6 +46,13 @@ type rowDrive struct {
 	// stored, for a GET that writes, counts the rows its write stores: none before the drive and
 	// one after it. Its $names are filled as the target's are.
 	stored string
+	// sendAfter, for a GET that writes, names the drives of its registry that must be sent before
+	// it: each whose run this drive's read reaches, so that sent first this read would make that
+	// drive's write itself (firstToWarn writes each run's warning once) and leave the drive
+	// nothing to write. TestEveryGETThatWritesMakesItsWrite sends every drive after each one it
+	// names (sendOrder), whatever order the routes are declared in. The order is stated here
+	// because where the routes are declared, by pattern, says nothing of what a read reaches.
+	sendAfter []string
 }
 
 // statementOf is a statement a drive must see: pattern matched case-insensitively across lines.
@@ -78,7 +85,7 @@ const searchTook = "how long the search ran, which each read times on its own cl
 const postHistoryStatement = `\bleft\s+join\s+lateral\s*\(\s*select\s+body,\s*edited_by,\s*edited_at\s+from\s+post_body_history\b`
 
 // readRowDrives is the drive of every read row of the table (readWritesNothing), keyed
-// "GET <pattern>" as readClasses is: the request that shows the row writes nothing a read may
+// "GET <pattern>", as a route names itself: the request that shows the row writes nothing a read may
 // not write and answers a read-only token as it answers that token's writer.
 var readRowDrives = map[string]rowDrive{
 	"GET /api/v1":               {target: "/api/v1", fromMemory: "the route index is built in memory when the table is registered"},
@@ -262,11 +269,13 @@ var readRowDrives = map[string]rowDrive{
 // getWriteDrives is the drive of every GET row of the table that writes (readWritesState), keyed
 // as readRowDrives is: the request that makes the write the row's WriteNote names, on the seeded
 // store. Each delivery read is sent at a window holding a deploy run with no production job of
-// its own, the newest run the timeline's and the oldest the pipeline's, and they are sent in the
-// table's order, the pipeline last: the timeline and the measures each read only the window
-// around their own run, and the pipeline reads seven days, which hold all three, and firstToWarn
-// writes once per process for each run (delivery.go), so a pipeline read sent first would warn
-// of the other two rows' runs before their own reads.
+// its own, the newest run the timeline's and the oldest the pipeline's, and firstToWarn writes
+// once per process for each run (delivery.go). The timeline reads only the window around its own
+// run; the measures' read reaches the timeline's run too, ten hours after its own, and the
+// pipeline reads seven days, which hold all three. So each is sent after the drives whose runs
+// it reaches (sendAfter): timeline, then measures, then pipeline. Sent in the order the routes
+// are declared, by pattern, the measures went first and its read wrote the timeline's warning
+// (envoy-go-race-api job 139500583275).
 var getWriteDrives = map[string]rowDrive{
 	"GET /api/v1/delivery/timeline": {
 		target:    "/api/v1/delivery/timeline?from=$timelineFrom&to=$timelineTo",
@@ -277,11 +286,13 @@ var getWriteDrives = map[string]rowDrive{
 		target:    "/api/v1/delivery/measures?from=$measuresFrom&to=$measuresTo",
 		statement: statementOf(`\binsert\s+into\s+delivery_run_warnings\b`),
 		stored:    "select count(*) from delivery_run_warnings where run_id = $measuresRun",
+		sendAfter: []string{"GET /api/v1/delivery/timeline"},
 	},
 	"GET /api/v1/delivery/pipeline": {
 		target:    "/api/v1/delivery/pipeline?at=$pipelineAt",
 		statement: statementOf(`\binsert\s+into\s+delivery_run_warnings\b`),
 		stored:    "select count(*) from delivery_run_warnings where run_id = $pipelineRun",
+		sendAfter: []string{"GET /api/v1/delivery/timeline", "GET /api/v1/delivery/measures"},
 	},
 	"GET /api/v1/going/requests/{id}/stream": {
 		target:    "/api/v1/going/requests/$going/stream",
@@ -300,10 +311,17 @@ func holdsReadAndNotApprove(answer map[string]any) string {
 	return ""
 }
 
+// declared is the declaration of one route by "<method> <pattern>", the zero value for a name no
+// route declares, which the walk around it reads as a route the table does not mount.
+func declared(name string) routeDecl {
+	route, _ := declaredRoute(name)
+	return route
+}
+
 // TestEveryGETRowHasADrive holds the two registries of drives to the read class: every GET row of
 // the table with its test hooks in (readOnlyTable), read off the table, so a GET row added later
 // fails here until it is driven. It fails for each read row with no drive in readRowDrives, each
-// GET that writes with no drive in getWriteDrives, each GET row readClasses has not classed that
+// GET that writes with no drive in getWriteDrives, each GET route stating no read class that
 // has a drive in neither, each drive that names no GET row of its class or whose target its
 // row's pattern does not match, each read's drive that names neither a statement its handler runs
 // nor why it reads from memory, or names both, and each drive of a GET that writes that names no
@@ -321,7 +339,7 @@ func TestEveryGETRowHasADrive(t *testing.T) {
 		patterns[name] = route.Pattern
 		_, read := readRowDrives[name]
 		_, write := getWriteDrives[name]
-		switch readClasses[name].Writes {
+		switch route.Read.Writes {
 		case readWritesNothing:
 			if !read {
 				problems = append(problems, name+": a read (readWritesNothing) with no drive in readRowDrives")
@@ -332,7 +350,7 @@ func TestEveryGETRowHasADrive(t *testing.T) {
 			}
 		default:
 			if !read && !write {
-				problems = append(problems, name+": a GET row readClasses has not classed, with no drive in readRowDrives or getWriteDrives")
+				problems = append(problems, name+": a GET route whose declaration states no read class, with no drive in readRowDrives or getWriteDrives")
 			}
 		}
 	}
@@ -351,7 +369,7 @@ func TestEveryGETRowHasADrive(t *testing.T) {
 		for name, drive := range registry.drives {
 			pattern, mounted := patterns[name]
 			switch {
-			case !mounted || readClasses[name].Writes != registry.class:
+			case !mounted || declared(name).Read.Writes != registry.class:
 				problems = append(problems, name+": "+registry.name+" drives it, and it is no "+registry.rows+" of the table")
 			case !sendsItsRow(pattern, drive.target):
 				problems = append(problems, name+": "+registry.name+" drives it at "+drive.target+", which its pattern does not match")
@@ -395,7 +413,7 @@ func sendsItsRow(pattern, target string) bool {
 }
 
 // driveRowsVariable names the read rows a run of the read drive sends, for a run that needs only
-// some of them: the rows' names ("GET <pattern>", as readClasses keys them), separated by commas.
+// some of them: the routes' names ("GET <pattern>"), separated by commas.
 // Unset or empty, every read row runs.
 const driveRowsVariable = "DISPATCH_READ_DRIVE_ROWS"
 
@@ -419,7 +437,7 @@ func drivenRows(t *testing.T, class readWrites) ([]string, map[string]rowDrive) 
 	drives := map[string]rowDrive{}
 	for _, route := range readOnlyTable() {
 		name := route.Method + " " + route.Pattern
-		if route.Method != http.MethodGet || readClasses[name].Writes != class {
+		if route.Method != http.MethodGet || route.Read.Writes != class {
 			continue
 		}
 		if len(only) > 0 && !only[name] {
@@ -538,7 +556,7 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 // sees the request's own context alone, fails before any row.
 //
 // DISPATCH_READ_DRIVE_ROWS narrows the run to the rows it names, separated by commas (each
-// "GET <pattern>", as readClasses keys it); unset, every read row runs, which takes minutes,
+// "GET <pattern>"); unset, every read row runs, which takes minutes,
 // about 4.5 s a row, and so runs in a Job and in CI rather than in a shared pod. The calibration
 // and the pre-check run either way.
 func TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter(t *testing.T) {
@@ -740,11 +758,12 @@ func statementList(statements []drivenStatement) string {
 // deploy run with no production job that is its own. It runs on the drive rig (newDriveRig) with
 // only the state those writes read (driveWorld.seedWrites), not the whole seeded store. Each is
 // sent in a window as the reads are, which must hold that write, and the store must hold none of
-// the row's rows before it and one after. The rows run in the table's order, which is the order
-// getWriteDrives's runs need.
+// the row's rows before it and one after. Each row runs after the rows its drive's sendAfter
+// names, the order getWriteDrives's runs need (sendOrder), and otherwise in the table's order.
 func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
 	t.Parallel()
 	rows, drives := drivenRows(t, readWritesState)
+	rows = sendOrder(t, rows, drives)
 	world := newDriveRig(t)
 	world.seedWrites(t)
 	writer := world.brokerSend("the writing token", world.writer)
@@ -779,4 +798,36 @@ func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
 			t.Logf("GET %s made its write %s, the window's writes %v", target, drive.statement, writesIn(statements))
 		})
 	}
+}
+
+// sendOrder is rows with each sent after every row its drive's sendAfter names, and otherwise in
+// the order rows gives. It fails for a name that is no row of the class, and for names that order
+// no row first.
+func sendOrder(t *testing.T, rows []string, drives map[string]rowDrive) []string {
+	t.Helper()
+	sent := map[string]bool{}
+	order := make([]string, 0, len(rows))
+	for len(order) < len(rows) {
+		placed := false
+		for _, name := range rows {
+			if sent[name] {
+				continue
+			}
+			ready := true
+			for _, before := range drives[name].sendAfter {
+				if _, row := drives[before]; !row {
+					t.Fatalf("%s is to be sent after %s, which is no row of its class", name, before)
+				}
+				ready = ready && sent[before]
+			}
+			if ready {
+				sent[name], placed = true, true
+				order = append(order, name)
+			}
+		}
+		if !placed {
+			t.Fatalf("the drives' sendAfter orders none of %v first", rows)
+		}
+	}
+	return order
 }

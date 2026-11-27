@@ -11,8 +11,8 @@
 -- installs version 7 and still refuses to create a decision.
 --
 -- The file changes two elements besides: `check`'s `subject` and `program`, which
--- 20261125125701_graph_supertags_check_subject declared at version 6, read from 6 and created from
--- 7, now keep their `since` 6 and take `creatable_since` 9, so this build reads them and creates
+-- 20261125125701_graph_supertags_check_subject declared at version 6 and 20261125163555 moved to
+-- `creatable_since` 8, now keep their `since` 6 and take `creatable_since` 9, so this build reads them and creates
 -- neither. The release after #5416 that records real deploys has not shipped yet, and until it
 -- does no build creates a check that names what it reads: `creatable_since` moves with each block
 -- schema bump until that release sets its final value. So this file moves the version of the
@@ -37,8 +37,8 @@
 -- Rolling deploy. A build of version 7, which holds 20261125163555 and not this file, installs a
 -- store schema above its own version at its own version (pmdoc.Install, asOfVersion): every
 -- element this file leaves has `since` 7 or less, so it installs the schema it installed before
--- this ran, but for `check`'s `subject` and `program`, which it then reads and no longer creates,
--- as `creatable_since` 9 says. It reads a document this build writes with a decision, a reading or
+-- this ran: `check`'s `subject` and `program` were already uncreatable at version 7 (`creatable_since`
+-- 8) and stay uncreatable at `creatable_since` 9. It reads a document this build writes with a decision, a reading or
 -- an ask's `shaped`, and still refuses to create one, as `creatable_since` 8 says. So the two
 -- builds serve one database side by side. The way back is the image alone, and the store stays at
 -- version 8: the build before leaves a version schema_migrations records and it has no file of as
@@ -61,7 +61,7 @@
 -- server installs the new version at once. Every row carries now(), the start of the runner's
 -- transaction, as the moment it was stated, so each type's newest `version` tuple orders after
 -- the 7 that 20261125163555 stamped at its own apply, and each of the two attributes' newest
--- `creatable_since` tuple after the 7 that 20261125125701 stamped at its own (graphstore.AsOfOut
+-- `creatable_since` tuple after the 8 that 20261125163555 stamped at its own (graphstore.AsOfOut
 -- orders a node's tuples by `at` first). The migration records no event, so every tuple it writes
 -- carries the `source_event` sentinel 0, and its rows carry a writer of their own, so a reader of
 -- the store can tell them from the seed's.
@@ -115,8 +115,8 @@ values
   ('supertag', 'requirement', 'version', 'value', '8', now(), '{"kind": "system", "id": "block-schema-version-8"}', 0, null, true);
 
 -- `check`'s `subject` and `program`: each attribute node is set to its whole attributes, what
--- 20261125125701 left on it with `creatable_since` moved from 7 to 9. No migration after
--- 20261125125701 writes either node, so that is what each holds, and this rewrites nothing but
+-- 20261125163555 left on it with `creatable_since` moved from 8 to 9. No migration after
+-- 20261125163555 writes either node, so that is what each holds, and this rewrites nothing but
 -- that number. The two take different values, so each is a statement of its own.
 update graph_nodes
 set attributes = '{"kind": "enum", "choices": ["code", "production", "graph"], "since": 6, "creatable_since": 9, "name": "subject", "store_name": "subject", "position": 6}'::jsonb
@@ -127,7 +127,7 @@ set attributes = '{"kind": "string", "since": 6, "creatable_since": 9, "name": "
 where (kind, id) in (('attribute', 'check/program'));
 
 -- The move, as the tuple it is: each attribute's newest `creatable_since` tuple is the 9 its row
--- now carries, and the 7 before it stays in its history.
+-- now carries, and the 8 that 20261125163555 stamped, and the 7 before it, stay in its history.
 insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
 values
   ('attribute', 'check/program', 'creatable_since', 'value', '9', now(), '{"kind": "system", "id": "block-schema-version-8"}', 0, null, true),

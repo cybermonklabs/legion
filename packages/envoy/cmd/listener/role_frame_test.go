@@ -118,7 +118,7 @@ func TestTheEnvelopeReadTakesAWholeNumberAndNoStringHoldingOne(t *testing.T) {
 // readRoleFrame keys a role mark as the role's claim is keyed (store.RoleClaimKeyOf), as it keys a
 // role lane's topic (roleOfLaneTopic): a free-form role under a project is that project's own
 // claim, <project>.<role>, and every other name is its bare name. A takeover pass copies a message
-// only to the role its read names (takenRoleMessage), so a mark read as the bare name would copy a
+// only to the role its read names (takenFrame), so a mark read as the bare name would copy a
 // project's message to the lane of the claim of the same name under no project, and the session
 // relay would read that claim's holder for it.
 func TestARoleMarkIsReadAsTheClaimKeyOfTheRoleItNames(t *testing.T) {
@@ -144,8 +144,8 @@ func TestARoleMarkIsReadAsTheClaimKeyOfTheRoleItNames(t *testing.T) {
 			if err != nil || frame.role != c.key {
 				t.Errorf("readRoleFrame of a message marked %q answers role %q and %v; want %q, the key roleOfLaneTopic gives its topic", c.mark, frame.role, err, c.key)
 			}
-			if item, ok := takenRoleMessage(data, c.key); !ok || item.EventID != "evt-mark" {
-				t.Errorf("a takeover pass of role %s takes the message marked %q: %t (event %q); want it taken", c.key, c.mark, ok, item.EventID)
+			if frame, kind := takenFrame(data, c.key, "ses_marked", false); kind != takenRoleCopy || frame.envelope().EventID != "evt-mark" {
+				t.Errorf("a takeover pass of role %s takes the message marked %q: %v (event %q); want it taken to the role's lane", c.key, c.mark, kind, frame.envelope().EventID)
 			}
 		})
 	}
@@ -330,8 +330,8 @@ func TestACopiedRoleMessageCarriesEveryFieldAmongManyKeys(t *testing.T) {
 	if got := frame.envelope(); !reflect.DeepEqual(got, want) {
 		t.Errorf("the relay's copy reads\n%+v\nwant every field its sender wrote\n%+v", got, want)
 	}
-	if got, ok := takenRoleMessage(data, "reader"); !ok || !reflect.DeepEqual(got, want) {
-		t.Errorf("a takeover pass takes %t and copies\n%+v\nwant every field its sender wrote\n%+v", ok, got, want)
+	if taken, kind := takenFrame(data, "reader", "ses_after", false); kind != takenRoleCopy || !reflect.DeepEqual(taken.envelope(), want) {
+		t.Errorf("a takeover pass takes it as %v and copies\n%+v\nwant every field its sender wrote\n%+v", kind, taken.envelope(), want)
 	}
 }
 

@@ -8,7 +8,7 @@ import (
 )
 
 // TestEveryRowThatSettlesWhatAPersonSettlesNeedsApprove holds each route that settles what only
-// the person settles to the approve scope in the route table. TestNoBrokerTokenGetsApprove walks
+// the person settles to the approve scope in its declaration. TestNoBrokerTokenGetsApprove walks
 // whatever rows name approve, so a row that stops naming it leaves that walk and the test still
 // passes, while every broker token a machine holds, which holds no approve, is then answered on
 // it. This pins the rows themselves: a review, a decision's Keep, a credential's approve, deny and
@@ -30,8 +30,9 @@ func TestEveryRowThatSettlesWhatAPersonSettlesNeedsApprove(t *testing.T) {
 		"PATCH /api/v1/me/agent-tokens/{id}",
 		"DELETE /api/v1/me/agent-tokens/{id}",
 	} {
-		scopes, named := routeScopes[name]
-		if !named || !slices.Contains(scopes, model.ScopeApprove) {
+		route, declared := declaredRoute(name)
+		scopes := route.OAuthScopes
+		if !declared || !slices.Contains(scopes, model.ScopeApprove) {
 			t.Errorf("%s names the scopes %v, want %s among them: without it a broker token, which never holds %s, is answered there",
 				name, scopes, model.ScopeApprove, model.ScopeApprove)
 		}

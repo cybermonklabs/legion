@@ -100,10 +100,10 @@ func onePersonRead(t *testing.T) {
 	}
 	// What a caller may hand it: the login the path names, and the page. A node kind, a filter
 	// or an edge to walk is what this route exists not to take.
-	shape, shaped := routeShapes[personNodesRoute]
-	if !shaped {
+	if !read.Shape.stated() {
 		t.Fatalf("%s declares no shape", personNodesRoute)
 	}
+	shape := read.Shape
 	keys := queryTagsOf(shape.Params)
 	sort.Strings(keys)
 	if want := []string{"limit", "offset"}; !slices.Equal(keys, want) {
@@ -575,7 +575,7 @@ func threeBadRequests(t *testing.T) {
 	}
 	queries := routeProbeQueries(owned)
 	for _, name := range slices.Sorted(maps.Keys(rowFields)) {
-		if _, known := routeShapes[name]; !known {
+		if _, known := declaredRoute(name); !known {
 			t.Errorf("rowFields names %s, which is no route of the table: take it off", name)
 		}
 	}
@@ -622,7 +622,7 @@ func threeBadRequests(t *testing.T) {
 		} else {
 			answered++
 		}
-		if routeShapes[name].RefusesUndeclared {
+		if route.Shape.RefusesUndeclared {
 			requireTheUndeclaredKeyRefused(t, name, walk, walked)
 			continue
 		}
@@ -651,7 +651,8 @@ func requireTheUndeclaredKeyRefused(t *testing.T, name, walk string, walked *htt
 	if err != nil {
 		t.Fatalf("read the traversal query %q: %v", walk, err)
 	}
-	declared := queryTagsOf(routeShapes[name].Params)
+	declaration, _ := declaredRoute(name)
+	declared := queryTagsOf(declaration.Shape.Params)
 	var undeclared []string
 	for _, key := range slices.Sorted(maps.Keys(query)) {
 		if !slices.Contains(declared, key) {
@@ -922,7 +923,8 @@ func seededProbePath(pattern string, owned crossProject) string {
 // undeclaredTraversal is the traversal one route is sent: every traversal word the route does
 // not declare as a query parameter of its own, each with a value a traversal would take.
 func undeclaredTraversal(route string) string {
-	declared := queryTagsOf(routeShapes[route].Params)
+	declaration, _ := declaredRoute(route)
+	declared := queryTagsOf(declaration.Shape.Params)
 	query := url.Values{}
 	for _, word := range traversalWords {
 		if !slices.Contains(declared, word) {

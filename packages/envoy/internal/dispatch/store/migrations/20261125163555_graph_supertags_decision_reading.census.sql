@@ -1,7 +1,9 @@
 -- This migration writes the type nodes of the store alone: it moves the `supertag` nodes
 -- `decision` and `reading` to block types, writes nine `attribute` nodes, sets `markdown` on the
--- attribute node ask/invalid, sets the attributes of the five other block type supertag nodes
--- (callout, ask, requirement, plan_task and check) to what 20261109051232_graph_supertags,
+-- attribute node ask/invalid, sets the attributes of the attribute nodes check/subject and
+-- check/program to what 20261125125701_graph_supertags_check_subject left on them, their
+-- `creatable_since` moved from 7 to 8, sets the attributes of the five other block type supertag
+-- nodes (callout, ask, requirement, plan_task and check) to what 20261109051232_graph_supertags,
 -- 20261113230000_graph_supertags_check_ci_check, 20261115130000_graph_supertags_element_versions,
 -- 20261123080000_graph_supertags_plan_task_steps and 20261125125701_graph_supertags_check_subject
 -- left on them, the version moved from 6 to 7, and appends the tuples that state each value. Its
@@ -9,11 +11,12 @@
 -- the binary that handles it. It passes the pre-apply census." No route or command writes a node
 -- of either kind (requireNoRouteOrCommandWritesAType in cmd/dispatch/supertag_nodes_test.go), and
 -- no migration between 20261125125701 and this one writes one, so every row it rewrites is a type
--- node an earlier migration wrote, the five supertag nodes hold what those five left and the
--- update rewrites only their version, and it states every new value it gives one. It refuses no
--- row and rewrites no row a person or an agent wrote, and it reads no existing row of another
--- table. Each of its statements is an `insert … values` of literal rows or an `update` that sets
--- literals on the rows its `where` names by their primary key in literal values, so it reads no
--- row of its own tables beyond the ones it names. The number of existing rows this migration
--- would refuse or rewrite is therefore 0.
+-- node an earlier migration wrote: the five supertag nodes hold what those five left and the update
+-- rewrites only their version, and check/subject and check/program hold what 20261125125701 left
+-- and the update rewrites only their `creatable_since`; and it states every new value it gives
+-- one. It refuses no row and rewrites no row a person or an agent wrote, and it reads no existing
+-- row of another table. Each of its statements is an `insert … values` of literal rows or an
+-- `update` that sets literals on the rows its `where` names by their primary key in literal values,
+-- so it reads no row of its own tables beyond the ones it names. The number of existing rows this
+-- migration would refuse or rewrite is therefore 0.
 select 0;

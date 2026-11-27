@@ -60,6 +60,16 @@ func blockIDFits(refKey, blockID string) bool {
 	return len(refKey)+len("#")+len(blockID) <= MaxBlockNodeBytes
 }
 
+// fromFits is whether the address from answers is inside the store's bound, read as blockIDFits
+// reads a block's, without building that address: the node the pair names of its own, or its
+// block's.
+func (p blockPair) fromFits(refKey string) bool {
+	if p.nodeKind != "" && p.nodeKind != BlockNodeKind {
+		return graphstore.AddressFits(p.nodeAddress)
+	}
+	return blockIDFits(refKey, p.blockID)
+}
+
 // blockFits is whether each block's address fits the store's key, and how many do not.
 func blockFits(refKey string, nodes []model.ArtifactBlock) ([]bool, int) {
 	fits := make([]bool, len(nodes))
@@ -654,28 +664,25 @@ func (b *BlockIndexing) planBlockRefs(ctx context.Context, q Queryer, index Bloc
 // until then. Every other row that names no node is left to that pass, or to the old block_refs
 // arm.
 func (b *BlockIndexing) rehome(link indexedLink, pair blockPair, writer model.Actor) (indexedLink, []graphstore.UncausedTuple) {
-	heldKind, held := link.from(b.refKey)
-	wantedKind, wanted := pair.from(b.refKey)
-	if !link.named {
-		if graphstore.AddressFits(held) || !graphstore.AddressFits(wanted) || !graphstore.AddressFits(link.target.ID) {
+	var stated []graphstore.UncausedTuple
+	named := true
+	if link.named {
+		heldKind, held := link.from(b.refKey)
+		wantedKind, wanted := pair.from(b.refKey)
+		if heldKind == wantedKind && held == wanted {
 			return link, nil
 		}
-		link.nodeKind, link.nodeAddress, link.named = pair.nodeKind, pair.nodeAddress, true
-		b.rehomed = append(b.rehomed, link)
-		b.moved = append(b.moved, link.target)
-		return link, []graphstore.UncausedTuple{assertedLink(b.refKey, link, writer)}
-	}
-	if heldKind == wantedKind && held == wanted {
+		stated = append(stated, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+			FromKind: heldKind, FromID: held, Kind: link.kind,
+			ToKind: link.target.Kind, ToID: link.target.ID,
+			At: b.versionAt, Who: writer, Asserted: false,
+		}})
+		named = graphstore.AddressFits(wanted)
+	} else if link.fromFits(b.refKey) || !pair.fromFits(b.refKey) || !graphstore.AddressFits(link.target.ID) {
 		return link, nil
 	}
-	stated := []graphstore.UncausedTuple{{Tuple: graphstore.Tuple{
-		FromKind: heldKind, FromID: held, Kind: link.kind,
-		ToKind: link.target.Kind, ToID: link.target.ID,
-		At: b.versionAt, Who: writer, Asserted: false,
-	}}}
-	link.nodeKind, link.nodeAddress = pair.nodeKind, pair.nodeAddress
-	link.named = graphstore.AddressFits(wanted)
-	if link.named {
+	link.nodeKind, link.nodeAddress, link.named = pair.nodeKind, pair.nodeAddress, named
+	if named {
 		stated = append(stated, assertedLink(b.refKey, link, writer))
 	}
 	b.rehomed = append(b.rehomed, link)

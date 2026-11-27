@@ -19,6 +19,11 @@
 -- The file also gives `ask`'s `invalid` the field `markdown: false`, which the server read by the
 -- attribute's name before: markdown never carries it. `ask` keeps its content rule.
 --
+-- It moves `check`'s `subject` and `program`, which 20261125125701 wrote read from version 6 and
+-- created from version 7, to `creatable_since` 8, and leaves their `since` at 6: this release
+-- reads them and creates neither. The follow-up to #5416 that records real deploys in production
+-- has not shipped; once production records them, that release sets the version that creates them.
+--
 -- A type is a node of the store, and the server installs the schema it builds from those nodes,
 -- not the file (20261109051232), so the change reaches a store only as this migration, in the
 -- release of the binary that handles version 7. The seed already holds a `supertag` node for
@@ -26,8 +31,10 @@
 -- moves both to block types. A build of version 6, which holds
 -- 20261125125701_graph_supertags_check_subject and not this file, reads the store's schema at its
 -- own version (pmdoc.Install, asOfVersion): it leaves out every element whose `since` is 7, and its
--- decoder ignores the two fields it does not know (`parents`, `markdown`), so it installs the
--- schema it installed before this ran and keeps serving.
+-- decoder ignores the two fields it does not know (`parents`, `markdown`). The `creatable_since` 8
+-- of `subject` and `program` is above its version as the 7 before it was, so it creates neither,
+-- as before this ran. So it installs the schema it installed then, but for that one number, and
+-- keeps serving.
 --
 -- It is a type migration written after the store's backfill, as
 -- 20261123080000_graph_supertags_plan_task_steps is: it is numbered above backfillVersion
@@ -58,13 +65,14 @@
 -- (20261109013400), in literal values. So no statement reads a row to write one: each node and
 -- each tuple is written out below as the row it is, a tuple states the value the node row above
 -- it carries, and an update sets a node's whole `attributes`, the value the node held before this
--- migration with this migration's keys in it. Every row carries now(), the start of the runner's
+-- migration with this migration's values in it. Every row carries now(), the start of the runner's
 -- transaction, as the moment it was made or stated, as the rows of 20261123080000 and
 -- 20261125125701 do. A reader at a moment (graphstore.AsOfOut, in graphstore/read.go) orders a
 -- node's tuples by `at` first (`order by kind, to_kind, to_id, at desc, seq desc`), and
--- 20261125125701 stamps its `version` tuples with now() at its own apply, so a literal stamp from
--- before that apply would order this file's version-7 tuples before that file's version-6 ones.
--- With now(), a later apply always stamps later.
+-- 20261125125701 stamps its `version` and `creatable_since` tuples with now() at its own apply, so
+-- a literal stamp from before that apply would order this file's version-7 tuples before that
+-- file's version-6 ones, and this file's `creatable_since` 8 before that file's 7. With now(), a
+-- later apply always stamps later.
 --
 -- It runs once, as the runner applies every file: its inserts are not repeatable, so it joins no
 -- second run (typeMigrations in cmd/dispatch/supertag_nodes_test.go). A second run all the same
@@ -95,7 +103,7 @@ where (kind, id) in (('supertag', 'reading'));
 -- attributes, counted from 0: `ask` holds ten before `shaped`, so `shaped` holds 10. The store
 -- holds none of the nine before this runs: the seed writes no attribute of `decision` and none
 -- of `ask` named `shaped`, 20261123080000 writes `plan_task/steps` alone, and 20261125125701
--- writes `check/subject` and `check/program` alone.
+-- writes `check/subject` and `check/program` alone, which this file moves below.
 insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
 values
   ('attribute', 'decision/uncertainty', 'attribute', 'project', 'live',
@@ -131,6 +139,20 @@ values
 update graph_nodes
 set attributes = '{"kind": "string", "server": true, "name": "invalid", "store_name": "invalid", "position": 7, "markdown": false}'::jsonb
 where (kind, id) in (('attribute', 'ask/invalid'));
+
+-- `check`'s `subject` and `program` move to `creatable_since` 8 and nothing else changes on them.
+-- A bounded write sets a column to a literal, so each is set to its whole attributes: the literal
+-- 20261125125701 wrote on it, with 8 in place of 7. Nothing but a migration writes a type node,
+-- and none between that file and this one writes either, so that literal is what each holds, and
+-- this rewrites nothing but the one number (the census says why). The two take different values,
+-- so each is a statement of its own.
+update graph_nodes
+set attributes = '{"kind": "enum", "choices": ["code", "production", "graph"], "since": 6, "creatable_since": 8, "name": "subject", "store_name": "subject", "position": 6}'::jsonb
+where (kind, id) in (('attribute', 'check/subject'));
+
+update graph_nodes
+set attributes = '{"kind": "string", "since": 6, "creatable_since": 8, "name": "program", "store_name": "program", "position": 7}'::jsonb
+where (kind, id) in (('attribute', 'check/program'));
 
 -- The two base attributes each new attribute node carries, as the tuples they are, as the seed
 -- states them: at the time and by the writer of the node's row.
@@ -174,7 +196,10 @@ values
 -- a string as itself, so `version` is `7`, `parents` is `["decision", "ask"]` and `markdown` is
 -- `false`. A value a node already states as its tuple is left as the seed wrote it: `ask/invalid`
 -- states its kind, server flag, name, store name and position already, so it gains `markdown`
--- alone, and the two supertag nodes, to which the seed gave no attribute, gain every value above.
+-- alone; `check/subject` and `check/program` state every value already, so each gains the
+-- `creatable_since` 8 its row now carries, a later value appended under that name, and the 7
+-- 20261125125701 stated stays in its history; and the two supertag nodes, to which the seed gave
+-- no attribute, gain every value above.
 insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
 values
   ('attribute', 'ask/invalid', 'markdown', 'value', 'false', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
@@ -184,6 +209,8 @@ values
   ('attribute', 'ask/shaped', 'position', 'value', '10', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'ask/shaped', 'since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'ask/shaped', 'store_name', 'value', 'shaped', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
+  ('attribute', 'check/program', 'creatable_since', 'value', '8', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
+  ('attribute', 'check/subject', 'creatable_since', 'value', '8', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/decided_by', 'creatable_since', 'value', '8', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/decided_by', 'kind', 'value', 'actor', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/decided_by', 'markdown', 'value', 'false', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),

@@ -244,8 +244,10 @@ func conversionPath(t *testing.T) (*docsWriterRig, docsWriter) {
 					t.Fatalf("create issue %s: %v", issue, err)
 				}
 			}
-			spec = r.issueDocument(t, ctx, issue, project, "spec", "spec.md", true, "", "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n")
-			decisions = r.issueDocument(t, ctx, issue, project, "decisions-md", "decisions.md", false, "decisions",
+			spec = r.issueDocument(t, ctx, issue, project, "spec", "spec.md", true, "", model.Actor{Kind: "user", ID: "alice"}, "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n")
+			// The agent's session wrote the section, so the conversion credits its decision to that
+			// session (creditSectionAuthors), which is the tie row the spec's tie step waits at.
+			decisions = r.issueDocument(t, ctx, issue, project, "decisions-md", "decisions.md", false, "decisions", agentOfTheReleaseBefore,
 				"# Decisions\n\n## Files stay out of the corpus\n\nWe write no file beside the database.\n")
 			for document, refKey := range map[string]*string{spec: &specRefKey, decisions: &decisionsRefKey} {
 				if err := r.database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, document).Scan(refKey); err != nil {
@@ -300,9 +302,9 @@ func conversionPath(t *testing.T) (*docsWriterRig, docsWriter) {
 }
 
 // issueDocument creates document slug of issue in project holding markdown as its version 1,
-// written by alice and indexed as an upload of a new document is, and settles it, as the decisions
+// written by author and indexed as an upload of a new document is, and settles it, as the decisions
 // step's tests write the documents of DOC-1 (restoreIssue.document).
-func (r *docsWriterRig) issueDocument(t *testing.T, ctx context.Context, issue, project, slug, name string, primary bool, role, markdown string) string {
+func (r *docsWriterRig) issueDocument(t *testing.T, ctx context.Context, issue, project, slug, name string, primary bool, role string, author model.Actor, markdown string) string {
 	t.Helper()
 	var id string
 	var rolePointer *string
@@ -317,15 +319,15 @@ func (r *docsWriterRig) issueDocument(t *testing.T, ctx context.Context, issue, 
 		t.Fatalf("create document %s of %s: %v", slug, issue, err)
 	}
 	if err := joinedWrite(r.service, func(ctx context.Context) error {
-		written, err := r.service.SeedText(ctx, id, markdown, model.Actor{Kind: "user", ID: "alice"})
+		written, err := r.service.SeedText(ctx, id, markdown, author)
 		if err != nil {
 			return err
 		}
 		tx, _ := txFromContext(ctx)
 		if _, err := tx.Exec(ctx, `
 			insert into artifact_versions (artifact_id, number, markdown, authors)
-			values ($1, 1, $2, '[{"kind":"user","id":"alice"}]')
-		`, id, written); err != nil {
+			values ($1, 1, $2, jsonb_build_array(jsonb_build_object('kind', $3::text, 'id', $4::text)))
+		`, id, written, author.Kind, author.ID); err != nil {
 			return err
 		}
 		_, write, err := r.service.IndexDocumentReferences(ctx, id, 1, written)

@@ -297,7 +297,7 @@ func manifestAsOf(t *testing.T, version int) []byte {
 // elements versions 4, 5 and 6 add each have a row of their own
 // (TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree,
 // TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour,
-// TestTheCheckMarksAreReadAtNAndWrittenFromNPlusOne).
+// TestTheCheckMarksAreReadFromNAndCreatedOnlyFromTheirCreatableVersion).
 func TestTheTypedBlocksThisVersionAddsAreUnknownToABuildAtTheVersionBefore(t *testing.T) {
 	const adds = 3
 	added := []string{"requirement", "plan_task", "check"}
@@ -443,7 +443,7 @@ func TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour(t *testing.T)
 // neither mark, so it creates none and reads a stored check carrying one as an element it does not
 // know (ErrUnknownElement, answered 409 DOC_NEWER_CONTENT). Each build is the embedded manifest as
 // of its version (manifestAsOf), so each assertion holds whatever this build's version is.
-func TestTheCheckMarksAreReadAtNAndWrittenFromNPlusOne(t *testing.T) {
+func TestTheCheckMarksAreReadFromNAndCreatedOnlyFromTheirCreatableVersion(t *testing.T) {
 	const n, creatable = 6, 9
 	const withoutIt = ":::check{#b-c1}\nBody.\n:::\n"
 	for _, mark := range []struct{ name, markdown string }{
@@ -456,23 +456,26 @@ func TestTheCheckMarksAreReadAtNAndWrittenFromNPlusOne(t *testing.T) {
 				t.Errorf("attribute %s of check = %+v, %t; want since %d and creatable_since %d", mark.name, versions, declared, n, creatable)
 			}
 
-			restoreN, err := UseManifestForTest(manifestAsOf(t, n))
-			if err != nil {
-				t.Fatalf("install the manifest as of version %d: %v", n, err)
+			var stored *Node
+			for version := n; version < creatable; version++ {
+				restoreVersion, err := UseManifestForTest(manifestAsOf(t, version))
+				if err != nil {
+					t.Fatalf("install the manifest as of version %d: %v", version, err)
+				}
+				t.Cleanup(restoreVersion)
+				stored, err = Parse(mark.markdown)
+				if err != nil {
+					t.Fatalf("a build at version %d reading a stored check carrying %s: %v", version, mark.name, err)
+				}
+				refusal := "this Dispatch build reads " + element.String() + " but cannot write it yet"
+				if _, err := ParseForWrite(mark.markdown, nil); !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), refusal) {
+					t.Errorf("a build at version %d writing a check carrying %s into a document that holds none = %v, want ErrSchema saying %q", version, mark.name, err, refusal)
+				}
+				if _, err := ParseForWrite(mark.markdown+"\nMore.\n", stored); err != nil {
+					t.Errorf("a build at version %d writing a document that already holds %s = %v, want it written", version, mark.name, err)
+				}
+				restoreVersion()
 			}
-			t.Cleanup(restoreN)
-			stored, err := Parse(mark.markdown)
-			if err != nil {
-				t.Fatalf("a build at version %d reading a stored check carrying %s: %v", n, mark.name, err)
-			}
-			refusal := "this Dispatch build reads " + element.String() + " but cannot write it yet"
-			if _, err := ParseForWrite(mark.markdown, nil); !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), refusal) {
-				t.Errorf("a build at version %d writing a check carrying %s into a document that holds none = %v, want ErrSchema saying %q", n, mark.name, err, refusal)
-			}
-			if _, err := ParseForWrite(mark.markdown+"\nMore.\n", stored); err != nil {
-				t.Errorf("a build at version %d writing a document that already holds %s = %v, want it written", n, mark.name, err)
-			}
-			restoreN()
 
 			before := n - 1
 			restore, err := UseManifestForTest(manifestAsOf(t, before))

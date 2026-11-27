@@ -364,9 +364,9 @@ func TestCarryVerdictOverTheApprovedAndTheNewVersion(t *testing.T) {
 // approver's answer to it is the whole change since the version they approved - and a block A
 // held open under other words. It composes with R10's case, naming both. Such a block that stands
 // alone in its container - a blockquote, a callout, or the document itself - carries as well: its
-// container is left holding an empty paragraph in both versions (withoutBlocks). A block added
-// since that nobody answered, or that someone else answered, an edit outside the blocks and a
-// block of A removed carry nothing.
+// container is left holding an empty paragraph in both versions (withoutBlocksFilled). A block
+// added since that nobody answered, or that someone else answered, an edit outside the blocks and
+// a block of A removed carry nothing.
 // An issue's reopen is carried too: the closed issue's version shows the question the close
 // withdrew resolved, and the reopen's version shows it open again, which differs in the
 // server-owned attributes of its block alone, on a fleet of one build and while two builds serve.

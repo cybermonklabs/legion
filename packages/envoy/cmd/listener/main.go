@@ -1236,6 +1236,7 @@ func runListener(credentialWait time.Duration) {
 	// role tokens, and each would be a series of its own for the process's life.
 	roleKeptExpired := met.NewCounter("envoy_role_kept_expired_total", "Kept role copies a walk dropped at the end of their hour, whether or not a session held the role, by who kept them (kept_by: listener or dispatch_outbox) and whether the hour had ended more than an hour before the drop with no walk's claim on the copy (stale)")
 	roleDeadLetters := met.NewCounter("envoy_role_dead_letters_total", "Dead letters sent to the sender session of a kept role copy a walk dropped, by result: stored, or refused for good and not sent again")
+	roleKeptExpiryNotices := met.NewCounter("envoy_role_kept_expiry_notices_total", "Expiry notices sent to Dispatch for a kept role copy Dispatch's outbox kept that a walk dropped at the end of its hour, by result: stored, or refused for good and not sent again")
 	roleKeptUndecodable := met.NewCounter("envoy_role_kept_undecodable_total", "Kept role copies a walk ended because no read can decode them")
 	deliveryDuration := met.NewHistogram("envoy_delivery_duration_seconds", "Duration of message delivery attempts", metrics.DefaultBuckets)
 	// The CI summary loop runs only beside the GitHub webhook route (Phase 6b2), so only a listener
@@ -1513,14 +1514,16 @@ func runListener(credentialWait time.Duration) {
 	legionAgents := openLegionAgentRegistry(client.Conn, logger, legionagents.WithReplicas(cfg.NATSReplicas), legionagents.WithLogger(logger.Slog()))
 
 	// The known-session store answers which sessions registered in the last 30 days, whether or
-	// not they are registered now; no delivery depends on it, so it never stops a start, and it is
-	// opened the way the Legion agent registry above is. A listener whose NATS user may not open
-	// the bucket - on a hub whose grant does not carry it - keeps the store, which logs the bucket
-	// it could not open once, answers no record and writes none, and retries the open in the
-	// background with a backoff and at once after each connection event
-	// (session.OpenKnownSessions), so a grant applied after this start is picked up with no
-	// restart. This line is the one failure that leaves no store at all, a connection that gives
-	// no JetStream context, which answers as an empty store does.
+	// not they are registered now, and the principal each last registered as, which a handover is
+	// held to; no delivery depends on it, so it never stops a start, and it is opened the way the
+	// Legion agent registry above is. A listener whose NATS user may not open the bucket - on a
+	// hub whose grant does not carry it - keeps the store, which logs the bucket it could not open
+	// once, answers no record and writes none, and retries the open in the background with a
+	// backoff and at once after each connection event (session.OpenKnownSessions), so a grant
+	// applied after this start is picked up with no restart. Meanwhile each registration is
+	// admitted with no principal recorded and a warning, and every claim's handover is refused
+	// (subscribeHandler, handoverRefusal). This line is the one failure that leaves no store at
+	// all, a connection that gives no JetStream context, which answers as an empty store does.
 	known, knownErr := session.OpenKnownSessions(
 		starting,
 		client.Conn,
@@ -1624,6 +1627,7 @@ func runListener(credentialWait time.Duration) {
 		forwardRole:       startRoleForward(client),
 		registry:          registry,
 		sessions:          sessions,
+		known:             known,
 		machineID:         cfg.MachineID,
 		dedupeCache:       dedupeCache,
 		attemptCache:      attemptCache,
@@ -1633,13 +1637,16 @@ func runListener(credentialWait time.Duration) {
 		messagesNAKed:     messagesNAKed,
 		deliveryDuration:  deliveryDuration,
 		roleKeptExpired:   roleKeptExpired,
-		// The walk's other two outcomes beside the drop, and the one publish a walk makes that
-		// is not a forward: a dropped copy's dead letter, stored on its sender's agent subject
-		// under the message id every listener gives it (endKeptCopyWithDeadLetter).
-		roleDeadLetters:     roleDeadLetters,
-		roleKeptUndecodable: roleKeptUndecodable,
-		publishDeadLetter:   client.PublishStoredAs,
-		keepPublish:         client.PublishStoredAck,
+		// The walk's other outcomes beside the drop, and the one publish a walk makes that is
+		// not a forward: a dropped copy's dead letter, stored on its sender's agent subject under
+		// the message id every listener gives it (endKeptCopyWithDeadLetter), or, for a copy
+		// Dispatch's outbox kept, its expiry notice to Dispatch (endKeptCopyWithExpiryNotice).
+		roleDeadLetters:       roleDeadLetters,
+		roleKeptExpiryNotices: roleKeptExpiryNotices,
+		roleKeptUndecodable:   roleKeptUndecodable,
+		publishDeadLetter:     client.PublishStoredAs,
+		publishExpiryNotice:   client.PublishKeptCopyExpiry,
+		keepPublish:           client.PublishStoredAck,
 
 		fanoutUnresponsiveSkips: fanoutUnresponsiveSkips,
 

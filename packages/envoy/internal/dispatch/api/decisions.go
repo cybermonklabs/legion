@@ -213,8 +213,8 @@ type keepDecisionInput struct {
 // 409 DECISION_CHANGED with nothing written: a Keep over text nobody read is the one thing Keep
 // exists to prevent, as `409 ASK_EDITED` holds an answer to the wording it was given on. Any other
 // block - one that is neither, a heading of a retired decisions document, or a decision marked
-// replaced, which is no longer the design - is 404 TARGET_NOT_FOUND. The route is the `person`
-// scope's (routeScopes): a Keep is a person's.
+// replaced, which is no longer the design - is 404 TARGET_NOT_FOUND. The route takes the `person`
+// or `approve` scope (its route file's OAuthScopes): a Keep is a person's.
 func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
