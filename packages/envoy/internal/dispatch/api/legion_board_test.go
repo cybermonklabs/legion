@@ -187,9 +187,11 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	if board.Project != "INFRA" {
 		t.Fatalf("the board names project %q, want INFRA", board.Project)
 	}
-	// The twelve columns the board answers, left to right, each with the label the view draws over
-	// it, written out rather than read from legion.Columns and legionBoardColumnLabels, which the
-	// route is built from: a reorder, a lost column or a changed label fails here.
+	// The thirteen columns the board answers, left to right, each with the label the view draws
+	// over it, written out rather than read from legion.Columns and legionBoardColumnLabels, which
+	// the route is built from: a reorder, a lost column or a changed label fails here. Step stands
+	// between Reviewing and Accepting, where a task of the default steps would put a step of a role
+	// the deployment defines.
 	wantColumns := []struct{ id, label string }{
 		{"queue", "Queue"},
 		{"design", "Design"},
@@ -197,6 +199,7 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 		{"implementing", "Implementing"},
 		{"testing", "Testing"},
 		{"reviewing", "Reviewing"},
+		{"step", "Deployment step"},
 		{"accepting", "Accepting"},
 		{"retro", "Retro"},
 		{"merging", "Merging"},
@@ -236,6 +239,7 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 		legion.ColumnPlanning:         {},
 		legion.ColumnTesting:          {},
 		legion.ColumnReviewing:        {},
+		legion.ColumnStep:             {},
 		legion.ColumnAccepting:        {},
 		legion.ColumnRetro:            {},
 		legion.ColumnMerging:          {},
@@ -350,7 +354,7 @@ func TestAnIssueAtAStepIsOnTheStepColumn(t *testing.T) {
 		t.Fatalf("%s at step is on cards of the columns %v, want one card, in the step column", key, in)
 	}
 	if step := slices.Index(ids, "step"); step < 1 || step+1 >= len(ids) ||
-		ids[step-1] != legionColumnReviewing || ids[step+1] != legionColumnAccepting {
+		ids[step-1] != legion.ColumnReviewing || ids[step+1] != legion.ColumnAccepting {
 		t.Errorf("the columns are %v, want step between reviewing and accepting", ids)
 	}
 }

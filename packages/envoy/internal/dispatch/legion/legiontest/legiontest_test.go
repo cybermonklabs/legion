@@ -24,7 +24,7 @@ func TestTheSeededHistoryAnswersFactsForEveryIssueLegionWorked(t *testing.T) {
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 
 	started := time.Now()
-	fixture := Seed(t, database.Pool, Spec{Project: "LEGION", Now: now, AwaitingChildren: true})
+	fixture := Seed(t, database.Pool, Spec{Project: "LEGION", Now: now, AwaitingChildren: true, DeploymentStep: true})
 	seeded := time.Since(started)
 
 	population, err := metrics.ReadProject(t.Context(), database.Pool, fixture.Project, now)
@@ -90,6 +90,16 @@ func TestTheSeededHistoryAnswersFactsForEveryIssueLegionWorked(t *testing.T) {
 	for phase, column := range legion.PhaseColumns {
 		if len(fixture.Phases[phase]) == 0 {
 			t.Errorf("the history reaches no issue in phase %q, so the board's %q column is never reached", phase, column)
+		}
+	}
+
+	// Each issue the sampler recorded at a step of a role the deployment defines holds that step's
+	// hours under the board's step column, and no hour under `other`: the column is reached in
+	// the facts as well as in the rows.
+	for _, key := range fixture.Phases[legion.PhaseStep] {
+		if got := facts[key]; got.PhaseHours[legion.ColumnStep] <= 0 || got.PhaseHours["other"] > 0 {
+			t.Errorf("%s stood at a step of a role the deployment defines and holds %g h under %s and %g h under other, want hours under %s and none under other",
+				key, got.PhaseHours[legion.ColumnStep], legion.ColumnStep, got.PhaseHours["other"], legion.ColumnStep)
 		}
 	}
 
