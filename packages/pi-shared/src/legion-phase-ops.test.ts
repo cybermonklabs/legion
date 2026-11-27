@@ -248,6 +248,8 @@ test("phaseInputAfter closes the phase only on a step's completion", () => {
   expect(phaseOps.phaseInputAfter("request_backward_move", {})).toBe("phase-closed");
   expect(phaseOps.phaseInputAfter("ready_for_update", {})).toBe("update-answered");
   expect(phaseOps.phaseInputAfter("read_record", {})).toBeUndefined();
+  // A defect report moves no phase: the role goes on with its step after it.
+  expect(phaseOps.phaseInputAfter("report_defect", {})).toBeUndefined();
 });
 
 test("the phase ops' fields, as a host declares them, are every field of every op, each optional, from the host's Zod", () => {
@@ -266,6 +268,9 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       to: { enum: [...LEGION_PHASE_BACKWARD_TARGETS] },
       reason: { type: "string" },
       round: { type: "string" },
+      defect: { type: "string" },
+      head: { type: "string" },
+      check: { type: "string" },
     },
     required: ["op"],
   });
@@ -1248,6 +1253,149 @@ test("request_backward_move names the issue an architect returns from accepting,
     new Error("a phase worker moves only its own issue LEGION-208, not LEGION-209")
   );
   expect(posted).toHaveLength(before + 4);
+});
+
+/** A report_defect call whose every field holds, at the head `HEAD_SEEN`. */
+const HEAD_SEEN = "3f2a9c41d0b7e6a85c1f4d2e9b0a7c6d5e4f3a2b";
+const DEFECT_REPORT = {
+  op: "report_defect",
+  issue: "LEGION-208",
+  defect: "The merged widget drops its last row: `bun test widget` fails on row 12.",
+  head: HEAD_SEEN,
+} as const;
+
+/** `DEFECT_REPORT` without `field`, as a call that leaves it out sends it. */
+const reportWithout = (field: keyof typeof DEFECT_REPORT): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(DEFECT_REPORT).filter(([name]) => name !== field));
+
+/** The refusal of a head that is not the 40 lower-case hex characters of a full commit. */
+const HEAD_REFUSAL =
+  "report_defect's head is the 40-character lower-case commit the pull request's head stood at when you saw the defect";
+
+// The daemon takes a defect only with its issue, its text and the head it was seen at
+// (DEFECT_TEXT_REQUIRED, DEFECT_HEAD_REQUIRED), so the tool refuses a call that leaves one out, or
+// sends a head that is no full lower-case commit, by the field's name and before any request.
+test("report_defect refuses each field it requires by name, and a head that is no full lower-case commit, before any daemon request", async () => {
+  const { ops, routes } = runtime();
+  for (const [input, message] of [
+    [reportWithout("issue"), "report_defect requires issue"],
+    [{ ...DEFECT_REPORT, issue: "  " }, "report_defect requires issue"],
+    [reportWithout("defect"), "report_defect requires defect"],
+    [{ ...DEFECT_REPORT, defect: " \n\t" }, "report_defect requires defect"],
+    [reportWithout("head"), "report_defect requires head"],
+    [{ ...DEFECT_REPORT, head: " " }, "report_defect requires head"],
+    [{ ...DEFECT_REPORT, head: HEAD_SEEN.toUpperCase() }, HEAD_REFUSAL],
+    [{ ...DEFECT_REPORT, head: HEAD_SEEN.slice(0, 39) }, HEAD_REFUSAL],
+    [{ ...DEFECT_REPORT, head: `${HEAD_SEEN}0` }, HEAD_REFUSAL],
+    [{ ...DEFECT_REPORT, head: "3f2a9c4" }, HEAD_REFUSAL],
+    [{ ...DEFECT_REPORT, head: "g".repeat(40) }, HEAD_REFUSAL],
+    [
+      { ...DEFECT_REPORT, check: " " },
+      "report_defect's check is the block id of one of the issue's checks",
+    ],
+    [
+      { op: "report_defect" },
+      "report_defect requires issue; report_defect requires defect; report_defect requires head",
+    ],
+    [{ ...DEFECT_REPORT, reason: "r" }, 'report_defect does not accept field "reason"'],
+  ] as const) {
+    await expect(executePhaseOp(ops, input)).rejects.toThrow(message);
+  }
+  expect(routes).toEqual([]);
+});
+
+// A defect report is the daemon's to record: the tool mints a grant, posts the defect with the
+// head it was seen at and the check it names, and answers the daemon's answer as it came. A
+// refusal reaches the caller with its code and sentence, as every op's does.
+test("report_defect mints a grant, posts the defect, its head and its check, and answers the daemon's answer", async () => {
+  const posted: { readonly route: string; readonly body: unknown }[] = [];
+  const recorded = { defect: "41", state: "recorded", nextChange: 4 };
+  const stub = (async (input, init) => {
+    const route = new URL(input.toString()).pathname;
+    posted.push({
+      route,
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+    });
+    if (route === "/legion/v1/grants") return Response.json(daemonFixture("grant.json"));
+    return Response.json(recorded);
+  }) as typeof fetch;
+  const runtimeFor = (claim: ClaimCapability): PhaseOpRuntime => ({
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: stub,
+    }),
+    claim,
+    build: BUILD,
+    handoffReport: async () => {
+      throw new Error("no handoff report expected");
+    },
+    branchHead: async () => {
+      throw new Error("no branch-head lookup expected");
+    },
+  });
+  const grant = {
+    route: "/legion/v1/grants",
+    body: {
+      sessionId: "ses_implementer",
+      secret: "U2VjcmV0",
+      tree: "LEGION-208",
+      issue: "LEGION-208",
+    },
+  };
+
+  // The implementer in retro, the merger in merging and the owning architect report alike.
+  for (const role of ["implementer", "merger", "architect"] as const) {
+    posted.length = 0;
+    await expect(
+      executePhaseOp(runtimeFor({ ...implementer, role }), DEFECT_REPORT)
+    ).resolves.toEqual(recorded);
+    expect(posted).toEqual([
+      grant,
+      {
+        route: "/legion/v1/defects/report",
+        body: {
+          grantId: "grant-for-one-command",
+          issue: "LEGION-208",
+          defect: DEFECT_REPORT.defect,
+          head: HEAD_SEEN,
+        },
+      },
+    ]);
+  }
+  posted.length = 0;
+  await expect(
+    executePhaseOp(runtimeFor(implementer), { ...DEFECT_REPORT, check: "c-after" })
+  ).resolves.toEqual(recorded);
+  expect(posted.at(-1)).toEqual({
+    route: "/legion/v1/defects/report",
+    body: {
+      grantId: "grant-for-one-command",
+      issue: "LEGION-208",
+      defect: DEFECT_REPORT.defect,
+      head: HEAD_SEEN,
+      check: "c-after",
+    },
+  });
+
+  const refusing: PhaseOpRuntime = {
+    ...runtimeFor(implementer),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: (async (input) =>
+        new URL(input.toString()).pathname === "/legion/v1/grants"
+          ? Response.json(daemonFixture("grant.json"))
+          : Response.json(
+              {
+                code: "DEFECT_BEFORE_LAST_STEP",
+                error: "LEGION-208 has not merged yet; send the defect to its step instead",
+              },
+              { status: 409 }
+            )) as typeof fetch,
+    }),
+  };
+  await expect(executePhaseOp(refusing, DEFECT_REPORT)).rejects.toThrow(
+    "POST /legion/v1/defects/report failed with 409 DEFECT_BEFORE_LAST_STEP: LEGION-208 has not merged yet; send the defect to its step instead"
+  );
 });
 
 test("read_record answers the record of any issue the caller names, or the claim's own when it names none, and names an issue the daemon has none for; request_backward_move posts with a fresh grant", async () => {

@@ -2051,10 +2051,15 @@ type Handler interface {
 // cause can clear while the fact's id stays the same, and writes nothing where it sets it. A
 // PlanGiven applies whatever its mark (factApplies), so its Unspent changes only what a release
 // before reads, which decides by the mark alone.
+//
+// Defect is what the workflow answers report_defect and withdraw_defect where it took the call,
+// which the route writes as its answer (api's reportDefect, withdrawDefect), and nil for every
+// other fact and for a refusal.
 type Result struct {
 	Refusal   *Refusal
 	Duplicate bool
 	Unspent   bool
+	Defect    *DefectAnswer
 }
 
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
@@ -2522,6 +2527,9 @@ func ApplyHandlers(ctx context.Context, tx pgx.Tx, fact Fact, handlers []Handler
 		}
 		if result.Refusal == nil {
 			result.Refusal = applied.Refusal
+		}
+		if result.Defect == nil {
+			result.Defect = applied.Defect
 		}
 		result.Unspent = result.Unspent || applied.Unspent
 	}

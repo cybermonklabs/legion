@@ -724,6 +724,70 @@ test("a workflow refusal surfaces its stable code and message", async () => {
   });
 });
 
+// The defect routes: report_defect's and withdraw_defect's requests go on their own routes as the
+// contract shapes them, and each answer is read as the daemon wrote it. No plugin code reads the
+// answer, which the tool hands to its agent whole, so a state word a later daemon adds is read
+// rather than refused, and a body that leaves out a key it always writes is read too.
+test("reportDefect and withdrawDefect post the contract's requests to the defect routes and read the daemon's answers", async () => {
+  const report = {
+    grantId: "grant-208",
+    issue: "LEGION-208",
+    defect: "The merged widget drops its last row: `bun test widget` fails on row 12.",
+    head: "3f2a9c41d0b7e6a85c1f4d2e9b0a7c6d5e4f3a2b",
+    check: "c-after",
+  };
+  const withdrawal = {
+    grantId: "grant-208",
+    issue: "LEGION-208",
+    defect: "41",
+    reason: "The row the report names is the fixture's own, not the widget's.",
+  };
+  for (const [operation, route, body, answer] of [
+    [
+      "reportDefect",
+      "/legion/v1/defects/report",
+      report,
+      { defect: "41", state: "recorded", nextChange: 4 },
+    ],
+    ["reportDefect", "/legion/v1/defects/report", report, { defect: "41", state: "same" }],
+    ["reportDefect", "/legion/v1/defects/report", report, { defect: "41", state: "a_later_word" }],
+    [
+      "withdrawDefect",
+      "/legion/v1/defects/withdraw",
+      withdrawal,
+      { defect: "41", state: "withdrawn" },
+    ],
+  ] as const) {
+    const { fetch, requests } = daemon(() => Response.json(answer));
+    const client = createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch,
+    }) as unknown as Record<string, ((body: object) => Promise<unknown>) | undefined>;
+    const call = client[operation];
+    expect(call, `${operation} is available`).toBeDefined();
+    await expect(call?.(body)).resolves.toEqual(answer);
+    expect(requests).toEqual([{ method: "POST", url: `http://daemon.test${route}`, body }]);
+  }
+
+  // A request the contract refuses never leaves the pane: a report with no head, and a
+  // withdrawal with no reason. The client parses a request before it posts it, and that parse
+  // throws, so each call runs inside an async function that turns the throw into its rejection.
+  const unsent = daemon(() => Response.json({}));
+  const guarded = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: unsent.fetch,
+  }) as unknown as Record<string, ((body: object) => Promise<unknown>) | undefined>;
+  for (const [operation, body] of [
+    ["reportDefect", without(report, "head")],
+    ["withdrawDefect", without(withdrawal, "reason")],
+  ] as const) {
+    await expect((async () => guarded[operation]?.(body))(), operation).rejects.toBeInstanceOf(
+      z.ZodError
+    );
+  }
+  expect(unsent.requests).toEqual([]);
+});
+
 // A refused plan is answered 409 PLAN_REFUSED with every reason in its sentence, beside `reasons`
 // by task, which the refusal's schema strips: the agent reads each cause in the error.
 test("a refused plan surfaces its code and every reason in its sentence", async () => {

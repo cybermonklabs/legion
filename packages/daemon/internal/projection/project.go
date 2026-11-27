@@ -295,6 +295,13 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 				view.HoldReason = string(issue.Hold.Reason)
 			}
 		}
+		// What the issue's close waits for, from its stored wait (closeWaitView): an issue in
+		// verifying, and one before its merge that holds a reported defect.
+		closeWait, err := closeWaitView(issue)
+		if err != nil {
+			return api.State{}, err
+		}
+		view.CloseWait = closeWait
 
 		rows := phases[issue.Key]
 		// The reviewer's own row, the single row of its role (the phases table is keyed by issue

@@ -28,6 +28,7 @@ var (
 	implementingPlace = record.StepPlace{Task: "default", Kind: "step", Place: 2}
 	testingPlace      = record.StepPlace{Task: "default", Kind: "step", Place: 3}
 	acceptingPlace    = record.StepPlace{Task: "default", Kind: "step", Place: 5}
+	retroPlace        = record.StepPlace{Task: "default", Kind: "retro", Place: 0}
 )
 
 // streamWait is one wait for an agent's stream (Options.AwaitStream): the claim, and how many
@@ -183,6 +184,26 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 			r.runs(t, "LEGION-208", acceptingPlace, architect.token)
 			return []agentRequest{{architect.token, func() *httptest.ResponseRecorder {
 				return r.h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil)
+			}}}
+		}},
+		"POST /legion/v1/defects/report": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
+			// The implementer reports a defect in the retro it runs. The report ends no step, and
+			// it waits for the implementer's stream all the same, as every fact of an agent whose
+			// run the record holds open on the fact's issue does (apply).
+			seedIssueAt(t, r.h, "LEGION-208", phase.Retro)
+			implementer := newLiveClaim(t, r.h, "LEGION-208", claim.RoleImplementer)
+			r.runs(t, "LEGION-208", retroPlace, implementer.token)
+			return []agentRequest{{implementer.token, func() *httptest.ResponseRecorder {
+				return reportDefectAs(r.h, implementer.grant(t), "LEGION-208", defectText, defectHead, "")
+			}}}
+		}},
+		"POST /legion/v1/defects/withdraw": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
+			// The owning architect withdraws a defect while it runs the root's accepting.
+			seedIssueAt(t, r.h, "LEGION-208", phase.Accepting)
+			architect := newLiveClaim(t, r.h, "LEGION-208", claim.RoleArchitect)
+			r.runs(t, "LEGION-208", acceptingPlace, architect.token)
+			return []agentRequest{{architect.token, func() *httptest.ResponseRecorder {
+				return withdrawDefectAs(r.h, architect.grant(t), "LEGION-208", "1", "same as an earlier defect")
 			}}}
 		}},
 		"POST /legion/v1/children/park": {none: "a removed route's refusal; " + noFact},

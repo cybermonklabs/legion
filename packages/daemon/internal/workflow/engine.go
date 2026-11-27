@@ -298,6 +298,10 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.dispatchAskRestored(ctx, tx, fact)
 	case intake.HandoffComplete:
 		return e.handoff(ctx, tx, fact)
+	case intake.DefectReport:
+		return e.defectReport(ctx, tx, fact)
+	case intake.DefectWithdrawal:
+		return e.defectWithdrawal(ctx, tx, fact)
 	case intake.PullRequestOpened:
 		return e.pullRequestOpened(ctx, tx, fact)
 	case intake.PullRequestSynchronized:

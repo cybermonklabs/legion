@@ -3,7 +3,30 @@ package phase
 import (
 	"slices"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
+
+// The implementer works two phases, implementing and the retro, and a completion of it that
+// arrives after the issue moved on is of the one it left: implementing before the retro, and the
+// retro once the issue stands past it, in merging and, after the merge, in verifying, where its
+// close waits. Verifying stands outside Order, so the line alone cannot place it past the retro,
+// and held stands outside it too: a held issue's work reached no phase past where it was held.
+func TestAnImplementersCompletionAfterItsRetroIsOfTheRetro(t *testing.T) {
+	for _, tc := range []struct{ at, want Phase }{
+		{Testing, Implementing},
+		{Reviewing, Implementing},
+		{Accepting, Implementing},
+		{Retro, Retro},
+		{Merging, Retro},
+		{Verifying, Retro},
+		{Held, Implementing},
+	} {
+		if got := Of(claim.RoleImplementer, tc.at); got != tc.want {
+			t.Errorf("the implementer's completion while its issue stands in %s is of %q, want %q", tc.at, got, tc.want)
+		}
+	}
+}
 
 // All is the wire contract's phase list, in the transition table's order.
 func TestPhaseValuesMatchWorkflowWireContract(t *testing.T) {

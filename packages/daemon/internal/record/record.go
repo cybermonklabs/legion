@@ -2740,6 +2740,16 @@ type Store interface {
 	// OpenDefects is every defect of issue that no withdrawal ended and no merged change carried,
 	// oldest first.
 	OpenDefects(ctx context.Context, tx pgx.Tx, issue string) ([]Defect, error)
+	// Defect is the defect id of issue, of any kind and whether or not it holds still, nil where
+	// issue holds no defect of that id: the one read that tells a withdrawal what it would end.
+	Defect(ctx context.Context, tx pgx.Tx, issue string, id int64) (*Defect, error)
+	// ClearWaitWithdrawals takes out of issue's stored wait (issues.close_wait, StoredWait.Withdrawn)
+	// each withdrawal of shown, matched by its defect and its time: the withdrawals a version of
+	// close-wait.md that Dispatch took said, so the next version does not say them again. A
+	// withdrawal the wait gained since that version was rendered stays. The caller holds the lock
+	// the workflow writes the wait under (treelifecycle.Serialize), so no write of it falls between
+	// this read and this write.
+	ClearWaitWithdrawals(ctx context.Context, tx pgx.Tx, issue string, shown []WaitWithdrawal) error
 	// WithdrawDefect ends the open reported defect id of issue with reason, at at. It answers false
 	// where issue holds no such defect: none of that id, one of another kind than a reported
 	// defect, one already withdrawn, or one a merged change carried. The reason is required.

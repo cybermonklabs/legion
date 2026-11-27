@@ -785,7 +785,7 @@ const (
 	droppedLineKind         = "the waiting line's kind of every member of a kind this caller does not admit"
 	droppedCapabilitySource = "the source of every capability row of a source this caller does not admit"
 	droppedStepStatus       = "the gatedSteps of every issue a step of which reads a status this caller does not admit"
-	droppedPhase            = "every phase this caller does not admit: an issue's phase served as admitted, and its heldFrom and its claim views' pendingTask phase left off"
+	droppedPhase            = "every phase this caller does not admit: an issue's phase served as the older phase that stands in for it (merging for verifying, else admitted), and its heldFrom and its claim views' pendingTask phase left off"
 	droppedHoldReason       = "the holdReason of every issue held for a reason this caller does not admit"
 	droppedHeldWord         = "the word of every row of admission.held whose word this caller does not admit, served as the older word that stands in for it with its heldBy, else as unclassified with no heldBy"
 )
@@ -1286,14 +1286,13 @@ func withoutUnadmittedStepStatuses(issue Issue, restore int) (Issue, bool) {
 // row, answers.go's phases and workflowPhases with the values entries add to them;
 // fieldArrivals.heldBack says which values and why). The architect's `pendingTask.phase` and each
 // worker's are one list at two rows, to which the same entries add the same values, so the
-// architect's row's arrivals answer for both. Today that is the
-// `awaiting_children` of gateBasisContract, and tomorrow any phase the table gives a later
-// arrival. The issue's own `phase` is a key every reader requires, so it is served as `admitted`,
-// the status that names no worker's phase, which is what dispatch://INFRA-3320 R13 gives a reader
-// that knows no awaiting_children. `heldFrom` and each claim view's `pendingTask.phase` are
+// architect's row's arrivals answer for both. Today those are the `awaiting_children` of
+// gateBasisContract and the `verifying` of defectCallsContract, and tomorrow any phase the table
+// gives a later arrival. The issue's own `phase` is a key every reader requires, so it is served
+// as the word phaseStandIn names for it. `heldFrom` and each claim view's `pendingTask.phase` are
 // `omitempty` and optional to every reader that has them, so a held-back word there is left off.
-// The daemon writes the word in neither today, since `heldFrom` is empty in the phase and no task
-// is queued for a phase no role works, and the strip holds them to the table all the same.
+// The daemon writes neither word in either, since no hold comes from either phase and no task is
+// queued for a phase no role works, and the strip holds them to the table all the same.
 //
 // The issue is a value of its own, and a claim view's task and the worker map are copied before
 // one is written (withEachClaimView), so the state the source answered is left as it was. It
@@ -1305,7 +1304,7 @@ func withoutUnadmittedPhases(issue Issue, restore int) (Issue, bool) {
 	taskPhases := arrivalsAt(issueKeyPath + "architect.pendingTask.phase")
 	moved := false
 	if issue.Phase != "" && issuePhases.heldBack(string(issue.Phase), restore) {
-		issue.Phase, moved = phase.Admitted, true
+		issue.Phase, moved = phaseStandIn(issue.Phase), true
 	}
 	if issue.HeldFrom != "" && heldFrom.heldBack(issue.HeldFrom, restore) {
 		issue.HeldFrom, moved = "", true
@@ -1319,6 +1318,19 @@ func withoutUnadmittedPhases(issue Issue, restore int) (Issue, bool) {
 		return view
 	})
 	return issue, moved || tasks
+}
+
+// phaseStandIn is the phase an issue standing in at is served as to a reader that does not admit
+// at. `verifying` is served as `merging`: a merged issue whose close waits stood in merging before
+// defectCallsContract gave the wait its own phase, and every reader before it knows that word.
+// Every other phase the table holds back is served as `admitted`, the status that names no
+// worker's phase, which is what dispatch://INFRA-3320 R13 gives a reader that knows no
+// awaiting_children.
+func phaseStandIn(at phase.Phase) phase.Phase {
+	if at == phase.Verifying {
+		return phase.Merging
+	}
+	return phase.Admitted
 }
 
 // heldReasonStandIn is the word a held row of reason is served as to a reader that does not admit

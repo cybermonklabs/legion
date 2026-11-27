@@ -269,8 +269,9 @@ export async function findPushedBranchHead(input: {
  * (`packages/daemon/internal/phase/phase.go`,
  * `packages/daemon/internal/api/handoff.go`): the planner, the tester, the reviewer and the
  * merger each work one phase, which is the answer wherever the issue stands; the implementer
- * works implementing and retro, and has left retro once the issue stands past it in the
- * workflow's order (`phase.MovesBack(at, retro)`, which merging alone answers) and implementing
+ * works implementing and retro, and has left retro once the issue stands past it: in merging
+ * (`phase.MovesBack(at, retro)`) and in verifying, where a merged issue's close waits, which
+ * `phase.LeftBy` names beside it since verifying is outside `phase.Order`; and implementing
  * anywhere else; the architect leaves no phase, so its answer is the issue's.
  */
 function completedPhase(role: LegionRole, at: LegionPhase): LegionPhase {
@@ -285,7 +286,7 @@ function completedPhase(role: LegionRole, at: LegionPhase): LegionPhase {
       return "merging";
     case "implementer":
       if (at === "implementing" || at === "retro") return at;
-      return at === "merging" ? "retro" : "implementing";
+      return at === "merging" || at === "verifying" ? "retro" : "implementing";
     case "architect":
       return at;
   }

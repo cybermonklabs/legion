@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  The `legion` tool gains `report_defect` (`issue`, `defect`, `head`, and `check` where the defect is about a check), which records a defect of the change of an issue, found once its task's last step passed, and moves no phase: every phase worker and the architect have it. The architect also gains `withdraw_defect` (`issue`, `defect`, `reason`), which takes a defect report back by its id. The plugin reads the daemon's `verifying` phase and each issue's `closeWait` with it.
+time: 2026-11-27T08:09:27Z
+custom:
+    Issue: defect-calls

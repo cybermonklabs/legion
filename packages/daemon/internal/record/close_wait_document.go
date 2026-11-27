@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // CloseWaitDocumentName is the name of the issue's Dispatch document that says what its close
@@ -23,20 +25,28 @@ const (
 // when the issue waits is the row's own column (Issue.CloseWaitSince), so it is not kept here
 // twice. Each item says since when it stands. Entered is the time of the issue's newest entry
 // into verifying, after which alone a read of the checks counts. Ended is the change that ended
-// last, said once in the version written when it ended. Closed is when the issue closed, set in
-// the last version only.
+// last, said once in the version written when it ended. Withdrawn is each reported defect the
+// owning architect withdrew, with the reason, that no version Dispatch took has said yet: every
+// write of the wait keeps it (workflow's heldWithdrawals), and the row that uploads a version
+// holding it takes it out after the upload (Store.ClearWaitWithdrawals), so it is said once.
+// Closed is when the issue closed, set in the last version only.
+//
+// A report of a defect in retro or merging (workflow's defectReport) stores the wait as well, so
+// close-wait.md names the defect before the merge: there the wait holds the reported defects, and
+// whatever an earlier entry into verifying left.
 type StoredWait struct {
-	Entered      time.Time       `json:"entered"`
-	Checks       []WaitCheck     `json:"checks,omitempty"`
-	Production   *WaitProduction `json:"production,omitempty"`
-	Beneath      []WaitIssue     `json:"beneath,omitempty"`
-	OpenChildren []WaitIssue     `json:"openChildren,omitempty"`
-	Defects      []WaitReason    `json:"defects,omitempty"`
-	NextChange   *WaitChange     `json:"nextChange,omitempty"`
-	Unread       *WaitUnread     `json:"unread,omitempty"`
-	Unapproved   *WaitUnapproved `json:"unapproved,omitempty"`
-	Ended        *WaitChangeEnd  `json:"ended,omitempty"`
-	Closed       *time.Time      `json:"closed,omitempty"`
+	Entered      time.Time        `json:"entered"`
+	Checks       []WaitCheck      `json:"checks,omitempty"`
+	Production   *WaitProduction  `json:"production,omitempty"`
+	Beneath      []WaitIssue      `json:"beneath,omitempty"`
+	OpenChildren []WaitIssue      `json:"openChildren,omitempty"`
+	Defects      []WaitReason     `json:"defects,omitempty"`
+	NextChange   *WaitChange      `json:"nextChange,omitempty"`
+	Unread       *WaitUnread      `json:"unread,omitempty"`
+	Unapproved   *WaitUnapproved  `json:"unapproved,omitempty"`
+	Ended        *WaitChangeEnd   `json:"ended,omitempty"`
+	Withdrawn    []WaitWithdrawal `json:"withdrawn,omitempty"`
+	Closed       *time.Time       `json:"closed,omitempty"`
 }
 
 // WaitCheck is one check of the issue's Verification document whose state is not a pass: its
@@ -71,13 +81,25 @@ type WaitIssue struct {
 }
 
 // WaitReason is one reason of a next change, or a reported defect that holds the close: its id,
-// its kind, its text, and the check it is about, where it names one.
+// its kind, its text, the check it is about, where it names one, and, for a reported defect, the
+// role that reported it and the head of the pull request it saw the defect at.
 type WaitReason struct {
 	ID    int64      `json:"id"`
 	Kind  DefectKind `json:"kind"`
 	Text  string     `json:"text"`
 	Check string     `json:"check,omitempty"`
+	Role  claim.Role `json:"role,omitempty"`
+	Head  string     `json:"head,omitempty"`
 	Since time.Time  `json:"since"`
+}
+
+// WaitWithdrawal is a reported defect the owning architect withdrew (withdraw_defect): its id, its
+// text, the withdrawal's reason and when it was made.
+type WaitWithdrawal struct {
+	ID     int64     `json:"id"`
+	Text   string    `json:"text"`
+	Reason string    `json:"reason"`
+	At     time.Time `json:"at"`
 }
 
 // WaitChange is the next change of the issue that is open: its generation and each reason it
@@ -139,6 +161,15 @@ func CloseWaitDocument(issue Issue) (string, error) {
 			fmt.Fprintf(&doc, "Change %d merged as pull request #%d at %s.\n", wait.Ended.Generation, wait.Ended.PullRequest, waitTime(wait.Ended.At))
 		} else {
 			fmt.Fprintf(&doc, "Change %d ended with no pull request at %s.\n", wait.Ended.Generation, waitTime(wait.Ended.At))
+		}
+	}
+	if len(wait.Withdrawn) > 0 {
+		doc.WriteString("\n## Withdrawn defects\n\n")
+		for _, withdrawn := range wait.Withdrawn {
+			fmt.Fprintf(&doc, "- defect %d, withdrawn at %s, because:\n", withdrawn.ID, waitTime(withdrawn.At))
+			writeIndented(&doc, "  ", withdrawn.Reason)
+			doc.WriteString("  The defect was:\n")
+			writeIndented(&doc, "    ", withdrawn.Text)
 		}
 	}
 	if wait.Closed != nil {
@@ -217,12 +248,19 @@ func CloseWaitDocument(issue Issue) (string, error) {
 }
 
 // writeWaitReason writes one reason of a change, or one reported defect, as an item of the list:
-// its kind and id, the check it is about where it names one, since when it stands, and its text
-// beneath, each line of it indented under the item.
+// its kind and id, the check it is about where it names one, the role that reported it and the
+// head it saw it at where the reason has them, since when it stands, and its text beneath, each
+// line of it indented under the item.
 func writeWaitReason(doc *strings.Builder, reason WaitReason) {
 	fmt.Fprintf(doc, "- %s %d", reason.Kind, reason.ID)
 	if reason.Check != "" {
 		fmt.Fprintf(doc, " about `%s`", reason.Check)
+	}
+	if reason.Role != "" {
+		fmt.Fprintf(doc, ", reported by the %s", reason.Role)
+	}
+	if reason.Head != "" {
+		fmt.Fprintf(doc, " at head `%s`", reason.Head)
 	}
 	fmt.Fprintf(doc, ", since %s", waitTime(reason.Since))
 	if text := strings.TrimSpace(reason.Text); text != "" {
@@ -238,4 +276,12 @@ func writeWaitReason(doc *strings.Builder, reason WaitReason) {
 // waitTime is a moment as close-wait.md writes it: UTC, to the second.
 func waitTime(at time.Time) string {
 	return at.UTC().Format("2006-01-02 15:04:05 UTC")
+}
+
+// writeIndented writes text trimmed, each of its lines under indent, so no line of a role's text
+// stands at the start of a line of the document, where it could open a heading, a list or a block.
+func writeIndented(doc *strings.Builder, indent, text string) {
+	for line := range strings.SplitSeq(strings.TrimSpace(text), "\n") {
+		fmt.Fprintf(doc, "%s%s\n", indent, strings.TrimRight(line, "\r"))
+	}
 }
