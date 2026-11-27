@@ -61,7 +61,7 @@ async function probeReport(prepare: (workspace: string) => Promise<void>): Promi
 
 // The capability report's production host (`ompCapabilityHost` in src/capability-report.ts). Oh
 // My Pi's `discoverExtensionPaths` returned bare paths at v18.18.6-sami.20261123-024918 and
-// returns `{path, scope}` entries at v18.18.6-sami.20261126-222037
+// returns `{path, scope}` entries at v18.18.6-sami.20261127-010836
 // (`extensibility/extensions/loader.ts:804-809`), and an adapter that passed the entries on
 // failed the repository-extensions row of every repository that carries an extension or a skill.
 // This case runs against a workspace that carries one of each. Measured on 2026-11-25 against

@@ -375,10 +375,10 @@ func (r *controllerSandboxRig) boot() {
 	r.t.Helper()
 	cfg := r.cfg
 	logger := slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	r.d = startDaemonWithin(r.t, cfg, overrides{
+	r.d = startDaemonLogging(r.t, cfg, overrides{
 		listen: heldSocketListen(r.apiSocket, cfg.Port), streamListen: heldSocketListen(r.streamSocket, cfg.WorkerStreamPort),
 		runtime: r.runtimeFor(cfg), clock: stillClock{}, workflowTokens: &workflowTokenRecorder{},
-	}, logger, 30*time.Second)
+	}, logger)
 	r.d.client.Timeout = controllerSandboxStep
 }
 

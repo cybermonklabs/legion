@@ -224,7 +224,7 @@ func newBusyRelaunchLive(t *testing.T) *busyRelaunchLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	for _, pane := range r.panes {
 		r.awaitReady(pane.token)
 	}
