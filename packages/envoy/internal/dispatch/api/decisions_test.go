@@ -219,6 +219,33 @@ func TestIssueDecisionsReadsEachDecisionOfTheDocument(t *testing.T) {
 		"decisions.0.text", "decisions.0.text_tree")
 }
 
+// The view answers a decision's `[^label]` as decisions.md reads it, for a caller that asked for
+// trees, as the batched reference read answers a block's: a footnote reference where the document
+// defines the label outside the decision, right after the words before it, and text where nothing
+// in the document defines it. A decision's text is its section of the document, so it holds no
+// definition the document writes after the section, and that text read alone reads every call as
+// text. The tree holds the decision's heading and the words around each call, and no footnote
+// definition or stand-in's `x` that the read resolves the calls with.
+func TestTheDecisionsReadCarriesTheFootnoteReferencesTheDocumentHolds(t *testing.T) {
+	t.Parallel()
+	handler, _ := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	uploadIssueDocument(t, handler, issue.Key, "decisions.md",
+		"## "+tableDecision+"\n\nWe chose the table[^1] over the file[^zz].\n\n# Notes\n\n[^1]: The table is the simplest storage.\n")
+	view := readIssueDecisions(t, handler, issue.Key)
+	if len(view.Decisions) != 1 || view.Decisions[0].Heading != tableDecision {
+		t.Fatalf("decisions = %#v, want the one decision %q", view.Decisions, tableDecision)
+	}
+	if text := view.Decisions[0].Text; !strings.Contains(text, "[^1]") || strings.Contains(text, "]:") {
+		t.Fatalf("the decision's text %q, want its call of the note and no footnote definition", text)
+	}
+	requireFootnotedTree(t, "the decision's text_tree",
+		treeAt(t, handler, "/api/v1/issues/"+issue.Key+"/decisions", "decisions.0.text_tree"),
+		&footnotedReference{label: "1", follows: "We chose the table"},
+		tableDecision, "We chose the table", " over the file[^zz].")
+}
+
 // A link added to an existing decision is not out of date; a version that changes the decision's
 // own text makes every link it already held out of date; and a later version of one linked spec
 // block clears that link alone.

@@ -250,6 +250,12 @@ func (s *server) specOpenQuestions(
 // false too, since it reads no field either mark sets: neither the cut nor the marks are made for
 // it, and a Keep parses no markdown and makes no read of the versions its keeps name
 // (markKeptAcrossRenderers), so no failure of that read fails a Keep.
+//
+// Each decision's text is registered with the footnotes it calls that the document defines
+// outside it (decisionFootnotes, registerBlockTree), as the batched reference read registers a
+// block's, so its tree reads each call as the document does. The labels are read from what the
+// process keeps of the document's parse by the markdown's sum (footnoteParses), so a view of a
+// markdown an earlier read parsed parses none of it again for them either.
 func (s *server) readDecisions(
 	ctx context.Context, who model.Actor, document model.Artifact, reference, specID string, reader *displayTreeReader, mark bool,
 ) ([]model.Decision, error) {
@@ -323,8 +329,14 @@ func (s *server) readDecisions(
 		decisions = append(decisions, decision)
 		markable = markable || len(decision.Links) > 0 || decision.WaitingReview && decision.Kept != nil
 	}
-	for index := range decisions {
-		reader.text(&decisions[index].TextTree, decisions[index].Text)
+	if reader != nil {
+		// Keep passes no reader: it answers no tree, so no footnote is read for it.
+		called := decisionFootnotes(document.ID, markdown, decisions)
+		for index := range decisions {
+			source := called[index]
+			source.markdown = decisions[index].Text
+			registerBlockTree(reader, &decisions[index].TextTree, source)
+		}
 	}
 	if !mark || !markable {
 		return decisions, nil
@@ -350,6 +362,41 @@ func (s *server) readDecisions(
 		return nil, err
 	}
 	return decisions, nil
+}
+
+// decisionFootnotes is, by each decision's index in decisions, the source of the tree of its text
+// but its markdown (blockTreeSource): the document artifactID, the decision's heading block and
+// the footnotes its text calls that the document defines outside the decision. A decision's text
+// is its section of markdown, the document's markdown the view cut it from, so it holds no
+// definition the document writes outside the section, and read alone it reads a call of such a
+// label as text, where the document reads, and the browser editor holds, a reference. The labels
+// are read from the parse of markdown as the batched reference read reads a block's
+// (footnotesCalledIn): a decision's heading is no typed block, so the rendering writes no id for it
+// and no node of the parse holds it, and its labels are each label the document defines that its
+// text writes as a call, up to case. markdown's parse is read only where some decision's text
+// holds a call at all (`[^`), since a decision that calls no footnote has no labels to read, and
+// what the labels are read from is kept, so a markdown an earlier read parsed is parsed again by
+// none (footnoteParses). A markdown the parser refuses leaves every decision the tree of its text
+// alone; the failure is logged.
+func decisionFootnotes(artifactID, markdown string, decisions []model.Decision) map[int]blockTreeSource {
+	var keys []int
+	for index := range decisions {
+		if strings.Contains(decisions[index].Text, "[^") {
+			keys = append(keys, index)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	texts := make(map[int]string, len(keys))
+	documents := make(map[int]refs.DocumentBlock, len(keys))
+	for _, index := range keys {
+		texts[index] = decisions[index].Text
+		documents[index] = refs.DocumentBlock{ArtifactID: artifactID, BlockID: decisions[index].BlockID}
+	}
+	called := make(map[int]blockTreeSource, len(keys))
+	footnotesCalledIn(markdown, artifactID, keys, texts, documents, called)
+	return called
 }
 
 // markStaleLinks decides each link's `stale`: the decision's own text changed after it first
