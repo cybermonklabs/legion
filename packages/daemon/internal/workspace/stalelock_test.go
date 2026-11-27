@@ -17,6 +17,7 @@ import (
 // and the workspace's own — the entry its .git names — is a line naming the entry and the cause,
 // its locks left, while every other lock of the clone is removed and the provisioning goes on.
 func TestRemoveStaleGitLocksSweepsPastAnUnreadableWorktreeEntry(t *testing.T) {
+	t.Parallel()
 	located, err := Location(t.TempDir(), ghrepo.MustParse("acme/widgets"), "infra-1")
 	if err != nil {
 		t.Fatal(err)
@@ -80,6 +81,7 @@ func TestRemoveStaleGitLocksSweepsPastAnUnreadableWorktreeEntry(t *testing.T) {
 // line saying why and fails nothing. The .git only chooses that line: the sibling it names keeps
 // its lock.
 func TestRemoveStaleGitLocksSaysWhyNoEntryIsTheWorkspaces(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name    string
 		pointer func(sibling string) string
@@ -153,6 +155,7 @@ func TestRemoveStaleGitLocksSaysWhyNoEntryIsTheWorkspaces(t *testing.T) {
 // and no workspace: the last row of gitWorktreeEntries' table, which has no locks and writes no
 // line, rather than a line every new pod would write about a workspace not yet made.
 func TestRemoveStaleGitLocksSaysNothingOfADiskWithNoClone(t *testing.T) {
+	t.Parallel()
 	located, err := Location(t.TempDir(), ghrepo.MustParse("acme/widgets"), "infra-1")
 	if err != nil {
 		t.Fatal(err)
@@ -171,6 +174,7 @@ func TestRemoveStaleGitLocksSaysNothingOfADiskWithNoClone(t *testing.T) {
 // writes no line saying it swept only the git directory: the workspace's .git cannot be read only
 // because the workspace is not made yet (the row above the last of gitWorktreeEntries' table).
 func TestRemoveStaleGitLocksSaysNothingOfAWorkspaceNotYetMade(t *testing.T) {
+	t.Parallel()
 	located, err := Location(t.TempDir(), ghrepo.MustParse("acme/widgets"), "infra-1")
 	if err != nil {
 		t.Fatal(err)

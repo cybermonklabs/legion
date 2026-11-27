@@ -324,6 +324,7 @@ esac
 // same case against the real codegraph CLI (not a stub): `.codegraph/` holding only its own
 // generated `.gitignore`, with no database.
 func TestWarmCodegraphIndexInitializesAnUntrackedCodegraphDirectoryAgainstTheRealCli(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("codegraph"); err != nil {
 		t.Skip("no codegraph CLI on PATH")
 	}
@@ -803,6 +804,7 @@ func TestATakeoverLeavesAFreshLeaseThatReusedTheStaleOnesInode(t *testing.T) {
 // it. The successor's lease is built here from the stalled holder's by a hard link, so it has the
 // same inode on every filesystem rather than only where the allocator hands the number back.
 func TestAStalledHoldersReleaseLeavesItsSuccessorsLeaseAtTheSameInode(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	lease := filepath.Join(dir, ".codegraph", warmLeaseName)
 	if err := os.Mkdir(filepath.Dir(lease), 0o700); err != nil {
@@ -858,6 +860,7 @@ func TestAStalledHoldersReleaseLeavesItsSuccessorsLeaseAtTheSameInode(t *testing
 // not with the runtime's panic for a bubble whose blocked goroutines outlive its main one, which
 // would end the package's test binary and every row after this one.
 func TestAStalledHoldersHeartbeatLeavesItsSuccessorsLeaseAtTheSameInode(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		dir := t.TempDir()
 		lease := filepath.Join(dir, ".codegraph", warmLeaseName)
@@ -934,6 +937,7 @@ func TestAStalledHoldersHeartbeatLeavesItsSuccessorsLeaseAtTheSameInode(t *testi
 // moved away. The row runs in a synctest bubble, and releases its heartbeat in a cleanup of the
 // bubble, as the one above does.
 func TestALiveHoldersHeartbeatOutlivesAnUnreadableLease(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		dir := t.TempDir()
 		lease := filepath.Join(dir, ".codegraph", warmLeaseName)
@@ -988,6 +992,7 @@ func TestALiveHoldersHeartbeatOutlivesAnUnreadableLease(t *testing.T) {
 // nothing to refresh, and nothing is created, but the heartbeat goes on to read it again at the
 // next tick (true).
 func TestRefreshWarmLease(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		content string
@@ -1070,8 +1075,9 @@ esac
 
 // captureStderr swaps os.Stderr — which has no seam — for the write end of a pipe, drained into a
 // buffer, until the returned function is called or the test ends; that function restores
-// os.Stderr, closes the pipe and returns everything written meanwhile. No test in this package
-// runs in parallel, so the swap races no other test's lines.
+// os.Stderr, closes the pipe and returns everything written meanwhile. No test that calls it runs
+// in parallel, and go test starts the package's parallel tests only once every test that is not
+// parallel has ended, so the swap races no other test's lines.
 func captureStderr(t *testing.T) func() string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -1335,6 +1341,7 @@ func (r *boundRow) answered(end string) {
 // only when status failed or didn't parse; and a live lock always wins over an index repair, of
 // either kind.
 func TestNextCodegraphStep(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                string
 		dirExists, lockLive bool

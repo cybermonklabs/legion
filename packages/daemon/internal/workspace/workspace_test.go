@@ -25,22 +25,24 @@ const testTimeout = 30 * time.Second
 // TestMain takes out of the process every variable that could lead git or jj to a workspace,
 // remote or credential not the test's own (fixtureenv.MustGuard), and gives the process a home of the
 // package's own (fixtureenv.Home), so every real jj and
-// git these tests run — provisioning's, which reads the process's environment, and the fixtures',
-// which run under fixtureenv.Isolated of that same home (setupEnvironment) — reads none of the
-// operator's configuration: in particular fsmonitor.backend = "watchman" on this devbox, which
+// git these tests run — provisioning's, which reads the process's environment (recordingRunner), and
+// the fixtures', which run under fixtureenv.Isolated of that same home (setupEnvironment) — reads none
+// of the operator's configuration: in particular fsmonitor.backend = "watchman" on this devbox, which
 // would have every test-created repository register a root with the operator's long-running
 // watchman. watchman drops a root once its directory is deleted, so without this, the roots that
-// pile up are the ones from a run this devbox's load killed before t.TempDir's cleanup ran. A test
-// that sets a home of its own afterward (newLocalRunner's) still wins: os.Environ() is read fresh
-// by every exec.Command.
+// pile up are the ones from a run this devbox's load killed before t.TempDir's cleanup ran. Every
+// test reads this one home: jj keeps each repository's and each workspace's configuration in its
+// config home under an id of that repository's or workspace's own, so tests that run at once read
+// none of each other's, and no test sets a home on the process but one that runs alone.
 func TestMain(m *testing.M) {
 	fixtureenv.MustGuard()
 	os.Exit(runUnderAHomeOfThePackagesOwn(m))
 }
 
-// runUnderAHomeOfThePackagesOwn does the setup the comment above describes and removes the home
-// afterwards. The removal is deferred, so it also runs when the setup below panics. A run killed
-// by a signal still keeps the home, which nothing here can help.
+// runUnderAHomeOfThePackagesOwn does the setup the comment above describes, makes the directory the
+// seeded remotes' templates go in (seedTemplates), and removes both afterwards. The removal is
+// deferred, so it also runs when the setup below panics. A run killed by a signal still keeps them,
+// which nothing here can help.
 func runUnderAHomeOfThePackagesOwn(m *testing.M) int {
 	home, err := os.MkdirTemp("", "legion-test-home")
 	if err != nil {
@@ -48,6 +50,13 @@ func runUnderAHomeOfThePackagesOwn(m *testing.M) int {
 		return 1
 	}
 	defer os.RemoveAll(home)
+	templates, err := os.MkdirTemp("", "legion-test-remotes")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "TestMain:", err)
+		return 1
+	}
+	defer os.RemoveAll(templates)
+	seedTemplates.root = templates
 	for _, entry := range fixtureenv.Home(home) {
 		key, value, _ := strings.Cut(entry, "=")
 		if err := os.Setenv(key, value); err != nil {
@@ -59,9 +68,9 @@ func runUnderAHomeOfThePackagesOwn(m *testing.M) int {
 }
 
 // setupEnvironment is the environment of a fixture command: fixtureenv.Isolated under the home
-// the test's provisioning reads too (TestMain's, or newLocalRunner's), so a fixture and a
-// provision read the same jj repository configuration, and no fixture reads the workspace,
-// configuration, provisioning token or credential of the process that runs the tests.
+// the test's provisioning reads too (TestMain's), so a fixture and a provision read the same jj
+// repository configuration, and no fixture reads the workspace, configuration, provisioning token
+// or credential of the process that runs the tests.
 func setupEnvironment() []string {
 	return fixtureenv.Isolated(os.Getenv("HOME"))
 }
@@ -75,7 +84,8 @@ type recordingRunner struct {
 	t       *testing.T
 	remote  string
 	timeout time.Duration
-	runner  Runner
+	// tools are the git and jj the production runner starts: testTools', or a test's own.
+	tools map[string]string
 
 	mu           sync.Mutex
 	commands     []Command
@@ -134,8 +144,16 @@ func (r *recordingRunner) Run(ctx context.Context, command Command) (Result, err
 			}
 		}
 	}
-	return r.runner.Run(ctx, actual)
+	// The production runner's environment is this process's as it stands at this command, as
+	// NewRunner's would be, so what a test sets with t.Setenv reaches provisioning, with the test's
+	// jj identity added (testIdentity), which no test sets on the process: tests that run at once
+	// change no variable they share.
+	return NewRunnerIn(merge(os.Environ(), testIdentity), r.timeout, r.tools).Run(ctx, actual)
 }
+
+// testIdentity is the jj identity provisioning's commands run under: fixtureenv.Isolated's, which
+// every fixture's command runs under too.
+var testIdentity = []string{"JJ_USER=Legion test", "JJ_EMAIL=legion-test@example.invalid"}
 
 func (r *recordingRunner) Calls() []Command {
 	r.mu.Lock()
@@ -159,14 +177,20 @@ func testTools(t *testing.T) map[string]string {
 		if err != nil {
 			t.Fatalf("provisioning's tests drive a real %s: %v", tool, err)
 		}
-		wrapper := filepath.Join(dir, tool)
-		script := "#!/bin/sh\n[ -z \"${GIT_ALLOW_PROTOCOL+set}\" ] || export GIT_ALLOW_PROTOCOL=\"$GIT_ALLOW_PROTOCOL:file\"\nexec '" + path + "' \"$@\"\n"
-		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		tools[tool] = wrapper
+		tools[tool] = fileTransportWrapper(t, dir, tool, path)
 	}
 	return tools
+}
+
+// fileTransportWrapper writes dir/name, testTools' wrapper of the executable path, and returns it.
+func fileTransportWrapper(t *testing.T, dir, name, path string) string {
+	t.Helper()
+	wrapper := filepath.Join(dir, name)
+	script := "#!/bin/sh\n[ -z \"${GIT_ALLOW_PROTOCOL+set}\" ] || export GIT_ALLOW_PROTOCOL=\"$GIT_ALLOW_PROTOCOL:file\"\nexec '" + path + "' \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return wrapper
 }
 
 func localBareRemote(t *testing.T) string {
@@ -175,9 +199,42 @@ func localBareRemote(t *testing.T) string {
 }
 
 // seedRemote is a bare repository at <root>/remote.git, standing in for GitHub, whose default
-// branch (its HEAD) is defaultBranch, holding one commit; it returns the repository's path.
+// branch (its HEAD) is defaultBranch, holding one commit; it returns the repository's path. It is a
+// copy of the one template the process holds for defaultBranch (seedTemplate), so every remote
+// seeded on one branch holds the same commit: a test that needs two repositories to differ pushes
+// to one of them.
 func seedRemote(t *testing.T, root, defaultBranch string) string {
 	t.Helper()
+	remote := filepath.Join(root, "remote.git")
+	runSetup(t, root, "cp", "-a", seedTemplate(t, defaultBranch), remote)
+	return remote
+}
+
+// seedTemplates holds, by default branch, the seeded remote seedRemote copies, each built by the
+// first test that asks for it under root, the directory TestMain makes for them and removes.
+var seedTemplates struct {
+	sync.Mutex
+	root    string
+	remotes map[string]string
+}
+
+// seedTemplate is the template of a remote seeded on defaultBranch, built on its first use: a bare
+// repository whose HEAD names defaultBranch, holding the one commit a colocated jj repository
+// pushed to it with that bookmark. Nothing writes it once built.
+func seedTemplate(t *testing.T, defaultBranch string) string {
+	t.Helper()
+	seedTemplates.Lock()
+	defer seedTemplates.Unlock()
+	if remote, ok := seedTemplates.remotes[defaultBranch]; ok {
+		return remote
+	}
+	if seedTemplates.root == "" {
+		t.Fatal("TestMain made no directory for the seeded remotes' templates")
+	}
+	root, err := os.MkdirTemp(seedTemplates.root, "seed")
+	if err != nil {
+		t.Fatal(err)
+	}
 	remote := filepath.Join(root, "remote.git")
 	runSetup(t, root, fixturegit.InitBare(remote, defaultBranch)...)
 
@@ -186,6 +243,10 @@ func seedRemote(t *testing.T, root, defaultBranch string) string {
 	runSetup(t, root, "jj", "bookmark", "set", jjString(defaultBranch), "-R", seed)
 	runSetup(t, root, "jj", "git", "remote", "add", "origin", remote, "-R", seed)
 	runSetup(t, root, "jj", "git", "push", "--remote", "origin", "--bookmark", "exact:"+jjString(defaultBranch), "--allow-empty-description", "-R", seed)
+	if seedTemplates.remotes == nil {
+		seedTemplates.remotes = map[string]string{}
+	}
+	seedTemplates.remotes[defaultBranch] = remote
 	return remote
 }
 
@@ -213,9 +274,10 @@ func fromOrigin(t *testing.T, run *recordingRunner, dir string, argv ...string) 
 }
 
 // newLocalRunner is a runner against a fresh local bare remote whose default branch is main. jj
-// reads no configuration of the user's who runs the tests: its home (fixtureenv.Home), whose
-// config home is where jj keeps a repository's configuration, is the test's own, as in a pod's
-// init container, and its fixtures read the same one.
+// reads no configuration of the user's who runs the tests: the home it and its fixtures read is
+// the package's own (TestMain's), as empty as a pod's init container's but for each repository's
+// own configuration, which its config home keeps under that repository's id. It sets nothing on
+// the process, so a test that uses it can run in parallel.
 func newLocalRunner(t *testing.T) *recordingRunner {
 	t.Helper()
 	return newLocalRunnerOnBranch(t, "main")
@@ -224,14 +286,7 @@ func newLocalRunner(t *testing.T) *recordingRunner {
 // newLocalRunnerOnBranch is newLocalRunner against a remote whose default branch is defaultBranch.
 func newLocalRunnerOnBranch(t *testing.T, defaultBranch string) *recordingRunner {
 	t.Helper()
-	home := t.TempDir()
-	for _, entry := range fixtureenv.Home(home) {
-		key, value, _ := strings.Cut(entry, "=")
-		t.Setenv(key, value)
-	}
-	t.Setenv("JJ_USER", "Legion test")
-	t.Setenv("JJ_EMAIL", "legion-test@example.invalid")
-	return &recordingRunner{t: t, remote: seedRemote(t, t.TempDir(), defaultBranch), timeout: testTimeout, runner: NewRunner(testTimeout, testTools(t))}
+	return &recordingRunner{t: t, remote: seedRemote(t, t.TempDir(), defaultBranch), timeout: testTimeout, tools: testTools(t)}
 }
 
 // provisionRequest is a host provisioning's request, the tmux runtime's: the one-shot credential
@@ -257,6 +312,7 @@ func provisionRequest(t *testing.T) Request {
 func TestProvisionStartsAtADefaultBranchWithASlash(t *testing.T) {
 	for _, source := range []string{"github"} {
 		t.Run(source, func(t *testing.T) {
+			t.Parallel()
 			run := newLocalRunnerOnBranch(t, "release/v7.1")
 			req := provisionRequest(t)
 			req.DefaultBranch = "release/v7.1"
@@ -290,6 +346,7 @@ func TestProvisionStartsAtADefaultBranchWithASlash(t *testing.T) {
 // after its directory and branch were lost, once the default branch has moved on GitHub: the direct
 // GitHub fetch brings the branch by its exact name.
 func TestProvisionStartsAtADefaultBranchWhoseNameJJWouldParse(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ branch, decoy string }{
 		{"release#stable", "release"},
 		{"release%2Fstable", "release/stable"},
@@ -298,6 +355,7 @@ func TestProvisionStartsAtADefaultBranchWhoseNameJJWouldParse(t *testing.T) {
 	} {
 		for _, source := range []string{"github"} {
 			t.Run(tc.branch+"/"+source, func(t *testing.T) {
+				t.Parallel()
 				run := newLocalRunnerOnBranch(t, tc.branch)
 				decoy := pushRemoteBranch(t, run.remote, tc.decoy, "decoy.txt")
 				provision := func(what string) Workspace {
@@ -332,6 +390,7 @@ func TestProvisionStartsAtADefaultBranchWhoseNameJJWouldParse(t *testing.T) {
 
 // A request with no default branch is refused before anything runs.
 func TestProvisionRequiresADefaultBranch(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := provisionRequest(t)
 	req.DefaultBranch = ""
@@ -344,6 +403,7 @@ func TestProvisionRequiresADefaultBranch(t *testing.T) {
 // GitHub source with no credential directory, is refused before provisioning runs anything or
 // touches the state directory.
 func TestProvisionRefusesARequestWithNoOneWayToTheRepository(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		edit func(*Request)
@@ -355,6 +415,7 @@ func TestProvisionRefusesARequestWithNoOneWayToTheRepository(t *testing.T) {
 		{"no log", func(r *Request) { r.Log = nil }, "workspace request names no log"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			run := newLocalRunner(t)
 			req := provisionRequest(t)
 			tc.edit(&req)
@@ -399,6 +460,7 @@ func TestEnsureRepoCloneDoesNotDisarmTheCallersWorkingDirectory(t *testing.T) {
 // jjWorkspaceRoot treats -R "" as no -R, the rootless path that once made the legacy disarm remove
 // config.toml from the daemon current working directory.
 func TestCloneAndWorkspaceCommandBuildersRefuseAnEmptyDirectory(t *testing.T) {
+	t.Parallel()
 	if _, err := onClone("", "log", "-r", "@"); err == nil || !strings.Contains(err.Error(), "clone directory is required") {
 		t.Errorf("onClone with an empty clone = %v, want a refusal", err)
 	}
@@ -417,6 +479,7 @@ func TestCloneAndWorkspaceCommandBuildersRefuseAnEmptyDirectory(t *testing.T) {
 // A symlinked workspace layout directory is refused before Provision creates the workspace,
 // registers it in the clone or writes its .git and .jj outside the state layout.
 func TestProvisionRefusesASymlinkedWorkspaceLayoutBeforeCreatingAnything(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	request := provisionRequest(t)
 	request.Issue = "WIDGETS-43"
@@ -546,6 +609,7 @@ func (p *tokenProbe) Run(ctx context.Context, command Command) (Result, error) {
 // The one-shot token file exists only while the clone and the fetch need it: an existing
 // workspace's `jj workspace update-stale`, which runs first, runs before it is written.
 func TestProvisionWritesTheTokenFileAfterUpdatingAStaleWorkspace(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := provisionRequest(t)
 	if _, err := Provision(context.Background(), run, req); err != nil {
@@ -576,6 +640,7 @@ func TestProvisionWritesTheTokenFileAfterUpdatingAStaleWorkspace(t *testing.T) {
 }
 
 func TestProvisionClonesThroughTemporarySiblingWithCredentialReset(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := provisionRequest(t)
 
@@ -629,6 +694,7 @@ func staticToken(token string) func() (string, error) {
 }
 
 func TestProvisionKilledCloneLeavesNoFinalDirectory(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	run.killClone = true
 	req := provisionRequest(t)
@@ -654,6 +720,7 @@ func TestProvisionKilledCloneLeavesNoFinalDirectory(t *testing.T) {
 }
 
 func TestProvisionForgetsRegisteredMissingWorkspace(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := provisionRequest(t)
 	workspace, err := Provision(context.Background(), run, req)
@@ -675,6 +742,7 @@ func TestProvisionForgetsRegisteredMissingWorkspace(t *testing.T) {
 }
 
 func TestProvisionKeepsWorkspaceWhenFetchDeletesMergedBookmark(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := provisionRequest(t)
 	workspace, err := Provision(context.Background(), run, req)
@@ -718,6 +786,7 @@ func TestProvisionKeepsWorkspaceWhenFetchDeletesMergedBookmark(t *testing.T) {
 }
 
 func TestRemoveForgetsTheWorkspace(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	workspace, err := Provision(context.Background(), run, provisionRequest(t))
 	if err != nil {
@@ -738,6 +807,7 @@ func TestRemoveForgetsTheWorkspace(t *testing.T) {
 // keeps working. Each workspace provisioning adds is locked, so a bare prune anyone else runs skips
 // it too.
 func TestProvisioningAndRemovalTouchOnlyTheirOwnGitWorktree(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	otherRequest := provisionRequest(t)
 	otherRequest.Issue = "WIDGETS-41"
@@ -794,6 +864,7 @@ func TestProvisioningAndRemovalTouchOnlyTheirOwnGitWorktree(t *testing.T) {
 // A workspace provisioned before provisioning locked anything has an unlocked git worktree entry;
 // the next provisioning of it, which adds nothing, locks it.
 func TestProvisionLocksAnExistingUnlockedWorkspace(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	request := provisionRequest(t)
 	workspace, err := Provision(context.Background(), run, request)
@@ -818,6 +889,7 @@ func TestProvisionLocksAnExistingUnlockedWorkspace(t *testing.T) {
 // record as it was, and a workspace removed and created again records its new creation, which the
 // role launcher compares with a resumed session's last write.
 func TestProvisionRecordsWhenItCreatedTheWorkspace(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	request := provisionRequest(t)
 	started := time.Now()
@@ -858,6 +930,7 @@ func TestProvisionRecordsWhenItCreatedTheWorkspace(t *testing.T) {
 // regular file holding one RFC 3339 instant and refuses anything else by name: a symlink, which it
 // does not follow, a FIFO, which it does not block on, and text that is no instant.
 func TestCreatedRefusesARecordThatIsNotOneInstant(t *testing.T) {
+	t.Parallel()
 	for name, plant := range map[string]func(t *testing.T, path string){
 		"a symlink": func(t *testing.T, path string) {
 			target := filepath.Join(t.TempDir(), "elsewhere")
@@ -956,6 +1029,7 @@ func TestProvisionExcludesTheCodegraphDirectoryFromEveryWorkspaceOfTheClone(t *t
 // volume's path a symlink is allowed (refuseSymlinkedLayout); git names the workspace by its
 // physical path through the resolved state directory.
 func TestGitWorktreeEntriesThroughASymlinkedClone(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	request := provisionRequest(t)
 	if err := os.MkdirAll(filepath.Dir(request.StateDir), 0o700); err != nil {
@@ -1002,6 +1076,7 @@ func TestGitWorktreeEntriesThroughASymlinkedClone(t *testing.T) {
 // outside the jj runner, because refuseSymlinkedLayout deliberately refuses that clone before a
 // production jj command reaches git.
 func TestGitWorktreeEntriesResolveACloneSymlinkOutsideTheWorkspace(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	realClone := filepath.Join(root, "real", "clone")
 	runSetup(t, root, fixturegit.InitWorkTree(realClone, "main")...)
@@ -1057,6 +1132,7 @@ func TestGitWorktreeEntriesResolveACloneSymlinkOutsideTheWorkspace(t *testing.T)
 // The next provisioning restores the entry at the working copy's parent, with an index to match and
 // the working copy untouched, and locks it.
 func TestProvisionRestoresALostGitWorktree(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	request := provisionRequest(t)
 	var logged []string
@@ -1101,6 +1177,7 @@ func TestProvisionRestoresALostGitWorktree(t *testing.T) {
 // next provisioning still finds the entry gone and restores it, instead of skipping the restore
 // because a half-written entry already exists.
 func TestProvisionCleansUpAFailedRestore(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	request := provisionRequest(t)
 	workspace, err := Provision(context.Background(), run, request)
@@ -1132,6 +1209,7 @@ func TestProvisionCleansUpAFailedRestore(t *testing.T) {
 // A pointer naming a directory outside the shared clone's git worktrees is nothing provisioning
 // creates or may write into: it is refused by name.
 func TestProvisionRefusesAGitPointerOutsideTheClone(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	request := provisionRequest(t)
 	workspace, err := Provision(context.Background(), run, request)
@@ -1155,6 +1233,7 @@ func TestProvisionRefusesAGitPointerOutsideTheClone(t *testing.T) {
 // any directory: resolving only .git, never worktrees itself, keeps that symlink from extending
 // where a restored entry may land.
 func TestProvisionRefusesAWorktreesSymlinkEscape(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	request := provisionRequest(t)
 	workspace, err := Provision(context.Background(), run, request)
@@ -1199,6 +1278,7 @@ func TestProvisionRefusesAWorktreesSymlinkEscape(t *testing.T) {
 // sweeps the stale sibling away, since nothing else can still be using it once that restore's own
 // rename has succeeded.
 func TestProvisionRestoresCleanlyAfterAKillBetweenTheWrites(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	request := provisionRequest(t)
 	workspace, err := Provision(context.Background(), run, request)
@@ -1234,6 +1314,7 @@ func TestProvisionRestoresCleanlyAfterAKillBetweenTheWrites(t *testing.T) {
 // has no git tree -- restores with jj's own unborn ref and an empty index instead of failing at
 // `git read-tree HEAD` ("failed to unpack tree object HEAD").
 func TestProvisionRestoresAWorkspaceWithNoRealParentCommit(t *testing.T) {
+	t.Parallel()
 	clone := t.TempDir()
 	runSetup(t, clone, fixturegit.JJInit(".", true)...)
 	other := filepath.Join(t.TempDir(), "other")
@@ -1273,6 +1354,7 @@ func TestProvisionRestoresAWorkspaceWithNoRealParentCommit(t *testing.T) {
 // entry would be named survives untouched: the temporary entry's name never collides with a real
 // worktree's own admin id.
 func TestProvisionRestoreDoesNotCollideWithAWorkspaceNamedLikeItsTemporaryEntry(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	request := provisionRequest(t)
 	workspace, err := Provision(context.Background(), run, request)
@@ -1301,6 +1383,7 @@ func TestProvisionRestoreDoesNotCollideWithAWorkspaceNamedLikeItsTemporaryEntry(
 // A crash between Remove's forget and its entry deletion leaves a workspace neither registered nor
 // present, with its locked entry still in the clone; the next Remove deletes it.
 func TestRemoveDeletesTheEntryACrashAfterTheForgetLeft(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	workspace, err := Provision(context.Background(), run, provisionRequest(t))
 	if err != nil {
@@ -1375,6 +1458,7 @@ func gitWorktreeLocks(t *testing.T, clone string) map[string]bool {
 }
 
 func TestLocationMatchesProvisionedWorkspacePath(t *testing.T) {
+	t.Parallel()
 	working, err := Location("/state", ghrepo.MustParse("acme/widgets"), "WIDGETS-42")
 	if err != nil {
 		t.Fatalf("Location: %v", err)
@@ -1392,6 +1476,7 @@ func TestLocationMatchesProvisionedWorkspacePath(t *testing.T) {
 // can build, the zero Repository, is refused by Provision and Fetch before either runs a command or
 // touches the state directory.
 func TestAZeroRepositoryNeverReachesTheVolume(t *testing.T) {
+	t.Parallel()
 	state := t.TempDir()
 	if err := os.WriteFile(filepath.Join(state, "volume-root.txt"), []byte("the tree volume's root\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1423,6 +1508,7 @@ func TestAZeroRepositoryNeverReachesTheVolume(t *testing.T) {
 // issue's workspace, and Remove deletes the workspace directory whole: Location refuses one, naming
 // it, and Remove removes nothing but a workspace Location names.
 func TestAnIssueWithADotSegmentIsRefused(t *testing.T) {
+	t.Parallel()
 	state := t.TempDir()
 	for _, issue := range []string{".", ".."} {
 		want := `workspace issue "` + issue + `" is a "` + issue + `" segment`

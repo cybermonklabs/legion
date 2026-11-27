@@ -45,9 +45,11 @@ const commandLives = `ticks=0; while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks
 // the end of its budget is still reported as a timeout rather than as a command that could not be
 // run, which is execRunner.Run reading its kill before it propagates the run's own error.
 func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
+	t.Parallel()
 	environment := []string{"PATH=" + os.Getenv("PATH")}
 
 	t.Run("a command that handles SIGTERM removes its lock", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		lock, ready := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready")
 		budget := time.Second
@@ -76,6 +78,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 	})
 
 	t.Run("a helper the command forked is stopped with it", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		ready, marker := filepath.Join(dir, "ready"), filepath.Join(dir, "deaf-helper-of-this-row")
 		trapped := filepath.Join(dir, "helper-trapped")
@@ -114,6 +117,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 	})
 
 	t.Run("execRunner reports a command that handled SIGTERM and exited 0 as timed out", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		lock, ready := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready")
 		fakeGit := filepath.Join(dir, "git")

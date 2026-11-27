@@ -100,6 +100,7 @@ var gitFailures = func() []gitFailure {
 // failed or broke, or a status a server may not answer again. A curl error is told the same way
 // whichever request met it.
 func TestATransientCloneFailureIsToldFromAPermanentOne(t *testing.T) {
+	t.Parallel()
 	for _, tc := range gitFailures {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := transientCloneFailure(tc.result); got != tc.transient {
@@ -118,6 +119,7 @@ func TestATransientCloneFailureIsToldFromAPermanentOne(t *testing.T) {
 // are not, and exit 1, which replaces the volume. The two tests read one set of git's lines
 // (gitFailures).
 func TestAFailureOutsideTheVolumeIsReadFromGitsOutput(t *testing.T) {
+	t.Parallel()
 	for _, tc := range gitFailures {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := outsideVolumeFailure(tc.result); got != tc.outside {
@@ -190,6 +192,7 @@ func fetchesUnderTheBound(t *testing.T, run *failingFetch, clock *testClock) tim
 // the failure and the retry limit, rather than holding the cache for the whole FetchTimeout. The
 // failure is outside the volume. transferWithRetries holds an issue pod's fill to the same rule.
 func TestFetchStopsAfterItsLastRetry(t *testing.T) {
+	t.Parallel()
 	clock := newTestClock()
 	run := newFailingFetch(t, clock, 0, fatal("fatal: unable to access 'https://github.com/acme/widgets/': The requested URL returned error: 503\n"))
 	req := fetchRequest(t)
@@ -221,6 +224,7 @@ func TestFetchStopsAfterItsLastRetry(t *testing.T) {
 // with less than ten minutes left, is killed at the bound itself: Fetch never runs past
 // FetchTimeout, and an attempt that ran out of its time is a cause outside the volume.
 func TestFetchKillsTheAttemptThatReachesItsBound(t *testing.T) {
+	t.Parallel()
 	clock := newTestClock()
 	run := newFailingFetch(t, clock, 10*time.Minute, fatal("error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8)\nfatal: early EOF\n"))
 	req := fetchRequest(t)
@@ -244,6 +248,7 @@ func TestFetchKillsTheAttemptThatReachesItsBound(t *testing.T) {
 // A retry whose wait would end past FetchTimeout is not made: Fetch fails naming the failure and
 // the bound.
 func TestFetchMakesNoRetryThatWouldStartPastItsBound(t *testing.T) {
+	t.Parallel()
 	clock := newTestClock()
 	run := newFailingFetch(t, clock, FetchTimeout-3*time.Second,
 		fatal("error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408\nfatal: expected 'packfile'\n"))
@@ -263,6 +268,7 @@ func TestFetchMakesNoRetryThatWouldStartPastItsBound(t *testing.T) {
 // A wait that ends past the bound — its timer fired late — starts no further attempt, which would
 // have no time at all: Fetch fails naming the last attempt's failure and the bound.
 func TestFetchStartsNoAttemptOnceAWaitEndsPastItsBound(t *testing.T) {
+	t.Parallel()
 	clock := newTestClock()
 	clock.overshoot = 2 * time.Millisecond
 	run := newFailingFetch(t, clock, FetchTimeout-5*time.Second-time.Millisecond,
@@ -305,6 +311,7 @@ func TestFetchFailsAPermanentFetchFailureAtOnce(t *testing.T) {
 // A fetch whose context ends during a backoff wait — its process stopped — ends with it, running
 // no further attempt.
 func TestFetchEndsWithItsContextDuringAWait(t *testing.T) {
+	t.Parallel()
 	clock := newTestClock()
 	run := newFailingFetch(t, clock, 0, fatal("error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8)\n"))
 	req := fetchRequest(t)
@@ -384,6 +391,7 @@ func (r *leavesPartial) Run(ctx context.Context, command Command) (Result, error
 // A fetch request names the log its retries are told to and the clock they wait on; one without
 // either is refused before Fetch runs anything or touches the cache's volume.
 func TestFetchRefusesARequestWithNoLogOrClock(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		edit func(*FetchRequest)
@@ -393,6 +401,7 @@ func TestFetchRefusesARequestWithNoLogOrClock(t *testing.T) {
 		{"no clock", func(r *FetchRequest) { r.Clock = nil }, "workspace fetch clock is required"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			run := newLocalRunner(t)
 			req := fetchRequest(t)
 			tc.edit(&req)
@@ -431,12 +440,19 @@ const (
 // failures' ways, then the stand-in serves them.
 type gitHubStandIn struct {
 	remote string
+	env    []string
 
 	mu        sync.Mutex
 	tokens    []string
 	failures  []packFailure
 	attempts  int
 	passwords []string
+}
+
+// runner is the production runner, with testTools' git and jj, whose git reaches the stand-in.
+func (s *gitHubStandIn) runner(t *testing.T) Runner {
+	t.Helper()
+	return NewRunnerIn(merge(os.Environ(), s.env), testTimeout, testTools(t))
 }
 
 func newGitHubStandIn(t *testing.T, http2 bool, token string, failures ...packFailure) *gitHubStandIn {
@@ -501,10 +517,7 @@ func newGitHubStandIn(t *testing.T, http2 bool, token string, failures ...packFa
 	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca}), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("GIT_SSL_CAINFO", caFile)
-	t.Setenv("https_proxy", "http://"+connectProxy(t, server.Listener.Addr().String()))
-	t.Setenv("no_proxy", "")
-	t.Setenv("NO_PROXY", "")
+	s.env = []string{"GIT_SSL_CAINFO=" + caFile, "https_proxy=http://" + connectProxy(t, server.Listener.Addr().String()), "no_proxy=", "NO_PROXY="}
 	return s
 }
 
@@ -873,6 +886,7 @@ func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *tes
 		}
 	})
 	t.Run("removed during a retry's backoff", func(t *testing.T) {
+		t.Parallel()
 		clock := newTestClock()
 		run := newFailingFetch(t, clock, 0, fatal("error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408\nfatal: expected 'packfile'\n"))
 		req := fetchRequest(t)
@@ -1127,6 +1141,7 @@ func TestFetchPointsTheCachesHeadAtGitHubsDefaultBranch(t *testing.T) {
 // nothing: a cache whose HEAD named nothing could publish no head, and a restart while GitHub is
 // unreachable would end Serve. The next fetch brings the branch and moves HEAD to it.
 func TestFetchLeavesHeadUntilAFetchBringsGitHubsDefaultBranch(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := fetchRequest(t)
 	var logged []string
@@ -1254,6 +1269,7 @@ func TestFetchReplacesACacheItDidNotWriteRunningNothingInIt(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			run := newLocalRunner(t)
 			req := fetchRequest(t)
 			var logged []string
@@ -1358,6 +1374,7 @@ func TestFetchKeepsACacheAfterGitGC(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			run := newLocalRunner(t)
 			req := fetchRequest(t)
 			var logged []string
@@ -1644,6 +1661,7 @@ func gitDirOf(argv []string) string {
 // GitHub (the one command that names the credential's file), and runs the real git for every other
 // command.
 func TestFetchScrubsTheTokenFromATransferASignalEnded(t *testing.T) {
+	t.Parallel()
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatalf("find git: %v", err)
@@ -2077,6 +2095,7 @@ func TestStreamCacheFailsWhenTheRepositoryCacheIsNeverReady(t *testing.T) {
 		{"a cache that does not answer", func(t *testing.T) string { return "http://" + testport.Refused(t) }, "connection refused"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			run := newLocalRunner(t)
 			url := tc.url(t)
 			gitDir := filepath.Join(t.TempDir(), "widgets.git")
@@ -2136,6 +2155,7 @@ func TestStreamCacheRefusesARepositoryCacheItCannotUse(t *testing.T) {
 			"the repository cache's history is not whole"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			run := newLocalRunner(t)
 			pushRemoteBranch(t, run.remote, "main", "history.txt")
 			url := (&fakeCache{body: tc.body(t, run.remote)}).serve(t)
@@ -2180,6 +2200,7 @@ func TestStreamCacheTakesNothingFromAnotherRepositorysCache(t *testing.T) {
 			`is the repository cache of "", not of acme/widgets`, 1, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			run := newLocalRunner(t)
 			tc.cache.body = cacheTar(t, cacheOf(t, run.remote))
 			url := tc.cache.serve(t)
@@ -2223,6 +2244,7 @@ func TestStreamCacheTakesNothingFromAnotherRepositorysCache(t *testing.T) {
 // A pack the cache streamed without its index — a cache on a release that never streamed one — is
 // indexed in the pod, as every pack was before, and the history is whole.
 func TestAPackWithoutItsIndexIsIndexedInThePod(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	cache := cacheOf(t, run.remote)
 	if err := os.Remove(strings.TrimSuffix(packOf(t, cache), ".pack") + ".idx"); err != nil {
@@ -2484,6 +2506,7 @@ func TestTheCachesAndTheFillsGitMapPacksInSmallWindows(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			run := newLocalRunner(t)
 			start := tc.prepare(t, run)
 			sink := recordPackWindows(t, run)
@@ -2593,9 +2616,7 @@ func recordPackWindows(t *testing.T, run *recordingRunner) string {
 	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := os.Getenv("PATH")
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+path)
-	run.runner = NewRunner(testTimeout, testTools(t))
-	t.Setenv("PATH", path)
+	run.tools = testTools(t)
+	run.tools["git"] = fileTransportWrapper(t, t.TempDir(), "git", filepath.Join(bin, "git"))
 	return sink
 }

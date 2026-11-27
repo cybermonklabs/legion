@@ -18,6 +18,7 @@ import (
 // workspace keeps its work. Created fails, and RecordCreated writes nothing through the link.
 // Nothing here needs root, so nothing skips as root.
 func TestALinkedJJIsRefusedBeforeTheCreationRecordIsReadOrWritten(t *testing.T) {
+	t.Parallel()
 	dir, target := t.TempDir(), t.TempDir()
 	if err := os.Symlink(target, filepath.Join(dir, ".jj")); err != nil {
 		t.Fatal(err)
@@ -44,6 +45,7 @@ func TestALinkedJJIsRefusedBeforeTheCreationRecordIsReadOrWritten(t *testing.T) 
 // directory's: a creation moment forged there. Read through the open directory it is the
 // workspace's own.
 func TestAJJSwappedForALinkAfterItsOpenReachesNoOtherDirectory(t *testing.T) {
+	t.Parallel()
 	saved := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
 	record := func(t *testing.T, jj string, at time.Time) {
 		t.Helper()
@@ -97,6 +99,7 @@ func TestAJJSwappedForALinkAfterItsOpenReachesNoOtherDirectory(t *testing.T) {
 // open asks for no O_DIRECTORY, which gVisor does not hold to at a link (openJJ), so the descriptor's
 // own fstat is what refuses it, and O_NONBLOCK is what keeps a FIFO from waiting for a writer.
 func TestAJJThatIsNoDirectoryIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		make func(path string) error

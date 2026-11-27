@@ -19,6 +19,7 @@ import (
 // createWorkspace refuses such a row by its shape before anything is added. Provision's fetch fails
 // on the same clone first, so createWorkspace is called directly.
 func TestCreateWorkspaceRefusesARowItCannotRead(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := provisionRequest(t)
 	first, err := Provision(context.Background(), run, req)
@@ -51,6 +52,7 @@ func TestCreateWorkspaceRefusesARowItCannotRead(t *testing.T) {
 // it is then, here none, so that provisioning starts at main. Provision's own fetch settles the row
 // first, so createWorkspace is called directly.
 func TestCreateWorkspaceRefusesAnOriginRowConcurrentFetchesConflicted(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	listed := pushRemoteBranch(t, run.remote, "legion/WIDGETS-42", "fixture.txt")
 	req := provisionRequest(t)
@@ -97,6 +99,7 @@ func TestCreateWorkspaceRefusesAnOriginRowConcurrentFetchesConflicted(t *testing
 // run as printed, lets the next one start at origin's main. Provision's own fetch settles the row
 // first, so createWorkspace is called directly.
 func TestCreateWorkspaceRefusesAMainAtOriginConcurrentFetchesConflicted(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := provisionRequest(t)
 	first, err := Provision(context.Background(), run, req)
@@ -153,6 +156,7 @@ func TestCreateWorkspaceRefusesAMainAtOriginConcurrentFetchesConflicted(t *testi
 // a state directory whose path holds one, must name the shared clone as one word: it tracks
 // main@origin, and the next provisioning starts there.
 func TestAForgottenMainsWayOutRunsAsPrintedFromAStateDirectoryHoldingASpace(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := provisionRequest(t)
 	req.StateDir = filepath.Join(t.TempDir(), "legion state")
@@ -199,6 +203,7 @@ func (r *trackRace) Run(ctx context.Context, command Command) (Result, error) {
 // that bookmark: jj refuses the implementer's `jj bookmark set` as sideways. That provisioning is
 // refused before anything is added, and the next one starts at the bookmark.
 func TestProvisionRefusesABranchThatMovedWhileItWasTracked(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	listed := pushRemoteBranch(t, run.remote, "legion/WIDGETS-42", "fixture.txt")
 	req := provisionRequest(t)
@@ -237,6 +242,7 @@ func TestProvisionRefusesABranchThatMovedWhileItWasTracked(t *testing.T) {
 // origin row that is tracked and has no target. It is a healthy bookmark: the workspace starts at
 // its commit.
 func TestProvisionStartsAtALocalBookmarkTrackedBeforeItsFirstPush(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := provisionRequest(t)
 	first, err := Provision(context.Background(), run, req)
@@ -264,7 +270,9 @@ func TestProvisionStartsAtALocalBookmarkTrackedBeforeItsFirstPush(t *testing.T) 
 }
 
 func TestProvisionUsesBookmarkCommitAndRefusesConflictBeforeWorkspaceAdd(t *testing.T) {
+	t.Parallel()
 	t.Run("one bookmark commit", func(t *testing.T) {
+		t.Parallel()
 		run := newLocalRunner(t)
 		req := provisionRequest(t)
 		first, err := Provision(context.Background(), run, req)
@@ -299,6 +307,7 @@ func TestProvisionUsesBookmarkCommitAndRefusesConflictBeforeWorkspaceAdd(t *test
 	})
 
 	t.Run("conflicted bookmark", func(t *testing.T) {
+		t.Parallel()
 		run := newLocalRunner(t)
 		req := provisionRequest(t)
 		workspace, err := Provision(context.Background(), run, req)
@@ -457,6 +466,7 @@ func nothingProvisioned(t *testing.T, run *recordingRunner, before int, workspac
 func TestProvisionAdoptsAnIssueBranchOnlyTheRemoteHas(t *testing.T) {
 	for _, path := range []string{"host"} {
 		t.Run(path, func(t *testing.T) {
+			t.Parallel()
 			run := newLocalRunner(t)
 			pushed := pushRemoteBranch(t, run.remote, "legion/WIDGETS-42", "fixture.txt")
 			req := provisionRequest(t)
@@ -499,6 +509,7 @@ func TestProvisionAdoptsAnIssueBranchOnlyTheRemoteHas(t *testing.T) {
 func TestProvisionStartsAtAnIssueBranchOffTheDefaultBranchsHistory(t *testing.T) {
 	for _, path := range []string{"host"} {
 		t.Run(path, func(t *testing.T) {
+			t.Parallel()
 			run := newLocalRunner(t)
 			// seedRemote's main is one empty commit, so main carries a file of its own here: a
 			// workspace started from main would hold it, and this one must not.
@@ -540,6 +551,7 @@ func TestProvisionStartsAtAnIssueBranchOffTheDefaultBranchsHistory(t *testing.T)
 // provisioned after that — its directory gone, as on a later pod's fresh disk — starts from main
 // as a brand-new issue's does, and the merged branch is not brought back.
 func TestProvisionAfterTheMergedBranchIsDeletedStartsFromMain(t *testing.T) {
+	t.Parallel()
 	l := pushedThenLost(t, "merged.txt")
 	runSetup(t, l.req.StateDir, "git", "--git-dir="+l.run.remote, "branch", "-D", l.first.Bookmark)
 
@@ -619,6 +631,7 @@ func cloneSnapshots(t *testing.T, clone string) int {
 // cancelling the deletion start at origin's branch, and deleting the branch on GitHub starts at
 // main.
 func TestProvisionRefusesALocalDeletionNeverPushed(t *testing.T) {
+	t.Parallel()
 	for _, way := range []struct {
 		name       string
 		command    string
@@ -630,6 +643,7 @@ func TestProvisionRefusesALocalDeletionNeverPushed(t *testing.T) {
 		{"delete the branch on GitHub", githubDelete, false, true},
 	} {
 		t.Run(way.name, func(t *testing.T) {
+			t.Parallel()
 			l := pushedThenLost(t, "pushed.txt")
 			runSetup(t, l.clone, "jj", "bookmark", "delete", l.first.Bookmark)
 			var refusal string
@@ -669,6 +683,7 @@ func TestProvisionRefusesALocalDeletionNeverPushed(t *testing.T) {
 // writes it, provisions as it says: keeping an added commit starts there, and starting from main
 // (deleting the branch on GitHub while origin has it, then the local bookmark) starts at main.
 func TestProvisionRefusesALocalConflictAndItsWaysOutHold(t *testing.T) {
+	t.Parallel()
 	moveLocally := func(t *testing.T, l lostWorkspace) string {
 		runSetup(t, l.clone, "jj", "new", "--no-edit", l.first.Bookmark, "-m", "never pushed", "--ignore-working-copy")
 		runSetup(t, l.clone, "jj", "bookmark", "set", l.first.Bookmark, "-r", l.first.Bookmark+"+", "--ignore-working-copy")
@@ -706,6 +721,7 @@ func TestProvisionRefusesALocalConflictAndItsWaysOutHold(t *testing.T) {
 			{"start from main", diverge.fromMain, false},
 		} {
 			t.Run(diverge.name+"/"+way.name, func(t *testing.T) {
+				t.Parallel()
 				l := pushedThenLost(t, "pushed.txt")
 				keep, sides := diverge.sides(t, l)
 				var refusal string
@@ -746,6 +762,7 @@ func TestProvisionRefusesALocalConflictAndItsWaysOutHold(t *testing.T) {
 // provisioning start at origin's branch. Each holds for main and for a default branch whose name
 // holds a slash.
 func TestProvisionRefusesAWorkspaceWithNoBranchWhenTheDefaultBranchDoesNotResolve(t *testing.T) {
+	t.Parallel()
 	for _, branch := range []string{"main", "release/v7.1"} {
 		remoteRow := branch + "@origin"
 		for _, tc := range []struct {
@@ -784,6 +801,7 @@ func TestProvisionRefusesAWorkspaceWithNoBranchWhenTheDefaultBranchDoesNotResolv
 			}, "jj bookmark set"},
 		} {
 			t.Run(branch+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
 				run := newLocalRunnerOnBranch(t, branch)
 				req := provisionRequest(t)
 				req.DefaultBranch = branch
@@ -837,6 +855,7 @@ func TestProvisionRefusesAWorkspaceWithNoBranchWhenTheDefaultBranchDoesNotResolv
 // refusal. This is the shape a daemon that re-pointed the bookmark at a pane's working copy left in
 // the shared clone: an undescribed child of the pushed commit that adds only an empty file.
 func TestProvisionStartsAtMainWhenAMergedBranchWasMovedOntoNothingDescribed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		described []bool // the commits the local move adds, oldest first: described or not
@@ -857,6 +876,7 @@ func TestProvisionStartsAtMainWhenAMergedBranchWasMovedOntoNothingDescribed(t *t
 		{"a move backwards, adding no commit", nil, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			l := pushedThenLost(t, "pushed.txt")
 			var logged []string
 			l.req.Log = func(line string) { logged = append(logged, line) }

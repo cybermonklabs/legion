@@ -356,6 +356,8 @@ func TestStreamCacheFallsBackFromPacksToTar(t *testing.T) {
 		// the issue's volume.
 		fails   string
 		outside bool
+		// alone is a row that sets a package variable, which runs before the rows that run at once.
+		alone bool
 	}{
 		{name: "a bucket whose every part holds fills the clone", source: SourceBucket},
 		{name: "a cache of an earlier release answers a bare 404", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) { c.answer(notFound) },
@@ -479,7 +481,7 @@ func TestStreamCacheFallsBackFromPacksToTar(t *testing.T) {
 					m.Objects[i].URL = moved(t, m.Objects[i].URL, host)
 				}
 			})
-		}, source: SourceTar, reason: reasonDownload, says: "the bucket delivered less than 1048576 bytes in 5m0s, the low-speed bound below which a download is ended"},
+		}, source: SourceTar, reason: reasonDownload, says: "the bucket delivered less than 1048576 bytes in 5m0s, the low-speed bound below which a download is ended", alone: true},
 		{name: "a pack whose trailer git refuses, whatever its SHA-256 vouches for", edit: func(t *testing.T, _ *recordingRunner, c *packsCache) {
 			body, err := os.ReadFile(packOf(t, c.clone))
 			if err != nil {
@@ -516,6 +518,9 @@ func TestStreamCacheFallsBackFromPacksToTar(t *testing.T) {
 		}, source: SourceTar, reason: reasonUnavailable, fails: "which does not verify"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if !tc.alone {
+				t.Parallel()
+			}
 			run := newLocalRunner(t)
 			pushRemoteBranch(t, run.remote, "main", "history.txt")
 			c := newPacksCache(t, cacheOf(t, run.remote), 0)

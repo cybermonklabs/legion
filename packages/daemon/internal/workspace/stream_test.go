@@ -65,6 +65,7 @@ func (w *fakeWindows) pass(t *testing.T, ctx context.Context) {
 // verification together, and the stream still reaches its last byte whole and unstopped. The
 // clock in its place threw away a download that was still arriving (INFRA-495).
 func TestTheCachesStreamRunsPastFetchTimeoutWhileItKeepsReceiving(t *testing.T) {
+	t.Parallel()
 	const windows = 7
 	if ran := windows * CacheStreamLowSpeedTime; ran <= FetchTimeout {
 		t.Fatalf("%d windows of %s are %s, not past the %s a clock gave the stream", windows, CacheStreamLowSpeedTime, ran, FetchTimeout)
@@ -100,6 +101,7 @@ func TestTheCachesStreamRunsPastFetchTimeoutWhileItKeepsReceiving(t *testing.T) 
 // one thing that wakes a Read blocked on a sender that has stopped — and the failure says the
 // bound rather than a bare cancelled context.
 func TestTheCachesStreamEndsWhenItFallsBelowTheLowSpeedBound(t *testing.T) {
+	t.Parallel()
 	if CacheStreamLowSpeedBytes != 1<<20 || CacheStreamLowSpeedTime != 5*time.Minute {
 		t.Fatalf("the low-speed bound is %d bytes in %s, want 1 MiB in 5 minutes", CacheStreamLowSpeedBytes, CacheStreamLowSpeedTime)
 	}

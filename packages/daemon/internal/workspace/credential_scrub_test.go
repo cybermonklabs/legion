@@ -41,6 +41,7 @@ func (r echoesTheToken) Run(_ context.Context, command Command) (Result, error) 
 // (ensureRepoClone's `jj git clone`) scrub their stderr, as Fetch's transfers do, before an error
 // is made from it, through commandFailure for an exit and through runFailure for a signal's death.
 func TestARunUnderTheProvisioningCredentialReturnsItsTokenScrubbed(t *testing.T) {
+	t.Parallel()
 	const token = "ghs_provisioningTokenThatMustNotLeak"
 	killed := exec.Command("sh", "-c", "kill -KILL $$").Run()
 	for _, ending := range []struct {
