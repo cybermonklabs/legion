@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/roles"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -197,29 +198,32 @@ var expiryPassCalls = []expiryPassCall{
 
 // expiryPassRow is two processes on one database, each with a NATS client of its own: held, whose
 // client reaches the server through proxy and whose expiry pass is held at gate, and working,
-// which reaches the server directly.
+// which reaches the server directly. recorder is the default logger both write to.
 type expiryPassRow struct {
 	proxy    *testnats.Proxy
 	database *store.Store
 	counter  *sendCounter
+	recorder *logtest.Recorder
 	gate     *passGate
 	held     *process
 	client   *bus.Client
 	working  *process
 }
 
-// startExpiryPassRow starts the row's two processes, held, named name, first, so it takes the
-// publisher hold, and brings held's expiry pass to call's gate. An event routed to a role nobody
-// holds has held's scan keep its copy on the role's kept lane; the expiry notice of that copy is
-// stored as a listener's walk stores it at the end of the copy's hour; and an event written
-// through held wakes it to scan and then make its expiry pass, which reads the notice, records it
-// and keeps the copy again. held reads the kept lanes, the notices and the role and session
-// buckets through its own client, as cmd/dispatch wires them, so what the proxy does reaches every
-// NATS call of the pass.
+// startExpiryPassRow installs the row's recorder as the default logger, starts the row's two
+// processes, held, named name, first, so it takes the publisher hold, and brings held's expiry
+// pass to call's gate. An event routed to a role nobody holds has held's scan keep its copy on the
+// role's kept lane; the expiry notice of that copy is stored as a listener's walk stores it at the
+// end of the copy's hour; and an event written through held wakes it to scan and then make its
+// expiry pass, which reads the notice, records it and keeps the copy again. held reads the kept
+// lanes, the notices and the role and session buckets through its own client, as cmd/dispatch
+// wires them, so what the proxy does reaches every NATS call of the pass.
 func startExpiryPassRow(t *testing.T, name string, call expiryPassCall) *expiryPassRow {
 	t.Helper()
+	recorder := &logtest.Recorder{}
+	logtest.SetDefault(t, recorder)
 	_, url := testnats.Start(t)
-	row := &expiryPassRow{proxy: testnats.StartProxy(t, url), database: storetest.Open(t), counter: &sendCounter{}, gate: newPassGate(t)}
+	row := &expiryPassRow{proxy: testnats.StartProxy(t, url), database: storetest.Open(t), counter: &sendCounter{}, recorder: recorder, gate: newPassGate(t)}
 	seedIssue(t, row.database, "T-1", nil)
 	row.held = startProcessWith(t, name, row.database, row.proxy.URL(), row.counter, func(client *bus.Client, deps *Deps) {
 		row.client = client
@@ -259,20 +263,23 @@ func startExpiryPassRow(t *testing.T, name string, call expiryPassCall) *expiryP
 
 // A holder whose NATS connection is cut while its expiry pass makes one of the pass's NATS calls
 // releases the publisher hold within natsLossGrace of the cut, as a holder cut between its passes
-// does (TestAnOutboxThatLosesNATSReleasesThePublisher). Each call is a subtest (expiryPassCalls):
-// the read of the listeners' expiry notices, the read of an expired copy back from its role's kept
-// lane, the read of the role's holder and the send of the keep. cmd/dispatch gives the outbox one
-// bus client for all four (Deps.KeptLanes, Deps.Publisher, and the role and session buckets it
-// reads Deps.RoleClaims and Deps.Sessions through), and each call made while that client
-// reconnects waits for the reconnect up to a bound of its own: 2 s for a read, through
-// boundedKeptLanes or readTimeout in internal/roles; 5 s for a keep, publishAcknowledgementTimeout
-// in internal/bus. Before boundedKeptLanes a stored-message read waited storedMessageWait in
-// internal/bus, 10 s, past the 10 s of TestAPublisherCutFromNATSHandsOverWithin10Seconds
-// (cmd/dispatch/multiprocess_test.go). A holder that waits such a call out before it counts the
-// loss releases the hold only after that bound and natsLossGrace, past the natsLossGrace and
-// half-second this row allows.
+// does (TestAnOutboxThatLosesNATSReleasesThePublisher), and gives it up for NATS lost; the other
+// process takes it and publishes what is written after the cut, and alone publishes. Each call is
+// a subtest (expiryPassCalls): the read of the listeners' expiry notices, the read of an expired
+// copy back from its role's kept lane, the read of the role's holder and the send of the keep.
+// cmd/dispatch gives the outbox one bus client for all four (Deps.KeptLanes, Deps.Publisher, and
+// the role and session buckets it reads Deps.RoleClaims and Deps.Sessions through), and each call
+// made while that client reconnects waits for the reconnect up to a bound of its own: 2 s for a
+// read, through boundedKeptLanes or readTimeout in internal/roles; 5 s for a keep,
+// publishAcknowledgementTimeout in internal/bus. Before boundedKeptLanes a stored-message read
+// waited storedMessageWait in internal/bus, 10 s, past the 10 s of
+// TestAPublisherCutFromNATSHandsOverWithin10Seconds (cmd/dispatch/multiprocess_test.go). A holder
+// that waits such a call out before it counts the loss releases the hold only after that bound and
+// natsLossGrace, past the natsLossGrace and half-second this row allows; the pass ends at the
+// client's connection event instead (passKeptExpiriesWhileNATSAnswers).
 //
-// Not parallel: its subject is that bound, the release within natsLossGrace and a half-second of it.
+// Not parallel: its subject is that bound, the release within natsLossGrace and a half-second of
+// it, and it swaps the default logger (logtest.SetDefault).
 func TestAnOutboxCutFromNATSInItsExpiryPassReleasesThePublisher(t *testing.T) {
 	for _, call := range expiryPassCalls {
 		t.Run(call.name, func(t *testing.T) {
@@ -287,10 +294,7 @@ func TestAnOutboxCutFromNATSInItsExpiryPassReleasesThePublisher(t *testing.T) {
 			t.Logf("the cut process released the publisher hold %s after a cut inside %s",
 				time.Since(downAt).Round(time.Millisecond), call.name)
 			event := writeMessage(t, row.working, "after the cut")
-			waitForPublished(t, row.database, row.counter, event)
-			if !row.working.outbox.Publishing() || row.held.outbox.Publishing() {
-				t.Fatalf("publishing %v after the cut, want only the process whose NATS works", publishing(row.held, row.working))
-			}
+			requireTakenOverAfterCut(t, row.recorder, row.held, row.working, event)
 		})
 	}
 }
@@ -304,9 +308,15 @@ func TestAnOutboxCutFromNATSInItsExpiryPassReleasesThePublisher(t *testing.T) {
 // holder has to find the silence itself: a holder that waits a call out to its own bound - 2 s for
 // a stored-message read (boundedKeptLanes), 5 s for a keep, one call after another - before a
 // batch's sends go unanswered and their probe fails hands the hold over that bound later. The
-// silent process then does not take the hold back while its connection stays silent.
+// pass's watcher finds it sooner (watchExpiryPass): a probe is due probeTimeout after the last one
+// that answered, or after the pass began, and is made then or as the pass returns, so the probe
+// that fails comes at most 2 x probeTimeout after the silence, and the pass, whose read in flight
+// then meets its own 2 s bound, returns at most about 3 x probeTimeout (6 s) after it. The silent
+// process then does not take the hold back while its connection stays silent, also once the other
+// process has stopped and released it (requireNoTakeBackWhileSilent).
 //
-// Not parallel: its subject is the take-over within silentTakeOver of the silence.
+// Not parallel: its subject is the take-over within silentTakeOver of the silence, and it swaps the
+// default logger (logtest.SetDefault).
 func TestAnOutboxWhoseNATSGoesSilentInItsExpiryPassGivesThePublisherToTheOther(t *testing.T) {
 	for _, call := range expiryPassCalls {
 		t.Run(call.name, func(t *testing.T) {
@@ -321,13 +331,7 @@ func TestAnOutboxWhoseNATSGoesSilentInItsExpiryPassGivesThePublisherToTheOther(t
 			})
 			t.Logf("the working process published the event %s after a silence inside %s",
 				time.Since(frozenAt).Round(time.Millisecond), call.name)
-			for range 20 {
-				if row.held.outbox.Publishing() {
-					t.Fatalf("publishing %v while the silent process's connection stays silent, want only the process whose NATS works",
-						publishing(row.held, row.working))
-				}
-				time.Sleep(100 * time.Millisecond)
-			}
+			requireNoTakeBackWhileSilent(t, row.recorder, row.held, row.working)
 		})
 	}
 }

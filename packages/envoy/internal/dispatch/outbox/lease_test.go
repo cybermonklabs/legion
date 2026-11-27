@@ -496,12 +496,91 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 	waitForPublished(t, database, counter, event)
 }
 
+// holdEndOf is why p's turn as the publisher hold's holder ended, as the line that ends the turn
+// says it (Outbox.publish): the reason of the first "released the publisher hold" line, or lost
+// for a "lost the publisher hold" line, that names p's instance, read from recorder, the default
+// logger the row installed before it started p; false while no such line was written.
+func holdEndOf(recorder *logtest.Recorder, p *process) (holdEnd, bool) {
+	instance := p.outbox.instance.String()
+	for _, record := range recorder.Records() {
+		released := strings.HasSuffix(record.Message, "released the publisher hold")
+		if !released && !strings.HasSuffix(record.Message, "lost the publisher hold") {
+			continue
+		}
+		end, named := holdLost, false
+		record.Attrs(func(attribute slog.Attr) bool {
+			switch attribute.Key {
+			case "instance":
+				named = attribute.Value.String() == instance
+			case "reason":
+				if released {
+					end = holdEnd(attribute.Value.String())
+				}
+			}
+			return true
+		})
+		if named {
+			return end, true
+		}
+	}
+	return "", false
+}
+
+// requireReleasedForNATSLost waits for the line that ends lost's turn as the holder and requires it
+// to name NATS lost (natsLost) as the reason.
+func requireReleasedForNATSLost(t *testing.T, recorder *logtest.Recorder, lost *process) {
+	t.Helper()
+	var end holdEnd
+	waitFor(t, "the line that ends "+lost.name+"'s turn as the holder", func() bool {
+		var written bool
+		end, written = holdEndOf(recorder, lost)
+		return written
+	})
+	if end != natsLost {
+		t.Fatalf("%s gave the publisher hold up for %q, want %q; the log says %q", lost.name, end, natsLost, loggedMessages(recorder))
+	}
+}
+
+// requireTakenOverAfterCut is what a row checks once the holder it cut from NATS let the publisher
+// hold go, within the row's own bound: cut gave the hold up for NATS lost, event - written through
+// working after the cut - is published with each of its subjects sent once, and working alone
+// publishes. recorder is the default logger the row installed before it started either process.
+func requireTakenOverAfterCut(t *testing.T, recorder *logtest.Recorder, cut, working *process, event model.Event) {
+	t.Helper()
+	requireReleasedForNATSLost(t, recorder, cut)
+	waitForPublished(t, working.store, working.sending, event)
+	if !working.outbox.Publishing() || cut.outbox.Publishing() {
+		t.Fatalf("publishing %v after the cut, want only the process whose NATS works", publishing(cut, working))
+	}
+}
+
+// requireNoTakeBackWhileSilent is what a row checks once the other process published after the
+// holder's NATS connection went silent, while the proxy stays frozen: silent gave the publisher
+// hold up for NATS lost, and once working has stopped, which releases the hold, silent does not
+// take it in the 2 s that follow. While working holds and renews the hold no take can succeed
+// (duty's takeHold takes only a lapsed row or the taker's own), so only a free hold shows what
+// silent does: its connection still reports itself connected, and the probe it makes first
+// (answering, probeBeforeHold) is what keeps it off. The hold is read every 25 ms, and the first
+// read that finds it held fails the row. recorder is the default logger the row installed before
+// it started either process.
+func requireNoTakeBackWhileSilent(t *testing.T, recorder *logtest.Recorder, silent, working *process) {
+	t.Helper()
+	requireReleasedForNATSLost(t, recorder, silent)
+	working.stop()
+	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return silent.outbox.hold.Load() != nil }) {
+		t.Fatalf("%s took the publisher hold while its NATS connection stays silent, after %s released it", silent.name, working.name)
+	}
+}
+
 // A holder whose NATS connection is cut releases the publisher hold once it has been without NATS
 // for natsLossGrace, and the other process, whose NATS works, takes the hold and publishes what is
 // written after the cut.
 //
-// Not parallel: its subject is that bound, the release within natsLossGrace and a half-second of it.
+// Not parallel: its subject is that bound, the release within natsLossGrace and a half-second of
+// it, and it swaps the default logger (logtest.SetDefault).
 func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
+	recorder := &logtest.Recorder{}
+	logtest.SetDefault(t, recorder)
 	_, url := testnats.Start(t)
 	proxy := testnats.StartProxy(t, url)
 	proxied := proxy.URL()
@@ -519,20 +598,20 @@ func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 	})
 	t.Logf("the cut process released the publisher hold %s after the cut", time.Since(downAt).Round(time.Millisecond))
 	event := writeMessage(t, working, "after the cut")
-	waitForPublished(t, database, counter, event)
-	if !working.outbox.Publishing() || cut.outbox.Publishing() {
-		t.Fatalf("publishing %v after the cut, want only the process whose NATS works", publishing(cut, working))
-	}
+	requireTakenOverAfterCut(t, recorder, cut, working, event)
 }
 
 // A holder whose NATS connection goes silent - still connected, nothing answering - finds out when
-// a batch's sends go unanswered and a probe of their connection fails, and releases the publisher
-// hold. It does not take the hold back while its connection stays silent, although the connection
-// still reports itself connected: the other process, whose NATS works, takes it and publishes the
-// event. How soon it does is TestAPublisherCutFromNATSHandsOverWithin10Seconds's subject
-// (cmd/dispatch/multiprocess_test.go), which bounds it at 10 s across two processes.
+// a batch's sends go unanswered and a probe of their connection fails, and gives the publisher hold
+// up for NATS lost. It does not take the hold back while its connection stays silent, although the
+// connection still reports itself connected, also once the other process, whose NATS works, has
+// taken the hold, published the event and stopped. How soon the other process publishes is
+// TestAPublisherCutFromNATSHandsOverWithin10Seconds's subject (cmd/dispatch/multiprocess_test.go),
+// which bounds it at 10 s across two processes.
 func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
+	recorder := &logtest.Recorder{}
+	logtest.SetDefault(t, recorder)
 	_, url := testnats.Start(t)
 	proxy := testnats.StartProxy(t, url)
 	database := storetest.Open(t)
@@ -550,13 +629,7 @@ func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
 		return working.outbox.Publishing() && publishedAt(t, database, event.ID) != nil
 	})
 	t.Logf("the working process published the event %s after the silence", time.Since(frozenAt).Round(time.Millisecond))
-	for range 20 {
-		if silent.outbox.Publishing() {
-			t.Fatalf("publishing %v while the silent process's connection stays silent, want only the process whose NATS works",
-				publishing(silent, working))
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	requireNoTakeBackWhileSilent(t, recorder, silent, working)
 }
 
 // A standby waits for the publisher hold to be released or to lapse, or for its NATS connection to
