@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/natsconn"
 )
 
 // Consumer delivery of the simulated sessions: each session registers with `delivery: {consumer:
@@ -319,7 +320,7 @@ type pullSpy struct {
 func startPullSpy(url string) (*pullSpy, error) {
 	nc, err := nats.Connect(url, nats.Name("loadgen-pull-spy"), nats.MaxReconnects(-1))
 	if err != nil {
-		return nil, fmt.Errorf("nats connect: %w", err)
+		return nil, fmt.Errorf("nats connect: %w", natsconn.ConnectionError(err))
 	}
 	p := &pullSpy{nc: nc}
 	prefix := "$JS.API.CONSUMER.MSG.NEXT." + bus.Stream + "."
@@ -375,7 +376,7 @@ func (st *step) readStreamConsumers(when string) (*int, string) {
 func streamConsumerCount(url string) (int, error) {
 	nc, err := nats.Connect(url, nats.Name("loadgen-stream-info"), nats.Timeout(5*time.Second))
 	if err != nil {
-		return 0, fmt.Errorf("nats connect: %w", err)
+		return 0, fmt.Errorf("nats connect: %w", natsconn.ConnectionError(err))
 	}
 	defer nc.Close()
 	js, err := nc.JetStream()

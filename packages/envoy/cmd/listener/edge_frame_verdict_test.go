@@ -97,6 +97,7 @@ func TestEdgeFrameVerdict(t *testing.T) {
 // goTopic, goRole or goRepo first checks that the encoding/json read takes the frame that way, so
 // no row passes on a frame that does not split the readers as it says.
 func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
+	t.Parallel()
 	const session = "ses_v"
 	own := contracts.LegacyAgentSubject(session)
 	const privRole, pubRole = "legion-priv-priv-1-tester", "legion-pub-pub-1-tester"
@@ -330,6 +331,7 @@ func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 // project's is withheld. Each row first checks what the relay's read makes of the message, so no
 // row passes on a message that read does not tell as the row names it.
 func TestEdgeFrameVerdictTellsARoleAsTheRelayDoes(t *testing.T) {
+	t.Parallel()
 	const session = "ses_v"
 	own := contracts.LegacyAgentSubject(session)
 	const privRole, pubRole = "legion-priv-priv-1-tester", "legion-pub-pub-1-tester"
@@ -406,6 +408,7 @@ func TestEdgeFrameVerdictTellsARoleAsTheRelayDoes(t *testing.T) {
 // relay's read, tells the frame a role message of the role the row names, so no row passes on a
 // frame that read does not take as a role message.
 func TestEdgeFrameVerdictCountsARoleMarkOnlyOnAnAgentSubject(t *testing.T) {
+	t.Parallel()
 	const session = "ses_v"
 	own := contracts.LegacyAgentSubject(session)
 	const privRole, pubRole = "legion-priv-priv-1-tester", "legion-pub-pub-1-tester"

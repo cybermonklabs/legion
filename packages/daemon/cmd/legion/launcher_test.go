@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -310,7 +311,11 @@ func TestRoleInitsOwnLinesPrintNoCredentialAURLCarries(t *testing.T) {
 		if strings.Contains(printed, token) {
 			t.Errorf("role-init printed the token its flag's value carries: %s", shown)
 		}
-		if want := `"https://d.example/status"`; !strings.Contains(stderr.String(), want) {
+		want := `"https://d.example/status"`
+		if strings.Contains(value, "@") {
+			want = `"https://` + redact.URLWithCredentials + `/status"`
+		}
+		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("role-init printed %q, want it to quote the value as %s", shown, want)
 		}
 	}
@@ -416,7 +421,7 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 			name:    "the controller pod's container",
 			args:    []string{"--connect", connect, "--token-file", token, "--role", "controller", "--private-dir", t.TempDir()},
 			until:   "launcher: daemon connection:",
-			shown:   []string{`launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://d.example/launch"`},
+			shown:   []string{`launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://[a URL with credentials]/launch"`},
 			planted: []string{"planted-query-token-4"},
 		},
 		{
@@ -424,8 +429,8 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 			args:  []string{"--connect", connect, "--roles-dir", rolesDir, "--role", "tester", "--test-postgres"},
 			until: "tester: launcher: daemon connection:",
 			shown: []string{
-				`tester: launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://d.example/launch"`,
-				"legion-testpg: the test database at postgresql://127.0.0.1:5433/legion_test does not answer",
+				`tester: launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://[a URL with credentials]/launch"`,
+				"legion-testpg: the test database at postgresql://[a URL with credentials]/legion_test does not answer",
 			},
 			planted: []string{"planted-query-token-4", "planted-query-token-5"},
 		},
@@ -435,7 +440,7 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 			code: 1,
 			// The query runs to the white space after it, so the ":" the line writes there goes
 			// with it.
-			shown:   []string{"launcher: token file https://d.example/token open https://d.example/token no such file"},
+			shown:   []string{"launcher: token file https://[a URL with credentials]/token open https://[a URL with credentials]/token no such file"},
 			planted: []string{"planted-query-token-6"},
 		},
 	} {

@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -230,12 +231,15 @@ func (r *pgDiskRig) superuserSocket() []string {
 // madeSQL lists the databases a case made, every one named tpg_…, by name.
 const madeSQL = `select coalesce(string_agg(datname, ' ' order by datname), '') from pg_database where datname like 'tpg\_%'`
 
-// makeDatabases makes each database through the DSN, as a test harness does.
+// makeDatabases makes each database through the DSN, as a test harness does, with JIT off as every
+// database a test makes (testdb.WithoutJIT, docs/testing.md, "A database a Go test creates").
 func (r *pgDiskRig) makeDatabases(t *testing.T, names ...string) {
 	t.Helper()
 	for _, name := range names {
-		if _, err := r.psql("create database "+name+" strategy file_copy", r.dsn); err != nil {
-			t.Fatal(err)
+		for _, sql := range []string{"create database " + name + " strategy file_copy", testdb.WithoutJIT(name)} {
+			if _, err := r.psql(sql, r.dsn); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 }
@@ -250,10 +254,11 @@ func (r *pgDiskRig) made(t *testing.T) []string {
 	return strings.Fields(out)
 }
 
-// answers makes and drops a database through the DSN, as a test that reaches the server does.
+// answers makes and drops a database through the DSN, as a test that reaches the server does, with
+// JIT off as every database a test makes (testdb.WithoutJIT).
 func (r *pgDiskRig) answers(t *testing.T) {
 	t.Helper()
-	for _, sql := range []string{"create database tpg_after strategy file_copy", "drop database tpg_after with (force)"} {
+	for _, sql := range []string{"create database tpg_after strategy file_copy", testdb.WithoutJIT("tpg_after"), "drop database tpg_after with (force)"} {
 		if _, err := r.psql(sql, r.dsn); err != nil {
 			t.Fatalf("the DSN does not serve a database: %v\n%s", err, r.log)
 		}

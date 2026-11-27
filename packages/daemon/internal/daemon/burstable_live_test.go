@@ -44,6 +44,7 @@ import (
 // safe-to-evict, and the Guaranteed case's carries both (checkBurstableLiveStopEviction). It
 // writes `<case> <namespace>/<pod> <legion.yaml>` per case to LEGION_E2E_RESULT for the script.
 func TestABurstableIssuePodRendersLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	env := map[string]string{}
 	for _, name := range []string{"LEGION_E2E_KUBECONFIG", "LEGION_E2E_KUBE_CONTEXT", "LEGION_E2E_IMAGE", "LEGION_E2E_STREAM_HOST", "LEGION_E2E_WORK", "LEGION_E2E_RESULT"} {
