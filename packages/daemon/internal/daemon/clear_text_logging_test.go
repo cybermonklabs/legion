@@ -434,7 +434,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 			// readIssuePullRequest's error at the start: the pull request read GitHub's rate limit
 			// refused.
 			name: "issue_reads.go:readIssuesAtStart read an issue's pull request as the daemon starts: GitHub's rate limit", capture: "sink/daemon/issue_reads.go/readIssuesAtStart/limited",
-			message: "read an issue's pull request as the daemon starts: GitHub's rate limit; the start reads no more issues, and each issue's next handoff reads it",
+			message: "read an issue's pull request as the daemon starts: GitHub's rate limit; the start reads no more issues: each one left with an open pull request goes to the reads of its base, and one with none open is read at its next handoff",
 			level:   "ERROR", keys: []string{"error"}, holds: []string{"GET /pulls/86 with 403", "[redacted]"},
 			drive: func(t *testing.T, log *sinkLog) (string, *sinkServer) {
 				github := newSinkServer(t, map[string]sinkRoute{"/repos/acme/widgets/pulls/86": sinkLimit()})
@@ -445,7 +445,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 		{
 			// readIssuePullRequest's error at the start: the pull request read GitHub answered 500.
 			name: "issue_reads.go:readIssuesAtStart read an issue's pull request as the daemon starts; the issue's next handoff", capture: "sink/daemon/issue_reads.go/readIssuesAtStart/failed",
-			message: "read an issue's pull request as the daemon starts; the issue's next handoff reads it", level: "WARN", keys: []string{"error"},
+			message: "read an issue's pull request as the daemon starts; with an open pull request recorded the reads of its base read it again, and with none its next handoff does", level: "WARN", keys: []string{"error"},
 			holds: []string{"GET /pulls/86 with 500", "[redacted]"},
 			drive: func(t *testing.T, log *sinkLog) (string, *sinkServer) {
 				github := newSinkServer(t, map[string]sinkRoute{"/repos/acme/widgets/pulls/86": sinkRefusal(http.StatusInternalServerError)})
