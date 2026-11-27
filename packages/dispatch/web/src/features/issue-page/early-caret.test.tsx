@@ -104,7 +104,7 @@ function early(
 }
 
 early("Enter draws the focused stand-in at offset zero before the room is ready", (f) => {
-  expect(f.input()).toBe(document.activeElement);
+  expect(f.input()).toBe<Element | null>(document.activeElement);
   expect(f.input()?.textContent).toBe(TEXT);
   expect(document.getSelection()?.isCollapsed).toBe(true);
   expect(f.selection()).toBe(0);
@@ -114,7 +114,7 @@ early("Enter draws the focused stand-in at offset zero before the room is ready"
 early(
   "a click draws the caret at the pressed offset before the bind",
   (f) => {
-    expect(f.input()).toBe(document.activeElement);
+    expect(f.input()).toBe<Element | null>(document.activeElement);
     expect(f.selection()).toBe(4);
   },
   4
@@ -224,7 +224,7 @@ early("Escape restores focus now and still applies typed text at the bind", asyn
   f.write(`x${TEXT}`, 1);
   f.event("Escape");
   expect(f.input()).toBeNull();
-  expect(f.row).toBe(document.activeElement);
+  expect(f.row).toBe<Element | null>(document.activeElement);
   await f.hold?.bind(f.editor);
   expect(f.text()).toBe(`x${TEXT}`);
   expect(f.ended()).toBe(1);
@@ -247,7 +247,7 @@ early(
     try {
       b.write(`B${TEXT}`, 1);
       expect(a.input()).toBeNull();
-      expect(b.input()).toBe(document.activeElement);
+      expect(b.input()).toBe<Element | null>(document.activeElement);
       await a.hold?.bind(a.editor);
       await b.hold?.bind(b.editor);
       expect([a.text(), b.text()]).toEqual([`A${TEXT}`, `B${TEXT}`]);

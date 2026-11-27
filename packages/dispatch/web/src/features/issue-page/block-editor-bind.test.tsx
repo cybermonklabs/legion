@@ -255,7 +255,7 @@ row("ArrowDown from the last line after a hard break stays inside the bound bloc
   f.bind("a", "First line.\n".length);
   const arrow = new KeyboardEvent("keydown", { key: "ArrowDown", cancelable: true });
   expect(f.controller.keydown(arrow)).toBe(true);
-  expect(f.dom).toBe(document.activeElement);
+  expect(f.dom).toBe<Element | null>(document.activeElement);
 });
 
 row("the converted room also edits the Verification fragment on the kept editor", (f) => {

@@ -135,7 +135,7 @@ test("the forbidden reads match every read the base's document editor makes of a
   }[] = [
     {
       label: "Conversation tree read (no view param)",
-      run: () => api.getIssueTree(SAMPLE_KEY, { kind: "conversation" }),
+      run: () => api.getIssueTree(SAMPLE_KEY, { kind: ["conversation"] }),
     },
     {
       label: "Graph tree read (no view param)",
