@@ -361,9 +361,9 @@ begin plugins
 # The stale-plugin-install checkpoint's own pack of this checkout's two plugins, through
 # lib/pack-plugin.sh as every other proof that installs a branch-built plugin packs: it points
 # each manifest at its dist bundle exactly as the release does (scripts/pi-plugin-prepack.sh
-# refuses to pack the committed manifest's own source-path omp.extensions), runs `bun pm pack`
-# with the prepack's build report on stderr, restores the committed manifest on every exit of its
-# own, and prints the tarball's path alone. The checkpoint's negative control names the published
+# refuses to pack the committed manifest's own source-path omp.extensions), in a copy of the
+# package so nothing in the checkout is written, runs `bun pm pack` with the prepack's build report
+# on stderr, and prints the tarball's path alone. The checkpoint's negative control names the published
 # pi-legion@9.6.1 by exact version with no pack of its own: the daemon-rendered install script
 # resolves that version to @sjawhar/pi-legion@9.6.1 and bun fetches it from the registry inside
 # the pod. Failing here fails the run before anything is created in the namespace.

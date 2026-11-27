@@ -10,10 +10,12 @@
 #   scripts/pi-plugin-prepack.sh --stage-skills <package name> <dest dir>
 #
 # The contract with whoever packs: the release workflow, the worker image and the e2e pack step
-# rewrite `omp.extensions` to the packed bundle, ["dist/<entry>.js"], before packing and restore the
-# committed manifest afterwards. Packing with the source manifest, ["extensions/<entry>.ts"], would
-# publish a package whose extension file is absent from the tarball (`files` ships dist/ only), so
-# the script refuses any other list, naming the one it found and the one it requires.
+# rewrite `omp.extensions` to the packed bundle, ["dist/<entry>.js"], in the tree they pack, which
+# no one else reads: the release's and the image's build trees are discarded, and the e2e pack step
+# packs a copy of the package (scripts/e2e/lib/pack-plugin.sh). Packing with the source manifest,
+# ["extensions/<entry>.ts"], would publish a package whose extension file is absent from the tarball
+# (`files` ships dist/ only), so the script refuses any other list, naming the one it found and the
+# one it requires.
 #
 # The partition lives here, keyed by package name, rather than in a manifest field the daemon's
 # boot gate would then have to know: the Envoy plugin ships what every session uses, the reviewer's
@@ -83,7 +85,7 @@ name=$(jq -r '.name' package.json)
 plugin "$name"
 required="[\"dist/$entry.js\"]"
 if ! jq -e --arg bundle "dist/$entry.js" '.omp.extensions == [$bundle]' package.json >/dev/null; then
-  refuse "refusing to pack $name with omp.extensions=$(jq -c '.omp.extensions' package.json); rewrite it to $required first (the release, the worker image and the e2e pack step do, then restore the committed manifest)"
+  refuse "refusing to pack $name with omp.extensions=$(jq -c '.omp.extensions' package.json); rewrite it to $required first, in the tree you pack (the release, the worker image and the e2e pack step do)"
 fi
 
 # The Envoy plugin ships the Dispatch CLI as a second bundle, built by envoy-client's

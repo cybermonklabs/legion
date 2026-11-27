@@ -1689,7 +1689,7 @@ No key exists on the devbox; the release is written to no file and appears in no
 the script copies `testdata/previouslayout/live_app_test.go.txt` over that commit's `live_app_test.go` before it builds it, so it mints from the same `LEGION_E2E_IMPLEMENT_APP_TOKEN_COMMAND`, which its environment carries on.
 
 The `plugins` step packs this checkout's own `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` for `stale-plugin-install`'s own Resume through `lib/pack-plugin.sh`, as every proof that installs a branch-built plugin does:
-it rewrites each package's `omp.extensions` to its built `dist` bundle exactly as the release workflow does before publishing (`scripts/pi-plugin-prepack.sh` packs no other manifest), runs `bun pm pack` with the prepack's build report on stderr, restores the committed manifest on every exit of its own, and prints the tarball's path alone (the checkout needs `bun install --frozen-lockfile` first, since the bundle resolves `@legion/*` through the root's `node_modules`).
+it rewrites each package's `omp.extensions` to its built `dist` bundle exactly as the release workflow does before publishing (`scripts/pi-plugin-prepack.sh` packs no other manifest), in a copy of the package so the checkout is never written, runs `bun pm pack` with the prepack's build report on stderr, and prints the tarball's path alone (the checkout needs `bun install --frozen-lockfile` first, since the bundle resolves `@legion/*` through the root's `node_modules`).
 That checkpoint's negative control packs nothing of its own:
 it names the published `@sjawhar/pi-legion@9.6.1` by exact version, which the daemon-rendered install script resolves to `@sjawhar/pi-legion@9.6.1` for `bun add` and bun fetches from the registry inside the pod.
 
@@ -2563,14 +2563,6 @@ set all four to distinct values and two runs proceed at once, on the same devbox
 - Each daemon start checks both its ports again, since another process can take one after the prerequisites;
   once the daemon answers `/healthz`, both ports must be held by that daemon's process, or the boot fails naming the holder.
   A `/healthz` answer alone could come from another daemon on the same address.
-
-**Two lanes need separate checkouts, not just distinct identities above.**
-The controller checkpoint packs both of this checkout's plugins, `@sjawhar/pi-envoy` (`packages/pi-envoy`) and `@sjawhar/pi-legion` (`packages/pi-legion`) ([`lib/pack-plugin.sh`](#libpack-pluginsh)), each rewriting its own `package.json` in place for the few seconds its pack takes, under its own flock on that one file:
-pi-envoy's pack and pi-legion's pack take separate locks, each serializing two lanes' packs of that one plugin against each other (whichever holds it waits its turn, as `release.yaml` and every other branch-built install already rely on);
-neither protects a lane's own [`lib/built-from.sh`](#libbuilt-fromsh)
-— called in `prerequisites` and again before the build — whose `jj diff`/`jj log` read the shared working copy directly, with no lock of their own.
-A second lane's pack landing mid-read reads as this lane's own tree having changed, failing `prerequisites` or the build's own revision check for a reason that has nothing to do with the change under test.
-Run concurrent lanes from separate checkouts (`jj workspace add`, or separate clones) of the same commit.
 
 **Two lanes can race for the cluster's capacity, and that is a finding, not a bug to fix here.**
 `preflight` reads the room on the nodes the run's pods may use (`run_pod_room`) before either lane has placed a pod, and refuses, BLOCKED, only where admission refuses the run's pods: it counts no NodePool's limits and runs on a cluster with no node for those pods now, so it never refuses for want of room for `run_pods_at_once` pods (4, the cap:
@@ -6665,36 +6657,25 @@ any other is refused, since the other workspace packages are not plugins.
 `<out dir>` is created when missing, and refused inside the checkout (jj would snapshot the tarball) or when it already holds a `.tgz`.
 Stdout is exactly one line, the tarball's path; every step's own output goes to stderr.
 
-The steps are the release's, run in the checkout
-— a copy of the package cannot build, because the prepack copies the repository's `skills/` and the bundle resolves `@legion/*` through the root's `node_modules`:
+The steps are the release's, run in a tree of the run's own under its `mktemp -d` directory, never in the checkout.
+The release rewrites the manifest and builds `dist/` in a tree it then discards;
+a checkout is shared — by the test files `bun test --parallel` runs beside the one that packs (the skill-scenario rig's kept-notice row packs this checkout while `packages/pi-legion/src/daemon-api-version.test.ts` reads its manifest), by another lane's pack, by jj's snapshot — and a reader there would take the packed manifest for the committed one.
+The run's tree is laid out as the checkout is: the package is a copy (`cp -a`, modes kept, its `dist/` left out as a release's fresh checkout has none), and every other entry of the root and of `packages/` is a link to the checkout's, `.git` and `.jj` aside.
+The package builds there as it does in place: the prepack copies the repository's `skills/` through the links, and the bundle resolves `@legion/*` through the root's and the package's `node_modules`, which are links too.
 
-1. save the package's `package.json` and arm an `EXIT` trap that copies it back byte-identical (`.github/workflows/release.yaml`'s `pi_envoy_build` and `pi_legion_build` jobs rewrite the manifest in "Point extensions at the packed bundle" and discard their tree, so only this script restores);
+1. make the run's tree, with the package copied (this script's own need: the checkout is shared, where the release's build job tree is discarded);
 
-2. rewrite `omp.extensions` to `["dist/<entry>.js"]` with `jq`, where `extensions/<entry>.ts` is the committed manifest's one entry (the same step, and the `jq '.omp.extensions = …'` line of `packages/daemon/docker/worker.Dockerfile`'s plugin `RUN` for that package);
+2. rewrite the copy's `omp.extensions` to `["dist/<entry>.js"]` with `jq`, where `extensions/<entry>.ts` is the committed manifest's one entry (`.github/workflows/release.yaml`'s `pi_envoy_build` and `pi_legion_build` "Point extensions at the packed bundle", and the `jq '.omp.extensions = …'` line of `packages/daemon/docker/worker.Dockerfile`'s plugin `RUN` for that package); for `pi-legion`, `legion.daemonApiVersion` too, the tree's contract (`scripts/daemon-contract.sh`);
 
-3. `bun pm pack --destination <out dir>`, whose `prepack` builds `dist/` (the release's "Pack extension" step, `scripts/pi-plugin-prepack.sh`);
-   the bundle inlines `package.json`, so it is built while the manifest names the packed bundle, as the release builds it;
-
-4. copy the saved manifest back and check it byte for byte (this script's own need: the checkout is reused, where the release's build job tree is discarded).
+3. `bun pm pack --destination <out dir>` in the copy, whose `prepack` builds `dist/` (the release's "Pack extension" step, `scripts/pi-plugin-prepack.sh`);
+   the bundle inlines `package.json`, so it is built while the manifest names the packed bundle, as the release builds it.
 
 Each step cites its source by what it runs, never by line number: the lines move with every edit above them.
 The release's version bump (its "Set release version" step) is not a step: the tarball carries the checkout's own version.
-The saved manifest is written to the run's `mktemp -d` directory, never beside `package.json`, so an interrupted run strands no `tmp.json` in the checkout.
 
-The manifest is rewritten only for as long as the pack takes.
-The trap copies it back on every other way out
-— a failed step, `SIGHUP`/`SIGINT`/`SIGTERM` (each routed through `exit`) — so a pack that dies halfway never leaves the rewrite for jj to snapshot.
-The script ignores SIGPIPE, so this holds when whoever read its stderr has gone too:
-bash's `Terminated` notice for an interrupted pack would otherwise kill it before the trap ran.
-It keeps the run's status; if the copy back itself fails, it says where the saved bytes are, leaves them there, and exits non-zero.
-Afterwards `jj status` is as it was before the run: `dist/` is gitignored, and nothing else is written inside the checkout.
-
-Runs in one checkout take turns at each package's manifest from the save to the copy back, under a `flock` on the manifest itself (rewritten and restored in place, so the lock's inode lasts the whole window);
-a run that has to wait says so on stderr.
-Without the lock, a run that starts while another has the manifest rewritten saves that rewrite as its "before" and puts it back at its own exit:
-both runs exit 0 and jj snapshots the rewritten `package.json`.
-Two stage proofs in one checkout, or a stage proof and the skill-scenario rig, can pack at the same time, and the lock takes them in turn;
-the two packages' packs never wait on each other.
+The tarball holds the bytes an in-place pack of the same tree held, but for one kind of line: above each module it inlines, `bun build` writes a `//` comment naming the module's path relative to the directory it builds in, and the run's tree resolves `node_modules` and the other workspace packages through links to the checkout's real paths, so those comments name the same files by a longer path.
+No code, manifest, notice, skill or mode differs.
+Runs in one checkout never wait on each other, and the run's tree goes with its temp directory on every way out.
 
 ## lib/install-plugin-profile.sh
 
@@ -6746,7 +6727,7 @@ Stdout is exactly one line, the installed manifest's path as `HOME=<home> OMP_PR
 for `pi-legion` that is the manifest the daemon's contract gate reads under the same profile (`pluginManifestPath`, `packages/daemon/internal/daemon/bootgate.go`).
 Every step's own output goes to stderr.
 
-The plugin is packed by [`lib/pack-plugin.sh`](#libpack-pluginsh), the release's pack steps run in the checkout, into the run's `mktemp -d` directory (never beside `package.json`, so an interrupted run strands no `.tgz` in the checkout).
+The plugin is packed by [`lib/pack-plugin.sh`](#libpack-pluginsh), the release's pack steps run in a copy of the package, into the run's `mktemp -d` directory (never beside `package.json`, so an interrupted run strands no `.tgz` in the checkout).
 Then:
 
 1. unpack the tarball into `<dir>` (`worker.Dockerfile`'s `mkdir -p /out/<package>` and `tar xzf ./*.tgz -C /out/<package> --strip-components=1`);
