@@ -27,6 +27,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/githubrate"
 	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/clock"
@@ -269,6 +270,9 @@ type testServerOptions struct {
 	// (DepsInput.GitHubRequestTimeout); zero keeps production's twenty seconds. A case that holds
 	// GitHub until it lets it go passes pastTheRun, so the release and nothing else ends the call.
 	githubRequestTimeout time.Duration
+	// githubRate is the process's count of its GitHub calls (DepsInput.GitHubRate); nil counts
+	// none, as before the rate reading.
+	githubRate *githubrate.Counter
 	// agentSecretsTimeout is the window of each call of the server's secrets broker client
 	// (cipher.WithTimeout), set on the client the server's Deps hold; zero keeps production's five
 	// seconds. A case that holds the broker until it lets it go passes pastTheRun.
@@ -480,6 +484,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		App:                  options.app,
 		GitHubAPIBase:        options.githubAPIBase,
 		GitHubRequestTimeout: options.githubRequestTimeout,
+		GitHubRate:           options.githubRate,
 		TestHooksEnabled:     options.testHooks,
 		StreamHeartbeat:      options.streamHeartbeat,
 		Admission:            options.admission,

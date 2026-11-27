@@ -331,10 +331,11 @@ func WithRequestTimeoutForTest(bound time.Duration) Option {
 // under that installation and the caller kind its context carries (githubrate.WithCaller). A
 // transport alone could not do the second half, since only the mint knows whose token it is.
 // Every client of one process that calls with installation tokens takes the one Counter, as
-// Dispatch's two do (the API's, which the architecture importer and the delivery intakes and
-// reconcile share, and the CI reconcile's), because GitHub budgets the installation and the
-// reading reports what the process spent of it, whichever client spent it. A nil counter counts
-// nothing, which is a client built without the option.
+// Dispatch's three do (the API's; the background one, which the architecture importer and the
+// delivery intakes and reconcile share (api.Deps.BackgroundGitHub); and the CI reconcile's),
+// because GitHub budgets the installation and the reading reports what the process spent of it,
+// whichever client spent it. A nil counter counts nothing, which is a client built without the
+// option.
 func WithRateCounter(counter *githubrate.Counter) Option {
 	return func(c *Client) {
 		if counter == nil {

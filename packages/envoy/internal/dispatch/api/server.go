@@ -484,7 +484,10 @@ func NewDeps(input DepsInput) (Deps, error) {
 	var architectureImporter *architecture.Importer
 	backgroundGitHub := github
 	if input.Store != nil && input.Store.Pool != nil {
-		if backgroundGitHub, err = newGitHub(githubapp.WithLimits(ratelimit.OnBackground(input.Store.Pool))); err != nil {
+		// The background client counts its calls on the process's one Counter too
+		// (githubapp.WithRateCounter): the importer, the delivery intakes and the reconcile spend
+		// the same installations' budget the API's client does.
+		if backgroundGitHub, err = newGitHub(githubapp.WithRateCounter(input.GitHubRate), githubapp.WithLimits(ratelimit.OnBackground(input.Store.Pool))); err != nil {
 			return Deps{}, err
 		}
 		architectureImporter = architecture.NewImporterOnBackground(input.Store, backgroundGitHub, input.Events)
