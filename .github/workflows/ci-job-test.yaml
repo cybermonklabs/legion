@@ -155,7 +155,8 @@ jobs:
       # to .github/scripts/harness-pool.sh, which queues it and returns; the harnesses run beside
       # each other, no more at once than the runner has cores, and beside the Bun steps after
       # them, and "Wait for the script harnesses and judge them",
-      # the job's last step but the ci-ok report, is their verdict and prints each one's log. A
+      # the job's last step but the record upload and the ci-ok report, is their verdict and
+      # prints each one's log. A
       # harness that needs an earlier step is queued after it: release-push.test.sh after
       # install-changie, disk_watch.test.sh after the user-namespace sysctl, check-ci-filters.test.sh,
       # go-cache-working-set.test.sh and go-legs.test.sh after setup-go.
@@ -166,6 +167,13 @@ jobs:
       - name: Test the release version bump
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"release_bump_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/release-bump.test.sh .github/scripts/release-bump.test.sh
+
+      # The reader of the record the pool keeps of when each harness line was written
+      # (.github/actions/harness-times-upload uploads it): its cases build fixture records of
+      # their own and read no artifact and no network.
+      - name: Test the harness case time reader
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"harness_case_times_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/harness_case_times.test.sh .github/scripts/harness_case_times.test.sh
 
       - name: Test third-party notices
         run: bun test scripts/third-party-notices.test.ts
@@ -527,6 +535,22 @@ jobs:
       - name: Name the script harnesses a cancelled job left
         if: cancelled() && steps.harness-wait.outcome == 'skipped'
         run: .github/scripts/harness-pool.sh wait --allow-none --now
+
+      # When each of those harnesses ran each of its cases: the pool stamps every line of every
+      # harness's log with the time it was written, and this keeps that record for 90 days, the
+      # repository's default (.github/actions/harness-times-upload, docs/testing.md). GitHub
+      # stamps a job's log by the line and the wait above prints each harness's log at the end,
+      # so the job's own log says only when the wait printed it. `always()`, so a cancelled or
+      # timed-out job keeps what was stamped before it ended. `continue-on-error`, since nothing the
+      # pool records may change what a test run decides: a failed upload is a red mark on this step
+      # alone, the job and its ci-ok report keep the harnesses' verdict, and the reader reports the
+      # lost record as UNKNOWN.
+      - name: Upload the harness case times
+        if: always()
+        continue-on-error: true
+        uses: ./.github/actions/harness-times-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
