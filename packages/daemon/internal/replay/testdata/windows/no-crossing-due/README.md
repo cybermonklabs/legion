@@ -14,8 +14,8 @@ No segment holds them, so the kill model counts them apart and keeps each at its
 Under `signals`, with its limit of 2 kills alone, the run writes the kills at 09:41, 10:40 and 10:50, as the paragraph above works them out: 1, 2 and 1.
 
 The window also runs under `main`, which gives the same scorecard but for its rule's name: no issue, so every measure is zero, and assumption 1 alone.
-The run limits all six signals, which `main` admits by none, so it keeps no deadline (`deadlines` is `[]`) and moves no slot (`slotPasses` is `[]`), under the ceiling of the window's one cap, 1.
+The run limits all five signals, which `main` admits by none, so it keeps no deadline (`deadlines` is `[]`) and moves no slot (`slotPasses` is `[]`), under the ceiling of the window's one cap, 1.
 At each of 09:41, 10:40 and 10:50 it writes:
 
-- `idle`, `queue`, `provider`, `refusals` and `approvals`: unrecorded, since the window names no span of any of them and holds no provider's record, merge queue file or settings events.
+- `idle`, `queue`, `provider` and `approvals`: unrecorded, since the window names no span of any of them and holds no provider's record, merge queue file or settings events.
 - `kills`: 1 at 09:41 (09:40's kill), 2 at 10:40 (09:50's and 10:35's, 09:40's having left the hour) and 1 at 10:50 (10:35's alone), the kill model's moments being the record's under every rule.

@@ -70,7 +70,6 @@
           "idle": 0.5,
           "queue": 2,
           "provider": 1,
-          "refusals": 4,
           "kills": 2,
           "approvals": 3
         },
@@ -79,7 +78,6 @@
             "idle": null,
             "queue": null,
             "provider": null,
-            "refusals": null,
             "kills": null,
             "approvals": null
           }

@@ -241,7 +241,7 @@ type absentCase struct {
 // before reported with no token count.
 var providerCoverage = []string{"provider/headroom: no token limit", "provider/headroom: a request with no token count"}
 
-// seriesRows is one row for each of the five series (store.LiveSeries()), the provider's by its
+// seriesRows is one row for each of the five series (signals.Names()), the provider's by its
 // headroom.
 func seriesRows() []seriesRow {
 	booted := func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
@@ -417,7 +417,7 @@ func TestSignalGateInventory(t *testing.T) {
 			parts[signal+"/"+part+": "+absent.cause] = true
 		}
 	}
-	for _, name := range store.LiveSeries() {
+	for _, name := range signals.Names() {
 		if !series[name] {
 			t.Errorf("the series %s has no row of TestLiveSignalGate/series", name)
 		}

@@ -101,15 +101,19 @@ func seededEvent(issueKey string, seq int, kind, payload string, at time.Time) [
 	return []any{issueKey, seq, kind, seededWriter, payload, false, at, at}
 }
 
-// seededStatusMovePayload is the payload of the `issue.updated` event a status write appends: the
-// status the issue was moved to and a `changed` list naming the field, which is what the second
-// fault's lateral reads to say when an issue was moved into `backlog` or `icebox` and by whom
-// (priorityBacklogQuery).
-func seededStatusMovePayload(t testing.TB, status string) string {
+// seededIssuePayload is the payload of an issue event: the status the issue stands in after it,
+// and the fields the write changed, where it names any. A status write's `issue.updated` names
+// `status` in `changed`, which is what the second fault's lateral reads to say when an issue was
+// moved into `backlog` or `icebox` and by whom (priorityBacklogQuery).
+func seededIssuePayload(t testing.TB, status string, changed ...string) string {
 	t.Helper()
-	payload, err := json.Marshal(map[string]any{"status": status, "changed": []string{"status"}})
+	fields := map[string]any{"status": status}
+	if len(changed) > 0 {
+		fields["changed"] = changed
+	}
+	payload, err := json.Marshal(fields)
 	if err != nil {
-		t.Fatalf("encode a status move payload: %v", err)
+		t.Fatalf("encode an issue event payload: %v", err)
 	}
 	return string(payload)
 }

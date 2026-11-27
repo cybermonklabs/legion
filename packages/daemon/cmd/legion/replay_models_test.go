@@ -22,6 +22,7 @@ import (
 // from --kills-from, by default 2026-11-18T00:00:00Z. A missing --window and a --kills-from that is
 // no time are usage errors.
 func TestReplayModelsPrintsEachModelAndItsDailyTest(t *testing.T) {
+	t.Parallel()
 	at := func(hour, minute int) time.Time { return time.Date(2001, time.March, 5, hour, minute, 0, 0, time.UTC) }
 	opening := "daemon: opening the store; a connection error that the next attempt can clear is tried again"
 	window := replay.Window{

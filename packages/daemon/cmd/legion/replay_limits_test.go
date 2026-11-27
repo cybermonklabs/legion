@@ -13,6 +13,7 @@ import (
 // names the flag; and a window it cannot read, with its reason, as a failure, so a plan is never
 // made from nothing. Its help names the readings the output rests on.
 func TestReplayLimitsRefusesWhatItCannotPlanFrom(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	given := []string{"--window-one", filepath.Join(dir, "one"), "--window-two", filepath.Join(dir, "two"),
 		"--models", filepath.Join(dir, "a.json"), "--models-reverse", filepath.Join(dir, "b.json"), "--baseline", dir, "--ceiling", "171"}

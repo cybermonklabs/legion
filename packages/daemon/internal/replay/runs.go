@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 )
 
 // A directory of runs is where validate, forecast and compare write each run they make and read
@@ -740,8 +741,10 @@ func readPart(dir string, key partKey, keepIssues bool) (*partRead, error) {
 // beside the measures of R4 (holdsLineReadings), or whose run.json was written before it named the
 // ancestors its window lacks (runRecord.MissingAncestors nil), its measures reading each issue's own
 // priority, is refused, naming it: read, it would give every report 0, or another priority's
-// reading, in each of those measures. A run whose window lacks an ancestor's history gives costs
-// with no priority taken in today's line's order and no wait of urgent work (Costs.Unresolved).
+// reading, in each of those measures. So is a run whose run.json limits a name that is no signal
+// (signals.Names), as a run written while the provider's refusals were a signal limits them: its
+// admissions rest on a limit no run takes now. A run whose window lacks an ancestor's history gives
+// costs with no priority taken in today's line's order and no wait of urgent work (Costs.Unresolved).
 func readRun(dir string, keepIssues bool, places map[uint64]stretchDraw) (runRead, error) {
 	var read runRead
 	var ran runRecord
@@ -751,6 +754,12 @@ func readRun(dir string, keepIssues bool, places map[uint64]stretchDraw) (runRea
 	if ran.SignalSummaries == nil || ran.SuppliedRefused == nil {
 		return runRead{}, fmt.Errorf("replay: the run in %s was written before its run.json held the summaries of the signals it limited and the refused minutes under the token limit (signalSummaries, suppliedRefused); "+
 			"it must be run again: delete its directory and run its part again", dir)
+	}
+	for _, name := range slices.Sorted(maps.Keys(ran.Limits)) {
+		if !slices.Contains(signals.Names(), name) {
+			return runRead{}, fmt.Errorf("replay: the run in %s limits %s, which is no signal a run takes a limit on now (%s); it was written while %s was one, "+
+				"and it must be run again: delete its directory and run its part again", dir, name, strings.Join(signals.Names(), ", "), name)
+		}
 	}
 	if ran.MissingAncestors == nil {
 		return runRead{}, fmt.Errorf("replay: the run in %s was written before its run.json named the ancestors whose history its window lacks (missingAncestors), "+

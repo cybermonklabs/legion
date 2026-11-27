@@ -11,6 +11,9 @@ GATE = gate("envoy_go", "envoy-go", runs=[
              ["./agentloop/"], workflow=ENVOY_GO_FILE, tags="modellive", mode="vet"),
     step_run(ENVOY_SKIPS_JOB, "Vet agent-secrets' moto run (no moto)", "go vet -tags moto ./cmd/cipher/", ENVOY,
              ["./cmd/cipher/"], workflow=ENVOY_GO_FILE, tags="moto", mode="vet"),
+    # ADOPTER_PACKAGES' tests, -v, after install-jj, in envoy-go-skips, built from the one list
+    # that also puts the package with that job in the legs file (hold_envoy_legs).
+    step_run(ENVOY_SKIPS_JOB, ADOPTER_STEP, ADOPTER_TEXT, ENVOY, ADOPTER_PKGS, workflow=ENVOY_GO_FILE),
     ceiling_run(ENVOY_LEGS_JOB, ENVOY_GO_FILE),
 ], exact=[
     # One go test per package of the plain run the race lane cannot make (RACE_IMPOSSIBLE_*),
@@ -97,6 +100,7 @@ GATE = gate("envoy_go", "envoy-go", runs=[
     (GO_LEGS_SCRIPT, at(ENVOY_LEGS_JOB, UNIT_TEST_STEP, ENVOY_GO_FILE)),
     (GO_LEGS, f"{GO_LEGS_SCRIPT} reads each leg's packages from it"),
 ) + ceiling_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE) + service_settings_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
+  + install_jj(ENVOY_SKIPS_JOB, ENVOY_GO_FILE)
   + setup_go(ENVOY_LEGS_JOB, f"{ENVOY}/go.mod", ENVOY_GO_FILE) + bun_job(ENVOY_LEGS_JOB, ENVOY_GO_FILE))
 GATE = with_reads(GATE, [
     Read('packages/envoy/**', "filter envoy_go held packages/envoy/** by hand before the filters were computed: it selected 728 file(s) no other read of this gate declares", but=('**/*_test.go',)),

@@ -838,9 +838,6 @@ func (n *neutralizer) registerGit(in GitInput) {
 		n.values = append(n.values, pull.Base)
 		for _, head := range pull.Heads {
 			n.values = append(n.values, head.Paths...)
-			for _, verdict := range head.Verdicts {
-				n.values = append(n.values, verdict.Paths...)
-			}
 		}
 	}
 	for _, missing := range in.Missing {
@@ -852,7 +849,7 @@ func (n *neutralizer) registerGit(in GitInput) {
 // renamed (renameKeys) and its deny words withheld, the same path the same in every line, so the
 // paths a head and a commit share stay shared, each list sorted again and a path two deny words
 // made one held once; each missing input's detail renamed as a daemon line's text is; its commits,
-// pull requests, times, sources and reasons kept.
+// pull requests, times, sources, verdicts and reasons kept.
 func (n *neutralizer) gitInput(in GitInput) GitInput {
 	paths := func(paths []string) []string {
 		if paths == nil {
@@ -873,15 +870,7 @@ func (n *neutralizer) gitInput(in GitInput) GitInput {
 		heads := make([]GitHead, len(pull.Heads))
 		for j, head := range pull.Heads {
 			head.Paths = paths(head.Paths)
-			verdicts := make([]GitVerdict, len(head.Verdicts))
-			for k, verdict := range head.Verdicts {
-				verdict.Paths = paths(verdict.Paths)
-				verdicts[k] = verdict
-			}
-			if head.Verdicts == nil {
-				verdicts = nil
-			}
-			head.Verdicts = verdicts
+			head.Verdicts = slices.Clone(head.Verdicts)
 			heads[j] = head
 		}
 		pull.Base = n.withhold(n.renameLogins(n.rename(pull.Base)))

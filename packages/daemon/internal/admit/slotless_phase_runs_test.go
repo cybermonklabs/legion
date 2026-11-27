@@ -271,6 +271,42 @@ func TestAcceptingRetroAndMergingRunWithNoSlot(t *testing.T) {
 	})
 }
 
+// A return from accepting to reviewing is work in a phase that keeps a row (record.PhaseKeepsSlot):
+// the review's outcome can send the change back to be written again. So the architect's move back
+// of an issue that holds no row in accepting writes the reviewer's start marked for a row, and
+// with the cap full that start stays unclaimable and the issue waits in the line. The row the cap
+// frees next goes to it, and the reviewer's start is claimable on that row.
+func TestAReturnFromAcceptingToReviewingWaitsForASlot(t *testing.T) {
+	pool := migratedPool(t)
+	admission := quiet(t, 1)
+	// The cap's one row, held by a tree already at work.
+	seedSlotted(t, pool, "LEGION-100", "A")
+
+	const sentBack = "LEGION-400"
+	slotlessRoot(t, pool, sentBack, phase.Accepting, "needs_review", "B")
+	by, generation, entry := rootArchitectsRead(t, pool, sentBack)
+	applyFact(t, pool, admission, "sent-back-to-review", intake.BackwardMove{Issue: sentBack, Requester: claim.RoleArchitect,
+		To: phase.Reviewing, Reason: "the review must read the change again", By: by, Generation: generation, Entry: entry})
+
+	if got := issue(t, pool, sentBack); got.Phase != phase.Reviewing {
+		t.Fatalf("the issue sent back = %#v, want it reviewing", got)
+	}
+	if holdsSlot(t, pool, sentBack) {
+		t.Fatalf("rows = %#v, want %s holding none: the cap has no row to give", slots(t, pool), sentBack)
+	}
+	if start := theOneStart(t, pool, sentBack); start.role != claim.RoleReviewer || !start.needsSlot || start.claimable {
+		t.Fatalf("the start of %s = %+v, want the reviewer's, marked for a row and held while the cap has none", sentBack, start)
+	}
+	assertWaiting(t, pool, []string{sentBack})
+
+	closeTree(t, pool, admission, "first-closed", "LEGION-100", "A")
+
+	if !holdsSlot(t, pool, sentBack) || !claimableStart(t, pool, sentBack) {
+		t.Fatalf("the starts of %s = %+v on rows %#v, want the reviewer's task claimable on the row the line gave it",
+			sentBack, startsOf(t, pool, sentBack), slots(t, pool))
+	}
+}
+
 // The repair of a worker that has lost its task reaches an issue standing in accepting, retro or
 // merging (record.InSlotlessPhase), which holds no row to be found by (admit's resumeSlottedWorkers).
 // The retro's implementer and the merger are started again, exactly as a row holder's worker is,

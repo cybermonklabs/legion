@@ -17,9 +17,9 @@ import (
 // Admission by signals in a replay (spec R11). The snapshot of each pass (readSignals) reads R11's
 // signals from the replay itself, never from the record. The idle share comes from the replay's own
 // slot holders: the states its pass observer reads over the newest pass's view and the stub's
-// claims. The approvals come from the replay's copy of Dispatch. The provider's headroom and
-// refusals, the kills and the merge queue come from the load models, read at the replay's own work
-// in flight, segment starts and queue entries as the run goes (ModelReader). After every pass, at
+// claims. The approvals come from the replay's copy of Dispatch. The provider's headroom, the kills
+// and the merge queue come from the load models, read at the replay's own work in flight, segment
+// starts and queue entries as the run goes (ModelReader). After every pass, at
 // each moment a modelled signal's input changes with no pass, and at each turn's start and end that
 // moves the idle share, the run computes the project's one deadline: the earliest crossing of the
 // signals with a limit, and under the back-off the allowance's next rise. It keeps one
@@ -91,12 +91,10 @@ type SignalReading struct {
 
 // signalModels is the load model each modelled signal comes from (spec R11). A model that gives
 // no limit for its signal leaves the signal with no limit in a run, but where givesSuppliedLimit
-// says it limits its signal under the run's token limit.
 var signalModels = map[string]string{
-	SignalQueue:      ModelQueue,
-	SignalProvider:   ModelTokens,
-	signals.Refusals: ModelTokens,
-	SignalKills:      ModelMemory,
+	SignalQueue:    ModelQueue,
+	SignalProvider: ModelTokens,
+	SignalKills:    ModelMemory,
 }
 
 // givesSuppliedLimit says whether model limits its signal in a run given the project's token
@@ -163,11 +161,10 @@ type standingDeadline struct {
 // and, where it limits a modelled signal or backs off, the load models fitted on the window
 // (windowInputs.models), read from the window's start. A model limits its signal where it gives a
 // limit, and, under a token limit (RunConfig.TokenLimit), where givesSuppliedLimit says it does. The
-// back-off folds the refusals and the kills of a model that limits its signal alone. The models
-// read the token limit only where the run reads the tokens model's signals, its headroom, its
-// refusals or their setbacks, so a run that reads none of them rests on no minute modelled against
-// it. Where the run limits the approvals, the replay's copy of Dispatch reads every ask, assignee
-// and default assignee.
+// back-off folds the kills where the memory model limits its signal. The models read the token
+// limit only where the run limits the provider's headroom, so a run that does not limit it rests on
+// no minute modelled against it. Where the run limits the approvals, the replay's copy of Dispatch
+// reads every ask, assignee and default assignee.
 func (d *driver) setupSignals() error {
 	cfg, w := d.cfg, d.window
 	s := &runSignals{mode: d.rule.Signals, limits: maps.Clone(cfg.Limits), inForce: map[string]float64{}, unlimited: map[string]string{},
@@ -200,7 +197,7 @@ func (d *driver) setupSignals() error {
 		for _, model := range models.Models {
 			gives[model.Name] = model.GivesLimit || cfg.TokenLimit > 0 && givesSuppliedLimit(model)
 		}
-		readsTokens := s.mode == signals.Backoff
+		readsTokens := false
 		for name, limit := range s.limits {
 			if model := signalModels[name]; model != "" && !gives[model] {
 				s.unlimited[name] = model
@@ -213,7 +210,7 @@ func (d *driver) setupSignals() error {
 		if readsTokens && gives[ModelTokens] {
 			tokenLimit = cfg.TokenLimit
 		}
-		if s.models, err = models.Reader(w.From, SetbackSources{Refusals: gives[ModelTokens], Kills: gives[ModelMemory]}, tokenLimit); err != nil {
+		if s.models, err = models.Reader(w.From, gives[ModelMemory], tokenLimit); err != nil {
 			return err
 		}
 	}
@@ -284,8 +281,6 @@ func (d *driver) signalValue(name string, at time.Time) signals.Value {
 		return d.sig.models.Queue(at)
 	case SignalProvider:
 		return d.sig.models.Headroom(at)
-	case signals.Refusals:
-		return d.sig.models.Refusals(at).Value()
 	case SignalKills:
 		return d.sig.models.Kills(at)
 	}
@@ -303,8 +298,6 @@ func (d *driver) signalNext(name string, at time.Time, limit float64) (time.Time
 		return d.sig.models.QueueNext(at, limit)
 	case SignalProvider:
 		return d.sig.models.HeadroomNext(at, limit)
-	case signals.Refusals:
-		return d.sig.models.RefusalsNext(at, limit)
 	case SignalKills:
 		return d.sig.models.KillsNext(at, limit)
 	}
@@ -411,8 +404,7 @@ func (d *driver) pushDeadline(crossing signals.Crossing) *standingDeadline {
 
 // scheduleInput keeps the item of the first moment after at at which a modelled signal the run
 // reads changes with no pass, as the models stand: a kill, where the run limits the kills or backs
-// off on them; a pull request entering or leaving the merge queue, where it limits the queue; and
-// the end of a minute that may hold a refusal, where it limits the refusals or backs off on them.
+// off on them; and a pull request entering or leaving the merge queue, where it limits the queue.
 // At that moment the run computes its deadline again and runs no pass: the replay leaves each
 // memory kill's fact out (assumption 31), as it leaves every other modelled event.
 func (d *driver) scheduleInput(at time.Time) {
@@ -425,17 +417,12 @@ func (d *driver) scheduleInput(at time.Time) {
 	}
 	if m := s.models; m != nil {
 		_, kills := s.inForce[SignalKills]
-		_, refusals := s.inForce[signals.Refusals]
 		_, queue := s.inForce[SignalQueue]
-		backoff := s.mode == signals.Backoff
-		if kills || backoff && m.sources.Kills {
+		if kills || s.mode == signals.Backoff && m.foldKills {
 			consider(m.NextKill(at))
 		}
 		if queue {
 			consider(m.NextQueueChange(at))
-		}
-		if refusals || backoff && m.sources.Refusals {
-			consider(m.NextRefusal(at))
 		}
 	}
 	if s.input != nil && !s.input.done && s.input.at.Equal(next) {

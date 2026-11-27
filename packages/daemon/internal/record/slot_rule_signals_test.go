@@ -58,9 +58,9 @@ func TestASignalRuleDecidesInItsOwnModeAndTheDaemonsRuleInTheSnapshots(t *testin
 		s.At, s.Setbacks = at, setbacks
 		return s
 	}
-	refusal := signals.Setback{At: now.Add(-30 * time.Minute), Count: 1}
-	kill := signals.Setback{At: now.Add(-25 * time.Minute), Count: 1}
-	twoRefusals := signals.Setback{At: refusal.At, Count: 2}
+	kill := signals.Setback{At: now.Add(-30 * time.Minute), Count: 1}
+	later := signals.Setback{At: now.Add(-25 * time.Minute), Count: 1}
+	twoKills := signals.Setback{At: kill.At, Count: 2}
 	ceilingRule, backoffRule := keptRule(t, "signals"), keptRule(t, "signals-backoff")
 	for _, tc := range []struct {
 		name   string
@@ -83,13 +83,13 @@ func TestASignalRuleDecidesInItsOwnModeAndTheDaemonsRuleInTheSnapshots(t *testin
 		{"signals, every signal under, a tick", ceilingRule, signals.PassTick, under, 2, signals.HeldByTick},
 		{"signals, the holders at the ceiling", ceilingRule, signals.PassEvent, under, 3, signals.HeldByCap},
 		{"signals in its own mode, whatever mode the snapshot names", ceilingRule, signals.PassEvent,
-			history(moded(under, signals.Backoff), now, twoRefusals), 2, signals.Starts},
-		{"signals-backoff, allowance 3 and a refusal gives 2: the holders at 2", backoffRule, signals.PassEvent, history(under, now, refusal), 2, signals.HeldByCap},
-		{"signals-backoff, allowance 2: one holder below it", backoffRule, signals.PassEvent, history(under, now, refusal), 1, signals.Starts},
-		{"signals-backoff, allowance 1 and a kill stays 1: one holder", backoffRule, signals.PassEvent, history(under, now, twoRefusals, kill), 1, signals.HeldByCap},
-		{"signals-backoff, allowance 1 and a kill stays 1: no holder", backoffRule, signals.PassEvent, history(under, now, twoRefusals, kill), 0, signals.Starts},
+			history(moded(under, signals.Backoff), now, twoKills), 2, signals.Starts},
+		{"signals-backoff, allowance 3 and a kill gives 2: the holders at 2", backoffRule, signals.PassEvent, history(under, now, kill), 2, signals.HeldByCap},
+		{"signals-backoff, allowance 2: one holder below it", backoffRule, signals.PassEvent, history(under, now, kill), 1, signals.Starts},
+		{"signals-backoff, allowance 1 and a third kill stays 1: one holder", backoffRule, signals.PassEvent, history(under, now, twoKills, later), 1, signals.HeldByCap},
+		{"signals-backoff, allowance 1 and a third kill stays 1: no holder", backoffRule, signals.PassEvent, history(under, now, twoKills, later), 0, signals.Starts},
 		{"signals-backoff, allowance 2 below a ceiling of 3 with nothing for an hour gives 3", backoffRule, signals.PassDeadline,
-			history(under, refusal.At.Add(time.Hour), refusal), 2, signals.Starts},
+			history(under, kill.At.Add(time.Hour), kill), 2, signals.Starts},
 		{"signals-backoff, a signal at its limit", backoffRule, signals.PassEvent, binding, 0, signals.HeldBySignal},
 		{"signals-backoff, a tick", backoffRule, signals.PassTick, under, 0, signals.HeldByTick},
 	} {

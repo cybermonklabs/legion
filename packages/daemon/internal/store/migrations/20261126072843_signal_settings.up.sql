@@ -2,7 +2,7 @@
 -- record of the changes a reader of the signals sees (S3 and S6 of dispatch://INFRA-5899).
 --
 --   - signal_settings is one row per project and setting: the switch ('switch', value 1 on and 0
---     off) and the limit of each of the five series by its name of store.LiveSeries() (value null
+--     off) and the limit of each of the five series by its name of signals.Names() (value null
 --     for a limit a person cleared), each with who set it last (the controller with its session, or
 --     the operator with none, as project_pauses holds a pause's actor), when, and the person's cited
 --     reason. A project with no row is a fresh project: admission by signals off and no limit.

@@ -502,11 +502,11 @@ func (r *modelRecord) tokens(at *ModelledSignals) LoadModel {
 			}
 			limited += minute.to.Sub(minute.from)
 			ownRecorded += float64(minute.line.Own)
-			ownModelled += float64(modelled.Own)
+			ownModelled += float64(modelled.own)
 			if minute.line.Own > 0 {
 				refusedRecorded++
 			}
-			if at.refused[key] {
+			if modelled.refused {
 				refusedModelled++
 			}
 		}

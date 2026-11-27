@@ -14,7 +14,7 @@
 // LEGION_TEST_PG_DSN names, and the script starts none.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// whole-daemon harness (startDaemonWithin, by way of liveIssueProof's boot), so the proof exercises
+// whole-daemon harness (startDaemonLogging, by way of liveIssueProof's boot), so the proof exercises
 // the real configuration, the real store and its migrations, the real HTTP API, the real claim
 // supervision and its worker stream, the real openWorkflow, the real JetStream consumers, the real
 // admission pass and the real outbox lanes, the role-message lane that carries the phase-ended

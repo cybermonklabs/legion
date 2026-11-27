@@ -18,10 +18,11 @@
 //     observe, which is never a pass.
 //
 // Every record belongs to a named set: session id ses_refill_<set>_<index>, title
-// "refill <set> <index> v<variant>" and interest topic notifications.team.refill.<set>.v<variant>, so
-// a poll tells which set a row is from and which version of it the listener answered. A set is
-// written on the command line as name=count[:variant] (variant 1 by default), several separated by
-// commas.
+// "refill <set> <index> v<variant>" and directory /refill/<set>/v<variant>, in the session record
+// and the interest row alike, so a poll tells which set a row is from and which version of it the
+// listener answered: a session row by its title, an interest row by its directory, which the
+// listener keeps from a registration. A set is written on the command line as
+// name=count[:variant] (variant 1 by default), several separated by commas.
 //
 // Each file holds one of those roles: main.go dispatches the commands; records.go names a set's
 // records and builds them; seed.go writes them straight into a bucket (seed, and recreate's fill),

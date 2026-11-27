@@ -29,6 +29,7 @@ import { phaseOpParameters } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { namesMissing } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
 import pkg from "../package.json";
 import { createLegionTool, type LegionToolSession } from "./tools";
@@ -217,7 +218,6 @@ const toolFor = (active: LegionToolSession) =>
     pi,
     daemon: recordingDaemon({}).daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
@@ -227,25 +227,25 @@ const toolFor = (active: LegionToolSession) =>
 
 // The daemon's refusals and notices over children carry its rules for ending a child
 // (record.EndChildRule) and its sentence on a status it has not taken yet
-// (record.StatusNotTakenYet), and the description gives an architect the same words. The daemon's
+// (record.StatusNotTakenYet), and the description gives an architect the same text. The daemon's
 // golden test (`packages/daemon/internal/api`, TestTheEndChildRuleGolden) writes both texts to
-// `end-child-rule.json`. This case holds the description to the file, so a word changed on either
-// side alone fails one test or the other. The first and the last sentence of the rule are written
-// out here, so a fixture that holds only a part of the rule fails here too.
-test("the legion tool's description carries the daemon's rules for ending a child and its not-taken-yet sentence, word for word", () => {
+// `end-child-rule.json`. This case holds the description to the file, so a change on either side
+// alone fails one test or the other. It holds no word of either text.
+test("the legion tool's description carries the daemon's rules for ending a child and its not-taken-yet sentence, as the daemon writes them", () => {
   const { rule, notTakenYet } = daemonFixture("end-child-rule.json") as {
     readonly rule: string;
     readonly notTakenYet: string;
   };
-  expect(rule).toStartWith("End a child with your own status write in Dispatch. ");
-  expect(rule).toEndWith(" When the daemon set the move back, write it again.");
+  expect(rule).not.toBe("");
+  expect(notTakenYet).not.toBe("");
   const { description } = toolFor(claimSession("architect"));
   expect(description).toContain(rule);
   expect(description).toContain(notTakenYet);
 });
 
-/** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole: every
- * property and every `op` value in the order the tool declares them. */
+/** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole but for
+ * the words of each property's description: every property and every `op` value in the order the
+ * tool declares them. Which properties carry a description is DESCRIBED_PROPERTIES. */
 const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
   $schema: "https://json-schema.org/draft/2020-12/schema",
   type: "object",
@@ -290,34 +290,13 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     },
     issue: { type: "string" },
     since: { type: "string" },
-    artifactId: {
-      type: "string",
-      description:
-        "register_gate's document for the step it registers, and register_plan's plan: its artifact id, slug, or filename, as a dispatch command's --artifact takes it",
-    },
+    artifactId: { type: "string" },
     version: { type: "number" },
-    step: {
-      type: "string",
-      enum: ["decisions", "criteria", "spec"],
-      description:
-        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it",
-    },
-    basis: {
-      type: "string",
-      description:
-        "register_gate's basis: the ancestor's document for the same step, as dispatch://<KEY>/spec, dispatch://<KEY>/artifact/<slug> or its artifact id. basis, basisVersion and reason come together or not at all",
-    },
-    basisVersion: {
-      type: "number",
-      description:
-        "register_gate's basis version: the version of the basis document a person approved, or the version its open approval request asks a person to approve",
-    },
+    step: { type: "string", enum: ["decisions", "criteria", "spec"] },
+    basis: { type: "string" },
+    basisVersion: { type: "number" },
     issues: { type: "array", items: { type: "string" } },
-    task: {
-      type: "string",
-      description:
-        "stop_task's task: the id of its plan_task block in the plan Legion runs for the issue, default for the project's default steps",
-    },
+    task: { type: "string" },
     to: {
       type: "string",
       enum: [
@@ -333,11 +312,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "held",
       ],
     },
-    reason: {
-      type: "string",
-      description:
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, set_p0_bound's and clear_p0_bound's why, register_gate's reason for its basis, and discard_give_up's why, which it requires; for signals_on, signals_off, set_signal_limit and clear_signal_limit, which each require it, the person's cited word: whose word it is and what they said. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child",
-    },
+    reason: { type: "string" },
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },
     verdict: { type: "string", enum: ["pass", "pending", "fail"] },
@@ -355,56 +330,72 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
       type: "string",
       enum: ["architect", "planner", "implementer", "tester", "reviewer", "merger"],
     },
-    giveUp: {
-      type: "number",
-      description:
-        "replay_give_up's and discard_give_up's one give-up, a message the daemon's intake gave up on: its record id, as the intake-gave-up notice names it. Name it, or consumer and throughSeq, never both",
-    },
-    consumer: {
-      type: "string",
-      description:
-        "replay_give_up's and discard_give_up's intake consumer, as read_state's summary names it on an intake give-ups line: with throughSeq, every open give-up of that consumer at or below that stream sequence",
-    },
-    throughSeq: {
-      type: "number",
-      description:
-        "With consumer: the highest stream sequence replay_give_up or discard_give_up takes. read_state's summary gives each consumer's newest seq, which takes all of its open give-ups",
-    },
-    signal: {
-      type: "string",
-      enum: ["idle", "queue", "provider", "kills", "approvals"],
-      description: "set_signal_limit's and clear_signal_limit's signal",
-    },
-    part: {
-      type: "string",
-      enum: ["headroom"],
-      description:
-        "The provider's part for set_signal_limit and clear_signal_limit; no other signal takes one",
-    },
-    limit: {
-      type: "number",
-      description: "set_signal_limit's limit, which the signal holds admission at or over",
-    },
-    bound: {
-      type: "number",
-      description:
-        "set_p0_bound's bound: how many P0 issues may hold an admission slot at once outside the cap, a whole number from 1 to 2147483647. Name it or unbounded, never both",
-    },
-    unbounded: {
-      type: "boolean",
-      description:
-        "set_p0_bound's no bound: true sets no P0 bound, whatever legion.yaml's admission_p0_bound says. Name it or bound, never both",
-    },
+    giveUp: { type: "number" },
+    consumer: { type: "string" },
+    throughSeq: { type: "number" },
+    signal: { type: "string", enum: ["idle", "queue", "provider", "kills", "approvals"] },
+    part: { type: "string", enum: ["headroom"] },
+    limit: { type: "number" },
+    bound: { type: "number" },
+    unbounded: { type: "boolean" },
   },
   required: ["op"],
   additionalProperties: false,
 });
 
+/** The properties whose description the tool states, in the order it declares them, each with the
+ * operations, fields, flags and values that description names. */
+const DESCRIBED_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
+  artifactId: ["register_gate", "register_plan", "--artifact"],
+  step: ["register_gate", "decisions", "criteria", "spec"],
+  basis: ["register_gate", "basisVersion", "reason"],
+  basisVersion: ["register_gate"],
+  task: ["stop_task", "plan_task", "default"],
+  reason: [
+    "close_root",
+    "request_backward_move",
+    "retry_or_escalate",
+    "pause",
+    "set_p0_bound",
+    "clear_p0_bound",
+    "register_gate",
+    "discard_give_up",
+    "replay_give_up",
+    "rerun_child",
+    "issue",
+    "signals_on",
+    "signals_off",
+    "set_signal_limit",
+    "clear_signal_limit",
+  ],
+  giveUp: ["replay_give_up", "discard_give_up", "consumer", "throughSeq"],
+  consumer: ["replay_give_up", "discard_give_up", "read_state", "throughSeq"],
+  throughSeq: ["consumer", "replay_give_up", "discard_give_up", "read_state"],
+  signal: ["set_signal_limit", "clear_signal_limit"],
+  part: ["set_signal_limit", "clear_signal_limit"],
+  limit: ["set_signal_limit"],
+  bound: ["set_p0_bound", "unbounded"],
+  unbounded: ["set_p0_bound", "true", "legion.yaml", "admission_p0_bound"],
+};
+
 test("the legion tool's parameter schema serializes to the exact schema Oh My Pi agents are given, for every session", () => {
   for (const active of EVERY_SESSION) {
-    expect(JSON.stringify(z.toJSONSchema(toolFor(active).parameters as z.ZodType))).toBe(
-      OMP_LEGION_TOOL_SCHEMA
-    );
+    const schema = z.toJSONSchema(toolFor(active).parameters as z.ZodType) as {
+      readonly properties: Record<string, Record<string, unknown>>;
+    };
+    const described: string[] = [];
+    const properties: Record<string, Record<string, unknown>> = {};
+    for (const [name, { description, ...property }] of Object.entries(schema.properties)) {
+      if (description !== undefined) {
+        expect(typeof description, name).toBe("string");
+        const missing = namesMissing(String(description), DESCRIBED_PROPERTIES[name] ?? []);
+        expect(missing, name).toEqual([]);
+        described.push(name);
+      }
+      properties[name] = property;
+    }
+    expect(described).toEqual(Object.keys(DESCRIBED_PROPERTIES));
+    expect(JSON.stringify({ ...schema, properties })).toBe(OMP_LEGION_TOOL_SCHEMA);
   }
 });
 
@@ -456,7 +447,6 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -469,7 +459,6 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
@@ -650,7 +639,6 @@ test("retry_or_escalate takes a reason", async () => {
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -710,7 +698,6 @@ test("rerun_child refuses a reason before any grant, naming issue and the dispat
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
@@ -789,7 +776,6 @@ test("read_release_records reads the window with this session's claim, and repor
       pi,
       daemon: answering,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -860,23 +846,18 @@ test("read_release_records reads the window with this session's claim, and repor
   });
 });
 
-// Every role reads one description, and the daemon accepts a verdict from the tester alone
-// (VERDICT_ROLE_FORBIDDEN): it may not leave another role to infer from its own instructions that
-// it reports one.
-test("the legion tool's description gives a verdict to the tester alone", () => {
-  const tool = createLegionTool({
-    pi,
-    daemon: recordingDaemon({}).daemon,
-    controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
-    onUpdateAnswered: () => undefined,
-    handoffReport: noHandoffReport,
-    branchHead: noBranchHead,
-    dispatch: noDispatch,
-    session: () => claimSession("reviewer"),
-  });
-  expect(tool.description).toContain("`verdict` pass|fail from the tester alone");
-  expect(tool.description).not.toContain("when your role's instructions require one");
+// Every phase worker reads one description of the tool, whatever its role, and the daemon alone
+// decides whose verdict it takes (VERDICT_ROLE_FORBIDDEN, held by internal/api's handoff tests):
+// no phase worker is given a description of its own. That one description names the `verdict`
+// field and its two values, each once in it. The tester, the role the verdict is taken from, is not
+// held: the description names the tester in other sentences too, so a check of it could not fail.
+// The case holds no word of it.
+test("every phase worker is given the same description of the legion tool", () => {
+  const described = (["planner", "implementer", "tester", "reviewer", "merger"] as const).map(
+    (role) => toolFor(claimSession(role)).description
+  );
+  expect(new Set(described).size).toBe(1);
+  expect(namesMissing(described[0] ?? "", ["`verdict`", "pass|fail"])).toEqual([]);
 });
 
 test("a workflow refusal tells the agent both its code and message", async () => {
@@ -896,7 +877,6 @@ test("a workflow refusal tells the agent both its code and message", async () =>
       signOff: async () => Promise.reject(refusal),
     })) as never,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
@@ -994,7 +974,6 @@ const gateTool = (
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
@@ -1370,7 +1349,6 @@ test("register_plan takes the document reference the Dispatch tools take and ans
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -1440,7 +1418,6 @@ test("register_plan passes on the daemon's refusal of a plan with its code and e
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
@@ -1470,7 +1447,6 @@ test("stop_task stops the task its block names, and is the architect's alone", a
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -1556,16 +1532,12 @@ const stateAt = (phase: LegionPhase) => ({
   },
 });
 
-test("a named look's report leaves the phase open and a step's completion closes it", async () => {
-  let completed = 0;
+test("a named look's report posts its check_opened_at, and a step's completion posts none", async () => {
   const { calls, daemon } = recordingDaemon({ state: stateAt("testing") });
   const tool = createLegionTool({
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => {
-      completed++;
-    },
     onUpdateAnswered: () => undefined,
     handoffReport: async () => ({ commit: TIP, handoffId: RECORD.id, handoffVersion: 2 }),
     branchHead: noBranchHead,
@@ -1585,7 +1557,6 @@ test("a named look's report leaves the phase open and a step's completion closes
     context()
   );
   expect(report).not.toHaveProperty("isError", true);
-  expect(completed).toBe(0);
   expect(calls.at(-1)).toEqual([
     "handoffComplete",
     {
@@ -1602,11 +1573,10 @@ test("a named look's report leaves the phase open and a step's completion closes
     undefined,
     context()
   );
-  expect(completed).toBe(1);
+  expect(calls.at(-1)?.[1]).not.toHaveProperty("checkOpenedAt");
 });
 
-test("handoff_complete finds the phase's handoff record and the pushed tip, posts them with a fresh grant, and closes the phase on success", async () => {
-  const completed: string[] = [];
+test("handoff_complete finds the phase's handoff record and the pushed tip, and posts them with a fresh grant", async () => {
   const reads: string[] = [];
   const { calls, daemon } = recordingDaemon({ state: stateAt("implementing") });
   const run = (
@@ -1619,7 +1589,6 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
       onUpdateAnswered: () => undefined,
       handoffReport: (phase, role) =>
         findHandoffReport({ phase, role, env: paneEnv, jj, latestHandoff }),
@@ -1654,7 +1623,6 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     ],
   ]);
   expect(reads).toEqual(["LEGION-208 implement"]);
-  expect(completed).toEqual(["ses_208"]);
 
   // A role that does not work the issue's phase reports its own newest record of the phase it
   // left: the tester at implementing its test record and the head it names, with the verdict as
@@ -1691,7 +1659,6 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
       commit: STANDING,
     },
   ]);
-  expect(completed).toEqual(["ses_208", "ses_208", "ses_208", "ses_208"]);
   expect(reads).toEqual(["LEGION-208 implement", "LEGION-208 test"]);
 
   // Refused before any daemon call: a root architect, which runs no phase; a missing summary; a
@@ -1713,7 +1680,6 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     expect(result.content).toEqual([{ type: "text", text: expect.stringContaining(message) }]);
   }
   expect(calls).toHaveLength(before);
-  expect(completed).toHaveLength(4);
 
   // Without check_opened_at, pending is refused as a phase completion before any daemon call.
   const pendingOnPhase = await run(claimSession("tester"), {
@@ -1729,10 +1695,9 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     },
   ]);
   expect(calls).toHaveLength(before);
-  expect(completed).toHaveLength(4);
 
   // Each refusal of the report is the tool's error, naming the remedy: the state is read, and
-  // then nothing is minted or posted, and the phase stays open.
+  // then nothing is minted or posted.
   const reportRefusals = [
     [
       paneJj(),
@@ -1778,7 +1743,6 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     expect(result.content).toEqual([{ type: "text", text: message }]);
     expect(calls.at(-1)).toEqual(["record", { issue: "LEGION-208" }]);
   }
-  expect(completed).toHaveLength(4);
 });
 
 test("the planner, the tester and the reviewer post their phase's handoff record and the head it names", async () => {
@@ -1793,7 +1757,6 @@ test("the planner, the tester and the reviewer post their phase's handoff record
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: (issuePhase, claimRole) =>
         findHandoffReport({
@@ -1846,7 +1809,6 @@ test("the retro's handoff_complete posts its rating of the plan as planRating an
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: (phase, role) =>
       findHandoffReport({
@@ -1903,7 +1865,6 @@ test("a completion once the issue moved on posts the role's own newest record of
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: (issuePhase, claimRole) =>
         findHandoffReport({
@@ -1947,7 +1908,6 @@ test("a completion once the issue moved on posts the role's own newest record of
 // it left, and posts its implement record and the head it names, reading nothing of the workspace,
 // for the daemon to answer.
 test("an implementer whose issue is in testing posts its implement record, though @- is the tester's unpushed commit", async () => {
-  const completed: string[] = [];
   const reads: string[] = [];
   const asked: string[] = [];
   const workspace = paneJj(STANDING, false);
@@ -1956,7 +1916,6 @@ test("an implementer whose issue is in testing posts its implement record, thoug
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
     onUpdateAnswered: () => undefined,
     handoffReport: (phase, role) =>
       findHandoffReport({
@@ -1987,7 +1946,6 @@ test("an implementer whose issue is in testing posts its implement record, thoug
   ]);
   expect(reads).toEqual(["LEGION-208 implement"]);
   expect(asked).toEqual([]);
-  expect(completed).toEqual(["ses_208"]);
 });
 
 // A tester whose issue was held before it wrote its test record completes testing, the phase it
@@ -2010,7 +1968,6 @@ test("a tester with no record on a held issue posts @-, and the daemon's answer 
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: (phase, role) =>
       findHandoffReport({
@@ -2066,7 +2023,6 @@ const openCheck = {
 const NEXT_LOOK = "2026-09-29T09:00:00Z";
 
 test("a report on its closed issue's production check carries a verdict and no commit, and a pending its next look", async () => {
-  const completed: string[] = [];
   const { calls, daemon } = recordingDaemon({
     state: {
       issues: {
@@ -2079,7 +2035,6 @@ test("a report on its closed issue's production check carries a verdict and no c
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
       onUpdateAnswered: () => undefined,
       // A check report resolves no record and no commit: the report is never asked.
       handoffReport: noHandoffReport,
@@ -2088,7 +2043,8 @@ test("a report on its closed issue's production check carries a verdict and no c
       session: () => session,
     }).execute("", parameters, undefined, undefined, context());
 
-  // A named check report posts a grant and report only, and leaves phase input open.
+  // Each of the three verdicts is posted with a fresh grant, the summary and no commit. The
+  // pending names its next look, which travels as the daemon's own `wakeAt`.
   for (const verdict of ["pending", "pass", "fail"]) {
     const wake = verdict === "pending" ? { wake_at: NEXT_LOOK } : {};
     await expect(
@@ -2117,7 +2073,6 @@ test("a report on its closed issue's production check carries a verdict and no c
       ],
     ]);
   }
-  expect(completed).toEqual([]);
 
   // A missing verdict is refused before any daemon call.
   const noVerdict = await run(claimSession("implementer"), {
@@ -2133,7 +2088,6 @@ test("a report on its closed issue's production check carries a verdict and no c
     },
   ]);
   expect(calls).toHaveLength(6);
-  expect(completed).toHaveLength(0);
 
   // A tester's named report posts the wake its pending supplied.
   const { calls: testerCalls, daemon: testerDaemon } = recordingDaemon({
@@ -2151,7 +2105,6 @@ test("a report on its closed issue's production check carries a verdict and no c
     pi,
     daemon: testerDaemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
@@ -2190,7 +2143,6 @@ test("a report on its closed issue's production check carries a verdict and no c
     pi,
     daemon: closedDaemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
@@ -2220,14 +2172,13 @@ test("a report on its closed issue's production check carries a verdict and no c
   ]);
 });
 
-test("a refused completion surfaces the daemon's code and leaves the phase open", async () => {
+test("a refused completion surfaces the daemon's code", async () => {
   const refusal = Object.assign(
     new Error(
       `POST /legion/v1/handoff/complete failed with 409 HANDOFF_NOT_NEW: the implementer named handoff record ${RECORD.id} for its previous phase of LEGION-208; write this phase's handoff with \`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\` before completing`
     ),
     { code: "HANDOFF_NOT_NEW" }
   );
-  const completed: string[] = [];
   const { daemon } = recordingDaemon({
     state: stateAt("implementing"),
     answers: { handoffComplete: refusal },
@@ -2236,7 +2187,6 @@ test("a refused completion surfaces the daemon's code and leaves the phase open"
     pi,
     daemon,
     controllerGrant: noControllerGrant,
-    onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
     onUpdateAnswered: () => undefined,
     handoffReport: (phase, role) =>
       findHandoffReport({
@@ -2257,7 +2207,6 @@ test("a refused completion surfaces the daemon's code and leaves the phase open"
     isError: true,
     content: [{ type: "text", text: expect.stringContaining("HANDOFF_NOT_NEW") }],
   });
-  expect(completed).toEqual([]);
 });
 
 /** A state the contracts schema accepts, with what a test varies laid over it: `read_state`
@@ -2271,7 +2220,7 @@ function legionState(overrides: Record<string, unknown> = {}): LegionState {
       firstBootAt: "2026-10-01T00:00:00Z",
       startedAt: "2026-10-30T01:02:03Z",
     },
-    admission: { cap: 8, active: [], waiting: [], blocked: [], free: 0 },
+    admission: { cap: 8, active: [], waiting: [], blocked: [] },
     issues: {},
     pendingStatusWrites: [],
     heldOutboxRows: [],
@@ -2369,7 +2318,6 @@ function stateOf92Issues(running = 46): LegionState {
     issues,
     admission: {
       cap: 8,
-      free: 0,
       active: ["INFRA-100", "INFRA-101"],
       waiting: ["INFRA-102"],
       blocked: [{ issue: "INFRA-102", blockedBy: ["INFRA-103", "INFRA-104"] }],
@@ -2394,9 +2342,6 @@ function controllerTool(daemon: () => LegionDaemonClient, minted: string[]): Reg
     controllerGrant: async (sessionId) => {
       minted.push(sessionId);
       return { grantId: "controller-grant-1", expiresAt: "2099-01-01T00:00:00Z" };
-    },
-    onPhaseCompleted: () => {
-      throw new Error("a controller completes no phase");
     },
     onUpdateAnswered: () => {
       throw new Error("a controller answers no update message");
@@ -2423,7 +2368,7 @@ async function summaryLinesOf(daemon: () => LegionDaemonClient): Promise<string[
 
 test("the controller reads the state without a grant and sets an issue's status with its own", async () => {
   const state = legionState({
-    admission: { cap: 2, free: 0, active: ["LEGION-208"], waiting: [], blocked: [] },
+    admission: { cap: 2, active: ["LEGION-208"], waiting: [], blocked: [] },
     issues: {
       "LEGION-208": {
         key: "LEGION-208",
@@ -2746,7 +2691,6 @@ test("an architect's agent action is refused as unavailable before any grant", a
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -2794,7 +2738,6 @@ test("read_build answers the package and version this process loaded, both contr
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -2825,7 +2768,6 @@ test("read_build says the daemon stated no contract, and belongs to the controll
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -3185,7 +3127,6 @@ test("pause and resume are offered to no architect and no phase worker", async (
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -3420,7 +3361,6 @@ test("a phase worker and an architect have neither replay_give_up nor discard_gi
       pi,
       daemon,
       controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -3475,7 +3415,7 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
 
   expect(summary).toContain("project INFRA boots 9 started 2026-10-30T01:02:03Z");
   expect(summary).toContain(
-    "\nadmission cap 8 free 0\nactive INFRA-100 INFRA-101\nwaiting INFRA-102\nblocked INFRA-102 on INFRA-103 INFRA-104\n"
+    "\nadmission cap 8\nactive INFRA-100 INFRA-101\nwaiting INFRA-102\nblocked INFRA-102 on INFRA-103 INFRA-104\n"
   );
   expect(summary).toContain("\ncapability subagents present\n");
   expect(summary).toContain(
@@ -3662,17 +3602,18 @@ test("read_state's summary names the live trees and each held issue with its rea
 
   const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
   expect(admissionLines(golden)).toEqual([
-    "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219",
-    "waiting LEGION-212 LEGION-211",
-    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-218 LEGION-219",
+    "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219 LEGION-220",
+    "waiting LEGION-212 LEGION-211 LEGION-216",
+    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-215 LEGION-216 LEGION-218 LEGION-219",
     "blocked LEGION-209 on LEGION-210 LEGION-213",
-    "blocked LEGION-211 on LEGION-210",
+    "blocked LEGION-216 on LEGION-210",
     "held LEGION-209 dispatch_blocker by LEGION-210 LEGION-213",
     "held LEGION-214 label_off",
+    "held LEGION-215 ancestry by LEGION-208",
   ]);
 
   const idle = legionState({
-    admission: { cap: 8, active: [], waiting: [], trees: [], blocked: [], held: [], free: 8 },
+    admission: { cap: 8, active: [], waiting: [], trees: [], blocked: [], held: [] },
   });
   expect(admissionLines(await summaryLinesOf(recordingDaemon({ state: idle }).daemon))).toEqual([
     "active (none)",
@@ -3691,23 +3632,29 @@ test("read_state's summary names the live trees and each held issue with its rea
 // R6): one line while the project is paused, naming the pause, since when, by whom and why, the
 // roles whose stop it still waits on and how many rows it holds; one line while the project
 // runs after a pause, naming that pause and when and by whom it was ended; and neither before
-// the project's first pause. The two states are the daemon's goldens, read through the client.
+// the project's first pause. The three states are the daemon's goldens, read through the client.
 test("read_state's summary prints the pause's line while the project is paused and the last pause's line while it runs", async () => {
   const pauseLines = (lines: readonly string[]) =>
     lines.filter((line) => line.startsWith("paused: ") || line.startsWith("last pause: "));
 
-  const paused = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
+  const paused = await summaryLinesOf(
+    goldenDaemon({ "/legion/v1/state": "state-paused.json" }).daemon
+  );
   const pausedLine =
-    "paused: pause 7 since 2026-09-22T09:09:00Z by the controller (session ses_controller): " +
-    "the model provider is refusing every turn; waits on 1 role — LEGION-208 implementer; " +
-    "holds 2 rows";
+    "paused: pause 1 since 2126-09-22T09:18:00Z by the controller (session ses_controller): " +
+    "the model provider is refusing every turn; waits on 8 roles — LEGION-207 implementer, " +
+    "LEGION-208 architect, LEGION-208 implementer, LEGION-218 implementer, LEGION-218 reviewer, " +
+    "LEGION-219 implementer, LEGION-219 reviewer, LEGION-220 implementer; holds 2 rows";
   expect(pauseLines(paused)).toEqual([pausedLine]);
+  expect(
+    pauseLines(await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon))
+  ).toEqual([]);
 
   const running = await summaryLinesOf(
     goldenDaemon({ "/legion/v1/state": "state-last-pause.json" }).daemon
   );
   expect(pauseLines(running)).toEqual([
-    "last pause: pause 7 since 2026-11-15T09:00:00Z by the operator: " +
+    "last pause: pause 1 since 2026-11-15T09:00:00Z by the operator: " +
       "the model provider is refusing every turn; " +
       "ended 2026-11-15T09:41:30Z by the controller (session ses_controller)",
   ]);
@@ -3780,7 +3727,6 @@ test("read_state's summary counts the wakes the pacing holds and says when the e
   const wave = legionState({
     admission: {
       cap: 8,
-      free: 0,
       active: ["INFRA-100", "INFRA-101"],
       waiting: ["INFRA-102"],
       blocked: [{ issue: "INFRA-102", blockedBy: ["INFRA-103"] }],
@@ -3816,7 +3762,7 @@ test("read_state's summary counts the wakes the pacing holds and says when the e
 
   // The daemon's own golden, read through the client: three wakes, the first of them the earliest.
   const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
-  expect(wakesLines(golden)).toEqual(["wakes waiting 3 next 2026-09-22T09:17:56Z"]);
+  expect(wakesLines(golden)).toEqual(["wakes waiting 3 next 2126-09-22T09:17:56Z"]);
 });
 
 // What the controller reads of the slots in `read_state` with no field (spec R6): the slots line
@@ -3830,7 +3776,7 @@ test("read_state's summary prints the slots line", async () => {
   };
   const lines = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
 
-  const capLine = lines.indexOf("admission cap 5");
+  const capLine = lines.indexOf("admission cap 6");
   expect(capLine).toBeGreaterThan(0);
   expect(lines[capLine + 1]).toBe(admission.slots.line);
   expect(lines.filter((line) => line.startsWith("slots: "))).toEqual([admission.slots.line]);
@@ -3849,7 +3795,6 @@ test("read_state's summary prints a slots line that counts its P0 holders, and s
   const state = legionState({
     admission: {
       cap: 157,
-      free: 0,
       p0Holders: 3,
       p0Bound: { bound: null },
       active: [],
@@ -3875,7 +3820,7 @@ test("read_state's summary prints a slots line that counts its P0 holders, and s
 
   const { daemon } = recordingDaemon({ state });
   const lines = await summaryLinesOf(daemon);
-  const capLine = lines.indexOf("admission cap 157 free 0");
+  const capLine = lines.indexOf("admission cap 157");
   expect(capLine).toBeGreaterThan(0);
   expect(lines[capLine + 1]).toBe(line);
   expect(lines[capLine + 1]).toContain("160 of 157 in use (3 P0):");

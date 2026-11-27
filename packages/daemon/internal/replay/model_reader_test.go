@@ -101,11 +101,11 @@ func sameCrossing(a time.Time, aDue bool, b time.Time, bDue bool) bool {
 // standing at 4 issues in flight from its start and at 1 from 01:30; killWorkWindow, its ACME-1
 // segment an hour later and two drawn issues in flight; and queueWorkWindow, its ACME-1 segment an
 // hour later and two drawn pull requests. The course is fed in time order, and at every five minutes
-// of each window, and at each moment the course changes, the reader's headroom, refusals, kills and
-// merge queue equal the whole timeline's, and so does each next crossing: of the kills, the queue
-// and the refusals over the whole timeline, which those crossings read only up to the moment, and of
-// the headroom over the timeline as it stands at that moment, whose minutes ahead are read at the
-// issues in flight then. At the end, the reader's kills and its counts equal the whole timeline's.
+// of each window, and at each moment the course changes, the reader's headroom, kills and merge
+// queue equal the whole timeline's, and so does each next crossing: of the kills and the queue over
+// the whole timeline, which those crossings read only up to the moment, and of the headroom over
+// the timeline as it stands at that moment, whose minutes ahead are read at the issues in flight
+// then. At the end, the reader's kills and its counts equal the whole timeline's.
 func TestTheModelReaderGivesWhatTheWholeTimelineGives(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -136,7 +136,7 @@ func TestTheModelReaderGivesWhatTheWholeTimelineGives(t *testing.T) {
 			models := fittedModels(t, w)
 			tl := c.course(t, models)
 			whole := modelledSignals(t, models, tl)
-			reader, err := models.Reader(w.From, SetbackSources{}, 0)
+			reader, err := models.Reader(w.From, false, 0)
 			if err != nil {
 				t.Fatalf("read the models: %v", err)
 			}
@@ -167,12 +167,8 @@ func TestTheModelReaderGivesWhatTheWholeTimelineGives(t *testing.T) {
 					}
 				}
 				check("the headroom", reader.Headroom(at), whole.Headroom(at))
-				check("the refusals", reader.Refusals(at).Value(), whole.Refusals(at).Value())
 				check("the kills", reader.Kills(at), whole.Kills(at))
 				check("the queue", reader.Queue(at), whole.Queue(at))
-				if got, want := reader.Refusals(at), whole.Refusals(at); got != want {
-					t.Errorf("the refusals at %s: the reader gives %+v, the whole timeline %+v", stamp(at), got, want)
-				}
 				frozen := modelledSignals(t, models, frozenAt(tl, at))
 				for _, limit := range c.limits {
 					compare := func(what string, got time.Time, gotDue bool, want time.Time, wantDue bool) {
@@ -190,9 +186,6 @@ func TestTheModelReaderGivesWhatTheWholeTimelineGives(t *testing.T) {
 					got, gotDue = reader.QueueNext(at, limit)
 					want, wantDue = signals.QueueNext(w.coverageOf(SignalQueue, at), whole.waits, at, limit)
 					compare("the queue", got, gotDue, want, wantDue)
-					got, gotDue = reader.RefusalsNext(at, limit)
-					want, wantDue = signals.RefusalsNext(whole.series, at, limit, reader.covered)
-					compare("the refusals", got, gotDue, want, wantDue)
 				}
 			}
 			reader.advance(w.End())
@@ -220,7 +213,7 @@ func TestADrawnIssuesKillsAreItsOwnInEveryCourse(t *testing.T) {
 	w := killWorkWindow(t)
 	models := fittedModels(t, w)
 	drawnKills := func(tl ReplayTimeline) []time.Time {
-		reader, err := models.Reader(w.From, SetbackSources{}, 0)
+		reader, err := models.Reader(w.From, false, 0)
 		if err != nil {
 			t.Fatalf("read the models: %v", err)
 		}

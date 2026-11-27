@@ -41,6 +41,10 @@
       "types": "./src/loopback-host.ts",
       "bun": "./src/loopback-host.ts"
     },
+    "./names-whole": {
+      "types": "./src/names-whole.ts",
+      "bun": "./src/names-whole.ts"
+    },
     "./package-build": {
       "types": "./src/package-build.ts",
       "bun": "./src/package-build.ts"
@@ -103,7 +107,7 @@
     "lint": "bunx biome check src/"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.14",
+    "@biomejs/biome": "2.5.15",
     "@types/bun": "1.4.2",
     "typescript": "^5.3.0"
   }

@@ -1,7 +1,7 @@
 kind: Added
 body: |-
   `legion-api.ts` gives the body and the answer of `POST /legion/v1/claims/model-requests` (daemon
-  API entry `20261126011643`, `admission-signals`): `LegionModelRequestsRequest`, the union of the
+  API entry `20261127153324`, `admission-signals`): `LegionModelRequestsRequest`, the union of the
   claim's caller (`claimToken`, `sessionId`, `secret`) and the launch's (`bootToken`), each with
   `generation` and 1 to 200 `requests` of `{id, session, model, endedAt, uncachedInputTokens?}`
   whose ids no two share; and `LegionModelRequestsResponse`, `{kept}`, every id of the batch the

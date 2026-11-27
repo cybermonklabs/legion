@@ -124,7 +124,10 @@ func rowName(row RowKind) string {
 // outboxVocabulary is every outbox kind record/outbox.go declares, in order — each constant of
 // type OutboxKind, a line naming no type of its own taking the one above it — and every supervise
 // op its validSuperviseOp takes, read from the file as data so a kind or an op a later change adds
-// is read with the rest. It fails rather than answer none.
+// is read with the rest. A kind the file names by a constant of package stateevent rather than
+// spells, as the state lane's three are (record.OutboxKindStateChange and its siblings), is read
+// from that package's file (stateeventSource). It fails rather than answer none, and for a kind it
+// cannot read.
 func outboxVocabulary(t *testing.T) ([]record.OutboxKind, []record.SuperviseOp) {
 	t.Helper()
 	path := filepath.FromSlash(outboxSource)
@@ -132,6 +135,7 @@ func outboxVocabulary(t *testing.T) ([]record.OutboxKind, []record.SuperviseOp) 
 	if err != nil {
 		t.Fatalf("parse %s: %v", path, err)
 	}
+	stateKinds := stringConstants(t, filepath.FromSlash(stateeventSource))
 	var kinds []record.OutboxKind
 	var ops []record.SuperviseOp
 	for _, decl := range file.Decls {
@@ -154,7 +158,13 @@ func outboxVocabulary(t *testing.T) ([]record.OutboxKind, []record.SuperviseOp) 
 				for _, expr := range value.Values {
 					if text, ok := stringLiteral(expr); ok {
 						kinds = append(kinds, record.OutboxKind(text))
+						continue
 					}
+					text, named := stateeventConstant(expr, stateKinds)
+					if !named {
+						t.Fatalf("%s declares an OutboxKind constant whose value is neither a string nor a string constant of %s", path, stateeventSource)
+					}
+					kinds = append(kinds, record.OutboxKind(text))
 				}
 			}
 		case *ast.FuncDecl:
@@ -191,4 +201,54 @@ func stringLiteral(expr ast.Expr) (string, bool) {
 	}
 	text, err := strconv.Unquote(literal.Value)
 	return text, err == nil
+}
+
+// stateeventSource is the file of package stateevent that declares the state rows' kinds, which
+// record/outbox.go's state-lane OutboxKind constants name rather than spell.
+const stateeventSource = "../stateevent/stateevent.go"
+
+// stateeventConstant is the value of expr where it names one of constants, package stateevent's
+// string constants by name (stringConstants), as `stateevent.KindChange` does.
+func stateeventConstant(expr ast.Expr, constants map[string]string) (string, bool) {
+	selector, isSelector := expr.(*ast.SelectorExpr)
+	if !isSelector {
+		return "", false
+	}
+	if pkg, isIdent := selector.X.(*ast.Ident); !isIdent || pkg.Name != "stateevent" {
+		return "", false
+	}
+	text, declared := constants[selector.Sel.Name]
+	return text, declared
+}
+
+// stringConstants is every constant the Go file at path declares with a string literal for its
+// value, by name. It fails where it reads none.
+func stringConstants(t *testing.T, path string) map[string]string {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	constants := map[string]string{}
+	for _, decl := range file.Decls {
+		gen, isGen := decl.(*ast.GenDecl)
+		if !isGen || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			value := spec.(*ast.ValueSpec)
+			for i, name := range value.Names {
+				if i >= len(value.Values) {
+					break
+				}
+				if text, ok := stringLiteral(value.Values[i]); ok {
+					constants[name.Name] = text
+				}
+			}
+		}
+	}
+	if len(constants) == 0 {
+		t.Fatalf("%s declares no string constant", path)
+	}
+	return constants
 }

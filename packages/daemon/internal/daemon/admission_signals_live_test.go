@@ -17,7 +17,7 @@
 // whole-daemon live proof.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration load,
+// whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration load,
 // the real store and its migrations, the real HTTP API, the real claim supervision, the real
 // openWorkflow with its live signals and their timer, the real JetStream consumers, the real
 // boot reads of GitHub's merge queue and of Dispatch's open asks, and the real outbox lanes. Each
@@ -231,7 +231,7 @@ func (r *admissionSignalsLive) boot() {
 	o := fakeRuntime(rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github
-	r.d = startDaemonWithin(r.t, r.cfg, o, slog.New(r.daemon), 60*time.Second)
+	r.d = startDaemonLogging(r.t, r.cfg, o, slog.New(r.daemon))
 }
 
 // shiftTimeline is the recorded timeline with every event's created_at moved by one offset, so
@@ -641,8 +641,8 @@ func (r *admissionSignalsLive) freshStateOffWithNoLimits() {
 			t.Fatalf("series %+v has a limit, a setter or a hold; want a fresh project with no limit", series)
 		}
 	}
-	if len(reading.Series) != len(store.LiveSeries()) {
-		t.Fatalf("admission.signals carries %d series; want the five of store.LiveSeries()", len(reading.Series))
+	if len(reading.Series) != len(signals.Names()) {
+		t.Fatalf("admission.signals carries %d series; want the five of signals.Names()", len(reading.Series))
 	}
 	queue := seriesOf(t, state, signals.Queue, "")
 	if !r.queueReads(queue) {

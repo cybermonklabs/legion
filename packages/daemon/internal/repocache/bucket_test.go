@@ -841,7 +841,7 @@ func (r *bucketRig) resource(t *testing.T, name string) (int, bucketResource) {
 	return status, res
 }
 
-// download GETs a signed address with no credential, as an issue pod's fetch does, from the
+// download GETs a signed address with no credential, as an issue pod's provision does, from the
 // double. A production address names Cloud Storage's own host over HTTPS, so its request goes to
 // the double with that Host, the host the double checks its signature over.
 func (r *bucketRig) download(t *testing.T, address string) (int, []byte) {

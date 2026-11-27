@@ -24,12 +24,11 @@ The window holds no span of any other signal, and no provider's record, no merge
 
 Under `signals`, with its limit of 2 kills alone, the run writes the kills at 10:31 and 10:40, as the table above works them out: 2 at 10:31, the hour from 09:31 holding both kills, and 1 at 10:40, once 09:40's leaves the hour.
 
-Under `main`, the run limits all six signals, which `main` admits by none, so they decide nothing and `main` keeps no deadline (`deadlines` is `[]`).
+Under `main`, the run limits all five signals, which `main` admits by none, so they decide nothing and `main` keeps no deadline (`deadlines` is `[]`).
 At 10:31 it writes:
 
 - `idle`: unrecorded, since the window names no span of the idle share's record.
 - `queue`: unrecorded: no merge queue file and no span of its record.
 - `provider`: unrecorded: no minute of the provider's record.
-- `refusals`: unrecorded: no minute of the provider's record before 10:31.
 - `kills`: 2, the kills of 09:40 and 09:50, both in the hour from 09:31, inside the record's span.
 - `approvals`: unrecorded, since the window names no span of the approvals' record.

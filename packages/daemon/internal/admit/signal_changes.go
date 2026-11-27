@@ -108,7 +108,7 @@ func signalsMoved(reading LiveReading, newest map[string]store.SeriesEntries) bo
 
 // passChanges is the entries a pass whose gate read reading writes against newest, the record's
 // newest entries of each series, where moved says the pass gave out or took back a slot (S6): for
-// each series in the order of store.LiveSeries(), its value where its hold changed (once, whatever
+// each series in the order of signals.Names(), its value where its hold changed (once, whatever
 // its step) or where it qualifies by its step (valueEntryDue), the provider's headroom only at a
 // pass that moved a slot or changed its hold, and then its hold where it changed. A hold is 0
 // while admission by signals is off and for a value the daemon cannot compute (SeriesReading.Holds).

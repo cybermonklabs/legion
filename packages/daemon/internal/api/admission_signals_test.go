@@ -74,16 +74,27 @@ func newSignalsHarness(t *testing.T, first ...intake.Handler) *signalsHarness {
 }
 
 // signalsSource is the state of the harness's project with admission by signals as the daemon's
-// source serves it (daemon's source.State), at the harness's clock.
+// source serves it (daemon's source.State), at the harness's clock, and its observed part as the
+// daemon's source serves that (daemon's source.ObservedState): the record of changes and no
+// reading.
 type signalsSource struct{ h *signalsHarness }
 
 func (s signalsSource) State(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error) {
-	state := State{Daemon: DaemonInfo{Project: testDispatchProject}, Admission: Admission{Cap: 2}}
+	state, _, err := s.ObservedState(ctx, tx)
+	if err != nil {
+		return State{}, nil, err
+	}
 	reading, err := s.h.live.State(ctx, tx, s.h.now)
 	if err != nil {
 		return State{}, nil, err
 	}
 	state.Admission.Signals = &reading
+	return state, nil, nil
+}
+
+func (s signalsSource) ObservedState(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error) {
+	state := State{Daemon: DaemonInfo{Project: testDispatchProject}, Admission: Admission{Cap: 2}}
+	var err error
 	state.Admission.SignalChanges, err = store.SignalChangesTx(ctx, tx, testDispatchProject, store.SignalChangesShown)
 	return state, nil, err
 }
@@ -186,10 +197,10 @@ func TestAdmissionSignalSettings(t *testing.T) {
 	t.Run("defaults", func(t *testing.T) {
 		h := newSignalsHarness(t)
 		answer := h.changed(operatorSignalsRoute, operatorChange(SignalsClearLimit, signals.Kills, nil, "the owner asked whether a limit stands"))
-		if answer.Changed || answer.Settings.On || answer.Settings.Switch != nil || len(answer.Settings.Limits) != len(store.LiveSeries()) {
+		if answer.Changed || answer.Settings.On || answer.Settings.Switch != nil || len(answer.Settings.Limits) != len(signals.Names()) {
 			t.Fatalf("a fresh project's settings = %+v, want off, no switch's change, and the five series", answer)
 		}
-		for i, series := range store.LiveSeries() {
+		for i, series := range signals.Names() {
 			signal, part := store.SignalPart(series)
 			got := answer.Settings.Limits[i]
 			if got.Signal != signal || (got.Part == nil) != (part == "") || got.Limit != nil || got.Set != nil {
@@ -315,7 +326,7 @@ func TestAdmissionSignalSettings(t *testing.T) {
 		h := newSignalsHarness(t)
 		tops := map[string]float64{signals.Idle: 1, signals.Queue: 168, signals.Provider: 10, signals.Kills: 1_000_000, signals.Approvals: 1_000_000}
 		whole := []string{signals.Kills, signals.Approvals}
-		for _, series := range store.LiveSeries() {
+		for _, series := range signals.Names() {
 			top, held := tops[series]
 			if !held {
 				t.Fatalf("the series %s has no top in this test", series)
@@ -450,11 +461,11 @@ func TestAdmissionSignalState(t *testing.T) {
 	if len(changes) != 0 || reading["on"] != false || reading["switch"] != nil {
 		t.Fatalf("a fresh project's state = %v and changes %v, want off, no switch's change and []", reading, changes)
 	}
-	// series-inventory: every series of store.LiveSeries() is served under its signal and part,
+	// series-inventory: every series of signals.Names() is served under its signal and part,
 	// with every member, and no other series is.
 	t.Run("series-inventory", func(t *testing.T) {
 		byName := seriesServed(t, reading)
-		for _, series := range store.LiveSeries() {
+		for _, series := range signals.Names() {
 			row, held := byName[seriesKey(series)]
 			if !held {
 				t.Errorf("the state serves no series %s", seriesKey(series))
@@ -464,8 +475,8 @@ func TestAdmissionSignalState(t *testing.T) {
 				t.Errorf("the series %s carries %v, want exactly %v", seriesKey(series), got, seriesMembers)
 			}
 		}
-		if len(byName) != len(store.LiveSeries()) {
-			t.Errorf("the state serves %d series %v, want the %d of store.LiveSeries()", len(byName), slices.Collect(maps.Keys(byName)), len(store.LiveSeries()))
+		if len(byName) != len(signals.Names()) {
+			t.Errorf("the state serves %d series %v, want the %d of signals.Names()", len(byName), slices.Collect(maps.Keys(byName)), len(signals.Names()))
 		}
 	})
 	// absence: before the daemon keeps an input its series has no value, a reason, and no hold, a

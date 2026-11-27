@@ -1,14 +1,19 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { LegionState } from "@legion/contracts/legion-api";
+import {
+  type LegionOwed,
+  type LegionState,
+  LegionStateResponse,
+} from "@legion/contracts/legion-api";
 import {
   EnvoyApiError,
   type KeyTakenResult,
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport";
+import type { OwedInput } from "@legion/pi-shared/daemon-client";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { EnvoyPublish } from "@legion/pi-shared/phase-reminder";
 import { DEFAULT_STALL_LIMITS, defaultCallBoundMs } from "@legion/pi-shared/stall-limits";
@@ -297,8 +302,11 @@ interface TellerRig {
   envoy: boolean;
   /** Whether `pi.appendEntry` takes the record. */
   transcriptWritable: boolean;
-  /** The daemon's answer to the record check; a string makes the read throw. */
-  state: LegionState | string;
+  /** What the daemon answers the claim owes, which names the architect that owns it; a string
+   * makes the read throw that message. */
+  owed: LegionOwed | string;
+  /** Every question the teller asked the owed route, in order. */
+  readonly asked: OwedInput[];
   /** The session's claim as the teller reads it at each moment. */
   claim: ClaimCapability | undefined;
   /** The publisher's build, which settles before the publisher is handed over; the publisher is at
@@ -323,7 +331,8 @@ function tellerRig(
     nextAnswers: [],
     envoy: true,
     transcriptWritable: true,
-    state: daemonState("working"),
+    owed: owedNaming("legion-legion-infra-1274-architect"),
+    asked: [],
     claim: "claim" in options ? options.claim : claimOf(),
     buildPublisher: undefined,
   };
@@ -345,9 +354,10 @@ function tellerRig(
       },
     claim: () => state.claim,
     project: options.project ?? "legion",
-    readRecord: async (issue) => {
-      if (typeof state.state === "string") throw new Error(state.state);
-      return state.state.issues[issue];
+    readOwed: async (input) => {
+      state.asked.push(input);
+      if (typeof state.owed === "string") throw new Error(state.owed);
+      return state.owed;
     },
     publisher: async () => {
       await state.buildPublisher?.();
@@ -362,7 +372,7 @@ function tellerRig(
       debug: () => {},
       warn: (message, context) => state.warnings.push({ message, ...(context ? { context } : {}) }),
     },
-    recordBoundMs: 200,
+    owedBoundMs: 200,
     sleep: async (ms) => {
       state.waits.push(ms);
     },
@@ -370,17 +380,21 @@ function tellerRig(
   return Object.assign(state, { teller });
 }
 
-/** The daemon's state with this issue's own architect claim in `state`. */
-function daemonState(architect: string | undefined): LegionState {
+/** The daemon's owed answer for the implementer of INFRA-1274, naming `architect` as the
+ * architect that owns its claim, or naming none when it is undefined. */
+function owedNaming(architect: string | undefined): LegionOwed {
   return {
-    issues: {
-      "INFRA-1274": {
-        ...(architect === undefined
-          ? {}
-          : { architect: { session: "ses_architect", state: architect, pluginContract: 57 } }),
-      },
-    },
-  } as unknown as LegionState;
+    owes: true,
+    work: "the implementing phase of INFRA-1274",
+    ...(architect === undefined ? {} : { architect }),
+  };
+}
+
+/** The daemon's state golden, which its own projection writes over a seeded record
+ * (`packages/contracts/fixtures/daemon-api/state.json`), read through the state route's schema. */
+function stateGolden(): LegionState {
+  const file = path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/state.json");
+  return LegionStateResponse.parse(JSON.parse(readFileSync(file, "utf8")));
 }
 
 test("a phase worker's session tells the issue's own live architect, with the evidence", async () => {
@@ -393,7 +407,8 @@ test("a phase worker's session tells the issue's own live architect, with the ev
   expect(written.kind).toBe("evidence");
   expect(written.tool).toBe("bash");
   expect(written.arguments).toBe('command="sleep 100000" pty=true');
-  // And into the message: the same record, as the payload the listener takes.
+  // And into the message: the same record, as the payload the listener takes. The topic is the
+  // architect the daemon names as the claim's owner, asked with the claim's own credential.
   expect(rig.published).toHaveLength(1);
   const notice = rig.published[0] as PublishInput;
   expect(notice.topic).toBe("notifications.role.legion-legion-infra-1274-architect");
@@ -403,6 +418,9 @@ test("a phase worker's session tells the issue's own live architect, with the ev
   expect(notice.idempotencyKey).toBe("legion-stall:toolu_stuck");
   expect(notice).not.toHaveProperty("keep");
   expect("sourceSessionID" in notice && notice.sourceSessionID).toBe("ses_worker");
+  expect(rig.asked).toEqual([
+    { claimToken: "claim-token", sessionId: "ses_worker", secret: CLAIM_SECRET },
+  ]);
 });
 
 // The publisher's first build can run Envoy's token command, and the event loop goes on serving
@@ -449,18 +467,63 @@ test("a notice whose claim changed while the publisher was built is not sent und
   );
 });
 
+// An issue whose own architect is not live is owned by the architect above it, and the notice
+// tells the owner the daemon names, as the reminder does. The daemon's state golden holds such a
+// child: LEGION-220, of LEGION-208's tree, whose implementer works while its own architect's claim
+// has failed (workflow's claimFailed tells the architect above it). The daemon's owner walk
+// (record.OwnerWalk.Architect, which the owed route answers with) passes over a failed or retired
+// architect and names the one above it, here the tree's, so its owed answer for that implementer
+// names LEGION-208's architect. The control is the answer for the same child with its own
+// architect live, which names that architect: a teller that always told the tree's architect would
+// pass the first. An answer that names none, and a daemon that does not answer inside the bound,
+// leave the notice to the tree's architect too.
 test("a phase worker falls back to the tree's architect, as the reminder does", async () => {
-  for (const architect of ["retired", "failed", undefined]) {
-    const rig = tellerRig();
-    rig.state = daemonState(architect);
-    await rig.teller.tellOverdue(evidenceOf());
-    expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
+  const golden = stateGolden();
+  const child = golden.issues["LEGION-220"];
+  const architect = child?.architect;
+  if (child === undefined || architect === undefined) {
+    throw new Error("the state golden holds no LEGION-220 with an architect claim of its own");
   }
-  // A daemon that does not answer inside the bound is the same: the tree's architect is told.
+  expect(child.tree).toBe("LEGION-208");
+  expect(architect.state).toBe("failed");
+  const toldWith = async (owner: string) => {
+    const rig = tellerRig({
+      session: {
+        kind: "phase-worker",
+        role: "implementer",
+        tree: "LEGION-208",
+        issue: "LEGION-220",
+      },
+      claim: claimOf({ tree: "LEGION-208", issue: "LEGION-220" }),
+    });
+    rig.owed = { owes: true, work: "the implementing phase of LEGION-220", architect: owner };
+    await rig.teller.tellOverdue(evidenceOf());
+    return rig.published[0]?.topic;
+  };
+  expect(await toldWith("legion-legion-legion-208-architect")).toBe(
+    "notifications.role.legion-legion-legion-208-architect"
+  );
+  expect(await toldWith("legion-legion-legion-220-architect")).toBe(
+    "notifications.role.legion-legion-legion-220-architect"
+  );
+  const unnamed = tellerRig();
+  unnamed.owed = owedNaming(undefined);
+  await unnamed.teller.tellOverdue(evidenceOf());
+  expect(unnamed.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
   const silent = tellerRig();
-  silent.state = "the daemon is unreachable";
+  silent.owed = "the daemon is unreachable";
   await silent.teller.tellOverdue(evidenceOf());
   expect(silent.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
+});
+
+test("a phase worker on its tree's root issue tells that tree's architect too", async () => {
+  const rig = tellerRig({
+    session: { kind: "phase-worker", role: "tester", tree: "INFRA-1000", issue: "INFRA-1000" },
+    claim: claimOf({ issue: "INFRA-1000", role: "tester" }),
+  });
+  rig.owed = owedNaming("legion-legion-infra-1000-architect");
+  await rig.teller.tellOverdue(evidenceOf());
+  expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
 });
 
 /** A root architect's own session, on its root. */
@@ -487,6 +550,8 @@ test("a root architect's ladder that stops short tells the controller role", asy
   expect(rig.published).toHaveLength(1);
   expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-controller");
   expect(rig.published[0]?.message).toContain("The architect of INFRA-1000");
+  // The controller is told without a question of the daemon: only a phase worker's notice asks.
+  expect(rig.asked).toEqual([]);
 });
 
 // The notice sends no `keep` field, so a listener keeps it for an owner's role that no live
@@ -536,18 +601,30 @@ test("the controller's own session publishes nothing and writes its evidence ins
 });
 
 test("a session never publishes to the role its own session holds", async () => {
-  // A sub-architect is a phase worker whose own claim is its issue's live architect.
+  // A sub-architect is a phase worker session whose claim is an architect's, so an answer naming
+  // its own role as the owner would hand it its own message.
   const rig = tellerRig({
     session: { kind: "phase-worker", role: "architect", tree: "INFRA-1000", issue: "INFRA-1300" },
     claim: claimOf({ issue: "INFRA-1300", role: "architect", sessionID: "ses_sub" }),
   });
-  rig.state = {
-    issues: {
-      "INFRA-1300": { architect: { session: "ses_sub", state: "working", pluginContract: 57 } },
-    },
-  } as unknown as LegionState;
+  rig.owed = owedNaming("legion-legion-infra-1300-architect");
   await rig.teller.tellOverdue(evidenceOf());
   expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
+
+  // A session whose claim is its tree's own architect holds the only architect role its notice
+  // could reach, and is told nothing rather than handed its own message.
+  expect(
+    stallNoticeTopic({
+      session: { kind: "phase-worker", role: "architect", tree: "INFRA-1000", issue: "INFRA-1000" },
+      claim: claimOf({ issue: "INFRA-1000", role: "architect" }),
+      project: "legion",
+      owner: "legion-legion-infra-1000-architect",
+      notice: "overdue",
+    })
+  ).toEqual({
+    kind: "none",
+    why: "this session holds the only architect role its notice could reach",
+  });
 
   // And the controller's own session, which holds the only role its notice could reach.
   expect(
@@ -555,7 +632,7 @@ test("a session never publishes to the role its own session holds", async () => 
       session: { kind: "controller" },
       claim: undefined,
       project: "legion",
-      liveArchitect: true,
+      owner: undefined,
       notice: "overdue",
     })
   ).toEqual({

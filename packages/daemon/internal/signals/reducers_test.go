@@ -10,8 +10,9 @@ import (
 
 // A limit is legal in its signal's range and nowhere else: the idle share above 0 and at most 1, the
 // provider's headroom above 0 and at most 10, the merge queue's hours above 0 and at most 168, and a
-// whole number from 1 to 1,000,000 for the refusals, the kills and the approvals. The top of a range
-// is legal, 0 and the number past the top are not, and no signal reads a number that is not finite.
+// whole number from 1 to 1,000,000 for the kills and the approvals. The top of a range is legal, 0
+// and the number past the top are not, and no signal reads a number that is not finite. The
+// provider's refusals are no signal, so no limit of them is legal, however whole.
 func TestALimitIsLegalOnlyInItsSignalsRange(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -35,13 +36,8 @@ func TestALimitIsLegalOnlyInItsSignalsRange(t *testing.T) {
 		{Queue, 0.25, true, "a fraction of an hour"},
 		{Queue, 0, false, "the open end"},
 		{Queue, -1, false, "below it"},
-		{Refusals, 1, true, "the least whole number"},
-		{Refusals, 1_000_000, true, "the top"},
-		{Refusals, 1_000_001, false, "above the top"},
-		{Refusals, 0, false, "below the least"},
-		{Refusals, 0.5, false, "a fraction below the least"},
-		{Refusals, 2.5, false, "not whole"},
-		{Refusals, -3, false, "negative"},
+		{"refusals", 1, false, "the provider's refusals are no signal"},
+		{"refusals", 1_000_000, false, "the provider's refusals are no signal, at the old top either"},
 		{Kills, 1, true, "the least whole number"},
 		{Kills, 1_000_000, true, "the top"},
 		{Kills, 1_000_001, false, "above the top"},

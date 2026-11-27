@@ -775,6 +775,7 @@ func TestAReadyReleasesAPacedCatchUpWhoseMomentHasPassed(t *testing.T) {
 // A held row that a newer catch-up drops gives its place up, so the rows behind it move one turn
 // up, and each row left is made due at the moment the pacer lets it out.
 func TestHeldCatchUpsRejoinInIDOrderAndADeletedRowGivesUpItsPlace(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	clock := &waveClock{now: wakeOrigin}
 	pacing := testCatchUpPacing(t, pool, wakepace.New(testWakeRate, testWakeBurst, nil), clock)

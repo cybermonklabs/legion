@@ -305,7 +305,7 @@ func TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds(t *testing.T) {
 		}
 		var held []record.HeldIssue
 		inTx(t, pool, func(tx pgx.Tx) {
-			reading, err := admission.tickRead(context.Background(), tx)
+			reading, err := admission.tickRead(context.Background(), tx, func() (*passJudgement, error) { return admission.finalJudgement(context.Background(), tx) })
 			if err != nil {
 				t.Fatalf("read what is held: %v", err)
 			}

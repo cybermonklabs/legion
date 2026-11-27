@@ -22,8 +22,12 @@ func TestThePublishersErrorsHoldNoTailOfThePassword(t *testing.T) {
 		_, _, lookupErr := publisher.RoleHolder(ctx, "implementer")
 		_, readErr := publisher.ReadSessionRegistration(ctx, "ses_x")
 		_, deleteErr := publisher.DeleteSession(ctx, "ses_x", DeleteConditions{NotRegisteredAfter: time.Unix(0, 0)})
+		// Publish answers the session the listener stored the message for as well as its error
+		// (Publisher.Publish); a dial that got no answer names no holder, and this test reads the
+		// error alone.
+		_, publishErr := publisher.Publish(ctx, "notifications.role.implementer", "hello", map[string]string{}, "key-1")
 		for request, err := range map[string]error{
-			"a publish":           publisher.Publish(ctx, "notifications.role.implementer", "hello", map[string]string{}, "key-1"),
+			"a publish":           publishErr,
 			"a role lookup":       lookupErr,
 			"a registration read": readErr,
 			"a session delete":    deleteErr,

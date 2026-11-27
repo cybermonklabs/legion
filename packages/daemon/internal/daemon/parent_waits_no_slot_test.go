@@ -21,6 +21,7 @@ import (
 // tick's re-read, which is the only read that reaches a child filed and not released, the restart
 // between the move and the return, and the release of the waiting parent's pod.
 func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
+	t.Parallel()
 	parent := startedParent
 	filed := dispatch.IssueSummary{Key: filedChild, Status: "triage", Parent: &parent, LastSeq: 1}
 

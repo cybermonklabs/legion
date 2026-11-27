@@ -63,7 +63,7 @@ A recorded window is a directory.
 | `log.jsonl` | The daemon's lines in the reach, the span and the run-out, one JSON object each, as the daemon writes them on standard error: `time`, `level`, `msg` and the attributes. |
 | `events/<KEY>.jsonl` | Each issue's Dispatch events, oldest first, as Dispatch's issue event log serves them. |
 | `merges/<owner>__<name>.jsonl` | The first-parent commits of each base branch, which the conflict draw reads, each at GitHub's merge event or, where GitHub records none, at its committer date, with its committer date beside it. |
-| `git/<owner>__<name>.jsonl` | Git's reading of the repository's pull requests: their heads, the paths that each head and each first-parent commit of the base branch change, and git's verdict of merging each head with each later commit of the base that changes one of its paths ([Add git's verdicts of each repository](#add-gits-verdicts-of-each-repository)). |
+| `git/<owner>__<name>.jsonl` | Git's reading of the repository's pull requests: their heads, the paths that each head and each first-parent commit of the base branch change, and git's verdict of merging each head with each later commit of the base that changes one of its paths, with the count of the paths in conflict ([Add git's verdicts of each repository](#add-gits-verdicts-of-each-repository)). |
 | `signals/provider.jsonl` | The deployment's record of the model provider, one line a minute. |
 | `launcher/log.jsonl` | The launcher's lines of the project's issue pods, whose memory guard lines are the record of its kills. |
 | `queue/<owner>__<name>.jsonl` | The merge queue's events of the repository's pull requests. |
@@ -436,36 +436,58 @@ It writes the file's new sha256 into `window.json`.
 The pull requests are those that `collect-queue` reads.
 It reads the merges file that `collect-merges` wrote of `--branch`, and refuses a window that holds no merges file of `--repo`.
 It reads the window one line at a time and checks it as every command does.
-It writes only its file and `window.json`, each to a temporary file that it renames into place: once the commits are read, and again as it finishes each pull request.
+It writes only its file and `window.json`.
+The file grows by appending: as a phase finishes a pull request, `collect-git` appends that pull request's block to the file, and it appends the commits' block once the git phase has read them.
+It writes again no block that the file already holds, but where a block before it changed, as a run on a window whose file exists says below.
+After each block it writes `window.json` to a temporary file that it renames into place.
 
-Each line of the file is one JSON object, in this order:
+Each line of the file is one JSON object.
+The lines stand in blocks, and each block ends with `{"kind":"done","pr"}`, the done line of its pull request, with `pr` 0 for the commits' block.
+First comes the GitHub phase's block of each pull request, in ascending number:
 
-- `{"kind":"commit","sha","paths"}`: each first-parent commit of `--branch` that the merges file holds, in that file's order, then each base commit that a read of a merge state names and the merges file does not hold.
-  `paths` is the paths that the commit changes against its first parent (`git diff-tree -r --no-commit-id --name-only <sha>^1 <sha>`), sorted.
-
-- `{"kind":"pull","pr","merge","base","baseChanges","heads"}`: each pull request, in ascending number, each followed by its head lines.
+- `{"kind":"pull","pr","merge","base","baseChanges","heads"}`, where GitHub gave the pull request, followed by its head lines.
   `merge` is the commit that GitHub records as its merge into `--branch` (`merge_commit_sha`, where `merged` is true and `base.ref` is `--branch`), where the merges file holds that commit, and empty where it does not.
   `base` is the current base branch from GitHub's `base.ref`.
   `baseChanges` lists the times of the timeline's `base_ref_changed` events, oldest first, or `[]` when there are none.
   A read can use the stored verdicts only if `base` is the collected branch and the recorded read is at or after the last base change.
   Otherwise the read is unanswered with kind `missing`.
-  Collect the git file again if it predates these required fields.
   `heads` counts the pull request's head lines.
 
-- `{"kind":"head","pr","sha","at","from","tip","mergeBase","paths","verdicts"}`: each head of the pull request, by `at` and then `sha`.
+- `{"kind":"head","pr","sha","at","from"}`: each head of the pull request, by `at` and then `sha`.
   `from` is `commit` for a committed event of the pull request's timeline, at its committer's time, `force-push` for the new tip of a `head_ref_force_pushed` event, at the event's time, and `read` for a head that a read of a merge state names and the timeline does not give, at the read's time.
   A committer's time only estimates when the commit was pushed.
+
+- Then each missing line of the pull request whose reason is GitHub's: `pull-not-found`, `pull-unread` or `timeline-unread`.
+
+Then, once the git phase has read anything, come git's blocks.
+The first is the commits' block:
+
+- `{"kind":"commit","sha","paths"}`: each first-parent commit of `--branch` that the merges file holds, in that file's order, then each base commit that a read of a merge state names and the merges file does not hold.
+  `paths` is the paths that the commit changes against its first parent (`git diff-tree -r --no-commit-id --name-only <sha>^1 <sha>`), sorted.
+
+- Then each missing line with `pr` 0, of a commit that git did not give.
+
+Git's block of each pull request comes next, in ascending number, for each pull request whose block holds a line:
+
+- `{"kind":"reading","pr","sha","tip","mergeBase","paths","verdicts"}`: git's reading of each head that git read, in the order of the pull request's head lines.
   `tip` is the base commit that the head's verdicts run to: the first parent of the pull request's own merge commit, where it merged in the window's inputs, and otherwise the last commit of the merges file.
   `mergeBase` is `git merge-base <head> <tip>`, and `paths` is `git diff --no-renames --name-only <mergeBase> <head>`, sorted: the paths that the head changes, which are its profile.
-  `verdicts` holds `{"base","conflict","paths"}` for each first-parent commit of the merges file after the merge base, up to the tip (`git rev-list --first-parent <tip> ^<head>`, oldest first), whose commit line shares a path with the head's `paths`.
-  Each is git's verdict of merging the head with the base as it stands at that commit (`git merge-tree --write-tree --no-messages --name-only <base> <head>`, or the same merge as a line of `git merge-tree --stdin`): clean, or a conflict in the `paths` that git names.
+  `verdicts` holds `{"base","conflict","pathCount"}` for each first-parent commit of the merges file after the merge base, up to the tip (`git rev-list --first-parent <tip> ^<head>`, oldest first), whose commit line shares a path with the head's `paths`.
+  Each is git's verdict of merging the head with the base as it stands at that commit (`git merge-tree --write-tree --no-messages --name-only <base> <head>`, or the same merge as a line of `git merge-tree --stdin`): clean, or a conflict.
   So the first verdict that conflicts names its cause, and each later verdict holds the earlier commits.
-  A head that git did not read has no `tip`, `mergeBase`, `paths` or `verdicts`.
+  `pathCount` counts the distinct paths that git names in the conflict: 0 for a clean merge and at least 1 for a conflict.
+  A merge that git calls a conflict and that names no path gives no verdict, and nor does a clean merge that names one: either is a `git-error` missing input.
+  The file does not list those paths, since no read of the replay asks which paths conflict, and on a real repository the lists held most of the file.
+  A head that git did not read has no reading line.
 
-- `{"kind":"missing","pr","head","base","reason","detail"}`: each input that the collector could not get, sorted by `pr`, `head`, `base` and `reason`, with `pr` 0 for a commit of the base branch.
-  `reason` is `pull-not-found`, `pull-unread`, `timeline-unread`, `head-unreachable`, `base-unreachable`, `git-error`, `memory-cap` or `timeout`.
-  A missing input is never written as a clean verdict.
-  A verdict that git cannot give ends the head's verdicts, since each later one would rest on it.
+- Then each missing line of the pull request whose reason is git's.
+
+A missing line is `{"kind":"missing","pr","head","base","reason","detail"}`: an input that the collector could not get, with `pr` 0 for a commit of the base branch.
+The missing lines of a block are sorted by `head`, `base`, `reason` and `detail`.
+`reason` is `pull-not-found`, `pull-unread`, `timeline-unread`, `head-unreachable`, `base-unreachable`, `git-error`, `memory-cap` or `timeout`.
+A missing input is never written as a clean verdict.
+A verdict that git cannot give ends the head's verdicts, since each later one would rest on it.
+A read refuses a file that is not in this form, so collect the git file again if it predates a member that the form names.
 
 The command runs in two phases.
 The GitHub phase reads, with `GET` alone, each pull request (`GET /repos/<owner>/<name>/pulls/<n>`) and its whole timeline (`GET /repos/<owner>/<name>/issues/<n>/timeline`).
@@ -489,17 +511,36 @@ Since the clone holds every blob that it reads, each command that reads it runs 
 Git merges a head with each base commit that it reads a verdict at in one `git merge-tree --stdin --write-tree --no-messages --name-only -z`, whose stdin holds a line `<base> <head>` for each base, 200 bases at most.
 Where that command fails, or gives fewer verdicts than it has lines, the collector keeps each verdict that it gave whole.
 It then merges each base after those alone (`git merge-tree --write-tree --no-messages --name-only -z <base> <head>`), up to the first that git does not give.
+Each merge-tree writes the trees and blobs that it merges into an object directory of its own, under `merge-objects` in the clone beside its `objects` (`GIT_OBJECT_DIRECTORY`), and reads the commits from the clone's `objects` (`GIT_ALTERNATE_OBJECT_DIRECTORIES`); no other git command gets these two variables.
+Git splits `GIT_ALTERNATE_OBJECT_DIRECTORIES` on `:`, so where the clone's path holds a `:` or a `"`, the collector gives git that path quoted, as `git help git` describes.
+The collector removes each merge-tree's directory once the command ends, however it ended, and `merge-objects` whole before the first merge-tree, whatever a stopped run left there, and after the last, so the clone does not grow with the merges.
 Git reads a head that several pull requests hold once: each merge base, each list of paths and each verdict that it gives serves every pull request that rests on it.
+Under `--parallel`, two pull requests can read the same head at once, and git then gives each the same answer.
 
-Each git command runs alone, under a memory guard: as the command starts and every 200 ms after, the guard reads from `/proc` the summed resident memory of the command's process group, and kills the group once it passes `--memory-cap`, 1.5 GiB by default.
+Each git command runs under a memory guard of its own: as the command starts and every 200 ms after, the guard reads from `/proc` the summed resident memory of the command's process group, and kills the group once it passes `--memory-cap`, 1.5 GiB by default.
 The guard also kills a command past its time: 15 minutes for the clone, 180 seconds for a fetch of a batch, 90 seconds for a fetch of one commit, 120 seconds for a merge-tree, and 60 seconds for any other.
+A `merge-tree --stdin` writes each verdict as it makes it, so its 120 seconds are those of one merge, counted from the last verdict that it wrote, or from its start before the first.
+So a batch that goes on giving verdicts finishes, and a merge that hangs is killed, while the collector keeps the verdicts that its batch gave before it.
 A kill is a `memory-cap` or a `timeout` missing input, any other failure of git a `git-error` one, and the run goes on.
 The guard reads Linux's `/proc`, so the git phase runs on Linux.
+
+`--parallel <n>` runs the git reads and merges of up to n heads at once, 1 by default.
+Each of n workers takes the next head in the file's order, across its pull requests, so a window of many small pull requests and a few large ones keeps all n busy.
+The collector still finishes the pull requests in the file's order: it writes a pull request and prints its line once all its heads are read, never before an earlier one.
+So the file, the lines and a run that goes on after a kill are those of `--parallel 1`, byte for byte.
+Memory grows with `--parallel`: each of the n git commands can hold up to `--memory-cap`, and a merge of a real repository holds about 350 MiB.
+`--github-only` and `--fetch-only` run none of the reads and merges, so they refuse a `--parallel` above 1.
 
 A run on a window whose git file of `--repo` exists asks GitHub and git for nothing that the file holds.
 The GitHub phase keeps each pull request that the file holds and no missing input of GitHub's names.
 The git phase keeps each commit's paths, each head's merge base where its tip is the same, its paths where its merge base is the same, and each verdict of the same head at the same base commit.
-So a run that the pod's release killed goes on where it stopped.
+A run writes nothing while each block that it would write is the block that the file holds in its place.
+At the first block that differs, it cuts the file there and appends that block and each block after it.
+Before it reads the window, a run but `--fetch-only` cuts the file after its last done line, so it drops a block that a write which stopped left without its done line, and that pull request is read again.
+It then writes the sha256 of the file as cut into `window.json`, whatever `window.json` named before.
+So a run that the pod's release killed goes on where it stopped, from the file as it stood or from a copy of the file taken at any moment.
+A run refuses a file whose lines after its last done line do not read in this form, or belong to more than one block, since no write that stopped leaves them.
+So a run refuses a git file of an older form that holds more than one block's lines, rather than cut it away.
 
 A build job holds no GitHub token, and the clone of a private repository needs your git credential.
 So run the GitHub phase alone with `--github-only` where a GitHub token is, and the git phase alone with `--git-only`, which takes the pull requests and heads from the file that the GitHub phase wrote.
@@ -518,21 +559,54 @@ legion replay collect-git \
   --out windows/acme-2026-10-05
 ```
 
+A private repository's merges take hours of CPU, which belong on a machine that holds no git credential.
+So the git phase also runs in two halves.
+`--fetch-only` runs its fetches alone: it makes or opens the clone in `--clones`, and fetches every commit that the merges will read, as the git phase does.
+It reads no head, merges nothing and writes nothing into the window, so it does not cut the git file either: it reads the file only as a run that ended left it.
+It prints one line: the commits that the merges read that the clone holds, and the heads and base commits that the remote did not give.
+`--merge-only` runs the git phase's reads and merges alone, on the clone that `--clones` holds, and opens no connection to the remote.
+It runs no `git clone`, `git fetch` or `git ls-remote`, each git command that it runs has lazy fetching off, and it needs no `origin` remote.
+It refuses a `--clones` that holds no clone of `--repo`.
+A head or a base commit that the clone does not hold is a `head-unreachable` or `base-unreachable` missing input, whose detail says that the clone does not hold the commit and that this run asks the remote for nothing.
+So run `--fetch-only` where your git credential is, and copy the clone's directory, `<clones>/<owner>__<name>`, to a machine that holds no credential and holds the window.
+Then run `--merge-only` there.
+The two in turn write the same file as `--git-only`.
+
+```sh
+legion replay collect-git \
+  --repo <owner>/<name> --branch main --fetch-only \
+  --clones <dir outside the window> \
+  --out windows/acme-2026-10-05
+
+tar -C <dir outside the window> -cf clone.tar <owner>__<name>
+# Copy clone.tar to the machine with no credential, and unpack it there.
+tar -C <dir outside the window> -xf clone.tar
+
+legion replay collect-git \
+  --repo <owner>/<name> --branch main --merge-only --parallel 4 \
+  --clones <dir outside the window> \
+  --out windows/acme-2026-10-05
+```
+
 `collect-git` prints one line for each pull request that a phase finishes, then a summary: the pull requests, heads, verdicts and conflicts, the missing inputs by reason, git's peak memory and the time taken.
+`--fetch-only` prints its one line instead, with git's peak memory and the time taken.
 
 | Flag | What it gives |
 | --- | --- |
 | `--repo <owner>/<name>` | The repository (required). |
 | `--branch <name>` | The base branch, whose merges file `collect-merges` wrote (required). |
-| `--github-token-env <VAR>` | The environment variable that holds the GitHub token, which `collect-git` never prints (required, but refused with `--git-only`). |
-| `--github-api <url>` | GitHub's REST API (`https://api.github.com` by default; refused with `--git-only`). |
-| `--github-reserve <n>` | The requests of the shared quota left to the daemon and the other roles (3000 by default; 0 for none; refused with `--git-only`). |
-| `--github-rate <n>` | The most requests a second sent to GitHub (0.6 by default; 0 for no pacing; refused with `--git-only`). |
+| `--github-token-env <VAR>` | The environment variable that holds the GitHub token, which `collect-git` never prints (required, but refused with `--git-only`, `--fetch-only` and `--merge-only`). |
+| `--github-api <url>` | GitHub's REST API (`https://api.github.com` by default; refused with `--git-only`, `--fetch-only` and `--merge-only`). |
+| `--github-reserve <n>` | The requests of the shared quota left to the daemon and the other roles (3000 by default; 0 for none; refused with `--git-only`, `--fetch-only` and `--merge-only`). |
+| `--github-rate <n>` | The most requests a second sent to GitHub (0.6 by default; 0 for no pacing; refused with `--git-only`, `--fetch-only` and `--merge-only`). |
 | `--out <dir>` | The directory of the window that `collect` wrote (required). |
-| `--clones <dir>` | The directory that the repository is cloned into, never inside the window (`clones/` beside the window by default). |
+| `--clones <dir>` | The directory that the repository is cloned into, never inside the window (`clones/` beside the window by default), where `--merge-only` reads the clone and makes none. |
 | `--memory-cap <bytes>` | The memory that one git command's processes may hold before the guard kills them (1610612736, 1.5 GiB, by default). |
+| `--parallel <n>` | The heads whose git reads and merges run at once, each git command under its own `--memory-cap`, with no change to the file written (1 by default; refused below 1, and above 1 with `--github-only` and `--fetch-only`). |
 | `--github-only` | Run the GitHub phase alone. |
 | `--git-only` | Run the git phase alone, from the file that the GitHub phase wrote. |
+| `--fetch-only` | Run the git phase's fetches alone, where your git credential is: fill the clone in `--clones` with every commit that the merges read, and write nothing into the window. |
+| `--merge-only` | Run the git phase's reads and merges alone, on the clone that `--clones` holds, with no connection to the remote. |
 
 ### Neutralize a window for test data
 
@@ -835,7 +909,7 @@ Nothing that moves an issue's work reads what a holder took, but the merger's st
 | `--seed <n>` | The seed of every draw (1 by default). |
 | `--slowdown <f>` | The factor f for each 42 issues in flight above the record's number (1 by default). |
 | `--cap <n>` | The admission cap that the replay serves under from the window's start to its end, in place of the caps that its record shows (0, the default, keeps the record's), which `run.json` names as `cap`. |
-| `--limit <signal>=<value>` | A signal's limit, given once for each signal that has one: `idle`, `queue`, `provider`, `refusals`, `kills` or `approvals`, each in the range that its limit takes ([The signals](#the-signals)), under which `signals` and `signals-backoff` start an issue below P0 only while each signal that has a limit reads under it. |
+| `--limit <signal>=<value>` | A signal's limit, given once for each signal that has one: `idle`, `queue`, `provider`, `kills` or `approvals`, each in the range that its limit takes ([The signals](#the-signals)), under which `signals` and `signals-backoff` start an issue below P0 only while each signal that has a limit reads under it. |
 | `--idle-after <duration>` | d, how long a slot holder has been idle before the idle signal counts it (1h by default). |
 | `--probe <time>` | A moment, in RFC 3339, at which `run.json` gives the value of each signal that `--limit` names, given once for each moment. |
 | `--token-limit <tokens a minute>` | The project's token limit in uncached input tokens a minute, a whole number above zero, which the replay takes in each minute whose provider record holds no limit of the project's own, a limit that the record holds standing (assumption 49). |
@@ -936,9 +1010,10 @@ legion replay signals --window windows/acme-2026-10-05 \
 ```
 
 `signals` reads each signal of [The signals](#the-signals) at each moment that `--at` names, from the window's record alone, with no replay and no database.
-It prints a block for each moment, with a line for each signal: `idle`, `queue`, `provider`, `refusals`, `kills` and `approvals`.
+It prints a block for each moment, with a line for each signal: `idle`, `queue`, `provider`, `kills` and `approvals`.
 Each line gives the signal's value, or `unrecorded` where the window holds no record of the signal at that moment.
-`idle` and `provider` are shares, `queue` is in hours, and `refusals`, `kills` and `approvals` are counts, with the refusals of the project's own limit and of the provider beside their count.
+`idle` and `provider` are shares, `queue` is in hours, and `kills` and `approvals` are counts.
+No line counts the provider's refusals, which are no signal.
 Under a signal, each `--limit <signal>=<value>` that names it adds a line with the next moment at which the signal would cross that limit if no new event came.
 That line says `no crossing due` where none would come, and, for `approvals`, that the signal changes only at events.
 `--token-limit` gives the project's token limit, which the provider's headroom reads in each minute whose record holds no limit of the project's own, as a replay that is given it reads it (assumption 49).
@@ -948,7 +1023,7 @@ Where the window holds the launcher's lines, `signals` then prints how many of t
 | --- | --- |
 | `--window <dir>` | The window (required). |
 | `--at <time>` | A moment, in RFC 3339, given once for each (required). |
-| `--limit <signal>=<value>` | A limit of `idle`, `queue`, `provider`, `refusals`, `kills` or `approvals`, at or above zero, given once for each. |
+| `--limit <signal>=<value>` | A limit of `idle`, `queue`, `provider`, `kills` or `approvals`, at or above zero, given once for each. |
 | `--idle-after <duration>` | d, how long a holder has been idle before the idle signal counts it (1 hour by default). |
 | `--token-limit <tokens a minute>` | The project's token limit in uncached input tokens a minute, a whole number above zero, which the provider's headroom reads in each minute whose record holds no limit of the project's own (assumption 49). |
 
@@ -1023,7 +1098,7 @@ With `--against`, a last section gives each rate on each record, their ratio, th
 `--json` prints the same as JSON (`LoadModels` in `internal/replay/models.go`), which the limit test reads.
 
 A replay reads each model's signal from the replay's own timeline: its issues in flight at each moment, the stretches in flight of each issue whose work the record never ran, its start of each recorded work segment, and each pull request of work that the record never ran entering the queue.
-It gives the provider's headroom and refusals, the kills of the hour before and the queue's wait at a moment, each by the signal's own definition ([The signals](#the-signals)), and `LoadModels.RecordTimeline` gives the record's own timeline, at which the daily test reads the models.
+It gives the provider's headroom, the kills of the hour before and the queue's wait at a moment, each by the signal's own definition ([The signals](#the-signals)), and `LoadModels.RecordTimeline` gives the record's own timeline, at which the daily test reads the models.
 `LoadModels.Replay` (`internal/replay/model_replay.go`) reads a whole timeline at once.
 A run reads it as it goes through `LoadModels.Reader` (`internal/replay/model_reader.go`), which models each minute once it ends, each kill once its segment or its drawn issue's own hours bring it, and each pull request once it enters, and gives at each moment what `LoadModels.Replay` gives over the whole timeline.
 Each modelled value at a moment reads only the course up to that moment, so nothing that the reader has given changes later.
@@ -1119,6 +1194,7 @@ The backtest passes when both of these hold:
 A backtest that fails either, or that reads no span, says that the tool cannot tell a change of the cap.
 A span of a cap that the daemon served for a few hours can give out as few as about five slots, and there a miss of one slot fails the span.
 So the backtest names each span in which one slot is more than 10% of the record's count.
+It also names each span whose cap is not `--cap` in which the record gave out no slot and the replay at `--cap` gave out none either: that replay did not miss the record there by more than 10%, so the span fails.
 Collect the window of a cap backtest with no run-out, so that its replays end at `--to`.
 `--json` gives the backtest as `capBacktest`, with each span's `from`, `to`, `cap`, `recorded`, `atRecordedCaps`, `atFlatCap`, `recordedPass`, `flatRead` and `flatPass`.
 
@@ -1328,8 +1404,8 @@ A percentile that repeats a lower percentile's limit is left out as its repeat.
 A signal that a load model gives has steps only where its model passed R11's tests.
 `--models` is the output of `legion replay models --against --json` for `--window-one` against the other record, and `--models-reverse` the output for the other record against `--window-one`.
 The model of a signal must fail the daily test on neither record, pass it on at least one, and pass the test across the two records in both outputs.
-A window that records no token limit of the project's own has no daily test for the tokens model, so the tokens model gives a limit for the provider's headroom and refusals only under `--token-limit`, the project's token limit, which every run of the plan takes (`legion replay run --token-limit`, [assumption 49](#assumption-49-the-projects-token-limit-is-the-one-that-the-replays-caller-gives-in-each-minute-whose-record-holds-none)).
-The provider's headroom and its refusals each have a limit and a sweep of their own, since each has its own range, and the table groups them under the provider.
+A window that records no token limit of the project's own has no daily test for the tokens model, so the tokens model gives a limit for the provider's headroom only under `--token-limit`, the project's token limit, which every run of the plan takes (`legion replay run --token-limit`, [assumption 49](#assumption-49-the-projects-token-limit-is-the-one-that-the-replays-caller-gives-in-each-minute-whose-record-holds-none)).
+The provider's signal is its headroom alone: the plan has no list, sweep or row for its refusals.
 The idle share and the approvals come from the replay itself, have no model and always have steps.
 A signal whose model failed has no step, and the output says why.
 
@@ -1368,7 +1444,7 @@ A named limit whose runs hold more issues in flight than the range's top is an e
 
 The output also says what each limit rests on.
 For a signal that a model gives, it lists each tested day of the daily test with the recorded and the modelled value and the record it is in, and the ratio of the test across the two records.
-For the provider's signals it also gives the token limit, the span of each window's provider record, and the refused minutes by day that the model gives under the token limit in minutes whose record holds no limit of the project's own, which the record cannot confirm (`run.json`'s `suppliedRefused`).
+For the provider's headroom it also gives the token limit, the span of each window's provider record, and the refused minutes by day that the model gives under the token limit in minutes whose record holds no limit of the project's own, which the record cannot confirm (`run.json`'s `suppliedRefused`).
 
 `limits` reads what the runs hold, so it is run again after each step.
 Step B waits for the runs of step A, and step C for the runs of step B, and the output says which step it waits for.
@@ -1573,7 +1649,7 @@ The daemon runs `main`, and a replay runs the rule that you name through the sam
 | `before-p0` | `main` with no P0 issue started outside the cap, so that a P0 issue waits in the line as any issue does and the cap counts every holder, measured for reference. | `0d3786da` |
 | `idle-return-1h` | `main` with the slot of a holder that waits on its children or on a person given back once none of its roles had a turn for an hour, the holder keeping its place in the line, for the reason that an owner asked why a P0 issue cannot start at once; it now differs from `main` only for a holder that waits on a person, since under `main` a started parent already gives its slot back while it waits for its children (`awaiting_children`). | `0d3786da` |
 | `signals` | `main` with R10's start of a P0 issue outside the cap and admission by signals below P0: the next issue in the line's priority order starts while each signal that has a limit is under it and the holders below P0 are fewer than the ceiling, which the cap becomes, at the pass of an event or of a signal's deadline and never at the tick. | `0d3786da` |
-| `signals-backoff` | `signals` with an allowance that falls to 90% at each project-limit refusal or kill (rounded down, minimum 1) and rises by 1 each quiet hour up to the ceiling. | `0d3786da` |
+| `signals-backoff` | `signals` with an allowance that falls to 90% at each kill of the memory guard (rounded down, minimum 1) and rises by 1 each quiet hour up to the ceiling. | `0d3786da` |
 
 The commit of `main` is the commit at which the rule was first written as a value.
 `main` is the daemon's rule at the tool's commit, which each run records, so since cybermonklabs/legion#4592 it moves a started parent with an open child into `awaiting_children`.
@@ -2069,16 +2145,18 @@ A replay supplies the signals to the passes of a run under either rule (`legion 
 The idle share comes from the replay's own slot holders: the states that its pass observer reads over the newest pass's view and the stub's claims, with the moment each holder has stood idle since.
 The replay's course up to the window's start is the record's, so a holder stands idle no earlier than the newest end of a turn of its issue that the record shows before the start.
 The approvals come from the replay's copy of Dispatch: each ask event, each comment on an ask and each change of an issue's assignee that it applies, and each move of the project's default assignee at its recorded moment.
-The provider's headroom and refusals, the kills and the merge queue come from the load models at the replay's own issues in flight, its starts of each recorded work segment and the pull requests of its drawn work ([`legion replay models`](#legion-replay-models)).
+The provider's headroom, the kills and the merge queue come from the load models at the replay's own issues in flight, its starts of each recorded work segment and the pull requests of its drawn work ([`legion replay models`](#legion-replay-models)).
 The models read the course as the run goes: each minute when it ends, each kill once its segment or its drawn issue's own hours bring it, and each pull request once it enters, so the cost of a pass does not grow with the window.
 A model that gives no limit for its signal leaves that signal with none in the run, and `run.json` names it under `unlimited`.
-Under `--token-limit`, the tokens model also limits the provider's headroom and its refusals where it gives no daily test only because the window records no limit of the project's own, and the run models each minute whose record holds no such limit against the token limit (assumption 49).
+Under `--token-limit`, the tokens model also limits the provider's headroom where it gives no daily test only because the window records no limit of the project's own, and the run models each minute whose record holds no such limit against the token limit (assumption 49).
+The models take the token limit only where the run limits the headroom, so a run that does not limit it, under `signals-backoff` too, models no minute against it and rests on no such minute.
 A model that fails its daily test gives no limit, with the token limit or without it.
 A signal with no record at a moment holds no start there (assumption 47).
-Under `signals-backoff` the pass also folds the setbacks: the project's own refusals of each minute, at the minute's end, and each kill, in time order, of a model that limits its signal in the run.
+Under `signals-backoff` the pass also folds the setbacks: each kill, in time order, where the memory model limits its signal in the run.
+No refusal is a setback, and no signal reads one.
 
 After every pass, the run computes the project's deadline: the earliest crossing of each signal that has a limit, with no event, and under `signals-backoff` the allowance's next rise (`signals.Earliest`).
-It does so again at each moment that a modelled input changes with no pass: a kill, a pull request entering or leaving the merge queue, and the end of a minute that may hold a refusal.
+It does so again at each moment that a modelled input changes with no pass: a kill, and a pull request entering or leaving the merge queue.
 It also does so at each turn that starts or ends with no pass, where the idle share has a limit.
 A kill runs no pass: the replay leaves the kill's fact out (assumption 31), and only computes the deadline again.
 The run keeps one deadline, as the daemon keeps one timer.
@@ -2089,9 +2167,14 @@ A boot drops the deadline that stands, and the boot's first pass computes it aga
 
 `signals-backoff` replaces the ceiling by an allowance.
 The allowance starts at the ceiling.
-At each refusal by the project's own limit and at each kill, it becomes 90% of itself in whole numbers, rounded down, and at least 1.
+At each kill of the memory guard, it becomes 90% of itself in whole numbers, rounded down, and at least 1.
 For each whole hour after the last of them, it rises by 1, up to the ceiling.
-The pass folds the history of refusals and kills up to the pass (`signals.Allowance`), so the same history gives the same allowance, and the moment of the next rise is one that a deadline can name (`signals.NextRise`).
+The pass folds the history of kills up to the pass (`signals.Allowance`), so the same history gives the same allowance, and the moment of the next rise is one that a deadline can name (`signals.NextRise`).
+
+A directory of runs written while the provider's refusals were a signal is refused by every report that reads it where a run's `run.json` limits them (`refusals` in `limits`), with an error that names the run and says to run it again.
+A `signals-backoff` run of that time that limited no refusal holds nothing that tells it apart, though its allowance also fell at each refusal by the project's own limit.
+Its `run.json`'s `buildCommit` names the binary that made it, and a report refuses it for that only where the caller asks for the same build, as `forecast` does.
+Run such runs again with a binary built after the change.
 
 ## The branches
 
@@ -2155,11 +2238,12 @@ A replay measures from the same states, so a reading of production and a replay 
 
 ## The signals
 
-The tool's spec names, in its R11, five signals that a rule can admit by: the idle share, the merge queue's wait, the model provider's headroom with its refusals, the memory guard's kills, and the approvals that wait on the project's default assignee.
+The tool's spec names, in its R11, five signals that a rule can admit by: the idle share, the merge queue's wait, the model provider's headroom, the memory guard's kills, and the approvals that wait on the project's default assignee.
+The provider's signal is its headroom alone: its refusals hold no start, and no limit can name them.
 Each has one definition in the tool's code (`internal/signals`), over plain values that its caller supplies at a moment: the replay reads them from a collected window's own record (`internal/replay/signals.go`), and the daemon's admission pass reads them from its own events.
 Package `signals` imports the standard library alone, so the daemon imports no replay code.
 It also holds the pairing of the merge queue's events into waits and the turn of each ask by its events (`signals.WaitsOf` and `signals.NextAsk`), for a caller that reads the events one at a time (`signals.MergeQueue` and `signals.ApprovalState`), and the legal limit of each signal (`signals.CheckLimit`).
-A limit is legal where it is above 0 and at most 1 for the idle share, at most 10 for the provider's headroom and at most 168 for the queue's hours, and where it is a whole number from 1 to 1,000,000 for the refusals, the kills and the approvals.
+A limit is legal where it is above 0 and at most 1 for the idle share, at most 10 for the provider's headroom and at most 168 for the queue's hours, and where it is a whole number from 1 to 1,000,000 for the kills and the approvals.
 `legion replay signals --limit` is not a setting: it reads any limit at or above zero, and prints where a signal would cross it.
 Lower is better for each.
 
@@ -2170,7 +2254,7 @@ The end of a signal's record is such a moment for a signal that binds there.
 It is the moment at which a rule that admits by the signals needs its next admission pass when no event comes first (R11), and each event moves it again.
 
 A replay keeps each work segment's recorded length, so it cannot show the load that more work in flight would cause.
-So a replay under another rule takes the merge queue's wait, the provider's headroom and refusals, and the kills from a model of the window that keeps what the window records and moves with the work in flight of the replay (assumption 45).
+So a replay under another rule takes the merge queue's wait, the provider's headroom and the kills from a model of the window that keeps what the window records and moves with the work in flight of the replay (assumption 45).
 [`legion replay models`](#legion-replay-models) fits the three models and tests each one by R11's daily test and by R11's test across two records.
 The idle share and the approvals come from the replay itself.
 The definitions below read the record, and [`legion replay signals`](#legion-replay-signals) prints them.
@@ -2215,17 +2299,14 @@ The headroom has no limit of the project's own in a minute before the limit's fi
 There it reads the project's token limit that the caller gives (`--token-limit`, assumption 49), and with none it has no record and binds nothing.
 A minute outside the record of the provider has no record, whatever the caller gives (assumption 47).
 
-**Refusals**: part of the provider's signal, the refusals of each minute of the record that ended in the hour before the moment, each by the limit that gave it, the project's own (`own`) or the provider's (`provider`), as the record splits them (assumption 46).
-A limit of the refusals reads their count (`--limit refusals=<n>`).
-The refusals have a record at a moment where the record holds the minute before it, whatever the limit.
+The record also splits the refusals of each minute into those of the project's own limit (`own`) and those of the provider (`provider`), as the record gives them (assumption 46).
+No signal reads them: the tokens model's daily test reads the project's own ([`legion replay models`](#legion-replay-models)).
 
-**Next crossing**: for the headroom, the first minute boundary at which the record's series starts or stops binding.
-For the refusals, with the refusals as they stand at the moment, the moment at which an old refusal leaves the hour.
+**Next crossing**: the first minute boundary at which the record's series starts or stops binding.
 
 **Inputs**: `signals/provider.jsonl`.
 
-**Source**: the tokens model fitted on the window, for the headroom and the refusals by the project's own limit.
-A refusal that the provider gives every project is kept as recorded.
+**Source**: the tokens model fitted on the window.
 
 ### Signal `kills`
 
@@ -3194,7 +3275,7 @@ In the daemon's log, read each notice that the daemon sent a worker, and the sta
 Turns that start soon after a notice more often than at other moments show that notices move work.
 Compare the rows that `run.json` counts under this assumption between rules, because a rule that sends many more notices rests more on it.
 
-### Assumption 27: What the daemon publishes on Dispatch for people and tools to read, the gated steps, the design gates, the role holders and the step and plan records, is read back by no decision a replay runs
+### Assumption 27: What the daemon publishes on Dispatch for people and tools to read, the gated steps, the design gates, the role holders, the step and plan records and the state events, is read back by no decision a replay runs
 
 The tool's own.
 Sound: the daemon decides from its own record and from Dispatch's events.
@@ -3206,6 +3287,7 @@ The workflow can attach an experiment and variant from a simulated assignment to
 Collected windows do not supply prior experiment assignments.
 `run.json` counts them under `divergence.finished`.
 A person's act after a publication is a Dispatch event of the window.
+The state events (the daemon's `state` lane, which Dispatch takes its board from) never reach a replay's outbox: only a daemon with a workflow turns them on, and a replay's store never does, so the replay queues none and applies no linger deadline, whose pass only writes the admission block's event.
 
 **If it is wrong.**
 If a decision of the daemon read a publication back, the replay moves the measures so.
@@ -3799,7 +3881,7 @@ Compare the first-slot errors on `main` and `main+conflicts=drawn`, and the spre
 ### Assumption 45: Each modelled signal moves with the work in flight only as its model's form says
 
 Doubtful.
-A replay under another rule takes the merge queue's wait, the provider's headroom with the refusals by the project's own limit, and the memory guard's kills from models of the window ([`legion replay models`](#legion-replay-models)).
+A replay under another rule takes the merge queue's wait, the provider's headroom and the memory guard's kills from models of the window ([`legion replay models`](#legion-replay-models)).
 Each model keeps what the window records, and moves with the replay's work in flight only as its form says.
 A minute's tokens are its recorded tokens for each issue in flight, times the replay's issues in flight.
 A kill moves with the work segment of its own issue, and work that the record never ran takes the day's recorded kills for each hour of an issue in flight.
@@ -3834,25 +3916,27 @@ A rate that moves between the records, or from one range of issues in flight to 
 ### Assumption 46: A refusal by the provider, or one the record does not split, is kept as recorded and counted as R11 says
 
 The record splits the refusals of each minute into those of the project's own limit and those of the provider ([Signal `provider`](#signal-provider)).
-A replay under another rule takes the project's own refusals from the tokens model and keeps the provider's as recorded, since the provider gives them to every project.
+The tokens model takes the project's own refusals from its refused minutes and keeps the provider's as recorded, since the provider gives them to every project, and R11's daily test of the model reads the project's own.
 A refusal that the record does not split counts as the project's own, and the result says so.
 A minute in which the window holds no record of the project's limit keeps its recorded refusals of both kinds, since the model has no limit to read there.
+No signal reads a refusal, and no rule admits by one.
 
 **Evidence in a recorded window.** _Refusals of both kinds in one minute._
 In one deployment's record of 2026-11-23 from 16:28, the provider refused 70 calls in the first minute while the project's own limit refused none, and in the third minute the project's own limit refused 127 beside the provider's 53.
 
 **If it is wrong.**
-If some of the refusals counted as the project's own came from the provider, the replay moves the measures so under a rule that holds back starts on the project's own refusals.
+If some of the refusals counted as the project's own came from the provider, the record holds refused minutes of the project's own limit that the limit did not give, and R11's daily test of the tokens model reads them.
+That test can then fail a model that keeps the record, or pass one that does not, and the provider's headroom has a limit only where the model passes.
 
-- Issues finished: Down, because the rule holds back starts for refusals that more work in flight did not cause.
+- Issues finished: Unknown, because a headroom limit that the test wrongly gives or withholds holds back starts that the true record would let through, or lets through starts that it would hold back.
 
-- Started work that waits for a slot: Up, for the same reason.
+- Started work that waits for a slot: Unknown, for the same reason.
 
-- Priority taken by holders: None, because the refusals hold back starts below P0, not ranks.
+- Priority taken by holders: None, because the headroom holds back starts below P0, not ranks.
 
 - Other delays: None, because the refusals move no loop and no wait on another issue.
 
-- Slots: Down, because the starts held back hold no slot.
+- Slots: Unknown, for the same reason as the issues finished.
 
 **The reading that would test it.** _A record that separates the counts._
 Check the minutes whose refusals the record does not split against a record of the same minutes that separates the project's own refusals from the provider's.

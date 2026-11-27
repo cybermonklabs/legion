@@ -28,9 +28,10 @@ section can use the words without stopping to explain them.
   issue's repository. Each issue targets one repository, the one Dispatch resolves for it (its
   own, else its nearest ancestor's in its own project, else the project's default repository,
   which is set in Dispatch), which Legion records, with that repository's default branch as GitHub
-  names it, when it first records the issue, and keeps. This release's one-time pass is the one
-  exception: it writes a configured rename's new name (`repository_renames`) over the old one on
-  the records.
+  names it, when it first records the issue. The record then follows Dispatch: a later change of
+  the issue's repository moves it onto the new one when GitHub answers, at that moment, that both
+  role Apps are installed there ([The project's repositories](/legion/legion/running-legion/#the-projects-repositories)),
+  and a configured rename's pass writes the new name (`repository_renames`) over the old one.
   Legion acts there through two GitHub Apps, so the account that reviews a change is never the one
   that wrote it. The daemon creates a root's branch at the recorded default branch (`main`,
   `develop` or `release/v7.1` alike) when it admits the root, before its architect starts, and a
@@ -44,7 +45,7 @@ section can use the words without stopping to explain them.
 One Legion deployment can work issues across several GitHub repositories, under several owners,
 with exactly one repository per issue — never two.
 A change that spans repositories uses child issues, each in one repository.
-Several children may share a repository, each child's own `--repo` fixed when the daemon records it.
+Several children may share a repository, and each child's record follows the repository Dispatch resolves for it.
 An issue may name any `owner/name`, and the account that installs a role's GitHub App decides what that role reaches.
 Every worker holds a gh bundle of its role's GitHub App, with one token for each owner that App
 is installed on.
@@ -227,12 +228,16 @@ starts: for a child, before `release_children` releases it, since a released chi
 first step in the same admission pass. Legion holds a plan given for a child it has not recorded
 yet, and the child's first step takes the newest plan its owner gave. Legion runs only those steps,
 in the order the plan names them, then the retro and the merge, so an issue with that plan runs no
-planner and no tester. Legion refuses any other plan with `PLAN_REFUSED` and one
-reason for each cause. An issue whose owner gives it no plan, or a task with no steps, runs the
-project's default steps, `projects.<KEY>.default_steps` in `legion.yaml`, which are
-`planner implementer tester reviewer acceptance:owner` unless the project sets others; so does an
-issue whose work started before its owner gave it a plan, until the owner stops that task with
-`stop_task` and gives a plan whose one task replaces it.
+planner and no tester. Legion refuses any other plan with `PLAN_REFUSED` and its reasons: the
+first reasons of each kind of cause, and one more reason for each kind with more that counts the
+rest of it. Each reason quotes the plan's words and lists its task ids within a bound of bytes,
+and a task id outside the form Dispatch records a step's task under (lowercase letters, digits and
+hyphens, starting with a letter or a digit, at most 64 bytes) is refused, so the answer has a bound in bytes
+whatever the plan holds. An issue whose owner gives it no plan, or a task with
+no steps, runs the project's default steps, `projects.<KEY>.default_steps` in `legion.yaml`,
+which are `planner implementer tester reviewer acceptance:owner` unless the project sets others;
+so does an issue whose work started before its owner gave it a plan, until the owner stops that
+task with `stop_task` and gives a plan whose one task replaces it.
 Set `default_steps` only once every daemon that reads the file runs a release that knows it: an
 earlier daemon refuses the whole file (`Unknown key "projects.<KEY>.default_steps"`).
 An issue that leaves its tree, as an orphan admitted again as a root of its own does, takes no plan

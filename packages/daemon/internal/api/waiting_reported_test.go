@@ -67,6 +67,11 @@ func (s projectedSource) State(ctx context.Context, tx pgx.Tx) (api.State, []sup
 	return state, nil, err
 }
 
+func (s projectedSource) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
+	observed, err := projection.Observe(ctx, projection.ObservedInputs{Tx: tx, Store: s.records, Project: waitProject, Steps: s.steps, Now: waitNow})
+	return observed, nil, err
+}
+
 // waitingStore is a migrated database of this package's template, with the records store and the
 // design-gate steps the deployment gates.
 func waitingStore(t *testing.T) (*store.Store, record.Store, []record.DesignStep) {

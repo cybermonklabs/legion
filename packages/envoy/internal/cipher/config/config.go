@@ -279,6 +279,22 @@ type Config struct {
 	// it that carries an owner and a tier tag (Secret Manager: annotation) and is encrypted with
 	// the agent-secrets key, and rereads them every five minutes.
 	SecretsPrefix string
+	// BROKER_SECRETS_SECOND_PREFIX: a second Secret Manager prefix, read only with
+	// gcp-secret-manager, for a deployment that moves its store to another prefix: a grant whose
+	// request froze a secret's source under it counts as one of the source the broker serves the
+	// same name from under BROKER_SECRETS_PREFIX, the same remainder after the prefix and the same
+	// type, so that grant is released, reused and connected through the airlock, and not ended as a
+	// grant of another secret. A release still reads the value from BROKER_SECRETS_PREFIX's secret
+	// alone, which the broker listed and checked; nothing of the broker lists, reads, serves,
+	// freezes or writes under the second prefix. Empty (the default) is a broker that counts a frozen
+	// source only when it is the one served. It is projects/<project number>/secrets/<secret-id
+	// prefix>-, as BROKER_SECRETS_PREFIX is, and neither may start with the other; the broker
+	// refuses to start on any value under aws-secrets-manager, whose source is an ARN a move to
+	// another name always changes. A deployment sets it to the new store's prefix before the move,
+	// swaps the two at the move, rewrites the frozen sources of its live grants and pending
+	// requests to the new prefix once no pod of the earlier setting serves, and removes it once its
+	// database holds no such source under the old prefix.
+	SecretsSecondPrefix string
 	// BROKER_SECRETS_KMS_KEY_ARN, BROKER_SECRETS_KMS_KEY_NAME: the agent-secrets key every agent
 	// secret is encrypted with, one variable per store, each required with its store and refused
 	// with the other. With aws-secrets-manager, BROKER_SECRETS_KMS_KEY_ARN, the AWS KMS key's ARN;
@@ -1056,11 +1072,13 @@ type Config struct {
 	// a seed of its kind (a user, an account, a curve key), naming the variable and never the
 	// value. BROKER_NATS_SERVICES lists the services admitted by platform identity, as
 	// whitespace-separated <kind>/<machine id or ->/<* or ->=<account> entries (dispatch,
-	// listener, edge-listener, daemon or measure; operator, the deployment's one operator
-	// identity, whose grant is the writer hold's phase's and whose token alone writes the hold
-	// through /v1/nats-hold; or probe, the hold's one probe; * for the kind's whole grant, - for
-	// the projects the account's exchange entry lists, which operator and probe refuse, as they
-	// refuse a machine id and a second entry of their kind), each account written as
+	// listener, webhook-listener, edge-listener, daemon or measure; webhook-listener is the
+	// listener that receives GitHub's webhook, the one listener whose grant publishes GitHub's
+	// lane; operator, the deployment's one operator identity, whose grant is the writer hold's
+	// phase's and whose token alone writes the hold through /v1/nats-hold; or probe, the hold's
+	// one probe; * for the kind's whole grant, - for the projects the account's exchange entry
+	// lists, which operator and probe refuse, as they refuse a machine id and a second entry of
+	// their kind), each account written as
 	// BROKER_API_ACCOUNTS writes one, every entry read once at load (ParseNATSServices). An edge
 	// listener's entry, edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>, lists in place of * or
 	// - the projects its grant is built for and GET /v1/project-repositories answers that account
@@ -2826,6 +2844,33 @@ func databaseIAM(databaseURL string) (bool, error) {
 	return true, nil
 }
 
+// secondPrefixRefusal refuses BROKER_SECRETS_SECOND_PREFIX, second, beside the store store and
+// BROKER_SECRETS_PREFIX, prefix, which Load has already held to its store's form, naming the
+// setting and the rule it breaks, and answers nil for an empty one, the default. A value is read
+// only with gcp-secret-manager, since an AWS Secrets Manager source is an ARN whose random suffix
+// a move to another name always changes, so no prefix could carry a grant across one; it is a
+// Secret Manager prefix (secrets.ValidGCPPrefix); it is not prefix itself, since a move goes
+// between two prefixes; and neither of the two starts with the other, since a secret under the
+// longer one is under both, so its source would count under either.
+func secondPrefixRefusal(store, prefix, second string) error {
+	switch {
+	case second == "":
+		return nil
+	case store != secrets.StoreGCP:
+		return fmt.Errorf("BROKER_SECRETS_SECOND_PREFIX is read only with BROKER_SECRETS_STORE=%s, and this broker's store is %s: an AWS Secrets Manager source is an ARN whose random suffix a move to another name always changes, so no second prefix carries a grant across one; unset it", secrets.StoreGCP, store)
+	}
+	if err := secrets.ValidGCPPrefix(second); err != nil {
+		return fmt.Errorf("BROKER_SECRETS_SECOND_PREFIX: %w", err)
+	}
+	switch {
+	case second == prefix:
+		return fmt.Errorf("BROKER_SECRETS_SECOND_PREFIX is BROKER_SECRETS_PREFIX itself, %q: it is the other prefix of a store move, the one the move leaves or reaches, so name that one, or unset it", second)
+	case strings.HasPrefix(second, prefix) || strings.HasPrefix(prefix, second):
+		return fmt.Errorf("BROKER_SECRETS_SECOND_PREFIX %q and BROKER_SECRETS_PREFIX %q nest, as one starts with the other: a secret under the longer one is under both, so its source would count under either; choose two prefixes neither of which starts with the other", second, prefix)
+	}
+	return nil
+}
+
 // httpURLSetting refuses a setting whose value is no absolute http or https URL, naming the
 // setting and quoting the value with its own credentials and query taken out (redact.URL). The
 // settings held to this form are a page a machine opens in a browser, a proxy a command dials,
@@ -2877,6 +2922,7 @@ func Load(getenv func(string) string) (Config, error) {
 		EdgeMachineLoginURL:       strings.TrimSpace(getenv("BROKER_EDGE_MACHINE_LOGIN_URL")),
 		SecretsStore:              orDefault(getenv("BROKER_SECRETS_STORE"), secrets.StoreAWS),
 		SecretsPrefix:             getenv("BROKER_SECRETS_PREFIX"),
+		SecretsSecondPrefix:       getenv("BROKER_SECRETS_SECOND_PREFIX"),
 		ProfilesFile:              getenv("BROKER_PROFILES_FILE"),
 		AirlockListenAddr:         orDefault(getenv("BROKER_AIRLOCK_LISTEN_ADDR"), "127.0.0.1:13381"),
 		AirlockProxyURL:           strings.TrimSpace(getenv("BROKER_AIRLOCK_PROXY_URL")),
@@ -3140,6 +3186,9 @@ func Load(getenv func(string) string) (Config, error) {
 		if err := secrets.ValidGCPKeyName(cfg.SecretsKMSKey); err != nil {
 			return Config{}, fmt.Errorf("BROKER_SECRETS_KMS_KEY_NAME: %w", err)
 		}
+	}
+	if err := secondPrefixRefusal(cfg.SecretsStore, cfg.SecretsPrefix, cfg.SecretsSecondPrefix); err != nil {
+		return Config{}, err
 	}
 	services, err := parseServiceAccounts("BROKER_SERVICES", getenv("BROKER_SERVICES"))
 	if err != nil {

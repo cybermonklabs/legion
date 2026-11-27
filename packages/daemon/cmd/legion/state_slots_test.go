@@ -59,6 +59,12 @@ func (s slotsStateSource) State(ctx context.Context, tx pgx.Tx) (api.State, []su
 	return state, claims, nil
 }
 
+// ObservedState answers the empty state for the observed view: `legion state` reads the whole
+// state.
+func (slotsStateSource) ObservedState(context.Context, pgx.Tx) (api.State, []supervise.Claim, error) {
+	return api.State{}, nil, nil
+}
+
 // slotsLinePattern is the slots line as the spec writes it (R6), with a group for every number
 // and every oldest time it prints, the number of P0 holders after the slots in use included. A
 // count with no known time prints no oldest, and the last sentence names the first issue that
@@ -114,6 +120,7 @@ func slotsLineMinute(at *time.Time) string {
 // ACME-5, a root waiting for its tree to be opened. ACME-6 ranks below ACME-1 and above the
 // other three holders the cap counts, and below the two P0 holders, which the line places first.
 func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := testpg.CloneStore(t, "legion_cmd_slots")
 	now := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)

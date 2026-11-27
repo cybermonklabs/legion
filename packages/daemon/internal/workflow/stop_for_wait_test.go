@@ -35,6 +35,7 @@ func ruleEngine(rule record.SlotRule) *Engine {
 // architect's own phase, the stop moves no parent under either rule, since an open child holds no
 // first phase of a started parent (record.OpenChildHolds).
 func TestAWaitThatStopsThePhaseIsTheRulesChoice(t *testing.T) {
+	t.Parallel()
 	rules := []record.SlotRule{record.MainRule}
 	for _, name := range []string{"legion-v20.42.5", "legion-v19.57.3", "legion-v22.14.1"} {
 		rule, kept := record.SlotRuleNamed(name)

@@ -53,7 +53,7 @@ legion project signals on	--config string	--json bool	--operator-token-file stri
 legion project signals set-limit	--config string	--json bool	--limit float64	--operator-token-file string	--part string	--port int	--reason string	--signal string
 legion replay
 legion replay collect	--after duration	--before duration	--collector string	--concurrency int	--default-assignee string	--dispatch-token-file string	--from string	--gate-steps string	--launcher-log stringArray	--linger duration	--log stringArray	--out string	--part stringArray	--project string	--provider string	--review-round-cap int	--stalled-tree-notice duration	--tick-interval duration	--to string	--worker-background duration	--worker-silence duration
-legion replay collect-git	--branch string	--clones string	--git-only bool	--github-api string	--github-only bool	--github-rate float64	--github-reserve int	--github-token-env string	--memory-cap int64	--out string	--repo string
+legion replay collect-git	--branch string	--clones string	--fetch-only bool	--git-only bool	--github-api string	--github-only bool	--github-rate float64	--github-reserve int	--github-token-env string	--memory-cap int64	--merge-only bool	--out string	--parallel int	--repo string
 legion replay collect-merges	--branch string	--from string	--github-api string	--github-rate float64	--github-reserve int	--github-token-env string	--out string	--repo string	--to string
 legion replay collect-queue	--github-api string	--github-rate float64	--github-reserve int	--github-token-env string	--out string	--repo string
 legion replay compare	--from-runs stringArray	--keep-logs bool	--only-rule string	--only-window string	--out string	--parallel int	--pg-dsn string	--rule stringArray	--runs string	--token-limit int64	--window stringArray
@@ -77,5 +77,4 @@ legion version	--contracts bool
 legion worker-shim	hidden	--agent-secrets-bin string	--agent-secrets-key-dir string	--boot-token-file string	--connect string	--pod-safety bool	--pod-token-file string	--provider-env-dir string	--reap-orphans bool	--stop-grace duration	--warm-codegraph bool
 legion workspace-init	hidden
 legion workspace-init cache	hidden	--listen string	--refresh duration	--repo string	--root string
-legion workspace-init fetch	hidden	--cache-url string	--feed string	--repo string
-legion workspace-init provision	hidden	--credential-helper string	--default-branch string	--feed string	--issue string	--repo string	--root string
+legion workspace-init provision	hidden	--credential-helper string	--default-branch string	--issue string	--repo string	--root string

@@ -1,12 +1,16 @@
 package main
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,7 +26,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
+	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -35,11 +41,11 @@ const winitHelper = workspace.GitHubCredentialHelper
 
 // fakeJJ is the jj first on the issue volume's PATH. It records every invocation as one line,
 // "<WINIT_TAG> <argv>" without the runner's leading --config pin, and runs the real jj with that
-// pin — with WINIT_HOLD set, the `jj git init --colocate` that makes the shared clone (cloned from
-// the pod's feed just before) opens the directory's `release` fifo, writes its pid to its `held`
-// fifo, waits on `release` until the test closes its end there, and exits without initializing. A
-// fresh provisioning's first jj command is that init, so a process held there is mid-provisioning.
-// WINIT_HOLD is empty for every other case, which therefore holds nowhere.
+// pin — with WINIT_HOLD set, the `jj git init --colocate` that completes the directly filled clone
+// opens the directory's `release` fifo, writes its pid to its `held` fifo, waits on `release` until
+// the test closes its end there, and exits without initializing. A fresh provisioning's first jj
+// command is that init, so a process held there is mid-provisioning. WINIT_HOLD is empty for every
+// other case, which therefore holds nowhere.
 const fakeJJ = `#!/bin/sh
 pin=
 case "$1" in --config=*) pin=$1; shift ;; esac
@@ -53,6 +59,50 @@ fi
 PATH="${PATH#*:}" exec "$WINIT_REAL_JJ" ${pin:+"$pin"} "$@"
 `
 
+// fakeGit maps GitHub to the fixture remote while recording the one-shot provisioning credential:
+// a fetch from github.com/acme/widgets into a repository — an issue pod's fill's, or the repository
+// cache's first fill's and refresh's — and a read of its HEAD (`ls-remote --symref`) each reach the
+// local bare remote instead, whose file transport joins the https the runner allows, after
+// appending the token file's path and what it held to WINIT_CREDENTIAL_LOG. A fetch first sleeps
+// WINIT_FETCH_SLEEP seconds when that is set. With WINIT_FETCH_FAILURES set (failFetches), a fetch
+// then counts itself in that directory's `attempts`, and an attempt whose number names a file there
+// fails as git does: it writes the file to stderr with @TOKEN@ replaced by the token it was handed,
+// and exits with the status the directory's `status` file holds. Every other invocation is the real
+// git's.
+const fakeGit = `#!/bin/sh
+while [ "$1" = "-c" ]; do
+	shift 2
+done
+if [ "$2" = fetch ]; then
+	printf '%s %s\n' "$LEGION_PROVISIONING_TOKEN_FILE" "$(cat "$LEGION_PROVISIONING_TOKEN_FILE")" >> "$WINIT_CREDENTIAL_LOG"
+	if [ -n "$WINIT_FETCH_SLEEP" ]; then
+		sleep "$WINIT_FETCH_SLEEP"
+	fi
+	if [ -n "$WINIT_FETCH_FAILURES" ]; then
+		attempt=$(( $(cat "$WINIT_FETCH_FAILURES/attempts" 2>/dev/null || echo 0) + 1 ))
+		echo "$attempt" > "$WINIT_FETCH_FAILURES/attempts"
+		if [ -f "$WINIT_FETCH_FAILURES/$attempt" ]; then
+			sed "s/@TOKEN@/$(cat "$LEGION_PROVISIONING_TOKEN_FILE")/g" "$WINIT_FETCH_FAILURES/$attempt" >&2
+			exit "$(cat "$WINIT_FETCH_FAILURES/status")"
+		fi
+	fi
+	first="$1"
+	shift 2
+	while [ "$1" = "--no-tags" ] || [ "$1" = "--prune" ] || [ "$1" = "--quiet" ]; do
+		shift
+	done
+	shift
+	GIT_ALLOW_PROTOCOL="$GIT_ALLOW_PROTOCOL:file" exec "$WINIT_REAL_GIT" "$first" fetch --no-tags --prune --quiet "$WINIT_REMOTE" "$@"
+fi
+if [ "$2 $3 $4 $5" = "ls-remote --symref https://github.com/acme/widgets HEAD" ]; then
+	printf '%s %s\n' "$LEGION_PROVISIONING_TOKEN_FILE" "$(cat "$LEGION_PROVISIONING_TOKEN_FILE")" >> "$WINIT_CREDENTIAL_LOG"
+	first="$1"
+	shift 5
+	GIT_ALLOW_PROTOCOL="$GIT_ALLOW_PROTOCOL:file" exec "$WINIT_REAL_GIT" "$first" ls-remote --symref "$WINIT_REMOTE" HEAD "$@"
+fi
+exec "$WINIT_REAL_GIT" "$@"
+`
+
 // fakeCodegraph is a recording `codegraph` stub first on the issue volume's PATH: it never does
 // anything but log its own argv, so workspace-init calling it at all is the regression this
 // guards, caught at once rather than by a timeout. Every real codegraph invocation runs with
@@ -64,21 +114,18 @@ const fakeCodegraph = `#!/bin/sh
 printf '%s\n' "$*" >> "${0%/bin/codegraph}/codegraph.log"
 `
 
-// issueVolume is one issue's volume and what a pod's two init containers run against it: a PATH
-// whose git clones a local bare remote in place of github.com/acme/widgets, the provisioning token
-// file `fetch` is pointed at and `provision` never is, the pod's feed, a TMPDIR standing in for the
-// fetching container's own filesystem, and, as in a pod, a jj config home that starts empty and no
-// user configuration. defaultBranch is the remote's default branch, which `provision` is told.
-// env is the environment each run of the command reads over proc's (process);
-// proc is the rest of what a run inside this test process reads instead of the process's own
-// (workspaceProcess: the clock, the fetch's bound, the runner), which a test sets on it. A run
-// takes them from the volume, never from the process, so the tests that run the command run
-// beside each other.
+// issueVolume is one issue pod's volume and environment: a PATH whose git maps fixture GitHub to
+// a local bare remote, its mounted provisioning token, a private TMPDIR for one-shot credentials,
+// and an empty Jujutsu config home. env is the environment each run of the command reads over
+// proc's (process); proc is the rest of what a run inside this test process reads instead of the
+// process's own (workspaceProcess: the clock, the fill's bound, the runner), which a test sets on
+// it. A run takes them from the volume, never from the process, so the tests that run the command
+// run beside each other.
 type issueVolume struct {
-	root, token, feed, jjLog, credentialLog, codegraphLog, realJJ, tmp, bin string
-	defaultBranch                                                           string
-	env                                                                     map[string]string
-	proc                                                                    workspaceProcess
+	root, token, jjLog, credentialLog, codegraphLog, realJJ, tmp, bin string
+	defaultBranch                                                     string
+	env                                                               map[string]string
+	proc                                                              workspaceProcess
 }
 
 func newIssueVolume(t *testing.T) *issueVolume {
@@ -110,7 +157,7 @@ func newIssueVolume(t *testing.T) *issueVolume {
 		t.Fatal(err)
 	}
 	v := &issueVolume{
-		root: root, token: token, feed: filepath.Join(dir, "feed"), jjLog: filepath.Join(dir, "jj.log"),
+		root: root, token: token, jjLog: filepath.Join(dir, "jj.log"),
 		credentialLog: filepath.Join(dir, "credential.log"), codegraphLog: filepath.Join(dir, "codegraph.log"),
 		realJJ: realJJ, tmp: tmp, bin: bin, defaultBranch: "main", proc: processWorkspace(),
 	}
@@ -124,8 +171,7 @@ func newIssueVolume(t *testing.T) *issueVolume {
 		"WINIT_REMOTE":         filepath.Join(dir, "no-remote.git"),
 		"WINIT_JJ_LOG":         v.jjLog,
 		"WINIT_CREDENTIAL_LOG": v.credentialLog,
-		"WINIT_CLONE_FAILURES": "",
-		"WINIT_FETCH_FAILURE":  "",
+		"WINIT_FETCH_FAILURES": "",
 		"WINIT_FETCH_SLEEP":    "",
 		"WINIT_TAG":            "",
 		"WINIT_HOLD":           "",
@@ -135,6 +181,192 @@ func newIssueVolume(t *testing.T) *issueVolume {
 		"JJ_CONFIG":            filepath.Join(dir, "no-user-config.toml"),
 	}
 	return v
+}
+
+// failFetches has the volume's git fail its first fetches from github.com/acme/widgets, one per
+// entry of stderr, in order, each exiting status (fakeGit), and returns the file that counts every
+// fetch attempt.
+func (v *issueVolume) failFetches(t *testing.T, status int, stderr ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "status"), []byte(strconv.Itoa(status)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for attempt, text := range stderr {
+		if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(attempt+1)), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	v.env["WINIT_FETCH_FAILURES"] = dir
+	return filepath.Join(dir, "attempts")
+}
+
+// fetchAttempts is how many fetches from github.com/acme/widgets the volume's git counted in
+// attempts, the file failFetches returned.
+func fetchAttempts(t *testing.T, attempts string) int {
+	t.Helper()
+	body, err := os.ReadFile(attempts)
+	if err != nil {
+		t.Fatalf("git ran no fetch from GitHub: %v", err)
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
+func printedBytes(t *testing.T, value string) int64 {
+	t.Helper()
+	if !regexp.MustCompile(`^[0-9]{1,3}(,[0-9]{3})*$`).MatchString(value) {
+		t.Fatalf("%q is not a grouped byte count", value)
+	}
+	n, err := strconv.ParseInt(strings.ReplaceAll(value, ",", ""), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// narrowedCacheTarServer serves the default-branch-only tar a current repository cache publishes.
+func (v *issueVolume) narrowedCacheTarServer(t *testing.T) (string, int) {
+	return v.cacheTarServer(t, cacheFault{})
+}
+
+// cacheFault is what a test's repository cache does wrong, nothing when it is zero.
+// afterFirstHealth runs as the first /healthz is asked, which answers ready without
+// defaultBranchOnly, as an earlier release's cache does. notReady answers every /healthz 503, as a
+// cache with no clone yet does. damagedPack flips one byte in the middle of the tar's pack, so the
+// pack fails its checksum. fullPack puts a symbolic link to /dev/full at the path of the tar's pack
+// in the git directory of the clone provision is filling, once the /tar request's token is checked
+// and before the tar streams: the open of the pack follows the link, so the write of the pack to
+// the volume fails inside its copy.
+type cacheFault struct {
+	afterFirstHealth                func()
+	notReady, damagedPack, fullPack bool
+}
+
+// cacheTarServer serves, as the repository cache's GET /healthz and GET /tar, a ready cache of the
+// volume's remote's default branch, with fault, and returns its address and the tar's length. Any
+// other path, /packs among them, is the mux's plain 404 naming no repository, as a cache with no
+// bucket answers it.
+func (v *issueVolume) cacheTarServer(t *testing.T, fault cacheFault) (string, int) {
+	t.Helper()
+	cache := filepath.Join(t.TempDir(), "widgets.git")
+	if output, err := v.runner(t).Try(filepath.Dir(cache), v.env["WINIT_REAL_GIT"], "clone", "--bare", "--single-branch", "--no-tags", "--quiet", "--no-local", v.env["WINIT_REMOTE"], cache); err != nil {
+		t.Fatalf("clone cache: %v\n%s", err, output)
+	}
+	pack := ""
+	var stream bytes.Buffer
+	archive := tar.NewWriter(&stream)
+	err := filepath.WalkDir(cache, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || path == cache {
+			return err
+		}
+		relative, err := filepath.Rel(cache, path)
+		if err != nil {
+			return err
+		}
+		name := filepath.ToSlash(relative)
+		if !workspace.CacheEntry(name, entry.IsDir()) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name = name
+		if entry.IsDir() {
+			header.Name += "/"
+			return archive.WriteHeader(header)
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.HasSuffix(name, ".pack") {
+			pack = name
+			if fault.damagedPack {
+				body[len(body)/2] ^= 0xff
+			}
+		}
+		if err := archive.WriteHeader(header); err != nil {
+			return err
+		}
+		_, err = archive.Write(body)
+		return err
+	})
+	if err == nil {
+		err = archive.Close()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pack == "" {
+		t.Fatalf("the cache %s holds no pack", cache)
+	}
+	body := stream.Bytes()
+	waited := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(workspace.CacheRepositoryHeader, winitRepo)
+		switch r.URL.Path {
+		case "/healthz":
+			if fault.notReady {
+				http.Error(w, "the repository cache holds no clone yet", http.StatusServiceUnavailable)
+				return
+			}
+			if !waited && fault.afterFirstHealth != nil {
+				waited = true
+				fault.afterFirstHealth()
+				_, _ = w.Write([]byte(`{"ready":true}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"ready":true,"defaultBranchOnly":true}`))
+		case "/tar":
+			if r.Header.Get("Authorization") != "Bearer "+cmdCacheToken {
+				w.Header().Del(workspace.CacheRepositoryHeader)
+				http.Error(w, "the repository cache token is required", http.StatusUnauthorized)
+				return
+			}
+			if fault.fullPack {
+				if err := v.linkToDevFull(pack); err != nil {
+					t.Errorf("put /dev/full at the clone's pack: %v", err)
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
+			_, _ = w.Write(body)
+		default:
+			w.Header().Del(workspace.CacheRepositoryHeader)
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server.URL, len(body)
+}
+
+// linkToDevFull puts a symbolic link to /dev/full at entry, a path inside the git directory of the
+// one temporary sibling of the volume's clone provision is filling (<clone>.clone-*).
+func (v *issueVolume) linkToDevFull(entry string) error {
+	staging, err := filepath.Glob(v.clone() + ".clone-*")
+	if err != nil {
+		return err
+	}
+	if len(staging) != 1 {
+		return fmt.Errorf("the clone's directory holds %d temporary siblings %q, want provision's one", len(staging), staging)
+	}
+	link := filepath.Join(staging[0], ".git", filepath.FromSlash(entry))
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		return err
+	}
+	return os.Symlink("/dev/full", link)
 }
 
 // runner runs one of the volume's own fixture commands — a git or jj that builds its remote or
@@ -176,13 +408,8 @@ func (v *issueVolume) workspace(issue string) string {
 	return filepath.Join(v.root, "workspaces", "acme", "widgets", strings.ToLower(issue))
 }
 
-// fetchArgs are the first init container's; args are the second's, for issue.
-func (v *issueVolume) fetchArgs() []string {
-	return []string{"fetch", "--repo", winitRepo, "--feed", v.feed}
-}
-
 func (v *issueVolume) args(issue string) []string {
-	return []string{"provision", "--issue", issue, "--repo", winitRepo, "--root", v.root, "--credential-helper", winitHelper, "--feed", v.feed, "--default-branch", v.defaultBranch}
+	return []string{"provision", "--issue", issue, "--repo", winitRepo, "--root", v.root, "--credential-helper", winitHelper, "--default-branch", v.defaultBranch}
 }
 
 // runtimeOptionalEnv are the variables a runtime sets on an init container, or on a cache's
@@ -208,16 +435,9 @@ func (v *issueVolume) process() workspaceProcess {
 	return p
 }
 
-// fetch runs the pod's first init container in-process, pointed at the provisioning token, and
-// fills the feed; the volume's environment is `provision`'s again once it returns.
-func (v *issueVolume) fetch(t *testing.T) {
-	t.Helper()
-	v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token
-	code, _, stderr := v.run(v.fetchArgs())
-	delete(v.env, "LEGION_PROVISION_TOKEN_FILE")
-	if code != 0 {
-		t.Fatalf("workspace-init fetch: exit %d, stderr %q", code, stderr)
-	}
+// provisionEnv points the one init container at the mounted provisioning token.
+func (v *issueVolume) provisionEnv() {
+	v.env[provisionTokenFileEnv] = v.token
 }
 
 // run runs `legion workspace-init args…` inside this test process on the volume's process.
@@ -250,6 +470,33 @@ func (v *issueVolume) answered(t *testing.T, what string, args []string) (code i
 	}()
 	a := testwait.Receive(t, what, answered)
 	return a.code, a.stdout, a.stderr
+}
+
+// instantClock is provision's clock in a test: each wait passes at once, recorded, and moves the
+// clock on by its length. atFirstWait, when set, runs as the first wait starts: what changes while
+// provision waits.
+type instantClock struct {
+	now         time.Time
+	waits       []time.Duration
+	atFirstWait func()
+}
+
+func (c *instantClock) Now() time.Time { return c.now }
+
+func (c *instantClock) Sleep(ctx context.Context, d time.Duration) error {
+	if len(c.waits) == 0 && c.atFirstWait != nil {
+		c.atFirstWait()
+	}
+	c.waits = append(c.waits, d)
+	c.now = c.now.Add(d)
+	return ctx.Err()
+}
+
+// instantClock makes an instantClock the clock of the volume's provisions (issueVolume.proc).
+func (v *issueVolume) instantClock() *instantClock {
+	clock := &instantClock{now: time.Date(2026, 10, 13, 17, 49, 23, 0, time.UTC)}
+	v.proc.clock = clock
+	return clock
 }
 
 // logLines is every invocation one of the volume's PATH stubs recorded to path, one call per
@@ -309,9 +556,8 @@ func (v *issueVolume) gitInput(t *testing.T, input string, args ...string) strin
 
 // commitAddingAFile commits name, holding content, onto parent's tree in the repository whose git
 // directory is gitDir, and points ref at that commit. It runs git plumbing alone and writes no
-// working copy: a pod's shared clone is cloned with --no-checkout and its sparse patterns cleared
-// (workspace.feedClone), so it has no working tree to write a file into and a jj snapshot of it
-// would record none.
+// working copy: an issue pod's clone has its sparse patterns cleared (workspace.issuePodClone), so
+// it has no working tree to write a file into and a jj snapshot of it would record none.
 func (v *issueVolume) commitAddingAFile(t *testing.T, gitDir, parent, ref, name, content string) {
 	t.Helper()
 	dir := "--git-dir=" + gitDir
@@ -328,11 +574,9 @@ func (v *issueVolume) commitAddingAFile(t *testing.T, gitDir, parent, ref, name,
 	v.git(t, dir, "update-ref", ref, v.git(t, dir, "commit-tree", tree, "-p", parent, "-m", "adds "+name))
 }
 
-// Every refusal `provision` makes happens before anything touches the volume or runs a tool
-// (cmdWorkspaceInit's flag and token checks, workspace-init.ts): an init container refused on its
-// input leaves the issue volume as it found it. It refuses to run pointed at the provisioning
-// token, which `fetch` alone holds; and the command refuses no subcommand, or another. A refusal
-// of its input exits 3, a cause outside the issue's volume, and a usage error exits 2.
+// Every refusal `provision` makes happens before anything touches the volume or runs a tool: no
+// one-shot credential is left in its TMPDIR and no git reached GitHub. A refusal of its input exits
+// 3, a cause outside the issue's volume, and a usage error exits 2.
 func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -375,7 +619,7 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 		{
 			name: "a --repo that is not owner/name",
 			args: func(v *issueVolume) []string {
-				return []string{"provision", "--issue", "LEGION-42", "--repo", "acme", "--root", v.root, "--credential-helper", "x", "--feed", v.feed}
+				return []string{"provision", "--issue", "LEGION-42", "--repo", "acme", "--root", v.root, "--credential-helper", "x"}
 			},
 			code: 3,
 			says: func(*issueVolume) string { return `--repo must be "owner/name" (got "acme")` },
@@ -383,7 +627,7 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 		{
 			name: "a --repo with a .. segment",
 			args: func(v *issueVolume) []string {
-				return []string{"provision", "--issue", "LEGION-42", "--repo", "../x", "--root", v.root, "--credential-helper", "x", "--feed", v.feed}
+				return []string{"provision", "--issue", "LEGION-42", "--repo", "../x", "--root", v.root, "--credential-helper", "x"}
 			},
 			code: 3,
 			says: func(*issueVolume) string { return `--repo "../x" has a ".." segment` },
@@ -391,7 +635,7 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 		{
 			name: "a --repo holding whitespace",
 			args: func(v *issueVolume) []string {
-				return []string{"provision", "--issue", "LEGION-42", "--repo", "acme/wid gets", "--root", v.root, "--credential-helper", "x", "--feed", v.feed}
+				return []string{"provision", "--issue", "LEGION-42", "--repo", "acme/wid gets", "--root", v.root, "--credential-helper", "x"}
 			},
 			code: 3,
 			says: func(*issueVolume) string { return `--repo "acme/wid gets" holds whitespace` },
@@ -400,9 +644,9 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 			// --repo is read first: every other input here is wrong too.
 			name: "a bad --repo, before every other input",
 			args: func(*issueVolume) []string {
-				return []string{"provision", "--issue", "nope", "--repo", "../..", "--root", "legion-root", "--feed", "feed"}
+				return []string{"provision", "--issue", "nope", "--repo", "../..", "--root", "legion-root"}
 			},
-			env:  func(t *testing.T, v *issueVolume) { v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token },
+			env:  func(t *testing.T, v *issueVolume) { delete(v.env, "LEGION_PROVISION_TOKEN_FILE") },
 			code: 3,
 			says: func(*issueVolume) string { return `--repo "../.." has a ".." segment` },
 		},
@@ -415,30 +659,63 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 		{
 			name: "a relative --root",
 			args: func(v *issueVolume) []string {
-				return []string{"provision", "--issue", "LEGION-42", "--repo", winitRepo, "--root", "legion-root", "--credential-helper", "x", "--feed", v.feed}
+				return []string{"provision", "--issue", "LEGION-42", "--repo", winitRepo, "--root", "legion-root", "--credential-helper", "x"}
 			},
 			code: 3,
 			says: func(*issueVolume) string { return `--root must be an absolute path (got "legion-root")` },
 		},
 		{
-			name: "no --feed",
-			args: func(v *issueVolume) []string { return v.args("LEGION-42")[:9] },
-			code: 3,
-			says: func(*issueVolume) string { return `--feed must be an absolute path (got "")` },
-		},
-		{
 			name: "no --default-branch",
-			args: func(v *issueVolume) []string { return v.args("LEGION-42")[:11] },
+			args: func(v *issueVolume) []string { return v.args("LEGION-42")[:9] },
 			code: 3,
 			says: func(*issueVolume) string { return "--default-branch is required" },
 		},
 		{
-			name: "pointed at the provisioning token",
-			env:  func(t *testing.T, v *issueVolume) { v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token },
+			name: "a provisioning token file that is absent",
+			env:  func(t *testing.T, v *issueVolume) { v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token + ".absent" },
+			code: 3,
+			// The refusal names no path: a path can hold a credential, so the rule of
+			// 2026-11-21 (daemon refusals print no credential) leaves it out.
+			says: func(*issueVolume) string {
+				return "LEGION_PROVISION_TOKEN_FILE names a file that could not be read: it does not exist"
+			},
+		},
+		{
+			name: "a provisioning token file that is blank",
+			env: func(t *testing.T, v *issueVolume) {
+				if err := os.WriteFile(v.token, []byte(" \n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			code: 3,
+			says: func(v *issueVolume) string {
+				return "LEGION_PROVISION_TOKEN_FILE names " + v.token + ", which is empty"
+			},
+		},
+		{
+			name: "a LEGION_REPOSITORY_CACHE_URL that is not an http URL",
+			env:  func(t *testing.T, v *issueVolume) { v.env[cacheURLEnv] = "10.0.0.5:8418" },
 			code: 3,
 			says: func(*issueVolume) string {
-				return "LEGION_PROVISION_TOKEN_FILE is set: provisioning runs without the provisioning token, which `workspace-init fetch` alone holds"
+				return `LEGION_REPOSITORY_CACHE_URL must be an http:// URL (got "10.0.0.5:8418")`
 			},
+		},
+		{
+			name: "a LEGION_REPOSITORY_CACHE_URL with no LEGION_REPOSITORY_CACHE_TOKEN_FILE",
+			env:  func(t *testing.T, v *issueVolume) { v.env[cacheURLEnv] = "http://10.0.0.5:8418" },
+			code: 3,
+			says: func(*issueVolume) string {
+				return "LEGION_REPOSITORY_CACHE_TOKEN_FILE is not set: a repository cache needs its token"
+			},
+		},
+		{
+			name: "a cache token file that is blank",
+			env: func(t *testing.T, v *issueVolume) {
+				v.env[cacheURLEnv] = "http://10.0.0.5:8418"
+				v.env[repocache.CacheTokenFileEnv] = writeCacheToken(t, "\n")
+			},
+			code: 3,
+			says: func(*issueVolume) string { return "LEGION_REPOSITORY_CACHE_TOKEN_FILE names " },
 		},
 		{
 			name: "no git on PATH",
@@ -478,6 +755,7 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			v := newIssueVolume(t)
+			v.provisionEnv()
 			if tc.env != nil {
 				tc.env(t, v)
 			}
@@ -501,27 +779,32 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 			if calls := v.jjCalls(t); calls != nil {
 				t.Fatalf("jj ran %q before the refusal", calls)
 			}
+			if entries, err := os.ReadDir(v.tmp); err != nil || len(entries) != 0 {
+				t.Fatalf("TMPDIR holds %v (%v), want no credential left behind", entries, err)
+			}
+			if _, err := os.Stat(v.credentialLog); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("git reached GitHub before the refusal (%v)", err)
+			}
 		})
 	}
 }
 
-// A fresh issue volume, provisioned from the feed `fetch` filled: the issue's clone, its origin
-// still GitHub's and marked as gh's default repository (`remote.origin.gh-resolved base`), and the
-// issue's jj workspace on its bookmark, the clone's credential helper the one named, no gh shim
-// and no tmux pane's `legion` launcher on the volume (a pod's PATH names the image's gh and
-// legion, and its credential is the gh files its role Secret projects), one log
-// line naming the workspace, and no sessions directory: no container of the pod mounts one, every
-// session being a row in the database the deployment names (INFRA-80). The permanent
-// guard on the pod path: a recording `codegraph` stub is first on PATH throughout, and this
-// container must never call it (#1647) — only a synchronous warm-up regressing back onto the init
-// container's launch path would. The provisioning runs as a process of its own (start), as an init
-// container does, so the stub is first on that process's PATH, where the warm-up looks for
-// codegraph (exec.LookPath); a run inside this test process would hand the stub's PATH to the
-// command's children alone.
+// A fresh issue volume is provisioned by filling the issue's clone directly from GitHub or the
+// repository cache: its origin is still GitHub's and marked as gh's default repository
+// (`remote.origin.gh-resolved base`), and its jj workspace is on its bookmark. The clone has the
+// named credential helper, no gh shim and no tmux pane's `legion` launcher on the volume (a pod's
+// PATH names the image's gh and legion, and its credential is the gh files its role Secret
+// projects), the fill's log line, one log line naming the workspace, and no sessions directory: no
+// container of the pod mounts one, every session being a row in the database the deployment names
+// (INFRA-80). The permanent guard on the pod path: a recording `codegraph` stub is first on PATH
+// throughout, and this container must never call it (#1647) — only a synchronous warm-up regressing
+// back onto the init container's launch path would. The provisioning runs as a process of its own
+// (start), as an init container does, so the stub is first on that process's PATH, where the
+// warm-up looks for codegraph (exec.LookPath); a run inside this test process would hand the stub's
+// PATH to the command's children alone.
 func TestWorkspaceInitProvisionsTheIssueWorkspace(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
-	v.fetch(t)
 
 	p := v.start(t, "", "LEGION-42")
 	code, lines := p.wait(t)
@@ -529,8 +812,9 @@ func TestWorkspaceInitProvisionsTheIssueWorkspace(t *testing.T) {
 		t.Fatalf("exit %d, stderr %q", code, p.stderr.String())
 	}
 	workspace := v.workspace("LEGION-42")
-	if want := []string{"workspace-init: " + workspace + " on legion/LEGION-42 from main"}; !slices.Equal(lines, want) {
-		t.Fatalf("stdout %q, want %q", lines, want)
+	const fill = "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub ("
+	if want := "workspace-init: " + workspace + " on legion/LEGION-42 from main"; len(lines) != 2 || !strings.HasPrefix(lines[0], fill) || lines[1] != want {
+		t.Fatalf("stdout %q, want the fill line then %q", lines, want)
 	}
 	if listed := v.jj(t, "workspace", "list", "-R", v.clone()); !strings.Contains(listed, "legion-42:") {
 		t.Fatalf("the clone's workspaces are %q, want legion-42 among them", listed)
@@ -571,15 +855,15 @@ func TestWorkspaceInitProvisionsTheIssueWorkspace(t *testing.T) {
 func TestWorkspaceInitProvisionsAtADefaultBranchWithASlash(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "release/v7.1")
-	v.fetch(t)
+	v.provisionEnv()
 
 	code, stdout, stderr := v.run(v.args("LEGION-42"))
 	if code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 	workspace := v.workspace("LEGION-42")
-	if want := "workspace-init: " + workspace + " on legion/LEGION-42 from release/v7.1\n"; stdout != want {
-		t.Fatalf("stdout %q, want %q", stdout, want)
+	if want := "workspace-init: " + workspace + " on legion/LEGION-42 from release/v7.1\n"; !strings.HasSuffix(stdout, want) || !strings.HasPrefix(stdout, "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub (") {
+		t.Fatalf("stdout %q, want the fill line then %q", stdout, want)
 	}
 	head := v.git(t, "--git-dir="+v.env["WINIT_REMOTE"], "rev-parse", "refs/heads/release/v7.1")
 	if parent := v.jj(t, "log", "-r", "@-", "--no-graph", "-T", "commit_id", "--ignore-working-copy", "-R", workspace); parent != head {
@@ -596,7 +880,7 @@ func TestWorkspaceInitProvisionsAtADefaultBranchWithASlash(t *testing.T) {
 // Request.CheckoutBound; workspace.CommandTimeout names which commands carry a bound of their
 // own): a pod whose checkout outlasts that budget provisions all the same, rather than exiting 1
 // on a killed checkout and spending one of the claim's launches (INFRA-1265). The case reads the
-// bound each command of the provisioning was given (issueVolume.newRunner): the checkout's is
+// bound each command of the provisioning was given (issueVolume.proc's runner): the checkout's is
 // CheckoutTimeout, and every other command's is the runner's budget or, for a step of the shared
 // clone's own clone, what remains of the shared clone's bound (workspace.CloneBound, read through
 // programbound). The budget is what is left of the test binary's deadline less 30 s, so no command
@@ -607,7 +891,7 @@ func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
 	// The checkout is what puts the tree in the workspace, so the remote's default branch carries
 	// a file for it to write there.
 	v.commitAddingAFile(t, v.env["WINIT_REMOTE"], "refs/heads/main", "refs/heads/main", "tree.txt", "tree\n")
-	v.fetch(t)
+	v.provisionEnv()
 	budget := testwait.Bounded(t, 1<<60, 30*time.Second)
 	if budget == workspace.CheckoutTimeout {
 		// A budget equal to the checkout's bound could not tell the two apart.
@@ -632,8 +916,8 @@ func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 	provisionedWorkspace := v.workspace("LEGION-42")
-	if want := "workspace-init: " + provisionedWorkspace + " on legion/LEGION-42 from main\n"; stdout != want {
-		t.Fatalf("stdout %q, want %q", stdout, want)
+	if want := "workspace-init: " + provisionedWorkspace + " on legion/LEGION-42 from main\n"; !strings.HasSuffix(stdout, want) || !strings.HasPrefix(stdout, "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub (") {
+		t.Fatalf("stdout %q, want the fill line then %q", stdout, want)
 	}
 	if _, err := os.Stat(filepath.Join(provisionedWorkspace, "tree.txt")); err != nil {
 		t.Fatalf("the workspace after provisioning: %v, want the tree the checkout writes", err)
@@ -649,8 +933,10 @@ func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
 			}
 		case command.Timeout == budget:
 			budgeted++
+		case command.Timeout <= workspace.FetchTimeout && command.Timeout >= workspace.FetchTimeout-elapsed:
+			// The fill's GitHub ref read and delta each have their own network bound.
 		case command.Timeout > cloneBound || command.Timeout < cloneBound-elapsed:
-			t.Errorf("%q ran under %s, want the runner's budget %s or what remains of the shared clone's %s", argv, command.Timeout, budget, cloneBound)
+			t.Errorf("%q ran under %s, want the runner's budget %s, FetchTimeout, or what remains of the shared clone's %s", argv, command.Timeout, budget, cloneBound)
 		}
 	}
 	if checkouts != 1 || budgeted == 0 {
@@ -712,7 +998,7 @@ func (v *issueVolume) provisioned(t *testing.T, issue string) string {
 func TestWorkspaceInitRemovesTheWorkspacesStaleIndexLock(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
-	v.fetch(t)
+	v.provisionEnv()
 	v.provisioned(t, "LEGION-42")
 	// The working copy is rebased from outside the workspace onto a commit carrying a file, so the
 	// next provisioning's update-stale checks out a new tree, which rewrites the worktree's index.
@@ -742,7 +1028,7 @@ func TestWorkspaceInitRemovesTheWorkspacesStaleIndexLock(t *testing.T) {
 func TestWorkspaceInitLeavesAnotherWorkspacesLockAlone(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
-	v.fetch(t)
+	v.provisionEnv()
 	v.provisioned(t, "LEGION-42")
 	v.provisioned(t, "LEGION-43")
 	other := filepath.Join(v.clone(), ".git", "worktrees", "legion-43", "index.lock")
@@ -769,7 +1055,7 @@ func TestWorkspaceInitLeavesAnotherWorkspacesLockAlone(t *testing.T) {
 func TestWorkspaceInitRemovesTheClonesStaleLocks(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
-	v.fetch(t)
+	v.provisionEnv()
 	v.provisioned(t, "LEGION-42")
 	git := filepath.Join(v.clone(), ".git")
 	locks := []string{
@@ -800,7 +1086,7 @@ func TestWorkspaceInitFailsOnALockItCannotRemove(t *testing.T) {
 		t.Skip("root removes a file from a directory it cannot write")
 	}
 	v := newIssueVolume(t).withRemote(t, "main")
-	v.fetch(t)
+	v.provisionEnv()
 	v.provisioned(t, "LEGION-42")
 	entry := filepath.Join(v.clone(), ".git", "worktrees", "legion-42")
 	lock := filepath.Join(entry, "index.lock")
@@ -830,7 +1116,7 @@ func TestWorkspaceInitRefusesASymlinkedGitDirectory(t *testing.T) {
 	for _, linked := range []string{".git", filepath.Join(".git", "worktrees")} {
 		t.Run(linked, func(t *testing.T) {
 			v := newIssueVolume(t).withRemote(t, "main")
-			v.fetch(t)
+			v.provisionEnv()
 			v.provisioned(t, "LEGION-42")
 			path := filepath.Join(v.clone(), linked)
 			elsewhere := filepath.Join(t.TempDir(), "elsewhere")
@@ -865,16 +1151,15 @@ func TestWorkspaceInitRefusesASymlinkedGitDirectory(t *testing.T) {
 	}
 }
 
-// A provisioning that fails — here, from a feed `fetch` never filled — is the command's failure,
-// with the failed command named, the shared clone of the feed, and exits 1: its cause is on the
-// issue's volume.
-func TestWorkspaceInitReportsAFailedProvisioning(t *testing.T) {
+// A provisioning whose mounted token is unavailable exits 3: replacing the issue volume cannot
+// repair a credential outside it.
+func TestWorkspaceInitReportsAnUnavailableProvisioningToken(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t)
 
 	code, stdout, stderr := v.run(v.args("LEGION-42"))
-	if code != 1 || !strings.Contains(stderr, "git clone --quiet --no-checkout --shared "+filepath.Join(v.feed, "acme", "widgets.git")) || stdout != "" {
-		t.Fatalf("exit %d, stdout %q, stderr %q; want 1 naming the failed clone", code, stdout, stderr)
+	if code != workspace.InitExitOutsideVolume || !strings.Contains(stderr, provisionTokenFileEnv+" is not set") || stdout != "" {
+		t.Fatalf("exit %d, stdout %q, stderr %q; want exit %d naming the missing token", code, stdout, stderr, workspace.InitExitOutsideVolume)
 	}
 }
 
@@ -898,6 +1183,7 @@ func (v *issueVolume) start(t *testing.T, tag, issue string, env ...string) *ini
 	overrides := maps.Clone(v.env)
 	overrides[testMainEnv] = "1"
 	overrides["WINIT_TAG"] = tag
+	overrides[provisionTokenFileEnv] = v.token
 	for _, entry := range env {
 		name, value, _ := strings.Cut(entry, "=")
 		overrides[name] = value
@@ -965,16 +1251,15 @@ func (p *initProcess) wait(t *testing.T) (code int, rest []string) {
 	return p.cmd.ProcessState.ExitCode(), rest
 }
 
-// holder fills the feed, starts `provision` for LEGION-42, and returns once it is held inside its
-// first jj command, the shared clone's init (fakeJJ's WINIT_HOLD), where it stays until the test ends. That jj
-// leads a process group of its own (procgroup.Configure), which no kill of workspace-init reaches,
-// so the test holds the one writing end of the jj's `release` fifo (O_RDWR opens a fifo without
-// waiting for a reader) and the hold ends when that end closes: in holder's cleanup, which runs
-// once start's has ended workspace-init and waits, where /proc shows it, until the jj has exited;
-// or as the kernel closes it, when the test binary dies first.
+// holder starts `provision` for LEGION-42 and returns once it is held inside its first jj command,
+// the shared clone's init (fakeJJ's WINIT_HOLD), where it stays until the test ends. That jj leads a
+// process group of its own (procgroup.Configure), which no kill of workspace-init reaches, so the
+// test holds the one writing end of the jj's `release` fifo (O_RDWR opens a fifo without waiting for
+// a reader) and the hold ends when that end closes: in holder's cleanup, which runs once start's has
+// ended workspace-init and waits, where /proc shows it, until the jj has exited; or as the kernel
+// closes it, when the test binary dies first.
 func (v *issueVolume) holder(t *testing.T) *initProcess {
 	t.Helper()
-	v.fetch(t)
 	hold := t.TempDir()
 	for _, fifo := range []string{"held", "release"} {
 		if err := syscall.Mkfifo(filepath.Join(hold, fifo), 0o600); err != nil {
@@ -1039,26 +1324,6 @@ func fifo(t *testing.T, path string, flag int, holder *initProcess) string {
 		t.Fatalf("nothing opened the other end of %s before the test binary's deadline", path)
 	}
 	return ""
-}
-
-// The provisioning token is the implement App's installation token, and every container of an
-// issue pod mounts the issue's volume under one uid: `provision`, the process that works on the
-// volume, never holds it. Held mid-clone, it has written no one-shot credential to its TMPDIR, and
-// no file on the volume holds the token — nor after it was killed there.
-func TestWorkspaceInitProvisionHoldsNoToken(t *testing.T) {
-	t.Parallel()
-	v := newIssueVolume(t).withRemote(t, "main")
-	first := v.holder(t)
-	if entries, err := os.ReadDir(v.tmp); err != nil || len(entries) != 0 {
-		t.Errorf("while provision's clone runs, TMPDIR holds %v (%v), want no credential", entries, err)
-	}
-	holdsNoToken(t, v.root, "while provision's clone runs")
-
-	if err := first.cmd.Process.Kill(); err != nil {
-		t.Fatal(err)
-	}
-	first.wait(t)
-	holdsNoToken(t, v.root, "after provision was killed mid-clone")
 }
 
 // holdsNoToken fails when any file under dir contains the provisioning token.
@@ -1144,33 +1409,545 @@ func killProcessesRunning(t *testing.T, path string) []string {
 	return found
 }
 
+// The issue pod's only init container provisions its clone directly: it receives the provisioning
+// token, makes the one-shot credential under its TMPDIR, and removes it once GitHub has answered.
+// Keeping the earlier two-container path makes this fail because provision refuses that token.
+func TestWorkspaceInitProvisionUsesTheProvisioningToken(t *testing.T) {
+	t.Parallel()
+	v := newIssueVolume(t).withRemote(t, "main")
+	v.provisionEnv()
+
+	code, _, stderr := v.run(v.args("LEGION-42"))
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	if _, err := os.Stat(v.clone()); err != nil {
+		t.Fatalf("provision did not make the clone: %v", err)
+	}
+	if credential, err := os.ReadFile(v.credentialLog); err != nil || !strings.Contains(string(credential), " ghs_test") {
+		t.Fatalf("GitHub credential log %q (%v), want the provisioning token", credential, err)
+	}
+	if entries, err := os.ReadDir(v.tmp); err != nil || len(entries) != 0 {
+		t.Fatalf("TMPDIR holds %v (%v), want the one-shot credential removed", entries, err)
+	}
+}
+
+// The clone stores the automatic-maintenance settings itself, so git and Jujutsu a role starts
+// after provisioning cannot begin maintenance when the one-shot provisioning environment is gone.
+func TestWorkspaceInitWritesCloneMaintenanceConfiguration(t *testing.T) {
+	t.Parallel()
+	v := newIssueVolume(t).withRemote(t, "main")
+	v.provisionEnv()
+
+	code, _, stderr := v.run(v.args("LEGION-42"))
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	gitDir := "--git-dir=" + filepath.Join(v.clone(), ".git")
+	for key, want := range map[string]string{"gc.auto": "0", "maintenance.auto": "false"} {
+		if got := v.git(t, gitDir, "config", "--get", key); got != want {
+			t.Errorf("clone %s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// The issue clone takes the default branch and this issue's branches, then persists only the
+// refspecs a role may fetch without naming another branch.
+func TestWorkspaceInitProvisionKeepsOnlyTheIssueRefs(t *testing.T) {
+	t.Parallel()
+	v := newIssueVolume(t).withRemote(t, "main")
+	remote := v.env["WINIT_REMOTE"]
+	main := "refs/heads/main"
+	for _, branch := range []string{
+		"legion/LEGION-42", "legion/LEGION-42.task", "legion/LEGION-420",
+		"legion/LEGION-421", "legion/OTHER-1", "cold/x",
+	} {
+		v.commitAddingAFile(t, remote, main, "refs/heads/"+branch, strings.ReplaceAll(branch, "/", "-")+".txt", branch+"\n")
+	}
+	v.git(t, "--git-dir="+remote, "tag", "-a", "v1", "-m", "version", "refs/heads/cold/x")
+	cold := v.git(t, "--git-dir="+remote, "rev-parse", "refs/heads/cold/x")
+	tag := v.git(t, "--git-dir="+remote, "rev-parse", "v1^{tag}")
+	v.provisionEnv()
+
+	code, _, stderr := v.run(v.args("LEGION-42"))
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	gitDir := "--git-dir=" + filepath.Join(v.clone(), ".git")
+	var refs []string
+	for _, ref := range strings.Split(v.git(t, gitDir, "for-each-ref", "--format=%(refname)"), "\n") {
+		if !strings.HasPrefix(ref, "refs/jj/") {
+			refs = append(refs, ref)
+		}
+	}
+	if want := []string{
+		"refs/heads/legion/LEGION-42", "refs/heads/main",
+		"refs/remotes/origin/HEAD",
+		"refs/remotes/origin/legion/LEGION-42", "refs/remotes/origin/legion/LEGION-42.task",
+		"refs/remotes/origin/main",
+	}; !slices.Equal(refs, want) {
+		t.Fatalf("clone refs %q, want %q", refs, want)
+	}
+	wantFetch := []string{
+		"+refs/heads/main:refs/remotes/origin/main",
+		"+refs/heads/legion/LEGION-42*:refs/remotes/origin/legion/LEGION-42*",
+		"^refs/heads/legion/LEGION-420*", "^refs/heads/legion/LEGION-421*",
+		"^refs/heads/legion/LEGION-422*", "^refs/heads/legion/LEGION-423*",
+		"^refs/heads/legion/LEGION-424*", "^refs/heads/legion/LEGION-425*",
+		"^refs/heads/legion/LEGION-426*", "^refs/heads/legion/LEGION-427*",
+		"^refs/heads/legion/LEGION-428*", "^refs/heads/legion/LEGION-429*",
+	}
+	if got, want := strings.Split(v.git(t, gitDir, "config", "--get-all", "remote.origin.fetch"), "\n"), wantFetch; !slices.Equal(got, want) {
+		t.Fatalf("remote.origin.fetch = %q, want %q", got, want)
+	}
+	if got := v.git(t, gitDir, "config", "--get", "remote.origin.tagopt"); got != "--no-tags" {
+		t.Fatalf("remote.origin.tagopt = %q, want --no-tags", got)
+	}
+	command := exec.Command(v.realJJ, "config", "get", "remotes.origin.fetch-tags", "-R", v.clone())
+	command.Dir = v.root
+	command.Env = fixtureenv.Isolated(t.TempDir())
+	for name, value := range v.env {
+		command.Env = append(command.Env, name+"="+value)
+	}
+	output, err := command.Output()
+	if err != nil {
+		t.Fatalf("jj config get remotes.origin.fetch-tags: %v", err)
+	}
+	if got := strings.TrimSpace(string(output)); got != "~*" {
+		t.Fatalf("remotes.origin.fetch-tags = %q, want ~*", got)
+	}
+	for _, object := range []string{cold, tag} {
+		cmd := exec.Command(v.env["WINIT_REAL_GIT"], "--git-dir="+filepath.Join(v.clone(), ".git"), "cat-file", "-e", object)
+		cmd.Env = v.runner(t).Env
+		if err := cmd.Run(); err == nil {
+			t.Errorf("clone retains object %s outside the default and issue refs", object)
+		}
+	}
+}
+
+// The configured wildcard refspecs match an absent issue branch and a branch GitHub deleted after
+// provisioning, so a role's plain fetch never turns either normal lifecycle state into a failure.
+func TestWorkspaceInitPlainFetchesTolerateAbsentIssueBranches(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		branch bool
+		delete bool
+	}{
+		{name: "not pushed"},
+		{name: "deleted after provision", branch: true, delete: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			v := newIssueVolume(t).withRemote(t, "main")
+			if tc.branch {
+				v.commitAddingAFile(t, v.env["WINIT_REMOTE"], "refs/heads/main", "refs/heads/legion/LEGION-42", "issue.txt", "issue\n")
+			}
+			v.provisionEnv()
+			code, _, stderr := v.run(v.args("LEGION-42"))
+			if code != 0 {
+				t.Fatalf("provision exit %d, stderr %q", code, stderr)
+			}
+			if tc.delete {
+				v.git(t, "--git-dir="+v.env["WINIT_REMOTE"], "update-ref", "-d", "refs/heads/legion/LEGION-42")
+			}
+			// The fixture remote replaces GitHub only for these role commands. Their persisted
+			// refspecs stay exactly as provisioning wrote them.
+			v.git(t, "--git-dir="+filepath.Join(v.clone(), ".git"), "config", "remote.origin.url", v.env["WINIT_REMOTE"])
+			environment := fixtureenv.Isolated(t.TempDir())
+			for name, value := range v.env {
+				environment = append(environment, name+"="+value)
+			}
+			git := exec.Command(v.env["WINIT_REAL_GIT"], "--git-dir="+filepath.Join(v.clone(), ".git"), "fetch")
+			git.Dir, git.Env = v.root, environment
+			if output, err := git.CombinedOutput(); err != nil {
+				t.Fatalf("plain git fetch: %v\n%s", err, output)
+			}
+			jj := exec.Command(v.realJJ, "--config=git.executable-path="+v.env["WINIT_REAL_GIT"], "git", "fetch", "-R", v.clone())
+			jj.Dir, jj.Env = v.root, environment
+			if output, err := jj.CombinedOutput(); err != nil {
+				t.Fatalf("plain jj git fetch: %v\n%s", err, output)
+			}
+			remoteIssue := v.git(t, "--git-dir="+filepath.Join(v.clone(), ".git"), "for-each-ref", "--format=%(refname)", "refs/remotes/origin/legion/LEGION-42")
+			if remoteIssue != "" {
+				t.Fatalf("plain fetch added issue remote ref %q", remoteIssue)
+			}
+		})
+	}
+}
+
+// A current cache streams its default branch into the clone's .git directory; GitHub then supplies
+// only this issue's branch. No object unique to an unrelated branch or tag reaches the pod. The
+// summary line follows the line that says /tar was the source because this cache serves no /packs.
+func TestWorkspaceInitProvisionStreamsANarrowedRepositoryCache(t *testing.T) {
+	t.Parallel()
+	v := newIssueVolume(t).withRemote(t, "main")
+	cache, length := v.narrowedCacheTarServer(t)
+	remote := v.env["WINIT_REMOTE"]
+	v.commitAddingAFile(t, remote, "refs/heads/main", "refs/heads/legion/LEGION-42", "issue.txt", "issue\n")
+	v.commitAddingAFile(t, remote, "refs/heads/main", "refs/heads/cold/x", "cold.txt", "cold\n")
+	v.git(t, "--git-dir="+remote, "tag", "-a", "v1", "-m", "version", "refs/heads/cold/x")
+	cold := v.git(t, "--git-dir="+remote, "rev-parse", "refs/heads/cold/x")
+	tag := v.git(t, "--git-dir="+remote, "rev-parse", "v1^{tag}")
+	v.provisionEnv()
+	v.env[cacheURLEnv] = cache
+	v.env[repocache.CacheTokenFileEnv] = writeCacheToken(t, cmdCacheToken)
+
+	code, stdout, stderr := v.run(v.args("LEGION-42"))
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	line := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(notServedLine) + `workspace-init: ([0-9,]+) bytes from the repository cache ` + regexp.QuoteMeta(cache) + ` in .+, its history verified in .+; [0-9,]+ bytes from GitHub for the delta \([0-9]+ refs\)$`)
+	match := line.FindStringSubmatch(stdout)
+	if match == nil {
+		t.Fatalf("stdout %q, want /tar as the source, then the cache stream and GitHub delta", stdout)
+	}
+	if got := printedBytes(t, match[1]); got != int64(length) {
+		t.Fatalf("cache bytes %d, want tar length %d", got, length)
+	}
+	gitDir := "--git-dir=" + filepath.Join(v.clone(), ".git")
+	if got := v.git(t, gitDir, "rev-parse", "refs/remotes/origin/legion/LEGION-42"); got == "" {
+		t.Fatal("the clone has no remote issue branch fetched after the cache stream")
+	}
+	for _, object := range []string{cold, tag} {
+		command := exec.Command(v.env["WINIT_REAL_GIT"], gitDir, "cat-file", "-e", object)
+		command.Env = v.runner(t).Env
+		if err := command.Run(); err == nil {
+			t.Errorf("clone retains object %s outside the cache default and issue delta", object)
+		}
+	}
+}
+
+// A cache wait must not leave the GitHub transfer holding the token that provision read before the
+// wait. The first health answer is intentionally from an earlier cache release, without its narrow
+// capability; it rewrites the mounted token before the next ready answer.
+func TestWorkspaceInitProvisionRenewsTheTokenAfterWaitingForTheCache(t *testing.T) {
+	t.Parallel()
+	v := newIssueVolume(t).withRemote(t, "main")
+	const (
+		oldToken = "ghs_before_cache_wait"
+		newToken = "ghs_after_cache_wait"
+	)
+	if err := os.WriteFile(v.token, []byte(oldToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cache, _ := v.cacheTarServer(t, cacheFault{afterFirstHealth: func() {
+		if err := os.WriteFile(v.token, []byte(newToken+"\n"), 0o600); err != nil {
+			panic(err)
+		}
+	}})
+	v.provisionEnv()
+	v.env[cacheURLEnv] = cache
+	v.env[repocache.CacheTokenFileEnv] = writeCacheToken(t, cmdCacheToken)
+
+	code, stdout, stderr := v.run(v.args("LEGION-42"))
+	if code != 0 {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	credential, err := os.ReadFile(v.credentialLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(credential), oldToken) || !strings.Contains(string(credential), newToken) {
+		t.Fatalf("GitHub credentials %q, want only the token minted after the cache wait", credential)
+	}
+	if strings.Contains(stdout+stderr, oldToken) {
+		t.Fatalf("output exposed the token read before the cache wait: stdout %q stderr %q", stdout, stderr)
+	}
+}
+
+// Admission may record a default branch after GitHub changed its HEAD. When both branches remain,
+// the issue starts at its recorded default and Jujutsu tracks that remote bookmark as well as the
+// current default.
+func TestWorkspaceInitProvisionTracksTheRecordedDefaultAfterGitHubChangesHead(t *testing.T) {
+	t.Parallel()
+	v := newIssueVolume(t).withRemote(t, "main")
+	remote := v.env["WINIT_REMOTE"]
+	v.commitAddingAFile(t, remote, "refs/heads/main", "refs/heads/release", "release.txt", "release\n")
+	release := v.git(t, "--git-dir="+remote, "rev-parse", "refs/heads/release")
+	v.provisionEnv()
+
+	args := v.args("LEGION-42")
+	for index, value := range args {
+		if value == v.defaultBranch {
+			args[index] = "release"
+		}
+	}
+	code, _, stderr := v.run(args)
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	workspaceDir := v.workspace("LEGION-42")
+	if parent := v.jj(t, "log", "-r", "@-", "--no-graph", "-T", "commit_id", "--ignore-working-copy", "-R", workspaceDir); parent != release {
+		t.Fatalf("workspace parent %s, want recorded release default %s", parent, release)
+	}
+	if tracked := v.jj(t, "bookmark", "list", "--tracked", "exact:release", "-T", `name ++ "@" ++ remote ++ "\n"`, "--ignore-working-copy", "-R", v.clone()); !strings.Contains(tracked, "release@origin") {
+		t.Fatalf("tracked release bookmarks %q, want release@origin", tracked)
+	}
+}
+
+// A clone the fill makes leaves origin/HEAD naming GitHub's default branch, as a clone from GitHub
+// does, so jj's trunk() resolves to that branch's tip when it is named neither main nor master nor
+// trunk. Without origin/HEAD, `jj git init --colocate` sets no trunk() alias and trunk() is the
+// root commit.
+func TestWorkspaceInitProvisionSetsTrunkToTheDefaultBranch(t *testing.T) {
+	t.Parallel()
+	v := newIssueVolume(t).withRemote(t, "develop")
+	remote := v.env["WINIT_REMOTE"]
+	develop := v.git(t, "--git-dir="+remote, "rev-parse", "refs/heads/develop")
+	v.provisionEnv()
+
+	code, _, stderr := v.run(v.args("LEGION-42"))
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	if head := v.git(t, "--git-dir="+filepath.Join(v.clone(), ".git"), "symbolic-ref", "refs/remotes/origin/HEAD"); head != "refs/remotes/origin/develop" {
+		t.Fatalf("origin/HEAD names %q, want refs/remotes/origin/develop", head)
+	}
+	// jj keeps the repository's own configuration, the trunk() alias its init writes among it, in
+	// the config home the provision ran with, so the read takes the provision's environment.
+	command := exec.Command(v.realJJ, "log", "-r", "trunk()", "--no-graph", "-T", "commit_id", "--ignore-working-copy", "-R", v.clone())
+	command.Dir = v.root
+	command.Env = fixtureenv.Isolated(t.TempDir())
+	for name, value := range v.env {
+		command.Env = append(command.Env, name+"="+value)
+	}
+	output, err := command.Output()
+	if err != nil {
+		t.Fatalf("jj log -r trunk(): %v", err)
+	}
+	if trunk := strings.TrimSpace(string(output)); trunk != develop {
+		t.Fatalf("trunk() is %s, want develop's tip %s", trunk, develop)
+	}
+}
+
 // workspace-init's lines and its failures pass the URL rule. A repository cache that cannot be
-// reached is logged on stdout while `fetch` waits for it, and named on stderr in the failure the
+// reached is logged on stdout while `provision` waits for it, and named on stderr in the failure the
 // wait ends in, each time with the error of the ask (workspace's askCache), which quotes
-// --cache-url with its user name and its query: each line names the cache by its scheme, the mark
-// of a URL with credentials and its path, and neither the user name nor the query reaches the init
-// log. A cache that is never ready is a cause
-// outside the issue's volume, so `fetch` exits workspace.InitExitOutsideVolume.
-func TestWorkspaceInitFetchWritesNoURLCredentials(t *testing.T) {
+// LEGION_REPOSITORY_CACHE_URL with its user name and its query: each line names the cache by its
+// scheme, the mark of a URL with credentials and its path, and neither the user name nor the query
+// reaches the init log. A cache that is never ready is a cause outside the issue's volume, so
+// `provision` exits workspace.InitExitOutsideVolume. The wait reads and sleeps on the clock of the
+// volume's process (issueVolume.proc), whose waits pass at once: on the process's own clock it
+// would last workspace.CacheWaitTimeout.
+func TestWorkspaceInitProvisionWritesNoURLCredentials(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t)
-	// A port nothing listens on, so every ask of the cache fails at its dial.
-	const cache = "127.0.0.1:1"
-	v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token
-	v.env["LEGION_REPOSITORY_CACHE_TOKEN_FILE"] = writeCacheToken(t, cmdCacheToken)
-	v.instantClock()
+	// An address nothing listens on, so every ask of the cache fails at its dial.
+	cache := testport.Refused(t)
+	v.provisionEnv()
+	v.env[cacheURLEnv] = "http://legion-reader@" + cache + "/widgets?token=planted-query-token-7"
+	v.env[repocache.CacheTokenFileEnv] = writeCacheToken(t, cmdCacheToken)
+	clock := v.instantClock()
 
-	code, stdout, stderr := v.run(append(v.fetchArgs(), "--cache-url", "http://legion-reader@"+cache+"/widgets?token=planted-query-token-7"))
+	code, stdout, stderr := v.answered(t, "the provisioning of LEGION-42", v.args("LEGION-42"))
 	shown := "http://[a URL with credentials]/widgets"
-	if want := "workspace-init fetch: waiting for the repository cache " + shown + " to be ready: Get \"" + shown + "\": "; !strings.HasPrefix(stdout, want) {
+	if want := "workspace-init: waiting for the repository cache " + shown + " to be ready: Get \"" + shown + "\": "; !strings.HasPrefix(stdout, want) {
 		t.Errorf("stdout %q, want the wait logged as %q", stdout, want)
 	}
-	if want := "the repository cache " + shown + " was not ready within "; code != workspace.InitExitOutsideVolume || !strings.Contains(stderr, want) {
+	if want := "the repository cache " + shown + " was not ready within " + workspace.CacheWaitTimeout.String(); code != workspace.InitExitOutsideVolume || !strings.Contains(stderr, want) {
 		t.Errorf("exit %d, stderr %q; want %d naming %q", code, stderr, workspace.InitExitOutsideVolume, want)
 	}
 	for _, credential := range []string{"legion-reader", "planted-query-token-7"} {
 		if strings.Contains(stdout+stderr, credential) {
-			t.Errorf("workspace-init fetch wrote stdout %q and stderr %q, which hold %q", stdout, stderr, credential)
+			t.Errorf("workspace-init provision wrote stdout %q and stderr %q, which hold %q", stdout, stderr, credential)
 		}
+	}
+	if len(clock.waits) == 0 {
+		t.Errorf("the wait for the cache slept on no wait of the volume's clock")
+	}
+}
+
+// The two transient failures a production fetch met from GitHub, as git prints them: an HTTP/2
+// stream GitHub cancelled mid-pack, and a 408 on the pack request.
+const (
+	curl92Failure = "error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8)\n" +
+		"fatal: early EOF\n" +
+		"fatal: fetch-pack: invalid index-pack output\n"
+	http408Failure = "error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408\n" +
+		"fatal: expected 'packfile'\n"
+)
+
+// A fetch from GitHub that fails transiently is run again after a backoff wait on the clock of the
+// volume's process (issueVolume.proc), each failure logged on stdout as one line, until one
+// succeeds and fills the clone.
+func TestWorkspaceInitProvisionRetriesATransientFetchFailure(t *testing.T) {
+	t.Parallel()
+	v := newIssueVolume(t).withRemote(t, "main")
+	attempts := v.failFetches(t, 128, curl92Failure, http408Failure)
+	clock := v.instantClock()
+	v.provisionEnv()
+
+	code, stdout, stderr := v.run(v.args("LEGION-42"))
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q, stdout %q", code, stderr, stdout)
+	}
+	want := "workspace-init: fetch attempt 1 failed; retrying in 5s: error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8) | fatal: early EOF | fatal: fetch-pack: invalid index-pack output\n" +
+		"workspace-init: fetch attempt 2 failed; retrying in 15s: error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408 | fatal: expected 'packfile'\n"
+	rest, retried := strings.CutPrefix(stdout, want)
+	if !retried || !strings.HasPrefix(rest, "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub (") {
+		t.Fatalf("stdout %q, want %q then the fill from GitHub", stdout, want)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr %q, want nothing", stderr)
+	}
+	if got := fetchAttempts(t, attempts); got != 3 {
+		t.Fatalf("git fetched %d times, want 3", got)
+	}
+	if waits := clock.waits; !slices.Equal(waits, []time.Duration{5 * time.Second, 15 * time.Second}) {
+		t.Fatalf("provision waited %v, want 5s then 15s", waits)
+	}
+	if main := v.git(t, "--git-dir="+filepath.Join(v.clone(), ".git"), "log", "-1", "--format=%s", "refs/heads/main"); main != "seed" {
+		t.Fatalf("the clone's main is %q, want the remote's", main)
+	}
+	if entries, err := os.ReadDir(v.tmp); err != nil || len(entries) != 0 {
+		t.Fatalf("TMPDIR holds %v (%v) after provision returned, want its credential gone", entries, err)
+	}
+}
+
+// Neither a retried attempt's log line nor the final failure carries the provisioning token, even
+// where git echoes it: in a URL the userinfo that carries it is removed whole (the URL rule,
+// redact.Writer), and anywhere else the token says *** in its place.
+func TestWorkspaceInitProvisionLogsNoToken(t *testing.T) {
+	t.Parallel()
+	v := newIssueVolume(t).withRemote(t, "main")
+	v.failFetches(t, 128,
+		"fatal: unable to access 'https://x-access-token:@TOKEN@@github.com/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n",
+		"remote: Invalid username or token @TOKEN@.\nfatal: Authentication failed for 'https://x-access-token:@TOKEN@@github.com/acme/widgets/'\n",
+	)
+	v.instantClock()
+	v.provisionEnv()
+
+	code, stdout, stderr := v.run(v.args("LEGION-42"))
+	if code != workspace.InitExitOutsideVolume {
+		t.Fatalf("exit %d, stderr %q; want %d", code, stderr, workspace.InitExitOutsideVolume)
+	}
+	if strings.Contains(stdout+stderr, "ghs_test") {
+		t.Fatalf("provision logged the provisioning token:\nstdout %q\nstderr %q", stdout, stderr)
+	}
+	if want := "workspace-init: fetch attempt 1 failed; retrying in 5s: fatal: unable to access 'https://[a URL with credentials]/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n"; stdout != want {
+		t.Fatalf("stdout %q, want %q", stdout, want)
+	}
+	for _, says := range []string{"remote: Invalid username or token ***.", "fatal: Authentication failed for 'https://[a URL with credentials]/acme/widgets/'"} {
+		if !strings.Contains(stderr, says) {
+			t.Fatalf("stderr %q, want it to name %q", stderr, says)
+		}
+	}
+}
+
+// `provision` exits 3 (workspace.InitExitOutsideVolume) for a cause outside the issue's volume,
+// which a new volume does not cure, and 1 for every other failure: the runtime keeps a kept volume
+// for the first and replaces it for the second. Each failing git prints git's own output, the
+// lines internal/workspace reads in gitFailures.
+//
+// The fill's fetch from GitHub exits 3 when it fails with an HTTP status, a host that did not
+// resolve, a pack stream cut with no cause line, a credential GitHub refused or a repository GitHub
+// did not find, when a read of the provisioning token before a retry fails, and when it runs past
+// the bound of its stage, the bound of the volume's process (issueVolume.proc's fetchBound;
+// workspace.FetchTimeout in production). It exits 1 for curl 23, a write to the volume that
+// failed, and for a bad object in the clone. A repository cache that is never ready, or that
+// refuses the /tar request, exits 3. A cache tar whose write to the volume fails inside the copy,
+// or whose pack fails its checksum, exits 1. The refusals before the volume, a bad flag among them,
+// are TestWorkspaceInitRefusesBeforeTouchingTheVolume's.
+func TestWorkspaceInitProvisionExitsThreeForAFailureOutsideTheVolume(t *testing.T) {
+	t.Parallel()
+	const access = "fatal: unable to access 'https://github.com/acme/widgets/': "
+	// failing has every fetch from GitHub fail with stderr and status.
+	failing := func(status int, stderr string) func(*testing.T, *issueVolume, *instantClock) {
+		return func(t *testing.T, v *issueVolume, _ *instantClock) {
+			v.failFetches(t, status, slices.Repeat([]string{stderr}, 6)...)
+		}
+	}
+	// fromCache is a fill from a repository cache of the volume's remote with fault, to which the
+	// fill presents token for the tar.
+	fromCache := func(fault cacheFault, token string) func(*testing.T, *issueVolume, *instantClock) {
+		return func(t *testing.T, v *issueVolume, _ *instantClock) {
+			cache, _ := v.cacheTarServer(t, fault)
+			v.env[cacheURLEnv] = cache
+			v.env[repocache.CacheTokenFileEnv] = writeCacheToken(t, token)
+		}
+	}
+	// timedOut is how the error of a transfer that ran out of its time begins: its git command,
+	// whose first flags are the four pack settings (workspace.PackWindowConfig) as `-c` pairs.
+	timedOut := "command timed out: git"
+	for _, pair := range workspace.PackWindowConfig() {
+		timedOut += " -c " + pair[0] + "=" + pair[1]
+	}
+	timedOut += " --git-dir="
+	for _, tc := range []struct {
+		name string
+		// prepare sets up the volume's git, its cache, the clock and the bound.
+		prepare func(t *testing.T, v *issueVolume, clock *instantClock)
+		code    int
+		says    string
+		// then, when set, checks what provision left.
+		then func(t *testing.T, v *issueVolume)
+	}{
+		{name: "a 403", prepare: failing(128, "remote: Write access to repository not granted.\n"+access+"The requested URL returned error: 403\n"),
+			code: 3, says: "The requested URL returned error: 403"},
+		{name: "a host that did not resolve", prepare: failing(128, access+"Could not resolve host: github.com\n"),
+			code: 3, says: "fetch attempt 5 failed, and the fetch retries a fetch at most 4 times"},
+		{name: "a pack stream cut with no cause line", prepare: failing(128, "fetch-pack: unexpected disconnect while reading sideband packet\nfatal: early EOF\nfatal: fetch-pack: invalid index-pack output\n"),
+			code: 3, says: "fatal: early EOF"},
+		{name: "a credential GitHub refused", prepare: failing(128, "remote: Invalid username or token. Password authentication is not supported for Git operations.\nfatal: Authentication failed for 'https://github.com/acme/widgets/'\n"),
+			code: 3, says: "fatal: Authentication failed for 'https://github.com/acme/widgets/'"},
+		{name: "a repository GitHub did not find", prepare: failing(128, "remote: Repository not found.\nfatal: repository 'https://github.com/acme/widgets/' not found\n"),
+			code: 3, says: "remote: Repository not found."},
+		{name: "a write of received data that failed", prepare: failing(128, "error: RPC failed; curl 23 Failed writing received data to disk/application\n"),
+			code: 1, says: "curl 23 Failed writing received data to disk/application"},
+		{name: "a bad object in the clone", prepare: func(t *testing.T, v *issueVolume, clock *instantClock) {
+			failing(1, "fatal: bad object refs/jj/keep/1111111111111111111111111111111111111111\nerror: file://"+v.env["WINIT_REMOTE"]+" did not send all necessary objects\n")(t, v, clock)
+		}, code: 1, says: "fatal: bad object refs/jj/keep/1111111111111111111111111111111111111111"},
+		{name: "an attempt that runs out of its time", prepare: func(t *testing.T, v *issueVolume, _ *instantClock) {
+			// The fetch from GitHub sleeps past any test binary's deadline, so only the bound's
+			// stop ends it: a stop a loaded machine makes late still comes before the sleep ends.
+			v.env["WINIT_FETCH_SLEEP"] = "86400"
+			v.proc.fetchBound = time.Second
+		}, code: 3, says: timedOut},
+		{name: "a read of the provisioning token before a retry that fails", prepare: func(t *testing.T, v *issueVolume, clock *instantClock) {
+			failing(128, http408Failure)(t, v, clock)
+			clock.atFirstWait = func() {
+				if err := os.Remove(v.token); err != nil {
+					t.Error(err)
+				}
+			}
+		}, code: 3, says: "fetch attempt 2: read the provisioning token: "},
+		{name: "a repository cache that is never ready", prepare: fromCache(cacheFault{notReady: true}, cmdCacheToken),
+			code: 3, says: "was not ready within " + workspace.CacheWaitTimeout.String()},
+		{name: "a repository cache that refuses the tar", prepare: fromCache(cacheFault{}, "another-cache's-token"),
+			code: 3, says: "/tar answered 401 Unauthorized"},
+		{name: "a cache entry whose write fails inside the copy", prepare: func(t *testing.T, v *issueVolume, clock *instantClock) {
+			if info, err := os.Stat("/dev/full"); err != nil || info.Mode()&os.ModeCharDevice == 0 {
+				t.Skipf("this case writes a cache entry to Linux's /dev/full, which this system does not have (%v)", err)
+			}
+			fromCache(cacheFault{fullPack: true}, cmdCacheToken)(t, v, clock)
+		}, code: 1, says: "no space left on device", then: func(t *testing.T, v *issueVolume) {
+			if info, err := os.Stat("/dev/full"); err != nil || info.Mode()&os.ModeCharDevice == 0 {
+				t.Errorf("/dev/full is %v (%v) after provision, want the device the link named", info, err)
+			}
+			if staging, err := filepath.Glob(v.clone() + ".clone-*"); err != nil || len(staging) != 0 {
+				t.Errorf("provision left %q (%v) beside the clone", staging, err)
+			}
+		}},
+		{name: "a pack that fails its checksum", prepare: fromCache(cacheFault{damagedPack: true}, cmdCacheToken),
+			code: 1, says: "which does not verify"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			v := newIssueVolume(t).withRemote(t, "main")
+			clock := v.instantClock()
+			tc.prepare(t, v, clock)
+			v.provisionEnv()
+			code, stdout, stderr := v.answered(t, "workspace-init provision ("+tc.name+")", v.args("LEGION-42"))
+			if code != tc.code || !strings.Contains(stderr, tc.says) {
+				t.Fatalf("exit %d, stderr %q, stdout %q; want %d naming %q", code, stderr, stdout, tc.code, tc.says)
+			}
+			if _, err := os.Stat(filepath.Join(v.clone(), ".jj")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the failed provision left a clone in place (%v)", err)
+			}
+			if tc.then != nil {
+				tc.then(t, v)
+			}
+		})
 	}
 }

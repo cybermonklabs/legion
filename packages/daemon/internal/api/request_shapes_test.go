@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
@@ -200,7 +201,7 @@ func sortedRequestShapes(records []requestShape) []requestShape {
 // readRequestShapes is the frozen fixture as it stands, and false where no file is there.
 func readRequestShapes(t *testing.T) ([]requestShape, bool) {
 	t.Helper()
-	encoded, err := os.ReadFile(goldenPath(requestShapesFixture))
+	encoded, err := os.ReadFile(apifixture.Path(requestShapesFixture))
 	if os.IsNotExist(err) {
 		return nil, false
 	}

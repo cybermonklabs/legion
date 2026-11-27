@@ -132,7 +132,9 @@ func spanCounts(cards []Scorecard, span CapSpan) []float64 {
 // Write prints b as Markdown, its headings at depth: what was replayed at which caps, a row for each
 // span of one cap with the record's slots and the replays' at the recorded caps and at the flat cap
 // with their tests, each span one slot is more than gapCapSpan of, so that a miss of one slot fails
-// it, and whether the backtest passes, or that the tool cannot tell a change of the cap.
+// it, each span the flat cap reads in which neither the record nor the flat cap gave out a slot, so
+// that the flat cap did not miss the record there, and whether the backtest passes, or that the tool
+// cannot tell a change of the cap.
 func (b CapBacktest) Write(w io.Writer, depth int) error {
 	p := &printer{w: w}
 	p.line("%s The cap backtest: %s under `%s` at the recorded caps and at one cap of %d", strings.Repeat("#", depth), b.Window, b.Rule, b.Cap)
@@ -145,7 +147,7 @@ func (b CapBacktest) Write(w io.Writer, depth int) error {
 	p.line("")
 	p.line("| from | to | cap | slots, recorded | at the recorded caps (lowest, highest seed) | test | at the cap of %d (lowest, highest seed) | test |", b.Cap)
 	p.line("| --- | --- | --- | --- | --- | --- | --- | --- |")
-	var small, failed []string
+	var small, empty, failed []string
 	for _, s := range b.Spans {
 		flat := "not read"
 		if s.FlatRead {
@@ -154,17 +156,25 @@ func (b CapBacktest) Write(w io.Writer, depth int) error {
 		p.line("| %s | %s | %d | %d | %s | %s | %s | %s |", spanStamp(s.From), spanStamp(s.To), s.Cap, s.Recorded,
 			spreadCell(s.AtRecordedCaps, s.RecordedLow, s.RecordedHigh, len(b.Seeds)), passWord(s.RecordedPass),
 			spreadCell(s.AtFlatCap, s.FlatLow, s.FlatHigh, len(b.Seeds)), flat)
+		span := spanStamp(s.From) + " to " + spanStamp(s.To)
 		if gapCapSpan.Allowed(float64(s.Recorded)) < 1 {
-			small = append(small, spanStamp(s.From)+" to "+spanStamp(s.To))
+			small = append(small, span)
+		}
+		if s.FlatRead && s.Recorded == 0 && s.AtFlatCap == 0 {
+			empty = append(empty, span)
 		}
 		if !s.RecordedPass || s.FlatRead && !s.FlatPass {
-			failed = append(failed, spanStamp(s.From)+" to "+spanStamp(s.To))
+			failed = append(failed, span)
 		}
 	}
 	p.line("")
 	if len(small) > 0 {
 		p.line("In %d of the %d spans one slot is more than %s of the record's count, so a miss of one slot fails it: %s.", len(small), len(b.Spans),
 			gapCapSpan, strings.Join(small, ", "))
+	}
+	if len(empty) > 0 {
+		p.line("In %d of the %d spans the record gave out no slot, and the cap of %d gave out none there either, so it did not miss the record by more than %s: %s.",
+			len(empty), len(b.Spans), b.Cap, gapCapSpan, strings.Join(empty, ", "))
 	}
 	switch {
 	case b.Pass:

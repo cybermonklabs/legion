@@ -22,7 +22,7 @@ type SignalSettings interface {
 }
 
 // SignalSwitch is a project's settings of admission by signals: whether it is on, and the limit of
-// each series that has one, by its name of store.LiveSeries(). A series with no limit holds nothing.
+// each series that has one, by its name of signals.Names(). A series with no limit holds nothing.
 // stored is the store's settings it was read from (StoreSignalSettings), with who set each and
 // why, which the state shows beside the reading without reading them again; zero for settings of
 // another source.
@@ -43,7 +43,7 @@ func (StoreSignalSettings) SignalSwitch(ctx context.Context, tx pgx.Tx, project 
 		return SignalSwitch{}, err
 	}
 	sw := SignalSwitch{On: settings.On(), Limits: map[string]float64{}, stored: settings}
-	for _, series := range store.LiveSeries() {
+	for _, series := range signals.Names() {
 		if limit, set := settings.Limit(series); set {
 			sw.Limits[series] = limit
 		}
@@ -76,7 +76,7 @@ type SeriesReading struct {
 	Due    bool
 }
 
-// LiveReading is the five series at At, in the order of store.LiveSeries(), and whether admission
+// LiveReading is the five series at At, in the order of signals.Names(), and whether admission
 // by signals is on.
 type LiveReading struct {
 	At     time.Time
@@ -389,7 +389,7 @@ func (a *Admission) idleHolders(ctx context.Context, tx pgx.Tx, at time.Time) (i
 	if err != nil {
 		return 0, nil, err
 	}
-	own := ownSlots(issues, slots)
+	own := record.OwnSlots(issues, slots)
 	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil, at)
 	if err != nil {
 		return 0, nil, err

@@ -18,11 +18,11 @@ import (
 // three models read of the window's record (modelRecord), and, from a fitted model and a replay's
 // own timeline (ReplayTimeline), each modelled signal at a moment (ModelledSignals), read by
 // package signals' definitions as the window's own record is (signals.go), so a modelled signal is
-// the same quantity as the recorded one: the provider's headroom and the refusals by the project's
-// own limit, the kills of the hour before, and the merge queue's wait. At the record's own timeline
-// (LoadModels.RecordTimeline) the models of the kills and of the merge queue give the record by
-// their form, which R11's daily test reads (FitLoadModels). The replay keeps each work segment's
-// recorded length (assumption 1), so a kill or a pull request keeps its offset in its segment.
+// the same quantity as the recorded one: the provider's headroom, the kills of the hour before, and
+// the merge queue's wait. At the record's own timeline (LoadModels.RecordTimeline) the models of the
+// kills and of the merge queue give the record by their form, which R11's daily test reads
+// (FitLoadModels). The replay keeps each work segment's recorded length (assumption 1), so a kill
+// or a pull request keeps its offset in its segment.
 
 // ReplayTimeline is a replay's own course, as the load models read it: the issues in flight in the
 // replay from each moment on, in time order, every issue counted and drawn work among them
@@ -76,26 +76,28 @@ type ModelledSignals struct {
 	Unserved     int
 
 	w Window
-	// minutes is each modelled minute of the provider, by its Unix time, and refused each of them
-	// the project's own limit refuses in the model.
-	minutes map[int64]signals.Minute
-	refused map[int64]bool
+	// minutes is each modelled minute of the provider, by its Unix time.
+	minutes map[int64]modelledMinute
 	// kills is the moment of each modelled kill, in order; waits each modelled wait in the merge
 	// queue, by the moment it began.
 	kills []time.Time
 	waits []signals.Wait
 }
 
+// modelledMinute is one minute of the provider as the tokens model gives it: the minute the
+// headroom reads, whether the project's own limit refuses it, and the project's own refusals the
+// model gives it, which R11's daily test of the model reads beside its refused minutes
+// (modelRecord.tokens) and no signal reads.
+type modelledMinute struct {
+	signals.Minute
+	refused bool
+	own     int64
+}
+
 // Headroom is the provider's headroom signal at at, as the model gives the minute before at
 // (signals.ProviderAt): its modelled tokens over the project's own limit in force.
 func (s *ModelledSignals) Headroom(at time.Time) signals.Value {
 	return signals.ProviderAt(s.series, at)
-}
-
-// Refusals is the provider's refusals at at (signals.RefusalsAt): the project's own as the model
-// gives them, the provider's as recorded.
-func (s *ModelledSignals) Refusals(at time.Time) signals.RefusalCount {
-	return signals.RefusalsAt(s.series, at)
 }
 
 // Kills is the kills signal at at (signals.KillsAt): the modelled kills of the hour before at.
@@ -112,7 +114,7 @@ func (s *ModelledSignals) Queue(at time.Time) signals.Value {
 // that minute.
 func (s *ModelledSignals) series(start time.Time) (signals.Minute, bool) {
 	minute, held := s.minutes[start.Unix()]
-	return minute, held
+	return minute.Minute, held
 }
 
 // held is where the window's record holds signal.
@@ -159,7 +161,7 @@ func (m LoadModels) Replay(tl ReplayTimeline) (*ModelledSignals, error) {
 		starts[segmentKey{issue: start.Issue, start: start.Recorded.UnixNano()}] = start.Replayed
 	}
 	s := &ModelledSignals{w: r.w}
-	s.minutes, s.refused = r.replayTokens(flight)
+	s.minutes = r.replayTokens(flight)
 	s.kills, s.KillsApart = r.replayKills(starts, tl.Drawn)
 	s.waits, s.EntriesApart, s.Unserved = r.replayQueues(starts, tl.Entries)
 	return s, nil
@@ -391,54 +393,50 @@ func issuePods(t Trace) map[string]string {
 }
 
 // replayTokens is each minute of the provider's record as the tokens model gives it at the
-// replay's issues in flight (tokensForm), by its Unix time, and each such minute the project's own
-// limit refuses, each against the limit the record holds (headroomLimit). A minute's issues in
-// flight, in the record and in the replay, are their average over the whole minute. A refused
-// minute counts the record's own refusals per refused minute, rounded so that the first n refused
-// minutes count round(n × rho) together; a minute with no limit keeps its recorded refusals, since
-// the model has no limit to read there.
-func (r *modelRecord) replayTokens(flight stretchCount) (map[int64]signals.Minute, map[int64]bool) {
-	minutes := make(map[int64]signals.Minute, len(r.minutes))
-	refused := make(map[int64]bool)
+// replay's issues in flight (tokensForm), by its Unix time, each against the limit the record holds
+// (headroomLimit), with whether that limit refuses it and the project's own refusals the model
+// gives it. A minute's issues in flight, in the record and in the replay, are their average over
+// the whole minute. A refused minute counts the record's own refusals per refused minute, rounded
+// so that the first n refused minutes count round(n × rho) together; a minute the limit does not
+// refuse counts none; a minute with no limit keeps its recorded refusals, since the model has no
+// limit to read there.
+func (r *modelRecord) replayTokens(flight stretchCount) map[int64]modelledMinute {
+	minutes := make(map[int64]modelledMinute, len(r.minutes))
 	count := 0
 	for _, key := range slices.Sorted(maps.Keys(r.minutes)) {
 		line := r.minutes[key]
 		start, end := line.Minute, line.Minute.Add(time.Minute)
 		limit, limited := r.headroomLimit(line)
-		minute, refuses := r.modelMinute(line, limit, limited, r.flight.hours(start, end), flight.hours(start, end), count)
-		if refuses {
+		minute, refuses := r.modelMinute(line, limit, limited, r.flight.hours(start, end), flight.hours(start, end))
+		modelled := modelledMinute{Minute: minute, refused: refuses}
+		switch {
+		case refuses:
 			count++
-			refused[key] = true
+			modelled.own = int64(math.Round(float64(count)*r.rho)) - int64(math.Round(float64(count-1)*r.rho))
+		case !limited:
+			modelled.own = line.Own
 		}
-		minutes[key] = minute
+		minutes[key] = modelled
 	}
-	return minutes, refused
+	return minutes
 }
 
 // modelMinute is line's minute as the tokens model gives it (tokensForm), limit being the limit in
-// force in it where limited says it has one, recorded and replayed the issue-hours in flight over
-// the minute in the record and in the replay, and count the refused minutes before it, and whether
-// the project's own limit refuses it: its recorded tokens scaled by replayed over recorded, kept as
-// recorded where recorded is none; where it has a limit, that limit, and, where the tokens pass
-// it, a refused minute whose own refusals the record's own per refused minute give, rounded so that
-// the first n refused minutes count round(n × rho) together. A minute with no limit keeps its
-// recorded refusals.
-func (r *modelRecord) modelMinute(line ProviderMinute, limit int64, limited bool, recorded, replayed float64, count int) (signals.Minute, bool) {
+// force in it where limited says it has one, and recorded and replayed the issue-hours in flight
+// over the minute in the record and in the replay, and whether the project's own limit refuses it:
+// its recorded tokens scaled by replayed over recorded, kept as recorded where recorded is none;
+// where it has a limit, that limit, and a refused minute where the tokens pass it.
+func (r *modelRecord) modelMinute(line ProviderMinute, limit int64, limited bool, recorded, replayed float64) (signals.Minute, bool) {
 	tokens := float64(line.Uncached)
 	if recorded > 0 {
 		tokens *= replayed / recorded
 	}
-	minute := signals.Minute{Uncached: int64(math.Round(tokens)), Own: line.Own, Provider: line.Provider}
+	minute := signals.Minute{Uncached: int64(math.Round(tokens))}
 	if !limited {
 		return minute, false
 	}
-	minute.Limit, minute.Own = limit, 0
-	if tokens <= float64(limit) {
-		return minute, false
-	}
-	count++
-	minute.Own = int64(math.Round(float64(count)*r.rho)) - int64(math.Round(float64(count-1)*r.rho))
-	return minute, true
+	minute.Limit = limit
+	return minute, tokens > float64(limit)
 }
 
 // replayKills is each modelled kill of the replay, in time order (memoryForm), and how many the

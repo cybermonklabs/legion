@@ -2,11 +2,14 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/signals"
 )
 
 // The record of changes of admission by signals (S6 of dispatch://INFRA-5899): per project, one
@@ -115,7 +118,7 @@ type SeriesEntries struct {
 	Holds *SignalChange
 }
 
-// NewestSeriesEntriesTx is, by series name of LiveSeries(), the newest value entry and holds
+// NewestSeriesEntriesTx is, by series name of signals.Names(), the newest value entry and holds
 // entry of each series of project, read through tx: what the last committed pass wrote of each,
 // which the next pass and the state compare with. It reads one row of the index of each series
 // and kind (newestSeriesEntries), however long the project's record is.
@@ -157,7 +160,7 @@ func NewestSeriesEntriesTx(ctx context.Context, tx pgx.Tx, project string) (map[
 var newestSeriesEntries = func() string {
 	var probes []string
 	for _, what := range []SignalChangeKind{SignalChangeValue, SignalChangeHolds} {
-		for _, series := range liveSeries {
+		for _, series := range signals.Names() {
 			signal, part := SignalPart(series)
 			ofPart := "part is null"
 			if part != "" {
@@ -185,6 +188,23 @@ func SignalChangesForPublishTx(ctx context.Context, tx pgx.Tx, project string, p
 	return readSignalChanges(ctx, tx, project, `select `+signalChangeColumns+` from signal_changes where project = $1
 		and id > least($2, coalesce((select last from signal_change_ids where project = $1), 0) - $3) order by id desc`,
 		project, published, SignalChangesShown)
+}
+
+// PublishedSignalChangesTx is the entries the admission block project's daemon queues now carries
+// (S6, record.AdmissionBlock.SignalChanges), read through tx: every entry above the newest entry
+// the block stored before carried (state_admission_blocks, migration 20261126163320), the newest
+// its last admission event published, since the state lane publishes the blocks in the order they
+// were stored, and never fewer than the newest SignalChangesShown (SignalChangesForPublishTx). A
+// project with no stored block, or whose stored block carries no entry, has published none. Both
+// reads are of tx's one snapshot.
+func PublishedSignalChangesTx(ctx context.Context, tx pgx.Tx, project string) ([]SignalChange, error) {
+	var published int64
+	err := tx.QueryRow(ctx, `select coalesce((block->'signalChanges'->0->>'id')::bigint, 0)
+		from state_admission_blocks where project = $1`, project).Scan(&published)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("read the newest entry of admission by signals %s's stored admission block carries: %w", project, err)
+	}
+	return SignalChangesForPublishTx(ctx, tx, project, published)
 }
 
 // signalChangeColumns is an entry as scanSignalChange reads it.
@@ -222,7 +242,7 @@ func readSignalChanges(ctx context.Context, tx pgx.Tx, project, query string, ar
 
 // SignalsReading is the state's `admission.signals` (S2): whether admission by signals is on, who
 // set the switch last, when and why (null before a person first did), each of the five series in
-// the order of LiveSeries() as the live signals read it at the state's moment
+// the order of signals.Names() as the live signals read it at the state's moment
 // (SignalSeriesReading), and the provider's record of the last hour (ProviderReading). Every
 // reading is computed at the read from what the daemon keeps of the inputs, never from an entry of
 // the record; only since is read from the record. admit's LiveSignals.State builds it.

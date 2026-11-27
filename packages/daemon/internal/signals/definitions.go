@@ -167,14 +167,12 @@ func KillsNext(c Coverage, kills []time.Time, at time.Time, limit float64) (time
 	})
 }
 
-// Minute is the provider's record of one whole minute: its uncached input tokens, the limit of the
-// project's own that bounds them in the minute (0 where none does: none set, one taken away, one
-// of another scope, or a minute outside the record of the headroom), and the refusals the project's
-// own limit and the provider gave in it.
+// Minute is the provider's record of one whole minute as the headroom reads it: its uncached input
+// tokens, and the limit of the project's own that bounds them in the minute (0 where none does:
+// none set, one taken away, one of another scope, or a minute outside the record of the headroom).
 type Minute struct {
-	Uncached      int64
-	Limit         int64
-	Own, Provider int64
+	Uncached int64
+	Limit    int64
 }
 
 // Series is a caller's record of the provider's minutes: the minute that starts at start, and
@@ -182,7 +180,7 @@ type Minute struct {
 type Series func(start time.Time) (Minute, bool)
 
 // MinuteBefore is the start of the last whole minute that ends at or before at, the minute the
-// provider's signals at at read.
+// provider's headroom at at reads.
 func MinuteBefore(at time.Time) time.Time { return at.Truncate(time.Minute).Add(-time.Minute) }
 
 // ProviderAt is the provider's headroom signal at at: the uncached input tokens of the minute
@@ -208,64 +206,4 @@ func ProviderNext(read Series, at, through time.Time, limit float64) (time.Time,
 		}
 	}
 	return time.Time{}, false
-}
-
-// RefusalCount is the refusals part of the provider's signal at a moment: the refusals of the hour
-// before it, each by the limit that gave it, the project's own (Own) or the provider's (Provider),
-// and whether the record holds the minute before it.
-type RefusalCount struct {
-	Recorded      bool
-	Own, Provider int64
-}
-
-// Count is every refusal c counts, of either limit.
-func (c RefusalCount) Count() int64 { return c.Own + c.Provider }
-
-// Value is the count as a signal's value: the refusals of either limit, unrecorded where the
-// record holds no minute before.
-func (c RefusalCount) Value() Value {
-	if !c.Recorded {
-		return Value{}
-	}
-	return Value{Recorded: true, Value: float64(c.Count())}
-}
-
-// RefusalsAt is the refusals at at: those of each minute of the record that ended in the hour
-// before at, (at − 1h, at], since a minute's refusals are known at its end. The record holds them
-// where it holds the minute before at, whatever the limit.
-func RefusalsAt(read Series, at time.Time) RefusalCount {
-	return refusalsKnown(read, at, at)
-}
-
-// refusalsKnown is the refusals at at as the record stands at known, at or before at: those of the
-// minutes that ended by known.
-func refusalsKnown(read Series, at, known time.Time) RefusalCount {
-	if _, held := read(MinuteBefore(at)); !held {
-		return RefusalCount{}
-	}
-	counted := RefusalCount{Recorded: true}
-	end := earlier(at, known).Truncate(time.Minute)
-	for minute := at.Truncate(time.Minute).Add(-RefusalSpan); minute.Before(end); minute = minute.Add(time.Minute) {
-		if line, held := read(minute); held {
-			counted.Own += line.Own
-			counted.Provider += line.Provider
-		}
-	}
-	return counted
-}
-
-// RefusalsNext is the next crossing after at of limit by the count of refusals, the refusals
-// standing as they do at at: the moment an old refusal leaves the hour, or one of edges, the
-// moments at which the record begins or stops holding the minute before. Refusals come only at
-// events, so the count rises at no moment of its own.
-func RefusalsNext(read Series, at time.Time, limit float64, edges []time.Time) (time.Time, bool) {
-	moments := slices.Clone(edges)
-	for minute := at.Truncate(time.Minute).Add(-RefusalSpan); minute.Before(at.Truncate(time.Minute)); minute = minute.Add(time.Minute) {
-		if line, held := read(minute); held && line.Own+line.Provider > 0 {
-			moments = append(moments, minute.Add(time.Minute+RefusalSpan))
-		}
-	}
-	return FirstChange(at, moments, func(t time.Time) bool {
-		return refusalsKnown(read, t, at).Value().Binds(limit)
-	})
 }

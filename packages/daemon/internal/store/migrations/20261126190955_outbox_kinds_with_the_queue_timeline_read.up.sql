@@ -7,16 +7,22 @@
 -- intake.QueueTimeline, whose events admission keeps in queue_events (20261126020201). It rides
 -- the signals lane (internal/record's lanes).
 --
--- The check is one list, so this migration names every kind, as 20261126110259 did: its
--- thirty-three kinds, in its order, and then this one, thirty-four in all. Its version stands
--- above 20261126110259, the list with merge_holds_changed, and above every other migration that
--- writes the list, so on any database this list is the last word: Migrate applies every
--- unrecorded migration in version order, and a list at a lower version, none of which names
+-- The check is one list, so this migration names every kind, as 20261126163320 did: its
+-- thirty-six kinds, in its order, and then this one, thirty-seven in all. Its version stands
+-- above 20261126163320, the list with the three state kinds (state_change, state_admission,
+-- state_boot), above 20261126110259, the list with merge_holds_changed, and above every other
+-- migration that writes the list, so on any database this list is the last word: Migrate applies
+-- every unrecorded migration in version order, and a list at a lower version, none of which names
 -- queue_timeline_read, would be applied after this one and refuse the kind. The kind is in no
 -- migration of its own release but this one, so 20261126020201's way back and roll forward leave
--- the list as it stands: a migration that wrote the list again there, without merge_holds_changed,
--- would refuse on the roll forward every merge_holds_changed row the earlier release queued, and
--- Migrate with it (SQLSTATE 23514).
+-- the list as it stands: a migration that wrote the list again there, without merge_holds_changed
+-- and the state kinds, would refuse on the roll forward every row of those kinds the earlier
+-- release queued, and Migrate with it (SQLSTATE 23514).
+--
+-- On earlier builds of this branch this list held the thirty-three kinds of 20261126110259 and
+-- this one, until the forward merge of 2026-11-27 brought in 20261126163320, which stands below
+-- it; the list as it stood then left the state kinds out and would have refused every state row.
+-- No deployment ran that list.
 --
 -- 20261126020201_queue_events wrote the list with queue_timeline_read on earlier builds of this
 -- branch, until the forward merge of 2026-11-26 brought in 20261126110259, which stood above it
@@ -39,4 +45,4 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
   'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
-  'merge_holds_changed', 'queue_timeline_read'));
+  'merge_holds_changed', 'state_change', 'state_admission', 'state_boot', 'queue_timeline_read'));

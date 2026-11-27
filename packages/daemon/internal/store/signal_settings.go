@@ -20,26 +20,16 @@ import (
 // transaction (ChangeSignalSettingTx) before the fact's pass, which reads it, so a change is in
 // force at once and a restart keeps it. The project is the project's Dispatch key.
 
-// liveSeries is each series the live daemon computes (admit's LiveSignals), one for each signal,
-// in the order of signals.Names(): the idle share, the merge queue's wait, the provider's
-// headroom, the kills and the approvals. A name of signals.Names() outside it is one only the
-// replay reads, and no surface of admission by signals names it.
-var liveSeries = []string{signals.Idle, signals.Queue, signals.Provider, signals.Kills, signals.Approvals}
-
-// LiveSeries is each series the live daemon computes, in its order (liveSeries): the series every
-// setting, reading and entry of admission by signals is of.
-func LiveSeries() []string { return slices.Clone(liveSeries) }
-
 // PartHeadroom is the provider's one part, its headroom: every surface of admission by signals
 // names the provider's series by the signal provider and this part.
 const PartHeadroom = "headroom"
 
 // SignalSwitchSetting is the setting the switch of admission by signals is kept under, beside the
-// limit of each series under the series' name of LiveSeries().
+// limit of each series under its name of signals.Names().
 const SignalSwitchSetting = "switch"
 
 // SignalPart is the signal and the part every surface of admission by signals names a series by,
-// for its name of LiveSeries(): the provider's series is the provider's headroom, and each other
+// for its name of signals.Names(): the provider's series is the provider's headroom, and each other
 // series is its own signal, with no part. It is the one map between the two namings, and
 // SignalSeries is its inverse.
 func SignalPart(series string) (signal, part string) {
@@ -49,10 +39,10 @@ func SignalPart(series string) (signal, part string) {
 	return series, ""
 }
 
-// SignalSeries is the series of LiveSeries() that signal and part name (SignalPart), and whether
+// SignalSeries is the series of signals.Names() that signal and part name (SignalPart), and whether
 // they name one: the provider needs its part, and every other signal takes none.
 func SignalSeries(signal, part string) (string, bool) {
-	for _, series := range liveSeries {
+	for _, series := range signals.Names() {
 		if named, of := SignalPart(series); named == signal && of == part {
 			return series, true
 		}
@@ -77,7 +67,7 @@ type SignalSetting struct {
 }
 
 // SignalSettings is a project's settings of admission by signals: the switch, nil before a person
-// first set it, and each series' limit that a person set or cleared, by its name of LiveSeries().
+// first set it, and each series' limit that a person set or cleared, by its name of signals.Names().
 type SignalSettings struct {
 	Switch *SignalSetting
 	Limits map[string]SignalSetting
@@ -99,7 +89,7 @@ func (s SignalSettings) Limit(series string) (float64, bool) {
 }
 
 // SignalSettingChange is a person's change of one setting: Setting is SignalSwitchSetting or a
-// series of LiveSeries(), Value the new value (1 or 0 for the switch; the limit, nil to clear it),
+// series of signals.Names(), Value the new value (1 or 0 for the switch; the limit, nil to clear it),
 // and Set who made it, when and why.
 type SignalSettingChange struct {
 	Setting string
@@ -117,14 +107,14 @@ func (c SignalSettingChange) Validate() error {
 		if c.Value == nil || *c.Value != 0 && *c.Value != 1 {
 			return fmt.Errorf("the switch of admission by signals is 1 or 0")
 		}
-	case slices.Contains(liveSeries, c.Setting):
+	case slices.Contains(signals.Names(), c.Setting):
 		if c.Value != nil {
 			if err := signals.CheckLimit(c.Setting, *c.Value); err != nil {
 				return err
 			}
 		}
 	default:
-		return fmt.Errorf("%q is no setting of admission by signals: it is the switch or a series of %v", c.Setting, liveSeries)
+		return fmt.Errorf("%q is no setting of admission by signals: it is the switch or a series of %v", c.Setting, signals.Names())
 	}
 	if err := c.Set.By.validate(); err != nil {
 		return fmt.Errorf("a setting of admission by signals: %w", err)
@@ -218,7 +208,7 @@ func ChangeSignalSettingTx(ctx context.Context, tx pgx.Tx, project string, chang
 
 // SignalSettingsView is a project's settings of admission by signals as the routes that change them
 // answer: whether it is on, who set the switch last, when and why (null before a person first did),
-// and each of the five series in the order of LiveSeries(), named by its signal and part
+// and each of the five series in the order of signals.Names(), named by its signal and part
 // (SignalPart) with its limit (null for none) and its last change (null before a person first set
 // or cleared it). They are read from the settings themselves, so a setting whose entry has left the
 // state's newest entries reads as it stands.
@@ -238,12 +228,13 @@ type SignalLimitView struct {
 
 // View is the settings as SignalSettingsView shows them.
 func (s SignalSettings) View() SignalSettingsView {
-	view := SignalSettingsView{On: s.On(), Limits: make([]SignalLimitView, 0, len(liveSeries))}
+	names := signals.Names()
+	view := SignalSettingsView{On: s.On(), Limits: make([]SignalLimitView, 0, len(names))}
 	if s.Switch != nil {
 		set := s.Switch.Set
 		view.Switch = &set
 	}
-	for _, series := range liveSeries {
+	for _, series := range names {
 		signal, part := seriesNames(series)
 		limit := SignalLimitView{Signal: *signal, Part: part}
 		if setting, set := s.Limits[series]; set {

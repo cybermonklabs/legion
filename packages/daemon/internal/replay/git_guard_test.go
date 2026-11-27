@@ -50,7 +50,7 @@ func TestTheGitGuardKillsAProcessGroupAboveItsCap(t *testing.T) {
 	}}
 	cmd := exec.Command("sh", "-c", `echo $$; sleep 60 >/dev/null 2>&1 & echo $! > "$1.tmp"; mv "$1.tmp" "$1"; wait`, "sh", childFile)
 	began := time.Now()
-	run := guard.run(context.Background(), cmd, time.Minute)
+	run := guard.run(context.Background(), cmd, time.Minute, false)
 	took := time.Since(began)
 	if run.killed != GitMemoryCap || run.code != -1 || run.err != nil || run.peak != 2<<30 || guard.peak != 2<<30 || took > 20*time.Second {
 		t.Fatalf("the guard's run = killed %q, exit %d, error %v, peak %d (the guard's %d), after %s; want a memory-cap kill, exit -1, peak %d, at once",
@@ -96,13 +96,47 @@ func TestTheGitGuardKillsACommandPastItsTimeAndLetsOthersEnd(t *testing.T) {
 	t.Parallel()
 	guard := &gitGuard{limit: 1 << 30, rss: func(int) int64 { return 1 << 20 }}
 	began := time.Now()
-	run := guard.run(context.Background(), exec.Command("sleep", "60"), 300*time.Millisecond)
+	run := guard.run(context.Background(), exec.Command("sleep", "60"), 300*time.Millisecond, false)
 	if took := time.Since(began); run.killed != GitTimeout || run.code != -1 || took > 20*time.Second {
 		t.Errorf("a minute's sleep under a time of 300ms = killed %q, exit %d, after %s; want a timeout kill at once", run.killed, run.code, took)
 	}
-	run = guard.run(context.Background(), exec.Command("sh", "-c", "echo out; echo err >&2; exit 3"), time.Minute)
+	run = guard.run(context.Background(), exec.Command("sh", "-c", "echo out; echo err >&2; exit 3"), time.Minute, false)
 	if run.killed != "" || run.err != nil || run.code != 3 || string(run.stdout) != "out\n" || string(run.stderr) != "err\n" || run.ok() {
 		t.Errorf("a command that exits 3 = killed %q, error %v, exit %d, stdout %q, stderr %q; want its own exit 3 and output", run.killed, run.err,
 			run.code, run.stdout, run.stderr)
+	}
+}
+
+// The guard counts the time of a command it runs sinceOutput from the command's last write on
+// stdout, not from its start, as a merge-tree --stdin's time is that of each merge: a command that
+// writes a byte about every 10ms, a tenth of its time, for at least four of its times in all ends by
+// itself with all it wrote; one that writes and then stalls is killed as a timeout, no sooner than
+// its time, with what it wrote kept. A command run without sinceOutput is still killed once its
+// whole run passes its time, though it writes all the while. It fails where the guard counts a
+// sinceOutput command's time from its start, lets one that stalls run on or drops what it wrote, or
+// counts another command's time from its writes.
+func TestTheGitGuardCountsATimeFromTheLastOutputWhereAsked(t *testing.T) {
+	// Not parallel: its first command writes about every 10ms under a time of 100ms (bound) and its
+	// second writes as it starts under that time, steps the parallel tests' load could push past it on
+	// a correct guard.
+	guard := &gitGuard{limit: 1 << 30, rss: func(int) int64 { return 1 << 20 }}
+	const bound = 100 * time.Millisecond
+	writes := `i=0; while [ "$i" -lt "$1" ]; do printf x; sleep 0.01; i=$((i+1)); done`
+	run := guard.run(context.Background(), exec.Command("sh", "-c", writes, "sh", "40"), bound, true)
+	if run.killed != "" || run.err != nil || run.code != 0 || string(run.stdout) != strings.Repeat("x", 40) {
+		t.Errorf("40 writes 10ms apart under a time of %s since the last = killed %q, error %v, exit %d, stdout %q; want its own exit 0 and its 40 bytes",
+			bound, run.killed, run.err, run.code, run.stdout)
+	}
+	began := time.Now()
+	run = guard.run(context.Background(), exec.Command("sh", "-c", "printf abc; exec sleep 60"), bound, true)
+	if took := time.Since(began); run.killed != GitTimeout || run.code != -1 || string(run.stdout) != "abc" || took < bound || took > 20*time.Second {
+		t.Errorf("a write, then a minute's sleep, under a time of %s since the last write = killed %q, exit %d, stdout %q, after %s; "+
+			"want a timeout kill no sooner than its time, its write kept", bound, run.killed, run.code, run.stdout, took)
+	}
+	began = time.Now()
+	run = guard.run(context.Background(), exec.Command("sh", "-c", writes, "sh", "600"), bound, false)
+	if took := time.Since(began); run.killed != GitTimeout || run.code != -1 || took > 20*time.Second {
+		t.Errorf("600 writes 10ms apart under a time of %s of the whole run = killed %q, exit %d, after %s; want a timeout kill once the run passes its time",
+			bound, run.killed, run.code, took)
 	}
 }

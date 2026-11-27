@@ -12,7 +12,7 @@ import (
 
 // UseSignals registers read, which answers the signals this pass admits below P0 by at the moment
 // of the pass (R11 and R12 of the tool's spec): the snapshot of each signal's reading and limit
-// and, for the back-off, the history of refusals and kills (signals.Snapshot), and whether
+// and, for the back-off, the history of the memory guard's kills (signals.Snapshot), and whether
 // admission by signals is on. Each pass asks it once, before it judges the line (promoteHolds), so
 // a change is in force from the next pass on. The snapshot's At is the moment of the pass. read
 // reads through the pass's own transaction tx, so it sees what the fact that started the pass

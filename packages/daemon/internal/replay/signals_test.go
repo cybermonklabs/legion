@@ -424,8 +424,8 @@ func TestAnAskEventIsReadAsTheDaemonReadsItsTurnAndOneWhoseAskedOfIsNoPersonIsRe
 
 // Each signal of R11 is read at moments of a window worked out by hand, one of them on an edge of
 // the span its record covers (spec R11, plan t30): idleWindow's idle share at d one hour, 10
-// minutes and 4 hours; queueWindow's merge queue wait; providerWindow's headroom and its
-// refusals; killsWindow's kills; and approvalsWindow's asks that wait on the default assignee.
+// minutes and 4 hours; queueWindow's merge queue wait; providerWindow's headroom; killsWindow's
+// kills; and approvalsWindow's asks that wait on the default assignee.
 // The test fails for each reading that differs from the hand-worked one, and for each moment at
 // which the approvals count asks other than those worked out.
 func TestEachSignalAtAMoment(t *testing.T) {
@@ -466,21 +466,6 @@ func TestEachSignalAtAMoment(t *testing.T) {
 			unrecordedAt(clock(11, 31), "the minute 11:30 has no limit, which was taken away"),
 			unrecordedAt(clock(11, 46), "the limit of the minute 11:45 is one model's own, not the project's"),
 		})
-		for _, want := range []struct {
-			at   time.Time
-			want signals.RefusalCount
-			why  string
-		}{
-			{clock(9, 0), signals.RefusalCount{}, "the record holds no minute before 09:00"},
-			{clock(9, 11), signals.RefusalCount{Recorded: true, Provider: 2}, "the provider's 2 of the minute 09:10, with no limit of the project's in force"},
-			{clock(10, 2), signals.RefusalCount{Recorded: true, Own: 3, Provider: 3}, "09:10's and 10:01's"},
-			{clock(10, 11), signals.RefusalCount{Recorded: true, Own: 3, Provider: 1}, "09:10's left the hour at 10:11"},
-			{clock(10, 31), signals.RefusalCount{Recorded: true, Own: 4, Provider: 1}, "10:01's and 10:30's"},
-		} {
-			if got := r.Refusals(want.at); got != want.want {
-				t.Errorf("refusals at %s = %+v, want %+v: %s", want.at.Format(time.RFC3339), got, want.want, want.why)
-			}
-		}
 	})
 	t.Run("kills", func(t *testing.T) {
 		checkReadings(t, SignalKills, signalRecordOf(t, killsWindow(t), signals.DefaultIdleAfter), killsAt, []reading{
@@ -578,11 +563,6 @@ func TestEachSignalsNextCrossing(t *testing.T) {
 			{at: clock(11, 0), limit: 0.5, next: clock(11, 31), why: "down: the limit taken away at 11:30 binds nothing"},
 			{at: clock(10, 4), limit: 2, why: "none: no minute of the record uses twice the limit"},
 		})
-		checkCrossings(t, "refusals", r, (*SignalRecord).NextRefusals, []crossing{
-			{at: clock(10, 2), limit: 5, next: clock(10, 11), why: "down: 09:10's refusals leave the hour at 10:11, leaving 4"},
-			{at: clock(10, 31), limit: 5, next: clock(11, 2), why: "down: 10:01's refusals leave the hour at 11:02, leaving 1"},
-			{at: clock(10, 11), limit: 5, why: "none: 4 refusals, and a refusal comes only at an event"},
-		})
 	})
 	t.Run("kills", func(t *testing.T) {
 		checkCrossings(t, SignalKills, signalRecordOf(t, killsWindow(t), signals.DefaultIdleAfter), killsNext, []crossing{
@@ -594,15 +574,16 @@ func TestEachSignalsNextCrossing(t *testing.T) {
 	})
 }
 
-// stateGolden is the body of `legion state --json` that internal/api's golden of the state with the
-// controller's claim pins: one slot of two in use, LEGION-208's, idle since its admission at
-// 2026-10-06T18:02:11Z with no turn ended.
+// stateGolden is the body of `legion state --json` that internal/daemon's composition of the state
+// with the controller's claim writes (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds):
+// one slot of six in use, LEGION-208's, idle since its admission at 2126-10-06T18:02:11Z with no
+// turn ended.
 var stateGolden = filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", "state-controller-claim.json")
 
 // The idle share read live from R6's states and times in a body of `legion state --json` is the
 // share the window's lines give at that moment (spec R11). The body is the daemon's state golden
 // stateGolden; the window holds the same slot: ACME-208 takes the one slot in use at
-// 2026-10-06T18:02:11Z and no turn of it ends. At d 10 minutes, an hour and 4 hours, the test
+// 2126-10-06T18:02:11Z and no turn of it ends. At d 10 minutes, an hour and 4 hours, the test
 // reads both at the slot's admission, a second before d has passed, when it has, and an hour later,
 // and fails where they differ or where either differs from the share worked out by hand: none
 // before d has passed, the whole after.
@@ -612,7 +593,7 @@ func TestTheIdleShareFromTheStateJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	admitted := time.Date(2026, time.October, 6, 18, 2, 11, 0, time.UTC)
+	admitted := time.Date(2126, time.October, 6, 18, 2, 11, 0, time.UTC)
 	from := admitted.Truncate(time.Hour)
 	b := newWindowBuilder(t, from, from.Add(6*time.Hour))
 	b.boot(from.Add(-time.Hour))

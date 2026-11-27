@@ -34,7 +34,7 @@ func TestEveryCandidateOfTheDesignIsARule(t *testing.T) {
 		{"rework-first", "returned work, then started work by arrival, then rank"},
 		{"arrival-order", "pure arrival order"},
 		{"idle-return-1h", "give back the slot after an hour without a turn on a person or child wait"},
-		{"signals-backoff", "lower the allowance on a project refusal or kill"},
+		{"signals-backoff", "lower the allowance on a kill"},
 		{"wait-grace", "short grace before a wait gives back a slot"},
 		{"wait-grace-1h", "one-hour grace before a wait gives back a slot"},
 		{"returned-by-first-slot", "order returned work by its first slot"},

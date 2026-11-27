@@ -669,7 +669,7 @@ func capReadings(t *testing.T, pool *pgxpool.Pool, admission *Admission, candida
 		if err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		own := ownSlots(issues, slots)
+		own := record.OwnSlots(issues, slots)
 		rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, records, testProject, issues, own, facts, nil, admission.now())
 		if err != nil {
 			t.Fatalf("judge the waiting line: %v", err)

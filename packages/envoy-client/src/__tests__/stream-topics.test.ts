@@ -14,6 +14,7 @@ import {
   registrationTopics,
   rememberedTopics,
   replayFollowedSubjects,
+  STORED_TOPIC_KINDS,
   streamDeliversNothing,
   streamStores,
 } from "../stream-topics";
@@ -25,6 +26,16 @@ test("the stream stores agent, producer and team topics, wildcards read literall
   expect(streamStores("notifications.team.deploy")).toBe(true);
   expect(streamStores("notifications.envoy.exceptions.notifications.agent.ses_a")).toBe(true);
   expect(streamStores("notifications.envoy.exceptions.notifications.team.deploy")).toBe(true);
+});
+
+// STORED_TOPIC_KINDS is read from the stream's prefixes, so this holds the reading: the list is not
+// empty, and each kind is one token whose topics the stream stores.
+test("each stored kind is one token whose topics the stream stores", () => {
+  expect(STORED_TOPIC_KINDS.length).toBeGreaterThan(0);
+  for (const kind of STORED_TOPIC_KINDS) {
+    expect(kind, kind).toMatch(/^[a-z]+$/);
+    expect(streamStores(`notifications.${kind}.x`), kind).toBe(true);
+  }
 });
 
 test("an uncaptured topic, bare prefixes and the relay subject are not stored", () => {

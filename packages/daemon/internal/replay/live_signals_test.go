@@ -41,42 +41,27 @@ type liveReplaySeries struct {
 	next func(r *SignalRecord, at time.Time, limit float64) (time.Time, bool)
 }
 
-// liveNotComputed is each signal of the tool's definitions (signals.Names()) that the live daemon
-// does not compute, with why. The replay's historical refusal measurements (SignalRecord.Refusals,
-// SignalRecord.NextRefusals) stay in the tool, and the live daemon has no refusal series: its
-// settings, its state and its record of changes carry none. A signal of the tool's that is in
-// neither this table nor the daemon's series fails TestLiveAndReplaySignalInventory until someone
-// classes it.
-var liveNotComputed = map[string]string{
-	signals.Refusals: "the provider's refusals are a historical measurement of the replay: the live daemon reads no model request's refusal",
-}
-
 // liveReplayRows is the replay's reader of each series the live daemon computes: each definition
-// of SignalDefinitions, taken as data, that liveNotComputed does not class as one it does not.
+// of SignalDefinitions, taken as data.
 func liveReplayRows() []liveReplaySeries {
 	var rows []liveReplaySeries
 	for _, def := range SignalDefinitions() {
-		if _, notLive := liveNotComputed[def.Name]; !notLive {
-			rows = append(rows, liveReplaySeries{name: def.Name, at: def.At, next: def.Next})
-		}
+		rows = append(rows, liveReplaySeries{name: def.Name, at: def.At, next: def.Next})
 	}
 	return rows
 }
 
-// The replay's readers are matched to the five series the daemon reads (store.LiveSeries()), each
-// once, and every signal of the tool's definitions (signals.Names() and SignalDefinitions) is
-// either one of them or classed as one the live daemon does not compute (liveNotComputed). It
-// fails where a series of the daemon's has no reader of the replay's, where a reader names no
-// series of the daemon's, where a signal of the tool's is neither, and where a class names a
-// signal the daemon does compute or the tool does not define.
+// The replay's readers are matched to the five series the daemon reads (signals.Names()), each
+// once: it fails where a series of the daemon's has no reader of the replay's, or more than one,
+// and where a reader of the replay's (a definition of SignalDefinitions) names no series of the
+// daemon's.
 func TestLiveAndReplaySignalInventory(t *testing.T) {
 	t.Parallel()
 	rows := map[string]int{}
 	for _, row := range liveReplayRows() {
 		rows[row.name]++
 	}
-	live := store.LiveSeries()
-	for _, name := range live {
+	for _, name := range signals.Names() {
 		if rows[name] != 1 {
 			t.Errorf("the series %s has %d readers of the replay's, want 1", name, rows[name])
 		}
@@ -84,26 +69,6 @@ func TestLiveAndReplaySignalInventory(t *testing.T) {
 	}
 	for _, name := range slices.Sorted(maps.Keys(rows)) {
 		t.Errorf("the replay's reader %s names no series of the daemon's", name)
-	}
-	defined := signals.Names()
-	for _, def := range SignalDefinitions() {
-		if !slices.Contains(defined, def.Name) {
-			t.Errorf("the definition %s of SignalDefinitions is no signal of the tool's (signals.Names())", def.Name)
-		}
-	}
-	for _, name := range defined {
-		_, notLive := liveNotComputed[name]
-		switch {
-		case notLive && slices.Contains(live, name):
-			t.Errorf("the signal %s is classed as one the live daemon does not compute, and it computes it", name)
-		case !notLive && !slices.Contains(live, name):
-			t.Errorf("the signal %s is neither a series of the live daemon nor classed as one it does not compute (liveNotComputed)", name)
-		}
-	}
-	for _, name := range slices.Sorted(maps.Keys(liveNotComputed)) {
-		if !slices.Contains(defined, name) {
-			t.Errorf("liveNotComputed names %s, which the tool does not define", name)
-		}
 	}
 }
 

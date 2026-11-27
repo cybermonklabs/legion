@@ -17,12 +17,14 @@ import (
 // The replay counts the holders of the cap as the daemon does, by the daemon's one count of them
 // (record.HoldersOf, cybermonklabs/legion#5488), which counts no slot of an issue the project does
 // not hold. From the boot's pass at 09:00 the replay's database holds a slot of OTHER-1, an issue of
-// another project, beside ACME-1's, at a cap of 2: the state the daemon serves over those records
-// (projection.Project) names OTHER-1 in `admission.active`, as it names every slot holder the issues
-// table holds, and the daemon's free slots over them, the cap less the holders the cap counts as
-// the pass reads them (record.SlotRule.CapCounted), are 1. ACME-2 and ACME-3 are filed at 09:10 and
-// 09:11, and the record starts neither. The replay's passes start exactly as many of them as the
-// daemon's free slots, one, ACME-2, the first filed: its free slots are the daemon's.
+// another project, beside ACME-1's, at a cap of 2. The state the daemon serves over those records
+// (projection.Project) lists the project's own slot holders alone in `admission.active`, as the
+// pass counts them (blockers.AdmissionOf over record.OwnSlots, cybermonklabs/legion#4432), so it
+// names no OTHER-1, while that issue still takes its slot: the daemon's free slots over those
+// records, the cap less the holders the cap counts as the pass reads them
+// (record.SlotRule.CapCounted), are 1. ACME-2 and ACME-3 are filed at 09:10 and 09:11, and the
+// record starts neither. The replay's passes start exactly as many of them as the daemon's free
+// slots, one, ACME-2, the first filed: its free slots are the daemon's.
 func TestTheReplayCountsTheSlotOfAnIssueTheProjectDoesNotHoldAsTheDaemonDoes(t *testing.T) {
 	t.Parallel()
 	const elsewhere = "OTHER-1"
@@ -84,8 +86,8 @@ func TestTheReplayCountsTheSlotOfAnIssueTheProjectDoesNotHoldAsTheDaemonDoes(t *
 	if !read {
 		t.Fatal("the replay settled at no moment, so no slot of another project was written")
 	}
-	if !slices.Contains(active, elsewhere) {
-		t.Errorf("the state over the replay's records names %v in admission.active, want %s among them", active, elsewhere)
+	if slices.Contains(active, elsewhere) {
+		t.Errorf("the state over the replay's records names %v in admission.active, want the project's own holders alone, no %s", active, elsewhere)
 	}
 	if free != 1 {
 		t.Errorf("the daemon's free slots over the replay's records are %d, want 1: the cap of 2 less ACME-1, and no slot of %s", free, elsewhere)

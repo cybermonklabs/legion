@@ -25,14 +25,21 @@ import (
 // signalsLineState is a state of project ACME with a slots reading and admission by signals as
 // the daemon serves them, each series of another shape: a value under its limit, one the daemon
 // cannot compute, one with no limit, one holding since a pass dated it, and one holding with no pass
-// that dated it.
+// that dated it. Its observed part is the same state with neither reading, as the daemon's source
+// answers it (api.ObservedState).
 type signalsLineState struct{ reading store.SignalsReading }
 
-func (s signalsLineState) State(context.Context, pgx.Tx) (api.State, []supervise.Claim, error) {
+func (s signalsLineState) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
+	state, _, _ := s.ObservedState(ctx, tx)
+	state.Admission.Slots = &record.SlotsReading{InUse: 0, Cap: 2, Line: "slots: 0 of 2 in use"}
+	state.Admission.Signals = &s.reading
+	return state, nil, nil
+}
+
+func (signalsLineState) ObservedState(context.Context, pgx.Tx) (api.State, []supervise.Claim, error) {
 	return api.State{
-		Daemon: api.DaemonInfo{Project: "ACME", SchemaVersion: 1, Boots: 1},
-		Admission: api.Admission{Cap: 2, Active: []string{}, Waiting: []string{},
-			Slots: &record.SlotsReading{InUse: 0, Cap: 2, Line: "slots: 0 of 2 in use"}, Signals: &s.reading},
+		Daemon:    api.DaemonInfo{Project: "ACME", SchemaVersion: 1, Boots: 1},
+		Admission: api.Admission{Cap: 2, Active: []string{}, Waiting: []string{}},
 	}, nil, nil
 }
 
@@ -41,7 +48,7 @@ func (s signalsLineState) State(context.Context, pgx.Tx) (api.State, []supervise
 // a series the daemon cannot compute reads as not recorded with its reason, which is shown as
 // terminalText, so a line break or an ESC that GitHub's answer put in it neither breaks the line
 // nor reaches the terminal, a hold no pass dated reads as undated, and every series of
-// store.LiveSeries() is on it (/series-inventory).
+// signals.Names() is on it (/series-inventory).
 func TestStateSignalLine(t *testing.T) {
 	since := time.Date(2026, 11, 26, 7, 0, 0, 0, time.UTC)
 	reading := store.SignalsReading{On: true}
@@ -53,7 +60,7 @@ func TestStateSignalLine(t *testing.T) {
 		signals.Kills:     {Value: new(6.0), Limit: new(5.0), Holds: true, Since: &since},
 		signals.Approvals: {Value: new(1.0), Limit: new(1000000.0)},
 	}
-	for _, series := range store.LiveSeries() {
+	for _, series := range signals.Names() {
 		row := shapes[series]
 		signal, part := store.SignalPart(series)
 		row.Signal = signal
@@ -106,7 +113,7 @@ func TestStateSignalLine(t *testing.T) {
 		if err := json.Unmarshal([]byte(raw), &served); err != nil {
 			t.Fatalf("read legion state --json: %v", err)
 		}
-		for _, series := range store.LiveSeries() {
+		for _, series := range signals.Names() {
 			signal, part := store.SignalPart(series)
 			name := signal
 			if part != "" {

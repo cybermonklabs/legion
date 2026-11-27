@@ -114,6 +114,13 @@ var OutboxHandling = map[RowKind]RowHandling{
 	// The variant is part of the step publication, not a second effect that the replay executes.
 	{Kind: record.OutboxKindStepRecord}: {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
 	{Kind: record.OutboxKindPlanRecord}: {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
+	// The state events of cybermonklabs/legion#4432 (record.LaneState): a change of what Dispatch
+	// observes of an issue, a change of the admission block, and a boot. Only a daemon with a
+	// workflow turns them on (record.Postgres.PublishState), and a replay's store never does, so a
+	// replay queues none; Dispatch takes them into its board, which no decision of the daemon reads.
+	{Kind: record.OutboxKindStateChange}:    {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
+	{Kind: record.OutboxKindStateAdmission}: {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
+	{Kind: record.OutboxKindStateBoot}:      {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
 
 	{Kind: record.OutboxKindIssueBranch}:     {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
 	{Kind: record.OutboxKindIssueSuspend}:    {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
