@@ -260,16 +260,9 @@ def granted(block: object) -> dict[str, int]:
     return {}
 
 
-def check_call_permissions(path: Path) -> None:
+def check_call_permissions(path: Path, document: dict, jobs: dict) -> None:
     """Rule 8: each job of `path` that calls a workflow of this repository grants, scope by scope,
     at least what that workflow's `permissions` and its jobs' `permissions` declare."""
-    try:
-        document = yaml.safe_load(path.read_text())
-    except (OSError, UnicodeDecodeError, yaml.YAMLError):
-        return  # rule 3 has named it
-    jobs = (document or {}).get("jobs") if isinstance(document, dict) else None
-    if not isinstance(jobs, dict):
-        return
     for job_id, job in jobs.items():
         uses = job.get("uses") if isinstance(job, dict) else None
         callee = local_callee(uses.strip()) if isinstance(uses, str) else None
@@ -279,6 +272,10 @@ def check_call_permissions(path: Path) -> None:
             called = yaml.safe_load(callee.read_text())
         except (OSError, UnicodeDecodeError, yaml.YAMLError):
             continue  # that file's own read names it
+        # A callee that is no mapping (a file of comments alone loads as None, a list as a list)
+        # declares no scope; rule 3 lets such a file through, so it is read as declaring nothing.
+        if not isinstance(called, dict):
+            continue
         need: dict[str, int] = {}
         blocks = [called.get("permissions")]
         blocks += [body.get("permissions") for body in (called.get("jobs") or {}).values() if isinstance(body, dict)]
@@ -305,10 +302,13 @@ def check_call_permissions(path: Path) -> None:
                           f"with no signal on the head." + limits(path))
 
 
-# Rule 9. A job name that is the condition deciding the job's own run: `<condition> && '<name>'
-# || '<other>'`, the whole of it in one `${{ }}` or in none.
-NAMED_CONDITION = re.compile(r"^\s*(?:\$\{\{)?\s*(?P<condition>.*?)\s*&&\s*'[^']*'\s*\|\|\s*'[^']*'\s*(?:\}\})?\s*$",
-                             re.S)
+# Rule 9. The checks main's ruleset requires (.github/ci-notes/ci.md, the paragraph that begins
+# "Main's ruleset requires ci-ok and pr-title"), and a name that yields one of them only where a
+# condition holds: `<condition> && '<check>' || '<other>'`, the whole of it in one `${{ }}` or in
+# none.
+REQUIRED_CHECKS = ("ci-ok", "pr-title")
+NAMED_CHECK = re.compile(r"^\s*(?:\$\{\{)?\s*(?P<condition>.*?)\s*&&\s*'(?P<check>[^']*)'\s*\|\|\s*'[^']*'\s*(?:\}\})?\s*$",
+                         re.S)
 
 
 def condition_text(value: object) -> str:
@@ -320,35 +320,44 @@ def condition_text(value: object) -> str:
     return " ".join(text.split())
 
 
-def check_one_condition(path: Path) -> None:
-    """Rule 9: in a file where a job's `name:` restates the condition that decides its own run,
-    that condition is the job's own `if:`, and every job of the file that waits for nothing
-    (`needs:` absent) writes the same `if:`: those are the jobs the event alone decides. A name
-    that chooses between two names by a test of its own, as the `pr-title (dispatch)` name in
-    .github/workflows/ci.yaml does, states no condition of the job's run: its first term differs
-    from the `if:`'s, and this passes over it."""
-    try:
-        document = yaml.safe_load(path.read_text())
-    except (OSError, UnicodeDecodeError, yaml.YAMLError):
-        return  # rule 3 has named it
-    jobs = (document or {}).get("jobs") if isinstance(document, dict) else None
-    if not isinstance(jobs, dict):
-        return
+def check_one_condition(path: Path, jobs: dict) -> None:
+    """Rule 9: a job that a required check is named for runs exactly where its name says it is
+    that check. A skipped job's check run is a passing required check, and GitHub leaves a skipped
+    job's name unevaluated, so such a job:
+      * writes its whole `if:` into its name, `<if> && '<check>' || '<other>'`: a job whose name
+        yields a required check under one condition and whose `if:` is another, or absent, is
+        refused, whatever term differs;
+      * is never named for the check as a plain word while it carries an `if:`;
+    and every job of its file that waits for nothing (`needs:` absent), which the event alone
+    decides as it does that job, writes the same `if:`. A job is held by the check its name
+    yields, not by its condition's text, so no drift of the condition takes a job out of the
+    rule. A name that yields another name under its condition is no such job: the
+    `pr-title (dispatch)` and `ci-ok (dispatch)` names of the main CI workflow."""
     named = holder = ""
     for job_id, job in jobs.items():
-        match = NAMED_CONDITION.match(str(job["name"])) if isinstance(job, dict) and "name" in job else None
-        if not match:
+        if not isinstance(job, dict) or "name" not in job:
+            continue
+        own = condition_text(job.get("if", ""))
+        name = str(job["name"]).strip()
+        if name in REQUIRED_CHECKS:
+            if own:
+                problem(path, f"{path}: job '{job_id}' is named {name}, a check main's ruleset "
+                              f"requires, as a plain word, and carries an `if:`, so where that "
+                              f"`if:` skips the job its check run {name} reads as a pass. Write "
+                              f"the `if:` into the name: `${{{{ <if> && '{name}' || '<another "
+                              f"name>' }}}}`." + limits(path))
+            continue
+        match = NAMED_CHECK.match(name)
+        if not match or match.group("check") not in REQUIRED_CHECKS:
             continue
         wanted = condition_text(match.group("condition"))
-        own = condition_text(job.get("if", ""))
-        if not own or wanted.split(" && ")[0] != own.split(" && ")[0]:
-            continue
         if wanted != own:
-            problem(path, f"{path}: job '{job_id}' writes one condition in its `name:` and "
-                          f"another in its `if:`, and GitHub evaluates the name only where the "
-                          f"job runs, so a name narrower than its `if:` leaves the job's check "
-                          f"run under another name. Its name holds `{wanted}` and its `if:` "
-                          f"`{own}`." + limits(path))
+            problem(path, f"{path}: job '{job_id}' is named {match.group('check')}, a check main's "
+                          f"ruleset requires, where `{wanted}` holds, and runs where "
+                          f"{f'`{own}` holds' if own else 'nothing skips it (it has no `if:`)'}. "
+                          f"GitHub evaluates the name only where the job runs, so the two must be "
+                          f"one text, or the check is posted where it should not be, or "
+                          f"missing where it should." + limits(path))
         elif not named:
             named, holder = own, str(job_id)
     if not named:
@@ -692,8 +701,16 @@ for path in targets:
             f"single workflow file, counting every tree of nested calls, and a file over that cap "
             f"starts no run." + limits(path),
         )
-    check_call_permissions(path)
-    check_one_condition(path)
+    # Rules 8 and 9 read the file's jobs as values, loaded once here; the file composed above, so a
+    # load that still fails (a tag no constructor takes) leaves them nothing to read.
+    try:
+        document = yaml.safe_load(path.read_text())
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        document = None
+    jobs = document.get("jobs") if isinstance(document, dict) else None
+    if isinstance(jobs, dict):
+        check_call_permissions(path, document, jobs)
+        check_one_condition(path, jobs)
 
 if problems:
     for annotation in problems:

@@ -245,6 +245,13 @@ run_lead
 check "follows the one that passed" "$(is "$(output)" "run=false ")"
 check "and says which" "$(contains "$out" '^run 39, an approval-time run at abc, is open or passed')"
 
+echo "case: lead with an earlier run whose ci-ok is still queued"
+reset
+head_runs 40
+reads_of 40 "ci-ok|queued|-|1"
+run_lead
+check "follows it: a queued ci-ok is open" "$(is "$(output)" "run=false ")"
+
 echo "case: lead with only a failed earlier run, a newer run and another workflow's run"
 reset
 head_runs 38 42 37=.github/workflows/ci.yaml
@@ -338,13 +345,15 @@ check "is waited for: the start clock runs only once lead has ended" "$(is "$sta
 check "through every read" "$(is "$(reads_made)" 3)"
 
 echo "case: the caller never starts"
-# A caller held where nothing releases it, or cancelled before it listed a job, lists neither its
-# jobs nor its skip: GitHub keeps one pending run per concurrency group and cancels the rest.
+# A caller cancelled before it listed a job, or one waiting behind another approval-time run of
+# its merge commit in ci.yaml's concurrency group, lists neither its jobs nor its skip.
 reset
 reads "$self;$lead_done"
 START=0 run_hold
 check "fails at once rather than hold the head pending to its timeout" "$(is "$status" 1)"
-check "says why" "$(contains "$out" '::error::no job of approval is listed 0 s after lead ended, neither its jobs nor its skip, so the caller never started')"
+check "says why" "$(contains "$out" '::error::no job of approval is listed 0 s after lead ended, neither its jobs nor its skip, so this ci-ok fails: the caller was cancelled, or it waits behind another approval-time run')"
+check "that a waiting caller runs once the other ends, and what to re-run when" \
+  "$(contains "$out" "keeps it waiting rather than cancelling it and starts it, running every suite, once that run ends. Once this whole run has ended, re-run its failed jobs (gh run rerun 41 --failed)")"
 
 follower="$self;$lead_done;approval|completed|skipped|1"
 echo "case: the caller is skipped, and the run it follows passes"
@@ -359,6 +368,15 @@ check "follows the one open, not the one that failed" "$(contains "$out" '^follo
 check "and concludes as its ci-ok" "$(contains "$out" '^the ci-ok of run 40 concluded success: https://github.com/o/r/actions/runs/40/job/3$')"
 check "reading the run it chose, not choosing again" "$(is "$(reads_made 40)" 3)"
 
+echo "case: the caller is skipped, and the run it follows is still queued"
+reset
+head_runs 40
+reads_of 40 "ci-ok|queued|-|1" "ci-ok|completed|success|1"
+reads "$follower"
+run_hold
+check "follows it, as lead does" "$(contains "$out" '^following run 40, the approval-time run at abc$')"
+check "and concludes as its ci-ok" "$(is "$status" 0)"
+
 echo "case: the caller is skipped, and the run it follows fails"
 reset
 head_runs 40
@@ -367,22 +385,31 @@ reads "$follower"
 run_hold
 check "fails" "$(is "$status" 1)"
 check "naming the run" "$(contains "$out" '::error::the ci-ok of run 40 concluded failure, so this ci-ok fails')"
+check "and the order to re-run in: the run it followed, then this one" \
+  "$(contains "$out" "re-run run 40's failed jobs first (gh run rerun 40 --failed), and then this run's (gh run rerun 41 --failed)")"
 
 echo "case: the caller is skipped, and no run at the head is open or passed any more"
 reset
-head_runs 40
-reads_of 40 "ci-ok|completed|cancelled|1"
+# 38 ran the suites and failed, 39 followed it and failed with it, 40 was a review that ran no
+# ci-ok (its job skipped under another name).
+head_runs 38 39 40
+reads_of 38 "ci-ok|completed|failure|1"
+reads_of 39 "ci-ok|completed|failure|1"
+reads_of 40 ""
 reads "$follower"
 run_hold
 check "fails" "$(is "$status" 1)"
-check "says what to re-run" "$(contains "$out" 'none of that head.s runs is open or passed now: the one it followed failed or was cancelled. Re-run that run.s failed jobs')"
+check "says what to re-run, one run to each command, oldest first, then this one" \
+  "$(contains "$out" 'Re-run the failed jobs of each, oldest first, the first before any other, since each later one follows the earliest open or passed: gh run rerun 38 --failed; gh run rerun 39 --failed; then this run.s, gh run rerun 41 --failed')"
+check "and names no run that ran no ci-ok" "$(is "$(contains "$out" 'rerun 40')" false)"
+check "and no command of two runs, which gh refuses" "$(is "$(contains "$out" 'gh run rerun [0-9][0-9]* [0-9]')" false)"
 
 echo "case: GitHub refuses a read"
 reset
 reads "$self;approval / ci-ok|completed|success|1"
 touch "$work/reads-41/fail.1" "$work/reads-41/fail.2" "$work/reads-41/fail.3"
 run_hold
-check "warns and reads again" "$(contains "$out" "::warning::GitHub refused this run's jobs at every attempt gh-read.sh made")"
+check "warns and reads again" "$(contains "$out" "::warning::GitHub refused run 41's jobs at every attempt gh-read.sh made")"
 check "then concludes" "$(is "$status" 0)"
 
 echo "case: an input the step did not set"

@@ -32,7 +32,8 @@ name: Large PR lanes
 # no ruleset reads.
 #
 # `lead` decides whether this approval runs the suites or follows the approval-time run already at
-# this head (large-pr-lanes.sh lead), so two approvals never test one head at once. `approval`
+# this head (large-pr-lanes.sh lead), so two approvals never test one head at once, unless GitHub
+# refuses `lead`'s read of the runs at the head (that script's header says what follows). `approval`
 # calls ci.yaml when it runs them. A called workflow runs under its caller's event, and on
 # pull_request_review each `changes` output a pull request holds back takes its paths filter's
 # verdict, as on a merge group; ci.yaml's own ci-ok judges the run as `approval / ci-ok`, which no
@@ -45,8 +46,11 @@ name: Large PR lanes
 # or failed ci-ok an older approval's run left on a head stays beside the newer run's, and GitHub's
 # rollup reads FAILURE: test pull request #5347 at 3a30f85f12a (ci-ok check runs 138437935113
 # cancelled, 138438707923 success) and at 9749b52fcd2 (138468630340 failure, 138469054547
-# success). A run whose verdict was a flake is re-run (`gh run rerun --failed`), which replaces
-# its check runs.
+# success). A run whose verdict was a flake is re-run once it has ended (`gh run rerun <run>
+# --failed`; GitHub refuses a run still running), which replaces its check runs. A run that
+# followed it does not take that new verdict: it concluded on the first verdict it saw. So re-run
+# the run that ran the suites first, then each run that followed it, oldest first; each failure's
+# message prints those commands in that order.
 on:
   pull_request_review:
     types: [submitted]

@@ -2090,8 +2090,13 @@ Three pieces make it:
     pending run per group, and a third arrival cancels the pending one, whatever
     cancel-in-progress says, which would leave a failed ci-ok with nothing failed. A second call
     that does start, after a refused read, lists no job while it waits in that group, so its own
-    ci-ok fails 300 s after its `lead` ended; its `lead` says so, and its failed jobs are re-run
-    once the first run has ended. Keying those two groups per run on this event instead was
+    ci-ok fails 300 s after its `lead` ended. The group keeps that call waiting rather than
+    cancelling it (`cancel-in-progress` is false; only a third call would cancel it), so it starts
+    once the first run ends and runs every suite again (#5347's run 45411425611: its `approval / changes` started 5 s after the
+    first run's `approval / ci-ok` ended). Its failed ci-ok stays until that run has ended and its
+    failed jobs are re-run (`gh run rerun <run> --failed`, which GitHub refuses with HTTP 403 while
+    the run is still running); the new attempt concludes as the suites that ran did. Its `lead`'s
+    warning and its hold's error say so. Keying those two groups per run on this event instead was
     weighed and not taken: browser-image.yaml is part of the browser image's build recipe
     (ci_images.py's recipe_sha256), so any edit of it rebuilds the image and moves its row, and
     following does the same work with no second run of the suites at all.
@@ -2115,9 +2120,10 @@ What an approval's run runs beside a merge group's. The jobs and steps of ci.yam
 test the event, read at this head: dispatch-two-builds-same runs on both
 (ci-job-dispatch-two-builds.yaml); `pr-title` runs on an approval's run too, since #5231 left
 its `if:` the draft term alone, and it gates nothing (CI_OK_EXEMPT); the daemon API contract
-step of lint, dispatch-browser-pr and the dispatch-references preview run on a pull request, so
-an approval's run skips them, and each ran at the same head on that head's push run;
-worker-image runs on a pull request alone, so an approval's run skips it as
+step of lint runs on a pull request and on a merge group (ci-job-lint.yaml), and
+dispatch-browser-pr and the dispatch-references preview on a pull request, so an approval's run
+skips all three, and each ran at the same head on that head's push run; worker-image runs on a
+pull request alone, so an approval's run skips it as
 a merge group does; cancel-started, ci-ok's two refusal steps and every ci-ok-report post are
 merge-group mechanics. The tree an approval's run tests is the head merged with its base as GitHub
 last merged it, not with the entries ahead of it in the queue.
