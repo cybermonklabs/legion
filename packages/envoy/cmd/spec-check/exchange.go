@@ -424,7 +424,7 @@ func finishOld(fsys fileSystem, old, dir string, read map[string]string) (lines 
 				refuse(name, err)
 			}
 			continue
-		case !entry.Type().IsRegular() || !current.Mode().IsRegular() || err != nil || !removable(path, info, current, read, name):
+		case err != nil || !info.Mode().IsRegular() || !current.Mode().IsRegular() || !removable(path, read, name):
 			changed = append(changed, name)
 			continue
 		}
@@ -476,16 +476,16 @@ func keptCause(changed, refused []string, refusal error, unread bool) string {
 		causes = append(causes, fmt.Sprintf("the system refused print's move or removal of %s (%s)", strings.Join(refused, ", "), refusal))
 	}
 	if len(causes) == 0 {
-		causes = append(causes, "another program made an entry there after print read it")
+		causes = append(causes, "it holds "+noEntryNamed+", which another program made there after print read it")
 	}
 	return strings.Join(causes, "; ")
 }
 
-// removable reports whether finishOld may remove the regular file path of an old directory, which
-// info describes, whose name in dir is the regular file that current describes: read holds the
-// text of path, the text of name that the run read. A second name of the file of dir is taken
-// before this call, so this is the one rule left.
-func removable(path string, info, current fs.FileInfo, read map[string]string, name string) bool {
+// removable reports whether finishOld may remove the regular file path of an old directory, whose
+// name in dir is a regular file: read, the text of each spec file of dir when the run read it,
+// holds the text of path under name. A second name of the file of dir is taken before this call,
+// so this is the one rule left.
+func removable(path string, read map[string]string, name string) bool {
 	sum, held := read[name]
 	if !held {
 		return false
@@ -524,9 +524,9 @@ func undoNew(fsys fileSystem, staging, dir string) (lines []string, kept bool) {
 // leave removes left, a directory that a run of print built or exchanged out of the spec
 // directory, and its record, when names, the entries of left that print could neither move nor
 // remove, is empty, and answers removed. Else it keeps left under another name (keep), and removes
-// its record once it kept it; it answers what, which names those entries ("an entry" for one made
-// in left after the run read it, so left was not empty), the name that it kept left under, and the
-// refusal of keep.
+// its record once it kept it; it answers what, which names those entries (noEntryNamed where it
+// has no name for one, so left was not empty), the name that it kept left under, and the refusal
+// of keep.
 func leave(fsys fileSystem, left string, names []string) (what, kept string, removed bool, err error) {
 	if len(names) == 0 && fsys.remove(left) == nil {
 		removeRecord(fsys, left)
@@ -534,7 +534,7 @@ func leave(fsys fileSystem, left string, names []string) (what, kept string, rem
 	}
 	what = strings.Join(names, ", ")
 	if what == "" {
-		what = "an entry"
+		what = noEntryNamed
 	}
 	if kept, err = keep(fsys, left); err == nil {
 		removeRecord(fsys, left)
@@ -542,8 +542,14 @@ func leave(fsys fileSystem, left string, names []string) (what, kept string, rem
 	return what, kept, false, err
 }
 
-// keep gives path, a directory that print leaves, a name that cleanLeftovers does not take as its
-// own, and answers that name.
+// noEntryNamed stands for the entries of a directory that print keeps where it has no name for
+// one: another program made it there after the run read the directory, so the run never saw it.
+// leave and keptCause give it one text.
+const noEntryNamed = "an entry"
+
+// keep gives path, a directory that print leaves, a name of its own form, "-kept-" and the time,
+// which no run takes for a directory of its own, and answers that name. A later run removes such
+// a directory where it holds nothing, which a stop inside this move can leave (cleanLeftovers).
 func keep(fsys fileSystem, path string) (string, error) {
 	kept := path + "-kept-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	return kept, move(fsys, path, kept)
@@ -643,10 +649,15 @@ func makeEmpty(fsys fileSystem, path string, directory bool) error {
 	return f.Close()
 }
 
-// allDigits reports whether s is one or more ASCII digits, the form of the inode and the time
-// that print writes into the names of the directories that it leaves beside a spec directory.
-func allDigits(s string) bool {
-	return s != "" && strings.IndexFunc(s, func(r rune) bool { return r < '0' || r > '9' }) < 0
+// cutKept is name without the "-kept-<time>" that keep adds, and whether it had one: what is left
+// is the name of the directory that print kept, which cleanLeftovers reads by the one rule of its
+// number form.
+func cutKept(name string) (string, bool) {
+	before, time, found := strings.Cut(name, "-kept-")
+	if !found || time == "" || strings.ContainsFunc(time, func(r rune) bool { return r < '0' || r > '9' }) {
+		return name, false
+	}
+	return before, true
 }
 
 // cleanLeftovers finishes each directory that a killed run of print left beside dir, whose inode
@@ -657,9 +668,10 @@ func allDigits(s string) bool {
 // name is the inode of dir, then it is a new directory that the run did not exchange (undoNew), or
 // its own inode, then it is the old directory that the run exchanged out of dir, which it finishes
 // with the record of that run (finishOld, readRecord); the line says that print removed or finished
-// it, or, where it could not, what it left and where. Each other entry of that form it passes over
-// with a line that says so. A record whose directory is gone, which a run killed after it finished
-// that directory left, it removes.
+// it, or, where it could not, what it left and where. An empty directory of a kept name, which a
+// stop inside keep left, it removes. Each other entry of that form it passes over with a line that
+// says so. A record whose directory is gone, which a run killed after it finished that directory
+// left, it removes.
 func cleanLeftovers(fsys fileSystem, dir string, ino uint64) (lines []string, kept bool) {
 	parent, prefix := filepath.Dir(dir), "."+filepath.Base(dir)+stagingInfix
 	list, err := os.ReadDir(parent)
@@ -669,23 +681,23 @@ func cleanLeftovers(fsys fileSystem, dir string, ino uint64) (lines []string, ke
 	for _, entry := range list {
 		rest, ok := strings.CutPrefix(entry.Name(), prefix)
 		rest, record := strings.CutSuffix(rest, recordSuffix)
-		// An empty directory of a kept name, which a stop inside keep left on a system with no
-		// rename that refuses an existing name: it holds nothing, so this run removes it, where a
-		// kept directory that holds an entry stays for a person to compare.
-		if digits, kept, isKept := strings.Cut(rest, "-kept-"); ok && !record && isKept && allDigits(digits) && allDigits(kept) {
-			path := filepath.Join(parent, entry.Name())
-			if info, err := entry.Info(); err == nil && entry.IsDir() && holdsNothing(path, info) {
+		rest, keptName := cutKept(rest)
+		made, err := strconv.ParseUint(rest, 10, 64)
+		if !ok || err != nil || strconv.FormatUint(made, 10) != rest {
+			continue
+		}
+		path := filepath.Join(parent, entry.Name())
+		// A directory of a kept name that holds nothing, which a stop inside keep left on a system
+		// with no rename that refuses an existing name: this run removes it, where one that holds
+		// an entry stays for a person to compare (finishOld).
+		if keptName {
+			if info, err := entry.Info(); err == nil && entry.IsDir() && !record && holdsNothing(path, info) {
 				if err := fsys.remove(path); err != nil {
 					lines = append(lines, fmt.Sprintf("print could not remove %s, an empty directory that a killed run of print left beside %s: %s", path, dir, err))
 				}
 			}
 			continue
 		}
-		made, err := strconv.ParseUint(rest, 10, 64)
-		if !ok || err != nil || strconv.FormatUint(made, 10) != rest {
-			continue
-		}
-		path := filepath.Join(parent, entry.Name())
 		if record {
 			staging := strings.TrimSuffix(path, recordSuffix)
 			if _, err := os.Lstat(staging); errors.Is(err, fs.ErrNotExist) && entry.Type().IsRegular() {

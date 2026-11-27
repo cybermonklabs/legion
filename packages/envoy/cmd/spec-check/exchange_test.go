@@ -206,8 +206,8 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 		}
 		st := info.Sys().(*syscall.Stat_t)
 		of := filepath.Join(dir, "a.yaml")
-		want := "print gives the new file a.yaml the owner and the group of " + of + ", " + strconv.Itoa(int(st.Uid)) + ":" + strconv.Itoa(int(st.Gid)) + ", and the system refused it (operation not permitted): " +
-			"run print as the owner of " + of + " or as root, then run print again"
+		want := "print gives the new file a.yaml the group of " + of + ", " + strconv.Itoa(int(st.Gid)) + ", and the system refused it (operation not permitted): " +
+			"run print as a member of that group or as root, then run print again"
 		if _, _, err := writeDir(failing(callFault{"lchown", "", syscall.EPERM}), dir, lock, files, after); err == nil || err.Error() != want {
 			t.Fatalf("writeDir with lchown refused: %v, want %q", err, want)
 		}
@@ -219,8 +219,8 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 			t.Fatal(err)
 		}
 		dirStat := held.Sys().(*syscall.Stat_t)
-		wantDir := "print gives the new directory the owner and the group of " + dir + ", " + strconv.Itoa(int(dirStat.Uid)) + ":" + strconv.Itoa(int(dirStat.Gid)) + ", and the system refused it (operation not permitted): " +
-			"run print as the owner of " + dir + " or as root, then run print again"
+		wantDir := "print gives the new directory the group of " + dir + ", " + strconv.Itoa(int(dirStat.Gid)) + ", and the system refused it (operation not permitted): " +
+			"run print as a member of that group or as root, then run print again"
 		if _, _, err := writeDir(failing(callFault{"lchown", filepath.Base(stagingPath(dir, inode(held))), syscall.EPERM}), dir, lock, files, after); err == nil || err.Error() != wantDir {
 			t.Fatalf("writeDir with the new directory's lchown refused: %v, want %q", err, wantDir)
 		}
@@ -391,8 +391,9 @@ func (c callFS) remove(path string) error {
 // of the place of the directory, with the old text of a spec file, which it removes, and a file
 // and a subdirectory that are no spec files, which it moves into the directory, the same inode.
 // An entry with the name that print builds, made for no run on this directory, and a directory
-// that print kept, it passes over. The run prints a term that the directory already holds, and
-// changes no file of it.
+// that print kept and that holds an entry, it passes over; an empty directory of a kept name,
+// which a stop inside keep left, it removes. The run prints a term that the directory already
+// holds, and changes no file of it.
 func TestPrintRemovesWhatAKilledRunLeft(t *testing.T) {
 	t.Parallel()
 	term := "---\ntype: term\nid: first-term\nname: first term\ndefinition:\n  - A term is a unit of meaning.\n"

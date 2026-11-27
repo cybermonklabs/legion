@@ -196,8 +196,9 @@ func (v *validator) ids() {
 		id, kind string
 		pos      Position
 	}
-	all := make([]held, 0, len(Nodes(v.tree)))
-	for _, n := range Nodes(v.tree) {
+	nodes := Nodes(v.tree)
+	all := make([]held, 0, len(nodes))
+	for _, n := range nodes {
 		all = append(all, held{n.NodeID(), n.KindName(), n.NodePos()})
 	}
 	slices.SortStableFunc(all, func(a, b held) int {

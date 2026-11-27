@@ -77,8 +77,11 @@ func sameOwner(fsys fileSystem, path, what, of string, old fs.FileInfo) error {
 		return nil
 	}
 	if err := fsys.lchown(path, uid, gid); err != nil {
-		return fmt.Errorf("print gives %s the owner and the group of %s, %d:%d, and the system refused it (%w): run print as the owner of %s or as root, then run print again",
-			what, of, want.Uid, want.Gid, err, of)
+		asked, wayOut := fmt.Sprintf("the owner and the group of %s, %d:%d", of, want.Uid, want.Gid), "run print as the owner of "+of+" or as root"
+		if uid < 0 {
+			asked, wayOut = fmt.Sprintf("the group of %s, %d", of, want.Gid), "run print as a member of that group or as root"
+		}
+		return fmt.Errorf("print gives %s %s, and the system refused it (%w): %s, then run print again", what, asked, err, wayOut)
 	}
 	return nil
 }

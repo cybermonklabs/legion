@@ -90,13 +90,16 @@ func TestPrintKeepsTheModeAndTheOwnerOfEachFile(t *testing.T) {
 	}
 }
 
-// Where the process may not give the owner of an entry but belongs to its group, print gives the
-// group alone (lchown with -1 for the uid), so a member of the spec directory's group who runs
-// print leaves the group its access. A process that is not root owns each entry that print makes,
-// and may give no other user, so it asks for no uid; it asks for nothing where it may give
-// neither. The rows read what sameOwner asks of the system through a stand-in that records each
-// call and answers nothing.
-func TestSameOwnerGivesTheGroupWhereItMayNotGiveTheUser(t *testing.T) {
+// sameOwner asks the system only for what the process may give the entry that print made and that
+// entry does not already have: a process as root may give any owner and group; another may give
+// its own user, which each entry that it makes already has, and any group that it belongs to, as
+// chown(2) lets the owner of an entry give it a group of its own. So a member of the spec
+// directory's group who runs print leaves the group its access, and a run over an entry of
+// another user writes it as itself, as git does. The rows read what sameOwner asks of the system
+// through a stand-in that records each call and answers nothing. The three rows that ask for
+// nothing are the controls, and the row of another user with a group of the process is the one
+// that asked for nothing before mayGive answered each part.
+func TestSameOwnerAsksForWhatTheProcessMayGive(t *testing.T) {
 	t.Parallel()
 	group := otherGroup(t)
 	if group < 0 {
@@ -115,10 +118,11 @@ func TestSameOwnerGivesTheGroupWhereItMayNotGiveTheUser(t *testing.T) {
 		uid, gid int
 		want     string
 	}{
-		{"the control: the process's own user, which the entry already has, and another of its groups", os.Geteuid(), group, fmt.Sprintf("-1:%d", group)},
+		{"another of the process's groups, which the entry does not have", os.Geteuid(), group, fmt.Sprintf("-1:%d", group)},
 		{"another user and a group of the process", os.Geteuid() + 1, group, fmt.Sprintf("-1:%d", group)},
-		{"another user and a group that the process is not in", os.Geteuid() + 1, notOurs, ""},
-		{"the process's own user and its own group, which the entry already has", os.Geteuid(), os.Getegid(), ""},
+		{"the control: another user and a group that the process is not in", os.Geteuid() + 1, notOurs, ""},
+		{"the control: another user and the group that the entry already has", os.Geteuid() + 1, os.Getegid(), ""},
+		{"the control: the process's own user and group, which the entry already has", os.Geteuid(), os.Getegid(), ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -234,61 +238,6 @@ type ownedBy struct {
 }
 
 func (o ownedBy) Sys() any { return &syscall.Stat_t{Uid: o.uid, Gid: o.gid} }
-
-// print gives an entry that it made the owner and the group of the entry that it replaces only
-// where the process may give them: a process as root gives any; another gives them when the old
-// owner is its own user and the old group one of its groups, and else leaves the entry its own,
-// the writer's, as git does. So a run as a user over a spec file of another user, or over one of a
-// group that the user is not in, writes the file. The stand-in for lchown answers EPERM, as the
-// system answers a process that may not give the owner, and the old entry is described with the
-// owner and the group of each row (ownedBy). The control is the old entry of the process's own
-// user and another of its groups, which it may give: lchown is called.
-func TestSameOwnerGivesOnlyAnOwnerThatTheProcessMayGive(t *testing.T) {
-	t.Parallel()
-	group := otherGroup(t)
-	if group < 0 {
-		return
-	}
-	root := os.Geteuid() == 0
-	notOurs := 0
-	for slices.Contains(mustGroups(t), notOurs) {
-		notOurs++
-	}
-	for _, row := range []struct {
-		name     string
-		uid, gid int
-		mayGive  bool
-	}{
-		{"the control: the process's own user and another of its groups", os.Geteuid(), group, true},
-		{"another user", os.Geteuid() + 1, os.Getegid(), root},
-		{"the process's own user and a group that it is not in", os.Geteuid(), notOurs, root},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
-			path := filepath.Join(t.TempDir(), "spec.yaml")
-			writeFile(t, path, []byte("---\n"))
-			info, err := os.Lstat(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var calls []string
-			fsys := callFS{func(op, p string, do func() error) error {
-				if op != "lchown" {
-					return do()
-				}
-				calls = append(calls, p)
-				return &os.PathError{Op: "lchown", Path: p, Err: syscall.EPERM}
-			}}
-			err = sameOwner(fsys, path, "the new file spec.yaml", path, ownedBy{info, uint32(row.uid), uint32(row.gid)})
-			switch {
-			case row.mayGive && (len(calls) != 1 || err == nil):
-				t.Errorf("sameOwner called lchown %d times and answered %v; want one call, and the refusal of the stand-in", len(calls), err)
-			case !row.mayGive && (len(calls) != 0 || err != nil):
-				t.Errorf("sameOwner called lchown %d times and answered %v; want no call, and the writer's owner kept", len(calls), err)
-			}
-		})
-	}
-}
 
 // mustGroups is each group of the process.
 func mustGroups(t *testing.T) []int {
