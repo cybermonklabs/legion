@@ -12,7 +12,7 @@
 // hold while that runs, the architect is told once in a checks-red notice naming testing, and the
 // tester's connection, in the turn its own assignment began, is sent nothing at all. Once the
 // implementer's push lands, the tester is told so; a completion it reports at the head the merge
-// replaced is refused HANDOFF_HEAD_MERGED_FORWARD and records nothing, and one at the new head is
+// replaced is refused HANDOFF_HEAD_MERGED_FORWARD and moves nothing, and one at the new head is
 // taken. The control is a second issue on the same base whose required check passed on its
 // conflicting head: its second read confirms the conflict too, and gets it nothing.
 // scripts/e2e/conflict-no-takeover.sh builds this driver with `-tags e2e` and owns the nats-server
@@ -317,7 +317,7 @@ func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 // with the head the merge replaced, the new one and how to read what the merge changed
 // (record.MergeForwardLanded). The tester's turn is still the one its step 1 assignment began. Its
 // completion at h1, the head the merge replaced, naming a handoff record of its own, is refused
-// 409 HANDOFF_HEAD_MERGED_FORWARD and records nothing: the issue stays in testing and the tester's
+// 409 HANDOFF_HEAD_MERGED_FORWARD and moves nothing: the issue stays in testing and the tester's
 // phases row holds no verdict and no commit. Its completion at h2, naming another record of its
 // own, is taken, and moves the issue to reviewing.
 func (r *conflictNoTakeoverLive) mergeLands() {
