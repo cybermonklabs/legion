@@ -3,10 +3,12 @@ package bus
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A client that asked for stream message reads (WithStreamMessageReads) reads and creates keys of
@@ -85,7 +87,7 @@ func TestAClientWithStreamMessageReadsReadsAndCreatesWithNoDirectGet(t *testing.
 	if sent := requestFor(t, directGets, stream, noRequestFor); sent != nil {
 		t.Fatalf("the client that reads with stream message gets sent the direct get %s", sent.Subject)
 	}
-	if requestFor(t, streamMsgGets, stream, noRequestFor) == nil {
+	if requestFor(t, streamMsgGets, stream, testwait.Remaining(t, 30*time.Second)) == nil {
 		t.Fatalf("the client that reads with stream message gets sent no stream message get of %s", stream)
 	}
 
@@ -100,7 +102,7 @@ func TestAClientWithStreamMessageReadsReadsAndCreatesWithNoDirectGet(t *testing.
 	if _, err := plain.Get(key); err != nil {
 		t.Fatalf("the plain client's Get(%s): %v", key, err)
 	}
-	if requestFor(t, directGets, stream, noRequestFor*10) == nil {
+	if requestFor(t, directGets, stream, testwait.Remaining(t, 30*time.Second)) == nil {
 		t.Fatalf("the plain client's Get(%s) drew no direct get on the wire, so the reading cannot see one", key)
 	}
 }

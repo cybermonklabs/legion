@@ -63,6 +63,7 @@ func requirementsVersion(blocks int, word, last string) string {
 // version keeps each of its requirements, and both change sets name the reworded requirement and
 // no other block.
 func TestACutReadsAVersionsBlockIDsInWorkLinearInItsSize(t *testing.T) {
+	// Not parallel: it writes the package variable writtenIDReads, the hook compareVersions calls.
 	one := pmdoc.MeasureDocument(requirementsVersion(1, "a", "a"))
 	two := pmdoc.MeasureDocument(requirementsVersion(2, "a", "a"))
 	elements, bytes := two.Elements-one.Elements, two.Bytes-one.Bytes
@@ -115,6 +116,7 @@ func TestACutReadsAVersionsBlockIDsInWorkLinearInItsSize(t *testing.T) {
 // up in it, among them an id that only begins the text after a `#`, an `id="` whose value ends at
 // the `"` of the next `id="`, and ids written `id="…"` because they hold a space, a `"` or an `&`.
 func TestAWrittenIDIsFoundWhereASearchOfTheTextFindsIt(t *testing.T) {
+	t.Parallel()
 	ids := []string{"r1", "r", "r12", "q:1", "décision", "a b", `x"y`, "a&b", "aid=", "b c", "c", "", "zz"}
 	for _, stored := range []string{
 		"",

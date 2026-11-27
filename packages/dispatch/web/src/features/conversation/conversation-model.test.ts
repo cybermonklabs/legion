@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import type {
   Actor,
   Ask,
@@ -11,12 +12,20 @@ import type {
 } from "../../api/types";
 import { activityDescription } from "../activity/activity-model";
 import type { AgentPart } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
   buildConversations,
   focusConversation,
   handoffFields,
+  listedReplies,
   matchesFilter,
 } from "./conversation-model";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // A writer carried by a frame's payload is one of the kinds Dispatch writes, where a route's
 // read states a plain string, so this one is written as the literal it is: a `block.invalid`
@@ -77,6 +86,8 @@ function comment(overrides: Partial<Comment> & Pick<Comment, "id" | "created_at"
     ask_id: null,
     author: bob,
     body: `body of ${overrides.id}`,
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     issue_key: "CORE-1",
@@ -98,6 +109,7 @@ function message(overrides: Partial<Message> & Pick<Message, "id" | "created_at"
     reply_block: null,
     body: `body of ${overrides.id}`,
     deliveries: [],
+    ...messageCorrectionFields(),
     in_reply_to: null,
     issue_key: "CORE-1",
     target: null,
@@ -368,6 +380,33 @@ test("an item id resolves to the conversation that holds it", () => {
   expect(focusConversation("nothing", lists)).toBeUndefined();
 });
 
+// A composer's host lists every comment and message its reads hold, each as it stands: a post its
+// author deleted keeps its place, so it is listed, as deleted, since Dispatch takes no reply to it
+// and a draft kept for it has no Reply to go on with (`ListedReplies`).
+test("the replies a host lists are every comment and message it reads, a deleted one as deleted", () => {
+  const deleted = { deleted_at: "2026-09-10T09:30:00Z", deleted_by: bob };
+  const listed = listedReplies(
+    [
+      thread(message({ created_at: "2026-09-10T09:00:00Z", id: "message-1" }), [
+        message({ created_at: "2026-09-10T09:01:00Z", id: "message-2", ...deleted }),
+      ]),
+      thread(message({ created_at: "2026-09-10T09:02:00Z", id: "message-3", ...deleted })),
+    ],
+    [
+      comment({ created_at: "2026-09-10T09:03:00Z", id: "comment-1" }),
+      comment({ created_at: "2026-09-10T09:04:00Z", id: "comment-2", ...deleted }),
+    ]
+  );
+
+  expect(Object.fromEntries(listed)).toEqual({
+    "comment-1": "standing",
+    "comment-2": "deleted",
+    "message-1": "standing",
+    "message-2": "deleted",
+    "message-3": "deleted",
+  });
+});
+
 test("each handoff version is a card of its own, closed, ordered by when it was written", () => {
   const conversations = build({
     comments: [comment({ created_at: "2026-09-10T09:01:00Z", id: "comment-1" })],
@@ -421,17 +460,32 @@ test("a handoff body expands to one row per top-level field and one per proof en
   });
 
   expect(handoffFields(body)).toEqual([
-    { field: "schemaVersion", json: false, label: "schemaVersion", text: "1" },
-    { field: "phase", json: false, label: "phase", text: "implement" },
-    { field: "verified", json: false, label: "verified", text: "true" },
-    { field: "note", json: false, label: "note", text: "null" },
-    { field: "files", json: true, label: "files", text: '[\n  "a.ts",\n  "b.ts"\n]' },
-    { field: "ci", json: true, label: "ci", text: '{\n  "status": "green"\n}' },
-    { field: "proof", json: false, label: "proof 1", text: "bun test passed" },
+    {
+      field: "schemaVersion",
+      label: "schemaVersion",
+      path: "/schemaVersion",
+      shape: "value",
+      text: "1",
+    },
+    { field: "phase", label: "phase", path: "/phase", shape: "prose", text: "implement" },
+    { field: "verified", label: "verified", path: "/verified", shape: "value", text: "true" },
+    { field: "note", label: "note", path: "/note", shape: "value", text: "null" },
+    {
+      field: "files",
+      label: "files",
+      path: "/files",
+      shape: "json",
+      text: '[\n  "a.ts",\n  "b.ts"\n]',
+    },
+    { field: "ci", label: "ci", path: "/ci", shape: "json", text: '{\n  "status": "green"\n}' },
+    // A proof entry's path is where the server keeps its reading: its JSON Pointer, `/proof/<n>`
+    // from 0.
+    { field: "proof", label: "proof 1", path: "/proof/0", shape: "prose", text: "bun test passed" },
     {
       field: "proof",
-      json: true,
       label: "proof 2",
+      path: "/proof/1",
+      shape: "json",
       text: '{\n  "command": "bun run typecheck",\n  "exit": 0\n}',
     },
   ]);
@@ -439,11 +493,23 @@ test("a handoff body expands to one row per top-level field and one per proof en
 
 test("a proof that is not a list is one row, and a body that is not a JSON object has none", () => {
   expect(handoffFields('{"proof":"see CI"}')).toEqual([
-    { field: "proof", json: false, label: "proof", text: "see CI" },
+    { field: "proof", label: "proof", path: "/proof", shape: "prose", text: "see CI" },
   ]);
   expect(handoffFields("{not json")).toBeUndefined();
   expect(handoffFields("[1, 2]")).toBeUndefined();
   expect(handoffFields("null")).toBeUndefined();
+});
+
+// The path is a JSON Pointer (RFC 6901), so a top-level field named `proof.0` and the first proof
+// entry have keys of their own, and a key holding `/` or `~` is written with the pointer's
+// escapes, `~1` and `~0`, as the server writes the key of its tree.
+test("each handoff row's path is its own JSON Pointer into the body", () => {
+  const body = JSON.stringify({ "a/b~c": "slashed", "proof.0": "x", proof: ["y"] });
+  expect(handoffFields(body)?.map(({ label, path }) => [label, path])).toEqual([
+    ["a/b~c", "/a~1b~0c"],
+    ["proof.0", "/proof.0"],
+    ["proof 1", "/proof/0"],
+  ]);
 });
 
 // The activity line is the Activity tab's (`features/activity/activity-model.ts`); these cases
@@ -616,7 +682,14 @@ test("an answer that replaced an earlier one reads as a change in the activity l
     seq: 5,
     type: "ask.answered",
   } as DispatchEvent;
-  expect(activityDescription(answered)).toEqual(["answered “Ship it?”"]);
+  // The question is a part of its own: the one reader draws it, as the ask's own record, so a
+  // mention in it reads as its target's name and never as the link's source (`SentenceParts`).
+  const question = {
+    prose: "Ship it?",
+    source: { id: "ask-1", issue: "CORE-1", kind: "ask" as const },
+    tree: undefined,
+  };
+  expect(activityDescription(answered)).toEqual(["answered “", question, "”"]);
   expect(
     activityDescription({
       ...answered,
@@ -627,5 +700,5 @@ test("an answer that replaced an earlier one reads as a change in the activity l
         state: "answered",
       },
     } as DispatchEvent)
-  ).toEqual(["changed the answer to “Ship it?”"]);
+  ).toEqual(["changed the answer to “", question, "”"]);
 });

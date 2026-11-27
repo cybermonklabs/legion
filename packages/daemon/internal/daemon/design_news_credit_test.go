@@ -112,6 +112,7 @@ func (r *creditRig) owed() []record.NewsItem {
 // reaches the row as it stands. Carried as the start computed it, the task would tell the change
 // list of 4 to 5 alone, and nobody would be told what changed from 3 to 4.
 func TestAStartComputedFromAnUnfinalCreditTellsThePairBeforeItOnceThatCreditIsGivenBack(t *testing.T) {
+	t.Parallel()
 	r := newCreditRig(t)
 	for _, pair := range []record.VersionPair{{ArtifactID: reconcileDoc, From: 3, To: 4}, {ArtifactID: reconcileDoc, From: 4, To: 5},
 		{ArtifactID: reconcileDoc, From: 3, To: 5}} {
@@ -168,6 +169,7 @@ func TestAStartComputedFromAnUnfinalCreditTellsThePairBeforeItOnceThatCreditIsGi
 // the row, reaches nothing. The holder reads as having taken version 3 again, and is owed version 5
 // since version 3, whose change list says what changed from 3 to 4.
 func TestARaisePastAnUnfinalCreditGoesWithThatCredit(t *testing.T) {
+	t.Parallel()
 	r := newCreditRig(t)
 	r.client.answer = func(pair record.VersionPair) (dispatch.ArtifactChanges, error) {
 		if pair.From == 4 && pair.To == 5 {
@@ -207,6 +209,7 @@ func TestARaisePastAnUnfinalCreditGoesWithThatCredit(t *testing.T) {
 // (TestTheNewsRecordHoldsToWhatTheHolderWasReallyTold): no tester's turn there ends with its result
 // while its run stands.
 func TestATestersTurnThatRanMakesItsCreditFinalAndItIsNotToldAgain(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 5, pathMember{key: pathRoot, at: phase.Implementing})
 	r.told(pathRoot, record.AudienceHolder, 4)
 	r.told(pathRoot, record.AudienceArchitect, 5)

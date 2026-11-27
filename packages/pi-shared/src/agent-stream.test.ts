@@ -7,8 +7,11 @@ import {
   type AgentStreamFrame,
   PICTURE_PLACEHOLDER,
 } from "@legion/contracts";
+import { renderInbound } from "@legion/envoy-client/delivery";
 
 import { AgentStreamPublisher, type AgentStreamSettingsState } from "./agent-stream";
+import { LOCAL_ENVOY_NOTICE } from "./envoy-notice";
+import { messageTag } from "./injected-user-turns";
 
 const SUBJECT = "agentstream.s1.frames";
 
@@ -1151,5 +1154,549 @@ describe("the model that produced an assistant turn", () => {
       `anthropic/${oversized}`.slice(0, AGENT_STREAM_LIMITS.modelChars) +
         AGENT_STREAM_TRUNCATION_SUFFIX
     );
+  });
+});
+
+/** The brief a session launcher has its claimer publish to the new agent's role. Its opening,
+ *  up to the `;`, is what the red check greps the live view's stream for. */
+const BRIEF = [
+  "alice started you with the session launcher; this is their request:",
+  "",
+  "Work on the Dispatch issue ACME-1: https://dispatch.example/issues/ACME-1.",
+].join("\n");
+
+/** The card pi-envoy shows an Envoy envelope in (`renderInbound`), read as session `s1`. */
+function rendered(fields: Record<string, unknown>): string {
+  return renderInbound(
+    JSON.stringify({
+      event_id: "event-1",
+      source: "agent",
+      source_event_id: "agent.event-1",
+      topic: "notifications.agent.s1",
+      dedupe_key: "agent.event-1",
+      issued_at: 1,
+      payload_summary: "message",
+      trace_id: "trace-1",
+      ...fields,
+    }),
+    "s1"
+  ).content;
+}
+
+/** An `envoy-message` card as Oh My Pi hands it to `message_start` and `message_end`. */
+function card(timestamp: number, content: unknown, details: object = {}, display = true) {
+  return { content, customType: "envoy-message", details, display, role: "custom", timestamp };
+}
+
+/** The text of a message frame's parts, joined. */
+function textOf(frame: AgentStreamFrame | undefined): string | undefined {
+  if (frame?.kind !== "message") return undefined;
+  return frame.message.parts.map((part) => (part.type === "text" ? part.text : "")).join("");
+}
+
+// pi-envoy shows every Envoy message the session receives as an `envoy-message` card, and the
+// terminal draws it; the live view drew none of them, so a session's first message, the brief a
+// session launcher sends, was in the terminal and not on the page (dispatch://INFRA-5271, R1).
+describe("an Envoy card the session displays", () => {
+  test("streams in its place as a user message saying who sent it and the whole of what they wrote", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const brief = rendered({
+      payload: BRIEF,
+      payload_summary: `${BRIEF.slice(0, 40)}…`,
+      source: "envoy",
+      topic: "notifications.role.alice-acme-1",
+    });
+    publisher.record(SUBJECT, card(20, brief, { envoyCard: "card-1", event_id: "event-1" }), true);
+    publisher.record(SUBJECT, card(20, brief, { envoyCard: "card-1", event_id: "event-1" }), false);
+    publisher.record(SUBJECT, assistant(30, [{ text: "ready", type: "text" }]), false);
+
+    const frame = published[1];
+    expect(frame?.kind === "message" && frame.message).toEqual({
+      at: 20,
+      id: "c20:card-1",
+      parts: [{ text: `Envoy message from envoy:\n\n${BRIEF}`, type: "text" }],
+      role: "user",
+      streaming: false,
+    });
+    // Both records of the card are one message, before the reply it started.
+    const replayed = publisher.replay("s1").frames;
+    expect(replayed.map((each) => (each.kind === "message" ? each.message.id : each.kind))).toEqual(
+      ["c20:card-1", "a30"]
+    );
+    // What the red check reads off the live view's stream: the brief's opening.
+    expect(JSON.stringify(replayed)).toContain(BRIEF.split(";")[0] ?? BRIEF);
+  });
+
+  test("names the agent that sent it, and a short message's words from its summary", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const peer = "01a0cccc-dddd-7eee-ffff-0123456789ab";
+    publisher.record(
+      SUBJECT,
+      card(10, rendered({ payload_summary: "The review is done.", source_session: peer })),
+      false
+    );
+
+    expect(textOf(published[0])).toBe(`Envoy message from ${peer}:\n\nThe review is done.`);
+  });
+
+  // The terminal's card shows the agent `renderInbound`'s warning that a body names a session
+  // other than its sender; the person reading the live view reads it under the words too.
+  test("writes the note a card adds under the words it brings", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const peer = "01a0cccc-dddd-7eee-ffff-0123456789ab";
+    const named = "01a0aaaa-bbbb-7ccc-dddd-eeeeeeeeeeee";
+    publisher.record(
+      SUBJECT,
+      card(10, rendered({ payload: `Ask ${named} about it.`, source_session: peer })),
+      false
+    );
+
+    expect(textOf(published[0])).toBe(
+      [
+        `Envoy message from ${peer}:`,
+        `Ask ${named} about it.`,
+        `note: body names session ${named}; the sender is ${peer}`,
+      ].join("\n\n")
+    );
+  });
+
+  // An empty `message` is no words: drawn as words, it would be a bubble with nothing under its
+  // header, so the card is shown whole as one with no words is.
+  test("shows a card whose message is empty whole and verbatim", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const empty = rendered({ payload: "", payload_summary: "Nothing here." });
+    expect(empty).toContain('  message: ""');
+    publisher.record(SUBJECT, card(10, empty), false);
+
+    expect(textOf(published[0])).toBe(`Envoy message from agent:\n\n\`\`\`\n${empty}\n\`\`\``);
+  });
+
+  // The live view renders a message as Markdown, which reads a card's indented TOON as code
+  // blocks and joins its lines, so a card that brings no words of a sender is fenced whole.
+  test("shows a Dispatch event's card, and any card with no words of a sender, whole and verbatim", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const event = rendered({
+      source: "dispatch",
+      payload: JSON.stringify({
+        id: 1,
+        issue_key: "ACME-1",
+        seq: 7,
+        type: "issue.updated",
+        actor: { kind: "user", id: "alice" },
+        notify: true,
+        created_at: "2026-11-22T00:00:00Z",
+        payload: { title: "Ship it", status: "in_progress" },
+      }),
+    });
+    const notice = "The session id changed.\n```\nkept\n```";
+    publisher.record(SUBJECT, card(10, event, { event_id: "dispatch-1" }), false);
+    publisher.record(SUBJECT, card(20, notice, LOCAL_ENVOY_NOTICE), false);
+
+    expect(textOf(published[0])).toBe(`Envoy message from dispatch:\n\n\`\`\`\n${event}\n\`\`\``);
+    // A fence longer than any run of backticks inside, so the card's own fence ends nothing.
+    expect(textOf(published[1])).toBe(`Envoy message:\n\n\`\`\`\`\n${notice}\n\`\`\`\``);
+  });
+
+  test("names a picture it carries, never its bytes", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    publisher.record(
+      SUBJECT,
+      card(10, [
+        { text: rendered({ payload_summary: "Look." }), type: "text" },
+        { data: "the picture's bytes", mimeType: "image/png", type: "image" },
+      ]),
+      false
+    );
+
+    const frame = published[0];
+    expect(frame?.kind === "message" && frame.message.parts).toEqual([
+      { text: "Envoy message from agent:\n\nLook.", type: "text" },
+      { text: PICTURE_PLACEHOLDER, type: "text" },
+    ]);
+  });
+
+  // A notice the plugin writes names neither a wake id nor an event, and two of them can be
+  // stamped in one millisecond: each keeps a slot of its own, and each record of one keeps its own.
+  test("keeps two cards that name no id, stamped in one millisecond, apart", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const first = card(10, "first notice", LOCAL_ENVOY_NOTICE);
+    const second = card(10, "second notice", LOCAL_ENVOY_NOTICE);
+    publisher.record(SUBJECT, first, true);
+    publisher.record(SUBJECT, second, true);
+    publisher.record(SUBJECT, first, false);
+
+    const ids = published.map((frame) => (frame.kind === "message" ? frame.message.id : ""));
+    expect(ids[0]).not.toBe(ids[1]);
+    expect(ids[2]).toBe(ids[0]);
+    // The replay orders cards of one millisecond by their newest record, which the second
+    // record of the first one moved, so the two are compared as a set.
+    expect(publisher.replay("s1").frames.map(textOf).sort()).toEqual([
+      "Envoy message:\n\n```\nfirst notice\n```",
+      "Envoy message:\n\n```\nsecond notice\n```",
+    ]);
+  });
+
+  // The pinned Oh My Pi hands `message_end` a copy of the message `message_start` was handed
+  // (`cloneMessageNotification`, `extensibility/extensions/lifecycle-mirror.ts`), so nothing of
+  // the host's object is the same across a card's two records but what the card says. Keyed by
+  // the object, the one notice was two rows in the live view, and one in the terminal.
+  test("keeps one slot for a card that names no id, though the host hands its end as a copy", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const notice = card(10, "Envoy inbound unavailable", LOCAL_ENVOY_NOTICE);
+    publisher.record(SUBJECT, notice, true);
+    publisher.record(SUBJECT, structuredClone(notice), false);
+
+    const ids = published.map((frame) => (frame.kind === "message" ? frame.message.id : ""));
+    expect(ids).toHaveLength(2);
+    expect(ids[1]).toBe(ids[0]);
+    expect(publisher.replay("s1").frames.map(textOf)).toEqual([
+      "Envoy message:\n\n```\nEnvoy inbound unavailable\n```",
+    ]);
+  });
+
+  // Dispatch stores every message it delivers to a session for that session, and the live view
+  // draws it from there: a card that delivers one, streamed too, would show the message twice.
+  test("is left out when it delivers a Dispatch message, which the live view draws from Dispatch's store", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const delivered = card(10, rendered({ source: "dispatch" }), {
+      dispatchMessageId: "44444444-4444-4444-8444-444444444444",
+      event_id: "dispatch-1",
+    });
+
+    expect(publisher.record(SUBJECT, delivered, true)).toBe(false);
+    expect(publisher.record(SUBJECT, delivered, false)).toBe(false);
+    expect(published).toEqual([]);
+    expect(publisher.replay("s1").frames).toEqual([]);
+  });
+
+  test("is left out when the session does not display it, as is any other custom message", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+
+    expect(publisher.record(SUBJECT, card(10, "hidden", {}, false), false)).toBe(false);
+    expect(
+      publisher.record(
+        SUBJECT,
+        {
+          content: "a rule",
+          customType: "ttsr-injection",
+          display: true,
+          role: "custom",
+          timestamp: 20,
+        },
+        false
+      )
+    ).toBe(false);
+    expect(published).toEqual([]);
+  });
+});
+
+/**
+ * A process that takes up a session whose transcript already holds turns (a pod's restart, `omp
+ * --continue`, a `/resume`) recorded none of them, and a viewer who opened the session was
+ * replayed none of the turns its terminal still showed (dispatch://INFRA-5990). The caller fills
+ * the ring from that transcript, each message as the host handed it to `message_end` when it ran.
+ */
+describe("a session this process takes up with turns already in its transcript", () => {
+  /** One turn of a session, each message as its host hands it over once it has settled: a
+   *  person's typed Send (its tag the Dispatch message), a reply with a tool call, the call's
+   *  result, an Envoy card and the last reply. */
+  const transcript = (): Record<string, unknown>[] => [
+    { ...user(10, "What changed?"), tag: "m-1" },
+    assistant(20, [
+      { text: "Reading it.", type: "text" },
+      { arguments: { path: "a.ts" }, id: "call-1", name: "read", type: "toolCall" },
+    ]),
+    {
+      content: [{ text: "export {};", type: "text" }],
+      isError: false,
+      role: "toolResult",
+      timestamp: 30,
+      toolCallId: "call-1",
+      toolName: "read",
+    },
+    card(40, rendered({ payload_summary: "The review is done." }), { envoyCard: "card-1" }),
+    assistant(50, [{ text: "Done.", type: "text" }]),
+  ];
+
+  test("replays them as the frames the process that ran them recorded", () => {
+    const ran = harness();
+    for (const message of transcript()) {
+      ran.publisher.record(SUBJECT, message, false, messageTag(message));
+    }
+    ran.publisher.noteViewer();
+    const before = ran.publisher.replay("s1").frames;
+    expect(before).toHaveLength(5);
+
+    const resumed = harness(2_000);
+    resumed.publisher.restore(transcript(), messageTag);
+    resumed.publisher.noteViewer();
+    const after = resumed.publisher.replay("s1").frames;
+
+    // Each process numbers its own frames, so the two are compared without their numbers.
+    expect(after.map(({ seq: _seq, ...frame }) => frame)).toEqual(
+      before.map(({ seq: _seq, ...frame }) => frame)
+    );
+    expect(dispatchIds(after)[0]).toBe("m-1");
+  });
+
+  test("publishes none of them, even while a viewer is attached", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    publisher.restore(transcript(), messageTag);
+
+    expect(published).toEqual([]);
+    expect(publisher.replay("s1").frames).toHaveLength(5);
+  });
+
+  test("keeps the newest messages within the ring's bound, and the replay within its bytes", () => {
+    const { publisher } = harness();
+    const total = AGENT_STREAM_LIMITS.historyMessages + 50;
+    publisher.restore(
+      Array.from({ length: total }, (_, index) =>
+        assistant(index + 1, [{ text: `turn ${index + 1}`, type: "text" }])
+      )
+    );
+    publisher.noteViewer();
+    const kept = publisher.replay("s1").frames.map(textOf);
+    expect(kept).toHaveLength(AGENT_STREAM_LIMITS.historyMessages);
+    expect(kept[0]).toBe(`turn ${total - AGENT_STREAM_LIMITS.historyMessages + 1}`);
+    expect(kept.at(-1)).toBe(`turn ${total}`);
+
+    const large = harness();
+    const body = "y".repeat(AGENT_STREAM_LIMITS.partChars);
+    large.publisher.restore(
+      Array.from({ length: 60 }, (_, index) => assistant(index + 1, [{ text: body, type: "text" }]))
+    );
+    large.publisher.noteViewer();
+    const frames = large.publisher.replay("s1").frames;
+    expect(new TextEncoder().encode(JSON.stringify(frames)).length).toBeLessThanOrEqual(
+      AGENT_STREAM_LIMITS.historyBytes
+    );
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames.length).toBeLessThan(60);
+    const newest = frames.at(-1);
+    expect(newest?.kind === "message" && newest.message.at).toBe(60);
+  });
+
+  // A long session's live context holds thousands of messages. Choosing the ones the ring keeps
+  // reads the slot each takes, and no assistant message's body; the fill then reads the body of
+  // each message its bound kept, once, to copy it. A replay reads the copies. (A card that names
+  // no id is read for its slot too, kept or not: `keyFor`.)
+  test("reads the body of no assistant message but those its bound kept, once each", () => {
+    const { publisher } = harness();
+    const { historyMessages } = AGENT_STREAM_LIMITS;
+    const reads = new Map<number, number>();
+    const total = historyMessages * 5;
+    const messages = Array.from({ length: total }, (_, index) => ({
+      role: "assistant",
+      timestamp: index + 1,
+      get content() {
+        reads.set(index, (reads.get(index) ?? 0) + 1);
+        return [{ text: `turn ${index}`, type: "text" }];
+      },
+    }));
+    publisher.restore(messages);
+    const kept = Array.from({ length: historyMessages }, (_, at) => total - historyMessages + at);
+    expect([...reads.keys()].sort((left, right) => left - right)).toEqual(kept);
+    expect(new Set(reads.values())).toEqual(new Set([1]));
+
+    publisher.noteViewer();
+    const frames = publisher.replay("s1").frames.map(textOf);
+    expect(frames).toHaveLength(historyMessages);
+    expect(frames.at(-1)).toBe(`turn ${total - 1}`);
+    expect(new Set(reads.values())).toEqual(new Set([1]));
+  });
+
+  // The host keeps its own message objects and rewrites them in place: a prune pass blanks a stale
+  // tool result's content (`blankToolResult` in Oh My Pi's `packages/agent/src/compaction/
+  // pruning.ts`). The ring keeps what a restored message said when the session was taken up, as
+  // it keeps what a live message said at its `message_end`.
+  test("keeps what a restored tool result said, though the host blanks its object later", () => {
+    const { publisher } = harness();
+    const result = {
+      content: [{ text: "export {};", type: "text" }],
+      isError: false,
+      role: "toolResult",
+      timestamp: 30,
+      toolCallId: "call-1",
+      toolName: "read",
+    };
+    publisher.restore([result]);
+    result.content = [{ text: "[Superseded by a newer read of this file]", type: "text" }];
+    publisher.noteViewer();
+
+    const [frame] = publisher.replay("s1").frames;
+    expect(frame?.kind === "tool-result" && frame.result.output).toBe("export {};");
+  });
+
+  // The ring drops the slot first taken, and a later message of a slot it holds keeps that slot's
+  // place: a turn recorded again is the slot the next turn past the bound drops, its newer text
+  // with it. A fill that kept the newest messages by their last record would bring that turn back
+  // and drop the one the ring still held.
+  test("keeps the messages the ring itself would hold when one turn is recorded twice", () => {
+    const { historyMessages } = AGENT_STREAM_LIMITS;
+    const messages = [
+      ...Array.from({ length: historyMessages }, (_, index) =>
+        assistant(index + 1, [{ text: `turn ${index + 1}`, type: "text" }])
+      ),
+      assistant(1, [{ text: "turn 1 again", type: "text" }]),
+      assistant(historyMessages + 1, [{ text: "the last turn", type: "text" }]),
+    ];
+    const ran = harness();
+    for (const message of messages) ran.publisher.record(SUBJECT, message, false);
+    ran.publisher.noteViewer();
+    const resumed = harness();
+    resumed.publisher.restore(messages);
+    resumed.publisher.noteViewer();
+
+    const live = ran.publisher.replay("s1").frames.map(textOf);
+    expect(live).toHaveLength(historyMessages);
+    expect(live.slice(0, 2)).toEqual(["turn 2", "turn 3"]);
+    expect(live.at(-1)).toBe("the last turn");
+    expect(resumed.publisher.replay("s1").frames.map(textOf)).toEqual(live);
+  });
+
+  // A turn recorded twice inside the bound keeps its first place and its newest text, and the
+  // ring a fill leaves drops the same slot as the running session's ring once later turns push it
+  // past the bound: the fill takes each slot in the order the ring first took it.
+  test("leaves a ring that holds a twice-recorded turn where the running session's ring does", () => {
+    const { historyMessages } = AGENT_STREAM_LIMITS;
+    const filled = [
+      ...Array.from({ length: historyMessages - 1 }, (_, index) =>
+        assistant(index + 1, [{ text: `turn ${index + 1}`, type: "text" }])
+      ),
+      assistant(1, [{ text: "turn 1 again", type: "text" }]),
+    ];
+    const later = [historyMessages, historyMessages + 1].map((at) =>
+      assistant(at, [{ text: `turn ${at}`, type: "text" }])
+    );
+    const ran = harness();
+    for (const message of filled) ran.publisher.record(SUBJECT, message, false);
+    const resumed = harness();
+    resumed.publisher.restore(filled);
+    for (const { publisher } of [ran, resumed]) publisher.noteViewer();
+
+    // Inside the bound: the row is the first turn's, in its place, with what it says last.
+    const inside = resumed.publisher.replay("s1").frames.map(textOf);
+    expect(inside).toHaveLength(historyMessages - 1);
+    expect(inside.slice(0, 2)).toEqual(["turn 1 again", "turn 2"]);
+    expect(inside).toEqual(ran.publisher.replay("s1").frames.map(textOf));
+
+    // Past it: both rings drop the slot first taken, the first turn's.
+    for (const message of later) {
+      for (const { publisher } of [ran, resumed]) publisher.record(SUBJECT, message, false);
+    }
+    const live = ran.publisher.replay("s1").frames.map(textOf);
+    expect(live.slice(0, 2)).toEqual(["turn 2", "turn 3"]);
+    expect(resumed.publisher.replay("s1").frames.map(textOf)).toEqual(live);
+  });
+
+  // The ring a fill leaves is the running session's ring from then on, so a turn this process
+  // recorded before the fill — the session's newest — must outlive the turns the fill brought
+  // back. Filled behind them, it was the slot first taken, and the next turn past the bound
+  // dropped it: the live view lost the newest turn and showed the oldest instead.
+  test("keeps the turn this process recorded when a later turn takes the ring past its bound", () => {
+    const { historyMessages } = AGENT_STREAM_LIMITS;
+    const newest = assistant(historyMessages, [{ text: `turn ${historyMessages}`, type: "text" }]);
+    const transcript = [
+      ...Array.from({ length: historyMessages - 1 }, (_, index) =>
+        assistant(index + 1, [{ text: `turn ${index + 1}`, type: "text" }])
+      ),
+      newest,
+    ];
+    const ran = harness();
+    for (const message of transcript) ran.publisher.record(SUBJECT, message, false);
+    // The process that takes the session up records the turn that ends under it, and the pass
+    // fills the turns before it in.
+    const resumed = harness();
+    resumed.publisher.record(SUBJECT, newest, false);
+    resumed.publisher.restore(transcript);
+    for (const { publisher } of [ran, resumed]) publisher.noteViewer();
+    expect(resumed.publisher.replay("s1").frames.map(textOf)).toEqual(
+      ran.publisher.replay("s1").frames.map(textOf)
+    );
+
+    const next = assistant(historyMessages + 1, [{ text: "the next turn", type: "text" }]);
+    for (const { publisher } of [ran, resumed]) publisher.record(SUBJECT, next, false);
+    const live = ran.publisher.replay("s1").frames.map(textOf);
+    expect(live).toHaveLength(historyMessages);
+    expect(live[0]).toBe("turn 2");
+    expect(live.at(-1)).toBe("the next turn");
+    expect(resumed.publisher.replay("s1").frames.map(textOf)).toEqual(live);
+  });
+
+  // The same turn, where the fill alone reaches the bound: the turn this process ran is past
+  // every turn the transcript holds, and a fill that put it behind them dropped it as its last
+  // message went in, leaving the view without the turn a person had just watched arrive.
+  test("keeps the turn this process recorded when the fill itself reaches the bound", () => {
+    const { historyMessages } = AGENT_STREAM_LIMITS;
+    const transcript = Array.from({ length: historyMessages }, (_, index) =>
+      assistant(index + 1, [{ text: `turn ${index + 1}`, type: "text" }])
+    );
+    const own = assistant(historyMessages + 1, [
+      { text: "the turn this process ran", type: "text" },
+    ]);
+    const ran = harness();
+    for (const message of [...transcript, own]) ran.publisher.record(SUBJECT, message, false);
+    const resumed = harness();
+    resumed.publisher.record(SUBJECT, own, false);
+    resumed.publisher.restore(transcript);
+    for (const { publisher } of [ran, resumed]) publisher.noteViewer();
+
+    const live = ran.publisher.replay("s1").frames.map(textOf);
+    expect(live).toHaveLength(historyMessages);
+    expect(live[0]).toBe("turn 2");
+    expect(live.at(-1)).toBe("the turn this process ran");
+    expect(resumed.publisher.replay("s1").frames.map(textOf)).toEqual(live);
+  });
+
+  // A slot the ring already holds was taken by this process, after the ring was made, so the
+  // fill leaves it behind every slot it brings back, whatever place the transcript gives that
+  // slot. The turn this process recorded is the one a viewer is watching for, and the bound
+  // drops a filled turn before it.
+  test("leaves a slot the ring holds behind the slots the fill brings back", () => {
+    const { historyMessages } = AGENT_STREAM_LIMITS;
+    const transcript = Array.from({ length: historyMessages }, (_, index) =>
+      assistant(index + 1, [{ text: `turn ${index + 1}`, type: "text" }])
+    );
+    const { publisher } = harness();
+    // The first turn's slot, recorded again under this process before the pass fills the ring.
+    publisher.record(SUBJECT, assistant(1, [{ text: "turn 1 again", type: "text" }]), false);
+    publisher.restore(transcript);
+    publisher.record(
+      SUBJECT,
+      assistant(historyMessages + 1, [{ text: "the next turn", type: "text" }]),
+      false
+    );
+    publisher.noteViewer();
+
+    const kept = publisher.replay("s1").frames.map(textOf);
+    expect(kept).toHaveLength(historyMessages);
+    // The bound dropped the oldest filled turn, the second, and kept both of this process's own.
+    expect(kept.slice(0, 3)).toEqual(["turn 1 again", "turn 3", "turn 4"]);
+    expect(kept.at(-1)).toBe("the next turn");
+  });
+
+  test("of an empty transcript keeps nothing: the session replays as a fresh one does", () => {
+    const fresh = harness();
+    const resumed = harness();
+    resumed.publisher.restore([]);
+    for (const { publisher } of [fresh, resumed]) {
+      publisher.noteViewer();
+      publisher.record(SUBJECT, assistant(10, [{ text: "the first turn", type: "text" }]), false);
+    }
+
+    expect(resumed.publisher.replay("s1")).toEqual(fresh.publisher.replay("s1"));
+    expect(resumed.published).toEqual(fresh.published);
   });
 });

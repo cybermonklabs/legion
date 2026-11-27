@@ -1,0 +1,9 @@
+kind: Fixed
+custom:
+  Issue: pr5220
+body: |-
+  `renderInbound` lays a structured payload out in at most `INBOUND_CARD_MAX_BYTES` (1 MiB, the
+  hub's largest frame), or twice the text it lays out (the frame and a body read whole) when that
+  is more. Past that, the card shows the payload as the text its sender sent, and
+  `payloadShownAsText` says so. Before, a JSON array nested 9,999 levels deep, 20 KB of text, made
+  a card of 100 MB. A payload that is already text is not held to the bound.

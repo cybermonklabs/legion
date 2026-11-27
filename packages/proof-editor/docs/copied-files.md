@@ -81,7 +81,14 @@ Biome's formatter, linter and `assist` are off over the copies, in the first ove
     `src/lib.ts`'s `installCreationGate` makes a markdown parse through `parserCtx` (a text/plain paste, a suggestion's accept) and an editable editor's `setMarkdown` throw for content holding a node, mark, typed block, attribute or enum value the editor may not create yet (`assertCreatable`), and puts `creatableDomParser` in `schema.cached`, so an HTML paste or drop reads no such node or mark, and `parsedDomAttrs` reads no typed block's section holding such an attribute or value.
     A read-only editor's `setMarkdown`, the collab sync and the headless engine still read all of them.
 
-28. Annotations, casts and assertions that make a file type-check, each of which erases before runtime.
+28. Editors that write no marks of Proof's own.
+    `src/lib.ts`'s `proofMarks` option (true by default): set to `false`, the editor installs neither `authoredTrackerPlugin`, nor `markPopoverPlugin` and `arrowCommentPlugin`, nor `dispatchActionBarPlugin`, and registers no popover hook.
+    So it offers no Comment, Suggest or Ask on a selection and writes no mark from one, records no authorship on what a person types, and its `commentOnSelection` answers false; `CreateProofEditorOptions` and `commentOnSelection`'s comment say so.
+    Dispatch sets it for a priority's description, which it saves as markdown; `tests/proof-marks.test.ts` holds both settings.
+
+29. `src/lib-headless.ts`'s parse processor installs `remarkKeepAddressesWhole` from `./whole-addresses` right after `remarkGfm`, and `src/lib.ts` installs that module's `libraryRemarkKeepAddressesWholePlugin` right after `gfm`, each with a comment saying why, so a bare `dispatch://` address is read whole by the headless engine and by the live editor's paste and `setMarkdown`.
+
+30. Annotations, casts and assertions that make a file type-check, each of which erases before runtime.
 
 ## The two micromark copies
 

@@ -11,6 +11,7 @@ import {
   pageMutedText,
   pagePaperBg,
 } from "../../theme/classes";
+import { IssueStatusNotes } from "../issue/parent-status/IssueStatusNotes";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { stoppedNote } from "../writes/useKeyedWrite";
@@ -20,7 +21,7 @@ import type { IssueAction } from "./IssueActionsMenu";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueIdentityRow } from "./IssueIdentityRow";
 import { IssuePropertiesRow } from "./IssuePropertiesRow";
-import { IssueTitleRow } from "./IssueTitleRow";
+import { EDIT_TITLE_BUTTON, IssueTitleRow } from "./IssueTitleRow";
 import { useIdentityBlock } from "./identity-block";
 import { pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, STATE_LINES } from "./page-words";
@@ -36,15 +37,16 @@ import { useIssuePalette } from "./useIssuePalette";
  * the dialog shuts once its change request is read, so the reader stays on the document they
  * just reviewed rather than being sent to the top of the header. "Issue actions" comes next: the
  * header draws it in every state and no write disables it, and it opens the actions a reader
- * goes on with. The title's heading comes last, as the field the issue's refusal line stands for,
- * which is the place the decision names; it stands in the same block as "Issue actions", so it
- * is reached only should that control ever be missing.
+ * goes on with. The title's Edit title button comes last, as the control of the field the
+ * issue's refusal line stands for, which is the place the decision names: the heading itself
+ * takes no focus, as it is no control (`IssueTitleRow.tsx`). It stands in the same block as
+ * "Issue actions", so it is reached only should that control ever be missing.
  */
 const HEADER_FOCUS_FALLBACKS: readonly FocusFallback[] = [
   chipOfLostAction,
   ({ root }) =>
     root.querySelector<HTMLElement>(`button[aria-label="${CONTROL_LABELS.issue_actions}"]`),
-  ({ root }) => root.querySelector<HTMLElement>("h1"),
+  ({ root }) => root.querySelector<HTMLElement>(EDIT_TITLE_BUTTON),
 ];
 
 /**
@@ -105,9 +107,9 @@ export function IssueHeader({
   const header = useRef<HTMLElement | null>(null);
   useFocusKeeper(header, HEADER_FOCUS_FALLBACKS);
   useIssuePalette({
-    drafts,
     isClosed,
     priorityWrite,
+    requestStatus: writes.requestStatus,
     saving: updateIssue.isPending,
   });
 
@@ -126,7 +128,7 @@ export function IssueHeader({
       ? {
           disabled: updateIssue.isPending,
           id: "reopen",
-          run: () => drafts.requestStatusSubmit("backlog"),
+          run: () => writes.requestStatus("backlog"),
           text:
             pendingStatus === "backlog"
               ? ANSWER_LINES.saving_reopen
@@ -135,7 +137,7 @@ export function IssueHeader({
       : {
           disabled: updateIssue.isPending,
           id: "close",
-          run: () => drafts.requestStatusSubmit("done"),
+          run: () => writes.requestStatus("done"),
           text: pendingStatus === "done" ? ANSWER_LINES.saving_close : CONTROL_LABELS.close_issue,
         },
     {
@@ -240,6 +242,11 @@ export function IssueHeader({
           }
           onRetry={drafts.retry}
           pending={updateIssue.isPending}
+        />
+        <IssueStatusNotes
+          issueKey={issue.key}
+          noteClassName={`text-sm ${pageFailedText}`}
+          statusMove={writes.statusMove}
         />
       </div>
     </header>

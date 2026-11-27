@@ -1,0 +1,40 @@
+{
+  "routes": [
+    {
+      "match": "^gh pr view 41( |$)",
+      "stdout": {
+        "number": 41,
+        "title": "feat(importer): read the header row and the plain fields of a CSV file",
+        "state": "MERGED",
+        "mergedAt": "2026-11-20T15:04:05Z",
+        "headRefOid": "4f1c0e9a6b2d8e7f3a5c1b9d0e2f4a6c8b1d3e5f",
+        "baseRefName": "main",
+        "body": "Reads the header row and the plain fields. A field in double quotes that holds a line break, and the error report, are not done."
+      }
+    },
+    {
+      "match": "^gh pr list",
+      "stdout": [
+        {
+          "number": 41,
+          "title": "feat(importer): read the header row and the plain fields of a CSV file",
+          "state": "MERGED",
+          "headRefOid": "4f1c0e9a6b2d8e7f3a5c1b9d0e2f4a6c8b1d3e5f"
+        }
+      ]
+    },
+    {
+      "match": "^gh api .*pulls/41(/|$| )",
+      "stdout": {
+        "number": 41,
+        "title": "feat(importer): read the header row and the plain fields of a CSV file",
+        "state": "closed",
+        "merged": true,
+        "merged_at": "2026-11-20T15:04:05Z",
+        "head": { "sha": "4f1c0e9a6b2d8e7f3a5c1b9d0e2f4a6c8b1d3e5f" },
+        "base": { "ref": "main" }
+      }
+    },
+    { "match": "^gh (api user|auth status)", "stdout": { "login": "rig[bot]" } }
+  ]
+}

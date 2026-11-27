@@ -7,19 +7,20 @@ import (
 	"net"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // One query reads the sessions the primary documents of a whole batch's issues credit, keyed by
 // issue: a document that is not primary credits no session here, and an issue with no primary
 // document, or with no row, has no entry.
 func TestLoadPrimaryDocumentAuthorsReadsEveryIssueOfABatchInOneQuery(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
 	seedSecondIssue(t, database, "T-2")
@@ -51,6 +52,7 @@ func TestLoadPrimaryDocumentAuthorsReadsEveryIssueOfABatchInOneQuery(t *testing.
 // is not, and one that is both is marked from the thread, which is what tells the destinations
 // which rows to leave out on an issue a session claims (addAuthorRoutes).
 func TestLoadCommentRecipientsReadsEveryThreadOfABatchInOneQuery(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -79,11 +81,7 @@ func TestLoadCommentRecipientsReadsEveryThreadOfABatchInOneQuery(t *testing.T) {
 		recipients, err = loadCommentRecipients(context.Background(), database.Pool,
 			[]string{first, nested, cyclic, "00000000-0000-0000-0000-000000000099"})
 	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("loadCommentRecipients did not end on a cyclic reply_to chain")
-	}
+	testwait.Receive(t, "loadCommentRecipients ending on a cyclic reply_to chain", done)
 	if err != nil {
 		t.Fatalf("load comment recipients: %v", err)
 	}
@@ -156,6 +154,7 @@ func refusingServer(t *testing.T, code string) string {
 // alike, and so is no refused statement; nor is any error once ctx ended. invalid_parameter_value,
 // what jsonb_array_elements answers a credit list that is no array with, is.
 func TestARefusedConnectionOrAFailingServerIsNoRefusedStatement(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	host, port, err := net.SplitHostPort(refusingServer(t, "53300"))
 	if err != nil {

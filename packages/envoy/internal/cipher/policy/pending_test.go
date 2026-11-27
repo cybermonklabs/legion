@@ -51,7 +51,7 @@ func TestASecretWithoutAValueIsPendingForItsFirstTenMinutes(t *testing.T) {
 		id := policytest.ID("WAITING_KEY")
 		ctx := context.Background()
 
-		want := pendingLine(id, owner, true)
+		want := pendingLine(id, owner, true) + noProfilesLine
 		requirePending := func(when string) {
 			t.Helper()
 			set := cur.Get()
@@ -130,7 +130,7 @@ func TestAPendingSecretThatGetsItsValueIsServedWithNoMoreLines(t *testing.T) {
 		store := secrets.NewLocal(createdWithoutValue("FILLED_KEY", now), createdWithoutValue("DROPPED_KEY", now))
 		logged := policytest.CaptureLog(t)
 		cur := policytest.Current(t, store)
-		want := pendingLine(policytest.ID("DROPPED_KEY"), owner, true) + pendingLine(policytest.ID("FILLED_KEY"), owner, true)
+		want := pendingLine(policytest.ID("DROPPED_KEY"), owner, true) + pendingLine(policytest.ID("FILLED_KEY"), owner, true) + noProfilesLine
 		if logged.String() != want {
 			t.Fatalf("the first load logged\n%s\nwant\n%s", logged, want)
 		}

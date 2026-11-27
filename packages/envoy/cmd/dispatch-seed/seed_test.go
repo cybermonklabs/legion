@@ -1,24 +1,57 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/answerswindow"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+
+// seedAtOnce seeds each of databases at once, a goroutine each, and answers each run. Each
+// database is its test's own (storetest.Open) and each render its own block ids (renderVersion),
+// so the seeds of a test, and those of the package's parallel tests, run at once in one process.
+func seedAtOnce(t *testing.T, databases ...*store.Store) []*seedRun {
+	t.Helper()
+	runs := make([]*seedRun, len(databases))
+	failures := make([]error, len(databases))
+	var seeds sync.WaitGroup
+	for index, database := range databases {
+		seeds.Go(func() {
+			started := time.Now()
+			runs[index], failures[index] = seed(context.Background(), database, testScale, io.Discard)
+			t.Logf("seed %d of %d at scale %v in %s", index+1, len(databases), testScale,
+				time.Since(started).Round(time.Millisecond))
+		})
+	}
+	seeds.Wait()
+	for index, failure := range failures {
+		if failure != nil {
+			t.Fatalf("seed %d of %d at scale %v: %v", index+1, len(databases), testScale, failure)
+		}
+	}
+	return runs
+}
 
 // testScale is the scale the suite seeds at: about 200 issues, which is small enough that two
 // whole runs fit in one test and large enough that every arm of the graph, every size band and
@@ -27,10 +60,12 @@ const testScale = 0.01
 
 // TestSeedAtASmallScale seeds two fresh databases and holds the pair, and then one of them, to
 // everything the seed promises. Both runs are in one test because each one takes most of a
-// minute: a test of its own for each check would seed six databases to read one data set.
+// minute: a test of its own for each check would seed six databases to read one data set. The two
+// seeds run at once, in this process (seedAtOnce).
 func TestSeedAtASmallScale(t *testing.T) {
-	first, firstRun := seedTestDatabase(t)
-	second, _ := seedTestDatabase(t)
+	t.Parallel()
+	first, second := storetest.Open(t), storetest.Open(t)
+	firstRun := seedAtOnce(t, first, second)[0]
 
 	t.Run("two runs at one scale write the same rows", func(t *testing.T) {
 		assertSameRowCounts(t, first, second)
@@ -48,8 +83,20 @@ func TestSeedAtASmallScale(t *testing.T) {
 	t.Run("every arm of graph_edges holds rows", func(t *testing.T) {
 		assertEveryGraphArmHoldsRows(t, first)
 	})
+	t.Run("the store census reads no difference and every comment its author", func(t *testing.T) {
+		assertStoreCensusAgrees(t, first)
+	})
 	t.Run("the rare word finds exactly the documents holding it", func(t *testing.T) {
 		assertRareWordFindsItsDocuments(t, first, firstRun)
+	})
+	t.Run("the answers read finds the seed's deliveries", func(t *testing.T) {
+		assertAnswersReadFindsTheDeliveries(t, first, firstRun)
+	})
+	t.Run("every answer and decline names its ask after the ask's opening event", func(t *testing.T) {
+		assertAnswersAndDeclinesNameTheirAsks(t, first)
+	})
+	t.Run("the newest status move of every issue in backlog or icebox is into the status it stands in", func(t *testing.T) {
+		assertStatusMovesEndInTheStatus(t, first)
 	})
 	t.Run("every project's default assignee is a person who has signed in", func(t *testing.T) {
 		var unknown int
@@ -74,19 +121,6 @@ func TestSeedAtASmallScale(t *testing.T) {
 	})
 }
 
-// seedTestDatabase seeds a database of its own and answers it with the run that filled it.
-func seedTestDatabase(t *testing.T) (*store.Store, *seedRun) {
-	t.Helper()
-	database := storetest.Open(t)
-	started := time.Now()
-	run, err := seed(context.Background(), database, testScale, io.Discard)
-	if err != nil {
-		t.Fatalf("seed at scale %v: %v", testScale, err)
-	}
-	t.Logf("seeded at scale %v in %s", testScale, time.Since(started).Round(time.Millisecond))
-	return database, run
-}
-
 // TestSeedBuildsTermStatisticsOnMainsSchema seeds the shape the measurement protocol's "before"
 // side seeds: a database migrated from a checkout of the release before this change, filled by
 // this tool with --no-migrate. Its search_term_totals carries no snapshot column (migration
@@ -100,19 +134,14 @@ func seedTestDatabase(t *testing.T) (*store.Store, *seedRun) {
 // the step reads the catalogue for; the rest of that release's schema is older still, and the
 // step's build reads nothing of it that this head does not also have.
 func TestSeedBuildsTermStatisticsOnMainsSchema(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx,
 		`alter table search_term_totals drop column snapshot, drop column snapshot_at`); err != nil {
 		t.Fatalf("drop the snapshot columns 20261101182515 added: %v", err)
 	}
-
-	started := time.Now()
-	run, err := seed(ctx, database, testScale, io.Discard)
-	if err != nil {
-		t.Fatalf("seed at scale %v on main's search_term_totals: %v", testScale, err)
-	}
-	t.Logf("seeded at scale %v in %s", testScale, time.Since(started).Round(time.Millisecond))
+	run := seedAtOnce(t, database)[0]
 
 	var built int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from search_term_totals`).Scan(&built); err != nil {
@@ -139,6 +168,7 @@ func TestSeedBuildsTermStatisticsOnMainsSchema(t *testing.T) {
 }
 
 func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	rollback, err := os.ReadFile("../../internal/dispatch/store/migrations/20261105014808_comments_answers.down.sql")
 	if err != nil {
@@ -147,9 +177,7 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 	if _, err := database.Pool.Exec(context.Background(), string(rollback)); err != nil {
 		t.Fatalf("restore the schema before comment answers: %v", err)
 	}
-	if _, err := seed(context.Background(), database, testScale, io.Discard); err != nil {
-		t.Fatalf("seed with --no-migrate on the schema before comment answers: %v", err)
-	}
+	seedAtOnce(t, database)
 	var replies int
 	if err := database.Pool.QueryRow(context.Background(), `select count(*) from comments where reply_to is not null`).Scan(&replies); err != nil {
 		t.Fatal(err)
@@ -160,6 +188,7 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 }
 
 func TestSeedReplyPlansInheritTheirOwnersAndAskThreads(t *testing.T) {
+	t.Parallel()
 	plan := newPlan(newSizes(testScale))
 	for index, comment := range plan.comments {
 		parent := comment.ReplyTo
@@ -195,6 +224,7 @@ func TestSeedReplyPlansInheritTheirOwnersAndAskThreads(t *testing.T) {
 // migrate-first run creates schema_migrations before it applies anything (store.prepareVersionTable),
 // so it shows there whichever migration it then fails on.
 func TestSeedRefusesAFilledDatabaseWithoutMigratingIt(t *testing.T) {
+	t.Parallel()
 	t.Run("a database that is not Dispatch's", func(t *testing.T) {
 		ctx := context.Background()
 		database := storetest.Open(t)
@@ -372,8 +402,7 @@ var checksums = []struct {
 	table   string
 	columns string
 }{
-	{"projects", `key, name, next_number, created_at, last_seq`},
-	{"repo_projects", `repo, project, created_at, is_default`},
+	{"projects", `key, name, default_repo, next_number, created_at, last_seq`},
 	{"issues", `key, project_key, number, title, status, parent_key, created_at, updated_at,
 		closed_at, rank, repo, priority, last_seq, tasks_done, tasks_total, tasks_version,
 		md5(search::text), title_lexemes::text`},
@@ -417,7 +446,7 @@ var checksums = []struct {
 	{"comment_block_refs", `comment_id::text, block_id, from_node, to_kind, to_id, kind, created_at`},
 	{"message_block_refs", `message_id::text, block_id, from_node, to_kind, to_id, kind, created_at`},
 	{"events", `id, issue_key, artifact_id::text, project_key, seq, type, actor::text, payload::text,
-		notify, published_at, created_at`},
+		notify, published_at, created_at, published_destinations::text`},
 	{"embeddings", `kind, id, content_hash, embedded_hash, model, embedded_at, md5(embedding::text)`},
 	{"search_term_stats", `project_key, lexeme, ndoc`},
 	{"search_term_totals", `project_key, items`},
@@ -554,19 +583,464 @@ func assertEveryAskHasItsOpeningEvent(t *testing.T, database *store.Store) {
 	}
 }
 
-// graphArmCount guards that the census reads every arm, including the comment answers arm.
-const graphArmCount = 27
+// assertAnswersReadFindsTheDeliveries holds the seed's deliveries to the agents' answers read
+// (sessionanswers.List), over the window's start by its one rule (answerswindow.StartQuery).
+// Each of the five types the read lists has a person's event delivered to a session; the read
+// lists at least one item for each of the three sessions the report names, and the three
+// together list every kind of item; and the old session holds at least OldDeliveries of those
+// events before the window, which the read must not read. The report's subjects are logged, as
+// the command prints them.
+func assertAnswersReadFindsTheDeliveries(t *testing.T, database *store.Store, run *seedRun) {
+	t.Helper()
+	ctx := context.Background()
+	rows, err := database.Pool.Query(ctx, `select e.type, count(*) from events e where `+answerswindow.DeliveredPersonEvent+` group by e.type`)
+	if err != nil {
+		t.Fatalf("count the deliveries by type: %v", err)
+	}
+	delivered := map[string]int{}
+	for rows.Next() {
+		var eventType string
+		var count int
+		if err := rows.Scan(&eventType, &count); err != nil {
+			t.Fatalf("count the deliveries by type: %v", err)
+		}
+		delivered[eventType] = count
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("count the deliveries by type: %v", err)
+	}
+	t.Logf("person events delivered to a session, by type: %v", delivered)
+	for _, eventType := range deliveryTypes {
+		if delivered[eventType] == 0 {
+			t.Errorf("no person's %s event names a session among its destinations", eventType)
+		}
+	}
+
+	subjects, err := answerswindow.Read(ctx, database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subjects.Since.IsZero() {
+		t.Fatal("the answers window has no start: no event delivers a person's words to a session")
+	}
+	report := *run
+	var printed bytes.Buffer
+	report.out = &printed
+	if err := report.reportSubjects(ctx); err != nil {
+		t.Fatalf("print the subjects: %v", err)
+	}
+	t.Logf("the report's subjects:%s", printed.String())
+
+	kinds := map[string]int{}
+	for _, subject := range []struct {
+		name    string
+		subject answerswindow.Subject
+	}{{"old", subjects.Old}, {"most", subjects.Most}, {"fewest", subjects.Fewest}} {
+		if subject.subject.Session == "" {
+			t.Errorf("the seed holds no %s session for the answers read", subject.name)
+			continue
+		}
+		items, err := sessionanswers.List(ctx, database.Pool, subject.subject.Session, subjects.Since)
+		if err != nil {
+			t.Fatalf("list the answers of the %s session %s: %v", subject.name, subject.subject.Session, err)
+		}
+		listed := map[string]int{}
+		for _, item := range items {
+			listed[item.Kind]++
+			kinds[item.Kind]++
+		}
+		t.Logf("the %s session %s: %d deliveries in the window, %d before it; the read lists %v",
+			subject.name, subject.subject.Session, subject.subject.InWindow, subject.subject.BeforeWindow, listed)
+		if len(items) == 0 {
+			t.Errorf("the answers read lists nothing for the %s session %s since %s",
+				subject.name, subject.subject.Session, subjects.Since.Format(time.RFC3339))
+		}
+	}
+	for _, kind := range []string{model.SessionAnswerKindAnswer, model.SessionAnswerKindComment,
+		model.SessionAnswerKindMessage, model.SessionAnswerKindDeclined} {
+		if kinds[kind] == 0 {
+			t.Errorf("the answers read lists no %s item for any of the three sessions", kind)
+		}
+	}
+
+	if before := subjects.Old.BeforeWindow; before < run.sizes.OldDeliveries {
+		t.Errorf("the old session %s holds %d deliveries before the window, want at least %d",
+			subjects.Old.Session, before, run.sizes.OldDeliveries)
+	}
+}
+
+// assertAnswersAndDeclinesNameTheirAsks holds every ask.answered and ask.resolved event to the
+// ask it carries. Its payload decodes as its type's payload, with no field the type does not
+// know: model.AskAnsweredEventPayload for an answer and model.AskEventPayload for a decline,
+// whose resolution is of kind declined. It names an ask the database holds, whose row holds the
+// answer or the resolution the event carries. And its id is above the id of the ask's identity
+// event as events.OpenedEventIDs resolves it, the lowest id of the ask's events, so the ask's
+// ask.opened stays that event: an event numbered below its ask.opened resolves to itself, and
+// fails.
+func assertAnswersAndDeclinesNameTheirAsks(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	type closing struct {
+		id       int64
+		kind     string
+		payload  []byte
+		askID    string
+		askHeld  bool
+		rowAgree bool
+	}
+	rows, err := database.Pool.Query(ctx, `
+		select e.id, e.type, e.payload::text, coalesce(e.payload->>'id', ''),
+		       a.id is not null,
+		       coalesce(case e.type when 'ask.answered' then a.answer = e.payload->'answer'
+		                            else a.resolution = e.payload->'resolution' end, false)
+		from events e
+		left join asks a on a.id::text = e.payload->>'id'
+		where e.type in ('ask.answered', 'ask.resolved')
+		order by e.id
+	`)
+	if err != nil {
+		t.Fatalf("read the answers and declines: %v", err)
+	}
+	closings, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (closing, error) {
+		var read closing
+		var payload string
+		err := row.Scan(&read.id, &read.kind, &payload, &read.askID, &read.askHeld, &read.rowAgree)
+		read.payload = []byte(payload)
+		return read, err
+	})
+	if err != nil {
+		t.Fatalf("read the answers and declines: %v", err)
+	}
+	askIDs := make([]string, 0, len(closings))
+	for _, read := range closings {
+		askIDs = append(askIDs, read.askID)
+	}
+	openedEventIDs, err := events.OpenedEventIDs(ctx, database.Pool, askIDs)
+	if err != nil {
+		t.Fatalf("resolve the asks' identity events: %v", err)
+	}
+	written := map[string]int{}
+	for _, read := range closings {
+		written[read.kind]++
+		decoder := json.NewDecoder(bytes.NewReader(read.payload))
+		decoder.DisallowUnknownFields()
+		var ask model.Ask
+		if read.kind == "ask.answered" {
+			var payload model.AskAnsweredEventPayload
+			err = decoder.Decode(&payload)
+			ask = payload.Ask
+		} else {
+			var payload model.AskEventPayload
+			err = decoder.Decode(&payload)
+			ask = payload.Ask
+			if err == nil && (ask.Resolution == nil || ask.Resolution.Kind != model.AskResolutionDeclined) {
+				t.Errorf("ask.resolved event %d carries resolution %+v, not a decline", read.id, ask.Resolution)
+			}
+		}
+		opened, resolved := openedEventIDs[read.askID]
+		switch {
+		case err != nil:
+			t.Errorf("%s event %d does not decode as its payload: %v\n%s", read.kind, read.id, err, read.payload)
+		case ask.ID == "" || !read.askHeld:
+			t.Errorf("%s event %d names ask %q, which the database does not hold", read.kind, read.id, ask.ID)
+		case !read.rowAgree:
+			t.Errorf("%s event %d carries an answer or a resolution that ask %s's row does not hold", read.kind, read.id, ask.ID)
+		case !resolved || opened >= read.id:
+			t.Errorf("%s event %d of ask %s is not after the ask's ask.opened event (%d)", read.kind, read.id, ask.ID, opened)
+		}
+	}
+	for _, kind := range []string{"ask.answered", "ask.resolved"} {
+		if written[kind] == 0 {
+			t.Errorf("the seed wrote no %s event, so this check proves nothing of it", kind)
+		}
+	}
+}
+
+// assertStatusMovesEndInTheStatus holds the seed's status moves to what the backlog move read
+// (api's backlogMoveLateral) finds of them. A status move is an `issue.updated` event whose payload
+// names `status` in `changed`, which are the lateral's own conditions beside the status. Every
+// issue that stands in `backlog` or `icebox` has a status move, and its newest one, by seq, is into
+// the status the issue stands in: so the event the lateral stops at is the issue's newest move.
+// Every other issue's newest move, where it has one, is into its status too. At least one issue in
+// backlog or icebox holds newer events after its newest move, so a read that stops at the move
+// reads fewer events than one that reads all of them, and at least one move into backlog or icebox
+// is on an issue that stands elsewhere now. Each move's payload decodes as the payload of the
+// status write (model.IssueEventPayload), with no field the type does not know, and names its
+// issue, its status, the status alone in `changed`, and its own seq as the issue's last_seq.
+func assertStatusMovesEndInTheStatus(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	type issueRow struct {
+		status  string
+		lastSeq int
+	}
+	rows, err := database.Pool.Query(ctx, `select key, status, last_seq from issues`)
+	if err != nil {
+		t.Fatalf("read the issues: %v", err)
+	}
+	issues := map[string]issueRow{}
+	for rows.Next() {
+		var key string
+		var row issueRow
+		if err := rows.Scan(&key, &row.status, &row.lastSeq); err != nil {
+			t.Fatalf("read the issues: %v", err)
+		}
+		issues[key] = row
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the issues: %v", err)
+	}
+
+	type move struct {
+		seq    int
+		status string
+	}
+	newest := map[string]move{}
+	var moves, backlogElsewhere int
+	rows, err = database.Pool.Query(ctx, `
+		select e.issue_key, e.seq, e.payload->>'status', e.payload::text from events e
+		where `+statusMoveEvent+`
+		order by e.issue_key, e.seq
+	`)
+	if err != nil {
+		t.Fatalf("read the status moves: %v", err)
+	}
+	for rows.Next() {
+		var key, status, raw string
+		var seq int
+		if err := rows.Scan(&key, &seq, &status, &raw); err != nil {
+			t.Fatalf("read the status moves: %v", err)
+		}
+		moves++
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		var payload model.IssueEventPayload
+		switch err := decoder.Decode(&payload); {
+		case err != nil:
+			t.Errorf("the status move of %s at seq %d does not decode as the status write's payload: %v\n%s", key, seq, err, raw)
+		case payload.Key != key || payload.Status != status || payload.LastSeq != seq ||
+			!slices.Equal(payload.Changed, []string{"status"}):
+			t.Errorf("the status move of %s at seq %d names issue %s, status %s, last_seq %d and changed %v",
+				key, seq, payload.Key, payload.Status, payload.LastSeq, payload.Changed)
+		}
+		if slices.Contains(model.IssueStatusesParked, status) && !slices.Contains(model.IssueStatusesParked, issues[key].status) {
+			backlogElsewhere++
+		}
+		newest[key] = move{seq: seq, status: status}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the status moves: %v", err)
+	}
+
+	var inBacklog, followed int
+	for key, issue := range issues {
+		last, moved := newest[key]
+		if !slices.Contains(model.IssueStatusesParked, issue.status) {
+			if moved && last.status != issue.status {
+				t.Errorf("%s stands in %s, and its newest status move, at seq %d, is into %s", key, issue.status, last.seq, last.status)
+			}
+			continue
+		}
+		inBacklog++
+		switch {
+		case !moved:
+			t.Errorf("%s stands in %s and has no status move", key, issue.status)
+		case last.status != issue.status:
+			t.Errorf("%s stands in %s, and its newest status move, at seq %d, is into %s", key, issue.status, last.seq, last.status)
+		case issue.lastSeq > last.seq:
+			followed++
+		}
+	}
+	t.Logf("%d status moves, %d of them into backlog or icebox on an issue that stands elsewhere; %d issues in backlog or icebox, %d with newer events after their newest move",
+		moves, backlogElsewhere, inBacklog, followed)
+	if inBacklog == 0 {
+		t.Fatal("no seeded issue stands in backlog or icebox, so this check proves nothing")
+	}
+	if followed == 0 {
+		t.Error("no issue in backlog or icebox holds an event newer than its newest status move")
+	}
+	if backlogElsewhere == 0 {
+		t.Error("no move into backlog or icebox is on an issue that stands elsewhere now")
+	}
+}
+
+// assertStoreCensusAgrees runs `census --store` over the seeded database as the subcommand runs
+// it (graphcensus.StoreCensus, on a connection of its own) and holds it to zero differences over
+// a census that read comment rows. The census holds each comment row to the authored_by tuple
+// graphstore.AuthorOf reads off the row's author, so a comment the seed wrote with an author and
+// no authored_by is one difference of the comment kind, which the printed report names.
+//
+// Each comment is then read through the store's own current read (graphstore.CurrentOut): one
+// that names an author holds exactly one current authored_by, ending at the node AuthorOf names,
+// and that node is live and states its two base attributes. A comment that names nobody holds
+// none.
+//
+// The seed states its author through its batch write and not through graphstore.QueueAuthored,
+// so QueueAuthored is run again over one seeded comment, as a batch of its own in a transaction
+// rolled back, and held to adding nothing but that comment's authored_by: no node, since the
+// seed already made the author's, and no alias the seed left out.
+func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	report, err := graphcensus.StoreCensus(ctx, databaseURLOf(t, database), false)
+	if err != nil {
+		t.Fatalf("take the store census: %v", err)
+	}
+	var printed strings.Builder
+	report.Write(&printed)
+	// The seed routes no issue to a role, so the census as a whole refuses on the kinds it
+	// checked no row of (graphcensus.StoreReport.Refused); what this holds it to is the comment
+	// kind, which must have checked rows and read no difference in either direction.
+	var commentKind graphcensus.KindReport
+	for _, kind := range report.Kinds {
+		if kind.Kind == graphstore.KindComment {
+			commentKind = kind
+		}
+	}
+	if commentKind.Rows == 0 {
+		t.Fatalf("the store census read no comment row, so it proves nothing about them:\n%s", printed.String())
+	}
+	if report.Differences() != 0 || commentKind.RowDifferences != 0 || commentKind.NodeDifferences != 0 {
+		t.Errorf("the store census reads %d difference(s) over the seeded database, %d and %d of them of comments:\n%s",
+			report.Differences(), commentKind.RowDifferences, commentKind.NodeDifferences, printed.String())
+	}
+
+	type commentAuthor struct {
+		id        string
+		author    model.Actor
+		createdAt time.Time
+	}
+	rows, err := database.Pool.Query(ctx, `select id::text, author, created_at from comments order by id`)
+	if err != nil {
+		t.Fatalf("list the comments: %v", err)
+	}
+	comments, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (commentAuthor, error) {
+		var comment commentAuthor
+		err := row.Scan(&comment.id, &comment.author, &comment.createdAt)
+		return comment, err
+	})
+	if err != nil {
+		t.Fatalf("list the comments: %v", err)
+	}
+	var sample commentAuthor
+	authored := 0
+	authors := map[[2]string]struct{}{}
+	wrong := []string{}
+	for _, comment := range comments {
+		held, err := graphstore.CurrentOut(ctx, database.Pool, graphstore.KindComment, comment.id,
+			[]string{graphstore.TupleAuthoredBy})
+		if err != nil {
+			t.Fatalf("read who wrote comment %s: %v", comment.id, err)
+		}
+		kind, id, ok := graphstore.AuthorOf(comment.author)
+		if !ok {
+			if len(held) != 0 {
+				wrong = append(wrong, fmt.Sprintf("%s names nobody and holds %d authored_by", comment.id, len(held)))
+			}
+			continue
+		}
+		if authored == 0 {
+			sample = comment
+		}
+		authored++
+		if len(held) != 1 || held[0].ToKind != kind || held[0].ToID != id {
+			wrong = append(wrong, fmt.Sprintf("%s holds %d current authored_by, want one to %s:%s",
+				comment.id, len(held), kind, id))
+			continue
+		}
+		authors[[2]string{kind, id}] = struct{}{}
+	}
+	if authored == 0 {
+		t.Fatalf("none of the %d seeded comments names an author, so this check proves nothing", len(comments))
+	}
+	if len(wrong) > 0 {
+		t.Errorf("%d of %d seeded comments do not hold their author, the first few: %v",
+			len(wrong), len(comments), wrong[:min(5, len(wrong))])
+	}
+	for author := range authors {
+		node, found, err := graphstore.ReadNode(ctx, database.Pool, author[0], author[1])
+		if err != nil {
+			t.Fatalf("read the node of %s:%s: %v", author[0], author[1], err)
+		}
+		if !found || node.State != graphstore.StateLive {
+			t.Errorf("the authored_by tuples end at %s:%s, which the store holds as %+v (found %t), not live",
+				author[0], author[1], node, found)
+		}
+		for attribute, want := range map[string]string{
+			"visibility": graphstore.VisibilityProject, "state": graphstore.StateLive,
+		} {
+			value, held, err := graphstore.CurrentValue(ctx, database.Pool, author[0], author[1], attribute)
+			if err != nil {
+				t.Fatalf("read the %s of %s:%s: %v", attribute, author[0], author[1], err)
+			}
+			if !held || value != want {
+				t.Errorf("%s:%s states %s %q (held %t), want %q", author[0], author[1], attribute, value, held, want)
+			}
+		}
+	}
+
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("open the transaction QueueAuthored runs in: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var lastSeq, nodesBefore, nodesAfter int64
+	if err := tx.QueryRow(ctx, `select coalesce(max(seq), 0), (select count(*) from graph_nodes) from graph_tuples`).
+		Scan(&lastSeq, &nodesBefore); err != nil {
+		t.Fatalf("read the store before QueueAuthored: %v", err)
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		return graphstore.QueueAuthored(b, graphstore.KindComment, sample.id, sample.author, sample.createdAt,
+			graphstore.NoEvent)
+	}); err != nil {
+		t.Fatalf("state the author of comment %s through QueueAuthored: %v", sample.id, err)
+	}
+	if err := tx.QueryRow(ctx, `select count(*) from graph_nodes`).Scan(&nodesAfter); err != nil {
+		t.Fatalf("count the nodes after QueueAuthored: %v", err)
+	}
+	rows, err = tx.Query(ctx, `
+		select from_kind || ':' || from_id || ' ' || kind || ' ' || to_kind || ':' || to_id
+		from graph_tuples where seq > $1 order by seq`, lastSeq)
+	if err != nil {
+		t.Fatalf("read what QueueAuthored appended: %v", err)
+	}
+	appended, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read what QueueAuthored appended: %v", err)
+	}
+	kind, id, _ := graphstore.AuthorOf(sample.author)
+	want := []string{graphstore.KindComment + ":" + sample.id + " " + graphstore.TupleAuthoredBy + " " + kind + ":" + id}
+	if nodesAfter != nodesBefore || !slices.Equal(appended, want) {
+		t.Errorf("QueueAuthored over comment %s made %d node(s) and appended %v, want no node and %v: the seed"+
+			" states less of its author than QueueAuthored does", sample.id, nodesAfter-nodesBefore, appended, want)
+	}
+}
+
+// graphArmCount guards that the census reads every arm. It is the arm list of
+// 20261109215947_graph_edges_tuples: the 27 arms 20261105014808 restated it with, the comment
+// answers arm among them, and the one arm over the store's current tuples that migration adds.
+// 20261120122700_graph_edges_tuple_arm_filter, the last migration to restate graph_edges, keeps
+// that list and moves one filter of the tuple arm. Each of the four arms over a kind the store
+// now writes answers only the rows of its table that name no node, and the seed names the node of
+// every row it writes, so those four answer nothing here (armGatedPerRow).
+const graphArmCount = 28
 
 var (
 	armKindLiteral   = regexp.MustCompile(`'([a-z_]+)'::text AS kind`)
 	armToKindLiteral = regexp.MustCompile(`'([a-z_]+)'::text AS to_kind`)
 )
 
+// armGatedPerRow matches one of the four arms over a kind the node and tuple store writes: the
+// test that keeps it to the rows of its own table that name no node.
+var armGatedPerRow = regexp.MustCompile(`node_kind IS NULL`)
+
 // assertEveryGraphArmHoldsRows runs each arm of graph_edges as its own query and holds it to at
 // least one row, and holds each (kind, to_kind) pair the view's literals define to a non-zero
 // count in the view itself. The arms come from pg_get_viewdef, the view's own text, not from a
 // list in this test and not from the seed's fixture: an arm a later migration adds is covered the
-// day it lands.
+// day it lands. One of the four arms the store answers for may hold no row of its own, since
+// every row the seed writes names its node; its pair is still held to a count in the view,
+// which is where the store's arm answers those rows.
 func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -576,7 +1050,7 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	}
 	arms := strings.Split(definition, "UNION ALL")
 	if len(arms) != graphArmCount {
-		t.Fatalf("graph_edges has %d arms, not the %d migration 20261105014808 restates it with; read the view and update the test",
+		t.Fatalf("graph_edges has %d arms, not the %d migration 20261109215947 restates it with; read the view and update the test",
 			len(arms), graphArmCount)
 	}
 	pairs := map[[2]string]bool{}
@@ -586,7 +1060,12 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 		if err := database.Pool.QueryRow(ctx, `select count(*) from (`+arm+`) arm`).Scan(&rows); err != nil {
 			t.Fatalf("count arm %d of graph_edges: %v\n%s", index+1, err, arm)
 		}
-		if rows == 0 {
+		switch {
+		case rows > 0:
+		case armGatedPerRow.MatchString(arm):
+			t.Logf("arm %d of graph_edges answers no row: it answers the rows of its table that name no node, and every row the seed writes names one, so the store's own arm answers them:\n%s",
+				index+1, arm)
+		default:
 			t.Errorf("arm %d of graph_edges holds no row:\n%s", index+1, arm)
 		}
 		kind := armKindLiteral.FindStringSubmatch(arm)

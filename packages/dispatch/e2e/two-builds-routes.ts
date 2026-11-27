@@ -37,6 +37,7 @@ export const walkRoutes = [
   { page: "SettingsPage", path: "/settings" },
   { page: "DeliveryPage", path: "/delivery" },
   { page: "PipelinePage", path: "/pipeline" },
+  { page: "PersonPage", path: "/people/:login" },
   { page: "NotFoundPage", path: "*" },
 ] as const satisfies readonly WalkRoute[];
 
@@ -44,6 +45,8 @@ export type WalkRoutePath = (typeof walkRoutes)[number]["path"];
 
 /** The chunks a page loads only once it needs them, each named by what shows it has run. */
 export const lazyPieces = {
+  dashboard:
+    "today's Dashboard tab, visible inside #issue-dashboard-panel (features/issue/IssuePage.tsx)",
   echarts: "the delivery timeline's chart, echarts (features/delivery/Timeline.tsx)",
   editor:
     "the document editor, @legion/proof-editor and its stylesheet (features/doc/editor.ts), " +

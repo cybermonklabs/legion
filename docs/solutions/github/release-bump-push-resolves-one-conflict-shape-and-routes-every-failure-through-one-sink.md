@@ -9,7 +9,7 @@ tags:
   - version-bump
   - code-review
 date: 2026-09-13
-status: active
+status: superseded in part — Retro commits nothing and pushes nothing, and no role writes to docs/solutions/.
 module: .github/scripts/release-push.sh
 problem_type: ci-correctness
 component: .github/scripts/release-push.sh push-main

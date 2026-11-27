@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of who has signed in, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -19,8 +19,15 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { projectDefaultAssigneesQuery } from "../../api/queries";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { AssigneeControl } from "./AssigneeControl";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const issue: Issue = {
   advances: [],
@@ -309,53 +316,56 @@ test("AssigneeControl sends null for Unassigned", async () => {
 test.each([
   ["names the project's default where the defaults read holds it", true, "carol"],
   ["keeps the person it waited on where the client has no defaults read", false, "alice"],
-])("AssigneeControl's unassign leaves an inbox row nobody handed on waiting on a person: it %s", async (_name, defaultsRead, person) => {
-  const save = Promise.withResolvers<Issue>();
-  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
-  const { queryClient, unmount, user } = renderControl();
-  const handedOn: InboxRow = {
-    ...inboxRow,
-    asked_of: "bob",
-    asked_of_at: "2026-09-09T01:00:00Z",
-    asked_of_by: "alice",
-    id: "ask-2",
-    waiting_on_person: "bob",
-  };
-  queryClient.setQueryData(inboxKey, [{ ...inboxRow, waiting_on_person: "alice" }, handedOn]);
-  if (defaultsRead) {
-    queryClient.setQueryData(projectDefaultAssigneesQuery().queryKey, [
-      { project: "OPS", assignee: "dana" },
-      { project: "CORE", assignee: "carol" },
-    ]);
-  }
-  try {
-    // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(select());
-    await waitFor(() => expect(select().options.length).toBe(3));
-    await user.selectOptions(select(), "");
-    await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: null }, keyedAttempt)
-    );
+])(
+  "AssigneeControl's unassign leaves an inbox row nobody handed on waiting on a person: it %s",
+  async (_name, defaultsRead, person) => {
+    const save = Promise.withResolvers<Issue>();
+    const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+    const { queryClient, unmount, user } = renderControl();
+    const handedOn: InboxRow = {
+      ...inboxRow,
+      asked_of: "bob",
+      asked_of_at: "2026-09-09T01:00:00Z",
+      asked_of_by: "alice",
+      id: "ask-2",
+      waiting_on_person: "bob",
+    };
+    queryClient.setQueryData(inboxKey, [{ ...inboxRow, waiting_on_person: "alice" }, handedOn]);
+    if (defaultsRead) {
+      queryClient.setQueryData(projectDefaultAssigneesQuery().queryKey, [
+        { project: "OPS", assignee: "dana" },
+        { project: "CORE", assignee: "carol" },
+      ]);
+    }
+    try {
+      // A focus with no press before it: user-event has no form for a bare focus.
+      fireEvent.focus(select());
+      await waitFor(() => expect(select().options.length).toBe(3));
+      await user.selectOptions(select(), "");
+      await waitFor(() =>
+        expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: null }, keyedAttempt)
+      );
 
-    // The save is still in flight: what the rows hold is the optimistic write alone.
-    const rows = queryClient.getQueryData<InboxRow[]>(inboxKey) ?? [];
-    expect(rows.map((row) => [row.id, row.issue?.assignee, row.waiting_on_person])).toEqual([
-      ["ask-1", null, person],
-      ["ask-2", null, "bob"],
-    ]);
+      // The save is still in flight: what the rows hold is the optimistic write alone.
+      const rows = queryClient.getQueryData<InboxRow[]>(inboxKey) ?? [];
+      expect(rows.map((row) => [row.id, row.issue?.assignee, row.waiting_on_person])).toEqual([
+        ["ask-1", null, person],
+        ["ask-2", null, "bob"],
+      ]);
 
-    await act(async () => {
-      save.resolve({ ...issue, assignee: null });
-      await save.promise;
-    });
-    await waitFor(() =>
-      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.assignee).toBeNull()
-    );
-  } finally {
-    unmount();
-    patchIssue.mockRestore();
+      await act(async () => {
+        save.resolve({ ...issue, assignee: null });
+        await save.promise;
+      });
+      await waitFor(() =>
+        expect(queryClient.getQueryData<IssueDetails>(detailKey)?.assignee).toBeNull()
+      );
+    } finally {
+      unmount();
+      patchIssue.mockRestore();
+    }
   }
-});
+);
 
 test("AssigneeControl rolls back and shows the server's refusal when the person has not signed in", async () => {
   const patchIssue = answerIssuePatches().mockRejectedValue(

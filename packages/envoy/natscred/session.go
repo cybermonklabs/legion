@@ -80,12 +80,12 @@ const signTimeout = 10 * time.Second
 // The Keeper runs the client's renewal loop (cipherclient.Client.Run) and reconnects the
 // connection on each token it lands that is not the one the connection presented, but for the
 // first when the presented token outlives that one's renewal. The loop trades on its first pass,
-// just after the connection presented a token the client held with more than RenewBefore left
-// (cipherclient.Client.Token), and renews RenewBefore ahead of each token it lands
-// (Client.RenewalAt). A presented token that lapses after the first token's renewal is kept until
-// the loop's second token, so the connection is not cut for nothing; one that lapses before it
-// moves to the first, since the server would drop the connection at its expiry before the second
-// landed. The service answers a session's user with its token's expiry, so either way the
+// just after the connection presented the token the client held, which cipherclient.Client.Token
+// answers until that token's renewal moment (Client.RenewalAt), and renews each token it lands at
+// its Client.RenewalAt. A presented token that lapses after the first token's renewal is kept
+// until the loop's second token, so the connection is not cut for nothing; one that lapses before
+// it moves to the first, since the server would drop the connection at its expiry before the
+// second landed. The service answers a session's user with its token's expiry, so either way the
 // connection moves to a later token before the server drops it.
 func Session(client *cipherclient.Client) (nats.Option, Keeper) {
 	credential := &sessionCredential{

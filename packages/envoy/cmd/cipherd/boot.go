@@ -34,8 +34,8 @@ type brokerBoot struct {
 	// Listen binds the address callers reach this broker on. In production:
 	// net.Listen("tcp", cfg.ListenAddr).
 	Listen func() (net.Listener, error)
-	// ListenAirlock binds the airlock's proxy port, and is nil for a deployment that configures
-	// no rules file and so has no airlock. In production: net.Listen("tcp",
+	// ListenAirlock binds the airlock's proxy port, and is nil for a deployment whose profiles
+	// hold no proxy block and so has no airlock. In production: net.Listen("tcp",
 	// cfg.AirlockListenAddr).
 	ListenAirlock func() (net.Listener, error)
 	// ListenEdge binds the broker's edge, and is nil for a deployment that names no edge

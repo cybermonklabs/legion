@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  The header of Dispatch's Legion board (`GET /api/v1/projects/{key}/legion/board`) gives
+  `p0_holders`: the daemon's own number of P0 issues that hold a slot outside the admission cap,
+  from the newest admission block Dispatch recorded, so a reader who sees more slots in use than
+  the cap sees why. The board copies the daemon's number and counts no P0 holder itself. The key
+  is in every answer, and its value is `null`, never `0`, where that block gives no number (a
+  daemon from before the P0 start sends none) or where nothing has recorded an admission block.
+  Dispatch records `admission.p0Holders` with the rest of the admission block, from a whole read
+  of the daemon's state, which still states no plugin contract, so the daemon serves it the
+  daemon's own body, which carries the number, and from each state event that carries the block.
+time: 2026-11-26T01:30:00Z
+custom:
+    Issue: INFRA-5636

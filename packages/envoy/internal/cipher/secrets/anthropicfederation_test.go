@@ -144,7 +144,7 @@ func (r *federationRig) advance(d time.Duration) {
 
 func (r *federationRig) mint(t *testing.T, value string) (secrets.Minted, error) {
 	t.Helper()
-	return r.minter.Mint(t.Context(), secrets.MintRequest{Name: "FED_ADMIN", Type: "anthropic-federation", HumanTier: true, Value: value})
+	return r.minter.Mint(t.Context(), secrets.MintRequest{Name: "FED_ADMIN", Source: "FED_ADMIN", Type: "anthropic-federation", HumanTier: true, Value: value})
 }
 
 // TestTheFederationGrantMintsTheBoundAccountsIdentityToken: the grant asks generateIdToken for the
@@ -363,7 +363,7 @@ func TestTwoConcurrentFederationMintsPresentTwoIdentityTokens(t *testing.T) {
 	var done sync.WaitGroup
 	for range 2 {
 		done.Go(func() {
-			if _, err := minter.Mint(context.Background(), secrets.MintRequest{Name: "FED_ADMIN", Type: "anthropic-federation", HumanTier: true, Value: federationValue(federationAccount, "")}); err != nil {
+			if _, err := minter.Mint(context.Background(), secrets.MintRequest{Name: "FED_ADMIN", Source: "FED_ADMIN", Type: "anthropic-federation", HumanTier: true, Value: federationValue(federationAccount, "")}); err != nil {
 				t.Errorf("Mint: %v", err)
 			}
 		})
@@ -387,7 +387,7 @@ func TestTwoConcurrentFederationMintsPresentTwoIdentityTokens(t *testing.T) {
 // and a minter given no identity-token reader refuses ErrMintUpstream and exchanges nothing.
 func TestAFederationSecretBoundToNoAccountReleasesNothing(t *testing.T) {
 	r := newFederationRig(t)
-	if _, err := r.minter.Mint(t.Context(), secrets.MintRequest{Name: "UNBOUND", Value: federationValue(federationAccount, "")}); !errors.Is(err, secrets.ErrMintNotBound) {
+	if _, err := r.minter.Mint(t.Context(), secrets.MintRequest{Name: "UNBOUND", Source: "UNBOUND", Value: federationValue(federationAccount, "")}); !errors.Is(err, secrets.ErrMintNotBound) {
 		t.Fatalf("Mint of an unbound secret = %v, want ErrMintNotBound", err)
 	}
 	if _, err := r.mint(t, federationValue("someone-else@example-project.iam.gserviceaccount.com", "")); !errors.Is(err, secrets.ErrMintNotBound) {
@@ -407,7 +407,7 @@ func TestAFederationSecretBoundToNoAccountReleasesNothing(t *testing.T) {
 	}
 	unread := *r.minter
 	unread.IdentityToken = nil
-	if minted, err := unread.Mint(t.Context(), secrets.MintRequest{Name: "FED_ADMIN", Type: "anthropic-federation", Value: federationValue(federationAccount, "")}); !errors.Is(err, secrets.ErrMintUpstream) || minted.Value != "" {
+	if minted, err := unread.Mint(t.Context(), secrets.MintRequest{Name: "FED_ADMIN", Source: "FED_ADMIN", Type: "anthropic-federation", Value: federationValue(federationAccount, "")}); !errors.Is(err, secrets.ErrMintUpstream) || minted.Value != "" {
 		t.Fatalf("Mint with no identity-token reader = %+v, %v; want ErrMintUpstream and no value", minted, err)
 	}
 	if asked := r.iam.Requests(); len(asked) != 0 {
@@ -415,5 +415,38 @@ func TestAFederationSecretBoundToNoAccountReleasesNothing(t *testing.T) {
 	}
 	if exchanged := r.anthropic.requests(); len(exchanged) != 0 {
 		t.Fatalf("a refused mint exchanged %d times, want none", len(exchanged))
+	}
+}
+
+// TestAnAnthropicFederationProfileMintsUnderItsSourcesBinding: the deployment binds each
+// anthropic-federation secret by its stored name (BROKER_SERVICE_ACCOUNT_SECRETS), which
+// MintRequest.Source carries, as it binds a google-service-account secret: a profile of a bound
+// secret mints under that binding whatever the profile is called, and a profile of an unbound
+// secret is refused ErrMintNotBound even where its own name is one the deployment binds, naming
+// the profile and the source it is of, before IAM or Anthropic is asked.
+func TestAnAnthropicFederationProfileMintsUnderItsSourcesBinding(t *testing.T) {
+	r := newFederationRig(t)
+	for _, req := range []secrets.MintRequest{
+		{Name: "FED_ADMIN", Source: "FED_ADMIN"},
+		{Name: "FED_ADMIN_READ", Source: "FED_ADMIN"},
+	} {
+		req.Type, req.HumanTier, req.Value = "anthropic-federation", true, federationValue(federationAccount, "")
+		if minted, err := r.minter.Mint(t.Context(), req); err != nil || minted.Value != federationToken {
+			t.Fatalf("Mint of %s, of %s = %+v, %v; want the token, minted under %s's binding", req.Name, req.Source, minted, err, req.Source)
+		}
+	}
+	asked, exchanged := len(r.iam.Requests()), len(r.anthropic.requests())
+	for _, req := range []secrets.MintRequest{
+		{Name: "UNBOUND_READ", Source: "UNBOUND"},
+		{Name: "FED_ADMIN", Source: "UNBOUND"},
+	} {
+		req.Type, req.HumanTier, req.Value = "anthropic-federation", true, federationValue(federationAccount, "")
+		_, err := r.minter.Mint(t.Context(), req)
+		if !errors.Is(err, secrets.ErrMintNotBound) || !strings.Contains(err.Error(), req.Name) || !strings.Contains(err.Error(), "UNBOUND") {
+			t.Fatalf("Mint of %s, of %s = %v; want ErrMintNotBound naming both", req.Name, req.Source, err)
+		}
+	}
+	if len(r.iam.Requests()) != asked || len(r.anthropic.requests()) != exchanged {
+		t.Fatal("a mint the binding refused asked IAM or Anthropic")
 	}
 }

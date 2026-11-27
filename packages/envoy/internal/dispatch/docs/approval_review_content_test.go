@@ -76,6 +76,7 @@ func requireReviewPin(t *testing.T, review model.ArtifactReview, text, source st
 
 // Hashing the latest version instead of the reviewed version breaks this test.
 func TestTheReviewHashIsTheVersionsUTF8Bytes(t *testing.T) {
+	t.Parallel()
 	database, artifact := reviewHashFixture(t)
 	review, event := writeHashReview(t, database, artifact, 1)
 	requireReviewPin(t, review, approvedUTF8, "insert")
@@ -97,6 +98,7 @@ func TestTheReviewHashIsTheVersionsUTF8Bytes(t *testing.T) {
 
 // Removing the insert trigger lets both old-release and forged inserts escape the pin.
 func TestAReviewInsertCannotChooseItsHashOrItsSource(t *testing.T) {
+	t.Parallel()
 	database, artifact := reviewHashFixture(t)
 	ctx := context.Background()
 	for _, columns := range []string{"", ", content_sha256, content_sha256_source"} {
@@ -114,6 +116,7 @@ func TestAReviewInsertCannotChooseItsHashOrItsSource(t *testing.T) {
 
 // Removing either update protection lets a pin or its provenance be rewritten.
 func TestAReviewsHashNeverChanges(t *testing.T) {
+	t.Parallel()
 	database, artifact := reviewHashFixture(t)
 	review, _ := writeHashReview(t, database, artifact, 1)
 	ctx := context.Background()
@@ -129,6 +132,7 @@ func TestAReviewsHashNeverChanges(t *testing.T) {
 
 // Filling the latest version, relabeling insert rows, or refilling pins breaks this test.
 func TestFillReviewContentHashesFillsOldRowsOnceAsBackfill(t *testing.T) {
+	t.Parallel()
 	database, artifact := reviewHashFixture(t)
 	inserted, _ := writeHashReview(t, database, artifact, 1)
 	ctx := context.Background()
@@ -193,6 +197,7 @@ func TestFillReviewContentHashesFillsOldRowsOnceAsBackfill(t *testing.T) {
 
 // R8: missing stored text is not a new refusal on the existing review path.
 func TestAReviewOfAVersionWithNoTextIsRecordedWithANullHash(t *testing.T) {
+	t.Parallel()
 	database, artifact := reviewHashFixture(t)
 	review, event := writeHashReview(t, database, artifact, 9)
 	if review.ContentSHA256 != nil || review.ContentSHA256Source != nil {

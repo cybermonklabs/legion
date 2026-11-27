@@ -18,6 +18,7 @@ import (
 // the migration, not run, so a statement inside it names nothing. A foreign key locks the table it
 // references (SHARE ROW EXCLUSIVE), so a table that is only referenced is touched too.
 func TestTouchedTablesFindsEveryStatementFormTheMigrationsUse(t *testing.T) {
+	t.Parallel()
 	for sql, want := range map[string][]string{
 		"alter table messages add column broadcast_position integer;":                                                             {"messages"},
 		"ALTER TABLE IF EXISTS ONLY public.asks DROP CONSTRAINT x;":                                                               {"asks"},
@@ -28,16 +29,22 @@ func TestTouchedTablesFindsEveryStatementFormTheMigrationsUse(t *testing.T) {
 		"create index on events (id);":                                                                                            {"events"},
 		"create unique index on only events (id);":                                                                                {"events"},
 		"create trigger trg before insert on comments for each row execute function f();":                                         {"comments"},
-		"drop trigger comments_embeddings_enqueue on comments;":                                                                   {"comments"},
-		"DROP TRIGGER IF EXISTS asks_embeddings_enqueue ON \"asks\";":                                                             {"asks"},
-		"update events set payload = '{}' where type = 'x';":                                                                      {"events"},
-		"delete from refs where kind is null;":                                                                                    {"refs"},
-		"insert into user_agent_read (login) select login from users;":                                                            {"user_agent_read"},
-		"lock table asks in access exclusive mode;":                                                                               {"asks"},
-		"-- alter table commented_out add column x integer;\ncreate table fresh (id integer);":                                    nil,
-		"do $$ begin delete from artifacts where id is null; end $$;":                                                             {"artifacts"},
-		"create table keys (id uuid not null references broadcasts(id), login text);":                                             {"broadcasts"},
-		"alter table comments add constraint comments_ask foreign key (ask_id) references public.asks (id);":                      {"asks", "comments"},
+		// A trigger that fires on truncate names its event and then its table: `on` is a reserved
+		// word, so no table is named by it unquoted.
+		"create trigger snap after insert or update or delete or truncate on route_roster for each statement execute function f();": {"route_roster"},
+		"create trigger snap after truncate on route_roster for each statement execute function f();":                               {"route_roster"},
+		"create trigger people_not_truncated before truncate on people for each statement execute function f();":                    {"people"},
+		"create trigger t after insert or truncate or update on comments for each statement execute function f();":                  {"comments"},
+		"drop trigger comments_embeddings_enqueue on comments;":                                                                     {"comments"},
+		"DROP TRIGGER IF EXISTS asks_embeddings_enqueue ON \"asks\";":                                                               {"asks"},
+		"update events set payload = '{}' where type = 'x';":                                                                        {"events"},
+		"delete from refs where kind is null;":                                                                                      {"refs"},
+		"insert into user_agent_read (login) select login from users;":                                                              {"user_agent_read"},
+		"lock table asks in access exclusive mode;":                                                                                 {"asks"},
+		"-- alter table commented_out add column x integer;\ncreate table fresh (id integer);":                                      nil,
+		"do $$ begin delete from artifacts where id is null; end $$;":                                                               {"artifacts"},
+		"create table keys (id uuid not null references broadcasts(id), login text);":                                               {"broadcasts"},
+		"alter table comments add constraint comments_ask foreign key (ask_id) references public.asks (id);":                        {"asks", "comments"},
 		// An update may name its table under an alias; 0043 and 0044 rewrite comments that way.
 		"update comments c set turn = 'human' from asks a where a.id = c.ask_id;":                                                  {"comments"},
 		"UPDATE artifact_versions AS v SET markdown = '' WHERE false;":                                                             {"artifact_versions"},
@@ -57,6 +64,7 @@ func TestTouchedTablesFindsEveryStatementFormTheMigrationsUse(t *testing.T) {
 // Postgres 17+ reads a vertical tab as whitespace between words (scan.l's space), so a migration
 // whose words a \v separates touches the same tables as the one written with spaces.
 func TestTouchedTablesReadsVerticalTabAsSpace(t *testing.T) {
+	t.Parallel()
 	for _, sql := range []string{
 		"alter table messages add column y integer;",
 		"create index i on events (id);",
@@ -78,6 +86,7 @@ func TestTouchedTablesReadsVerticalTabAsSpace(t *testing.T) {
 // CensusTables does not need the foreign-key catalog for a migration that writes no row, so a
 // pure DDL migration stays readable when its caller cannot query that catalog.
 func TestCensusTablesSkipsForeignKeysForAMigrationThatDoesNotWriteRows(t *testing.T) {
+	t.Parallel()
 	got, err := CensusTables(context.Background(), refusingCatalogQuerier{}, "alter table things add column note text")
 	if err != nil {
 		t.Fatalf("CensusTables: %v", err)
@@ -101,6 +110,7 @@ func (refusingCatalogQuerier) QueryRow(context.Context, string, ...any) pgx.Row 
 // table it references, so the census reads that table, reached from the dropped one. A table that
 // references the dropped one is not reached: drop table without cascade refuses while one does.
 func TestADroppedTableReachesTheTablesItsForeignKeysReference(t *testing.T) {
+	t.Parallel()
 	keys := []foreignKey{{from: "polls", to: "records", onDelete: "a"}, {from: "notes", to: "polls", onDelete: "a"}}
 	got := reachedByForeignKeys(map[string]rowWrite{"polls": dropsTable}, keys)
 	if want := map[string]string{"records": "polls"}; !maps.Equal(got, want) {
@@ -110,6 +120,7 @@ func TestADroppedTableReachesTheTablesItsForeignKeysReference(t *testing.T) {
 
 // An index a migration drops or alters is named, so CensusTables can resolve it to its table.
 func TestTouchedIndexesFindsDropAndAlterIndex(t *testing.T) {
+	t.Parallel()
 	got := touchedIndexes("drop index asks_search;\nalter index messages_reply_to rename to messages_in_reply_to;")
 	if want := []string{"asks_search", "messages_reply_to"}; !slices.Equal(got, want) {
 		t.Errorf("touchedIndexes = %v, want %v", got, want)
@@ -121,6 +132,7 @@ func TestTouchedIndexesFindsDropAndAlterIndex(t *testing.T) {
 // wherever the statement stands: inside a DO block too, behind the usual guard on pg_constraint. A
 // references inside a literal or another statement adds none.
 func TestAddedForeignKeysReadsTheKeysAMigrationAdds(t *testing.T) {
+	t.Parallel()
 	for sql, want := range map[string][]foreignKey{
 		"create table keys (id uuid not null references broadcasts(id) on delete cascade, login text);":                          {{from: "keys", to: "broadcasts", onDelete: "c"}},
 		"ALTER TABLE public.comments ADD CONSTRAINT c FOREIGN KEY (ask_id) REFERENCES public.asks (id);":                         {{from: "comments", to: "asks", onDelete: "a"}},
@@ -142,6 +154,7 @@ func TestAddedForeignKeysReadsTheKeysAMigrationAdds(t *testing.T) {
 // verdict; a lock holder is named by its session metadata and never its query. A table a foreign
 // key reaches says from where, and a size above the limit never prints as the limit itself.
 func TestReportWritesCountsAndEndsWithTheVerdict(t *testing.T) {
+	t.Parallel()
 	count := int64(3)
 	age := 2*time.Hour + 14*time.Minute
 	report := &Report{VersionTable: "schema_migrations", SchemaVersion: 52, TableLimit: CensusTableLimit, LongTransaction: CensusLongTransaction, Pending: []MigrationCensus{{
@@ -181,6 +194,7 @@ func TestReportWritesCountsAndEndsWithTheVerdict(t *testing.T) {
 // Every refusal the verdict counts is printed, whatever its text: the report promises every
 // reason is in it.
 func TestReportPrintsEveryRefusalItCounts(t *testing.T) {
+	t.Parallel()
 	report := &Report{VersionTable: "schema_migrations", SchemaVersion: 1, TableLimit: CensusTableLimit, LongTransaction: CensusLongTransaction, Pending: []MigrationCensus{{
 		Migration: Migration{Version: 2, Name: "0002_x.up.sql"},
 		Refusals:  []string{"things is held by an old transaction"},
@@ -195,6 +209,7 @@ func TestReportPrintsEveryRefusalItCounts(t *testing.T) {
 // A table above the limit that an exempt migration touches is still printed with its size and the
 // limit, with why the limit does not apply, so the report never falls silent about a large table.
 func TestReportPrintsAnExemptMigrationsLargeTable(t *testing.T) {
+	t.Parallel()
 	report := &Report{VersionTable: "schema_migrations", SchemaVersion: 121, TableLimit: CensusTableLimit, LongTransaction: CensusLongTransaction, Pending: []MigrationCensus{{
 		Migration:          Migration{Version: 122, Name: "0122_x.up.sql"},
 		TableSizeExemption: "create function and create trigger",
@@ -210,6 +225,7 @@ func TestReportPrintsAnExemptMigrationsLargeTable(t *testing.T) {
 
 // A fresh database's report is one line and the verdict.
 func TestReportOfAFreshDatabaseIsOneLine(t *testing.T) {
+	t.Parallel()
 	var out strings.Builder
 	(&Report{VersionTable: "schema_migrations", Fresh: true, TableLimit: CensusTableLimit, LongTransaction: CensusLongTransaction}).Write(&out)
 	if got, want := out.String(), "census: fresh database, nothing to check\ncensus: ok\n"; got != want {
@@ -226,6 +242,7 @@ func TestReportOfAFreshDatabaseIsOneLine(t *testing.T) {
 // role, and says what it is. A transaction's age is printed as Postgres measured it, to the
 // microsecond, never rounded.
 func TestSessionStringSaysWhatPostgresHides(t *testing.T) {
+	t.Parallel()
 	age := 59*time.Second + 500123*time.Microsecond
 	for session, want := range map[Session]string{
 		{PID: 79, User: "other"}:                                                 `pid 79 (user other, application "", state not visible, transaction age not visible)`,
@@ -254,6 +271,7 @@ func TestSessionStringSaysWhatPostgresHides(t *testing.T) {
 // nothing - hidden from the census's role, or not tracked - does the census take the table's age
 // for it.
 func TestAHolderRefusesOnlyWhatWouldHoldTheMigrationPastItsLockTimeout(t *testing.T) {
+	t.Parallel()
 	young, old := 5*time.Second, 2*time.Hour
 	short, past := 59500*time.Millisecond, 60500*time.Millisecond
 	yes, no := true, false
@@ -303,6 +321,7 @@ func TestAHolderRefusesOnlyWhatWouldHoldTheMigrationPastItsLockTimeout(t *testin
 // Exec's LockTimeout until the migration sets its own, then each value it sets, as Postgres would
 // read it. A SET in a comment or a literal sets nothing.
 func TestMigrationLockTimeoutsReadsEveryBoundAMigrationWaitsUnder(t *testing.T) {
+	t.Parallel()
 	for sql, want := range map[string][]string{
 		"alter table asks add column note text;":                                                       {lockTimeoutSetting},
 		"-- why\nset local lock_timeout = '500ms';\n\nalter table asks add constraint c check (true);": {"500ms"},
@@ -326,6 +345,7 @@ func TestMigrationLockTimeoutsReadsEveryBoundAMigrationWaitsUnder(t *testing.T) 
 // comment for the redactor to take out. A query that is visible is printed only as redactedQuery
 // leaves it, quoted.
 func TestHolderDiagnosisSaysAQueryItMayNotSeeIsNotVisible(t *testing.T) {
+	t.Parallel()
 	hidden := "<insufficient privilege>"
 	shown := "select 'ghp_SECRET' from asks where id = 42"
 	for name, tc := range map[string]struct {

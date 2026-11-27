@@ -3,6 +3,7 @@ package bus
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"reflect"
 	"slices"
@@ -90,6 +91,9 @@ func keeperPasses(t *testing.T, keepers []*Client, n int) {
 	for i, keeper := range keepers {
 		from[i] = keeper.keepPasses.Load()
 	}
+	if waiting := keeperPassesWaiting.Load(); waiting != nil {
+		(*waiting)()
+	}
 	testwait.Until(t, fmt.Sprintf("each of %d keepers to end %d passes begun after %v had ended", len(keepers), n, from), func() ([]uint64, bool) {
 		ended := make([]uint64, len(keepers))
 		all := true
@@ -99,6 +103,86 @@ func keeperPasses(t *testing.T, keepers []*Client, n int) {
 		}
 		return ended, all
 	})
+}
+
+// keeperPassesWaiting, when set, runs as keeperPasses has read the passes ended so far and is about
+// to wait for more: TestHoldKeeperUpdatesWaitsOutAKeeperPassBegunBeforeItsSwap releases a pass it
+// holds there, so that pass ends only while keeperPasses waits for it.
+var keeperPassesWaiting atomic.Pointer[func()]
+
+// keeperSwapping, when set, runs in holdKeeperUpdates just before it swaps a keeper's JetStream
+// context: TestHoldKeeperUpdatesWaitsOutAKeeperPassBegunBeforeItsSwap holds a keeper pass begun
+// there, with the context from before the swap.
+var keeperSwapping atomic.Pointer[func()]
+
+// heldBucketReads holds every read of stream, once armed, until resume closes, and closes entered
+// at the first it holds: a keeper pass that reads it then waits there, sending its read again each
+// time its read limit passes (readAgain), until the test resumes it.
+type heldBucketReads struct {
+	nats.JetStreamContext
+	stream  string
+	armed   atomic.Bool
+	entered chan struct{}
+	first   sync.Once
+	resume  chan struct{}
+}
+
+func (js *heldBucketReads) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	if stream == js.stream && js.armed.Load() {
+		js.first.Do(func() { close(js.entered) })
+		<-js.resume
+	}
+	return js.JetStreamContext.StreamInfo(stream, opts...)
+}
+
+// holdKeeperUpdates returns only once every keeper pass begun before its swap has ended: a pass
+// takes its client's JetStream context once, as it starts, so one that began before the swap still
+// writes through the context with no hold, and it could put back the update the test makes next
+// before the test's read of it came back. The row starts holding the keeper's reads of a bucket at
+// the swap (keeperSwapping), waits there until a keeper pass is held in one, and releases that pass
+// only from inside a wait for passes that comes after the swap (keeperPassesWaiting). So a
+// holdKeeperUpdates with no wait (the independent tester's plant PL7), or with its wait before the
+// swap (PL15), returns while that pass is still held, and the row fails by name; no span decides
+// it. (The tester's forcing FP7 found the gap: each keeper read held 5 s, and the lowering's
+// replies frozen 40 s.)
+func TestHoldKeeperUpdatesWaitsOutAKeeperPassBegunBeforeItsSwap(t *testing.T) {
+	const bucket = "envoy_keeper_held_pass"
+	cluster, _ := startClusterJetStream(t)
+	client := startOnCluster(t, cluster, WithReplicas(3), WithKeptBuckets(bucket), WithKeepInterval(testKeepInterval), heldKeeperStepGuard(t))
+	if _, err := EnsureKeyValue(t.Context(), client.Conn, client.JS(), &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3}); err != nil {
+		t.Fatalf("open %s at three copies: %v", bucket, err)
+	}
+	held := &heldBucketReads{stream: "KV_" + bucket, entered: make(chan struct{}), resume: make(chan struct{})}
+	release := sync.OnceFunc(func() { close(held.resume) })
+	t.Cleanup(release)
+	client.mu.Lock()
+	held.JetStreamContext = client.js
+	client.js = held
+	client.mu.Unlock()
+
+	var endedBefore atomic.Uint64
+	swapping := func() {
+		held.armed.Store(true)
+		testwait.Receive(t, "a keeper pass to begin its read of KV_"+bucket+" before the swap", held.entered)
+		endedBefore.Store(client.keepPasses.Load())
+	}
+	keeperSwapping.Store(&swapping)
+	t.Cleanup(func() { keeperSwapping.Store(nil) })
+	waiting := func() {
+		client.mu.Lock()
+		swapped := client.js != nats.JetStreamContext(held)
+		client.mu.Unlock()
+		if held.armed.Load() && swapped {
+			release()
+		}
+	}
+	keeperPassesWaiting.Store(&waiting)
+	t.Cleanup(func() { keeperPassesWaiting.Store(nil) })
+	open := holdKeeperUpdates(t, client)
+	defer open()
+	if ended := client.keepPasses.Load(); ended <= endedBefore.Load() {
+		t.Fatalf("holdKeeperUpdates returned while the keeper pass begun before its swap was still running: %d passes ended, as when that pass began", ended)
+	}
 }
 
 // heldFor waits for passes passes of each of keepers, one at a time (keeperPasses), and fails the
@@ -156,6 +240,42 @@ func (js *interleavedJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nat
 	return info, err
 }
 
+// holdKeeperUpdates holds the first stream update the keeper of each of keepers sends until the
+// func it returns runs, which a test runs once its own update of what those keepers restore has
+// been read back (testnats.UpdateStream): a keeper that put the update back before a read of it
+// came back would leave no read that ever shows it, and the read-back would fail the test at its
+// deadline. The keeper waits inside a step of its pass for as long as the read-back takes, which a
+// loaded machine can make longer than a start's step guard (startHangGuard, 36 s): each keeper
+// passed here is started with heldKeeperStepGuard, so its step's guard is the test's deadline and
+// not that. A pass takes its client's JetStream context once, as it starts (keepPass), so this
+// waits for one whole pass after the swap: every pass that reads the update holds the gated
+// context. The hold ends on every way out of the test, before a client's close waits for its
+// keeper.
+func holdKeeperUpdates(t *testing.T, keepers ...*Client) func() {
+	t.Helper()
+	gate := make(chan struct{})
+	open := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(open)
+	for _, keeper := range keepers {
+		if swapping := keeperSwapping.Load(); swapping != nil {
+			(*swapping)()
+		}
+		keeper.mu.Lock()
+		keeper.js = &interleavedJetStream{JetStreamContext: keeper.js, beforeUpdate: func() { <-gate }}
+		keeper.mu.Unlock()
+	}
+	keeperPasses(t, keepers, 1)
+	return open
+}
+
+// heldKeeperStepGuard is the step guard of a keeper whose update holdKeeperUpdates holds: what is
+// left of the test binary's deadline less testwait's 30 s margin as the keeper starts
+// (withKeeperStepGuard). A step that outlasts the test is ended by the client's close at the test's
+// end, after the test's own read-back has failed it by name.
+func heldKeeperStepGuard(t *testing.T) ConnectOption {
+	return withKeeperStepGuard(testwait.Remaining(t, 30*time.Second))
+}
+
 // awaitRestoredLog waits until the keeper's restore lines name every one of wants. The keeper logs
 // a restore after the server applied it, so a test that reads the stream as kept can get there
 // before the line is written.
@@ -188,8 +308,9 @@ func restoredLog(t *testing.T, logs *capturedLogs) string {
 // keeper periods the setting program's keeper puts the three copies and the byte limit back and
 // logs both, and the stream keeps its id, on every run.
 func TestTheKeeperEndsTheMixedSettingsRaceAtThreeCopiesTheByteLimitAndTheID(t *testing.T) {
+	t.Parallel()
 	cluster, js := startClusterJetStream(t)
-	logs := captureLogs(t)
+	logs := captureLogs()
 	const id = "deployed-id"
 	deployed := *streamCfg
 	deployed.Subjects = slices.Clone(streamCarriedSubjects[:len(streamCarriedSubjects)-1])
@@ -202,12 +323,12 @@ func TestTheKeeperEndsTheMixedSettingsRaceAtThreeCopiesTheByteLimitAndTheID(t *t
 	defaults := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 	var setting *Client
 	defaultStart := &interleavedJetStream{JetStreamContext: js, beforeUpdate: func() {
-		setting = startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval))
+		setting = startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval), WithLogger(logs.logger))
 		if info, err := js.StreamInfo(Stream); err != nil || !keptAtSettings(id)(info) {
 			t.Fatalf("the setting program's start left the stream at %+v (%v), want three copies, the byte limit and the id", info, err)
 		}
 	}}
-	if _, err := ensureStreamWithConfig(t.Context(), defaultStart, &defaults, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), logs.logger, defaultStart, &defaults, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("the default program's start: %v", err)
 	}
 	if n := defaultStart.updates.Load(); n != 1 {
@@ -240,29 +361,28 @@ func TestTheKeeperEndsTheMixedSettingsRaceAtThreeCopiesTheByteLimitAndTheID(t *t
 // and logs it, and a pass of the first program's keeper, whose binary does not compile the subject,
 // leaves it there.
 func TestEachReleasesKeeperAddsBackItsOwnSubjectAConcurrentWriteTookAway(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	const added = "notifications.newer.>"
 	limited := parseConnectOptions([]ConnectOption{WithStreamMaxBytes(keeperByteLimit)}).streamConfig()
 	newer := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 	newer.Subjects = append(slices.Clone(streamCarriedSubjects), added)
-	if _, err := ensureStreamWithConfig(t.Context(), js, &limited, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), js, &limited, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("the limited program's start: %v", err)
 	}
 	lowered := deployedStream(t, js).Config
 	lowered.MaxBytes = -1
-	if _, err := js.UpdateStream(&lowered); err != nil {
-		t.Fatalf("remove the byte limit: %v", err)
-	}
+	testnats.UpdateStream(t, js, lowered)
 
 	keeper := &interleavedJetStream{JetStreamContext: js, beforeUpdate: func() {
-		if _, err := ensureStreamWithConfig(t.Context(), js, &newer, capsAnUnsetStream, atStart); err != nil {
+		if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), js, &newer, capsAnUnsetStream, atStart); err != nil {
 			t.Fatalf("the newer release's start: %v", err)
 		}
 		if subjects := deployedStream(t, js).Config.Subjects; !slices.Contains(subjects, added) {
 			t.Fatalf("the newer release's start left the subjects %v, want %s among them", subjects, added)
 		}
 	}}
-	restored, err := keepStream(t.Context(), keeper, &limited, capsAnUnsetStream)
+	restored, err := keepStream(t.Context(), slog.Default(), keeper, &limited, capsAnUnsetStream)
 	if want := []string{fmt.Sprintf("max_bytes -1 -> %d", keeperByteLimit)}; err != nil || !slices.Equal(restored, want) {
 		t.Fatalf("the limited program's keeper restored %v (%v), want %v", restored, err, want)
 	}
@@ -270,11 +390,11 @@ func TestEachReleasesKeeperAddsBackItsOwnSubjectAConcurrentWriteTookAway(t *test
 		t.Fatalf("subjects %v still hold %s: the keeper's write did not land after the newer start's", subjects, added)
 	}
 
-	restored, err = keepStream(t.Context(), js, &newer, capsAnUnsetStream)
+	restored, err = keepStream(t.Context(), slog.Default(), js, &newer, capsAnUnsetStream)
 	if want := []string{"subjects added " + added}; err != nil || !slices.Equal(restored, want) {
 		t.Fatalf("the newer release's keeper restored %v (%v), want %v", restored, err, want)
 	}
-	if restored, err := keepStream(t.Context(), js, &limited, capsAnUnsetStream); err != nil || len(restored) != 0 {
+	if restored, err := keepStream(t.Context(), slog.Default(), js, &limited, capsAnUnsetStream); err != nil || len(restored) != 0 {
 		t.Fatalf("the limited program's next pass restored %v (%v), want nothing", restored, err)
 	}
 	info := deployedStream(t, js)
@@ -290,6 +410,7 @@ func TestEachReleasesKeeperAddsBackItsOwnSubjectAConcurrentWriteTookAway(t *test
 // before the start's move. Its next pass, on the stream the start moved them off, restores the
 // byte limit with no role lane in the list.
 func TestTheKeeperNeverPutsBackARoleLaneAStartMovedOffTheStream(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	roleLane := contracts.RoleTopicPrefix + ">"
 	legacy := *streamCfg
@@ -302,11 +423,11 @@ func TestTheKeeperNeverPutsBackARoleLaneAStartMovedOffTheStream(t *testing.T) {
 	defaults := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 
 	stale := deployedStream(t, js)
-	if _, err := ensureStreamWithConfig(t.Context(), js, &defaults, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), js, &defaults, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("the start that moves the role lanes off: %v", err)
 	}
 	keeper := &interleavedJetStream{JetStreamContext: js, firstRead: stale}
-	restored, err := keepStream(t.Context(), keeper, &limited, capsAnUnsetStream)
+	restored, err := keepStream(t.Context(), slog.Default(), keeper, &limited, capsAnUnsetStream)
 	if err == nil || !strings.Contains(err.Error(), roleLane) || len(restored) != 0 {
 		t.Fatalf("the keeper's pass on the stream it read with the role lanes = %v (%v), want an error naming %s", restored, err, roleLane)
 	}
@@ -317,7 +438,7 @@ func TestTheKeeperNeverPutsBackARoleLaneAStartMovedOffTheStream(t *testing.T) {
 		t.Fatalf("subjects %v capture the role lanes after the start moved them off", subjects)
 	}
 
-	restored, err = keepStream(t.Context(), js, &limited, capsAnUnsetStream)
+	restored, err = keepStream(t.Context(), slog.Default(), js, &limited, capsAnUnsetStream)
 	if want := []string{fmt.Sprintf("max_bytes -1 -> %d", keeperByteLimit)}; err != nil || !slices.Equal(restored, want) {
 		t.Fatalf("the keeper's next pass restored %v (%v), want %v", restored, err, want)
 	}
@@ -330,6 +451,7 @@ func TestTheKeeperNeverPutsBackARoleLaneAStartMovedOffTheStream(t *testing.T) {
 // lacks and that overlap none deployed: it keeps every deployed subject, a foreign one, a widened
 // one and a narrowed one included.
 func TestTheKeepersSubjectsAddOnlyItsOwnThatOverlapNothingDeployed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		deployed, own []string
@@ -353,24 +475,25 @@ func TestTheKeepersSubjectsAddOnlyItsOwnThatOverlapNothingDeployed(t *testing.T)
 // adds its new subject once and leaves the first's wide subject in place, and from then on neither
 // keeper sends an update, with both new subjects in the list.
 func TestTwoKeepersWithDifferentSubjectListsNeverSwitchTheStream(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	alpha := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 	alpha.Subjects = append(slices.Clone(streamCarriedSubjects), "notifications.alpha.>")
 	beta := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 	beta.Subjects = append(slices.Clone(streamCarriedSubjects), "notifications.beta.>")
 	beta.Subjects[slices.Index(beta.Subjects, "notifications.github.>")] = "notifications.github.pr.>"
-	if _, err := ensureStreamWithConfig(t.Context(), js, &alpha, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), js, &alpha, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("the alpha release's start: %v", err)
 	}
 
-	restored, err := keepStream(t.Context(), js, &beta, capsAnUnsetStream)
+	restored, err := keepStream(t.Context(), slog.Default(), js, &beta, capsAnUnsetStream)
 	if want := []string{"subjects added notifications.beta.>"}; err != nil || !slices.Equal(restored, want) {
 		t.Fatalf("the beta release's keeper restored %v (%v), want %v", restored, err, want)
 	}
 	counting := &countingJetStream{JetStreamContext: js}
 	for range 3 {
 		for _, cfg := range []*nats.StreamConfig{&alpha, &beta} {
-			if restored, err := keepStream(t.Context(), counting, cfg, capsAnUnsetStream); err != nil || len(restored) != 0 {
+			if restored, err := keepStream(t.Context(), slog.Default(), counting, cfg, capsAnUnsetStream); err != nil || len(restored) != 0 {
 				t.Fatalf("a keeper pass with subjects %v restored %v (%v), want nothing", cfg.Subjects, restored, err)
 			}
 		}
@@ -390,9 +513,10 @@ func TestTwoKeepersWithDifferentSubjectListsNeverSwitchTheStream(t *testing.T) {
 // over the passes after. The removed subject comes back at the end of the list, and the foreign
 // subject stays: the keeper only adds subjects.
 func TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject(t *testing.T) {
+	t.Parallel()
 	cluster, js := startClusterJetStream(t)
-	logs := captureLogs(t)
-	keeper := startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval))
+	logs := captureLogs()
+	keeper := startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval), WithLogger(logs.logger), heldKeeperStepGuard(t))
 	info := testnats.AwaitSettledStream(t, js, Stream)
 	const removed = "notifications.legion.>"
 
@@ -404,9 +528,9 @@ func TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject(t *testi
 	lowered.Subjects = append(slices.DeleteFunc(slices.Clone(info.Config.Subjects), func(subject string) bool { return subject == removed }), "operations.foreign.>")
 	lowered.MaxAge = info.Config.MaxAge + time.Hour
 	lowered.Discard = nats.DiscardOld
-	if _, err := js.UpdateStream(&lowered); err != nil {
-		t.Fatalf("operator update: %v", err)
-	}
+	open := holdKeeperUpdates(t, keeper)
+	testnats.UpdateStream(t, js, lowered)
+	open()
 
 	restored := awaitKept(t, js, Stream, "three copies, the byte limit and an id", keptAtSettings(""))
 	if want := append(slices.Clone(lowered.Subjects), removed); !slices.Equal(restored.Config.Subjects, want) {
@@ -443,17 +567,16 @@ func TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject(t *testi
 // nothing, and a start with that setting writes nothing. Once an operator lowers the limit below
 // the setting, the keeper raises it back to the setting and logs it.
 func TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne(t *testing.T) {
+	t.Parallel()
 	cluster, js := startClusterJetStream(t)
-	logs := captureLogs(t)
-	settings := []ConnectOption{WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval)}
+	logs := captureLogs()
+	settings := []ConnectOption{WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval), WithLogger(logs.logger), heldKeeperStepGuard(t)}
 	first := startOnCluster(t, cluster, settings...)
 	info := testnats.AwaitSettledStream(t, js, Stream)
 
 	raise := info.Config
 	raise.MaxBytes = 4 * keeperByteLimit
-	if _, err := js.UpdateStream(&raise); err != nil {
-		t.Fatalf("operator raise: %v", err)
-	}
+	testnats.UpdateStream(t, js, raise)
 	raised := testnats.AwaitSettledStream(t, js, Stream).Config
 	if raised.MaxBytes != raise.MaxBytes {
 		t.Fatalf("stream byte limit = %d after the operator's raise, want %d", raised.MaxBytes, raise.MaxBytes)
@@ -463,7 +586,7 @@ func TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne(t *testi
 
 	counting := &countingJetStream{JetStreamContext: js}
 	cfg := parseConnectOptions(settings).streamConfig()
-	if _, err := ensureStreamWithConfig(t.Context(), counting, &cfg, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), logs.logger, counting, &cfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("start with the old limit: %v", err)
 	}
 	if writes := counting.written(); len(writes) != 0 {
@@ -477,9 +600,9 @@ func TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne(t *testi
 
 	lower := raised
 	lower.MaxBytes = keeperByteLimit / 2
-	if _, err := js.UpdateStream(&lower); err != nil {
-		t.Fatalf("operator lowering: %v", err)
-	}
+	open := holdKeeperUpdates(t, first, second)
+	testnats.UpdateStream(t, js, lower)
+	open()
 	awaitKept(t, js, Stream, "the byte limit", func(info *nats.StreamInfo) bool { return info.Config.MaxBytes == keeperByteLimit })
 	awaitRestoredLog(t, logs, fmt.Sprintf("max_bytes %d -> %d", lower.MaxBytes, keeperByteLimit))
 }
@@ -490,8 +613,9 @@ func TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne(t *testi
 // for a feature it has not configured, is skipped: the keeper creates nothing, updates nothing and
 // logs nothing about it.
 func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T) {
+	t.Parallel()
 	cluster, js := startClusterJetStream(t)
-	logs := captureLogs(t)
+	logs := captureLogs()
 	const listed, unlisted, missing = "envoy_keeper_listed", "envoy_keeper_unlisted", "envoy_keeper_missing"
 
 	watcher := testnats.Connect(t, cluster.URL())
@@ -506,10 +630,15 @@ func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T)
 		t.Fatalf("flush the watch: %v", err)
 	}
 
-	client := startOnCluster(t, cluster, WithReplicas(3), WithKeptBuckets(listed, missing), WithKeepInterval(testKeepInterval))
+	client := startOnCluster(t, cluster, WithReplicas(3), WithKeptBuckets(listed, missing), WithKeepInterval(testKeepInterval), WithLogger(logs.logger), heldKeeperStepGuard(t))
+	// Each lowering is read back (testnats.UpdateStream): a replica change on a loaded cluster was
+	// answered after jetStreamWait, or never, and failed the row as "context deadline exceeded".
+	// The buckets are opened on the client's own context, which holdKeeperUpdates does not hold.
+	opened := client.JS()
+	open := holdKeeperUpdates(t, client)
 	before := map[string]nats.StreamConfig{}
 	for _, bucket := range []string{listed, unlisted} {
-		if _, err := EnsureKeyValue(t.Context(), client.Conn, client.JS(), &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3, History: 5, TTL: time.Hour}); err != nil {
+		if _, err := EnsureKeyValue(t.Context(), client.Conn, opened, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3, History: 5, TTL: time.Hour}); err != nil {
 			t.Fatalf("open %s at three copies: %v", bucket, err)
 		}
 		stream := "KV_" + bucket
@@ -517,9 +646,8 @@ func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T)
 		before[bucket] = info.Config
 		lowered := info.Config
 		lowered.Replicas = 1
-		if _, err := js.UpdateStream(&lowered); err != nil {
-			t.Fatalf("lower %s to one copy: %v", stream, err)
-		}
+		testnats.UpdateStream(t, js, lowered)
+		open()
 	}
 
 	raised := awaitKept(t, js, "KV_"+listed, "three copies", func(info *nats.StreamInfo) bool { return info.Config.Replicas == 3 })
@@ -553,6 +681,7 @@ func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T)
 // keeper's own connection sends after them has reached the watch, so every update those passes
 // sent is in the count.
 func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
+	t.Parallel()
 	const marker = "envoy.keeper.test.marker"
 	cluster, js := startClusterJetStream(t)
 	startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit))
@@ -600,9 +729,7 @@ func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the stream: %v", err)
 	}
-	if _, err := js.UpdateStream(&info.Config); err != nil {
-		t.Fatalf("update the stream: %v", err)
-	}
+	testnats.UpdateStream(t, js, info.Config)
 	testwait.Until(t, "the watch to see the update sent to the stream", func() (int, bool) {
 		n := sent()
 		return n, n > 0
@@ -614,6 +741,7 @@ func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
 // so the update fails as a pass in flight at a shutdown does, and the keeper logs no failure for
 // it. Once the client stops, its keeper has ended, so nothing raises the stream from its one copy.
 func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
+	t.Parallel()
 	for _, stop := range []struct {
 		name string
 		stop func(*Client)
@@ -622,9 +750,10 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 		{name: "drain", stop: func(client *Client) { _ = client.Drain(5 * time.Second) }},
 	} {
 		t.Run(stop.name, func(t *testing.T) {
+			t.Parallel()
 			cluster, js := startClusterJetStream(t)
-			logs := captureLogs(t)
-			client := startOnCluster(t, cluster, WithReplicas(3), WithKeepInterval(testKeepInterval))
+			logs := captureLogs()
+			client := startOnCluster(t, cluster, WithReplicas(3), WithKeepInterval(testKeepInterval), WithLogger(logs.logger))
 			info := testnats.AwaitSettledStream(t, js, Stream)
 
 			entered := make(chan struct{})
@@ -649,9 +778,7 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 			keeperPasses(t, []*Client{client}, 1)
 			lowered := info.Config
 			lowered.Replicas = 1
-			if _, err := js.UpdateStream(&lowered); err != nil {
-				t.Fatalf("lower the stream to one copy: %v", err)
-			}
+			testnats.UpdateStream(t, js, lowered)
 			testwait.Receive(t, "the keeper's update of the lowered stream", entered)
 
 			stopped := make(chan struct{})
@@ -687,6 +814,7 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 // races it on most runs; with the gate the replaced subject is still gone after a hundred passes,
 // and no keeper pass fails on a stream not reconciled yet.
 func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testing.T) {
+	t.Parallel()
 	const replaced, replacing = "notifications.github.*", "notifications.github.>"
 	srv, uri := testnats.Start(t)
 	deploy := testnats.Connect(t, uri)
@@ -704,8 +832,8 @@ func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testin
 	deploy.Close()
 	srv.Stop(t)
 
-	logs := captureLogs(t)
-	client, err := ConnectOwningStream([]string{uri}, WithConnectInBackground(), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(time.Millisecond))
+	logs := captureLogs()
+	client, err := ConnectOwningStream([]string{uri}, WithConnectInBackground(), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(time.Millisecond), WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("connect owning the stream while the server is down: %v", err)
 	}
@@ -739,6 +867,7 @@ func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testin
 // An owning client that connects in the background and stops before its server ever answered
 // started no keeper, and Close and Drain return at once rather than wait for one.
 func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *testing.T) {
+	t.Parallel()
 	for _, stop := range []struct {
 		name string
 		stop func(*Client)
@@ -776,6 +905,7 @@ func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *test
 // has a stream with no cap on a server that caps no such stream itself, which the keeper leaves
 // as it is.
 func TestRestoredFieldsNamesTheConsumerCapTheKeeperRaised(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name     string
 		deployed int

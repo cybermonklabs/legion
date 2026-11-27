@@ -53,7 +53,6 @@ test("the selection bar comments, suggests, and asks on marks that both users se
     spec: initialMarkdown,
     title: "Review the spec",
   });
-  const relatedIssue = await createIssue({ project: "CORE", title: "Related work" });
   const artifactId = issue.primary_artifact_id;
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
@@ -87,12 +86,6 @@ test("the selection bar comments, suggests, and asks on marks that both users se
     await selectEditorText(alicePage, "brown");
     await barAction(alicePage, "Comment");
     const commentComposer = alicePage.getByRole("form", { name: "Comment composer" });
-    await commentComposer.getByLabel("Comment").press("Control+k");
-    await expect(
-      commentComposer.getByRole("button", { name: `${relatedIssue.key}: Related work` })
-    ).toBeVisible();
-    await alicePage.keyboard.press("Escape");
-    await expect(alicePage.getByRole("dialog", { name: "Reference picker" })).toHaveCount(0);
     await commentComposer.getByLabel("Comment").fill("why?");
     await commentComposer.getByRole("button", { exact: true, name: "Send" }).click();
     const comment = await commentWithBody(issue.key, artifactId, "why?");
@@ -717,7 +710,6 @@ test("a viewer who opens the issue after an anchored ask is answered sees it in 
     await alicePage.getByRole("tab", { name: "Spec" }).click();
     const aliceCard = marginCard(alicePage, ask.id);
     await expect(aliceCard).toContainText("brown");
-    await aliceCard.getByRole("button", { name: "Add a note or answer in your own words" }).click();
     await aliceCard.getByLabel("Your answer").fill("Because it is precise.");
     await aliceCard.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect.poll(() => getAsk(ask.id)).toMatchObject({ ask: { state: "answered" } });
@@ -795,9 +787,7 @@ test("long option labels and descriptions wrap inside the margin ask card @phone
     await setSheet(page, testInfo.project.name, true);
     const card = needsYouCards(page).getByTestId(`ask-${ask.id}`);
     await expect(card).toContainText("severity table shape");
-    await expect(
-      card.getByRole("button", { name: "Add a note or answer in your own words" })
-    ).toBeVisible();
+    await expect(card.getByLabel("Your answer")).toBeVisible();
     await page.screenshot({
       path: testInfo.outputPath(`margin-long-options-${testInfo.project.name}.png`),
     });

@@ -1,0 +1,20 @@
+# proxy-carry-reads-connection-grant-only: the watcher of a call handled for another grant of the
+# enrollment reads the connection's own grant alone, so the call is cut at once though its grant
+# lives, and nothing reads the grant whose value it carries.
+# must fail: TestACallCarriedForAnotherGrantOfTheEnrollmentEndsWithThatGrant
+# Applied with patch -p1 from a copy.
+
+diff --git a/packages/envoy/internal/cipher/proxy/bound.go b/packages/envoy/internal/cipher/proxy/bound.go
+index a5b1ad8cba4c..864ff9e9c53f 100644
+--- a/packages/envoy/internal/cipher/proxy/bound.go
++++ b/packages/envoy/internal/cipher/proxy/bound.go
+@@ -949,7 +949,8 @@ func (s *Server) carryRefusal(ctx context.Context, info connInfo, chosen pair) *
+ 	if cut := s.carryHold(ctx, grant.Operator); cut != nil {
+ 		return cut
+ 	}
+-	if info.handledBy != "" {
++	// MUTANT: a carried call is read again by the connection's own grant alone.
++	if false && info.handledBy != "" {
+ 		if grant, err = s.grants.AirlockConnection(ctx, info.handledBy); err != nil {
+ 			return s.carryRead("connection", err)
+ 		}

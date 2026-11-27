@@ -137,18 +137,21 @@ test("the label controls keep touch-sized targets and the filtered list fits the
   }
 });
 
-test("eight thirty-character labels scroll inside the header's details line without widening the page", async ({
+// The header's labels are a group of at most ten, then "+N" that shows the rest in place
+// (dispatch://INFRA-5200, the layout rule's 3), and long labels wrap onto further lines inside
+// the header rather than scroll or widen the page.
+test("twelve thirty-character labels wrap in the header, ten then +2, without widening the page", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Long labels" });
+  const labels = Array.from({ length: 12 }, (_, index) => `label-${index}-`.padEnd(30, "x"));
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     const title = page
       .getByTestId("issue-header")
       .getByRole("heading", { level: 1, name: "Long labels" });
-    const rail = page.getByTestId("issue-metadata-rail");
     for (const [width, height] of [
       [1280, 900],
       [390, 844],
@@ -159,32 +162,49 @@ test("eight thirty-character labels scroll inside the header's details line with
       await expect(page.getByRole("button", { name: "Edit labels" })).toBeVisible();
       const titleBefore = await title.boundingBox();
 
-      await patchIssue(issue.key, {
-        labels: Array.from({ length: 8 }, (_, index) => `label-${index}-`.padEnd(30, "x")),
-      });
+      await patchIssue(issue.key, { labels });
       await page.reload();
-      await expect(page.getByText("label-7-".padEnd(30, "x"), { exact: true })).toBeVisible();
+      await expect(page.getByText(labels[9] ?? "", { exact: true })).toBeVisible();
+      // Ten labels, then the control that shows the other two.
+      await expect(page.getByText(labels[10] ?? "", { exact: true })).toHaveCount(0);
+      const more = page.getByRole("button", { name: "+2, show all 12 labels" });
+      await expect(more).toHaveText("+2");
+      expect((await more.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
 
-      // The title box is untouched and the details line is the scroll container: it overflows
-      // sideways inside the card while the document itself is no wider than the window.
+      // The title box is untouched, the labels take more than one line, and nothing scrolls
+      // sideways: no box of the header, and not the document.
       expect(await title.boundingBox()).toEqual(titleBefore);
-      const metrics = await rail.evaluate((element) => ({
-        clientWidth: element.clientWidth,
-        overflowX: getComputedStyle(element).overflowX,
-        scrollWidth: element.scrollWidth,
-      }));
-      expect(metrics.overflowX).toBe("auto");
-      expect(metrics.scrollWidth).toBeGreaterThan(metrics.clientWidth);
-      expect(metrics.clientWidth).toBeLessThanOrEqual(width);
+      const tops = await page
+        .getByTestId("issue-labels")
+        .locator("span")
+        .filter({ hasText: /^label-/ })
+        .evaluateAll((chips) => chips.map((chip) => Math.round(chip.getBoundingClientRect().top)));
+      expect(new Set(tops).size).toBeGreaterThan(1);
+      const scrolls = await page.getByTestId("issue-header").evaluate((header) =>
+        [header, ...header.querySelectorAll("*")].some((element) => {
+          const overflowX = getComputedStyle(element).overflowX;
+          return (
+            (overflowX === "auto" || overflowX === "scroll") &&
+            element.scrollWidth > element.clientWidth + 1
+          );
+        })
+      );
+      expect(scrolls).toBe(false);
       const pageWidths = await page.evaluate(() => ({
         clientWidth: document.documentElement.clientWidth,
         scrollWidth: document.documentElement.scrollWidth,
       }));
       expect(pageWidths.scrollWidth).toBe(pageWidths.clientWidth);
       expect(pageWidths.clientWidth).toBeLessThanOrEqual(width);
-      const shot = testInfo.outputPath(`labels-overflow-${width}.png`);
+
+      // The control shows the other two in place, and folds them back.
+      await more.click();
+      await expect(page.getByText(labels[11] ?? "", { exact: true })).toBeVisible();
+      await page.getByRole("button", { name: "Show fewer labels" }).click();
+      await expect(page.getByText(labels[11] ?? "", { exact: true })).toHaveCount(0);
+      const shot = testInfo.outputPath(`labels-wrapped-${width}.png`);
       await page.screenshot({ path: shot });
-      await testInfo.attach(`eight long labels (${width}px)`, {
+      await testInfo.attach(`twelve long labels (${width}px)`, {
         contentType: "image/png",
         path: shot,
       });

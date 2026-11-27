@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -96,15 +97,16 @@ const (
 	InputQuery    InputType = "search_query"
 )
 
-// Limits are one place's own numbers: no place borrows another's, because each has its own
-// batch limit, request timeout and quota.
+// Limits are one place's numbers: its batch limit, the bytes one background call carries and its
+// quota's background share.
 type Limits struct {
 	// MaxBatchTexts is the most texts one Embed call accepts.
 	MaxBatchTexts int
 	// MaxBatchBytes is the most UTF-8 bytes of text (BoundedBytes, summed over the call's texts)
-	// one background Embed call carries, so the call finishes inside the place's request
-	// timeout; 0 means no budget, and only MaxBatchTexts bounds a call. The client does not
-	// enforce it: embedqueue's chunkForBudget sizes every call it makes to fit.
+	// one background Embed call carries, so the call finishes inside the time the embedding queue
+	// gives it (embedqueue's callBound); 0 means no budget, and only MaxBatchTexts and the queue's
+	// token ceiling bound a call. The client does not enforce it: embedqueue's chunkForBudget sizes
+	// every call it makes to fit.
 	MaxBatchBytes int
 	// BackgroundTokensPerMinute is the most estimated tokens (EstimateTokens) a minute
 	// background work may spend, leaving the rest of the place's quota to live search queries.
@@ -173,6 +175,22 @@ func IsThrottled(err error) bool {
 	return errors.As(err, &marked) && marked.Throttled()
 }
 
+// IsOutage reports whether err is the model service failing to answer now in a way that is no
+// throttle (azureStatusError: a 408, or a 5xx but the 503 that is Azure's capacity throttle;
+// Bedrock's bedrockOutageErrorCodes; a call of either client that ran out of time, timedOut; and
+// a call Bounded ended at its bound).
+// Such an answer is either the service failing or one text it fails on every time (one too slow
+// to embed in the call's time among them), and only embedqueue can tell them apart: it still
+// bisects the batch and confirms a row's own failure with its canary, which fails too while the
+// whole service does. Only then does it back RateLimitedEmbedder off (BackOff): a failing half of
+// a bisection moves the pace not at all. It reads only the marker a client puts on its own
+// outages, and Bounded on a call it ended - an error in err's chain with an Outage() bool method
+// answering true.
+func IsOutage(err error) bool {
+	var marked interface{ Outage() bool }
+	return errors.As(err, &marked) && marked.Outage()
+}
+
 // throttleError marks a client's own throttle for IsThrottled, keeping the cause's text and
 // letting errors.Is/As reach the cause.
 type throttleError struct{ err error }
@@ -180,6 +198,28 @@ type throttleError struct{ err error }
 func (e *throttleError) Error() string   { return e.err.Error() }
 func (e *throttleError) Unwrap() error   { return e.err }
 func (e *throttleError) Throttled() bool { return true }
+
+// outageError marks a client's own outage for IsOutage, as throttleError marks a throttle.
+type outageError struct{ err error }
+
+func (e *outageError) Error() string { return e.err.Error() }
+func (e *outageError) Unwrap() error { return e.err }
+func (e *outageError) Outage() bool  { return true }
+
+// timedOut reports whether err ended a call that ran out of time - a deadline that ended it
+// (context.DeadlineExceeded, such as AzureClient's azureRequestTimeout) or a network timeout (a
+// net.Error whose Timeout is true, such as an HTTP client's own Timeout) - while ctx, the
+// caller's own context, is still live. A call whose caller's context ended says nothing about the
+// service, so it is no outage. Each client marks such a failure for IsOutage, so a call that ran
+// out of time does not speed RateLimitedEmbedder up as an untroubled call does, and a canary that
+// ran out of time backs it off.
+func timedOut(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil {
+		return false
+	}
+	var timeout net.Error
+	return errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout()
+}
 
 // Literal renders a vector as pgvector's text input form ("[0.1,0.2,...]"), the form a query
 // parameter cast with ::vector accepts. Dispatch never scans a vector value back out of

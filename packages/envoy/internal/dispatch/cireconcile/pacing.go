@@ -76,11 +76,11 @@ func (r *Reconciler) gap(rows int) time.Duration {
 	if expected == 0 {
 		// A cycle whose heads the queries all answered whole leaves no REST work behind, while
 		// the heads it listed are still counted, so the guard above does not fire; a deployment
-		// whose mappings and issues no longer name a repository leaves none to read either, and
-		// there is nothing at all for this pass to spread over its bound. The floor is the
-		// answer to no expected work, as it is above, and the arithmetic below would divide by
-		// zero: nothing recovers a panic of the pass's goroutine, so it would take the process
-		// down.
+		// whose project defaults and issues no longer name a repository leaves none to read
+		// either, and there is nothing at all for this pass to spread over its bound. The floor
+		// is the answer to no expected work, as it is above, and the arithmetic below would
+		// divide by zero: nothing recovers a panic of the pass's goroutine, so it would take the
+		// process down.
 		return FastestRequestPace
 	}
 	return min(max(r.PassTimeout*9/10/time.Duration(expected), FastestRequestPace), r.Pace)

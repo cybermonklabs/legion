@@ -11,10 +11,10 @@ import (
 // repository cache reads its own volume with too, and which refuses by name on every platform but
 // Linux (volumestat_other.go). Its error is volumestat's, under this package's prefix.
 //
-// It is a package-level variable rather than a function because it is the trimmer's one reading
-// of the machine: every test of a sweep injects a reading through it and counts the calls, which
-// is this package's seam for a thing a test must fake (roleInitLaunch, testPGInterval).
-var readVolumeUsage = func(path string) (volumeUsage, error) {
+// The trimmer reads the volume through its readUsage field, which newTrimmer sets to this
+// function: every test of a sweep gives its own trimmer a reading of its own there and counts the
+// calls, so a test that fakes the reading changes nothing another test's trimmer reads.
+func readVolumeUsage(path string) (volumeUsage, error) {
 	reading, err := volumestat.Read(path)
 	if err != nil {
 		return volumeUsage{}, fmt.Errorf("launcher: %w", err)

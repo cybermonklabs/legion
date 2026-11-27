@@ -59,27 +59,36 @@ test("an ordinal is given only where an owner has more than one row, in list ord
 });
 
 test("a name is the owner and the start of the question", () => {
-  expect(controlName(issueAsk, undefined)).toBe("CORE-12: Which release?");
-  expect(controlName(documentAsk, undefined)).toBe("Rollout plan: Sign this off?");
-  expect(controlName(issueAsk, { index: 2, total: 2 })).toBe("CORE-12, ask 2 of 2: Which release?");
+  expect(controlName(issueAsk, undefined, issueAsk.question)).toBe("CORE-12: Which release?");
+  expect(controlName(documentAsk, undefined, documentAsk.question)).toBe(
+    "Rollout plan: Sign this off?"
+  );
+  expect(controlName(issueAsk, { index: 2, total: 2 }, issueAsk.question)).toBe(
+    "CORE-12, ask 2 of 2: Which release?"
+  );
+});
+
+test("a name carries the question it is handed, never the ask's own source", () => {
+  // The caller hands the question's plain-text projection (`useControlName`), where a mention
+  // reads as its target's name; the name holds those words and none of the stored markdown.
+  const mentioning = { ...issueAsk, question: "Ask [@Old](dispatch://agent/session-1) first?" };
+  expect(controlName(mentioning, undefined, "Ask @Planner first?")).toBe(
+    "CORE-12: Ask @Planner first?"
+  );
 });
 
 test("a question longer than a name can carry is cut without a trailing space", () => {
-  const long = {
-    ...issueAsk,
-    question: "Which of the two long-running migration strategies do we adopt?",
-  };
-  expect(controlName(long, undefined)).toBe(
+  const long = "Which of the two long-running migration strategies do we adopt?";
+  expect(controlName(issueAsk, undefined, long)).toBe(
     "CORE-12: Which of the two long-running migration strategi…"
   );
 
   // The cut lands on a space in this one: the ellipsis follows the word, not a gap.
-  const atSpace = { ...issueAsk, question: `${"x".repeat(47)} tail` };
-  expect(controlName(atSpace, undefined)).toBe(`CORE-12: ${"x".repeat(47)}…`);
+  expect(controlName(issueAsk, undefined, `${"x".repeat(47)} tail`)).toBe(
+    `CORE-12: ${"x".repeat(47)}…`
+  );
 });
 
 test("a question's own line breaks and runs of spaces collapse to single spaces", () => {
-  expect(controlName({ ...issueAsk, question: "  Which\n\n release? " }, undefined)).toBe(
-    "CORE-12: Which release?"
-  );
+  expect(controlName(issueAsk, undefined, "  Which\n\n release? ")).toBe("CORE-12: Which release?");
 });

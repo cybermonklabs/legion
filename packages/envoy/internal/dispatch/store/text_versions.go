@@ -30,8 +30,15 @@ type TextVersions struct {
 // the items' own tables. Its columns, in this order, are a contract its readers build on
 // (TestTheKeywordRelationAnswersTheContractColumns): kind text, id text, issue_key text,
 // project_key text, event_id bigint, event_seq integer, started_at timestamptz, body text,
-// spec_artifact_id uuid, spec_version integer, search tsvector and deleted_at timestamptz, which
-// is null until the posts carry a deleted_at of their own.
+// spec_artifact_id uuid, spec_version integer, search tsvector and deleted_at timestamptz.
+//
+// deleted_at is the post's own delete mark as it stands now (comments.deleted_at for a comment,
+// messages.deleted_at for a message), on every version of a deleted post whatever the cut, and
+// null on every version of a post that stands and of an issue or an ask: no read gives a deleted
+// post's words (R3 of dispatch://INFRA-1523), the words it held before its delete included, so a
+// reader leaves out or marks each version that carries it, as the present search stamps a
+// deleted post's hit. It is read by the post's primary key, only for a row the reader takes, and
+// an id that is no uuid, which names no post, answers null rather than failing the cast.
 //
 // A version holds at the cut when it started at or before the cut and no later version of the
 // same item, in its owner's seq order, started at or before the cut; so an item has at most one
@@ -42,7 +49,13 @@ type TextVersions struct {
 func (v TextVersions) SQL() string {
 	cut := "'" + textVersionsTime(v.Cut) + "'::timestamptz"
 	return `(select v.kind, v.id, v.issue_key, v.project_key, v.event_id, v.event_seq, v.started_at, v.body,
-        v.spec_artifact_id, v.spec_version, v.search, null::timestamptz as deleted_at
+        v.spec_artifact_id, v.spec_version, v.search,
+        case v.kind
+          when 'comment' then (select c.deleted_at from public.comments c
+                                where c.id = case when pg_input_is_valid(v.id, 'uuid') then v.id::uuid end)
+          when 'message' then (select m.deleted_at from public.messages m
+                                where m.id = case when pg_input_is_valid(v.id, 'uuid') then v.id::uuid end)
+        end as deleted_at
    from public.search_text_versions v
   where v.started_at <= ` + cut + `
     and not exists (select from public.search_text_versions l

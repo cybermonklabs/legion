@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/fixtures/ask-reply-recipients.json TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers os.ReadFile (askReplyRecipientsFixture, ../../../../contracts/fixtures): TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers compares the copies the outbox published with the committed fixture, which writes under -update
+
 import (
 	"bytes"
 	"context"
@@ -29,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The session whose list each test reads, and another session beside it.
@@ -201,7 +204,8 @@ func (f *answersFixture) publishOutbox(t *testing.T) {
 }
 
 // publishOutboxThrough is publishOutbox handing every envelope to publisher, for a test that reads
-// what each topic was handed (recordingOutboxPublisher).
+// what each topic was handed (recordingOutboxPublisher). Its wait for the outbox to publish has one
+// bound, the test binary's deadline (testwait.UntilPolling).
 func (f *answersFixture) publishOutboxThrough(t *testing.T, publisher outbox.Publisher) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -218,8 +222,7 @@ func (f *answersFixture) publishOutboxThrough(t *testing.T, publisher outbox.Pub
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.UntilPolling(t, 10*time.Millisecond, "the outbox to publish every event that can carry a person's words to a session (those still unpublished)", func() (int, bool) {
 		var unpublished int
 		if err := f.database.Pool.QueryRow(context.Background(), `
 			select count(*) from events
@@ -229,14 +232,8 @@ func (f *answersFixture) publishOutboxThrough(t *testing.T, publisher outbox.Pub
 		`).Scan(&unpublished); err != nil {
 			t.Fatalf("count unpublished events: %v", err)
 		}
-		if unpublished == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox left %d events unpublished", unpublished)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return unpublished, unpublished == 0
+	})
 }
 
 // destinations is the published_destinations of the one eventType event about id.
@@ -324,6 +321,7 @@ var answersAlice = model.Actor{Kind: "user", ID: "alice"}
 var answersAliceProven = model.Actor{Kind: "user", ID: "alice", Proven: true}
 
 func TestSessionAnswersListsAPersonsAnswerToTheSessionsAsk(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	answered := f.answer(t, askID, []string{"Postgres"}, "Postgres, for the pool.", nil)
@@ -331,11 +329,14 @@ func TestSessionAnswersListsAPersonsAnswerToTheSessionsAsk(t *testing.T) {
 
 	before := time.Now().UTC()
 	listed := f.list(t, answersSession, "")
+	after := time.Now().UTC()
 	if listed.SessionID != answersSession || listed.Total != 1 || len(listed.Items) != 1 {
 		t.Fatalf("answers = %+v, want one item for %s", listed, answersSession)
 	}
-	if window := before.Sub(listed.Since); window < 72*time.Hour-time.Minute || window > 72*time.Hour+time.Minute {
-		t.Fatalf("since = %s, want 72 hours before the read (%s)", listed.Since, before)
+	// The server read its clock once, between before and after, and the window starts 72 hours
+	// before that reading, however long the read took.
+	if read := listed.Since.Add(72 * time.Hour); read.Before(before) || read.After(after) {
+		t.Fatalf("since = %s, want 72 hours before the read, which came between %s and %s", listed.Since, before, after)
 	}
 	item := listed.Items[0]
 	if item.Kind != model.SessionAnswerKindAnswer || item.Relation != model.SessionAnswerRelationAnsweredYourAsk || item.ID != askID {
@@ -359,6 +360,7 @@ func TestSessionAnswersListsAPersonsAnswerToTheSessionsAsk(t *testing.T) {
 }
 
 func TestSessionAnswersListsAReplacedAnswerOnceAtItsLatestWords(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	first := f.answer(t, askID, []string{"SQLite"}, "SQLite for now.", nil)
@@ -375,6 +377,7 @@ func TestSessionAnswersListsAReplacedAnswerOnceAtItsLatestWords(t *testing.T) {
 }
 
 func TestSessionAnswersListsAPersonsReplyOnTheSessionsAsk(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	reply := f.comment(t, map[string]any{"body": "Which pool size do you need?", "ask_id": askID}, "alice")
@@ -394,6 +397,7 @@ func TestSessionAnswersListsAPersonsReplyOnTheSessionsAsk(t *testing.T) {
 }
 
 func TestSessionAnswersListsAReplyInTheSessionsCommentThread(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	root := f.comment(t, map[string]any{"body": "I will cut the release on Friday."}, answersSession)
 	reply := f.comment(t, map[string]any{"body": "Friday works.", "reply_to": root}, "alice")
@@ -407,6 +411,7 @@ func TestSessionAnswersListsAReplyInTheSessionsCommentThread(t *testing.T) {
 }
 
 func TestSessionAnswersListsACommentOnADocumentTheSessionWrote(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	uploaded := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/projects/ANS/artifacts", map[string]any{
 		"name": "Rollout plan", "content": "# Rollout plan\n\nShip on Friday.\n", "actor": answersActor(answersSession),
@@ -440,6 +445,7 @@ func TestSessionAnswersListsACommentOnADocumentTheSessionWrote(t *testing.T) {
 // session through the document's author route, so its list carries the reply. A reply carries
 // replied_in_a_comment_thread, which sessionanswers.List ranks above commented_on_a_document.
 func TestSessionAnswersListsAPersonsReplyInAThreadOnADocumentTheSessionWrote(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	uploaded := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/projects/ANS/artifacts", map[string]any{
 		"name": "Rollout plan", "content": "# Rollout plan\n\nShip on Friday.\n", "actor": answersActor(answersSession),
@@ -480,6 +486,7 @@ func TestSessionAnswersListsAPersonsReplyInAThreadOnADocumentTheSessionWrote(t *
 }
 
 func TestSessionAnswersListsACommentOnAnIssueRoutedToTheSession(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	f.route(t, "session:"+answersSession)
 	comment := f.comment(t, map[string]any{"body": "Please take the flaky test next."}, "alice")
@@ -493,6 +500,7 @@ func TestSessionAnswersListsACommentOnAnIssueRoutedToTheSession(t *testing.T) {
 }
 
 func TestSessionAnswersListsAMention(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	comment := f.comment(t, map[string]any{
 		"body": "@answers, can you look at the queue?", "mentions": []map[string]any{{"target": "session:" + answersSession}},
@@ -514,6 +522,7 @@ func TestSessionAnswersListsAMention(t *testing.T) {
 }
 
 func TestSessionAnswersListsATargetedMessage(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	direct := f.write(t, http.MethodPost, "/api/v1/agents/"+answersSession+"/messages", map[string]any{"body": "Status, please.", "delivery": "btw"}, "alice")
 	onIssue := f.message(t, map[string]any{"body": "Pick this up.", "target": "session:" + answersSession, "delivery": "btw"}, "alice")
@@ -535,6 +544,7 @@ func TestSessionAnswersListsATargetedMessage(t *testing.T) {
 }
 
 func TestSessionAnswersListsABroadcastCopy(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	response := postBroadcast(t, f.handler, map[string]any{
 		"body": "Stand down and report status.", "delivery": "btw", "session_ids": []string{answersSession, answersOther},
@@ -564,6 +574,7 @@ func TestSessionAnswersListsABroadcastCopy(t *testing.T) {
 }
 
 func TestSessionAnswersListsAPersonsReplyToTheSessionsMessage(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	root := f.message(t, map[string]any{"body": "The deploy is blocked on review."}, answersSession)
 	reply := f.message(t, map[string]any{"body": "I will review it now.", "in_reply_to": root}, "alice")
@@ -580,6 +591,7 @@ func TestSessionAnswersListsAPersonsReplyToTheSessionsMessage(t *testing.T) {
 }
 
 func TestSessionAnswersLeavesOutAnAgentsCommentToTheSession(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	reply := f.comment(t, map[string]any{"body": "Postgres, I would say.", "ask_id": askID}, answersOther)
@@ -592,6 +604,7 @@ func TestSessionAnswersLeavesOutAnAgentsCommentToTheSession(t *testing.T) {
 }
 
 func TestSessionAnswersLeavesOutAnEventDeliveredToAnotherSession(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersOther, "Which database backs the queue?")
 	f.answer(t, askID, []string{"Postgres"}, "Postgres.", nil)
@@ -604,6 +617,7 @@ func TestSessionAnswersLeavesOutAnEventDeliveredToAnotherSession(t *testing.T) {
 }
 
 func TestSessionAnswersLeavesOutADeliveryToARoleRoute(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	f.route(t, "role:reviewer")
 	comment := f.comment(t, map[string]any{"body": "Reviewers, please look."}, "alice")
@@ -622,6 +636,7 @@ func TestSessionAnswersLeavesOutADeliveryToARoleRoute(t *testing.T) {
 }
 
 func TestSessionAnswersLeavesOutAnAnswer73HoursOld(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	old := f.ask(t, answersSession, "Old question?")
 	recent := f.ask(t, answersSession, "Recent question?")
@@ -653,6 +668,7 @@ func TestSessionAnswersLeavesOutAnAnswer73HoursOld(t *testing.T) {
 }
 
 func TestSessionAnswersListsAnEditedCommentAtItsCurrentBody(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	reply := f.comment(t, map[string]any{"body": "Use SQLite.", "ask_id": askID}, "alice")
@@ -675,6 +691,7 @@ func TestSessionAnswersListsAnEditedCommentAtItsCurrentBody(t *testing.T) {
 // and the list holds the reply once, as a reply on the session's own ask, which outranks the
 // mention.
 func TestSessionAnswersLeavesAFollowersReplyToTheDeliveredMentionAndListsItOnce(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	reply := f.comment(t, map[string]any{
@@ -699,6 +716,7 @@ func TestSessionAnswersLeavesAFollowersReplyToTheDeliveredMentionAndListsItOnce(
 // mention's send was not known to be delivered at publish time, so the outbox published the route
 // copy, and a retry delivered the mention after.
 func TestSessionAnswersListsACommentBothTheRouteAndAMentionHoldOnce(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	f.route(t, "session:"+answersSession)
 	comment := f.comment(t, map[string]any{
@@ -724,6 +742,7 @@ func TestSessionAnswersListsACommentBothTheRouteAndAMentionHoldOnce(t *testing.T
 }
 
 func TestSessionAnswersListsNewestFirst(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	f.answer(t, askID, []string{"Postgres"}, "", nil)
@@ -750,6 +769,7 @@ func TestSessionAnswersListsNewestFirst(t *testing.T) {
 }
 
 func TestSessionAnswersMaxCharsStopsAfterTheCrossingItem(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	bodies := []string{"0123456789", "abcdefghij", "😀😀😀😀😀"} // 10 UTF-16 units each, oldest first
 	ids := make([]string, len(bodies))
@@ -790,6 +810,7 @@ func TestSessionAnswersMaxCharsStopsAfterTheCrossingItem(t *testing.T) {
 // so a caller asking for a few hundred characters of declines is answered with what it asked
 // for and not with thousands.
 func TestSessionAnswersMaxCharsCountsTheWordsADeclineServes(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	older := f.write(t, http.MethodPost, "/api/v1/agents/"+answersSession+"/messages",
 		map[string]any{"body": "0123456789", "delivery": "btw"}, "alice") // 10 UTF-16 units
@@ -817,6 +838,7 @@ func TestSessionAnswersMaxCharsCountsTheWordsADeclineServes(t *testing.T) {
 }
 
 func TestSessionAnswersRefusesASinceOlderThanSevenDays(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	first := f.write(t, http.MethodPost, "/api/v1/agents/"+answersSession+"/messages", map[string]any{"body": "First.", "delivery": "btw"}, "alice")
 	between := time.Now().UTC()
@@ -844,6 +866,7 @@ func TestSessionAnswersRefusesASinceOlderThanSevenDays(t *testing.T) {
 }
 
 func TestSessionAnswersRefusesABadSessionID(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	for _, session := range []string{"bad%20id", "%3Cx%3E", "a%7Cb"} {
 		response := dispatchRequest(t, f.handler, http.MethodGet, "/api/v1/agents/"+session+"/answers", nil, "alice")
@@ -853,17 +876,33 @@ func TestSessionAnswersRefusesABadSessionID(t *testing.T) {
 	}
 }
 
-// declineIndex is the partial index the answers list reads its window of human events through,
-// over the five event types the read names (20261111002444).
+// declineIndex is the partial btree index of a person's events of the five types by time
+// (20261111002444). The read of the release before this one finds a session's events in its window
+// through it, by time alone, and tests the session's topic with = any on each row. This release
+// keeps it for two reasons: its own read takes it where the window holds far fewer of a person's
+// events, reading them all by time and keeping the session's, and a pod of the release before
+// still serves through it while this release rolls out.
 const declineIndex = "events_person_words_with_declines"
+
+// destinationsIndex is the partial GIN index of the same events by (published_destinations,
+// created_at) (20261125131000), which this release's read finds a session's events in its window
+// through on a window that holds many of a person's events, as production's does and as
+// seedEvents makes this fixture's: its test of the topic is published_destinations @>
+// array[...], which GIN serves.
+const destinationsIndex = "events_person_words_destinations"
 
 // A person who declines an ask closes it with no answer, and every session the decline reached -
 // the asker and every follower - reads it on its own list: an item of its own kind, under a
 // relation of its own, at the resolution's own time, carrying the four sentences Dispatch wrote
-// and the person's note in parts of their own. No other resolution is listed at all, and the two
-// plans at the end are what lets this release drop the four-type index while a pod of the release
-// before it, whose read names four types, still serves requests through the five-type one.
+// and the person's note in parts of their own. No other resolution is listed at all. The plans at
+// the end hold the rolling update: this release's read, the five types by @>, reads
+// destinationsIndex over this fixture's window, which seedEvents fills with other sessions'
+// events, as a window of production's size and shape is filled, and the read of the release
+// before it, the five types by = any, still reads declineIndex, which this release keeps. The
+// read of the releases before 20261111002444, which names four types, reads declineIndex too,
+// since 20261111002445 dropped the four-type index.
 func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	const question = "Which database backs the queue?"
 	askID := f.ask(t, answersSession, question)
@@ -986,9 +1025,10 @@ func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
 
 	f.seedEvents(t, 2000)
 	const personWords = `'ask.answered', 'comment.created', 'message.created', 'message.answered'`
-	for _, read := range []struct{ name, types string }{
-		{"the five types this release reads", personWords + `, 'ask.resolved'`},
-		{"the four types the release before it reads", personWords},
+	for _, read := range []struct{ name, types, topic, index string }{
+		{"the five types by @>, which this release reads", personWords + `, 'ask.resolved'`, `e.published_destinations @> array[$2::text]`, destinationsIndex},
+		{"the five types by = any, which the release before it reads", personWords + `, 'ask.resolved'`, `$2 = any(e.published_destinations)`, declineIndex},
+		{"the four types by = any, which the releases before 20261111002444 read", personWords, `$2 = any(e.published_destinations)`, declineIndex},
 	} {
 		statement := `
 			select e.type, e.payload->>'id' as id
@@ -996,24 +1036,27 @@ func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
 			where e.actor->>'kind' = 'user'
 			  and e.type in (` + read.types + `)
 			  and e.created_at >= $1
-			  and $2 = any(e.published_destinations)`
+			  and ` + read.topic
 		plan := planWithoutSeqScans(t, f.database, statement,
 			time.Now().UTC().Add(-72*time.Hour), contracts.LegacyAgentSubject(answersSession))
 		if explaintest.SeqScansRelation(t, plan, "events") {
-			t.Fatalf("%s scans events sequentially; want %s:\n%s", read.name, declineIndex, plan)
+			t.Fatalf("%s scans events sequentially; want %s:\n%s", read.name, read.index, plan)
 		}
 		scans := explaintest.IndexScans(t, plan)
-		if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == declineIndex }) {
-			t.Fatalf("%s reads %v, want an index scan of %s:\n%s", read.name, scans, declineIndex, plan)
+		if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == read.index }) {
+			t.Fatalf("%s reads %v, want an index scan of %s:\n%s", read.name, scans, read.index, plan)
 		}
 	}
 }
 
-// seedEvents fills events with rows of a type no partial index of this read holds, so the plans
-// above are costed over a table worth an index rather than over the handful of rows this fixture
-// writes, and analyzes after, without which the planner costs every index off the same default
-// estimate. The seeded rows are published and notify nobody, so no outbox run of this test has
-// anything to do with them.
+// seedEvents fills events with rows no list of this test reads, so the plans above are costed over
+// a table worth an index rather than over the handful of rows this fixture writes: rows of a type
+// no partial index of this read holds, and as many events of the five types that a person wrote in
+// the window to the topics of 20 other sessions, which both partial indexes hold. Without the
+// second kind, the window holds this fixture's own events alone, and a read of them by time alone
+// costs less than a read by the session's topic, whatever the statement tests. It analyzes after,
+// without which the planner costs every index off the same default estimate. The seeded rows are
+// published and notify nobody, so no outbox run of this test has anything to do with them.
 func (f *answersFixture) seedEvents(t *testing.T, rows int) {
 	t.Helper()
 	if _, err := f.database.Pool.Exec(context.Background(), `
@@ -1023,6 +1066,16 @@ func (f *answersFixture) seedEvents(t *testing.T, rows int) {
 		from generate_series(1, $2::int) n
 	`, f.issue, rows); err != nil {
 		t.Fatalf("seed %d events: %v", rows, err)
+	}
+	if _, err := f.database.Pool.Exec(context.Background(), `
+		insert into events (issue_key, seq, type, actor, payload, notify, published_at, created_at, published_destinations)
+		select $1::text, 100000 + $2::int + n,
+		       (array['ask.answered', 'comment.created', 'message.created', 'message.answered', 'ask.resolved'])[1 + n % 5],
+		       '{"kind":"user","id":"alice"}'::jsonb, jsonb_build_object('id', gen_random_uuid()::text), false, now(),
+		       now() - make_interval(mins => n), array[$3::text || (n % 20)]
+		from generate_series(1, $2::int) n
+	`, f.issue, rows, contracts.LegacyAgentSubject("session-seed-")); err != nil {
+		t.Fatalf("seed %d events of other sessions: %v", rows, err)
 	}
 	if _, err := f.database.Pool.Exec(context.Background(), "analyze events"); err != nil {
 		t.Fatalf("analyze the seeded events: %v", err)
@@ -1286,6 +1339,7 @@ func normalizeAskReplyFixture(encoded []byte) []byte {
 // `go test ./internal/dispatch/api -run '^TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers$' -update`
 // rewrites it.
 func TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	f.credit(t, askSessionB)
 	const question = "Which database backs the queue?"
@@ -1509,6 +1563,7 @@ func TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers(t *testing.T) {
 // answered_an_ask, and declined_an_ask with the person's note alone: those words tell the asker
 // to decide its next step, and B asked nothing.
 func TestAnAnswerAndADeclineAreTheSessionsOwnOnlyForItsAskerAndFollowers(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	f.route(t, "session:"+askSessionB)
 	answeredID := f.ask(t, askSessionA, "Which database backs the queue?")

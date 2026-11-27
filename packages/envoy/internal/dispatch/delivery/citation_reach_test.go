@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/citebody"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // TestEveryCitationIsDecidedWithinItsReachAsOverTheWholeBody is the differential of
@@ -25,6 +26,7 @@ import (
 // each path (or the body before it, where the path stands nearer the start) and the path, the
 // owner, repository and number of each path it credits, and the number of each bare reference.
 func TestEveryCitationIsDecidedWithinItsReachAsOverTheWholeBody(t *testing.T) {
+	t.Parallel()
 	const repo = "acme/widgets"
 	var bodies, paths, cut, shorterDiffers, credited, refused, failures int
 	fail := func(format string, args ...any) {
@@ -37,7 +39,7 @@ func TestEveryCitationIsDecidedWithinItsReachAsOverTheWholeBody(t *testing.T) {
 	for i, body := range reachCorpus() {
 		bodies++
 		var reads citebody.Reads
-		got := citedIssues(repo, citebody.New(body, &reads))
+		got := citedIssues(refs.Renames{}, repo, citebody.New(body, &reads))
 		if want := citedIssuesOverTheWholeBody(repo, body); !slices.Equal(got, want) {
 			fail("body %d (%d bytes) cites %v within the reach and %v over the whole body: %.300q", i, len(body), got, want, body)
 		}

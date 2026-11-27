@@ -5,29 +5,30 @@ import { Link } from "react-router-dom";
 import { issueQuery } from "../../api/queries";
 import type { Artifact, DispatchEvent } from "../../api/types";
 import { linkText } from "../../theme/classes";
-import { type AgentPart, AgentParts } from "../refs/AgentName";
 import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/routes";
+import { type SentencePart, SentenceParts } from "./SentenceParts";
 
 type ArtifactVersionEvent = Extract<DispatchEvent, { type: "artifact.version" }>;
 
 /** The activity text with the artifact's name turned into a link, so the reader opens the
  *  upload from the Conversation instead of hunting for it on the Artifacts tab. The text itself
- *  comes from `activityDescription`, in a text part; an agent part is never searched for it. The
- *  link goes on the last reading of the name, because a correction's line names the document
- *  twice - `renamed <old> to <new>` - and it is the new title that has the page. */
+ *  comes from `activityDescription`, in a text part; an agent part and a text of the record are
+ *  never searched for it. The link goes on the last reading of the name, because a correction's
+ *  line names the document twice - `renamed <old> to <new>` - and it is the new title that has
+ *  the page. */
 function LinkedName({
   description,
   name,
   to,
 }: {
-  description: readonly AgentPart[];
+  description: readonly SentencePart[];
   name: string;
   to: string;
 }): ReactNode {
   const linked = description.findIndex((part) => typeof part === "string" && part.includes(name));
   return (
     <span>
-      <AgentParts
+      <SentenceParts
         parts={description}
         text={(part, index) => {
           if (index !== linked) {
@@ -56,7 +57,7 @@ function SavedVersionLine({
   event,
   issueKey,
 }: {
-  description: readonly AgentPart[];
+  description: readonly SentencePart[];
   event: ArtifactVersionEvent;
   issueKey: string;
 }): ReactNode {
@@ -67,7 +68,7 @@ function SavedVersionLine({
   if (artifact === undefined) {
     return (
       <span>
-        <AgentParts parts={description} />
+        <SentenceParts parts={description} />
       </span>
     );
   }
@@ -85,7 +86,7 @@ export function ActivityLine({
   event,
   issueKey,
 }: {
-  description: readonly AgentPart[];
+  description: readonly SentencePart[];
   event: DispatchEvent;
   issueKey: string;
 }): ReactNode {
@@ -109,7 +110,7 @@ export function ActivityLine({
       return (
         <>
           <span>
-            <AgentParts parts={description} />
+            <SentenceParts parts={description} />
           </span>
           <Link
             className={`dispatch-inline-link underline ${linkText}`}
@@ -122,7 +123,7 @@ export function ActivityLine({
     default:
       return (
         <span>
-          <AgentParts parts={description} />
+          <SentenceParts parts={description} />
         </span>
       );
   }

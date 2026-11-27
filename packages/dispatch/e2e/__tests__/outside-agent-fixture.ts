@@ -12,16 +12,32 @@ import { hostTool } from "@legion/test-fixtures/host-tools";
 export const acceptance = fileURLToPath(new URL("../acceptance/", import.meta.url));
 export const publicLeg = join(acceptance, "outside-agent-public.sh");
 export const tailnetLeg = join(acceptance, "outside-agent-tailnet.sh");
+export const codexLeg = join(acceptance, "outside-agent-codex.sh");
 /** The support files the legs source from beside them: a leg copied elsewhere takes them along. */
 export const supportFiles = [
   "outside-agent-lib.sh",
   "outside-agent-peer.sh",
   "outside-agent-sweep.sh",
   "outside-agent-pins.sh",
+  "outside-agent-grants.sh",
 ];
 
-/** The public leg's P rows, in order. */
-export const publicRows = ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10"];
+/** The Codex leg's rows, in order, which the public leg prints after P10. */
+export const codexRows = ["C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7"];
+/** The public leg's P rows and its Codex leg's C rows, in order. */
+export const publicRows = [
+  "P1",
+  "P2",
+  "P3",
+  "P4",
+  "P5",
+  "P6",
+  "P7",
+  "P8",
+  "P9",
+  "P10",
+  ...codexRows,
+];
 
 /** A directory maker of a test file's own: `temporaryDirectories(...)`'s answer. */
 export type Scratch = (label: string) => string;
@@ -32,9 +48,10 @@ export interface LegRun {
   readonly stderr: string;
 }
 
-/** The shell tools the legs read text with. PATH holds these alone in the absent-target runs, so
- *  no tool the legs drive (`omp`, `tmux`, `bun`, `gh`, `git`, `crane`, `agent-secrets`,
- *  `agent-secrets-helper`) is there. */
+/** The shell tools the legs read text and lay out their scratch with: `ln` makes the links of
+ *  real_tools, which the legs' children find their programs through. PATH holds these alone in the
+ *  absent-target runs, so no tool the legs drive (`omp`, `tmux`, `bun`, `gh`, `git`, `crane`,
+ *  `agent-secrets`, `agent-secrets-helper`) is there. */
 const textTools = [
   "bash",
   "curl",
@@ -45,6 +62,7 @@ const textTools = [
   "mkdir",
   "cat",
   "ls",
+  "ln",
   "od",
   "tr",
   "chmod",

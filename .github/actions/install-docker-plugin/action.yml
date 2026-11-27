@@ -5,8 +5,7 @@ description: >-
 
   The `pulumi-docker` row of .github/ci-tools.yaml pins the version and the one sha256 of the whole
   release tarball that both sources are checked against, and .github/scripts/check-ci-tools.sh
-  holds that row's version to `const DockerPluginVersion` of
-  packages/envoy/infra/internal/pulumitest/pulumitest.go, the constant the live programs pin the
+  holds that row's version to `packages/envoy/infra/internal/pulumitest/pulumitest.go#const DockerPluginVersion`, the constant the live programs pin the
   plugin at. The row's second source is get.pulumi.com, which serves the same tarball, so an
   outage of GitHub's release assets does not stop the job.
 

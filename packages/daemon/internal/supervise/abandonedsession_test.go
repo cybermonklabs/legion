@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 const (
@@ -44,35 +45,34 @@ func (h *harness) wantAbandonedToldBy(by, when string) {
 	}
 }
 
-// abandonSession walks the claim to where the provider refused every turn of it out of its launch
-// budget and an operator retried it, which leaves that session behind: from here the claim records
-// an abandoned session nothing has told its replacement of yet.
-func (h *harness) abandonSession(refusal string) {
+// abandonSession walks the claim to where an operator stopped it and a retry asking for a new
+// session started it again, which leaves the recorded session behind (freshSession): from here the
+// claim records an abandoned session nothing has told its replacement of yet. It answers why the
+// claim records the session was left: the retry's own reason, since a stopped claim carries no
+// failure to name.
+func (h *harness) abandonSession() string {
 	h.t.Helper()
 	h.reach(StateIdle)
-	for turn := 1; turn <= testLimits().LaunchFailures; turn++ {
-		h.report(uint64(turn), true, refusal)
-	}
-	h.wantState(StateFailed)
-	h.must(RequestRetry{Claim: h.token})
+	h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
+	h.wantState(StateRetired)
+	h.must(RequestRetry{Claim: h.token, FreshSession: true})
+	return "the retry asked for a new session"
 }
 
-// A claim the provider refused out of its budget fails, and the retry of it leaves that session
-// behind. The claim records which session it abandoned and why, since nothing else does — the
-// session itself stays in its store — and the first task the agent that replaces it is given names
-// that session, quoted, the cause in the provider's own words (the context size it refused at
-// among them), the issue's branch and the handoffs committed on it. Nothing in a new session says
-// that an older one existed, so a worker given the bare task would read an empty transcript as a
-// fresh start and do again what the abandoned session already pushed (dispatch://INFRA-714, item
-// 4 of the refusal section).
+// A retry that asks for a new session leaves the recorded one behind. The claim records which
+// session it abandoned and why, since nothing else does — the session itself stays in its store —
+// and the first task the agent that replaces it is given names that session, quoted, why it was
+// left, the issue's branch and the handoffs committed on it. Nothing in a new session says that an
+// older one existed, so a worker given the bare task would read an empty transcript as a fresh
+// start and do again what the abandoned session already pushed (dispatch://INFRA-714, item 4 of
+// the refusal section).
 func TestTheFreshSessionsFirstTaskNamesTheSessionItReplacedAndWhatOutlivedIt(t *testing.T) {
 	h := newHarness(t)
-	refusal := "the provider ended the turn with an error at 226k tokens of context"
 
-	h.abandonSession(refusal)
+	refusal := h.abandonSession()
 
 	if got := h.claim().Abandoned; got.Session != session || got.SessionFile != sessionFile || !strings.Contains(got.Why, refusal) {
-		t.Fatalf("the claim records %+v, want the session %q it left behind and the provider's own words for why", got, session)
+		t.Fatalf("the claim records %+v, want the session %q it left behind and why", got, session)
 	}
 	h.registerFresh()
 	base := len(h.prompts())
@@ -108,21 +108,27 @@ func TestTheFreshSessionsFirstTaskNamesTheSessionItReplacedAndWhatOutlivedIt(t *
 }
 
 // Whoever abandons a session, the claim records which one and why in that one's own words: an
-// operator's `legion claims forget-session`, and an operator's retry in a new session, which fails
-// nothing and so has no failure to name.
+// operator's forget, from `legion claims forget-session` or its retry --fresh-session, the forget
+// of the controller's fresh session, which no operator asked for, and an operator's retry in a new
+// session, which fails nothing and so has no failure to name.
+//
+// The negative control is forgottenBy answering the operator's sentence for every asker: the
+// controller's row then records that an operator cleared the session.
 func TestEveryAbandonmentIsRecordedWithItsOwnReason(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		event Event
 		why   string
 	}{
-		{"the operator forgetting the session", RequestForgetSession{Claim: testToken, Session: session}, "forget-session"},
+		{"the operator forgetting the session", RequestForgetSession{Claim: testToken, Session: session, By: SuspendedByOperator}, "forget-session"},
+		{"the controller's fresh session", RequestForgetSession{Claim: testToken, Session: session, By: SuspendedByController},
+			"the project's controller asked for a fresh session of this agent"},
 		{"a retry asking for a new session", RequestRetry{Claim: testToken, FreshSession: true}, "the retry asked for a new session"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateIdle)
-			h.must(RequestStop{Claim: h.token})
+			h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 			h.wantState(StateRetired)
 
 			h.must(tc.event)
@@ -148,8 +154,7 @@ func TestEveryAbandonmentIsRecordedWithItsOwnReason(t *testing.T) {
 // (dispatch://INFRA-714).
 func TestARefusedPromptLeavesTheAbandonedSessionStillToBeTold(t *testing.T) {
 	h := newHarness(t)
-	refusal := "the provider ended the turn with an error at 226k tokens of context"
-	h.abandonSession(refusal)
+	refusal := h.abandonSession()
 	h.registerFresh()
 	base := len(h.prompts())
 	h.conn.RefusePrompt("the agent will not take it")
@@ -199,8 +204,7 @@ func TestARefusedPromptLeavesTheAbandonedSessionStillToBeTold(t *testing.T) {
 // and the turn that takes it tells it.
 func TestAnAbandonedSessionsSentenceIsToldAtConfirmation(t *testing.T) {
 	h := newHarness(t)
-	refusal := "the provider ended the turn with an error at 226k tokens of context"
-	h.abandonSession(refusal)
+	refusal := h.abandonSession()
 	h.registerFresh()
 	base := len(h.prompts())
 	says := []string{session, "abandoned", refusal, "legion/LEGION-209"}
@@ -210,7 +214,7 @@ func TestAnAbandonedSessionsSentenceIsToldAtConfirmation(t *testing.T) {
 	wantSays(t, first.Message, says...)
 	h.wantAbandonedToldBy("", "at the acknowledgement")
 
-	h.must(StreamLateRefusal{Claim: h.token, DeliveryID: first.DeliveryID, Error: busyAnswer})
+	h.must(StreamLateRefusal{Claim: h.token, DeliveryID: first.DeliveryID, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 	h.wantAbandonedToldBy("", "after the busy answer")
 
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
@@ -220,7 +224,7 @@ func TestAnAbandonedSessionsSentenceIsToldAtConfirmation(t *testing.T) {
 	h.wantAbandonedToldBy(second.DeliveryID, "once the task's turn began")
 
 	// Oh My Pi answers that prompt busy after all: the turn that confirmed it was another input's.
-	h.must(StreamLateRefusal{Claim: h.token, DeliveryID: second.DeliveryID, Error: busyAnswer})
+	h.must(StreamLateRefusal{Claim: h.token, DeliveryID: second.DeliveryID, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 	if p := h.pending(); !p.ConfirmedAt.IsZero() {
 		t.Fatalf("pending after the late busy answer = %+v, want the confirmation taken back", p)
 	}

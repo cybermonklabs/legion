@@ -42,6 +42,7 @@ func heldTaskClock(clock *heldClock) heldTaskOption {
 // same `decided` notice four times from 05:52Z, and again in a catch-up at 05:55:02Z
 // (dispatch://INFRA-3276, spec version 26).
 func TestAKeptDecisionToldInALateTurnIsToldOnce(t *testing.T) {
+	t.Parallel()
 	clock := &heldClock{}
 	r := newHeldTaskRig(t, heldTaskClock(clock))
 	ref := "dispatch://" + heldTaskRoot + "/ask/ask-late-turn"
@@ -76,7 +77,7 @@ func TestAKeptDecisionToldInALateTurnIsToldOnce(t *testing.T) {
 	r.wantHeldBy(ref, taken.ID)
 
 	// The sweep sends the task again, and Oh My Pi, preparing the first prompt's turn, answers busy.
-	r.conn.RefusePrompt(keptBusyRefusal)
+	r.conn.FailPrompt(keptBusy)
 	if err := machine.Handle(r.ctx, aliveObservation(machine)); err != nil {
 		t.Fatalf("post the sweep's observation: %v", err)
 	}

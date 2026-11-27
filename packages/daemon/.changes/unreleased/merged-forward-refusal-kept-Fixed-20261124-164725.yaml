@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    The prompt part every phase worker shares no longer says that a completion refused
+    `HANDOFF_HEAD_MERGED_FORWARD` recorded nothing. The refusal moves nothing, but the daemon
+    keeps it under the call's key, so the same call again is answered `HANDOFF_ALREADY_RECORDED`;
+    the prompt and the troubleshooting guide now say so.
+time: 2026-11-24T16:47:25Z
+custom:
+    Issue: merged-forward-refusal-kept

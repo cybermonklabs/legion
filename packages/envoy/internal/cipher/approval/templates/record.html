@@ -1,5 +1,6 @@
 {{define "token"}}
 {{- range .Printed}}<input type="hidden" name="printed" value="{{.}}">{{end -}}
+{{- range .Profiles}}<input type="hidden" name="profile_digest" value="{{.}}">{{end -}}
 <input type="hidden" name="token" value="{{.Token}}"><input type="hidden" name="expires" value="{{.Expires}}">
 {{- end}}
 
@@ -29,6 +30,40 @@
 <dl>
 <dt>{{if $r.MachineLogin}}Host{{else}}Secrets{{end}}</dt>
 <dd>{{range $j, $name := $r.Identifiers}}{{if $j}}, {{end}}<code>{{$name}}</code>{{end}}</dd>
+{{- range $r.Profiles}}
+<dt>Profile</dt>
+<dd><code>{{.Name}}</code></dd>
+<dt>Source</dt>
+<dd><code>{{.Source}}</code></dd>
+{{- if .Accounts}}
+<dt>GitHub accounts</dt>
+<dd>{{.Accounts}}</dd>
+<dt>Repositories</dt>
+<dd>{{.Repositories}}</dd>
+<dt>Permissions</dt>
+<dd>{{.Permissions}}</dd>
+<dt>Target</dt>
+<dd>{{.Target}}</dd>
+{{- end}}
+{{- if .GoogleScopes}}
+<dt>Google scopes</dt>
+<dd>{{.GoogleScopes}}</dd>
+{{- end}}
+{{- if .ProxyHosts}}
+<dt>Proxy hosts</dt>
+<dd>{{.ProxyHosts}}</dd>
+{{- end}}
+{{- end}}
+{{- range $r.Proxied}}
+<dt>Behind the proxy</dt>
+<dd><code>{{.Name}}</code></dd>
+<dt>Kind</dt>
+<dd><code>{{.Kind}}</code></dd>
+<dt>Proxy hosts</dt>
+<dd>{{.ProxyHosts}}</dd>
+<dt>Allowed requests</dt>
+<dd>{{.Allow}}</dd>
+{{- end}}
 {{- range $r.Projects}}
 <dt>Project of <code>{{.Secret}}</code></dt>
 <dd><code>{{.Project}}</code>, {{if .Private}}private, {{if .Named}}which the session names{{else}}which the session does not name{{end}}{{else}}public{{end}}</dd>

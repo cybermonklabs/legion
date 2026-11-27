@@ -13,12 +13,12 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // The windows both of the controller's claim recoveries are read in, and the fixtures that
@@ -46,9 +46,9 @@ import (
 // words are the states its predicates admit is a different question, and a copy like this one
 // cannot answer it: the predicates decide it in reachstates_test.go.
 const (
-	wantCompactionReaches   = "A compaction reaches a claim whose agent is ready or idle"
+	wantCompactionReaches   = "A compaction reaches an agent that is ready or idle"
 	wantCompactionLive      = "ready or idle"
-	wantFreshSessionReaches = "A fresh session reaches a claim whose agent is registered, ready or idle, one that is suspended, failed or retired, and one stored working that no process stands behind"
+	wantFreshSessionReaches = "A fresh session reaches an agent that is registered, ready or idle, one that is suspended, failed or retired, and one whose claim is stored working and that no process stands behind"
 	wantFreshSessionLive    = "registered, ready or idle"
 	wantAskAgainLater       = "Ask again later; `read_state` (`legion claims list`) shows its state"
 )
@@ -121,17 +121,11 @@ func parkedRelaunchCauses() []parkedRelaunchCause {
 //
 // The pacing is installed before the claim is created, because a machine takes its deps where
 // it is built, and it holds nothing until the verdict below: the launches that make the claim
-// ready run as they are raised. The turn it then gives is an hour away and this harness's clock
+// ready run as they are raised. The turn it then gives is minutes away and this harness's clock
 // fires no timer at all (stillClock), so the wake stays parked for the rest of the test.
 func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.Observation) claim.Token {
 	t.Helper()
-	var park atomic.Bool
-	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
-		if park.Load() {
-			return now.Add(time.Hour)
-		}
-		return now
-	}}
+	park := pacedUntilParked(h)
 	token := idleOnTheLadder(t, h)
 	conn := connected(h, token)
 	release := conn.HoldCompact()
@@ -141,7 +135,7 @@ func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.O
 	}()
 	waitForCompacting(t, h, token)
 
-	park.Store(true)
+	park()
 	m, _ := h.supervisor.Machine(token)
 	locator := m.Claim().Locator
 	if locator == nil {
@@ -180,6 +174,26 @@ func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.O
 			view.SuspensionHeldBy)
 	}
 	return token
+}
+
+// pacedUntilParked sets the harness's wake pacing to a pacer on the machines' own clock that lets
+// every paced launch out at its join until park is called, and parks every one after it: the
+// limiter's burst holds every launch the fixtures make before the park, and park reserves a whole
+// burst more, so every token is spent and a place joined after waits for a turn minutes out (one
+// for each launch the fixtures made, and one more), which a harness clock that fires no timer
+// (stillClock) never gives. It is set before any claim is created, because a machine takes its
+// deps where it is built. The burst is the pace the wake lines name.
+func pacedUntilParked(h *harness) (park func()) {
+	const burst = 64
+	limiter := wakepace.New(1, burst, nil)
+	clock := h.supervisor.deps.Clock
+	pacer := supervise.NewPacer(limiter, clock)
+	h.supervisor.deps.WakePace = supervise.WakePace{Pacer: pacer, Interval: limiter.Interval(), Rate: 1, Burst: burst}
+	return func() {
+		for range burst {
+			limiter.Reserve(clock.Now())
+		}
+	}
 }
 
 // A claim whose relaunch waits its paced turn is a claim between states with a launch in
@@ -243,19 +257,13 @@ func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled
 // TheLaunchsTurn in supervise).
 func workingUnderAParkedRefresh(t *testing.T, h *harness) claim.Token {
 	t.Helper()
-	var park atomic.Bool
-	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
-		if park.Load() {
-			return now.Add(time.Hour)
-		}
-		return now
-	}}
+	park := pacedUntilParked(h)
 	token := idleOnTheLadder(t, h)
 
-	park.Store(true)
+	park()
 	m, _ := h.supervisor.Machine(token)
 	stale := m.Claim()
-	stale.PluginContract = DaemonAPIVersion - 1
+	stale.PluginContract = DaemonAPIVersion() - 1
 	if err := h.store.PutClaim(h.ctx, stale); err != nil {
 		t.Fatalf("seed %s at an earlier plugin contract: %v", token, err)
 	}
@@ -583,7 +591,7 @@ func processReads(h *harness) int {
 
 // recoveryDoor is one of the four doors the two recoveries have, with the words its own
 // operation writes into the refusals both of its doors give (freshSessionDoors, compactDoors,
-// controllerOp). The rows whose answer is the same at every door run through all four.
+// agentAction). The rows whose answer is the same at every door run through all four.
 type recoveryDoor struct {
 	name        string
 	ask         func(t *testing.T, h *harness, issue string, role claim.Role) *httptest.ResponseRecorder
@@ -601,7 +609,7 @@ func recoveryDoors() []recoveryDoor {
 		doors = append(doors, recoveryDoor{door.name, ask, "a fresh session would cut that turn off", wantFreshSessionReaches})
 	}
 	for _, door := range compactDoors() {
-		doors = append(doors, recoveryDoor{door.name, door.ask, "a compaction would abort that turn", wantCompactionReaches})
+		doors = append(doors, recoveryDoor{door.name, door.ask, "Oh My Pi refuses a compaction's handoff in that turn", wantCompactionReaches})
 	}
 	return doors
 }
@@ -779,7 +787,7 @@ func workingController(t *testing.T, h *harness) claim.Token {
 	generation := m.Claim().Generation
 	for _, ev := range []supervise.Event{
 		supervise.RequestRegister{Claim: token, Generation: generation, Session: "ses_controller",
-			SessionFile: "/sessions/ses_controller.jsonl", CapabilityHash: capabilityHash("secret"), PluginContract: DaemonAPIVersion},
+			SessionFile: "/sessions/ses_controller.jsonl", CapabilityHash: capabilityHash("secret"), PluginContract: DaemonAPIVersion()},
 		supervise.RequestReady{Claim: token, Generation: generation, Session: "ses_controller"},
 		supervise.StreamTurnStart{Claim: token},
 	} {
@@ -796,22 +804,25 @@ func workingController(t *testing.T, h *harness) claim.Token {
 
 // deadControllerRefusal is the sentence the compaction gives the project's own controller
 // stored working over a process the read at the request finds gone (api's refuseDeadController).
-// Its keeper does nothing for a controller stored working, and the fresh session refuses the
-// controller in every state, so neither is named: what starts it is the operator's suspend,
+// Its keeper ends a controller stored working only past controller_turn_bound_minutes, and the
+// fresh session refuses the controller in every state, so neither is named: what starts it is the
+// operator's suspend,
 // which lands where it arrives on a claim whose process a read found gone, and then the
 // operator's resume, which the keeper's own resume is held from by that suspension.
 func deadControllerRefusal(token claim.Token) string {
 	return string(token) + " is stored working over a process that is no longer running, so it runs no " +
-		"Oh My Pi session to compact. The daemon's controller keeper does nothing for a controller stored " +
-		"working and does not resume one an operator suspended, so the operator starts it again: " +
+		"Oh My Pi session to compact. The daemon's controller keeper ends a controller stored working only " +
+		"once its turn has been open longer than controller_turn_bound_minutes, and does not resume one an " +
+		"operator suspended, so the operator starts it again now: " +
 		"`legion claims suspend --claim " + string(token) + "`, then `legion claims resume --claim " + string(token) + "`"
 }
 
 // The project's own controller stored working over a dead process is refused the compaction
 // as every claim in that window is, with the code of a claim that runs no session to compact
 // (api's claimNotRunning) — and named what starts it, which is neither the door a workflow role
-// is named nor the keeper a stopped controller is: the keeper leaves a controller stored working
-// alone, and the fresh session refuses the controller outright. So the sentence names the
+// is named nor the keeper a stopped controller is: the keeper ends a controller stored working
+// only past its turn bound, and the fresh session refuses the controller outright. So the
+// sentence names the
 // operator's suspend and resume, and the row then runs those two commands as the sentence names
 // them and finds the controller suspended by the first and launching after the second, which is
 // what makes the sentence true rather than merely spelled. Only the operator's door asks: the
@@ -1067,8 +1078,8 @@ func TestAFreshSessionThatStoppedTheClaimAndCouldNotStartItSaysNotRestartedInIts
 // (refusingCheckLaunchStore). Each finds its own line and not the other's.
 func TestTheControllersFreshSessionLogsWhetherItStartedTheClaimAgain(t *testing.T) {
 	const (
-		startedLine = "api: the controller started a claim in a fresh session"
-		stoppedLine = "api: the controller's fresh session stopped a claim and did not start it again"
+		startedLine = "api: the controller started an agent in a fresh session"
+		stoppedLine = "api: the controller's fresh session stopped an agent and did not start it again"
 	)
 	for _, row := range []struct {
 		name          string
@@ -1155,7 +1166,7 @@ func routeServer(h *harness) *server {
 func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *testing.T) {
 	for _, door := range []struct {
 		name    string
-		op      controllerOp
+		op      agentAction
 		reaches string
 	}{
 		{"the fresh session", freshSessionOp, wantFreshSessionReaches},
@@ -1163,13 +1174,7 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 	} {
 		t.Run("the read: "+door.name, func(t *testing.T) {
 			h := compactHarness(t, nil)
-			var park atomic.Bool
-			h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
-				if park.Load() {
-					return now.Add(time.Hour)
-				}
-				return now
-			}}
+			park := pacedUntilParked(h)
 			token := readyImplementer(t, h)
 			m, _ := h.supervisor.Machine(token)
 			if err := m.Handle(h.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
@@ -1179,7 +1184,7 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 			if before.State != supervise.StateWorking || before.WakeWaiting != nil {
 				t.Fatalf("the view is of a claim %s with wake %+v, want one in a turn with nothing parked", before.State, before.WakeWaiting)
 			}
-			park.Store(true)
+			park()
 			if err := m.Handle(h.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{
 				Locator: *before.Locator, Kind: runtime.Gone, At: stillClock{}.Now(),
 			}}); err != nil {
@@ -1211,7 +1216,8 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 		m, _ := h.supervisor.Machine(token)
 		recorder := httptest.NewRecorder()
 
-		suspended := routeServer(h).suspendForFreshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token)
+		suspended := routeServer(h).suspendForFreshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token,
+			supervise.SuspendedByOperator)
 
 		if suspended {
 			t.Fatal("the suspension landed, want it refused for the parked relaunch")
@@ -1275,7 +1281,8 @@ func TestAFreshSessionsSuspensionRefusedAsWorkingIsAnsweredByASecondRead(t *test
 			before := h.stored(token)
 			recorder := httptest.NewRecorder()
 
-			suspended := routeServer(h).suspendForFreshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token)
+			suspended := routeServer(h).suspendForFreshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token,
+				supervise.SuspendedByOperator)
 
 			if suspended {
 				t.Fatal("the suspension landed, want it refused for the claim in a turn")
@@ -1306,7 +1313,7 @@ func TestAFreshSessionsSuspensionRefusedAsWorkingIsAnsweredByASecondRead(t *test
 func TestARecoveryStepRefusesAWorkingClaimThatRecordsNoProcessAsUnsettled(t *testing.T) {
 	for _, door := range []struct {
 		name    string
-		op      controllerOp
+		op      agentAction
 		reaches string
 	}{
 		{"the fresh session", freshSessionOp, wantFreshSessionReaches},
@@ -1360,10 +1367,10 @@ func TestARecoveryRefusedAsWorkingWhoseLaterViewIsNotWorkingAnswersThatTheClaimM
 		refuse  func(s *server, w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, view supervise.ClaimView)
 	}{
 		{"the fresh session", wantFreshSessionReaches, func(s *server, w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, view supervise.ClaimView) {
-			s.refuseSuspensionRefusedAsWorking(w, r, m, token, view)
+			s.refuseSuspensionRefusedAsWorking(w, r, m, token, view, supervise.SuspendedByOperator)
 		}},
 		{"the compaction", wantCompactionReaches, func(s *server, w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, view supervise.ClaimView) {
-			s.refuseState(w, r, m, token, supervise.StateWorking, view)
+			s.refuseState(w, r, m, token, supervise.StateWorking, view, supervise.SuspendedByOperator)
 		}},
 	} {
 		t.Run(door.name, func(t *testing.T) {
@@ -1581,7 +1588,7 @@ func heldSuspensionCases() []heldSuspensionCase {
 // role's — the fresh session for a workflow role, and the daemon's controller keeper for the
 // project's own controller — and the asking operation is what reaches a live one, in the
 // states that operation's own set holds (api's refuseHeldSuspension, startsAgainName,
-// controllerOp.liveStates).
+// agentAction.liveStates).
 //
 // The second sentence is of the claims nothing is held over, because the claim in hand is
 // held: a hold over a ready agent is reached by neither door while it stands, and a sentence
@@ -1589,10 +1596,10 @@ func heldSuspensionCases() []heldSuspensionCase {
 // before it. What the words themselves have to be is checked from the predicates rather than
 // from this copy of them (TestTheHeldSuspensionRefusalNamesEachDoorsOwnLiveStates).
 func heldSuspensionRefusal(token claim.Token, startsAgain, operation, liveStates string) string {
-	return string(token) + " has a suspension held over it, and " + operation + " reaches no claim a " +
-		"suspension waits over, whatever state it is in. Of the claims with no suspension held over them, " +
+	return string(token) + " has a suspension held over it, and " + operation + " reaches no agent a " +
+		"suspension waits over, whatever state it is in. Of the agents with no suspension held over them, " +
 		startsAgain + " reaches those that are suspended, failed or retired, and " + operation +
-		" reaches those whose agent is " + liveStates + ". " + wantAskAgainLater
+		" reaches those that are " + liveStates + ". " + wantAskAgainLater
 }
 
 // A suspension held over the claim is read ahead of every other window the claim can be in,
@@ -1604,30 +1611,37 @@ func heldSuspensionRefusal(token claim.Token, startsAgain, operation, liveStates
 // operation reaches instead, of the claims nothing is held over, and both recoveries say so
 // of every row (api's refuseHeldSuspension). The code each row takes is the claim's own, so
 // the answer a state was refused with before either door read the hold is the answer it is
-// refused with now.
+// refused with now. The one exception is the hold's own: the controller's fresh session of an
+// agent the operator's suspension is held over is refused that hold first, while the
+// controller's compaction is let past it (compactOp.controllerPassesHold) and named the
+// operator's resume as what starts the agent rather than the fresh session the door refuses it
+// (wantHeldRefusal).
 func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing.T) {
 	for _, held := range heldSuspensionCases() {
 		for _, door := range compactDoors() {
 			t.Run(held.name+": "+door.name, func(t *testing.T) {
 				h := compactHarness(t, nil)
 				token := held.start(t, h)
+				m, _ := h.supervisor.Machine(token)
+				heldBy := m.View().SuspensionHeldBy
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-				refusedSaying(t, recorder, http.StatusConflict, held.code,
-					heldSuspensionRefusal(token, freshSessionName, "a compaction", wantCompactionLive))
+				door.wantHeldRefusal(t, recorder, token, heldBy, held.code)
 			})
 		}
 		for _, door := range freshSessionDoors() {
 			t.Run(held.name+": "+door.name, func(t *testing.T) {
 				h := compactHarness(t, nil)
 				token := held.start(t, h)
+				m, _ := h.supervisor.Machine(token)
+				heldBy := m.View().SuspensionHeldBy
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
-				refusedSaying(t, recorder, http.StatusConflict, held.code,
+				door.wantHeldRefusal(t, recorder, token, heldBy, held.code,
 					heldSuspensionRefusal(token, freshSessionName, "a fresh session", wantFreshSessionLive))
-				if m, _ := h.supervisor.Machine(token); !m.View().SuspensionHeld {
+				if !m.View().SuspensionHeld {
 					t.Errorf("the refused claim holds no suspension, want the one the refusal left held")
 				}
 			})

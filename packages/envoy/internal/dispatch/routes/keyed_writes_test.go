@@ -44,7 +44,8 @@ func (m *recordingMux) HandleFunc(pattern string, handler func(http.ResponseWrit
 func mounted(t *testing.T) *recordingMux {
 	t.Helper()
 	mux := &recordingMux{}
-	mount(newKeyedCensusContext(t), mux)
+	_, background := mount(newKeyedCensusContext(t), mux)
+	t.Cleanup(background.Wait)
 	return mux
 }
 
@@ -55,6 +56,7 @@ func mounted(t *testing.T) *recordingMux {
 // (the api package's TestAKeyedWriteNeverRunsUnkeyed), or one of browserWrites. A write mounted
 // later beside them fails here, as the control's does.
 func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
+	t.Parallel()
 	t.Run("control", func(t *testing.T) {
 		mux := mounted(t)
 		const planted = "POST /api/v1/planted-outside-the-table"
@@ -85,13 +87,13 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 func newKeyedCensusContext(t *testing.T) *AppContext {
 	t.Helper()
 	people := newMemoryPeople()
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:       testSigningKey,
 		People:           people,
 		Identity:         identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 		Lifetime:         t.Context(),
 		TestHooksEnabled: true,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}

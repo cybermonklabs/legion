@@ -55,7 +55,7 @@ func TestRunesCutsWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 			text:    strings.Repeat("w", 25) + " " + plantedURL,
 			n:       40,
 			planted: plantedUser,
-			want:    strings.Repeat("w", 25) + " https://h.exa…",
+			want:    strings.Repeat("w", 25) + " https://[a UR…",
 		},
 		{
 			name:    "a bound inside a URL's query",
@@ -109,7 +109,7 @@ func TestBytesCutsWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 			text:    strings.Repeat("w", 25) + " " + plantedURL,
 			n:       40,
 			planted: plantedUser,
-			want:    strings.Repeat("w", 25) + " https://h.exam",
+			want:    strings.Repeat("w", 25) + " https://[a URL",
 			wantCut: true,
 		},
 		{
@@ -125,6 +125,23 @@ func TestBytesCutsWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 			text:    strings.Repeat("é", 25),
 			n:       41,
 			want:    strings.Repeat("é", 20),
+			wantCut: true,
+		},
+		{
+			// The bound falls two bytes into a three-byte character, the start two bytes back.
+			name:    "a bound inside a three-byte character",
+			text:    strings.Repeat("€", 20),
+			n:       41,
+			want:    strings.Repeat("€", 13),
+			wantCut: true,
+		},
+		{
+			// The bound falls three bytes into a four-byte character, the start as far back as
+			// Bytes looks, utf8.UTFMax-1 bytes.
+			name:    "a bound inside a four-byte character",
+			text:    strings.Repeat("𝄞", 15),
+			n:       43,
+			want:    strings.Repeat("𝄞", 10),
 			wantCut: true,
 		},
 		{
@@ -156,6 +173,84 @@ func TestBytesCutsWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 	}
 }
 
+// TestBytesHoldsEveryBoundary generates the whole cut boundary. For each length from eight below
+// through eight above 128, each character width 1 to 4 starts at every byte that ends at or
+// crosses it. The malformed row holds the bounded look-back. The URL row is long before the rule
+// and short after it. The invariants are a longest whole-character prefix of URLCredentials(text),
+// no longer than the bound, and the cut bit that length decides.
+func TestBytesHoldsEveryBoundary(t *testing.T) {
+	const (
+		bound = 128
+		span  = 8
+	)
+	for _, edge := range bytesBoundaryCases(bound, span) {
+		t.Run(edge.name, func(t *testing.T) {
+			redacted := URLCredentials(edge.text)
+			want, wantCut := bytesWholePrefixAtMost(redacted, bound)
+			got, cut := Bytes(edge.text, bound)
+			if !strings.HasPrefix(redacted, got) || len(got) > bound || got != want || cut != wantCut {
+				t.Fatalf("Bytes of %s, %d bytes before redaction and %d after, = %q, %t; want longest whole prefix %q, %t",
+					edge.name, len(edge.text), len(redacted), got, cut, want, wantCut)
+			}
+		})
+	}
+}
+
+type bytesBoundaryCase struct {
+	name string
+	text string
+}
+
+func bytesBoundaryCases(bound, span int) []bytesBoundaryCase {
+	cases := []bytesBoundaryCase{}
+	for total := bound - span; total <= bound+span; total++ {
+		for _, char := range []string{"x", "é", "€", "𝄞"} {
+			if total < bound && total >= len(char) {
+				start := total - len(char)
+				cases = append(cases, bytesBoundaryCase{
+					name: fmt.Sprintf("%d bytes, a %d-byte character ending at byte %d", total, len(char), total),
+					text: strings.Repeat("a", start) + char,
+				})
+			}
+			for start := max(0, bound-len(char)); start <= bound; start++ {
+				suffix := total - start - len(char)
+				if suffix < 0 {
+					continue
+				}
+				cases = append(cases, bytesBoundaryCase{
+					name: fmt.Sprintf("%d bytes, a %d-byte character at byte %d", total, len(char), start),
+					text: strings.Repeat("a", start) + char + strings.Repeat("z", suffix),
+				})
+			}
+		}
+	}
+	cases = append(cases,
+		bytesBoundaryCase{
+			name: "a malformed-byte run at the bound",
+			text: strings.Repeat("a", bound-span) + strings.Repeat("\x80", span*2),
+		},
+		bytesBoundaryCase{
+			name: "a URL redacted under the bound",
+			text: "https://" + strings.Repeat("u", bound+span*2) + "@h.example/p",
+		},
+	)
+	return cases
+}
+
+func bytesWholePrefixAtMost(text string, bound int) (string, bool) {
+	if len(text) <= bound {
+		return text, false
+	}
+	end := 0
+	for at := range text {
+		if at > bound {
+			break
+		}
+		end = at
+	}
+	return text[:end], true
+}
+
 // The end Tail keeps of a URL that starts before the kept window holds no part of that URL's
 // query or its user name, since the rule reads the whole text before the cut, and a text the rule
 // leaves alone is cut as it was before the rule: its last n bytes, moved forward to a rune's
@@ -175,15 +270,15 @@ func TestTailKeepsTheEndOfWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 			n:       20,
 			planted: plantedQuery,
 			want:    strings.Repeat("p", 16) + " end",
-			wantCut: len("start https://h.example/") + 14,
+			wantCut: len("start https://"+URLWithCredentials+"/") + 14,
 		},
 		{
-			name:    "a window that starts inside a URL's user name",
+			name:    "a window that starts inside the mark of a URL's credentials",
 			text:    strings.Repeat("x", 30) + " https://" + plantedUser + "@h.example/" + path,
-			n:       len("ader@h.example/") + len(path),
+			n:       len("h credentials]/") + len(path),
 			planted: plantedUser,
-			want:    "ps://h.example/" + path,
-			wantCut: 34,
+			want:    "h credentials]/" + path,
+			wantCut: 49,
 		},
 		{
 			name:    "a window that starts inside a character",
@@ -258,7 +353,7 @@ func TestReadDropsTheRunABoundedReadStoppedInside(t *testing.T) {
 			name: "a read that stopped inside a run with no \"://\" after a URL",
 			text: "moved to " + plantedURL + " unfinish",
 			cut:  true,
-			want: "moved to https://h.example/p unfinish",
+			want: "moved to https://" + URLWithCredentials + "/p unfinish",
 		},
 		{
 			name: "a read that stopped inside a run with no end that holds \"://\"",
@@ -275,7 +370,7 @@ func TestReadDropsTheRunABoundedReadStoppedInside(t *testing.T) {
 		{
 			name: "a read its bound did not cut",
 			text: "moved to " + plantedURL,
-			want: "moved to https://h.example/p",
+			want: "moved to https://" + URLWithCredentials + "/p",
 		},
 		{
 			name: "a read its bound did not cut, with no end",

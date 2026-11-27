@@ -1,4 +1,4 @@
-// The plugin stage of packages/daemon/docker/worker.Dockerfile runs this with the stage's Bun,
+// The plugin-deps stage of packages/daemon/docker/worker.Dockerfile runs this with the stage's Bun,
 // `bun resolve-playwright-core.mjs <package.json>`, naming packages/dispatch's package.json, to find
 // the playwright-core of the Playwright that package locks. The stage's install uses Bun's isolated
 // linker, so playwright-core is not hoisted at the root's node_modules. This walks the chain

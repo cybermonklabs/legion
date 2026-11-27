@@ -23,9 +23,10 @@ import (
 )
 
 type fakeSource struct {
-	state  State
-	claims []supervise.Claim
-	err    error
+	state    State
+	claims   []supervise.Claim
+	observed State
+	err      error
 }
 
 func (f fakeSource) State(_ context.Context, _ pgx.Tx) (State, []supervise.Claim, error) {
@@ -33,6 +34,13 @@ func (f fakeSource) State(_ context.Context, _ pgx.Tx) (State, []supervise.Claim
 		return State{}, nil, f.err
 	}
 	return f.state, f.claims, nil
+}
+
+func (f fakeSource) ObservedState(_ context.Context, _ pgx.Tx) (State, []supervise.Claim, error) {
+	if f.err != nil {
+		return State{}, nil, f.err
+	}
+	return f.observed, f.claims, nil
 }
 
 func serve(t *testing.T, src StateSource, method, target string) *httptest.ResponseRecorder {
@@ -51,22 +59,31 @@ func serveWithTransactions(t *testing.T, src StateSource, txs *fakeStateTransact
 type fakeStateTransactions struct {
 	tx   *fakeTx
 	opts pgx.TxOptions
+	// err is the begin's failure, when set.
+	err error
 }
 
 func (f *fakeStateTransactions) BeginTx(_ context.Context, opts pgx.TxOptions) (pgx.Tx, error) {
 	f.opts = opts
+	if f.err != nil {
+		return nil, f.err
+	}
 	return f.tx, nil
 }
 
 type fakeTx struct {
 	committed  bool
 	rolledBack bool
+	// bounded is whether the route has run its statement bound on this transaction.
+	bounded bool
+	// commitErr is the commit's answer, nil for one that committed.
+	commitErr error
 }
 
 func (t *fakeTx) Begin(context.Context) (pgx.Tx, error) { return t, nil }
 func (t *fakeTx) Commit(context.Context) error {
 	t.committed = true
-	return nil
+	return t.commitErr
 }
 func (t *fakeTx) Rollback(context.Context) error {
 	t.rolledBack = true
@@ -84,8 +101,9 @@ func (*fakeTx) Prepare(context.Context, string, string) (*pgconn.StatementDescri
 // Exec takes the one statement a route runs of its own on this transaction — the state route's
 // bound on its own statements — and refuses every other: those belong to a state source, and the
 // sources here are fakes that run none.
-func (*fakeTx) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+func (t *fakeTx) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
 	if strings.HasPrefix(sql, "set local statement_timeout = ") {
+		t.bounded = true
 		return pgconn.CommandTag{}, nil
 	}
 	return pgconn.CommandTag{}, errors.New("unexpected exec: " + sql)
@@ -258,6 +276,35 @@ func TestStateRouteLogsNoErrorWhenTheCallerHangsUp(t *testing.T) {
 	}
 	if !strings.Contains(logged.String(), "api: state source failed") {
 		t.Fatalf("log = %s, want the read logged at Debug", logged.String())
+	}
+}
+
+// The state route's log line names the step of its transaction that failed, with the words each
+// step logged before the read ran through store.TransactWith: the begin, or the commit of a read
+// that succeeded, which the server answered as not committed. A search for either line still
+// finds it.
+func TestStateRouteLogsWhichStepOfItsTransactionFailed(t *testing.T) {
+	for _, tc := range []struct {
+		step string
+		txs  *fakeStateTransactions
+		want string
+	}{
+		{"begin", &fakeStateTransactions{err: errors.New("connection refused")}, "api: begin state transaction failed"},
+		{"commit", &fakeStateTransactions{tx: &fakeTx{commitErr: pgx.ErrTxCommitRollback}}, "api: commit state transaction failed"},
+	} {
+		t.Run(tc.step, func(t *testing.T) {
+			var logged bytes.Buffer
+			server := NewServer("127.0.0.1", 8437, Options{State: fakeSource{}, StateTransactions: tc.txs,
+				Log: slog.New(slog.NewJSONHandler(&logged, nil))})
+			recorder := httptest.NewRecorder()
+			server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/legion/v1/state", nil))
+			if recorder.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500; body %s", recorder.Code, recorder.Body)
+			}
+			if !strings.Contains(logged.String(), `"`+tc.want+`"`) {
+				t.Fatalf("log = %s, want the line %q", logged.String(), tc.want)
+			}
+		})
 	}
 }
 

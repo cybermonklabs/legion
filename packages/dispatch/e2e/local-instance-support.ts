@@ -360,7 +360,7 @@ class FactGaveUp extends Error {
  * the deadline whatever the reads do. The abort of `signal` rejects with Interrupted at once,
  * whether the wait is on a read or between reads.
  */
-async function awaitFact<T>(wait: FactWait<T>): Promise<FactHeld<T>> {
+export async function awaitFact<T>(wait: FactWait<T>): Promise<FactHeld<T>> {
   const { boundMs, closing = [], fact, holds, intervalMs, read, show, signal } = wait;
   if (signal?.aborted) throw new Interrupted("interrupted");
   const started = Date.now();

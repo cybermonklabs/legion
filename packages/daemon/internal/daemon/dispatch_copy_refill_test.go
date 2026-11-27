@@ -31,6 +31,7 @@ const copyRefillLine = "workflow: the first boot on this release refilled the co
 // asks Dispatch nothing more. The second boot lists <P>-3 alone and finds the mark stamped: it
 // removes nothing and stamps nothing.
 func TestTheFirstBootRefillsTheCopyFromAListingOnce(t *testing.T) {
+	t.Parallel()
 	var listing atomic.Pointer[[]map[string]any]
 	cfg := workflowConfigOn(t, workflowNATS(t), func(t *testing.T, project string) string {
 		return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {

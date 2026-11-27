@@ -1,16 +1,10 @@
 package testnats
 
 import (
-	"context"
-	"fmt"
 	"math/rand/v2"
 	"net"
 	"runtime"
 	"strings"
-
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/go-connections/nat"
-	"github.com/testcontainers/testcontainers-go"
 )
 
 // LoopbackIP is an address for one test listener a client dials: on Linux, where every address of
@@ -74,68 +68,4 @@ var loopbackPorts = func(n int) (string, []int, error) {
 // address, as Docker words it ("failed to listen on TCP socket: address already in use").
 func addressInUse(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "address already in use")
-}
-
-// clientPort and monitorPort are the container ports start publishes: the one a client dials and
-// the monitoring endpoint's.
-const (
-	clientPort  nat.Port = "4222/tcp"
-	monitorPort nat.Port = "8222/tcp"
-)
-
-// published is the part of a container endpoint reads: its published ports, and the host of the
-// Docker daemon that runs it.
-type published interface {
-	Inspect(context.Context) (*container.InspectResponse, error)
-	Host(context.Context) (string, error)
-}
-
-// endpoint is the host:port Docker published container's port on: the loopback address and port
-// start chose (loopbackPorts), or, where the port took Docker's default binding of every address
-// (a daemon on another machine, localDaemon), the daemon's host at the port Docker chose. Docker
-// publishes a port again at each start of a container, so a caller reads it once the container
-// runs.
-func endpoint(container published, port nat.Port) (string, error) {
-	ctx := context.Background()
-	info, err := container.Inspect(ctx)
-	if err != nil {
-		return "", fmt.Errorf("inspect the NATS container: %w", err)
-	}
-	if info.NetworkSettings == nil || len(info.NetworkSettings.Ports[port]) == 0 {
-		return "", fmt.Errorf("the NATS container publishes no %s", port)
-	}
-	binding := info.NetworkSettings.Ports[port][0]
-	host := binding.HostIP
-	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
-		if host, err = container.Host(ctx); err != nil {
-			return "", fmt.Errorf("read the Docker daemon's host: %w", err)
-		}
-	}
-	return net.JoinHostPort(host, binding.HostPort), nil
-}
-
-// localDaemon reports whether the Docker daemon testcontainers reaches runs on this machine
-// (localDaemonHost of the host testcontainers places it at). It is a copy of
-// packages/envoy/internal/testnats's, for the reason LoopbackIP gives.
-func localDaemon(ctx context.Context) (bool, error) {
-	provider, err := testcontainers.NewDockerProvider()
-	if err != nil {
-		return false, err
-	}
-	defer provider.Close()
-	host, err := provider.DaemonHost(ctx)
-	if err != nil {
-		return false, err
-	}
-	return localDaemonHost(host), nil
-}
-
-// localDaemonHost reports whether a Docker daemon testcontainers places at host is this machine,
-// so a port it publishes on a loopback address is one this process can dial: testcontainers names
-// such a daemon "localhost" (a unix socket, outside a container) or a loopback address. A daemon
-// that DOCKER_HOST names on another machine, or the host's daemon as a container reaches it through
-// its gateway, publishes on a machine whose loopback this one does not reach.
-func localDaemonHost(host string) bool {
-	ip := net.ParseIP(host)
-	return host == "localhost" || (ip != nil && ip.IsLoopback())
 }

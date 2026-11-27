@@ -5,8 +5,8 @@ import { api } from "../../api/client";
 import type { LauncherCredentialResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { credentialGrantsQuery } from "./grants";
-import { machineLoginsQuery, machineName } from "./machineLogins";
+import { credentialGrantsQuery } from "./logic/grants";
+import { machineLoginsQuery, machineName } from "./logic/machineLogins";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
 
 /** Who approved a login, as its "Approved by" cell says: the approver of a login a person
@@ -91,6 +91,7 @@ export function MachineLoginsSection(): ReactNode {
     <RevocableList
       className="pt-4"
       columns={columns}
+      // A login's subject is the Kubernetes identity its token names, not a writer's text.
       confirm={(login) =>
         `Revoke the machine login for ${machineName(login)}? ${revokeOutcome(login)}`
       }

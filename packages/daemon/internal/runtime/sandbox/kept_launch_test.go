@@ -112,6 +112,7 @@ func agentSecretsFlags(start shimwire.LauncherStart, r *Runtime) bool {
 // (keptPod) and must never outlive the pod it was built for — a role of the fresh pod that went
 // without the broker would stay without it until something else replaced that pod.
 func TestALaunchThatReplacesTheDriftedPodStartsItsRoleOnTheConfigurationNow(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	// The worker stream moved as well as the configuration: the pod's launchers dial an address
@@ -148,6 +149,7 @@ func TestALaunchThatReplacesTheDriftedPodStartsItsRoleOnTheConfigurationNow(t *t
 // for reasons that touch no start command — its reservation here — and a role of it must not be
 // started degraded for one of those.
 func TestARoleStartedInAKeptPodThatCarriesBothIsStartedWithBoth(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(withBrokerAndOverlay))
 	loc := g.spawn(workerSpec(t))
 	r2 := restartedOver(t, g, loc, func(o *Options) {
@@ -177,6 +179,7 @@ func TestARoleStartedInAKeptPodThatCarriesBothIsStartedWithBoth(t *testing.T) {
 // The same launch over a readable template keeps the pod
 // (TestARoleStartedInAKeptDriftedPodIsStartedAsItsPodWasBuilt).
 func TestALaunchReplacesTheDriftedPodWhenItsStoredTemplateCannotBeRead(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	r2 := restartedOver(t, g, loc, withBrokerAndOverlay)
@@ -225,6 +228,7 @@ func forgetPodContainers(t *testing.T, g *rig, r *Runtime, name string) {
 // own store is that it reads the store its pod has until the round replaces the pod, which a role
 // that never started could not do at all.
 func TestARoleStartedInAKeptPodIsToldTheSessionStoreThatPodCarries(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		// built is the configuration the pod was created under, now the one the restarted daemon
 		// reads, and forget a pod created before any session store was configured at all.
@@ -365,6 +369,7 @@ func withRoundPodEnds(ends bool, err error, asked *[]roundAsk) rigOption {
 // round's replacement in flight; and the role starts in the new pod. An error of the hook fails the
 // launch as any of its steps does, and the pod is kept.
 func TestARelaunchReplacesACoveredPodWhoseRoundEndsAndKeepsItOtherwise(t *testing.T) {
+	t.Parallel()
 	resume := func(t *testing.T, g *rig, loc runtime.Locator) (runtime.Locator, error) {
 		t.Helper()
 		spec := workerSpec(t)

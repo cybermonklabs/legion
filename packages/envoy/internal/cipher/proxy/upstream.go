@@ -1,8 +1,9 @@
 // packages/envoy/internal/cipher/proxy/upstream.go
 // How a failed call to a service is written down and answered, and the lines net/http writes
 // through either server's ErrorLog: the one rule for the error of a call the proxy made to a
-// service (upstreamReason), the line and the 502 of a call it could not carry (badGateway), and
-// net/http's own line (slogWriter).
+// service (upstreamReason), the line and the 502 of a call it could not carry (badGateway;
+// destination.go's destinationUnreachable for the private destination), and net/http's own line
+// (slogWriter).
 package proxy
 
 import (

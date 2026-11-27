@@ -7,7 +7,7 @@ tags:
   - legion-workflow
   - dispatch
 date: 2026-10-30
-status: active
+status: superseded in part — The awaiting_merge phase is gone, and the merger can move an issue in merging back to an earlier step.
 module: packages/envoy/internal/dispatch/store
 related_issues:
   - "sjawhar/legion#2483"

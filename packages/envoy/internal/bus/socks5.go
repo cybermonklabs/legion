@@ -85,17 +85,17 @@ func dnsName(host string) bool {
 	return true
 }
 
-// socks5Dialer is the nats.CustomDialer a proxied connect installs. Each Dial is bounded by
-// timeout: the bus's connect timeout, or what remains of a connect's deadline when that is shorter
-// (bounded), since nats.go applies a connect's own timeout only to its default dialer. It records
-// the last error a Dial returned, which connectWithContext names when nats.go reports only
+// socks5Dialer is the dialer a proxied connect's severableDialer dials through. Each dial is bounded
+// by timeout: the bus's connect timeout, or what remains of a connect's deadline when that is
+// shorter (bounded), since nats.go applies a connect's own timeout only to its default dialer. It
+// records the last error a dial returned, which connectWithContext names when nats.go reports only
 // ErrNoServers (nats.go discards "connection refused"). The record is shared by every copy bounded
 // makes and is safe for concurrent use: nats.go dials from its own reconnect goroutine
 // (nats.go@v1.55.0:3562-3565, doReconnect → createConn), and a client's background recovery and a
 // publish's replacement dial can connect at once, each storing while the other loads.
 type socks5Dialer struct {
 	address string              // the proxy's host:port, for the error that names it
-	proxy   proxy.ContextDialer // golang.org/x/net/proxy.SOCKS5 over a net.Dialer
+	proxy   proxy.ContextDialer // golang.org/x/net/proxy.SOCKS5 over a socketRecordingDialer
 	timeout time.Duration
 	lastErr *atomic.Pointer[error]
 }
@@ -108,16 +108,30 @@ func (d *socks5Dialer) bounded(remaining time.Duration) *socks5Dialer {
 	return &socks5Dialer{address: d.address, proxy: d.proxy, timeout: remaining, lastErr: d.lastErr}
 }
 
-// Dial connects through the proxy and records the error it returns.
-func (d *socks5Dialer) Dial(network, address string) (net.Conn, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), d.timeout)
+// DialContext connects through the proxy, until ctx ends or timeout passes, and records the error it
+// returns.
+func (d *socks5Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
 	conn, err := d.proxy.DialContext(ctx, network, address)
 	d.lastErr.Store(&err)
 	return conn, err
 }
 
-// LastError is the error the latest Dial returned, or nil.
+// socketRecordingDialer dials the SOCKS5 proxy, and records the TCP socket in the dial's context
+// (socketSlot) when the dial asks for it, since the net.Conn proxy.SOCKS5 returns wraps that socket
+// and hides it from a reset (severableDialer).
+type socketRecordingDialer struct{ net.Dialer }
+
+func (d *socketRecordingDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	conn, err := d.Dialer.DialContext(ctx, network, address)
+	if slot, ok := ctx.Value(socketSlot{}).(*net.Conn); ok && err == nil {
+		*slot = conn
+	}
+	return conn, err
+}
+
+// LastError is the error the latest dial returned, or nil.
 func (d *socks5Dialer) LastError() error {
 	if err := d.lastErr.Load(); err != nil {
 		return *err
@@ -144,8 +158,9 @@ func socks5Proxy(lookup func(string) (string, bool)) (*socks5Dialer, error) {
 		return nil, fmt.Errorf("%s %w", SOCKS5ProxyEnvVar, err)
 	}
 	// proxy.SOCKS5 hands a host that is not an IP address to the proxy as a domain name, unresolved
-	// (AddrTypeFQDN), and its Dialer bounds the handshake by the context Dial passes (ContextDialer).
-	dialer, err := proxy.SOCKS5("tcp", address, nil, &net.Dialer{})
+	// (AddrTypeFQDN), and its Dialer bounds the handshake by the context DialContext passes
+	// (ContextDialer), which carries the socket's slot (socketRecordingDialer) through to the dial.
+	dialer, err := proxy.SOCKS5("tcp", address, nil, &socketRecordingDialer{})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", SOCKS5ProxyEnvVar, err)
 	}

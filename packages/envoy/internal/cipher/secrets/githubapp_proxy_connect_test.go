@@ -11,16 +11,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
 // TestATokenRequestWhoseProxyRefusedItsTunnelIsSentAgain: a broker that reaches GitHub through an
 // HTTPS proxy asks the proxy for a tunnel (CONNECT) before it sends anything to GitHub, and a
 // proxy that refuses that tunnel answers with a status the transport returns as an error of no
-// type of its own. GitHub received nothing, so the check of a narrowing sends its token request
-// again, as a release does, rather than read the refusal as a request GitHub may have minted
-// for: a transport the minter owns, as its own default one is, reports the connection it got to
-// the request's trace before it writes a byte, and this one never got one. This test's transport
+// type of its own. GitHub received nothing, so a check sends its token request again, as a
+// release does, rather than read the refusal as a request GitHub may have minted for: a
+// transport the minter owns, as its own default one is, reports the connection it got to the
+// request's trace before it writes a byte, and this one never got one. This test's transport
 // is one it made itself and registers no protocol on, so it counts as owned. Each run mints
 // exactly one token, at the second tunnel.
 func TestATokenRequestWhoseProxyRefusedItsTunnelIsSentAgain(t *testing.T) {
@@ -37,11 +38,11 @@ func TestATokenRequestWhoseProxyRefusedItsTunnelIsSentAgain(t *testing.T) {
 			github := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.Method {
 				case http.MethodGet:
-					_, _ = io.WriteString(w, `[{"id":2,"account":{"login":"ada"}}]`)
+					_, _ = io.WriteString(w, `[{"id":2,"account":{"login":"ada"},"permissions":{"contents":"write","metadata":"read"}}]`)
 				case http.MethodPost:
 					minted.Add(1)
 					w.WriteHeader(http.StatusCreated)
-					_, _ = fmt.Fprintf(w, `{"token":"ghs_proxy_connect_test","expires_at":%q,"repository_selection":"selected","repositories":[{"name":"lean"}]}`,
+					_, _ = fmt.Fprintf(w, `{"token":"ghs_proxy_connect_test","expires_at":%q,"permissions":{"contents":"read"},"repository_selection":"selected","repositories":[{"name":"lean"}]}`,
 						time.Now().UTC().Add(time.Hour).Format(time.RFC3339))
 				case http.MethodDelete:
 					w.WriteHeader(http.StatusNoContent)
@@ -92,10 +93,9 @@ func TestATokenRequestWhoseProxyRefusedItsTunnelIsSentAgain(t *testing.T) {
 			retry, _, _ := testRetry(atTheBottom)
 			app := secrets.GitHubApp{Base: github.URL, HTTP: &http.Client{Transport: transport}, Retry: retry}
 
-			result, err := app.Mint(t.Context(), secrets.MintRequest{
-				Value: githubAppValue(t, "123456", key), GitHubOwners: []string{"ada"}, Check: check,
-				GitHubNarrowing: &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{"lean"}},
-			})
+			scope := readScope("ada")
+			scope.Repositories = []string{"ada/lean"}
+			result, err := app.Mint(t.Context(), secrets.MintRequest{Value: githubAppValue(t, "123456", key), GitHub: scope, Check: check})
 			if refused.Load() != 1 {
 				t.Fatalf("the proxy refused %d tunnels, want the token request's one: the row reads nothing", refused.Load())
 			}
@@ -104,7 +104,7 @@ func TestATokenRequestWhoseProxyRefusedItsTunnelIsSentAgain(t *testing.T) {
 					err, secrets.MintErrorClass(err), minted.Load())
 			}
 			if !check {
-				app.GiveBack(t.Context(), "APP_KEY", result.Value)
+				app.GiveBack(t.Context(), "APP_KEY", result.Value, githubname.ValueInstallations)
 			}
 		})
 	}
