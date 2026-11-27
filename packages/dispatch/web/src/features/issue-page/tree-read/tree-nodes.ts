@@ -99,10 +99,10 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
  * step of this part's, makes no draft and stays in the answer, which the page keeps whole (R7);
  * a later part draws a kind of its own with one line in that list, and adds a member to another
  * step's draft with one line in `treeDraftMarks`. A check of an issue under this one makes no
- * draft in this part's steps either, nor does its plan task but where the read answers its place
- * in the plan (`draftServing`), as the Plan view's read does. Part Y's steps, first in that list
- * (`model-rows/model-drafts.ts`), draw a criterion and a check, a plan task and a result of an
- * issue under this one.
+ * draft in this module's steps either, nor does its plan task but where the read answers its
+ * place in the plan (`draftServing`), as the Plan view's read does. The model's steps, first in
+ * that list (`model-rows/model-drafts.ts`), draw a criterion and a check, a plan task and a
+ * result of an issue under this one.
  *
  * `buildIssueTree` builds the tree from these drafts, so this module imports no code of
  * `issue-tree.ts`, which would close an import cycle (`biome.json`'s `noImportCycles`): the word

@@ -362,7 +362,7 @@ export interface ModelRowsSeed extends WholeIssueSeed {
   readonly question: ModelNode;
   /** The planner's reading of alice's answer to it. */
   readonly questionReading: ModelNode;
-  /** The slug of the spec, which part G's row layouts read the statements of. */
+  /** The slug of the spec, by which the rows' layout read names its statements (`rowLayouts`). */
   readonly specSlug: string;
   readonly statementOne: ModelNode;
   readonly statementSeven: ModelNode;

@@ -3518,7 +3518,7 @@ test("a row drawn from a view's own tree names its other parent by that parent's
   }
 });
 
-// Decision 523: the Verification view's read answers a check of an issue under this one, and its
+// The Verification view's read answers a check of an issue under this one, and its
 // result, as context under the statement the check serves. The view draws both there as rows of
 // its own: the check stands as the facts that read holds of the node of its full read id say, and
 // names its issue by its key, a link to that issue. The child's check shares its block id with

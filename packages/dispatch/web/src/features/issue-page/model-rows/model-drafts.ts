@@ -6,29 +6,30 @@ import type { TreeDraftContext, TreeDraftStep } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 
 /**
- * The model's rows from the tree read: the steps this part puts first in T's `treeDraftSteps`
- * (`tree-read/tree-nodes.ts`), each answering only kinds no step of T's answers.
+ * The model's rows from the tree read: steps that stand first in `treeDraftSteps`
+ * (`tree-read/tree-nodes.ts`), each answering only kinds no other step of that list answers.
  *
  * - **A criterion of this issue** stands under the conversation node the read names as its
  *   parent, with its author and time (R1).
  * - **A borrowed check or plan task** - another issue's, which the read reaches through its
  *   `serves` - stands under each statement of this issue it serves, in the order its tuples name
  *   them, and never under the child issue's node; one that serves none of this issue's
- *   statements is drawn nowhere (R4). A borrowed check stands as F's one reading of a check reads
- *   it (`checkStanding`), over the result nodes the read answers under it (`borrowedStanding`). A
- *   borrowed plan task the Plan view's read answers with its place in the plan is T's to draft.
+ *   statements is drawn nowhere (R4). A borrowed check stands as the one shared reading of a
+ *   check reads it (`tree-drafts.ts`' `checkStanding`), over the result nodes the read answers
+ *   under it (`borrowedStanding`). A borrowed plan task the Plan view's read answers with its
+ *   place in the plan is drafted by the tree read's own step (`draftServing`).
  * - **A borrowed result** stands under the borrowed check it was recorded against, with who
  *   recorded it and when.
  *
- * A reading is T's own step (`draftReading`), which draws its author too (R3): no step here
- * drafts one.
+ * A reading is drafted by the tree read's own step (`draftReading`), which draws its author too
+ * (R3): no step here drafts one.
  *
- * T's four helpers are handed in (`DraftParts`), and this file imports only types from
- * `tree-read/tree-nodes.ts`, so T's file importing this one closes no import cycle (`biome.json`'s
+ * Four helpers of `tree-read/tree-nodes.ts` are handed in (`DraftParts`), and this file imports
+ * only types from it, so that file importing this one closes no import cycle (`biome.json`'s
  * `noImportCycles`, which ignores type imports).
  */
 
-/** T's own helpers a step here drafts with (`tree-read/tree-nodes.ts`): a draft as every kind
+/** The helpers of `tree-read/tree-nodes.ts` a step here drafts with: a draft as every kind
  *  starts one, whether the read marks a node as another issue's, whether a node is a statement of
  *  this issue, and a node's author and time. */
 export interface DraftParts {
@@ -38,7 +39,7 @@ export interface DraftParts {
   readonly madeBy: (draft: Draft, node: TreeAnswerNode) => void;
 }
 
-/** The steps this part adds to `treeDraftSteps`, drafting with T's helpers `parts`. */
+/** The model's steps of `treeDraftSteps`, drafting with the helpers `parts`. */
 export function modelDraftSteps({
   draftOf,
   isForeign,
@@ -59,8 +60,8 @@ export function modelDraftSteps({
    *  tuples name, in their order, with its address in its own issue (`draftOf`) and no author or
    *  time, as this issue's own checks draw none; none where it serves no statement of this
    *  issue. A check stands as its result nodes say (`borrowedStanding`). A plan task the read
-   *  answers its place in the plan for (`plan`), which only the Plan view's read does, is T's
-   *  step's (`draftServing`), which drafts its order and its needs. */
+   *  answers its place in the plan for (`plan`), which only the Plan view's read does, is the
+   *  tree read's own step's (`draftServing`), which drafts its order and its needs. */
   const draftBorrowed: TreeDraftStep = (node, answer, context) => {
     if (
       (node.supertag !== "check" && node.supertag !== "plan_task") ||
@@ -84,8 +85,8 @@ export function modelDraftSteps({
   };
 
   /** A result of another issue whose read parent is a borrowed check drafted here: who recorded
-   *  it and when, under that check (`placeOf`). T drafts no check of another issue, so a draft
-   *  standing for such a check is this part's. */
+   *  it and when, under that check (`placeOf`). No other step drafts a check of another issue,
+   *  so a draft standing for such a check was drafted here. */
   const draftBorrowedResult: TreeDraftStep = (node, _answer, context) => {
     if (node.supertag !== "result" || !isForeign(node, context.key) || node.parent === null) {
       return undefined;
@@ -135,12 +136,12 @@ function resultsUnder(answer: TreeAnswer, parentId: string): readonly TreeAnswer
 }
 
 /**
- * How a borrowed check stands: F's one reading of a check (`checkStanding`) over what the read
- * answers of it (`borrowedReads`). So the newest result nobody withdrew over the check's current
- * words decides, a pass passed and a fail failed; where none is, the newest over moved words
- * reads out of date, every result withdrawn retracted, and no result no-result. A pass at a
- * commit the child's check no longer compares with still reads passed, since no basis is read
- * for another issue.
+ * How a borrowed check stands: the one shared reading of a check (`tree-drafts.ts`'
+ * `checkStanding`) over what the read answers of it (`borrowedReads`). So the newest result
+ * nobody withdrew over the check's current words decides, a pass passed and a fail failed; where
+ * none is, the newest over moved words reads out of date, every result withdrawn retracted, and
+ * no result no-result. A pass at a commit the child's check no longer compares with still reads
+ * passed, since no basis is read for another issue.
  *
  * Undefined where the read answers no words' sum on the check (`check`) or no `result` on one
  * of its result nodes, so the row draws no standing word: a pass that may be against old words

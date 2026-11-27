@@ -125,12 +125,12 @@ import {
  * it for the child's check's standing. The third edits nodes on the outline and the fourth
  * edits in place in the filters, both through the issue's one room. The fifth checks that
  * Verification draws a long statement and a long check whole on desktop and phone. The sixth
- * reads part X's marks, open branches and fold counts on criteria.
+ * reads a node's proposed and overtaken marks, open branches and fold counts on criteria.
  *
  * `phase` opens the real stack as alice with the new issue page on. The first four rows and
- * the standing row use `seedModelRows`, and the sixth part X's `seedNodeStates` with criteria
- * written over it (`seedCriterionStates`); each skips when the server does not serve the issue's
- * tree read. The fifth uses `seedLongWords`, which waits on coverage and results instead.
+ * the standing row use `seedModelRows`, and the sixth `seedNodeStates` (`issue-page-x.ts`) with
+ * criteria written over it (`seedCriterionStates`); each skips when the server does not serve the
+ * issue's tree read. The fifth uses `seedLongWords`, which waits on coverage and results instead.
  */
 
 /** What a failure says where the issue's tree read does not answer `converted: true`. */
@@ -185,8 +185,8 @@ async function openOutline(page: Page, key: string): Promise<void> {
  *  settles every document the seed wrote (`quiesceDocuments`), while no page holds one open, so
  *  no settlement of the seed's lands during the load or after it: one that lands later can write
  *  a version of the spec, and move alice's approval with it. The seed's architecture source is
- *  imported first too, and the seed's events have landed, as part T's first-load row waits
- *  (`architectureSettled`, `seedEventsLanded`): the server's own import pass would else send
+ *  imported first too, and the seed's events have landed, as the tree read's first-load row
+ *  waits (`issue-page-t-reads.e2e.ts`): the server's own import pass would else send
  *  its event in one of the two loads the row compares, and the page answers that event with a
  *  second read of the project's architecture and of its sources. */
 async function firstLoad(page: Page, key: string): Promise<readonly RouteCount[]> {
@@ -900,7 +900,7 @@ test("a reading stands under what it reads and a child's check under the stateme
 // c-readings, in a row of its own beside row 2: the child's check under statement 7 stands as its
 // passing result gives it, "passed". The page reads that standing from the tree read alone: the
 // check node's `check.text_sha256` and its result node's `result` (`verdict`, `retracted`,
-// `check_sha256`), read by F's one reading of a check (`model-rows/model-drafts.ts`'
+// `check_sha256`), read by the one shared reading of a check (`model-rows/model-drafts.ts`'
 // `borrowedStanding`). It is read in Graph, whose read is the whole tree and so holds the result
 // under the check: Conversation's read names no result (`CONVERSATION_KINDS`). The row first reads
 // that Graph's own read holds the one pass over the check's words as they stand, so the standing
@@ -1300,9 +1300,9 @@ test("a node is edited in place in each filter", async ({ browser }) => {
     const answered = nodeRow(page, question.row).first();
     await expect(answered).toBeVisible();
     // The planner's decision shapes no statement, so the view draws it, its reading right after
-    // it, in its foot. The foot is drawn unfolded as the view opens (part U's R2), and a press of
-    // its control folds an unfolded foot, so the control is pressed only where the foot stands
-    // folded, read once the page shows which (`expandedState`).
+    // it, in its foot. The foot is drawn unfolded as the view opens (`decisionsFoot`), and a
+    // press of its control folds an unfolded foot, so the control is pressed only where the foot
+    // stands folded, read once the page shows which (`expandedState`).
     const foot = decisionsFoot(page);
     if ((await expandedState("the Decisions foot", foot)) === "shut") await foot.click();
     await expect(foot, "Decisions does not unfold its foot").toHaveAttribute(
@@ -1348,8 +1348,8 @@ test("a node is edited in place in each filter", async ({ browser }) => {
 
     // The ordered steps edit the task's text; Enter on the chart goes to the same task's address
     // in the conversation, which Conversation draws no row of (its read names no plan task), so
-    // the address opens the filter of its kind, Plan, at the task (`slots/body.tsx`), as part K's
-    // row reads it (`issue-page-k.e2e.ts`).
+    // the address opens the filter of its kind, Plan, at the task (`slots/body.tsx`), as the Plan
+    // view's own row reads it (`issue-page-k.e2e.ts`).
     await pickPreset(page, PRESET_NAMES.plan);
     const block = seeded.planTasks[0];
     if (block === undefined) throw new Error("the seed has no plan task");
@@ -1422,8 +1422,9 @@ test("the Verification view draws a long statement and a long check whole @phone
   });
 });
 
-/** A proposed node's mark and an overtaken one's, as part X's rows read them (`NodeMarks.tsx`):
- *  its token, the token of its shape, the shape drawn, and its word. */
+/** A proposed node's mark and an overtaken one's, as the node states' rows read them
+ *  (`issue-page-x.e2e.ts`, `NodeMarks.tsx`): its token, the token of its shape, the shape drawn,
+ *  and its word. */
 const PROPOSED: DrawnMark = {
   mark: "proposed",
   shape: GLYPH_TOKENS.marks.proposed,
@@ -1438,7 +1439,7 @@ const OVERTAKEN: DrawnMark = {
 };
 
 /** How long row 6 waits for the page to draw what the read holds, and for a write of its seed to
- *  stand in a read: part X's own bounds. */
+ *  stand in a read: the bounds of the node states' rows (`issue-page-x.e2e.ts`). */
 const DRAWN_MS = 30_000;
 const SEED_READ_MS = 20_000;
 
@@ -1448,9 +1449,9 @@ const UNDER_CRITERION_BLOCK = "r-under-criterion";
 /** The kinds the Spec control counts (`presets.ts`' `COUNTED_KINDS`): statements and criteria. */
 const SPEC_COUNTED: readonly string[] = ["requirement", "criterion"];
 
-/** What row 6 reads: part X's seed, the issue's first comment thread (a comment's read id is its
- *  own id), the three criteria written under it (each by read id and page row id), and the
- *  statement written under the overtaken one. */
+/** What row 6 reads: the node states' seed, the issue's first comment thread (a comment's read
+ *  id is its own id), the three criteria written under it (each by read id and page row id), and
+ *  the statement written under the overtaken one. */
 interface CriterionStates {
   readonly comment: string;
   readonly criteria: Readonly<Record<"live" | "overtaken" | "proposed", WrittenCriterion>>;
@@ -1459,18 +1460,19 @@ interface CriterionStates {
 }
 
 /**
- * Part X's `seedNodeStates` on a `seedWholeIssue` issue - whose criterion and statement stand
- * under the open question made overtaken by its ask's address - and over it, as alice, three
- * criteria written under the issue's first comment thread with the page's own write
+ * `seedNodeStates` (`issue-page-x.ts`) on a `seedWholeIssue` issue - whose criterion and
+ * statement stand under the open question made overtaken by its ask's address - and over it, as
+ * alice, three criteria written under the issue's first comment thread with the page's own write
  * (`writeCriterionApi`), in this order: one made proposed, one made overtaken, and one left live
  * whose words hold the word "proposed"; and a statement written into the spec under the
- * overtaken one, as the planner, as X writes the statement under its question. The statement is
- * waited on in the tree read under that criterion, and in the coverage read with no check serving
- * it, before the states are written, so live it would draw "No check". Each criterion is written
- * into the issue's tree artifact and carries no `document`, so its address is built from that
- * artifact's slug and the block id the read answers. The seed asserts the read answers each
- * criterion's state and its place under the comment, and waits, as X's seed does, until no
- * document of the issue owes its block index, so the coverage read holds every gap.
+ * overtaken one, as the planner, as that seed writes the statement under its question. The
+ * statement is waited on in the tree read under that criterion, and in the coverage read with no
+ * check serving it, before the states are written, so live it would draw "No check". Each
+ * criterion is written into the issue's tree artifact and carries no `document`, so its address
+ * is built from that artifact's slug and the block id the read answers. The seed asserts the
+ * read answers each criterion's state and its place under the comment, and waits, as that seed
+ * does, until no document of the issue owes its block index, so the coverage read holds every
+ * gap.
  */
 async function seedCriterionStates(): Promise<CriterionStates> {
   const whole = await seedWholeIssue();
@@ -1602,7 +1604,8 @@ async function pickSettled(page: Page, traffic: ApiRequests, name: string): Prom
 }
 
 /** Waits until the row of the node `readId` is drawn open with a row right under it for each of
- *  `under`, as part X reads a branch the page holds open, and fails with `message`. */
+ *  `under`, as the node states' rows read a branch the page holds open, and fails with
+ *  `message`. */
 async function expectOpenWith(
   page: Page,
   readId: string,
@@ -1673,21 +1676,21 @@ async function expectProposedCriterion(page: Page, id: string, where: string): P
   await expect(rowGaps(row), `the proposed criterion draws a gap ${where}`).toHaveCount(0);
 }
 
-// c-write, row 6: part X's R2, R3 and R5 (a proposed node marked, every node counted, an
-// overtaken node drawn open at its place) read on criteria, which X draws no row for (decision
-// 510 (1)). (1) On the first load, with no address, the question overtaken by its ask's address is
-// drawn open with its criterion and its statement under it; (2) after the load it carries
-// "Overtaken" and its shape, open with both, and its criterion draws no gap; (3) the same in
-// Graph. (4) Each branch the page draws open, folded one at a time, counts what the tree read
-// holds under it that Conversation draws, the overtaken question's criterion included. (5) The
-// proposed criterion carries "Proposed" and its shape in its row's state line, in the outline and
-// in Graph, with no gap, and under Spec it is a row carrying "Proposed", in the Spec control's
-// count; the live criterion whose words hold "proposed" carries no mark. (6) The overtaken
-// criterion is a row at its place among the comment's children, carrying "Overtaken" and its
-// shape, open with the statement under it, which draws no gap; its own fold control folds it and
-// opens it again, and the comment, folded, counts it and its statement. No criterion is reserved
-// for its author: a criterion is a block, and `refs/visibility.go`'s `nodeRegistry` gives a block
-// no author rule. At 1440 px.
+// c-write, row 6: what the page draws of a node's state (a proposed node marked, every node
+// counted, an overtaken node drawn open at its place), read on criteria, which the node states'
+// own rows (`issue-page-x.e2e.ts`) do not read. (1) On the first load, with no address, the
+// question overtaken by its ask's address is drawn open with its criterion and its statement
+// under it; (2) after the load it carries "Overtaken" and its shape, open with both, and its
+// criterion draws no gap; (3) the same in Graph. (4) Each branch the page draws open, folded one
+// at a time, counts what the tree read holds under it that Conversation draws, the overtaken
+// question's criterion included. (5) The proposed criterion carries "Proposed" and its shape in
+// its row's state line, in the outline and in Graph, with no gap, and under Spec it is a row
+// carrying "Proposed", in the Spec control's count; the live criterion whose words hold
+// "proposed" carries no mark. (6) The overtaken criterion is a row at its place among the
+// comment's children, carrying "Overtaken" and its shape, open with the statement under it, which
+// draws no gap; its own fold control folds it and opens it again, and the comment, folded, counts
+// it and its statement. No criterion is reserved for its author: a criterion is a block, and
+// `refs/visibility.go`'s `nodeRegistry` gives a block no author rule. At 1440 px.
 //
 // The criteria stand under the issue's first comment thread, a post the outline draws as a row,
 // and not under the comment `seedWholeIssue` anchors to statement 2: that one is on a node's text,
@@ -1695,11 +1698,11 @@ async function expectProposedCriterion(page: Page, id: string, where: string): P
 // could hold the criteria or count them. (5)'s reading of the live criterion is made right after
 // (1), before any other mark is read, so a page that reads a node's life from a word of its text
 // fails there first; (1) reads the page as it first opened, before any press.
-// SLOW(>=2s): a whole seeded issue with part X's ten node states, two questions with the two nodes
-// under one and a lens written, three criteria and a statement written and waited on in the tree
-// and coverage reads, then every branch of the outline folded and opened again, Graph and Spec
-// turned on, and three loads.
-test("a criterion is marked, drawn open and counted as part X draws every node", async ({
+// SLOW(>=2s): a whole seeded issue with `seedNodeStates`' ten node states, two questions with the
+// two nodes under one and a lens written, three criteria and a statement written and waited on
+// in the tree and coverage reads, then every branch of the outline folded and opened again, Graph
+// and Spec turned on, and three loads.
+test("a criterion is marked, drawn open and counted as every other node is", async ({
   browser,
 }) => {
   test.skip(!(await treeReadServed()), TREE_READ_OWED);

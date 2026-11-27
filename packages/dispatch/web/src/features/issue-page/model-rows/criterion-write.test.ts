@@ -496,8 +496,8 @@ test("a blank text sends nothing", () => {
 });
 
 // R1: a criterion's row draws its bullet in the statements' colour, wherever it stands. A
-// criterion carries no `statement` mark, which only the spec's own requirement does (decision
-// 246), so a colour read from that mark drew it in a block's colour.
+// criterion carries no `statement` mark, which only a requirement of the issue's spec does
+// (`isStatement`), so a colour read from that mark drew it in a block's colour.
 test("a criterion's row draws its bullet in the statements' colour", () => {
   const view = render(
     createElement(

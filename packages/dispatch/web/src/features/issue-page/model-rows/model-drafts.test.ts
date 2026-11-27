@@ -21,8 +21,8 @@ import { roomTarget } from "./room-target";
 
 /**
  * The model's rows from the tree read (`model-drafts.ts`), drafted as the page drafts them: each
- * case writes an answer of the tree read with T's fixtures (`tree-fixtures.ts`), runs T's
- * `treeDraftsFrom` over it, whose steps hold this part's first, and builds the outline from the
+ * case writes an answer of the tree read with the tree read's fixtures (`tree-fixtures.ts`), runs
+ * `treeDraftsFrom` over it, whose steps hold the model's first, and builds the outline from the
  * drafts with `assemble`, as `buildIssueTree` does.
  */
 
@@ -275,13 +275,13 @@ function standingOf(results: readonly TreeAnswerNode[], check = true) {
   return drawn(tree).drafts.get("c-child")?.state;
 }
 
-// R4, the plan's decision on a borrowed check's standing: the read answers no results read for
-// another issue, so the check stands by F's one reading of a check (`checkStanding`) over the
-// result nodes the read answers under it, from the words' sum the read answers on the check and
-// the `result` on each result node - the newest result nobody withdrew over the check's words
-// now decides; where none is, one over moved words reads out of date, every result withdrawn
-// retracted, and none at all no result. Without that sum or a node's `result` the check draws no
-// standing word, since its standing cannot be shown current.
+// R4, how a borrowed check stands: the read answers no results read for another issue, so the
+// check stands by the one shared reading of a check (`checkStanding`) over the result nodes the
+// read answers under it, from the words' sum the read answers on the check and the `result` on
+// each result node - the newest result nobody withdrew over the check's words now decides; where
+// none is, one over moved words reads out of date, every result withdrawn retracted, and none at
+// all no result. Without that sum or a node's `result` the check draws no standing word, since
+// its standing cannot be shown current.
 test("a borrowed check's standing comes from its results", () => {
   const passThenFail = [
     childResult("res-1", "c-child", "pass", "2026-11-05T10:00:00Z"),
