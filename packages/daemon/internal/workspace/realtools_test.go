@@ -171,7 +171,14 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 	}
 
 	timeout := startBound + lockBound
-	run := NewRunner(timeout, map[string]string{"git": git})
+	// CONTROL ONLY (never for merge): the runner's git is a wrapper that sleeps 1.5 s in the git's
+	// own process and then execs the real git, so the kernel's start of the git is unchanged and the
+	// git takes .git/index.lock 1.5 s after it.
+	wrapper := filepath.Join(t.TempDir(), "git")
+	if err := testexec.WriteFile(wrapper, []byte("#!/bin/sh\nsleep 1.5\nexec '"+git+"' \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	run := NewRunner(timeout, map[string]string{"git": wrapper})
 
 	var ended atomic.Pointer[os.ProcessState]
 	hook := func(command Command, state *os.ProcessState) {
