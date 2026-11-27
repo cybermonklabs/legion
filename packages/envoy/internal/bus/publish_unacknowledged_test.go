@@ -33,6 +33,17 @@ func unacknowledgedEnvelope(topic string) contracts.Envelope {
 	}
 }
 
+// pastTheRunAcknowledgements is the acknowledgement clock (bus.WithPublishAcknowledgementClock) of
+// the clients below whose publishes wait through a reconnect. The bus bounds every stored publish
+// by publishBound, 5 s, whatever its context; a reconnect can take longer than that on a loaded
+// machine with nothing wrong, and no row here races that bound, so each publish ends with its own
+// context instead: testwait.Context, or a window's 500 ms.
+type pastTheRunAcknowledgements struct{}
+
+func (pastTheRunAcknowledgements) WithTimeout(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, testwait.PastTheRun)
+}
+
 // A stored publish that failed after its send went out unanswered may still have put its message
 // in the stream, and its error says so (bus.ErrUnacknowledged) beside the error it wraps; one that
 // sent nothing, or that the server refused, does not. The listener's sender limit charges a
@@ -45,7 +56,7 @@ func unacknowledgedEnvelope(topic string) contracts.Envelope {
 func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) {
 	t.Parallel()
 	server, uri := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1), bus.WithPublishAcknowledgementClock(pastTheRunAcknowledgements{}))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -159,7 +170,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 	t.Run("a publish interrupted by reconnect is sent again after its first copy is stored", func(t *testing.T) {
 		topic := contracts.LegacyAgentSubject("ses_unacknowledged_reconnect")
 		proxy := testnats.StartProxy(t, uri)
-		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
+		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1), bus.WithPublishAcknowledgementClock(pastTheRunAcknowledgements{}))
 		if err != nil {
 			t.Fatalf("connect through the reply gate: %v", err)
 		}
@@ -219,7 +230,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 	t.Run("a cursor write stored before a reconnect cut its answer is no ErrCursorMoved", func(t *testing.T) {
 		subject := bus.KeptRoleCursorSubject("unacknowledged-cursor-reconnect")
 		proxy := testnats.StartProxy(t, uri)
-		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
+		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1), bus.WithPublishAcknowledgementClock(pastTheRunAcknowledgements{}))
 		if err != nil {
 			t.Fatalf("connect through the reply gate: %v", err)
 		}
@@ -277,7 +288,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		subject := bus.TakeoverSubject(role, previous, id.New())
 		record := bus.TakeoverRecord{Role: role, Previous: previous, ClaimedAt: time.Now().UnixMilli()}
 		proxy := testnats.StartProxy(t, uri)
-		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
+		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1), bus.WithPublishAcknowledgementClock(pastTheRunAcknowledgements{}))
 		if err != nil {
 			t.Fatalf("connect through the reply gate: %v", err)
 		}
@@ -322,7 +333,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		subject := bus.HandoverSubject(role, previous, successor)
 		record := bus.TakeoverRecord{Role: role, Previous: previous, ClaimedAt: time.Now().UnixMilli()}
 		proxy := testnats.StartProxy(t, uri)
-		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
+		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1), bus.WithPublishAcknowledgementClock(pastTheRunAcknowledgements{}))
 		if err != nil {
 			t.Fatalf("connect through the reply gate: %v", err)
 		}
