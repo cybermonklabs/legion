@@ -568,6 +568,20 @@ func (a *Admission) noteUnknownChain(ctx context.Context, key string) {
 	})
 }
 
+// noteUnknownChains notes for the daemon's re-read (noteUnknownChain) each of issues, the pass's
+// records, whose Dispatch chain chains, the pass's own reading (record.ReadLineFacts, which walks
+// from every one of them), holds unknown, in Legion's work or out of it: R16 of
+// dispatch://INFRA-3320 reads Dispatch again for an issue on an unknown chain until the chain is
+// known, whatever the issue's phase, and what waits on that chain waits for that read, the telling
+// a re-parent seed owes among them (workflow's ReparentChainPending). It sends no statement.
+func (a *Admission) noteUnknownChains(ctx context.Context, issues []record.Issue, chains *record.Chains) {
+	for _, issue := range issues {
+		if !chains.Chain(issue.Key).Known() {
+			a.noteUnknownChain(ctx, issue.Key)
+		}
+	}
+}
+
 // OnUnknownChain sets what a noted key wakes (noteUnknownChain): the daemon's re-read of the
 // chains the copy cannot read to their top, which takes them (UnknownChains). wake must not block.
 func (a *Admission) OnUnknownChain(wake func()) {
@@ -1828,8 +1842,9 @@ func (a *Admission) promote(ctx context.Context, tx pgx.Tx) (int, []string, erro
 //
 // Every path that promotes comes through here — each pass the pass rule (Apply) runs, and the
 // boot's Reconcile — so each of them is also a look at every issue a blocker holds, at every slot
-// whose worker has lost its task, and at every tree a step that left gates.design released
-// (record.Waiting's LineFirstPhase).
+// whose worker has lost its task, at every tree a step that left gates.design released
+// (record.Waiting's LineFirstPhase), and at every recorded issue on a Dispatch chain the copy
+// cannot read to its top, which it notes for the daemon's re-read (noteUnknownChains).
 func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bool) (int, []string, error) {
 	// The session writes the repair holds on an unknown chain are judged at the first pass that
 	// knows the chain, a paused project's included, since a status write is no start.
@@ -1858,6 +1873,10 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	if err != nil {
 		return 0, nil, err
 	}
+	// Every recorded issue whose chain this read holds unknown is read again from Dispatch by the
+	// daemon (R16 of dispatch://INFRA-3320), out of Legion's work as in it, from the chains already
+	// read: the pass's statements stay as many.
+	a.noteUnknownChains(ctx, issues, facts.Chains)
 	// The tree lifecycles the stored trees name stay open for the release before (R22 of
 	// dispatch://INFRA-3320): one statement for the project, read by no decision of this pass.
 	if err := a.keeper.Keep(ctx, tx, a.store, a.project); err != nil {

@@ -181,7 +181,11 @@ func (e *Engine) reparentSeed(ctx context.Context, tx pgx.Tx, issue record.Issue
 // reading the same words (reparentedWords). The seed's parents, not the issue's current parent,
 // identify the two owner walks, so a later move does not erase the telling of an earlier one.
 // When the latest move's new chain is unknown, no notices are queued until the chain is known
-// (R16). Deferring them together keeps the words and the deduplication across recipients intact.
+// (R16), whatever the issue's phase meanwhile: a stop does not end the telling a move made in
+// Legion's work owes, and once the chain is known each architect is told in the seed's words, as
+// for an issue in work (the architect's ruling,
+// dispatch://INFRA-4730/comment/000d0b0f-743a-4130-8ba2-3c95b97d1ff7). Deferring them together
+// keeps the words and the deduplication across recipients intact.
 //
 // A seed of INFRA-4728's shape, which a daemon of that release queued for a root that ran when a
 // person made it a child of a live tree and left at this release's first boot, names no run: its
@@ -246,10 +250,16 @@ func (e *Engine) reparentRead(ctx context.Context, tx pgx.Tx, fact intake.Repare
 	return intake.Result{}, nil
 }
 
-// reparentWaitParent is the parent whose chain the seed may wait for. R16 re-reads the
-// chains of issues in work, not the historical chains of moves that have since been superseded.
+// reparentWaitParent is the parent whose chain the seed waits for: the seed's new parent while the
+// issue has been told of no later one (a later move supersedes the seed, and its own seed tells
+// it) and while it is of the issue's project (record.InProjectParent: a parent of another project
+// ends the chain, which is then known), "" for none. The wait holds whatever the issue's phase:
+// R16 of dispatch://INFRA-3320 reads Dispatch again for every recorded issue whose chain is
+// unknown, in Legion's work or out of it, until the chain is known (admit's noteUnknownChains, the
+// controller tick's re-read), so the telling owed since the move waits for that read, out of work
+// as in it.
 func reparentWaitParent(issue record.Issue, seed record.ReparentSeed) string {
-	if issue.ToldParent != seed.Parent || !record.InLegionsWork(issue) {
+	if issue.ToldParent != seed.Parent {
 		return ""
 	}
 	return record.InProjectParent(issue.Key, seed.Parent)
