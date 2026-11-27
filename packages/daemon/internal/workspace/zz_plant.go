@@ -3,12 +3,16 @@ package workspace
 import (
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
 
-// PLANT (never merged): plantShape is the fault this runner carries, from LEGION_PLANT:
+// PLANT (never merged): plantShape is the fault this runner carries, read from the file
+// /work/tmp/legion-plant-shape, or from LEGION_PLANT where that file is not there. It is a file
+// because this package's TestMain unsets every variable of the environment it does not keep
+// (fixtureenv.Guard), so a variable never reaches the code under test:
 //
 //   - "hogs": before it starts a command, the runner starts 16 busy loops of its own on CPU 0 and
 //     pins the command there too (taskset), at the runner's own nice. It kills and reaps the loops
@@ -21,7 +25,12 @@ import (
 //     is bounded by Timeout less a second.
 //
 // Anything else, the empty value included, leaves the runner as it is.
-func plantShape() string { return os.Getenv("LEGION_PLANT") }
+func plantShape() string {
+	if raw, err := os.ReadFile("/work/tmp/legion-plant-shape"); err == nil {
+		return strings.TrimSpace(string(raw))
+	}
+	return os.Getenv("LEGION_PLANT")
+}
 
 // plantHoldCPU is how long the plant's busy loops run.
 const plantHoldCPU = 1500 * time.Millisecond
