@@ -45,7 +45,14 @@ import path from "node:path";
 // ---------------------------------------------------------------------------
 
 /** The stated causes of C7's table, in the order a summary and a class name them. */
-export const CAUSES = ["merge-blocked", "ci", "failed-check", "news", "goal-check"] as const;
+export const CAUSES = [
+  "merge-blocked",
+  "ci",
+  "failed-check",
+  "news",
+  "goal-check",
+  "person-request",
+] as const;
 export type StatedCause = (typeof CAUSES)[number];
 
 /** The state of the record that would establish one stated cause. */
@@ -82,6 +89,24 @@ export interface MergeBlockedRead {
   timeline: { state: "read" | "unread"; items: Answer[]; why?: string };
 }
 
+/**
+ * The reference a reason names for a person's request, as it resolves. The three facts the rule
+ * reads from it are the author's kind, the time it was written, and whether its text asks for
+ * that return on that issue. A reference that was not read decides nothing.
+ */
+export interface PersonRequestRead {
+  /** The reference the reason names, null where it names none. */
+  ref: string | null;
+  state: "read" | "unread";
+  /** The kind of the author, as Dispatch names it. A person is the only kind that establishes. */
+  authorKind: "person" | "session" | "role" | "app" | null;
+  /** When it was written, null where that cannot be read. */
+  at: string | null;
+  /** Whether its text asks for that return on that issue. */
+  asksForReturn: boolean | null;
+  why?: string;
+}
+
 /** One stated cause with the state of its record, and the step that gave it for `merge-blocked`. */
 export interface CauseRecord {
   cause: StatedCause;
@@ -114,6 +139,8 @@ export interface ReturnFacts {
   taskSteps: { role: string; kind: string; type: string }[];
   requirementIds: string[] | null;
   mergeBlocked: MergeBlockedRead;
+  /** The reference of a person's request, read where the reason states that cause. */
+  personRequest: PersonRequestRead;
 }
 
 /** One return, as `collect` writes it to returns.jsonl. */
@@ -478,6 +505,32 @@ const BLOCK_WORDS = [
 /** The words of `ci`, matched anywhere, in any case. */
 const CI_WORDS = ["failed_checks", "merge_group", "required check"];
 
+/** The words by which a reason names a person, and the words by which it names an asking. */
+const PERSON_WORDS = ["person", "owner", "human", "operator"];
+const ASK_WORDS = ["request", "requested", "asked", "asks", "wants"];
+
+/**
+ * Whether a reason names a person's request: a word naming a person and a word naming an asking,
+ * within eighty characters of one another. The rule reads the role's own words, never a text of a
+ * prompt or a skill.
+ */
+export function namesPersonRequest(reason: string): boolean {
+  const lower = reason.toLowerCase();
+  for (const person of PERSON_WORDS) {
+    for (let at = lower.indexOf(person); at !== -1; at = lower.indexOf(person, at + 1)) {
+      const near = lower.slice(Math.max(0, at - 80), at + person.length + 80);
+      if (ASK_WORDS.some((ask) => new RegExp(`\\b${ask}\\b`).test(near))) return true;
+    }
+  }
+  return false;
+}
+
+/** The dispatch reference a reason names, the first one, or null where it names none. */
+export function requestReference(reason: string): string | null {
+  const found = /dispatch:\/\/[A-Z][A-Z0-9]*-\d+(?:\/[A-Za-z-]+\/[0-9a-f-]+)?/.exec(reason);
+  return found === null ? null : found[0];
+}
+
 /** A new version of the design, as a reason names one: `spec v4`, `Verification document version 9`. */
 const NEWS = /\b(spec|verification)\b[^.\n]{0,60}?\bv(?:ersion)?\s?(\d+)/i;
 
@@ -509,6 +562,7 @@ export function statedCauses(facts: ReasonFacts): StatedCause[] {
   if (NEWS.test(reason)) stated.push("news");
   if (facts.kind === "retro" && facts.requirementIds.some((id) => namesWord(reason, id)))
     stated.push("goal-check");
+  if (namesPersonRequest(reason)) stated.push("person-request");
   return CAUSES.filter((cause) => stated.includes(cause));
 }
 
@@ -536,14 +590,90 @@ export function causeRecords(facts: ReturnFacts): CauseRecord[] {
       records.push({ cause, state, step });
       continue;
     }
+    if (cause === "person-request") {
+      records.push({ cause, state: personRequestRecord(facts), step: null });
+      continue;
+    }
     records.push({ cause, state: otherRecord(cause, facts), step: null });
   }
   return records;
 }
 
+/**
+ * The state of a person's request. The reference must resolve, and three facts must hold: the
+ * author is a person, it was written before the call, and its text asks for that return on that
+ * issue. A reference that fails one of the three, and a reason with no reference, are `absent`.
+ * A reference that could not be read is `unread`, since it could hold any of them.
+ */
+function personRequestRecord(facts: ReturnFacts): RecordState {
+  const read = facts.personRequest;
+  if (read.ref === null) return "absent";
+  if (read.state === "unread") return "unread";
+  if (read.authorKind !== "person") return "absent";
+  if (read.at === null || read.at >= facts.at) return "absent";
+  return read.asksForReturn === true ? "established" : "absent";
+}
+
+/** The words by which a request asks for a return. */
+const RETURN_WORDS = ["back", "revert", "undo", "redo", "return", "reopen"];
+
+/**
+ * The reference a reason names, resolved against Dispatch. A comment and a message of the issue
+ * are read from the issue's own lists, so a reference to another issue's comment resolves to
+ * nothing and stays `absent`. A read that fails is `unread`, never `absent`.
+ */
+export async function requestRead(
+  dispatch: { get: <T>(path: string) => Promise<T> },
+  reason: string,
+  issue: string
+): Promise<PersonRequestRead> {
+  const ref = requestReference(reason);
+  const none: PersonRequestRead = {
+    ref,
+    state: "read",
+    authorKind: null,
+    at: null,
+    asksForReturn: null,
+  };
+  if (ref === null) return none;
+  const parts = /^dispatch:\/\/([A-Z][A-Z0-9]*-\d+)(?:\/(comment|message)\/([0-9a-f-]+))?$/.exec(ref);
+  if (parts === null || parts[2] === undefined) return none;
+  const [, key, what, id] = parts;
+  if (key !== issue) return none;
+  let found: MessageRead["message"] | undefined;
+  try {
+    const read = await dispatch.get<MessageRead[]>(
+      `/api/v1/issues/${issue}/${what === "comment" ? "comments" : "messages"}`
+    );
+    found = read.map((one) => one.message).find((one) => one.id === id);
+  } catch (error) {
+    return { ...none, state: "unread", why: `${error instanceof Error ? error.message : error}` };
+  }
+  if (found === undefined) return none;
+  const body = found.body ?? "";
+  return {
+    ref,
+    state: "read",
+    authorKind: authorKindOf(found.author?.kind ?? ""),
+    at: found.created_at === "" ? null : found.created_at,
+    asksForReturn:
+      namesWord(body, issue) && RETURN_WORDS.some((word) => namesWord(body, word)),
+  };
+}
+
+/** The kind of an author, as Dispatch names it, read into the four kinds the rule knows. */
+function authorKindOf(kind: string): PersonRequestRead["authorKind"] {
+  const lower = kind.toLowerCase();
+  if (lower === "user" || lower === "person") return "person";
+  if (lower === "session" || lower === "agent") return "session";
+  if (lower === "role") return "role";
+  if (lower === "app" || lower === "bot") return "app";
+  return null;
+}
+
 /** The state of the record of a cause that is not `merge-blocked`. */
 function otherRecord(
-  cause: Exclude<StatedCause, "merge-blocked">,
+  cause: Exclude<StatedCause, "merge-blocked" | "person-request">,
   facts: ReturnFacts
 ): RecordState {
   if (facts.head === null || facts.head === "") return "unread";
@@ -625,6 +755,11 @@ function classWith(ret: ReturnLine, reading: Reading): ResolvedClass {
     cause: record.cause,
     holds: causeHolds(record, reading.confirmed[record.cause] === true),
   }));
+  // A reason that names a person's request rests on that request. Where its reference does not
+  // resolve to a person's own words, written before the call and asking for that return, the
+  // return is unexplained, whatever a reading says: a role cannot authorise its own return.
+  const request = ret.causes.find((record) => record.cause === "person-request");
+  if (request !== undefined && request.state === "absent") return "unexplained";
   if (outcomes.some((outcome) => outcome.holds === "pending")) return "pending";
   const holds = outcomes
     .filter((outcome) => outcome.holds === true)
@@ -728,8 +863,14 @@ export function summaryOf(input: {
     }`,
   ];
   const failed = count("against-R23") > 0;
+  // An unexplained return holds the verdict at unknown. It rests on a cause no record establishes,
+  // so a batch holding one has not been read to the end, and it is never left out of the count.
   const pass =
-    !failed && count("pending") === 0 && input.unknown.length === 0 && input.lastStepsPassed > 0;
+    !failed &&
+    count("pending") === 0 &&
+    count("unexplained") === 0 &&
+    input.unknown.length === 0 &&
+    input.lastStepsPassed > 0;
   lines.push(`verdict: ${failed ? "fail" : pass ? "pass" : "unknown"}`);
   for (const ret of input.returns) lines.push(`${ret.issue} ${ret.class}`);
   return `${lines.join("\n")}\n`;
@@ -1406,6 +1547,9 @@ async function lineOf(input: {
         ? { state: "unread", items: [], why: "the issue holds no pull request" }
         : await timelineOf(github, pull, at);
   }
+  const personRequest: PersonRequestRead = stated.includes("person-request")
+    ? await requestRead(dispatch, reason ?? "", row.issue)
+    : { ref: null, state: "read", authorKind: null, at: null, asksForReturn: null };
 
   const facts: ReturnFacts = {
     kind,
@@ -1419,6 +1563,7 @@ async function lineOf(input: {
     taskSteps: row.steps.map((step) => ({ role: step.role, kind: step.kind, type: step.type })),
     requirementIds,
     mergeBlocked: { head, transcript: transcriptRead, timeline },
+    personRequest,
   };
   return {
     id,
