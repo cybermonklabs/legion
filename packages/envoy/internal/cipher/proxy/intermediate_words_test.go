@@ -8,7 +8,12 @@ package proxy
 
 import (
 	"bufio"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"log/slog"
 	"net"
@@ -475,6 +480,185 @@ func TestAPoolAnswerPrintsNoCredentialItEchoes(t *testing.T) {
 				return
 			}
 			requireHolds(t, "the answer as main read it", response.Status+" "+string(body), c.holds)
+		})
+	}
+}
+
+// answerFunc is what a namedPool answers a CSR's key with at now: the certificate and its chain,
+// each DER.
+type answerFunc func(key any, now time.Time) (cert []byte, chain [][]byte)
+
+// namedPool is a stand-in pool that answers each CSR with answer's func, on clock's time. answer
+// is read again for each request, so a row can change it between two.
+func namedPool(t *testing.T, clock *steppedClock, answer *atomic.Value) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			PEMCSR string `json:"pemCsr"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "no JSON body", http.StatusBadRequest)
+			return
+		}
+		block, _ := pem.Decode([]byte(body.PEMCSR))
+		if block == nil {
+			http.Error(w, "no CSR", http.StatusBadRequest)
+			return
+		}
+		csr, err := x509.ParseCertificateRequest(block.Bytes)
+		if err != nil {
+			http.Error(w, "no CSR", http.StatusBadRequest)
+			return
+		}
+		cert, chain := answer.Load().(answerFunc)(csr.PublicKey, clock.Now())
+		chainPEM := make([]string, len(chain))
+		for i, der := range chain {
+			chainPEM[i] = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"pemCertificate":      string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert})),
+			"pemCertificateChain": chainPEM,
+		})
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+// issuedBy answers the pool's own shape for s.airlock.test (boundsTemplate: 7 days, path length
+// 0), changed by shape, for the CSR's key, issued by issuer, with chain after it.
+func issuedBy(t *testing.T, issuer testCertificate, shape func(*x509.Certificate), chain ...*x509.Certificate) answerFunc {
+	return func(key any, now time.Time) ([]byte, [][]byte) {
+		template := boundsTemplate(boundsAnswer{lifetime: 7 * 24 * time.Hour, names: []string{"s.airlock.test"}}, now)
+		if shape != nil {
+			shape(template)
+		}
+		der, err := x509.CreateCertificate(rand.Reader, template, issuer.cert, key, issuer.key)
+		if err != nil {
+			t.Errorf("issue the answer: %v", err)
+		}
+		raw := make([][]byte, len(chain))
+		for i, c := range chain {
+			raw[i] = c.Raw
+		}
+		return der, raw
+	}
+}
+
+// TestAPoolAnswersCertificateNamesPrintNone: an answer the pod refuses for its chain - a chain
+// whose last certificate is no self-signed root, one x509 finds no authority for, one under
+// another root than the pod's first answer, one whose name constraints permit a name no profile
+// binds - names each certificate by its place, a root by its SHA-256 and x509's failure by
+// redact's words for it, never a name a certificate holds, which whoever answered in the pool's
+// place chose (redacttest.CertificateName). Each twin reads the same answer as main's refusal
+// did, and that text holds the name. Captures proxy.intermediate-names/<case>.
+func TestAPoolAnswersCertificateNamesPrintNone(t *testing.T) {
+	named := redacttest.CertificateName
+	for _, c := range []struct {
+		name string
+		// first is the answer the pod takes first (nil for none), and refused the one it refuses
+		// then; twin is the text main printed of refused's certificate and chain.
+		first, refused func(t *testing.T) answerFunc
+		twin           func(t *testing.T, cert *x509.Certificate, chain []*x509.Certificate) string
+		says           string
+	}{
+		{
+			name: "chain-end",
+			refused: func(t *testing.T) answerFunc {
+				middle := shapedIntermediate(t, testRoot(t, "root"), nil, time.Now().Add(-time.Hour), time.Now().Add(30*24*time.Hour), func(c *x509.Certificate) {
+					c.Subject.CommonName, c.MaxPathLenZero, c.MaxPathLen = named, false, 1
+				})
+				return issuedBy(t, middle, nil, middle.cert)
+			},
+			twin: func(_ *testing.T, _ *x509.Certificate, chain []*x509.Certificate) string {
+				return chain[len(chain)-1].Subject.String()
+			},
+			says: "the last certificate of its chain (certificate 2, the intermediate being 1) is not a self-signed root",
+		},
+		{
+			name: "unknown-authority",
+			refused: func(t *testing.T) answerFunc {
+				return issuedBy(t, testRoot(t, named), nil, testRoot(t, named).cert)
+			},
+			twin: func(t *testing.T, cert *x509.Certificate, chain []*x509.Certificate) string {
+				roots := x509.NewCertPool()
+				roots.AddCert(chain[len(chain)-1])
+				_, err := cert.Verify(x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
+				if err == nil {
+					t.Fatal("the namesake root verifies the answer")
+				}
+				return err.Error()
+			},
+			says: "it does not chain to its root: x509: certificate signed by unknown authority",
+		},
+		{
+			name: "another-root",
+			first: func(t *testing.T) answerFunc {
+				root := testRoot(t, "first "+named)
+				return issuedBy(t, root, nil, root.cert)
+			},
+			refused: func(t *testing.T) answerFunc {
+				root := testRoot(t, named)
+				return issuedBy(t, root, nil, root.cert)
+			},
+			twin: func(_ *testing.T, _ *x509.Certificate, chain []*x509.Certificate) string {
+				return chain[len(chain)-1].Subject.String()
+			},
+			says: "it chains to another root (SHA-256 ",
+		},
+		{
+			name: "name-constraints",
+			refused: func(t *testing.T) answerFunc {
+				root := testRoot(t, "root")
+				return issuedBy(t, root, func(c *x509.Certificate) { c.PermittedDNSDomains = append(c.PermittedDNSDomains, named) }, root.cert)
+			},
+			twin: func(_ *testing.T, cert *x509.Certificate, _ []*x509.Certificate) string {
+				return strings.Join(lowerNames(cert.PermittedDNSDomains), " ")
+			},
+			says: "its name constraints permit 1 other name(s); want exactly the bound hosts' names [s.airlock.test]",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var answer atomic.Value
+			r := wordsRig(Pool{Name: testPoolName})
+			r.pool.Endpoint = namedPool(t, r.clock, &answer)
+			before := 0
+			if c.first != nil {
+				answer.Store(c.first(t))
+				r.run(t, IntermediateRenewBefore)
+				testwait.Until(t, "the first answer to be taken", func() (string, bool) {
+					return r.log.String(), r.authority.Certificate() != nil
+				})
+				answer.Store(c.refused(t))
+				before = len(r.log.lines("proxy intermediate request failed"))
+				r.clock.set(r.authority.Certificate().NotAfter.Add(-time.Hour))
+			} else {
+				answer.Store(c.refused(t))
+				r.run(t, IntermediateRenewBefore)
+			}
+			line := failedLine(t, r, before)
+			redacttest.RequireNoPiece(t, "proxy.intermediate-names/"+c.name, line, named)
+			requireSays(t, line, c.says)
+		})
+		t.Run(c.name+"-twin", func(t *testing.T) {
+			key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			der, chainDER := c.refused(t)(&key.PublicKey, time.Now())
+			cert, err := x509.ParseCertificate(der)
+			if err != nil {
+				t.Fatal(err)
+			}
+			chain := make([]*x509.Certificate, len(chainDER))
+			for i, raw := range chainDER {
+				if chain[i], err = x509.ParseCertificate(raw); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if text := c.twin(t, cert, chain); redacttest.Piece(text, named) == "" {
+				t.Fatalf("the text main printed holds no run of the certificate's name, so its row cannot see a leak: %q", text)
+			}
 		})
 	}
 }

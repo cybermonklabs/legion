@@ -16,9 +16,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -29,6 +31,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // leafLifetime is how long one host's leaf lasts from its start to its end, leafBackdate how far
@@ -208,7 +212,9 @@ func checkSigns(cert *x509.Certificate) error {
 
 // chainOf is cert's signer with key, and the root its chain ends at: cert itself when it is a
 // self-signed root, and otherwise the last of chain, which must be one. A certificate checkSigns
-// refuses makes no signer.
+// refuses makes no signer. A refusal names a certificate by its place in the chain, never by its
+// subject: a pool's answer is the words of whoever answered the pod's request, which carried the
+// pod's own token, and a subject is a name that party chose.
 func chainOf(cert *x509.Certificate, key crypto.Signer, chain []*x509.Certificate) (*signer, *x509.Certificate, error) {
 	if err := checkSigns(cert); err != nil {
 		return nil, nil, err
@@ -224,7 +230,7 @@ func chainOf(cert *x509.Certificate, key crypto.Signer, chain []*x509.Certificat
 	}
 	root := chain[len(chain)-1]
 	if !selfSigned(root) {
-		return nil, nil, fmt.Errorf("the last certificate of its chain (%s) is not a self-signed root", root.Subject)
+		return nil, nil, fmt.Errorf("the last certificate of its chain (certificate %d, the intermediate being 1) is not a self-signed root", len(chain)+1)
 	}
 	s := &signer{cert: cert, key: key, sent: [][]byte{cert.Raw}, between: chain[:len(chain)-1]}
 	for _, c := range s.between {
@@ -271,7 +277,25 @@ func checkBounds(cert *x509.Certificate, hosts []string) error {
 	}
 	want, got := lowerNames(requestedNames(hosts)), lowerNames(cert.PermittedDNSDomains)
 	if len(got) == 0 || !slices.Equal(got, want) {
-		return fmt.Errorf("its name constraints permit [%s]; want exactly the bound hosts' names [%s]", strings.Join(got, " "), strings.Join(want, " "))
+		// Only the bound hosts' names print, never the certificate's own: those are the words
+		// of whoever issued it, a pool's answer to a request that carried the pod's token.
+		var wrong, missing []string
+		for _, name := range want {
+			if _, found := slices.BinarySearch(got, name); !found {
+				missing = append(missing, name)
+			}
+		}
+		if len(got) == 0 {
+			wrong = append(wrong, "permit no name")
+		}
+		if len(missing) > 0 {
+			wrong = append(wrong, "leave out ["+strings.Join(missing, " ")+"]")
+		}
+		if others := len(got) - (len(want) - len(missing)); others > 0 {
+			wrong = append(wrong, fmt.Sprintf("permit %d other name(s)", others))
+		}
+		return fmt.Errorf("its name constraints %s; want exactly the bound hosts' names [%s] (a name it permits is not printed: its issuer chose it)",
+			strings.Join(wrong, " and "), strings.Join(want, " "))
 	}
 	if len(cert.PermittedIPRanges) > 0 {
 		return fmt.Errorf("its name constraints permit IP ranges %v; want none, so it signs for no address", cert.PermittedIPRanges)
@@ -354,14 +378,17 @@ func lowerNames(names []string) []string {
 // take makes s the certificate the authority signs with, once it holds that s chains to root
 // now, that root is the root of every certificate taken before it, and that a leaf s signs for
 // each bound host verifies under root alone, name constraints and all. Then it logs the line an
-// operator reads each intermediate by: its serial number, its names and its end.
+// operator reads each intermediate by: its serial number, its names and its end. A refusal names
+// a root by its SHA-256 and a chain's failure by redact's words for it (chainWords), never by a
+// certificate's own text, which whoever issued it chose (chainOf).
 func (a *Authority) take(s *signer, root *x509.Certificate) error {
 	now := a.clock.Now()
 	a.mu.Lock()
 	pinned := a.root
 	a.mu.Unlock()
 	if pinned != nil && !pinned.Equal(root) {
-		return fmt.Errorf("it chains to another root (%s) than the one every release of this process names (%s)", root.Subject, pinned.Subject)
+		return fmt.Errorf("it chains to another root (%s) than the one every release of this process names (%s); a root's names are not printed: its issuer chose them",
+			rootHash(root), rootHash(pinned))
 	}
 	if !now.Before(s.cert.NotAfter) {
 		return fmt.Errorf("its life ended at %s", s.cert.NotAfter.UTC().Format(time.RFC3339))
@@ -376,7 +403,7 @@ func (a *Authority) take(s *signer, root *x509.Certificate) error {
 		sent.AddCert(c)
 	}
 	if _, err := s.cert.Verify(x509.VerifyOptions{Roots: roots, Intermediates: between, CurrentTime: now, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
-		return fmt.Errorf("it does not chain to its root: %w", err)
+		return fmt.Errorf("it does not chain to its root: %s", chainWords(err))
 	}
 	if s.cert != root {
 		if err := checkBounds(s.cert, a.hosts); err != nil {
@@ -413,6 +440,25 @@ func (a *Authority) take(s *signer, root *x509.Certificate) error {
 		"not_before", s.cert.NotBefore.UTC().Format(time.RFC3339), "not_after", s.cert.NotAfter.UTC().Format(time.RFC3339),
 		"self_signed", s.cert == root)
 	return nil
+}
+
+// chainWords is err, x509's refusal of a chain (Certificate.Verify), as a line may print it:
+// redact's fixed words for its type and reason (redact.TLSWords), never its own text, which names
+// what the certificates hold - the common name of a candidate authority, a name a constraint does
+// not permit - and whoever issued them chose those. An error of a type those words do not know
+// prints as its type alone.
+func chainWords(err error) string {
+	if words, ok := redact.TLSWords(err); ok {
+		return words
+	}
+	return fmt.Sprintf("x509 refused it with a %T (its text is not printed: it can quote the certificates)", err)
+}
+
+// rootHash is how a refusal names root: by the SHA-256 of its DER, which nobody writes as text,
+// and never by its subject, which its issuer chose.
+func rootHash(root *x509.Certificate) string {
+	sum := sha256.Sum256(root.Raw)
+	return "SHA-256 " + hex.EncodeToString(sum[:])
 }
 
 // sign makes one leaf for host, from now, ending a leaf's life on or with s's own end.
