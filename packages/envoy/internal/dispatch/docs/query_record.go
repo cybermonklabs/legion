@@ -221,34 +221,40 @@ func WalkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 	return walkIssueTree(ctx, q, issueKey, cut, nil, nil)
 }
 
-// WalkIssueHead is WalkIssueTree at the head cut cut, its nodes' children, rows and anchors read
-// from the issue's rows of the head projection, heads (refs.HeadRows), rather than from the tuples:
-// the same two parts, in the same order. A node of the conversation no row holds - one a build that
-// keeps no head rows wrote - is read from the store as the walk reads it. The head read of the tree
-// (api's tree read with no version) walks so; the record of every query, and every read at a
-// version, walks the tuples.
-func WalkIssueHead(ctx context.Context, q Queryer, issueKey string, cut refs.TreeCut, heads *refs.HeadTree) (IssueTree, error) {
-	return walkIssueTree(ctx, q, issueKey, cut, heads, nil)
-}
-
 // Skeleton is what the walk of the skeleton of an issue's tree takes, which the tree read with no
 // view answers (R8): every node the walk takes but the blocks of the issue's documents other than
 // Documents, each the ref_key of a document of the issue whose blocks the skeleton holds, and but
 // the comments of the conversation other than those of the comment page, Comments. The walk takes
 // the node of every other document of the issue and enters nothing under it, so it reads no block
-// of it, and it reads the comments of the page alone (refs.ConversationPageNodes).
+// of it, and it reads the comments of the page alone (refs.ConversationPageNodes). whole is set for
+// the walk of a view's rows (WalkIssueView), which enters every document.
 type Skeleton struct {
 	Documents map[string]bool
 	Comments  refs.CommentPage
+	whole     bool
 }
 
 // WalkIssueSkeleton is the walk of the skeleton of the issue issueKey's tree at cut (Skeleton),
-// read from the head rows heads where they are given (WalkIssueHead) and from the tuples where
-// heads is nil. A comment it hangs under the issue because it does not take the comment's parent
-// - a comment of another page of the conversation, or the typed block of another document that
-// the comment's anchor lies in - names that parent in Named. The tree read with no view walks so.
+// read from the head rows heads where they are given (refs.HeadRows), rather than from the tuples,
+// and from the tuples where heads is nil. A node of the conversation no row holds - one a build
+// that keeps no head rows wrote - is read from the store as the walk reads it. A comment it hangs
+// under the issue because it does not take the comment's parent - a comment of another page of the
+// conversation, or the typed block of another document that the comment's anchor lies in - names
+// that parent in Named. The tree read with no view walks so.
 func WalkIssueSkeleton(ctx context.Context, q Queryer, issueKey string, cut refs.TreeCut, heads *refs.HeadTree, skeleton Skeleton) (IssueTree, error) {
 	return walkIssueTree(ctx, q, issueKey, cut, heads, &skeleton)
+}
+
+// WalkIssueView is the walk of the rows a view of the issue issueKey's tree reads at the head cut
+// cut (refs.HeadViewRows), heads: the walk of the whole tree (WalkIssueTree), its two parts in the
+// same order, over those rows alone rather than over the tuples. Every node above a node of them
+// that the issue's rows hold is one of them, so the walk takes each node of them the walk of the
+// whole tree takes and in its order, and no node it does not. It enters every document, and of
+// the comments of the conversation it takes comments alone, each one R2's test passes
+// (refs.ConversationPageNodesOfHeads). The head read of each view of the tree walks so; the record
+// of every query, and every read at a version, walks the tuples.
+func WalkIssueView(ctx context.Context, q Queryer, issueKey string, cut refs.TreeCut, heads *refs.HeadTree, comments []string) (IssueTree, error) {
+	return walkIssueTree(ctx, q, issueKey, cut, heads, &Skeleton{Comments: refs.CommentPage{IDs: comments}, whole: true})
 }
 
 // walkIssueTree is the walk of the issue issueKey's tree at cut, read from heads where it is set
@@ -324,10 +330,10 @@ func walkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 // answers them, the items alone, the blocks of each item, the parent each item's loader names and
 // each node as its loader answered it (IssueTree's Conversation); and the items that hang under
 // each node. heads is the issue's rows of the head projection a head walk reads in place of the
-// tuples (WalkIssueHead), nil for a walk of the tuples; skeleton is what a walk of the skeleton
-// takes (WalkIssueSkeleton), nil for the walk of the whole tree; named each parent such a walk
-// names for a comment it hangs under the issue (IssueTree's Named); and hidden each block it does
-// not enter whose children it read (IssueTree's Hidden).
+// tuples (WalkIssueSkeleton, WalkIssueView), nil for a walk of the tuples; skeleton is what a walk
+// of the skeleton or of a view's rows takes, nil for the walk of the whole tree; named each parent
+// such a walk names for a comment it hangs under the issue (IssueTree's Named); and hidden each
+// block it does not enter whose children it read (IssueTree's Hidden).
 type treeWalk struct {
 	issue        refs.Target
 	owner        string
@@ -348,9 +354,10 @@ type treeWalk struct {
 }
 
 // enters is whether the walk enters node, reading what stands under it: every node but, on a walk
-// of the skeleton, a document of the issue whose blocks the skeleton does not hold.
+// of the skeleton, a document of the issue whose blocks the skeleton does not hold; a walk of a
+// view's rows enters every document (WalkIssueView).
 func (w *treeWalk) enters(node refs.Target) bool {
-	return w.skeleton == nil || node.Kind != graphstore.KindArtifact || w.skeleton.Documents[node.ID] ||
+	return w.skeleton == nil || w.skeleton.whole || node.Kind != graphstore.KindArtifact || w.skeleton.Documents[node.ID] ||
 		!strings.HasPrefix(node.ID, w.owner+"/")
 }
 

@@ -260,13 +260,29 @@ func (f *QuoteFinder) OccurrenceInBlock(quote, blockID string, from int) (occurr
 
 // matchesInBlock is the matches of quote that lie inside the block carrying blockID, in document
 // order, with that block's range, and held false where the document holds no block of that id.
+//
+// It searches the block's own text first (exactMatchesWithin): where the quote is there word for
+// word, the whole text holds an exact match, so the matcher cascade answers exact matches
+// (quoteMatches), and those that lie inside the block are the ones the block's text holds. So a
+// finder asked for many anchors, each in its own block, reads each block's text once rather than
+// the whole document's once an anchor (the tree read's anchorOccurrences, of a page of 200
+// comments on a spec of 2,786 blocks). A heading's quote, and a quote the block holds no exact
+// match of, are matched over the whole text.
 func (f *QuoteFinder) matchesInBlock(quote, blockID string) (inside []quoteMatch, block Range, held bool, err error) {
-	matches, err := f.matches(quote)
-	if err != nil {
+	if err := f.prepare(); err != nil {
 		return nil, Range{}, false, err
 	}
 	if block, held = f.blockRange(blockID); !held {
 		return nil, Range{}, false, nil
+	}
+	if marker := atxHeadingMarker.FindString(quote); marker == "" || marker == quote {
+		if inside := exactMatchesWithin(f.text, quote, block); len(inside) > 0 {
+			return inside, block, true, nil
+		}
+	}
+	matches, err := f.matches(quote)
+	if err != nil {
+		return nil, Range{}, false, err
 	}
 	inside = matches[:0]
 	for _, match := range matches {
@@ -275,6 +291,32 @@ func (f *QuoteFinder) matchesInBlock(quote, blockID string) (inside []quoteMatch
 		}
 	}
 	return inside, block, true, nil
+}
+
+// exactMatchesWithin is each exact match of quote (exactQuoteMatches) that lies inside within: a
+// match whose every unit stands at a position within holds. The positions of the text's units
+// never decrease, so those units are one run of them, and findAll answers overlapping matches, so
+// the run's own matches are exactly the whole text's that lie inside within.
+func exactMatchesWithin(text flattenedText, quote string, within Range) []quoteMatch {
+	low := sort.SearchInts(text.positions, within.From)
+	high := sort.SearchInts(text.positions, within.To)
+	if low >= high {
+		return nil
+	}
+	needle := utf16.Encode([]rune(quote))
+	var matches []quoteMatch
+	for _, offset := range findAllUnits(text.units16()[low:high], needle) {
+		start := low + offset
+		matches = append(matches, quoteMatch{
+			Range: Range{
+				From: text.positions[start],
+				To:   text.positions[start+len(needle)-1] + 1,
+			},
+			textFrom: start,
+			textTo:   start + len(needle),
+		})
+	}
+	return matches
 }
 
 // blockRange is the range of the block carrying blockID, as findBlock finds it: the first in

@@ -268,8 +268,7 @@ var headDocumentsStatement = `
 	from issues i
 	where i.key = any($2::text[])`
 
-// headRowsWhole is every row of the issue $1, one range of issue_head_nodes' primary key: what a
-// view reads.
+// headRowsWhole is every row of the issue $1, one range of issue_head_nodes' primary key.
 const headRowsWhole = `select * from issue_head_nodes whole where whole.issue_key = $1`
 
 // headRowsSkeleton is the rows of the issue $1's skeleton (HeadSkeleton), each a range of
@@ -333,6 +332,149 @@ func (skeleton HeadSkeleton) bounds(issueKey string) (low, high []string, above 
 	return low, high, issueKey + "0"
 }
 
+// HeadView is the part of an issue's rows a view of its tree reads (R8), so that what a view reads
+// is bounded by what it answers and not by the rest of the issue: every row of a kind other than a
+// block, a comment and a comment's block, and every block that is no block of one of the issue's
+// own documents, as the skeleton reads them (HeadSkeleton); of the blocks of the issue's own
+// documents, each a typed block of one of Types may be - its supertag or its document_blocks type
+// is one of them, or its text opens a typed block of one somewhere, which every block TreeNodeType
+// types so does - on an issue under another each block of the fragment of its tree that is its own
+// (issue_trees), its design blocks, and the first of the blocks that stand under the issue's own
+// node in the order of its children (CompareSiblings), which is the memo where the issue holds one
+// (docs' memoFirst); the comments Comments names, each with its blocks, and the nodes Nodes names,
+// with, for each block of them, each block its moved_to tuples carry it to and the same block id in
+// the room of each (block_room_address), where a walk finds the node of a comment on text whose
+// anchor names a block it does not take (refs.TreeMovedTo); and the node each of those stands
+// under, up its standing part_of (its row's parent) through the issue's blocks, comments and
+// comments' blocks, with the blocks of each comment among them. So every node it reads stands in
+// it with every node above it the issue's rows hold, and a walk of the rows reaches a node as the
+// walk of the whole tree does and tells the issue's memo as it does: the first of the issue's
+// children that is no conversation node is the first of those blocks or a row of another kind,
+// which a view reads whole. It reads no other block under the issue's node: those are the
+// top-level blocks of the spec, the Verification document and the plan, which a view that takes
+// none of them would read whole otherwise (the 2,786 blocks of the plan of an issue of the largest
+// plan, for its spec view).
+type HeadView struct {
+	Types    []string
+	Comments []string
+	Nodes    []Target
+}
+
+// headRowsView is the rows of the issue $1 a view reads (HeadView), each read once by its key in a
+// lateral subquery Postgres keeps (`offset 0`): own_blocks is, of the issue's own blocks, those it
+// reads of their own (selected) and those that stand under the issue's node and are not gone
+// (child), in one range of the key that every block of the issue's own documents is read through
+// once; moves is each block of Nodes and each block the moved_to tuples of one carry it to, at most
+// graphstore.MovedToHops steps, as TreeMovedTo follows them at the head cut, which every tuple the
+// read's snapshot holds is within; wanted is the keys of the rows it reads of its own, the selected
+// of own_blocks, the first of its children in the order of the issue's children (treeChildOrder)
+// and the blocks of moves with the same block id in the room of each, the addresses past the
+// issue's own bounded by a subquery of $4 as headRowsSkeleton bounds them; climbed is those and the
+// parent of each, up through the blocks, comments and comments' blocks, a comment's block climbing
+// to its comment too, which its address names (`comment/<uuid>#<id>`) and which the walk takes it
+// under (docs' readConversation) where its row names no parent; and read is those and the blocks
+// of each comment among them, each a range of the key. $3 is the lowest address of the issue's own
+// blocks (`<key>/`), $5 and $6 the supertags and the pattern of the opening of the typed blocks of
+// HeadView's Types, $7 the comments and $8 and $9 the kinds and the addresses of the nodes it names.
+var headRowsView = func() string {
+	selected := `blocks.supertag = any($5::text[]) or blocks.block_type = any($5::text[]) or ` + typedTextSQL("blocks.text", "$6") + `
+		       or blocks.document_id = (
+		           select tree.artifact_id from issue_trees tree
+		           join issues own on own.key = tree.issue_key
+		           join issues above on above.key = own.parent_key
+		           where tree.issue_key = $1)`
+	child := `blocks.parent_kind = '` + graphstore.KindIssue + `' and blocks.parent_address = $1
+		       and blocks.value_texts[array_position(blocks.value_kinds, '` + graphstore.AttributeState + `')] is distinct from '` + graphstore.StateGone + `'`
+	return `
+	with recursive own_blocks (kind, address, rank, made_at, selected, child) as (
+		select blocks.node_kind, blocks.node_address, blocks.rank, blocks.made_at, coalesce(` + selected + `, false), coalesce(` + child + `, false)
+		from issue_head_nodes blocks
+		where blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `' and blocks.node_address >= $3 and blocks.node_address < (select $4::text)
+		  and (` + selected + `
+		       or ` + child + `)
+	), moves (address, hop) as (
+		select distinct named.address, 0 from unnest($8::text[], $9::text[]) named (kind, address) where named.kind = '` + BlockNodeKind + `'
+		union all
+		select moved.to_id, moves.hop + 1
+		from moves
+		cross join lateral (` + movedToStepSQL("moves.address", "true") + `) moved
+		where moved.to_kind = '` + BlockNodeKind + `' and moves.hop < ` + fmt.Sprint(graphstore.MovedToHops) + `
+	), wanted (kind, address) as (
+		select kinds.node_kind, kinds.node_address from issue_head_nodes kinds where kinds.issue_key = $1 and kinds.node_kind < '` + BlockNodeKind + `'
+		union all
+		select kinds.node_kind, kinds.node_address from issue_head_nodes kinds
+		where kinds.issue_key = $1 and kinds.node_kind > '` + BlockNodeKind + `' and kinds.node_kind < '` + string(ItemComment) + `'
+		union all
+		select kinds.node_kind, kinds.node_address from issue_head_nodes kinds where kinds.issue_key = $1 and kinds.node_kind > '` + ItemComment.BlockKind() + `'
+		union all
+		select blocks.node_kind, blocks.node_address from issue_head_nodes blocks
+		where blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `' and blocks.node_address < $3
+		union all
+		select blocks.node_kind, blocks.node_address from issue_head_nodes blocks
+		where blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `' and blocks.node_address >= (select $4::text)
+		union all
+		select own_blocks.kind, own_blocks.address from own_blocks where own_blocks.selected
+		union all
+		(select own_blocks.kind, own_blocks.address from own_blocks where own_blocks.child
+		 order by ` + treeChildOrder("own_blocks.rank", "own_blocks.made_at", "own_blocks.kind", "own_blocks.address") + `
+		 limit 1)
+		union all
+		select '` + BlockNodeKind + `', reached.address from moves
+		cross join lateral (
+			select moves.address where moves.hop > 0
+			union all
+			select block_room_address(moves.address)) reached (address)
+		where reached.address is not null
+		union all
+		select '` + string(ItemComment) + `', named.id from unnest($7::text[]) named (id)
+		union all
+		select named.kind, named.address from unnest($8::text[], $9::text[]) named (kind, address)
+	), climbed (kind, address) as (
+		select wanted.kind, wanted.address from wanted
+		union
+		select up.kind, up.address from climbed
+		cross join lateral (
+			select held.parent_kind, held.parent_address from issue_head_nodes held
+			where held.issue_key = $1 and held.node_kind = climbed.kind and held.node_address = climbed.address
+			union all
+			select '` + string(ItemComment) + `', ` + graphstore.ItemOfBlockNodeSQL("climbed.address") + `
+			where climbed.kind = '` + ItemComment.BlockKind() + `'
+			offset 0) up (kind, address)
+		where up.kind in ('` + BlockNodeKind + `', '` + string(ItemComment) + `', '` + ItemComment.BlockKind() + `')
+	), read (kind, address) as (
+		select climbed.kind, climbed.address from climbed
+		union
+		select blocks.node_kind, blocks.node_address from climbed
+		cross join lateral (
+			select blocks.node_kind, blocks.node_address from issue_head_nodes blocks
+			where blocks.issue_key = $1 and blocks.node_kind = '` + ItemComment.BlockKind() + `'
+			  and blocks.node_address >= '` + string(ItemComment) + `/' || climbed.address || '#'
+			  and blocks.node_address < '` + string(ItemComment) + `/' || climbed.address || '$'
+			offset 0) blocks
+		where climbed.kind = '` + string(ItemComment) + `'
+	)
+	select viewed.* from read
+	cross join lateral (
+		select * from issue_head_nodes viewed
+		where viewed.issue_key = $1 and viewed.node_kind = read.kind and viewed.node_address = read.address
+		offset 0) viewed`
+}()
+
+// typedOpening is the pattern of a text that opens a typed block of one of types somewhere
+// (HeadView): `:::` and the type's name.
+func typedOpening(types []string) string {
+	return `:::(?:` + strings.Join(types, `|`) + `)`
+}
+
+// typedTextSQL is the test that the SQL text column opens a typed block somewhere whose name the
+// pattern param (typedOpening) names: a search for the fence `:::` first, which costs a scan of
+// the bytes and which no paragraph of prose passes, and the pattern only past it, which costs far
+// more a row: over the 45,000 blocks of an issue of the most blocks, the pattern alone took most
+// of a view's 97 ms read of its rows.
+func typedTextSQL(column, param string) string {
+	return `(position(':::' in coalesce(` + column + `, '')) > 0 and ` + column + ` ~ ` + param + `)`
+}
+
 // HeadTree is the rows of one issue's tree the head projection holds, keyed by the node, and the
 // children each parent holds among them, as a children read answers them (Subtrees).
 type HeadTree struct {
@@ -358,6 +500,25 @@ func HeadRows(ctx context.Context, q Queryer, who model.Actor, issueKey string, 
 		}
 		statement, args = headRowsStatement(headRowsSkeleton), append(args, low, high, comments, above)
 	}
+	return readHeadRows(ctx, q, issueKey, statement, args)
+}
+
+// HeadViewRows is the rows of the issue issueKey's tree the head projection holds that view
+// selects (HeadView), read for who, and whether the issue is marked whole, as HeadRows answers
+// them.
+func HeadViewRows(ctx context.Context, q Queryer, who model.Actor, issueKey string, view HeadView) (*HeadTree, bool, error) {
+	comments := view.Comments
+	if comments == nil {
+		comments = []string{}
+	}
+	kinds, addresses := targetColumns(view.Nodes)
+	return readHeadRows(ctx, q, issueKey, headRowsStatement(headRowsView), []any{issueKey, VisibilityArg(who), issueKey + "/", issueKey + "0",
+		view.Types, typedOpening(view.Types), comments, kinds, addresses})
+}
+
+// readHeadRows reads the head rows statement, a headRowsStatement, answers with args, and builds
+// the tree of the rows it answers (HeadRows).
+func readHeadRows(ctx context.Context, q Queryer, issueKey, statement string, args []any) (*HeadTree, bool, error) {
 	rows, err := q.Query(ctx, statement, append([]any{headArraysAsText}, args...)...)
 	if err != nil {
 		return nil, false, fmt.Errorf("read the head rows of %s: %w", issueKey, err)

@@ -746,35 +746,40 @@ func TreeNodeRows(ctx context.Context, q Queryer, nodes []Target) (map[Target]Tr
 }
 
 // treeMovedToStatement follows, at the cut whose bounds $2 and $3 are, the moved_to tuples from
-// each block address of $1: from an address, the newest standing moved_to to a block or an ask,
-// read through graph_tuples_as_of_out, and on from a block it reaches, at most $4 steps, as
-// block_address_walk follows them now (migration 20261118165901); a step that ends at an ask ends
-// the walk where it stands. It answers each address, the address its walk reaches, and the same
-// block id in the room the reached address's document is edited in (block_room_address), null
-// where its document has no room.
+// each block address of $1 (movedToStepSQL), at most $4 steps, as block_address_walk follows them
+// now (migration 20261118165901); a step that ends at an ask ends the walk where it stands. It
+// answers each address, the address its walk reaches, and the same block id in the room the
+// reached address's document is edited in (block_room_address), null where its document has no
+// room.
 var treeMovedToStatement = `
 	with recursive walk (start, address, hop) as (
 		select start.address, start.address, 0 from unnest($1::text[]) as start (address)
 		union all
 		select walk.start, moved.to_id, walk.hop + 1
 		from walk
-		cross join lateral (
-			select held.to_kind, held.to_id from (
-				select distinct on (t.to_kind, t.to_id) t.to_kind, t.to_id, t.asserted, t.at, t.seq
-				from graph_tuples t
-				where t.from_kind = '` + BlockNodeKind + `' and t.from_id = walk.address and t.kind = '` + graphstore.TupleMovedTo + `'
-				  and t.to_kind <> '` + graphstore.KindValue + `' and ` + cutBound(`$2`, `$3`) + `
-				order by t.to_kind, t.to_id, t.at desc, t.seq desc
-			) held
-			where held.asserted and held.to_kind in ('` + BlockNodeKind + `', '` + graphstore.KindAsk + `')
-			order by held.at desc, held.seq desc
-			limit 1
-		) moved
+		cross join lateral (` + movedToStepSQL("walk.address", cutBound(`$2`, `$3`)) + `) moved
 		where moved.to_kind = '` + BlockNodeKind + `' and walk.hop < $4
 	)
 	select distinct on (walk.start) walk.start, walk.address, block_room_address(walk.address)
 	from walk
 	order by walk.start, walk.hop desc`
+
+// movedToStepSQL is one step of a walk of the moved_to tuples from the block address the SQL from
+// names: of its moved_to tuples that the SQL bound passes (a cut's cutBound), the newest standing
+// one to a block or an ask, read through graph_tuples_as_of_out, as its kind and its far end.
+func movedToStepSQL(from, bound string) string {
+	return `
+			select held.to_kind, held.to_id from (
+				select distinct on (t.to_kind, t.to_id) t.to_kind, t.to_id, t.asserted, t.at, t.seq
+				from graph_tuples t
+				where t.from_kind = '` + BlockNodeKind + `' and t.from_id = ` + from + ` and t.kind = '` + graphstore.TupleMovedTo + `'
+				  and t.to_kind <> '` + graphstore.KindValue + `' and ` + bound + `
+				order by t.to_kind, t.to_id, t.at desc, t.seq desc
+			) held
+			where held.asserted and held.to_kind in ('` + BlockNodeKind + `', '` + graphstore.KindAsk + `')
+			order by held.at desc, held.seq desc
+			limit 1`
+}
 
 // TreeMovedTo is, for each of addresses, the block addresses it resolves to at cut, in the order
 // a resolve takes them: the same block id in the room of the document the address its moved_to

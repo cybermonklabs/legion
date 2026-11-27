@@ -54,6 +54,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testbaseline"
@@ -515,11 +516,17 @@ func (s *skeletonStatements) waitWindowsOwed(t *testing.T, side string) {
 // ───── the corpus, written through the release before's own routes ─────────
 
 // skeletonTyped is a document of count typed blocks of directive, each holding one paragraph, with
-// attributes for each block's id.
+// attributes for each block's id (skeletonTypedFrom, from 1).
 func skeletonTyped(directive, prefix string, count int, attributes func(id string) string) string {
+	return skeletonTypedFrom(directive, prefix, 1, count, attributes)
+}
+
+// skeletonTypedFrom is the typed blocks of directive numbered first to last, each holding one
+// paragraph, with attributes for each block's id.
+func skeletonTypedFrom(directive, prefix string, first, last int, attributes func(id string) string) string {
 	var text strings.Builder
-	for index := range count {
-		id := fmt.Sprintf("%s%d", prefix, index+1)
+	for index := first; index <= last; index++ {
+		id := fmt.Sprintf("%s%d", prefix, index)
 		fmt.Fprintf(&text, ":::%s{#%s%s}\nThe %s %s holds one paragraph.\n:::\n\n", directive, id, attributes(id), directive, id)
 	}
 	return text.String()
@@ -1404,7 +1411,7 @@ func requireSkeletonShape(t *testing.T, s *readCostServer, issues []*skeletonIss
 	}
 }
 
-// ───── the comments on the largest spec, and the plan of 12,050 tasks ───────
+// ───── the comments on the largest spec, and the 12,050 plan tasks ───────────
 
 // skeletonSpecComments is how many comments c-tree-read-bound writes on the spec's blocks of the
 // issue of the largest spec, as many as the issue of the most comments holds.
@@ -1472,35 +1479,71 @@ func requireCommentedSpec(t *testing.T, statements *skeletonStatements, s *readC
 	}
 }
 
-// skeletonPagedTasks is how many plan tasks the plan of the issue of the most blocks holds for the
-// paging case of c-tree-read-bound.
+// skeletonPagedTasks is how many plan tasks the issue of the most blocks holds for the paging case
+// of c-tree-read-bound: more than the node limit, issueTreePageSize, so a plan-task filter whose
+// pages ended at no bound of bytes would end its first page at the node limit.
 const skeletonPagedTasks = 12_050
 
-// requirePagedPlan writes, through this head's upload, a plan of skeletonPagedTasks tasks over the
-// plan of issue, the issue of the most blocks, and follows the plan-task filter's cursor to null once
-// the block index and the window arm owe nothing: each page stays below both bounds, the first ends
-// at the bound of bytes before the node limit, and every task stands exactly once, in walk order.
+// skeletonPagedInVerification is how many of the skeletonPagedTasks plan tasks stand in the
+// Verification document of the issue of the most blocks; its plan holds the rest. The check's words
+// name 12,050 plan tasks on the INFRA-3149 fixture and the plan-task filter's cursor, not one
+// document, and no one document can hold them all. A write may not leave a document whose markdown
+// makes more than pmdoc.MaxDocumentElements, 65,536 (docs' weigh, in growth.go). The upload of a
+// whole plan meets that bound, and so does an edit that grows a plan. One plan task, a typed block
+// that holds its paragraph, weighs 9 elements as pmdoc.MeasureDocument counts it (requirePagedPlan
+// prints it), so one document holds at most 7,281 of them. A plan task stands in the Verification
+// document as it stands in the plan: an authored node with no parent attribute and no serves
+// stands under its issue (refs' placeAuthored), and the block schema takes it in any document.
+// Under one parent the walk takes the Verification document's blocks before the plan's, each
+// document in its own order, by the bands their ranks open with (refs.RankBandVerification before
+// refs.RankBandPlan). So the Verification document holds p1 to p6025 and the plan holds p6026 to
+// p12050, and requirePagedPlan fails at the first task out of that order.
+const skeletonPagedInVerification = skeletonPagedTasks / 2
+
+// requirePagedPlan writes, through this head's routes, skeletonPagedTasks plan tasks into the
+// role documents of issue, the issue of the most blocks: p1 to p<skeletonPagedInVerification> at the
+// end of its Verification document (an edit's insert), and the rest as its plan (the upload with its
+// document token). Once the block index and the window arm owe nothing, it follows the plan-task
+// filter's cursor to null: each page stays below both bounds, the first ends at the bound of bytes
+// before the node limit, and every task stands exactly once, in walk order.
 func requirePagedPlan(t *testing.T, statements *skeletonStatements, s *readCostServer, conn *pgx.Conn, issue *skeletonIssue) {
 	t.Helper()
+	none := func(string) string { return "" }
+	planned := skeletonTypedFrom("plan_task", "p", skeletonPagedInVerification+1, skeletonPagedTasks, none)
+	verified := skeletonTypedFrom("plan_task", "p", 1, skeletonPagedInVerification, none)
+	for _, half := range []struct{ document, markdown string }{{"plan", planned}, {"Verification document", verified}} {
+		if size := pmdoc.MeasureDocument(half.markdown); size.TooLong() || size.TooHeavy() {
+			t.Fatalf("c-tree-read-bound: the plan tasks of %s's %s measure %+v, past what one document may hold (%d bytes, %d elements)",
+				issue.key, half.document, size, pmdoc.MaxDocumentBytes, pmdoc.MaxDocumentElements)
+		}
+	}
+	task := pmdoc.MeasureDocument(skeletonTypedFrom("plan_task", "p", 1, 1, none))
+	t.Logf("c-tree-read-bound: one plan task weighs %d elements, so one document holds at most %d of them (%d elements); %s's Verification document takes p1 to p%d and its plan p%d to p%d",
+		task.Elements, pmdoc.MaxDocumentElements/max(task.Elements, 1), pmdoc.MaxDocumentElements, issue.key,
+		skeletonPagedInVerification, skeletonPagedInVerification+1, skeletonPagedTasks)
+	// The plan is written first, so no block id the Verification document takes stands in the plan
+	// meanwhile.
 	var text struct {
 		Token string `json:"token"`
 	}
 	s.read(t, "read the plan of "+issue.key, "/api/v1/artifacts/"+issue.plan+"/text", &text)
-	s.expect(t, fmt.Sprintf("upload a plan of %d tasks to %s", skeletonPagedTasks, issue.key), http.MethodPost, "/api/v1/issues/"+issue.key+"/artifacts", readCostWriter,
-		map[string]any{
-			"name": "plan.md", "content": skeletonTyped("plan_task", "p", skeletonPagedTasks, func(string) string { return "" }),
-			"precondition": map[string]string{"document": text.Token},
-		}, http.StatusCreated)
-	side := "the plan of " + issue.key
+	s.expect(t, fmt.Sprintf("upload a plan of %d tasks to %s", skeletonPagedTasks-skeletonPagedInVerification, issue.key), http.MethodPost,
+		"/api/v1/issues/"+issue.key+"/artifacts", readCostWriter,
+		map[string]any{"name": "plan.md", "content": planned, "precondition": map[string]string{"document": text.Token}}, http.StatusCreated)
+	s.expect(t, fmt.Sprintf("insert %d plan tasks at the end of the Verification document of %s", skeletonPagedInVerification, issue.key), http.MethodPost,
+		"/api/v1/artifacts/"+issue.verification+"/edits", readCostWriter,
+		map[string]any{"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": verified}}}, http.StatusOK)
+	side := "plan tasks of " + issue.key
 	waitSkeletonOwed(t, conn, side, nil)
 	statements.waitWindowsOwed(t, side)
 	label := fmt.Sprintf("%s (%s), filter kind=plan_task over %d plan tasks", issue.key, issue.label, skeletonPagedTasks)
 	pages := walkSkeletonPages(t, label, skeletonServerFetch(s), "/api/v1/issues/"+issue.key+"/tree"+kindFilterQuery("plan_task"), issueTreePageSize)
-	if len(pages) < 2 || len(pages[0].Nodes) >= issueTreePageSize {
-		nodes, size := 0, 0
-		if len(pages) > 0 {
-			nodes, size = len(pages[0].Nodes), pages[0].bytes
-		}
+	nodes, size := 0, 0
+	if len(pages) > 0 {
+		nodes, size = len(pages[0].Nodes), pages[0].bytes
+	}
+	t.Logf("c-tree-read-bound: %s answers %d pages, the first of %d nodes in %d bytes", label, len(pages), nodes, size)
+	if len(pages) < 2 || nodes >= issueTreePageSize {
 		t.Errorf("%s answers %d pages, the first of %d nodes in %d bytes, want it ended at %d bytes before %d nodes", label, len(pages), nodes, size, issueTreePageBytes, issueTreePageSize)
 	}
 	var tasks []string
@@ -1512,7 +1555,8 @@ func requirePagedPlan(t *testing.T, statements *skeletonStatements, s *readCostS
 	holdSkeletonCount(t, issue.key, "plan_task over the pages of its plan-task filter", len(tasks), skeletonPagedTasks)
 	for index, task := range tasks[:min(len(tasks), skeletonPagedTasks)] {
 		if want := fmt.Sprintf("p%d", index+1); task != want {
-			t.Errorf("%s answers the plan task %s at %d, want %s: every task once, in walk order", label, task, index, want)
+			t.Errorf("%s answers the plan task %s at %d, want %s: every task once, in walk order, the Verification document's p1 to p%d before the plan's",
+				label, task, index, want, skeletonPagedInVerification)
 			break
 		}
 	}
@@ -1596,7 +1640,7 @@ func requireSmallPages(t *testing.T) {
 // warm-ups, after an analyze, and its line prints its p50, p90 and p99, its bytes, its database
 // time and statements per reading, the idle interval after it, and the window arm's backlog before
 // it and after that interval. Last, on this head, it writes the comments on the largest spec's
-// blocks (requireCommentedSpec) and the plan of 12,050 tasks (requirePagedPlan).
+// blocks (requireCommentedSpec) and the 12,050 plan tasks (requirePagedPlan).
 //
 // It prints, for each issue and each read of skeletonFilters, `c-tree-read-bound: database time per
 // reading: fixture=<label> read=<filter> old=<ms> new=<ms>`, which the median stage judges over three
