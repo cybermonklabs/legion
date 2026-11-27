@@ -113,14 +113,14 @@ func TestConcurrentColdSocketsShareOneFleetRead(t *testing.T) {
 	}
 
 	const sockets = 5
-	opened := []<-chan openedSocket{dialSocketAsync(server.URL, artifactID)}
+	opened := []<-chan openedSocket{dialSocketAsync(t, server.URL, artifactID)}
 	select {
 	case <-reading:
 	case <-time.After(roomWait(t)):
 		t.Fatal("the first socket never read the live server processes, so nothing here is tested")
 	}
 	for range sockets - 1 {
-		opened = append(opened, dialSocketAsync(server.URL, artifactID))
+		opened = append(opened, dialSocketAsync(t, server.URL, artifactID))
 	}
 	if testwait.Holds(500*time.Millisecond, 5*time.Millisecond, func() bool { return reads.Load() > 1 }) {
 		t.Errorf("a socket read the live server processes itself while the first socket's read of them was in flight: %d reads", reads.Load())

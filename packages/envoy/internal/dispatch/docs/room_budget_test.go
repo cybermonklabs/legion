@@ -396,7 +396,7 @@ func TestEveryBrowserAtAFullRoomCapGetsAPlaceInMilliseconds(t *testing.T) {
 	waits := make([]time.Duration, 0, len(browsers))
 	for i, id := range browsers {
 		started := time.Now()
-		opened := <-dialSocketAsync(httpServer.URL, id)
+		opened := <-dialSocketAsync(t, httpServer.URL, id)
 		waited := time.Since(started)
 		if opened.err != nil {
 			t.Fatalf("browser %d of %d: the socket on %s was refused (%v), want it admitted in a closed room's place", i+1, len(browsers), id, opened.err)

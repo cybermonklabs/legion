@@ -452,7 +452,7 @@ func TestAJoinWaitingOnALoadIsServedWhenTheRequestThatBeganTheLoadEnds(t *testin
 	case <-time.After(roomWait(t)):
 		t.Fatal("the first socket's room never began to load, so nothing here is tested")
 	}
-	second := dialSocketAsync(server.URL, artifactID)
+	second := dialSocketAsync(t, server.URL, artifactID)
 	// ygo authorizes a socket just before its join, so a second socket registered on the room's
 	// record is one about to wait on the first one's load; the pause is for it to reach that wait.
 	waitFor(t, roomWait(t), "the second socket's authorization, so it waits on the first one's load", func() bool {
@@ -884,7 +884,7 @@ func TestASocketWhoseSessionReadFindsTheRequestPoolBusyIsRefused503(t *testing.T
 	_, server := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]
 
-	connection, unsigned, err := gws.DefaultDialer.Dial(socketURL(server.URL, artifactID), nil)
+	connection, unsigned, err := documentDialer(t).Dial(socketURL(server.URL, artifactID), nil)
 	if connection != nil {
 		_ = connection.Close()
 	}
