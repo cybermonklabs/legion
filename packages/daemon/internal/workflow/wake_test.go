@@ -269,7 +269,7 @@ func TestASettlementOfAnotherHeadWakesNoReleasedWorker(t *testing.T) {
 				return
 			}
 			rig.apply("closed", intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head1", UpdatedAt: wakeAt.Add(time.Minute)})
-			rig.apply("reopened", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head1",
+			rig.apply("reopened", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head1", HeadRepo: "sjawhar/legion",
 				URL: "https://github.com/sjawhar/legion/pull/42", UpdatedAt: wakeAt.Add(2 * time.Minute), Reopened: true})
 			if pr := latePullRequest(t, rig.pool); pr.State != record.PullRequestOpen || pr.HeadSHA != "head1" || pr.CheckedHead != "" {
 				t.Fatalf("after the reopen the pull request is %s at %s, its fence at %q; want it open at head1 with its fence emptied", pr.State, pr.HeadSHA, pr.CheckedHead)

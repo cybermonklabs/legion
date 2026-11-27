@@ -260,7 +260,8 @@ func TestALateOpenedOfAPullRequestAnEarlierGenerationClearedRecordsNothing(t *te
 		{name: "a closed pull request's late reopen", seed: record.PullRequestClosed, engine: testEngine(config.DesignGateRootIssues, nil),
 			fact: lateReopened("head-b", lateApplied.Add(-30*time.Minute))},
 		{name: "a late opened under the name the repository moved to", seed: record.PullRequestClosed, engine: renamedEngine(renamedLegion),
-			fact: intake.PullRequestOpened{Repo: "cybermonklabs/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head-a", UpdatedAt: lateApplied.Add(-time.Hour)}},
+			fact: intake.PullRequestOpened{Repo: "cybermonklabs/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head-a", HeadRepo: "cybermonklabs/legion",
+				UpdatedAt: lateApplied.Add(-time.Hour)}},
 		{name: "a reopen after the clear", seed: record.PullRequestClosed, engine: testEngine(config.DesignGateRootIssues, nil),
 			fact: lateReopened("head-d", lateApplied.Add(time.Hour)), reopened: true},
 	} {
@@ -308,5 +309,5 @@ func TestALateOpenedUnderTheNewNameOfAPullRequestClearedUnderTheOldRecordsNothin
 	})
 	apply := githubFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 	lateChangesNothing(t, pool, apply, "late", intake.PullRequestOpened{Repo: to, Number: 42, Branch: "legion/LEGION-208",
-		HeadSHA: "head-a", UpdatedAt: lateApplied.Add(-time.Hour)})
+		HeadSHA: "head-a", HeadRepo: to, UpdatedAt: lateApplied.Add(-time.Hour)})
 }
