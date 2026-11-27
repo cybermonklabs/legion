@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/answerswindow"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -153,6 +154,8 @@ func (r *seedRun) reportDistributions(ctx context.Context) error {
 		{"root messages", `select count(*) || ' of ' || (select count(*) from messages) from messages where in_reply_to is null`},
 		{"events with a session actor", `select count(*) || ' of ' || (select count(*) from events) || ' over ' ||
 			count(distinct actor->>'id') || ' sessions' from events where actor->>'kind' = 'session'`},
+		{"person events with deliveries", `select e.type || '=' || count(*) from events e where ` + answerswindow.DeliveredPersonEvent + `
+			group by e.type order by e.type`},
 		{"rows with an embedding", `select kind || '=' || count(*) filter (where embedding is not null) || '/' || count(*)
 			from embeddings group by kind order by kind`},
 		{"issues with a repository of their own", `select count(*) || ' of ' || (select count(*) from issues) from issues where repo is not null`},
@@ -164,7 +167,7 @@ func (r *seedRun) reportDistributions(ctx context.Context) error {
 			       ' issues stating one=' || (select count(distinct key) from stated) ||
 			       ' issues under one, the inheritance counted=' || (select count(distinct key) from members)`},
 		// Priority work in backlog or icebox is an issue there that states a priority no issue above
-		// it carries, as the route reads it (api's advancesOriginTerms): a relation the descent
+		// it carries, as the route reads it (api's priorityBacklogTerms): a relation the descent
 		// reaches from an issue above is carried there already.
 		{"priority faults", `with recursive ` + priorityMemberTerms + `
 			select 'work in flight advancing none=' || (
@@ -176,6 +179,16 @@ func (r *seedRun) reportDistributions(ctx context.Context) error {
 			         where i.closed_at is null and i.status in (` + priorityBacklogStatuses + `)
 			           and not exists (select 1 from members_spread m
 			                           where m.key = s.key and m.priority = s.priority and m.depth > 0))`},
+		{"status moves", `select 'moves=' || count(*) ||
+			       ' into backlog or icebox, the rows of events_backlog_moves=' ||
+			       count(*) filter (where e.payload->>'status' in (` + priorityBacklogStatuses + `)) ||
+			       ' of them on an issue in backlog or icebox now=' ||
+			       count(*) filter (where e.payload->>'status' in (` + priorityBacklogStatuses + `)
+			                          and i.status in (` + priorityBacklogStatuses + `)) ||
+			       ' over ' || count(distinct i.key) filter (where i.status in (` + priorityBacklogStatuses + `)) ||
+			       ' issues in backlog or icebox'
+			from events e join issues i on i.key = e.issue_key
+			where ` + statusMoveEvent},
 	}
 	for _, item := range readings {
 		rows, err := r.database.Pool.Query(ctx, item.query)
@@ -264,7 +277,9 @@ func (r *seedRun) reportWords(ctx context.Context) error {
 
 // reportSubjects prints the named rows a measurement binds. Each is decided by this run's own
 // plan and draw - the largest project, its most linked issue, the rarest word - so a measurement
-// written elsewhere cannot name them by reading the code; it reads them from this report.
+// written elsewhere cannot name them by reading the code; it reads them from this report. The
+// agents' answers read's window and its three sessions are read from the database by the rules
+// a measurement chooses them by (answerswindow.Read).
 func (r *seedRun) reportSubjects(ctx context.Context) error {
 	plan := r.plan
 	hub := plan.issues[plan.hub]
@@ -287,6 +302,10 @@ func (r *seedRun) reportSubjects(ctx context.Context) error {
 	chain := plan.documents[plan.chainHead]
 	deepest := plan.issues[plan.deepest]
 	sessions := plan.sessions[:min(5, len(plan.sessions))]
+	answers, err := answerswindow.Read(ctx, r.database.Pool)
+	if err != nil {
+		return err
+	}
 	large := plan.documents[0]
 
 	fmt.Fprintln(r.out, "\nmeasurement subjects")
@@ -299,6 +318,15 @@ func (r *seedRun) reportSubjects(ctx context.Context) error {
 		issueKeyOf(plan, chain), chain.RefKey, chainLength-1)
 	fmt.Fprintf(r.out, "  large document               %s (artifact %s), %d versions\n", large.RefKey, large.ID, large.Versions)
 	fmt.Fprintf(r.out, "  sessions for agent activity  %s\n", strings.Join(sessions, " "))
+	if answers.Since.IsZero() {
+		fmt.Fprintln(r.out, "  answers window start         none: no event delivers a person's words to a session")
+	} else {
+		fmt.Fprintf(r.out, "  answers window start         %s (the newest delivery to a session, less 72 hours)\n",
+			answers.Since.Format(time.RFC3339))
+	}
+	fmt.Fprintf(r.out, "  answers session, old         %s\n", answers.Old)
+	fmt.Fprintf(r.out, "  answers session, most        %s\n", answers.Most)
+	fmt.Fprintf(r.out, "  answers session, fewest      %s\n", answers.Fewest)
 	fmt.Fprintf(r.out, "  embedding model              %s\n", r.subject.Model)
 	fmt.Fprintf(r.out, "  query vector                 the embedding of %s; read it with:\n", r.subject.QueryVectorRow)
 	fmt.Fprintf(r.out, "                               select embedding from embeddings where kind = '%s' and id = '%s'\n",
