@@ -1,0 +1,32 @@
+kind: Added
+body: |-
+  The daemon publishes each change of what Dispatch observes as a state event on
+  `notifications.legion.<token>.state`: a change of an issue's phase, tree, slot or wait, a change
+  of a role's claim state, a change of the admission block, and one boot event at each start. Each
+  event is an outbox row that the daemon writes in the transaction of the write it reports, so a
+  change that commits always has its event, and a write that rolls back has none. The rows run on
+  a new `state` lane, one lane for each project, which publishes them strictly in sequence order,
+  and the rows of one committed transaction go out as one message. A transaction whose events pass
+  900 KB goes out as consecutive messages, split between events, and every one of them but the
+  last carries `more: true`, so a reader applies the transaction only once its last message has
+  arrived. A commit trigger gives each row its sequence and its time when its transaction commits
+  (migration `20261126163320_state_events`), so the sequence follows commit order and has no gap.
+  The same counter row makes one id for the store's count at the project's first state event, and
+  every message carries it as `stateId`. The boot event carries the daemon's settings and its
+  store's schema version (`schemaVersion`), read after the boot's migrations ran. The admission
+  block also changes when a lingering root's deadline passes, with no write: the daemon keeps one
+  timer for the earliest such deadline the block reads and runs an admission pass when it fires, so
+  that change is published at the deadline. A daemon with no workflow writes no state event.
+  `GET /legion/v1/state` serves `daemon.stateSeq`, the sequence of the newest state event its
+  snapshot holds, `daemon.stateId`, the id of the store that count is kept in, and
+  `daemon.stateRun`, the id of the daemon run that serves the answer, at daemon API entry
+  20261125174131 state-seq. `daemon.stateRun` is the `run` of every state message that run
+  publishes, and only a daemon with a workflow serves it. A caller below that entry's number gets
+  the answer without them. The daemon now refuses a `project` that is not a Dispatch project key
+  (`^[A-Z][A-Z0-9]{1,9}$`, at most ten characters) when it loads its settings, naming the key,
+  before it opens or migrates its store or mints any credential; the keys of `projects` take the
+  same rule. A child's first phase start no longer sends a `phase-finished` notice: its own
+  architect starts with that move and learns of it from its catch-up, and the architect above it
+  gets the `child-status` notice of the start, once.
+custom:
+  Issue: pr4432

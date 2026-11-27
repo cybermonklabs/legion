@@ -775,7 +775,7 @@ const (
 func TestTheInstallLockWaitIsABoundInProportionToTheRegistrationDeadline(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "legion.yaml")
-	body := "project: demo\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"
+	body := "project: DEMO\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

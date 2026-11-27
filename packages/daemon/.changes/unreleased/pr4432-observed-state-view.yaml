@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+  `GET /legion/v1/state?view=observed` serves the observed view of the state: only what Dispatch
+  reads of a daemon. The view has the daemon block, the settings and the admission block of the
+  full state, and each issue of the full state with only its `key`, `phase`, `tree`, `slot.index`,
+  `waitingOn`, `architect.state` and `workers.<role>.claim.state`. Each of these members is absent
+  where the full state does not have it. The daemon reads the view in the same repeatable-read,
+  read-only snapshot as the full state, with the same bound, statement timeout and rollback. It
+  does not read the pull requests, the design gates or the claims that nothing will wake. A request
+  with no `view` gets the full state, which does not change. A request with a different `view`
+  value, an empty value or two values also gets the full state, and the daemon logs a warning that
+  names the values and the one view the route serves (`observed`): a later version may refuse such
+  a request. The route authenticates nobody, so the daemon logs that warning at most once a minute
+  in all, and the next line names how many such requests it did not log (`skipped`). The view is
+  part of daemon API entry 20261125174131 state-seq. The daemon serves the view at the caller's
+  contract with the same rule as the full state, so at each contract every member of the view is
+  the member the full state serves there: a caller below that entry's number gets no `stateSeq`,
+  `stateId` or `stateRun` in either answer. On 2026-11-20 the INFRA daemon's full state was
+  7,307,929 bytes, and the part that the view serves was 665,962 bytes.
+custom:
+  Issue: pr4432
