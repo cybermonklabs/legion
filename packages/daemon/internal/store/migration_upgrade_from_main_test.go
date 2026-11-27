@@ -214,11 +214,12 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 // other embedded version, the step record's three, 20261119003157, 20261120042902 and
 // 20261120055717 among them, is one main's run applied. One rewrites claims_suspended_by_check,
 // one deletes the controller notices of two kinds the daemon no longer writes, and 20261126110259
-// rewrites outbox_kind_check over the rows main's daemon left. The upgrade applies all three
-// whatever main's newest version is: Store.apply asks each migration whether its own version is
-// recorded.
+// rewrites outbox_kind_check over the rows main's daemon left, and so do dispatch://INFRA-3931's
+// state events (20261126163320) and, last, dispatch://INFRA-5602's run retros (20261126164240),
+// neither of which main has recorded either. The upgrade applies all five whatever main's newest
+// version is: Store.apply asks each migration whether its own version is recorded.
 var thisBranchsMigrationsMainLacks = map[int]bool{
-	20261115060739: true, 20261115121838: true, 20261126110259: true,
+	20261115060739: true, 20261115121838: true, 20261126110259: true, stateEventsVersion: true, runRetrosVersion: true,
 }
 
 // A daemon of this release is also deployed over a database main migrated once main recorded each
@@ -231,15 +232,16 @@ var thisBranchsMigrationsMainLacks = map[int]bool{
 // tree's news of its approved design (20261119203047), a phase_ended row for each parent the
 // admission pass moves into awaiting_children in the middle of its worker's phase, and a
 // pending_basis_seed and a reparent_seed for each read of a root's design-gate basis and of a
-// re-parented root (20261122154643). The upgrade applies this branch's kind list with the merge
-// holds change (20261126110259) over those rows, and `ADD CONSTRAINT … CHECK` validates the rows
-// the table holds, so a list that left any of the eight kinds out would fail Migrate (SQLSTATE
-// 23514) and leave the daemon unable to boot. After the upgrade the outbox takes a
-// merge_holds_changed row, the kind 20261126110259 adds: its list stands above 20261122154643's,
-// which does not name the kind, and is the last word of the check. The negative controls are each
-// of the eight kinds taken out of 20261126110259's list, where the Migrate below then fails on
-// that pending row, and merge_holds_changed taken out of it, where the row queued after the
-// upgrade is refused.
+// re-parented root (20261122154643). The upgrade applies this branch's kind lists with the merge
+// holds change (20261126110259), the state events (20261126163320) and then the run retros
+// (20261126164240) over those rows, and `ADD CONSTRAINT … CHECK` validates the rows the table
+// holds, so a list that left any of the eight kinds out would fail Migrate (SQLSTATE 23514) and
+// leave the daemon unable to boot. After the upgrade the outbox takes a merge_holds_changed row,
+// the kind 20261126110259 adds: the three lists stand above 20261122154643's, which does not name
+// the kind, and the run retros' list, which names it too, is the last word of the check. The
+// negative controls are each of the eight kinds taken out of any of the three lists, where the
+// Migrate below then fails on that pending row, and merge_holds_changed taken out of the last one,
+// where the row queued after the upgrade is refused.
 func TestADatabaseMainMigratedWithRowsOfItsNewestKindsUpgrades(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -441,15 +443,24 @@ const mainsAppliedSequence = 20261121170714
 // (20261124073512), and the merge of c227d0466191 brought dispatch://INFRA-3149's release teardown
 // (20261124143026), which stands above them: the three stand above every other version this head
 // embeds, and no database of an earlier merge holds any of them, so each database here lacks all
-// three, above its newest. Store.Migrate asks each embedded migration whether its own version is
-// recorded (apply) and never compares it with the newest, so each upgrade applies the versions that
-// database lacks, below its newest and above it alike, and leaves every embedded version recorded
-// once.
+// three, above its newest. The merge of main into dispatch://INFRA-3931's branch brought its state
+// events (20261126163320), which stands above the merge holds' 20261126110259, and the merge of
+// main dc18a1fed31c into dispatch://INFRA-5602's branch set them below that branch's run retros
+// (20261126164240), the newest version this head embeds: no database of an earlier merge holds
+// either, so each lacks both above its newest, and one that main at dc18a1fed31c migrated holds
+// every version this head embeds but the run retros, which it lacks above its newest.
+// Store.Migrate asks each embedded migration whether its own version is recorded (apply) and never
+// compares it with the newest, so each upgrade applies the versions that database lacks, below its
+// newest and above it alike, and leaves every embedded version recorded once.
 //
 // Main's database holds an outbox row of each kind its own kind check admits, read off that check:
 // the basis seeds' list rewrites the check, which validates every row the table holds, so a kind
 // main's daemon can queue that the list leaves out fails the upgrade. After it the outbox takes the
-// two basis seeds as well. This branch's database at 10e98a85ef53 holds a row of the copy of
+// two basis seeds as well. Main's database at dc18a1fed31c holds a row of each of the thirty-six
+// kinds its check admits, the three state kinds among them, which its daemon queues on each
+// project's state lane, and the upgrade rewrites the check over them with the run retros' list
+// alone: each state row stands through it, and after it the outbox takes a row of each state kind
+// and of retro_bound. This branch's database at 10e98a85ef53 holds a row of the copy of
 // Dispatch's issues as the release before 20261121170714 writes one, and the upgrade gives it
 // applied_seq at 0. Its database at 03ac783258da holds a phases row as the release before
 // 20261117034837 writes one, and the upgrade leaves the row as it was, running no step
@@ -512,6 +523,22 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 			lacks:  []int{gateBasisVersion, awaitingChildrenVersion, basisSeedsVersion, keepsNoWorkspaceVersion},
 			seed:   queueMainsKinds,
 			check:  queueBasisSeeds,
+		},
+		{
+			name:   "main at dc18a1fed31c",
+			newest: stateEventsVersion,
+			seed:   queueMainsKinds,
+			check: func(t *testing.T, store *Store) {
+				const pending = `select kind from outbox where kind in ('state_change', 'state_admission', 'state_boot') order by kind`
+				if got, want := rowsAsText(t, store, pending), []string{"state_admission", "state_boot", "state_change"}; !slices.Equal(got, want) {
+					t.Errorf("the state rows after the upgrade = %v, want %v: the one of each kind main's daemon left pending", got, want)
+				}
+				for _, kind := range []string{"state_change", "state_admission", "state_boot", "retro_bound"} {
+					if err := queueRowOfKind(store, kind); err != nil {
+						t.Errorf("queue a %s row after the upgrade: %v", kind, err)
+					}
+				}
+			},
 		},
 		{
 			name:   "this branch at 10e98a85ef53",

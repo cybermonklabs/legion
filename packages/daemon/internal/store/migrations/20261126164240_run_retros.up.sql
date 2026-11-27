@@ -49,17 +49,19 @@
 -- every row the upgrade finds.
 --
 -- The outbox's kind check is one list, so it is rewritten whole naming every kind: the list of
--- 20261126110259_merge_holds_changed.up.sql, its thirty-three kinds in its order, with retro_bound
--- added, the row that ends a retro after a close nobody reported at its bound (record.RetroBound),
--- thirty-four in all. Its version stands above that list's, and so above the lists of
--- 20261122154643, 20261119203047, 20261119003157, 20261117023932 and 20261117000528, which that
--- list stands above too, so on any database this list is the last word: Migrate applies every
--- unrecorded migration in version order, and at a lower version any of those lists, none of which
--- names retro_bound, would be applied after this one and refuse the kind. This list must name
+-- 20261126163320_state_events.up.sql, its thirty-six kinds in its order, with retro_bound added,
+-- the row that ends a retro after a close nobody reported at its bound (record.RetroBound),
+-- thirty-seven in all. Its version stands above that list's, and so above the lists of
+-- 20261126110259, 20261122154643, 20261119203047, 20261119003157, 20261117023932 and
+-- 20261117000528, which that list stands above too, so on any database this list is the last
+-- word: Migrate applies every unrecorded migration in version order, and at a lower version any of
+-- those lists, none of which names retro_bound, would be applied after this one and refuse the
+-- kind. This list must name the three state kinds (state_change, state_admission, state_boot),
 -- merge_holds_changed and every other kind of that list, because a database main's release
--- migrated can hold a row of each of those kinds when this migration is applied over it, and a
--- list without the kind would fail its ADD CONSTRAINT on that row (SQLSTATE 23514), and Migrate
--- with it.
+-- migrated can hold a pending row of each of those kinds when this migration is applied over it,
+-- and a list without the kind would fail its ADD CONSTRAINT on that row (SQLSTATE 23514), and
+-- Migrate with it. A list without the state kinds would, besides, be the last word on every
+-- database and refuse every state row the daemon queues.
 --
 -- This migration was numbered 20261125213821 on earlier builds of this branch until the forward
 -- merge of 2026-11-26 brought in 20261126110259, which stood above it and left retro_bound out. No
@@ -90,9 +92,10 @@
 -- retros after a close: a tree whose linger ended while one was open, or whose last one ended within
 -- the hour before the rollback, keeps the claims and the workspace of each such retro's issue, and
 -- its Sandbox, until a todo on its root re-admits the tree and its next linger ends. The kind check
--- keeps retro_bound, which admits every kind the release before writes. The outbox, claims and
--- pending_task_deliveries hold the rows of every project that shares the database, so every daemon
--- of one database moves back, and forward, together.
+-- keeps retro_bound beside every kind of 20261126163320's list, the three state kinds among them,
+-- so it admits every kind the release before writes. The outbox, claims and pending_task_deliveries
+-- hold the rows of every project that shares the database, so every daemon of one database moves
+-- back, and forward, together.
 --
 -- begin;
 -- delete from outbox where kind = 'retro_bound';
@@ -140,7 +143,7 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
   'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
-  'merge_holds_changed', 'retro_bound'));
+  'merge_holds_changed', 'state_change', 'state_admission', 'state_boot', 'retro_bound'));
 
 -- own is each recorded issue's current run that started of itself: the issue stands in a phase
 -- that carries a run, or holds a step start of the run's generation. started_at is the run's

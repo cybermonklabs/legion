@@ -98,10 +98,11 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.SessionLost{}, intake.SessionStoreFault{},
 		intake.MemoryGuardKill{}, intake.ControllerMemoryGuardKill{}, intake.VolumeNearFull{}, intake.ClaimReady{}, intake.TaskConfirmed{},
 		intake.GateRequestFound{},
-		intake.CatchUpApplied{}, intake.LingerExpired{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{}, intake.CheckReport{},
-		intake.CheckWakeDue{}, intake.CheckLookEnded{}, intake.CheckBound{}, intake.RetroReport{}, intake.RetroBoundEnded{},
-		intake.ListenerWake{}, intake.PodBackstopDue{}, intake.WorkerSilent{}, intake.WorkerBackgroundStalled{},
-		intake.PendingBasisRead{}, intake.BasisChangesRead{}, intake.ReparentRead{},
+		intake.CatchUpApplied{}, intake.LingerExpired{}, intake.LingerDeadline{}, intake.DaemonBooted{},
+		intake.CutoverMergerRepair{}, intake.CheckReport{}, intake.CheckWakeDue{}, intake.CheckLookEnded{},
+		intake.CheckBound{}, intake.RetroReport{}, intake.RetroBoundEnded{}, intake.ListenerWake{}, intake.PodBackstopDue{},
+		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{}, intake.PendingBasisRead{}, intake.BasisChangesRead{},
+		intake.ReparentRead{},
 	} {
 		rows = append(rows, row{fact: fact})
 	}
