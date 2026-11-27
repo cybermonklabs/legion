@@ -81,12 +81,14 @@ import { ownPathTo, ownPathWhere } from "./row-reveal";
 
 /** One new row this outline made: the key of the row the focus was on as it was made, and how
  *  far its editing has come - asked for once the row is drawn (`starting`), asked for (`asked`,
- *  with the folded branches above it opened once where they kept it from being drawn), then
- *  under way in its row (`edited`). */
+ *  with the folded branches above it opened and its place named once where they kept it from being
+ *  drawn), then under way in its row (`edited`), with `revealed` naming the row key last named for
+ *  a placed row drawn past a parent's drawn children. */
 interface Made {
   readonly origin: string | undefined;
   phase: "asked" | "edited" | "starting";
   key?: string;
+  revealed?: string;
   unfolded?: true;
 }
 
@@ -144,6 +146,7 @@ export function useNewRowEditing({
   body,
   bridge,
   closed,
+  drawTo,
   edit,
   editing,
   issue,
@@ -160,6 +163,7 @@ export function useNewRowEditing({
   readonly bridge: MoveKeyBridge;
   /** The places of the rows the outline draws folded (`tree-fold.ts`' `OpenedBranches`). */
   readonly closed: ReadonlySet<string>;
+  readonly drawTo: (place: string | undefined) => void;
   readonly edit: NodeEditing["edit"];
   readonly editing: EditedRow | undefined;
   readonly issue: string | undefined;
@@ -202,10 +206,25 @@ export function useNewRowEditing({
       if (newRows.some((row) => row.blockId === blockId)) continue;
       if (rows.some((row) => row.kind === "node" && rowKeyOf(row) === mine.key)) continue;
       const drawn = drawnRowOf(rows, blockId);
-      if (drawn === undefined) continue;
-      const from = mine.key;
-      mine.key = rowKeyOf(drawn);
-      bridge.follow?.(from, mine.key);
+      if (drawn !== undefined) {
+        const from = mine.key;
+        mine.key = rowKeyOf(drawn);
+        bridge.follow?.(from, mine.key);
+        continue;
+      }
+      // The placed node stands in the tree but no row draws it yet: a folded branch above it or a
+      // parent's drawn page ("N more rows") hides it. Unfold and name its place in this render so
+      // the next draws it before the drop rule ends the editing.
+      const path = ownPathTo(root, blockId);
+      const node = path?.at(-1);
+      if (path === undefined || node === undefined) continue;
+      const trail = path.slice(0, -1).map((above) => above.id);
+      const to = rowKeyOf({ kind: "node", level: path.length, node, trail });
+      if (placesAlong(trail).some((place) => closed.has(place))) unfoldPath(trail);
+      if (mine.revealed !== to) {
+        mine.revealed = to;
+        drawTo(to);
+      }
     }
   }
 
@@ -347,15 +366,16 @@ export function useNewRowEditing({
         const key = drawn === undefined ? undefined : rowKeyOf(drawn);
         const element = rowOf(key);
         if (drawn === undefined || key === undefined || element === null) {
-          // A folded branch above the row's place is opened once; a place the outline draws
-          // nowhere - outside the zoom - takes no row.
-          const above = (ownPathTo(root, blockId) ?? []).slice(0, -1).map((each) => each.id);
-          if (
-            mine.unfolded === undefined &&
-            placesAlong(above).some((place) => closed.has(place))
-          ) {
+          // A folded branch above the row's place, or a parent's drawn page ("N more rows"), is
+          // opened once; a place the outline draws nowhere - outside the zoom - takes no row.
+          const path = ownPathTo(root, blockId);
+          const node = path?.at(-1);
+          if (mine.unfolded === undefined && path !== undefined && node !== undefined) {
+            const above = path.slice(0, -1).map((each) => each.id);
+            const to = rowKeyOf({ kind: "node", level: path.length, node, trail: above });
+            if (placesAlong(above).some((place) => closed.has(place))) unfoldPath(above);
+            drawTo(to);
             mine.unfolded = true;
-            unfoldPath(above);
           } else {
             left();
           }

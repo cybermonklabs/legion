@@ -1804,6 +1804,105 @@ test("in Graph Tab in a list item indents the node", async () => {
   expect(blocksOf(view), "the list's items changed").toEqual(blocks);
   expect(editorsFrom(live, TREE_ID), "the move let the document's editor go").toEqual([TREE_ID]);
 });
+/** The fixture's converted read with `count` ranked blocks of the issue's own fragment placed
+ *  under `HEADING`, so a move that puts `LIST` after them lands it past `HEADING`'s first 50
+ *  drawn children (part T's `CHILD_PAGE`). Answers the read and the last block's id. */
+function headingWithManyChildren(count: number): {
+  readonly last: string;
+  readonly read: TreeAnswer;
+} {
+  const nodes = converted.nodes ?? [];
+  const at = nodes.findIndex((each) => each.id === HEADING.id);
+  const headingParent: TreeAnswerNode["parent"] = {
+    first_line: wordsOfNode(HEADING),
+    id: HEADING.id,
+    kind: HEADING.kind,
+    supertag: HEADING.supertag,
+  };
+  const extras = Array.from({ length: count }, (_, index) => {
+    const tag = String(index).padStart(3, "0");
+    const id = `<extra-under-heading-${tag}>`;
+    return {
+      ...PARAGRAPH,
+      block_id: id,
+      id,
+      parent: headingParent,
+      rank: `20${tag}`,
+    };
+  });
+  return {
+    last: extras.at(-1)?.id ?? "",
+    read: {
+      ...converted,
+      nodes: [...nodes.slice(0, at + 1), ...extras, ...nodes.slice(at + 1)],
+    },
+  };
+}
+
+// R4: a move by key that puts the node past its new parent's first 50 drawn children ("N more
+// rows") draws the rows up to it in the render that draws its new place, keeps the editing and the
+// caret in its text, and puts the next letter in its block.
+test("a move by key that puts the node past a parent's drawn children draws its row and keeps the caret", async () => {
+  const user = userEvent.setup();
+  holdTreeReads();
+  const { last, read } = headingWithManyChildren(55);
+  const placed = `${String(LIST.placement_seq)}@2`;
+  const sent = answerNodeRoutes({
+    patches: [{ body: { after: last, parent: HEADING.id, placement_seq: placed }, status: 200 }],
+  });
+  const live = drawLive(undefined, undefined, read);
+  const tree = live.rooms.get(TREE_ID);
+  const { editable, view } = await editRow(live, user, LIST, TREE_ID);
+  const second = "The second item of the list.";
+  await caretAt(textIn(editable, LIST.block_id ?? "", second), 4);
+  const before = caretPlace();
+  expect(pressIn(editable, "Tab"), "Tab was left to the editor").toBe(false);
+  await waitFor(() => expect(sent.patches).toHaveLength(1));
+  expect(sent.patches[0]).toEqual({
+    body: { after: last, parent: HEADING.id },
+    dryRun: false,
+    expected: null,
+    id: LIST.id,
+    ifMatch: `"${String(LIST.placement_seq)}"`,
+  });
+  await editedUnder(live, HEADING, LIST);
+  await waitFor(() => expect(caretPlace(), "the caret moved").toEqual(before));
+  expect(editorsFrom(live, TREE_ID), "the move let the document's editor go").toEqual([TREE_ID]);
+  typeInEditor(view, "Z");
+  expect(
+    fragmentOf(tree).some(
+      (block) => block.includes(LIST.block_id ?? "") && block.includes("The Zsecond")
+    ),
+    "the next letter did not land in the moved block"
+  ).toBe(true);
+  await waitInAct(50);
+  expect(
+    rowUnder(live.view, HEADING, LIST),
+    "the moved row left after the move settled"
+  ).not.toBeNull();
+});
+
+// R4: a move from the menu that puts the node past its new parent's first 50 drawn children
+// ("N more rows") draws the rows up to it and focuses the moved row.
+test("a move from the menu that puts the node past a parent's drawn children draws and focuses its row", async () => {
+  const user = userEvent.setup();
+  const { last, read } = headingWithManyChildren(55);
+  answerTreeReads(read, NEVER);
+  const placed = `${String(LIST.placement_seq)}@2`;
+  const sent = answerNodeRoutes({
+    deletes: [deleted.dry_run],
+    patches: [{ body: { after: last, parent: HEADING.id, placement_seq: placed }, status: 200 }],
+  });
+  const view = draw();
+  await openMenu(view, user, LIST);
+  await user.click(entry(view, CONTROL_LABELS.edit_indent));
+  await waitFor(() => expect(sent.patches).toHaveLength(1));
+  await waitFor(() => {
+    const under = rowUnder(view, HEADING, LIST);
+    expect(under, "the moved row is not drawn under its new parent").not.toBeNull();
+    expect(document.activeElement, "the moved row did not take the focus").toBe(under);
+  });
+});
 
 // R4: at a grey edge the key writes nothing, the caret stays where it was with the focus, and the
 // row shows the entry's reason: the first statement has no sibling above to indent under, and is

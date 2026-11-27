@@ -68,12 +68,13 @@ function nodeOfRead(node: TreeNode, readId: string): TreeNode | undefined {
  * lacks the node, whose row's focus the outline's drop rule gives the nearest row, as for every
  * drop. In the render that draws the node's row, the row takes the focus as a key's move gives it
  * (`moveToRow`), before the drop rule, which runs after this in the same commit and leaves a
- * focus a row holds where it is; where a folded branch above it keeps the row from being drawn,
- * every branch above the node's own row is unfolded, a folded new parent among them
- * (`unfoldPath`, the reader's folds otherwise as they left them), and the row takes the focus in
- * the next render, which draws it. The row a move takes out of the tree drops the focus meanwhile,
- * which the drop rule gives the nearest row; the node's row takes it back. The reader's first act
- * since lets it go, so a reader who moved on stays where they went.
+ * focus a row holds where it is; where a folded branch above it or a parent's drawn page ("N more
+ * rows", part T's R15) keeps the row from being drawn, every branch above the node's own row is
+ * unfolded (`unfoldPath`, the reader's folds otherwise as they left them) and the row's place is
+ * named (`drawTo`), and the row takes the focus in the next render, which draws it. The row a move
+ * takes out of the tree drops the focus meanwhile, which the drop rule gives the nearest row; the
+ * node's row takes it back. The reader's first act since lets it go, so a reader who moved on
+ * stays where they went.
  *
  * A delete confirm remembers where its row was drawn before it took focus. On success or a gone
  * refusal, it checks again after the dialog restores focus. If the row is still drawn, the same
@@ -84,11 +85,13 @@ function nodeOfRead(node: TreeNode, readId: string): TreeNode | undefined {
  */
 export function useRowReveal({
   body,
+  drawTo,
   reach,
   root,
   unfoldPath,
 }: {
   readonly body: RefObject<HTMLElement | null>;
+  readonly drawTo: (place: string | undefined) => void;
   readonly reach: (id: string) => void;
   readonly root: TreeNode;
   readonly unfoldPath: (above: readonly string[]) => void;
@@ -138,8 +141,9 @@ export function useRowReveal({
       return;
     }
     unfoldPath(trail);
+    drawTo(key);
     setPending({ key, kind: "focus" });
-  }, [body, pending, root, unfoldPath]);
+  }, [body, drawTo, pending, root, unfoldPath]);
   const latest = useRef({ body, reach, root });
   latest.current = { body, reach, root };
   return useMemo((): RowReveal => {

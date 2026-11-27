@@ -39,12 +39,14 @@ import { ownPathTo } from "./row-reveal";
  * block R2 does not admit - a kind it does not edit, a node of another issue, a closed issue -
  * takes none of the keys, which do there what they do today.
  *
- * A taken move draws the node under its new parent, which is a row of another key (`rowKeyOf`): the
- * editing follows the node there in the render that draws it (`MoveKeyBridge.follow`), with the
- * document's one editor and the caret where the reader had it, so the reader goes on typing; a
- * folded branch above that row - a folded new parent - is unfolded first, in the same render, so
- * no render draws the tree with the edited row gone, which would end the editing
- * (`IssueTree.tsx`).
+ * A taken move draws the node under its new parent, or past the children its parent draws ("N more
+ * rows", part T's R15), which is a row of another key (`rowKeyOf`) or past a parent's drawn page:
+ * where a folded branch above that row or a parent's page keeps it from being drawn, the branch is
+ * unfolded (`unfoldPath`) and the row's place named (`drawTo`) in the same render, so the render
+ * that follows draws it and no render draws the tree with the edited row gone, which would end the
+ * editing (`IssueTree.tsx`). Once the node's own row is drawn, the editing follows it there in
+ * that render (`MoveKeyBridge.follow`), with the document's one editor and the caret where the
+ * reader had it, so the reader goes on typing.
  *
  * Two keys of a new row (R3) go the same way, with the caret at the end of the block's text:
  * Enter makes a new row below, as the menu's New row below does, through the room editor the
@@ -72,6 +74,7 @@ export function useMoveKeyBridge(): MoveKeyBridge {
 export function useMoveKeys({
   bridge,
   closed,
+  drawTo,
   editing,
   editor,
   isClosed,
@@ -83,6 +86,7 @@ export function useMoveKeys({
 }: {
   readonly bridge: MoveKeyBridge;
   readonly closed: ReadonlySet<string>;
+  readonly drawTo: (place: string | undefined) => void;
   readonly editing: EditedRow | undefined;
   readonly editor: RowEditor | undefined;
   readonly isClosed: boolean;
@@ -96,9 +100,12 @@ export function useMoveKeys({
   const readIds = useMemo(() => readIdsOf(rows), [rows]);
   const issue = writesIssueOf(key ?? "", isClosed, zoomReadOf(readIds, zoomRoot));
   const writes = useNodeActs(issue);
-  // The node a move key of the edited row went for (`TreeNode.id`), and the row it is edited in
-  // now, while that editing lasts.
-  const moving = useRef<{ readonly id: string; row: string } | undefined>(undefined);
+  // The node a move key of the edited row went for (`TreeNode.id`), the row it is edited in now,
+  // and the row key we last asked the outline to draw past a parent's page (`revealed`), so a
+  // render that still cannot draw it (outside a zoom) asks at most once.
+  const moving = useRef<{ readonly id: string; revealed?: string; row: string } | undefined>(
+    undefined
+  );
   // Whether the next commit is one a move draws: a row a taken move moved in the page, or one the
   // editing followed, which drops the focus as the editor's box leaves the page (`restore`).
   const restoreNext = useRef(false);
@@ -171,9 +178,9 @@ export function useMoveKeys({
 
   // The editing follows the node a move key moved, in this render: where the edited row is no
   // longer drawn and the node's own row is, under another key, the editing goes there; where a
-  // folded branch above that row keeps it from being drawn, the branch is unfolded, and the render
-  // that draws it follows. Each update is made only where it changes what is drawn, so the render
-  // it asks for asks for none.
+  // folded branch above that row or a parent's drawn page keeps it from being drawn, the branch is
+  // unfolded and the row's place named (`drawTo`), and the render that draws it follows. Each
+  // update is made only where it changes what is drawn, so the render it asks for asks for none.
   if (editing === undefined) moving.current = undefined;
   const held = moving.current;
   if (key !== undefined && held !== undefined && editing?.row === held.row && !drawn(held.row)) {
@@ -187,8 +194,12 @@ export function useMoveKeys({
         held.row = to;
         restoreNext.current = true;
         bridge.follow?.(from, to);
-      } else if (placesAlong(trail).some((place) => closed.has(place))) {
-        unfoldPath(trail);
+      } else if (!drawn(to)) {
+        if (placesAlong(trail).some((place) => closed.has(place))) unfoldPath(trail);
+        if (held.revealed !== to) {
+          held.revealed = to;
+          drawTo(to);
+        }
       }
     }
   }

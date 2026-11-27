@@ -269,6 +269,9 @@ export function IssueTree({
   const [unfoldedAll, setUnfoldedAll] = useState(0);
   // The node a key is taking the reader to, once the row it asked for is on the page.
   const [wanted, setWanted] = useState<string | undefined>(undefined);
+  // The row a Graph move or placing is revealing past its parent's drawn children, kept by its own
+  // place (`treeRows`' `placed`) so the row stays drawn without moving the focus.
+  const [drawnTo, setDrawnTo] = useState<string | undefined>(undefined);
   // The last zoom the reader made, which the effect that places a zoom places once its rows and
   // the focus are on the page (`zoomTo`): whether it draws the crumb line (`lined`). Each zoom is
   // a new value, so a zoom made before the last one's placing has been drawn is placed too, and
@@ -425,7 +428,8 @@ export function IssueTree({
   // parent's page where it stands there (R15).
   const rootedAbove = rootedPath.slice(0, -1).map((one) => one.id);
   const named = [target?.id, wanted].filter((id): id is string => id !== undefined);
-  const drawn = treeRows(rooted, shown, rootedAbove, named, stop === undefined ? [] : [stop]);
+  const placed = [stop, drawnTo].filter((place): place is string => place !== undefined);
+  const drawn = treeRows(rooted, shown, rootedAbove, named, placed);
   // The issue is no row: the header is the issue, so the nodes under it are the tree's top
   // level, with no filter on as under one. A zoom into a node keeps that node's own row, which
   // is the node the reader reads from there.
@@ -596,7 +600,7 @@ export function IssueTree({
   );
   // Graph's node menu takes the reader to a row through these: the row a taken move put under a
   // new parent, and the row a refusal's line names (`graph-edit/row-reveal.ts`).
-  const rowReveal = useRowReveal({ body, reach, root, unfoldPath });
+  const rowReveal = useRowReveal({ body, drawTo: setDrawnTo, reach, root, unfoldPath });
   // In Graph, the room editor the node menu and the editor's keys are given, which makes a new
   // row and starts its editing in the render that draws it, and retypes a prose block in the
   // editing it opens on the block's row (`graph-edit/new-row-editing.ts`).
@@ -604,6 +608,7 @@ export function IssueTree({
     body,
     bridge: moveKeys,
     closed: shown.closed,
+    drawTo: setDrawnTo,
     edit,
     editing,
     issue: graphKey,
@@ -621,6 +626,7 @@ export function IssueTree({
   useMoveKeys({
     bridge: moveKeys,
     closed: shown.closed,
+    drawTo: setDrawnTo,
     editing,
     editor: rowEditor,
     isClosed,

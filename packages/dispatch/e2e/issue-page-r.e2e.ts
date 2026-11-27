@@ -1000,6 +1000,96 @@ test("a block indents, outdents and moves by key while its text is edited @phone
   });
 });
 
+// c-move, fourth row: a move by key that puts the node past its parent's first 50 drawn children
+// ("N more rows") draws the rows up to it and keeps the caret in its text, so the next typed
+// letter lands in its block, and after a reload the node stands where the answer put it.
+// SLOW(>=2s): a seed grown past 50 children under the issue, a landing, a move by key answered, a
+// letter typed and stored, and a reload.
+test("a move that puts the node past the drawn rows draws the rows up to it and keeps the caret", async ({
+  browser,
+}) => {
+  test.setTimeout(360_000);
+  await phase(browser, seedGraphEdit, async (page, seed) => {
+    owedUnless(await roomWriteGate(page, seed.key));
+    const ids = await graphEditIds(page, seed);
+    const key = seed.key;
+    // More than 50 ranked paragraphs under the issue so an outdent from the issue's comment puts
+    // the moved block past the issue's first 50 drawn rows.
+    const count = 55;
+    const prefix = "Past-rows filler paragraph";
+    const filler = Array.from({ length: count }, (_, index) => `${prefix} ${index + 1}.`).join(
+      "\n\n"
+    );
+    const movedWords = "The prose block moved past the drawn rows.";
+    await insertInto(seed.tree, "end", `${filler}\n\n${movedWords}\n`);
+    await expect
+      .poll(
+        async () => {
+          const nodes = (await treeOf(key)).nodes ?? [];
+          return nodes.filter(
+            (node) =>
+              node.kind === "block" &&
+              node.supertag === "block" &&
+              node.text.includes(prefix) &&
+              node.rank !== null &&
+              typeof node.placement_seq === "number"
+          ).length;
+        },
+        { message: "the issue's filler paragraphs did not all gain ranks", timeout: PLACED_MS }
+      )
+      .toBe(count);
+    const moved = await rankedProse(key, movedWords);
+    const placedUnderComment = await moveNode(key, moved.id, moved.placement_seq ?? 0, {
+      parent: `comment/${ids.issueComment}`,
+    });
+    expect(
+      placedUnderComment.status,
+      `placing the prose block under the issue's comment: ${JSON.stringify(placedUnderComment.body)}`
+    ).toBe(200);
+    const sent = watchNodeRequests(page, key);
+    // Land on the comment rather than on the block itself, so the address never names the block
+    // and cannot keep its row drawn past the issue's first 50 children after the outdent.
+    await landOn(page, key, ids.issueComment, "the comment on the issue");
+    await focusOn(readRow(page, moved.id).first(), "the prose block under the comment");
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretRowReadId(page), { message: "Enter puts no caret in the prose block" })
+      .toBe(moved.id);
+    await page.keyboard.press("End");
+    await page.keyboard.press("Shift+Tab");
+    const outdent = await nthWrite(sent, 1, "Shift+Tab sends no PATCH");
+    expect((await outdent.answer)?.status, "Shift+Tab's PATCH is refused").toBe(200);
+    await expect
+      .poll(
+        async () => ({
+          caret: await caretRowReadId(page),
+          drawn: (await readRow(page, moved.id).count()) > 0,
+        }),
+        { message: "the moved row is drawn and holds the caret" }
+      )
+      .toEqual({ caret: moved.id, drawn: true });
+    const letter = " x";
+    await page.keyboard.type(letter);
+    await expect
+      .poll(async () => nodeOf(await requestedTreeRead(page, key), moved.id)?.text ?? "", {
+        message: "the next typed letter lands in the moved node's stored text",
+        timeout: 60_000,
+      })
+      .toContain(`${movedWords}${letter}`);
+    await page.keyboard.press("Escape");
+    const after = await treeAfterReload(page, key);
+    expect(
+      nodeOf(after, moved.id)?.parent?.id,
+      "after a reload the moved node stands under the issue"
+    ).toBe(ids.issue);
+    const top = childIds(after, ids.issue);
+    expect(
+      top.indexOf(moved.id),
+      "after a reload the moved node stands past the issue's first 50 children"
+    ).toBeGreaterThanOrEqual(50);
+  });
+});
+
 // ---------------------------------------------------------------------------------------------
 // c-retype
 // ---------------------------------------------------------------------------------------------
@@ -2273,7 +2363,7 @@ test("two move keys pressed with no pause each move the node from where the key 
     const down = await nthWrite(
       sent,
       2,
-      "Alt+Shift+Down, pressed before Alt+Shift+Up's answer came, sends no PATCH",
+      "the second key moves the node from where the first left it",
       30_000
     );
     expect((await down.answer)?.status, "the move down is refused").toBe(200);
