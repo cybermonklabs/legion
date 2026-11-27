@@ -1969,23 +1969,21 @@ test("IssuePage selects the next tab with ] and the previous with [, wrapping at
     expect(route()).toBe("/issues/CORE-1/spec");
 
     // Before Spec is Dashboard, the first tab; before it is the last one, and after the last
-    // the first.
-    const legion = spyOn(api, "getLegionIssue").mockResolvedValue({
-      configured: false,
-      state: null,
-    });
+    // the first. Dashboard's reads (`DashboardTab.tsx`) answer empty here; its Legion state is
+    // the live socket's view, which reads no route.
+    const handoffs = spyOn(api, "listHandoffs").mockResolvedValue([] as never);
     const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
       decisions: [],
       open_questions: [],
-    });
-    const results = spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] });
+    } as never);
+    const results = spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] } as never);
     const coverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
       has_plan: false,
       issue: "CORE-1",
       requirements: [],
       spec_artifact_id: "",
-    });
-    const replies = spyOn(api, "listMyReplies").mockResolvedValue({ rows: [] });
+    } as never);
+    const replies = spyOn(api, "listMyReplies").mockResolvedValue({ rows: [] } as never);
     try {
       await user.keyboard("[[");
       await screen.findByRole("tab", { name: "Dashboard", selected: true });
@@ -1997,7 +1995,7 @@ test("IssuePage selects the next tab with ] and the previous with [, wrapping at
       await screen.findByRole("tab", { name: "Dashboard", selected: true });
       expect(route()).toBe("/issues/CORE-1/dashboard");
     } finally {
-      legion.mockRestore();
+      handoffs.mockRestore();
       decisions.mockRestore();
       results.mockRestore();
       coverage.mockRestore();
