@@ -262,7 +262,7 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
     // The first scheme is shot after a real change and repaint, as the second is: from the
     // page's own load it is one of two rasterisations (the head of this file has the counts).
     await page.emulateMedia({ colorScheme: SCHEMES[SCHEMES.length - 1] });
-    await waitForRouteSettled(page, route);
+    await waitForRouteSettled(page, route, listedRequests(page));
     for (const colorScheme of SCHEMES) {
       await page.emulateMedia({ colorScheme });
       // Before the shot, so no baseline is taken of a loading skeleton, a 404 or a page

@@ -425,56 +425,59 @@ test.each([
   [1440, "closed", "bound", "after"],
   [1024, "open", "bound", "before"],
   [1440, "open", "bound", "before"],
-] as const)("at %i px with Details %s and the document's editor %s, the margin reads its comments and answered asks %s the document's first batch", async (width, drawer, editor, when) => {
-  const restoreMatchMedia = stubViewport(width);
-  const row = `Details ${drawer} at ${width} px with the editor ${editor}`;
-  const listComments = spyOn(api, "listComments").mockResolvedValue([comment]);
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
-  // How many times each of the margin's two reads has gone out.
-  const reads = () => ({
-    answeredAsks: listIssueAsks.mock.calls.length,
-    comments: listComments.mock.calls.length,
-  });
-  act(() => theFirstBatchIsAwaited(true));
-  const view = render(
-    <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "spec" })]}>
-      <QueryClientProvider client={unreadClient()}>
-        <MarginProvider>
-          <Details fills open={drawer === "open"}>
-            {editor === "bound" ? <BoundDocument /> : null}
-            <Margin />
-          </Details>
-        </MarginProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  try {
-    // Both reads are out by the end of `settled()` where a reader sees the margin, so it waits
-    // long enough for a read to go out; and under a rule that lets the reads go before the batch
-    // where no reader sees the margin, both have gone out by here. It runs inside `act`: where
-    // the reads go out, their answers land during it and draw the margin's cards.
-    await act(settled);
-    expect(
-      reads(),
-      `${row} ${when === "before" ? "did not make" : "made"} the margin's reads before the first batch`
-    ).toEqual(
-      when === "before" ? { answeredAsks: 1, comments: 1 } : { answeredAsks: 0, comments: 0 }
+] as const)(
+  "at %i px with Details %s and the document's editor %s, the margin reads its comments and answered asks %s the document's first batch",
+  async (width, drawer, editor, when) => {
+    const restoreMatchMedia = stubViewport(width);
+    const row = `Details ${drawer} at ${width} px with the editor ${editor}`;
+    const listComments = spyOn(api, "listComments").mockResolvedValue([comment]);
+    const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
+    // How many times each of the margin's two reads has gone out.
+    const reads = () => ({
+      answeredAsks: listIssueAsks.mock.calls.length,
+      comments: listComments.mock.calls.length,
+    });
+    act(() => theFirstBatchIsAwaited(true));
+    const view = render(
+      <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "spec" })]}>
+        <QueryClientProvider client={unreadClient()}>
+          <MarginProvider>
+            <Details fills open={drawer === "open"}>
+              {editor === "bound" ? <BoundDocument /> : null}
+              <Margin />
+            </Details>
+          </MarginProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
     );
-    act(() => theFirstBatchIsAwaited(false));
-    await waitFor(() =>
+    try {
+      // Both reads are out by the end of `settled()` where a reader sees the margin, so it waits
+      // long enough for a read to go out; and under a rule that lets the reads go before the batch
+      // where no reader sees the margin, both have gone out by here. It runs inside `act`: where
+      // the reads go out, their answers land during it and draw the margin's cards.
+      await act(settled);
       expect(
         reads(),
-        `${row} did not make the margin's reads once each by the first batch`
-      ).toEqual({ answeredAsks: 1, comments: 1 })
-    );
-  } finally {
-    view.unmount();
-    act(() => theFirstBatchIsAwaited(false));
-    listComments.mockRestore();
-    listIssueAsks.mockRestore();
-    restoreMatchMedia();
+        `${row} ${when === "before" ? "did not make" : "made"} the margin's reads before the first batch`
+      ).toEqual(
+        when === "before" ? { answeredAsks: 1, comments: 1 } : { answeredAsks: 0, comments: 0 }
+      );
+      act(() => theFirstBatchIsAwaited(false));
+      await waitFor(() =>
+        expect(
+          reads(),
+          `${row} did not make the margin's reads once each by the first batch`
+        ).toEqual({ answeredAsks: 1, comments: 1 })
+      );
+    } finally {
+      view.unmount();
+      act(() => theFirstBatchIsAwaited(false));
+      listComments.mockRestore();
+      listIssueAsks.mockRestore();
+      restoreMatchMedia();
+    }
   }
-});
+);
 
 // R14: on a phone Details is a sheet over the whole page, so a link followed inside
 // it closes the sheet. The page draws its panels into the drawer through a portal, outside the

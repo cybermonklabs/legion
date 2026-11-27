@@ -111,7 +111,10 @@ async function answerTheLiveSocket(page: Page): Promise<void> {
  *  untouched. */
 async function answerTheDocumentSocket(page: Page): Promise<void> {
   await page.routeWebSocket("**/ws/doc/**", (socket) => {
-    socket.close({ code: NO_DOCUMENT_SERVER_CLOSE_CODE, reason: NO_DOCUMENT_SERVER_CLOSE_REASON });
+    void socket.close({
+      code: NO_DOCUMENT_SERVER_CLOSE_CODE,
+      reason: NO_DOCUMENT_SERVER_CLOSE_REASON,
+    });
   });
 }
 

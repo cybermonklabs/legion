@@ -309,7 +309,7 @@ async function build(
       };
     } finally {
       const { view: built } = handle;
-      handle.destroy();
+      void handle.destroy();
       while (!built.isDestroyed) await Promise.resolve();
     }
   });
@@ -458,7 +458,7 @@ describe("an editor constructed before its document arrives", () => {
         expect(root.dataset.writePath).toBe("live");
       } finally {
         const { view } = handle;
-        handle.destroy();
+        void handle.destroy();
         while (!view.isDestroyed) await Promise.resolve();
       }
     });
@@ -477,7 +477,7 @@ describe("an editor constructed before its document arrives", () => {
         expect(blocksBuilt(root)).toBe(8);
       } finally {
         const { view } = handle;
-        handle.destroy();
+        void handle.destroy();
         while (!view.isDestroyed) await Promise.resolve();
       }
     });
@@ -499,7 +499,7 @@ describe("an editor constructed before its document arrives", () => {
         expect(handle.view).toBe(view);
         expect(handle.view.state.plugins).toContain(host);
       } finally {
-        handle.destroy();
+        void handle.destroy();
         while (!view.isDestroyed) await Promise.resolve();
       }
     });
@@ -512,7 +512,7 @@ describe("an editor constructed before its document arrives", () => {
     await withDomWindow(async (window) => {
       const { construction, root, view } = await construct(window, paragraphs(8));
 
-      construction.destroy();
+      void construction.destroy();
       expect(root.style.display).toBe("");
       expect(blocksBuilt(root)).toBe(0);
       while (!view.isDestroyed) await Promise.resolve();
@@ -545,8 +545,8 @@ describe("an editor constructed before its document arrives", () => {
         expect(first.root.style.display).toBe("");
       } finally {
         const { view } = handle;
-        handle.destroy();
-        first.construction.destroy();
+        void handle.destroy();
+        void first.construction.destroy();
         while (!view.isDestroyed || !first.view.isDestroyed) await Promise.resolve();
       }
     });

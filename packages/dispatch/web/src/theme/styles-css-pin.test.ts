@@ -213,21 +213,25 @@ const EXEMPTION_CASES: readonly ReaderCase[] = [
 ];
 
 describe("the reader finds every notation a colour can be written in", () => {
-  test.each(
-    NOTATION_CASES.map((readerCase) => [readerCase.name, readerCase] as const)
-  )("%s", (_name, { css, found }) => {
-    const uses = findColors(css);
-    expect(uses.map(({ literal, notation }) => ({ literal, notation }))).toEqual(found);
-    expect(unpinned(uses)).toHaveLength(uses.length);
-  });
+  test.each(NOTATION_CASES.map((readerCase) => [readerCase.name, readerCase] as const))(
+    "%s",
+    (_name, { css, found }) => {
+      const uses = findColors(css);
+      expect(uses.map(({ literal, notation }) => ({ literal, notation }))).toEqual(found);
+      expect(unpinned(uses)).toHaveLength(uses.length);
+    }
+  );
 });
 
 describe("the reader finds no colour where none is written", () => {
-  test.each(
-    EXEMPTION_CASES.map((readerCase) => [readerCase.name, readerCase] as const)
-  )("%s", (_name, { css, found }) => {
-    expect(findColors(css).map(({ literal, notation }) => ({ literal, notation }))).toEqual(found);
-  });
+  test.each(EXEMPTION_CASES.map((readerCase) => [readerCase.name, readerCase] as const))(
+    "%s",
+    (_name, { css, found }) => {
+      expect(findColors(css).map(({ literal, notation }) => ({ literal, notation }))).toEqual(
+        found
+      );
+    }
+  );
 });
 
 test("the mask exemption covers only mask and mask-image", () => {

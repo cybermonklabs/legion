@@ -136,13 +136,22 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // the short row draws the thread's subject, the mention's own words, so that is what the
     // row waits for. It is the NARROW row's wait alone. The wide row needs none: its own
     // control cannot draw before the list, since the column reads the document the selected
-    // row names.
+    // row names. A narrow Inbox shows one thing at a time, so where a row is already open there
+    // the list is hidden under it and the open row's own control is what drew last, as at the
+    // wide widths: the wait takes whichever of the two is visible (run 45990322275, shard 1,
+    // where the stub layer's narrow Inbox held a row open and the hidden list's words failed it).
     ready: (page) => {
       const heading = page.getByRole("heading", { exact: true, level: 1, name: "Inbox" });
-      const wideEnoughForPane = wideLayout(page);
-      return wideEnoughForPane
-        ? [heading, page.getByRole("button", { name: "Skip to the answer" })]
-        : [heading, page.getByText("@Tester please re-run the broadcast spec")];
+      const skipToTheAnswer = page.getByRole("button", { name: "Skip to the answer" });
+      return wideLayout(page)
+        ? [heading, skipToTheAnswer]
+        : [
+            heading,
+            page
+              .getByText("@Tester please re-run the broadcast spec")
+              .or(skipToTheAnswer)
+              .filter({ visible: true }),
+          ];
     },
   },
   {

@@ -84,7 +84,7 @@ describe("the host's own node views", () => {
             "them after the build pays for the whole document a second time"
         ).toBeGreaterThan(0);
       } finally {
-        handle.destroy();
+        void handle.destroy();
         while (!view.isDestroyed) await Promise.resolve();
       }
     });
@@ -256,7 +256,7 @@ describe("a hold between two batches", () => {
             const { batches, building, seen } = startTheBuild(window, update, hold);
             const handle = await building;
             const { view } = handle;
-            handle.destroy();
+            void handle.destroy();
             while (!view.isDestroyed) await Promise.resolve();
             return { batches: batches.length, seen };
           }
@@ -312,7 +312,7 @@ describe("a hold between two batches", () => {
         expect(told).toEqual(Array.from({ length: batches.length - 1 }, (_, index) => index + 1));
       } finally {
         const { view } = handle;
-        handle.destroy();
+        void handle.destroy();
         while (!view.isDestroyed) await Promise.resolve();
       }
     });

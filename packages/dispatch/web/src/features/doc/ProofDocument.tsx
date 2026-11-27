@@ -1365,7 +1365,7 @@ export function ProofDocument({
     };
     const teardown = () => {
       run.disposeEditorBindings?.();
-      run.editor?.destroy();
+      void run.editor?.destroy();
       // A construction the sync never bound is torn down when it arrives: its root is the
       // host's again and the editor it built takes nothing. One the sync did bind is the
       // handle above, destroyed by whichever of the two got it.

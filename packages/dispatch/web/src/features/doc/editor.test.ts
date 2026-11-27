@@ -124,7 +124,7 @@ test("a document keeps an inline HTML comment byte for byte when another block i
       "Held <!-- legion: keep me --> here.\n\nThe second block today.\n"
     );
   } finally {
-    handle.destroy();
+    void handle.destroy();
     root.remove();
   }
 });
