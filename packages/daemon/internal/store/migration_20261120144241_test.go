@@ -220,7 +220,7 @@ func TestMigration20261120144241KeepsEachIntakeFailureToItsRules(t *testing.T) {
 		{shape: "a fence of no known kind", issue: "LEGION-208", kind: "pull_requests", position: 2, head: "h3",
 			code: "23514", constraint: "pull_request_settled_heads_kind_check"},
 		{shape: "a fence of an issue with no pull request recorded", issue: "LEGION-209", kind: "pull_request", position: 0, head: "h1",
-			code: "23503", constraint: "pull_request_settled_heads_pull_request_fkey"},
+			code: "23503", constraint: "pull_request_settled_heads_issue_fkey"},
 	} {
 		// The migration that keys pull_requests by the issue and the branch (20261122122826) keys
 		// these rows by the branch too, so each is written on its pull request's branch.
