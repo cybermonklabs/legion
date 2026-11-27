@@ -196,6 +196,10 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 // owed yet: a report sent from that turn is refused as no report on production
 // (CHECK_LOOK_NOT_SERVED), and the look's task comes as the next prompt.
 //
+// A claim the work hold holds (supervise.Claim.WorkHeld) owes no phase until the hold's opening
+// starts it again, since its close message told it to end its turn and no phase of its tree runs
+// while the standing design gate is closed.
+//
 // Neither the claim's prompts nor the daemon's own delivery of a relaunch's record change that
 // reading. A prompt of the task Oh My Pi acknowledged and has not answered (supervise's
 // Machine.outstanding) makes a late turn the task's, so the confirmation it gives is what
@@ -213,6 +217,9 @@ func owedBy(c supervise.Claim, position completionPosition, owner claim.Token, r
 			check.NamedBy(look.OpenedAt) && check.Role == c.Role {
 			return OwedResponse{Owes: true, Work: "the production check of " + issue.Key, Architect: owner}
 		}
+	}
+	if c.WorkHeld() {
+		return nothing
 	}
 	if position.lingers || roleFor(issue.Phase) != c.Role || position.merged() {
 		return nothing
