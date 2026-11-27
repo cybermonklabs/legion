@@ -983,3 +983,53 @@ func TestTheOwnerLockLegacyWindowIsThePruneAge(t *testing.T) {
 			store.OwnerLockLegacyWindow, PruneAge)
 	}
 }
+
+// A process registers at this build's Legion state intake (LegionStateIntake), which no Instance
+// carries, so a fleet of this build alone holds no earlier one. A row of a build before it names
+// no legion_state_intake and reads the column's default, 0: EarlierLegionIntake counts it while its
+// heartbeat is within store.OwnerLockLegacyWindow of the database's now(), the window the owner
+// lock counts an earlier build's row in, and not once its heartbeat is older.
+func TestEarlierLegionIntakeCountsARowOfAnEarlierBuildUntilItIsPruned(t *testing.T) {
+	database := storetest.Open(t)
+	registration := mustRegister(t, database, "c1", "K0")
+	earlier := func(what string) bool {
+		t.Helper()
+		found, err := EarlierLegionIntake(context.Background(), database.Pool)
+		if err != nil {
+			t.Fatalf("%s: read the fleet's Legion intakes: %v", what, err)
+		}
+		return found
+	}
+	var intake int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select legion_state_intake from server_processes where instance = $1`, registration.ID).Scan(&intake); err != nil {
+		t.Fatalf("read the registered row's Legion state intake: %v", err)
+	}
+	if intake != LegionStateIntake {
+		t.Errorf("the registered row's legion_state_intake is %d, want this build's %d", intake, LegionStateIntake)
+	}
+	if earlier("a fleet of this build alone") {
+		t.Error("a fleet of this build alone holds an earlier Legion intake, want none")
+	}
+
+	// A process of the build before this one: it writes the owner lock protocol, and no Legion
+	// state intake.
+	var id string
+	if err := database.Pool.QueryRow(context.Background(), `
+		insert into server_processes (instance, commit, dashboard_build, signing_keys, owner_lock_protocol)
+		values (gen_random_uuid(), 'c0', 'build-c0', $1, 1)
+		returning instance::text`, fingerprints(t, "K0")).Scan(&id); err != nil {
+		t.Fatalf("insert a row as the build before this one writes it: %v", err)
+	}
+	if !earlier("a live row of an earlier build") {
+		t.Error("a live row of an earlier build is not an earlier Legion intake, want it to be")
+	}
+	ageHeartbeat(t, database, id, store.OwnerLockLegacyWindow-time.Minute)
+	if !earlier("a row of an earlier build that stopped heartbeating inside the window") {
+		t.Errorf("a row of an earlier build silent for %s is not an earlier Legion intake, want it counted until %s", store.OwnerLockLegacyWindow-time.Minute, store.OwnerLockLegacyWindow)
+	}
+	ageHeartbeat(t, database, id, store.OwnerLockLegacyWindow+time.Minute)
+	if earlier("a row of an earlier build silent past the window") {
+		t.Errorf("a row of an earlier build silent for %s is an earlier Legion intake, want none past %s", store.OwnerLockLegacyWindow+time.Minute, store.OwnerLockLegacyWindow)
+	}
+}

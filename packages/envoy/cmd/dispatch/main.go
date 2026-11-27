@@ -736,16 +736,18 @@ func main() {
 	//     shared listener below says their work may have changed, or when a due time their last
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
 	//     excerpts (docs.ExcerptsOwedChannel), the edit notices (docs.EditNoticesChannel), the
-	//     suggestion outcomes (api.EventsChannel) and the delivery settings both intakes route by
-	//     (delivery.SettingsChannel). The two leased ones, reference-excerpts and edit-notices,
-	//     take their lease with no period (duty.RunWoken): a process that finds it held retries
-	//     until a pass of its own runs, since the other process's pass may have read before the
-	//     change that woke this one. The suggestion-outcome loop takes none: each of its pages
-	//     runs in a transaction holding the suggestion_outcome_cursor row for update, which
-	//     serialises two processes woken by one commit, the first pass on a database included
-	//     (api/suggestion_outcomes.go). The keyed writes' own sweep - the Idempotency-Keys past
-	//     their window, and the deliveries a process that died left owed - keeps a timer of its
-	//     own below, because no wake announces either: a death commits nothing.
+	//     suggestion outcomes (api.EventsChannel), the delivery settings both delivery intakes
+	//     route by (delivery.SettingsChannel) and the Legion settings, on whose every write the
+	//     Legion state intake checks each project's starting point (legion.SettingsChannel). The
+	//     two leased ones, reference-excerpts and edit-notices, take their lease with no period
+	//     (duty.RunWoken): a process that finds it held retries until a pass of its own runs,
+	//     since the other process's pass may have read before the change that woke this one. The
+	//     suggestion-outcome loop takes none: each of its pages runs in a transaction holding the
+	//     suggestion_outcome_cursor row for update, which serialises two processes woken by one
+	//     commit, the first pass on a database included (api/suggestion_outcomes.go). The keyed
+	//     writes' own sweep - the Idempotency-Keys past their window, and the deliveries a process
+	//     that died left owed - keeps a timer of its own below, because no wake announces either:
+	//     a death commits nothing.
 	//   - boot passes, which run once at start: the embedding coverage pass (embedqueue.Run starts
 	//     it, and repeats its identity steps and its record of issues' inputs every 10 minutes for
 	//     as long as the process runs) and the task progress reconciliation (retrying, briefly,
@@ -797,9 +799,10 @@ func main() {
 	// Deliberately NOT leased, in three classes:
 	//   - already claims its own work, so two processes never do one unit of it twice: the
 	//     embedding queue (embedqueue, `for update skip locked`), the task progress
-	//     reconciliation (`for no key update ... skip locked`) and the delivery intakes (each
+	//     reconciliation (`for no key update ... skip locked`), the delivery intakes (each
 	//     delivers from its durable only while it holds that durable's duty.Hold, which
-	//     delivery.StartIntakes takes).
+	//     delivery.StartIntakes takes) and the Legion state intake (likewise under its own
+	//     durable's hold, legion.StartIntake).
 	//   - per-process by design, because each serves this process's own connections or memory:
 	//     the delivery live hub and its listener (migration 0107_events_notify.up.sql states that
 	//     purpose), the event stream relay, the document rooms' timers, the document compaction
@@ -875,18 +878,22 @@ func main() {
 	// The display tree fill (texttreefill.Run): a leased loop like the rest, reserved here so
 	// that this process's count is the same whether or not it has work to do.
 	textTreeFillLeases := reserve("text tree fill")
-	// The Legion sampler (legion.RunSampler): a leased loop like the rest, reserved here so that
-	// this process's count is the same whether or not any project names a daemon.
-	legionSamplerLeases := reserve("Legion sampler")
 	// R25's one-time fix of parents' statuses at boot (api.RunParentStatusFixAtBoot, below): it
 	// takes its lease only with DISPATCH_PARENT_STATUS_RULE on, and is reserved here so that this
 	// process's count is the same with the setting off.
 	parentStatusFixLeases := reserve("parent status fix")
-	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
-	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
+	// The delivery intakes' six callers - a consumer lease, a hold and the hold's renewal per
+	// durable - whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
 	if err != nil {
 		fatal("dispatch delivery: reserve the lease pool for the intakes", "error", err)
+	}
+	// The Legion state intake's three callers - its durable's consumer lease, its hold and the
+	// hold's renewal - whether or not this configuration starts it (legion.ReserveLeases).
+	legionIntakeLeases, err := legion.ReserveLeases(leaseCallers)
+	if err != nil {
+		slog.Error("dispatch: reserve the lease pool for the Legion state intake", "error", err)
+		os.Exit(1)
 	}
 	// The keyword fill's two callers - its own goroutine's hold statements, batches and reads, and
 	// its hold's renewal (textversions.ReserveLeases).
@@ -1022,16 +1029,17 @@ func main() {
 	// still hold listener connections of their own (store.Pool.Listener).
 	//
 	// A wake is registered only for a loop that will read it: with no embedder embedqueue.Run
-	// returns at once, without NATS or the GitHub App no intake starts to route by the settings,
-	// and without the GitHub App this process keeps no copy of the GitHub reads' record (below),
-	// so none of those channels is LISTENed on.
+	// returns at once, without NATS or the GitHub App no delivery intake starts to route by the
+	// delivery settings, without NATS no Legion state intake starts to read a project's daemon on
+	// a write of its Legion setting, and without the GitHub App this process keeps no copy of the
+	// GitHub reads' record (below), so none of those channels is LISTENed on.
 	listenerHub := &pglisten.Hub{
 		Owner: "dispatch",
 		Dial: func(ctx context.Context) (*pgx.Conn, error) {
 			return database.Pool.Dedicated(ctx, docs.ListenerApplicationPrefix+documentService.ProcessID())
 		},
 	}
-	var embeddingsWake, settingsWake, gitHubReadsWake <-chan struct{}
+	var embeddingsWake, settingsWake, legionSettingsWake, gitHubReadsWake <-chan struct{}
 	if embedder != nil {
 		embeddingsWake = listenerHub.Wake(embedqueue.WakeChannel)
 	}
@@ -1043,6 +1051,9 @@ func main() {
 	schemaWake := schemanodes.RegisterWake(listenerHub)
 	if natsClient != nil && appCtx.GitHub() != nil {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
+	}
+	if natsClient != nil {
+		legionSettingsWake = listenerHub.Wake(legion.SettingsChannel)
 	}
 	if appCfg != nil {
 		gitHubReadsWake = listenerHub.Wake(githubreads.Channel)
@@ -1295,15 +1306,6 @@ func main() {
 		slog.Info("dispatch: GitHub rate reading off: it needs the GitHub App private key")
 	}
 
-	// dispatch://INFRA-1077: each project whose legion_settings row names a Legion daemon has its
-	// `GET /legion/v1/state` read once a minute from one replica, under the `legion-state` lease,
-	// and every value that moved recorded. It is a timer and not a woken loop for the reason the
-	// delivery reconcile below is: a remote daemon announces nothing Dispatch can listen for. Its
-	// statements - the settings it reads, each read's record and announcement, the prune - run on
-	// the background pool, as every other loop's here do, and none while it waits on a daemon
-	// (legion.Client's RequestTimeout bounds that wait), so no request queues behind a pass.
-	go legion.RunSampler(ctx, background, legionSamplerLeases)
-
 	// LEGION-567: the delivery timeline's 5-minute GitHub-App reconcile runs regardless of NATS
 	// (it never touches it); the NATS consumer that catches events between reconcile passes needs
 	// a client, exactly like the outbox above. Both take the event broker: each writes
@@ -1316,47 +1318,72 @@ func main() {
 		reconcile.TickEvery(boot.DeliveryReconcileInterval)
 	}
 	go reconcile.Run(ctx, deliveryReconcileLeases)
-	// waitIntakes waits for both intakes to stop once ctx is cancelled; StartIntakes returns it as
-	// a sync.OnceFunc, so a second call returns once the first has. The shutdown runs it before it
-	// closes the database pool: it closes the intakes' NATS clients after their Runs return, then
-	// waits for any hand-back finalizer to release its duty.Hold through that pool. A hold left in
-	// place for its TTL names the stopped process's deliver subject, which a process of the build
-	// before holds, binding by lookup, goes on delivering at, so the next holder would read that
-	// binding as a dead holder's and take it over. Every exit after the intakes start runs it too
-	// (fatalAfterIntakes, stopIntakesOnExit until shutdown runs, and the stop during the registry's
-	// admission wait), since each intake can hold its durable before this process serves anything;
-	// shutdown runs it within its one deadline. With no NATS client there is nothing to wait for.
+	// waitIntakes waits for the three intakes to stop once ctx is cancelled: the two delivery
+	// intakes and the Legion state intake. StartIntakes and legion.StartIntake each return their
+	// stop as a function a second call of which returns once the first has, so a second call of
+	// waitIntakes does too. The shutdown runs it before it closes the database pool: each stop
+	// closes its intakes' NATS clients after their Runs return, then waits for any hand-back
+	// finalizer to release its duty.Hold through that pool. A hold left in place for its TTL
+	// names the stopped process's deliver subject, which a process of the build before holds,
+	// binding by lookup, goes on delivering at, so the next holder would read that binding as a dead
+	// holder's and take it over. Every exit after the intakes start runs it too (fatalAfterIntakes,
+	// stopIntakesOnExit until shutdown runs, and the stop during the registry's admission wait),
+	// since each intake can hold its durable before this process serves anything; shutdown runs it
+	// within its one deadline. With no NATS client there is nothing to wait for.
 	waitIntakes := func() {}
 	// shutdownRan is set as main hands the intakes' stop to shutdown (below): from then on main's
 	// deferred stop of them only cancels (stopIntakesOnExit).
 	shutdownRan := false
 	if natsClient != nil {
-		// The intake and the job intake (LEGION-690) each bind a durable, so each takes a client of
-		// its own (delivery.StartIntakes). Their Runs begin stopping at the signal beside the HTTP
-		// drain and document shutdown, and return once a message in a handler has been acknowledged or
-		// given up at its stop budget and handed back. StartIntakes then closes both clients, waits for
-		// each pending hand-back's finalizer to release the hold through the pool, and returns. Each
-		// connects in the background as the publisher does, and its poll takes the durable's hold once
-		// it has, whether or not delivery settings are saved. The intake hands each push of a branch
-		// to the ticker's architecture importer, on the background pool and sharing the routes'
-		// importer's flights, which imports the enabled sources on that repository and branch at
-		// once; a push it hands over once the importer's Close has begun starts nothing
-		// (architecture.Importer.Pushed).
+		// The intake and the job intake (LEGION-690) each bind a durable, and the Legion state
+		// intake a third, so each takes a client of its own (delivery.StartIntakes,
+		// legion.StartIntake). Their Runs begin stopping at the signal beside the HTTP drain and
+		// document shutdown, and return once a message in a handler has been acknowledged or given
+		// up at its stop budget and handed back. StartIntakes and legion.StartIntake then close
+		// their clients, wait for each pending hand-back's finalizer to release the hold through
+		// the pool, and return. Each connects in the background as the publisher does, and its poll
+		// takes the durable's hold once it has, whether or not delivery settings are saved. The
+		// intake hands each push of a branch to the ticker's architecture importer, on the
+		// background pool and sharing the routes' importer's flights, which imports the enabled
+		// sources on that repository and branch at once; a push it hands over once the importer's
+		// Close has begun starts nothing (architecture.Importer.Pushed). Each intake's client writes
+		// with the deadline delivery.IntakeWriteDeadline, which says how long a write to a frozen
+		// link holds the client's Close and why no fixed time bounds that Close. No other client of
+		// the server takes that deadline, since the publisher and the agent stream relay publish
+		// payloads a slow link can take longer than that to accept.
 		connectIntake := func(name string) (*bus.Client, error) {
-			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
+			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name),
+				bus.WithWriteDeadline(delivery.IntakeWriteDeadline))...)
 		}
 		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, background, intakeLeases, backgroundGitHub, broker, settingsWake, architectureTicker, attributor)
 		if err != nil {
 			fatal("dispatch delivery: connect NATS", "error", err)
 		}
-		waitIntakes = stopIntakes
+		// dispatch://INFRA-3931: each project whose legion_settings row names a Legion daemon has
+		// its observations written from the state events that daemon publishes, which the Legion
+		// state intake takes from its held durable, with or without the GitHub App; it reads a
+		// daemon's `GET /legion/v1/state` whole only for the reasons legion's ReadReason constants
+		// name, a project's reads at least legion.ReadRetryAfter apart, and no recurring timer
+		// reads one. A connect that fails stops the delivery intakes before the exit, since they
+		// may hold their durables already.
+		stopLegionIntake, err := legion.StartIntake(ctx, connectIntake, database.Pool, legionIntakeLeases, legionSettingsWake)
+		if err != nil {
+			slog.Error("dispatch: connect the Legion state intake to NATS", "error", err)
+			cancel()
+			stopIntakes()
+			os.Exit(1)
+		}
+		waitIntakes = func() {
+			stopIntakes()
+			stopLegionIntake()
+		}
 		// A stop before serving (the admission wait, below) returns without shutdown, and a panic
 		// before serving unwinds past it, so the intakes are stopped here too. Once shutdown has run
 		// it has waited for them within its deadline, or given up on them there, at whichever stage it
 		// ended (it waits for them beside its background stage), and this only cancels.
 		defer func() { stopIntakesOnExit(cancel, waitIntakes, shutdownRan) }()
 	} else {
-		slog.Info("dispatch delivery: no NATS client — intake is idle; the reconcile alone still runs")
+		slog.Info("dispatch: no NATS client — the delivery intakes and the Legion state intake are idle; the delivery reconcile alone still runs")
 	}
 
 	// LEGION-781, INFRA-555: the announcer publishes server.started once each time every live

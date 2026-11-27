@@ -126,6 +126,7 @@ packages/daemon:
       - internal/leakguard/leakguardtest
       - internal/pods
       - internal/runtime/sandbox/rolegitconfig
+      - internal/stateevent
       - internal/supervise/supervisetest
       - internal/testbinary
       - internal/testbuild
@@ -256,6 +257,7 @@ packages/envoy:
       - internal/holdrecord/holdrecordtest
     # Dispatch's commands and the lighter half of its packages.
     3:
+      - internal/dispatch/legion                # 489 s alone in an issue pod (docs/testing.md)
       - cmd/dispatch                            # 316 s
       - cmd/dispatch-seed                       # 83 s
       - internal/dispatch/duty                  # 31 s
@@ -267,7 +269,6 @@ packages/envoy:
       - internal/dispatch/access                # 9 s
       - internal/dispatch/pmdoc/schemanodes     # 8 s
       - internal/dispatch/deliveryaudit         # 6 s
-      - internal/dispatch/legion                # 5 s
       - internal/dispatch/dashboard             # 5 s
       - internal/dispatch/legion/metrics        # 5 s
       - internal/dispatch/startup               # 5 s

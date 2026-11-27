@@ -264,8 +264,8 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 	return read, err
 }
 
-// readLegionBoardView is a Legion board's read: the project's own daemon state as the sampler
-// recorded it, read through pool, the live pool (liveRead), as every view's read is. It reads no
+// readLegionBoardView is a Legion board's read: the project's own daemon state as the Legion
+// intake recorded it, read through pool, the live pool (liveRead), as every view's read is. It reads no
 // delivery settings — its own are the project's Legion setting, and a deployment that configured
 // one and not the other still shows the board. A project that does not exist is loadProject's
 // refusal, as GET /api/v1/projects/{key}/legion/board answers it.
