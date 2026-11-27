@@ -28,7 +28,7 @@ export const CHILD_TASKS = { first: "xa", second: "xb" } as const;
 
 /** The block id the second issue's plan and each of the two plans under it write its one task
  *  with. */
-export const TWIN_TASK = "t1";
+const TWIN_TASK = "t1";
 
 /** The words of each task and statement, one sentence each and no longer than a chip draws
  *  whole (`node-row-chip.ts`' `CHIP_LIMIT`, 32 characters), so a chip naming one, a need's or a

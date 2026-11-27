@@ -1688,8 +1688,10 @@ func readOwedDigests(ctx context.Context, tx pgx.Tx, issueKey string) ([]owedDig
 // insert trigger pins the record's digest, and that carry appends its artifact.approved after the
 // version's artifact.version, because the approval itself came after it. The COMMIT follows the
 // batch, so the fill's window is main's batched shape. An issue that owes no digest runs nothing
-// past its reads.
-func (s *Service) fillOwedDigests(ctx context.Context, issueKey string) ([]model.Event, error) {
+// past its reads. Each lock wait of the transaction lasts at most wait, where wait is not zero
+// (boundLockWaits), set before the owner lock: a write's caller bounds its fill (fillOwed,
+// DrainOwedQueries), and the tick's repair (fillLostDigests) does not.
+func (s *Service) fillOwedDigests(ctx context.Context, issueKey string, wait time.Duration) ([]model.Event, error) {
 	if hold := s.fillHold.Load(); hold != nil {
 		(*hold)(issueKey)
 	}
@@ -1698,6 +1700,9 @@ func (s *Service) fillOwedDigests(ctx context.Context, issueKey string) ([]model
 		return nil, fmt.Errorf("begin the fill of the record digests %s owes: %w", issueKey, err)
 	}
 	defer tx.Rollback(ctx)
+	if err := boundLockWaits(ctx, tx, wait); err != nil {
+		return nil, err
+	}
 	if err := store.LockOwner(ctx, tx, store.IssueOwner(issueKey)); err != nil {
 		return nil, err
 	}
@@ -1873,18 +1878,26 @@ func (s *Service) HoldFills(hold func(issueKey string)) {
 // waits for the issue's owner lock, which another writer of the issue takes before it waits for
 // that slot (joinLiveWrite), and Postgres cannot see a wait on a slot to break the cycle. So a
 // write publishes its rooms' writes first (Ledger.Commit), and a settlement frees its slots first.
+// Each fill waits for a lock at most afterCommitWait, as the drain does (DrainOwedQueries): one
+// that meets the bound is logged at Warn naming the issue and the bound, and its digests stay owed
+// for the tick.
 func (s *Service) fillOwed(ctx context.Context, issues []string) []model.Event {
 	if len(issues) == 0 || store.HoldsPooledConnection(ctx) {
 		return nil
 	}
+	wait := s.afterCommitWait()
 	var appended []model.Event
 	for _, issue := range issues {
-		filled, err := s.fillOwedDigests(ctx, issue)
-		if err != nil {
+		filled, err := s.fillOwedDigests(ctx, issue, wait)
+		switch {
+		case err == nil:
+			appended = append(appended, filled...)
+		case lockWaitRanOut(err):
+			slog.Warn("dispatch: the fill of the record digests a write left owed waited past its bound for a lock and left them owed to the block-index tick",
+				"issue", issue, "bound", wait, "error", err)
+		default:
 			slog.Error("dispatch: fill the record digests a write left owed", "issue", issue, "error", err)
-			continue
 		}
-		appended = append(appended, filled...)
 	}
 	return appended
 }
@@ -1903,7 +1916,7 @@ func (s *Service) fillLostDigests(ctx context.Context) error {
 		return fmt.Errorf("list the issues that owe a record digest: %w", err)
 	}
 	for _, issue := range issues {
-		filled, err := s.fillOwedDigests(ctx, issue)
+		filled, err := s.fillOwedDigests(ctx, issue, 0)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()

@@ -3,7 +3,7 @@ import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { askOfNode, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
 import { decisionNodeChanges, deletedPostIds, inReviewList, treeComments } from "./decision-review";
 import { changeUnread } from "./tree-drafts";
-import { nextTreeCursor } from "./tree-read/tree-nodes";
+import { nextTreeCursor } from "./tree-read/comment-positions";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -40,9 +40,12 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * the same without them. One the reader asked to change waits on its agent and is not counted,
  * by the outline's one rule (`decisionNodeChanges`): its Change is a comment the read the
  * decisions are counted from hangs under its node. The count matches no quote, reads no block
- * of a document and no comment list of its own. A Change may be older than the comment page of
- * either read; a marked decision (`changeUnread`) is not counted until the older pages resolve
- * it. A Change on a decision past Conversation's pages can still be read with its decision.
+ * of a document and no comment list of its own. A Change may stand on a page of either read the
+ * page has not loaded, a next page or an older comment page: a marked decision (`changeUnread`)
+ * is not counted until those pages resolve it (decisions 563 (4) and 574 (B)), which the header
+ * reads, the next pages and then the older comment pages of the read it counts, once the page has
+ * drawn (`tree-read/tree-read.ts`' `useReadUnloadedPages`), as `unread` says. A Change on a
+ * decision past Conversation's pages can still be read with its decision.
  * A Change its author deleted asks nothing any more, as in the outline: the same
  * answer's comment nodes carry their author's marks, which say which were (`treeComments`,
  * `deletedPostIds`).
@@ -80,8 +83,9 @@ export interface WaitingOnReader {
    *  the decisions of the pages loaded and the header draws it with "+"; absent where it names
    *  none. */
   readonly more?: true;
-  /** Decisions that may have a Change on an older comment page. The header reads older pages
-   *  of the answer it counts while any remain marked (`useReadOlderDecisionComments`). */
+  /** How many decisions carry the mark of a Change on a page not read yet (`changeUnread`),
+   *  waiting for review or kept, none of them counted: while any does, the header reads those
+   *  pages of the answer it counts (`useReadUnloadedPages`). */
   readonly unread: number;
 }
 

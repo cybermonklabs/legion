@@ -21,7 +21,7 @@ import {
   type TreeAnswerNode,
   treeRead,
   useDecisionsView,
-  useReadOlderDecisionComments,
+  useReadUnloadedPages,
 } from "../tree-read/tree-read";
 import { issueMessagesQuery, viewTree } from "../useIssueTree";
 import { askIdOf, type DecisionsParts, decisionsParts, placements } from "./decisions-parts";
@@ -37,9 +37,11 @@ import { askIdOf, type DecisionsParts, decisionsParts, placements } from "./deci
  * (`TreeNode.views`), and each decision is read as every reader of a decision reads it
  * (`decisionNodes`). A decision's Change is the comment the read its decision is read from hangs
  * under its node (`decision-review.ts`' `decisionNodeChanges`), and no quote is matched for it.
- * Either read can omit an older Change. A decision that may have one (`changeUnread`) stays in
- * the review list with "+" and is excluded from the count until the older pages resolve it.
- * After the first drawing, the seam reads those pages from the same answer as its decisions.
+ * Either read can omit a Change, on a next page or an older comment page it has not loaded. A
+ * decision that may have one (`changeUnread`) stays in the review list with "+" and is excluded
+ * from the count until those pages resolve it. After the first drawing, the seam reads those
+ * pages, the next pages and then the older comment pages, from the same read as its decisions
+ * (`useReadUnloadedPages`, decisions 563 (4) and 574 (B)).
  * The same read answers on each comment node what its author did to it (`treeComments`):
  * which Changes their author deleted (`deletedPostIds`), and when its author last edited a
  * Change, which its row draws. A view that holds no decision gives none, and no error.
@@ -301,7 +303,7 @@ export function useDecisionsEntries({
     () => decisions?.some((row) => changeUnread(row, changes.has(row.ref), held)) === true,
     [changes, decisions, held]
   );
-  useReadOlderDecisionComments(issue.key, held, unread, viewAnswer !== undefined);
+  useReadUnloadedPages(issue, () => unread, viewAnswer);
   // How this issue addresses a node, which is the one rule the tree was built with, so a
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);

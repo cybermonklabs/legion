@@ -27,19 +27,24 @@
   - TestACascadeThatWritesALegionIssueIsRefusedWhole  # 1.2 s
   - TestAChangeAfterAReadsPositionRecomputesTheViewAgain  # 1.4 s
   - TestAChangeLogResetDuringAReadKeepsTheViewDirty  # 1.1 s
+  - TestAChangeOfScopesGivesP0FromACredentialThatHoldsIt
   - TestAChangeSetNamesNoBlockUnderAnIDNeitherStoredVersionCarries  # 0.0 s
+  - TestACheckCIProvesDerivesAResultAtEachOpenHead
   - TestACheckCIProvesIsAnsweredFromTheHeadItsFirstReadLearned  # 4.0 s
   - TestACheckWithNeitherCICheckNorRunStoresAsToday  # 0.8 s
   - TestACheckWithOneResultAtAPullRequestsHeadStandsAtIt  # 1.1 s
   - TestAChildInWorkKeepsItsParentInWork  # 0.6 s
+  - TestAChildIsNeverWiderThanItsParent
   - TestAChildsResultOnTheParentsTabAsksGitHubNothing  # 1.4 s
   - TestAClaimTakesItsTimeFromTheDatabase  # 1.2 s
   - TestAClaimWriteThatWaitedNeverMovesUpdatedAtBackward  # 1.6 s
   - TestAClientAbortMidSendStillDeliversOnce  # 0.7 s
+  - TestAClosedIssueRefusesABeforeMergeResultFirst
   - TestAClosedIssueTakesItsMergeRecord  # 0.8 s
   - TestAClosedIssueTakesItsRoleHolders  # 0.9 s
   - TestAColdSubscriptionStartsAtTheRelaysPublishedCursor  # 0.7 s
   - TestACommentAndMessageOfOneLongestBlockReachTheEmbedderWhole  # 1.3 s
+  - TestACommentAskedForAuthorIsRefusedNamingItsKind
   - TestACommentCitingABlockIDPastTheBoundPosts  # 0.7 s
   - TestACommentDuringAListenerTakeOverReachesTheRouteHolderOnce  # 1.6 s
   - TestACommentEditThatKeepsAPartyReferenceStillNamesItAndSendsNothing  # 1.7 s
@@ -47,25 +52,39 @@
   - TestACommentInAnAskThreadTakesItsAuthorsNodesInAscendingOrder  # 1.0 s
   - TestACommentInAnAsksThreadNamesTheSessionsThatOwnTheAsk  # 1.1 s
   - TestACommentListAfterARestartMakesNoDisplayTree  # 0.2 s
+  - TestACommentOfAThreadInARetiredDocumentTakesAnEditAndWritesTheDocumentNothing
   - TestACommentStoredWithADecisionBlockIsStillReadWholeAndIndexedAsAnAsk  # 0.6 s
   - TestACommentWriteHeldOpenBlocksNoOtherWriteOnTheSameIssue  # 0.6 s
   - TestACommentsCorrectionsCarryItsThreadRootAndTheLoginsOnItsThread  # 1.1 s
   - TestACommentsEditKeepsItsBlockIDs  # 0.8 s
+  - TestAComponentIsANodeWithItsThreeTupleKinds
   - TestAConfigurationWarningIsLoggedOnceAcrossServers  # 0.2 s
+  - TestAConversationNodeMayBeABlockParent
+  - TestAConversionMapNamingACheckOfAnotherProjectWritesNothing
+  - TestAConvertedDocumentsReferencesAreItsBlocksNotItsRoomsTree
+  - TestAConvertedIssuesDecisionAnswersAsAnUnconvertedIssuesDecisionDoes
+  - TestAConvertedNodeKeepsItsAuthor
   - TestACreateRacingItsParentsCloseIsRefusedEitherWay  # 0.5 s
   - TestACreateThatWaitedOnARemovalDatesItsDocumentAfterIt  # 1.0 s
+  - TestACriterionTheEditRouteWritesStalesTheSpecsApproval
+  - TestADecisionADeferredVersionRemovesIsGoneBeforeTheBlockIndexRuns
   - TestADecisionAfterAQuotedHeadingOfItsNameStaysKeptAcrossARendererChange  # 0.4 s
   - TestADecisionKeptBeforeARendererChangeWaitsOnceItsContentChanges  # 0.4 s
   - TestADecisionKeptInsideOrOutsideATypedBlockStaysKeptAcrossARendererChange  # 1.1 s
   - TestADecisionKeptRunningPastItsCalloutsClosingLineWaitsAcrossARendererChange  # 1.1 s
+  - TestADefaultBranchResultOfUnmergedWorkCountsAnyTrunkCommit
   - TestADefaultRepositoryThatIsNoRepositoryIsRefused  # 0.3 s
   - TestADeleteEndsAKeptAnswerWhateverTimeItBegan  # 1.5 s
   - TestADeletedNewestReplyStillDecidesTheAsksTurn  # 1.0 s
   - TestADeliverySettleWaitsForItsReceiptOwnersLockHoldingNoTransactionID  # 0.7 s
+  - TestADeployRouteRefusesACommitGitHubSaysTheRepositoryDoesNotHold
+  - TestADeployWriteRefusesAProjectScopedTokenBeforeItsBody
   - TestADeploymentWriteIsRefusedToAProjectScopedToken  # 0.2 s
   - TestADesignGateEntryOfAPublishMayLeaveOutHolds  # 3.3 s
+  - TestADesignGateRowOfTheDecisionsStepIsIgnored
   - TestADocumentALaterReleaseMarkedWhileItStandsIsComplete  # 1.0 s
   - TestADocumentIsMadeWithNoContent  # 1.5 s
+  - TestADocumentNoQueryRecordCoversRecordsNoDigest
   - TestADocumentPastTheBlockBoundLeavesItsBlocksToTheReconciliation  # 4.3 s
   - TestADocumentSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong  # 1.5 s
   - TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt  # 1.6 s
@@ -78,14 +97,18 @@
   - TestADryRunWritesNothing  # 1.5 s
   - TestAFailedAttemptTheSessionAnswersRecordsTheSessionItReached  # 1.1 s
   - TestAFailedMentionOfASessionNothingSkippedLeavesTheCommentCreatedEventAlone  # 1.8 s
+  - TestAFailedReadOfThePullRequestHeadsRefusesTheRecord
   - TestAFailedRetryLeavesTheQueuedAttemptToItsLane  # 1.0 s
   - TestAFailedRetryOfAMentionSendsTheCommentToNoNewDestination  # 3.0 s
   - TestAFailingListenerIsAskedOnceWithinTheSilenceWindow  # 0.6 s
   - TestAFailureAfterTheSendCommittedIsAnsweredFromItsMessage  # 0.3 s
+  - TestAFileUploadUnderARetiredDocumentsNameIsRefusedAsRetiredWithOrWithoutAFileStore
   - TestAForeignOriginIsRefused  # 0.3 s
+  - TestAFrameOfARunWithNoNodeWritesTheNodeFirst
   - TestAFrameThatIsNotJSONIsSkipped  # 0.1 s
   - TestAGroupNameRefusesATitleOutsideIt  # 0.5 s
   - TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim  # 1.4 s
+  - TestAHeadingOfAStandingDecisionsDocumentIsKeptUntilItIsRetired
   - TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep  # 1.0 s
   - TestAHeldMentionSendIsCountedAndReportedOnce  # 7.5 s
   - TestAHolderThatLostItsKeyCommitsNoWrite  # 0.4 s
@@ -93,6 +116,9 @@
   - TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer  # 0.6 s
   - TestAJobBrokerTokenIsNamedByWhoami  # 0.2 s
   - TestAJobBrokerTokenWritesEveryClass  # 1.1 s
+  - TestAJobsNamedTokenIsJudgedAsAPersonsNamedTokenForTheSameProject
+  - TestAKeepIsTwoAppendsOnTheDecisionNodeThatDecisionKeepsProjects
+  - TestAKeepWritesADecisionsQueryVersion
   - TestAKeptAnswerHoldsTheObjectsItsOwnIDsName  # 0.0 s
   - TestAKeptListAnswerIsChargedTheKeyAndTheBufferItHolds  # 0.7 s
   - TestAKeyedClaimFinishesWhenItsClientGivesUpDuringIt  # 0.6 s
@@ -103,13 +129,21 @@
   - TestAKeyedRepeatSendsTheAttemptAFailedRetryOvertook  # 1.6 s
   - TestAKeyedReplayAfterTheDeleteGivesNoPartOfTheBody  # 0.8 s
   - TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored  # 5.9 s
+  - TestAKindFilterPutsEachContextNodeOnTheFirstPageThatNamesIt
   - TestALabelAddedBesideAnEarlierBuildsLabelKeepsBoth  # 1.5 s
   - TestALabelledIssueLeavesItsLabelledParentWithoutTheScope  # 0.4 s
   - TestALapsedHolderIsTakenOver  # 0.3 s
   - TestALaterSessionTakingAGroupsNameStandsApart  # 0.4 s
+  - TestALaterVersionStatesItsBytesInTheStoreLockOrder
   - TestALegionIssueStatusNeedsThePersonOrLegionStatusScope  # 2.0 s
+  - TestALensOnABlockOfACommentStandsOnItWhereEveryReaderKeysIt
+  - TestALensOnAFindingGoesGoneWithTheFinding
+  - TestALensTakenGoneTakesItsFindingsAndRisksGone
+  - TestALensWriteThatWaitsBehindARemovalIsRefused
   - TestALineKeepsAPublicHostWithNoSchemeAsTheParseLeavesIt  # 1.6 s
   - TestALinkInAListItemStartsAtTheItemsParagraph  # 1.1 s
+  - TestALinkOfADecisionWhoseWordsChangedAndChangedBackIsNotStale
+  - TestALinkOfADecisionWhoseWordsReturnToThoseTheRequirementChangedBesideIsNotStale
   - TestALinkedPullRequestDispatchCannotReadCountsAsNoLink  # 1.3 s
   - TestAListedAskCarriesThePartIDsItsOwnReadCarries  # 1.2 s
   - TestAListenerRefusingTheTokenSettlesTheSendAtOnce  # 0.3 s
@@ -117,9 +151,11 @@
   - TestAListenerThatDoesNotAnswerHoldsAReadOnlyForTheFetchBound  # 0.8 s
   - TestALiveSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong  # 0.8 s
   - TestALockOnlyTransactionMarksNothing  # 0.2 s
+  - TestALongNamedDocumentStaysItsOwnRoomWhileARoleDocumentJoinsTheIssues
   - TestAMachineLoginsOwnTokenIsRefusedAndNeverFilledInFromTheBody  # 0.8 s
   - TestAMalformedKeyIsRefusedBeforeAnythingRuns  # 0.2 s
   - TestAMarkAllOverTwoProjectsTakesTheirLocksInLockKeyOrder  # 2.1 s
+  - TestAMeasuresViewIsMarkedByAMergeBeforeItsWindow
   - TestAMemberNeitherUploadShapeDeclaresIsIgnoredAndAMisspelledTokenIsRefused  # 1.0 s
   - TestAMentionQueuedForAStoppedSessionReachesItsPerson  # 1.5 s
   - TestAMentionQueuedPastALeaseHoldsItsCopyAndSettlesItWhenTheSendLands  # 2.9 s
@@ -127,6 +163,9 @@
   - TestAMessageAndACommentBodyAreStoredWithLineFeeds  # 3.2 s
   - TestAMessageDeliveryReplyNamesABlockOfAnOwedMessage  # 0.9 s
   - TestAMessageReplyNamesTheBlockItAnswers  # 1.5 s
+  - TestAMoveBodyFollowedByAClosingBraceIsReadAsTheValueBeforeIt
+  - TestAMoveReadsTheWholeSubtreeWhateverItsKindsSortBy
+  - TestAMoveUnderAFindingNamesItAsTheReasoningRoutesDo
   - TestANamedBrokerTokenLimitsWritesToItsProject  # 1.7 s
   - TestANarrowedPipelinePopulationComputesWhatAFreshReadReturns  # 0.8 s
   - TestANarrowedPopulationComputesWhatAFreshReadReturns  # 1.1 s
@@ -138,25 +177,39 @@
   - TestANewIssueAlwaysHasAnAssignee  # 1.3 s
   - TestANewReplysQuestionReferenceResolvesAgainstItsThreadsDocument  # 1.1 s
   - TestANewVersionMovesTheOpenApprovalAsk  # 13.4 s
+  - TestANoChangeWriteKeepsThePreviousTypedNodes
+  - TestANodeAnchoredCommentPageMovesItsETagWithItsNodes
+  - TestANodeTakenGoneTakesItsWholePartOfSubtree
   - TestAPageThatAnswersNoPingLosesItsSocketWithNoCloseFrame  # 0.6 s
   - TestAParagraphEditBeforeTheAnswerDoesNotCarry  # 1.4 s
+  - TestAParentStatusConflictLeavesOutAPrivateProjectsIssue
   - TestAParentsComponentChangeReachesPagesHoldingItsChildren  # 1.9 s
   - TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPark  # 3.3 s
+  - TestAPassAndAFailAtOneHeadReadNotKnown
   - TestAPassDropsTheQueuedChangesThatNameNoProject  # 0.3 s
+  - TestAPassStandsForTheCheckOnlyWhenEachOpenHeadReadsYes
+  - TestAPatchForARunGivesAnIssueWithNoNodeTheNodeTheBackfillGivesIt
   - TestAPersonlessTokenWritesAsItsAccount  # 0.4 s
   - TestAPersonsTokenRewordsAnAskItDidNotAsk  # 0.7 s
   - TestAPinnedBlockReferenceToADeletedCommentGivesNoText  # 0.8 s
   - TestAPinnedCommentBlockReadsItsRevision  # 0.8 s
   - TestAPinnedReadOfABlockHiddenFromTheReaderAnswersWhatNobodyHolds  # 0.9 s
   - TestAPinnedReferenceWhoseTextReturnedIsUnchanged  # 1.2 s
+  - TestAPlanTasksSkillsAndDocsReadBackFromTheOrderedRead
+  - TestAPlanUploadedToAConvertedIssueLandsInItsFragment
   - TestAPlanWriteIsTheDaemonsAlone  # 1.0 s
   - TestAPlanWriteRefusesItsBadValues  # 0.9 s
   - TestAPointerAndAProseCitationOfOneTargetAreTwoEdges  # 0.3 s
+  - TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding
+  - TestAPrivateParentOrBlockedByTargetAnswersAsAMissingIssueToAnotherProjectsToken
   - TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject  # 1.2 s
   - TestAProjectCredentialWritesOnlyItsProject  # 0.8 s
   - TestAProjectScopedCallerIsRefusedAParentOfAnotherProject  # 0.7 s
+  - TestAProjectScopedTokenCommentsOnAnotherProjectsIssue
+  - TestAProjectScopedTokenCreatesAnIssueInAnotherProject
   - TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk  # 2.3 s
   - TestAProjectUpdateCarriesTheDefaultRepositoryItsWriteLeft  # 0.2 s
+  - TestAProjectWriteAnswersAndCarriesAStoredListWithoutTheDecisionsStep
   - TestAProjectsDefaultRepositoryIsSetAndCleared  # 0.3 s
   - TestAPullRequestThatLeftTheWindowIsRemoved  # 0.0 s
   - TestARatingReasonHoldingANulIsRefused  # 0.9 s
@@ -165,21 +218,28 @@
   - TestAReadMarkDeletesTheRowsOfRepliesItPasses  # 0.6 s
   - TestAReadOfATreeStoredAtAnotherVersionBuildsItsOwn  # 0.2 s
   - TestAReadWhoseRequestEndsWhileItWaitsReturnsPromptly  # 0.2 s
+  - TestAReadingInAnAskBlockStandsUnderTheAskTheBlockShows
   - TestAReasonAndADescriptionCarryTheirTreesOnlyUnderTheHeader  # 3.8 s
   - TestARebuildFromMarkdownRefusesABlockPointerToADisallowedType  # 0.3 s
   - TestARebuildFromTheLatestVersionAnswersForWhatThatVersionHolds  # 0.3 s
   - TestARecomputeAfterTiedRowsAreWrittenAgainSendsNothing  # 0.7 s
   - TestAReconnectCatchesUpWhatTheListenerMissed  # 4.1 s
+  - TestARecordCarryWaitsForTheRequestOrTheReopen
+  - TestARecordedDeployWakesEachOpenIssueThatHoldsALiveResult
   - TestAReferencesAnswerWithoutTheTreesHeaderIsTheBytesBefore  # 0.8 s
   - TestAReferencesReadAfterACitedDocumentIsRenamedAnswersTheNewName  # 1.4 s
   - TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim  # 1.8 s
   - TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead  # 1.2 s
   - TestARefusalNamesALinkedRepositoryGitHubsNamingRuleRefuses  # 1.0 s
   - TestARefusalNamesAtMostTheBoundOfLinkedPullRequestsDispatchCannotRead  # 1.1 s
+  - TestARemovalOfAConvertedIssuesDocumentLeavesTheIssueRoomAsItStood
+  - TestARemovalOfADocumentCitedWhileTheIssueRoomHoldsAnUnsettledEditIsRefusedForTheCitation
+  - TestARemovalStatesItsDocumentGoneInTheStoreLockOrder
   - TestARemovedDocumentsNodeIsGoneAndItsAddressIsTakenAgain  # 1.1 s
   - TestARenameOfAProjectDocumentBesideACommentOnItBothSucceed  # 0.9 s
   - TestARenewedLiveSocketReadDeadlineLiftsTheOneItsTimerApplied  # 0.0 s
   - TestAReopenCarriesAnApprovalOfAClosedVersionAnotherRendererVersionStored  # 0.4 s
+  - TestAReopenKeepsTheRequestWithThePersonWhenItsVersionDiffersOnlyInTheAskAttributes
   - TestAReopenWithNoClosedVersionMovesAndCarriesNothing  # 1.2 s
   - TestARepairPassThatFailsOneIssueStillMovesTheWindowAndRetriesIt  # 1.9 s
   - TestARepairThatChangesNothingAppendsNoUpdateAndMarksNoDocument  # 3.5 s
@@ -195,41 +255,56 @@
   - TestAReplayCarriesTheFirstAnswersHeaders  # 0.2 s
   - TestAReplyIsRefusedByADeleteThatCommitsWhileItWaitsForTheOwnerLock  # 1.1 s
   - TestAReplyNamingABlockKeepsBothPointers  # 0.8 s
+  - TestAReplyQuoteOnAnItemThatOwesItsIndexIsCheckedOnItsWholeText
+  - TestAReplyThatNamesABlockHangsUnderItsComment
   - TestAReplyToARoleRouteAttemptComesFromTheRolesHolder  # 3.5 s
   - TestARequestCarriesTheNewestApprovalWhoeverGaveIt  # 1.4 s
   - TestARequestKeysRowIsOneOfItsStates  # 0.2 s
+  - TestARequirementMovedToOvertakenWritesASpecQueryVersion
+  - TestARestoreOfTheApprovedRecordPinsItsDigestBeforeItsVersion
   - TestARestoredBlockAnsweredBeforeTheApprovalCarriesNothing  # 1.5 s
   - TestARestoredTextAroundTheApproversOwnAnswerCarriesByTheAnswerCarry  # 1.7 s
+  - TestAResultAtTheHeadOfAPullRequestInAnotherRepository
+  - TestAResultBeforeTheLinkedMergeDoesNotCount
   - TestAResultOfAnIssueRecordedUnderARepositorysOldNameStandsAtItsHead  # 1.1 s
   - TestAResultsDryRunJudgesALinkedCommitAsTheRecordDoes  # 4.6 s
   - TestAResultsReadResolvesTheDefaultRepositoryWithRepoProjectsDropped  # 1.1 s
   - TestAResultsWriteReadsTheChecksWordsWithBothIssuesOwnerLocksFree  # 1.1 s
   - TestARetryOfASwitchAnEarlierReleaseWroteIsRefusedForAStoppedSession  # 1.0 s
   - TestAReviewNamingAVersionRecordsOnlyTheVersionTheReviewWouldRecord  # 0.8 s
+  - TestARevisedVersionLeavesNoDocumentOwedItsBlockIndex
+  - TestARewordOfABlockAskInARetiredDocumentIsRefusedAsAnEditOfItIs
   - TestARewordOfAnAnsweredBlockInTheAnswersVersionDoesNotCarry  # 1.9 s
   - TestARoleHoldersPublicationRefusesWhatIsNoSet  # 0.6 s
+  - TestARoleSessionWritesNoRecordOfAnIssue
   - TestARootsUnfilteredReadListsEachReplyOnceAndNoAnswersEdge  # 0.8 s
   - TestARoundTripWithoutNewDocumentRefusesInTheReplacementUploadsOwnWords  # 3.3 s
   - TestARowStillHoldingItsBytesIsServedFromTheRow  # 1.0 s
   - TestARunningHandlerRenewsItsKeyPastTheLease  # 0.5 s
   - TestARunsSessionReportAndGenerationComeBackAsWritten  # 0.7 s
+  - TestAScopedStatusChangeMovesAnAncestorOfAnotherProject
   - TestASearchHitCarriesTheTreeOfItsSnippet  # 0.7 s
   - TestASendInFlightAtShutdownStillSettles  # 0.9 s
   - TestASendParkedForAFailedClaimReadIsNoHeldCopy  # 0.0 s
   - TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes  # 1.5 s
   - TestASendTakenFromAHeldLaneStartsItsTakeOverWindowAtItsDelivery  # 8.5 s
   - TestASendThatLostItsKeyCommitsNothing  # 0.3 s
+  - TestASendTheListenerAnsweredWithAnOutageIsTriedAgain
   - TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers  # 0.6 s
   - TestASessionAcceptsAQueuedAttemptAsItsTurn  # 0.3 s
   - TestASessionGroupEditReachesEveryView  # 0.9 s
   - TestASessionIsInOneGroup  # 0.3 s
   - TestASessionThatIsNoSessionIDIsRefused  # 0.5 s
+  - TestAShapedWriteKeepsTheDecisionsSum
   - TestAShutdownEndsAFetchInFlight  # 0.2 s
   - TestASlowReaderIsClosedNotBuffered  # 0.3 s
   - TestASpecOfFrontMatterAndTheMostHeadingsIsTaken  # 8.8 s
   - TestAStartAfterTheLastEndCountsNoTime  # 0.7 s
+  - TestAStateWriteKeepsTheCauseOfTheBlockItMoves
   - TestAStatusChangeChecksItsPlanUnderItsLocks  # 0.3 s
+  - TestAStatusChangeLeavesOutAPrivateProjectsIssue
   - TestAStatusChangeRefusedMidwayNamesWhatItChanged  # 0.5 s
+  - TestAStatusChangeWhoseIssueTurnedPrivateAnswersAsAMissingOne
   - TestAStatusTheLifecycleDoesNotHoldIsNoRefusal  # 1.0 s
   - TestAStepAndItsCommentCommitTogether  # 0.3 s
   - TestASubscribeWithAMemberNoFrameDeclaresIsAnswered  # 0.3 s
@@ -247,6 +322,7 @@
   - TestAThreadReadWaitsForAWritersReadPhase  # 0.7 s
   - TestATitlelessEventOfARoleSessionGivesItsIssuePhaseWork  # 0.3 s
   - TestATreesRequestAndOneWithoutNeverShareAListETag  # 0.9 s
+  - TestATypedBlockADeferredVersionRemovesReadsGoneAtOnce
   - TestAVariantIsTheDaemonsAlone  # 0.7 s
   - TestAVersionDownloadIsNamedAfterItsArtifactOnEveryRoute  # 1.2 s
   - TestAVersionNumberAboveTheColumnsRangeIsRefusedNotAFault  # 1.0 s
@@ -271,13 +347,16 @@
   - TestAdvancesListEachPriorityOnceHoweverTheDatabaseCollatesTheIDs  # 1.3 s
   - TestAdvancesRelation  # 2.3 s
   - TestAdvancesRelationRevisionIsExactAndRefusesBeforeItWrites  # 0.9 s
+  - TestAfterMergeResultDoesNotBorrowANeighboursMerge
   - TestAfterMergeResultFallsBackToTheTrunkWithoutAMergeOfTheIssue  # 1.3 s
   - TestAfterMergeResultFallsBackWhenTheMergedRowNamesNoBaseBranch  # 1.1 s
   - TestAfterMergeResultFollowsTheBranchTheIssueMergedInto  # 1.0 s
   - TestAfterMergeResultReadsTheBaseBranchOrTheDefaultBranch  # 1.2 s
   - TestAfterMergeResultStandsAtItsMergedBranchWithNoAppKey  # 1.2 s
   - TestAfterMergeResultStandsAtItsMergedBranchWithNoDefaultBranchNamed  # 1.4 s
+  - TestAfterMergeResultWaitsWhenTheMergedRowNamesNoBaseBranch
   - TestAfterMergeResultWithNoPullRequestFollowsTheDefaultBranch  # 1.3 s
+  - TestAfterMergeResultWithNoPullRequestWaitsForAMerge
   - TestAfterMergeResultWithTheBaseBranchDeleted  # 1.2 s
   - TestAgentFileListRefusesACallerTheConversationReadRefuses  # 0.3 s
   - TestAgentStreamRefusesASessionIdThatIsNotAUUID  # 0.5 s
@@ -289,6 +368,7 @@
   - TestAgentsIncludeGroupedOpenAskCountsAndLastActivity  # 0.2 s
   - TestAgentsTmuxPlaceIsAbsentForASessionOutsideTmux  # 0.2 s
   - TestAnAcceptanceFieldGoesOnlyWithAnAcceptanceStatus  # 0.7 s
+  - TestAnAgentCannotDropAnAnsweredAsk
   - TestAnAgentViewAsksForItsReplayOffTheReadLoop  # 0.6 s
   - TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt  # 0.9 s
   - TestAnAgentsAnswerReviewAndSnoozeAreRecordedAsThePersonWithItsActBesideThem  # 1.1 s
@@ -296,6 +376,7 @@
   - TestAnAgentsConversationListsOnlyItsNewestFiles  # 0.2 s
   - TestAnAgentsListDuringAShutdownDrainListsAHealthyListenersSessions  # 0.2 s
   - TestAnAgentsListWhoseRequestEndsWhileItWaitsOnTheFetchAnswers503  # 0.2 s
+  - TestAnAnchorByBlockFindsTheQuoteInThatBlockAlone
   - TestAnAnchorInABlockWhoseLiveIDHoldsANulIsUnpinned  # 1.3 s
   - TestAnAnchorRefreshCarriesTheCutBody  # 1.6 s
   - TestAnAnswerAfterAnotherHumanRequestedChangesDoesNotCarry  # 1.2 s
@@ -304,8 +385,11 @@
   - TestAnAnswerCarriesWhenAnAgentEditInsideAnotherBlockLandsInItsVersion  # 1.7 s
   - TestAnAnswerIsGzippedForACallerThatTakesGzip  # 0.8 s
   - TestAnAnswerTheDocumentHasNoRoomForIsKeptOnItsAskAndLeftOutOfItsBlock  # 29.7 s
+  - TestAnAnswerTheDocumentHasNoRoomForIsKeptWholeOnItsAskAndBesideTheText
+  - TestAnAnswerThroughACopysSourceWritesOneStateVersionOfEachDocumentAndCarriesBothApprovals
   - TestAnAnswerToACopysSourceAfterItsRewordingOpensTheCopysOwnAsk  # 1.4 s
   - TestAnAnsweredAskAloneIsADecisionOnlyChange  # 1.3 s
+  - TestAnApproveOnlyTokenAnswersAnApprovalAskAndNoOtherAsk
   - TestAnArchitectureSourceUnderARenamedNameIsSavedUnderItsNewName  # 0.6 s
   - TestAnArchitectureSyncReachesEveryView  # 1.1 s
   - TestAnAskEventCarriesEveryAskTextUnderItsPath  # 0.0 s
@@ -315,6 +399,7 @@
   - TestAnAskWhoseIndexIsBehindItsRowCarriesNoWrongPartIDs  # 0.8 s
   - TestAnAsksPartsAreIndexedOnEveryWrite  # 1.2 s
   - TestAnEarlyAnswerDrainsTheBodyUpToTheRoutesLimit  # 2.4 s
+  - TestAnEditAboveTheBoundDefersItsIndex
   - TestAnEditBesideABrokenCICheckIsNotRefused  # 1.0 s
   - TestAnEditBodyEndingInAStrayBracketIsReadAsItsOneValue  # 0.8 s
   - TestAnEmptyCommentListAnswersOneETagPerReading  # 0.5 s
@@ -332,14 +417,17 @@
   - TestAnIssuesLegionLiveViewOfAnIssueTheDaemonDoesNotRecordAnswersNullThenItsState  # 0.7 s
   - TestAnIssuesLegionRead  # 1.0 s
   - TestAnIssuesLegionReadCountsTheRunsRevision  # 0.3 s
+  - TestAnIssuesTreeArtifactTakesItsSlugItsNodeAndItsIssueTreesRow
   - TestAnOldConversationAnsweredNowIsInsideTheWindow  # 0.4 s
   - TestAnOlderBrokersNamedAnswerWritesNothing  # 0.8 s
   - TestAnOlderListenerAnswerNeverReplacesANewerOne  # 0.4 s
   - TestAnOlderVersionDownloadTakesItsNumberBeforeTheExtension  # 0.9 s
   - TestAnOpenApprovalRequestIsAnsweredByTheCarry  # 1.5 s
   - TestAnOptionIsTheHitThroughTheWindowHoldingItsQuestion  # 0.7 s
+  - TestAnOutgoingMentionOfABlockOfAnIssueRoomCarriesItsDocument
   - TestAnUnpagedListingReadsEachResolvedTableOnce  # 3.0 s
   - TestAnUnreadOwnRepositoryBesideALinkedReadThatDidNotAnswerRefusesTheRecordForNow  # 1.1 s
+  - TestAnUnreadableMergeRefreshKeepsTheRequestsLearnedHead
   - TestAnUnsubscribeQueuedBehindAnotherTakesItsPendingRequest  # 0.6 s
   - TestAnUploadLeavesNoSpooledFileBehind  # 0.3 s
   - TestAnUploadMovingAnOpenAsksQuoteIntoACodeBlockIs400  # 0.8 s
@@ -353,6 +441,7 @@
   - TestAnchorQuoteNotFoundIs404  # 0.7 s
   - TestAnchoredAskAnswerAndInbox  # 1.2 s
   - TestAnchorsCaptureAnUnnamedVersionWhenLiveTextChanged  # 1.0 s
+  - TestAnotherProjectsDaemonPublishesRoleHoldersUnderTheLegionStatusScope
   - TestAnswerAskChangeUsesTheCurrentAnswerAsCompareAndSet  # 0.9 s
   - TestAnswerAskChangesTheCurrentAnswerAndRecordsHistory  # 0.9 s
   - TestAnswerAskHistoryIgnoresARestorationAndKeepsTheLaterChange  # 2.7 s
@@ -364,6 +453,7 @@
   - TestApprovalRequestFollowsDocumentVersions  # 1.1 s
   - TestApprovalRequestSaysWhenTheSpecMarksNoRequirements  # 0.8 s
   - TestApprovalRequestWithTheVerificationDocumentRefusesAnIssueThatHasNone  # 0.6 s
+  - TestApprovalRequestsCostAtMostTwentyTwoRoundTrips
   - TestArchitectWriteOnAProvenProjectNeedsAProvenSession  # 1.1 s
   - TestArchitectWritePassesForTheIssuesArchitectAnArchitectAboveAndAPerson  # 7.4 s
   - TestArchitectureSourceInputValidation  # 0.8 s
@@ -398,7 +488,7 @@
   - TestBlockAskOptionsEditWritesAParsedList  # 1.5 s
   - TestBlockLinksRefuseAnEndThatIsNotADocument  # 0.7 s
   - TestBlockPathReadsPlaceAnAnchoredCellByRowAndColumn  # 1.6 s
-  - TestBlockSchemaRouteServesEmbeddedSchema  # 0.0 s
+  - TestBlockSchemaRouteServesTheInstalledSchemaBesideTheStoresTypes
   - TestBlocksListATablesRowsAndCellsWhereTheBlockRoutePlacesThem  # 1.2 s
   - TestBoardMoveStatusAndDependencyWriteDoNotDeadlock  # 1.9 s
   - TestBodiesAreBoundedOnEveryWriteRoute  # 4.7 s
@@ -414,6 +504,7 @@
   - TestCIReconcilePassesShowsARunningPass  # 0.2 s
   - TestCIResultCutsTheRunsOutputToTwoThousandRunes  # 0.9 s
   - TestCIResultDetailNamesTheStatusAndMessageOfARateLimit  # 2.0 s
+  - TestCIResultNamesTheArtifactItsChecksRowIsKeyedBy
   - TestCIResultReadsAPaddedCICheckAsTheRunItNames  # 1.3 s
   - TestCIResultReadsEachOutcomeOfTheNamedRun  # 3.5 s
   - TestChangingBlockAskReplacesAnswerAttributes  # 1.3 s
@@ -439,6 +530,8 @@
   - TestCommentMentionReadProjectionIncludesReplyChain  # 1.1 s
   - TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry  # 0.8 s
   - TestCommentPartySetRefusals  # 0.7 s
+  - TestCommentThreadPageAnswersAnETagOverEveryParameter
+  - TestCommentThreadPagePersonInHoldsThePeoplesAndTheTextsThreads
   - TestComputedAtAndFreshnessAloneAreNoChange  # 0.0 s
   - TestConcurrentBroadcastsWithOneKeyMakeOneBroadcast  # 0.5 s
   - TestConcurrentUploadsOfOneBaseLandTheFirstAndRefuseTheSecond  # 0.7 s
@@ -538,14 +631,18 @@
   - TestEventPayloadsAreServedAsStoredForEveryEventKind  # 1.3 s
   - TestEventStreamRelayProvesItsOwnObservationAtOnce  # 1.8 s
   - TestEventStreamRelayReadsEachCommitOnceForEverySubscriber  # 1.4 s
+  - TestEveryAnswerAPersonsPagesShowReadsTheAsksNode
   - TestEveryCommentWriteMovesTheCommentListsValidator  # 0.9 s
   - TestEveryDocumentARemovalCanTakeIsReadByItsCreateEvent  # 1.6 s
   - TestEveryEventOfAnEditedPostCarriesTheTimeOfItsLastEdit  # 1.2 s
   - TestEveryGETRowHasOneReadEntry  # 0.0 s
   - TestEveryMarkdownWriteRefusesMarkdownPastTheElementLimit  # 4.5 s
+  - TestEveryPointerAtAMovedNodeIsATupleAndItsProjection
   - TestEveryProjectNamesAPerson  # 0.6 s
+  - TestEveryProjectRouteWritesAnotherPublicProjectsObject
   - TestEveryQuestionReachesAPerson  # 2.5 s
   - TestEveryReadOfADeletedIssueMessageSaysItIsDeletedAndGivesNoneOfIt  # 1.7 s
+  - TestEveryReadOfAnIssueEventAnswersItsWaitsUnderBothSpellings
   - TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter  # 95.3 s
   - TestEveryReadServesATreeAtTheDepthBound  # 5.0 s
   - TestEveryReadThatGivesADeletedPostsWordsAsPartOfAnotherGivesNoneOfThem  # 1.5 s
@@ -556,7 +653,9 @@
   - TestEverySendOnAHeldLaneIsCounted  # 0.0 s
   - TestEveryStoringRouteRefusesANulInItsText  # 25.0 s
   - TestEveryVersionOperationDeclaresTheDownloadParameterInTheOpenAPIDocument  # 0.1 s
+  - TestEveryVersionRowIsTheProjectionOfAVersionNode
   - TestEveryWriteOfAStatusOrAParentKeepsTheRule  # 1.2 s
+  - TestEveryWriteThatMovesAQuerysRecordAppendsAVersionOfIt
   - TestExternalIssueLinkedInAnotherProjectIsRefused  # 0.7 s
   - TestExternalIssueReferenceResolvesBothGitHubURLShapes  # 0.8 s
   - TestExternalIssueResolutionAndAutoCreation  # 0.8 s
@@ -582,6 +681,7 @@
   - TestGoingRequestUnderOneKeyRecordsOneRun  # 0.3 s
   - TestGoingStreamAfterACommentItReadIsDeletedGivesOnlyTheWithdrawal  # 0.8 s
   - TestGoingStreamAnswersEveryRunItWillNotServeAlike  # 0.2 s
+  - TestGraphEdgesKeepsEveryRelationAcrossARollback
   - TestGrowsLinearlyRejectsQuadraticFinalRung  # 0.3 s
   - TestHandoffWriteAppendsHandoffRecordedWithoutTheBody  # 0.7 s
   - TestHeaderChangesRequestedAnswersTheOpenApprovalAskAndNeedsAReason  # 1.0 s
@@ -642,17 +742,18 @@
   - TestListOpenAsksForSession  # 2.6 s
   - TestListOpenAsksRequiresExactlyOneScope  # 0.3 s
   - TestListProjectsIncludesCreatedAt  # 0.4 s
-  - TestMainsDocumentArmSearchesNoDocumentSearchIndex  # 2.9 s
   - TestMarkThreadReadRacingABlockAskAnswerThatRefreshesAnAnchor  # 10.6 s
   - TestMarkThreadReadRacingASessionReply  # 7.3 s
   - TestMarkdownRoundTripNamesWhatTheStoreChanges  # 0.3 s
   - TestMarkdownRoundTripWithoutNewDocumentAnswersAReplacementTheUploadStores  # 0.3 s
   - TestMeaningScanRollsBackWhenASettingFails  # 0.1 s
+  - TestMeaningSearchNamesNoBlockOfAnIssueRoomItsReaderMayNotSee
   - TestMentionLookupsOfOneCommentRunAtOnce  # 0.6 s
   - TestMentionReplyErrorRecordsAttemptWithoutComment  # 1.8 s
   - TestMentionReplyRequiresItsAttemptTargetAndIsIdempotent  # 1.5 s
   - TestMentionedCommentRejectsInvalidMentionInput  # 0.8 s
   - TestMessageBlockIndexFollowsAnEditAndADelete  # 1.0 s
+  - TestMessageThreadPagePersonSplitsThreadsAndLeavesOutTheDaemons
   - TestMissingIssueDocumentRouteListsItsSlugsAndNames  # 0.7 s
   - TestMovedApprovalRequestComesAgainOnTheNextVersion  # 1.0 s
   - TestMovedApprovalRequestIsAbsentWhenNoRequestNamesTheDocument  # 0.8 s
@@ -673,6 +774,7 @@
   - TestNoCorrectionEventCarriesTextOfAnotherPost  # 2.2 s
   - TestNoMintHoldsLegionStatus  # 0.1 s
   - TestNoReadOfADeletedPostServesTheTreeOfItsOldText  # 0.8 s
+  - TestNoRouteIsDeclaredTwice
   - TestNoTwoCommentListsShareAValidator  # 0.8 s
   - TestOldPendingSuggestionsOnOtherIssuesCostAPassNothing  # 2.8 s
   - TestOneExpressionDecidesWhoWaits  # 2.5 s
@@ -697,6 +799,7 @@
   - TestPlanReviewApprovesAPlanVersionAndNoPersonIsAsked  # 0.8 s
   - TestPlanReviewRefusesAVersionThePlanDoesNotHave  # 0.8 s
   - TestPlanReviewRefusesEveryDocumentThatIsNotAPlan  # 1.1 s
+  - TestPlanTasksThatNeedEachOtherNameTheirRoomNodesFromTheFirstVersion
   - TestPrimaryRoutesAreGone  # 0.6 s
   - TestPriorityIDFromTitle  # 0.0 s
   - TestPriorityTitleAndIDAreBounded  # 0.6 s
@@ -711,7 +814,9 @@
   - TestQuoteAnchorCommentSpansParagraphs  # 0.7 s
   - TestQuoteAnchorWritesServerMark  # 0.7 s
   - TestQuoteAnchorsRecordBlockAndBlocksCountReferences  # 1.3 s
+  - TestReadAndP0NeverShareAToken
   - TestRebuildRefsConvergesOnTheLiveIndex  # 1.2 s
+  - TestRebuildingAClosedIssuesDocumentWritesTheAskAttributesAsTheFleetStands
   - TestRecordingAResultReadsThroughToAPullRequestDispatchHasNoEventFor  # 1.2 s
   - TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead  # 1.2 s
   - TestReferenceTargetsResolveABatchInOneRequest  # 2.4 s
@@ -721,6 +826,7 @@
   - TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent  # 3.2 s
   - TestReferencesToADeletedBlockAnswer404AndReturnWithTheBlock  # 1.7 s
   - TestRefreshRebuildsInFullAfterTheOldReleaseWroteTheRow  # 0.3 s
+  - TestRegisterRefusesARouteThatIsNotClassed
   - TestRelatedCheckBoundsCompletesBehindAOneSecondLock  # 1.5 s
   - TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead  # 2.0 s
   - TestRelatedCheckKeepsAnOpenAskOverTheIssueThatOwnsIt  # 1.0 s
@@ -835,6 +941,7 @@
   - TestTargetedMessagePrefixesUnavailableListenerErrors  # 1.4 s
   - TestTheAPIsMentionWaitsForARoleRouteItsSessionHoldsNow  # 2.0 s
   - TestTheAgentsLastActivityAnswersWhatMainsStatementDid  # 0.3 s
+  - TestTheAnsweredQuestionsOfOtherProjectsAreReadOffTheirNodes
   - TestTheAnswersListHoldsADeclineForEachSessionItReached  # 1.8 s
   - TestTheApprovalReadNamesTheLatestReviewsEventSequence  # 0.6 s
   - TestTheApprovalReadNamesTheReviewThatCommittedLast  # 0.6 s
@@ -849,16 +956,25 @@
   - TestTheBoardReadsPhaseWorkAsTheOneReadDoesAfterARename  # 0.5 s
   - TestTheBodysActorNamesTheActingSessionWhereTheCredentialProvedNone  # 1.1 s
   - TestTheCIPullRequestLineDropsIssueKeysFromTheRunName  # 0.8 s
+  - TestTheCIReadNamesItsHeadAndTheResultItDerived
+  - TestTheCensusHoldsTheAuthorOfAnAskPastTheBound
+  - TestTheCensusReadsAReadingInAnAnsweredAskAsTheAskBlocksChild
   - TestTheChangeSetNamesOneOfTwoSwappedSectionsMoved  # 0.8 s
+  - TestTheCheckReasonIsTheSameWhateverTheOrderOfItsHeads
   - TestTheContractRequiresTheRoleAndTheSessionOfEachHolder  # 0.2 s
+  - TestTheConversionCarriesTheApprovalAcrossTheShapedPointersItGivesAnAsk
   - TestTheCoverageReadCarriesARequirementsContentWhole  # 0.9 s
+  - TestTheCoverageReadClimbsTheTreeOfTheIssueAbove
   - TestTheDaemonPublishesTheRoleHoldersOfAnIssue  # 0.8 s
   - TestTheDaemonsIDIsNoWriterButAsASession  # 1.2 s
+  - TestTheDecisionsQueryTakesNoUploadNoEditAndNoSocket
+  - TestTheDeferredWriteStatesEachBlocksTextRowAndMembershipOnce
   - TestTheDeliverySocketAnswersASubscribeWithASnapshot  # 0.7 s
   - TestTheDeliverySweepSettlesWhatItCannotSend  # 5.5 s
   - TestTheDeploymentsRosterCacheKeepsAnAnswerAndASilenceFiveSeconds  # 0.0 s
   - TestTheDisconnectHookClosesEverySocketWithServiceRestart  # 0.5 s
   - TestTheDocumentSocketTakesACookieAndNotTheSharedAgentToken  # 0.5 s
+  - TestTheDryRunReadsNoExpectedCount
   - TestTheEditorsCarriedIDsSurviveMoveRewordAndSplit  # 0.9 s
   - TestTheEventFeedClosesOnceItsPersonNoLongerResolves  # 4.2 s
   - TestTheEventFeedDoesNotResendAnEventAtOrBelowItsSince  # 1.8 s
@@ -867,14 +983,19 @@
   - TestTheEventFeedSaysWhenItsReplayCoversTheGap  # 0.7 s
   - TestTheEventsRouteIsGone  # 0.1 s
   - TestTheFactsOfAnEdgesOtherEndAreTheNodesOwn  # 1.6 s
-  - TestTheFillCoversEveryDocumentOverMoreThanOneBatch  # 1.0 s
+  - TestTheFillCarriesAVersionWhoseWritePassedOverItsRecord
   - TestTheFirstPassOfAJustStartedProcessStartsAtTheNewestEvent  # 0.6 s
   - TestTheFixWritesEventsTheDaemonReads  # 0.4 s
   - TestTheFourCorrectionEventsCarryTheirBodiesAndTheirMarks  # 1.0 s
+  - TestTheGoingSweepEndsARunOverdueByMoreThanADay
   - TestTheGoingSweepEndsARunPastItsWindowOnce  # 0.3 s
+  - TestTheGraphReadOfAWithdrawnRunWhoseRowsAnOlderBuildDeletedQuotesNoDeletedPost
   - TestTheIssueChildrenAnswerWhatMainsStatementDid  # 2.6 s
   - TestTheKeywordFillPausesWhileTheAnswersReadIsSlow  # 44.2 s
+  - TestTheLegionBoardHeaderGivesTheDaemonsP0Holders
   - TestTheLegionBoardQueuesByRankUntilADaemonRecordsItsWaitingLine  # 0.4 s
+  - TestTheLensReadAnswersEachLensWithItsFindingsAndRisks
+  - TestTheLensReadAnswersEveryLensInInvocationOrder
   - TestTheListedClosedIssueHoldsAnOpenAsk  # 3.4 s
   - TestTheLiveHubKeepsASessionsNameWhenAnEventCarriesNoTitle  # 3.5 s
   - TestTheLiveTestHooksAreMountedOnlyUnderTestHooks  # 0.3 s
@@ -883,9 +1004,18 @@
   - TestTheMaintenanceLoopSweepsOncePerPeriodAcrossTwoRunners  # 2.1 s
   - TestTheModelSwitchToAStoppedSessionIsRefusedAndQueuesNothing  # 0.5 s
   - TestTheMountedServerAnswersEachReadOnlyTokenByItsClass  # 14.9 s
+  - TestTheMoveKeepsEveryNodeButALensOffADocumentARemovalCouldTake
+  - TestTheMoveRefusesAParentOutsideItsPlaceAndAnAfterOfNoSiblingOfItsBand
+  - TestTheMoveWritesItsTextWhereMarkdownCanShowIt
+  - TestTheNewTypesAreReadButNotWrittenBeforeTheirNodePass
+  - TestTheOldDecisionsMemberAnswersAPersonsUnkeptDecisionAsAPersons
   - TestTheOtherCredentialsAreUnaffectedByTheBrokerBranch  # 0.2 s
   - TestTheOtherResolvedReadsAnswerWhatMainsLateralsDid  # 3.2 s
+  - TestTheP0RefusalComesBeforeTheClosedAndChangedRefusals
+  - TestTheParserReadsTheCapturedPremortem
+  - TestThePatchRefusesAParentTheWalkDoesNotReach
   - TestThePlainPunctuationIsWhatItsDocCommentLists  # 0.0 s
+  - TestThePointerRouteKindEnumIsTheStoresPointerKinds
   - TestTheProjectListRunsNoSubqueryPerProject  # 3.0 s
   - TestThePullRequestLineCarriesNoRunAndNoNegativeControl  # 0.9 s
   - TestThePullRequestLineCarriesTheReading  # 0.9 s
@@ -894,33 +1024,53 @@
   - TestTheReadOfAProjectListsEachFinishedIssue  # 1.9 s
   - TestTheReadOfAnIssueLegionNeverRanHoldsNoTime  # 1.0 s
   - TestTheReadOfPlansRefusesAnUnknownProjectAndABadWindow  # 0.7 s
+  - TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey
+  - TestTheReasonOfAnUnknownCheckNamesAPassAndAFailAtAnyOfItsHeads
+  - TestTheReasoningRoutesWriteEachNodeAndAnswerItsShape
+  - TestTheReasoningWriteStatesTheWriterItsRecordNames
   - TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole  # 2.2 s
   - TestTheRelatedRouteCarriesTheTreeOfEveryAnswerItOffersOnBothLegs  # 1.3 s
   - TestTheRelaysFirstStartDoesNotReadTheWholeEventLogWhileAWriterFromBeforeBootIsOpen  # 6.6 s
   - TestTheRepairSweepLeavesTheCopyOfAResolvedDecisionResolved  # 1.7 s
   - TestTheResponderTestHookRefusesAMemberItDoesNotDeclare  # 0.3 s
+  - TestTheResultRoutesSecondChecksAnswerAPrivateCheckAsAMissingOne
   - TestTheResultsReadCarriesAChecksContentWhole  # 0.6 s
   - TestTheResultsReadCarriesEachResultsObservedTree  # 0.8 s
   - TestTheRoleHoldersOfAnIssueReadInWorkflowOrder  # 0.7 s
   - TestTheRoleHoldersTableChecksTheLegionRoles  # 0.2 s
   - TestTheRuleJudgesOnlyThePairsAWriteChanges  # 0.3 s
   - TestTheScopedMeaningStatementReadsTheProjectIndex  # 2.2 s
+  - TestTheSkeletonLiftsWhatStandsUnderAnotherDocumentToTheIssue
   - TestTheSlowWriteHookDelaysEveryKeyedRunOfItsPath  # 2.3 s
+  - TestTheStateRouteRefusesABlockOfACommentInWordsThatAreTrue
   - TestTheStatusChangeRouteTakesThePatchFence  # 4.4 s
+  - TestTheStructuralEdgeKindsNameEveryKindTheStoreAloneStates
   - TestTheSuggestionSweepTrailsTheSafeHorizon  # 0.9 s
+  - TestTheSweepReadsOfTheRunsPastTheHourAreBounded
   - TestTheSweepResumesAStrandedSwitchAsConnectedOnly  # 0.8 s
   - TestTheSweepSendsAMentionAStoppedProcessLeftAndLeavesALiveClaimAlone  # 0.9 s
   - TestTheSweepStatesAnOrphanGoneAsTheRemovalStatesIt  # 1.7 s
   - TestTheSweepsKeyedSendReadUsesItsPartialIndex  # 0.2 s
+  - TestTheTextOfADocumentWithNoAskBlockAnswersNoAsksMember
   - TestTheTextRoutesCarryTheBlocksTheirMarkdownHolds  # 0.9 s
+  - TestTheTextRoutesReadTheAnswerOfAnAskWhoseRowNamesNoNodeOffItsRow
+  - TestTheTreeReadAnswersACriterionWithItsAuthorAndItsChain
+  - TestTheTreeReadAnswersAPostsEditAndDeleteMarks
+  - TestTheTreeReadAnswersAResultsObservedTextAsItsReading
+  - TestTheTreeReadNamesTheAncestorAnIssueIsAViewOf
+  - TestTheTreeReadPagesTheCommentsNewestFirst
+  - TestTheTreeReadWritesItsAnswerAsWriteJSONWritesIt
+  - TestTheTreeWalkLeavesOutTheWorkflowsRecords
   - TestTheUploadLockProbeNamesAnUploadsOwnTransaction  # 0.7 s
   - TestTheVisualShotReadsWriteOnlyTheirCaches  # 2.7 s
   - TestTheWindowsUnreadFlagIsReadAgainstTheMarkNotThePresenceOfAReply  # 0.5 s
+  - TestThreadPageAuthorKeepsTheThreadsTheActorWroteIn
   - TestTimelineShowsAGroupAsTheParentAgentOfItsSessionsPRs  # 0.4 s
   - TestTwoFileUploadsNamingOneTokenTakeOne  # 19.8 s
   - TestTwoIssueReadsWithinTheTTLMakeOneListenerCall  # 0.8 s
   - TestTwoPatchesOfOneIssueSerializeOnItsOwnerLockAndLoseNoUpdate  # 0.8 s
   - TestTwoResultReadsSpendOneReadThroughOfACommit  # 1.2 s
+  - TestTwoWritersAppendingFramesOfOneRunTakeGaplessSequences
   - TestUnlinkChildrenMakesEachARoot  # 0.6 s
   - TestUnroutedIssueHasNoRouteStatusAndCostsNoListenerCall  # 0.7 s
   - TestUnsubscribeCommitsItsAuditEventBeforeAListenerFailureAndRetriesIdempotently  # 0.5 s
@@ -951,15 +1101,22 @@
   - TestABlockSeenFirstAtItsDocumentsFirstIndexingHasNoMaker  # 1.5 s
   - TestABodyWithBlockHTMLReadsBackAsItIsStored  # 1.0 s
   - TestABroadcastStoresTheOneTreeOfItsBody  # 0.6 s
+  - TestABrokerSessionOfAWorkloadIsNotThatWorkload
   - TestABrokerTokenProvedByAnotherKeyIsRefused  # 0.2 s
+  - TestABrowserEditThatDoesNotReadBackStoresNoVersion
   - TestABrowserWritePointingAtAMissingBlockIsSavedAndUnresolved  # 0.3 s
   - TestABrowsersNulLeavesTheDocumentVersionable  # 3.4 s
   - TestABurstCoalescesIntoOneRecompute  # 0.5 s
   - TestACICheckNamePaddedWithSpacesIsRefusedOrReadAsTheRunItNames  # 1.8 s
+  - TestACarryCommitsApprovalFirstWhileTheRootWaitsAtAnUnapprovedVersion
   - TestACarryOnOneDocumentOfATwoDocumentRequestLeavesItOpen  # 1.9 s
   - TestAChangedAnswerByTheSameHumanCarriesAgain  # 1.5 s
   - TestAChangedMeasureSendsTheMeasuresWhole  # 0.0 s
+  - TestACheckBlockServesItsSubjectAndProgram
   - TestACheckComparingWithNothingNamesWhichKindOfNothing  # 2.9 s
+  - TestAChildWhoseCreateDeferredItsIndexKeepsItsSpecItsOwn
+  - TestAChildWhoseSpecIsItsOwnNeverBecomesAView
+  - TestAChildsRequirementWrittenThroughTheRoomMakesItsSpecItsOwn
   - TestAClaimantWhoseResentMentionFailsStillHearsTheComment  # 2.3 s
   - TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle  # 0.9 s
   - TestAClosedFeedReloadsTheOpenP0sAndRecomputesEveryView  # 1.9 s
@@ -979,36 +1136,53 @@
   - TestACommentUnderAPersonalTokenIsStillTheSessionsOwnWrite  # 0.9 s
   - TestACommentWhoseAuthorIsASessionPastTheBoundLeavesOutItsNode  # 0.8 s
   - TestACommentWriteWritesNoWindowUnderTheIssueRow  # 0.8 s
+  - TestACommentsMarkOnARetiredDecisionsDocumentIsRefusedAsDecisionsAreNodes
+  - TestACommentsMarkOnARetiredDocumentIsRefusedAsItsEditIs
+  - TestACommentsMarkOnARetiredDocumentOfAnIssueRoomIsRefusedAndTheSpecsLands
   - TestACommentsMentionFrameNamesItsOwnersProject  # 2.8 s
   - TestACommitThatFailsAfterTheMarkLeavesNoMark  # 0.3 s
   - TestAConditionalReadAfterADeleteAnswersWithoutTheDeletedText  # 2.3 s
   - TestAContentFreeCreateTakesNoDocumentRole  # 1.1 s
+  - TestAConversionMapNamingACheckOfTheDocumentItRetiresWritesNothing
+  - TestAConvertedDocumentsAskIsItsOwnAndItsAnswerOwesNoCopy
   - TestACopiedBlockAnsweredThroughItsSourceCarriesOnTheSourceOnly  # 1.6 s
   - TestACopiedBlockPlantedSinceHisApprovalDoesNotCarry  # 2.0 s
   - TestACreateNamingNobodyTakesTheDefault  # 1.4 s
+  - TestACriterionWrittenThroughEditsOnTheTreeArtifactReadsBackInTheTreeRead
   - TestADaemonsWriteRecordsNoScopeAnActCannotCarry  # 0.5 s
+  - TestADecisionAPersonDecidedWaitsForNoReviewAndAnAgentsDoes
   - TestADecisionAfterAListItemOpeningWithCodeMarksItsLinkOnceItsContentChanges  # 0.4 s
   - TestADecisionAfterAQuotedHeadingOfItsNameMarksItsLinkOnceItsContentChanges  # 0.4 s
   - TestADecisionAnsweredJustBeforeTheCloseTakesTheIssueLeavesItsCopyAnswered  # 4.0 s
   - TestADecisionBlockIsRefusedInABodyTheParserRefuses  # 2.9 s
+  - TestADecisionInASettlementOfSeveralWritersNamesTheOneWhoWroteIt
   - TestADecisionKeptBeforeARendererChangeStaysKept  # 0.7 s
   - TestADecisionKeptBeforeItMovedIntoAListItemWaitsBesideADecisionOfItsName  # 0.3 s
+  - TestADecisionLinkAnswersTheStateItsTargetHolds
   - TestADecisionResolvedJustBeforeTheCloseTakesTheIssueLeavesItsCopyResolved  # 1.6 s
+  - TestADecisionThatSettlesAnAskStandsUnderThatAsk
+  - TestADecisionsDocumentIsRefusedByNameAndOneThatStandsTakesItsNextVersion
   - TestADecisionsViewParsesEachStoredVersionOnce  # 0.4 s
   - TestADefaultRepositoryUnderARenamedNameIsStoredUnderItsNewName  # 0.3 s
   - TestADeleteFindsAnAcceptedVersionNoLinkNamesByTheAcceptsTime  # 0.9 s
   - TestADeleteSettlesAHeldCopyOfTheCommentWithNothingPublished  # 1.0 s
+  - TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite
   - TestADeletedAcceptedSuggestionLeavesNoPartOfItsBodyInTheDocumentRead  # 1.3 s
   - TestADeletedBlockLeavesEveryListAndReturnsWithItsID  # 1.6 s
   - TestADeletedPostLeavesTheGraphAndTheReferencedByRead  # 1.5 s
   - TestADeletesSettleHoldsEachPendingAttemptToWhatItsReadFound  # 1.1 s
   - TestADeliveredOnlyConversationIsListedAndCountsNothingUnread  # 0.5 s
   - TestADeliveryCallbackReplyAnswersTheCommentItWasHanded  # 0.8 s
+  - TestADeliveryReplysQuoteRefusalComesWhereItsBlockRefusalComes
   - TestADeliveryResolutionMovesTheCommentListsValidator  # 0.7 s
+  - TestADeployKeepsTheCredentialProvedSession
   - TestADeployOfANewDisplayParserVersionChangesTheIssueReferencesETag  # 0.4 s
+  - TestADeployRouteRefusesBadFieldsBeforeWriting
+  - TestADeployedCommitBeforeTheMergeCannotDecideALiveCheck
   - TestADirectMessagePrefixKeepsTheConversationGuard  # 0.2 s
   - TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply  # 2.6 s
   - TestADocumentHoldingABlockIDPastTheBoundTakesUnrelatedWrites  # 1.2 s
+  - TestADocumentMadeAgainAfterItsRemovalIsANodeAgain
   - TestADocumentMadeWhereAnOrphanedNodeStandsStatesItGoneThenLive  # 2.4 s
   - TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires  # 2.7 s
   - TestADocumentUnderTheBlockBoundIsIndexedByItsOwnWrite  # 4.6 s
@@ -1018,16 +1192,23 @@
   - TestAFailedWritePhaseLeavesNothing  # 6.6 s
   - TestAFailureAfterACommittedWriteIsAnsweredCommitted  # 0.2 s
   - TestAFailuresWindowCountsFromWhenTheFailureIsKnown  # 1.1 s
+  - TestAFencePassesOverADrainsDecisionsQueryVersionAndReadsADocumentVersion
+  - TestAFileNamedLikeARoleDocumentPlaysNoRole
+  - TestAFindingNamedAsAReferenceTargetAnswersItsTextTree
+  - TestAFindingOrARiskWrittenWhileItsLensIsTakenGoneIsRefused
   - TestAForgedServerAttributeOnADecidedBlockCarriesNothing  # 13.8 s
   - TestAFrameLargerThanOneNotificationReachesAViewerOnTheOtherProcessWhole  # 0.2 s
   - TestAGoingRequestRecordsItsWindowAndReadsBack  # 0.3 s
   - TestAGoingRunTakesNoFrameOnceItHasEnded  # 0.2 s
-  - TestAGoingTerminalWriteForAMissingRunLeavesItsBatchStanding  # 0.3 s
+  - TestAGoingTerminalWriteForAMissingRunFailsNoSweep
+  - TestAGraphCheckReadsTheCurrentDeployAsProductionDoes
   - TestAHandoffReadCarriesTheTreeOfEachTextItsCardDraws  # 3.5 s
+  - TestAHeadingKeepThatWaitsBehindTheStepsRetirementIsNotFound
   - TestAHistoryThatCannotLoadReadsAsDocumentUnloadable  # 0.7 s
   - TestAHubWithNoViewReadsNothingAndHoldsNoListener  # 4.2 s
   - TestAJobBrokerTokenWritesAsItsSessionForItsService  # 0.3 s
   - TestAJobTokenWritesOnlyAsItsOwnSession  # 0.8 s
+  - TestAKeepReachesADecisionOfAnIssueRoom
   - TestAKeptAnswerHoldingNoTextOfADeletedPostIsReplayedAsKept  # 1.2 s
   - TestAKeyPastItsWindowIsUnusedAgain  # 0.2 s
   - TestAKeyReusedForAnotherRequestIsRefused  # 0.9 s
@@ -1043,9 +1224,15 @@
   - TestALegionBoardOfAProjectWithNoDaemonIsRefusedOnce  # 0.6 s
   - TestALegionSettingIsRefusedToAProjectScopedToken  # 0.8 s
   - TestALegionViewNamesItsProjectAndNothingElse  # 0.1 s
+  - TestALensChainOfExactlyFiftyIsListedWhole
+  - TestALensMovedOntoADocumentRecordsThatDocumentsRow
+  - TestALensOnABlockRecordsTheRowItsAddressNames
+  - TestALensReadOnAKindNoLensStandsOnAnswersWhatANodeNobodyHoldsAnswers
+  - TestALensReadSkipsALensTheReaderMayNotSee
   - TestALinkedReadThatDidNotAnswerRefusesTheRecordForNow  # 4.7 s
   - TestALinkedResultsAnswerNamesItsRepository  # 2.3 s
   - TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce  # 1.0 s
+  - TestALiveCheckCountsOnlyTheDeployOfTheProgramItNames
   - TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat  # 13.0 s
   - TestALiveSubscriptionIsSentAnEventWhileTransactionsThatWriteNoEventAreOpen  # 0.8 s
   - TestALoneSuggestionSweepRunnerPassesOnEveryWake  # 0.6 s
@@ -1054,29 +1241,44 @@
   - TestAMalformedFrameIsAnErrorFrameNotAClose  # 0.2 s
   - TestAMarginRewordReachesTheAskInTheEditorsNameAfterTheReopen  # 1.6 s
   - TestAMarkMadeBeforeAReadTakesItsPositionIsThatReadsToAnswer  # 4.4 s
+  - TestAMeasuresViewIsMarkedByEveryDeployRunChange
   - TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails  # 3.2 s
   - TestAMentionInFlightAtAKillReachesItsSessionOnceAfterTheClaimLapses  # 0.8 s
   - TestAMentionPastTheQueueBoundIsSentOnceTheQueueDrains  # 0.8 s
   - TestAMentionStartsAtItsBlock  # 1.0 s
   - TestAMentionThePreviousBuildDeliveredIsDroppedAsARepeatAfterTheDeploy  # 1.8 s
+  - TestAMergeCommitDispatchHasNotStoredIsReadOnce
+  - TestAMergeThatCannotBeLearnedReadsNotKnown
+  - TestAMergeTimeThatCannotBeReadLeavesTheMergeNotKnown
+  - TestAMergedHeadStaysABasisWhileAPullRequestIsOpen
   - TestAMergedPullRequestReachesTheSubscriberAsOneDelta  # 0.8 s
   - TestAMessageAnAgentSentForItsPersonIsRecordedWithItsActAndRefusedByTheAccept  # 0.4 s
+  - TestAMessageEditMadeForARunNamesTheMessageChangedByIt
+  - TestAMessageReplyThatNamesABlockHangsUnderItsMessage
   - TestAMessageToARoleWhoseHolderIsGoneStillFails  # 1.6 s
+  - TestAMintGivesP0OnlyWhereItsMakerNamesIt
+  - TestAMoveThatKeepsItsParentKeepsTheParentAttribute
+  - TestAMoveWhoseSecondReadMeetsAnUnlockedIssueAtEachAttemptIsContended
   - TestAMovedSectionWhoseTextChangedIsNamedChangedNotMoved  # 1.1 s
   - TestAMultipartRetryUnderANewBoundaryIsARepeat  # 0.5 s
   - TestANamedBrokerTokenNamingTwoProjectsWritesNothing  # 0.9 s
+  - TestANamedVersionOfARetiredDocumentIsRefusedAndWritesNoVersion
   - TestANewArtifactNamePastTheBoundIsRefused  # 5.9 s
   - TestANewAsksQuestionReferenceResolvesAgainstItsIssuesSpec  # 1.1 s
   - TestANewIssueUnderARecycledKeyIsNeverAnsweredTheOldIssuesLists  # 1.1 s
+  - TestANoProjectCredentialNamingAnotherProjectsDaemonWritesNoRecord
   - TestAPRChecksRunMarksOnlyPipelineViews  # 1.1 s
   - TestAPagedListingFailsOnlyOnABadChainOfItsOwnRows  # 1.7 s
   - TestAPagedListingResolvesItsPageAlone  # 2.8 s
   - TestAPanickingHandlerReleasesItsKey  # 0.3 s
   - TestAParentChangeThatLeavesNoLabelledAncestorNeedsTheScope  # 6.3 s
   - TestAParentInAnotherProjectPassesOnNoAssignee  # 14.5 s
+  - TestAParentIsRefusedAtANodeThatIsNoConversation
+  - TestAParentStatusConflictListsOnlyThePublicChild
   - TestAParentsResultsStandAtItsHeadThoughAChildRecordedOnTheSameCheck  # 1.3 s
   - TestAParkedLanesTimerStartsOnceNoGoroutineServesIt  # 0.4 s
   - TestAPassKeepsItsChecksWordsAcrossAnotherRenderersSpelling  # 0.5 s
+  - TestAPatchForARunThatChangesNoFieldNamesNoChange
   - TestAPatchThatWaitedNeverMovesUpdatedAtBackward  # 1.1 s
   - TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn  # 2.1 s
   - TestAPersonPageDecidesAndListsInOneSnapshot  # 0.7 s
@@ -1088,35 +1290,51 @@
   - TestAPersonsTokenForcesAndReleasesAClaimAsThePersonDoes  # 0.8 s
   - TestAPinnedReferenceAnswers404ForAVersionItCannotRead  # 0.8 s
   - TestAPipelineViewMovesItsDaysAtMidnightWithoutReadingTheDatabase  # 0.7 s
+  - TestAPointerRetargetMovesTheKindAndKeepsThePlace
   - TestAPresetRecomputeWhereOnlyTheWindowMovedSendsNothing  # 0.8 s
+  - TestAPreventedByAppendedAtAChecksRoomAddressWhileItsDocumentIsRetiredIsNotLeftStanding
   - TestAPriorityDescriptionTreeSaysWhetherItIsExact  # 0.4 s
   - TestAProjectDocumentNamedPlanIsAPlainDocument  # 1.3 s
   - TestAProjectNameOverTheCapIsCapExceededForABearerAndAPerson  # 0.3 s
+  - TestAProjectScopedCallerNamesAParentOrABlockedByTargetOfAnotherProject
+  - TestAProjectScopedCallerRecordsAndRetractsOnAnotherProjectsCheck
   - TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned  # 0.9 s
   - TestAProjectScopedSearchAnswersWhenTheFillsProgressTableIsMissing  # 0.7 s
   - TestAProjectScopedTokenCreatesIssuesOnlyInItsOwnProject  # 1.5 s
+  - TestAProjectScopedTokenWritesAnotherProjectsObjects
   - TestAProjectScopedTokenWritesOnlyItsOwnProject  # 1.7 s
+  - TestAQueryVersionWithNoRecordedRevisionAnswersNotRecorded
+  - TestAQuestionWhoseAdviceSavepointCannotBeEndedAnswersThatFailure
   - TestAQueuedMessageAnsweredLaterLeavesTheCensusAtZero  # 0.8 s
   - TestAQuoteMatchesABrowsersNulAsEveryReadServesIt  # 1.3 s
   - TestAReadMarkRunsOnlyAsThePersonWhoPressedIt  # 0.7 s
   - TestAReadOfAnUnstoredTextBuildsItsTreeAndStoresIt  # 0.2 s
   - TestAReadOnlyPersonalTokenRecordsItsLastUse  # 0.2 s
   - TestAReadOnlyTransactionMarksNothing  # 0.3 s
+  - TestAReadingIsAChildNodeOfTheDecisionItReads
+  - TestAReasoningNodeNamesTheSessionItsBodyNamesAsItsWriter
   - TestARebuildFromMarkdownHoldingABlockIDPastTheBoundIsWritten  # 1.0 s
+  - TestARebuildOfARetiredDocumentIsRefusedAndWritesNothing
   - TestARecordPostgresRefusesIsAFailedReadAndTheBoardKeepsTheLastGoodRead  # 0.6 s
   - TestARecordReadsAtMostTheBoundOfLinkedPullRequests  # 1.5 s
+  - TestARecordedOrRetractedResultLeavesNoDocumentOwedItsBlockIndex
+  - TestARecordedResultIsANodeWithItsTuples
+  - TestAReferencePinnedBeforeTheConversionReadsTheBlockItsVersionHeld
   - TestARefreshWithNoChangeLeavesTheRowAsItWas  # 0.3 s
   - TestARefreshWithNoChangeReadsNoItem  # 0.5 s
   - TestARefusalBeforeTheKeyedLayerAnswersChanged  # 0.2 s
   - TestARefusalSendsBackNoNul  # 0.6 s
   - TestARefusalStatusAlsoAnswersThePlainErrorBody  # 2.9 s
+  - TestARefusedCallerIsNeitherReadOnlyNorApproveOnly
   - TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind  # 1.0 s
   - TestARelayDropWithinTheBoundsCatchesTheSubscriptionUp  # 0.6 s
   - TestARemovalLeavesTheGoneNodeOfAnEarlierBuildsDocumentGone  # 1.0 s
   - TestARemovalOfADocumentWithNoNodeDatesTheNodeAtItsCreation  # 2.2 s
+  - TestARemovedDocumentIsNoLongerANodeOfItsIssue
   - TestARemovedDocumentsRoomClosesOnEveryProcess  # 3.9 s
   - TestAReopenCarriesAnApprovalToTheApprovedTextAClosedSettlementWroteBack  # 1.4 s
   - TestAReopenKeepsTheRequestWithThePersonOverATextAnotherRendererVersionStored  # 0.4 s
+  - TestAReopenMovesNoApprovalRequestOntoTheClosedVersionOfARetiredDocument
   - TestAReopenWritesNoSecondReviewForAnApprovalAlreadyCarriedToTheLatestVersion  # 1.1 s
   - TestAReopenedApprovalRequestNamesTheVersionAClosedSettlementWrote  # 2.1 s
   - TestARepeatOfACommentDeliversItsOwedMentionOnce  # 0.7 s
@@ -1127,18 +1345,25 @@
   - TestAReplacedDeliveryViewsAnswerGoesOutBeforeItsReplacementsFrames  # 1.6 s
   - TestAReplyNamingAnAskAnswersNoComment  # 0.6 s
   - TestAReplyQueuedBehindAHandBackTakesTheTurn  # 1.2 s
+  - TestAReplyQuoteIsRefusedWhereTheBlockDoesNotHoldIt
   - TestAReplyThatWaitedForTheOwnerRowIsTheNewest  # 3.2 s
+  - TestAReplyToAReplyHangsUnderTheCommentItAnswers
   - TestAReplyToAnAskNamesThePartItAnswers  # 1.1 s
   - TestAReplyWhoseRoleHolderTheListenerDoesNotNameIsAskedAgain  # 0.9 s
   - TestAReplysDeleteEventCarriesNoTextOfThePostItAnswers  # 1.2 s
   - TestAReplysQuoteOfADeletedPostCarriesThePostsMark  # 1.0 s
   - TestARequestOnAnApprovedDocumentCarriesTheApproval  # 0.9 s
+  - TestARequirementPastedIntoAViewIsAGapOfItsOwnKind
   - TestAResetChangeLogIsCaughtAndEveryViewRecomputed  # 2.5 s
   - TestAResetEventLogIsCaughtAndEveryViewRecomputed  # 2.5 s
+  - TestARestoreOfTheApprovedTextOverAMovedRecordCarriesNothing
   - TestARestoredPlanVersionCarriesThePlanReviewsOwnKind  # 1.4 s
+  - TestAResultOnAPrivateProjectsCheckAnswersAsAMissingCheckToAnotherProjectsToken
   - TestAResultStandsAtItsCommitOnceAPullRequestOpensThere  # 0.9 s
+  - TestAResultStandsOnlyAtAHeadOfItsOwnRepository
   - TestAResultsDryRunAnswersTheLineAndRecordsNothing  # 0.8 s
   - TestAResumedMentionOfARoutedCommentReachesTheRouteHolderOnce  # 3.8 s
+  - TestARetiredDocumentsAddressResolvesToItsIssue
   - TestARetractedPassDoesNotStand  # 0.8 s
   - TestARetryCarriesTheUrgencyOfTheAttemptItResumesAndNoneOnANewAttempt  # 1.8 s
   - TestARetryInFlightThatIsSentSupersedesTheAttemptTheLaneStoodDownFrom  # 0.7 s
@@ -1150,22 +1375,30 @@
   - TestAReviewReasonHoldingADecisionBlockIsStored  # 2.2 s
   - TestAReviewThePreviousReleaseWritesDuringARolloutReadsAsTheNewest  # 2.5 s
   - TestARewordlessHandBackKeepsTheQuestionsRevision  # 1.9 s
+  - TestARisksPreventedByIsACheckOfAnyIssueOfItsProject
   - TestARollingUpdatesSuccessorSendsTheMentionTheOldProcessAcceptedWhileDraining  # 0.6 s
   - TestARootInBothCandidateBranchesIsListedOnce  # 1.2 s
   - TestARootsDirectReplyIsReferencedOnce  # 1.1 s
   - TestARouteStatusFilterAnswersAFailedRosterReadAsTheDatabases  # 0.8 s
+  - TestARunListsAndCountsNoDocumentItMadeOnceThatDocumentIsRemoved
   - TestASavedBlockPointerIsALinkNamedByItsAttribute  # 0.4 s
+  - TestAScopedIncludeChildrenStopsAtAPrivateChildThatIsNoStep
   - TestAScopedStatusChangeIsRefusedADescendantOfAnotherProject  # 0.3 s
+  - TestAScopedStatusChangeWritesADescendantOfAnotherProject
   - TestASearchReturnsEveryIndexedKindWithinSixtySeconds  # 1.1 s
   - TestASecondReadOfEachListIsAnsweredFromTheKeptBytes  # 1.0 s
   - TestASendAnsweredStoppedIsQueuedThoughTheRegistryReadFoundItLive  # 0.3 s
   - TestASendInFlightKeepsItsPlaceInTheQueue  # 0.0 s
   - TestASenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone  # 1.0 s
   - TestAServiceOnlyBrokerTokenWithNoProofIsRefused  # 0.9 s
+  - TestASessionDecidersNodeCarriesItsTitle
+  - TestASessionThatStampedNoTitleCarriesNoTitle
   - TestASessionTheListenerDoesNotKnowIsStillRefusedByTheSameText  # 1.1 s
   - TestASessionWriteDuringAViewsReadThatItsAnswerDoesNotShowRecomputesNothing  # 1.4 s
   - TestASessionsIssueCreateBesideTheDaemonsBootPublishOfGatedStepsIsCreated  # 1.5 s
   - TestASettledDeliveryStatesTheSessionNodeUnderItsReceipt  # 0.8 s
+  - TestASettlementsVersionAfterADeferredOneCarriesTheApproval
+  - TestAShapedTupleTiesADecisionToEachSpecNodeItShaped
   - TestASignInIssuerOutageAnswersTheAPIAndTheDocumentSocket503AndKeepsTheSession  # 0.7 s
   - TestASilentListenerStillLeavesTheSessionOneCopyOfTheComment  # 4.1 s
   - TestASinceAboveTheHeadStartsAtTheRelaysPublishedCursor  # 0.6 s
@@ -1182,12 +1415,16 @@
   - TestAStoredVersionCutsEachDecisionAsTheViewShowsIt  # 56.3 s
   - TestASubscriberGetsTheGETBodyAsItsSnapshot  # 0.5 s
   - TestASubscriptionsContextEndsWhenItsSocketEnds  # 0.5 s
+  - TestASuccessorsReplyIsHeldToThePrincipalTheListenerNamesIt
   - TestASupersededResultsCommitIsAskedOfGitHubOnceAndNotAgainWithinTheSpan  # 1.1 s
   - TestASweepTakesTheQueuedMentionsOfALaneWhoseClaimsLapsed  # 1.2 s
   - TestATargetedMessageToASessionNoStoreHoldsIsQueuedByDispatch  # 0.6 s
   - TestATargetedMessageWhoseSendFindsNoLiveSessionIsQueuedByDispatch  # 2.3 s
   - TestAThreadMarkWaitsForTheProjectLockHoldingNoTransactionID  # 0.6 s
-  - TestAVersionCommittedWhileTheFillRunsIsNotReplacedByTheOlderOneItRead  # 0.9 s
+  - TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote
+  - TestATreePageEndsAtItsBoundOfBytes
+  - TestATwoDocumentRequestClosesOnlyOnTheCarriesTheWritePhaseKeeps
+  - TestATypedBlocksOwnTextIsNoNodeOfTheTreeRead
   - TestAVersionIndexesItsBlocksAndTheMentionsInThem  # 1.1 s
   - TestAVersionMoveKeepsTheCarriedApproval  # 1.1 s
   - TestAVersionMoveKeepsTheLongestAcceptedSummaryWithinTheAskBound  # 1.3 s
@@ -1195,14 +1432,18 @@
   - TestAVersionOneCharacterFromTheApprovedTextLeavesTheApprovalStale  # 1.0 s
   - TestAVersionWhoseApprovedVersionHoldsNewerContentIsWrittenByABuildThatReadsIt  # 0.5 s
   - TestAVersionWriteNamesATargetWhoseBlockCountChanged  # 1.4 s
+  - TestAVersionWrittenForARunNamesTheBlocksItChanged
   - TestAVersionsBlocksIndexTheMarkdownItsAnswerCarries  # 0.9 s
   - TestAVersionsDisplayTreeIsStoredOnItsFirstRead  # 0.8 s
   - TestAWindowWiderThanTheMaximumIsAnErrorFrame  # 0.4 s
   - TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen  # 1.9 s
   - TestAWriteCannotMintOrMoveAnAskPartID  # 0.8 s
   - TestAWriteDetachedPastTheAnswerCommits  # 0.2 s
+  - TestAWriteNamingARunInAnotherUuidSpellingIsAdmittedAsTheCanonicalID
+  - TestAWriteNamingARunItMayNotWriteForStoresNothing
   - TestAWriteRepeatingAHeldBlockIDIsRefused  # 8.8 s
   - TestAWriteThatNamesAnotherSessionIsRefused  # 0.8 s
+  - TestAWriteToARetiredDocumentIsRefused
   - TestAWriteWithoutAKeyRunsEachTime  # 0.2 s
   - TestAcceptDuringTheSendLeavesTheSettleItsReceipt  # 0.6 s
   - TestAcceptRecordsAPersonsFreshAttemptAsTheSessionsTurnOnce  # 1.1 s
@@ -1230,31 +1471,44 @@
   - TestAgentsTmuxPlaceIsAnsweredMemberForMember  # 0.3 s
   - TestAnAbandonedMentionIsDeliveredOnceByTheOutboxOrTheSweepNotBoth  # 1.5 s
   - TestAnAcceptRewritingATypedBlockUnderItsOwnIDIsTaken  # 3.4 s
+  - TestAnAcceptanceListsOnlyThePublicChild
   - TestAnActsSessionIsProvenOnlyWhereTheCredentialProvedIt  # 1.7 s
+  - TestAnAfterMergeResultCountsOnlyAtACommitThatHoldsTheMerge
+  - TestAnAgentEditBesideAnAnswerSupersedesTheApprovalAndItsVersionHoldsNoAnswer
   - TestAnAgentsConversationOwnsTheFilesUploadedToIt  # 0.9 s
   - TestAnAgentsConversationRefusesADocumentAndAnInvalidSessionID  # 1.0 s
   - TestAnAmbiguousPrefixListsEachFirstLineTreeOnlyUnderTheHeader  # 0.9 s
   - TestAnAnchorRefreshAfterTheDeleteStoresTheDeleteMark  # 1.4 s
   - TestAnAnchoredReadDecidesCancellationByItsOwnRequest  # 0.9 s
   - TestAnAnchoredReadNamesADocumentErrorAsTheBlockRouteDoes  # 1.2 s
+  - TestAnAnswerAResolveAndADeclineLeaveAnApprovalRequestWithThePerson
   - TestAnAnswerBesideABlockAnotherHumanAnsweredSinceHisApprovalDoesNotCarry  # 1.7 s
   - TestAnAnswerTakesItsTimeFromTheDatabase  # 1.6 s
   - TestAnAnswerThatIsTheWholeChangeSinceHisApprovalCarriesIt  # 1.4 s
+  - TestAnAnswerToAnAskWhoseRowNamesARetiredDecisionsDocumentIsTakenAndWritesItNoVersion
   - TestAnAnswerUnderTheThresholdIsNotCompressed  # 0.2 s
+  - TestAnAnswerWritesOneVersionOfItsStateAndTheApprovalIsCarriedAcrossIt
+  - TestAnAnsweredAskWhoseBlockIdABlockOfAnotherTypeTookNamesNoDocument
+  - TestAnAnsweredAskWhoseBlockLeftItsDocumentNamesNoDocument
   - TestAnAnsweredAsksPartEdgesAreListedSince  # 1.0 s
+  - TestAnAnsweredAsksVersionMovesWithItsOwnWordsAloneAndNotWithTheServersAttributes
   - TestAnAnswersShortIDResolvesAmongTheNodesTheAnswererMaySee  # 1.2 s
   - TestAnAnswersTTLCountsFromWhenItsCallWasSent  # 2.7 s
   - TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved  # 1.9 s
   - TestAnApprovalRequestLeavesItsAskToTheWindowArm  # 1.3 s
+  - TestAnApproveOnlyTokenApprovesAsItsPersonAndNothingElse
   - TestAnApprovedVersionShowingADecidedBlockUnderOtherWordingCarriesNothing  # 1.9 s
+  - TestAnArtifactNodeHangsUnderItsIssueWithItsBytesAsValues
   - TestAnArtifactPayloadCarriesNoApprovalTreeThoughItsReadDoes  # 0.8 s
   - TestAnArtifactStoredPastTheNameBoundTakesVersionsAndEdits  # 0.9 s
   - TestAnAskBlockWithNoRowIsResolvedWhileClosedAndOpensAtTheReopen  # 1.3 s
   - TestAnAskReplyDuringAListenerTakeOverReachesTheFollowerOnce  # 1.0 s
+  - TestAnAskStateWriteSkipsADocumentRetiredAfterItsListWasRead
   - TestAnAsksReadCarriesThePartIDsOfItsOptionsAndAnswer  # 0.9 s
   - TestAnAsksTextIsWeighedBeforeItIsRendered  # 0.6 s
   - TestAnAsksWordingIsBoundedWhereverItIsWritten  # 0.8 s
   - TestAnEarlyHandoffAnswerDrainsUpToTheHandoffWritesLimit  # 1.1 s
+  - TestAnEditNamingAnotherParentPlacesAStoredCheckThere
   - TestAnEditOfAnOlderVersionLeavesDocumentSearchAsItWas  # 1.3 s
   - TestAnEditReportsThatTheLiveDocumentKeptIt  # 1.4 s
   - TestAnEditedCommentChangesTheCommentListsETag  # 0.7 s
@@ -1262,11 +1516,17 @@
   - TestAnEventsSubscriptionOnARelayStillOnAReplacedLogWaitsForItsReset  # 7.3 s
   - TestAnEventsViewNamesOnlyItsKindAndItsSinceIsAnEventID  # 0.7 s
   - TestAnExternalReferenceResolvesUnderEitherNameOfARenamePair  # 0.7 s
+  - TestAnIndexThatClearsAnOwedDocumentAppendsOneQuietIndexedEvent
   - TestAnIndexedExcerptIsTheBlockTheRouteServedForEachBlockKind  # 1.4 s
+  - TestAnInsertIntoAChildsNodeThroughTheParentIsRefused
+  - TestAnIntegrationBranchReachesTheDefaultBranchThroughItsLanding
   - TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass  # 1.6 s
   - TestAnIssueCreateStoresItsNodeBeforeItsRow  # 1.2 s
+  - TestAnIssueIsBornConvertedOnlyWhileEveryLiveProcessListsTheIssueRoom
+  - TestAnIssueRoomVersionsOnlyFragmentsThatReadBack
   - TestAnIssueTitleChangeReachesPagesThatNameTheIssue  # 1.5 s
   - TestAnIssueTitlePastTheSearchVectorLimitIsRefused  # 1.1 s
+  - TestAnIssueWithARetiredDocumentClosesAndReopensWithItsOpenAsk
   - TestAnIssueWithThreeRetrosHasThreeRatings  # 1.0 s
   - TestAnIssueWriteKeepsAnUpdatedAtAheadOfItsClock  # 0.8 s
   - TestAnIssuesLegionLiveView  # 15.6 s
@@ -1274,13 +1534,16 @@
   - TestAnIssuesLegionLiveViewOfAKeyDispatchDoesNotHoldIsRefusedAsTheRouteRefusesIt  # 1.5 s
   - TestAnOffsetNearTheLargestIntIsNoFaultOfTheRepliesRoute  # 0.4 s
   - TestAnOlderVersionCommittedLastLeavesTheHigherNumber  # 1.1 s
+  - TestAnOwedDocumentIsNamedByTheReads
   - TestAnUnansweredMentionOfAnotherStringForTheRouteIsLeftToThatMention  # 0.9 s
   - TestAnUnansweredSessionMentionOfTheRootAuthorSuppressesTheAuthorCopy  # 1.2 s
   - TestAnUnauthenticatedUpgradeIsRefused  # 0.2 s
   - TestAnUnchangedApprovalRenewalThatAddsAFollowerRecordsIt  # 0.8 s
   - TestAnUnchangedBodyDiffsToNothing  # 0.0 s
   - TestAnUnchangedHolderKeepsItsTime  # 0.7 s
+  - TestAnUnfilledCarriedReviewTakesItsSourceFromItsReason
   - TestAnUnknownProjectAndABadStateURLAreRefused  # 0.3 s
+  - TestAnUnnamedLiveCheckReadsTheOnlyProgram
   - TestAnUnresolvedBearerKeepsTheAnswerItHadBeforeTheGate  # 0.6 s
   - TestAnUnstartedChildIsCountedOnTheNearestCardAndNeverLosesItsOwn  # 0.2 s
   - TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused  # 3.3 s
@@ -1294,6 +1557,7 @@
   - TestAnUploadTheStoreRefusesLeavesNoVersionBehind  # 0.7 s
   - TestAnchorInputRequiresQuoteXorMarkID  # 2.4 s
   - TestAnotherAgentCannotTakeOrReleaseAnUnresponsiveHoldersIssue  # 1.1 s
+  - TestAnotherProjectsDaemonPublishesRoleHoldersOfAProvenSessionsProject
   - TestAnswerAskChangeStillRequiresTheReviewedQuestionRevision  # 0.8 s
   - TestAnswerAskRejectsAQuestionEditedAfterTheHumanReadIt  # 0.7 s
   - TestAnsweredEventStoredWithNullSelectedServesEmptyLists  # 0.8 s
@@ -1337,6 +1601,7 @@
   - TestBlockRemovedFromTheDocumentRetractsAsTheSystemActorAndUndoRestores  # 2.0 s
   - TestBlockTextContentReadsTheItemCorporaAsTheItemDoes  # 16.0 s
   - TestBlockedByCrossesAProjectAndStillRefusesACycle  # 9.6 s
+  - TestBothRoleReadersGiveAFileNamedLikeARoleDocumentNoRole
   - TestBroadcastAnswersBeforeDeliveringAndStillReachesEveryRecipient  # 0.5 s
   - TestBroadcastReadsLegacyUnpositionedRecipientsByCreatedAtAndID  # 0.2 s
   - TestBroadcastRoutesRefuseACredentialWithoutThePersonScope  # 0.4 s
@@ -1347,6 +1612,7 @@
   - TestCIReconcilePassesShowsAKilledPassAsEndedWithoutCompleting  # 0.1 s
   - TestCallbackReplyUnderAnAskJoinsTheAskThread  # 1.1 s
   - TestCallerTextThatIsNotUTF8IsRefused  # 3.9 s
+  - TestChangingBlockAskReplacesTheAnswerItsTextAnswers
   - TestChildCreateWithoutBlockersDoesNotWaitOnParentRow  # 1.0 s
   - TestChildsResultAgainstAnAncestorsCheckStandsAtNoBasisAtTheChildsHead  # 1.1 s
   - TestClaimAnswersWhoOwnsTheIssuesStatus  # 2.0 s
@@ -1385,6 +1651,7 @@
   - TestContractAServicesTokenLoginIsListedAndRevokedByAnyoneThroughDispatch  # 1.6 s
   - TestContractAnyoneApprovalCannotReleaseAPersonsWithheldSecret  # 1.9 s
   - TestContractPendingListShowsCreatedRecordThroughDispatch  # 3.3 s
+  - TestConvertPremortemWritesTheLensItsRisksAndTheirChecksOnce
   - TestCoverageFlagsAMissingPlanTaskOnlyOnceTheIssueHasAPlan  # 1.1 s
   - TestCoverageSaysWhenTheSpecMarksNoRequirements  # 0.5 s
   - TestCreateExternalIssueIsIdempotentDuringConcurrentCreation  # 0.7 s
@@ -1415,6 +1682,7 @@
   - TestDashboardBuildsNamesTheEntryChunksOfTheLiveProcesses  # 1.6 s
   - TestDecisionBlockCheckAnswersTheEditsNewBlock  # 1.7 s
   - TestDecisionBlockChecksPastFiveAreNotMade  # 2.6 s
+  - TestDecisionNodeCarriesItsTuplesAndItsCertainty
   - TestDecisionsDocumentTakesItsRoleFromItsName  # 1.4 s
   - TestDeleteCommentIsAuthorOnlyAndFinal  # 0.8 s
   - TestDeleteMessageFailsEachPendingSend  # 0.6 s
@@ -1455,6 +1723,8 @@
   - TestDocumentUploadAdviceNamesTheApprovalItSuperseded  # 1.0 s
   - TestDocumentWritePathsNameChangedTargets  # 1.6 s
   - TestDoneCantQuestionAnswersLikeAnyQuestion  # 0.7 s
+  - TestEachAPIWriteSetsTheOwnSpecMark
+  - TestEachOpenHeadHoldsTheStateOfItsOwnResults
   - TestEachProjectsLegionBoardIsItsOwn  # 0.5 s
   - TestEditArtifactCreatesNamedVersion  # 1.0 s
   - TestEditArtifactRollbackNeverReachesTheRoom  # 1.6 s
@@ -1476,8 +1746,10 @@
   - TestEveryApiStoreWriterTakesTheStoreLockOrder  # 9.5 s
   - TestEveryApprovalReadNamesTheApprovedBytes  # 1.1 s
   - TestEveryCorrectionRouteRefusesAPathIDThatIsNoID  # 0.2 s
+  - TestEveryDeclaredPlanAttributeSurvivesTheConversionAndThePlanView
   - TestEveryDocumentWriteRefusesACICheckThatBreaksARule  # 2.1 s
   - TestEveryEventOfADeletedCommentGivesNoBodyAndKeepsTheReplysFrozenPreview  # 1.4 s
+  - TestEveryGETRouteStatesOneReadClass
   - TestEveryGETThatWritesMakesItsWrite  # 10.2 s
   - TestEveryGoingActionAcceptsItsExampleAndRefusesAMissingArgument  # 0.0 s
   - TestEveryKeyedAnswerNamesItsKey  # 0.3 s
@@ -1486,12 +1758,17 @@
   - TestEveryObjectNodeWriterTakesTheStoreLockOrder  # 7.9 s
   - TestEveryPathThatOpensAnAttemptRecordsWhoAskedForIt  # 1.8 s
   - TestEveryPostAndPatchRouteTakesAKey  # 0.5 s
+  - TestEveryPostCorrectionKeepsTheIssuesHeadRows
+  - TestEveryProjectAddressHasAnAddressedWrite
   - TestEveryQueryKeyAHandlerReadsIsNamedByItsParameters  # 2.2 s
   - TestEveryReadOfAnAnswerCarriesTheTreeOfEachLabelItChose  # 4.8 s
   - TestEveryReadOfAnAsksThreadSaysADeletedReplyIsDeletedAndGivesNoneOfIt  # 1.1 s
   - TestEveryRefusalTheRoundTripsDeclareHasATextRefusalRow  # 0.0 s
   - TestEveryResultOfAnIssueAtAPullRequestsHeadStandsAtIt  # 1.2 s
+  - TestEveryRouteThatNamesABlockToReplyToTakesItsQuote
+  - TestEveryRowTheApproveListDoesNotNameRefusesAnApproveOnlyTokenBeforeItsHandler
   - TestEverySearchTriggerHandsTheParserOnlyNormalisedText  # 0.2 s
+  - TestEveryTreeReadCarriesTheCommentsOnItsNodesText
   - TestEveryVersionWriteLeavesItsDocumentIndexed  # 1.3 s
   - TestEveryWriteOfAStoredTextStoresItsDisplayTree  # 1.2 s
   - TestEveryWriteRouteChecksWhoPressedIt  # 0.5 s
@@ -1502,6 +1779,8 @@
   - TestExternalIssueCreationReusesPullRequestLink  # 0.7 s
   - TestFileReplacementWithNoTokenIsTakenCountedAndLogged  # 0.2 s
   - TestFileUploadNamingABlocksBaseIsRefused  # 0.8 s
+  - TestFiledFromTakesAPublicItemOfTheIssuesProjectAlone
+  - TestFindNodeUnderIssueDecodesTheStoreAddress
   - TestFirstFileUploadNamingABaseIsRefused  # 7.2 s
   - TestGetCommentReturnsNotFound  # 0.1 s
   - TestGetDeliveryPipelineWithoutSettingsIs404  # 0.2 s
@@ -1552,6 +1831,7 @@
   - TestIssueExternalLinksRequireAbsoluteHTTPURLs  # 0.7 s
   - TestIssuePatchExternalLinkTakenByAnotherIssue  # 0.8 s
   - TestIssuePatchParentSetClearAndEvents  # 1.0 s
+  - TestIssueQueryMarksDrainAfterCommit
   - TestIssueRanksStayOrderedPastLowercaseDigitsAndProductionShapedMoves  # 5.7 s
   - TestIssueReferencesAtRealSize  # 16.6 s
   - TestIssueReferencesVersionsAllIsTheFullAnswerAndOtherValuesAreRefused  # 0.8 s
@@ -1562,6 +1842,7 @@
   - TestKnownSessionsLongestIDIsTheLongestAReferenceNames  # 0.0 s
   - TestKnownSessionsReadsTheWholeBatchInOneStatement  # 0.4 s
   - TestKnownSessionsRefusesAQueryOutsideItsRule  # 0.3 s
+  - TestLensKindCatalogueIsSeededWithItsSources
   - TestListIssueAsksFiltersByState  # 1.4 s
   - TestListIssueAsksOpenQueryUsesAsksOpenIndex  # 0.3 s
   - TestListIssuesCarriesCreatorAndCreationTime  # 0.8 s
@@ -1608,9 +1889,12 @@
   - TestNearCopyChecksAWriteThatFindsItsOwnRowHasLanded  # 0.4 s
   - TestNearCopyChecksPagesAndRefusesBadQueries  # 1.7 s
   - TestNearCopyChecksRecordTheStepAReadWaitedAt  # 0.6 s
+  - TestNeedsCrossesAProjectAndRefusesAProjectScopedCaller
   - TestNoEventOutrunsItsNode  # 2.6 s
   - TestNoListingRequestReadsMoreOnTheGenericPlan  # 8.1 s
+  - TestNodePlacementRoutesMatchTheGeneratedContract
   - TestNotConfiguredIsAnErrorFrameThenASnapshotOnceConfigured  # 1.1 s
+  - TestOnOneBuildACloseAndAReopenEachWriteOneVersionAndOnlyTheReopensCarries
   - TestOnlyAnAcceptEncodingThatTakesGzipIsAnsweredWithIt  # 0.8 s
   - TestOpenAPIDocumentDeclaresEverySchemaItReferences  # 2.8 s
   - TestOpenAPIDocumentIsTheSameBytesEveryRun  # 5.5 s
@@ -1622,6 +1906,7 @@
   - TestPatchIssueReassignsClearsAndLeavesAssigneeAlone  # 0.8 s
   - TestPendingMentionRetryKeepsItsOriginalDeliveryMode  # 0.9 s
   - TestPingsKeepAnIdleSocketOpen  # 0.6 s
+  - TestPlacementAndCoverageAreTwoRelations
   - TestPlanReviewTakesAPlanRowThatCarriesNoRole  # 0.7 s
   - TestPostHistoryAnswersAPageOfThePageLimitAndTheRowsBeforeItAfter  # 0.6 s
   - TestPostHistoryOfAPostNobodyEditedIsEmptyAndNotAnError  # 0.8 s
@@ -1644,6 +1929,7 @@
   - TestRebuildArtifactVersionsSuppliedMarkdownButNotTheLatestVersionSource  # 1.9 s
   - TestReconnectingBrowserCannotBringBackAHeldEdit  # 0.9 s
   - TestReferenceTargetsMarkAnEditedPostAndGiveNoWordOfADeletedOne  # 0.8 s
+  - TestReferenceTargetsReadAConvertedSpecsBlockThroughItsRoom
   - TestReferencesAndSessionMessageNotify  # 1.2 s
   - TestReferencesExcerptsCarryTheirTreesOnlyUnderTheHeader  # 1.2 s
   - TestReferencesFromADocumentNameTheBlockHoldingEachLink  # 0.9 s
@@ -1677,6 +1963,7 @@
   - TestRelatedTermsProbeAProjectWithNoStatisticsAndStartItsRefresh  # 0.6 s
   - TestRelatedTermsQueryCastsAndMatchesTheItemsHoldingTheChosenWords  # 0.8 s
   - TestRelatedTermsSayATextHoldsNoLexeme  # 0.3 s
+  - TestRepairSweepsAClosedConvertedIssueWhoseRoomOwesASettlement
   - TestRepairWithdrawsTheOpenAsksOfAnIssueClosedWithoutWithdrawing  # 2.3 s
   - TestReparentDoesNotDeadlockWithABoardMoveOfTheSameIssue  # 1.5 s
   - TestReparentIgnoresUnrelatedGrandchildRowActivity  # 1.3 s
@@ -1690,6 +1977,7 @@
   - TestResolveRecordsWhoAndWhen  # 1.2 s
   - TestResultAgainstACICheckHoldingAResultIsRecorded  # 1.0 s
   - TestResultAtACommitTheRepositoryHoldsIsStored  # 1.0 s
+  - TestResultRefusesABeforeMergePassWithNoNegativeControl
   - TestResultRetractionIsTakenOnAClosedIssueAndForAnAfterMergeCheck  # 1.0 s
   - TestRetryInAnotherModeSupersedesTheStrandedAttempt  # 1.6 s
   - TestRouteReachNamesAnUnresponsiveHolderRatherThanDroppingIt  # 0.0 s
@@ -1741,6 +2029,8 @@
   - TestSessionAnswersMaxCharsStopsAfterTheCrossingItem  # 0.8 s
   - TestSetBlockAttributesRefusesABlockPointerInTheLiveRoom  # 0.4 s
   - TestSettlementsBehindAnAnchoredWriteDoNotWedgeThePool  # 1.2 s
+  - TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor
+  - TestSettlingAnIssuesDocumentsSettlesARetiredOneWithNoErrorAndNoVersion
   - TestSignInRoutesNameTheCallerNeverTheBrowser  # 0.3 s
   - TestSpecWriteAGatedStepsEventCarriesTheStoredSetting  # 0.1 s
   - TestSpecWriteChangesNothingAfterTheLabelGoes  # 0.7 s
@@ -1767,8 +2057,9 @@
   - TestTargetedMessageResolvesRolesAndEnforcesReplyBoundaries  # 1.4 s
   - TestTargetedReadsReadAUrnUuidIDAsTheCanonicalID  # 0.8 s
   - TestTheAnswersReadIsTimedAsTheAccessLogTimesIt  # 0.1 s
+  - TestTheApprovedTextOverABlockDecidedSinceCarriesTheApproval
+  - TestTheAuthorDeletesACommentHoldingAPendingSuggestionOnARetiredDocument
   - TestTheBackfillLeavesEveryIndexedKindComplete  # 1.1 s
-  - TestTheBackfillLeavesSearchAnsweringWhatMainsStatementDoes  # 1.8 s
   - TestTheBackgroundWaitHoldsForAnOpenLiveSocket  # 0.4 s
   - TestTheBackgroundWaitWaitsForARunningKeyedHandler  # 0.7 s
   - TestTheBackgroundWaitWaitsForWorkStartedWhileItWaits  # 0.1 s
@@ -1776,18 +2067,27 @@
   - TestTheBoardClimbsThroughAnIssueWithOnlyPhaseWork  # 0.6 s
   - TestTheCallersOwnReplyLeavesBothHalvesDismissed  # 2.5 s
   - TestTheCarrysAnswerAndTheRequestsMoveTakeARevisionEach  # 1.4 s
+  - TestTheCensusHoldsAnAgentWhoseOnlyActsAreADecisionAndAReading
   - TestTheChangeSetAnswersAMissingVersionNotFound  # 0.8 s
   - TestTheChangeSetEitherNamesWhatChangedOrReportsNoChange  # 3.5 s
   - TestTheChangeSetNamesAReorderBesideAnAddedSection  # 0.8 s
   - TestTheChangeSetNamesAnAddedAndARemovedRequirement  # 0.8 s
   - TestTheChangeSetNamesEachRunOutsideTheSectionsWhereItStands  # 2.6 s
+  - TestTheChangeSetReadsEachVersionAsTheOneRendererAnswersIt
+  - TestTheChangeSetRefusesAnUnreadableVersion
   - TestTheClaimHoldersLivenessReadNeverAsksForStoppedSessions  # 0.2 s
   - TestTheClientBeforeTheResultsContractPrintsCurrentAndOlder  # 1.0 s
   - TestTheCommittedDocumentOffersTheFiveMembersOnTheResultsRouteAlone  # 0.1 s
+  - TestTheCoverageAndResultsReadsAnswerFromTheTuples
+  - TestTheCoverageReadClosesARequirementUnderAnOvertakenNodeOfAnyKind
   - TestTheCrossProjectQuestionStatementReadsTheHNSWIndex  # 1.0 s
+  - TestTheDecisionsQueryOwesNoReindexQueueOnCreateOrConversion
+  - TestTheDecisionsReadListsADecisionAnAskAndAReadingAtEveryStateButGone
   - TestTheDeclinedAskReminderStaysBoundedWhateverThePeopleWrote  # 1.8 s
+  - TestTheDeleteNamesAContainerItWouldEmptyInItsOwnWords
   - TestTheDeliverySweepFinishesEveryDeliveringRouteOnce  # 6.3 s
   - TestTheDeliverySweepLeavesWhatIsNotOwed  # 0.3 s
+  - TestTheDeployRoutesRecordAndReadEachProgram
   - TestTheDeploymentsRelatedCheckAllowanceIsTheDocumentedBound  # 0.0 s
   - TestTheDisconnectHookSendsTheEventFeedThroughItsResume  # 0.7 s
   - TestTheDownloadAddressAnswersADocumentAsItsMarkdownFile  # 3.6 s
@@ -1804,8 +2104,15 @@
   - TestTheFixIsNotRefusedWithBothSettingsOn  # 0.5 s
   - TestTheFixRunsBeforeAnyOtherWriteAndOnlyWithItsSetting  # 0.6 s
   - TestTheFixUnlinksEachOpenIssueFromItsDoneParentOnly  # 0.4 s
+  - TestTheGatedStepsWriteTakesTheDecisionsStepAndStoresTheListWithoutIt
   - TestTheGoingCatalogueIsMountedOnTheServedTable  # 0.2 s
+  - TestTheGraphNodeKindEnumIsTheRegistrysKinds
   - TestTheGraphNodeOfADeletedPostSaysItIsDeleted  # 0.8 s
+  - TestTheGraphReadOfAWithdrawnRunAnswersWhatItsStreamAnswers
+  - TestTheIssueOfAConversationItemAnswersAReadThatFails
+  - TestTheIssueReferencesReadRunsWithJITOff
+  - TestTheKeptReadsAnswerFromTheStore
+  - TestTheKeyLayerNeverRunsTheHandlerOfARefusedRun
   - TestTheKeywordTableHoldsEachVersionOfEachItem  # 9.2 s
   - TestTheLegionBoardOfAProjectWithNoDaemonIsRefused  # 0.9 s
   - TestTheLegionBoardPutsEachIssueInOneColumn  # 0.4 s
@@ -1819,33 +2126,58 @@
   - TestTheMaintenanceLoopResumesOwedDeliveries  # 0.5 s
   - TestTheMaintenancePassEndsAGoingRunNobodyReads  # 0.6 s
   - TestTheMetricsClimbThroughPhaseWorkOutsideTheirWindow  # 0.5 s
+  - TestTheMetricsClimbThroughPhaseWorkWhereNothingClosed
+  - TestTheMoveChecksItsWriterUnderTheOwnerLocks
+  - TestTheMoveReadsItsFirstRulesInR7sOrder
   - TestTheNewIssueSettingsReadAnswersWhatTheDeploymentConfigured  # 0.5 s
   - TestTheNewerContentHookWritesAnElementThisBuildDoesNotKnow  # 2.0 s
+  - TestTheNextFrameReadsTwoIndexProbes
+  - TestTheOldDecisionsMembersAnswerFromTheStore
+  - TestTheOpenQuestionsOfASpecThatOwesItsIndexHoldItsNewAsk
   - TestTheOptionsRideARouteOfTheirOwn  # 0.5 s
+  - TestTheOrphanSweepTakesEveryLensOnItsDocumentGone
   - TestTheOwningArchitectsProvenSessionWritesAnIssueUnderIt  # 2.6 s
   - TestTheParallelFillAnswersTheTreeOfEveryRowInOrder  # 0.1 s
+  - TestThePremortemRouteRefusesAnEntryNamingItsPosition
   - TestTheQuestionMapRouteAnswersEverySourceKind  # 1.2 s
   - TestTheQueuedAttemptIsSentWhenNoRetryOvertakesIt  # 0.9 s
   - TestTheRateRefusalCarriesTheWaitInItsHeader  # 0.2 s
   - TestTheReadListsTasksInTheOrderOfTheirFirstStep  # 0.6 s
   - TestTheReadOfAProjectNamesEachIssuesVariant  # 1.4 s
+  - TestTheReasoningRoutesRefuseAndStoreNothing
+  - TestTheRecordCarryCarriesOnlyWhereTheDigestHolds
+  - TestTheRecordOfOneNodeIsItsLayoutByteForByte
   - TestTheReferenceTargetsETagAnswers304UntilAMemberChanges  # 1.0 s
   - TestTheReferenceTargetsETagCoversABlocksWholeText  # 1.0 s
+  - TestTheReferencesListReadRunsWithJITOff
   - TestTheRelaysFirstStartDoesNotReadTheWholeEventLog  # 6.9 s
   - TestTheRelaysFirstStartReadsAboveThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen  # 5.2 s
   - TestTheRepairSweepLeavesTheCopyOfAnAnsweredDecisionAnswered  # 1.6 s
   - TestTheReviewSequenceTriggerTakesNoEventOfATransactionStartedAtTheSameMoment  # 0.7 s
   - TestTheReviewSequenceTriggerTouchesOnlyItsOwnTransactionsReview  # 0.7 s
+  - TestTheRouteIndexSaysAPriorityOf0NeedsP0
+  - TestTheSearchForAViewsAncestorPassesOverAViewAncestor
   - TestTheSearchTriggerShapeReadsTheRowsItAllows  # 0.0 s
   - TestTheStatementsThatFindTheirEventByItsIDReadEventsByItsPrimaryKey  # 1.0 s
   - TestTheSweepLeavesAQueuedAttemptAlone  # 0.5 s
   - TestTheSweepSendsTheAttemptAFailedRetryOvertookOnceItsClaimLapses  # 0.8 s
+  - TestTheSweepTakesTheLensesOnADocumentAnotherBuildStatedGone
   - TestTheSwitchRuleCaseByCase  # 11.4 s
   - TestTheThreadReadsAreUnchangedByTheAnswersColumn  # 0.8 s
+  - TestTheTreeReadAndTheCoverageRouteCountTheChecksOfALiveRequirementUnderAnOvertakenOne
+  - TestTheTreeReadAnswersARunsWholeQuestion
+  - TestTheTreeReadAnswersTheBlockAnAskIsAnchoredIn
+  - TestTheTreeReadAnswersTheCatalogueNodesItsTuplesNameAsContext
+  - TestTheTreeReadAnswersTheConversationBeforeTheRankedSiblings
+  - TestTheTreeReadLiftsAVisibleNodeAboveAParentItsReaderMayNotSee
+  - TestTheTreeReadSendsNoRepeatedStatement
   - TestTheTreesCostOfACommentList  # 1.3 s
+  - TestTheTupleArmReadsABlocksTypeFromItsNode
   - TestTheUnreadCountEqualsWhatTheWindowShowsForEverySession  # 0.9 s
   - TestTheWriteBoundBenchmarksOpenTheirIssues  # 1.6 s
   - TestTheWriteNamesThePerson  # 1.5 s
+  - TestThreadPagesHoldTheirBoundOnTheLargestIssues
+  - TestThreadPagesWalkEveryThreadOnceNewestActivityFirst
   - TestThreadReplyToADeletedPostIsRefused  # 1.6 s
   - TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet  # 1.5 s
   - TestTwoFileUploadsRacingOneTokenTakeOne  # 13.4 s
@@ -1856,6 +2188,7 @@
   - TestTwoSectionsOfOneHeadingAreToldApartByOccurrence  # 0.8 s
   - TestTwoServersJudgeARouteAgainstTheOneStoredListenerAnswer  # 0.8 s
   - TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass  # 0.4 s
+  - TestUnderACredentialThatProvesNoSessionOnlyTheIssuesDaemonNamesTheRoleHolders
   - TestUnsubscribeIssueSessionReportsNotFoundWhenNotSubscribed  # 0.7 s
   - TestUntargetedSessionReplyNamesItsThreadTarget  # 0.9 s
   - TestUploadArtifactJSONCreatesNextVersion  # 0.9 s
@@ -1873,6 +2206,7 @@
   - TestUserIssueStateSequenceRejectsStaleWrites  # 0.6 s
   - TestUserStateEventSaysWhichFieldsMoved  # 1.0 s
   - TestUserThreadsLoginReadsALoginAsCanonicalLoginDoes  # 0.2 s
+  - TestWhileTwoBuildsServeAnAnswerKeepsTheApprovalCurrent
   - TestWhoamiSaysNoSignInForEveryCredentialThatMayWrite  # 0.2 s
   - TestWriteAdviceCountsDecisionBlocksAtDocumentWriteTime  # 1.1 s
   - TestWriteAdviceCountsOnlyTheCallingSessionsOwnWrites  # 0.9 s
@@ -1882,6 +2216,7 @@
   - TestWritesMomentsApartAreJudgedTogetherAsActedOn  # 1.7 s
   - TestWrittenTextReachesTheDocumentWithLineFeeds  # 11.1 s
 3:
+  - TestABackwardLensChainOfAHundredAndTwentyAnswersFiftyInAll
   - TestABeforeMergeResultAtALinkedCommitIsDecidedByThatRepository  # 0.8 s
   - TestABlockIDHoldingANulIsMintedAgain  # 2.2 s
   - TestABlockIDPrefixIsMatchedWithinTheDocumentItsRouteNames  # 0.7 s
@@ -1901,6 +2236,7 @@
   - TestACallIsJudgedByTheLabelsAndChainBeforeAndAfterIt  # 2.9 s
   - TestACarriedApprovalAnswerTakesItsTimeFromTheDatabase  # 3.7 s
   - TestACarriedApprovalPinsTheVersionItCarriesTo  # 1.4 s
+  - TestACarriedReviewNamesTheVersionItCarriesFrom
   - TestACarryOnTheVerificationDocumentAnswersTheRequestWhenTheSpecStandsApproved  # 1.7 s
   - TestAChangeBeforeTheFirstSectionNamesTheRunBeforeTheFirstSection  # 0.9 s
   - TestAChangeMovesOnlyTheChangedNode  # 1.9 s
@@ -1911,9 +2247,11 @@
   - TestAClaimSurvivesItsHoldersSilenceForTheGrace  # 0.0 s
   - TestAClearedRowIsAnsweredByWhatTheStoreSays  # 0.7 s
   - TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused  # 1.5 s
+  - TestACloseMadeForARunSettlesTheIssuesDocumentsForNoRun
   - TestACloseSweepThatWaitedOutAReopenWritesNothing  # 1.1 s
   - TestAClosedPullRequestsHeadDoesNotHoldOffTheReadThrough  # 1.0 s
   - TestACodePointGoLeavesUnassignedIsVisibleForABearerAndAPerson  # 0.3 s
+  - TestACommentDeleteMadeForARunNamesTheCommentChangedByIt
   - TestACommentDeliveryReplyNamesABlockOfAnOwedComment  # 1.1 s
   - TestACommentDuringAListenerTakeOverReachesTheClaimantOnce  # 1.0 s
   - TestACommentDuringAListenerTakeOverReachesThePrimaryDocumentAuthorOnce  # 3.3 s
@@ -1922,11 +2260,15 @@
   - TestACommentIsBoundedBlockByBlockRatherThanAsAWhole  # 1.3 s
   - TestACommentItsOwnerRefusesResolvesNoMention  # 1.5 s
   - TestACommentLeavesItsWindowsToTheBlockIndexTick  # 1.3 s
+  - TestACommentOnANodesTextHangsUnderThatNode
   - TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLapses  # 0.8 s
   - TestACommentsMentionFinishesWhenItsClientGivesUp  # 2.5 s
   - TestACommittedWriteWhoseAnswerWasLostIsNeverRunAgain  # 0.2 s
   - TestAConversationMovesOnActivityDeepInItsChain  # 2.5 s
+  - TestAConvertedRisksCheckOfAnotherIssueIsRetargetedAndRetractedThroughThePointerRoute
+  - TestACopyOfASpecUploadedIntoItsConvertedIssueIsARoomOfItsOwnAndOpensNoAsk
   - TestACreateWithNoQuestionCandidateReadsNoScope  # 1.1 s
+  - TestACredentialWithoutP0CannotGiveIt
   - TestACutAReadAnswersCarriesItsTreeAndStoresNone  # 1.0 s
   - TestACutReadsAVersionsBlockIDsInWorkLinearInItsSize  # 3.0 s
   - TestADPoPPresentationWithoutABrokerIsRefusedAsItAlwaysWas  # 0.2 s
@@ -1934,14 +2276,17 @@
   - TestADecisionCutStandsAloneUnlessItHoldsOneFenceOfATypedBlock  # 0.0 s
   - TestADecisionKeptAsFootnoteShapedTextWaitsOnceItCitesTheFootnote  # 0.4 s
   - TestADecisionKeptBeforeARendererChangeWaitsOnceItsKeepsVersionHoldsNoSuchHeading  # 0.4 s
+  - TestADecisionsWordsAndVersionAreReadPastWhereTheBlockIndexStands
   - TestADeclinedAskReadsDeclinedAndWritesNoAnswer  # 2.4 s
   - TestADeleteRenamesNoVersionWhenTwoCarryTheAcceptsTime  # 1.1 s
   - TestADeleteRenamesTheVersionItsAcceptRecordedWhereAnotherCarriesTheAcceptsTime  # 1.0 s
   - TestADeleteWhoseSendMovesWhileItIsWrittenAnswersDeleteContended  # 1.1 s
   - TestADeletedAndRestoredAnsweredBlockIsApprovedOnceItsTextIsTheApprovedText  # 2.0 s
+  - TestADeletedPostLeavesNoQuoteOfItsWords
   - TestADeliveryClaimMovesTheCommentListsValidator  # 0.7 s
   - TestADeployFlipsEveryWaitingPullRequestItShipped  # 0.0 s
   - TestADeployOfANewDisplayParserVersionChangesBothListETags  # 0.2 s
+  - TestADeployRecordNamesItsWriter
   - TestADirectMessagesBlockHasNoAddress  # 0.5 s
   - TestADirectWriteOfTheSearchVectorQueuesTheChange  # 0.2 s
   - TestADismissHoldingTheAgentRootGivesTheThreadBackOnAnOlderReply  # 3.7 s
@@ -1949,14 +2294,21 @@
   - TestADocumentApprovedAtVersionOneCarriesOnItsFirstBlocksAnswer  # 1.3 s
   - TestADocumentPastTheSearchVectorLimitVersionsAndIsFound  # 12.4 s
   - TestADocumentsCommentListAnswersItsOwnNotModified  # 0.8 s
+  - TestADrainRefusedOverAnotherWritesOwedDigestLogsNoError
   - TestADrainStopsWaitingForABodyThatStalls  # 10.2 s
+  - TestADrainedVersionNamesTheWriterOfTheWriteThatMarkedIt
   - TestAFailedLegionReadLeavesTheDeliveryFeedRunning  # 0.4 s
   - TestAFailedReadOfTheIssuesOwnRepositoryStillReadsTheLinks  # 1.3 s
+  - TestAFarEndTakenGoneWhileAWriteWaitsAnswersNotFound
+  - TestAFarEndTheCallerMayNotSeeAnswersAsNoNode
   - TestAFastBrowserClockNeitherHidesNorUncountsTheNextReply  # 0.8 s
+  - TestAFileNamedDecisionsMdOnAnIssueIsRefusedBeforeItsObjectIsWritten
+  - TestAFileUploadUnderTheDecisionsQuerysNameIsRefusedAsTheQueryWithOrWithoutAFileStore
   - TestAFileVersionIsCachedForeverAndADocumentVersionIsNot  # 2.0 s
   - TestAFileVersionStoredWithNoHashCarriesNoToken  # 8.7 s
-  - TestAFillAfterThePassIsFinishedReadsOneRowAndWritesNothing  # 0.6 s
+  - TestAFilledMergeAndAnUnfilledOneAreReadInTheOrderTheyMerged
   - TestAFilteredMeaningSearchFindsTheCommentItsFiltersKeep  # 2.3 s
+  - TestAFindingAskedForProjectUnderAnAuthorOnlyLensIsRefused
   - TestAFirstIndexingMarksNothingOutOfDate  # 1.8 s
   - TestAFirstRequestCarriesNoEarlierApproval  # 0.9 s
   - TestAFollowUpUnderADeletedAnswerIsRefused  # 0.8 s
@@ -1964,16 +2316,20 @@
   - TestAFreshHubServesDeliveryChangesWhileATransactionHoldsTheEventHorizon  # 1.4 s
   - TestAGenerationEndingDuringTheFeedHandOverLeavesTheRelayNoSubscriber  # 1.2 s
   - TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade  # 0.0 s
+  - TestAGoingCallerNamesItsRunOnEveryWriteItMakes
   - TestAGoingRelationOutsideBothEdgeFamiliesFails  # 0.0 s
   - TestAGoingRunAskedUnderAnEarlierBuildsOwnerAnswersItsCanonicalOwner  # 1.9 s
   - TestAGroupMayTakeATitleItHoldsWhole  # 0.3 s
   - TestAGuardedDirectMessageCandidateCarriesNeitherItsLineNorItsTree  # 0.2 s
   - TestAHandOffAfterTheRetryCheckIsNotDropped  # 0.0 s
   - TestAHandlerThatHijacksReachesTheConnection  # 0.0 s
+  - TestAHeadNamesTheNewestResultsThatDecideIt
+  - TestAHeadingKeepThatWaitsBehindTheStepsConversionOfItsSectionIsNotFound
   - TestAHookNotificationNamingMorePartsThanAnyCallIsDropped  # 0.3 s
   - TestAHumanAddsAndRemovesAnyFollower  # 0.9 s
   - TestAJobsNamedTokenIsHeldToItsProject  # 1.5 s
   - TestAJobsPublicTokenWritesEveryProjectAndTheDeployment  # 1.2 s
+  - TestAKeepThatWaitsBehindAWriteOfItsDecisionReadsItAgain
   - TestAKeptDecisionWaitsForReviewAgainWhenABlockLeavesOrJoinsIt  # 1.7 s
   - TestAKeptRefusalListingAPostThatIsThenDeletedIsReplayedAsKept  # 0.6 s
   - TestAKeptRefusalRepeatedAfterTheDeleteOfThePostItNamesIsTheSameRefusal  # 0.8 s
@@ -1988,6 +2344,10 @@
   - TestALegionBoardsSnapshotAndDeltasLandOnItsGET  # 1.1 s
   - TestALegionIssueViewNamesItsIssueAndNothingElse  # 0.0 s
   - TestALegionSettingRoundTripsAndIsRemoved  # 0.2 s
+  - TestALensChainOfSixtyIsCutAtFifty
+  - TestALensOnARemovedBlockOrARetiredDocumentNamesItsParent
+  - TestALensOnARemovedPartOrCommentBlockNamesItsLastRevision
+  - TestALensReadOfANodeNobodyMaySeeAnswersNotFound
   - TestALinkInAnOptionStartsAtThatOption  # 0.9 s
   - TestALinkWhoseVersionTheParserRefusesStaysAsItIs  # 0.3 s
   - TestAListOfAnOwnerNoRowHoldsKeepsNothing  # 0.2 s
@@ -1998,6 +2358,7 @@
   - TestALiveBrokerTokenWithASoundProofIsAccepted  # 0.1 s
   - TestALiveEventFrameCarriesItsTrees  # 0.0 s
   - TestALiveListenerLeavesTheMentionedSessionTheMentionsCopyAlone  # 1.8 s
+  - TestALiveRoomWriteRefusesABlockPointerItMayNotHold
   - TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires  # 0.3 s
   - TestALongBlocksTailIsFoundByMeaning  # 1.3 s
   - TestALongNamedDocumentIsReadByItsOwnReference  # 1.1 s
@@ -2012,9 +2373,17 @@
   - TestAMentionWhoseFrameLeftBeforeTheDeleteReadsEndedByThePostsDelete  # 0.7 s
   - TestAMentionWhoseSendsTheListenerRefusesSettlesFailedAfterTheTakeOverWindow  # 2.1 s
   - TestAMentionWrittenAndRemovedEachMoveTheCommentListsValidator  # 0.6 s
+  - TestAMergeGitHubNoLongerAnswersLeavesTheOrderNotKnown
+  - TestAMergedSubjectThatCannotBeOrderedReadsNotKnown
+  - TestAMessageDeleteMadeForARunNamesTheMessageChangedByIt
   - TestAMessageEventCarriesALongBodyInPartAndSaysSo  # 0.8 s
   - TestAMessageOverTheReadLimitInChromesFramesClosesTheSocket  # 1.5 s
   - TestAMessageSenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone  # 0.8 s
+  - TestAMoveMarksItsIssuesQueriesOwedAndTheDrainWritesThem
+  - TestAMoveOfOneParagraphKeepsEveryBlockID
+  - TestAMoveUnderAFindingOfItsOwnSubtreeIsACycle
+  - TestAMoveUnderALensOfAParentIssueWaitsForThatIssuesLock
+  - TestANamedBrokerTokenWritesAnotherProject
   - TestANamedVersionKeepsCurrentAnApprovalOfATextAnotherRendererVersionStored  # 0.5 s
   - TestANamedVersionThatChangesNothingKeepsTheApprovalCurrent  # 0.6 s
   - TestANarrowedTokenActsAsItsIdentityAndOnlyReads  # 0.4 s
@@ -2028,6 +2397,7 @@
   - TestAParentIsDoneOnlyWhenEachChildIsDone  # 0.8 s
   - TestAParentWriteTakesTheParentsProjectLock  # 0.4 s
   - TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds  # 0.0 s
+  - TestAPastedAccountTokenPrintsInNeitherTheAnswerNorTheLog
   - TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee  # 0.6 s
   - TestAPersonPageMarksAnEditedCommentAndADeletedOne  # 0.7 s
   - TestAPersonTokenWithProjectsLimitsNoWriteYet  # 1.6 s
@@ -2040,12 +2410,18 @@
   - TestAPinnedReferenceToADeletedBlockSaysItWasRemoved  # 0.9 s
   - TestAPipelineCardThatMovedIsTheOnlyField  # 0.0 s
   - TestAPresetViewSendsItsOldestPullRequestLeavingWithoutAReadingTheDatabase  # 0.9 s
+  - TestAPreventedByAppendedWhileItsChecksDocumentIsRetiredIsNotLeftStanding
   - TestAPriorityDescriptionNested4000DeepReadsBackAsATreeOfItsOwnText  # 0.9 s
   - TestAPriorityListAnswersAsTheMergeBaseAnswers  # 111.6 s
+  - TestAPrivateProjectsObjectAnswersAsAMissingObjectToAnotherProjectsToken
   - TestAProductionJobFlipsTheWaitingPullRequestsItShips  # 1.0 s
+  - TestAProjectFileUploadUnderARetiredDocumentsNameIsRefusedAsRetiredWithOrWithoutAFileStore
+  - TestAProjectScopedCallerAsksAnotherProjectAndEveryProject
   - TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling  # 1.6 s
   - TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRow  # 0.5 s
+  - TestAProjectScopedTokenResolvesAnotherProjectsAskByAPrefix
   - TestAPullRequestOpenedAtASettledCommitIsSeenOnceTheSpanEnds  # 1.1 s
+  - TestAQuestionsCreateAndAnswerEachWriteADecisionsQueryVersion
   - TestAQueueOfOneRefusesASecondSendWhileTheFirstIsInFlight  # 0.8 s
   - TestARatingBelongsToARetroRecordAlone  # 0.7 s
   - TestARatingIsTheDaemonsAlone  # 0.7 s
@@ -2055,7 +2431,9 @@
   - TestAReadOnlyResultsReadStoresNothingAndAnswersAsAWriter  # 3.0 s
   - TestAReadOnlyTokenIsRefusedBeforeTheIdempotencyKey  # 1.8 s
   - TestAReadRefusesANulInItsParameters  # 1.2 s
+  - TestAReadingKeepsAPersonsApprovalOfTheCurrentSpec
   - TestAReconcilePassThatFindsNothingNewSendsNothing  # 0.8 s
+  - TestARecordedResultAndItsRetractionChangeNoRequirementCriterionOrCheck
   - TestARecoveredReplayKeepsNothingOfARefusal  # 0.0 s
   - TestAReferenceResolvesAPrefixWithinTheOwnerItNames  # 0.9 s
   - TestAReferenceResolvesAPrefixWithinTheProjectDocumentItNames  # 1.0 s
@@ -2063,9 +2441,11 @@
   - TestARefillOneServerMetIsARefillOnTheOther  # 0.9 s
   - TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim  # 1.2 s
   - TestARefusedFileUploadLeavesNoObjectInTheFileStore  # 3.2 s
+  - TestARefusedP0WriteWritesNothingElseOfItsRequest
   - TestARefusedRequestIsLoggedWithNoCaller  # 0.1 s
   - TestARelayDropEndsTheSubscriptionAsDropped  # 0.6 s
   - TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill  # 4.7 s
+  - TestARelayReadOvertakenByAResetPublishesNothingOfTheNewLog
   - TestAReopenCarriesAnApprovalOnlyOverTheAsksTheCloseWithdrew  # 4.4 s
   - TestAReopenKeepsTheRequestWithThePersonWhenAClosedSettlementWroteBackItsText  # 1.3 s
   - TestAReopenedIssuesApprovalRequestStillWaitsOnThePersonOnceItsDocumentsSettle  # 2.3 s
@@ -2075,6 +2455,7 @@
   - TestARepeatOfAnUploadStillRunningWaitsForItsAnswerAfterTheIssueCloses  # 0.5 s
   - TestARepeatOfAnUploadThatLandedReplaysItsAnswerAfterTheIssueCloses  # 1.2 s
   - TestARepeatWhileTheFirstRunsIsInFlight  # 0.2 s
+  - TestARepeatedLensWriteUnderItsKeyWritesOnce
   - TestARepeatedMemberHidesNoNulFromAPlanOrARating  # 5.1 s
   - TestAReplaceWithoutItsWithIsRefused  # 4.6 s
   - TestAReplacedAnswersEventCarriesTheTreeOfEachLabelItChose  # 1.3 s
@@ -2082,12 +2463,18 @@
   - TestAReplyKeepsTheCommentItAnswers  # 0.7 s
   - TestAReplyNamesABlockOfTheItemTheRequestNamed  # 1.0 s
   - TestAReplyNamesTheBlockItAnswers  # 1.7 s
+  - TestAReplyToABlockStoresTheWordsItQuotes
+  - TestAReplyToADirectMessageComesFromTheSessionThatReplacedItsRecipient
+  - TestAReplyToAPartOfAnAskHangsUnderTheAsk
+  - TestAReplyToAThreadInARetiredDocumentIsTakenAndWritesTheDocumentNothing
   - TestAReplyUnderAClosedAskJoinsItsThreadAndRecordsNoTurn  # 6.0 s
   - TestAReplyWhoseRouteReadFailsIsNotRefused  # 1.1 s
   - TestAReplysQuoteOfAnEditedPostCarriesThePostsEdit  # 0.8 s
+  - TestARequirementUnderACriterionInAListIsReachedAtOnce
   - TestAResolveThatDidNotAnswerIsUnknownAndNotAVerdict  # 1.1 s
   - TestARestoredDecidedWordingMovesTheAsksPartRevision  # 0.8 s
   - TestARestoredTextAroundADecisionBlockTheAgentRewordedLeavesTheApprovalStale  # 1.2 s
+  - TestARestoredTextAroundTheApproversOwnAnswerIsTheApprovedText
   - TestAResultAtTheHeadOfALinkedPullRequestFollowsThatHead  # 1.2 s
   - TestAResultAtTheHeadOfAPullRequestTitledAfterAnotherRepositorysIssueStandsAtIt  # 1.1 s
   - TestAResultDispatchCannotPlaceAnswersNoCurrency  # 1.4 s
@@ -2096,6 +2483,7 @@
   - TestAResultsWriteRefusesACheckRewordedAtEveryAttempt  # 1.2 s
   - TestAResumeOfTheWrongShapeIsAnInvalidFrame  # 0.4 s
   - TestAResumedRoleMessageKeepsItsOriginalRecipient  # 0.8 s
+  - TestARetiredDocumentsChecksPreventNoRisk
   - TestARetriedHandoffWriteReplaysItsAnswerAndRecordsOneVersion  # 1.6 s
   - TestARetryInAnotherModeThatTimedOutLeavesTheRecipientOneCopy  # 0.9 s
   - TestARetryInFlightThatFailsLeavesTheQueuedAttemptToTheSweep  # 0.9 s
@@ -2107,10 +2495,19 @@
   - TestAReviewNamingNoVersionOfTheDocumentIsRefusedWithNothingWritten  # 0.8 s
   - TestAReviewUnderAnOpenRequestMustNameTheVersionTheRequestNames  # 1.0 s
   - TestARevokedBearerClosesItsSocketWithPolicyViolation  # 3.3 s
+  - TestARewordOfAnAnsweredBlockDoesNotCarryAndTheDecidedWordingWrittenBackDoes
+  - TestARoomLeftOwedRunsTheTypedNodePassOnItsFragment
+  - TestARoomMarkNamesItsOwnWriterPastATupleCommittedWhileItWaits
   - TestARouteStatusPageIsStillCutAfterTheRosterFilter  # 1.8 s
   - TestARouteWhoseOwnLookupGoesUnansweredIsSuppressedForTheSessionItNames  # 1.1 s
+  - TestARunIsAnInteractionNodeWrittenBeforeItsRowInOneTransaction
+  - TestARunIsGoneAfterOneHour
+  - TestARunIsReadByTheWholeCredentialThatAskedIt
+  - TestARunListsAndCountsNoDocumentItMadeOnceThatDocumentIsRetired
   - TestARunPastItsLimitStopsRenewingItsLease  # 3.1 s
-  - TestARunRecordedBeforeTheMarkIsItsOwnCredentialsStill  # 0.0 s
+  - TestARunRecordedBeforeTheProvenMarkIsItsOwnCredentialsStill
+  - TestAScopedIncludeChildrenStopsAtAPrivateChild
+  - TestAScopedIncludeParentStopsAtAPrivateParent
   - TestAScopedStatusChangeIsRefusedAnAncestorOfAnotherProject  # 0.3 s
   - TestASecondRunOfAStepAnswersAttemptTwo  # 0.7 s
   - TestASecondStartOfTheFixChangesNothing  # 0.6 s
@@ -2134,6 +2531,8 @@
   - TestASocketOpenReadsTheIssueAndTheCallerOnce  # 0.6 s
   - TestASocketPastItsAgeClosesWithMaxAge  # 0.4 s
   - TestASocketsHeartbeatLeavesTheSessionItWasAdmittedAs  # 0.2 s
+  - TestASpecAskWhoseOptionsDoNotDecodeIsLeftOutOfEveryTreeRead
+  - TestASpecAskWhoseRowDoesNotDecodeIsLeftOutOfTheOpenQuestions
   - TestAStartAtTheLastEndCountsZeroTime  # 0.8 s
   - TestAStatusChangeRefusedByItsRequestKeyAnswersChanged  # 0.3 s
   - TestAStepWriteAppendsNoEvent  # 0.8 s
@@ -2148,17 +2547,29 @@
   - TestASwitchLineAnAgentSentForItsPersonIsQueuedForAStoppedSession  # 0.3 s
   - TestATargetedMessageDeletedDuringItsLastTryIsNotQueued  # 1.3 s
   - TestATestHookNamesTheProcessThatNeverAcknowledged  # 2.2 s
+  - TestAThreadInARetiredDocumentReopensAndWritesTheDocumentNothing
+  - TestAThreadInARetiredDocumentResolvesAndWritesTheDocumentNothing
+  - TestATieToAnotherIssueIsRefusedOnEveryWritePath
   - TestATokenBesideABrowserIdentityIsTheTokens  # 0.8 s
   - TestATopLevelHeadingLiftedAboveASectionNamesEachRunWhereItStands  # 2.3 s
+  - TestATriggerPointsOnlyAtALensInvokedBefore
+  - TestAVersionAboveTheBoundListsItsUnreachedChecksAndRequirementsAtOnce
   - TestAVersionAnOlderBuildWritesReachesDocumentSearch  # 1.1 s
+  - TestAVersionAnswersTheDigestAnApprovalCovers
   - TestAVersionDownloadNameWritesEveryUnsafeCharacterAsAnUnderscore  # 0.7 s
   - TestAVersionReadCarriesThatVersionsBlocks  # 1.1 s
+  - TestAViewReadOfItsRowsAnswersAsTheWalk
+  - TestAViewsSpecQueryTakesOnlyItsMemo
   - TestAWarmGzipReadOfAListIsCompressedOnce  # 1.0 s
   - TestAWindowThatMovedAloneSendsNothing  # 0.0 s
   - TestAWriteNamingABlockIDPastTheBoundIsWritten  # 4.1 s
+  - TestAWriteOnALensOnARemovedDocumentIsRefusedAsGone
+  - TestAWriteRacingItsDocumentsRetirementIsRefusedUnderTheOwnersLock
   - TestAWriteRefusesABlockPointerOutsideItsIssueOrDocument  # 0.7 s
   - TestAWriteRefusesABlockPointerToADisallowedType  # 0.4 s
   - TestAWriteRunsOnlyAsThePersonWhoPressedIt  # 0.6 s
+  - TestAWriteThatKeepsOrLowersP0OrSetsAnotherPriorityNeedsNoScope
+  - TestAWriteThroughTheParentNamingAChildsNodeIsRefused
   - TestAWriteWhoseTreeCannotBeStoredStillSucceeds  # 0.6 s
   - TestAWritersShortIDResolvesOnlyAmongTheNodesTheWriterMaySee  # 0.9 s
   - TestAWrittenIDIsFoundWhereASearchOfTheTextFindsIt  # 0.0 s
@@ -2177,14 +2588,17 @@
   - TestAgentStreamReportsASessionNobodyAnswersFor  # 0.2 s
   - TestAgentStreamWritesNothingToPostgres  # 0.9 s
   - TestAgentsAnswer503ThroughTheSilenceWindow  # 0.2 s
+  - TestAgentsListenerUnavailableAnswerHoldsNoTokenOfTheListenersURL
   - TestAgentsListsAndIssueReadsWithinTheTTLShareOneListenerCall  # 0.7 s
   - TestAgentsReportsARefillingListenerAsRefilling  # 0.5 s
   - TestAgentsReportsHostFromListener  # 0.3 s
   - TestAnAcceptCannotGrowADocumentPastWhatOneDocumentMayHold  # 17.4 s
+  - TestAnAcceptanceWriteLeavesOutAPrivateProjectsOpenChild
   - TestAnAcceptanceWriteTakesTheDependencyLock  # 1.0 s
   - TestAnAcceptanceWriteWaitsForAnOpenChildOfAnotherProject  # 3.0 s
   - TestAnActorThatDoesNotDecodeFailsTheRead  # 0.9 s
   - TestAnAdvisedResponseWritesTheAdviceAfterThePayloadsOwnFields  # 0.0 s
+  - TestAnAgentMovesAndDeletesNoUnclaimedCopyOfAnAnsweredAsk
   - TestAnAgentViewHoldsFramesWithinTheViewersBudget  # 1.1 s
   - TestAnAgentViewNamesItsKindAndItsSessionAlone  # 0.2 s
   - TestAnAgentViewThatFallsPastItsBudgetEndsAsBehind  # 0.3 s
@@ -2194,7 +2608,9 @@
   - TestAnAgentsConversationListsItsFilesNewestFirst  # 0.5 s
   - TestAnAgentsOwnRewordAndFollowAreStillTheSessionsOwnAct  # 1.0 s
   - TestAnAmbiguousPrefixCutsNoCandidateReferenceInHalf  # 0.7 s
+  - TestAnAnchorBlockIsATupleEveryAnchorWriteKeeps
   - TestAnAnchorInsideABlockWhoseIDIsPastTheBoundIsWritten  # 0.3 s
+  - TestAnAnchoredCommentStillHangsUnderItsTypedBlock
   - TestAnAnswerAResolutionAndAReviewAreBoundedByTheirField  # 0.8 s
   - TestAnAnswerAfterABlockHeApprovedWasRemovedDoesNotCarry  # 1.7 s
   - TestAnAnswerBesideASecondBlockLeftOpenDoesNotCarry  # 1.2 s
@@ -2202,14 +2618,19 @@
   - TestAnAnswerOnADocumentOnlyAnotherHumanApprovedDoesNotCarry  # 1.1 s
   - TestAnAnswerPastTheKeptSizeReplaysItsStatusAlone  # 0.2 s
   - TestAnAnsweredAsksEventNamesWhatItsAnswerMentions  # 1.4 s
+  - TestAnAnsweredBlockAskReadsAnsweredInTheAsksOfItsDocumentsText
   - TestAnApprovalRequestOnAClosedIssuesPlanNamesTheClose  # 1.6 s
   - TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesNothing  # 8.6 s
+  - TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesToTheVersionWithoutIt
   - TestAnAskAnsweredBesideAChangedSectionIsNoDecisionOnlyChange  # 1.5 s
+  - TestAnAskBlockPastedWithNullServerAttributesIsTaken
   - TestAnAskBlockRefusalWhoseReasonIsASchemaRefusalStaysThatRefusal  # 0.0 s
   - TestAnAskPartCarriesTheFactsOfEveryNode  # 0.9 s
   - TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers  # 3.0 s
+  - TestAnAskWhoseNodeHoldsAValueThatDoesNotParseIsLeftOutOfTheDecisionsRead
   - TestAnAttemptNumberAReplyNamesAboveTheColumnsRangeIsNotFoundNotAFault  # 1.2 s
   - TestAnAttemptNumberAboveTheColumnsRangeIsNotFoundNotAFault  # 0.5 s
+  - TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse
   - TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept  # 2.0 s
   - TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody  # 1.4 s
   - TestAnEarlyAnswerToAnUploadReachesAClientThatSendsItsWholeBodyFirst  # 4.0 s
@@ -2225,18 +2646,26 @@
   - TestAnIDPrefixNamesOneItemOnEveryOwnerFreeRoute  # 0.7 s
   - TestAnIgnoredMemberIsLoggedAtDebugWithItsRoute  # 0.2 s
   - TestAnInFlightRepeatIsJudgedWithoutSpoolingItsBody  # 0.1 s
+  - TestAnIssueCreateRefusesARequirementOnAView
+  - TestAnIssueRelationAndItsProjectionCommitTogether
   - TestAnIssueResolvesToItsProjectsDefaultRepository  # 1.9 s
   - TestAnIssueThatLeftTheDaemonsStateStaysTheTopOfItsTree  # 0.2 s
+  - TestAnIssueUnderNeedsIsWrittenOnlyWhileTheFleetCreatesIt
+  - TestAnIssueWhoseDecisionsDocumentTheStepRetiredClosesAndReopensWithItsOpenAskAndASweepThatLogsNoError
   - TestAnIssueWriteStoresARenamedRepositoryUnderItsNewName  # 1.0 s
+  - TestAnIssuesBacklinksLeaveOutItsTreeAndItsDecisionsQuery
+  - TestAnIssuesOutboundRelationsAnswerEachOnce
   - TestAnIssuesRepositoryIsRefusedUnlessGitHubCouldHoldIt  # 0.0 s
   - TestAnOlderEditedCommentsFirstItemBlockIndexHasNoMakingTime  # 0.8 s
   - TestAnOpenApprovalRequestIsAnsweredByTheVersionRestoringTheApprovedText  # 1.2 s
   - TestAnOpenedAskPublishesWhatItsQuestionCites  # 1.3 s
+  - TestAnOwedDocumentDrawsNoCheckGap
   - TestAnOwedEditedExcerptFallsBackToTheDocumentNameUntilReconciled  # 1.3 s
   - TestAnOwnerGitHubServesIsTakenThoughTheSignUpFormWouldRefuseIt  # 0.0 s
   - TestAnUnansweredMentionOfTheRouteItselfSuppressesTheRouteCopy  # 1.2 s
   - TestAnUnansweredRoleMentionHeldByTheRootAuthorIsLeftToThatMention  # 1.1 s
   - TestAnUnauthenticatedReplaceCarryingAForeignMemberIsRefusedForItsIdentity  # 0.7 s
+  - TestAnUnboundPersonalDeployNamesItsProvedAccount
   - TestAnUnchangedListAnswersNotModifiedToItsOwnETag  # 0.7 s
   - TestAnUnchangedPointerIsNotRefusedWhenItsTargetIsRetyped  # 0.4 s
   - TestAnUndatedSilenceKeepsTheClaim  # 0.0 s
@@ -2249,16 +2678,20 @@
   - TestAnUploadIsAPictureOnlyWhenItsBytesAreOne  # 1.3 s
   - TestAnUploadIsHeldToTheSessionTheCredentialProved  # 0.3 s
   - TestAnUploadNamedAfterAnArtifactsSlugOfAnotherKindIsRefused  # 0.7 s
+  - TestAnUploadOfTheApprovedTextOverABlockDecidedSinceCarriesTheApproval
   - TestAnUploadToAClosedIssueIsRefusedBeforeItsBodyIsSpooled  # 0.3 s
   - TestAnchoredCommentOfManyBlocksReachesTheMarginWhole  # 1.5 s
   - TestAnchoringInASpecWhoseTextARendererMightRewriteWritesNoVersion  # 1.1 s
   - TestAnchorsKeepCleanDocumentAtExistingVersion  # 0.9 s
   - TestAnotherHumansAnswerHeApprovedStaysOutOfTheCarrysTest  # 1.7 s
+  - TestAnotherProjectsDaemonWritesTheRecordsOfAnIssue
   - TestAnswerAskChangeRefusesClosedAndApprovalAsks  # 1.1 s
   - TestAnswerAskLocksIssueBeforeAskRow  # 0.8 s
   - TestAnswerBlockAskWritesItsServerStateIntoTheDocument  # 1.0 s
   - TestAnsweringAfterAnEditAndSettlementSucceeds  # 2.0 s
+  - TestAnswersByHumansOtherThanTheApproverWriteTheirStatesVersionsAndTheApprovalIsCarried
   - TestApprovalAskFollowsItsRequestingSession  # 0.7 s
+  - TestApprovalCoversTheDigestOfOneQuerysRecord
   - TestApprovalRequestNamesEachRequirementWithNoCheck  # 2.1 s
   - TestApprovalRequestOpensAnAskWhoseAnswerPinsAReviewToTheDocumentVersion  # 1.1 s
   - TestApprovalRequestWithTheVerificationDocumentRefusesEveryDocumentButTheSpec  # 0.7 s
@@ -2298,6 +2731,7 @@
   - TestBlockAskIndexedAfterEditKeepsTheWritingActor  # 1.0 s
   - TestBlockTextContentReadsEveryShape  # 0.1 s
   - TestBlocksOfAHeldDocumentShareOneSpanBudget  # 5.6 s
+  - TestBothOldMembersNameTheOldestOfAnIssuesTwoDecisionsDocuments
   - TestBoundaryMaskFindsABoundaryAcrossWrites  # 0.0 s
   - TestBroadcastQueuesForAStoppedRecipientAndExcludesItFromNothing  # 0.6 s
   - TestBroadcastReachesSessionsTheLiveListNoLongerHolds  # 0.5 s
@@ -2305,6 +2739,7 @@
   - TestBroadcastRepeatWithItsKeyAnswersTheOriginalAndDeliversOnce  # 0.4 s
   - TestBroadcastWhoseBudgetEndsBeforeEverySessionIsReadWritesNothingAndLeavesItsKeyFree  # 0.4 s
   - TestBrokerTokenRefusalsEachHaveTheirOwnCode  # 0.5 s
+  - TestCIReadBoundHasDeadline
   - TestCIReconcilePassesAnswersAnEmptyListWhenNoPassHasRun  # 0.1 s
   - TestCIReconcilePassesIsReadableBySignedInCallersAlone  # 0.2 s
   - TestCIResultDetailNamesTheStatusAndMessageOfALargeRefusal  # 1.4 s
@@ -2325,7 +2760,9 @@
   - TestClosedIssueDeliversAMessageItsRetryAndTheAgentsReply  # 1.1 s
   - TestClosedIssueStillRefusesEveryOtherWriteUntilReopened  # 1.1 s
   - TestClosingAnIssueReleasesItsClaimAndAClosedIssueTakesNone  # 0.9 s
+  - TestClosingAnIssueWithARetiredDocumentWithdrawsItsAsksAndReopeningRestoresThem
   - TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningRestoresThem  # 1.5 s
+  - TestClosingAnIssueWritesAnAnsweredAsksCopiesWithoutItsWordsWhileAnotherBuildServes
   - TestCommentBodyMentionDelivers  # 1.5 s
   - TestCommentBodyMentionInCodeDoesNotCountTowardTheCap  # 1.2 s
   - TestCommentBodyMentionInCodeIsNeverDelivered  # 0.7 s
@@ -2396,6 +2833,7 @@
   - TestDeliveryPipelineProductionCardMergesJobNames  # 0.0 s
   - TestDeliveryResolvesAnUnresponsiveHolderAndRefusesAGoneOne  # 0.0 s
   - TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks  # 2.5 s
+  - TestDeployAttributionDoesNotChangeAReadOnlyTokensScope
   - TestDerivedApprovalMoveEditedAtIsTheRowsEditedAt  # 1.2 s
   - TestDismissAppendsOneEventPerProjectAndSession  # 1.9 s
   - TestDismissIgnoresAMemberANewerPageAdds  # 2.6 s
@@ -2405,6 +2843,7 @@
   - TestDismissRacingAnotherDismissAndAMarkAll  # 20.5 s
   - TestDismissSkipsAReplyThreadWhoseTriggerHoldsTheRowItWrites  # 2.4 s
   - TestDismissedScaleHoldsTheInboxsReads  # 0.0 s
+  - TestDispatchIssuesExternalNamesTheCodeItsRouteAnswers
   - TestDocumentAnchorMustTargetTheDocument  # 0.6 s
   - TestDocumentAsksAndCommentsAreOwnerScoped  # 1.8 s
   - TestDocumentEditAdviceSupersedesNoApprovalWhenThereIsNone  # 0.8 s
@@ -2430,10 +2869,16 @@
   - TestDocumentVersionsNameChangedTargets  # 0.7 s
   - TestDocumentsNearestRanksByExactDistanceAndFoldsOnlyASCII  # 0.0 s
   - TestDuplicateGateBarsAreOrderedFractions  # 0.0 s
+  - TestDuplicateOfTakesAnIssueOfTheProjectAlone
   - TestEachAgentsConversationKeepsItsFilesApartFromAnothers  # 0.4 s
   - TestEachFieldOfAStatusChangesRecoveryPointIsTaggedWithItsMember  # 0.0 s
+  - TestEachForeignKeyCheckOfARemovalProbesAnIndex
+  - TestEachHeadAtOneCommitNamesTheResultItsOwnRunDerived
   - TestEachLetterOfTheLegionLabelFoldsOnlyBetweenItsASCIICases  # 0.0 s
   - TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics  # 0.7 s
+  - TestEachRepositoryAtOneCommitDerivesItsOwnCIResult
+  - TestEachResolverFollowsAMove
+  - TestEachRouteIsDeclaredInTheFileItsNameNames
   - TestEachSocketsAgeFallsInItsWindow  # 0.0 s
   - TestEditAndDeleteOfAnAnchoredPostOfAClosedIssue  # 1.5 s
   - TestEditArtifactWithoutSummaryReturnsUnnamedVersion  # 0.8 s
@@ -2453,16 +2898,17 @@
   - TestEventStreamRelayReadsNothingWithoutASubscriber  # 0.7 s
   - TestEventsNoViewReadsRecomputeNothing  # 0.9 s
   - TestEveryAnswerCarriesNosniffAndAMediaType  # 0.0 s
+  - TestEveryAnswerThatCanHoldAReplyBlockCarriesItsQuote
   - TestEveryArtifactSlugReadsBackAsItsArtifact  # 0.0 s
   - TestEveryAskCreateStoresItsNode  # 1.4 s
+  - TestEveryAskTransitionAndKeepTakesTheStoreLockOrder
   - TestEveryBaseAttributeTupleCarriesTheWriteThatCausedIt  # 0.9 s
   - TestEveryBlockIsPartOfItsDocument  # 0.8 s
   - TestEveryCreateStoresItsNode  # 1.2 s
-  - TestEveryDocumentArmAnswersWhatMainsStatementDoes  # 5.1 s
-  - TestEveryDocumentArmSearchesTheDocumentSearchIndex  # 4.6 s
   - TestEveryEnumSitsWhereItsGoFieldPutsIt  # 3.4 s
   - TestEveryEventOfADeletedMessageGivesNoBodyAndKeepsTheReplysFrozenPreview  # 1.2 s
   - TestEveryGETRowHasADrive  # 0.0 s
+  - TestEveryGateNameACommentNamesExists
   - TestEveryIDRouteIsNamed  # 0.0 s
   - TestEveryKeyedAnswerThatCanHoldAReplyBlockIsReadAfresh  # 0.0 s
   - TestEveryKeyedRouteTableNamesARoute  # 0.0 s
@@ -2470,8 +2916,12 @@
   - TestEveryMessageWriteIndexesItsBlocks  # 1.3 s
   - TestEveryMutatingRouteIsClassed  # 0.0 s
   - TestEveryNodeKindCarriesItsFacts  # 4.3 s
+  - TestEveryNodeStateAndVisibilityEnumIsTheStoresValues
+  - TestEveryOperationThatTakesAnIssuePriorityNeedsP0ForZero
+  - TestEveryProjectRouteAnswersAPrivateProjectsObjectAsAMissingOne
   - TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader  # 4.2 s
   - TestEveryReadOfADocumentsVersionsNamesTheAcceptedVersionAsTheDeleteRenamedIt  # 2.0 s
+  - TestEveryReadOfAnAnswerReadsTheAsksNodeNotItsRow
   - TestEveryReadOfTheEventLogGivesADeletedPostsEventsWithTheMarkAndNoBody  # 1.1 s
   - TestEveryResponseFieldHasOneClass  # 0.0 s
   - TestEveryRouteAnswersADocumentHoldingNewerContentAlike  # 0.6 s
@@ -2483,6 +2933,7 @@
   - TestEveryStatusFallsInOneGroup  # 0.0 s
   - TestEveryUploadStoresItsDocumentsNode  # 0.8 s
   - TestEveryVersionAWriteOrAReferenceReadAnswersCarriesItsStoredSize  # 1.0 s
+  - TestEveryWriterOfAnAnswerWritesItOnTheNode
   - TestEveryWrittenEmbeddingRowCarriesItsProject  # 1.4 s
   - TestEveryoneWhoWritesToAnAskFollowsIt  # 1.2 s
   - TestExternalIssueRejectsAMissingProject  # 0.3 s
@@ -2529,6 +2980,7 @@
   - TestInitialCommentDeliveryRechecksCapabilityAgainstCurrentRegistration  # 2.3 s
   - TestInitialMentionDeliveryReturnsFailedAttemptAfterErrorReplyConsumesPending  # 0.9 s
   - TestInteractionCapsAndAnswerValidation  # 1.1 s
+  - TestInteractionNodesAreTuplesReadByTheirOwnCredential
   - TestIssueAskEventsExposeOpenedEventID  # 0.7 s
   - TestIssueAssigneeRejectsUnlistedAndMalformedLogins  # 1.3 s
   - TestIssueBlockedByConcurrentWritesDoNotDeadlock  # 18.4 s
@@ -2587,11 +3039,13 @@
   - TestMarkdownRoundTripWithoutNewDocumentAnswersTheRenderingOfAnElementThisBuildCannotCreate  # 0.3 s
   - TestMatchingTopics  # 0.0 s
   - TestMeaningScanAppliesTheServersBoundToItsTransaction  # 0.2 s
+  - TestMeaningSearchFindsADocumentOfAnIssueRoomByItsBestBlock
   - TestMentionDuringAnUnanswerableRegistryReadIsNotRecordedAsNoLiveSession  # 1.0 s
   - TestMentionRepliesAddressEachDeliveredTarget  # 1.4 s
   - TestMentionedCommentDeliversAndProjectsResolvedMention  # 2.0 s
   - TestMentionedCommentDoesNotReresolveMissingRoleHolder  # 1.1 s
   - TestMentionedCommentRecordsFailedOfflineSession  # 1.3 s
+  - TestMergeRefreshReattributionChangesBothSubjectsAndCI
   - TestMessageCorrectionAnswersListTheDeliveriesAReadLists  # 0.7 s
   - TestMessageReferencingAnotherMessageCreatesAToKindMessageRef  # 0.8 s
   - TestMissingDocumentOnABusyOwnerNamesTheClosestAndCountsTheRest  # 2.1 s
@@ -2614,6 +3068,7 @@
   - TestNewDepsRefusesNewIssueSettingsNoIssueCouldTake  # 0.0 s
   - TestNextExpiryIsMidnightWhenNothingLeavesSooner  # 0.0 s
   - TestNextExpiryIsTheOldestMergeLeaving  # 0.0 s
+  - TestNoAttributeTiesABlockToItsConversation
   - TestNoBrokerTokenGetsApprove  # 0.6 s
   - TestNoJobTokenReachesARowThatNeedsAPerson  # 0.6 s
   - TestNoLargeStoreWritePassesAnArgumentTheReleaseCannotCount  # 11.3 s
@@ -2623,6 +3078,8 @@
   - TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot  # 0.5 s
   - TestOneBoardAnswerReadsItsHeaderAndItsCardsFromOneSnapshot  # 0.4 s
   - TestOneMergeSendsOnlyTheCountsItMoved  # 0.0 s
+  - TestOnlyAPersonChangesAPersonsDecision
+  - TestOnlyAPersonOrAnArchitectWritesASpecNode
   - TestOnlyAPersonScopeRecordsADeclineAndNeverOnAnApprovalRequest  # 1.6 s
   - TestOnlyAVerdictIsStored  # 1.9 s
   - TestOnlyAnExpiredCredentialRotatesASocket  # 0.5 s
@@ -2693,6 +3150,7 @@
   - TestRelatedTermsRefreshTiming  # 0.0 s
   - TestRelatedTermsSkipASingleWordPastTheMatchBudget  # 0.3 s
   - TestRelatedTermsTokenizeATextAsADocumentVersionsVectorIsBuilt  # 0.6 s
+  - TestRemovingADocumentTakesEveryLensOnItGone
   - TestRemovingTheDocumentTheSearchFillCursorNamesKeepsTheFillsProgressRow  # 1.9 s
   - TestReopenCommentClearsResolutionAndReprojects  # 1.1 s
   - TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring  # 2.2 s
@@ -2720,6 +3178,7 @@
   - TestResultRecordsAgainstAChecksOfTheIssueAndOfAnAncestor  # 1.3 s
   - TestResultsReadAtACommitComparesEveryCheckWithThatCommit  # 1.0 s
   - TestResumeFromBeforeTheKeptDayGetsASnapshot  # 0.7 s
+  - TestRetireDocument
   - TestRevokingAReadOnlyPersonalTokenEndsIt  # 0.7 s
   - TestRoleHolderPublicationOnAProvenProjectNeedsTheDaemonsProof  # 0.8 s
   - TestRouteIndexLinesOrderTwoMethodsOfOnePathByMethod  # 0.0 s
@@ -2735,6 +3194,7 @@
   - TestSearchFindsAMeaningOnlyMatch  # 0.6 s
   - TestSearchFindsAnAskByItsOwnWordsPastWhatBroadeningWouldBury  # 1.8 s
   - TestSearchFindsStandaloneProjectDocumentsAndTheirDiscussions  # 0.8 s
+  - TestSearchFollowsABlockThatChangesOwner
   - TestSearchFusesAnItemFoundByBothListsAboveOneFoundOnlyByMeaning  # 1.0 s
   - TestSearchKeepsAPostEditedAfterTheDateItNarrowsBy  # 0.9 s
   - TestSearchKeywordAnswersOverAnAnchorArtifactIDThatDoesNotCast  # 1.1 s
@@ -2761,6 +3221,7 @@
   - TestSessionAnswersListsAPersonsReplyOnTheSessionsAsk  # 0.7 s
   - TestSessionAnswersListsAReplyInTheSessionsCommentThread  # 1.0 s
   - TestSessionAnswersListsAnEditedCommentAtItsCurrentBody  # 0.8 s
+  - TestSessionAnswersListsTheAnswerTheAsksNodeHolds
   - TestSessionAnswersMaxCharsCountsTheWordsADeclineServes  # 1.2 s
   - TestSessionAnswersRefusesASinceOlderThanSevenDays  # 0.7 s
   - TestSettlementCannotGrowADocumentPastWhatOneUploadMayHoldByRestoringAnswers  # 62.8 s
@@ -2798,6 +3259,7 @@
   - TestTheActivityFeedsETagChangesWithItsPagingQuery  # 0.8 s
   - TestTheAgentStreamRouteIsGone  # 0.3 s
   - TestTheAgentsLastActivityReadsEventsThroughTheSessionActorIndex  # 0.3 s
+  - TestTheApproveListIsTheApproveRowsLessTheTokenMintsAndTheAnswer
   - TestTheApprovedTextOverABlockDecidedSinceCarriesNothing  # 1.5 s
   - TestTheAuditedReadsSearchTheirIndex  # 2.0 s
   - TestTheBackgroundWaitHoldsForTheDeliveryHub  # 0.6 s
@@ -2805,8 +3267,10 @@
   - TestTheBlocksRoutesListAnItemsBlocks  # 1.6 s
   - TestTheCILineEndsAtTheRunWhenTheCutKeepsNothing  # 0.0 s
   - TestTheCIPullRequestLineDropsIssueKeysFromTheChecksWords  # 1.0 s
+  - TestTheCIReadWithNoOpenHeadReadsTheLastToMerge
   - TestTheCIVerdictLineNamesTheRunOnlyWhenItKeepsEveryWordOfIt  # 1.0 s
   - TestTheCatalogueIsTheDispatchToolsThatWrite  # 0.0 s
+  - TestTheCensusHoldsAPersonWhoseAnswerWasTakenOff
   - TestTheChangeSetNamesAChangedSectionByItsHeading  # 1.0 s
   - TestTheChangeSetNamesACheckWhoseRunOrWordsChanged  # 0.9 s
   - TestTheChangeSetNamesASectionLiftedToTheTopAsTheOnlyOneMoved  # 0.9 s
@@ -2814,13 +3278,21 @@
   - TestTheClientLiveFixturesAreFramesTheSocketReads  # 0.0 s
   - TestTheCommentOnTheNamedIssueListsWhatOneBlockHoldsAndCountsTheRest  # 0.1 s
   - TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites  # 2.9 s
+  - TestTheCoverageReadOverTheTuplesHoldsTheFourStatesApart
   - TestTheCredentialRelayRefusesANulBeforeTheBroker  # 0.2 s
   - TestTheDaemonWritesAStepAndAReaderReadsIt  # 0.6 s
+  - TestTheDecisionsQueryVersionsRenderTheirAnswerAsOfTheirRow
+  - TestTheDecisionsReadAnswersEveryDecisionInOrder
+  - TestTheDecisionsReadNamesASessionDeciderByTheTitleItStamped
+  - TestTheDecisionsViewAnswersTheDecisionsQuery
   - TestTheDefaultRepositoryIsADeploymentWrite  # 1.6 s
   - TestTheDeleteOfAnAcceptedSuggestionNamesTheVersionItRenamed  # 1.1 s
+  - TestTheDeliveryHistoryAnswersTheDeliveryRoutes
+  - TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead
   - TestTheDeliverySweepResumesAnAttemptWithTheUrgencyItRecorded  # 0.6 s
   - TestTheDeliverySweepSendsTheAttemptItFoundOwed  # 1.6 s
   - TestTheDocumentCutMemoKeepsTheMostRecentlyUsedCutsWithinItsBound  # 0.0 s
+  - TestTheDrainAfterAnEditsCommitWaitsForTheOwnerLockOnlyUpToItsBound
   - TestTheDriveReadsOnlyACompactionsUpdateColumnAsNoVerb  # 0.0 s
   - TestTheEarlyStopPrintsWhatWholeTextJudgingPrints  # 161.6 s
   - TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolderDies  # 1.4 s
@@ -2831,15 +3303,19 @@
   - TestTheFirstColdSubscriptionOfAFreshProcessIsSentAnEventCommittedWhileTheRelayStarts  # 0.9 s
   - TestTheFixMovesNotStartedAncestorsIntoWorkOverTheLinksLeft  # 0.4 s
   - TestTheFixRunsOnceUnderItsLeaseBesideASecondProcess  # 1.1 s
-  - TestTheGoingSweepDeletesARunPastItsTTL  # 0.2 s
   - TestTheGraphListsTheCommentAReplyAnswers  # 0.8 s
+  - TestTheGraphReadOfARunWithdrawnBeforeItsEndingAnswersWhatItsStreamWillAnswer
+  - TestTheHeadProjectionAnswersAsTheWalk
   - TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead  # 1.4 s
   - TestTheInboxRouteDescriptionStatesTheRule  # 0.0 s
   - TestTheIssueChildrenCarryWhatBlocksThemAndWhoHoldsThem  # 2.0 s
   - TestTheIssueChildrenReadEveryIssueThroughTheParentIndex  # 3.1 s
   - TestTheIssueKeywordArmMatchesItsVectorThroughIssuesSearch  # 0.6 s
   - TestTheIssueListAnswersWhatMainsStatementDid  # 3.5 s
+  - TestTheIssueReferencesRouteListsNoDecidedBy
+  - TestTheIssuesOwnPriorityDecidesTheP0Check
   - TestTheKeywordFillWritesWhileTheServerAnswers  # 12.8 s
+  - TestTheKindReadAnswersAChangeOnADecisionTheSkeletonDoesNotOpen
   - TestTheLabelsRemovalNeedsTheScopeUnderALabelledParentToo  # 1.1 s
   - TestTheLatestVersionsStoresHoldNoWordOfAPendingInsertOnceItsDeleteCommits  # 1.4 s
   - TestTheLegionBoardOfADaemonThatNeverAnsweredIsEmptyWithItsFailure  # 0.7 s
@@ -2850,27 +3326,44 @@
   - TestTheLockTablePlacesEveryWriterTheCensusNames  # 0.0 s
   - TestTheMentionDrainGivesBackItsClaimsAfterItsSendContextIsCancelled  # 0.0 s
   - TestTheMergingColumnHoldsMergingAndAwaitingMerge  # 0.3 s
+  - TestTheMoveHoldsR28sWriterCheck
   - TestTheMutatingRoutesNoToolSpecNames  # 0.0 s
+  - TestTheNeighbourhoodReadEndsInsideTheRelatedAllowance
   - TestTheNewIssueSettingsTestHookReplacesThem  # 0.5 s
+  - TestTheNewestMergedHeadIsASubjectWhereNoPullRequestIsOpen
+  - TestTheNewestMergedSubjectIsTheLastToMerge
+  - TestTheNewestResultDecidesACheckComparedWithABranch
   - TestTheNextAskOnTheIssueNamesTheDeclinedAsk  # 6.2 s
   - TestTheParentStatusRuleDecidesBeforeTheOpenForeignChildCheck  # 0.3 s
   - TestTheParentStatusRuleWaitsForItsSetting  # 1.4 s
   - TestThePersonChangesTheAnswerTheirAgentMadeAndEveryReaderStillSeesThem  # 1.1 s
   - TestThePlanSourceTagsNameTheStoresSources  # 0.9 s
+  - TestTheProjectCreateRouteNamesItsDefaultAssigneeFieldAndRefusal
   - TestTheProjectListCountsWhatMainsSubqueryDid  # 2.6 s
+  - TestTheProposedReadTakesTheProposedIndex
   - TestThePublishPathStoresTheTreesOfAnEventsPayloadTexts  # 0.2 s
   - TestTheQueryKeyWalkSeesEveryFormThisPackageReadsAKeyIn  # 0.0 s
   - TestTheQueuedTestHookListsWhatThisProcessQueued  # 0.8 s
   - TestTheReadOfPlansKeepsASubMicrosecondBoundsMeaning  # 0.8 s
+  - TestTheReadsAnswerEachNodeStateAndCountNoProposedNodeAsSettled
   - TestTheReconciliationStoresTheExcerptOfAMentionIndexedWithout  # 1.3 s
   - TestTheReferencesInStatementLeavesTheIssuesOwnNodesOutByAnAntiJoin  # 9.0 s
+  - TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas
   - TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks  # 4.8 s
+  - TestTheReferencesReadAnswersEachNewKindAtItsAddress
   - TestTheRefusalAndTheIssueReadShareTheGracesBoundary  # 0.0 s
+  - TestTheRetiredDocumentRefusalNamesAReadableAddressOfItsVersions
   - TestTheReviewSequenceTriggerReadsItsTransactionsSavepoints  # 0.7 s
   - TestTheRoleHolderShapesNameTheLegionRoles  # 0.0 s
+  - TestTheRolesOfAHeadAreThePassesAtThatHead
   - TestTheRotateHookClosesEverySocketWithMaxAge  # 0.2 s
   - TestTheSessionsAnswersListCarriesTheActOfAnAnswerMadeForThePerson  # 1.1 s
   - TestTheShapedListingsAnswerTheirModelsBytesWithoutTheHeader  # 1.1 s
+  - TestTheStateAtAHeadComesOnlyFromItsCommit
+  - TestTheStateRouteRefusesACopiedAskBlockNamingItsSourceAsk
+  - TestTheStateRouteRefusesAnAskBlockAndWritesTheAsk
+  - TestTheStateRouteRefusesAnUnclaimedCopyNamingTheAskItsOpeningLineNames
+  - TestTheStateRouteTakesTheFiveValuesWhereTheyApplyAndRefusesTheRest
   - TestTheStepRouteNamesContractsWords  # 0.0 s
   - TestTheStoreAddsNoReachAndNoReadChangesShape  # 15.5 s
   - TestTheStoreHoldsNodesAndAppendedTuples  # 1.0 s
@@ -2878,12 +3371,25 @@
   - TestTheSweepLeavesABusySendersUnstartedSendsToIt  # 1.2 s
   - TestTheSweepSettlesAnOvertakenAttemptNoSenderSettled  # 1.2 s
   - TestTheSweepSettlesAnUndeliverableMentionBehindItsOwnersLockHoldingNoTransactionID  # 0.8 s
+  - TestTheTextADocumentReadPrintsHoldsNoServerOwnedAskAttributeAndUploadsBackUnchanged
+  - TestTheTextRoutesServeAReaderOfAsksNoAskAttributeAndEveryOtherReaderTheKeptForm
+  - TestTheTimelineAnswersWhatEveryJobOfItsRunsAnswers
+  - TestTheTreeReadAnswersAResultAgainstTheWordsItWasRecordedFor
+  - TestTheTreeReadAnswersARunThatChangedANodeOnceAsItsAuthorsContext
+  - TestTheTreeReadAnswersEachTypedBlockOnceWithItsDocument
+  - TestTheTreeReadAnswersEveryDecisionMemberAsTheDecisionsReadDoes
+  - TestTheTreeReadFiltersByNodeKind
+  - TestTheTreeReadRefusesAVersionPastTheColumn
+  - TestTheTwoCutsAnswerAsTheUncutWalk
   - TestTheUnreadFlagFollowsTheReadMark  # 0.5 s
+  - TestTheVerificationViewAnswersEveryRequirementOfTheIssue
   - TestTheVersionCutReadsTheSameDecisionsAsTheBlockWalk  # 3.0 s
   - TestTheWalkOverAnAsksTextsAnswersEveryOneOfThem  # 0.0 s
   - TestTheWindowReturnsEveryUnreadConversationBesideTheFiftyMostActive  # 0.8 s
+  - TestThreadPageRefusesAQueryItCannotAnswerExactly
   - TestTwoAgentViewsShareOneSocket  # 0.5 s
   - TestTwoBuildsNeverShareAListValidator  # 1.0 s
+  - TestTwoMergesWithNoTimeAreReadInTheOrderTheyMerged
   - TestTwoPutsOfOneStepAtOneTimeKeepBoth  # 1.2 s
   - TestTwoSessionsThatChangeRolesInOnePublication  # 0.9 s
   - TestTwoWritersCommittingAtOnceEachKeepTheirBump  # 0.5 s
@@ -2900,6 +3406,8 @@
   - TestUrgencyOnlyEditLeavesAnAnchoredCommentAttached  # 2.1 s
   - TestUserAgentPinIsOnePinWhateverTheCasingOfTheirLogin  # 0.2 s
   - TestUserAgentPinWriteAnnouncesItselfToTheViewersOtherDevices  # 0.4 s
+  - TestVersionRecordDigestFillsAfterCommit
+  - TestWhileTwoBuildsServeAReopenThatRestoresAnAskKeepsTheApprovalCurrent
   - TestWhoamiNamesHumanPersonalTokenOwnerAndSharedToken  # 0.3 s
   - TestWriteAdviceCountsSessionWritesSinceLastHumanEvent  # 1.2 s
   - TestWriteAdviceFailureDoesNotAbortWrite  # 0.7 s

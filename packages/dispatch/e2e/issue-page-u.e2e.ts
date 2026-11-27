@@ -12,11 +12,8 @@ import {
   NODE_STATE_WORDS,
   SPEC_WORDS,
 } from "../web/src/features/issue-page/page-words";
-import {
-  nextTreeCursor,
-  type TreeIdReads,
-  treeIdOf,
-} from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { nextTreeCursor } from "../web/src/features/issue-page/tree-read/comment-positions";
+import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { parseNodeReference } from "../web/src/features/refs/routes";
 import { listComments } from "./api";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";

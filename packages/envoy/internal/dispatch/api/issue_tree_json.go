@@ -22,10 +22,10 @@ import (
 // (appendTreeString), a time in RFC 3339 with nanoseconds, a map's keys in sorted order, a display
 // tree reformatted by jsontext with the options encoding/json writes a Marshaler's output with
 // (jsontext.AppendFormat with json.DefaultOptionsV1), and each member few nodes carry - a
-// decision, an ask, a plan, a result, a check, a document, an anchor, an actor with more than its
-// kind, its id and its proof - through json.Marshal itself. A value it cannot write - a time outside
-// RFC 3339, a display tree that is no JSON - is written by WriteJSON, which answers it as it always
-// did.
+// decision, an ask, a plan, a result, a check, a document, an anchor, an ask's block anchor, an
+// actor with more than its kind, its id and its proof - through json.Marshal itself. A value it
+// cannot write - a time outside RFC 3339, a display tree that is no JSON - is written by
+// WriteJSON, which answers it as it always did.
 
 // treeAnswerBuffers holds the buffers answers are appended into, so a read of a large tree does
 // not allocate its answer's bytes again.
@@ -397,6 +397,12 @@ func appendIssueTreeNode(b []byte, node *model.IssueTreeNode) ([]byte, error) {
 	if node.Anchor != nil {
 		b = append(b, `,"anchor":`...)
 		if b, err = appendTreeMarshaled(b, node.Anchor); err != nil {
+			return b, err
+		}
+	}
+	if node.BlockAnchor != nil {
+		b = append(b, `,"block_anchor":`...)
+		if b, err = appendTreeMarshaled(b, node.BlockAnchor); err != nil {
 			return b, err
 		}
 	}

@@ -1,4 +1,4 @@
--- 20261123180100_issue_tree_head.up.sql — the head projection of each issue's tree, and the mark
+-- 20261127120803_issue_tree_head.up.sql — the head projection of each issue's tree, and the mark
 -- that says an issue's rows may be read.
 --
 -- It is dated after every type migration of its release. While it is pending, the census reads

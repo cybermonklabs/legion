@@ -181,6 +181,37 @@ func requireVersionEvent(t *testing.T, database *store.Store, artifactID string,
 	return id, actor
 }
 
+// requireNamedByTheTick fails unless version number of the document artifactID, whose ref_key is
+// refKey, names the tick's drain's own system actor (docs.QueryDrainActor, kind system) as its one
+// author, as its node's maker and as the actor of its artifact.version, and unless none of the
+// three names one of writers, the people whose writes left the marks the tick drained (R7).
+func requireNamedByTheTick(t *testing.T, database *store.Store, what, artifactID, refKey string, number int, writers ...string) {
+	t.Helper()
+	named := func(where string, actor model.Actor) {
+		if actor.Kind != "system" || actor.ID != docs.QueryDrainActor.ID {
+			t.Errorf("%s: %s names %+v, want the drain's system actor, kind system and id %s", what, where, actor, docs.QueryDrainActor.ID)
+		}
+		if slices.Contains(writers, actor.ID) {
+			t.Errorf("%s: %s names %s, whose request wrote a mark the tick drained; the tick's drain names no request writer", what, where, actor.ID)
+		}
+	}
+	authors := versionOf(t, database, artifactID, number).Authors
+	if len(authors) != 1 {
+		t.Errorf("%s: version %d of %s is written by %+v, want the drain's system actor alone", what, number, refKey, authors)
+	}
+	for _, author := range authors {
+		named(fmt.Sprintf("version %d of %s's author", number, refKey), author)
+	}
+	var maker model.Actor
+	if err := database.Pool.QueryRow(context.Background(), `select made_by from graph_nodes where kind = $1 and id = $2`,
+		graphstore.KindVersion, graphstore.VersionID(refKey, number)).Scan(&maker); err != nil {
+		t.Fatalf("%s: read the node of version %d of %s: %v", what, number, refKey, err)
+	}
+	named(fmt.Sprintf("the node of version %d of %s", number, refKey), maker)
+	_, actor := requireVersionEvent(t, database, artifactID, number)
+	named(fmt.Sprintf("the artifact.version of version %d of %s", number, refKey), actor)
+}
+
 // requestedVersionOf is the version the approval request askID names of the document artifactID.
 func requestedVersionOf(t *testing.T, database *store.Store, askID, artifactID string) int {
 	t.Helper()
@@ -297,11 +328,12 @@ func requireDrainTrace(t *testing.T, what string, sent []storetest.SentStatement
 //     its artifact.version, and the approval stands at the new version.
 //   - Its retraction moves a result node the approval holds: the drain writes the version and
 //     carries nothing, and the approval reads changed since.
-//   - With the request's drain suppressed, a result and its retraction on the issue leave one mark,
-//     caused by the greater event and the greater tuple sequence of the two, with the retraction's
-//     writer; the tick of the block-index reconciliation writes the version under that event, in the
-//     drain's name of the newest marking tuple's writer, and clears the mark, and a second tick
-//     writes nothing.
+//   - With the request's drain suppressed, alice's result and bob's retraction of it leave one mark,
+//     caused by the greater event and the greater tuple sequence of the two, with bob, the
+//     retraction's writer, at its greatest_seq; the tick of the block-index reconciliation writes
+//     the version under that event, in the name of the drain's own system actor
+//     (docs.QueryDrainActor, kind system) on the version, its node and its artifact.version, never
+//     alice's or bob's, and clears the mark, and a second tick writes nothing.
 //   - A result on an issue that has not converted marks nothing and runs no drain.
 //
 // The node PATCH's eventless mark (greatest_event null) and its drain are held by
@@ -327,10 +359,11 @@ func TestIssueQueryMarksDrainAfterCommit(t *testing.T) {
 		result := decodeBody[recordedResult](t, recorded).Result
 		return result, eventOf(t, database, "result.recorded", "payload->>'result_id'", result.ID)
 	}
-	retractOne := func(t *testing.T, result model.CheckResult) int64 {
+	retractOne := func(t *testing.T, result model.CheckResult, login string) int64 {
 		t.Helper()
-		if retracted := retractAsPerson(t, handler, result.ID, "The run measured the wrong build."); retracted.Code != http.StatusCreated {
-			t.Fatalf("retract the result %s: status=%d body=%s", result.ID, retracted.Code, retracted.Body.String())
+		if retracted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/results/"+result.ID+"/retract",
+			map[string]any{"reason": "The run measured the wrong build."}, login); retracted.Code != http.StatusCreated {
+			t.Fatalf("retract the result %s as %s: status=%d body=%s", result.ID, login, retracted.Code, retracted.Body.String())
 		}
 		return eventOf(t, database, "result.retracted", "payload->>'result_id'", result.ID)
 	}
@@ -432,7 +465,7 @@ func TestIssueQueryMarksDrainAfterCommit(t *testing.T) {
 
 	t.Run("a retraction carries nothing", func(t *testing.T) {
 		before := newestQueryVersion(t, database, verification.id)
-		event := retractOne(t, carried)
+		event := retractOne(t, carried, "alice")
 		version := newestQueryVersion(t, database, verification.id)
 		if version.number != before.number+1 || version.markdown != before.markdown {
 			t.Fatalf("the retraction leaves the Verification document at version %d holding %q, want version %d holding %q",
@@ -454,13 +487,13 @@ func TestIssueQueryMarksDrainAfterCommit(t *testing.T) {
 		drains := probe.drains.Load()
 		probe.suppress.Store(true)
 		result, recordedEvent := recordOne(t)
-		retractedEvent := retractOne(t, result)
+		retractedEvent := retractOne(t, result, "bob")
 		probe.suppress.Store(false)
 		if ran := probe.drains.Load(); ran != drains {
 			t.Fatalf("the suppressed requests ran %d drains", ran-drains)
 		}
 		seq := max(greatestSeqOf(t, database, recordedEvent), greatestSeqOf(t, database, retractedEvent))
-		requireMarkCauses(t, database, "a result and its retraction", issue.Key, max(recordedEvent, retractedEvent), seq, "alice")
+		requireMarkCauses(t, database, "alice's result and bob's retraction", issue.Key, max(recordedEvent, retractedEvent), seq, "bob")
 		if held := newestQueryVersion(t, database, verification.id); held.number != before.number {
 			t.Fatalf("the suppressed drain left the Verification document at version %d, want %d", held.number, before.number)
 		}
@@ -482,9 +515,7 @@ func TestIssueQueryMarksDrainAfterCommit(t *testing.T) {
 		}
 		requireRecordedDigest(t, database, "the version the tick drained", issue.Key, graphstore.QueryVerification, version)
 		requireRevisedVersion(t, database, "the version the tick drained", verification.id, verification.refKey, version.number, retractedEvent)
-		if _, actor := requireVersionEvent(t, database, verification.id, version.number); actor.Kind != "user" || actor.ID != "alice" {
-			t.Errorf("the tick's artifact.version names %+v, want alice, who wrote the tuple at the mark's greatest_seq", actor)
-		}
+		requireNamedByTheTick(t, database, "the version the tick drained", verification.id, verification.refKey, version.number, "alice", "bob")
 
 		again, err := documents.ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil)
 		if err != nil {

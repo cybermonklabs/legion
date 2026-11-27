@@ -243,10 +243,13 @@ export function TreeReadFailed({ issue }: { issue: IssueDetails }): ReactNode {
  * The control after a view's last row while its view read answers a next page (R15), in the
  * view's own measure: it says how many nodes the read holds after the pages read
  * (`NextPageWords`), and a press, or Enter on it, reads the next page (`useNextViewPage`), whose
- * rows the view draws where the read's order puts them, and puts the focus on the first row the
- * view drew that it had not drawn before, once it is drawn, unless the reader acts first. A press
- * takes no focus from where it was (`preventDefault` on `mousedown`), since the control goes once
- * no page is left. Nothing while the view's answer names no next page.
+ * rows the view draws where the read's order puts them, and puts the focus on the first row of a
+ * node the view did not draw as the press was made, once it is drawn, unless the reader acts
+ * first. A row is told by its node (`data-node-id`), not by its element: a read the press waits
+ * for can draw a row it held anew, as a Keep moves its decision from one part of the Decisions
+ * view to another. A press that reads nothing lands nowhere. A press takes no focus from where it
+ * was (`preventDefault` on `mousedown`), since the control goes once no page is left. Nothing
+ * while the view's answer names no next page.
  */
 export function NextViewPage({
   filter,
@@ -257,8 +260,8 @@ export function NextViewPage({
 }): ReactNode {
   const next = useNextViewPage(issueKey, filter);
   const box = useRef<HTMLDivElement | null>(null);
-  // The landing on the first new row a press waits for, which the reader's next act, another
-  // press or the control leaving the page ends.
+  // The landing on the first row of a new node a press waits for, which the reader's next act,
+  // another press, the press merging no page or the control leaving the page ends.
   const landing = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => landing.current?.abort(), []);
   if (next === undefined) return null;
@@ -266,22 +269,32 @@ export function NextViewPage({
     const view = box.current?.parentElement;
     if (view == null) return;
     landing.current?.abort();
-    const before = new Set(view.querySelectorAll(VIEW_ROW));
+    const before = new Set(
+      [...view.querySelectorAll<HTMLElement>(VIEW_ROW)].map((row) => row.dataset.nodeId)
+    );
     const acts = abortOnReaderAct();
     landing.current = acts;
     // The view draws the page's rows in a render after the answer lands, so each change of what it
-    // draws is looked at until a row it did not draw before is there.
+    // draws is looked at until a row of a node it did not draw before is there.
     const drawn = new MutationObserver(() => {
-      const row = [...view.querySelectorAll<HTMLElement>(VIEW_ROW)].find((one) => !before.has(one));
+      const row = [...view.querySelectorAll<HTMLElement>(VIEW_ROW)].find(
+        (one) => !before.has(one.dataset.nodeId)
+      );
       if (row === undefined) return;
       acts.abort();
       moveToRow(row);
     });
     drawn.observe(view, { childList: true, subtree: true });
     acts.signal.addEventListener("abort", () => drawn.disconnect());
-    // A refused page, or one that names a cursor the read asked for already, leaves the answer as
-    // it was (`readNextTreePage`), and the control stays for another press.
-    next.read().catch(() => acts.abort());
+    // A press that merged no page lands nowhere. A refused page, or one that names a cursor the
+    // read asked for already, leaves the answer as it was (`readNextTreePage`), and the control
+    // stays for another press.
+    next.read().then(
+      (merged) => {
+        if (!merged) acts.abort();
+      },
+      () => acts.abort()
+    );
   };
   return (
     <div className={`text-xs leading-7 ${pageQuietText}`} data-tree-more="" ref={box}>
@@ -298,7 +311,8 @@ export function NextViewPage({
   );
 }
 
-/** A row a view draws, the outline's (`NodeRow.tsx`) or one of its own that carries the mark. */
+/** A row a view draws, the outline's (`NodeRow.tsx`) or one of its own that carries the mark,
+ *  each with its node's id (`data-node-id`). */
 const VIEW_ROW = "[data-node-row]";
 
 /** The outline's tree itself (`IssueTree.tsx`), by its name. */

@@ -352,11 +352,23 @@ type issueTreeBuilder struct {
 	counted  map[string]int
 }
 
-// treeAsk is what an ask's row says that its node does not: its question, its state, and the rest
-// of its wording, its options, urgency and multiple.
+// treeAsk is what an ask's row says that its node does not: its question, its state, the rest of
+// its wording, its options, urgency and multiple, and the block its anchor names (askBlockAnchor),
+// nil where it names none.
 type treeAsk struct {
 	question, state string
 	wording         model.IssueTreeAsk
+	blockAnchor     *model.IssueTreeBlockAnchor
+}
+
+// askBlockAnchor is the block an ask's stored anchor names, from the anchor's artifact_id and
+// block_id as text, as GET /api/v1/artifacts/{id}/blocks reads them (blockReferences): none where
+// either is null or empty, as for an ask anchored nowhere or across two top-level blocks.
+func askBlockAnchor(artifactID, blockID *string) *model.IssueTreeBlockAnchor {
+	if deref(artifactID) == "" || deref(blockID) == "" {
+		return nil
+	}
+	return &model.IssueTreeBlockAnchor{ArtifactID: *artifactID, BlockID: *blockID}
 }
 
 // treeResult is what a result's check_results row and its retraction hold for the tree read: who
@@ -1678,17 +1690,21 @@ func (b *issueTreeBuilder) readMembers() error {
 	queueTexts(graphstore.KindComment, `select id::text, body from comments where id = any($1::uuid[])`, comments)
 	queueTexts(graphstore.KindMessage, `select id::text, body from messages where id = any($1::uuid[])`, messages)
 	if len(asks) > 0 {
-		batch.Queue(`select id::text, question, state, options, urgency, multiple from asks where id = any($1::uuid[])`, asks).Query(func(rows pgx.Rows) error {
+		batch.Queue(`
+			select id::text, question, state, options, urgency, multiple, anchor->>'artifact_id', anchor->>'block_id'
+			from asks where id = any($1::uuid[])`, asks).Query(func(rows pgx.Rows) error {
 			for rows.Next() {
 				var id string
 				var ask treeAsk
 				var options []byte
-				if err := rows.Scan(&id, &ask.question, &ask.state, &options, &ask.wording.Urgency, &ask.wording.Multiple); err != nil {
+				var anchorArtifact, anchorBlock *string
+				if err := rows.Scan(&id, &ask.question, &ask.state, &options, &ask.wording.Urgency, &ask.wording.Multiple, &anchorArtifact, &anchorBlock); err != nil {
 					return err
 				}
 				if err := json.Unmarshal(options, &ask.wording.Options); err != nil {
 					return fmt.Errorf("decode the options of ask %s: %w", id, err)
 				}
+				ask.blockAnchor = askBlockAnchor(anchorArtifact, anchorBlock)
 				b.asks[id] = ask
 				b.texts[refs.Target{Kind: graphstore.KindAsk, ID: id}] = ask.question
 			}
@@ -2557,6 +2573,7 @@ func (b *issueTreeBuilder) node(target refs.Target) model.IssueTreeNode {
 		wording := ask.wording
 		b.treeAskAnswer(&wording, target)
 		node.Ask = &wording
+		node.BlockAnchor = ask.blockAnchor
 	}
 	if decision, decided := b.decisions[target]; decided {
 		node.Decision = &model.IssueTreeDecision{Decision: decision}

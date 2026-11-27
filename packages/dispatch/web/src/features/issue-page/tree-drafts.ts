@@ -23,7 +23,7 @@ import { buildDispatchReference, issueOrDocumentTitle, parseNodeReference } from
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { firstWordedBlock } from "../refs/tree-fragment";
 import type { DecisionNode } from "./decision-nodes/decision-nodes";
-import { blockIdOfNode, changeMayBeOlder, reviewState } from "./decision-review";
+import { blockIdOfNode, changeMayBeUnloaded, reviewState } from "./decision-review";
 import { artifactsBySlug } from "./issue-artifacts";
 import type {
   IssueTreeReads,
@@ -80,7 +80,7 @@ export interface Draft {
   author?: Actor;
   /** A person's answer to this ask, which the ask's own row and body draw (`TreeNode.answer`). */
   answer?: NodeAnswer;
-  /** Whether a Change of this decision may stand on a comment page the read has not loaded,
+  /** Whether a Change of this decision may stand on a page the read has not loaded,
    *  where it is drawn with no Change (`TreeNode.changeUnread`, `markChangeUnread`). */
   changeUnread?: true;
   chips: NodeChip[];
@@ -141,9 +141,13 @@ export interface Draft {
   /** Whether the model marks this decision unsure: its `uncertainty` is `high`. */
   unsure?: true;
   /** Whether this node waits on the reader: a decision in their review list (`inReviewList`)
-   *  that carries no mark of a Change on a comment page not read yet (`changeUnread`), or an open
+   *  that carries no mark of a Change on a page not read yet (`changeUnread`), or an open
    *  question whose turn is the reader's own (`waiting_on_person`). */
   waiting: boolean;
+  /** Whether this decision is in the reader's review list and would wait on them but for its
+   *  mark of a Change on a page not read yet (`changeUnread`): no decision known to wait, which
+   *  the Decisions control's to-review flag counts as its "+" (`TreeNode.waitingUnread`). */
+  waitingUnread?: true;
 }
 
 /** What every builder needs of the reads: how this issue addresses a node, and what a reference
@@ -675,7 +679,7 @@ export function deciderOf(
 }
 
 /** Marks `draft`, a decision, where it is drawn as waiting for review or kept with no Change while
- *  a Change of it may stand on a comment page the tree read's `answer` does not hold yet
+ *  a Change of it may stand on a page the tree read's `answer` does not hold yet
  *  (`changeUnread`): its state then carries "+", the page's mark of a count with more to read
  *  (R15), so a decision whose Change the page has not read does not read as unchanged. */
 export function markChangeUnread(
@@ -692,15 +696,17 @@ type ReviewableChange = Partial<
 >;
 
 /**
- * Whether `decision` carries the mark of a Change on a comment page the tree read's `answer` does
- * not hold yet (`markChangeUnread`), where `changed` says whether a Change of it is held: by its
- * state (`reviewState`), it waits for review or stands kept, and a Change of it may stand on an
- * older page (`changeMayBeOlder`). Such a decision waits on no reader until that page is read
- * (decision 563 (4)): the outline's `waiting`, the header's count (`waiting.ts`) and the count of
- * the Decisions view's review list, where it stands drawn with the mark
- * (`decisions-filter/decisions-parts.ts`' `reviewWaiting`), leave it out of what waits, and the
- * page reads the older pages for it once it has drawn (`tree-read/tree-read.ts`'
- * `useReadOlderComments`).
+ * Whether `decision` carries the mark of a Change on a page the tree read's `answer` does not hold
+ * yet (`markChangeUnread`), where `changed` says whether a Change of it is held: by its state
+ * (`reviewState`), it waits for review or stands kept, and a Change of it may stand on a next
+ * page of the read or on an older comment page (`changeMayBeUnloaded`). A decision whose Change
+ * the answer holds - a comment the read hangs under its node - is `changed`, drawn with that
+ * Change, and never marked, whatever pages remain. A marked decision waits on no reader until
+ * those pages are read (decision 563 (4), decision 574 (B)): the outline's `waiting`, the
+ * header's count (`waiting.ts`) and the count of the Decisions view's review list, where it
+ * stands drawn with the mark (`decisions-filter/decisions-parts.ts`' `reviewWaiting`), leave it
+ * out of what waits, and the page reads the next pages and then the older comment pages for it
+ * once it has drawn (`tree-read/tree-read.ts`' `useReadUnloadedPages`).
  */
 export function changeUnread(
   decision: ReviewableChange,
@@ -708,7 +714,7 @@ export function changeUnread(
   answer: TreeAnswer | undefined
 ): boolean {
   const state = reviewState(decision, changed);
-  return (state === "waiting_review" || state === "kept") && changeMayBeOlder(decision, answer);
+  return (state === "waiting_review" || state === "kept") && changeMayBeUnloaded(decision, answer);
 }
 
 /**

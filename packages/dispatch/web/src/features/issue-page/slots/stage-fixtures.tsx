@@ -38,7 +38,9 @@ import { ViewRowSlot } from "./view-row";
  * (`outline-reads.test.tsx`) draw in; the outline's own tests and the Plan view's
  * (`IssueTree.test.tsx`, `PlanFilterBody.test.tsx`) draw that stack by hand. Details' tests
  * (`details-more.test.tsx`) draw what they test under the location the browser makes for an
- * address (`renderAtBrowserEntry`), as the stage's tests do.
+ * address (`renderAtBrowserEntry`), as the stage's tests do. `spyOnBoxes` gives the boxes
+ * happy-dom does not lay out, for the outline's tests, the Spec body's drawn test and the failed
+ * read's line's test.
  */
 
 /** A navigator that goes nowhere, for a router whose location the case sets itself. */
@@ -380,4 +382,18 @@ export function stubReads(): { mockRestore(): void }[] {
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
   ];
+}
+
+/** Answers each HTML element's box with `box`, called on that element as the DOM's own read is;
+ *  any other element keeps the empty box the DOM gives it. On Element, which owns the method: a
+ *  spy on HTMLElement leaves an own property behind once restored, which hides every later spy on
+ *  Element (Margin.landing.test.tsx's `stubRects`). */
+export function spyOnBoxes(
+  box: (this: HTMLElement) => DOMRect
+): Mock<Element["getBoundingClientRect"]> {
+  return spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    return this instanceof HTMLElement ? box.call(this) : new DOMRect();
+  });
 }

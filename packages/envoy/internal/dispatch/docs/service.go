@@ -373,6 +373,15 @@ type Service struct {
 	// a write left owed (fillOwedDigests), once that write has committed and before the fill's own
 	// transaction begins. Unset outside tests.
 	fillHold atomic.Pointer[func(issueKey string)]
+	// drainHold, where a test set it (HoldDrains), runs at the start of each drain of an issue's
+	// query mark (drainMark), once the fill before it has committed and before the drain's own
+	// transaction begins. Unset outside tests.
+	drainHold atomic.Pointer[func(issueKey string)]
+	// afterCommitLockWaitForTest, where a test set it (SetAfterCommitLockWaitForTest), replaces
+	// afterCommitLockWait as the bound of each lock wait of the fill and the drain a write's caller
+	// runs after its COMMIT (Service.afterCommitWait); a negative value takes the bound out. Zero,
+	// its value outside tests, leaves the constant.
+	afterCommitLockWaitForTest atomic.Int64
 	// beforeFlushMeasure runs once a flush has copied the room's shadow window and the classes it
 	// is to store under the state's lock and released that lock, and before it measures them on
 	// the shadow (Service.flushThrough, storedClasses). Nil outside tests; tests use it to drop

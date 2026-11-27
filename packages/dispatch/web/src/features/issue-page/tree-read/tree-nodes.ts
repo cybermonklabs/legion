@@ -73,7 +73,7 @@ import {
   stableSourceOf,
   type TreeContext,
 } from "../tree-drafts";
-import { splitPosition } from "./comment-positions";
+import { nextTreeCursor, splitPosition } from "./comment-positions";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
 
 /**
@@ -706,9 +706,9 @@ function draftResult(
  * `decision` names no decider; none where the read answers no such tuple. A person's Change the
  * read hangs under it says it waits on its agent (`decisionNodeChanges`), and names who asked
  * for it: the first author of the newest Change (`changedBy`), whose name the row draws after
- * "Changed by". Where the read hangs no Change under it and the answer names an older comment
- * page that may hold one, its state says so (`markChangeUnread`) and it waits on no reader until
- * that page is read.
+ * "Changed by". Where the read hangs no Change under it and the answer names a next page or an
+ * older comment page that may hold one, its state says so (`markChangeUnread`) and it waits on no
+ * reader until that page is read.
  *
  * Whether its agent was unsure and whether it waits on the reader are read off the decision as
  * every other reader of a decision reads it (`decisionNodes`), so the row, the header's count
@@ -764,13 +764,24 @@ function draftDecision(
   }
   draft.replaced = decision.replaced === true;
   if (decided?.unsure ?? decision.unsure === true) draft.unsure = true;
-  // A decision the read hangs no Change under may have one on a comment page not read yet.
+  // A decision the read hangs no Change under may have one on a page the read has not loaded.
   markChangeUnread(draft, reviewed, changed, answer);
   draft.waiting =
     node.state !== "overtaken" &&
     decided !== undefined &&
     context.viewer !== undefined &&
     inReviewList(decided, context.isCoverageStatement, changed || draft.changeUnread === true);
+  // One the mark alone keeps from waiting stands in the review list all the same, and the
+  // Decisions control's to-review flag draws "+" for it (decision 580).
+  if (
+    draft.changeUnread === true &&
+    node.state !== "overtaken" &&
+    decided !== undefined &&
+    context.viewer !== undefined &&
+    inReviewList(decided, context.isCoverageStatement, changed)
+  ) {
+    draft.waitingUnread = true;
+  }
   return draft;
 }
 
@@ -1507,18 +1518,6 @@ export function nodesRemaining(answer: TreeAnswer): number | undefined {
   return nextTreeCursor(answer) !== undefined && typeof remaining === "number"
     ? remaining
     : undefined;
-}
-
-/**
- * The cursor of the page after `page` in its read, or undefined where `page` is the last: one
- * whose cursor is null, left out of the body, or empty, as a server that drops an empty field
- * writes it. The one rule every walk of the read ends by: the page's own (`tree-read.ts`'
- * `readTree`) and the e2e helpers', which load this module and not that one, as they do for
- * `mergeTreePages`.
- */
-export function nextTreeCursor(page: TreeAnswer): string | undefined {
-  const { cursor } = page;
-  return typeof cursor === "string" && cursor !== "" ? cursor : undefined;
 }
 
 /**

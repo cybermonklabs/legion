@@ -54,9 +54,9 @@ type itemBlockNode struct {
 // edited before blocks were recorded) and changed at its changed revision's time. It belongs to
 // its item at that revision. A block of a comment carries its comment's EditedAt and delete mark
 // (ItemKind.postMarkColumns), as the comment's own node does; a part of an ask carries neither.
-// A part of an ask whose maker is no actor is left out and logged, as loadAskNodes leaves out an
-// ask whose author is none; a block of a comment whose author is none fails the read, as its
-// comment's node does.
+// A part of an ask whose maker is no actor, or of an ask whose stored options are no list of
+// options (decodeAskOptions), is left out and logged, as loadAskNodes leaves out such an ask; a
+// block of a comment whose author is none fails the read, as its comment's node does.
 //
 // Its predicate and its stored state and visibility are read in one probe of its `graph_nodes`
 // row rather than two (visibleStoredKind), as the block loader reads a document's blocks: the
@@ -73,14 +73,17 @@ func itemBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind ItemKi
 	if !tables.revisions() {
 		return nil, fmt.Errorf("read the block nodes of a %q: its revisions are not recorded", string(kind))
 	}
-	maker := "t.author"
+	maker, options := "t.author", "null::jsonb"
 	if tables.makers {
 		maker = "coalesce(b.made_by, t.author)"
+	}
+	if kind == ItemAsk {
+		options = "t.options"
 	}
 	storedJoin, storedColumns, seen := visibleStoredKind(kind.BlockKind(), "b.node_id", "$3")
 	rows, err := q.Query(ctx, `
 		select b.node_id, b.block_id, b.excerpt, b.made_at, b.changed_revision, b.changed_at, b.removed_at,
-		       t.id::text, t.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), `+maker+`,
+		       t.id::text, t.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), `+maker+`, `+options+`,
 		       `+storedColumns+`, `+kind.postMarkColumns("t")+`
 		from `+tables.blocks+` b
 		join `+tables.items+` t on t.id = b.`+tables.item+`
@@ -94,6 +97,7 @@ func itemBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind ItemKi
 	}
 	defer rows.Close()
 	blocks := []itemBlockNode{}
+	var askOptions []model.AskOption
 	for rows.Next() {
 		var block itemBlockNode
 		var nodeID, blockID, itemID, project, slug string
@@ -101,17 +105,20 @@ func itemBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind ItemKi
 		var madeAt *time.Time
 		var changedAt time.Time
 		var changedRevision int
-		var author []byte
+		var author, storedOptions []byte
 		var stored StoredNode
 		var marks postMarks
 		if err := rows.Scan(append([]any{&nodeID, &blockID, &block.excerpt, &madeAt, &changedRevision, &changedAt, &block.removedAt,
-			&itemID, &issueKey, &project, &slug, &author, &stored.State, &stored.Visibility}, marks.targets()...)...); err != nil {
+			&itemID, &issueKey, &project, &slug, &author, &storedOptions, &stored.State, &stored.Visibility}, marks.targets()...)...); err != nil {
 			return nil, fmt.Errorf("scan %s block node: %w", string(kind), err)
 		}
 		authors, err := storedActor(author)
+		if err == nil && kind == ItemAsk {
+			err = decodeAskOptions(storedOptions, &askOptions, itemID)
+		}
 		if err != nil && kind == ItemAsk {
-			// A part of an ask whose maker is no actor is left out and logged, as an ask whose
-			// author is no actor is (loadAskNodes).
+			// A part of an ask whose maker is no actor, or whose ask's options are no list of
+			// options, is left out and logged, as such an ask is (loadAskNodes).
 			slog.Warn("dispatch: a part of an ask whose stored value does not parse is left out of the read",
 				"block", nodeID, "err", err)
 			continue

@@ -1666,12 +1666,15 @@ func anchorVersion(alias string) string {
 // carrying no artifact_id at all does, and as both search arms link the same ask. The version and
 // the document therefore always come from one branch.
 //
-// An ask whose stored author, or the editor its latest ask.edited event names, is no actor is
-// absent from the answer and logged, as a node the reader may not see is absent, and so is each
-// of its parts whose maker is that author (itemBlockNodes): every read of the graph reaches its
-// asks here, the walk of an issue's tree and its conversation among them (ConversationNodes), so
-// one row written by hand drops that ask from each of those reads and fails none of them, as the
-// Decisions read drops an ask whose stored value does not decode (dispatch://INFRA-1150's R4).
+// An ask whose stored author, or the editor its latest ask.edited event names, is no actor, or
+// whose stored options are no list of options (decodeAskOptions), is absent from the answer and
+// logged with its id and its issue, as a node the reader may not see is absent, and so is each of
+// its parts whose maker is that author or whose ask's options are such (itemBlockNodes): every read
+// of the graph reaches its asks here, the walk of an issue's tree and its conversation among them
+// (ConversationNodes), which leaves out with the ask every item that stands under it
+// (leftOutThreads), so one row written by hand drops that ask from each of those reads and fails
+// none of them, as the Decisions read drops an ask whose stored value does not decode
+// (dispatch://INFRA-1150's R4).
 //
 // The edit lookup repeats events_ask_payload_id's type list (migration 0030), so the planner can
 // prove the partial index serves it.
@@ -1681,7 +1684,7 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 	anchorArtifact := store.CastableUUID(`k.anchor->>'artifact_id'`)
 	storedJoin, storedColumns := storedNode("ask", "k.id::text")
 	rows, err := q.Query(ctx, `
-		select k.id::text, k.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), k.question,
+		select k.id::text, k.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), k.question, k.options,
 		       k.author, k.created_at, k.edited_at, edit.edited_by, `+documentColumns("doc")+`,
 		       case
 		         when `+anchorArtifact+` is not null then `+anchorVersion("k")+`
@@ -1714,24 +1717,34 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 		return fmt.Errorf("load ask nodes: %w", err)
 	}
 	defer rows.Close()
+	var options []model.AskOption
 	for rows.Next() {
 		var id, project, slug, question string
 		var issueKey *string
-		var author, editedBy []byte
+		var storedOptions, author, editedBy []byte
 		var createdAt time.Time
 		var editedAt *time.Time
 		var document documentParent
 		var version *int
 		var stored StoredNode
-		targets := append([]any{&id, &issueKey, &project, &slug, &question, &author, &createdAt, &editedAt, &editedBy}, document.targets()...)
+		targets := append([]any{&id, &issueKey, &project, &slug, &question, &storedOptions, &author, &createdAt, &editedAt, &editedBy}, document.targets()...)
 		if err := rows.Scan(append(targets, &version, &stored.State, &stored.Visibility)...); err != nil {
 			return fmt.Errorf("scan ask node: %w", err)
 		}
 		node := model.GraphNode{Kind: "ask", ID: id, IssueKey: issueKey, Project: project, Ref: itemRef("ask", issueKey, project, slug, id)}
-		if err := setMadeAndChanged(&node, author, createdAt, editedBy, editedAt, storedActor); err != nil {
-			// A maker or an editor that is no actor leaves the ask out (R4, above).
+		err := setMadeAndChanged(&node, author, createdAt, editedBy, editedAt, storedActor)
+		if err == nil {
+			err = decodeAskOptions(storedOptions, &options, id)
+		}
+		if err != nil {
+			// A maker or an editor that is no actor, or options that are no list of options, leave
+			// the ask out (R4, above).
+			issue := ""
+			if issueKey != nil {
+				issue = *issueKey
+			}
 			slog.Warn("dispatch: an ask whose stored value does not parse is left out of the read",
-				"ask", id, "err", err)
+				"ask", id, "issue", issue, "err", err)
 			continue
 		}
 		setStored(&node, stored)
@@ -1742,6 +1755,19 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 		nodes[[2]string{"ask", id}] = resolvedNode{GraphNode: node, text: question}
 	}
 	return rows.Err()
+}
+
+// decodeAskOptions decodes an ask's stored options, its asks row's options column raw, into
+// options, whose backing array it reuses from one ask to the next: the loaders decode them only to
+// know that they do. A JSON array that is no list of model.AskOption, which asks_options_array
+// admits, does not decode, and the error names the ask. Every read of an ask's wording decodes the
+// column so (docs.ScanAsk, api's tree read), so an ask the loaders answer is one whose options every
+// such read decodes.
+func decodeAskOptions(raw []byte, options *[]model.AskOption, askID string) error {
+	if err := json.Unmarshal(raw, options); err != nil {
+		return fmt.Errorf("decode the options of ask %s: %w", askID, err)
+	}
+	return nil
 }
 
 // loadCommentNodes resolves comment nodes. A comment is made by its author, and only its author

@@ -3,7 +3,6 @@ package docs
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -23,9 +22,6 @@ import (
 var AskColumns = `a.id::text, a.issue_key, a.artifact_id::text, a.block_id, (` + refs.AskBlockDocumentSQL("a") + `)::text, a.author, a.question, a.options, a.multiple, a.urgency,
 		a.anchor, a.state, a.answer, a.resolution, a.created_at, a.edited_at, a.kind, a.approval, a.asked_of, a.asked_of_by, a.asked_of_at`
 
-// ErrUndecodableAsk identifies an ask whose stored value cannot be decoded after its row scans.
-var ErrUndecodableAsk = errors.New("stored ask value does not decode")
-
 // UndecodableAskError is a value an ask stores that does not decode, read once its row has
 // scanned: a column of its row (ScanAsk: its author, options, anchor, answer, resolution or
 // approval), the answer its node holds, or its newest reply's author (api's scanAskRead). AskID is
@@ -42,8 +38,6 @@ func (e *UndecodableAskError) Error() string {
 }
 
 func (e *UndecodableAskError) Unwrap() error { return e.Err }
-
-func (e *UndecodableAskError) Is(target error) bool { return target == ErrUndecodableAsk }
 
 // ScanAsk decodes one AskColumns row. extra receives, in order, any columns the query
 // selects after AskColumns. A stored value of the row that does not decode answers an

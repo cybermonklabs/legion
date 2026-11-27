@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The head projection of each issue's tree (migration 20261123180100_issue_tree_head):
+// The head projection of each issue's tree (migration 20261127120803_issue_tree_head):
 // issue_head_nodes holds one row per node of an issue's tree with what the tree read answers of
 // it at the head, and issue_head_marks names each issue whose rows may be read. Every writer of a
 // node, and of a value or a relation out of a node, of an issue's tree writes the node's rows in
