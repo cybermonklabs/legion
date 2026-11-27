@@ -181,7 +181,7 @@ type issuePod struct {
 
 // ForIssuePod reaches GitHub with the mounted provisioning token and, when cacheURL is non-empty,
 // starts the clone from the repository cache. The cache's bearer token is separate from the GitHub
-// token and is needed only for its tar stream. clock is what the fill's waits read and sleep on:
+// token, and it carries the cache's /packs answer and its tar stream alike. clock is what the fill's waits read and sleep on:
 // its polls of a cache that is not ready and its backoff between transfers from GitHub. bound is
 // the time each clocked stage of the fill gets — the check of what the cache streamed, and the
 // transfers from GitHub — zero being FetchTimeout.
