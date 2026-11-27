@@ -491,6 +491,89 @@ func TestEveryOtherCallerOfTheWritesIsRefusedAndWritesNothing(t *testing.T) {
 	}
 }
 
+// TestAFailurePostedToOneProjectCannotBlameAPrivateProjectsDeploy: a broker token scoped to BRK
+// posts, to BRK's own route, a failure that blames a deploy of HIDDEN, a private project the token
+// does not name, by the deploy's row id, by its GitHub run and by a commit it shipped. A failure
+// counts in every project its deploy counts for (evals' failure_days.go), so such a row moves
+// HIDDEN's change fail rate through a credential that may not write HIDDEN (project_scope.go), and
+// an answer other than the one a deploy no row holds gets tells the token which commits and runs
+// HIDDEN deployed. Each post is answered as a deploy no row holds is, and writes no row (found by
+// INFRA-978's tester at a37567ad, where each was 201 and the private project's rate moved).
+func TestAFailurePostedToOneProjectCannotBlameAPrivateProjectsDeploy(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const scoped = "a-token-of-BRK"
+	rig.broker.Says(scoped, liveNamedToken(caller.jkt))
+	for _, key := range []string{brokerTestProject, "HIDDEN"} {
+		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": key, "name": key}); created.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", key, created.Code, created.Body.String())
+		}
+	}
+	if _, err := rig.database.Pool.Exec(t.Context(), `update projects set visibility = 'private' where key = 'HIDDEN'`); err != nil {
+		t.Fatalf("mark HIDDEN private: %v", err)
+	}
+	const commit = "5555555555555555555555555555555555555555"
+	hidden := writeProductionDeploy(t, rig.database, "HIDDEN", 77, time.Now().UTC().Add(-time.Hour), commit)
+	post := func(ref string, names map[string]any) *httptest.ResponseRecorder {
+		body := map[string]any{"kind": "failure", "source_ref": ref}
+		for key, value := range names {
+			body[key] = value
+		}
+		return rig.serve(caller.presenting(t, http.MethodPost, productionEventsPath(brokerTestProject), scoped, body))
+	}
+	none := post("alerts:none", map[string]any{"deploy_id": "0195f2a8-0000-7000-8000-000000000000"})
+	if none.Code != http.StatusConflict {
+		t.Fatalf("a failure blaming a deploy no row holds: status=%d body=%s, want 409", none.Code, none.Body.String())
+	}
+	want := decodeBody[map[string]any](t, none)["code"]
+	rows := countRows(t, rig.database, `select count(*) from production_events`)
+	for name, names := range map[string]map[string]any{
+		"its row id": {"deploy_id": hidden.ID},
+		"its run":    {"cicd.pipeline.run.id": "77", "repo": "acme/app"},
+		"its commit": {"commit_sha": commit},
+	} {
+		got := post("alerts:"+name, names)
+		if got.Code != none.Code || decodeBody[map[string]any](t, got)["code"] != want {
+			t.Errorf("a failure blaming HIDDEN's deploy by %s: status=%d body=%s, want %d %v as for a deploy no row holds",
+				name, got.Code, got.Body.String(), none.Code, want)
+		}
+	}
+	if after := countRows(t, rig.database, `select count(*) from production_events`); after != rows {
+		t.Fatalf("the posts left %d rows, want the %d there were", after, rows)
+	}
+}
+
+// TestARestoreCannotNameADeployThatFinishedBeforeTheFailedDeploy: Mark restored naming, as the
+// restoring deploy, one that finished before the deploy the failure blames is refused and leaves
+// the failure unrestored, while one that finished after it restores it. A deploy cannot restore a
+// failure of a deploy that came after it, and deployment-rework-rate counts the restoring deploy
+// on its own day (evals' failure_days.go), so the earlier one would count as rework in a window
+// the failure is not in (found by INFRA-978's tester at a37567ad, where the earlier deploy was
+// taken, 200).
+func TestARestoreCannotNameADeployThatFinishedBeforeTheFailedDeploy(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": brokerTestProject, "name": brokerTestProject}); created.Code != http.StatusCreated {
+		t.Fatalf("create project %s: status=%d body=%s", brokerTestProject, created.Code, created.Body.String())
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	earlier := writeProductionDeploy(t, rig.database, brokerTestProject, 1, now.Add(-3*time.Hour))
+	failed := writeProductionDeploy(t, rig.database, brokerTestProject, 2, now.Add(-2*time.Hour))
+	later := writeProductionDeploy(t, rig.database, brokerTestProject, 3, now.Add(-time.Hour))
+	failure := writeProductionFailure(t, rig.database, brokerTestProject, "alerts:1", failed.ID, now.Add(-90*time.Minute))
+	path := productionEventStatePath(brokerTestProject, failure.ID)
+	refused := rig.asPerson(t, http.MethodPut, path, map[string]any{"state": "restored", "restored_by_deploy": earlier.ID})
+	if refused.Code < 400 || refused.Code >= 500 {
+		t.Errorf("a restore by a deploy that finished an hour before the failed one: status=%d body=%s, want a refusal", refused.Code, refused.Body.String())
+	}
+	if stored := readProductionEvent(t, rig.database, brokerTestProject, failure.ID); stored.RestoredAt != nil || stored.RestoredByDeploy != nil {
+		t.Errorf("the refused restore left restored_at %v by deploy %v, want the failure unrestored", stored.RestoredAt, deref(stored.RestoredByDeploy))
+	}
+	restored := rig.asPerson(t, http.MethodPut, path, map[string]any{"state": "restored", "restored_by_deploy": later.ID})
+	if stored := readProductionEvent(t, rig.database, brokerTestProject, failure.ID); restored.Code != http.StatusOK || stored.RestoredByDeploy == nil || *stored.RestoredByDeploy != later.ID {
+		t.Fatalf("a restore by the deploy an hour after the failed one: status=%d body=%s, want 200 naming %s", restored.Code, restored.Body.String(), later.ID)
+	}
+}
+
 // TestTheStateRouteTakesAPersonAndTheProvenControllerAlone: a person rejects, re-counts and
 // restores a failure; the project's controller, the session the daemon's newest read names and a
 // broker token proves, rejects and re-counts it and may not restore it; once a later read names
