@@ -219,7 +219,7 @@ func TestEveryFrameOfTheAnswerToABrowsersSyncStep1FitsTheFrameCap(t *testing.T) 
 		return !service.hasPendingUpdates(artifactID) && !service.hasDurableAppend(artifactID)
 	})
 
-	connection, response, err := gws.DefaultDialer.Dial(socketURL(server.URL, artifactID), http.Header{"X-Dispatch-User": []string{"alice"}})
+	connection, response, err := documentDialer(t).Dial(socketURL(server.URL, artifactID), http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
 		t.Fatalf("open a reader's document socket: response=%v err=%v", response, err)
 	}
@@ -401,7 +401,7 @@ func TestAnsweringASyncStep1CostsNoMoreThanLinearlyInTheRoomsChainedClients(t *t
 		waitFor(t, answerDeadline, "the room to have stored what the chain wrote", func() bool {
 			return !service.hasPendingUpdates(rung.room) && !service.hasDurableAppend(rung.room)
 		})
-		connection, response, err := gws.DefaultDialer.Dial(socketURL(server.URL, rung.room), http.Header{"X-Dispatch-User": []string{"alice"}})
+		connection, response, err := documentDialer(t).Dial(socketURL(server.URL, rung.room), http.Header{"X-Dispatch-User": []string{"alice"}})
 		if err != nil {
 			t.Fatalf("open a reader's socket on the room of %d chained clients: response=%v err=%v", rung.clients, response, err)
 		}

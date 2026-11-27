@@ -70,13 +70,13 @@ func readKeptRoleCopy(t *testing.T, client *bus.Client, role string) (contracts.
 // which the role lane writes after its own handler has answered, and returns it.
 func waitForKeptRoleMessage(t *testing.T, client *bus.Client, role, eventID string) contracts.Envelope {
 	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(listenerWaitBound(t)); ; time.Sleep(10 * time.Millisecond) {
 		item, ok := readKeptRoleMessage(t, client, role)
 		if ok && item.EventID == eventID {
 			return item
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("role %s's kept lane does not hold event %s after 5s (last read: %+v, held: %t)", role, eventID, item, ok)
+			t.Fatalf("role %s's kept lane does not hold event %s in the time it was given (last read: %+v, held: %t)", role, eventID, item, ok)
 		}
 	}
 }
@@ -134,7 +134,7 @@ func TestAPublishToAnUnheldRoleIsKeptAndAnsweredWithItsReason(t *testing.T) {
 	const role = "kept-unclaimed"
 
 	recorder, answer := publishToRole(t, d, role,
-		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"nobody holds this yet"}`)
+		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","source_session":"ses_kept_sender","message":"nobody holds this yet"}`)
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("publish to an unheld role: status %d, body %s; want 202", recorder.Code, recorder.Body.String())
 	}
@@ -221,7 +221,7 @@ func TestAPublishToALapsedClaimIsKeptAndTheClaimStands(t *testing.T) {
 			}
 
 			recorder, answer := publishToRole(t, d, role,
-				`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"is the holder still there?"}`)
+				`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","source_session":"ses_kept_sender","message":"is the holder still there?"}`)
 			if recorder.Code != http.StatusAccepted {
 				t.Fatalf("publish to a lapsed claim: status %d, body %s; want 202 with the message kept", recorder.Code, recorder.Body.String())
 			}
@@ -462,7 +462,7 @@ func TestNoKeptRoleCopyOrPublishAnswerCarriesAKeepKey(t *testing.T) {
 	)
 
 	recorder, answer := publishToRole(t, d, role,
-		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"nobody holds this yet","keep":true}`)
+		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","source_session":"ses_kept_sender","message":"nobody holds this yet","keep":true}`)
 	if recorder.Code != http.StatusAccepted || !answer.Kept {
 		t.Fatalf("publish to an unheld role: status %d, body %s; want 202 kept", recorder.Code, recorder.Body.String())
 	}
@@ -489,8 +489,8 @@ func TestNoKeptRoleCopyOrPublishAnswerCarriesAKeepKey(t *testing.T) {
 	select {
 	case frame := <-frames:
 		assertNoKeepKey(t, "the copy handed to the role's next holder", frame)
-	case <-time.After(30 * time.Second):
-		t.Fatalf("the claimant of %s was handed no kept copy in 30 seconds", role)
+	case <-time.After(listenerWaitBound(t)):
+		t.Fatalf("the claimant of %s was handed no kept copy in time", role)
 	}
 
 	// The live send's own forward and its 200, which carry the envelope the same way.
@@ -503,8 +503,8 @@ func TestNoKeptRoleCopyOrPublishAnswerCarriesAKeepKey(t *testing.T) {
 	select {
 	case frame := <-frames:
 		assertNoKeepKey(t, "the copy forwarded to the live holder", frame)
-	case <-time.After(30 * time.Second):
-		t.Fatalf("the live holder of %s was forwarded nothing in 30 seconds", role)
+	case <-time.After(listenerWaitBound(t)):
+		t.Fatalf("the live holder of %s was forwarded nothing in time", role)
 	}
 }
 
@@ -521,7 +521,7 @@ func TestAClaimForwardsEachKeptRoleMessageToItsNewHolderExactlyOnce(t *testing.T
 	)
 
 	recorder, answer := publishToRole(t, d, role,
-		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"wait for the next holder"}`)
+		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","source_session":"ses_kept_sender","message":"wait for the next holder"}`)
 	if recorder.Code != http.StatusAccepted || !answer.Kept {
 		t.Fatalf("publish to an unheld role: status %d, body %s; want 202 kept", recorder.Code, recorder.Body.String())
 	}
@@ -1033,7 +1033,7 @@ func TestAPublishToARoleNoClaimCanNameIsRefusedAndKeepsNothing(t *testing.T) {
 	const role = "legion-infra-INFRA-839-architect"
 
 	recorder, _ := publishThrough(d,
-		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"a token no claim can name"}`)
+		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","source_session":"ses_kept_sender","message":"a token no claim can name"}`)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("publish to a role no claim can name: status %d, body %s; want 404", recorder.Code, recorder.Body.String())
 	}
@@ -1087,8 +1087,8 @@ func TestAKeptCopyReachesTheHolderThatClaimedTheRoleUnderTheKeep(t *testing.T) {
 		if forwarded.KeptAt == nil || *forwarded.KeptAt <= 0 {
 			t.Fatalf("the forwarded copy carries kept_at %v, want the time the stream stored it", forwarded.KeptAt)
 		}
-	case <-time.After(20 * time.Second):
-		t.Fatalf("the copy kept for %s, which held the role already, reached it in no 20 seconds and no second claim comes:\n%s",
+	case <-time.After(listenerWaitBound(t)):
+		t.Fatalf("the copy kept for %s, which held the role already, reached it in none of the time this package gives a wait and no second claim comes:\n%s",
 			holder, harness.logs.String())
 	}
 }

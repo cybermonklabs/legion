@@ -31,6 +31,7 @@ import {
   resolveComment,
 } from "./api";
 import { conversationFilter, holdFirstRequest } from "./editor";
+import { openIssueDetails } from "./issue-details";
 import { expectNoneOf } from "./none-of";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
@@ -104,6 +105,7 @@ test("Conversation owns the route, lists one card per message newest first, and 
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
+    await openIssueDetails(page);
     await page.getByRole("button", { name: "Subscribers: 1" }).click();
     const subscribedAgents = page.getByRole("region", { name: "Subscribed agents" });
     await expect(subscribedAgents.getByText("Planner (e2e)", { exact: true })).toBeVisible();

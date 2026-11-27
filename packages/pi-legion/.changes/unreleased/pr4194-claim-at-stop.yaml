@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  A pane's claim boot, and the claim of the controller the daemon launched, stop with the
+  session. Once the session's stop has begun, the deferred Envoy role claim is not made, a role
+  claim the listener answered 503 is not made again, and a failed `claims/ready`, at the boot or
+  after a role regain, is neither said nor sent again. A claim that fails from then on says
+  nothing and does not exit the process, so the stop's role release and DELETE run to their end.
+  The stop begins at `session_shutdown`. It also begins when Envoy refuses the claim, or the
+  controller's notice subscription, because the session is stopping, as it does in RPC mode,
+  where a SIGTERM emits no `session_shutdown`. Only a pi-envoy of this release refuses in those
+  words: beside an earlier pi-envoy, a claim at an RPC-mode stop still exits the process.
+time: 2026-11-22T02:48:51Z
+custom:
+    Issue: pr4194

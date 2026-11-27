@@ -59,10 +59,12 @@ func TestMirrorWritesTheRowOfADispatchIssueFact(t *testing.T) {
 // re-read of each issue it waits on, and its listing) and the release's read of the children it
 // adopts each write the row of the issue they read; a turn that observed nothing writes nothing;
 // a claim event writes the claim and no row. Every other fact writes neither, whatever issue it
-// names: a fact the daemon makes says what the daemon intends, never what Dispatch said. The
-// kinds are read from package intake's own source, each type that is an intake.Fact, so a kind
-// added there fails this test until a row here says what the mirror writes for it. Each row is
-// applied in a transaction of its own, which is rolled back, so each meets an empty copy.
+// names: a fact the daemon makes says what the daemon intends, never what Dispatch said, and a
+// seed's read of a document or of a new parent (PendingBasisRead, BasisChangesRead, ReparentRead)
+// carries no value of the copy at a Dispatch sequence. The kinds are read from package intake's
+// own source, each type that is an intake.Fact, so a kind added there fails this test until a row
+// here says what the mirror writes for it. Each row is applied in a transaction of its own, which
+// is rolled back, so each meets an empty copy.
 func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 	kinds := factKinds(t)
 	pool := migratedPool(t)
@@ -83,9 +85,10 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		{fact: intake.DispatchClaim{Key: "LEGION-903", Seq: 3, ClaimedBy: "user:alice"}, claims: []string{"LEGION-903"}},
 	}
 	for _, fact := range []intake.Fact{
-		intake.Handover{}, intake.DispatchArtifact{}, intake.GateAboveDispatch{},
+		intake.Handover{}, intake.DispatchArtifact{}, intake.MergeHoldsChanged{}, intake.GateAboveDispatch{},
 		intake.DispatchAskOpened{}, intake.DispatchAskRestored{}, intake.DispatchAskClosed{}, intake.DispatchAskReply{},
 		intake.DispatchApprovalMoved{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{}, intake.ProjectResumed{},
+		intake.P0BoundChanged{},
 		intake.PullRequestOpened{}, intake.PullRequestSynchronized{}, intake.PullRequestReview{}, intake.PullRequestChecks{},
 		intake.PullRequestMergeability{}, intake.PullRequestMerged{}, intake.PullRequestClosed{}, intake.PullRequestDequeued{},
 		intake.PullRequestReviewRequests{}, intake.PullRequestMergeStateUnread{},
@@ -97,7 +100,8 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.GateRequestFound{},
 		intake.CatchUpApplied{}, intake.LingerExpired{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{}, intake.CheckReport{},
 		intake.CheckWakeDue{}, intake.CheckLookEnded{}, intake.CheckBound{}, intake.ListenerWake{}, intake.PodBackstopDue{},
-		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{},
+		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{}, intake.PendingBasisRead{}, intake.BasisChangesRead{},
+		intake.ReparentRead{},
 	} {
 		rows = append(rows, row{fact: fact})
 	}

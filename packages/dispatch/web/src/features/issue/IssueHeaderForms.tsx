@@ -1,20 +1,30 @@
 import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 
+import { TruncatedText } from "../../components/TruncatedText";
 import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   borderTransparent,
   dangerText,
+  focusVisibleRing,
   inputClasses,
+  linkHoverText,
+  linkText,
   secondaryButtonBorder,
   secondaryButtonDisabledText,
   secondaryButtonText,
+  surfaceMutedStrongBg,
   textMutedHoverToSecondary,
+  textMutedOnSurface,
+  textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { AgentName, useAgentText } from "../refs/AgentName";
+import { buildIssuePath, sessionOfAddress } from "../refs/routes";
 import type { IssueDrafts } from "./useIssueDrafts";
 
-/** What the issue's message route is, said beside its value and its editor. The header draws it
- *  once, with the id `routeHintId`, which each of them names. */
+/** What the issue's message route is, said under its value in Details, with the id
+ *  `routeHintId`, which the route's control and its editor each name. */
 export const routeHint =
   "New asks, comments, and messages on this issue wake this agent or role; replies inside a thread reach their participants directly. It is where messages go, not who is working the issue — that is the claim.";
 export const routeHintId = "issue-route-hint";
@@ -26,14 +36,16 @@ const fieldBox = `w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputC
 interface HeaderFormProps {
   drafts: IssueDrafts;
   isClosed: boolean;
-  /** Closes the editor: after a save that was sent or queued, a Cancel or an Escape. */
-  onClose: () => void;
+  /** Gives the edit up and closes the editor: its Cancel and its Escape. */
+  onCancel: () => void;
+  /** Closes the editor after a save that was sent or queued. */
+  onSaved: () => void;
   /** Whether the header's issue write is out, which holds Save. */
   saving: boolean;
 }
 
 /**
- * The input an editor opens on: the trigger that opened it unmounts with the press, so without
+ * The input an editor opens on: the control that opened it unmounts with the press, so without
  * this the focus would drop to the body and a keyboard reader would have to find the form again.
  */
 function useFocusOnOpen() {
@@ -44,27 +56,25 @@ function useFocusOnOpen() {
   return input;
 }
 
-/** The issue header's editor of the message route. */
-export function IssueRouteForm({ drafts, isClosed, onClose, saving }: HeaderFormProps): ReactNode {
+/**
+ * The editor of the issue's message route. Its groups, in this order, wrapping whole: the route's
+ * field, then Save route and Cancel, then the line that says why a route is refused, drawn only
+ * while the draft is no route.
+ */
+export function IssueRouteForm({
+  drafts,
+  isClosed,
+  onCancel,
+  onSaved,
+  saving,
+}: HeaderFormProps): ReactNode {
   const input = useFocusOnOpen();
-  const discard = () => {
-    drafts.discardRoute();
-    onClose();
-  };
   const save = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (drafts.requestRouteSubmit()) onClose();
+    if (drafts.requestRouteSubmit()) onSaved();
   };
   return (
-    <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={save}>
-      <label
-        aria-describedby={routeHintId}
-        className={`text-sm font-medium ${textSecondaryOnSurface}`}
-        htmlFor="issue-route"
-        title={routeHint}
-      >
-        Message route:
-      </label>
+    <form className="flex flex-wrap items-center gap-2" onSubmit={save}>
       <input
         aria-label="Message route"
         aria-describedby={`${routeHintId} issue-route-help`}
@@ -73,23 +83,29 @@ export function IssueRouteForm({ drafts, isClosed, onClose, saving }: HeaderForm
         id="issue-route"
         onChange={(event) => drafts.writeRoute(event.target.value)}
         onKeyDown={(event) => {
-          // The Escape that ends an input method's composition is the input method's.
-          if (event.key === "Escape" && !inputMethodKey(event)) discard();
+          // The Escape that drops an input method's composition is no key of the reader's: it
+          // gives up the composition, not the edit. Safari sends it after its compositionend, with
+          // `isComposing` false and keyCode 229 (`inputMethodKey`).
+          if (inputMethodKey(event)) return;
+          if (event.key === "Escape") onCancel();
         }}
         placeholder="role:legion-controller-core"
         ref={input}
         value={drafts.route}
       />
-      <button
-        className={saveButton}
-        disabled={isClosed || !drafts.routeIsValid || saving}
-        type="submit"
-      >
-        Save route
-      </button>
-      <button className={cancelButton} onClick={discard} type="button">
-        Cancel
-      </button>
+      {/* Save and Cancel are one group: the form wraps it whole onto the next line. */}
+      <span className="inline-flex shrink-0 items-center gap-2">
+        <button
+          className={saveButton}
+          disabled={isClosed || !drafts.routeIsValid || saving}
+          type="submit"
+        >
+          Save route
+        </button>
+        <button className={cancelButton} onClick={onCancel} type="button">
+          Cancel
+        </button>
+      </span>
       <span
         className={drafts.routeIsValid ? "sr-only" : `text-sm ${dangerText}`}
         id="issue-route-help"
@@ -100,31 +116,28 @@ export function IssueRouteForm({ drafts, isClosed, onClose, saving }: HeaderForm
   );
 }
 
-/** The issue header's editor of the parent, a key in `project` or in another project. */
+/**
+ * The editor of the issue's parent, a key in `project` or in another project. Its groups, in this
+ * order, wrapping whole: the key's field, then Save parent and Cancel.
+ */
 export function IssueParentForm({
   drafts,
   isClosed,
-  onClose,
+  onCancel,
+  onSaved,
   project,
   saving,
 }: HeaderFormProps & { project: string }): ReactNode {
   const input = useFocusOnOpen();
-  const discard = () => {
-    drafts.discardParent();
-    onClose();
-  };
   const save = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (drafts.requestParentSubmit()) onClose();
+    if (drafts.requestParentSubmit()) onSaved();
   };
   return (
-    <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={save}>
+    <form className="flex flex-wrap items-center gap-2" onSubmit={save}>
       <label className="sr-only" htmlFor="issue-parent">
         Parent
       </label>
-      <span aria-hidden="true" className={`text-sm font-medium ${textSecondaryOnSurface}`}>
-        Parent:
-      </span>
       <input
         aria-describedby="issue-parent-help"
         className={fieldBox}
@@ -132,22 +145,130 @@ export function IssueParentForm({
         id="issue-parent"
         onChange={(event) => drafts.writeParent(event.target.value)}
         onKeyDown={(event) => {
-          // The Escape that ends an input method's composition is the input method's.
-          if (event.key === "Escape" && !inputMethodKey(event)) discard();
+          // The Escape that drops an input method's composition is no key of the reader's.
+          if (inputMethodKey(event)) return;
+          if (event.key === "Escape") onCancel();
         }}
         placeholder={`${project}-12`}
         ref={input}
         value={drafts.parent}
       />
-      <button className={saveButton} disabled={isClosed || saving} type="submit">
-        Save parent
-      </button>
-      <button className={cancelButton} onClick={discard} type="button">
-        Cancel
-      </button>
+      <span className="inline-flex shrink-0 items-center gap-2">
+        <button className={saveButton} disabled={isClosed || saving} type="submit">
+          Save parent
+        </button>
+        <button className={cancelButton} onClick={onCancel} type="button">
+          Cancel
+        </button>
+      </span>
       <span className="sr-only" id="issue-parent-help">
         Parent issue key, in {project} or another project; leave empty to clear the parent.
       </span>
     </form>
+  );
+}
+
+/** Whether an editor of Details is open, held by the header, which closes it with Details. */
+interface DetailsEditorProps extends Omit<HeaderFormProps, "onSaved"> {
+  editing: boolean;
+  onEditingChange: (editing: boolean) => void;
+}
+
+/**
+ * The value of the Message route row of today's issue header's Details. Its groups, in this
+ * order: the route - a control that opens its editor, which a `session:` route draws as the agent
+ * it names, with that agent's live link - or, while the reader edits it, the editor
+ * (`IssueRouteForm`); then what a route is, on a line of its own (`routeHint`).
+ */
+export function IssueRouteDetails({
+  editing,
+  onEditingChange,
+  ...form
+}: DetailsEditorProps): ReactNode {
+  const { drafts, isClosed } = form;
+  const agentText = useAgentText();
+  // A `session:` route is an agent: its button names it as `AgentName` does, with the agent's own
+  // live link beside it. A role route is its address.
+  const routeSession = sessionOfAddress(drafts.route);
+  const routeLabel = `Messages default to ${
+    drafts.route === ""
+      ? "no route"
+      : routeSession === undefined
+        ? drafts.route
+        : agentText.sessionText(routeSession, undefined)
+  }`;
+  const routeButton = (name: ReactNode) => (
+    <button
+      aria-describedby={routeHintId}
+      aria-label={routeLabel}
+      className={`inline-flex min-h-11 min-w-0 max-w-full items-center truncate rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
+      disabled={isClosed}
+      onClick={() => onEditingChange(true)}
+      title={drafts.route === "" ? undefined : drafts.route}
+      type="button"
+    >
+      <TruncatedText>{name}</TruncatedText>
+    </button>
+  );
+  return (
+    <>
+      {editing ? (
+        <IssueRouteForm {...form} onSaved={() => onEditingChange(false)} />
+      ) : routeSession === undefined ? (
+        routeButton(drafts.route === "" ? "No route" : drafts.route)
+      ) : (
+        <AgentName
+          className="inline-flex min-w-0 max-w-full items-center"
+          control={routeButton}
+          kind="control"
+          sessionId={routeSession}
+          storedTitle={undefined}
+        />
+      )}
+      <p className={`mt-1 text-xs ${textMutedOnSurface}`} id={routeHintId}>
+        {routeHint}
+      </p>
+    </>
+  );
+}
+
+/**
+ * The value of the Parent row of today's issue header's Details. Its groups, in this order,
+ * wrapping whole: the parent's key as a link, when it has one, then the control that opens the
+ * editor ("None" or "Edit"); or, while the reader edits it, the editor (`IssueParentForm`).
+ */
+export function IssueParentDetails({
+  editing,
+  onEditingChange,
+  parent,
+  project,
+  ...form
+}: DetailsEditorProps & { parent: string | null; project: string }): ReactNode {
+  if (editing) {
+    return <IssueParentForm {...form} onSaved={() => onEditingChange(false)} project={project} />;
+  }
+  return (
+    <span className="flex min-w-0 flex-wrap items-center gap-2">
+      {parent === null ? null : (
+        <Link
+          className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
+          to={buildIssuePath({ key: parent, kind: "issue" })}
+        >
+          {parent}
+        </Link>
+      )}
+      <button
+        // The name starts with the word on the button - "None" or "Edit" - because a name that
+        // does not contain the visible text leaves the control out of reach of a voice user
+        // (WCAG 2.5.3, axe's `label-content-name-mismatch`).
+        aria-label={parent === null ? "None, set parent issue" : "Edit parent issue"}
+        className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
+        disabled={form.isClosed}
+        onClick={() => onEditingChange(true)}
+        type="button"
+      >
+        {parent === null ? "None" : "Edit"}
+      </button>
+    </span>
   );
 }

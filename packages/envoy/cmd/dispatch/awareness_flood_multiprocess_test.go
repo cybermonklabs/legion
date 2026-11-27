@@ -17,6 +17,8 @@ import (
 // the flooding tab left at once), and B drops every client it has not seen before: the new reader
 // stays invisible on B for that long, while on A it is seen at once.
 func TestAReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "FLD")
 	pair.a.createProject(t, project, "Awareness flood")
@@ -56,6 +58,8 @@ func TestAReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T
 // and never relays it: bob sees her only once the flooding tab stops re-announcing and its clients
 // expire.
 func TestAReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "FLL")
 	pair.a.createProject(t, project, "Live awareness flood")

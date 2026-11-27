@@ -8,6 +8,7 @@ import (
 // ENVOY_CI_VERIFY is on or off, off when unset; any other value refuses the start naming the
 // variable, since a misspelt value would otherwise turn the check off without a word.
 func TestCIVerifySettingIsOnOrOffAndRefusesAnythingElse(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		value string
 		on    bool

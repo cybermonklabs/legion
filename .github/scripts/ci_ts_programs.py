@@ -31,6 +31,10 @@ def at(job: str, step: str, held_by: str = "") -> str:
 PROGRAMS = [
     ("contracts", "packages/contracts", at("contracts", "Typecheck contracts (bun run typecheck: bunx tsc --noEmit)")),
     ("envoy_client", "packages/envoy-client", at("envoy-client", "Typecheck Envoy client")),
+    # approve-check's session (packages/envoy/scripts/approve/session.ts) runs on envoy-client's
+    # credential and Dispatch client, so the job that typechecks envoy-client typechecks it too.
+    ("envoy_client", "packages/envoy/scripts/approve",
+     at("envoy-client", "Typecheck approve-check's session (bunx tsc --noEmit -p ../envoy/scripts/approve)")),
     ("broker_client", "packages/cipher-client", at("broker-client", "Typecheck the broker client")),
     ("pi_shared", "packages/pi-shared", at("pi-shared", "Typecheck pi-shared")),
     ("pi_envoy", "packages/pi-envoy", at("pi-envoy", "Typecheck pi-envoy")),
@@ -75,6 +79,9 @@ BUNDLES = [
     ("dispatch_two_builds_go", "packages/envoy-client/bin/dispatch.ts",
      at("dispatch-two-builds", "Two-build tests of the Dispatch server (`packages/envoy/cmd/dispatch/twobuild_cli_test.go#currentCLI` runs "
                                "`bun ../../../envoy-client/bin/dispatch.ts`, this tree's dispatch command)")),
+    ("envoy_go_checks", "packages/envoy/scripts/approve/scan.ts",
+     at("envoy-go-checks", "Scan tests of approve-check's session (bun test scripts/approve/, whose tests spawn "
+                           "`bun scripts/approve/scan.ts`)")),
 ]
 
 # The trees a filter names file by file rather than whole: the changes job's generation writes
@@ -99,7 +106,7 @@ LISTED = [
     ("dispatch_ui", "packages/contracts/src", ("dispatch_ui",),
      "the dashboard's and the proof editor's typechecks, tests and SPA build compile the contracts modules "
      "these two programs import and what those import, and no other: `packages/dispatch/web/vite.config.ts#alias` "
-     "aliases the twelve entries the dashboard imports to the same sources"),
+     "aliases the thirteen entries the dashboard imports to the same sources"),
     # The browser suite has no tsc program of its own. Its rows drive the SPA built from
     # packages/dispatch, which bundles the proof editor, and the Playwright config and the e2e
     # helpers it loads are packages/dispatch/e2e, which the dashboard's program compiles: that
@@ -110,8 +117,8 @@ LISTED = [
     # loads are its bundle's, which BUNDLES pairs with dispatch_two_builds_go, so the block is
     # the union of the two sets: a module only the command loads is one the suite loads too.
     # Its jobs' `Build contracts for dispatch e2e` step runs packages/contracts' `build:dispatch`,
-    # which bundles the twelve entries the dashboard imports (`packages/dispatch/web/vite.config.ts#alias`
-    # aliases the same twelve) and so compiles nothing outside dispatch_ui's set: not
+    # which bundles the thirteen entries the dashboard imports (`packages/dispatch/web/vite.config.ts#alias`
+    # aliases the same thirteen) and so compiles nothing outside dispatch_ui's set: not
     # packages/contracts/src/legion-api.ts, which neither Dispatch nor the command imports. A
     # change that breaks the package's full `build` fails the contracts job's own
     # `Build contracts` step, whose filter takes the whole tree.

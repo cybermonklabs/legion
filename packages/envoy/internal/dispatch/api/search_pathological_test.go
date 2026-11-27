@@ -49,6 +49,8 @@ import (
 // would otherwise spend its drain budget settling 1 MiB documents, finds no document loaded and
 // leaves each to resume.
 func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
+	// Not parallel: it holds wall-clock save times to a growth ratio (growsLinearly over time.Since),
+	// which the package's parallel tests would share the machine with.
 	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createArtifactIssue(t, handler)
 	documents := 0

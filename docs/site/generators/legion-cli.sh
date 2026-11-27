@@ -84,7 +84,7 @@ commands() {
   local line
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    [[ $line =~ ^\ \ ([a-z][a-z-]*)\ +(.*)$ ]] || fail "unexpected line in a command list: $line"
+    [[ $line =~ ^\ \ ([a-z][a-z0-9-]*)\ +(.*)$ ]] || fail "unexpected line in a command list: $line"
     case ${BASH_REMATCH[1]} in
     help | completion) continue ;;
     esac

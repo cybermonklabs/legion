@@ -114,6 +114,7 @@ func TestACommitThatFailsAfterTheMarkLeavesNoMark(t *testing.T) {
 // past IdempotencyKeyTTL and keeps one inside it, so a repeat of a day-old press is still answered
 // from its key and one past the window is a new write.
 func TestTheMaintenanceLoopKeepsAKeyForItsWholeWindow(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	rig := newKeyedRig(t, answerRun)
 	for _, key := range []string{"inside", "past"} {
 		if response := rig.send(t, "a", nil, "alice", key); response.Code != http.StatusCreated {
@@ -228,8 +229,8 @@ func TestARequestKeysRowIsOneOfItsStates(t *testing.T) {
 
 // Every route the keyed layer's own tables name - those that replay a recovery point, read the
 // post a kept answer holds again, never keep their answer, take an upload's body, or read a body
-// of their own size (handoffWriteRoute, markdownRoundTripRoute) - is a POST or PATCH route the
-// server registers: a pattern spelled wrong would silently turn its rule off.
+// of their own size (handoffWriteRoute, markdownRoundTripRoute, fileRoundTripRoute) - is a POST or
+// PATCH route the server registers: a pattern spelled wrong would silently turn its rule off.
 func TestEveryKeyedRouteTableNamesARoute(t *testing.T) {
 	t.Parallel()
 	registered := map[string]bool{}
@@ -253,6 +254,7 @@ func TestEveryKeyedRouteTableNamesARoute(t *testing.T) {
 	}
 	tables["handoffWriteRoute"] = []string{handoffWriteRoute}
 	tables["markdownRoundTripRoute"] = []string{markdownRoundTripRoute}
+	tables["fileRoundTripRoute"] = []string{fileRoundTripRoute}
 	for table, routes := range tables {
 		for _, route := range routes {
 			if !registered[route] {

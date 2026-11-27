@@ -3,6 +3,8 @@ package bus
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -110,7 +112,7 @@ func TestAPublishWithAnEndedContextSendsNothing(t *testing.T) {
 			if err := client.PublishWithin(live, envelope); err != nil {
 				t.Fatalf("publish under a live context: %v", err)
 			}
-			if _, err := received.NextMsg(5 * time.Second); err != nil {
+			if _, err := received.NextMsgWithContext(live); err != nil {
 				t.Fatalf("the subscriber received nothing from the live publish: %v", err)
 			}
 			if !tc.core {
@@ -172,6 +174,8 @@ func TestAPublishConfirmedWithASpentDeadlinePublishesNothing(t *testing.T) {
 	// span), so the publish happens and the flush that follows finds the window spent. The error is
 	// the spent window's, and not ErrWindowEndedBeforePublish, which would tell the listener the
 	// forward never left this process.
+	// A window, not a wait: the window must end while the publish is being made, and 100 ms is how
+	// long it lasts.
 	short, cancelShort := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancelShort()
 	late := 0
@@ -195,5 +199,62 @@ func TestAPublishConfirmedWithASpentDeadlinePublishesNothing(t *testing.T) {
 	}
 	if published != 1 {
 		t.Fatalf("publishConfirmed with a deadline ahead called publish %d times, want 1", published)
+	}
+}
+
+// A core publish whose read of the connection's state has not answered when its ctx ends sends
+// nothing. So its error is ErrWindowEndedBeforePublish, and it is still ErrReconnecting. The read
+// waits for nats.go's connection lock, which nats.go holds through a reconnect's handshake, and
+// publishConfirmed answers a read that ctx ended with reconnectWaitEnded. Its text stays
+// `bus: NATS is reconnecting: context deadline exceeded`. The listener marks a role forward that
+// fails so with "window_ended_before_publish":true (finishRoleForward), because the forward never
+// left this process.
+//
+// The row holds a reconnect's handshake and makes the publish under a ctx bounded at 300 ms. The
+// publish answers that text, with ErrReconnecting, context.DeadlineExceeded and
+// ErrWindowEndedBeforePublish, within the bound and a margin of 700 ms, during the attempt held
+// when it began (answerByName). Its publish is never called.
+//
+// The controls: a publish with a live ctx before the hold and once the connection is back is
+// confirmed. The negative control is publishConfirmed that returns reconnectWaitEnded alone: its
+// answer is not ErrWindowEndedBeforePublish.
+func TestAPublishWhoseStateReadItsContextEndedIsAWindowEndedBeforeThePublish(t *testing.T) {
+	// Serial (busTestParallelism): each answer has a wall-clock bound, heldBound and heldMargin.
+	client, hold := heldHandshakeClient(t)
+	conn := client.Connection()
+	subject := fmt.Sprintf("held-handshake.ended-read.%d", time.Now().UnixNano())
+	var published atomic.Int64
+	publish := func(msg *nats.Msg) error {
+		published.Add(1)
+		return conn.PublishMsg(msg)
+	}
+	confirmed := func(t *testing.T, when string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := client.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, conn.PublishMsg); err != nil {
+			t.Fatalf("control: a core publish %s answered %v, want nil", when, err)
+		}
+	}
+	confirmed(t, "before the hold")
+
+	hold.HoldReconnect(t, conn)
+	answerByName(t, hold, conn, []heldRow{
+		atBound("publishConfirmed", waitEnded, func(ctx context.Context) error {
+			err := client.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, publish)
+			if !errors.Is(err, ErrWindowEndedBeforePublish) {
+				return fmt.Errorf("%w, which is not ErrWindowEndedBeforePublish", err)
+			}
+			return err
+		}),
+	})
+	if n := published.Load(); n != 0 {
+		t.Fatalf("the core publish made during the held handshake was called %d time(s), want none", n)
+	}
+
+	releaseUntilConnected(t, hold, conn)
+	confirmed(t, "once the hold was released")
+	if n := published.Load(); n != 0 {
+		t.Fatalf("the core publish made during the held handshake was called %d time(s) after the hold's release, want none", n)
 	}
 }

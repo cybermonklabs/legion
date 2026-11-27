@@ -1,5 +1,5 @@
-import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useLocation, useNavigate, useNavigationType } from "react-router-dom";
 
 import { placeInView } from "../doc/readers-place";
 import { buildInboxPath, type InboxRoute } from "../refs/routes";
@@ -25,32 +25,90 @@ interface Neighbours {
   below: string | undefined;
 }
 
+/** What an Inbox address's history entry says about how its `?item=` got there. Kept in the
+ *  entry itself, so Back, a reload and a remount read it exactly as the entry was written, and
+ *  a `replace` that does not carry a mark drops it. */
+export interface InboxEntryState {
+  /** The column chose the row by itself - the first one the reader could see - rather than the
+   *  reader picking it. Below the column's width such a row is not open: the list shows. */
+  inboxDefaultPick?: true;
+  /** The entry was pushed over the list's own by a row the reader opened below the column's
+   *  width, so the way back to the list goes back through it. */
+  inboxOverList?: true;
+}
+
+/** The Inbox's marks on a history entry's state, whatever else the entry holds. */
+export function inboxEntryState(state: unknown): InboxEntryState {
+  if (typeof state !== "object" || state === null) return {};
+  const { inboxDefaultPick, inboxOverList } = state as Record<string, unknown>;
+  return {
+    ...(inboxDefaultPick === true ? { inboxDefaultPick: true } : {}),
+    ...(inboxOverList === true ? { inboxOverList: true } : {}),
+  };
+}
+
+type SelectMode = "column-default" | "push" | "replace";
+
+/** What the address says on a commit, read against the rows the list holds: something this list
+ *  has answered already, a listed row the reader linked or went Back to (now selected), or a row
+ *  the list does not hold, or none. */
+type AddressReading = "answered" | "listed" | "unlisted";
+
 export interface PaneSelectionOptions {
   /** How many rows a bulk snooze is deferring; zero while none is out. */
   bulkSnoozing: number;
   /** Every row the list could hold before its five fields narrow it (`Inbox`'s `candidates`). */
   candidates: readonly InboxListRow[];
+  /** Whether the reading column stands beside the list (`READING_PANE_QUERY`, 1280 px). There a
+   *  row is always selected - the first one the reader can see, until they pick another - and
+   *  the address follows the selection. Below it the address is the selection: no `?item=` is
+   *  the list with nothing open, and a row the reader opens is a new history entry whose reading
+   *  view takes the list's place. */
+  columns: boolean;
   /** The address this list is on. The selection is written into its `?item=`. */
   filter: InboxRoute;
+  /** Whether the reader's own write took the row with this id out of the list - their answer,
+   *  snooze, dismiss, Assign to me or hand-on - rather than the server on its own. */
+  leftByReader: (id: string) => boolean;
   /** The list's root, where the selected row's own element is looked up. */
   listRef: RefObject<HTMLElement | null>;
+  /** Below the column's width, the row with this id, which the reading view showed, left the list
+   *  without the reader's own write, and the list is back at that place. */
+  onOpenRowLeft: (id: string) => void;
   /** Opens the folded band, for an `?item=` naming a row the reader deferred. */
   openFoldedBand: () => void;
-  /** Whether the reading column is on. Without it there is no selection, the column shows
-   *  nothing, and nothing is written to the address. */
-  paneShown: boolean;
+  /** Whether this list selects at all: the Inbox page does at every width, the drawer never
+   *  does. Without it there is no selection, no reading view shows the row, and nothing is
+   *  written to the address. */
+  pane: boolean;
   /** The rows the reader can see, in the order they see them, as the list last rendered them.
    *  The list keeps this record for its own motion hold, and the selection is answered against
    *  exactly the rows in it. */
   presented: RefObject<readonly PlacedRow[]>;
+  /** Whether the list holds every row it will draw from this read: the asks' read has landed and
+   *  the thread side has answered too, or has none to read (`useInboxThreadRows`'s `ready`). The
+   *  thread rows come from a read of their own, which can land after the asks', so until then
+   *  the selection is not settled at all: a `?item=` naming a thread row would read as a row
+   *  this list does not hold, which closes the reading view below the column's width and has the
+   *  column pick its top row beside the list. */
+  rowsReady: boolean;
   /** Ask ids whose own snooze write is out. */
   snoozing: ReadonlySet<string>;
 }
 
 export interface PaneSelection {
+  /** Leaves the row's reading view for the list, below the column's width: back through the
+   *  history entry `open` pushed where the entry says it did, else to the address with no
+   *  `?item=`. The list then hands the focus to the row the reader left, scrolled into view. */
+  close: () => void;
   /** The row the column is showing, by its `rowId`, or undefined while it shows none. */
   id: string | undefined;
-  /** Selects a row, or nothing, and writes it to the address. */
+  /** The reader's own pick of a row, by a click or Enter: from the column's width it is
+   *  `select`; below it, it opens the row's reading view in place of the list as a new history
+   *  entry, so the browser's Back returns to the list as the view's own Inbox control does. */
+  open: (id: string) => void;
+  /** Selects a row, or nothing, and writes it to the address in place of the entry it is on.
+   *  Below the column's width, nothing selected on an entry `open` pushed goes back through it. */
   select: (id: string | undefined) => void;
   /** The selection as it stands now, for a callback whose closure is older than it: an answer's
    *  own card holds the `onAnswered` of the render its write began in, and by the time the
@@ -77,20 +135,29 @@ export interface PaneSelection {
  * The Inbox reading column's selection: which row the column shows, how the keys and the
  * address move it, and what keeps it on a question whose row has gone.
  *
- * The address holds the selection (`?item=`), so a reload or a link keeps the reader's place;
- * below the column's width, and in the drawer, there is no selection and nothing is written.
+ * The address holds the selection (`?item=`), so a reload or a link keeps the reader's place.
+ * From the column's width a row is always selected; below it a row is selected only while its
+ * reading view is open, so there an address with no `?item=` is the list. In the drawer there
+ * is no selection and nothing is written.
  */
 export function usePaneSelection({
   bulkSnoozing,
   candidates,
+  columns,
   filter,
+  leftByReader,
   listRef,
+  onOpenRowLeft,
   openFoldedBand,
-  paneShown,
+  pane,
   presented,
+  rowsReady,
   snoozing,
 }: PaneSelectionOptions): PaneSelection {
   const navigate = useNavigate();
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  const entry = inboxEntryState(location.state);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const selectedNow = useRef<string | undefined>(undefined);
   selectedNow.current = selectedId;
@@ -125,17 +192,60 @@ export function usePaneSelection({
   const nextAfterSelected = (): string | undefined =>
     stoodBetween.current.below ?? stoodBetween.current.above;
 
-  const select = (id: string | undefined): void => {
+  /** The history entry `close` went back from, by its key, while that step is under way. A
+   *  browser's `history.go` lands a frame or more later, so until it does the address still
+   *  names the row the reader closed: read as a new address, it would select that row again. */
+  const leaving = useRef<string | undefined>(undefined);
+  const listAnswered = useRef(false);
+  /** Below the column's width, the row that now stands where the row the reading view showed
+   *  stood, when that row left the list on its own: the list comes back with the focus there. */
+  const returnTo = useRef<string | undefined>(undefined);
+
+  const select = (id: string | undefined, mode: SelectMode = "replace"): void => {
     setSelectedId(id);
     selectedNow.current = id;
     shownItem.current = id;
-    if (id !== filter.item) {
-      // Replace, never push: a reader walking the list with `j` would otherwise have to press
-      // Back once per row to leave the page, the rule the assignee filter already holds to.
-      // Selecting nothing clears `?item=` rather than leaving it on the row that has just
-      // left: a reload reads the address, and an address naming a row the reader deferred
-      // would open the folded band and put that question back in front of them.
-      navigate(buildInboxPath({ ...filter, item: id }), { replace: true });
+    const written: InboxEntryState =
+      mode === "push"
+        ? { inboxOverList: true }
+        : id === undefined
+          ? {}
+          : inboxEntryState({
+              inboxDefaultPick: mode === "column-default",
+              inboxOverList: entry.inboxOverList,
+            });
+    if (
+      id === filter.item &&
+      written.inboxDefaultPick === entry.inboxDefaultPick &&
+      written.inboxOverList === entry.inboxOverList
+    ) {
+      return;
+    }
+    // Replace, but for a row the reader opens below the column's width: a reader walking the
+    // list with `j` would otherwise have to press Back once per row to leave the page, the rule
+    // the assignee filter already holds to. Selecting nothing clears `?item=` rather than
+    // leaving it on the row that has just left: a reload reads the address, and an address
+    // naming a row the reader deferred would open the folded band and put that question back
+    // in front of them.
+    navigate(buildInboxPath({ ...filter, item: id }), {
+      replace: mode !== "push",
+      state: Object.keys(written).length === 0 ? undefined : written,
+    });
+  };
+
+  /** Below the column's width, the way from a row's reading view to the list: back through the
+   *  entry `open` pushed over the list's own, rather than writing the list a second entry the
+   *  next Back would only land on again, and else nothing selected on the entry the view is on.
+   *  The view stays as it is until a back step lands, so nothing is drawn for an address it is
+   *  about to leave. */
+  const leaveView = (): void => {
+    if (entry.inboxOverList !== true) {
+      select(undefined);
+      return;
+    }
+    if (leaving.current !== location.key) {
+      leaving.current = location.key;
+      navigate(-1);
     }
   };
 
@@ -163,18 +273,23 @@ export function usePaneSelection({
     if (next !== undefined) select(rowId(next.row));
   };
 
+  /** A listed row's own element, or null where the list does not draw it. */
+  const rowElement = useCallback(
+    (id: string): HTMLElement | null =>
+      listRef.current?.querySelector<HTMLElement>(`[${ROW_ATTRIBUTE}="${CSS.escape(id)}"]`) ?? null,
+    [listRef]
+  );
   /** The row the column is showing, or null while it is showing none. Held to the selection,
    *  because the effect keeping that row on screen is the selection's and nothing else's. */
   const selectedRow = useCallback(
-    () =>
-      selectedId === undefined
-        ? null
-        : (listRef.current?.querySelector<HTMLElement>(
-            `[${ROW_ATTRIBUTE}="${CSS.escape(selectedId)}"]`
-          ) ?? null),
-    [listRef, selectedId]
+    () => (selectedId === undefined ? null : rowElement(selectedId)),
+    [rowElement, selectedId]
   );
 
+  /** The row the reader has open, by the rule of the width the Inbox is at. Beside the list it is
+   *  the selection. Below it, a row the column picked by itself is no row the reader opened:
+   *  nothing is drawn for it, not even for the one commit before `settleReadingView` clears it. */
+  const openId = columns || entry.inboxDefaultPick !== true ? selectedId : undefined;
   /**
    * What the column shows this commit, given the selected row among the ones the list renders
    * (none, where it renders none at all). Normally that row, which leaves the column as it
@@ -190,8 +305,8 @@ export function usePaneSelection({
    * drops the row the moment the answer goes out, and the column hands the selection on when the
    * server records it (`recordAnswered`), not when the page guesses it will: an answer the server
    * refuses leaves the question here with the card's own refusal and its Retry under what they
-   * answered - the one surface that refusal is shown on - exactly as it does below this column's
-   * width, where the reader's hand on the row holds it (`heldRow`). This is `snoozing`'s rule for
+   * answered - the one surface that refusal is shown on - exactly as it does in the drawer's
+   * cards, where the reader's hand on the row holds it (`heldRow`). This is `snoozing`'s rule for
    * a deferred row, for the one write whose own optimistic update takes the row out of the Inbox
    * read rather than merely out of this view.
    *
@@ -203,7 +318,7 @@ export function usePaneSelection({
    */
   const paneRow = (listed: InboxListRow | undefined): InboxListRow | undefined => {
     const subject = paneSubject.current;
-    if (!paneShown || selectedId === undefined) {
+    if (!pane || openId === undefined) {
       paneSubject.current = undefined;
       return undefined;
     }
@@ -211,18 +326,19 @@ export function usePaneSelection({
       paneSubject.current = { kept: false, row: listed };
       return listed;
     }
-    if (subject === undefined || rowId(subject.row) !== selectedId) {
+    if (subject === undefined || rowId(subject.row) !== openId) {
       paneSubject.current = undefined;
       return undefined;
     }
-    const kept = subject.kept || answerOutstanding(selectedId) || answerDraft(selectedId) !== "";
-    const row = candidates.find((candidate) => rowId(candidate) === selectedId) ?? subject.row;
+    const kept = subject.kept || answerOutstanding(openId) || answerDraft(openId) !== "";
+    const row = candidates.find((candidate) => rowId(candidate) === openId) ?? subject.row;
     paneSubject.current = kept ? { kept: true, row } : undefined;
     return kept ? row : undefined;
   };
 
   const showing = (listed: readonly PlacedRow[]): InboxListRow | undefined => {
     listedRows.current = listed;
+    listAnswered.current = true;
     const visible = presented.current;
     // Read here, where the rows stand as the reader sees them, and held while a snooze of the
     // selected row is out: that write folds its row into `Later` on the pick, so a read taken
@@ -244,78 +360,188 @@ export function usePaneSelection({
     return paneRow(visible.find(({ row }) => rowId(row) === selectedId)?.row);
   };
 
-  // What the selection is, settled after each commit against the rows this list holds.
-  //
-  // The address names it, and is read as the reader's own move - the first visit, a link, a
-  // reload - exactly while it says something this list has not already answered: a row it holds
-  // is selected (its band opened first, if the reader linked into a folded one: following the
-  // link is what they asked for), and one it does not hold leaves the first visible row
-  // selected and the address rewritten. Otherwise the selection is the reader's, and the address
-  // follows it.
-  useEffect(() => {
-    // A list that holds nothing - still loading, failed, or genuinely empty - answers no
-    // address: `?item=` is left unread until there are rows to read it against.
-    if (!paneShown || listedRows.current.length === 0) {
+  /** The step both widths share: the address is read as the reader's own move - the first
+   *  visit, a link, a reload, the browser's Back - exactly while it says something this list has
+   *  not already answered. A row it holds is selected, its band opened first if the reader linked
+   *  into a folded one: following the link is what they asked for. */
+  const readAddress = (visible: readonly PlacedRow[]): AddressReading => {
+    if (filter.item === shownItem.current) return "answered";
+    shownItem.current = filter.item;
+    const wanted = listedRows.current.find((placed) => rowId(placed.row) === filter.item);
+    if (wanted === undefined) return "unlisted";
+    const id = rowId(wanted.row);
+    setSelectedId(id);
+    if (!shown(visible, id)) openFoldedBand();
+    return "listed";
+  };
+
+  /** From the column's width a row is always selected. An address the list cannot answer leaves
+   *  the first visible row selected, as the column's own pick, and the address rewritten; a row
+   *  that leaves hands the selection to where it was heading. Otherwise the selection is the
+   *  reader's, and the address follows it. */
+  const settleBesideList = (): void => {
+    // Before the Inbox's read has landed there are no rows to read `?item=` against, so it is
+    // left unread.
+    if (listedRows.current.length === 0) return;
+    const visible = presented.current;
+    const address = readAddress(visible);
+    if (address === "listed") return;
+    // Back onto an entry that names no row - the one a row opened below the column's width was
+    // pushed over - is the reader's own way back: the column takes its first row by itself,
+    // rather than writing back the row the Back left.
+    const top = visible[0];
+    if (
+      address === "unlisted" &&
+      filter.item === undefined &&
+      navigationType === "POP" &&
+      top !== undefined
+    ) {
+      select(rowId(top.row), "column-default");
       return;
     }
-    const visible = presented.current;
-    if (filter.item !== shownItem.current) {
-      shownItem.current = filter.item;
-      const wanted = listedRows.current.find((placed) => rowId(placed.row) === filter.item);
-      if (wanted !== undefined) {
-        const id = rowId(wanted.row);
-        setSelectedId(id);
-        if (!visible.some((placed) => rowId(placed.row) === id)) openFoldedBand();
-        return;
-      }
-    }
-    if (visible.some((placed) => rowId(placed.row) === selectedId)) {
+    if (shown(visible, selectedId)) {
       if (selectedId !== filter.item) select(selectedId);
       return;
     }
     // A question the column is keeping for the reader's unsent answer keeps the selection with
     // it: the row has gone, the question has not, and only their next pick ends that.
-    if (paneSubject.current?.kept === true) {
+    if (paneSubject.current?.kept === true) return;
+    // The row the selection was on has left the bands - the reader deferred it, the server took
+    // it away - so the selection goes where that row was heading, a pick of the column's own
+    // staying its own, and with nowhere to go to the first row the reader can see.
+    const next = nextAfterSelected();
+    if (shown(visible, next)) {
+      select(next, entry.inboxDefaultPick === true ? "column-default" : "replace");
       return;
     }
-    // The row the selection was on has left the bands - the reader deferred it, the server
-    // took it away - so the selection goes where that row was heading and the address follows
-    // it, down to naming no row at all when the list has none left to show.
+    select(top === undefined ? undefined : rowId(top.row), "column-default");
+  };
+
+  /** Below the column's width the address is the selection: no `?item=` is the list, and a row
+   *  the column picked by itself is not open either. An open row the reader's own write takes
+   *  out of the list hands the view to where it was heading; one that leaves on its own brings
+   *  the list back at its place, saying so; with nowhere to go the view gives way to the list. */
+  const settleReadingView = (): void => {
+    // An address that names no row is the list with nothing open, whatever was open before: the
+    // browser's Back, or the reading view's own Inbox control. Read before the rows are, since
+    // an empty list is still a list to come back to.
+    if (filter.item === undefined) {
+      shownItem.current = undefined;
+      if (selectedId !== undefined) setSelectedId(undefined);
+      return;
+    }
+    if (entry.inboxDefaultPick === true) {
+      leaveView();
+      return;
+    }
+    // Before the Inbox's read has landed there are no rows to read `?item=` against, so it is
+    // left unread. Once the list has answered and holds nothing, the row the address names
+    // cannot be shown: the view gives way to the list - saying so when the row left on its own -
+    // unless it is keeping a question for an unsent answer.
+    if (listedRows.current.length === 0) {
+      if (listAnswered.current && paneSubject.current?.kept !== true) {
+        if (selectedId !== undefined && !leftByReader(selectedId)) onOpenRowLeft(selectedId);
+        leaveView();
+      }
+      return;
+    }
+    const visible = presented.current;
+    if (readAddress(visible) === "listed") return;
+    if (shown(visible, selectedId)) {
+      if (selectedId !== filter.item) select(selectedId);
+      return;
+    }
+    if (paneSubject.current?.kept === true) return;
     const next = nextAfterSelected();
-    const first = visible[0];
-    select(
-      visible.some((placed) => rowId(placed.row) === next)
-        ? next
-        : first === undefined
-          ? undefined
-          : rowId(first.row)
-    );
+    // The list is hidden behind the view, so a row that left on its own is not swapped for one
+    // the reader never opened: the list comes back at that place, and says the row left.
+    if (selectedId !== undefined && !leftByReader(selectedId)) {
+      returnTo.current = shown(visible, next) ? next : undefined;
+      onOpenRowLeft(selectedId);
+      leaveView();
+      return;
+    }
+    if (shown(visible, next)) {
+      select(next);
+      return;
+    }
+    leaveView();
+  };
+
+  // What the selection is, settled after each commit against the rows this list holds, by the
+  // rule of the width the Inbox is at: one or the other, chosen once. Not before every row the
+  // list will draw has arrived (`rowsReady`): the address, a reload's or a link's, is read once.
+  useEffect(() => {
+    if (!pane || !rowsReady) {
+      return;
+    }
+    // A back step `leaveView` started is under way: the address still names the row it is
+    // leaving, and is read again once the step lands.
+    if (leaving.current !== undefined) {
+      if (leaving.current === location.key) return;
+      leaving.current = undefined;
+    }
+    if (columns) settleBesideList();
+    else settleReadingView();
   });
 
   // The selected row is kept on screen as the reader walks the list: the column beside it shows
-  // the row they cannot see otherwise. The move is the page placing what it draws, so it goes
-  // through the one call that records it (`placeInView`, `features/doc/readers-place.ts`),
-  // which measures what the browser's own `scrollIntoView({ block: "nearest" })` would do and
-  // writes it through `moveTheBox`: the browser's own call tells nobody, and a landing
-  // correction watching the same box would read it as the reader taking the list over
-  // (`refocus-when-settled.ts`).
+  // the row they cannot see otherwise. Below the column's width the reading view stands in the
+  // list's place, so there is no list to keep it in. The move is the page placing what it draws,
+  // so it goes through the one call that records it (`placeInView`,
+  // `features/doc/readers-place.ts`), which measures what the browser's own
+  // `scrollIntoView({ block: "nearest" })` would do and writes it through `moveTheBox`: the
+  // browser's own call tells nobody, and a landing correction watching the same box would read
+  // it as the reader taking the list over (`refocus-when-settled.ts`).
   useEffect(() => {
-    if (!paneShown || selectedId === undefined) {
+    if (!columns || selectedId === undefined) {
       return;
     }
     const row = selectedRow();
     if (row !== null) {
       placeInView(row, { block: "nearest" });
     }
-  }, [paneShown, selectedId, selectedRow]);
+  }, [columns, selectedId, selectedRow]);
+
+  // Below the column's width, the commit that closes a row's reading view brings the list back
+  // at that row: it takes the focus, so the keys walk on from it, and is scrolled to the middle
+  // of the screen. A layout effect, so the row is placed in the commit that shows the list
+  // again rather than one frame after the list painted at its top. Only a row a reading view was
+  // drawn for is remembered: the column's own row, dropped as the window narrows, never had
+  // one, so the focus stays where the reader has it - in the search box, say. The scroll is the
+  // page placing what it draws, so it goes through `placeInView` as the walk's does above.
+  const lastSelected = useRef<string | undefined>(undefined);
+  useLayoutEffect(() => {
+    const left = lastSelected.current;
+    lastSelected.current = columns ? undefined : openId;
+    if (!pane || columns || left === undefined || selectedId !== undefined) {
+      return;
+    }
+    const back = returnTo.current;
+    returnTo.current = undefined;
+    const row = rowElement(left) ?? (back === undefined ? null : rowElement(back));
+    if (row === null) {
+      return;
+    }
+    row.focus({ preventScroll: true });
+    placeInView(row, { block: "center" });
+  });
 
   return {
-    id: selectedId,
+    close: leaveView,
+    id: openId,
     nextAfterSelected,
-    select,
+    open: (id) => select(id, columns ? "replace" : "push"),
+    // Below the column's width, nothing selected is the way back to the list.
+    select: (id) => (id === undefined && !columns ? leaveView() : select(id)),
     selectedNow,
     selectedRow,
     showing,
     step,
   };
+}
+
+/** Whether the reader can see the row with this id among `visible`. */
+function shown(visible: readonly PlacedRow[], id: string | undefined): boolean {
+  return visible.some((placed) => rowId(placed.row) === id);
 }

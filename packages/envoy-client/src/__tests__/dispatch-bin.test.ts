@@ -6,7 +6,8 @@ import { fakeSearchResponse } from "./fake-search-response";
 
 // The `dispatch` entry is its own process in production, and every omp session reads it through a
 // pipe: Bun's `process.exit` drops what a pipe has not yet taken, so the entry must wait for its
-// writes. These tests run the real entry and read its output through a pipe.
+// writes. These tests run the real entry and read its output through a pipe, and hold that stored
+// content or a body that is not JSON reaches the pipe as its bytes, unchanged (`stdoutBytes`).
 
 const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
 const PROJECTS = 4000;
@@ -31,6 +32,24 @@ const ASK = {
   created_at: "2026-09-08T00:00:00Z",
 };
 const QUERY = "json api";
+
+/** A picture version's route, and its bytes: a PNG's signature, then two bytes no UTF-8 text
+ *  holds, which a round trip through text would change. */
+const PICTURE_VERSION = "/api/v1/artifacts/01234567-0000-4000-8000-000000000003/versions/1";
+const PNG = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe);
+/** A file version stored as JSON, and its bytes: an integer past 2^53 and a decimal with a
+ *  trailing zero, which a parse and a print again would change. */
+const DATA_VERSION = "/api/v1/artifacts/01234567-0000-4000-8000-000000000004/versions/1";
+const DATA_JSON = new TextEncoder().encode('{"id":12345678901234567890,"ratio":1.10,"name":"x"}');
+
+/** Each file version the stub answers, as `serveFileVersion` does: its stored bytes under its
+ *  stored type, as an attachment. */
+const FILES: Readonly<
+  Record<string, { readonly bytes: Uint8Array<ArrayBuffer>; readonly type: string }>
+> = {
+  [PICTURE_VERSION]: { bytes: PNG, type: "image/png" },
+  [DATA_VERSION]: { bytes: DATA_JSON, type: "application/json;charset=utf-8" },
+};
 
 const makeDirectory = temporaryDirectories("dispatch-bin");
 
@@ -85,14 +104,28 @@ const server = Bun.serve({
         ])
       );
     }
+    const file = FILES[url.pathname];
+    if (file !== undefined) {
+      return new Response(file.bytes, {
+        headers: {
+          "Content-Type": file.type,
+          "Content-Disposition": `attachment; filename="file"; filename*=UTF-8''file`,
+        },
+      });
+    }
     return Response.json({ error: "unexpected" }, { status: 500 });
   },
 });
 
 afterAll(() => server.stop(true));
 
+/** The session an Oh My Pi shell names, which a run with a host is handed. */
+const OMP = { DISPATCH_HOST: "omp", DISPATCH_SESSION_ID: "ses-bin" };
+
+/** Runs `dispatch <args>` with `host`'s variables beside Dispatch's URL and bearer. */
 async function runEntry(
-  args: readonly string[]
+  args: readonly string[],
+  host: Readonly<Record<string, string>>
 ): Promise<{ code: number; stdout: Uint8Array; stderr: string }> {
   const state = makeDirectory();
   // Bun.spawn's own stdout pipe drains fast enough to hide the loss, so the entry writes into a
@@ -103,7 +136,7 @@ async function runEntry(
     [
       "bash",
       "-c",
-      'set -o pipefail; bun=$1; shift; "$bun" "$0" "$@" | cat',
+      'set -o pipefail; runtime="$1"; shift; "$runtime" "$0" "$@" | cat',
       ENTRY,
       process.execPath,
       ...args,
@@ -113,8 +146,7 @@ async function runEntry(
         PATH: process.env.PATH,
         HOME: state,
         DISPATCH_STATE_DIR: state,
-        DISPATCH_HOST: "omp",
-        DISPATCH_SESSION_ID: "ses-bin",
+        ...host,
         DISPATCH_URL: `http://127.0.0.1:${server.port}`,
         DISPATCH_TOKEN: TOKEN,
       },
@@ -139,7 +171,7 @@ describe("the dispatch entry", () => {
   // default. It fires only if the child never exits or its pipe never ends. The rows below run
   // the same entry against the same stub, and take the same guard.
   test("writes all of its output to a pipe, however long", async () => {
-    const { code, stdout, stderr } = await runEntry(["projects"]);
+    const { code, stdout, stderr } = await runEntry(["projects"], OMP);
     expect(stderr).toBe("");
     expect(code).toBe(0);
     const text = new TextDecoder().decode(stdout);
@@ -152,7 +184,7 @@ describe("the dispatch entry", () => {
   // `selected: null`. Each read that prints the answer still prints its text, and exits 0. The
   // printed text is read first, so a read that failed shows what it printed instead.
   test("dispatch read --ref prints an answer whose selected is null, and exits 0", async () => {
-    const { code, stdout, stderr } = await runEntry(["read", "--ref", ASK_REF]);
+    const { code, stdout, stderr } = await runEntry(["read", "--ref", ASK_REF], OMP);
     const text = new TextDecoder().decode(stdout);
     expect(text).toContain(`- Text: ${ANSWER_TEXT}\n`);
     expect(text).toContain("- Selected: none\n");
@@ -166,11 +198,27 @@ describe("the dispatch entry", () => {
   }, 30_000);
 
   test("dispatch search prints an answer whose selected is null, and exits 0", async () => {
-    const { code, stdout, stderr } = await runEntry(["search", "--query", QUERY]);
+    const { code, stdout, stderr } = await runEntry(["search", "--query", QUERY], OMP);
     const text = new TextDecoder().decode(stdout);
     expect(text).toContain(`  Answer text: ${ANSWER_TEXT}\n`);
     expect(text).toContain("options chosen: none\n");
     expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
     expect(requests).toEqual([`GET /api/v1/search?${new URLSearchParams({ q: QUERY })}`]);
   }, 30_000);
+
+  test.each([
+    ["a picture, with a host", PICTURE_VERSION, OMP],
+    ["a picture, with no host", PICTURE_VERSION, {}],
+    ["a file stored as JSON, with a host", DATA_VERSION, OMP],
+    ["a file stored as JSON, with no host", DATA_VERSION, {}],
+  ] as const)(
+    "writes stored content to a pipe as its bytes, unchanged: %s",
+    async (_, path, host) => {
+      const { code, stdout, stderr } = await runEntry(["api", "--path", path], host);
+      expect(stderr).toBe("");
+      expect(code).toBe(0);
+      expect(stdout).toEqual(FILES[path]?.bytes);
+    },
+    30_000
+  );
 });

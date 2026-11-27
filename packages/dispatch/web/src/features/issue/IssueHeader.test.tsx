@@ -12,6 +12,7 @@ import {
   pressAsInputMethod,
   pressInputMethodKey,
 } from "../../__tests__/input-method-keys";
+import { ALICE_DETAILS_KEY, openIssueDetails } from "../../__tests__/issue-details";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
@@ -262,15 +263,16 @@ test("a read of the state asked while the header's pin is out waits for its answ
 
 // A reader typing Chinese, Japanese or Korean drops a candidate with Escape: that Escape is the
 // input method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's
-// end, as Safari sends it (WebKit bug 165004). In the route's and the parent's boxes it drops
-// nothing and closes nothing; a plain Escape after it drops the draft and closes the box. The
-// title's box takes the same keys in the rows below.
+// end, as Safari sends it (WebKit bug 165004). In the route's and the parent's boxes, which
+// Details holds (`HeaderDetails`), it drops nothing and closes nothing; a plain Escape after it
+// drops the draft and closes the box. The title's box takes the same keys in the rows below.
 test("an input method's Escape in the route's or the parent's box keeps the edit, and a plain Escape ends it", async () => {
   const client = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
   const view = renderHeader(client, <Header state={unpinnedState} />);
   try {
+    await openIssueDetails(view.user);
     for (const [opener, name] of [
       [
         () => view.q.getAllByRole("button", { name: "Messages default to no route" })[0],
@@ -294,6 +296,7 @@ test("an input method's Escape in the route's or the parent's box keeps the edit
     }
   } finally {
     view.unmount();
+    window.localStorage.removeItem(ALICE_DETAILS_KEY);
   }
 });
 

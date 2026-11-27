@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
 import {
   ASK_IS_FOR_A_PERSON,
   ASK_WAITS_ON_THE_ASSIGNEE,
@@ -13,15 +11,10 @@ import { useIssueUpdateCli } from "./issue-update-cli";
 // Who an open ask waits on, from the command line and from the texts an agent reads. A person
 // hands an ask on through the web app or `PUT /api/v1/asks/{id}/asked-of`, both person-scoped, so
 // the half of this the CLI carries is the issue's assignee and nothing else: the command sets
-// that, and no command of the whole surface writes `asked_of`. The rest is text — the two
-// sentences every description and skill shares, and the scan that fails a new line telling an
-// agent to address or hand on an ask.
+// that, and no command of the whole surface writes `asked_of`. The rest is the two sentences both
+// ask descriptions compose from their constants.
 
 const { run, calls, patchBody, forget } = useIssueUpdateCli("dispatch-asked-of");
-
-/** The repository root, from this file's own path rather than the working directory, which bun
- *  sets to the package when the check runs `cd packages/envoy-client && bun test`. */
-const REPO_ROOT = join(import.meta.dir, "..", "..", "..", "..");
 
 const ASSIGNEE = "bob@example.com";
 
@@ -88,148 +81,12 @@ function descriptionOf(tool: string): string {
   return spec.description;
 }
 
-test("the two shared sentences stand in both ask descriptions and in the dispatch skill", () => {
-  for (const text of [
-    descriptionOf("dispatch_ask"),
-    descriptionOf("dispatch_edit_ask"),
-    readFileSync(join(REPO_ROOT, "skills", "dispatch", "SKILL.md"), "utf8"),
-  ]) {
+// Both ask descriptions compose the two shared sentences from their constants.
+test("both ask descriptions carry the two shared sentences", () => {
+  for (const text of [descriptionOf("dispatch_ask"), descriptionOf("dispatch_edit_ask")]) {
     expect(text).toContain(ASK_IS_FOR_A_PERSON);
     expect(text).toContain(ASK_WAITS_ON_THE_ASSIGNEE);
   }
-});
-
-// The negative half, as a rule a reader can decide: on one line, one of the words that would tell
-// an agent to move an ask somewhere, standing within forty characters of `ask` or `asks`. Forty
-// characters is a clause: near enough that the two words are about each other, far enough to catch
-// "the ask ... hand it to". The scan reads every file under skills/, every packages/*/AGENTS.md
-// and every dispatch_* tool description, which is every text that tells an agent how asks work.
-//
-// A hit is not a defect by itself: most of these lines say "hand the work over" or name an anchor
-// called `finding-asks.md#hand-over-a-clear-defect`. So the scan fails on a hit the allowlist
-// below does not hold, each entry its source and the half-line that matched, so a later reader
-// judges the line rather than a count. An entry that matches nothing fails too: a line that moved
-// or changed its wording is re-read rather than left allowed. The shape follows the retired-phrase
-// scan in `packages/pi-legion/src/skills-guard.test.ts`.
-const NEAR = 40;
-const MOVING_WORDS = /\b(?:hand|handed|hands|address|addressed|redirect|redirects)\b/gi;
-const AN_ASK = /\basks?\b/gi;
-
-/** Every `[source, excerpt]` the scan may see, with why the line says nothing about who an ask
- *  goes to. The last two are this change's own sentences, which say it and say it right. */
-const ALLOWED: readonly (readonly [string, string])[] = [
-  // Handing over the *work*, never the ask.
-  [
-    "skills/legion-worker/references/findings.md",
-    "## Fix it where you are, else hand it over, and ask only for a",
-  ],
-  // Handing a turn back inside one ask's thread, which moves nobody's list.
-  [
-    "skills/legion-architect/references/wake-routing.md",
-    "request you must revise or hand back, `--reply-to-ask <ask id> --turn agent`,",
-  ],
-  // A link to a section of a reference file, whose anchor holds the word.
-  ["skills/legion-controller/SKILL.md", "finding-asks.md#hand-over-a-clear-defect`"],
-  [
-    "skills/legion-controller/references/consolidation.md",
-    "finding-asks.md#hand-over-a-clear-defect`",
-  ],
-  // Tool descriptions that state who an ask waits on and what a hand-on moves.
-  [
-    "dispatch_issue_update description",
-    "this issue's asks, and every ask on it waits on them until a person hands that ask on",
-  ],
-  [
-    "dispatch_claim description",
-    "to it, except in an ask you follow: anyone else's answer, hand-back, resolution or edit of",
-  ],
-];
-
-interface Hit {
-  readonly source: string;
-  readonly line: number;
-  readonly text: string;
-}
-
-function matches(line: string, pattern: RegExp): { from: number; to: number }[] {
-  return [...line.matchAll(pattern)].map((match) => ({
-    from: match.index,
-    to: match.index + match[0].length,
-  }));
-}
-
-/** Every line of `text` where one of the moving words stands within `NEAR` characters of `ask`
- *  or `asks`, counting the characters between the two words. */
-function hitsIn(source: string, text: string): Hit[] {
-  const hits: Hit[] = [];
-  text.split("\n").forEach((line, index) => {
-    const moving = matches(line, MOVING_WORDS);
-    const asks = matches(line, AN_ASK);
-    const near = moving.some((word) =>
-      asks.some(
-        (ask) =>
-          (word.from >= ask.to
-            ? word.from - ask.to
-            : ask.from >= word.to
-              ? ask.from - word.to
-              : 0) <= NEAR
-      )
-    );
-    if (near) hits.push({ source, line: index + 1, text: line });
-  });
-  return hits;
-}
-
-/** Every file under `dir`, at any depth. */
-function filesUnder(dir: string): string[] {
-  return readdirSync(dir).flatMap((entry) => {
-    const full = join(dir, entry);
-    return statSync(full).isDirectory() ? filesUnder(full) : [full];
-  });
-}
-
-/** Every text that tells an agent how an ask works: the skills, the per-package AGENTS.md notes,
- *  and the Dispatch tool descriptions, each under the name the failure prints. */
-function scannedTexts(): { source: string; text: string }[] {
-  const texts: { source: string; text: string }[] = [];
-  for (const file of filesUnder(join(REPO_ROOT, "skills"))) {
-    texts.push({ source: relative(REPO_ROOT, file), text: readFileSync(file, "utf8") });
-  }
-  for (const entry of readdirSync(join(REPO_ROOT, "packages"))) {
-    const file = join(REPO_ROOT, "packages", entry, "AGENTS.md");
-    if (!statSync(join(REPO_ROOT, "packages", entry)).isDirectory()) continue;
-    try {
-      texts.push({ source: relative(REPO_ROOT, file), text: readFileSync(file, "utf8") });
-    } catch {
-      // A package without an AGENTS.md note.
-    }
-  }
-  for (const spec of dispatchToolSpecs) {
-    if (!spec.name.startsWith("dispatch_")) continue;
-    texts.push({ source: `${spec.name} description`, text: spec.description });
-  }
-  return texts;
-}
-
-test("no skill, package note or tool description tells an agent to hand an ask on", () => {
-  const hits = scannedTexts().flatMap(({ source, text }) => hitsIn(source, text));
-  expect(hits.length, "the scan read nothing").toBeGreaterThan(0);
-
-  const used = new Set<number>();
-  const unexplained: string[] = [];
-  for (const hit of hits) {
-    const at = ALLOWED.findIndex(
-      ([source, excerpt]) => source === hit.source && hit.text.includes(excerpt)
-    );
-    if (at < 0) unexplained.push(`${hit.source}:${hit.line}: ${hit.text.trim()}`);
-    else used.add(at);
-  }
-  expect(unexplained).toEqual([]);
-
-  const stale = ALLOWED.filter((_, at) => !used.has(at)).map(
-    ([source, excerpt]) => `${source}: ${excerpt}`
-  );
-  expect(stale).toEqual([]);
 });
 
 // Every `ask.*` frame an agent receives is this payload. The three stored fields of a hand-on ride

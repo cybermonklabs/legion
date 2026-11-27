@@ -10,13 +10,14 @@
 // it, which is what tells a read served by an index from one that reads the whole index and
 // filters it, and it holds a whole plan to that (RequireIndexKeyed) and builds the generic plan a
 // prepared statement settles on, which is the plan an index is lost in, explained (GenericPlan)
-// or run and measured (AnalyzedGenericPlan). For a statement over a batch of rows (batch.go) it
-// runs the statement a writer sent, after the statements it sent first, under each plan-cache
-// mode (ExplainAfter), and holds the analyzed plan to reading the batch once and each named table
-// by a probe of one row's key (UnprobedReads, RequireEachRowProbedOnce), with a control that must
-// fail it (RequireTheCheckFails), and it runs any statement under a plan-cache mode with the
-// planner's own settings and explains it with the shared buffers each node hit and read
-// (ExplainBuffered).
+// or run and measured (AnalyzedGenericPlan), and runs a statement with sequential scans off and
+// measures the plan it read its rows by (AnalyzedPlan), and writes a plan's shape for a test's log
+// (Outline). For a statement over a batch of rows (batch.go) it runs the statement a writer sent,
+// after the statements it sent first, under each plan-cache mode (ExplainAfter), and holds the
+// analyzed plan to reading the batch once and each named table by a probe of one row's key
+// (UnprobedReads, RequireEachRowProbedOnce), with a control that must fail it
+// (RequireTheCheckFails), and it runs any statement under a plan-cache mode with the planner's own
+// settings and explains it with the shared buffers each node hit and read (ExplainBuffered).
 // dispatch/api, dispatch/refs, dispatch/graphstore and cipher/requests each pin a plan with these
 // checks, so they live here once rather than as a second (or third) hand copy of the same
 // recursive walk; it is an ordinary package rather than a _test.go file because Go cannot share
@@ -24,6 +25,7 @@
 package explaintest
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"regexp"
@@ -48,8 +50,9 @@ var indexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Index Sca
 // parent, what an analyzed plan measured of it (its loops and the rows each answered, the rows an
 // index-only scan fetched from the heap, and the rows its Filter and a join's Join Filter removed
 // each time it ran, all 0 in a plan explained without ANALYZE), the shared buffers it and the
-// nodes under it hit and read (0 in a plan explained without BUFFERS), the CTE it scans, the alias
-// the statement gives the relation it reads, and its children.
+// nodes under it hit and read (0 in a plan explained without BUFFERS), the CTE it scans, the
+// function a function scan reads, the alias the statement gives what it reads, the set operation a
+// SetOp node makes, and its children.
 type planNode struct {
 	NodeType                string            `json:"Node Type"`
 	RelationName            string            `json:"Relation Name"`
@@ -71,7 +74,9 @@ type planNode struct {
 	SharedHitBlocks         float64           `json:"Shared Hit Blocks"`
 	SharedReadBlocks        float64           `json:"Shared Read Blocks"`
 	CTEName                 string            `json:"CTE Name"`
+	FunctionName            string            `json:"Function Name"`
 	Alias                   string            `json:"Alias"`
+	Command                 string            `json:"Command"`
 	Plans                   []json.RawMessage `json:"Plans"`
 
 	// subplan is the subplan this node runs under, which the walk carries down from the node
@@ -308,6 +313,50 @@ func Nodes(t testing.TB, planJSON json.RawMessage) []Node {
 		nodes = append(nodes, node.asNode())
 	}
 	return nodes
+}
+
+// Outline is plan's nodes, one a line, each indented under the node it is directly under: its
+// side of that node, its type, its kind of join or set operation, what it reads under which name,
+// and the subplan it runs under. It is what a test logs of a plan it judges by its shape, and
+// prints where the shape fails, rather than the whole JSON, which writes out every array a plan
+// with the values was given.
+func Outline(t testing.TB, plan json.RawMessage) string {
+	t.Helper()
+	nodes := planNodes(t, plan)
+	depths, lines := make([]int, len(nodes)), make([]string, len(nodes))
+	for i, node := range nodes {
+		side := ""
+		if node.parent >= 0 {
+			depths[i] = depths[node.parent] + 1
+			side = node.ParentRelationship + ": "
+		}
+		lines[i] = strings.Repeat("  ", depths[i]) + side + outlineName(node)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// outlineName names node as Outline cites it: its type, its kind of join or set operation, the
+// relation, function or CTE it reads and the name the statement gives that, and the subplan it
+// runs under.
+func outlineName(node planNode) string {
+	name := node.NodeType
+	if node.JoinType != "" {
+		name += " (" + node.JoinType + ")"
+	}
+	if node.Command != "" {
+		name += " " + node.Command
+	}
+	read := cmp.Or(node.RelationName, node.FunctionName, node.CTEName)
+	if read != "" {
+		name += " on " + read
+	}
+	if node.Alias != "" && node.Alias != read {
+		name += " " + node.Alias
+	}
+	if node.subplan != "" {
+		name += " [" + node.subplan + "]"
+	}
+	return name
 }
 
 // BitmapHeapScan is one "Bitmap Heap Scan" of a plan with the bitmap it reads its rows through:
@@ -583,4 +632,29 @@ func explainGenericPlan(
 		t.Fatalf("deallocate %s: %v", name, err)
 	}
 	return OnePlan(t, raw)
+}
+
+// AnalyzedPlan runs statement under `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` with sequential
+// scans off, in a transaction of its own that is rolled back, and answers its one plan node for
+// the checks above and the plan's text, which a failure prints. A test's fixtures hold a handful
+// of rows, which is read fastest whole however a statement is written, so without that setting
+// the planner answers a sequential scan whatever indexes exist and the plan says nothing about the
+// statement; with it, a read that no index serves still shows up, as a sequential scan or a scan
+// carrying no index condition. ANALYZE runs the statement, so the plan is the one that read the
+// rows, with the buffers it touched; the rollback keeps a write it makes out of the database.
+func AnalyzedPlan(t testing.TB, ctx context.Context, pool Beginner, statement string, arguments ...any) (json.RawMessage, string) {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the plan's transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "set local enable_seqscan = off"); err != nil {
+		t.Fatalf("disable sequential scans: %v", err)
+	}
+	var raw []byte
+	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement, arguments...).Scan(&raw); err != nil {
+		t.Fatalf("explain the statement: %v", err)
+	}
+	return OnePlan(t, raw), string(raw)
 }

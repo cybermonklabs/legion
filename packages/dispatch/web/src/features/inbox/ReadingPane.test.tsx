@@ -321,6 +321,7 @@ function renderPane({
             <AskHandOnLiveContext value={(askId, live) => handOnLiveness.push([askId, live])}>
               <ReadingPane
                 onAnswered={(id) => answered.push(id)}
+                onAssignWrite={() => {}}
                 onSnoozeLive={(askId, live) => snoozeLiveness.push([askId, live])}
                 row={{ ask: row, kind: "ask" }}
                 viewer="alice"
@@ -1937,6 +1938,7 @@ function renderThread(
           <MarginProvider>
             <ReadingPane
               onAnswered={() => {}}
+              onAssignWrite={() => {}}
               onSnoozeLive={() => {}}
               row={{ kind: "thread", thread: row }}
               viewer="alice"

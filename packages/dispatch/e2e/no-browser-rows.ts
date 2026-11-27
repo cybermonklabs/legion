@@ -110,11 +110,18 @@ export type StaleExemption = {
  * the suite no longer holds, or one naming a row that now drives a browser — so this list cannot
  * quietly grow stale.
  *
- * It holds one entry: the row that reads what the other person's pen leaves behind when the
- * document's room refuses him as a writer (dispatch://INFRA-341, review round 3). Every other
- * row of the suite drives a browser.
+ * It holds two entries: `artifact-dry-run.e2e.ts`'s table, whose claim needs the real command as
+ * its own process and a real Dispatch together, and the row that reads what the other person's
+ * pen leaves behind when the document's room refuses him as a writer (dispatch://INFRA-341,
+ * review round 3). Every other row of the suite drives a browser.
  */
 export const exemptions: readonly Exemption[] = [
+  {
+    file: "artifact-dry-run.e2e.ts",
+    title: "combination",
+    reason:
+      "`dispatch artifact --dry-run` is held to the call, each run of the real command its own process against a real Dispatch, over every row of api/testdata/text-refusals.json: a bun test has only a fake Dispatch and a Go test has no command, so no other layer holds both halves of the claim",
+  },
   {
     file: "large-documents-build.e2e.ts",
     reason:

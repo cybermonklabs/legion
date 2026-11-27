@@ -52,6 +52,10 @@ const tables = [
   "user_agent_thread_dismissed",
   "user_threads",
   "events",
+  // Each session's stored title (migration 20261117100008), which a trigger on events writes. No
+  // foreign key reaches it, so the closure below does not find it: a title a row stored would
+  // otherwise name a session of the same id in the next row's Delivery and Pipeline pages.
+  "session_titles",
   "refs",
   "messages",
   "broadcasts",

@@ -41,6 +41,7 @@ import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, roveFocus } from "../shell/roving";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AttachmentLists, type AttachmentView } from "./AttachmentLists";
+import { ComponentDetails } from "./ComponentDetails";
 import {
   type ComponentIndex,
   type ComponentTone,
@@ -50,8 +51,7 @@ import {
   distrustedSources,
   indexComponents,
   sourceState,
-} from "./architecture-model";
-import { ComponentDetails } from "./ComponentDetails";
+} from "./logic/architecture-model";
 
 const ROW_SELECTOR = "[data-component-row]";
 const rowFocusRing = `outline-none focus-visible:ring-2 ${focusVisibleRing}`;

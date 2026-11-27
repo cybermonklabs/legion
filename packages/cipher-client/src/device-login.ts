@@ -40,6 +40,7 @@
 
 import { generateKeyPairSync, type KeyObject, randomUUID } from "node:crypto";
 import { holdSecret, holdUrlUserinfo } from "@legion/contracts/held-secrets";
+import { outage } from "@legion/contracts/http-status";
 import { isHttpUrl, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { CompactSign, calculateJwkThumbprint } from "jose";
@@ -89,7 +90,8 @@ import {
 } from "./device-login-reach";
 import { type DpopKey, dpopKeyOf } from "./dpop";
 import { messageOf } from "./error-text";
-import { endsGrant, outage, refusalCode } from "./oauth-refusal";
+import { LOOPBACK_HOST } from "./loopback";
+import { endsGrant, refusalCode } from "./oauth-refusal";
 import type { SubjectToken, TokenSource } from "./source";
 import { sleep, TRADE_ATTEMPT_MS } from "./token-client";
 import {
@@ -141,9 +143,6 @@ export function leastAccessLifeMs(
  *  broker's answer before it is one the broker did not answer: half a trade's attempt, so a
  *  refresh that got no answer can be sent once more within one. */
 const BROKER_REQUEST_MS = TRADE_ATTEMPT_MS / 2;
-
-/** A host an http broker may be on: this machine's loopback, as a dev stack's broker is. */
-const LOOPBACK_HOST = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/i;
 
 /** A control or format character: a terminal may run the one as an escape sequence rather than
  *  print it, and the other (a right-to-left override) changes what it shows. */

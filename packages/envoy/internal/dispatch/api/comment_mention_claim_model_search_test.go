@@ -22,7 +22,8 @@ import (
 // The sender claim model's search (TestTheMentionSenderClaimModel; comment_mention_claim_model_test.go
 // and the run, steps and checks files beside it hold the model itself): the key a run's state is
 // known by, the breadth-first walk of every state a variant reaches, each run replayed in a bubble
-// of its own, and the test that runs the sender as built and its control.
+// of its own or visited one step on in its parent's, and the test that runs the sender as built and
+// its control.
 
 // key is the run's state as the search keys on it: every claim in play named by its order among
 // them and its age up to a lease and a slot, then the model's rows, the sender's goroutines in the
@@ -207,16 +208,18 @@ func (r *cmRun) key() string {
 	return b.String()
 }
 
-// cmResult is what one search found: the states it reached, the longest run, and, by check, how
-// many states broke it first and the trace of the first of them, a shortest one.
+// cmResult is what one search found: the states it reached, the longest run, by check how many
+// states broke it first and the trace of the first of them, a shortest one, and how many visits it
+// carried from a parent's replay and how many of those it checked against a replay from the start.
 type cmResult struct {
-	variant  cmVariant
-	periods  int
-	states   int
-	depth    int
-	found    map[string]int
-	first    map[string][]string
-	duration time.Duration
+	variant          cmVariant
+	periods          int
+	states           int
+	depth            int
+	found            map[string]int
+	first            map[string][]string
+	carried, checked int
+	duration         time.Duration
 }
 
 func (r cmResult) String() string {
@@ -243,17 +246,72 @@ func cmVisitOf(t *testing.T, v cmVariant, periods int, steps []cmStep, tracing b
 		for _, s := range steps {
 			r.apply(s)
 		}
-		visit = cmVisit{key: sha256.Sum256([]byte(r.key())), fault: r.fault, fresh: r.fresh, enabled: r.enabled(),
-			trace: r.trace}
+		visit = r.visit()
 	})
 	return visit
 }
 
-// cmExplore searches every state of v within periods breadth first, each run replayed from the
-// start in a bubble of its own and the runs of one depth spread over at most 16 workers, then
-// taken in order, so the first trace of each check is a shortest one and the same on every run.
-// The search keeps a state's SHA-256 rather than its key, and replays with its trace on only the
-// run that first breaks a check, or that fails the model; the replay must reach the same state.
+// visit is what the run has come to.
+func (r *cmRun) visit() cmVisit {
+	return cmVisit{key: sha256.Sum256([]byte(r.key())), fault: r.fault, fresh: r.fresh, enabled: r.enabled(),
+		trace: r.trace}
+}
+
+// same is whether two visits of one run came to the same thing: state, fault, checks broken and
+// next steps.
+func (a cmVisit) same(b cmVisit) bool {
+	return a.key == b.key && a.fault == b.fault && slices.Equal(a.fresh, b.fresh) && slices.Equal(a.enabled, b.enabled)
+}
+
+// cmVisitWithFirstChildOf replays steps as cmVisitOf does with its trace off, then takes, in the
+// same run, the first step the run may take next - the step of the first child the search makes
+// of this run's state - and visits that run too. Reading a run's key and its next steps changes
+// nothing in it, so the child's visit is the one a replay of its steps from the start would reach;
+// cmExplore replays every cmCarriedCheckEvery-th such visit from the start to hold it to that. A
+// run that fails the model or may take no step has no first child.
+func cmVisitWithFirstChildOf(t *testing.T, v cmVariant, periods int, steps []cmStep) (visit cmVisit, child *cmVisit) {
+	synctest.Test(t, func(*testing.T) {
+		r := newCmRun(v, periods, false)
+		defer r.shutdown()
+		for _, s := range steps {
+			r.apply(s)
+		}
+		visit = r.visit()
+		if visit.fault == "" && len(visit.enabled) > 0 {
+			r.apply(visit.enabled[0])
+			first := r.visit()
+			child = &first
+		}
+	})
+	return visit, child
+}
+
+// cmEntry is a run the search has still to visit: its steps from the start and, when it is the
+// first child of a state whose replay went on to it (cmVisitWithFirstChildOf), its visit.
+type cmEntry struct {
+	steps   []cmStep
+	visited *cmVisit
+}
+
+// cmCarriedCheckEvery is how often, among the visits a search carries from a parent's replay, one
+// is replayed from the start as well and must come to the same thing: every 64th, in the search's
+// order, about 1% more replays. Without it a carried visit given to the wrong run would go unseen:
+// the run it should have been is never replayed, so its state's subtree drops out, and no check
+// fails. With each carried visit given to the state's last child instead of its first, the sender
+// as built reached 1,837,683 states instead of 4,231,211, and the test passed.
+const cmCarriedCheckEvery = 64
+
+// cmExplore searches every state of v within periods breadth first, the runs of one depth spread
+// over at most 16 workers, then taken in order, so the first trace of each check is a shortest one
+// and the same on every run. A run's state lives in its goroutines, so a run cannot be copied: the
+// search replays a run from the start in a bubble of its own, and that replay goes on one step to
+// the run's first child, whose visit then needs no replay of its own (for the sender as built at
+// three periods, 4,231,211 states over 11,913,487 runs: 8.2 million replays instead of 11.9, 387
+// million replayed steps instead of 567, before the check below adds 58,512 replays). Every
+// cmCarriedCheckEvery-th carried visit is replayed too and must match. The search keeps a state's
+// SHA-256 rather than its key, and replays with its trace on only the run that first breaks a
+// check, that fails the model, or whose carried visit does not match; the first two replays must
+// reach the same state.
 func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 	began := time.Now()
 	result := cmResult{variant: v, periods: periods, found: map[string]int{}, first: map[string][]string{}}
@@ -266,27 +324,48 @@ func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 		}
 		return visit
 	}
-	frontier := [][]cmStep{nil}
+	frontier := []cmEntry{{}}
 	for depth := 0; len(frontier) > 0; depth++ {
 		visits := make([]cmVisit, len(frontier))
+		children := make([]*cmVisit, len(frontier))
+		// replayed holds, for each carried visit the search checks, the visit of its run replayed
+		// from the start.
+		replayed := make([]*cmVisit, len(frontier))
 		work := make(chan int)
 		var workers sync.WaitGroup
 		for range min(runtime.GOMAXPROCS(0), 16) {
 			workers.Go(func() {
 				for i := range work {
-					visits[i] = cmVisitOf(t, v, periods, frontier[i], false)
+					if frontier[i].visited != nil {
+						visit := cmVisitOf(t, v, periods, frontier[i].steps, false)
+						replayed[i] = &visit
+						continue
+					}
+					visits[i], children[i] = cmVisitWithFirstChildOf(t, v, periods, frontier[i].steps)
 				}
 			})
 		}
-		for i := range frontier {
+		for i, entry := range frontier {
+			if entry.visited != nil {
+				visits[i] = *entry.visited
+				if result.carried++; result.carried%cmCarriedCheckEvery != 0 {
+					continue
+				}
+				result.checked++
+			}
 			work <- i
 		}
 		close(work)
 		workers.Wait()
-		var next [][]cmStep
+		var next []cmEntry
 		for i, visit := range visits {
+			steps := frontier[i].steps
+			if replayed[i] != nil && !replayed[i].same(visit) {
+				t.Fatalf("the visit carried from its parent's replay is not what a replay of its run from the start comes to, after:\n\t%s",
+					strings.Join(cmVisitOf(t, v, periods, steps, true).trace, "\n\t"))
+			}
 			if visit.fault != "" {
-				visit = traced(frontier[i], visit.key)
+				visit = traced(steps, visit.key)
 				t.Fatalf("%s, after:\n\t%s", visit.fault, strings.Join(visit.trace, "\n\t"))
 			}
 			if _, ok := seen[visit.key]; ok {
@@ -298,11 +377,15 @@ func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 			for _, kind := range visit.fresh {
 				result.found[kind]++
 				if result.first[kind] == nil {
-					result.first[kind] = traced(frontier[i], visit.key).trace
+					result.first[kind] = traced(steps, visit.key).trace
 				}
 			}
-			for _, s := range visit.enabled {
-				next = append(next, append(slices.Clip(frontier[i]), s))
+			for j, s := range visit.enabled {
+				child := cmEntry{steps: append(slices.Clip(steps), s)}
+				if j == 0 {
+					child.visited = children[i]
+				}
+				next = append(next, child)
 			}
 		}
 		frontier = next
@@ -331,6 +414,7 @@ func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 // TestALostRefreshNeverRevivesALapsedClaim and TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim
 // on the database and TestAHandOffAfterTheRetryCheckIsNotDropped on a sender with stub statements.
 func TestTheMentionSenderClaimModel(t *testing.T) {
+	// Not parallel: it swaps the default logger (slog.SetDefault).
 	if model.DeliveryClaimLapse != cmLapsePeriods*mentionClaimRefresh {
 		t.Fatalf("the model counts a claim's lease as %d refresh periods; model.DeliveryClaimLapse is %v and mentionClaimRefresh %v",
 			cmLapsePeriods, model.DeliveryClaimLapse, mentionClaimRefresh)
@@ -362,9 +446,13 @@ func TestTheMentionSenderClaimModel(t *testing.T) {
 	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 	t.Logf("| sender | periods | states | longest run | stale claims | dropped sends | A-2 before A-1 | sent twice | held behind event 0 | A-2 first after the sweep took a lapsed claim | time |")
 	t.Logf("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+	// The table's rows go together; what each search carried and checked follows it.
+	var carried []string
 	for _, run := range runs {
 		result := cmExplore(t, run.v, run.periods)
 		t.Logf("%s", result)
+		carried = append(carried, fmt.Sprintf("%s: %d visits carried from a parent's replay, %d of them replayed from the start too, each the same",
+			run.v.name, result.carried, result.checked))
 		if run.breaks == nil {
 			for _, kind := range cmChecks {
 				if trace := result.first[kind]; trace != nil {
@@ -381,6 +469,9 @@ func TestTheMentionSenderClaimModel(t *testing.T) {
 				t.Logf("%s, first %s:\n\t%s", run.v.name, kind, strings.Join(result.first[kind], "\n\t"))
 			}
 		}
+	}
+	for _, line := range carried {
+		t.Logf("%s", line)
 	}
 	t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
 }

@@ -6,6 +6,8 @@ import { onMarkdownLatePaint } from "../refs/useRenderedMarkdown";
 const FOLLOW_POSITION_TOLERANCE_PX = 1;
 /** Every card and reply carries `data-turn`; the first in the document is the newest card. */
 const NEWEST_TURN_SELECTOR = "[data-turn]";
+/** The Conversation's docked composer: sticky above the list from `sm` up, fixed at the foot of
+ *  the screen below it (`MentionComposer`'s docked form). */
 const COMPOSER_SELECTOR = '[aria-label="Comment composer"]';
 
 /** The box that carries the conversation: the column of a reading pane, or the page itself
@@ -21,9 +23,30 @@ function theBoxThatCarriesThem(): HTMLElement | null {
   return inIt === null ? null : whatScrolls(inIt);
 }
 
+/**
+ * The band of the screen the docked composer covers, as an IntersectionObserver `rootMargin`: the
+ * top of the screen down to the sticky composer's bottom from `sm` up, or the foot of the screen
+ * up to the fixed composer's top below it. A card's head in that band is under the composer.
+ */
+function composerBand(): string {
+  const composer = document.querySelector<HTMLElement>(COMPOSER_SELECTOR);
+  if (composer === null) return "0px";
+  const style = window.getComputedStyle(composer);
+  if (style.position === "sticky") {
+    const top = Number.parseFloat(style.top) || 0;
+    return `${-Math.round(top + composer.offsetHeight)}px 0px 0px 0px`;
+  }
+  if (style.position === "fixed") {
+    const covered = window.innerHeight - composer.getBoundingClientRect().top;
+    return `0px 0px ${-Math.max(0, Math.round(covered))}px 0px`;
+  }
+  return "0px";
+}
+
 export function useFollowLatest({
   enabled,
   latestItemSeq,
+  turnList,
   onFirstPlacement,
   ownSendCount,
 }: {
@@ -33,6 +56,10 @@ export function useFollowLatest({
    *  and needs nothing else about the list. It spends its one first placement on the first
    *  defined value, so a caller must not pass one before the card renders. */
   latestItemSeq: number | undefined;
+  /** The list of turns the caller draws, whose first `[data-turn]` is the newest card, or `null`
+   *  while no list is drawn. An IntersectionObserver on that card says whether any of it is on
+   *  screen, which costs no layout read on the scroll path. */
+  turnList: HTMLElement | null;
   /** Called once, in the layout effect that spends the first placement, right after the reader
    *  is placed at the newest card - so before any parent layout effect of that commit. It tells
    *  the caller the reader has just been placed for the first time: a scroll position recorded
@@ -43,9 +70,16 @@ export function useFollowLatest({
 }): {
   atTop: boolean;
   jumpToLatest: () => void;
+  /** Some part of the newest card is in the visible band (the screen less the docked composer's
+   *  band), so the reader already sees where a jump would take them: nothing is left for `Jump to
+   *  latest` to offer, and the pill drawn over the card it points at would cover that card's own
+   *  controls (dispatch://INFRA-5200). Any part, not its head, so a card taller than the room
+   *  under the pill is never under it either. */
+  newestCardOnScreen: boolean;
   pinnedToTop: () => boolean;
 } {
   const [atTop, setAtTop] = useState(true);
+  const [newestCardOnScreen, setNewestCardOnScreen] = useState(false);
   const atTopRef = useRef(true);
   const previousItemSeq = useRef<number | undefined>(undefined);
   const previousSends = useRef(ownSendCount);
@@ -96,7 +130,6 @@ export function useFollowLatest({
     }
     followedAt.current = whereTheReaderIs(scroller);
   }, []);
-
   useEffect(() => {
     const onScroll = () => {
       const nextAtTop = followsLatest();
@@ -109,6 +142,59 @@ export function useFollowLatest({
     onScroll();
     return () => window.removeEventListener("scroll", onScroll, true);
   }, [followsLatest]);
+
+  // Whether any part of the newest card is in the visible band is read from that card itself,
+  // through an IntersectionObserver: the browser reports a crossing of the band's edge off the
+  // scroll path, so a scroll costs no layout read (`ConversationTab.test.tsx` holds a scroll to
+  // none). The band the docked composer covers is no part of the screen here - a card under the
+  // composer is a card the reader cannot see - so the observer is built with that band taken off
+  // its root (`composerBand`), and built again when the band moves (the composer growing with a
+  // hint or a reply chip, or a resize that docks it elsewhere) or when another card becomes the
+  // newest, which a change of the list's children says.
+  useEffect(() => {
+    // Nothing is watched while the caller is not live: a hidden tab draws no pill.
+    if (turnList === null || !enabled) {
+      setNewestCardOnScreen(false);
+      return;
+    }
+    let observer: IntersectionObserver | null = null;
+    let band = "";
+    let card: Element | null = null;
+    const watch = () => {
+      const nextBand = composerBand();
+      const nextCard = turnList.querySelector(NEWEST_TURN_SELECTOR);
+      if (observer !== null && nextBand === band && nextCard === card) return;
+      band = nextBand;
+      card = nextCard;
+      observer?.disconnect();
+      observer = null;
+      if (card === null) {
+        setNewestCardOnScreen(false);
+        return;
+      }
+      observer = new IntersectionObserver(
+        (entries) => {
+          const last = entries.at(-1);
+          if (last !== undefined) setNewestCardOnScreen(last.isIntersecting);
+        },
+        { rootMargin: band }
+      );
+      observer.observe(card);
+    };
+    watch();
+    const cards = new MutationObserver(watch);
+    cards.observe(turnList, { childList: true });
+    const composer = document.querySelector<HTMLElement>(COMPOSER_SELECTOR);
+    const sizes = composer === null ? null : new ResizeObserver(watch);
+    if (composer !== null) sizes?.observe(composer);
+    window.addEventListener("resize", watch);
+    return () => {
+      window.removeEventListener("resize", watch);
+      sizes?.disconnect();
+      cards.disconnect();
+      observer?.disconnect();
+    };
+  }, [enabled, turnList]);
 
   // The mutation's `onSuccess` bumps `ownSendCount` and invalidates the events query in the same
   // tick, but the event feed (api/event-feed.ts) can independently invalidate the same query
@@ -168,6 +254,7 @@ export function useFollowLatest({
   return {
     atTop,
     jumpToLatest,
+    newestCardOnScreen,
     pinnedToTop: followsLatest,
   };
 }

@@ -6,11 +6,13 @@
  *  through `e2e/two-builds-routes.ts`: a page the router adds is reviewed or excluded with a
  *  reason, never silently unreviewed.
  *
- *  This module holds data, locators and the one wait built from them. The visual review runs in
- *  a container that carries no `psql` binary, so nothing here may reach `./psql`, `./seed` or
- *  `./delivery-seed`: its only imports are `@playwright/test` - its types and `expect`, which
- *  `waitForRouteSettled` asserts with - and `./two-builds-routes`'s route paths, and that
- *  module imports nothing at all. */
+ *  This module holds data, locators, the one wait built from them, and the two sources that wait
+ *  reads requests in flight from: `listedRequests`, Playwright's own list, and
+ *  `trackDocumentRequests`, which opens a CDP session on the test's own page. The visual review
+ *  runs in a container that carries no `psql` binary, so nothing here may reach `./psql`,
+ *  `./seed` or `./delivery-seed`: its only imports are `@playwright/test` - its types and
+ *  `expect`, which `waitForRouteSettled` asserts with - and `./two-builds-routes`'s route paths,
+ *  and that module imports nothing at all. */
 import { expect, type Locator, type Page, type Request } from "@playwright/test";
 
 import type { WalkRoutePath } from "./two-builds-routes";
@@ -117,29 +119,30 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // waits `DOCUMENT_SETTLE_MS` before it reads its document, so a page read on the heading
     // alone caught the head without that control in one run of the drift probe and with it in
     // the next. The column shows from the wide layout's width and nowhere narrower
-    // (`READING_PANE_QUERY`, `web/src/features/shell/useDialog.ts`).
+    // (`READING_PANE_QUERY`, `web/src/features/shell/useDialog.ts`): below it the Inbox lists
+    // short rows and opens none by itself, so the phone row has no column to wait for.
     //
-    // And the last words this corpus fills the list with, on either width, because THE HEADING
-    // IS NOT THE PAGE. `app.tsx` draws it outside the `Suspense` that holds `InboxList`, whose
-    // fallback is `null`, so between the heading's commit and that chunk's the page is the
-    // header and the heading alone - 390 by 664 against a 390 by 3,965 baseline, which is what
+    // And the last words this corpus fills the list with, because THE HEADING IS NOT THE PAGE.
+    // `app.tsx` draws it outside the `Suspense` that holds `InboxList`, whose fallback is
+    // `null`, so between the heading's commit and that chunk's the page is the header and the
+    // heading alone - 390 by 664 against a 390 by 3,965 baseline, which is what
     // `visual-phone`'s `inbox` shot was in run 42815937548, and what a build of this tree three
     // commits earlier gave twice in three runs: the race is older than that run and the
-    // baseline simply won it. The list's own first commit is not enough either, at 2,295 px of
-    // 3,988 with three of its six rows: its thread rows arrive on their own reads, and one
-    // measured run shot the page mid-fill. So this names something from the last of those
-    // reads - the Tester's reply to the @-mention on CORE-3 (`e2e/workspace.ts`) - after which
-    // the page does not move. It is the NARROW row's wait alone: at the wide layout that text
-    // is a card the reading pane holds rather than a row of the list, and it is not on the
-    // screen at all - a wait for it there is a wait for something the page never draws, which
-    // one run proved by timing out on it. The wide row needs none: its own control cannot draw
-    // before the list, since the column reads the document the selected row names.
+    // baseline simply won it. The list's own first commit is not enough either: when the phone's
+    // Inbox was a list of cards it stood at 2,295 px of 3,988 with three of its six rows, its
+    // thread rows arriving on their own reads, and one measured run shot the page mid-fill. So
+    // this names something from the last of those reads - the Tester's thread on CORE-3
+    // (`e2e/workspace.ts`), the @-mention the Tester replied to. The card drew the reply itself;
+    // the short row draws the thread's subject, the mention's own words, so that is what the
+    // row waits for. It is the NARROW row's wait alone. The wide row needs none: its own
+    // control cannot draw before the list, since the column reads the document the selected
+    // row names.
     ready: (page) => {
       const heading = page.getByRole("heading", { exact: true, level: 1, name: "Inbox" });
       const wideEnoughForPane = wideLayout(page);
       return wideEnoughForPane
         ? [heading, page.getByRole("button", { name: "Skip to the answer" })]
-        : [heading, page.getByText("Re-ran: 2 passed.")];
+        : [heading, page.getByText("@Tester please re-run the broadcast spec")];
     },
   },
   {
@@ -455,7 +458,14 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "settings",
     path: () => "/settings",
     pattern: "/settings",
-    ready: (page) => [page.getByRole("heading", { level: 1, name: "Settings" })],
+    // The mint form's Set P0 box, which Settings draws only once `GET /api/v1/whoami` has
+    // answered that the person holds `p0` (`web/src/features/settings/AgentTokensSection.tsx`).
+    // The page's heading is drawn while that read is still out, so without this a run can shoot
+    // the page before the box and another after it, against the same baseline.
+    ready: (page) => [
+      page.getByRole("heading", { level: 1, name: "Settings" }),
+      page.getByRole("checkbox", { name: "Set P0 (new token)" }),
+    ],
   },
   {
     kind: "reviewed",
@@ -673,8 +683,8 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  the reads the header made as it mounted going out about 285 ms into the shot and about
  *  310 ms after the first frame that shows the skeleton; the header's mount now reads who is
  *  subscribed to the issue and the project's architecture sources
- *  (`web/src/features/issue/IssueHeader.tsx` and its metadata rail's
- *  `IssueComponentsLine.tsx`). So this waits for both skeletons to be gone, after the row's own
+ *  (`web/src/features/issue/IssueHeader.tsx` and the `IssueComponentsLine.tsx` its Details
+ *  row draws). So this waits for both skeletons to be gone, after the row's own
  *  locators: before those the page may still be drawing "Loading issue…", which has neither
  *  box.
  *
@@ -702,8 +712,16 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  against it. The accessibility one would otherwise scan that same state: a scan of a
  *  half-resolved page reports findings about a page no reader sees - the contrast of a
  *  skeleton, the name of a chip that is about to be replaced - and misses the findings of the
- *  page a reader does read. */
-export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Promise<void> {
+ *  page a reader does read.
+ *
+ *  `inFlight` is where the Inbox half reads the requests still waiting for their answer: a page
+ *  answered by a real server reads `listedRequests`, and one answered from routes reads
+ *  `trackDocumentRequests`, which says why. */
+export async function waitForRouteSettled(
+  page: Page,
+  route: Pick<ReviewedRoute, "ready">,
+  inFlight: InFlightRequests
+): Promise<void> {
   for (const locator of route.ready(page)) {
     await expect(locator).toBeVisible();
   }
@@ -712,7 +730,7 @@ export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Pro
   await expect(page.locator("[data-landing-ring]")).toHaveCount(0);
   await expect(page.getByTestId("issue-header-box")).toHaveCount(0);
   await expect(page.getByTestId("issue-tabs-box")).toHaveCount(0);
-  await waitForInboxCountSettled(page);
+  await waitForInboxCountSettled(page, inFlight);
 }
 
 /** How long the Inbox number has to hold one value, with nothing it is read from in flight, before
@@ -722,21 +740,80 @@ export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Pro
  *  longer than that gap, which is tens of milliseconds over a local socket. */
 const INBOX_COUNT_QUIET_MS = 500;
 
-/** Whether `request` feeds the shell's one Inbox number (`web/src/features/inbox/useInboxCount.ts`)
- *  or moves it. The reads are the asks (`GET /api/v1/inbox`) counted for the viewer
- *  `/auth/whoami` names, the pending credential requests, and the unread total of
- *  `GET /api/v1/me/replies`. The writes are the viewer's own read state under `/api/v1/me/`: the
- *  broadcast page's read mark (`PUT /api/v1/me/agents/{session}/state`, `useMarkShownRepliesRead`
- *  in `web/src/features/agents/unread.ts`) is one, and the reads under that prefix answer the
- *  number too. */
-function feedsInboxCount(request: Request): boolean {
-  const { pathname } = new URL(request.url());
+/** Whether a request to `url` feeds the shell's one Inbox number
+ *  (`web/src/features/inbox/useInboxCount.ts`) or moves it. The reads are the asks
+ *  (`GET /api/v1/inbox`) counted for the viewer `/auth/whoami` names, the pending credential
+ *  requests, and the unread total of `GET /api/v1/me/replies`. The writes are the viewer's own read
+ *  state under `/api/v1/me/`: the broadcast page's read mark (`PUT /api/v1/me/agents/{session}/state`,
+ *  `useMarkShownRepliesRead` in `web/src/features/agents/unread.ts`) is one, and the reads under
+ *  that prefix answer the number too. */
+function feedsInboxCount(url: string): boolean {
+  const { pathname } = new URL(url);
   return (
     pathname === "/api/v1/inbox" ||
     pathname === "/api/v1/credential-requests" ||
     pathname === "/auth/whoami" ||
     pathname.startsWith("/api/v1/me/")
   );
+}
+
+/** The URLs of the requests a page has in flight that feed the Inbox number. A source may leave
+ *  out a request `feedsInboxCount` rejects, since the wait reads no other. */
+export type InFlightRequests = () => Promise<readonly string[]>;
+
+/** The requests of `page.requests()` - the page's latest hundred, which holds every request
+ *  recent enough to still be waiting - that can still answer: the ones the page's current
+ *  document sent (`requestsOfThisDocument`), each until Playwright has heard that it ended
+ *  (`stillAnswering`). The source of a page a real server answers.
+ *
+ *  `stillAnswering` asks Playwright's server about a request it has not heard the end of, so only
+ *  the requests the wait reads are asked: a page draws a hundred of them and reads the Inbox
+ *  number through four. */
+export function listedRequests(page: Page): InFlightRequests {
+  return async () => {
+    const waiting: string[] = [];
+    // Every request is asked, not only those up to the first still in flight, so the next poll
+    // has heard of each one that has already ended.
+    for (const request of await requestsOfThisDocument(page)) {
+      if (feedsInboxCount(request.url()) && stillAnswering(request)) waiting.push(request.url());
+    }
+    return waiting;
+  };
+}
+
+/** Starts reading `page`'s requests by the document that sent them, and answers the requests in
+ *  flight that the document the page shows now sent. Call it before the page's first load: a
+ *  request sent before it is not seen. Chromium only: it opens a CDP session on the page.
+ *
+ *  A page whose answers come from routes needs it (the layout rows, `e2e/layout-check.ts`). Such
+ *  a page can replace its document on its own after the load - the app reloads when a lazy chunk
+ *  fails to download (`features/shell/DeploymentResilience.tsx`), which a network change on a
+ *  busy host provokes - and a request a route held when its document went stays in
+ *  `page.requests()` for ever, with neither an answer nor a failure, so a wait that read
+ *  `listedRequests` never settled. Traced in dispatch://INFRA-5200's reproduction (the
+ *  issue-spec-outline row repeated 80 times while the host's addresses changed every 150 ms): 10
+ *  rows failed in the wait, each with a replaced document's Inbox reads listed as in flight 15 s
+ *  after the page had loaded again, some of them sent after the next document's own navigation
+ *  request had gone out. The document that sent a request (its `loaderId`) is what tells them
+ *  apart, and only Chromium's own events carry it. */
+export async function trackDocumentRequests(page: Page): Promise<InFlightRequests> {
+  const cdp = await page.context().newCDPSession(page);
+  const inFlight = new Map<string, { readonly document: string; readonly url: string }>();
+  let shown = "";
+  cdp.on("Network.requestWillBeSent", (event) => {
+    inFlight.set(event.requestId, { document: event.loaderId, url: event.request.url });
+  });
+  cdp.on("Network.loadingFinished", (event) => inFlight.delete(event.requestId));
+  cdp.on("Network.loadingFailed", (event) => inFlight.delete(event.requestId));
+  cdp.on("Page.frameNavigated", (event) => {
+    if (event.frame.parentId === undefined) shown = event.frame.loaderId;
+  });
+  await cdp.send("Network.enable");
+  await cdp.send("Page.enable");
+  shown = (await cdp.send("Page.getFrameTree")).frameTree.frame.loaderId;
+  const shownInFlight: InFlightRequests = async () =>
+    [...inFlight.values()].filter((sent) => sent.document === shown).map((sent) => sent.url);
+  return shownInFlight;
 }
 
 /** The rail's Inbox entry, the link whose text carries the shell's one Inbox number from the wide
@@ -775,23 +852,15 @@ export function topBarInboxBadge(page: Page): Locator {
  *  A stable value alone is not enough, because a value can hold for any window while the read
  *  that will change it is in flight; an idle network alone is not enough either, because the
  *  refetch a write causes is sent only once the socket's event arrives. So both are asked for,
- *  and the window restarts whenever either fails. The requests come from `page.requests()`, the
- *  page's latest hundred, which holds every request recent enough to still be waiting, and only
- *  those that can still answer count: the ones the page's current document sent
- *  (`requestsOfThisDocument`), each until Playwright has heard that it ended (`stillAnswering`). */
-async function waitForInboxCountSettled(page: Page): Promise<void> {
+ *  and the window restarts whenever either fails. The requests in flight come from `inFlight`. */
+async function waitForInboxCountSettled(page: Page, inFlight: InFlightRequests): Promise<void> {
   const count = wideLayout(page) ? railInboxLink(page) : topBarInboxBadge(page);
   let held: string | undefined;
   let heldSince = Date.now();
   await expect
     .poll(
       async () => {
-        // Every request is asked, not only those up to the first still in flight, so the next
-        // poll has heard of each one that has already ended.
-        let waiting = false;
-        for (const request of await requestsOfThisDocument(page)) {
-          if (feedsInboxCount(request) && stillAnswering(request)) waiting = true;
-        }
+        const waiting = (await inFlight()).some(feedsInboxCount);
         const reading = (await count.allTextContents()).join(" | ");
         if (waiting || reading !== held) {
           held = reading;

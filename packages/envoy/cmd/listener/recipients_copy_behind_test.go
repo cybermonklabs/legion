@@ -3,7 +3,6 @@ package main
 import (
 	"slices"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/store"
@@ -47,7 +46,7 @@ func holdRoleCopyBehind(t *testing.T, registry *store.Registry, role string) (re
 // copy is one write behind the claim, which is the state the row is about.
 func requireCopyBehind(t *testing.T, registry *store.Registry, former, next string) {
 	t.Helper()
-	waitFor(t, 10*time.Second, "the role claim view to name "+next, func() bool {
+	waitFor(t, "the role claim view to name "+next, func() bool {
 		held, err := registry.RolesHeldBy(next)
 		return err == nil && slices.Contains(held, lostLaneRole)
 	})
@@ -64,6 +63,7 @@ func requireCopyBehind(t *testing.T, registry *store.Registry, former, next stri
 // bucket stream's leader, which holds every write, so the lane goes. Control: the copy behind is
 // real for the row: a direct get of the claim names the former holder after the claim.
 func TestATakeoverNarrowsTheFormerHolderWhileTheRoleCopyIsBehind(t *testing.T) {
+	t.Parallel()
 	rig := newLostLaneRig(t)
 	const former, next = "ses_behind_takeover_former", "ses_behind_takeover_next"
 	rig.subscribe(t, consumerRegistration(former, "epoch-1"))
@@ -91,6 +91,7 @@ func TestATakeoverNarrowsTheFormerHolderWhileTheRoleCopyIsBehind(t *testing.T) {
 // publish counted the former holder, recipients 1 for a message its consumer, filtered on the
 // claim's newest record, does not deliver. Control: the copy behind is real for the row.
 func TestALaneCountReadsTheClaimFromTheLeaderWhileTheRoleCopyIsBehind(t *testing.T) {
+	t.Parallel()
 	rig := newLostLaneRig(t)
 	const former, next = "ses_behind_count_former", "ses_behind_count_next"
 	claimRoles(t, rig.harness.registry, former, lostLaneRole)

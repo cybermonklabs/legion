@@ -190,19 +190,34 @@ function openAskLine(ask: OpenAsk, linkBase: string | undefined): string {
 
 /** `dispatch open-asks` as text, each ask linked against `linkBase`, the base `linkBaseOf`
  *  answers (the command's own, or the Claude Code session hook's), or printed as its
- *  `dispatch://` reference where there is none (`linkFor`). */
+ *  `dispatch://` reference where there is none (`linkFor`). Without `project` the asks are the
+ *  ones this session authored. With `project` they are every open ask of that project, whoever
+ *  authored them, and the header says so. */
 export function formatOpenAsksSummary(
   response: OpenAsksResponse,
-  linkBase: string | undefined
+  linkBase: string | undefined,
+  project?: string
 ): string {
-  const scope = "active open asks you authored on open issues and project documents";
   if (response.count === 0) {
-    return ["There are no unanswered asks for this session.", `Scope: ${scope}.`].join("\n");
+    return (
+      project === undefined
+        ? [
+            "There are no unanswered asks for this session.",
+            "Scope: active open asks you authored on open issues and project documents.",
+          ]
+        : [
+            `There are no unanswered asks in the ${project} project.`,
+            `Scope: active open asks on the ${project} project's open issues and documents, whoever authored them.`,
+          ]
+    ).join("\n");
   }
+  const asks = `${response.count} unanswered ${response.count === 1 ? "ask" : "asks"}`;
   const waitingOnHuman = (response.asks ?? []).filter((ask) => ask.waiting_on === "human");
   const waitingOnAgent = (response.asks ?? []).filter((ask) => ask.waiting_on === "agent");
   return [
-    `${response.count} unanswered ${response.count === 1 ? "ask" : "asks"} you authored on active issues and project documents.`,
+    project === undefined
+      ? `${asks} you authored on active issues and project documents.`
+      : `${asks} on the ${project} project's active issues and documents, whoever authored them.`,
     "",
     `Waiting on human (${waitingOnHuman.length}):`,
     ...waitingOnHuman.map((ask) => openAskLine(ask, linkBase)),

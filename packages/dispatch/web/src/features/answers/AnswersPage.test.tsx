@@ -266,20 +266,38 @@ test("a row's chosen options are drawn from the trees of their labels", async ()
   }
 });
 
-test("an approval answer offers no Change answer", async () => {
+test("a current answer that cannot be changed says why in place of Change answer", async () => {
   const listMyAnswers = spyOn(api, "listMyAnswers").mockResolvedValue(
     page([
       answerRow({
         answer: { ...shipAnswer, selected: ["Approve"], text: null },
+        ask_id: "ask-approval",
         ask_kind: "approval",
         question: "Approve spec (version 2)?",
       }),
+      answerRow({ ask_id: "ask-closed", ask_state: "resolved", question: "Closed question?" }),
+      answerRow({ ask_id: "ask-open", ask_state: "open", question: "Asked again?" }),
+      answerRow({ ask_id: "ask-answered", question: "Still answered?" }),
     ])
   );
   const { view } = renderPage();
   try {
-    await view.findByRole("link", { name: "Open" });
-    expect(view.queryByRole("button", { name: "Change answer" })).not.toBeInTheDocument();
+    await view.findAllByRole("link", { name: "Open" });
+    const row = (id: string) =>
+      view.container.querySelector<HTMLElement>(`[data-answer-row="${id}"]`) as HTMLElement;
+    const reasons: Record<string, string> = {
+      "ask-approval": "An approval can't be changed",
+      "ask-closed": "Closed, so it can't be changed",
+      "ask-open": "Open again: answer it from the Inbox",
+    };
+    for (const [id, reason] of Object.entries(reasons)) {
+      expect(within(row(id)).queryByRole("button", { name: "Change answer" })).toBeNull();
+      expect(within(row(id)).getByText(reason)).toBeTruthy();
+    }
+    // An answer that can be changed offers the control and gives no reason.
+    const answered = row("ask-answered");
+    expect(within(answered).getByRole("button", { name: "Change answer" })).toBeTruthy();
+    expect(answered.querySelector("[data-answer-unchangeable]")).toBeNull();
   } finally {
     view.unmount();
     listMyAnswers.mockRestore();

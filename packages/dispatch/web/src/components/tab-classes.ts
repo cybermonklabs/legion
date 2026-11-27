@@ -21,9 +21,12 @@ export function tabStripClassName(compact: boolean): string {
   return `${compact ? "mb-0" : "mb-3"} flex flex-wrap items-center gap-1 border-b ${borderDefault}`;
 }
 
-/** The tablist inside it, which scrolls sideways where the tabs are wider than the page. */
+/** The tablist inside it. Where it is narrower than its tabs - the issue's ten tabs on a phone,
+ *  or beside the comment margin - it wraps onto a further line rather than scrolling, so every
+ *  tab is in view at every width; the space the issue page keeps for the strip wraps with it,
+ *  since it reads this same class around a box per tab. */
 export function tabListClassName(compact: boolean): string {
-  return `flex min-w-0 ${compact ? "gap-0 md:gap-1" : "gap-1"} overflow-x-auto [scrollbar-width:thin]`;
+  return `flex min-w-0 flex-wrap ${compact ? "gap-0 md:gap-1" : "gap-1"}`;
 }
 
 /** The box whatever trails the tablist stands in: the Spec toolbar on the issue page

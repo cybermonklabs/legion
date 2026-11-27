@@ -161,7 +161,10 @@ func newRecordingServer(t *testing.T, service *Service) *recordingServer {
 // the server's end of it, which records what the server writes to that page.
 func (s *recordingServer) dialUnreadPage(t *testing.T, artifactID string, query url.Values, receiveBuffer int) (*gws.Conn, *serverSocket) {
 	t.Helper()
-	dialer := gws.Dialer{NetDialContext: (&net.Dialer{Control: receiveBufferControl(receiveBuffer)}).DialContext}
+	// documentDialer bounds the handshake by the test binary's deadline; only the connection's
+	// receive buffer differs.
+	dialer := *documentDialer(t)
+	dialer.NetDialContext = (&net.Dialer{Control: receiveBufferControl(receiveBuffer)}).DialContext
 	address := "ws" + strings.TrimPrefix(s.URL, "http") + "/ws/doc/" + artifactID + "?" + query.Encode()
 	connection, response, err := dialer.Dial(address, http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {

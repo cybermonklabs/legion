@@ -12,7 +12,8 @@ import {
 } from "./api";
 import { holdFirstRequest } from "./editor";
 import { nextFrames } from "./frames";
-import { askCard, inboxPane, paneScroller, READING_PANE_WIDTH, selectedRow } from "./inbox-pane";
+import { askCard, inboxPane, paneScroller, selectedRow } from "./inbox-pane";
+import { READING_PANE_WIDTH } from "./reading-pane";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 

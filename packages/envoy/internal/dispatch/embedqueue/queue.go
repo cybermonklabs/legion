@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"math"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"time"
 
@@ -61,14 +62,6 @@ const (
 	batchPause = 200 * time.Millisecond
 )
 
-// renewClaimInterval is how often a claimRenewal re-extends its claim on every row it still
-// protects - between bisection's own embed attempts, and during a single reservation's wait
-// longer than this - comfortably inside claimWindow so a renewal always lands before the claim
-// it is refreshing could lapse. A var, not a const alongside claimWindow above, so a test can
-// shrink it well below claimWindow's own 2 minutes and observe a renewal firing in milliseconds
-// rather than needing to wait out the real interval.
-var renewClaimInterval = claimWindow / 2
-
 // Deps are the durable state and embedding dependencies for the queue.
 type Deps struct {
 	Store    *store.Store
@@ -89,8 +82,42 @@ type Deps struct {
 	proven *proof
 	// enqueued is signalled, without blocking, each time Cover changes rows: it writes embeddings
 	// itself rather than through embeddings_enqueue, so no notification announces what it makes
-	// pending, and Run's scan loop wakes on this instead. Nil for a caller that builds Deps itself.
+	// pending, and Run's scan loop wakes on this instead. Run makes it (a buffer of one) unless a
+	// test of this package has, to signal the scan loop itself and read whether a signal is still
+	// waiting there. Nil for a caller that builds Deps itself.
 	enqueued chan struct{}
+	// idle and coverageParked are the two ends of Run's work, for a test that must know the
+	// process has finished all of it: idle is called whenever the scan loop waits with nothing
+	// owed and nothing due (duty.WokenLoop.Idle), and coverageParked each time the coverage loop
+	// settles into its wait after a pass that succeeded (reportParked). The coverage loop is not
+	// a thing that ends - it rechecks the identity for as long as the process runs - so what a
+	// test can wait for is the loop parked, not the loop returned. Nil in production and for a
+	// caller that builds Deps itself; a test of this package sets them.
+	idle           func()
+	coverageParked func(awaitingAnswer bool)
+	// identityRecheck is the coverage loop's interval between runs. Run sets it to
+	// identityRecheckInterval unless a test of the recheck has set a shorter one, to run its own
+	// Run's in seconds beside tests whose Run keeps ten minutes.
+	identityRecheck time.Duration
+	// pace is the pace every Embed call this queue makes waits on (embedDocuments), which Paced
+	// sets and cmd/dispatch asks for: the wait renews the claim on the rows the call carries, and a
+	// canary that meets an outage backs the pace off (confirmSoloFailure). It is a field of its own
+	// rather than found by Embedder's type, so no wrapper of the embedder turns either off. Nil for
+	// an embedder no pace holds back (a test's fake, or a caller that builds Deps itself).
+	pace *embed.RateLimitedEmbedder
+}
+
+// Paced returns d with its embedder paced: d keeps an embed.RateLimitedEmbedder around Embedder,
+// each of whose calls the queue bounds at callBound (embed.Bounded), as its pace (Deps.pace),
+// which every Embed call the queue makes goes through (embedDocuments). Embedder stays as given:
+// the queue reads only its Identity and Limits, which the pace answers the same. A wrapper of the
+// embedder (metrics, tracing) goes in Embedder before Paced, so it sits inside the pace and sees every
+// call. A nil Embedder stays nil, so Run still starts nothing for it.
+func (d Deps) Paced() Deps {
+	if d.Embedder != nil {
+		d.pace = embed.NewRateLimitedEmbedder(embed.Bounded(d.Embedder, callBound))
+	}
+	return d
 }
 
 // proof is a record, set once, that an Embed call this process's queue made has succeeded.
@@ -119,9 +146,28 @@ func (p *proof) answered() <-chan struct{} {
 
 // embedDocuments embeds texts as documents with the configured embedder and, when the call
 // succeeds, records that the embedder works (Deps.proven). Every Embed call this package makes
-// goes through it, the canaries' included.
-func (d Deps) embedDocuments(ctx context.Context, texts []string) ([][]float32, error) {
-	vectors, err := d.Embedder.Embed(ctx, texts, embed.InputDocument)
+// goes through it, the canaries' included, and each ends at callBound (embed.Bounded). With a pace
+// (Deps.pace, which cmd/dispatch sets through Paced) the call waits on it first, at its slowest
+// retry.MaxDelay (5 minutes), longer than claimWindow, so that wait renews renewal's claim as a
+// reservation's wait does (waitOutDebt): unrenewed, the claim would lapse mid-wait, and another
+// process's scan would claim the rows and embed them again. The wait is the pace's in full, so the
+// pace holds. Right before the call goes out - before the pace when it has no wait, and at the
+// end of the wait when it has one - the claim is renewed if it is due, or if the call, run to
+// callBound, could otherwise end with it too old (renew, needing callBound plus callSlack). A nil
+// renewal (a call that holds no claim) waits without renewing.
+func (d Deps) embedDocuments(ctx context.Context, texts []string, renewal *claimRenewal) ([][]float32, error) {
+	var vectors [][]float32
+	var err error
+	renewal.renew(ctx, callBound+callSlack)
+	if d.pace != nil {
+		vectors, err = d.pace.EmbedAfter(ctx, texts, embed.InputDocument, func(ctx context.Context, wait time.Duration) bool {
+			waitOutDebt(ctx, wait, renewal)
+			renewal.renew(ctx, callBound+callSlack)
+			return ctx.Err() == nil
+		})
+	} else {
+		vectors, err = embed.Bounded(d.Embedder, callBound).Embed(ctx, texts, embed.InputDocument)
+	}
 	if err == nil {
 		d.proven.record()
 	}
@@ -173,8 +219,14 @@ func Run(ctx context.Context, deps Deps) {
 		return
 	}
 	deps.proven = newProof()
-	wake := make(chan struct{}, 1)
-	deps.enqueued = wake
+	wake := deps.enqueued
+	if wake == nil {
+		wake = make(chan struct{}, 1)
+		deps.enqueued = wake
+	}
+	if deps.identityRecheck <= 0 {
+		deps.identityRecheck = identityRecheckInterval
+	}
 	coverageCtx, err := store.ForConcurrentRead(ctx)
 	if err != nil {
 		slog.Error("dispatch embedqueue: not started: the caller holds a pooled connection", "error", err)
@@ -195,6 +247,7 @@ func Run(ctx context.Context, deps Deps) {
 		Wake:   wake,
 		MinGap: retryInterval,
 		Pass:   func(ctx context.Context) time.Time { return scanPass(ctx, deps) },
+		Idle:   deps.idle,
 	})
 }
 
@@ -325,10 +378,12 @@ type pendingRow struct {
 // about this batch's own content *might* have broken the request (a text the API refuses
 // outright, say), and handleGroupFailure isolates which row(s) via bisectSplit, splitting the
 // batch and re-embedding each half, recursively. A failure isolated down to a single row is
-// decided by confirmSoloFailure: a fixed, known-good embedCanary probe sent immediately after
-// that row's own failed call. Canary success proves the service, credentials and model were all
-// working at that exact moment, so the row's own failure is confirmed permanent (dead-lettered
-// once confirmed often enough); canary failure - including a throttle - means the condition is
+// decided by confirmSoloFailure: a fixed, known-good embedCanary probe sent after that row's own
+// failed call, through the same token budget and pace. Canary success proves the service,
+// credentials and model were all working when the canary was answered, so the row's own failure is
+// confirmed permanent (dead-lettered once confirmed often enough with no success between; a canary
+// that goes out after the service recovered from the outage the row met confirms that good row
+// once, as confirmSoloFailure says); canary failure - including a throttle - means the condition is
 // systemic, not this row's fault, and the row goes back to retry instead. This confirmation is
 // local to the one row and its own canary call: it never depends on any other row in the batch,
 // so a batch that was already exactly one row with no siblings at all is confirmed and
@@ -336,11 +391,17 @@ type pendingRow struct {
 // cancellation - this call's own ctx ending mid-request, including embed.RateLimitedEmbedder's
 // own pacing wait ending early - is never evidence about any row either, whatever error text
 // came back: handleGroupFailure checks for it before confirmSoloFailure or bisectSplit ever run,
-// and retries the whole group instead.
+// and retries the whole group instead. An outage that is no throttle (embed.IsOutage: Azure's
+// 408, or a 5xx but its 503, Bedrock's outage codes, or a call that ran out of time while this
+// call's ctx was live) is a non-throttled failure like any other here: it may be one text the
+// service fails on every time, which the canary confirms, or the service failing, whose canary
+// fails too, so nothing is counted against any row while it lasts (at its end, see
+// confirmSoloFailure).
 func ProcessBatch(ctx context.Context, deps Deps) (succeeded, failed int, blocked, throttled bool, err error) {
 	if active, _, err := deps.embedderActive(ctx); err != nil || !active {
 		return 0, 0, false, false, err
 	}
+	claimed := time.Now() // before the scan's statement claims the rows (newClaimRenewal)
 	rows, settled, err := scanPending(ctx, deps)
 	if err != nil {
 		return 0, 0, false, false, err
@@ -356,7 +417,7 @@ func ProcessBatch(ctx context.Context, deps Deps) (succeeded, failed int, blocke
 	// known to be needed: a single reservation for a full batch of maximum-length documents can
 	// itself wait close to claimWindow (chunkForBudget's and reserveTokens' own doc comments), so
 	// a renewer must be in scope for every embed attempt this call makes.
-	renewal := newClaimRenewal(deps, rows)
+	renewal := newClaimRenewal(deps, rows, claimed)
 	result := embedRows(ctx, deps, rows, renewal)
 	if result.err != nil {
 		return 0, 0, false, false, result.err
@@ -365,38 +426,54 @@ func ProcessBatch(ctx context.Context, deps Deps) (succeeded, failed int, blocke
 		blocked = retryRows(ctx, deps, result.permanent, true)
 	}
 	if len(result.retry) > 0 {
-		blocked = retryRows(ctx, deps, result.retry, false) || blocked
+		unwritten := retryRows(ctx, deps, result.retry, false)
+		if !unwritten {
+			for _, group := range result.throttledGroups {
+				warnThrottledGroup(group)
+			}
+		}
+		blocked = unwritten || blocked
 	}
 	return settled + result.succeeded, len(rows) - result.succeeded, blocked, result.throttled, nil
 }
 
 // bisectResult is embedRows' own report (and handleGroupFailure's, and bisectSplit's): every row
 // given to one of them ends up in exactly one of succeeded (committed), permanent (a solo row's
-// own non-throttled failure immediately confirmed by a successful embedCanary probe right after
-// it - proof the service was working at that exact moment, so the failure is this row's own
-// content), or retry (not confirmed - a throttle, a cancellation, a multi-row group not yet split
-// down to one, or a solo failure whose own canary probe also failed, which is never evidence
-// about this row and means the whole subtree backs off instead). err is a genuine infrastructure
-// failure (commitEmbeddings' own), never a reason to call any row permanent.
+// own non-throttled failure confirmed by a successful embedCanary probe sent after it
+// (confirmSoloFailure): proof the service was working when the canary was answered, so the failure
+// is taken as this row's own content), or retry (not confirmed - a throttle, a cancellation, a
+// multi-row group not yet split down to one, or a solo failure whose own canary probe also failed,
+// which is never evidence about this row and means the whole subtree backs off instead).
+// throttledGroups are the groups of retry the model service throttled, each with its error, whose
+// WARN ProcessBatch writes once their retry is written (warnThrottledGroup). err is a genuine
+// infrastructure failure (commitEmbeddings' own), never a reason to call any row permanent.
 type bisectResult struct {
-	succeeded int
-	permanent []pendingRow
-	retry     []pendingRow
-	throttled bool
-	err       error
+	succeeded       int
+	permanent       []pendingRow
+	retry           []pendingRow
+	throttled       bool
+	throttledGroups []throttledGroup
+	err             error
+}
+
+// throttledGroup is a group of rows whose one Embed call the model service throttled, with the
+// throttle's error (handleGroupFailure).
+type throttledGroup struct {
+	rows []pendingRow
+	err  error
 }
 
 // embedRows embeds and commits rows group by group (chunkForBudget splits rows so no single
 // reservation ever exceeds the embedder's BackgroundTokensPerMinute and no Embed call carries
-// more than its MaxBatchBytes, so a call of dense text finishes inside the place's request
-// timeout instead of timing out and being bisected), committing each group's vectors to the
-// database as soon as that group's own Embed call succeeds: a later group's failure never
-// re-embeds an earlier group's already-committed rows, and a group that itself fails
-// non-throttled is handed to handleGroupFailure, which isolates it without ever re-embedding that
-// exact group again. The returned bisectResult accumulates every group's own outcome across the
-// whole call. A genuine infrastructure error (commitEmbeddings' own) stops the loop immediately
-// and propagates as-is, abandoning whatever groups were not yet attempted - ProcessBatch and
-// bisectSplit both treat it as a hard failure, never a reason to retry row by row.
+// more than its MaxBatchBytes, so a call of dense text finishes inside callBound instead of
+// running out of time and being bisected), committing each group's vectors to the database as soon
+// as that group's own Embed call succeeds: a later group's failure never re-embeds an earlier
+// group's already-committed rows, and a group that itself fails non-throttled is handed to
+// handleGroupFailure, which isolates it without ever re-embedding that exact group again. The
+// returned bisectResult accumulates every group's own outcome across the whole call. A genuine
+// infrastructure error (commitEmbeddings' own) stops the loop immediately and propagates as-is,
+// abandoning whatever groups were not yet attempted - ProcessBatch and bisectSplit both treat it as
+// a hard failure, never a reason to retry row by row.
 func embedRows(ctx context.Context, deps Deps, rows []pendingRow, renewal *claimRenewal) bisectResult {
 	var result bisectResult
 	limits := deps.Embedder.Limits()
@@ -409,9 +486,8 @@ func embedRows(ctx context.Context, deps Deps, rows []pendingRow, renewal *claim
 		for i, row := range group.rows {
 			texts[i] = row.text
 		}
-		renewal.renew(ctx)
 		reserveTokens(ctx, deps, group.tokens, limits.BackgroundTokensPerMinute, renewal)
-		vectors, err := deps.embedDocuments(ctx, texts)
+		vectors, err := deps.embedDocuments(ctx, texts, renewal)
 		if err != nil {
 			groupResult := handleGroupFailure(ctx, deps, group.rows, err, renewal)
 			if groupResult.err != nil {
@@ -421,6 +497,7 @@ func embedRows(ctx context.Context, deps Deps, rows []pendingRow, renewal *claim
 			result.permanent = append(result.permanent, groupResult.permanent...)
 			result.retry = append(result.retry, groupResult.retry...)
 			result.throttled = result.throttled || groupResult.throttled
+			result.throttledGroups = append(result.throttledGroups, groupResult.throttledGroups...)
 			continue
 		}
 		committed, permanent, cErr := commitEmbeddings(ctx, deps, group.rows, vectors)
@@ -441,10 +518,11 @@ func embedRows(ctx context.Context, deps Deps, rows []pendingRow, renewal *claim
 // evidence about any row's content, and isolating "which row triggered it" would be meaningless
 // (and would cost far more calls against a provider that has already said to slow down). A single
 // row goes to confirmSoloFailure. More than one row splits via bisectSplit, which re-embeds only
-// the two halves, never the group that already failed.
+// the two halves, never the group that already failed. A throttled group is reported in
+// throttledGroups too, so ProcessBatch can name it in a WARN once its retry is written.
 func handleGroupFailure(ctx context.Context, deps Deps, group []pendingRow, err error, renewal *claimRenewal) bisectResult {
 	if embed.IsThrottled(err) {
-		return bisectResult{retry: group, throttled: true}
+		return bisectResult{retry: group, throttled: true, throttledGroups: []throttledGroup{{rows: group, err: err}}}
 	}
 	if ctx.Err() != nil {
 		return bisectResult{retry: group}
@@ -453,6 +531,19 @@ func handleGroupFailure(ctx context.Context, deps Deps, group []pendingRow, err 
 		return confirmSoloFailure(ctx, deps, group, err, renewal)
 	}
 	return bisectSplit(ctx, deps, group, renewal)
+}
+
+// warnThrottledGroup writes the WARN for a group the model service throttled, which ProcessBatch
+// calls once the group's retry is written, so a retry write that failed names no retry: how many
+// rows the group holds, its first row, the attempt that row's retry reaches and how long after the
+// write it falls due (nextAttempt, as retryRows wrote them), never a text. A group is handled once
+// per ProcessBatch, and each one advances its rows' attempt counts, so the line comes once per
+// group and attempt count.
+func warnThrottledGroup(group throttledGroup) {
+	first := group.rows[0]
+	attempt, delay := nextAttempt(first)
+	slog.Warn("dispatch embedqueue: the model service throttled a group; it is retried whole, counted against no row",
+		"rows", len(group.rows), "kind", first.kind, "id", first.id, "attempt", attempt, "retryIn", delay, "error", group.err)
 }
 
 // bisectSplit isolates which row(s) in rows actually broke a non-throttled embed failure
@@ -500,10 +591,11 @@ func mergeRows(a, b []pendingRow) []pendingRow {
 
 func mergeBisectResults(left, right bisectResult) bisectResult {
 	return bisectResult{
-		succeeded: left.succeeded + right.succeeded,
-		permanent: mergeRows(left.permanent, right.permanent),
-		retry:     mergeRows(left.retry, right.retry),
-		throttled: left.throttled || right.throttled,
+		succeeded:       left.succeeded + right.succeeded,
+		permanent:       mergeRows(left.permanent, right.permanent),
+		retry:           mergeRows(left.retry, right.retry),
+		throttled:       left.throttled || right.throttled,
+		throttledGroups: slices.Concat(left.throttledGroups, right.throttledGroups),
 	}
 }
 
@@ -519,14 +611,15 @@ type budgetedGroup struct {
 // closing a group before the row that would take it past either of the embedder's limits: its
 // estimated tokens (embed.EstimateTokens) past BackgroundTokensPerMinute, so reserveTokens never
 // has to reserve more than one minute's worth of budget for a single group, or its bytes
-// (embed.BoundedBytes) past MaxBatchBytes when that is set, so every background call fits the
-// place's request timeout (Azure's, azureMaxBatchBytes' comment). Each row is in exactly one
-// group. A row that alone meets or passes either limit - a MaxInputRunes-length document under
-// a small quota, say - still gets a group of its own rather than being split further: both counts
-// already truncate at MaxInputRunes, so even that worst case is a known, bounded size (at most
-// 128,000 bytes, under Azure's 320,000), and one row is the smallest unit this package ever
-// embeds. Each group's tokens field is the sum of its own rows' estimates, computed here once and
-// carried forward rather than re-estimated from the group's joined texts later.
+// (embed.BoundedBytes) past MaxBatchBytes when that is set, so every background call finishes
+// inside callBound (azureMaxBatchBytes' and bedrockMaxBatchBytes' comments). Each row is in
+// exactly one group. A row that alone meets or passes either limit - a MaxInputRunes-length
+// document under a small quota, say - still gets a group of its own rather than being split
+// further: both counts already truncate at MaxInputRunes, so even that worst case is a known,
+// bounded size (at most 128,000 bytes, under either place's 320,000), and one row is the smallest
+// unit this package ever embeds. Each group's tokens field is the sum of its own rows' estimates,
+// computed here once and carried forward rather than re-estimated from the group's joined texts
+// later.
 func chunkForBudget(rows []pendingRow, limits embed.Limits) []budgetedGroup {
 	if len(rows) == 0 {
 		return nil
@@ -546,171 +639,6 @@ func chunkForBudget(rows []pendingRow, limits embed.Limits) []budgetedGroup {
 		size += rowBytes
 	}
 	return append(groups, budgetedGroup{rows: rows[start:], tokens: tokens})
-}
-
-// claimRenewal re-extends scanPending's claim on every row of the original top-level batch a
-// ProcessBatch call is working through - not just whatever subtree bisection is currently in,
-// since every row not yet committed or confirmed permanent is still this call's responsibility
-// until it returns - once renewClaimInterval has passed since the last renewal, so work slower
-// than claimWindow (a long bisection, or a single reservation's own wait; see renewClaimInterval
-// and reserveTokens' own doc comments) never loses its claim to a concurrent scanner partway
-// through. Best-effort: a failed renewal is logged and never aborts anything, since a row a
-// concurrent scanner reclaims is merely processed twice, not corrupted - commitEmbeddings' own
-// content_hash-matched update already makes a doubly-claimed row safe, just not free. A nil
-// *claimRenewal (a caller with no claim to protect, such as a test exercising reserveTokens
-// alone) is a safe no-op.
-type claimRenewal struct {
-	deps Deps
-	rows []pendingRow
-	last time.Time
-}
-
-func newClaimRenewal(deps Deps, rows []pendingRow) *claimRenewal {
-	return &claimRenewal{deps: deps, rows: rows, last: time.Now()}
-}
-
-func (c *claimRenewal) renew(ctx context.Context) {
-	if c == nil || ctx.Err() != nil || time.Since(c.last) < renewClaimInterval {
-		return
-	}
-	c.last = time.Now()
-	kinds := make([]string, len(c.rows))
-	ids := make([]string, len(c.rows))
-	hashes := make([]string, len(c.rows))
-	for i, row := range c.rows {
-		kinds[i], ids[i], hashes[i] = row.kind, row.id, row.contentHash
-	}
-	// content_hash-matched, exactly as commitEmbeddings and retryRows both are: a row a
-	// concurrent write already changed is no longer this claim's to protect, and touching it
-	// anyway would delay that write's own, fresher embeddings_enqueue up to claimWindow for no
-	// reason - the row's new content_hash makes it eligible again immediately otherwise.
-	if _, err := c.deps.Store.Pool.Exec(ctx, `
-		update embeddings e set next_attempt_at = now() + $4
-		from unnest($1::text[], $2::text[], $3::text[]) as v(kind, id, content_hash)
-		where e.kind = v.kind and e.id = v.id and e.content_hash = v.content_hash
-	`, kinds, ids, hashes, claimWindow); err != nil {
-		slog.Error("dispatch embedqueue: bisection claim renewal failed", "error", err)
-	}
-}
-
-// resolve removes committed rows from the set a claimRenewal still protects: once a row commits
-// (embedded_hash = content_hash), scanPending's own predicate no longer selects it, so renewing
-// its claim further touches nothing a concurrent scanner could ever reclaim.
-func (c *claimRenewal) resolve(committed []pendingRow) {
-	if c == nil || len(committed) == 0 {
-		return
-	}
-	c.rows = excludingRows(c.rows, committed)
-}
-
-// excludingRows returns rows with every row also present in exclude removed, matched by (kind,
-// id) - embedRows' own way of turning commitEmbeddings' rows/permanent pair into the set that
-// actually committed, for claimRenewal.resolve. A fresh slice, never c.rows[:0] or rows itself
-// filtered in place: c.rows is the original top-level batch, which bisectSplit's own recursion is
-// still actively slicing into (rows[:mid], rows[mid:]) elsewhere in the same call tree -
-// overwriting its backing array in place would corrupt whatever sibling subtree is reading from
-// it concurrently with this call.
-func excludingRows(rows, exclude []pendingRow) []pendingRow {
-	if len(exclude) == 0 {
-		return rows
-	}
-	skip := make(map[string]struct{}, len(exclude))
-	for _, row := range exclude {
-		skip[row.kind+"\x00"+row.id] = struct{}{}
-	}
-	kept := make([]pendingRow, 0, len(rows))
-	for _, row := range rows {
-		if _, ok := skip[row.kind+"\x00"+row.id]; !ok {
-			kept = append(kept, row)
-		}
-	}
-	return kept
-}
-
-// reserveBackgroundTokens estimates texts' tokens (embed.EstimateTokens) and reserves them
-// against the embedder's BackgroundTokensPerMinute in the shared, database-backed budget
-// (reserveTokens), waiting out whatever debt that reservation leaves - renewing renewal's claim
-// during a wait longer than renewClaimInterval, not only before or after it. embedRows' own
-// per-group reservations call reserveTokens directly with chunkForBudget's already-computed token
-// total instead of this helper, so the one-off embedCanary probes (confirmSoloFailure's, and the
-// coverage pass's proveEmbedder) are its only callers. Best-effort: a reservation that fails to
-// read or write (a transient database error) is logged and never blocks or fails the call -
-// embed.RateLimitedEmbedder's own in-process, reactive AIMD backoff is the backstop if this
-// proactive ceiling is ever skipped or under-estimates a call.
-func reserveBackgroundTokens(ctx context.Context, deps Deps, texts []string, renewal *claimRenewal) {
-	reserveTokens(ctx, deps, embed.EstimateTokens(texts), deps.Embedder.Limits().BackgroundTokensPerMinute, renewal)
-}
-
-// reserveTokens draws tokens from embeddings_rate_limit's one shared row (migration 0078),
-// refilling it continuously at ceilingPerMinute/60 tokens per second and capping it at
-// ceilingPerMinute (one statement does both: a plain token bucket), then waits out whatever
-// negative balance - debt - that reservation leaves before returning, so the caller's real
-// model-service call never races ahead of the budget it just drew down. The row is in the
-// database, not in-process memory, because a place's quota belongs to the whole account or
-// deployment, not to one caller: every envoy-dispatch process's background work draws from the
-// same bucket, and embed.RateLimitedEmbedder's in-process, reactive pacing alone cannot keep a
-// live search request in one process safe from throttling another process's background work
-// causes. ceilingPerMinute is the configured place's BackgroundTokensPerMinute (two thirds of its
-// quota, the rest left to live queries) in estimated tokens (embed.EstimateTokens counts 4
-// characters a token), not what the model service counts. The cap and the refill together can
-// release about twice the ceiling in one minute, so a minute can pass the quota even when the
-// estimate is exact: through LEGION-549's Bedrock backfill (2026-10-11, 72 minutes, 15,117 rows)
-// Bedrock counted about 7% more input tokens than the estimate, about 220,600 a minute against
-// a 300,000 quota with 8 minutes above it (peak 431,590), and throttled none of it. Dense text
-// (hex, CJK) costs about 3.5x the estimate and more on Azure (EstimateTokens' comment), so
-// background work on it can pass the deployment's quota; the 429s that follow are throttles,
-// which the queue retries without counting them against any row. That is accepted.
-//
-// Two processes may reserve with different ceilings: two builds whose places set different
-// limits, during the release that changes them. Each statement refills at most its own ceiling's
-// rate and caps at its own ceiling, so the row never refills faster than the larger ceiling, and
-// each process waits out its debt at its own rate, never faster than the larger one: together they
-// take no more than one process with the larger ceiling would, the larger ceiling a minute once
-// the row is in debt. Only a process whose embedder's identity is active reserves at all
-// (ProcessBatch, Cover).
-//
-// chunkForBudget already keeps one reservation's own tokens at or under ceilingPerMinute, but the
-// wait can still run past renewClaimInterval when other debt was already on the row (another
-// process's, or this one's own earlier groups) - renewal is woken (renew) at every
-// renewClaimInterval-sized slice of the wait, not only before or after it, so a claim never lapses
-// mid-wait; renewal.renew is a safe no-op on nil (a caller with no claim to protect, such as a
-// test exercising the budget alone). ceilingPerMinute is a parameter rather than read from deps
-// here so a test can use a tiny ceiling and observe a real, short wait instead of needing to
-// simulate a whole minute.
-func reserveTokens(ctx context.Context, deps Deps, tokens, ceilingPerMinute int, renewal *claimRenewal) {
-	var available float64
-	if err := deps.Store.Pool.QueryRow(ctx, `
-		update embeddings_rate_limit
-		set tokens_available = least($2::double precision, tokens_available + extract(epoch from now() - last_refill_at) * ($2::double precision / 60.0)) - $1::double precision,
-		    last_refill_at = now()
-		returning tokens_available
-	`, float64(tokens), float64(ceilingPerMinute)).Scan(&available); err != nil {
-		slog.Error("dispatch embedqueue: background token-budget reservation failed", "error", err)
-		return
-	}
-	if available >= 0 {
-		return
-	}
-	wait := time.Duration(-available / (float64(ceilingPerMinute) / 60.0) * float64(time.Second))
-	waitOutDebt(ctx, wait, renewal, renewClaimInterval)
-}
-
-// waitOutDebt is reserveTokens' own wait loop, pulled out so a test can drive it with a tiny
-// segment instead of renewClaimInterval's real one minute: it sleeps out wait in slices of at
-// most segment, calling renewal.renew between every slice (not only before or after the whole
-// wait), so a wait longer than segment still renews partway through rather than only at the end.
-func waitOutDebt(ctx context.Context, wait time.Duration, renewal *claimRenewal, segment time.Duration) {
-	for wait > 0 {
-		s := wait
-		if s > segment {
-			s = segment
-		}
-		if !pauseFor(ctx, s) {
-			return
-		}
-		wait -= s
-		renewal.renew(ctx)
-	}
 }
 
 // nothingToEmbed renders, over the text expression expr, the one SQL test for a text with nothing
@@ -897,7 +825,7 @@ func retryRows(ctx context.Context, deps Deps, rows []pendingRow, permanent bool
 	nextAttempts := make([]time.Time, len(rows))
 	deads := make([]bool, len(rows))
 	for i, row := range rows {
-		n := row.attempts + 1
+		n, delay := nextAttempt(row)
 		confirmed := row.confirmedFailures
 		if permanent {
 			confirmed++
@@ -909,7 +837,7 @@ func retryRows(ctx context.Context, deps Deps, rows []pendingRow, permanent bool
 		kinds[i], ids[i], hashes[i] = row.kind, row.id, row.contentHash
 		attempts[i] = int32(n)
 		confirmedFailures[i] = int32(confirmed)
-		nextAttempts[i] = time.Now().Add(retry.Delay(n))
+		nextAttempts[i] = time.Now().Add(delay)
 		deads[i] = dead
 	}
 	_, err := deps.Store.Pool.Exec(ctx, `
@@ -926,4 +854,12 @@ func retryRows(ctx context.Context, deps Deps, rows []pendingRow, permanent bool
 		return true
 	}
 	return false
+}
+
+// nextAttempt is the attempt count a retry of row records and how long after the retry is written
+// it falls due (retry.Delay): retryRows schedules each row's retry by it, and warnThrottledGroup
+// names it.
+func nextAttempt(row pendingRow) (attempt int, delay time.Duration) {
+	attempt = row.attempts + 1
+	return attempt, retry.Delay(attempt)
 }

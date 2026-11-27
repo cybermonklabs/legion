@@ -12,7 +12,12 @@ import type {
 import { urlForText } from "@legion/contracts/log-text";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type { DispatchHost, ExecFn } from "../dispatch-cwd";
-import { DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
+import {
+  DISPATCH_WRITE_RETRY,
+  DispatchClient,
+  type DispatchClientOptions,
+  type DispatchWriteRetry,
+} from "../dispatch-http";
 import type { Owner, ParsedDispatchRef } from "../dispatch-owner";
 import type { AgentArtifactRef, LocalPicture } from "../dispatch-picture-tools";
 import type { ToolImage } from "../dispatch-pictures";
@@ -50,8 +55,10 @@ export interface ExecuteDispatchToolInput {
   readonly args: ToolArguments;
   readonly cwd: string;
   /**
-   * The bytes of an upload's `--path` file as the CLI already read them for AskGate's check, sent
-   * in place of a fresh read, so the upload sends exactly the bytes that check digested.
+   * The bytes of an upload's `--path` file the CLI already read, sent in place of a read: those
+   * AskGate's check digested where it read them, so the upload sends exactly those bytes, and
+   * otherwise those of a Markdown file as the CLI read and checked them once the flags were read
+   * (`documentFileRead`), so the call reads the file no second time.
    */
   readonly uploadBytes?: Uint8Array;
   readonly host: DispatchHost;
@@ -83,6 +90,12 @@ export interface ExecuteDispatchToolInput {
 export interface DispatchToolResult {
   readonly text: string;
   readonly details: Record<string, unknown>;
+  /** A body the dispatch CLI writes to standard output as it came, byte for byte, in place of
+   *  `text`, with no line of its own beside it there: `dispatch api`'s answer to a 2xx that is not
+   *  Dispatch's JSON: stored content (an attachment) whatever its type, a body that is not JSON,
+   *  or a bodiless 204's none. `text` then says what it is, and `details` records it without its
+   *  bytes. */
+  readonly body?: Uint8Array;
   /** Pictures the model is shown after the text, in the order the text names them. */
   readonly images?: readonly ToolImage[];
   /** What the caller should hear beside the result rather than in it: the dispatch CLI writes
@@ -94,6 +107,70 @@ export interface DispatchToolResult {
    *  told a create happened. */
   readonly refused?: boolean;
 }
+
+/**
+ * What a command's dry-run step (`DispatchCommand.dryRun`, table.ts) is handed once the call's own
+ * argument check has passed: what the step needs to ask Dispatch what the call asks before it
+ * writes, under the dry run's deadline.
+ */
+export interface DryRunContext {
+  /** The command's tool name, which its refusals name. */
+  readonly tool: string;
+  /** The arguments as the call's check parsed them. */
+  readonly args: ToolArguments;
+  /** The directory the call resolves a relative file path against, as the call does. */
+  readonly cwd: string;
+  /** The bytes of the upload's Markdown `--path` file as the CLI read and checked them once the
+   *  flags were read (`documentFileRead`), which the step checks in place of a read. */
+  readonly uploadBytes?: Uint8Array<ArrayBuffer>;
+  /**
+   * The client the call builds, from the session's Dispatch as the call resolves it. It stops at
+   * `deadline`, and its own deadline is the same budget (`deadlineMs`), so a failure after the
+   * budget is the deadline's and a credential is given that budget less the request's reserve. It
+   * asks no request again that Dispatch answered with no route. It prints each warning of the
+   * session's configuration on stderr, and throws, naming why, when the session has no Dispatch.
+   * A step calls it only for arguments it asks Dispatch about, so a dry run of any other arguments
+   * builds no client here and prints no configuration warning. The one other dry run that sends a
+   * request is a `dispatch result` record's, which runs as the record does (`dryRunAsksDispatch`).
+   */
+  readonly client: () => DispatchClient;
+  /** Aborts once `deadlineMs` have passed, so a failure after it is the deadline's. */
+  readonly deadline: AbortSignal;
+  readonly deadlineMs: number;
+}
+
+/** How long a dry run waits on Dispatch for its step's answer (`DispatchCommand.dryRun`): well
+ *  inside the 20 s an AskGate older than DISPATCH_DRY_RUN_LOCAL gives a dry run, so a slow Dispatch
+ *  passes that gate's dry run with a warning rather than failing it. AskGate now sets the
+ *  variable, under which no step runs. The call of `dispatch artifact` asks its check of a
+ *  Markdown file within the same bound, through the same client options as its dry run
+ *  (`askOnceWithinDryRun`). */
+export const DRY_RUN_DEADLINE_MS = 5_000;
+
+/**
+ * The options of a client that asks Dispatch once within the dry run's bound, `deadlineMs`
+ * (DRY_RUN_DEADLINE_MS, or a shorter one a test sets): its own deadline is that bound, it asks no
+ * request again that Dispatch answered with no route, and it sends no second attempt after a
+ * failed one (no pauses), so no wait outlasts the bound. A fresh token is still presented once
+ * where Dispatch says the token is no longer live. The dry run's client and the client of the
+ * call's check of a Markdown file both take these, so the two ask alike. The pacing is
+ * DISPATCH_WRITE_RETRY's, its pauses removed: the dry run has no session pacing of its own, and the
+ * call's is DISPATCH_WRITE_RETRY wherever a test does not replace it.
+ */
+export function askOnceWithinDryRun(deadlineMs = DRY_RUN_DEADLINE_MS): DispatchClientOptions {
+  return { deadlineMs, retryNoRoute: false, writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [] } };
+}
+
+/**
+ * What a dry-run step found, which the dry run answers with the call's own output and exit code:
+ * - `refused`: the error the call throws for these arguments, which the dry run prints as
+ *   `messageFor` prints it, and exits 2 on where it is a `ToolInputError` and 1 on any other, as
+ *   the call does;
+ * - `passed`: a pass, with a warning for stderr when the step could not get its answer.
+ */
+export type DryRunVerdict =
+  | { readonly kind: "refused"; readonly refusal: Error }
+  | { readonly kind: "passed"; readonly warning?: string };
 
 export interface ResolvedArtifact {
   readonly owner: Owner;
@@ -237,9 +314,10 @@ export function asObject(value: unknown): Record<string, unknown> | null {
 }
 
 /**
- * What every command is handed: the call as `checkDispatchCall` left it, and the Dispatch this
- * session speaks to. A command that answers before the origin is resolved (`dispatch_open_asks`,
- * `dispatch_answers`, `dispatch_whoami`) takes this alone, so it starts no subprocess.
+ * What every spec command is handed: the call as `checkDispatchCall` left it, and the Dispatch
+ * this session speaks to. A command that answers before the origin is resolved
+ * (`dispatch_open_asks`, `dispatch_answers`, `dispatch_whoami`) takes this alone, so it starts no
+ * subprocess.
  */
 export interface SessionContext {
   readonly input: ExecuteDispatchToolInput;
@@ -263,9 +341,12 @@ export interface SessionContext {
   readonly hostSession: string | undefined;
   /**
    * A factory, not one instance: the constructor starts the request deadline, and the main path
-   * resolves the origin (a subprocess) before it needs a client.
+   * resolves the origin (a subprocess) before it needs a client. `options` are laid over the
+   * session's own (its signal, its write pacing and its sleep), for a request that runs under a
+   * budget of its own: the call of `dispatch artifact` asks its check of a Markdown file once,
+   * within DRY_RUN_DEADLINE_MS, as its dry run asks it (`askOnceWithinDryRun`).
    */
-  newClient(): DispatchClient;
+  newClient(options?: DispatchClientOptions): DispatchClient;
 }
 
 /**
@@ -307,7 +388,7 @@ export interface CommandContext extends SessionContext {
 export type DispatchCommand = (context: CommandContext) => Promise<DispatchToolResult>;
 
 /**
- * The context every command starts from, built from the checked call. The client names the
+ * The context every spec command starts from, built from the checked call. The client names the
  * configured server in a transport error (`DispatchClient`: its URL by `urlForText`, the failure
  * by `errorClass`), since a session whose Dispatch moved reads that message and nothing else;
  * every link is built on a clean base or printed as its reference (`linkBaseOf`). The client's
@@ -328,11 +409,12 @@ export function sessionContext(
     configUrl,
     linkBase: linkBaseOf(input.config.publicUrl ?? url),
     hostSession: input.sessionId?.trim(),
-    newClient: () =>
+    newClient: (options = {}) =>
       new DispatchClient(url, credential, fetchImpl, {
         signal: input.signal,
         writeRetry: input.writeRetry,
         sleep: input.sleep,
+        ...options,
       }),
   };
 }

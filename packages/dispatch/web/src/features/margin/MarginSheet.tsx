@@ -1,4 +1,4 @@
-import { type ReactNode, type RefObject, useEffect, useRef } from "react";
+import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 
 import type { Artifact, Ask, DispatchEvent } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -155,6 +155,27 @@ interface MarginSheetProps {
   model: MarginSheetModel;
 }
 
+/**
+ * The document's review margin. Its groups, in this order (the layout rule of
+ * `packages/dispatch/web/src/AGENTS.md`, dispatch://INFRA-5200):
+ *
+ * 1. Compact toggle: below `xl`, the sheet's handle and its Open / Close review panel button,
+ *    one row at the foot of the screen while the sheet is collapsed.
+ * 2. Tabs and desktop control: the margin's tabs, then the control that collapses the margin to
+ *    its rail. The control is drawn from `xl` up only; below it the tabs have the row alone.
+ * 3. Filter and Clear: while a reader has filtered the margin to one block from the document,
+ *    "References for this block" and Clear filter, on a row of their own under the tabs; the
+ *    words wrap inside their item, and Clear keeps its place at the row's end.
+ * 4. Composer and content: the margin's compose, then the cards of the open tab, one per line.
+ * 5. Phone thread: on a phone an opened thread is a full-screen view in place of the body, with
+ *    its own composer at the foot; Back returns to the list.
+ *
+ * Below `xl` the margin is a sheet fixed at the foot of the screen, collapsed to its toggle or
+ * expanded as a modal dialog up to 85dvh; from `xl` up it is a sticky column beside the
+ * document. While it is expanded it publishes its height as `--margin-sheet-height`, and the
+ * editor's selection bar docks 12 px above the sheet's top edge (`styles.css`), so the bar
+ * neither covers the sheet's controls nor leaves the reader's reach.
+ */
 export function MarginSheet({
   collapsed = false,
   desktopControl,
@@ -275,6 +296,31 @@ export function MarginSheet({
   // holds its band, its box on the screen, and the floats keep clear of it. Expanded, it is a
   // modal sheet over the page, and adds nothing. The dialog's container is this same `<aside>`.
   useFootInset(dialog.containerRef, compactSheet && owner !== undefined && !sheet.expanded, "page");
+  // How tall the sheet stands while it is the modal one, on the document element as
+  // `--margin-sheet-height`. The editor's selection bar is no element of ours - the library
+  // fixes it at the foot of a touch screen, where this sheet is - so `styles.css` lifts the bar
+  // above the sheet by this height, and the reader can still send a selection of the document to
+  // the margin's view while the panel is open (dispatch://INFRA-5200). A ResizeObserver on the
+  // sheet publishes it, since the sheet's height follows its content up to 85dvh with no render
+  // of this component: a card's own state, a picture loading, or the dvh changing as a phone's
+  // toolbar collapses all change it.
+  const modalSheet = compactSheet && sheet.expanded;
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    const element = dialog.containerRef.current;
+    if (!modalSheet || element === null) return;
+    const publish = () => {
+      const height = Math.round(element.getBoundingClientRect().height);
+      root.style.setProperty("--margin-sheet-height", `${height}px`);
+    };
+    publish();
+    const sizes = new ResizeObserver(publish);
+    sizes.observe(element);
+    return () => {
+      sizes.disconnect();
+      root.style.removeProperty("--margin-sheet-height");
+    };
+  }, [dialog.containerRef, modalSheet]);
 
   return (
     <>

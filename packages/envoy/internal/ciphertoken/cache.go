@@ -11,8 +11,8 @@ import (
 //
 // It is keyed on the SHA-256 of the presented token and never holds the token itself: this map
 // outlives any one request, and a credential kept in memory for its own lookup key is a
-// credential a heap dump carries. It holds no refusal and nothing past the token's own expiry
-// (remember), and it is bounded at AffirmativeCacheSize.
+// credential a heap dump carries. It holds no refusal, nothing past the token's own expiry and no
+// not-held answer past its deadline (remember), and it is bounded at AffirmativeCacheSize.
 type answerCache struct {
 	mu      sync.Mutex
 	entries map[[sha256.Size]byte]cachedAnswer
@@ -45,8 +45,10 @@ func (c *answerCache) lookup(key [sha256.Size]byte, now time.Time) (Introspectio
 
 // remember keeps answer for key until AffirmativeCacheTTL from now, or until the token's own
 // expiry where that comes first: a token the broker says dies in two seconds is a token Dispatch
-// refuses in two seconds, never one its cache keeps alive for five. An answer that is already
-// past its expiry is not remembered at all.
+// refuses in two seconds, never one its cache keeps alive for five. A not-held answer is kept no
+// later than its deadline (not_held_until) either, since past it the answer that its person is not
+// held no longer serves; a held one is kept as every live answer is. An answer that is already
+// past its expiry or its deadline is not remembered at all.
 //
 // A full cache drops what has expired and, if that frees nothing, keeps what it has rather than
 // evicting a live entry: the arrival that does not fit pays one introspection, where picking a
@@ -56,6 +58,9 @@ func (c *answerCache) remember(key [sha256.Size]byte, answer Introspection, now 
 	until := now.Add(AffirmativeCacheTTL)
 	if expiry := expiryOf(answer); !expiry.IsZero() && expiry.Before(until) {
 		until = expiry
+	}
+	if deadline := notHeldUntilOf(answer); !deadline.IsZero() && deadline.Before(until) {
+		until = deadline
 	}
 	if !until.After(now) {
 		return

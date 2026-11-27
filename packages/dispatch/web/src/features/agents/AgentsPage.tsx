@@ -110,6 +110,7 @@ import type { BroadcastSend } from "./broadcast-queue";
 import { EndedAgentsWithReplies } from "./EndedAgentsWithReplies";
 import { agentReplyTo } from "./exchange-delivery";
 import { AGENT_ROW_SELECTOR, foldToggleOf, leaveAgentComposer, useAgentsKeymap } from "./keyboard";
+import { orderAgents } from "./logic/agent-order";
 import { useAgentPinWrite, usePinnedAgents } from "./pins";
 import { groupCountLabel, matchingSelection, selectionSummary, toggleMatching } from "./selection";
 import { storeAgentState, unreadRepliesLabel, useMarkRepliesRead, useUnreadAtOpen } from "./unread";
@@ -121,38 +122,6 @@ import { storeAgentState, unreadRepliesLabel, useMarkRepliesRead, useUnreadAtOpe
 const composerLineLayout =
   "mt-2 text-sm narrow-or-short:order-2 narrow-or-short:col-start-2 narrow-or-short:mt-0 narrow-or-short:min-w-0 narrow-or-short:overflow-x-auto narrow-or-short:text-xs narrow-or-short:whitespace-nowrap short:order-3 short:col-span-4 short:col-start-1";
 const composerLine = `${composerLineLayout} ${dangerText}`;
-
-/**
- * Pinned sessions first, in pin order; then whoever needs the viewer, then the most open asks,
- * then the newest Dispatch activity (sessions Dispatch never heard from last), then the title.
- */
-export function orderAgents(
-  agents: readonly Agent[],
-  pinned: readonly string[],
-  needsYou: NeedsYouBySession
-): Agent[] {
-  const pinOrder = new Map(pinned.map((sessionID, index) => [sessionID, index]));
-  return [...agents].sort((left, right) => {
-    const leftPin = pinOrder.get(left.session_id);
-    const rightPin = pinOrder.get(right.session_id);
-    if (leftPin !== undefined || rightPin !== undefined) {
-      if (leftPin === undefined) return 1;
-      if (rightPin === undefined) return -1;
-      return leftPin - rightPin;
-    }
-    const byNeedsYou = (needsYou.get(right.session_id) ?? 0) - (needsYou.get(left.session_id) ?? 0);
-    if (byNeedsYou !== 0) return byNeedsYou;
-    if (left.open_asks !== right.open_asks) return right.open_asks - left.open_asks;
-    if (left.last_activity === null || right.last_activity === null) {
-      if (left.last_activity === null && right.last_activity !== null) return 1;
-      if (left.last_activity !== null && right.last_activity === null) return -1;
-    } else {
-      const byActivity = compareTimestamps(right.last_activity, left.last_activity);
-      if (byActivity !== 0) return byActivity;
-    }
-    return left.title.localeCompare(right.title) || left.session_id.localeCompare(right.session_id);
-  });
-}
 
 /**
  * Every listed session in its group (`agent-groups.ts`), each group in `orderAgents` order. The

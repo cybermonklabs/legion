@@ -10,6 +10,7 @@ import {
   syncArchitectureSource,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
+import { openIssueDetails } from "./issue-details";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -405,7 +406,9 @@ test("a project with no architecture source answers the read, so its pages make 
 
     // Both surfaces that ask the question on every visit.
     await page.goto(`/issues/${issue.key}`);
-    await expect(page.getByTestId("issue-metadata-rail")).toBeVisible();
+    // The issue page asks for the sources where it draws the components, a row of Details.
+    await expect(await openIssueDetails(page)).toBeVisible();
+    await expect(page.getByTestId("issue-components")).toBeVisible();
     await page.goto("/projects/CORE");
     await expect(page).toHaveURL("/projects/CORE/issues");
     await expect(page.getByRole("tab", { name: "Architecture" })).toHaveCount(0);
