@@ -10,10 +10,18 @@ import { RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { SessionContext as HostSessionContext, PiApi } from "@legion/pi-shared/pi-types";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { until } from "@legion/test-fixtures/wait";
 import { REPLAY_NOTICE_ENTRY } from "../src/missed-messages";
 import type { EnvoyModule } from "./envoy-module";
-import { createPi, sessionContext, settle, until } from "./extension-harness";
-import { natsState, pushNatsStatus, response } from "./listener-stand-in";
+import {
+  createPi,
+  type PassClock,
+  rowProbe,
+  rowSessionShutdown,
+  sessionContext,
+  settle,
+} from "./extension-harness";
+import { natsState, pushNatsStatus, response, rowCheck, stillOn } from "./listener-stand-in";
 import type { SessionContext } from "./stand-in-host";
 
 /** The host's own context, for the two members the stand-in host's type does not name. */
@@ -131,8 +139,19 @@ export async function bootConsumer(
     readonly refuseCard?: (message: SentCard) => boolean;
     /** Answers `POST /v1/interests/unsubscribe` (`{}` without it); a throw is no answer. */
     readonly unsubscribe?: () => Response;
+    /** The test's clock a row on `onPassClock` boots on: the start is stepped on it through a
+     *  refused registration's retry (`stepping`), and the first registration is held for on it
+     *  (`hold`), since `until` is for real timers only. A registration that has not reached the
+     *  listener when the hold's turns run out fails the boot, naming it. */
+    readonly clock?: PassClock;
   } = {}
 ) {
+  // The row the session is booted in. Each method below that hands the session an event checks
+  // it first, so a body its guard abandoned hands the session nothing inside the row after it.
+  // `stop` does not: it is the session's `rowSessionShutdown`, which the harness's hooks run once
+  // the row ended, whether or not the row ran it.
+  const ownRow = rowCheck();
+  stillOn(ownRow, "booting a consumer session");
   process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
   process.env.DISPATCH_URL = "http://dispatch.test";
   process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
@@ -206,6 +225,7 @@ export async function bootConsumer(
     events.push(data === undefined ? subject : `${subject} ${new TextDecoder().decode(data)}`);
   };
   const { default: envoyExtension }: EnvoyModule = await import(`../extensions/envoy.ts?${query}`);
+  stillOn(ownRow, "starting the consumer session");
   const fixture = createPi();
   const intervals: (() => void)[] = [];
   const written: unknown[] = [];
@@ -255,9 +275,14 @@ export async function bootConsumer(
     ui: { ...base.ui, notify: (message) => notifications.push(message) },
     ...(options.runEphemeralTurn !== undefined && { runEphemeralTurn: options.runEphemeralTurn }),
   };
-  await fixture.handlers.get("session_start")?.({}, context);
+  const stop = rowSessionShutdown(fixture, context);
+  const started = fixture.handlers.get("session_start")?.({}, context);
+  if (options.clock === undefined) await started;
+  else await options.clock.stepping("the boot", started, 1_000);
   if (options.withoutRelay !== true) {
-    await until(() => registrations.length > 0, "the first registration");
+    const registered = () => registrations.length > 0;
+    if (options.clock === undefined) await until("the first registration", rowProbe(registered));
+    else await options.clock.hold("the first registration", registered);
   }
   await settle();
   let inboxes = 0;
@@ -308,7 +333,8 @@ export async function bootConsumer(
         (entry) =>
           entry.customType === REPLAY_NOTICE_ENTRY && JSON.stringify(entry.data).includes(text)
       ),
-    /** The listener relays stored message `seq`; answers the reply inbox it carried. */
+    /** The listener relays stored message `seq`; answers the reply inbox it carried. The inbox
+     *  names this boot's query, so a second boot's replies never read the first one's. */
     relay: (
       seq: number,
       data: string,
@@ -318,10 +344,11 @@ export async function bootConsumer(
         readonly storedAt?: Date;
       } = {}
     ): string => {
+      stillOn(ownRow, `relaying stored message ${seq}`);
       const controls = natsState.controls.get(RELAY);
       if (controls === undefined) throw new Error("the relay subject was never subscribed");
       inboxes += 1;
-      const inbox = `_INBOX.relay.${seq}.${inboxes}`;
+      const inbox = `_INBOX.relay.${query}.${seq}.${inboxes}`;
       controls.push(data, inbox, {
         [RelayHeader.subject]: frame.subject ?? AGENT,
         [RelayHeader.streamSeq]: String(seq),
@@ -336,15 +363,22 @@ export async function bootConsumer(
       natsState.published
         .filter((published) => published.subject === inbox)
         .map((published) => new TextDecoder().decode(published.data)),
-    /** One heartbeat tick, run until its registration reached the listener. */
-    tick: async () => {
+    /** One heartbeat tick, run until its registration reached the listener: waited for with
+     *  `until`, or, in a row on the test's clock (`onPassClock`), held on that `clock`, since
+     *  `until` is for real timers only. A registration that has not reached the listener when
+     *  the hold's turns run out fails the tick, naming it. */
+    tick: async (clock?: PassClock) => {
+      stillOn(ownRow, "ticking the consumer session's heartbeat");
       const before = registrations.length;
       for (const interval of intervals) interval();
-      await until(() => registrations.length > before, "the heartbeat's registration");
+      const sent = () => registrations.length > before;
+      if (clock === undefined) await until("the heartbeat's registration", rowProbe(sent));
+      else await clock.hold("the heartbeat's registration", sent);
       await settle();
     },
     /** One heartbeat tick, not waited on: its pass may queue behind another. */
     beat: () => {
+      stillOn(ownRow, "ticking the consumer session's heartbeat");
       for (const interval of intervals) interval();
     },
     /**
@@ -352,21 +386,32 @@ export async function bootConsumer(
      * the session holds no relay subject, so no registration reaches the listener.
      */
     tickWithoutNats: async () => {
+      stillOn(ownRow, "ticking the consumer session's heartbeat");
       const dials = natsState.failConnects;
       for (const interval of intervals) interval();
-      await until(() => natsState.failConnects < dials, "the tick's NATS dial");
+      await until(
+        "the tick's NATS dial",
+        rowProbe(() => natsState.failConnects < dials)
+      );
       await settle();
     },
     /** nats.js reports a reconnect. */
     reconnect: async () => {
+      stillOn(ownRow, "reporting a reconnect");
       const before = registrations.length;
       pushNatsStatus("reconnect");
-      await until(() => registrations.length > before, "the reconnect's registration");
+      await until(
+        "the reconnect's registration",
+        rowProbe(() => registrations.length > before)
+      );
       await settle();
     },
     /** The streaming turn takes every card it holds: the host writes each, in order. */
     take: async () => {
-      for (const message of held.splice(0)) await write(message);
+      for (const message of held.splice(0)) {
+        stillOn(rowCheck(), "writing the next held card");
+        await write(message);
+      }
       await settle();
     },
     /**
@@ -375,6 +420,7 @@ export async function bootConsumer(
      * idle from then on, writing each card it is handed.
      */
     interrupt: async () => {
+      stillOn(ownRow, "interrupting the streaming turn");
       held.splice(0);
       turn = "idle";
       await fixture.handlers.get("agent_end")?.(
@@ -383,13 +429,18 @@ export async function bootConsumer(
       );
       await settle();
     },
-    follow: (topic: string) =>
-      fixture.tools
+    follow: (topic: string) => {
+      stillOn(ownRow, `following ${topic}`);
+      return fixture.tools
         .find((tool) => tool.name === "envoy_subscribe")
-        ?.execute("", { topics: [topic] }),
+        ?.execute("", { topics: [topic] });
+    },
     /** A session event that keeps the session's id (a tree navigation): its pass registers. */
-    navigate: () => fixture.handlers.get("session_tree")?.({}, context),
-    stop: () => fixture.handlers.get("session_shutdown")?.({}, context),
+    navigate: () => {
+      stillOn(ownRow, "navigating the session's tree");
+      return fixture.handlers.get("session_tree")?.({}, context);
+    },
+    stop,
   };
   return session;
 }

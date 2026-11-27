@@ -4,9 +4,10 @@
 // rows are in `consumer-delivery.test.ts`, which says why the three files are apart. Each has the
 // `describe` "consumer delivery", and they boot one session (`../test/consumer-delivery-session`)
 // on one harness (`../test/extension-harness`).
-import { describe, expect, setSystemTime, test } from "bun:test";
+import { describe, expect, setSystemTime } from "bun:test";
 import { BUS_UNANSWERED_PREFIX } from "@legion/contracts";
 import { INBOUND_FIRST_OPEN_BOUND_MS } from "@legion/envoy-client/inbound-outage";
+import { until } from "@legion/test-fixtures/wait";
 import { logger } from "@oh-my-pi/pi-utils";
 import {
   bootConsumer,
@@ -15,8 +16,8 @@ import {
   type Registration,
   SESSION,
 } from "../test/consumer-delivery-session";
-import { settle, until, useExtensionHarness } from "../test/extension-harness";
-import { natsState } from "../test/listener-stand-in";
+import { onPassClock, rowProbe, settle, useExtensionHarness } from "../test/extension-harness";
+import { natsState, test } from "../test/listener-stand-in";
 
 useExtensionHarness();
 
@@ -36,30 +37,49 @@ describe("consumer delivery", () => {
     { status: 413, reason: "too_large" },
   ] as const) {
     test(`a registration refused ${refusal.status} ${refusal.reason} leaves the session running with a notice naming it, the next heartbeat asks again, and the accepted registration is told once`, async () => {
-      const session = await bootConsumer(`consumer-refused-${refusal.reason}`, {
-        refuse: refusal,
+      // The boot's pass and the heartbeat's each race their deadline, 90 s here (the heartbeat's
+      // interval, which a pass's deadline is never shorter than), and a refusal of 503 is sent
+      // again 250 ms later (`LISTENER_CALL_RETRY_DELAY_MS`): both are this process's timers. On
+      // the real clock each pass raced its deadline with its work, so a host slow enough could
+      // abandon a pass the row did not mean to. So the row boots and runs on the test's clock
+      // (`onPassClock`), which moves only through that retry, 10 ms at a time while the boot is
+      // pending (`bootConsumer`'s `clock`), so no deadline ends. No other timer matters: the
+      // listener answers each call in process, the relay subject stays open, so no resubscribe
+      // delay comes into it, and the frame's 20 s progress interval (`RELAY_PROGRESS_INTERVAL_MS`)
+      // never ends while the clock stands.
+      await onPassClock(async (clock) => {
+        const session = await bootConsumer(`consumer-refused-${refusal.reason}`, {
+          refuse: refusal,
+          clock,
+        });
+
+        const told = session.fixture.deliveries.filter((delivery) =>
+          delivery.content.includes("Envoy inbound unavailable")
+        );
+        expect(told).toHaveLength(1);
+        expect(told[0]?.content).toContain(refusal.reason);
+        // The session runs on: its tools are registered and its relay subject stays open, so the
+        // consumer a later registration is given has somewhere to land.
+        expect(session.fixture.tools.map((tool) => tool.name)).toContain("envoy_send");
+        expect(session.subscriptions()).toEqual([`agentstream.${SESSION}.control`, RELAY]);
+
+        session.accept();
+        await session.tick(clock);
+        // The accepted registration tells the session once that it receives again.
+        expect(session.cards("Envoy inbound restored")).toHaveLength(1);
+        const inbox = session.relay(3, peer(`after-${refusal.reason}`));
+        const answered = () => session.replies(inbox).includes("done");
+        await clock.hold(
+          "the done answer to the frame relayed after the accepted registration",
+          answered
+        );
+
+        expect(session.cards(`evt-after-${refusal.reason}`)).toHaveLength(1);
+        await session.tick(clock);
+        expect(session.cards("Envoy inbound restored")).toHaveLength(1);
       });
-
-      const told = session.fixture.deliveries.filter((delivery) =>
-        delivery.content.includes("Envoy inbound unavailable")
-      );
-      expect(told).toHaveLength(1);
-      expect(told[0]?.content).toContain(refusal.reason);
-      // The session runs on: its tools are registered and its relay subject stays open, so the
-      // consumer a later registration is given has somewhere to land.
-      expect(session.fixture.tools.map((tool) => tool.name)).toContain("envoy_send");
-      expect(session.subscriptions()).toEqual([`agentstream.${SESSION}.control`, RELAY]);
-
-      session.accept();
-      await session.tick();
-      // The accepted registration tells the session once that it receives again.
-      expect(session.cards("Envoy inbound restored")).toHaveLength(1);
-      const inbox = session.relay(3, peer(`after-${refusal.reason}`));
-      await until(() => session.replies(inbox).includes("done"), "the frame's done");
-
-      expect(session.cards(`evt-after-${refusal.reason}`)).toHaveLength(1);
-      await session.tick();
-      expect(session.cards("Envoy inbound restored")).toHaveLength(1);
+      // What can hang is the load of the extension's module in the boot, awaited with no bound of
+      // turns; every other wait ends by its own count of turns or steps (`onPassClock`).
     });
   }
 
@@ -81,7 +101,10 @@ describe("consumer delivery", () => {
       setSystemTime(new Date(start + 30_000));
       await session.tick();
       const inbox = session.relay(1, peer("start-race"));
-      await until(() => session.replies(inbox).includes("done"), "the frame's done");
+      await until(
+        "the frame's done",
+        rowProbe(() => session.replies(inbox).includes("done"))
+      );
 
       expect(session.cards("evt-start-race")).toHaveLength(1);
       expect(session.cards("Envoy inbound unavailable")).toEqual([]);
@@ -133,7 +156,10 @@ describe("consumer delivery", () => {
       const inbox = session.relay(4, peer("stored-meanwhile"), {
         storedAt: new Date(pastBound + 5_000),
       });
-      await until(() => session.replies(inbox).includes("done"), "the frame's done");
+      await until(
+        "the frame's done",
+        rowProbe(() => session.replies(inbox).includes("done"))
+      );
       expect(session.cards("evt-stored-meanwhile")).toHaveLength(1);
 
       // A later accepted registration tells nothing more.
@@ -169,7 +195,10 @@ describe("consumer delivery", () => {
     });
     try {
       // The start's pass found NATS closed, so its registration found no relay subject.
-      await until(() => found().length > 0, "the log line");
+      await until(
+        "the log line",
+        rowProbe(() => found().length > 0)
+      );
       expect(found()).toEqual([
         "warn envoy: a registration found that this session holds no relay subject, because its relay subject could not be opened: CONNECTION_REFUSED",
       ]);
@@ -295,7 +324,10 @@ describe("consumer delivery", () => {
   }): Promise<void> {
     const before = session.registrations.length;
     await session.tick();
-    await until(() => session.registrations.length >= before + 2, "the tick's second attempt");
+    await until(
+      "the tick's second attempt",
+      rowProbe(() => session.registrations.length >= before + 2)
+    );
     await settle();
   }
 
@@ -305,12 +337,18 @@ describe("consumer delivery", () => {
     });
     const start = Date.now();
     try {
-      await until(() => session.registrations.length >= 2, "the first registration's retry");
+      await until(
+        "the first registration's retry",
+        rowProbe(() => session.registrations.length >= 2)
+      );
       await settle();
       expect(session.cards("Envoy inbound unavailable")).toEqual([]);
       // The listener made the consumer before the record's write, so a stored message arrives.
       const inbox = session.relay(1, peer("unrecorded"));
-      await until(() => session.replies(inbox).includes("done"), "the frame's done");
+      await until(
+        "the frame's done",
+        rowProbe(() => session.replies(inbox).includes("done"))
+      );
       expect(session.cards("evt-unrecorded")).toHaveLength(1);
 
       setSystemTime(new Date(start + 15_000));
@@ -337,7 +375,10 @@ describe("consumer delivery", () => {
     });
     const start = Date.now();
     try {
-      await until(() => session.registrations.length >= 2, "the first registration's retry");
+      await until(
+        "the first registration's retry",
+        rowProbe(() => session.registrations.length >= 2)
+      );
       await settle();
       setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
       await refusedTick(session);
@@ -374,7 +415,10 @@ describe("consumer delivery", () => {
     const start = Date.now();
     const claims = /receive[sd]? (nothing|again)|inbound messages are/;
     try {
-      await until(() => session.registrations.length >= 2, "the first registration's retry");
+      await until(
+        "the first registration's retry",
+        rowProbe(() => session.registrations.length >= 2)
+      );
       await settle();
       setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
       await refusedTick(session);
@@ -417,7 +461,10 @@ describe("consumer delivery", () => {
     session.hold();
     const asked = session.registrations.length;
     const navigating = session.navigate();
-    await until(() => session.registrations.length > asked, "the held registration");
+    await until(
+      "the held registration",
+      rowProbe(() => session.registrations.length > asked)
+    );
     session.beat();
     await settle();
     return { session, navigating };
@@ -460,7 +507,10 @@ describe("consumer delivery", () => {
       const sent = session.registrations.length;
       session.release();
       await navigating;
-      await until(() => session.registrations.length > sent, "the heartbeat's registration");
+      await until(
+        "the heartbeat's registration",
+        rowProbe(() => session.registrations.length > sent)
+      );
       await settle();
 
       expect(session.registrations).toHaveLength(sent + 1);
@@ -480,7 +530,10 @@ describe("consumer delivery", () => {
     session.hold();
     const asked = session.registrations.length;
     const navigating = session.navigate();
-    await until(() => session.registrations.length > asked, "the held registration");
+    await until(
+      "the held registration",
+      rowProbe(() => session.registrations.length > asked)
+    );
     const notified = session.notifications.length;
 
     const stopping = session.stop();

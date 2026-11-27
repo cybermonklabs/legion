@@ -4,20 +4,24 @@
 // carried only in part. The relay's own rows are in `consumer-delivery.test.ts`, which says why
 // the three files are apart. Each has the `describe` "consumer delivery", and they boot one
 // session (`../test/consumer-delivery-session`) on one harness (`../test/extension-harness`).
-import { describe, expect, test } from "bun:test";
+import { describe, expect } from "bun:test";
 import { legacyDispatchIssueSubject } from "@legion/contracts";
-import { logger } from "@oh-my-pi/pi-utils";
+import { until } from "@legion/test-fixtures/wait";
+import type { logger } from "@oh-my-pi/pi-utils";
 import { REPLAY_DELIVERED_ENTRY } from "../src/missed-messages";
 import { AGENT, bootConsumer, peer, SESSION } from "../test/consumer-delivery-session";
 import {
   ledgerSeam,
+  onPassClock,
+  rowLogSink,
+  rowProbe,
   sessionContext,
   settle,
   targetedDispatchEnvelope,
-  until,
+  UNRACED_PASS_DEADLINE_MS,
   useExtensionHarness,
 } from "../test/extension-harness";
-import { response } from "../test/listener-stand-in";
+import { response, rowCheck, test } from "../test/listener-stand-in";
 
 useExtensionHarness();
 
@@ -32,7 +36,10 @@ describe("consumer delivery", () => {
     });
 
     const inbox = session.relay(9, targetedDispatchEnvelope("btw", "late-btw"), { delivered: 2 });
-    await until(() => session.replies(inbox).includes("done"), "the late BTW's done");
+    await until(
+      "the late BTW's done",
+      rowProbe(() => session.replies(inbox).includes("done"))
+    );
 
     const cards = session.cards("dispatch-late-btw");
     expect(cards).toHaveLength(1);
@@ -55,7 +62,7 @@ describe("consumer delivery", () => {
   // names and to no other.
   test("shows no late BTW card when the host left inside the read of its body, and naks the frame", async () => {
     const warnings: string[] = [];
-    const stopSink = logger.registerLogSink((entry) => {
+    const stopSink = rowLogSink((entry) => {
       if (entry.level === "warn") warnings.push(entry.message);
     });
     const move: { fire?: () => Promise<void> } = {};
@@ -93,7 +100,10 @@ describe("consumer delivery", () => {
         targetedDispatchEnvelope("btw", "late-btw-moved", { bodyTruncated: true }),
         { delivered: 2 }
       );
-      await until(() => session.replies(inbox).includes("nak"), "the late BTW's nak");
+      await until(
+        "the late BTW's nak",
+        rowProbe(() => session.replies(inbox).includes("nak"))
+      );
 
       expect(moved).toBe(true);
       expect(session.cards("dispatch-late-btw-moved")).toHaveLength(0);
@@ -115,9 +125,10 @@ describe("consumer delivery", () => {
   // host moved to is shown nothing of the frame, and the frame goes back to the stream for
   // whoever takes ses_delivery next (dispatch://INFRA-771).
   test("holds a give-up's notice to the session its frame was relayed to, showing the conversation the host moved to nothing of it", async () => {
+    const ownRow = rowCheck();
     const moved = "ses_moved_notice";
     const warnings: logger.LogEvent[] = [];
-    const stopSink = logger.registerLogSink((entry) => {
+    const stopSink = rowLogSink((entry) => {
       if (entry.level === "warn") warnings.push(entry);
     });
     try {
@@ -137,8 +148,8 @@ describe("consumer delivery", () => {
         for (const delivered of [1, 2, 3]) {
           inbox = session.relay(seq, peer(label), { delivered });
           await until(
-            () => session.replies(inbox).length > 1,
-            `the answer to delivery ${delivered} of ${label}`
+            `the answer to delivery ${delivered} of ${label}`,
+            rowProbe(() => session.replies(inbox).length > 1)
           );
         }
         return session.replies(inbox);
@@ -183,7 +194,7 @@ describe("consumer delivery", () => {
       // notices, not one that is shown nothing at all.
       expect(session.cards("evt-notice-shown")).toHaveLength(1);
     } finally {
-      ledgerSeam.beforeFailureNotice = undefined;
+      if (ownRow()) ledgerSeam.beforeFailureNotice = undefined;
       stopSink();
     }
   });
@@ -198,44 +209,86 @@ describe("consumer delivery", () => {
       },
     });
 
-    const btw = session.relay(1, targetedDispatchEnvelope("btw", "btw-running"));
-    await until(() => sideTurns === 1, "the side turn");
-    const next = session.relay(2, peer("after-btw"));
-    await until(() => session.replies(next).includes("done"), "the next frame's done");
+    // The row reads each frame's replies whole, and a frame the session holds is sent `progress`
+    // every 20 s (`RELAY_PROGRESS_INTERVAL_MS`) until it is answered, on an interval of this
+    // process that `createConsumerDelivery` arms as it receives the frame. On the real clock the
+    // BTW, held from its relay to its answer, and the next frame, held from its relay to its done,
+    // raced that interval with the row's own work, and a host slow enough put a `progress` in a
+    // list the row reads. So the frames are relayed on the test's clock (`onPassClock`), where
+    // each interval is armed and ends only once the clock moves, which it never does here. Nothing
+    // the row waits for needs it to: the side turn arms no timer (`runEphemeralTurn`; the stand-in
+    // answers once the row resolves it), the relay subject stays open, so no redial or resubscribe
+    // delay comes into it, the host writes each card after a microtask, and the Dispatch reply's
+    // deadline and its attempt's silence bound (`DispatchClient`, 60 s and 20 s) end only once the
+    // clock moves, while the stand-in listener answers the reply at once. Everything between runs
+    // in process, on real turns, so each wait holds the clock for its count of turns (`hold`). The
+    // boot runs before, on the real clock: it holds no frame, so it arms no interval. Most
+    // consumer rows boot so; the refused-registration rows boot on the test's clock instead.
+    await onPassClock(async (clock) => {
+      const btw = session.relay(1, targetedDispatchEnvelope("btw", "btw-running"));
+      // The side turn starts on real turns, with the clock held.
+      await clock.hold("the BTW's side turn", () => sideTurns === 1);
+      expect(sideTurns).toBe(1);
+      const next = session.relay(2, peer("after-btw"));
+      await clock.hold("the next frame's done", () => session.replies(next).includes("done"));
 
-    expect(session.replies(next)).toEqual(["received", "done"]);
-    expect(session.cards("evt-after-btw")).toHaveLength(1);
-    expect(session.replies(btw)).toEqual(["received"]);
+      expect(session.replies(next)).toEqual(["received", "done"]);
+      expect(session.cards("evt-after-btw")).toHaveLength(1);
+      expect(session.replies(btw)).toEqual(["received"]);
 
-    answering.resolve({ replyText: "the answer" });
-    await until(() => session.replies(btw).includes("done"), "the BTW's done");
-    expect(session.dispatchReplies).toHaveLength(1);
-    expect(session.cards("dispatch-btw-running")).toHaveLength(0);
+      answering.resolve({ replyText: "the answer" });
+      await clock.hold("the BTW's done", () => session.replies(btw).includes("done"));
+      expect(session.replies(btw)).toContain("done");
+      expect(session.dispatchReplies).toHaveLength(1);
+      expect(session.cards("dispatch-btw-running")).toHaveLength(0);
+    });
+    // What can hang is the boot's wait for its first registration (`bootConsumer`, on the real
+    // clock), which ends at the row's deadline; every wait on the test's clock ends by its own
+    // count of turns (`onPassClock`).
   });
 
   test("a card Escape cleared from the queue between received and done is shown once afterwards, and done only after that write", async () => {
     const session = await bootConsumer("consumer-queue-cleared", { turn: "streaming" });
 
-    const inbox = session.relay(5, peer("cleared"));
-    await until(() => session.cards("evt-cleared").length > 0, "the card");
-    expect(session.replies(inbox)).toEqual(["received"]);
+    // The frame is held from its relay to its done, and a held frame is sent `progress` every 20 s
+    // (`RELAY_PROGRESS_INTERVAL_MS`), on an interval of this process that `createConsumerDelivery`
+    // arms as it receives the frame. On the real clock the row's work from the relay to the done
+    // raced that interval, and a host slow enough put a `progress` in the replies the row reads.
+    // So the frame is relayed on the test's clock (`onPassClock`), as in the BTW row before: the
+    // interval is armed there and ends only once the clock moves, which it never does here.
+    // Nothing the row waits for needs it to: the relay subject stays open, so no redial or
+    // resubscribe delay comes into it, the host writes each card after a microtask, and each
+    // heartbeat pass's deadline and its listener calls' bounds end only once the clock moves,
+    // while the stand-in listener answers each call at once. Everything between runs in process,
+    // on real turns, so each wait holds the clock for its count of turns (`hold`, `run`). The
+    // boot runs before, on the real clock: it holds no frame, so it arms no interval. Most
+    // consumer rows boot so; the refused-registration rows boot on the test's clock instead.
+    await onPassClock(async (clock) => {
+      const inbox = session.relay(5, peer("cleared"));
+      const handed = () => session.cards("evt-cleared").length > 0;
+      await clock.hold("the frame's card, handed to the streaming turn", handed);
+      expect(session.replies(inbox)).toEqual(["received"]);
 
-    await session.interrupt();
-    expect(session.replies(inbox)).toEqual(["received"]);
-    expect(
-      session.entries().filter((entry) => JSON.stringify(entry).includes("evt-cleared"))
-    ).toEqual([]);
+      await clock.run("the interrupt", session.interrupt());
+      expect(session.replies(inbox)).toEqual(["received"]);
+      expect(
+        session.entries().filter((entry) => JSON.stringify(entry).includes("evt-cleared"))
+      ).toEqual([]);
 
-    await session.tick();
-    await until(() => session.replies(inbox).includes("done"), "the frame's done");
+      await session.tick(clock);
+      await clock.hold("the frame's done", () => session.replies(inbox).includes("done"));
 
-    expect(session.events.filter((event) => event === "written evt-cleared")).toHaveLength(1);
-    expect(session.events.indexOf("written evt-cleared")).toBeLessThan(
-      session.events.indexOf(`${inbox} done`)
-    );
-    expect(session.replies(inbox)).toEqual(["received", "done"]);
-    await session.tick();
-    expect(session.events.filter((event) => event === "written evt-cleared")).toHaveLength(1);
+      expect(session.events.filter((event) => event === "written evt-cleared")).toHaveLength(1);
+      expect(session.events.indexOf("written evt-cleared")).toBeLessThan(
+        session.events.indexOf(`${inbox} done`)
+      );
+      expect(session.replies(inbox)).toEqual(["received", "done"]);
+      await session.tick(clock);
+      expect(session.events.filter((event) => event === "written evt-cleared")).toHaveLength(1);
+    });
+    // What can hang is the boot's wait for its first registration (`bootConsumer`, on the real
+    // clock), which ends at the row's deadline; every wait on the test's clock ends by its own
+    // count of turns (`onPassClock`).
   });
 
   // A peer's message whose JSON payload is nested past the depth the card's TOON encoder reaches
@@ -244,7 +297,7 @@ describe("consumer delivery", () => {
   // and the extension says so once, naming the message.
   test("a message whose payload is nested 9,999 deep is shown as its text, taken, and logged once with its id", async () => {
     const warnings: { readonly message: string; readonly context?: unknown }[] = [];
-    const stopSink = logger.registerLogSink((entry) => {
+    const stopSink = rowLogSink((entry) => {
       if (entry.level === "warn") warnings.push({ message: entry.message, context: entry.context });
     });
     const session = await bootConsumer("consumer-deep-payload");
@@ -254,11 +307,13 @@ describe("consumer delivery", () => {
         1,
         JSON.stringify({ event_id: "evt-deep", source: "agent", topic: AGENT, payload: nested })
       );
-      // The answer that settles the frame: `done` once it is taken, `nak` once it failed.
+      // The answer that settles the frame: `done` once it is taken, `nak` once it failed. Main's
+      // `until` took a deadline of its own here (30_000); this wait ends at the row's deadline.
       await until(
-        () => session.replies(inbox).includes("done") || session.replies(inbox).includes("nak"),
         "the frame's settling answer",
-        30_000
+        rowProbe(
+          () => session.replies(inbox).includes("done") || session.replies(inbox).includes("nak")
+        )
       );
 
       expect(session.replies(inbox)).toEqual(["received", "done"]);
@@ -279,6 +334,7 @@ describe("consumer delivery", () => {
       stopSink();
       await session.stop();
     }
+    // What can hang is the consumer's boot or its delivery of the frame.
   });
 
   // A session behind on its inbox read a card stamped five hours earlier, took the stamp for the
@@ -287,37 +343,61 @@ describe("consumer delivery", () => {
   describe("the time a card reached the session", () => {
     test("a card the host writes hours after its send shows every model request when it was delivered and how long it waited", async () => {
       const session = await bootConsumer("card-age-late", { turn: "streaming" });
-      const sentAt = Date.now() - (5 * 3_600_000 + 30_000);
-      const frame = JSON.stringify({ ...JSON.parse(peer("card-age-late")), issued_at: sentAt });
+      // The card's `delivered:` time is read from this process's `Date.now()` as the card is
+      // handed and written, and the row's send is 5 h 30 s before the `Date.now()` it reads
+      // below: the wait reads 5 h 0 min, in whole minutes (`duration`), only while that delivery
+      // comes less than 30 s after the row's read. On the real clock the row's work from its read
+      // to the write ran inside that 30 s window, and a host slow enough would read 5 h 1 min.
+      // So the row reads the time, relays the frame and has the host write it on the test's clock
+      // (`onPassClock`), whose `Date.now()` moves only as the row moves it, which it never does
+      // here. No timer matters: the frame's 20 s progress interval (`RELAY_PROGRESS_INTERVAL_MS`)
+      // is armed and ends only once the clock moves, the host writes the card after a microtask,
+      // and the listener answers each call at once, in process. The boot runs before, on the real
+      // clock: it holds no frame, and the row reads no time of it.
+      await onPassClock(async (clock) => {
+        const sentAt = Date.now() - (5 * 3_600_000 + 30_000);
+        const frame = JSON.stringify({ ...JSON.parse(peer("card-age-late")), issued_at: sentAt });
 
-      // The turn streams, so the host holds the card until the turn takes it.
-      session.relay(1, frame);
-      await until(() => session.cards("evt-card-age-late").length > 0, "the relayed card");
-      await session.take();
-      const [card] = session.cards("evt-card-age-late");
-      if (card === undefined) throw new Error("the card was not handed");
-      const written = {
-        role: "custom",
-        customType: card.customType,
-        content: card.content,
-        display: true,
-        details: card.details,
-        timestamp: sentAt,
-      };
-      const context = sessionContext(SESSION);
-      const contextHandler = session.fixture.handlers.get("context");
-      if (contextHandler === undefined) throw new Error("no context handler was registered");
-      const first = JSON.stringify(await contextHandler({ messages: [written] }, context));
-      const second = JSON.stringify(await contextHandler({ messages: [written] }, context));
+        // The turn streams, so the host holds the card until the turn takes it.
+        session.relay(1, frame);
+        await clock.hold(
+          "the card, handed to the streaming turn",
+          () => session.cards("evt-card-age-late").length > 0
+        );
+        await clock.run("the take", session.take());
+        const [card] = session.cards("evt-card-age-late");
+        if (card === undefined) throw new Error("the card was not handed");
+        const written = {
+          role: "custom",
+          customType: card.customType,
+          content: card.content,
+          display: true,
+          details: card.details,
+          timestamp: sentAt,
+        };
+        const context = sessionContext(SESSION);
+        const contextHandler = session.fixture.handlers.get("context");
+        if (contextHandler === undefined) throw new Error("no context handler was registered");
+        const first = JSON.stringify(
+          await clock.run("the first request", contextHandler({ messages: [written] }, context))
+        );
+        const second = JSON.stringify(
+          await clock.run("the second request", contextHandler({ messages: [written] }, context))
+        );
 
-      expect(first).toMatch(/\\n {2}delivered: \\"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\\"\\n/);
-      expect(first).toContain(
-        "waited: \\\"5 h 0 min between at and delivered; delivered is this machine's clock and at the sending server's, and at is when it was sent, not the present time\\\""
-      );
-      // The same bytes in every request, so the provider's prompt cache reads them again.
-      expect(second).toBe(first);
-      // The card the host keeps is the one it was handed.
-      expect(card.content).not.toContain("delivered:");
+        expect(first).toMatch(/\\n {2}delivered: \\"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\\"\\n/);
+        expect(first).toContain(
+          "waited: \\\"5 h 0 min between at and delivered; delivered is this machine's clock " +
+            "and at the sending server's, and at is when it was sent, not the present time\\\""
+        );
+        // The same bytes in every request, so the provider's prompt cache reads them again.
+        expect(second).toBe(first);
+        // The card the host keeps is the one it was handed.
+        expect(card.content).not.toContain("delivered:");
+      });
+      // What can hang is the boot's wait for its first registration (`bootConsumer`, on the real
+      // clock), which ends at the row's deadline; every wait on the test's clock ends by its own
+      // count of turns (`onPassClock`).
     });
 
     // The mirror of the case above: a machine whose clock runs 4 h 45 min ahead of the listener's
@@ -334,7 +414,10 @@ describe("consumer delivery", () => {
       const frame = JSON.stringify({ ...JSON.parse(peer("card-age-clocks")), issued_at: sentAt });
 
       session.relay(1, frame);
-      await until(() => session.cards("evt-card-age-clocks").length > 0, "the relayed card");
+      await until(
+        "the relayed card",
+        rowProbe(() => session.cards("evt-card-age-clocks").length > 0)
+      );
       await session.take();
       const [card] = session.cards("evt-card-age-clocks");
       if (card === undefined) throw new Error("the card was not handed");
@@ -362,9 +445,14 @@ describe("consumer delivery", () => {
     // same event by its own consumer. The request that session makes must state when the event
     // reached it, from its own ledger record, and never when the session before it was shown it.
     test("an event in the session the host moved to reads that session's own delivery time", async () => {
+      // An hour, past the command's guard, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
+      process.env.ENVOY_PASS_DEADLINE_MS = String(UNRACED_PASS_DEADLINE_MS);
       const session = await bootConsumer("card-age-moved", { turn: "streaming" });
       session.relay(1, peer("card-age-moved"));
-      await until(() => session.cards("evt-card-age-moved").length > 0, "the relayed card");
+      await until(
+        "the relayed card",
+        rowProbe(() => session.cards("evt-card-age-moved").length > 0)
+      );
       await session.take();
 
       // The host resumes a session it left, whose file holds no record of this event: what that
@@ -433,6 +521,8 @@ describe("consumer delivery", () => {
       expect(live).not.toContain(movedIso);
       // Returning to it reads the same bytes, so the provider's prompt cache reads them again.
       expect(liveAgain).toBe(live);
+      // What can hang is the boot's wait for its first registration (`bootConsumer`) or the wait
+      // for the relayed card, each of which ends at the row's deadline.
     });
 
     // The delivery a session first gives a card goes into its file once, at the card's
@@ -441,7 +531,10 @@ describe("consumer delivery", () => {
     test("a card's write records its delivery in the session once", async () => {
       const session = await bootConsumer("card-age-recorded", { turn: "streaming" });
       session.relay(1, peer("card-age-recorded"));
-      await until(() => session.cards("evt-card-age-recorded").length > 0, "the relayed card");
+      await until(
+        "the relayed card",
+        rowProbe(() => session.cards("evt-card-age-recorded").length > 0)
+      );
       await session.take();
       const [card] = session.cards("evt-card-age-recorded");
       if (card === undefined) throw new Error("the card was not handed");
@@ -535,7 +628,8 @@ describe("consumer delivery", () => {
     /** Boots a session following INFRA-370's topic, relays the comment event - cut, or the
      *  stand-in when `omitted` - on the session's own consumer, the one path a frame reaches it
      *  by, and answers the comment read with `read`. Returns the card its agent was prompted
-     *  with. */
+     *  with. What can hang is a card that is never delivered for the relayed comment event: the
+     *  wait for the frame's done ends at the row's deadline, naming it. */
     async function cardForCutComment(
       name: string,
       read: (path: string) => Response | undefined,
@@ -552,7 +646,10 @@ describe("consumer delivery", () => {
       const inbox = session.relay(1, cutCommentEnvelope(CUT_SUBJECT, omitted), {
         subject: CUT_SUBJECT,
       });
-      await until(() => session.replies(inbox).includes("done"), "the cut comment's done");
+      await until(
+        "the cut comment's done",
+        rowProbe(() => session.replies(inbox).includes("done"))
+      );
       const card = session.cards("dispatch-cut-1")[0]?.content;
       if (card === undefined) throw new Error("no card was delivered for the cut comment");
       return card;

@@ -23,6 +23,7 @@ import { resetEnvoyPluginInterfaceForTests } from "@legion/pi-shared/interface";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { realTimeDeadline } from "@legion/test-fixtures/deadline";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
+import { settled, until } from "@legion/test-fixtures/wait";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import type { connect } from "nats";
@@ -647,29 +648,63 @@ export function rowProbe<T>(condition: () => T): () => T {
   };
 }
 
-// Polls `condition` between event-loop turns. Only the resubscribe path waits on a real timer
-// (`ENVOY_RESUBSCRIBE_DELAY_MS`, 10 ms in these tests), which no fake clock reaches, and a busy
-// machine runs it later than any fixed sleep allows; the deadline is measured on the monotonic
-// clock, which `setSystemTime` leaves alone. A caller waiting on a real child process rather
-// than on this process's own work passes a longer bound: starting a shell and killing its group
-// is the operating system's work, and two seconds of it is a wait a loaded machine can lose.
-// A row whose wait can still be parked when the row ends (bun fails a row at its timeout and
-// goes on to the next while the row's own code waits on a turn of `settle`) passes `ended`, which
-// its teardown aborts: once it is aborted the wait reads the condition no more and returns, so it
-// neither polls on after the row nor throws into a later one.
-export async function until(
-  condition: () => boolean,
-  what: string,
-  timeoutMs = 2_000,
-  ended?: AbortSignal
-): Promise<void> {
-  const deadline = performance.now() + timeoutMs;
-  for (;;) {
-    if (ended?.aborted === true) return;
-    if (condition()) return;
-    if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await settle();
-  }
+/**
+ * Drives a session's heartbeat by hand (`intervals[0]`) and counts the registrations the
+ * listener stand-in accepts: the stand-in's fetch calls `accept()` for each one. Each wait
+ * answers with the count the listener reached, and ends at its row's deadline, naming what it
+ * waited for (`@legion/test-fixtures/wait`). Once its row has ended, each wait throws
+ * (`stillOn`) before its next tick and in place of its answer: it ticks no dead extension into
+ * the rows after it, and it answers no count once its row has ended.
+ */
+export function heartbeatTicks(intervals: readonly (() => void)[]) {
+  let registrations = 0;
+  /** Told of the next registration the listener accepts, while `registered` waits for one. */
+  let told: (() => void) | undefined;
+  return {
+    /** The listener accepted a registration: the stand-in's fetch calls this for each one. */
+    accept: (): void => {
+      registrations += 1;
+      told?.();
+    },
+    /** How many registrations the listener has accepted. */
+    registrations: (): number => registrations,
+    /**
+     * Ticks once, and waits for the listener to accept the next registration. It is for a tick
+     * no pass is running at: that tick starts a pass, and the pass registers. It never ticks
+     * again. A tick while that pass runs, once a whole refresh interval has passed since the
+     * last registration, meets a stall, and the heartbeat says so.
+     */
+    registered: async (): Promise<number> => {
+      const ownRow = rowCheck();
+      stillOn(ownRow, "waiting for a tick's registration");
+      const accepted = Promise.withResolvers<void>();
+      told = accepted.resolve;
+      try {
+        intervals[0]?.();
+        await settled("the tick's registration", accepted.promise);
+      } finally {
+        told = undefined;
+      }
+      stillOn(ownRow, "waiting for a tick's registration");
+      return registrations;
+    },
+    /**
+     * Ticks until the listener has accepted one more registration, and answers the count. A
+     * tick that lands inside the refresh interval posts nothing, so the wait's probe ticks
+     * again, at the wait's own pace, until the count moves: a refresh is awaited where it
+     * shows, at the listener.
+     */
+    refreshed: (): Promise<number> => {
+      const ownRow = rowCheck();
+      const seen = registrations;
+      return until("a tick's refresh of the registration", () => {
+        stillOn(ownRow, "ticking for a refresh");
+        if (registrations !== seen) return registrations;
+        intervals[0]?.();
+        return undefined;
+      });
+    },
+  };
 }
 
 /** nats.js's own default server, the one it dials when a connect is handed none. */

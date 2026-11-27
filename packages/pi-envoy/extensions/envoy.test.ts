@@ -100,6 +100,7 @@ import {
   createPi,
   followedTopics,
   forwardedRoleEnvelope,
+  heartbeatTicks,
   hostBuiltins,
   listenCountingDials,
   NATS_DEFAULT_PORT,
@@ -12900,65 +12901,6 @@ console.log(JSON.stringify(args));
     ]);
     expect(regained).toEqual([{ role, reason: "reclaimed" }]);
   });
-
-  /**
-   * Drives a session's heartbeat by hand (`intervals[0]`) and counts the registrations the
-   * listener stand-in accepts: the stand-in's fetch calls `accept()` for each one. Each wait
-   * answers with the count the listener reached, and ends at its row's deadline, naming what it
-   * waited for (`@legion/test-fixtures/wait`). Once its row has ended, each wait throws
-   * (`stillOn`) before its next tick and in place of its answer: it ticks no dead extension into
-   * the rows after it, and it answers no count once its row has ended.
-   */
-  function heartbeatTicks(intervals: readonly (() => void)[]) {
-    let registrations = 0;
-    /** Told of the next registration the listener accepts, while `registered` waits for one. */
-    let told: (() => void) | undefined;
-    return {
-      /** The listener accepted a registration: the stand-in's fetch calls this for each one. */
-      accept: (): void => {
-        registrations += 1;
-        told?.();
-      },
-      /** How many registrations the listener has accepted. */
-      registrations: (): number => registrations,
-      /**
-       * Ticks once, and waits for the listener to accept the next registration. It is for a tick
-       * no pass is running at: that tick starts a pass, and the pass registers. It never ticks
-       * again. A tick while that pass runs, once a whole refresh interval has passed since the
-       * last registration, meets a stall, and the heartbeat says so.
-       */
-      registered: async (): Promise<number> => {
-        const ownRow = rowCheck();
-        stillOn(ownRow, "waiting for a tick's registration");
-        const accepted = Promise.withResolvers<void>();
-        told = accepted.resolve;
-        try {
-          intervals[0]?.();
-          await settled("the tick's registration", accepted.promise);
-        } finally {
-          told = undefined;
-        }
-        stillOn(ownRow, "waiting for a tick's registration");
-        return registrations;
-      },
-      /**
-       * Ticks until the listener has accepted one more registration, and answers the count. A
-       * tick that lands inside the refresh interval posts nothing, so the wait's probe ticks
-       * again, at the wait's own pace, until the count moves: a refresh is awaited where it
-       * shows, at the listener.
-       */
-      refreshed: (): Promise<number> => {
-        const ownRow = rowCheck();
-        const seen = registrations;
-        return until("a tick's refresh of the registration", () => {
-          stillOn(ownRow, "ticking for a refresh");
-          if (registrations !== seen) return registrations;
-          intervals[0]?.();
-          return undefined;
-        });
-      },
-    };
-  }
 
   test("heartbeat ticks while this session is the live holder issue no claim and append no transcript entry", async () => {
     const role = "legion-controller";

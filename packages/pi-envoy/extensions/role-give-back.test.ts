@@ -5,13 +5,14 @@
 // same in every file. Both files share one harness (`../test/extension-harness`).
 import { describe, expect, test } from "bun:test";
 import { claimEnvoyRole, subscribeLegionNotice } from "@legion/pi-shared/role-claim-bridge";
+import { until } from "@legion/test-fixtures/wait";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { EnvoyModule } from "../test/envoy-module";
 import {
   ANY_CLIENT_INSTANCE,
   createPi,
+  rowProbe,
   sessionContext,
-  until,
   useExtensionHarness,
 } from "../test/extension-harness";
 import { busOutageAnswer, response, responseWithRegistration } from "../test/listener-stand-in";
@@ -74,7 +75,10 @@ describe("envoy OMP extension", () => {
         await subscribeLegionNotice("ses_notice", lane, context, role);
         // The role ends: its notice subject is closed and taken out of the registry.
         await claimEnvoyRole("ses_notice", "notice-other", context);
-        await until(() => warnings.length > index, `the warning about ${role}'s notices`);
+        await until(
+          `the warning about ${role}'s notices`,
+          rowProbe(() => warnings.length > index)
+        );
         expect(warnings[index]).toBe(row.warned);
       }
     } finally {

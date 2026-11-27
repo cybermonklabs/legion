@@ -5,23 +5,28 @@
 // `nats-start.test.ts` stays under 1,000 lines. Their `describe` is "envoy OMP extension", the one
 // `envoy.test.ts` uses, so a row's full name is the same in every file. The files share one
 // harness (`../test/extension-harness`).
-import { describe, expect, test } from "bun:test";
+import { describe, expect } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AGENT_STREAM_LIMITS } from "@legion/contracts";
 import { NATS_DIAL_TOKEN_DROPPED } from "@legion/envoy-client/nats-connection";
+import { TRADE_DEADLINE_MS } from "@legion/envoy-client/nats-credential";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { logger } from "@oh-my-pi/pi-utils";
+import { until } from "@legion/test-fixtures/wait";
 import { ErrorCode, NatsError } from "nats";
 import { z } from "zod";
 import type { EnvoyModule } from "../test/envoy-module";
 import {
   configDirectory,
   createPi,
+  onPassClock,
+  type PassClock,
+  rowLogSink,
+  rowProbe,
+  rowSessionShutdown,
   sessionContext,
   setNatsConnectForTests,
   topLevelSession,
-  until,
   useExtensionHarness,
   withEnvoyTimings,
 } from "../test/extension-harness";
@@ -29,7 +34,10 @@ import {
   natsStandInConnect,
   natsState,
   responseWithRegistration,
+  rowCheck,
   rowFetch,
+  stillOn,
+  test,
 } from "../test/listener-stand-in";
 import type { SessionContext } from "../test/stand-in-host";
 
@@ -54,10 +62,14 @@ describe("envoy OMP extension", () => {
   // answers 500 or a malformed token, and a machine token that cannot be read.
   test("a broker that answers no trade: the session's notice names the trade, and no pass is abandoned", async () => {
     // The pass deadline the story above names, 30 s, the deadline's floor (`MIN_PASS_DEADLINE_MS`),
-    // with the heartbeat shortened to it, since a deadline is never shorter than the heartbeat. The
-    // queue's own timer is then the row's bound, on the same loop as the pass: a pass that
-    // outlasts it is abandoned, and the session is told so.
+    // with the heartbeat shortened to it, since a deadline is never shorter than the heartbeat.
+    // Each pass's dial waits for ready within its bound (`startTradeBoundMs`, 20 s of the 30 s),
+    // and that bound and the queue's deadline are this process's timers, so the row reads both
+    // passes on the test's clock (`onPassClock`) rather than leaving their order to how fast the
+    // host runs a pass's work: a pass that outlasts its deadline is abandoned, and the session is
+    // told so instead of the trade.
     const passMs = 30_000;
+    const startBoundMs = 20_000;
     await withEnvoyTimings({ heartbeatMs: passMs, passDeadlineMs: passMs }, async () => {
       const tokenFile = join(configDirectory, "projected-token");
       writeFileSync(tokenFile, `${MACHINE_IDENTITY_TOKEN}\n`);
@@ -65,14 +77,16 @@ describe("envoy OMP extension", () => {
       process.env.AGENT_SECRETS_URL = "http://broker.test";
       process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
       process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
+      let answered = 0;
       globalThis.fetch = async (input, init) => {
         const request = new Request(input, init);
         if (new URL(request.url).host !== "broker.test")
           return responseWithRegistration(input, init, []);
         await request.text();
+        answered += 1;
         return new Response("the broker is away", { status: 503 });
       };
-      const notifications: string[] = [];
+      const notifications: { readonly message: string }[] = [];
       const intervals: { callback: () => void; intervalMs: number }[] = [];
       const context: SessionContext = {
         cwd: "/tmp/envoy-omp-test",
@@ -80,45 +94,81 @@ describe("envoy OMP extension", () => {
         setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
         // The one extra call a failed heartbeat arms is not run: the row reads the heartbeat.
         setTimeout: () => undefined,
-        ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+        ui: {
+          ...sessionContext().ui,
+          notify: (message) => notifications.push({ message }),
+        },
       };
       const { default: envoyExtension }: EnvoyModule = await import(
         "./envoy.ts?broker-answers-no-trade"
       );
       const fixture = createPi();
       await envoyExtension(fixture.pi);
-      await fixture.handlers.get("session_start")?.({}, context);
-      expect(
-        notifications.some((message) => message.includes("the trade for the session's token"))
-      ).toBe(true);
-      // The next heartbeat pass, while the broker is still away, as a pod's heartbeat runs it: the
-      // heartbeat's own interval, whose tick says what its pass came to, a failure or a pass the
-      // queue abandoned at its deadline. The 15 s retry the start's failure arms says neither, so a
-      // row that ran it saw nothing of its pass.
-      const heartbeat = intervals.find(({ intervalMs }) => intervalMs === passMs);
-      if (heartbeat === undefined) throw new Error("the heartbeat interval was not registered");
-      const before = notifications.length;
-      heartbeat.callback();
-      // Its pass ends inside the queue's 30 s deadline, the trade failing at 20 s, or is abandoned
-      // there and says so: a heartbeat that says nothing a minute on has hung, and is named.
-      await until(
-        () => notifications.length > before,
-        "the heartbeat's notice of what its pass came to",
-        60_000
-      );
-      expect(notifications.slice(before)).toEqual([
+      const stop = rowSessionShutdown(fixture, context);
+      const trade = (from: number) =>
+        notifications
+          .slice(from)
+          .find(({ message }) => message.includes("the trade for the session's token"));
+      const heartbeatFailed = (from: number) =>
+        notifications
+          .slice(from)
+          .find(({ message }) => message.includes("envoy: registry heartbeat failed"));
+      const { start, from, heartbeat } = await onPassClock(async (clock) => {
+        const start = await readPass(clock, {
+          begin: () => fixture.handlers.get("session_start")?.({}, context),
+          boundMs: startBoundMs,
+          answered: () => answered,
+          said: () => trade(0) !== undefined,
+        });
+        // The next heartbeat pass, while the broker is still away, as a pod's heartbeat runs it:
+        // the heartbeat's own interval, whose tick says what its pass came to, a failure or a pass
+        // the queue abandoned at its deadline. The 15 s retry the start's failure arms says
+        // neither, so a row that ran it saw nothing of its pass.
+        const tick = intervals.find(({ intervalMs }) => intervalMs === passMs);
+        if (tick === undefined) throw new Error("the heartbeat interval was not registered");
+        const from = notifications.length;
+        // It trades no sooner than the retry loop the start's failure left running, whose next
+        // trade waits on the clock, so the clock is held only until the pass arms its bound.
+        const heartbeat = await readPass(clock, {
+          begin: () => tick.callback(),
+          boundMs: startBoundMs,
+          said: () => heartbeatFailed(from) !== undefined,
+        });
+        return { start, from, heartbeat };
+      });
+      // Each pass says what its trade came to as its bound ends, with the test's clock standing
+      // at it, and not a step before, and then settles inside its deadline: a ready with no bound
+      // outlives the pass, and a bound grown into the 10 s the pass keeps after it
+      // (`PASS_REST_MS`) waits longer, so neither says so here.
+      for (const read of [start, heartbeat]) {
+        expect(read.early).toBe(false);
+        expect(read.saidMs).toBe(startBoundMs);
+        expect(read.armedMs).toBe(0);
+        expect(read.settled).toBe(true);
+      }
+      expect(trade(0)?.message).toContain("HTTP 503");
+      expect(notifications.slice(from).map(({ message }) => message)).toEqual([
         expect.stringContaining("envoy: registry heartbeat failed"),
       ]);
-      expect(notifications.some((message) => message.includes("did not settle within"))).toBe(
+      expect(notifications.some(({ message }) => message.includes("did not settle within"))).toBe(
         false
       );
-      await fixture.handlers.get("session_shutdown")?.({}, context);
+      await stop();
     });
-  }, 90_000);
+    // What can hang is `readPass`'s wait for each pass's work up to its bound (`clock.wait`),
+    // which has no bound of turns, because the start's trade reads the pod's token from disk, real
+    // I/O.
+  });
 
   /** A pod whose NATS connection presents its broker token, at a broker that answers each trade
-   *  as `answer(n)` says for its n-th: a 503, or a token it mints for the trade's session. */
-  function brokerPod(answer: (trade: number) => "503" | "grant"): { minted: Map<string, string> } {
+   *  as `answer(n)` says for its n-th: a 503, or a token it mints for the trade's session.
+   *  Answers the tokens minted, each to its trade's session, and how many trades have reached
+   *  the broker. */
+  function brokerPod(answer: (trade: number) => "503" | "grant"): {
+    minted: Map<string, string>;
+    trades: () => number;
+  } {
+    stillOn(rowCheck(), "standing in the broker pod");
     const tokenFile = join(configDirectory, "projected-token");
     writeFileSync(tokenFile, `${MACHINE_IDENTITY_TOKEN}\n`);
     process.env.NATS_AUTH = "broker";
@@ -143,7 +193,7 @@ describe("envoy OMP extension", () => {
         expires_in: 900,
       });
     };
-    return { minted };
+    return { minted, trades: () => trades };
   }
 
   /** A session's context whose notices are kept with how long after `started` each was made: the
@@ -162,54 +212,168 @@ describe("envoy OMP extension", () => {
     return { context, notifications };
   }
 
+  /**
+   * Reads one pass on the test's clock (`onPassClock`): `begin` starts it, and its own work up to
+   * the `AbortSignal.timeout` of `boundMs` it arms, and the broker's next answer where the pass
+   * trades at once (`answered`), run with the clock held. That work includes the trade's read of
+   * the pod's token from disk (`projectedToken`'s `readFile`), real I/O that no count of turns
+   * measures, so the clock is held for it with no bound of turns (`wait`). The clock then moves in
+   * 100 ms steps, which let each retry the loop makes be answered on real turns: one step short of
+   * the bound the pass must have said nothing, and at the bound, held, it says what its trade came
+   * to (`said`), which the code makes in process from the last answer it holds. Then it goes on to
+   * its end inside its deadline. Answers, each from `begin` on the test's clock, when the bound was
+   * armed and when the pass said so, whether it had said so a step early, and whether it settled.
+   */
+  async function readPass(
+    clock: PassClock,
+    options: {
+      readonly begin: () => unknown;
+      readonly boundMs: number;
+      /** How many trades the broker has answered, for a pass that trades as it starts. */
+      readonly answered?: () => number;
+      readonly said: () => boolean;
+    }
+  ): Promise<{ armedMs?: number; early: boolean; saidMs?: number; settled: boolean }> {
+    const { begin, boundMs, answered, said } = options;
+    const armedBefore = clock.armed.filter((ms) => ms === boundMs).length;
+    const answeredBefore = answered?.() ?? 0;
+    const started = clock.now();
+    let settled = false;
+    void Promise.resolve(begin()).finally(() => {
+      settled = true;
+    });
+    const armed = () => clock.armed.filter((ms) => ms === boundMs).length > armedBefore;
+    await clock.wait(
+      "the pass's work up to its bound",
+      () => armed() && (answered === undefined || answered() > answeredBefore)
+    );
+    const armedMs = armed() ? clock.now() - started : undefined;
+    for (let step = 0; step < boundMs / 100 - 1; step += 1) await clock.advance(100);
+    const early = said();
+    await clock.advance(100);
+    await clock.turns(
+      10_000,
+      "the pass's word on what its trade came to, which the row reads itself",
+      said
+    );
+    const saidMs = said() ? clock.now() - started : undefined;
+    for (let step = 0; step < 150 && !settled; step += 1) await clock.advance(100);
+    return { armedMs, early, saidMs, settled };
+  }
+
   test("a broker that never grants: the start fails at its 20 s bound, naming the 503, inside its pass", async () => {
-    // The start waits for ready within its bound (`TRADE_DEADLINE_MS`, 20 s), through the retry
-    // loop's retries, and then fails naming what the last trade came to, before the pass's
-    // deadline: a pass abandoned at that deadline names no cause at all. The deadline is its floor
-    // here, 30 s (`MIN_PASS_DEADLINE_MS`, the heartbeat shortened to it), and the queue's own
-    // timer is the row's upper bound, on the same loop as the start's: a start that outlasts it is
-    // abandoned, and the session is told that instead of the trade.
+    // The start waits for ready within its bound (`startTradeBoundMs`: the pass less the 10 s the
+    // rest of it needs, `PASS_REST_MS`, which for a 30 s pass is `TRADE_DEADLINE_MS`, 20 s),
+    // through the retry loop's retries, and then fails naming what the last trade came to, before
+    // the pass's deadline: a pass abandoned at that deadline names no cause at all. The deadline is
+    // its floor here, 30 s (`MIN_PASS_DEADLINE_MS`, the heartbeat shortened to it). Both are this
+    // process's timers, so the row reads them on the test's clock (`onPassClock`), from the start
+    // on, rather than leaving their order to how fast the host runs the pass's work.
     const passMs = 30_000;
+    const startBoundMs = 20_000;
     await withEnvoyTimings({ heartbeatMs: passMs, passDeadlineMs: passMs }, async () => {
       brokerPod(() => "503");
+      // How many trades the broker has answered. The pod's fetch is `rowFetch()`, as in the
+      // switch-follow row.
+      const pod = rowFetch();
+      let answered = 0;
+      globalThis.fetch = async (input, init) => {
+        const answer = await pod(input, init);
+        if (new URL(new Request(input, init).url).host === "broker.test") answered += 1;
+        return answer;
+      };
       const { default: envoyExtension }: EnvoyModule = await import(
         "./envoy.ts?broker-answers-503"
       );
       const fixture = createPi();
       await envoyExtension(fixture.pi);
-      // Timed from the start itself, not from before the module loads: a module slow to load on a
-      // loaded machine is no slower start.
       const { context, notifications } = timedContext("ses_broker_503", Date.now());
-      await fixture.handlers.get("session_start")?.({}, context);
-      const notice = notifications.find(({ message }) =>
-        message.includes("the trade for the session's token")
+      const stop = rowSessionShutdown(fixture, context);
+      const notice = () =>
+        notifications.find(({ message }) => message.includes("the trade for the session's token"));
+      const read = await onPassClock((clock) =>
+        readPass(clock, {
+          begin: () => fixture.handlers.get("session_start")?.({}, context),
+          boundMs: startBoundMs,
+          answered: () => answered,
+          said: () => notice() !== undefined,
+        })
       );
+      // The start names the trade as its bound ends, with the test's clock standing at it, and
+      // not a step before: a start whose ready waits with no bound outlives the pass, and one
+      // whose bound grows into the 10 s the pass keeps after it (`PASS_REST_MS`) waits longer, so
+      // neither names it here.
+      expect(read.early).toBe(false);
       expect(
-        notice,
+        read.saidMs,
         `no notice named the trade: ${notifications.map(({ message }) => message).join(" | ")}`
-      ).toBeDefined();
-      expect(notice?.message).toContain("HTTP 503");
-      // A timer fires no sooner than it is due, so the start waited out its bound however loaded
-      // the machine.
-      expect(notice?.at).toBeGreaterThanOrEqual(19_000);
+      ).toBe(startBoundMs);
+      // The bound was armed with the clock held, where the code arms it.
+      expect(read.armedMs).toBe(0);
+      expect(notice()?.message).toMatch(/the trade for the session's token.*HTTP 503/);
+      expect(read.settled).toBe(true);
       expect(notifications.some(({ message }) => message.includes("did not settle within"))).toBe(
         false
       );
-      await fixture.handlers.get("session_shutdown")?.({}, context);
+      await stop();
     });
-  }, 60_000);
+    // What can hang is `readPass`'s wait for the start's work up to its bound (`clock.wait`),
+    // which has no bound of turns, because its trade reads the pod's token from disk, real I/O.
+  });
 
   test("a first trade that answers 503 and then grants: the start presents its token in its first pass", async () => {
     // The start has nothing to do until it holds a token, so it waits for ready: the retry
     // loop's next trade, 15 s at most later, grants, and the session's first pass dials and
     // registers with it, rather than waiting for the next heartbeat, 90 s on.
-    const { minted } = brokerPod((trade) => (trade === 1 ? "503" : "grant"));
+    const { minted, trades } = brokerPod((trade) => (trade === 1 ? "503" : "grant"));
     const started = Date.now();
     const { context, notifications } = timedContext("ses_broker_once_away", started);
     const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?broker-away-once");
     const fixture = createPi();
     await envoyExtension(fixture.pi);
-    await fixture.handlers.get("session_start")?.({}, context);
+    const stop = rowSessionShutdown(fixture, context);
+    // The retry loop's next trade comes 7.5 to 15 s after the first's 503 (its jittered delay,
+    // at most `RETRY_FIRST_WAIT_MS`) and the start's ready waits for it within its 20 s bound
+    // (`TRADE_DEADLINE_MS`): both are this process's timers, so the start runs on the test's
+    // clock (`onPassClock`). Each trade first reads the pod's token from disk (`projectedToken`'s
+    // `readFile`), real I/O that runs off the event loop; its DPoP proof is signed synchronously.
+    // A clock moved while a read is in flight races the 20 s as the real clock did on a slow
+    // host, so the clock never moves then. It is held until the first trade has reached the
+    // broker, its read done (`wait`, which no count of turns bounds). The broker answers 503, and
+    // all the start waits on is then the retry's delay: the clock moves through it 100 ms at a
+    // time until the retry has fired, which the second trade shows by arming its own 30 s bound
+    // (`TRADE_ATTEMPT_MS`) in the turn it starts its read, and is held from that step on, through
+    // the read, the grant and the start's dial and registration. The delay is set as the code
+    // reads the 503, in process, a step at most after the broker answers, so the retry fires
+    // before the 20 s; the steps stop at the 20 s in any case, which the clock never passes, and
+    // a retry that has not begun by then, with the start unsettled, fails the row there.
+    /** How long one trade of the retry loop may take: the token client's `TRADE_ATTEMPT_MS`
+     *  (`packages/cipher-client/src/token-client.ts`), which pi-envoy does not import. */
+    const TRADE_ATTEMPT_MS = 30_000;
+    await onPassClock(async (clock) => {
+      let settled = false;
+      const starting = Promise.resolve(
+        fixture.handlers.get("session_start")?.({}, context)
+      ).finally(() => {
+        settled = true;
+      });
+      /** The trades begun so far, each by the `TRADE_ATTEMPT_MS` bound it arms before its read.
+       *  Between the first trade and the retry's, no other bound of that length arms: the start
+       *  waits for its token within its own bound, armed before the first trade; the retry loop
+       *  sleeps out its delay on a `setTimeout`, which `armed` does not hold; the start's dial and
+       *  registration wait for the token; and this context's `setInterval` runs no heartbeat. */
+      const begun = () => clock.armed.filter((ms) => ms === TRADE_ATTEMPT_MS).length;
+      await clock.wait("the first trade", () => trades() > 0 || settled);
+      const first = begun();
+      for (let step = 0; step < 200 && begun() === first && !settled; step += 1) {
+        await clock.advance(100);
+      }
+      if (begun() === first && !settled) {
+        throw new Error("the retry's trade did not begin in 20 s, and the start did not settle");
+      }
+      await clock.wait("the second trade", () => trades() > 1 || settled);
+      await clock.waitOn("the start", starting);
+    });
     expect(
       natsState.presented.map((token) => minted.get(token)),
       `the start presented no token: ${notifications.map(({ message }) => message).join(" | ")}`
@@ -218,13 +382,16 @@ describe("envoy OMP extension", () => {
     expect(
       notifications.some(({ message }) => message.includes("the trade for the session's token"))
     ).toBe(false);
-    await fixture.handlers.get("session_shutdown")?.({}, context);
-  }, 60_000);
+    await stop();
+    // What can hang is a wait for a trade's read of the pod's token from disk or for the start's
+    // dial (`clock.wait`, `clock.waitOn`), which has no bound of turns: the read is real I/O.
+  });
 
   test("a first NATS dial whose broker token the hub refuses twice drops it, starts another trade, and says so", async () => {
     // The pass's dials share the keeper's count of the token's refusals (`connectNats`'
     // `hooks.credential`), so the dial drops a token the hub refused twice, as the keeper does on
     // an open connection. The waits between the dials are recorded, not slept.
+    const ownRow = rowCheck();
     const { minted } = brokerPod(() => "grant");
     natsState.failConnects = 2;
     natsState.failError = () =>
@@ -235,7 +402,7 @@ describe("envoy OMP extension", () => {
       { delay: async () => {}, random: () => 0 }
     );
     const warnings: string[] = [];
-    const stopSink = logger.registerLogSink((entry) => {
+    const stopSink = rowLogSink((entry) => {
       if (entry.level === "warn") warnings.push(entry.message);
     });
     try {
@@ -245,22 +412,35 @@ describe("envoy OMP extension", () => {
       );
       const fixture = createPi();
       await envoyExtension(fixture.pi);
-      await fixture.handlers.get("session_start")?.({}, context);
+      const stop = rowSessionShutdown(fixture, context);
+      // The start's work, two trades that each read the pod's token from disk and three dials,
+      // runs inside this process's own timers: the start's trade bound (`TRADE_DEADLINE_MS`) and
+      // its pass's deadline. On the real clock the row's outcome depended on the host finishing
+      // that work inside them, so the start runs on the test's clock (`onPassClock`), held while
+      // the work runs, which no count of turns measures (`waitOn`): the token's read is real I/O.
+      await onPassClock((clock) =>
+        clock.waitOn("the start", fixture.handlers.get("session_start")?.({}, context))
+      );
       expect(natsState.failConnects, notifications.map(({ message }) => message).join(" | ")).toBe(
         0
       );
       // The start's token, and the trade the drop started.
-      await until(() => minted.size === 2, "the trade the drop started");
+      await until(
+        "the trade the drop started",
+        rowProbe(() => minted.size === 2)
+      );
       expect([...minted.values()]).toEqual(["ses_first_dial_refused", "ses_first_dial_refused"]);
       expect(warnings.filter((message) => message.includes(NATS_DIAL_TOKEN_DROPPED))).toHaveLength(
         1
       );
-      await fixture.handlers.get("session_shutdown")?.({}, context);
+      await stop();
     } finally {
       stopSink();
-      setNatsConnectForTests(natsStandInConnect);
+      if (ownRow()) setNatsConnectForTests(natsStandInConnect);
     }
-  }, 30_000);
+    // What can hang is the wait for the start (`clock.waitOn`), which has no bound of turns,
+    // because each of its trades reads the pod's token from disk, real I/O.
+  });
 
   test("natsCredential follows a session switch", async () => {
     // A session that presents its broker token (NATS_AUTH=broker) is admitted to its own subjects
@@ -295,26 +475,58 @@ describe("envoy OMP extension", () => {
     );
     const fixture = createPi();
     await envoyExtension(fixture.pi);
-    await fixture.handlers.get("session_start")?.({}, sessionContext("ses_switch_from"));
-    // Each CONNECT presented a token the broker minted for the session it names here.
-    expect(natsState.presented.map((token) => minted.get(token))).toEqual(["ses_switch_from"]);
-    expect(natsState.controls.get("notifications.agent.ses_switch_from")?.active()).toBe(true);
+    const stop = rowSessionShutdown(fixture, sessionContext("ses_switch_to"));
+    // The start waits for its token within its trade bound (`startTradeBoundMs`, 20 s of the 30 s
+    // pass), and the switch's follow takes the new session's token within its share of the
+    // follow's bound (20 s of `followBoundMs`'s 28 s), then waits for the connection to come back
+    // within the rest (`FOLLOW_RECONNECT_MS`, 8 s); each trade is bounded by its own attempt too
+    // (`TRADE_ATTEMPT_MS`, 30 s). Those are timers of this process, which each trade must beat,
+    // and a trade first reads the pod's token from disk, real I/O that runs off the event loop,
+    // which no count of turns measures. So the row runs on the test's clock (`onPassClock`) from
+    // the start on, where none of those timers moves, held while the start and the follow's trade
+    // run (`waitOn`, `wait`). The clock moves once, 1 ms, which ends none of those bounds, after
+    // the follow has asked the connection to come back, its trade done: the stand-in server
+    // answers that on a 0 ms timer, which only a move of the clock runs. On the real clock a host
+    // slow enough to stretch a trade past its bound would fail the row.
+    await onPassClock(async (clock) => {
+      await clock.waitOn(
+        "the start",
+        fixture.handlers.get("session_start")?.({}, sessionContext("ses_switch_from"))
+      );
+      // Each CONNECT presented a token the broker minted for the session it names here.
+      expect(natsState.presented.map((token) => minted.get(token))).toEqual(["ses_switch_from"]);
+      expect(natsState.controls.get("notifications.agent.ses_switch_from")?.active()).toBe(true);
 
-    natsState.timeline.length = 0;
-    await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_switch_to"));
-    expect(natsState.presented.map((token) => minted.get(token))).toEqual([
-      "ses_switch_from",
-      "ses_switch_to",
-    ]);
-    // The reconnect comes before every subscribe of the new session's subjects.
-    const moved = natsState.timeline.filter(
-      (entry) => entry === "reconnect" || entry.includes("ses_switch_to")
-    );
-    expect(moved[0]).toBe("reconnect");
-    expect(moved.length).toBeGreaterThan(1);
-    expect(natsState.controls.get("notifications.agent.ses_switch_to")?.active()).toBe(true);
-    expect(traded).toContain("ses_switch_to");
-    await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_switch_to"));
+      natsState.timeline.length = 0;
+      let switched = false;
+      const switching = Promise.resolve(
+        fixture.handlers.get("session_switch")?.({}, sessionContext("ses_switch_to"))
+      ).finally(() => {
+        switched = true;
+      });
+      await clock.wait(
+        "the follow's reconnect",
+        () => natsState.timeline.includes("reconnect") || switched
+      );
+      await clock.advance(1);
+      await clock.waitOn("the switch", switching);
+      expect(natsState.presented.map((token) => minted.get(token))).toEqual([
+        "ses_switch_from",
+        "ses_switch_to",
+      ]);
+      // The reconnect comes before every subscribe of the new session's subjects.
+      const moved = natsState.timeline.filter(
+        (entry) => entry === "reconnect" || entry.includes("ses_switch_to")
+      );
+      expect(moved[0]).toBe("reconnect");
+      expect(moved.length).toBeGreaterThan(1);
+      expect(natsState.controls.get("notifications.agent.ses_switch_to")?.active()).toBe(true);
+      expect(traded).toContain("ses_switch_to");
+    });
+    await stop();
+    // What can hang is the wait for the start, the follow's reconnect or the switch
+    // (`clock.waitOn`, `clock.wait`), which has no bound of turns, because the start's and the
+    // follow's trades read the pod's token from disk, real I/O.
   });
 
   test("the keeper's warning of a refused token reaches the session as a notice, once", async () => {
@@ -325,74 +537,126 @@ describe("envoy OMP extension", () => {
     const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?keeper-notice");
     const fixture = createPi();
     await envoyExtension(fixture.pi);
-    await fixture.handlers.get("session_start")?.({}, context);
-    expect(natsState.presented.map((token) => minted.get(token))).toEqual(["ses_keeper_notice"]);
+    const stop = rowSessionShutdown(fixture, context);
     const refused = () =>
       notifications.filter(({ message }) =>
         message.includes("refused the connection's live broker token")
       );
-    for (const read of natsState.statusReaders) {
-      read({ type: "error", data: "AUTHORIZATION_VIOLATION" });
-    }
-    // The reader's warning is this process's own work, done within turns of the push; a bound of
-    // two-thirds of the row's time names a hang without failing a machine that stalls.
-    await until(() => refused().length > 0, "the keeper's notice", 20_000);
+    // The start's trade and dial wait within its 20 s bound (`TRADE_DEADLINE_MS`), this process's
+    // own timer, so the row runs on the test's clock (`onPassClock`), which the start's work does
+    // not move: on the real clock a host slow enough to stretch the start past that bound failed
+    // the row. The start's trade first reads the pod's token from disk (`projectedToken`'s
+    // `readFile`), real I/O that no count of turns measures, so the clock is held for the start
+    // with no bound of turns (`waitOn`). The reader's warning is this process's own work, done
+    // within turns of the push.
+    await onPassClock(async (clock) => {
+      await clock.waitOn("the start", fixture.handlers.get("session_start")?.({}, context));
+      expect(natsState.presented.map((token) => minted.get(token))).toEqual(["ses_keeper_notice"]);
+      for (const read of natsState.statusReaders) {
+        read({ type: "error", data: "AUTHORIZATION_VIOLATION" });
+      }
+      await clock.hold("the notice of the refused token", () => refused().length > 0);
+    });
     expect(refused().map(({ message }) => message)).toEqual([
       "envoy: the NATS server refused the connection's live broker token (AUTHORIZATION_VIOLATION): the auth service is away, or the token was revoked; the connection keeps redialling, and at the second refusal the token is dropped and another traded",
     ]);
-    await fixture.handlers.get("session_shutdown")?.({}, context);
-  }, 30_000);
+    await stop();
+    // What can hang is the wait for the start (`clock.waitOn`), which has no bound of turns,
+    // because its trade reads the pod's token from disk, real I/O.
+  });
 
   test("a switch whose new token never comes fails inside a short pass, naming the trade", async () => {
     // ENVOY_HEARTBEAT_MS=10000 ENVOY_PASS_DEADLINE_MS=10000: the follow takes at most 8 s of the
-    // pass (`followBoundMs`), its trade 4 s of that, so the pass names what the trade came to
-    // rather than being abandoned at its deadline with no word of the cause (the review of
-    // 2fa6fbf7cf, m3: unbounded, the trade alone waited 20 s).
+    // pass (`followBoundMs`), its trade half of that, 4 s (`followNatsCredential`), so the pass
+    // names what the trade came to rather than being abandoned at its deadline with no word of
+    // the cause (the review of 2fa6fbf7cf, m3: unbounded, the trade alone waited 20 s).
     await withEnvoyTimings({ heartbeatMs: 10_000, passDeadlineMs: 10_000 }, async () => {
       brokerPod((trade) => (trade === 1 ? "grant" : "503"));
-      const started = Date.now();
-      // When the follow's trade for the new session reached the broker: the follow starts its
-      // clock just before it, which the switch's own work before the pass can put well after the
-      // row's switch. The pod's fetch is `rowFetch()`: `globalThis.fetch` reads the file's
-      // recording wrapper, which calls whatever a row installed, so a wrapper that called it would
-      // call itself forever.
+      // Whether the follow traded for the new session at the broker. The pod's fetch is
+      // `rowFetch()`: `globalThis.fetch` reads the file's recording wrapper, which calls whatever
+      // a row installed, so a wrapper that called it would call itself forever.
       const pod = rowFetch();
-      let followTradeAt: number | undefined;
+      let followTraded = false;
       globalThis.fetch = async (input, init) => {
         const request = new Request(input, init);
         if (new URL(request.url).host === "broker.test") {
           const session = new URLSearchParams(await request.clone().text()).get("session");
-          if (session === "ses_follow_to") followTradeAt ??= Date.now() - started;
+          if (session === "ses_follow_to") followTraded = true;
         }
         return await pod(input, init);
       };
-      const before = timedContext("ses_follow_from", started);
+      const before = timedContext("ses_follow_from", Date.now());
       const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?follow-bound");
       const fixture = createPi();
       await envoyExtension(fixture.pi);
-      await fixture.handlers.get("session_start")?.({}, before.context);
-      const after = timedContext("ses_follow_to", started);
-      const switchedAt = Date.now() - started;
-      await fixture.handlers.get("session_switch")?.({}, after.context);
+      const after = timedContext("ses_follow_to", Date.now());
+      const stop = rowSessionShutdown(fixture, after.context);
       const all = () => [...before.notifications, ...after.notifications];
       const named = () =>
         all().find(({ message }) => message.includes("could not take the new session's token"));
-      await until(() => named() !== undefined, "a notice naming the follow's trade", 45_000);
+      // From the boot on, the test's clock (`onPassClock`): the passes' deadlines, the follow's
+      // bound and its trade's share are all this process's timers, so on it they come at the
+      // times the code gives them, whatever the host's speed. The work between those times (the
+      // start's trade and dial, the pass's restores, the follow's trade and the report of how it
+      // ended) comes on real turns, which move no clock, so the clock is held while it runs:
+      // through the boot, until the follow has traded, and again at the trade's share until the
+      // notice is made. Each trade first reads the pod's token from disk (`projectedToken`'s
+      // `readFile`), real I/O that no count of turns measures, so the boot and the follow's trade
+      // are held for with no bound of turns (`waitOn`, `wait`); the rest is in-process here. A
+      // boot on the real clock would race its own 10 s pass deadline, and a boot past it puts
+      // "did not settle within" into the notices this row reads.
+      const shareMs = 4_000;
+      const { earlyNotice, noticeMs, settled, switching } = await onPassClock(async (clock) => {
+        const bootedAt = clock.now();
+        await clock.waitOn("the boot", fixture.handlers.get("session_start")?.({}, before.context));
+        // The boot's own work moved no clock.
+        expect(clock.now()).toBe(bootedAt);
+        const switchedAt = clock.now();
+        let settled = false;
+        const switching = Promise.resolve(
+          fixture.handlers.get("session_switch")?.({}, after.context)
+        );
+        void switching.finally(() => {
+          settled = true;
+        });
+        await clock.wait("the follow's trade", () => followTraded);
+        // The follow traded with the clock held, so nothing of the pass's own work before it
+        // moved the clock.
+        expect(followTraded).toBe(true);
+        expect(clock.now()).toBe(switchedAt);
+        // Not before the trade's share: one step short of it, the pass has said nothing.
+        await clock.advance(shareMs - 50);
+        const earlyNotice = named()?.message;
+        // At the share, held until the pass says what the trade came to.
+        await clock.advance(50);
+        await clock.turns(
+          10_000,
+          "the pass's word on what the trade came to, which the row reads itself",
+          () => named() !== undefined
+        );
+        const noticeMs = named() === undefined ? undefined : clock.now() - switchedAt;
+        // The pass goes on after the follow (its subscribes and its registration), inside its
+        // own deadline, which a pass that outlived it would say below.
+        for (let step = 0; step < 120 && !settled; step += 1) await clock.advance(100);
+        return { earlyNotice, noticeMs, settled, switching };
+      });
+      // The notice is made as the trade's share ends, half the follow's 8 s bound of the pass's
+      // 10 s, with the test's clock standing at that share: a follow given no bound (m3) has 20 s
+      // for its trade and is abandoned with the pass at 10 s, saying nothing, and a follow whose
+      // bound grows into the 2 s the pass keeps after it (`FOLLOW_REST_MS`) gives its trade more
+      // than 4 s, so neither names the trade here.
+      expect(earlyNotice).toBeUndefined();
+      expect(noticeMs).toBe(shareMs);
       expect(named()?.message).toContain("HTTP 503");
-      const at = named()?.at ?? Number.POSITIVE_INFINITY;
-      // Not before the trade's 4 s share, which no timer ends early: counted from the switch,
-      // before the follow started its clock.
-      expect(at - switchedAt).toBeGreaterThanOrEqual(3_900);
-      // Inside the follow's own 8 s bound (`followBoundMs`), counted from its trade: the 4 s share
-      // and as much again for a loaded machine to say so, the share the follow would leave the
-      // connection. The pass's own 10 s deadline is the bound the queue keeps: a follow that
-      // outlasted it would be abandoned, which says so below.
-      expect(followTradeAt).toBeDefined();
-      expect(at - (followTradeAt ?? Number.NEGATIVE_INFINITY)).toBeLessThan(8_000);
+      expect(settled).toBe(true);
       expect(all().some(({ message }) => message.includes("did not settle within"))).toBe(false);
-      await fixture.handlers.get("session_shutdown")?.({}, after.context);
+      await switching;
+      await stop();
     });
-  }, 60_000);
+    // What can hang is the wait for the boot or for the follow's trade (`clock.waitOn`,
+    // `clock.wait`), which has no bound of turns, because each trade reads the pod's token from
+    // disk, real I/O.
+  });
 
   test("after a switch whose move failed, the old session's viewer is replayed nothing of the new one", async () => {
     // The move to the new session's token fails (its trade is refused outright, a refusal no
@@ -425,33 +689,60 @@ describe("envoy OMP extension", () => {
     );
     const fixture = createPi();
     await envoyExtension(fixture.pi);
-    await fixture.handlers.get("session_start")?.({}, sessionContext("ses_failed_from"));
     const oldControl = "agentstream.ses_failed_from.control";
-    expect(natsState.controls.get(oldControl)?.active()).toBe(true);
-
     const next = sessionContext("ses_failed_to");
-    await fixture.handlers.get("session_switch")?.({}, next);
-    expect(natsState.controls.has("agentstream.ses_failed_to.control")).toBe(false);
+    const stop = rowSessionShutdown(fixture, next);
     const marker = "a turn of the session switched to";
-    await fixture.handlers.get("message_end")?.(
-      { message: { content: [{ text: marker, type: "text" }], role: "assistant", timestamp: 30 } },
-      next
-    );
+    // The start's trade and the switch's follow each wait within a bound of this process's own
+    // (`TRADE_DEADLINE_MS`, `followBoundMs`), so the row runs on the test's clock (`onPassClock`),
+    // which their work does not move: on the real clock a host slow enough to stretch the start
+    // past its bound failed the row before it read anything of the switch. Each of their trades
+    // first reads the pod's token from disk (`projectedToken`'s `readFile`), real I/O that no
+    // count of turns measures, so the clock is held for the start and the switch with no bound of
+    // turns (`waitOn`). The turn's end is in-process.
+    await onPassClock(async (clock) => {
+      await clock.waitOn(
+        "the start",
+        fixture.handlers.get("session_start")?.({}, sessionContext("ses_failed_from"))
+      );
+      expect(natsState.controls.get(oldControl)?.active()).toBe(true);
 
-    // A viewer of the old session asks for its history.
-    const control = natsState.controls.get(oldControl);
-    control?.push(JSON.stringify({ type: "watch", v: 1 }));
-    control?.push(JSON.stringify({ type: "replay", v: 1 }), "inbox-old-viewer");
-    for (let index = 0; index < 20; index += 1) await Promise.resolve();
-    await Bun.sleep(50);
+      await clock.waitOn("the switch", fixture.handlers.get("session_switch")?.({}, next));
+      expect(natsState.controls.has("agentstream.ses_failed_to.control")).toBe(false);
+      await clock.run(
+        "the turn's end",
+        fixture.handlers.get("message_end")?.(
+          {
+            message: {
+              content: [{ text: marker, type: "text" }],
+              role: "assistant",
+              timestamp: 30,
+            },
+          },
+          next
+        )
+      );
+
+      // A viewer of the old session asks for its history. What the replay would publish, it
+      // publishes within turns of the request, held here: the old session's subject is closed,
+      // so it publishes nothing, and the turns are what a replay that did answer would need.
+      const control = natsState.controls.get(oldControl);
+      control?.push(JSON.stringify({ type: "watch", v: 1 }));
+      control?.push(JSON.stringify({ type: "replay", v: 1 }), "inbox-old-viewer");
+      await clock.turns(200, "the turns a replay that did answer would need");
+    });
     const replayed = natsState.published
       .filter((each) => each.subject === "inbox-old-viewer")
       .map((each) => new TextDecoder().decode(each.data));
     expect(replayed.join("\n")).not.toContain(marker);
     expect(natsState.controls.get(oldControl)?.active()).toBe(false);
-    await fixture.handlers.get("session_shutdown")?.({}, next);
-  }, 30_000);
+    await stop();
+    // What can hang is the wait for the start or the switch (`clock.waitOn`), which has no bound
+    // of turns, because each of their trades reads the pod's token from disk, real I/O.
+  });
 
+  // Not decided by the host's speed: the row waits for the viewer's replay to hold B's own turn,
+  // however late it lands, and reads what else it holds only then.
   test("after a rollback with no event, a viewer of the session left is replayed nothing of the one returned to", async () => {
     // Two sessions of one host: it switches from A to B, B's viewer attaches, and the host then
     // returns to A with no event. Until the next pass runs, A's control subject is closed and B's
@@ -463,6 +754,7 @@ describe("envoy OMP extension", () => {
     const fixture = createPi();
     await envoyExtension(fixture.pi);
     const first = sessionContext("ses_ring_a");
+    const stop = rowSessionShutdown(fixture, first);
     await fixture.handlers.get("session_start")?.({}, first);
     const second = sessionContext("ses_ring_b");
     await fixture.handlers.get("session_switch")?.({}, second);
@@ -479,17 +771,24 @@ describe("envoy OMP extension", () => {
 
     control?.push(JSON.stringify({ type: "watch", v: 1 }));
     control?.push(JSON.stringify({ type: "replay", v: 1 }), "inbox-viewer-of-b");
-    for (let index = 0; index < 20; index += 1) await Promise.resolve();
-    await Bun.sleep(50);
-    const replayed = natsState.published
-      .filter((each) => each.subject === "inbox-viewer-of-b")
-      .map((each) => new TextDecoder().decode(each.data))
-      .join("\n");
-    // The replay can carry a turn at all: B's own is in it.
-    expect(replayed).toContain(ownTurn);
+    const decoder = new TextDecoder();
+    // The replay is one publish on the viewer's inbox (`pumpAgentStreamControl`), so once it holds
+    // B's own turn it holds all it ever will. The replay can carry a turn at all: B's own is in it.
+    const replayed = await until(
+      "the replay on B's viewer's inbox to hold B's own turn",
+      rowProbe(() => {
+        const text = natsState.published
+          .filter((each) => each.subject === "inbox-viewer-of-b")
+          .map((each) => decoder.decode(each.data))
+          .join("\n");
+        return text.includes(ownTurn) && text;
+      })
+    );
     expect(replayed).not.toContain(returnedTurn);
-    await fixture.handlers.get("session_shutdown")?.({}, first);
-  }, 30_000);
+    await stop();
+    // What can hang is the session's start, its switch, a turn's end (`message_end`) or its
+    // shutdown.
+  });
 
   /** The frames a viewer that attaches to `session` is replayed, in the order the answer gives
    *  them. */
@@ -499,7 +798,10 @@ describe("envoy OMP extension", () => {
     control?.push(JSON.stringify({ type: "watch", v: 1 }));
     control?.push(JSON.stringify({ type: "replay", v: 1 }), inbox);
     const answered = () => natsState.published.filter((each) => each.subject === inbox);
-    await until(() => answered().length > 0, `the replay answer on ${inbox}`);
+    await until(
+      `the replay answer on ${inbox}`,
+      rowProbe(() => answered().length > 0)
+    );
     const answer = answered().at(-1);
     return z
       .object({ frames: z.array(z.record(z.string(), z.unknown())) })
@@ -894,24 +1196,72 @@ describe("envoy OMP extension", () => {
     );
     const fixture = createPi();
     await envoyExtension(fixture.pi);
-    await fixture.handlers.get("session_start")?.({}, sessionContext("ses_kept"));
-    const [first] = minted;
-    expect(first).toBeString();
-    expect(natsState.presented[0]).toBe(first);
-    // What the start did is done; from here a reconnect is the keeper's.
-    natsState.timeline.length = 0;
-    const before = natsState.presented.length;
-    const deadline = Date.now() + 5_000;
-    while (!natsState.timeline.includes("reconnect") && Date.now() < deadline) await Bun.sleep(50);
-    expect(natsState.timeline).toContain("reconnect");
-    expect(natsState.presented.length).toBeGreaterThan(before);
-    expect(natsState.presented.at(-1)).not.toBe(natsState.presented[before - 1]);
-    await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_kept"));
-    // Stopped, it trades and reconnects no more.
-    const reconnects = natsState.timeline.filter((entry) => entry === "reconnect").length;
-    const traded = minted.length;
-    await Bun.sleep(2_500);
-    expect(natsState.timeline.filter((entry) => entry === "reconnect").length).toBe(reconnects);
-    expect(minted).toHaveLength(traded);
-  }, 15_000);
+    // The keeper renews on a timer of this process, a second after each two-second token lands
+    // (`renewDelay`), and each trade first reads the pod's token from disk (`projectedToken`'s
+    // `readFile`), real I/O that runs off the event loop. On the real clock a trade could outlast
+    // the shutdown and reach the broker after it: a renewal in flight as the keeper stopped, or
+    // the deregistration's own trade, which its credential waits for 500 ms of the shutdown's 1 s
+    // (`SHUTDOWN_DEADLINE_MS`) before the DELETE goes without it. So the host's speed decided the
+    // row, and it runs on the test's clock (`onPassClock`). The clock is held through the start
+    // (`wait`, `waitOn`, which no count of turns bounds) but for one move of 1 ms: the start's
+    // pass follows the session (`followNatsCredential`), which with two-second tokens trades and
+    // reconnects, and the stand-in server answers the reconnect on a 0 ms timer, which only a move
+    // of the clock runs, made once the follow's trade is done. All the keeper then waits on is its
+    // timer: the clock moves 100 ms at a time until the keeper's renewal arms its bound, and is
+    // held from that step on, through the renewal's read and the reconnect. The session shuts
+    // down there, the clock still held: the keeper's next renewal is a second away, so none is in
+    // flight, and the deregistration's trade reaches the broker before the shutdown ends. The
+    // clock then moves 10 s, five token lifetimes, 100 ms at a time, each step held on real
+    // turns: a keeper that had not stopped would renew about once a second there. No other timer
+    // matters: the bounds of the start, its follow, each trade, each listener call and the
+    // shutdown end only work that is done by then, and this context's `setInterval` runs no
+    // heartbeat.
+    await onPassClock(async (clock) => {
+      /** The renewals the keeper has begun, each by the bound it arms as its timer ends
+       *  (`TRADE_DEADLINE_MS`). The start's ready and its follow arm theirs before the start ends;
+       *  after it nothing else arms one: the keeper's reconnect presents a live token, so its
+       *  CONNECT starts no trade of its own. */
+      const renewals = () => clock.armed.filter((ms) => ms === TRADE_DEADLINE_MS).length;
+      let started = false;
+      const starting = Promise.resolve(
+        fixture.handlers.get("session_start")?.({}, sessionContext("ses_kept"))
+      ).finally(() => {
+        started = true;
+      });
+      await clock.wait(
+        "the start's follow",
+        () => natsState.timeline.includes("reconnect") || started
+      );
+      await clock.advance(1);
+      await clock.waitOn("the start", starting);
+      const [first] = minted;
+      expect(first).toBeString();
+      expect(natsState.presented[0]).toBe(first);
+      // What the start did is done; from here a reconnect is the keeper's.
+      natsState.timeline.length = 0;
+      const before = natsState.presented.length;
+      // The keeper renews before the two-second token lapses, and the connection reconnects to
+      // present the new one.
+      const begun = renewals();
+      for (let step = 0; step < 20 && renewals() === begun; step += 1) await clock.advance(100);
+      if (renewals() === begun) throw new Error("the keeper began no renewal in the token's 2 s");
+      await clock.wait("the keeper's reconnect", () => natsState.timeline.includes("reconnect"));
+      expect(natsState.timeline).toContain("reconnect");
+      expect(natsState.presented.length).toBeGreaterThan(before);
+      expect(natsState.presented.at(-1)).not.toBe(natsState.presented[before - 1]);
+      await clock.waitOn(
+        "the shutdown",
+        fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_kept"))
+      );
+      // Stopped, it trades and reconnects no more.
+      const reconnects = natsState.timeline.filter((entry) => entry === "reconnect").length;
+      const traded = minted.length;
+      await clock.steps(10_000, 100);
+      expect(natsState.timeline.filter((entry) => entry === "reconnect").length).toBe(reconnects);
+      expect(minted).toHaveLength(traded);
+    });
+    // What can hang is the wait for the start's follow, the start, the keeper's reconnect or the
+    // shutdown (`clock.wait`, `clock.waitOn`), which has no bound of turns, because each waits on
+    // a trade that reads the pod's token from disk, real I/O.
+  });
 });
