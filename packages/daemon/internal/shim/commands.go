@@ -356,6 +356,12 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) (fixDir, movedTo s
 // commits of one immutable. Tracked, the branch is the fix's in this clone as it was in the pod
 // that pushed it, so the fix's next push of it succeeds and the fix can rebase its own commits.
 func fixStart(request shimwire.AdoptWorkingCopy, dir, jj string, run func(stdin []byte, args ...string) (string, error)) (string, error) {
+	// CONTROL (fb8-ctl-6): the fix's own branch on origin is never read, so a take run again
+	// starts at the head the request names and takes each commit over.
+	return request.FixFrom, nil
+}
+
+func fixStartUnused(request shimwire.AdoptWorkingCopy, dir, jj string, run func(stdin []byte, args ...string) (string, error)) (string, error) {
 	if request.FixBranch == "" {
 		return request.FixFrom, nil
 	}
