@@ -473,7 +473,7 @@ enough: `globalSetup` runs after the config has loaded. A workstation gets the b
 this step. It runs `build:dispatch`, the contracts entries Dispatch imports and no other
 (`.github/workflows/ci-job-dispatch-ui.yaml#Build contracts for the suites that spawn Playwright` says
 how that list grows), so it compiles no module the dispatch_browser filter's listed
-block leaves out - not ./legion-api, which no row loads.
+block leaves out.
 
 ## What the shard job's PostgreSQL reading records, and why it is a script
 
