@@ -5039,8 +5039,11 @@ each release waits on one person's approval, the person an agent acts for includ
 person and not two (INFRA-840's `c-operator-grant-door`): the finding names it an open route until
 R16's grant door exists. No such secret passes, and only once `gcloud secrets list
 --project=<the prefix's project number> --format=json` (every page) lists a secret whose id starts
-with the prefix: a mistyped prefix answers `NOT_FOUND` for a secret that exists, so a project that
-lists none under the prefix is `UNKNOWN`, since it cannot be told from a wrong prefix. The reads need
+with the prefix and no secret whose id ends with the operator secret's own slug under another
+prefix: a mistyped prefix answers `NOT_FOUND` for a secret that exists, and a shorter form of the
+real prefix (`agent-` for `agent-secrets-`) lists that very secret while missing it. A project
+that lists none under the prefix, and one that holds the operator's secret under another prefix,
+are each `UNKNOWN`, since neither can be told from a wrong prefix. The reads need
 `secretmanager.secrets.get` on the secret and `secretmanager.secrets.list` on the prefix's project,
 and no broker. A refused describe or list, and a run with no `--secrets-prefix`, are `UNKNOWN`. The
 step does not read who can change the secret's annotations or create it

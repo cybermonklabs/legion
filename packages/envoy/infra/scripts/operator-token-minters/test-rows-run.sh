@@ -34,10 +34,12 @@
 #        held beside the annotations instead of in them is a finding too (the read's control); no
 #        such secret passes, naming the secret and the secrets the prefix's project lists under it,
 #        and reads UNKNOWN where that project lists none under the prefix (a mistyped prefix beside
-#        the real secret, a project holding none, a prefix naming another project) or the list is
-#        refused; controls: a copy without the list check passes the mistyped prefix, and a copy
-#        listing --project instead passes another project's prefix; a refused describe, and a run
-#        with no --secrets-prefix, read UNKNOWN;
+#        the real secret, a project holding none, a prefix naming another project), where it lists
+#        the operator's secret under another prefix (a shorter prefix beside the real secret) or
+#        the list is refused; controls: a copy without that witness passes the mistyped prefix, a
+#        copy without its second half passes the shorter one, and a copy listing --project instead
+#        passes another project's prefix; a refused describe, and a run with no --secrets-prefix,
+#        read UNKNOWN;
 #   (m)  --report writes run_at, findings, credited and residuals ([] each for a run that credits
 #        nothing; row fa holds their entries), unknown, allowances ([] for a run given none) and
 #        steps (the step census, row sc), with a stubbed UNKNOWN step listed under unknown;
@@ -374,18 +376,26 @@ fi
 readonly secret_id="projects/$number/secrets/agent-secrets-envoy-operator"
 # What the step says it does not read, beside its PASS and its release finding.
 readonly not_read="who can change the secret's annotations or create it (secretmanager.secrets.update on it, secretmanager.secrets.create on its project) is not read"
-readonly no_route="PASS admin tag of ENVOY_OPERATOR: no such secret $secret_id, and project $number lists 1 secret(s) whose id starts agent-secrets-, so --secrets-prefix names where the broker keeps its secrets: nothing releases the operator's credential through the broker; $not_read"
+readonly no_route="PASS admin tag of ENVOY_OPERATOR: no such secret $secret_id, and project $number lists 1 secret(s) whose id starts agent-secrets- and none whose id ends envoy-operator under another prefix, so --secrets-prefix names where the broker keeps its secrets: nothing releases the operator's credential through the broker; $not_read"
 admin_tag_row() {
   local args script="$check"
   base_world
   case "$1" in
-    present | no-admin | admin-outside | agent-tier | mistyped | mistyped-control) broker_secret ENVOY_OPERATOR true ;;
+    present | no-admin | admin-outside | agent-tier | mistyped | mistyped-control | shorter | shorter-control) broker_secret ENVOY_OPERATOR true ;;
   esac
   case "$1" in
     mistyped-control)
-      # The step before the witness: NOT_FOUND read as no route, whatever the list holds.
+      # The step before the witness: NOT_FOUND read as no route, whatever the list holds. Both
+      # halves go, since either one catches this world on its own.
       script="$(script_copy "no-witness-$1")"
-      plant "$(dirname "$script")/operator-token-minters/step-admin-tag.sh" '  elif [ "$listed" -eq 0 ]; then' '  elif false; then'
+      plant "$(dirname "$script")/operator-token-minters/step-admin-tag.sh" '    if [ "$listed" -eq 0 ]; then' '    if false; then'
+      plant "$(dirname "$script")/operator-token-minters/step-admin-tag.sh" '    elif [ "$elsewhere" -gt 0 ]; then' '    elif false; then'
+      ;;
+    shorter-control)
+      # The step with the witness but without its second half: a listing holding the secret under
+      # another prefix read as the broker's own place.
+      script="$(script_copy "no-slug-$1")"
+      plant "$(dirname "$script")/operator-token-minters/step-admin-tag.sh" '    elif [ "$elsewhere" -gt 0 ]; then' '    elif false; then'
       ;;
     other-project-control)
       script="$(script_copy "list-project-$1")"
@@ -437,6 +447,20 @@ admin_tag_row() {
         want_text "PASS admin tag of ENVOY_OPERATOR: no such secret projects/$number/secrets/agent-secret-envoy-operator" "the copy without the list check"
       fi
       ;;
+    shorter | shorter-control)
+      # The real secret is there, and the prefix given is a shorter form of the real one, so the
+      # listing holds a secret that starts with it: the count alone reads that as the broker's own
+      # place while agent-secrets-envoy-operator sits there at admin and human tier.
+      run_script="$script" run --secrets-prefix "projects/$number/secrets/agent-"
+      if [ "$1" = shorter ]; then
+        want_status 2 "a shorter --secrets-prefix beside the real ENVOY_OPERATOR"
+        want_text "UNKNOWN admin tag of ENVOY_OPERATOR: no such secret projects/$number/secrets/agent-envoy-operator, and project $number lists 1 secret(s) whose id ends envoy-operator under another prefix than agent-: --secrets-prefix names a shorter or neighbouring prefix of one that holds such a secret" \
+          "a shorter --secrets-prefix"
+        ! has_prefix "PASS admin tag of ENVOY_OPERATOR: " || fail "a shorter --secrets-prefix: the step passed"
+      else
+        want_text "PASS admin tag of ENVOY_OPERATOR: no such secret projects/$number/secrets/agent-envoy-operator" "the copy without the slug check"
+      fi
+      ;;
     empty)
       rm "$world/secrets/ENVOY_OPERATOR_CONTROL.json"
       echo other-program-key >"$world/other-secrets"
@@ -484,9 +508,9 @@ admin_tag_row() {
   esac
 }
 if row l; then
-  each admin_tag_row present no-admin admin-outside agent-tier missing mistyped mistyped-control empty other-project other-project-control \
-    list-refused control-secret refused no-prefix
-  passed "(l) the admin tag is read from the secret's annotations: ENVOY_OPERATOR at human tier with --admin, a missing admin annotation, admin outside them, agent tier and the scratch secret each exit 1; no secret passes only where the prefix's project lists the broker's secrets, and a mistyped prefix, an empty project, another project and a refused list read UNKNOWN, which copies without that witness miss; a refused describe and no --secrets-prefix read UNKNOWN"
+  each admin_tag_row present no-admin admin-outside agent-tier missing mistyped mistyped-control shorter shorter-control empty \
+    other-project other-project-control list-refused control-secret refused no-prefix
+  passed "(l) the admin tag is read from the secret's annotations: ENVOY_OPERATOR at human tier with --admin, a missing admin annotation, admin outside them, agent tier and the scratch secret each exit 1; no secret passes only where the prefix's project lists the broker's secrets under this prefix and the operator's secret under no other, and a mistyped prefix, a shorter one, an empty project, another project and a refused list read UNKNOWN, which copies without each half of that witness miss; a refused describe and no --secrets-prefix read UNKNOWN"
 fi
 
 # --- (m) The report. ---

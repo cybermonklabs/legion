@@ -18,9 +18,13 @@
 # What passes is no such secret, and only once the step has seen that --secrets-prefix names where
 # the broker keeps its secrets: a mistyped prefix in the right project answers NOT_FOUND too, for a
 # secret that is there. So on NOT_FOUND it lists the prefix's own project (`gcloud secrets list`,
-# which needs secretmanager.secrets.list there, every page: no --limit) and passes only when a secret
-# of that prefix is listed; none is UNKNOWN, since a place holding none cannot be told from a wrong
-# one. Each listed name's last segment is compared with the prefix's, whichever form gcloud prints.
+# which needs secretmanager.secrets.list there, every page: no --limit) and passes only when that
+# listing holds a secret of this prefix and holds none of the operator secret's own slug under
+# another prefix. The first alone passes a prefix that is a shorter form of the real one, or a
+# neighbour of it: `agent-` lists `agent-secrets-envoy-operator`, which starts with `agent-`, while
+# the secret it names sits there at admin and human tier. Each is UNKNOWN: a place holding none,
+# and a place holding the secret under another prefix, cannot be told from a wrong prefix. Each
+# listed name's last segment is compared with the prefix's, whichever form gcloud prints.
 # Who can rewrite a secret's tags or make the secret (secretmanager.secrets.update on it,
 # secretmanager.secrets.create on the project) is no step's read, though either changes how the
 # secret is released, so the step's PASS and its release finding each say so (NOT_READ).
@@ -51,13 +55,21 @@ elif grep -q 'NOT_FOUND: Secret \[' "$WORK/secret.err"; then
   prefix_project="${prefix_project%%/*}"
   if ! gcloud secrets list --project="$prefix_project" --format=json --quiet >"$WORK/secrets.json" 2>"$WORK/secrets.err"; then
     unknown "$step" "no such secret $secret_id, and gcloud secrets list --project=$prefix_project was refused (it needs secretmanager.secrets.list on the project), so whether --secrets-prefix names where the broker keeps its secrets is unknown: $(first_line "$WORK/secrets.err")"
-  elif ! listed="$(jq -r --arg p "$prefix_id" 'if type == "array" then [.[] | .name? | strings | split("/") | last | select(startswith($p))] | length else error("no list") end' \
-    "$WORK/secrets.json" 2>"$WORK/secrets.err")"; then
+  elif ! counts="$(jq -r --arg p "$prefix_id" --arg s "$secret_slug" 'if type == "array" then
+      [.[] | .name? | strings | split("/") | last] as $ids
+      | [($ids | map(select(startswith($p))) | length), ($ids | map(select(endswith($s) and . != ($p + $s))) | length)]
+      | @tsv
+    else error("no list") end' "$WORK/secrets.json" 2>"$WORK/secrets.err")"; then
     unknown "$step" "no such secret $secret_id, and gcloud secrets list --project=$prefix_project printed no list of secrets: $(first_line "$WORK/secrets.err")"
-  elif [ "$listed" -eq 0 ]; then
-    unknown "$step" "no such secret $secret_id, and project $prefix_project lists no secret whose id starts $prefix_id: either the broker keeps no secret there or --secrets-prefix names the wrong place, which cannot be told apart, so the absence is not read as no release route"
   else
-    pass "$step" "no such secret $secret_id, and project $prefix_project lists $listed secret(s) whose id starts $prefix_id, so --secrets-prefix names where the broker keeps its secrets: nothing releases the operator's credential through the broker; $NOT_READ"
+    IFS="$(printf '\t')" read -r listed elsewhere <<<"$counts"
+    if [ "$listed" -eq 0 ]; then
+      unknown "$step" "no such secret $secret_id, and project $prefix_project lists no secret whose id starts $prefix_id: either the broker keeps no secret there or --secrets-prefix names the wrong place, which cannot be told apart, so the absence is not read as no release route"
+    elif [ "$elsewhere" -gt 0 ]; then
+      unknown "$step" "no such secret $secret_id, and project $prefix_project lists $elsewhere secret(s) whose id ends $secret_slug under another prefix than $prefix_id: --secrets-prefix names a shorter or neighbouring prefix of one that holds such a secret, so the absence is not read as no release route"
+    else
+      pass "$step" "no such secret $secret_id, and project $prefix_project lists $listed secret(s) whose id starts $prefix_id and none whose id ends $secret_slug under another prefix, so --secrets-prefix names where the broker keeps its secrets: nothing releases the operator's credential through the broker; $NOT_READ"
+    fi
   fi
 else
   unknown "$step" "gcloud secrets describe $secret_id was refused (it needs secretmanager.secrets.get on the secret): $(first_line "$WORK/secret.err")"
