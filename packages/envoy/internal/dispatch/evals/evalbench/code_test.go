@@ -235,8 +235,9 @@ func codeRig(t *testing.T, spec Spec) (*store.Store, projectHistory) {
 // two code groups in its delivery settings, the repository checked on Now's day, a row of every
 // measured day and of the 30 days after the newest, the changes and the pairs, and leaves
 // code_projects empty; and a regroup pass of the project, with no GitHub client and no App, builds
-// the day rows of both code evals for every measured day from those rows, stores the groups'
-// digest, and then finds nothing left to build. That is the server's start in the bench.
+// the day rows of both code evals for every measured day from those rows, stores the digest of its
+// default repository and its groups, and then finds nothing left to build. That is the server's
+// start in the bench.
 func TestTheCodeResultsAreWrittenAndTheRegroupBuildsINFRAsDayRowsFromThem(t *testing.T) {
 	spec := Spec{Now: codeNow, Seed: 2916, Scale: 0.02, BuiltBy: "evalbench-test"}
 	rig, history := codeRig(t, spec)

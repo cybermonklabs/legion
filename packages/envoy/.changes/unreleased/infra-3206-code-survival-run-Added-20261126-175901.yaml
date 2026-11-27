@@ -15,8 +15,8 @@ body: |-
   budget less the requests it would make falls below a quarter of the limit, and goes again at the
   first hourly tick after the reset. Each repository's pass logs one `codesurvival: run` line, and
   `GET /healthz` names the run's newest attempt as `github.code_survival`. A save of a project's
-  code groups rebuilds its day rows from the stored results within seconds, on every server, with
-  no GitHub request (`codesurvival.Regroup`).
+  code groups, or a move of its default repository, rebuilds its day rows from the stored results
+  within seconds, on every server, with no GitHub request (`codesurvival.Regroup`).
 time: 2026-11-26T17:59:01Z
 custom:
     Issue: INFRA-3206

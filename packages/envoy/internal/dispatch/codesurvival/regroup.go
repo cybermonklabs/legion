@@ -1,9 +1,9 @@
 package codesurvival
 
-// regroup.go is the regroup (plan, "The run", "The regroup"): a save of a project's code groups
-// rebuilds its day rows of the two code evals from the stored results, in one transaction, with no
-// GitHub request and no patch read (R3, k9), so the head branches and logins the run stored are
-// all a new grouping needs.
+// regroup.go is the regroup (plan, "The run", "The regroup"): a save of a project's code groups,
+// and a move of its default repository, rebuilds its day rows of the two code evals from the
+// stored results, in one transaction, with no GitHub request and no patch read (R3, k9, k16), so
+// the head branches, logins and issues the run stored are all a new grouping needs.
 
 import (
 	"context"
@@ -20,18 +20,19 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The regroup loop's pacing: passes start at least regroupGap apart, so a burst of saves costs one
-// pass, and a pass that left a project unbuilt, for a failure or a project the seed has not reached
-// yet, asks for another regroupRetry later.
+// The regroup loop's pacing: passes start at least regroupGap apart, so a burst of saves or events
+// costs one pass, and a pass that left a project unbuilt, for a failure or a project the seed has
+// not reached yet, asks for another regroupRetry later.
 const (
 	regroupGap   = 2 * time.Second
 	regroupRetry = time.Minute
 )
 
-// Regroup rebuilds the code evals' day rows of each project whose code groups moved since its rows
-// were built. Pool is Dispatch's database, Build the running build, which the rows record, Now its
-// clock (time.Now where nil), and Logger where it logs (slog.Default() where nil). It holds no
-// GitHub client: a server with no GitHub App, as the eval bench's, regroups as well.
+// Regroup rebuilds the code evals' day rows of each project whose code groups or default
+// repository moved since its rows were built. Pool is Dispatch's database, Build the running
+// build, which the rows record, Now its clock (time.Now where nil), and Logger where it logs
+// (slog.Default() where nil). It holds no GitHub client: a server with no GitHub App, as the eval
+// bench's, regroups as well.
 type Regroup struct {
 	Pool   *store.Pool
 	Build  string
@@ -43,13 +44,18 @@ type Regroup struct {
 }
 
 // Run runs the regroup's woken loop (duty.RunWoken) until ctx ends, with no lease: one pass at
-// start, which regroups every project whose groups moved while no process ran, then a pass on
-// each wake, the dispatch_delivery_settings notification a save of a project's delivery settings
-// sends (delivery.SettingsChannel), and a pass a minute after one that left a project unbuilt. Two
-// processes woken by one save each regroup; the second finds the digest stored under the row's
-// lock and writes nothing (regroup).
-func (g *Regroup) Run(ctx context.Context, wake <-chan struct{}) {
-	duty.RunWoken(ctx, duty.WokenLoop{Wake: wake, MinGap: regroupGap, Pass: g.Pass})
+// start, which regroups every project whose groups or default repository moved while no process
+// ran, then a pass on a wake of either channel, and a pass a minute after one that left a project
+// unbuilt. settings is the dispatch_delivery_settings notification a save of a project's delivery
+// settings sends (delivery.SettingsChannel); events is the dispatch_events notification each
+// commit that appended an event sends (api.EventsChannel), among them the project.updated that PUT
+// /api/v1/projects/{key}/default-repository appends when it moves a project's default repository.
+// Every event wakes it, and that is cheap: a pass that finds every project built under its
+// digest costs one statement (regroupStates), and passes start at least regroupGap apart, so a
+// burst of events costs one pass. Two processes woken by one save each regroup; the second finds
+// the digest stored under the row's lock and writes nothing (regroup).
+func (g *Regroup) Run(ctx context.Context, settings, events <-chan struct{}) {
+	duty.RunWoken(ctx, duty.WokenLoop{Wake: duty.MergeWakes(ctx, settings, events), MinGap: regroupGap, Pass: g.Pass})
 }
 
 func (g *Regroup) now() time.Time {
@@ -66,12 +72,12 @@ func (g *Regroup) logger() *slog.Logger {
 	return slog.Default()
 }
 
-// Pass is one regroup pass over every project as regroupStates reads them: each project whose code
-// groups' digest (groupsDigest) differs from the one code_projects says its rows stand built under,
-// or whose rows were never built, is rebuilt (regroup), where the seed has written its code evals;
-// one whose evals the seed has not written yet is left unbuilt with no transaction opened. It
-// answers when to pass again: regroupRetry from now where a project was left unbuilt, and never
-// otherwise.
+// Pass is one regroup pass over every project as regroupStates reads them: each project whose
+// default repository and code groups' digest (rowsDigest) differs from the one code_projects says
+// its rows stand built under, or whose rows were never built, is rebuilt (regroup), where the seed
+// has written its code evals; one whose evals the seed has not written yet is left unbuilt with no
+// transaction opened. It answers when to pass again: regroupRetry from now where a project was
+// left unbuilt, and never otherwise.
 func (g *Regroup) Pass(ctx context.Context) time.Time {
 	states, err := regroupStates(ctx, g.Pool)
 	if err != nil {
@@ -86,7 +92,7 @@ func (g *Regroup) Pass(ctx context.Context) time.Time {
 		if ctx.Err() != nil {
 			return time.Time{}
 		}
-		if state.stood.Built() && state.stood.GroupsDigest == groupsDigest(state.Groups) {
+		if state.stood.Built() && state.stood.GroupsDigest == rowsDigest(state.project) {
 			continue
 		}
 		if !state.seeded {
@@ -162,8 +168,8 @@ func regroupStates(ctx context.Context, db Querier) ([]regroupState, error) {
 // regroup rebuilds every day row of key's code evals from the stored results in one transaction
 // (prepare, builder.write), under the lock of its code_projects row, which the run's builder takes
 // too, and drains the outbox once it has committed. A project whose rows another builder has just
-// built under its groups is left as it is. It answers false, with no error, where the seed has not
-// written the project's code evals yet.
+// built under its default repository and groups is left as it is. It answers false, with no error,
+// where the seed has not written the project's code evals yet.
 func (g *Regroup) regroup(ctx context.Context, key string) (bool, error) {
 	now := g.now()
 	tx, err := g.Pool.Begin(ctx)
@@ -179,7 +185,7 @@ func (g *Regroup) regroup(ctx context.Context, key string) (bool, error) {
 		return false, nil
 	}
 	p := b.projects[0]
-	if stood := b.stood[key]; stood.Built() && stood.GroupsDigest == groupsDigest(p.Groups) {
+	if stood := b.stood[key]; stood.Built() && stood.GroupsDigest == rowsDigest(p) {
 		if err := tx.Commit(ctx); err != nil {
 			return false, fmt.Errorf("commit the regroup of %s: %w", key, err)
 		}

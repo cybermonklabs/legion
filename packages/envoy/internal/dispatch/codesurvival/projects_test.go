@@ -2,7 +2,9 @@ package codesurvival
 
 import (
 	"context"
+	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/codesurvival/codesurvivaltest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/fold"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/pglisten"
@@ -65,7 +68,9 @@ func r11Rig(t *testing.T) *rig {
 // A change counts for the project R11 gives it (k16): the change of ALPHA's issue for ALPHA alone;
 // the change naming DELTA-2, an issue of another repository, and the change naming none for each
 // project whose default repository holds them, ALPHA and BETA, through the repository; and GAMMA's
-// issue's change for GAMMA, which has no default repository, on its day alone.
+// issue's change for GAMMA, which has no default repository and so takes its days from sharedRepo,
+// the repository its issue's change is in: it holds a row of each day the pass measured there,
+// with its one change on day 1 and zero counts on every other day.
 func TestAChangeCountsForTheProjectR11GivesIt(t *testing.T) {
 	t.Parallel()
 	r := r11Rig(t)
@@ -80,8 +85,17 @@ func TestAChangeCountsForTheProjectR11GivesIt(t *testing.T) {
 				value(read.survival.Changes), value(read.survival.ViaRepository), value(read.survival.Share), c.changes, c.via)
 		}
 	}
-	if days := r.evalDays("GAMMA"); !slices.Equal(days, []time.Time{day(1)}) {
-		t.Errorf("GAMMA holds rows of %v, want of its change's day 1 alone", days)
+	if days := r.evalDays("GAMMA"); !slices.Equal(days, daysFrom(0, 8)) {
+		t.Errorf("GAMMA holds rows of %v, want of each of %s's measured days 0 to 7", days, sharedRepo)
+	}
+	for n := range 8 {
+		want := "0"
+		if n == 1 {
+			want = "1"
+		}
+		if read := r.read("GAMMA", "all", day(n), day(n+1)); value(read.survival.Changes) != want || value(read.survival.ViaRepository) != "0" {
+			t.Errorf("GAMMA counts %s changes, %s through a repository, on day %d; want %s and 0", value(read.survival.Changes), value(read.survival.ViaRepository), n, want)
+		}
 	}
 	if read := r.read("GAMMA", "all", day(0), day(8), sharedRepo); read.survival.Changes == nil || *read.survival.Changes != 1 {
 		t.Errorf("GAMMA's cut of %s counts %s changes, want its issue's one", sharedRepo, value(read.survival.Changes))
@@ -100,13 +114,15 @@ func TestAChangeCountsForTheProjectR11GivesIt(t *testing.T) {
 }
 
 // A project whose default repository the App cannot read reads "no data" naming it, and one with
-// no default repository and no change reads "no data" with no row (k16, R11): DELTA, whose issue's
-// change was measured in sharedRepo, holds that day's rows with repo_unreadable, its window reads
-// no number, and refusedRepo is stored unreadable with its reason; EPSILON holds no row, so its
-// window reads no data, and its settings name no default repository.
+// no default repository and no change of its issues in any repository reads "no data" naming the
+// missing repository, with no row (k16, R11): DELTA, whose issue's change was measured in
+// sharedRepo, holds that day's rows with repo_unreadable, its window reads no number, and
+// refusedRepo is stored unreadable with its reason; EPSILON, once the regroup has built it, holds
+// no row, so its window reads no number and no measured day, and its settings name no default
+// repository.
 func TestAProjectWithNoDefaultRepositoryOrAnUnreadableOneNamesWhy(t *testing.T) {
 	t.Parallel()
-	r := r11Rig(t)
+	r := r11Built(t)
 	read := r.read("DELTA", "all", day(0), day(8))
 	if read.survival.Share != nil || read.survival.Changes != nil || read.status.RepoUnreadable == 0 || read.status.MeasuredDays != 1 {
 		t.Errorf("DELTA reads survival %s over %s changes, %d rows naming its repository unreadable and %d measured days; want no data, the row named, one day",
@@ -121,12 +137,258 @@ func TestAProjectWithNoDefaultRepositoryOrAnUnreadableOneNamesWhy(t *testing.T) 
 	if days := r.evalDays("EPSILON"); len(days) != 0 {
 		t.Errorf("EPSILON holds rows of %v, want none", days)
 	}
-	if read := r.read("EPSILON", "all", day(0), day(8)); read.survival.Share != nil || read.status.WaitingDays != 8 {
-		t.Errorf("EPSILON reads %s with %d days waiting, want no data and every day waiting", value(read.survival.Share), read.status.WaitingDays)
+	if read := r.read("EPSILON", "all", day(0), day(8)); read.survival.Share != nil || read.survival.Changes != nil || read.status.MeasuredDays != 0 || read.status.WaitingDays != 8 {
+		t.Errorf("EPSILON reads %s over %s changes with %d measured days and %d waiting, want no data, no day measured and every day waiting",
+			value(read.survival.Share), value(read.survival.Changes), read.status.MeasuredDays, read.status.WaitingDays)
+	}
+	if stood, err := ProjectDigest(r.ctx, r.database.Pool, "EPSILON"); err != nil || !stood.Built() {
+		t.Errorf("EPSILON stands as %+v (%v), want built", stood, err)
 	}
 	settings, err := delivery.GetProjectSettings(r.ctx, r.database.Pool, "EPSILON")
 	if err != nil || settings.DefaultRepo != nil {
 		t.Errorf("EPSILON's settings name the default repository %v (%v), want none", settings.DefaultRepo, err)
+	}
+}
+
+// r11Projects is the keys of r11Rig's five projects, in key order.
+var r11Projects = []string{"ALPHA", "BETA", "DELTA", "EPSILON", "GAMMA"}
+
+// r11Built is r11Rig once a regroup pass, an hour after the run's, has built the one project the
+// run did not: EPSILON, which no repository's results count for.
+func r11Built(t *testing.T) *rig {
+	t.Helper()
+	r := r11Rig(t)
+	r.clock.Set(day(40).Add(2 * time.Hour))
+	if next := r.regroup.Pass(r.ctx); !next.IsZero() {
+		t.Fatalf("the regroup pass after k16's run asks to pass again at %s, want no retry", next)
+	}
+	return r
+}
+
+// r11Rows is the stored rows of each of r11Projects' code evals, by project.
+func (r *rig) r11Rows() map[string][]string {
+	r.t.Helper()
+	rows := map[string][]string{}
+	for _, key := range r11Projects {
+		rows[key] = r.evalRows(key)
+	}
+	return rows
+}
+
+// r11RowsMoved is each of r11Projects but skip whose stored rows of the code evals are not rows'.
+func (r *rig) r11RowsMoved(rows map[string][]string, skip string) []string {
+	r.t.Helper()
+	var moved []string
+	for _, key := range r11Projects {
+		if key != skip && !slices.Equal(r.evalRows(key), rows[key]) {
+			moved = append(moved, key)
+		}
+	}
+	return moved
+}
+
+// r11Changes is how many changes each of r11Projects counts over days 0 to 7, and how many of
+// those reached it through its default repository, as a log line states them.
+func (r *rig) r11Changes() string {
+	r.t.Helper()
+	counts := make([]string, 0, len(r11Projects))
+	for _, key := range r11Projects {
+		read := r.read(key, "all", day(0), day(8))
+		counts = append(counts, fmt.Sprintf("%s %s (%s through its repository)", key, value(read.survival.Changes), value(read.survival.ViaRepository)))
+	}
+	return fmt.Sprintf("%d projects: %s", len(r11Projects), strings.Join(counts, ", "))
+}
+
+// A clear of a project's default repository rebuilds its rows, and a restore rebuilds them again
+// (k16, R11). Once every project of k16's rig is built, BETA's default repository is cleared as
+// PUT /api/v1/projects/{key}/default-repository clears it, and the next regroup pass rebuilds BETA
+// alone. BETA's two changes name no issue of its own and counted for it only through sharedRepo,
+// so it then holds no row and reads "no data" naming its missing default repository, as EPSILON
+// does: no number, no measured day, every day waiting, and no default repository in its settings.
+// Every other project's rows stand as they were. Once the repository is restored, the next pass
+// rebuilds BETA again, and it counts its 2 changes, 2 of them through its repository, on the days
+// it held rows of before the clear.
+func TestAClearedDefaultRepositoryCountsNoChangeOfItAndARestoreCountsThemAgain(t *testing.T) {
+	t.Parallel()
+	r := r11Built(t)
+	regroups := 0
+	r.regroup.afterRows = func() { regroups++ }
+	rows := r.r11Rows()
+	before, beforeDays := r.read("BETA", "all", day(0), day(8)), r.evalDays("BETA")
+	if value(before.survival.Changes) != "2" || value(before.survival.ViaRepository) != "2" || before.survival.Share == nil {
+		t.Fatalf("BETA counts %s changes, %s through its repository, survival %s, before the clear; want 2, 2 and a number",
+			value(before.survival.Changes), value(before.survival.ViaRepository), value(before.survival.Share))
+	}
+	t.Logf("before the clear, %s", r.r11Changes())
+
+	r.setDefaultRepo("BETA", "")
+	r.clock.Set(day(40).Add(3 * time.Hour))
+	if next := r.regroup.Pass(r.ctx); !next.IsZero() || regroups != 1 {
+		t.Fatalf("the pass after the clear ran %d regroups and asks to pass again at %s, want BETA's alone and no retry", regroups, next)
+	}
+	t.Logf("after the clear, %s", r.r11Changes())
+	after := r.read("BETA", "all", day(0), day(8))
+	if after.survival.Share != nil || after.survival.Changes != nil || after.rework.Share != nil || after.status.MeasuredDays != 0 || after.status.WaitingDays != 8 {
+		t.Errorf("BETA reads survival %s over %s changes and rework %s, with %d measured days and %d waiting, after the clear; want no data, no day measured and every day waiting",
+			value(after.survival.Share), value(after.survival.Changes), value(after.rework.Share), after.status.MeasuredDays, after.status.WaitingDays)
+	}
+	if days := r.evalDays("BETA"); len(days) != 0 {
+		t.Errorf("BETA holds rows of %v after the clear, want none", days)
+	}
+	settings, err := delivery.GetProjectSettings(r.ctx, r.database.Pool, "BETA")
+	if err != nil || settings.DefaultRepo != nil {
+		t.Errorf("BETA's settings name the default repository %v (%v) after the clear, want none", settings.DefaultRepo, err)
+	}
+	if stood, err := ProjectDigest(r.ctx, r.database.Pool, "BETA"); err != nil || !stood.Built() || stood.GroupsDigest != rowsDigest(project{Groups: everyChange}) {
+		t.Errorf("BETA stands as %+v (%v) after the clear, want built under its groups and no default repository", stood, err)
+	}
+	if moved := r.r11RowsMoved(rows, "BETA"); len(moved) != 0 {
+		t.Errorf("the regroup after BETA's clear rewrote the rows of %v", moved)
+	}
+
+	r.setDefaultRepo("BETA", sharedRepo)
+	regroups = 0
+	r.clock.Set(day(40).Add(4 * time.Hour))
+	if next := r.regroup.Pass(r.ctx); !next.IsZero() || regroups != 1 {
+		t.Fatalf("the pass after the restore ran %d regroups and asks to pass again at %s, want BETA's alone and no retry", regroups, next)
+	}
+	t.Logf("after the restore, %s", r.r11Changes())
+	restored := r.read("BETA", "all", day(0), day(8))
+	for _, figure := range []struct {
+		name      string
+		got, want *float64
+	}{
+		{"changes", restored.survival.Changes, before.survival.Changes},
+		{"changes through its repository", restored.survival.ViaRepository, before.survival.ViaRepository},
+		{"survival", restored.survival.Share, before.survival.Share},
+		{"rework", restored.rework.Share, before.rework.Share},
+	} {
+		if value(figure.got) != value(figure.want) {
+			t.Errorf("BETA's %s read %s after the restore, want %s as before the clear", figure.name, value(figure.got), value(figure.want))
+		}
+	}
+	if days := r.evalDays("BETA"); !slices.Equal(days, beforeDays) {
+		t.Errorf("BETA holds rows of %v after the restore, want of %v as before the clear", days, beforeDays)
+	}
+	if moved := r.r11RowsMoved(rows, "BETA"); len(moved) != 0 {
+		t.Errorf("the regroup after BETA's restore rewrote the rows of %v", moved)
+	}
+}
+
+// A pass after a save of the same groups under the same default repository rebuilds nothing
+// (k16): once every project of k16's rig is built, BETA's groups are saved again as they were and
+// its default repository is written again as it was, and the next regroup pass opens no regroup,
+// asks for no retry, and leaves every project's rows and code_projects as they were.
+func TestAPassAfterASaveOfTheSameGroupsAndRepositoryRebuildsNothing(t *testing.T) {
+	t.Parallel()
+	r := r11Built(t)
+	regroups := 0
+	r.regroup.afterRows = func() { regroups++ }
+	rows, stood := r.r11Rows(), r.dump("code_projects")
+
+	r.saveGroups("BETA", everyChange)
+	r.setDefaultRepo("BETA", sharedRepo)
+	r.clock.Set(day(40).Add(3 * time.Hour))
+	if next := r.regroup.Pass(r.ctx); !next.IsZero() || regroups != 0 {
+		t.Fatalf("the pass after the same save ran %d regroups and asks to pass again at %s, want none and no retry", regroups, next)
+	}
+	if moved := r.r11RowsMoved(rows, ""); len(moved) != 0 {
+		t.Errorf("the pass after the same save rewrote the rows of %v", moved)
+	}
+	if after := r.dump("code_projects"); !slices.Equal(after, stood) {
+		t.Errorf("the pass after the same save left code_projects as %v, want %v", after, stood)
+	}
+}
+
+// daysFrom is the UTC midnights of days from up to to.
+func daysFrom(from, to int) []time.Time {
+	var days []time.Time
+	for n := from; n < to; n++ {
+		days = append(days, day(n))
+	}
+	return days
+}
+
+// lateRepo is HOME's default repository, and the own repository of LATE-1, the one issue of LATE,
+// which has no default repository.
+const lateRepo = "acme/late"
+
+// A project with no default repository takes its days from the repository its issues' changes are
+// in on the run's path too (k16, R11), as the regroup builds them. lateRepo, HOME's default
+// repository, lands a commit a day for 22 days, day 10's the one change of LATE-1. The first run
+// measures days 0 to 7, and the regroup builds LATE, which no change counts for yet, with no row.
+// The second run measures days 8 to 14, LATE's change among them, and LATE then holds a row of each
+// of the 15 measured days, the 8 the first run measured included. The third measures days 15 to
+// 21, which hold no change of LATE's, and LATE holds a row of each of them too. Every day counts
+// LATE's one change on day 10 alone, and zero on every other day.
+func TestAProjectWithNoDefaultRepositoryHoldsARowOfEachDayItsIssuesRepositoryMeasured(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.project("HOME", lateRepo, everyChange)
+	r.project("LATE", "", everyChange)
+	r.issue("LATE", 1, lateRepo)
+	w := newWriter(t)
+	for n := range 22 {
+		at := day(n).Add(10 * time.Hour)
+		if n == 10 {
+			w.add("src/late.txt", 4, at, "LATE-1: late")
+			pull := w.pull()
+			pull.Title = "LATE-1: late"
+			w.h.Land(pull, at)
+			continue
+		}
+		w.add("src/notes.txt", 1, at, "note")
+		w.h.Push("note", at)
+	}
+	r.github.Serve(lateRepo, w.h.Branch())
+	measuredDays := func() int {
+		measured := 0
+		for _, state := range r.days(lateRepo) {
+			if state == survival.DayMeasured {
+				measured++
+			}
+		}
+		return measured
+	}
+	counted := func(through int) {
+		t.Helper()
+		for n := range through {
+			want := "0"
+			if n == 10 {
+				want = "1"
+			}
+			if read := r.read("LATE", "all", day(n), day(n+1)); value(read.survival.Changes) != want {
+				t.Errorf("LATE counts %s changes on day %d, want %s", value(read.survival.Changes), n, want)
+			}
+		}
+	}
+
+	r.passAt(day(40).Add(time.Hour))
+	r.clock.Set(day(40).Add(2 * time.Hour))
+	if next := r.regroup.Pass(r.ctx); !next.IsZero() {
+		t.Fatalf("the regroup pass after the first run asks to pass again at %s, want no retry", next)
+	}
+	if measured, days := measuredDays(), r.evalDays("LATE"); measured != 8 || len(days) != 0 {
+		t.Fatalf("after the first run %s holds %d measured days and LATE rows of %v; want 8, and none, since no change counts for LATE yet", lateRepo, measured, days)
+	}
+	if stood, err := ProjectDigest(r.ctx, r.database.Pool, "LATE"); err != nil || !stood.Built() {
+		t.Fatalf("LATE stands as %+v (%v) after the regroup, want built", stood, err)
+	}
+
+	r.passAt(day(47).Add(time.Hour))
+	if measured, days := measuredDays(), r.evalDays("LATE"); measured != 15 || !slices.Equal(days, daysFrom(0, 15)) {
+		t.Fatalf("after the second run %s holds %d measured days and LATE rows of %v; want 15, and a row of each of them", lateRepo, measured, days)
+	}
+	counted(15)
+
+	r.passAt(day(54).Add(time.Hour))
+	if measured, days := measuredDays(), r.evalDays("LATE"); measured != 22 || !slices.Equal(days, daysFrom(0, 22)) {
+		t.Fatalf("after the third run %s holds %d measured days and LATE rows of %v; want 22, and a row of each of them", lateRepo, measured, days)
+	}
+	counted(22)
+	if read := r.read("LATE", "all", day(0), day(22)); value(read.survival.Changes) != "1" || value(read.survival.ViaRepository) != "0" || read.survival.Share == nil {
+		t.Errorf("LATE counts %s changes, %s through a repository, survival %s over days 0 to 21; want 1, 0 and a number",
+			value(read.survival.Changes), value(read.survival.ViaRepository), value(read.survival.Share))
 	}
 }
 
@@ -264,7 +526,7 @@ func TestARunAndARegroupOfTheSameProjectsTakeTheirLocksInOneOrder(t *testing.T) 
 		}
 	}
 	stood, err := ProjectDigest(r.ctx, r.database.Pool, "ONE")
-	if err != nil || !stood.Built() || stood.GroupsDigest != groupsDigest(oneGroups) {
+	if err != nil || !stood.Built() || stood.GroupsDigest != rowsDigest(project{DefaultRepo: k9Repo, Groups: oneGroups}) {
 		t.Fatalf("ONE stands as %+v (%v), want built under its groups", stood, err)
 	}
 	if counts := r.groupCounts("ONE", oneGroups); counts["seeded"] != "2" || counts["rest"] != "1" {
@@ -308,10 +570,10 @@ func TestAGroupsSaveRegroupsWithNoGitHubRequest(t *testing.T) {
 	hub.OnConnected(sync.OnceFunc(func() { close(connected) }))
 	go hub.Run(ctx)
 	testwait.Receive(t, "the listener of the settings notification", connected)
-	go r.regroup.Run(ctx, wake)
+	go r.regroup.Run(ctx, wake, nil)
 
 	regrouped := []delivery.CodeGroup{{Name: "prefixed", BranchPrefixes: []string{k9Prefix}}, {Name: "everyone"}}
-	want := groupsDigest(regrouped)
+	want := rowsDigest(project{DefaultRepo: k9Repo, Groups: regrouped})
 	r.saveGroups("ONE", regrouped)
 	testwait.Until(t, "the regroup of ONE under the saved groups", func() (bool, bool) {
 		stood, err := ProjectDigest(r.ctx, r.database.Pool, "ONE")
@@ -361,7 +623,7 @@ func TestAPassOpensNoRegroupOfAProjectTheSeedHasNotReached(t *testing.T) {
 	if regroups != 1 {
 		t.Errorf("the pass after LATE's seed opened %d regroups, want 1", regroups)
 	}
-	if stood, err := ProjectDigest(r.ctx, r.database.Pool, "LATE"); err != nil || !stood.Built() || stood.GroupsDigest != groupsDigest(everyChange) {
+	if stood, err := ProjectDigest(r.ctx, r.database.Pool, "LATE"); err != nil || !stood.Built() || stood.GroupsDigest != rowsDigest(project{Groups: everyChange}) {
 		t.Errorf("LATE stands as %+v (%v), want built under its groups", stood, err)
 	}
 }

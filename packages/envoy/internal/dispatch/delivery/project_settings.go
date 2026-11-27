@@ -105,8 +105,8 @@ func CodeGroupNames(groups []CodeGroup) []string {
 
 // CodeGroupsJSON is groups' canonical JSON: the list in order, every group's list of prefixes and
 // of logins written, empty or not. It is what a save stores in project_delivery_settings.code_groups
-// (PutProjectSettings), and what codesurvival hashes into the digest of the groups a project's day
-// rows stand built under.
+// (PutProjectSettings), and what codesurvival hashes, after the project's default repository, into
+// the digest a project's day rows stand built under.
 func CodeGroupsJSON(groups []CodeGroup) ([]byte, error) {
 	canonical := make([]CodeGroup, len(groups))
 	for i, group := range groups {

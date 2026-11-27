@@ -740,8 +740,11 @@ func main() {
 	//     excerpts (docs.ExcerptsOwedChannel), the edit notices (docs.EditNoticesChannel), the
 	//     suggestion outcomes (api.EventsChannel), the delivery settings both intakes route by
 	//     (delivery.SettingsChannel, and api.EventsChannel for a moved default repository), the
-	//     Legion facts (legionfacts.Run, whose due times are a pass legionfacts.PassRetry after one
-	//     that failed and one soon after one whose safe horizon held an event back) and the eval day
+	//     code survival regroup (codesurvival.Regroup, woken by delivery.SettingsChannel and by
+	//     api.EventsChannel for a moved default repository, its passes at least 2 s apart, whose
+	//     due time is a minute after a pass that left a project unbuilt), the Legion facts
+	//     (legionfacts.Run, whose due times are a pass legionfacts.PassRetry after one that failed
+	//     and one soon after one whose safe horizon held an event back) and the eval day
 	//     rows (evals.Store.RunRefresher, woken by api.EventsChannel and delivery.ChangesChannel,
 	//     whose due time is evals.RefresherGap after the last pass that began a batch of the walks
 	//     while a walk has days left, else the earlier of the next UTC midnight and the next prune
@@ -758,9 +761,12 @@ func main() {
 	//     before the change that woke this one. The suggestion-outcome loop takes none: each of its
 	//     pages runs in a transaction holding the suggestion_outcome_cursor row for update, which
 	//     serialises two processes woken by one commit, the first pass on a database included
-	//     (api/suggestion_outcomes.go). The keyed writes' own sweep - the Idempotency-Keys past
-	//     their window, and the deliveries a process that died left owed - keeps a timer of its
-	//     own below, because no wake announces either: a death commits nothing.
+	//     (api/suggestion_outcomes.go). The code survival regroup takes none either: it rebuilds a
+	//     project under the lock of its code_projects row, and the second of two processes woken
+	//     by one change finds the digest stored there and writes nothing. The keyed writes' own
+	//     sweep - the Idempotency-Keys past their window, and the deliveries a process that died
+	//     left owed - keeps a timer of its own below, because no wake announces either: a death
+	//     commits nothing.
 	//   - boot passes, which run once at start: the embedding coverage pass (embedqueue.Run starts
 	//     it, and repeats its identity steps and its record of issues' inputs every 10 minutes for
 	//     as long as the process runs) and the task progress reconciliation (retrying, briefly,
@@ -1076,11 +1082,14 @@ func main() {
 	signalsChangesWake := listenerHub.Wake(delivery.ChangesChannel)
 	signalsSettingsWake := listenerHub.Wake(delivery.SettingsChannel)
 	signalsRevertsWake := listenerHub.Wake(signals.RevertsChannel)
-	// The code survival regroup's own wake on a save of a project's delivery settings, whose code
-	// groups its day rows are built under (codesurvival.Regroup). A Wake is a channel of its own,
-	// which one reader takes, so it registers its own beside the production signals' and the
-	// intakes', and whatever NATS and the GitHub App are: the regroup reads no GitHub.
+	// The code survival regroup's own wakes (codesurvival.Regroup): a save of a project's delivery
+	// settings, whose code groups its day rows are built under, and the events, among which a
+	// project.updated whose default repository moved moves the changes with no issue that count for
+	// the project. A Wake is a channel of its own, which one reader takes, so it registers its own
+	// beside the production signals', the intakes' and the other events readers', and whatever NATS
+	// and the GitHub App are: the regroup reads no GitHub.
 	codeGroupsWake := listenerHub.Wake(delivery.SettingsChannel)
+	codeEventsWake := listenerHub.Wake(api.EventsChannel)
 	// The block schema's own wake. It is a Wake and not a Handle because the reinstall reads
 	// the store, which a handler on Run's goroutine must not do (schemanodes.Installer).
 	schemaWake := schemanodes.RegisterWake(listenerHub)
@@ -1507,13 +1516,15 @@ func main() {
 	})
 	// dispatch://INFRA-3206: the code survival and post-merge rework evals. The regroup is a woken
 	// loop with no lease (duty.RunWoken): one pass at start, which rebuilds the code evals' day rows
-	// of every project whose code groups moved while no process ran, then a pass on each save of a
-	// project's delivery settings. It reads no GitHub, so it runs whatever NATS and the App are, as
-	// on the eval bench. The daily run is a leased loop of an hourly tick, from a tick at start
-	// (duty.RunLeased), so one process runs each tick: a tick does each default repository's daily
-	// pass where it is due one (codesurvival.Run.Pass). It reads GitHub through the App, so it runs
-	// only where the server has one, and records each pass as the code_survival read of /healthz.
-	go (&codesurvival.Regroup{Pool: database.Pool, Build: processBuild()}).Run(ctx, codeGroupsWake)
+	// of every project whose code groups or default repository moved while no process ran, then a
+	// pass on each save of a project's delivery settings and each commit that appended an event,
+	// which a pass that finds every project built answers with one statement. It reads no GitHub,
+	// so it runs whatever NATS and the App are, as on the eval bench. The daily run is a leased loop
+	// of an hourly tick, from a tick at start (duty.RunLeased), so one process runs each tick: a
+	// tick does each default repository's daily pass where it is due one (codesurvival.Run.Pass).
+	// It reads GitHub through the App, so it runs only where the server has one, and records each
+	// pass as the code_survival read of /healthz.
+	go (&codesurvival.Regroup{Pool: database.Pool, Build: processBuild()}).Run(ctx, codeGroupsWake, codeEventsWake)
 	codeSurvival := appCfg != nil && appCtx.GitHub() != nil
 	if codeSurvival {
 		run := &codesurvival.Run{Pool: database.Pool, Client: appCtx.GitHub(), Attributor: attributor, Build: processBuild(), GitHubReads: recordGitHubRead}

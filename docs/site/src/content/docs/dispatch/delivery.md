@@ -365,6 +365,8 @@ Each day Dispatch reads, through its GitHub App, the first-parent commits of the
 A day can be measured from 33 days after it began: by then the 30-day mark of its last change has passed, with two days to spare for a commit that reaches the branch later than the time it is dated.
 A run starts once at least seven days can be measured, a force-push has changed a measured day, or a blocked day (below) is due its weekly try, and it measures up to 28 days.
 A measured day is measured again only when a force-push changes the commits of that day or of the 31 days after it.
+A project's measured days are those of its default repository; a project with no default repository takes them from each repository that holds a change of one of its issues, so a day one of those repositories measured counts as measured for the project, with no change on it where none of its issues has one.
+A project with no default repository and no change of its issues in any repository has no measured day, and its windows read "no data" naming the missing repository.
 Dispatch keeps each change's counts, its pull request, branch, login and issue, and never a patch.
 A run stops before it reads the pull requests and the patches, and stores no measurement, when the requests GitHub still allows the App, less those the run would make, fall below a quarter of GitHub's limit; it stops the same way when they fall that low while it reads, and its next hourly try after GitHub's limit resets runs it again.
 
@@ -396,6 +398,7 @@ Code survival lists `change` rows, one for each change, with its lines added and
 Post-merge rework lists `pair` rows, one for each change and later change that removed some of its lines, with the lines, the days between the two and both issues.
 Both list `absent` rows, one for each reason the window reads "no data" other than days that still wait.
 A save of the code groups counts the stored changes again under the new groups within seconds, with no read of GitHub.
+A change of the project's default repository counts them again the same way, so once it is cleared, the changes with no issue in that repository no longer count for the project.
 
 ## For agents
 

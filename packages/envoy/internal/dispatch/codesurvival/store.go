@@ -6,8 +6,9 @@
 // its day, its head branch, its author's login and its issue; the pairs of a change and a later one
 // that removed its lines; each replayed day's fingerprint, the count and the sha256 of its
 // first-parent commits' SHAs, and the state of the day; the repositories the run reads; and the
-// groups each project's day rows stand built under. A patch is never an argument of any function
-// here, and no column holds one (TestTheResultsTablesHoldNoTextOfAPatch).
+// digest of the default repository and the groups each project's day rows stand built under. A
+// patch is never an argument of any function here, and no column holds one
+// (TestTheResultsTablesHoldNoTextOfAPatch).
 //
 // Every function takes the caller's connection, a transaction where the caller's writes must
 // stand or fall together (ReplaceDays, MarkDays, LockProject), so a run decides where its
@@ -503,9 +504,10 @@ func Pairs(ctx context.Context, db Querier, repo string, days []time.Time) ([]su
 	return pairs, nil
 }
 
-// Project is one row of code_projects: the sha256 of the code groups a project's day rows stand
-// built under, and when they were built. A project whose rows were never built has the zero
-// BuiltAt, and its GroupsDigest means nothing.
+// Project is one row of code_projects: the digest of the default repository and the code groups
+// a project's day rows stand built under (rowsDigest), which the column groups_digest holds, and
+// when they were built. A project whose rows were never built has the zero BuiltAt, and its
+// GroupsDigest means nothing.
 type Project struct {
 	Key          string
 	GroupsDigest [32]byte
@@ -542,8 +544,9 @@ func projectOf(key string, digest []byte, built *time.Time) (Project, error) {
 	return project, nil
 }
 
-// ProjectDigest is the groups digest of key's day rows, and when they were built. A project with
-// no row, or a row that holds no digest yet, is not built.
+// ProjectDigest is the digest of the default repository and the groups key's day rows stand built
+// under, and when they were built. A project with no row, or a row that holds no digest yet, is not
+// built.
 func ProjectDigest(ctx context.Context, db Querier, key string) (Project, error) {
 	project, err := scanProject(db.QueryRow(ctx, `select project_key, groups_digest, built_at from code_projects where project_key = $1`, key))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -571,8 +574,9 @@ func LockProject(ctx context.Context, tx pgx.Tx, key string) (Project, error) {
 	return project, nil
 }
 
-// StoreProject writes the digest of the groups key's day rows stand built under, and when they
-// were built. A builder holds the row (LockProject) in the transaction it calls this in.
+// StoreProject writes the digest of the default repository and the groups key's day rows stand
+// built under, and when they were built. A builder holds the row (LockProject) in the transaction
+// it calls this in.
 func StoreProject(ctx context.Context, db Querier, key string, digest [32]byte, builtAt time.Time) error {
 	if _, err := db.Exec(ctx, `
 		insert into code_projects (project_key, groups_digest, built_at) values ($1, $2, $3)

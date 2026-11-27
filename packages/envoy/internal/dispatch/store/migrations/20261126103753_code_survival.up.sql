@@ -46,9 +46,11 @@
 -- two things.
 --
 -- code_projects holds one row per project whose day rows the run or the regroup built: the sha256
--- of the code groups they stand built under (groups_digest) and when (built_at), both null
--- until a build. The builders lock the row, so a run and a regroup never build one project's rows
--- together.
+-- of the default repository and the code groups they stand built under (groups_digest; the
+-- repository in lower case, a NUL byte and the groups' canonical JSON, codesurvival's rowsDigest)
+-- and when (built_at), both null until a build. A move of the project's default repository or a
+-- save of other groups changes the digest, which the regroup then rebuilds the rows under. The
+-- builders lock the row, so a run and a regroup never build one project's rows together.
 --
 -- A SHA is stored only for a change, for the remover of a stored pair, and for a blocked day's
 -- blocking commit. No column holds patch text: the bytea columns hold 32-byte digests, which

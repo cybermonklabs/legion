@@ -57,10 +57,10 @@ type heads struct {
 // day row, so k22's capture at its base head waits for the facts and the fill alone (readConsumers),
 // as it did before the code evals. A merge of main can change what the base runs. Where the
 // database holds code_projects (codeBuilt), the regroup's pass at the server's start has built a
-// project's day rows of the code evals when its row holds the digest of its groups. In mode k14 it
-// reads the production signals' loop too (prodevents/signals): its three cursors, and each source
-// repository whose GitHub deploy rows stand derived under another rule than its own, or under
-// none (signalsOwed).
+// project's day rows of the code evals when its row holds the digest they stand built under. In
+// mode k14 it reads the production signals' loop too (prodevents/signals): its three cursors, and
+// each source repository whose GitHub deploy rows stand derived under another rule than its own,
+// or under none (signalsOwed).
 type consumerState struct {
 	heads       heads
 	legionFacts bool
@@ -374,12 +374,12 @@ func collectPairs(ctx context.Context, pool *store.Pool, query string, into map[
 // figures' read reads), since a first paint measured before that would read the day rows, which
 // the stored figures are there to spare it. Where the database holds the code survival results
 // (codeBuilt), the regroup's pass at the server's start must have built codeProject's day rows of
-// the code evals, which its row of code_projects says by the digest of its groups. A day row keeps
-// the build that last moved its values, so a release whose rules move no value leaves them as they
-// were. Production serves with the fill caught up once its one backfill, at the deploy, is done,
-// so evalbench's load writes the cursor as caught up with the loaded log, and this waits for the
-// fill to follow the events the server wrote after the load: a paint measured while the fill still
-// writes its batches would share the database with them.
+// the code evals, which its row of code_projects says by the digest they stand built under. A day
+// row keeps the build that last moved its values, so a release whose rules move no value leaves
+// them as they were. Production serves with the fill caught up once its one backfill, at the
+// deploy, is done, so evalbench's load writes the cursor as caught up with the loaded log, and
+// this waits for the fill to follow the events the server wrote after the load: a paint measured
+// while the fill still writes its batches would share the database with them.
 func (s consumerState) caughtUp(build string, previous *heads, codeProject string) []string {
 	var missing []string
 	if previous == nil {

@@ -123,6 +123,19 @@ func (r *rig) saveGroups(key string, groups []delivery.CodeGroup) {
 	}
 }
 
+// setDefaultRepo writes repo as key's default repository, null for "", as PUT
+// /api/v1/projects/{key}/default-repository writes it (api/project_default_repository.go).
+func (r *rig) setDefaultRepo(key, repo string) {
+	r.t.Helper()
+	var value any
+	if repo != "" {
+		value = repo
+	}
+	if _, err := r.database.Pool.Exec(r.ctx, `update projects set default_repo = $2 where key = $1`, key, value); err != nil {
+		r.t.Fatalf("write the default repository of %s: %v", key, err)
+	}
+}
+
 // issue makes the issue <project>-<number>, with repo as its own repository ("" for none), and
 // answers its key.
 func (r *rig) issue(project string, number int, repo string) string {

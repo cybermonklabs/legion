@@ -4,8 +4,8 @@ package codesurvival
 // one builder the run's results transaction, the marks' transaction and the regroup share (plan,
 // "The day rows and their series"): which changes count for which project (R11), each project's
 // day states, the cuts its rows are stored under, and the write of them (evals.WriteCodeDaysTx)
-// beside the project's group series (evals.WriteCodeGroupSeriesTx) and its groups digest
-// (code_projects).
+// beside the project's group series (evals.WriteCodeGroupSeriesTx) and the digest of its default
+// repository and its groups (code_projects).
 
 import (
 	"context"
@@ -73,25 +73,37 @@ func readProjects(ctx context.Context, db Querier, keys []string) ([]project, er
 	return projects, nil
 }
 
-// groupsDigest is the sha256 of groups' canonical JSON (delivery.CodeGroupsJSON): what
-// code_projects.groups_digest holds of the groups a project's day rows stand built under.
-func groupsDigest(groups []delivery.CodeGroup) [32]byte {
-	encoded, err := delivery.CodeGroupsJSON(groups)
+// rowsDigest is the digest of what p's day rows are built under besides the stored results: the
+// sha256 of its default repository in lower case ("" for none), a NUL byte, and its code groups'
+// canonical JSON (delivery.CodeGroupsJSON). It is what code_projects.groups_digest holds of a
+// project's built rows, so a move of its default repository, a clear and a restore among them,
+// rebuilds them as a save of other groups does, and a save of the same groups under the same
+// repository rebuilds nothing. No Postgres text holds a NUL byte, so the first one ends the
+// repository and no two inputs hash the same bytes.
+func rowsDigest(p project) [32]byte {
+	groups, err := delivery.CodeGroupsJSON(p.Groups)
 	if err != nil {
 		// A list of strings always encodes.
 		panic(fmt.Sprintf("codesurvival: encode code groups: %v", err))
 	}
-	return sha256.Sum256(encoded)
+	input := make([]byte, 0, len(p.DefaultRepo)+1+len(groups))
+	input = append(append(append(input, p.DefaultRepo...), 0), groups...)
+	return sha256.Sum256(input)
 }
 
 // projectsOfRepo is the keys of every project repo's results on days count for (R11), sorted:
-// each project whose default repository repo is, and each project of an issue of a change repo
-// holds on days. A caller that replaces the days' changes reads it before the replace and adds the
-// projects of the new changes' issues (projectsOfIssues), so a project that loses its last change
-// of those days still has its rows of them rebuilt.
+// each project whose default repository repo is, each project with no default repository that
+// holds a change of one of its issues in repo on any day, whose days are repo's (projectRows), and
+// each project of an issue of a change repo holds on days. A caller that replaces the days'
+// changes reads it before the replace and adds the projects of the new changes' issues
+// (projectsOfIssues), so a project that loses its last change of those days still has its rows of
+// them rebuilt.
 func projectsOfRepo(ctx context.Context, db Querier, repo string, days []time.Time) ([]string, error) {
 	rows, err := db.Query(ctx, `
 		select key from projects where lower(default_repo) = $1
+		union
+		select i.project_key from code_changes c join issues i on i.key = c.issue_key join projects p on p.key = i.project_key
+		where c.repo = $1 and coalesce(p.default_repo, '') = ''
 		union
 		select i.project_key from code_changes c join issues i on i.key = c.issue_key
 		where c.repo = $1 and c.day = any($2::date[])
@@ -133,6 +145,63 @@ func union(lists ...[]string) []string {
 	all := slices.Concat(lists...)
 	slices.Sort(all)
 	return slices.Compact(all)
+}
+
+// unionDays is the days of a and b, sorted, each once.
+func unionDays(a, b []time.Time) []time.Time {
+	all := slices.Concat(a, b)
+	slices.SortFunc(all, time.Time.Compare)
+	return slices.CompactFunc(all, time.Time.Equal)
+}
+
+// issueReposOf is the statement of each repository that holds a stored change of an issue of the
+// project $1 names: the repositories whose days are the days of a project with no default
+// repository (projectRows).
+const issueReposOf = `select c.repo from code_changes c join issues i on i.key = c.issue_key where i.project_key = $1`
+
+// issueRepos is each repository that holds a stored change of an issue of key's, sorted
+// (issueReposOf).
+func issueRepos(ctx context.Context, db Querier, key string) ([]string, error) {
+	rows, err := db.Query(ctx, `select distinct repo from (`+issueReposOf+`) r order by 1`, key)
+	if err != nil {
+		return nil, fmt.Errorf("read the repositories of the changes of %s's issues: %w", key, err)
+	}
+	repos, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the repositories of the changes of %s's issues: %w", key, err)
+	}
+	return repos, nil
+}
+
+// movedOwnDays is every day whose own row (repository "") p, a project with no default
+// repository, holds where its rule builds none, or lacks where its rule builds one: the decided
+// days of the repositories that hold a change of one of its issues (issueReposOf) on which it
+// holds no own row of either code eval, and each day it holds one of that none of them decided.
+// So a build of some days rebuilds the rest too where a change moved the project's repositories,
+// as its first change in a repository does, and its days stay those repositories' decided days.
+func movedOwnDays(ctx context.Context, db Querier, p project) ([]time.Time, error) {
+	rows, err := db.Query(ctx, `
+		with decided as (
+			select day from code_days where state <> 'replayed' and repo in (`+issueReposOf+`)
+		), own as (
+			select day from eval_days where project_key = $1 and eval_id = any($2::text[]) and repo = ''
+		)
+		(select day from decided except select day from own)
+		union
+		(select day from own except select day from decided)
+		order by 1`, p.Key, codeEvalIDs(p.Key))
+	if err != nil {
+		return nil, fmt.Errorf("read the moved days of %s: %w", p.Key, err)
+	}
+	days, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (time.Time, error) {
+		var day time.Time
+		err := row.Scan(&day)
+		return day.UTC(), err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the moved days of %s: %w", p.Key, err)
+	}
+	return days, nil
 }
 
 // builder is one transaction's build of the day rows of projects: the projects in key order, which
@@ -210,18 +279,29 @@ func prepare(ctx context.Context, tx pgx.Tx, keys []string, build string, at tim
 }
 
 // write rebuilds, from the stored results tx reads, every prepared project's day rows of the code
-// evals on days, and stores the digest of the groups they stand built under. A project whose rows
-// were never built, or stand built under other groups than it holds now (a save the regroup has
-// not reached yet), has every day rebuilt (decidedDays), as does every project where days is nil:
-// so the digest it stores is that of the groups every row of the project stands built under.
+// evals on days, and stores the digest of the default repository and the groups they stand built
+// under (rowsDigest). A project whose rows were never built, or stand built under another default
+// repository or other groups than it holds now (a move or a save the regroup has not reached yet),
+// has every day rebuilt (decidedDays), as does every project where days is nil: so the digest it
+// stores is that of the default repository and the groups every row of the project stands built
+// under. A project with no default repository has its moved days rebuilt beside days
+// (movedOwnDays), so its own rows stay on the decided days of the repositories its issues' changes
+// are in.
 func (b *builder) write(ctx context.Context, days []time.Time) error {
 	for _, p := range b.projects {
-		digest, written := groupsDigest(p.Groups), days
-		if stood := b.stood[p.Key]; written == nil || !stood.Built() || stood.GroupsDigest != digest {
+		digest, written := rowsDigest(p), days
+		switch stood := b.stood[p.Key]; {
+		case written == nil || !stood.Built() || stood.GroupsDigest != digest:
 			var err error
 			if written, err = decidedDays(ctx, b.tx, p); err != nil {
 				return err
 			}
+		case p.DefaultRepo == "":
+			moved, err := movedOwnDays(ctx, b.tx, p)
+			if err != nil {
+				return err
+			}
+			written = unionDays(written, moved)
 		}
 		if len(written) > 0 {
 			rows, err := projectRows(ctx, b.tx, p, written)
@@ -240,11 +320,14 @@ func (b *builder) write(ctx context.Context, days []time.Time) error {
 }
 
 // decidedDays is every day p's code evals can hold a row of: each day its default repository
-// measured, marked or blocked, each day of a change that counts for it, and each day it holds a
-// row of either eval, so a rebuild deletes a row its input no longer builds.
+// measured, marked or blocked, or, for a project with none, each day a repository that holds a
+// change of one of its issues did (issueReposOf); each day of a change that counts for it; and
+// each day it holds a row of either eval, so a rebuild deletes a row its input no longer builds.
 func decidedDays(ctx context.Context, db Querier, p project) ([]time.Time, error) {
 	rows, err := db.Query(ctx, `
 		select day from code_days where repo = $2 and state <> 'replayed'
+		union
+		select day from code_days where $2 = '' and state <> 'replayed' and repo in (`+issueReposOf+`)
 		union
 		select c.day from code_changes c join issues i on i.key = c.issue_key where i.project_key = $1
 		union
@@ -265,17 +348,23 @@ func decidedDays(ctx context.Context, db Querier, p project) ([]time.Time, error
 }
 
 // projectRows is p's day rows of the code evals on days, built from the stored results
-// (fold.BuildDays), in each cut it holds: its own (repository ""), its default repository's, and
-// each other repository that holds a change that counts for it.
+// (fold.BuildDays), in each cut it holds: its own (repository ""), the cut of each repository its
+// days are those of, and each other repository that holds a change that counts for it.
 //
 // A change counts for p as R11 says (fold.CountsFor): a change of an issue of p's, in any
-// repository, and a change with no issue in p's default repository. p's own day D is as its
-// default repository's day D is, measured, marked or blocked (a day of no state there has no row,
-// whatever another repository holds); a project with no default repository, or one the App cannot
-// read, has a row of D only where a repository holds a change that counts for it on D. A day
-// whose changes include one of a repository's marked day is marked, so a window that holds it
-// reads "no data" naming it (R8). A repository's cut holds that repository's changes and its own
-// state of each day: every decided day of the default repository, and each day of another
+// repository, and a change with no issue in p's default repository. p's days are those of its
+// default repository, or, for a project with none, those of each repository that holds a change of
+// one of its issues on any day (issueReposOf), as a project's are its default repository's: p's
+// own day D is as those repositories' days D are, measured, marked or blocked, so p holds a row of
+// each day one of them decided, with zero counts where no change of its counts, and none of a day
+// none of them has a state of, whatever another repository holds. So a project with no default
+// repository reads the changes of its issues over a window from the first day those repositories
+// measured, and one with no change of its issues in any repository holds no row and reads "no
+// data" naming the missing repository. A project whose default repository the App cannot read has
+// a row of D only where a repository holds a change that counts for it on D. A day whose changes
+// include one of a repository's marked day is marked, so a window that holds it reads "no data"
+// naming it (R8). A repository's cut holds that repository's changes and its own state of each
+// day: every decided day of a repository p's days are those of, and each day of another
 // repository that holds a change that counts for p. A project whose default repository the App
 // cannot read has repo_unreadable on every row (R11).
 func projectRows(ctx context.Context, db Querier, p project, days []time.Time) ([]evals.DayRow, error) {
@@ -291,14 +380,26 @@ func projectRows(ctx context.Context, db Querier, p project, days []time.Time) (
 	if err != nil {
 		return nil, err
 	}
-	repos := map[string]bool{}
+	// ownRepos is each repository p's days are those of: its default repository, or, with none,
+	// each repository that holds a change of one of its issues.
+	ownRepos := map[string]bool{}
 	if p.DefaultRepo != "" {
-		repos[p.DefaultRepo] = true
+		ownRepos[p.DefaultRepo] = true
+	} else {
+		issued, err := issueRepos(ctx, db, p.Key)
+		if err != nil {
+			return nil, err
+		}
+		for _, repo := range issued {
+			ownRepos[repo] = true
+		}
 	}
+	repoSet := maps.Clone(ownRepos)
 	for _, change := range changes {
-		repos[change.Repo] = true
+		repoSet[change.Repo] = true
 	}
-	states, err := dayStates(ctx, db, slices.Sorted(maps.Keys(repos)), days)
+	repos := slices.Sorted(maps.Keys(repoSet))
+	states, err := dayStates(ctx, db, repos, days)
 	if err != nil {
 		return nil, err
 	}
@@ -338,8 +439,8 @@ func projectRows(ctx context.Context, db Querier, p project, days []time.Time) (
 				continue
 			}
 		}
-		for repo := range held {
-			if repo != p.DefaultRepo && held[repo][key] {
+		for _, repo := range repos {
+			if repo != p.DefaultRepo && (ownRepos[repo] || held[repo][key]) {
 				if state, found := states[repo][key]; found {
 					seen = append(seen, state)
 				}
@@ -360,11 +461,11 @@ func projectRows(ctx context.Context, db Querier, p project, days []time.Time) (
 		own = append(own, decided)
 	}
 	rows := cut("", own, changes, pairs)
-	for _, repo := range slices.Sorted(maps.Keys(repos)) {
+	for _, repo := range repos {
 		var decided []fold.Day
 		for _, day := range days {
 			state, found := states[repo][dayKey(day)]
-			if found && (repo == p.DefaultRepo || held[repo][dayKey(day)]) {
+			if found && (ownRepos[repo] || held[repo][dayKey(day)]) {
 				decided = append(decided, state)
 			}
 		}

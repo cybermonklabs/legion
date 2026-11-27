@@ -17,11 +17,11 @@ import (
 // The two code evals of dispatch://INFRA-3206: code survival at 30 days and post-merge rework at
 // 30 days, which the daily run of codesurvival reads from GitHub's patches and keeps as counts.
 // No refresher family builds their day rows. The run writes them in its own transaction, and so
-// does the regroup that a save of a project's code groups wakes (WriteCodeDaysTx), as
-// WriteUnownedP0Day writes unowned-p0's rows outside the families. So the refresher writes no
-// zero row of them, no walk serves them (builtWalk), no read-time path builds them (atReadFamilies),
-// and no rebuild stages them (rebuild.go stages the families' evals alone); a day with no row is a
-// day that waits (R7).
+// does the regroup that a save of a project's code groups or a move of its default repository
+// wakes (WriteCodeDaysTx), as WriteUnownedP0Day writes unowned-p0's rows outside the families. So
+// the refresher writes no zero row of them, no walk serves them (builtWalk), no read-time path
+// builds them (atReadFamilies), and no rebuild stages them (rebuild.go stages the families' evals
+// alone); a day with no row is a day that waits (R7).
 //
 // Each eval holds the catalogue's status series (fold.SeriesStatus) and a series of each of the
 // project's code groups, `<base>:<group>` (catalogueEntry.groups): rows of eval_series that the run
