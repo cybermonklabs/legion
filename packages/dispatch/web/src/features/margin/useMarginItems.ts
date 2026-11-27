@@ -595,6 +595,13 @@ export function useMarginItems(
           blocks.add(blockId);
         }
       }
+      // Under the set a kept editor's references button selects (`blockFilterIds`), the decision
+      // shows only beside the blocks of the set it shaped, as one block's filter keeps it above.
+      if (blockFilterIds !== undefined) {
+        for (const blockId of blocks) {
+          if (!blockFilterIds.has(blockId)) blocks.delete(blockId);
+        }
+      }
       if (blocks.size === 0) return [];
       // A decision the view names no document for - one of a document that plays no role - is
       // found by its own address among the issue read's documents, as the Decisions tab finds it.
@@ -618,6 +625,7 @@ export function useMarginItems(
     );
   }, [
     blockFilterId,
+    blockFilterIds,
     blockPlacements,
     decisionsView.data,
     documentsKey,
@@ -701,6 +709,23 @@ export function useMarginItems(
   const answeredAskError = answeredAsks.error;
   const retryAnsweredAsk =
     answeredAskError === undefined ? undefined : () => void answeredAskError.refetch();
+  // Under the set a kept editor's references button selects (`blockFilterIds`), the asks drawn are
+  // those anchored to its blocks, as its comments are (`selectComments`) and as one block's
+  // filter keeps them (`isInBlock`): the open ones with their count, and each list that holds an
+  // ask's card, so the cards drawn are the ones the button counted.
+  const onBlocks = useMemo(() => {
+    if (blockFilterIds === undefined) return undefined;
+    const anchored = (ask: Ask): boolean =>
+      typeof ask.anchor?.block_id === "string" && blockFilterIds.has(ask.anchor.block_id);
+    const keeps = (item: MarginItem): boolean => item.kind !== "ask" || anchored(item.ask);
+    const open = needsYou.filter(anchored);
+    return {
+      items: items.filter(keeps),
+      marginItems: marginItems.filter(keeps),
+      needsYou: open,
+      openAskCount: open.length,
+    };
+  }, [blockFilterIds, items, marginItems, needsYou]);
 
   return {
     actionFailure,
@@ -739,5 +764,6 @@ export function useMarginItems(
     retryComments: () => void comments.refetch(),
     retryItem,
     threads,
+    ...onBlocks,
   };
 }

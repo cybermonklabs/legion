@@ -1,21 +1,38 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { QueryClient } from "@tanstack/react-query";
-import { act, renderHook } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, render, renderHook, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { createDecoder, readVarString, readVarUint, readVarUint8Array } from "lib0/decoding";
 import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 import * as Y from "yjs";
 
 import { onFakeClock, settle, tick } from "../../__tests__/fake-clock";
+import { issueTreeKey } from "../../api/queries";
+import type { Ask, Comment, DecisionEntry } from "../../api/types";
 import type { ConnectionCallbacks } from "../doc/connection";
 import type { EditorHandle } from "../doc/editor";
-import { bindBlockEditor, IssueBlockRoomContext } from "./block-editor";
+import { issueSpecAddress } from "../doc/spec-marks";
+import { MarginProvider, useMargin } from "../margin/margin-context";
+import { anchoredAsk, comment, issue, specArtifact } from "../margin/margin-fixture";
+import { marginItemId, useMarginItems } from "../margin/useMarginItems";
+import { bindBlockEditor, IssueBlockRoomContext, type KeptBind } from "./block-editor";
 import { createBlockRoom } from "./block-room";
-import { artifact, node } from "./decisions-filter/decisions-fixtures";
+import {
+  artifact,
+  decision,
+  entryOf,
+  node,
+  shaped,
+  specRef,
+} from "./decisions-filter/decisions-fixtures";
 import { openEarlyCaret } from "./early-caret";
+import { anchoredCount, KeptBlockReferences } from "./kept-editor-parts";
 import { watchLoadEnd } from "./load-end";
 import { KEY_REPORTS } from "./page-structure";
 import { splitSync } from "./sync-parts";
+import { commentNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import { useNodeEditing } from "./useNodeEditing";
 
 function capture(): Uint8Array {
@@ -344,3 +361,220 @@ test("a deleted held block ends the editor and sets the status entry", () =>
       peer.destroy();
     }
   }));
+
+/** A comment of the margin's fixture, anchored to the block `blockId` of the spec. */
+function commentOn(id: string, blockId: string): Comment {
+  if (comment.anchor === null) throw new Error("the fixture's comment has no document anchor");
+  return { ...comment, anchor: { ...comment.anchor, block_id: blockId, mark_id: id }, id };
+}
+
+/** An ask of the margin's fixture, anchored to the block `blockId` of the document `artifactId`,
+ *  as the asks read answers it. */
+function askOn(
+  id: string,
+  blockId: string,
+  state: Ask["state"],
+  artifactId = specArtifact.id
+): Ask {
+  if (anchoredAsk.anchor === null) throw new Error("the fixture's ask has no document anchor");
+  const anchor = { ...anchoredAsk.anchor, artifact_id: artifactId, block_id: blockId, mark_id: id };
+  return { ...anchoredAsk, anchor, id, state };
+}
+
+/** An agent's decision of the spec, as the decisions read answers it, that shaped each block of
+ *  `to` in the spec. */
+function decisionShaping(block: string, to: readonly string[]): DecisionEntry {
+  const document = issueSpecAddress(issue.key);
+  return entryOf(
+    decision(block, {
+      links: to.map((id) => {
+        const link = shaped(specRef(id));
+        return { ...link, to: { ...link.to, block_id: id, document } };
+      }),
+    })
+  );
+}
+
+/** The id of the margin's card of `entry` beside the spec's block `blockId` (`useMarginItems`). */
+function decisionCard(entry: DecisionEntry, blockId: string): string {
+  return `decision:${entry.node.id}:${issue.key}/spec#${blockId}`;
+}
+
+/** The bound block's references button over the tree reads `client` holds, and the margin's
+ *  cards beside the spec by their ids, under the filter a press on the button sets. */
+function ReferencesAndCards({ bind, client }: { bind: KeptBind; client: QueryClient }) {
+  const { blockFilterGroup, blockFilterId, filterToBlocks } = useMargin();
+  const { marginItems } = useMarginItems(
+    { key: issue.key, kind: "issue" },
+    "comments",
+    specArtifact,
+    new Map(),
+    new Map(),
+    blockFilterId,
+    { blockFilterIds: blockFilterGroup?.ids, documentShown: true }
+  );
+  return (
+    <>
+      <KeptBlockReferences
+        bind={bind}
+        onReferencesPress={(_, blockId, blocks) => filterToBlocks(blockId, blocks)}
+        reference={anchoredCount(client, issue.key, bind)}
+      />
+      <ul aria-label="Margin cards">
+        {marginItems.map((item) => (
+          <li key={marginItemId(item)}>{marginItemId(item)}</li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+/** Draws the references button of the spec's block `requirement`, bound with the block
+ *  `paragraph` inside it, and the margin's cards, over reads that hold `comments`, `asks` and
+ *  `decisions`: the tree read each comment's node and each ask's, with the block its anchor names
+ *  (`block_anchor`). Answers the cards drawn, in order of their ids, and how to take it down. */
+function drawReferences({
+  asks = [],
+  comments,
+  decisions = [],
+}: {
+  readonly asks?: readonly Ask[];
+  readonly comments: readonly Comment[];
+  readonly decisions?: readonly DecisionEntry[];
+}) {
+  const doc = new Y.Doc();
+  const element = new Y.XmlElement("requirement");
+  const inner = new Y.XmlElement("paragraph");
+  doc.getXmlFragment(spec.fragment).insert(0, [element]);
+  element.setAttribute("blockId", "requirement");
+  element.insert(0, [inner]);
+  inner.setAttribute("blockId", "paragraph");
+  const bind: KeptBind = {
+    artifactId: specArtifact.id,
+    box: document.createElement("div"),
+    element,
+  };
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(
+    issueTreeKey(issue.key),
+    treeAnswer([
+      ...comments.map((one) => commentNode(one)),
+      ...asks.map((ask) => {
+        if (ask.anchor === null || ask.anchor.block_id === null) throw new Error("no anchor");
+        const { artifact_id, block_id } = ask.anchor;
+        return treeNode(ask.id, "ask", issue.key, { block_anchor: { artifact_id, block_id } });
+      }),
+    ])
+  );
+  client.setQueryData(["comments", issue.key], comments);
+  client.setQueryData(["asks", issue.key], asks);
+  client.setQueryData(["decisions", issue.key], {
+    decisions: [],
+    document: null,
+    entries: decisions,
+    open_questions: [],
+  });
+  client.setQueryData(["inbox"], []);
+  client.setQueryData(["user-state"], {});
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <MarginProvider>
+          <ReferencesAndCards bind={bind} client={client} />
+        </MarginProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return {
+    cards: () =>
+      view
+        .queryAllByRole("listitem")
+        .map((card) => card.textContent ?? "")
+        .sort(),
+    close: () => {
+      view.unmount();
+      client.clear();
+      doc.destroy();
+    },
+    view,
+  };
+}
+
+// The bound block's references button counts the asks anchored to the block and to the blocks
+// inside it beside its comments (R7, decision 567), as the whole document's editor counts them
+// from the blocks read (`references.comments + references.asks`): from the tree read's ask nodes,
+// each of which names the block its anchor stands in (`block_anchor`), so the bind reads nothing.
+// An ask of another block, and one of a block of the same id in another document, is not counted.
+// A press shows the cards it counted, the asks among them, and no other block's.
+test("the bound block's references button counts the asks anchored to it and inside it beside its comments, and its press shows them", async () => {
+  const drawn = drawReferences({
+    asks: [
+      askOn("ask on requirement", "requirement", "open"),
+      askOn("ask on paragraph", "paragraph", "answered"),
+      askOn("ask on another block", "other", "open"),
+      askOn("ask on another document", "requirement", "open", "artifact-2"),
+    ],
+    comments: [
+      commentOn("comment on requirement", "requirement"),
+      commentOn("comment on paragraph", "paragraph"),
+      commentOn("comment on another block", "other"),
+    ],
+  });
+  try {
+    const button = drawn.view.getByRole("button", { name: "4 references on block" });
+    expect(button.getAttribute("data-block-references")).toBe("requirement");
+    await userEvent.setup().click(button);
+    await waitFor(() =>
+      expect(drawn.cards()).toEqual([
+        "ask on paragraph",
+        "ask on requirement",
+        "comment on paragraph",
+        "comment on requirement",
+      ])
+    );
+    expect(drawn.cards()).toHaveLength(Number(button.textContent));
+  } finally {
+    drawn.close();
+  }
+});
+
+// A press on the bound block's references button filters the decisions beside the spec too, as
+// the whole document's editor's press does for its one block (`useMarginItems`'s `decisions`): a
+// decision shows where a block it shaped is the bound block or a block inside it, once for each
+// such block, and a decision that shaped only another block is not shown. Before the press the
+// margin draws every decision beside the block it shaped.
+test("a press on the bound block's references button shows the decisions that shaped it or a block inside it, and none that shaped another block", async () => {
+  const on = decisionShaping("d-on", ["requirement"]);
+  const inside = decisionShaping("d-inside", ["paragraph"]);
+  const both = decisionShaping("d-both", ["paragraph", "other"]);
+  const elsewhere = decisionShaping("d-elsewhere", ["other"]);
+  const drawn = drawReferences({
+    comments: [commentOn("comment on requirement", "requirement")],
+    decisions: [on, inside, both, elsewhere],
+  });
+  const shown = [
+    "comment on requirement",
+    decisionCard(on, "requirement"),
+    decisionCard(inside, "paragraph"),
+    decisionCard(both, "paragraph"),
+  ];
+  try {
+    await waitFor(() =>
+      expect(drawn.cards(), "the margin did not draw every decision before the press").toEqual(
+        [...shown, decisionCard(both, "other"), decisionCard(elsewhere, "other")].sort()
+      )
+    );
+    await userEvent
+      .setup()
+      .click(drawn.view.getByRole("button", { name: "1 references on block" }));
+    await waitFor(() =>
+      expect(drawn.cards(), "the press shows a decision that shaped another block").toEqual(
+        [...shown].sort()
+      )
+    );
+  } finally {
+    drawn.close();
+  }
+});

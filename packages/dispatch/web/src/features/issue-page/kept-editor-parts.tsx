@@ -113,7 +113,12 @@ export function KeptBlockReferences({
 }
 
 /** The bound block, where a comment or an ask of the issue's held tree reads is anchored to it or
- *  to a block inside it, with how many are: the block's own references button (R7). */
+ *  to a block inside it, with how many are: the block's own references button (R7). A comment's
+ *  node names its block in its document anchor (`anchor`), and an ask's node the block its stored
+ *  anchor names (`block_anchor`), the block the blocks read counts the ask among the references
+ *  of, so the count is the one the whole document's editor draws
+ *  (`references.comments + references.asks`, `doc/ProofDocument.tsx`). An answer of a server of
+ *  the release before names no ask's block, and counts the comments alone. */
 export function anchoredCount(
   queryClient: QueryClient,
   issueKey: string,
@@ -128,6 +133,11 @@ export function anchoredCount(
     const nodes = (query.state.data as TreeAnswer | undefined)?.nodes;
     if (!Array.isArray(nodes)) continue;
     for (const node of nodes) {
+      const asked = node.block_anchor;
+      if (asked !== undefined) {
+        if (asked.artifact_id === artifactId && blocks.has(asked.block_id)) anchored.add(node.id);
+        continue;
+      }
       const anchor = node.anchor;
       if (anchor === undefined || anchor.orphaned || anchor.artifact_id !== artifactId) continue;
       if (anchor.block_id !== undefined && blocks.has(anchor.block_id)) anchored.add(node.id);
