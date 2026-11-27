@@ -3931,10 +3931,13 @@ describe("a kept notice", () => {
             "Content-Type": "application/json",
             Authorization: `Bearer ${readFileSync(tokenFile, "utf8").trim()}`,
           },
+          // The listener keeps a copy for a role nobody holds only for a publish that names its
+          // source session (#5412): the dead letter of a copy that expires goes to that session.
           body: JSON.stringify({
             topic: other,
             message: notice.message,
             dedupe_key: "rig-notice-control",
+            source_session: "rig-notice-control",
             keep: true,
           }),
         });
