@@ -269,7 +269,10 @@ func (r *podUpdateRig) startStanding() {
 		if issue.Phase == phase.Accepting {
 			err = r.engine.StartStepRecord(fact, tx, issue)
 		} else {
-			err = r.engine.StartPromotedWorker(fact, tx, issue, workflow.RoleFor(issue.Phase))
+			// The worker takes no carried slot here: this rig moves the issue into its phase
+			// itself, so no promotion of a re-admitted tree carries one. The start's first
+			// answer says whether the issue is held, which this rig never leaves it.
+			_, err = r.engine.StartPromotedWorker(fact, tx, issue, workflow.RoleFor(issue.Phase), false)
 		}
 		if err != nil {
 			return err
