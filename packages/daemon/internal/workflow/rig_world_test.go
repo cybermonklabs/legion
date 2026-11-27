@@ -289,7 +289,7 @@ func rigWorld(t *testing.T, req rigWorldRequest) rigWorldAnswer {
 	engine.cfg.Project = req.Project
 	engine.cfg.Steps = config.Gates{}.Steps()
 	engine.cfg.Repositories = fixedRepositories{served: map[string]string{req.Repository: req.DefaultBranch}}
-	engine.cfg.WorkspaceDir = func(record.Issue) string { return req.Workspace }
+	engine.cfg.WorkspaceDir = func(record.Issue, string) string { return req.Workspace }
 
 	for i, issue := range req.Issues {
 		at := phase.Admitted
