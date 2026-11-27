@@ -22,6 +22,7 @@ import (
 // queued behind it - three sends of A-1, three WARN lines, one naming each comment, and no
 // second line for any of them however many times the lane waits for its retry again.
 func TestEverySendHeldPastTheThresholdIsReportedOnce(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	lifetime, stop := context.WithCancel(context.Background())
@@ -69,6 +70,7 @@ func TestEverySendHeldPastTheThresholdIsReportedOnce(t *testing.T) {
 // it. Neither waits for a retry again, yet each waited past the threshold: each logs one WARN naming its own
 // comment, s1 and event 42.
 func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	lifetime, stop := context.WithCancel(context.Background())
@@ -143,6 +145,7 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 // recorded, what the send itself last waited behind: here s1 and event 42, where a read of the
 // lane alone would log an empty session and event 0.
 func TestALateReportWithNoWaitOnItsLaneNamesTheSendsOwnWait(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	sender := &mentionSender{heldWarnAfter: time.Millisecond, waits: map[laneKey]heldWait{}, mu: new(sync.Mutex)}
@@ -300,6 +303,7 @@ func TestALanesRetryTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
 // no held copy, so the held gauges count nothing of it and no WARN names an earlier event of its
 // owner, which would be event 0. The control row's read answers, and the send is tried.
 func TestASendRetriedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	for _, tc := range []struct {
 		name     string
 		readFail bool
@@ -387,6 +391,7 @@ func TestASendRetriedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 // event 42 and a wait of at least a second and no longer than the test has run: never the age of
 // a send stamped at no time, nor a wait measured backwards.
 func TestASendRetriedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	for _, tc := range []struct {
 		name     string
 		readFail bool

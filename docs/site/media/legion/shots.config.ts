@@ -120,11 +120,13 @@ async function headerOnTop(page: Page): Promise<void> {
   await expect(page.getByTestId("issue-header")).toBeInViewport({ ratio: 1 });
 }
 
-/** The header's details rail scrolls sideways and lists the issue's links last, so at a desktop
- *  width the pull request sits past the rail's right edge, where it is still "visible" to a
- *  check. This scrolls the rail to it and waits for the link to be wholly on screen. */
-async function pullRequestInView(page: Page): Promise<void> {
-  const link = page.getByTestId("issue-header").getByText(`#${SAVED_CART.pullRequest.number}`);
+async function pullRequestInDetails(page: Page): Promise<void> {
+  const header = page.getByTestId("issue-header");
+  const details = header.getByRole("button", { exact: true, name: "Details" });
+  await expect(details).toHaveAttribute("aria-expanded", "false");
+  await details.click();
+  await expect(details).toHaveAttribute("aria-expanded", "true");
+  const link = header.getByTestId("issue-details").getByText(`#${SAVED_CART.pullRequest.number}`);
   await link.scrollIntoViewIfNeeded();
   await expect(link).toBeInViewport({ ratio: 1 });
 }
@@ -215,7 +217,7 @@ const legion: ShotSet<LegionJourney> = {
     },
     {
       id: "status-events",
-      alt: "The issue after the phases ran: Retro in its header beside the pull request link, #42, and its Activity tab newest first: the Legion daemon's status updates, the architect's acceptance, one update from the implementer, and alice's approval of the spec.",
+      alt: "The issue after the phases ran: Retro in its header, and its Activity tab newest first: the Legion daemon's status updates, the architect's acceptance, one update from the implementer, and alice's approval of the spec.",
       route: activity,
       viewport: "desktop",
       theme: "light",
@@ -227,26 +229,23 @@ const legion: ShotSet<LegionJourney> = {
         await accept(journey, SAVED_CART);
       },
       ready: async (page) => {
-        await expect(page.getByTestId("issue-header").getByText("#42")).toBeVisible();
+        await titled(page, SAVED_CART.title);
         await expect(page.getByRole("list", { name: "Issue activity" })).toContainText(
           "updated the issue"
         );
       },
-      steps: async (page) => {
-        await headerOnTop(page);
-        await pullRequestInView(page);
-      },
+      steps: headerOnTop,
     },
     {
       id: "pull-request",
-      alt: "The issue header with the pull request Legion opened, linked as #42.",
+      alt: "The issue header with its Details open, and the pull request Legion opened linked there as #42.",
       route: (journey) => `/issues/${journey.key}`,
       viewport: "desktop",
       theme: "light",
       ready: async (page) => {
-        await expect(page.getByTestId("issue-header").getByText("#42")).toBeVisible();
+        await titled(page, SAVED_CART.title);
       },
-      steps: pullRequestInView,
+      steps: pullRequestInDetails,
       element: (page) => page.getByTestId("issue-header"),
     },
     {

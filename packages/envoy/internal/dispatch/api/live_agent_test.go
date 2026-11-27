@@ -419,6 +419,7 @@ func TestARelayDropEndsTheSubscriptionAsDropped(t *testing.T) {
 // (the writer closes a socket with 1011 for a frame it cannot encode). The subscription counts what
 // it skipped in one WARN when it ends, the count alone and never the bytes.
 func TestAFrameThatIsNotJSONIsSkipped(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	source := agentstream.NewMemory()

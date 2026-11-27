@@ -42,8 +42,8 @@ func TestMain(m *testing.M) {
 }
 
 // bedrockShaped gives a test embedder the Identity and Limits embed.Embedder asks for: Bedrock's
-// own, so the batch size and token ceiling the tests below count against are Bedrock's. Every
-// fake in this file embeds it.
+// own, so the batch size, byte budget and token ceiling the tests below count against are
+// Bedrock's. Every fake in this file embeds it.
 type bedrockShaped struct{}
 
 func (bedrockShaped) Identity() string     { return embed.BedrockModel }
@@ -631,10 +631,9 @@ func TestClaimRenewalExtendsNextAttemptAtPastClaimWindow(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "RNWL", "RNWL-1", "A title")
 	ctx := context.Background()
-	renewal := newClaimRenewal(Deps{Store: database}, []pendingRow{{kind: "issue", id: "RNWL-1", contentHash: contentHashOf(t, database, "issue", "RNWL-1")}})
-	renewal.last = time.Now().Add(-renewClaimInterval - time.Second)
+	renewal := newClaimRenewal(Deps{Store: database}, []pendingRow{{kind: "issue", id: "RNWL-1", contentHash: contentHashOf(t, database, "issue", "RNWL-1")}}, time.Now().Add(-renewClaimInterval-time.Second))
 	before := time.Now()
-	renewal.renew(ctx)
+	renewal.renew(ctx, 0)
 	var nextAttempt time.Time
 	if err := database.Pool.QueryRow(ctx,
 		`select next_attempt_at from embeddings where kind = 'issue' and id = 'RNWL-1'`,
@@ -683,25 +682,31 @@ func TestReserveTokensSharesItsBudgetAcrossConnections(t *testing.T) {
 // TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt proves a single reservation's own
 // wait can run past claimWindow (a full batch of maximum-length documents can need far more than
 // one minute's token ceiling to wait out), so waitOutDebt must renew the claim partway through a
-// long wait, not only before or after it. A tiny segment stands in for renewClaimInterval's real
-// one minute so the test itself takes a little over a second, not several minutes, while
-// exercising the identical loop.
+// long wait, not only before or after it. renewClaimInterval is shrunk well below its real one
+// minute so the test itself takes a little over a second, not several minutes, while exercising
+// the identical loop: a claim renewed just before the wait is renewed again inside it, before the
+// wait ends, and that renewal reaches the database.
 func TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it shortens renewClaimInterval (shortenForTest), which every claim renewal reads.
 	database := storetest.Open(t)
 	seedIssue(t, database, "LONG", "LONG-1", "A title")
 	ctx := context.Background()
-	renewal := newClaimRenewal(Deps{Store: database}, []pendingRow{{kind: "issue", id: "LONG-1", contentHash: contentHashOf(t, database, "issue", "LONG-1")}})
-	// Looks stale from the start, so the very first segment's renew() call actually renews
-	// rather than being skipped as "too soon since the last one".
-	renewal.last = time.Now().Add(-time.Hour)
-
-	const segment = 300 * time.Millisecond
+	const interval = 300 * time.Millisecond
+	shortenForTest(t, &renewClaimInterval, interval)
+	renewal := newClaimRenewal(Deps{Store: database}, []pendingRow{{kind: "issue", id: "LONG-1", contentHash: contentHashOf(t, database, "issue", "LONG-1")}}, time.Now())
+	var renewed []time.Duration
+	write := renewal.extend
 	before := time.Now()
-	waitOutDebt(ctx, 4*segment, renewal, segment)
+	renewal.extend = func(ctx context.Context, rows []pendingRow) error {
+		renewed = append(renewed, time.Since(before))
+		return write(ctx, rows)
+	}
 
-	if !renewal.last.After(before) {
-		t.Error("renewal.last was never updated - waitOutDebt never actually renewed during its wait")
+	waitOutDebt(ctx, 4*interval, renewal)
+	ended := time.Since(before)
+
+	if len(renewed) == 0 || renewed[0] >= ended-interval {
+		t.Errorf("renewals at %v in a wait that ended at %v; want one inside the wait, an interval or more before its end", renewed, ended)
 	}
 	var nextAttempt time.Time
 	if err := database.Pool.QueryRow(ctx,
@@ -712,6 +717,17 @@ func TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt(t *testing.T) 
 	if !nextAttempt.After(before.Add(claimWindow - time.Second)) {
 		t.Errorf("next_attempt_at = %v, want at least claimWindow (%v) past %v - the mid-wait renewal should have pushed it out, so a concurrent scanner never reclaims LONG-1 while this reservation is still waiting", nextAttempt, claimWindow, before)
 	}
+}
+
+// shortenForTest sets *setting, a duration of the package a test may shrink (renewClaimInterval,
+// callBound), to d until t ends. A test that calls it is serial (its "Not parallel:" line says so),
+// and Go starts no parallel test of a package until its serial tests have finished, so nothing
+// else reads the setting meanwhile.
+func shortenForTest(t *testing.T, setting *time.Duration, d time.Duration) {
+	t.Helper()
+	healthy := *setting
+	*setting = d
+	t.Cleanup(func() { *setting = healthy })
 }
 
 // TestClaimRenewalResolveStopsRenewingACommittedRow proves resolve removes a row from the set a
@@ -734,11 +750,10 @@ func TestClaimRenewalResolveStopsRenewingACommittedRow(t *testing.T) {
 	renewal := newClaimRenewal(Deps{Store: database}, []pendingRow{
 		{kind: "issue", id: "RSLV-1", contentHash: contentHashOf(t, database, "issue", "RSLV-1")},
 		{kind: "issue", id: "RSLV-2", contentHash: contentHashOf(t, database, "issue", "RSLV-2")},
-	})
+	}, time.Now().Add(-renewClaimInterval-time.Second))
 	renewal.resolve([]pendingRow{{kind: "issue", id: "RSLV-1"}})
-	renewal.last = time.Now().Add(-renewClaimInterval - time.Second)
 	before := time.Now()
-	renewal.renew(ctx)
+	renewal.renew(ctx, 0)
 
 	var rslv1Next, rslv2Next time.Time
 	if err := database.Pool.QueryRow(ctx,
@@ -795,12 +810,19 @@ func seedManyIssues(t *testing.T, database *store.Store, projectKey string, coun
 
 // countingGroupEmbedder fails any call whose texts include poison (simulating one bad row's
 // group) and otherwise succeeds, recording every call's own size so a test can prove exactly how
-// many Embed calls ran and how many total rows they carried.
+// many Embed calls ran and how many total rows they carried. Its limits are Bedrock's with no byte
+// budget, so the token ceiling is what closes a group of its test.
 type countingGroupEmbedder struct {
 	bedrockShaped
 	poison   string
 	calls    int
 	rowsSent int
+}
+
+func (*countingGroupEmbedder) Limits() embed.Limits {
+	limits := new(embed.BedrockClient).Limits()
+	limits.MaxBatchBytes = 0
+	return limits
 }
 
 func (e *countingGroupEmbedder) Embed(_ context.Context, texts []string, _ embed.InputType) ([][]float32, error) {
@@ -1308,33 +1330,36 @@ func (canaryThrottledEmbedder) Embed(_ context.Context, texts []string, _ embed.
 // either call site left the full suite green. This test shrinks renewClaimInterval to make a
 // renewal observable in milliseconds, forces real wall-clock time to pass between two embed
 // calls (an artificial sleep in the fake embedder, standing in for real network latency), and has
-// the second call read the database directly to prove a renewal already ran before it - the one
+// the first call read the claim the scan wrote and the second require it raised since - the one
 // signal that survives retryRows' own final overwrite of next_attempt_at at the end of the call,
 // which would otherwise hide an intermediate renewal from a check made after ProcessBatch
-// returns. The token budget is checked the ordinary way: it must be measurably drawn down.
+// returns. The scan's own claim is no renewal: it already sets next_attempt_at claimWindow on, so
+// only a later claim than the scan's proves one. The token budget is checked the ordinary way: it
+// must be measurably drawn down.
 type wiringCheckEmbedder struct {
 	bedrockShaped
 	t          *testing.T
 	database   *store.Store
 	ids        []string
-	before     time.Time
 	calls      int
+	claimed    time.Time
 	sawRenewal bool
 }
 
 func (e *wiringCheckEmbedder) Embed(ctx context.Context, texts []string, _ embed.InputType) ([][]float32, error) {
 	e.calls++
-	if e.calls == 1 {
-		time.Sleep(30 * time.Millisecond)
-		return nil, errors.New("simulated: a non-throttled embed failure")
-	}
 	var minNext time.Time
 	if err := e.database.Pool.QueryRow(ctx,
 		`select min(next_attempt_at) from embeddings where kind = 'issue' and id = any($1::text[])`, e.ids,
 	).Scan(&minNext); err != nil {
 		e.t.Fatalf("read next_attempt_at mid-call: %v", err)
 	}
-	if minNext.After(e.before.Add(claimWindow - time.Second)) {
+	if e.calls == 1 {
+		e.claimed = minNext
+		time.Sleep(30 * time.Millisecond)
+		return nil, errors.New("simulated: a non-throttled embed failure")
+	}
+	if minNext.After(e.claimed) {
 		e.sawRenewal = true
 	}
 	return fakeVectors(len(texts)), nil
@@ -1347,9 +1372,7 @@ func TestProcessBatchActuallyCallsRenewalAndReservesTokens(t *testing.T) {
 	for i, id := range ids {
 		seedIssue(t, database, "WIRE", id, fmt.Sprintf("Title %d", i))
 	}
-	oldInterval := renewClaimInterval
-	renewClaimInterval = 10 * time.Millisecond
-	t.Cleanup(func() { renewClaimInterval = oldInterval })
+	shortenForTest(t, &renewClaimInterval, 10*time.Millisecond)
 
 	var tokensBefore float64
 	if err := database.Pool.QueryRow(context.Background(),
@@ -1357,7 +1380,7 @@ func TestProcessBatchActuallyCallsRenewalAndReservesTokens(t *testing.T) {
 	).Scan(&tokensBefore); err != nil {
 		t.Fatalf("read tokens_available before: %v", err)
 	}
-	embedder := &wiringCheckEmbedder{t: t, database: database, ids: ids, before: time.Now()}
+	embedder := &wiringCheckEmbedder{t: t, database: database, ids: ids}
 	deps := Deps{Store: database, Embedder: embedder}
 
 	if _, _, _, _, err := ProcessBatch(context.Background(), deps); err != nil {
@@ -1374,6 +1397,82 @@ func TestProcessBatchActuallyCallsRenewalAndReservesTokens(t *testing.T) {
 	}
 	if tokensAfter >= tokensBefore {
 		t.Errorf("tokens_available = %v after ProcessBatch, want less than %v before it - reserveBackgroundTokens does not appear to be wired into the embed path", tokensAfter, tokensBefore)
+	}
+}
+
+// claimLeftEmbedder embeds every call, and at the first reads how long the claim on ids has left in
+// the database's own clock: the earliest next_attempt_at less now().
+type claimLeftEmbedder struct {
+	bedrockShaped
+	database *store.Store
+	ids      []string
+	calls    int
+	left     time.Duration
+	err      error
+}
+
+func (e *claimLeftEmbedder) Embed(ctx context.Context, texts []string, _ embed.InputType) ([][]float32, error) {
+	e.calls++
+	if e.calls == 1 {
+		e.err = e.database.Pool.QueryRow(ctx, `
+			select min(next_attempt_at) - now() from embeddings
+			where kind = 'issue' and id = any($1::text[])`, e.ids,
+		).Scan(&e.left)
+	}
+	return fakeVectors(len(texts)), nil
+}
+
+// The claim scanPending makes is dated before the scan's statement (ProcessBatch reads claimed
+// first), so a scan slow to return leaves the claim reading no younger than it is. The database
+// dates the claim by its now(), the statement's start; here the statement then waits scanHeld on a
+// lock the test holds, which a trigger on the claim's column takes. scanHeld is past
+// renewClaimInterval, so the claim is due when the first call goes out and is renewed first: the
+// call sees nearly claimWindow left. Dated after the scan, the claim read scanHeld younger, was not
+// renewed, and the call went out with at most claimWindow less scanHeld left. Five seconds leave
+// each side seconds of margin on a loaded host: the renewal must reach the call within half of
+// scanHeld, and a claim dated after the scan is renewed only if renewClaimInterval, a second short
+// of scanHeld, passes between the scan and the call.
+func TestAClaimIsDatedBeforeTheScanThatMadeIt(t *testing.T) {
+	// Not parallel: it shortens renewClaimInterval (shortenForTest), and the renewal must reach the
+	// call within 2.5 s of the scan that a lock holds 5 s.
+	database := storetest.Open(t)
+	ids := []string{"SCAN-1", "SCAN-2"}
+	for i, id := range ids {
+		seedIssue(t, database, "SCAN", id, fmt.Sprintf("Title %d", i))
+	}
+	const scanHeld = 5 * time.Second
+	shortenForTest(t, &renewClaimInterval, scanHeld-time.Second)
+	mustExec(t, database.Pool, `create function hold_claim() returns trigger language plpgsql as $$
+		begin perform pg_advisory_xact_lock(1); return new; end $$`)
+	mustExec(t, database.Pool, `create trigger hold_claim before update of next_attempt_at on embeddings
+		for each row execute function hold_claim()`)
+	ctx := context.Background()
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder: %v", err)
+	}
+	defer holder.Rollback(ctx)
+	mustExec(t, holder, `select pg_advisory_xact_lock(1)`)
+
+	embedder := &claimLeftEmbedder{database: database, ids: ids}
+	done := make(chan error, 1)
+	go func() {
+		_, _, _, _, err := ProcessBatch(ctx, Deps{Store: database, Embedder: embedder})
+		done <- err
+	}()
+	storetest.WaitForLockWaiters(t, holder, 1)
+	time.Sleep(scanHeld)
+	if err := holder.Rollback(ctx); err != nil {
+		t.Errorf("release the scan: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("ProcessBatch: %v", err)
+	}
+	if embedder.calls == 0 || embedder.err != nil {
+		t.Fatalf("%d calls; reading the claim in the first: %v", embedder.calls, embedder.err)
+	}
+	if floor := claimWindow - scanHeld/2; embedder.left < floor {
+		t.Errorf("the first call went out with %v left on its claim, want at least %v: no renewal came before the call, though the claim was older than renewClaimInterval (%v) once the scan returned", embedder.left, floor, renewClaimInterval)
 	}
 }
 

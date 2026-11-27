@@ -50,14 +50,12 @@ decides whether to admit it or leave it for you, and moves it to `backlog` or `i
 person asked for that or its work is done, folded into another issue or no longer needed.
 
 The controller never takes an issue on its own, whatever slots are free: Legion works what a person
-hands it, and the clear defects its own agents report that no tree owns. You can also ask the
+hands it, and the clear defects its own agents report. You can also ask the
 controller to hand an issue over for you, in a message or in Slack. An agent that finds a defect
 outside its own issue whose fix needs no choice of yours fixes it itself, in its own pull request
-or a separate pull request of its tree, in whichever repository the defect is. It writes the
-defect to the architect of the tree that owns the code, as a Dispatch comment that mentions that
-architect's role, only when its fix would collide with that tree's open pull request or its token
-does not reach the repository. The controller files the defect labelled `legion` only when no tree
-owns the code, and it passes no defect on to a tree. When the problem needs a decision, a deploy
+or a separate pull request of its tree, in whichever repository the defect is. The controller
+files the defect labelled `legion` when the agent's token does not reach the repository, and it
+passes no defect on to a tree. When the problem needs a decision, a deploy
 window or work much larger than the agent's own, the agent asks you in a Dispatch ask whether to
 file one, rather than filing it. Answer with `File it for Legion` and the controller files it
 labelled `legion`.

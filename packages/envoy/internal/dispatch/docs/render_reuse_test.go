@@ -1277,6 +1277,7 @@ func TestRenderReuseAColdWriteAppendedDuringALoadIsRendered(t *testing.T) {
 // document pushed outside the schema after the fork read renders, and WARNs, as before; a cold
 // repair is already in the room that loads after it committed, so nothing of it is classified.
 func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault in its captureWarnings).
 	const updatedOutside = "updated document outside Proof schema"
 	captureWarnings := func(t *testing.T) *storetest.LockedLog {
 		logs := &storetest.LockedLog{}
@@ -1865,6 +1866,8 @@ func topLevelAskElement(t *testing.T, fragment *crdt.YXmlFragment) *crdt.YXmlEle
 // collection in between would otherwise decide the counts; the collector runs again before the
 // shadow renders, so a race build's memory does not grow through the whole test.
 func TestRenderReuseACatchUpTakesTheLoadsRendering(t *testing.T) {
+	// Not parallel: it turns the whole process's collector off (debug.SetGCPercent in
+	// pauseCollections) and forces a collection (runtime.GC).
 	t.Run("the first commit takes the load's rendering", func(t *testing.T) {
 		service, artifactID, sh := newRenderReuseService(t)
 		m := sh.measure()
