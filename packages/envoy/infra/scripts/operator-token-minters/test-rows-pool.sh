@@ -17,9 +17,9 @@
 #        with UNKNOWN; --pool-project naming another pool cannot read clean;
 #   (s)  a binding subject on a fleet member: grade-ci, a Google service account, bound to
 #        cluster-admin on a GKE member in another project exits 1 naming grade-ci and create
-#        namespaces; a person's email bound the same way, and a Group bound the same way while the
-#        member has Google Groups for RBAC off, exit 0; a refused list of bindings exits 2 with
-#        UNKNOWN;
+#        namespaces, and so does a person's email bound the same way, naming the person; a Group
+#        bound the same way while the member has Google Groups for RBAC off exits 0; a refused list
+#        of bindings exits 2 with UNKNOWN;
 #   (w)  two guarded pairs (--guarded envoy-route/envoy-route-password-reader beside the
 #        operator's): grade-ci bound to cluster-admin on a fleet member is reported for both;
 #   (x)  a ServiceAccount on a fleet member that can create pods, and nothing else, in the
@@ -244,10 +244,11 @@ if row s; then
   grade_member
   cluster_admin grade-cluster "$(user_subject alice@example.com)"
   run
-  want_status 0 "a person bound to cluster-admin on a fleet member"
-  [ "$(count_prefix 'FINDING ')" -eq 0 ] || fail "a person bound to cluster-admin on a fleet member: a finding"
-  want_text "PASS $grade_step: " "a person bound to cluster-admin on a fleet member"
-  passed "(s) a person's email bound to cluster-admin on a fleet member stays allowed"
+  want_status 1 "a person bound to cluster-admin on a fleet member"
+  want_line "FINDING user:alice@example.com: create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster" \
+    "a person bound to cluster-admin on a fleet member"
+  ! has_prefix "PASS $grade_step: " || fail "a person bound to cluster-admin on a fleet member: the member's step passed"
+  passed "(s) a person's email bound to cluster-admin on a fleet member is reviewed and exits 1 naming the person"
 
   base_world
   grade_member
@@ -469,14 +470,16 @@ guarded_ns_row() {
         fail "the test could not put the old finding into its copy"
       ;;
   esac
-  run_script="$script" run --report "$temporary_dir/guarded-ns.json"
+  # Each item's report is its own world's: the items run at once (each), and one shared path let
+  # another item's report be read as this one's (a present item failed so under load, 2026-11-27).
+  run_script="$script" run --report "$world/guarded-ns.json"
   case "$1" in
     present)
       want_status 1 "a holder of the operator's token in envoy-operator on another cluster"
       want_line "$want" "a holder of the operator's token in envoy-operator on another cluster"
       ! has_prefix "$bare" || fail "the namespace on another cluster is still a finding that names no principal"
       jq -e --arg res "cluster:$project/us-east1/other-cluster" \
-        'any(.findings[]; .principal == "system:serviceaccount:apps:deployer" and .resource == $res)' "$temporary_dir/guarded-ns.json" >/dev/null ||
+        'any(.findings[]; .principal == "system:serviceaccount:apps:deployer" and .resource == $res)' "$world/guarded-ns.json" >/dev/null ||
         fail "the holder's finding does not carry the cluster's label cluster:$project/us-east1/other-cluster"
       ;;
     absent)
