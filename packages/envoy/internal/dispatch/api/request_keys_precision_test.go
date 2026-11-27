@@ -114,6 +114,7 @@ func TestACommitThatFailsAfterTheMarkLeavesNoMark(t *testing.T) {
 // past IdempotencyKeyTTL and keeps one inside it, so a repeat of a day-old press is still answered
 // from its key and one past the window is a new write.
 func TestTheMaintenanceLoopKeepsAKeyForItsWholeWindow(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	rig := newKeyedRig(t, answerRun)
 	for _, key := range []string{"inside", "past"} {
 		if response := rig.send(t, "a", nil, "alice", key); response.Code != http.StatusCreated {

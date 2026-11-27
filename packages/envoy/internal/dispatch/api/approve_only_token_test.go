@@ -94,6 +94,7 @@ func refusedAsApproveOnly(response *httptest.ResponseRecorder) bool {
 // issue, and its mint and change of a personal token, are refused 403 APPROVE_ONLY_TOKEN, and none
 // of them is recorded. Each holds on /api/v1 and on /api/v2.
 func TestAnApproveOnlyTokenApprovesAsItsPersonAndNothingElse(t *testing.T) {
+	t.Parallel()
 	rig := newApproveOnlyRig(t, testServerOptions{})
 	for _, version := range approveOnlyVersions {
 		t.Run(version.prefix, func(t *testing.T) {
@@ -171,6 +172,7 @@ func TestAnApproveOnlyTokenApprovesAsItsPersonAndNothingElse(t *testing.T) {
 // resolve and decline) stay closed to it as they are on /api/v1, held by the state check
 // (gateApproveOnlyStates).
 func TestTheApproveListIsTheApproveRowsLessTheTokenMintsAndTheAnswer(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	var want []string
 	for _, route := range approveRows(rig.served) {
@@ -223,6 +225,7 @@ func TestTheApproveListIsTheApproveRowsLessTheTokenMintsAndTheAnswer(t *testing.
 // answers anything but that refusal. A row it names by state answers by the state sent, which
 // TestAnApproveOnlyTokenIsHeldToTheStatesOfAByStateRoute walks. A walk that walked nothing fails.
 func TestEveryRowTheApproveListDoesNotNameRefusesAnApproveOnlyTokenBeforeItsHandler(t *testing.T) {
+	t.Parallel()
 	rig := newApproveOnlyRig(t, testServerOptions{testHooks: true})
 	walked, listed := 0, 0
 	walking := readOnlyWalkToken{name: "the approve-only token", token: rig.approveOnly}
@@ -261,6 +264,7 @@ func TestEveryRowTheApproveListDoesNotNameRefusesAnApproveOnlyTokenBeforeItsHand
 // those keys is claimed: the check runs before the keyed layer. A walk that sent no state the token
 // may send, or none it may not, fails.
 func TestAnApproveOnlyTokenIsHeldToTheStatesOfAByStateRoute(t *testing.T) {
+	t.Parallel()
 	rig := newApproveOnlyRig(t, testServerOptions{})
 	const keys = "approve-only-state-"
 	sent, left := 0, 0

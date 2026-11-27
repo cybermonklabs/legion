@@ -21,6 +21,7 @@ import (
 // DOCUMENT_WRITER_NOT_ARCHITECT like its markdown upload, and writes nothing, and C's architect's
 // Markdown upload of verification.md is then taken.
 func TestSpecWriteRefusesAWorkersFirstVerificationUploadedAsAFile(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{noVerification: true})
 	for _, contentType := range []string{"text/plain", "application/octet-stream"} {

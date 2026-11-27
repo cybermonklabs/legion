@@ -237,6 +237,8 @@ func TestANewDeliveryAttemptChangesTheCommentListsETagWithNoEventAppended(t *tes
 // come out: the display parser version is hashed into each, so no ETag the build before it gave is
 // matched by this one.
 func TestADeployOfANewDisplayParserVersionChangesBothListETags(t *testing.T) {
+	// Not parallel: it moves the process's display parser version
+	// (pmdoc.SetDisplayTreeVersionForTest).
 	handler := newTestHandler(t)
 	_, comments, feed := listTargets(t, handler, "PRSRL", 2)
 	for _, list := range []struct{ name, target string }{

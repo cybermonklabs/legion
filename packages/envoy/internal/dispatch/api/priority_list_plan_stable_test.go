@@ -48,6 +48,7 @@ const (
 // test prints each request's shared buffers and time on both plans and their ratio, and on a
 // ratio above 2 the three nodes of the generic plan that ran the most times.
 func TestNoListingRequestReadsMoreOnTheGenericPlan(t *testing.T) {
+	t.Parallel()
 	corpus := seedListCorpus(t)
 	type planStableRequest struct {
 		name     string

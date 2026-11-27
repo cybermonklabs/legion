@@ -81,6 +81,7 @@ func readAskAsPerson(t *testing.T, rig *approveOnlyRig, ask string) *httptest.Re
 // approval ask of the same issue is recorded, which is the control that the token and the route
 // work.
 func TestAnApproveOnlyTokenAnswersAnApprovalAskAndNoOtherAsk(t *testing.T) {
+	t.Parallel()
 	rig := newApproveOnlyRig(t, testServerOptions{})
 	for _, version := range approveOnlyVersions {
 		t.Run(version.prefix, func(t *testing.T) {
@@ -113,6 +114,7 @@ func TestAnApproveOnlyTokenAnswersAnApprovalAskAndNoOtherAsk(t *testing.T) {
 // answered ask is the engine's own conflict, which is no proof of the token's refusal and is not
 // asserted here.
 func TestAnApproveOnlyTokenIsRefusedARepeatOfTheAnswerThePersonGaveOnV2(t *testing.T) {
+	t.Parallel()
 	rig := newApproveOnlyRig(t, testServerOptions{})
 	asks := openApproveOnlyAsks(t, rig, approveV2)
 	answer := func(token string) *httptest.ResponseRecorder {
@@ -134,6 +136,7 @@ func TestAnApproveOnlyTokenIsRefusedARepeatOfTheAnswerThePersonGaveOnV2(t *testi
 // token the state answered alone. Each of the other three, sent to the approval request and to the
 // question, is refused 403 APPROVE_ONLY_TOKEN, and neither ask moves.
 func TestAnApproveOnlyTokenSendsNoStateOfAnAskButAnswered(t *testing.T) {
+	t.Parallel()
 	rig := newApproveOnlyRig(t, testServerOptions{})
 	asks := openApproveOnlyAsks(t, rig, approveV2)
 	for _, ask := range []string{asks.approval, asks.question} {
@@ -167,6 +170,7 @@ func TestAnApproveOnlyTokenSendsNoStateOfAnAskButAnswered(t *testing.T) {
 // its keys work: answered 200 under its key, replayed to its repeat. Each holds on /api/v1 and on
 // /api/v2.
 func TestAnApproveOnlyTokenIsRefusedAKeyedAnswerOfAnAskThatIsNoApprovalRequest(t *testing.T) {
+	t.Parallel()
 	rig := newApproveOnlyRig(t, testServerOptions{})
 	for _, version := range approveOnlyVersions {
 		t.Run(version.prefix, func(t *testing.T) {

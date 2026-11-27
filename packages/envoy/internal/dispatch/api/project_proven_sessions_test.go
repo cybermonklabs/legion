@@ -109,6 +109,7 @@ func latestProjectUpdate(t *testing.T, database *store.Store, project string) pr
 // project-scoped broker token's DELETE are 403 OAUTH_SCOPE_REQUIRED and leave it on; the personal
 // token's DELETE turns it off again, and its event names the person.
 func TestSpecWriteProvenSessionsSettingStartsOffAndOnlyAPersonTurnsItOff(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	const project, writer = "PROVEN", "ses-turns-proven-sessions-on"
 	path := "/api/v1/projects/" + project + "/proven-sessions"
@@ -214,6 +215,7 @@ func TestSpecWriteProvenSessionsSettingStartsOffAndOnlyAPersonTurnsItOff(t *test
 // publication appends carries the project's proven_sessions as the row stores it: false before the
 // setting is turned on, and true after it.
 func TestSpecWriteAGatedStepsEventCarriesTheStoredSetting(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	const project = "PROVEN"
 	createAdviceProject(t, handler, project)
@@ -243,6 +245,7 @@ func TestSpecWriteAGatedStepsEventCarriesTheStoredSetting(t *testing.T) {
 // holds while it sets the default repository; once the lock is released, the write's event names
 // the repository set while it waited.
 func TestAProjectUpdateCarriesTheDefaultRepositoryItsWriteLeft(t *testing.T) {
+	t.Parallel()
 	for _, write := range []struct {
 		name string
 		body map[string]any

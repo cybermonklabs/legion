@@ -19,6 +19,7 @@ import (
 // reader for either call site that splits one of these frames' fields differently makes its row
 // fail, and one that agrees with it on every row here passes them all.
 func TestTheEdgeAndTheRelayReadAFramesFieldsAlike(t *testing.T) {
+	t.Parallel()
 	const bom = "\xef\xbb\xbf"
 	const plain = `{"topic":"notifications.agent.ses_v","role":"legion-priv-priv-1-tester"}`
 	const topic, role = "notifications.agent.ses_v", "legion-priv-priv-1-tester"
