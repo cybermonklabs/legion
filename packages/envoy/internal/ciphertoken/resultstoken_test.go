@@ -96,7 +96,12 @@ func TestAResultsTokenIsServedAsResultsOnly(t *testing.T) {
 	const token = "a-results-token-where-one-is-served"
 	rig.broker.Says(token, resultsToken(caller.jkt, time.Hour))
 	decided, err := decides(t, rig, caller, token)
-	run := &oauthwire.Run{CIRun: *resultsRun(), Workflow: ".github/workflows/ci-results.yaml", ID: 7, Attempt: 1, CheckRun: 97}
+	claims := resultsRun()
+	run := &oauthwire.Run{
+		Repository: claims.Repository, WorkflowRef: claims.WorkflowRef, Ref: claims.Ref, SHA: claims.SHA,
+		EventName: claims.EventName, RunnerEnvironment: claims.RunnerEnvironment,
+		Workflow: ".github/workflows/ci-results.yaml", ID: 7, Attempt: 1, CheckRun: 97,
+	}
 	want := ciphertoken.Caller{Session: resultsSession, Person: "ada@example.com", Projects: []string{"ACME"}, ProjectScope: ciphertoken.ProjectScopeResults, ResultsOnly: true, CI: run}
 	if err != nil || !sameCaller(decided, want) {
 		t.Fatalf("Verify = %+v (run %+v), %v; want %+v (run %+v)", decided, decided.CI, err, want, want.CI)

@@ -788,9 +788,9 @@ func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exc
 	return answered, nil
 }
 
-// ProxyPlaceholderGrant is the grant the broker minted presented for, and "" when it knows
-// none. The proxy reads it to name, in the refusal of a request that still carries a placeholder
-// after the swap, which grant that placeholder was minted for.
+// ProxyPlaceholderGrant is the grant the broker minted the placeholder presented for, and "" when
+// it knows none. The proxy reads it to name, in the refusal of a request that still carries a
+// placeholder after the swap, which grant that placeholder was minted for.
 //
 //   - A secret's release placeholder is read from airlock_placeholders, by the table's primary
 //     key: it names its grant live or ended, until the sweep has deleted an ended grant's rows

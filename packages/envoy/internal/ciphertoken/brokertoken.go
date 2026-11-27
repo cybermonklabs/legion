@@ -241,12 +241,8 @@ type Caller struct {
 	// Verifier's clock (Verifier.Lapsed); Dispatch does not read it yet.
 	NotHeldUntil time.Time
 	// ApproveOnly is true exactly when the verifier accepted an approve-only token
-	// (shapeApproveOnly, Options.ServesApproveOnly): the project scope ProjectScopePerson beside
-	// the one scope ScopeApprove, a person, and no service, no project and no cut
-	// (approveShapeOf) - the token the secrets broker mints for a person's approve grant and
-	// spends through its proxy, never released. Only a verifier built with
-	// Options.ServesApproveOnly answers such a Caller, and the service that set the switch holds
-	// it to the routes that settle what a person settles.
+	// (shapeApproveOnly, Options.ServesApproveOnly). The service holds the caller to the routes
+	// that settle what a person settles.
 	ApproveOnly bool
 	// Cut is the past time a read-only token reads at, which its trade asked for (the answer's
 	// as_of, oauthwire.FormAsOf), in UTC; it is the zero time for a token that names no cut. Only a

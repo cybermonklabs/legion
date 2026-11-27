@@ -292,7 +292,7 @@ func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string, f
 	if source.LastError == nil && source.LastCommit != nil && *source.LastCommit == commit {
 		return i.touch(ctx, source, commit)
 	}
-	listing, importErr := i.github.Dir(ctx, token, owner, name, commit, SourceDir)
+	listing, importErr := i.github.Dir(ctx, token, owner, name, commit, SourceDir, notes.IsNote)
 	if importErr != nil {
 		githubreads.NoteFailure(ctx, importErr)
 		return i.failed(ctx, parent, source, importErr)

@@ -1033,10 +1033,11 @@ function isStoredKeyStatus(status: number): boolean {
 /**
  * The table's event for an answer (`WriteEvent`, write-outcome.ts).
  * - An answer Cipher's proxy wrote itself (`answer.proxy`, `proxyOwnAnswer`) is read by its headers
- *   alone, whatever its status or body (`proxyEvent`): `proxy-refused` for a 4xx and
- *   `proxy-failed` for a 5xx it wrote before any byte left it (`Cipher-Proxy-Forwarded: false`),
- *   and `proxy-unsettled` for one it wrote after the write may have reached Dispatch. A service's
- *   answer it carried names no code, and is read as Dispatch's below.
+ *   alone, whatever its status or body (`proxyEvent`): one it wrote before any byte left it
+ *   (`Cipher-Proxy-Forwarded: false`) is `proxy-failed` for an outage (`outage`: a 408, a 429 or a
+ *   5xx) and `proxy-refused` for any other status, and one it wrote after the write may have
+ *   reached Dispatch is `proxy-unsettled`. A service's answer it carried names no code, and is
+ *   read as Dispatch's below.
  * - A 2xx is `applied` once its body was read whole, except where it is no answer of Dispatch's
  *   (`foreign-2xx`): its body is empty or not JSON-typed where its status carries one (`notJson`),
  *   a captive portal's 200 page for one; or it names no key back, or another request's, though

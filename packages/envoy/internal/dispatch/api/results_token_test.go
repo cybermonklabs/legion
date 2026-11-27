@@ -119,9 +119,10 @@ func resultsLimitedToken() limitedToken {
 
 // walkEveryChainWith builds every row's own chain as register does (routeHandler), with the row's
 // handler replaced by a recorder, and sends each the token with a body and a valid
-// Idempotency-Key. Every row the token's list does not name answers 403 with its refusal and
-// never runs its handler; each row the list names runs it once, and is a row the walk names an
-// answer for (listAnswers), so a list that grows fails the walk until the walk names the row too.
+// Idempotency-Key. Every row whose declaration does not state the token's mark answers 403 with
+// its refusal and never runs its handler; each row that states it runs it once, and is a row the
+// walk names an answer for (listAnswers), so a list that grows fails the walk until the walk names
+// the row too, and a row the walk names that no longer states the mark fails it as well.
 // GET /ws/live is walked the same way through its own chain (liveSocketHandler), with the socket
 // replaced. A row is counted once its assertions have run, and the count is held to the rows the
 // registered server mounts (its route index, one entry a row), so a walk that skipped a row, or

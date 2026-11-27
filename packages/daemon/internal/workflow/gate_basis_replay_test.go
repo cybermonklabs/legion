@@ -79,6 +79,7 @@ func ended(t *testing.T, pool *pgxpool.Pool, act string) {
 //     opens nothing, and the seed's read ends the wait on the changes request it shows; that
 //     changes request, applied after, adds nothing.
 func TestALateEventOnAPendingBasisChangesNothingDispatchNoLongerShows(t *testing.T) {
+	t.Parallel()
 	reason := "name the rollback path"
 	latestThree := requestOpen()
 	latestThree.Version, latestThree.Reason, latestThree.By = new(4), &reason, basisPerson
@@ -147,6 +148,7 @@ func TestALateEventOnAPendingBasisChangesNothingDispatchNoLongerShows(t *testing
 // mark.After), so the changes request at 61, delivered after the opening, passes nothing on and
 // leaves the step open, while one recorded after the approval at 63 is passed on.
 func TestAnApprovalTheReadShowsOpensTheStepAndAnOlderChangesRequestPassesNothing(t *testing.T) {
+	t.Parallel()
 	pool, _, apply := registeredPending(t)
 	latest := ancestorReview(intake.DispatchArtifactApproved, 4, 63, "")
 
@@ -185,6 +187,7 @@ func TestAnApprovalTheReadShowsOpensTheStepAndAnOlderChangesRequestPassesNothing
 // says: it queues the step's pending-basis seed, whose read the workflow judges instead. The
 // person's approval, a close of the request and the ancestor's done are each such a cue here.
 func TestACueQueuesThePendingBasisSeedAndChangesNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		fact intake.Fact
@@ -220,6 +223,7 @@ func TestACueQueuesThePendingBasisSeedAndChangesNothing(t *testing.T) {
 // condition), with the request still open. The control: the same event whose seed reads the
 // ancestor done ends the wait, naming that.
 func TestALateAncestorDoneEndsNoWaitWhileDispatchShowsItOpen(t *testing.T) {
+	t.Parallel()
 	done := intake.DispatchIssue{Key: basisAncestor, Seq: 70, Type: "issue.updated", Status: record.DoneStatus, Title: "ancestor", Rank: "T", HandedOver: true}
 
 	t.Run("the read shows the ancestor reopened", func(t *testing.T) {
@@ -249,6 +253,7 @@ func TestALateAncestorDoneEndsNoWaitWhileDispatchShowsItOpen(t *testing.T) {
 // same holds for LEGION-208 itself registered again on ask-200: the read of its seed for ask-100
 // changes nothing of its wait on ask-200, whose own seed the cue queued.
 func TestEachSeedsReadDecidesOnlyItsOwnStepsWait(t *testing.T) {
+	t.Parallel()
 	const later, laterDoc = "LEGION-209", "artifact-209"
 	reason := "name the rollback path"
 	changes := ancestorReview(intake.DispatchArtifactChangesRequested, 4, 62, reason)

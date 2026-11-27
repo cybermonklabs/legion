@@ -24,8 +24,8 @@ func ciEvidenceAt(recorded, conclusion string) (model.CheckBlock, comparison) {
 	project := "ACME"
 	actor := model.Actor{Kind: "session", ID: "github-actions:run-1:attempt-1:check-71", Project: &project}
 	run := oauthwire.Run{
-		CIRun: oauthwire.CIRun{Repository: "example/repo", Ref: "refs/heads/legion/ACME-1", SHA: sha, CheckRunID: "71", RunID: "1", RunAttempt: "1", EventName: "push"},
-		ID:    1, Attempt: 1, CheckRun: 71,
+		Repository: "example/repo", Ref: "refs/heads/legion/ACME-1", SHA: sha, EventName: "push",
+		ID: 1, Attempt: 1, CheckRun: 71,
 	}
 	resolved := resolvedCheck{
 		checkBlockRef:   checkBlockRef{IssueKey: "ACME-1", BlockID: "c1", Ref: "dispatch://ACME-1/artifact/verification-md#b-c1"},

@@ -52,7 +52,7 @@ const docsCompactionNote = "Writes nothing itself. A cold read of a document who
 
 // read_classes.go holds what a read class is: the two classes, what each means, and the note a
 // class carries. Which class a route has is the route's own declaration (routeDecl.Read, one file
-// per route), which routes() answers as apiRoute.Read and the limited-token gate reads
+// per route), which routes() answers as apiRoute.Read and the read-only gate reads
 // (refuseLimitedToken). register refuses to mount a table whose GET routes are not all classed,
 // or whose write states a class (readClassRefusals, routes_table.go), so a GET route added later
 // is served to no read-only credential until someone has read its handler and classed it.

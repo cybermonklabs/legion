@@ -387,7 +387,7 @@ func TestAKeyBelongsToItsLogin(t *testing.T) {
 	}
 
 	owner, service := "Carol@example.com", "system:serviceaccount:legion:worker"
-	run := &oauthwire.Run{CIRun: oauthwire.CIRun{Repository: "example-org/example-repo", CheckRunID: "97"}, CheckRun: 97}
+	run := &oauthwire.Run{Repository: "example-org/example-repo", CheckRun: 97}
 	for name, test := range map[string]struct {
 		actor model.Actor
 		human bool

@@ -831,8 +831,9 @@ const FileSuffix = ".yaml"
 
 // IsFile reports whether one entry of the spec directory is a spec file: a regular file (kind
 // notes.KindFile) directly in the directory, whose name ends in FileSuffix. Each reader of the
-// spec files takes its entries by this rule: spec-check, through notes.ReadSet, and ReadScenario
-// for the files of each commit.
+// spec files takes its entries by this rule: spec-check, through notes.ReadSet, ReadScenario for
+// the files of each commit, and Dispatch's results route, through the GitHub client's listing of
+// a commit's spec directory (githubapp.Client.Dir).
 func IsFile(name string, entryKind notes.Kind) bool {
 	return entryKind == notes.KindFile && !strings.Contains(name, "/") && strings.HasSuffix(name, FileSuffix)
 }

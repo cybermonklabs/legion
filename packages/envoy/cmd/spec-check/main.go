@@ -401,7 +401,8 @@ type judged struct {
 	oversize []error
 }
 
-// judge reads dir with readFiles and judges its files with judgeFiles.
+// judge reads dir with readFiles and judges its files with judgeFiles, as every reader of spec
+// files judges them (specgraph.Judge).
 func judge(stderr io.Writer, dir string, o specgraph.Options) (judged, error) {
 	files, err := readFiles(stderr, dir)
 	if err != nil {
@@ -410,11 +411,11 @@ func judge(stderr io.Writer, dir string, o specgraph.Options) (judged, error) {
 	return judgeFiles(dir, files, o), nil
 }
 
-// judgeFiles is the judgment of tree over files in memory: notes.CheckSize of each file, and then
-// the judgment every reader of spec files makes (specgraph.Judge: Parse, and Validate with o, its
-// problems sorted). A file above the bound is in oversize, and then no file is parsed, as the
-// importer refuses a set before it parses any. print judges the files that a run would leave with
-// it, so print and tree judge by one rule.
+// judgeFiles is the judgment of tree over files in memory: notes.CheckSize of each file, then the
+// one reading of spec files that each of their readers shares, Parse and Validate with o, its
+// problems sorted (specgraph.Judge). A file above the bound is in oversize, and then no file is
+// parsed, as the importer refuses a set before it parses any. print judges the files that a run
+// would leave with it, so print and tree judge by one rule.
 func judgeFiles(dir string, files map[string][]byte, o specgraph.Options) judged {
 	j := judged{dir: dir, files: len(files)}
 	for _, name := range slices.Sorted(maps.Keys(files)) {

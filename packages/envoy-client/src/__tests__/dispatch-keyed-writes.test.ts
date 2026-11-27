@@ -486,30 +486,33 @@ describe("DispatchClient's writes", () => {
   test.each([
     ["un-echoed", false],
     ["echoed", true],
-  ] as const)("a silence cut then %s 503s to the end leaves the write unsettled", async (_, echoes) => {
-    const { retry, stall } = stalling();
-    const unavailable = () =>
-      refusal(
-        503,
-        "BROKER_UNAVAILABLE",
-        "the secrets broker cannot be reached; try again in a minute"
+  ] as const)(
+    "a silence cut then %s 503s to the end leaves the write unsettled",
+    async (_, echoes) => {
+      const { retry, stall } = stalling();
+      const unavailable = () =>
+        refusal(
+          503,
+          "BROKER_UNAVAILABLE",
+          "the secrets broker cannot be reached; try again in a minute"
+        );
+      const { fetchImpl, sent } = scripted(
+        [stall, ...Array.from({ length: 30 }, unavailable)],
+        echoes ? {} : { namesNoKey: true }
       );
-    const { fetchImpl, sent } = scripted(
-      [stall, ...Array.from({ length: 30 }, unavailable)],
-      echoes ? {} : { namesNoKey: true }
-    );
 
-    const error = await failure(client(fetchImpl, retry).comment("DSP-1", comment));
+      const error = await failure(client(fetchImpl, retry).comment("DSP-1", comment));
 
-    expect(sent.length).toBeGreaterThan(2);
-    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
-    expect((error as DispatchWriteUnsettledError).key).toBe(
-      sent[0]?.headers["Idempotency-Key"] as string
-    );
-    expect((error as DispatchWriteUnsettledError).last).toEqual(
-      expect.objectContaining({ code: "BROKER_UNAVAILABLE", status: 503 })
-    );
-  });
+      expect(sent.length).toBeGreaterThan(2);
+      expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+      expect((error as DispatchWriteUnsettledError).key).toBe(
+        sent[0]?.headers["Idempotency-Key"] as string
+      );
+      expect((error as DispatchWriteUnsettledError).last).toEqual(
+        expect.objectContaining({ code: "BROKER_UNAVAILABLE", status: 503 })
+      );
+    }
+  );
 
   test("wait a Retry-After longer than the pause, and stop rather than start past 30 s", async () => {
     const { fetchImpl, sent } = scripted([
@@ -1462,21 +1465,22 @@ describe("DispatchClient's writes", () => {
     expect(error.message).toContain("may or may not have taken effect");
   });
 
-  test.each(
-    unjudged
-  )("%s after a silent attempt leaves the write unsettled, carrying its key", async (_, answer, status) => {
-    const { retry, stall } = stalling();
-    const { fetchImpl, sent } = scripted([stall, answer()], { namesNoKey: true });
+  test.each(unjudged)(
+    "%s after a silent attempt leaves the write unsettled, carrying its key",
+    async (_, answer, status) => {
+      const { retry, stall } = stalling();
+      const { fetchImpl, sent } = scripted([stall, answer()], { namesNoKey: true });
 
-    const error = await failure(client(fetchImpl, retry).comment("DSP-1", comment));
+      const error = await failure(client(fetchImpl, retry).comment("DSP-1", comment));
 
-    expect(sent).toHaveLength(2);
-    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
-    const unsettled = error as DispatchWriteUnsettledError;
-    expect(unsettled.key).toBe(sent[0]?.headers["Idempotency-Key"] as string);
-    expect((unsettled.last as DispatchServiceError).status).toBe(status);
-    expect(error.message).toContain("so it may or may not have taken effect");
-  });
+      expect(sent).toHaveLength(2);
+      expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+      const unsettled = error as DispatchWriteUnsettledError;
+      expect(unsettled.key).toBe(sent[0]?.headers["Idempotency-Key"] as string);
+      expect((unsettled.last as DispatchServiceError).status).toBe(status);
+      expect(error.message).toContain("so it may or may not have taken effect");
+    }
+  );
 
   // A handler's 403 runs inside keyedWrites and is stored under the key. When its first answer is
   // lost, the repeat's replay is the final refusal, not an auth refusal before the keyed layer.
@@ -1598,24 +1602,27 @@ describe("DispatchClient's writes", () => {
   test.each([
     ["deadline", new DOMException("The operation timed out.", "TimeoutError")],
     ["caller's stop", new DOMException("The operation was aborted.", "AbortError")],
-  ] as const)("a 201 whose body the %s ends after a landing leaves the write unsettled, carrying its key", async (_, reason) => {
-    const controller = new AbortController();
-    const { fetchImpl, sent } = scripted([
-      refusal(503, "UNAVAILABLE", "the database is restarting"),
-      partBody(controller, reason),
-    ]);
+  ] as const)(
+    "a 201 whose body the %s ends after a landing leaves the write unsettled, carrying its key",
+    async (_, reason) => {
+      const controller = new AbortController();
+      const { fetchImpl, sent } = scripted([
+        refusal(503, "UNAVAILABLE", "the database is restarting"),
+        partBody(controller, reason),
+      ]);
 
-    const error = await failure(
-      client(fetchImpl, pacing().retry, controller.signal).comment("DSP-1", comment)
-    );
+      const error = await failure(
+        client(fetchImpl, pacing().retry, controller.signal).comment("DSP-1", comment)
+      );
 
-    expect(sent).toHaveLength(2);
-    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
-    expect((error as DispatchWriteUnsettledError).key).toBe(
-      sent[0]?.headers["Idempotency-Key"] as string
-    );
-    expect((error as DispatchWriteUnsettledError).last.name).toBe(reason.name);
-  });
+      expect(sent).toHaveLength(2);
+      expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+      expect((error as DispatchWriteUnsettledError).key).toBe(
+        sent[0]?.headers["Idempotency-Key"] as string
+      );
+      expect((error as DispatchWriteUnsettledError).last.name).toBe(reason.name);
+    }
+  );
 
   // The same body cut short by the deadline before anything else of the write: a 201's headers came,
   // so it may have landed.
@@ -1738,61 +1745,63 @@ describe("DispatchClient's writes", () => {
     expect(clock()).toBeLessThanOrEqual(DISPATCH_WRITE_RETRY.withinMs);
   });
 
-  test.each(
-    goingOn.slice(1)
-  )("a credential that fails with %s, told after its share of the deadline, ends the write at once with it", async (_, make) => {
-    const { credential, writes } = failing(make);
-    const { retry, pauses } = pacing();
-    const { fetchImpl, sent } = scripted([]);
+  test.each(goingOn.slice(1))(
+    "a credential that fails with %s, told after its share of the deadline, ends the write at once with it",
+    async (_, make) => {
+      const { credential, writes } = failing(make);
+      const { retry, pauses } = pacing();
+      const { fetchImpl, sent } = scripted([]);
 
-    const error = await failure(
-      new DispatchClient("http://dispatch.test", credential, fetchImpl, {
-        writeRetry: retry,
-      }).comment("DSP-1", comment)
-    );
+      const error = await failure(
+        new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+          writeRetry: retry,
+        }).comment("DSP-1", comment)
+      );
 
-    expect(error).toBeInstanceOf(make().constructor as new (...args: never[]) => Error);
-    expect(sent).toHaveLength(0);
-    expect(writes()).toHaveLength(1);
-    expect(pauses).toEqual([]);
-  });
+      expect(error).toBeInstanceOf(make().constructor as new (...args: never[]) => Error);
+      expect(sent).toHaveLength(0);
+      expect(writes()).toHaveLength(1);
+      expect(pauses).toEqual([]);
+    }
+  );
 
-  test.each(
-    goingOn
-  )("a credential that keeps failing with %s after a landing ends the write unsettled, carrying its key", async (_, make) => {
-    let calls = 0;
-    const { credential: never } = failing(make);
-    const credential: RequestCredential = {
-      scheme: "DPoP",
-      headers: (method, url, body, signal) => {
-        calls += 1;
-        return calls === 1
-          ? { Authorization: "DPoP live" }
-          : never.headers(method, url, body, signal);
-      },
-      secret: () => "",
-    };
-    const { fetchImpl, sent } = scripted([
-      refusal(503, "UNAVAILABLE", "the database is restarting"),
-    ]);
+  test.each(goingOn)(
+    "a credential that keeps failing with %s after a landing ends the write unsettled, carrying its key",
+    async (_, make) => {
+      let calls = 0;
+      const { credential: never } = failing(make);
+      const credential: RequestCredential = {
+        scheme: "DPoP",
+        headers: (method, url, body, signal) => {
+          calls += 1;
+          return calls === 1
+            ? { Authorization: "DPoP live" }
+            : never.headers(method, url, body, signal);
+        },
+        secret: () => "",
+      };
+      const { fetchImpl, sent } = scripted([
+        refusal(503, "UNAVAILABLE", "the database is restarting"),
+      ]);
 
-    const error = await failure(
-      new DispatchClient("http://dispatch.test", credential, fetchImpl, {
-        writeRetry: pacing().retry,
-      }).comment("DSP-1", comment)
-    );
+      const error = await failure(
+        new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+          writeRetry: pacing().retry,
+        }).comment("DSP-1", comment)
+      );
 
-    expect(sent).toHaveLength(1);
-    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
-    expect((error as DispatchWriteUnsettledError).key).toBe(
-      sent[0]?.headers["Idempotency-Key"] as string
-    );
-    expect((error as DispatchWriteUnsettledError).last).toBeInstanceOf(
-      make().constructor as new (
-        ...args: never[]
-      ) => Error
-    );
-  });
+      expect(sent).toHaveLength(1);
+      expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+      expect((error as DispatchWriteUnsettledError).key).toBe(
+        sent[0]?.headers["Idempotency-Key"] as string
+      );
+      expect((error as DispatchWriteUnsettledError).last).toBeInstanceOf(
+        make().constructor as new (
+          ...args: never[]
+        ) => Error
+      );
+    }
+  );
 
   // Every Dispatch write asks for JSON, so a 2xx whose body is never the JSON it says is asked
   // again under its key until the asking is spent, and then ends unsettled with the key: never a
@@ -1819,34 +1828,40 @@ describe("DispatchClient's writes", () => {
   // once the keyed layer answered it. A write that stores no row (`rowStores`, the related-item
   // check here) lost nothing, so the bodiless answer is its answer; and a 2xx Dispatch replayed from
   // the key settles once its body is read.
-  test.each([
-    204, 205,
-  ])("a %i the keyed layer answers settles a write that stores no row", async (status) => {
-    // A bodiless status is no JSON, so the layer is told it judged every answer.
-    const { fetchImpl, sent } = scripted([new Response(null, { status })], { judged: () => true });
+  test.each([204, 205])(
+    "a %i the keyed layer answers settles a write that stores no row",
+    async (status) => {
+      // A bodiless status is no JSON, so the layer is told it judged every answer.
+      const { fetchImpl, sent } = scripted([new Response(null, { status })], {
+        judged: () => true,
+      });
 
-    const answer: unknown = await client(fetchImpl, pacing().retry).related("ACME", {
-      title: "A title",
-    });
+      const answer: unknown = await client(fetchImpl, pacing().retry).related("ACME", {
+        title: "A title",
+      });
 
-    expect(answer).toBe("");
-    expect(sent).toHaveLength(1);
-  });
+      expect(answer).toBe("");
+      expect(sent).toHaveLength(1);
+    }
+  );
 
   // The same bodiless answer to a write whose row its callers read gives no row: Dispatch answers a
   // write's 2xx only after the write committed, so the write landed with its answer lost
   // (`#writePayload`), and is never asked again.
-  test.each([
-    204, 205,
-  ])("a %i the keyed layer answers to a write that stores a row is a landing whose answer was lost", async (status) => {
-    const { fetchImpl, sent } = scripted([new Response(null, { status })], { judged: () => true });
+  test.each([204, 205])(
+    "a %i the keyed layer answers to a write that stores a row is a landing whose answer was lost",
+    async (status) => {
+      const { fetchImpl, sent } = scripted([new Response(null, { status })], {
+        judged: () => true,
+      });
 
-    const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
+      const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
 
-    expect(error).toBeInstanceOf(DispatchWriteLandedError);
-    expect(error).toEqual(expect.objectContaining({ code: DISPATCH_ANSWER_LOST, status }));
-    expect(sent).toHaveLength(1);
-  });
+      expect(error).toBeInstanceOf(DispatchWriteLandedError);
+      expect(error).toEqual(expect.objectContaining({ code: DISPATCH_ANSWER_LOST, status }));
+      expect(sent).toHaveLength(1);
+    }
+  );
 
   test("a 201 Dispatch replayed from the key settles once its body is read", async () => {
     const { fetchImpl, sent } = scripted([replayed()]);
@@ -1870,26 +1885,29 @@ describe("DispatchClient's writes", () => {
       () => new Response("", { status: 200, headers: { "Content-Type": "application/json" } }),
     ],
     ["a 201 in plain text", () => new Response("created", { status: 201 })],
-  ] as const)("%s leaves the write unsettled with its key, whatever key it names back", async (_, answer) => {
-    for (const [options, says] of [
-      [
-        { judged: () => true },
-        "though every Dispatch write answers JSON, so something in Dispatch's place answered",
-      ],
-      [{ namesNoKey: true }, "naming no key back"],
-    ] as const) {
-      const { fetchImpl, sent } = scripted([answer()], options);
+  ] as const)(
+    "%s leaves the write unsettled with its key, whatever key it names back",
+    async (_, answer) => {
+      for (const [options, says] of [
+        [
+          { judged: () => true },
+          "though every Dispatch write answers JSON, so something in Dispatch's place answered",
+        ],
+        [{ namesNoKey: true }, "naming no key back"],
+      ] as const) {
+        const { fetchImpl, sent } = scripted([answer()], options);
 
-      const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
+        const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
 
-      expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
-      expect((error as DispatchWriteUnsettledError).key).toBe(
-        sent[0]?.headers["Idempotency-Key"] as string
-      );
-      expect((error as DispatchWriteUnsettledError).last.message).toContain(says);
-      expect(sent).toHaveLength(1);
+        expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+        expect((error as DispatchWriteUnsettledError).key).toBe(
+          sent[0]?.headers["Idempotency-Key"] as string
+        );
+        expect((error as DispatchWriteUnsettledError).last.message).toContain(says);
+        expect(sent).toHaveLength(1);
+      }
     }
-  });
+  );
 
   // A 2xx whose body breaks off is asked again on its Retry-After, and the replay settles it.
   test("a 201 whose body breaks off is asked again on its Retry-After", async () => {
@@ -2081,26 +2099,26 @@ describe("DispatchClient's writes", () => {
   // ends in `+json`, letter case aside, as Dispatch's own rule reads it (`compressibleAnswer`,
   // response_compression.go); so a proxy that rewrites the type's case leaves Dispatch's answer
   // Dispatch's.
-  test.each([
-    "Application/JSON; charset=utf-8",
-    "application/vnd.dispatch+json",
-  ])("a 201 typed %s settles the write as Dispatch's answer", async (type) => {
-    const { fetchImpl, sent } = scripted([
-      (signal) => {
-        void signal;
-        const key = sent[0]?.headers["Idempotency-Key"] ?? "";
-        return new Response(JSON.stringify(posted), {
-          status: 201,
-          headers: { "Content-Type": type, "Idempotency-Key": key },
-        });
-      },
-    ]);
+  test.each(["Application/JSON; charset=utf-8", "application/vnd.dispatch+json"])(
+    "a 201 typed %s settles the write as Dispatch's answer",
+    async (type) => {
+      const { fetchImpl, sent } = scripted([
+        (signal) => {
+          void signal;
+          const key = sent[0]?.headers["Idempotency-Key"] ?? "";
+          return new Response(JSON.stringify(posted), {
+            status: 201,
+            headers: { "Content-Type": type, "Idempotency-Key": key },
+          });
+        },
+      ]);
 
-    await expect(client(fetchImpl, pacing().retry).comment("DSP-1", comment)).resolves.toEqual(
-      posted
-    );
-    expect(sent).toHaveLength(1);
-  });
+      await expect(client(fetchImpl, pacing().retry).comment("DSP-1", comment)).resolves.toEqual(
+        posted
+      );
+      expect(sent).toHaveLength(1);
+    }
+  );
 
   // F3: Dispatch's keyed layer answers every keyed write with its key, so a 2xx without it, here
   // after an answer that named the key back, is something in Dispatch's place (a captive portal's

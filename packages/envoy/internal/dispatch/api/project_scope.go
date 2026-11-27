@@ -51,10 +51,10 @@ package api
 //
 // A credential that names one project writes every project's objects that a credential naming
 // none may write. The one exception is a private project that the credential does not name.
-// access.CredentialCovers holds that test. A results token is held narrower than both, by this
-// check rather than by that test: the broker minted it for one CI run of one project, so it
-// writes that project's results and nothing of any other project, private or not
-// (callerCovers, routeDecl.ResultsScope). Each resolver reads the visibility of the target's
+// access.CredentialCovers holds that test. A results token is held narrower than both by that same
+// test: withinProjectScope builds its credential with Restricted, since the broker minted it for
+// one CI run of one project, so it writes that project's results and nothing of any other
+// project, private or not (routeDecl.ResultsScope). Each resolver reads the visibility of the target's
 // project in the statement that reads that project, and the check passes it to the test. A
 // target of a private project that the credential does not name gets the refusal of a target
 // that resolves to nothing: an object that the caller cannot see answers as one that does not
@@ -372,10 +372,11 @@ func unaddressed(err error) bool {
 // For a caller whose credential names no project, a covered route costs one header read and
 // calls the handler. For one that names a project, the check resolves the target's project and
 // that project's visibility. A target of a project that access.CredentialCovers covers reaches
-// the handler, whichever project the credential names, but for a results token, whose one
-// project narrows every project it reaches: it writes the results of that project alone. A
-// target that resolves to no project or to nothing is refused, so the check fails closed, and an
-// object of a private project that the credential does not name gets that same refusal.
+// the handler, whichever project the credential names. A results token's credential is read as
+// restricted there, so its one project narrows every project it reaches: it writes the results of
+// that project alone. A target that resolves to no project or to nothing is refused, so the check
+// fails closed, and an object of a private project that the credential does not name gets that
+// same refusal.
 func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	switch route.WriteClass {
 	case scopeProject:
@@ -401,6 +402,12 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 				handler(w, r)
 				return
 			}
+			// A results token's one project narrows every project it reaches, private or not, as a
+			// restricted member's list does (access.CredentialCovers): the broker minted it for one
+			// CI run of one project, and that run writes the results of its own project alone
+			// (routeDecl.ResultsScope, spec_results.go). A named token's list narrows the private
+			// projects alone, as the file comment says.
+			credential := access.Credential{Listed: []string{covers}, Restricted: resultsOnlyRequest(r)}
 			belongsTo, private, err := resolve(r.Context(), s.deps.Store.Pool, r)
 			if err != nil {
 				s.writeHandlerError(w, err)
@@ -411,7 +418,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 			// private project that the credential does not name gets the same answer, so the
 			// caller cannot tell it from an id nobody holds. The check does not hide which ids
 			// exist, and it does not claim to (the file comment).
-			if belongsTo == "" || !callerCovers(r, covers, belongsTo, private) {
+			if belongsTo == "" || !access.CredentialCovers(credential, belongsTo, private) {
 				s.writeHandlerError(w, outsideProjectScopeError(covers))
 				return
 			}
@@ -421,7 +428,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 					s.writeHandlerError(w, err)
 					return
 				}
-				if checkProject == "" || !callerCovers(r, covers, checkProject, checkPrivate) {
+				if checkProject == "" || !access.CredentialCovers(credential, checkProject, checkPrivate) {
 					s.writeHandlerError(w, outsideProjectScopeError(covers))
 					return
 				}
@@ -446,22 +453,6 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 		// all (scopeNoWrite).
 		return handler
 	}
-}
-
-// callerCovers reports whether the credential of r, which names the one project covers, may write
-// an object of project, whose visibility is private.
-//
-// Every credential but one writes what access.CredentialCovers covers: its own project, and every
-// other project that is not private. A results token is the one that does not (model.Credential.
-// ResultsOnly): the broker mints it for one CI run and holds it to the one project whose results
-// that run writes (ciphertoken shapeOf, the results project scope), so it writes that project
-// alone, whatever a project's visibility is. The results routes' own checks of the run's
-// repository refuse most of the rest, and this is the rule that does not rest on them.
-func callerCovers(r *http.Request, covers, project string, private bool) bool {
-	if resultsOnlyRequest(r) {
-		return project == covers
-	}
-	return access.CredentialCovers(access.Credential{Listed: []string{covers}}, project, private)
 }
 
 // outsideProjectScopeError is the refusal of a write whose target resolves to no project or to

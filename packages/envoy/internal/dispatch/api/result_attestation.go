@@ -11,6 +11,7 @@ package api
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -70,7 +71,8 @@ func (a attestedResult) statement() model.ResultAttestation {
 			Verdict: a.verdict, Observed: a.observed, Job: a.job, Leg: a.leg,
 			Run: model.ResultRun{
 				Repository: a.run.Repository, WorkflowRef: a.run.WorkflowRef, Ref: a.run.Ref, EventName: a.run.EventName,
-				RunID: a.run.RunID, Attempt: int(a.run.Attempt), CheckRunID: a.run.CheckRunID, RunnerEnvironment: a.run.RunnerEnvironment,
+				RunID: strconv.FormatInt(a.run.ID, 10), Attempt: int(a.run.Attempt), CheckRunID: strconv.FormatInt(a.run.CheckRun, 10),
+				RunnerEnvironment: a.run.RunnerEnvironment,
 			},
 			Recorder: model.ResultRecorder{Session: a.session, Principal: oauthwire.ResultPrincipal(a.run.Repository, a.run.Workflow)},
 		},

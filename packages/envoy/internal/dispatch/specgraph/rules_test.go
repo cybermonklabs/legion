@@ -482,20 +482,21 @@ func TestValidateSortsItsProblems(t *testing.T) {
 }
 
 // Judge reads the files as Parse does and judges the tree as Validate does, with the problems of
-// both in one list in Validate's order: a line outside any block and an unclosed block are
-// Parse's, and the leaf the unclosed block leaves without a check is Validate's. The tree is the
-// one Parse reads, the unclosed block's statement in it.
+// both in one list in Validate's order: a file with no document and a key the node does not take
+// are Parse's, and the leaf that statement leaves without a check is Validate's. The tree is the
+// one Parse reads, the statement the schema refused in it, since such a document still gives its
+// node.
 func TestJudgeHoldsTheProblemsOfParseAndOfValidate(t *testing.T) {
 	t.Parallel()
 	tree, problems := Judge(map[string][]byte{
-		"b.md": []byte(":::requirement{#broken kind=\"behavior\"}\nThis block never closes.\n"),
-		"a.md": []byte("A line outside any block.\n"),
+		"b.yaml": []byte("---\ntype: requirement\nid: broken\nkind: behavior\ntext:\n  - Legion keeps the claim of an issue.\nnote: a key no node takes\n"),
+		"a.yaml": []byte(""),
 	}, Options{})
 	var keys []string
 	for _, p := range problems {
 		keys = append(keys, fmt.Sprintf("%s:%d %s %s", p.Pos.File, p.Pos.Line, p.Node, p.Rule))
 	}
-	want := []string{"a.md:1 - text-outside-block", "b.md:1 broken leaf-without-check", "b.md:1 broken unclosed-block"}
+	want := []string{"a.yaml:1 - no-node", "b.yaml:1 broken leaf-without-check", "b.yaml:1 broken schema"}
 	if !reflect.DeepEqual(keys, want) {
 		t.Errorf("Judge problems %q, want %q", keys, want)
 	}
