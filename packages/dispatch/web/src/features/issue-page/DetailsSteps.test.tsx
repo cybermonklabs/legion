@@ -62,6 +62,7 @@ const TWO_TASKS: IssueSteps = {
   issue: KEY,
   tasks: [
     {
+      needs: null,
       steps: [
         stepRecord({
           ended_at: at(8, 30),
@@ -75,6 +76,7 @@ const TWO_TASKS: IssueSteps = {
       task: "docs",
     },
     {
+      needs: null,
       steps: [
         stepRecord({ ended_at: at(9, 40), id: "implement-1", started_at: at(9) }),
         stepRecord({
@@ -300,6 +302,7 @@ test("the section draws the experiment and variant of the newest run once, above
     issue: KEY,
     tasks: [
       {
+        needs: null,
         steps: [
           stepRecord({ experiment: "planning", generation: 1, id: "older-1", variant: "a" }),
           stepRecord({ experiment: "planning", generation: 2, id: "newest-1", variant: "b" }),
@@ -339,6 +342,7 @@ test("the section draws no experiment line where no record of the newest run nam
     issue: KEY,
     tasks: [
       {
+        needs: null,
         steps: [
           stepRecord({ experiment: "planning", generation: 1, id: "older-1", variant: "a" }),
           stepRecord({ generation: 2, id: "newest-1" }),
@@ -373,9 +377,9 @@ test("the runs are drawn 20 at a time across their tasks, the heading counts the
   const steps = renderSteps(async () => ({
     issue: KEY,
     tasks: [
-      { steps: runsOf("docs", 15), task: "docs" },
-      { steps: runsOf("default", 10), task: "default" },
-      { steps: runsOf("release", 5), task: "release" },
+      { needs: null, steps: runsOf("docs", 15), task: "docs" },
+      { needs: null, steps: runsOf("default", 10), task: "default" },
+      { needs: null, steps: runsOf("release", 5), task: "release" },
     ],
   }));
   const section = () => screen.getByRole("region", { name: CONTROL_LABELS.steps });
