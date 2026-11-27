@@ -762,33 +762,31 @@ func TestAPortReservedOnAnAddressTakesItsServerAndNoOtherBind(t *testing.T) {
 	t.Logf("reserved %s: binds without SO_REUSEADDR refused there and on 0.0.0.0, a dial refused, and a Go listener bound it twice", address)
 }
 
-// startReady starts cmd as startLogged does and waits up to 30 s for ready to return nil, failing
-// the test with the process's output when it exits or the 30 s pass first.
+// startReady starts cmd as startLogged does and waits for ready to return nil (awaitReady), failing
+// the test with the process's output when it exits first.
 func startReady(t *testing.T, name string, cmd *exec.Cmd, ready func(*cmdtest.Process) error) *cmdtest.Process {
 	t.Helper()
 	p := startLogged(t, name, cmd)
-	if err := awaitReady(p, ready); err != nil {
+	if err := awaitReady(t, name, p, ready); err != nil {
 		t.Fatalf("%s did not start: %v\n%s", name, err, p.Output.String())
 	}
 	return p
 }
 
-// awaitReady waits up to 30 s for ready to return nil while p runs, and returns ready's last error
-// otherwise.
-func awaitReady(p *cmdtest.Process, ready func(*cmdtest.Process) error) error {
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+// awaitReady waits for ready to return nil while p runs, and returns an error once p exits first.
+// Only the test binary's deadline bounds the wait (testwait.Until): a server that a loaded machine
+// starts late costs the test time, not its result.
+func awaitReady(t *testing.T, name string, p *cmdtest.Process, ready func(*cmdtest.Process) error) error {
+	t.Helper()
+	return testwait.Until(t, name+" to be ready", func() (error, bool) {
 		select {
 		case <-p.Exited:
-			return errors.New("the process exited")
+			return errors.New("the process exited"), true
 		default:
 		}
 		err := ready(p)
-		if err == nil || time.Now().After(deadline) {
-			return err
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return err, err == nil
+	})
 }
 
 // kill sends the server SIGKILL and waits for it to exit.

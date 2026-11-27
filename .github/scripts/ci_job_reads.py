@@ -657,6 +657,9 @@ SCHEMA_SCRIPT = (
 # moves no closure: the whole package compiles under the tag, whichever tests the run selects, so
 # each entry's Run is the plain tagged go test the step ran before.
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
+# The wrapper envoy-infra-go's natslive step runs each go test under: it gives the go test a
+# -timeout of what is left of the job's limit (go-test-step-expansion.py's GO_WRAPPERS).
+GO_WITHIN_JOB = ".github/scripts/go-test-within-job.sh"
 NATS_MATRIX_STEP = "Test the container-backed NATS matrix (natslive)"
 NATS_MATRIX_SCRIPT = f"""\
 rig=$(../../{TAGGED_TESTS} natslive ./internal/testnats)
@@ -676,7 +679,7 @@ INFRA_NATSLIVE_PACKAGES = ["./core", "./seed", "./gcp"]
 INFRA_NATSLIVE_SCRIPT = f"""\
 for pkg in {" ".join(INFRA_NATSLIVE_PACKAGES)}; do
   pattern=$(../../../{TAGGED_TESTS} natslive "$pkg")
-  go test -count=1 -timeout 30m -tags natslive -run "$pattern" "$pkg"
+  ../../../{GO_WITHIN_JOB} go test -count=1 -tags natslive -run "$pattern" "$pkg"
 done"""
 MEMORY_STEP = "Memory tests of the Dispatch server"
 MEMORY_SCRIPT = f"""\

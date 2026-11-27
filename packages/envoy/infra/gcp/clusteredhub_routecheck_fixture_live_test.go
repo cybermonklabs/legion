@@ -183,7 +183,7 @@ func (h *stagedHub) start(t *testing.T, s *stagedServer) {
 	s.startedAt = time.Now().UTC().Truncate(time.Second)
 	p := startLogged(t, s.name, cmd)
 	s.stamps = stampOutput(p)
-	if err := awaitReady(p, listeningForRoutes(s.route)); err != nil {
+	if err := awaitReady(t, s.name, p, listeningForRoutes(s.route)); err != nil {
 		t.Fatalf("%s did not start: %v\n%s", s.name, err, p.Output.String())
 	}
 	s.proc = p

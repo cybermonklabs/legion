@@ -76,6 +76,10 @@ echo "case: the wrapper's own path is read from its end, as a step writes it"
 check "a deeper relative path is still the wrapper" \
   "$(is "$(command_of '../../../.github/scripts/race_memory.py go test ./pkg')" "go test ./pkg")"
 
+echo "case: the job-limit wrapper (envoy-infra-go's natslive step)"
+line='../../../.github/scripts/go-test-within-job.sh go test -count=1 -tags natslive -run "$pattern" "$pkg"'
+check "is dropped" "$(is "$(command_of "$line")" 'go test -count=1 -tags natslive -run "$pattern" "$pkg"')"
+
 echo "case: a -run pattern keeps its quoting"
 line="GODEBUG=checkfinalizers=1 go test -run '^(TestOne|TestTwo)\$' ./pkg"
 check "the text keeps the quotes the line wrote" \

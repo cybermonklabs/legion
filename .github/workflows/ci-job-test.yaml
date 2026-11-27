@@ -378,6 +378,10 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"disk_watch_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/disk_watch.test.sh .github/scripts/disk_watch.test.sh
 
+      - name: Test the go test job-limit wrapper
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_test_within_job_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/go-test-within-job.test.sh .github/scripts/go-test-within-job.test.sh
+
       - name: Test the daemon contract order script (a scratch repository)
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"daemon_contract_order_test"')
         run: .github/scripts/harness-pool.sh start scripts/daemon-contract-order.test.sh bash scripts/daemon-contract-order.test.sh

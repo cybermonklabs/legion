@@ -12,6 +12,7 @@ GATE = gate("envoy_infra_go", "envoy-infra-go", exact=[
     (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: consts Image, HubImage"),
     (f"{ENVOY}/internal/testpg/testpg.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: const Image"),
     (TAGGED_TESTS, f"{at('envoy-infra-go', INFRA_NATSLIVE_STEP)} takes each call's -run from it"),
+    (GO_WITHIN_JOB, f"{at('envoy-infra-go', INFRA_NATSLIVE_STEP)} runs each go test under it"),
 ) + setup_go("envoy-infra-go", f"{INFRA}/go.mod"))
 GATE = with_reads(GATE, [
     Read('packages/envoy/internal/dispatch/delivery/**', "filter envoy_infra_go held packages/envoy/internal/dispatch/delivery/** by hand before the filters were computed: it selected 2 file(s) no other read of this gate declares", but=('**/*_test.go',)),
