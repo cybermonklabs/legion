@@ -924,11 +924,18 @@ type AdoptWorkingCopy struct {
 	TimeoutMs int    `json:"timeoutMs"`
 }
 
-// AdoptWorkingCopyResult answers AdoptWorkingCopy (worker-shim.ts:332-341).
+// AdoptWorkingCopyResult answers AdoptWorkingCopy (worker-shim.ts:332-341). EditsCommits names
+// each commit in which bringing a stale working copy up to date (`jj workspace update-stale`) left
+// the edits that no jj command had recorded, which are no longer on disk, on an answer that
+// succeeds and on one that refuses alike: an update that succeeded before a later command failed
+// still left them there. The field is optional both ways: a daemon of an earlier release decodes
+// the frame with a plain json.Unmarshal (decodeInto) and ignores it, and a shim of an earlier
+// release writes none, which reads as no such commit.
 type AdoptWorkingCopyResult struct {
-	ID    string `json:"id"`
-	OK    bool   `json:"ok"`
-	Error string `json:"error,omitempty"`
+	ID           string   `json:"id"`
+	OK           bool     `json:"ok"`
+	Error        string   `json:"error,omitempty"`
+	EditsCommits []string `json:"editsCommits,omitempty"`
 }
 
 // WorkspaceWork asks the shim whether the workspace it runs in holds work that no branch or tag

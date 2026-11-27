@@ -1,0 +1,58 @@
+# jj --ignore-working-copy debug object commit 0fb55fde683d9090c90cc1e55b5d2192180f8e85 --color=never, printed by jj 0.46.0-sami.20261127-111037-13d6540c23ece8c970fef2f8978f939ebf7dede9 as conflicted, with descriptions, and so conflict labels, that hold ", TreeId(" and root_tree:
+Commit {
+    parents: [
+        CommitId(
+            "1ad5fed258483239a0b6938e4e996a5b69e96a92",
+        ),
+    ],
+    predecessors: [
+        CommitId(
+            "46aafa0b6ba5602f0b39cd1894ec7ff126a71ae0",
+        ),
+    ],
+    root_tree: Conflicted(
+        [
+            TreeId(
+                "09fd040d5db469ff43138d500db567e4df6d7ec9",
+            ),
+            TreeId(
+                "48330953513ed59af77f677348a28cbab5ee657c",
+            ),
+            TreeId(
+                "fd5e7b0cf42d7d2fa6952b3f74b703e4995e3705",
+            ),
+        ],
+    ),
+    conflict_labels: Conflicted(
+        [
+            "qlkmtwyp 1ad5fed2 \"other root_tree: Resolved( TreeId(\"abc\"), conflict_labels: \"q\\\" z\" (rebase destination)",
+            "zotqkoyv 9ab5f37b \"the default branch\" (parents of rebased revision)",
+            "qlpsxksy 19f3e682 \"ws \"side\" TreeId(\"x\") root_tree: y\" (rebased revision)",
+        ],
+    ),
+    change_id: ChangeId(
+        "9ea72f710f288b18bc341dc5d2c3be1f",
+    ),
+    description: "ws \"side\" TreeId(\"x\") root_tree: y\n",
+    author: Signature {
+        name: "implementer",
+        email: "implementer@example.test",
+        timestamp: Timestamp {
+            timestamp: MillisSinceEpoch(
+                1795807677000,
+            ),
+            tz_offset: 0,
+        },
+    },
+    committer: Signature {
+        name: "implementer",
+        email: "implementer@example.test",
+        timestamp: Timestamp {
+            timestamp: MillisSinceEpoch(
+                1795807677000,
+            ),
+            tz_offset: 0,
+        },
+    },
+    secure_sig: None,
+}

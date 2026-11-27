@@ -1,0 +1,46 @@
+# jj --ignore-working-copy debug object commit 7c1f1c4ad8b2d6223c8488171c33863d7b804c37 --color=never, printed by jj 0.46.0-sami.20261127-111037-13d6540c23ece8c970fef2f8978f939ebf7dede9 in a workspace whose working-copy commit another workspace rebased onto a commit that changes a file
+Commit {
+    parents: [
+        CommitId(
+            "a57c270fa533314259321e90045cb4ef08ff365d",
+        ),
+    ],
+    predecessors: [
+        CommitId(
+            "52c8f7b15f0f7215c9b0cc9125b70908d8627f48",
+        ),
+    ],
+    root_tree: Resolved(
+        TreeId(
+            "f014918f4d7a531b14e2b59feffae31f97727241",
+        ),
+    ),
+    conflict_labels: Resolved(
+        "",
+    ),
+    change_id: ChangeId(
+        "f72ee5561d12532c0d547ea1bb0e07d7",
+    ),
+    description: "",
+    author: Signature {
+        name: "tester",
+        email: "tester@example.test",
+        timestamp: Timestamp {
+            timestamp: MillisSinceEpoch(
+                1795807675000,
+            ),
+            tz_offset: 0,
+        },
+    },
+    committer: Signature {
+        name: "implementer",
+        email: "implementer@example.test",
+        timestamp: Timestamp {
+            timestamp: MillisSinceEpoch(
+                1795807675000,
+            ),
+            tz_offset: 0,
+        },
+    },
+    secure_sig: None,
+}

@@ -163,7 +163,9 @@ type Delivery struct {
 	// at every send, by the one render that writes both (Deps.DesignNews, and Deps.RootTask where a
 	// root architect's task is narrowed, and at every send of a resume task, whose text RootTask
 	// writes from the record with this news rendered after it), so the news a delivery holds is
-	// exactly what its text names: no writer keeps one beside a text it did not render with it.
+	// exactly what its text names: no writer keeps one beside a text it did not render with it. The
+	// one writer of the start's own text in it outside a render is the sentence a stale working
+	// copy's adoption adds to the task (leftEdits, Deps.NewsTask), written to both alike.
 	// Empty for a task that carries none, which no send asks about.
 	News []byte
 	// Carried is the copy of News that the prompt whose turn this delivery's confirmation takes
@@ -1633,6 +1635,15 @@ func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, 
 // delivery's, the pending delivery's News is what it carries. Its acknowledgement records that
 // news with the prompt (acked), and a turn taken for the task's while the send is in flight
 // credits the same (turnAnswers).
+//
+// The prompt's text is fixed here, before the adoption runs, and an adoption that brought a stale
+// working copy up to date can answer commits in which the update left the edits that no jj
+// command had recorded (runtime.Adoption). Such a send does not prompt with the text fixed here:
+// the goroutine hands the commits to the machine first (leftEdits), which writes them into the
+// pending task under a new id, and the send goes on with that task, so the prompt the agent gets
+// names them. A refusal that names commits is recorded on the task the same way before the
+// refusal's own handling, so the next send carries them, though its own adoption, of a working
+// copy that is up to date by then, names none.
 func (m *Machine) startSend(ctx context.Context, conn runtime.Conn) error {
 	if err := m.currentWorkingCopy(ctx); err != nil {
 		return err
@@ -1658,7 +1669,11 @@ func (m *Machine) startSend(ctx context.Context, conn runtime.Conn) error {
 		working := m.worker()
 		var err error
 		if adopting {
-			err = m.adopt(working, role, loc, &d)
+			var edits []string
+			edits, err = m.adopt(working, role, loc, &d)
+			if len(edits) > 0 {
+				d, prompt = m.leftEdits(working, send, d, prompt, edits)
+			}
 		}
 		if err == nil {
 			sending, cancel := context.WithTimeout(working, m.deps.Timeouts.RPC)
@@ -1761,21 +1776,121 @@ func (m *Machine) issueInTurn() (claim.Token, bool) {
 // with the shim's own work inside it. The refusals are logged where the send's outcome is
 // (refused); without this line nothing in the log tells which tasks adopted the working copy,
 // which is what a production check reads to see the rule held (dispatch://INFRA-2695).
-func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locator, d *Delivery) error {
+//
+// It answers each commit in which the adoption's update of a stale working copy left the edits
+// that no jj command had recorded, on a refusal as on a success (runtime.Adoption), and the line
+// of an adoption the shim answers ok names them too.
+func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locator, d *Delivery) ([]string, error) {
 	if loc == nil {
-		return fmt.Errorf("adopt the working copy of %s: the claim has no locator", m.claim.Token)
+		return nil, fmt.Errorf("adopt the working copy of %s: the claim has no locator", m.claim.Token)
 	}
 	id, err := m.deps.Identity(ctx, role, m.claim.Issue)
 	if err != nil {
-		return fmt.Errorf("%w: the git identity of %s: %w", runtime.ErrIdentityUnavailable, m.claim.Token, err)
+		return nil, fmt.Errorf("%w: the git identity of %s: %w", runtime.ErrIdentityUnavailable, m.claim.Token, err)
 	}
 	started := m.deps.Clock.Now()
-	if err := m.deps.Runtime.AdoptWorkingCopy(ctx, *loc, id); err != nil {
-		return err
+	adoption, err := m.deps.Runtime.AdoptWorkingCopy(ctx, *loc, id)
+	if err != nil {
+		return adoption.EditsCommits, err
 	}
-	m.log.Info("supervise: the working copy was adopted for the phase task",
-		"delivery", d.ID, "phase", string(d.Phase), "identity", id.Name, "took", m.deps.Clock.Now().Sub(started))
-	return nil
+	args := []any{"delivery", d.ID, "phase", string(d.Phase), "identity", id.Name, "took", m.deps.Clock.Now().Sub(started)}
+	if len(adoption.EditsCommits) > 0 {
+		args = append(args, "editsCommits", adoption.EditsCommits)
+	}
+	m.log.Info("supervise: the working copy was adopted for the phase task", args...)
+	return adoption.EditsCommits, nil
+}
+
+// leftEdits writes into the pending task the commits in which the adoption of send, bringing a
+// stale working copy up to date, left the edits that no jj command had recorded, which are no
+// longer on disk (staleEditsSentence), and answers the delivery and the prompt send goes on with:
+// the rewritten task, under a new id, and its prompt as message composes it. The sentence is the
+// task's own text from here on, so every later send of the task carries it — after a refusal, a
+// busy answer or a daemon restart — where the adoption of each, of a working copy that is up to
+// date by then, names no commit. A task that carries news of the approved design is rendered
+// anew at each later send from the start's own text its news holds (Deps.DesignNews), so the
+// sentence is written there too (Deps.NewsTask) and stored with the task in the same write: this
+// send names the commits at the task's end, and each later one after the start's own text, before
+// the news. News the daemon cannot write again is logged and left as it was: this send still
+// names the commits, and a later send of the task, whose render reads that news, does not. The
+// new id keeps the shim's dedupe by id (shimwire's Dedupe) from answering the new text from its
+// record of the old, and send takes it, so the outcome send posts is the pending task's
+// (fenceOutcome). The task is written as memory holds it, and a write that failed is written again
+// before the next decision (saved, settle): the commits are named once, by this adoption, and a
+// write that waited for the store to take it would lose them.
+//
+// It is a decision of the send's goroutine, made under the machine's lock and ended by unlock as
+// every decision is, on the one condition that send is still the pending task's: no outcome has
+// ended it and the task it was made for is still pending at the generation it was made at. A send
+// that is not goes on as it was, and its outcome is fenced as ever; the commits are logged, so the
+// log still names them.
+func (m *Machine) leftEdits(ctx context.Context, send *sending, d Delivery, prompt string, commits []string) (Delivery, string) {
+	m.mu.Lock()
+	defer m.unlock()
+	p := m.claim.Pending
+	if m.send != send || p == nil || p.ID != d.ID || send.generation != m.claim.Generation {
+		m.log.Warn("supervise: the adoption left the edits no jj command had recorded in a commit, and the task it was made for is no longer this send's; no task names the commit",
+			"delivery", d.ID, "pending", pendingID(p), "editsCommits", commits)
+		return d, prompt
+	}
+	naming := func(task string) string { return withStaleEdits(task, p.RoundNamed, commits) }
+	next := *p
+	next.ID, next.Task = rotateTaskID(p.ID), naming(p.Task)
+	if len(p.News) > 0 && m.deps.NewsTask != nil {
+		news, err := m.deps.NewsTask(m.claim, p.News, naming)
+		if err != nil {
+			m.log.Warn("supervise: the news the task carries could not be written with the commits the adoption left the edits in; this send names them, and a later send, whose text is rendered from that news, does not",
+				"delivery", next.ID, "editsCommits", commits, "error", err)
+		} else {
+			next.News = news
+		}
+	}
+	*m.claim.Pending = next
+	if err := m.saved(m.putDelivery(ctx, next)); err != nil {
+		m.log.Warn("supervise: the task that names the commits the adoption left the edits in was not written; settle writes it again",
+			"delivery", next.ID, "error", err)
+	}
+	if m.heldSend == send.id {
+		m.heldSend = next.ID
+	}
+	send.id = next.ID
+	m.log.Info("supervise: the adoption brought a stale working copy up to date and left the edits no jj command had recorded in a commit; the task names it and is sent at once",
+		"delivery", next.ID, "was", d.ID, "issue", m.claim.Issue, "editsCommits", commits)
+	text, carried := next.message(m.claim)
+	m.carried.abandoned = m.carried.abandoned || carried.abandoned
+	m.carried.ended = m.carried.ended || carried.ended
+	return next, text
+}
+
+// withStaleEdits is task with the sentence that names the commits a stale working copy's update
+// left the edits in (staleEditsSentence), a blank line before it where the task says anything. It
+// goes at the task's end, except before the two sentences of a reviewer's review round where the
+// task ends with them (roundNamed, Delivery.RoundNamed), which stay the last two of each task the
+// reviewer is sent (reviewround). The same holds of the start's own text a task's news carries,
+// which ends with those two sentences where the task does.
+func withStaleEdits(task string, roundNamed bool, commits []string) string {
+	body, round := task, ""
+	if roundNamed {
+		if cut, sentences, named := reviewround.Split(task); named {
+			body, round = cut, sentences
+		}
+	}
+	if body != "" {
+		body += "\n\n"
+	}
+	return body + staleEditsSentence(commits) + round
+}
+
+// staleEditsSentence tells the role that the working copy was stale before its task, and where
+// the edits that no jj command had recorded went when it was brought up to date: into commits,
+// which are not checked out, and off the disk.
+func staleEditsSentence(commits []string) string {
+	if len(commits) == 1 {
+		return "Before this task, the working copy was stale. Bringing it up to date left the edits that no jj command had recorded in commit " +
+			commits[0] + ", and they are no longer on disk: read them with `jj show " + commits[0] + "` and restore what you need."
+	}
+	return "Before this task, the working copy was stale. Bringing it up to date left the edits that no jj command had recorded in commits " +
+		strings.Join(commits, ", ") + ", and they are no longer on disk: read each with `jj show <commit>` and restore what you need."
 }
 
 // confirmCarrying records that the pending delivery's turn started: the claim and the delivery

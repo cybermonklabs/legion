@@ -1406,8 +1406,16 @@ Under tmux the `jj` in the state directory's `bin/` does, or the image's wrapper
 
 **The adoption sets the author of `@`.**
 Before the daemon sends a role a phase task, it asks that role's shim to adopt the working copy under the role's App identity.
-The shim runs `jj --ignore-working-copy log` on `@` without snapshotting the working copy.
+First the shim reads whether the working copy is stale, without snapshotting it.
+It compares the operation and the tree that the working copy recorded (`jj debug working-copy`) with the repository's head operation and the tree of `@`, as jj's own check does.
+Only on a stale working copy does it run `jj workspace update-stale`, which snapshots the working copy.
+That update leaves the edits that no jj command recorded in a commit of `@`'s change that is not checked out: `@`'s change is then divergent, and those edits are no longer on disk.
+The shim names each such commit in its answer (`editsCommits`) and in one line of its log.
+The daemon adds a sentence to the task that names the commit and says that the edits are there, and every later send of the task carries it.
+A role restores the edits from that commit, which `jj show <commit>` prints.
+Next the shim runs `jj --ignore-working-copy log` on `@`, which takes no snapshot either.
 Then it runs `jj --ignore-working-copy metaedit --update-author` on an `@` that has no description, or `jj --ignore-working-copy new` on an `@` that has one.
+After that change the shim reads again whether the working copy is stale, since a jj command that another workspace ran meanwhile can leave it stale, and brings it up to date the same way.
 The metaedit fills an author that is empty: an `@` that jj makes with no identity has an empty author.
 `jj git push` refuses such a commit, unless the push step first gives it the author of the role that its `Legion-Role` trailer names.
 An adoption can also make one role the author of edits that another role left in `@`.

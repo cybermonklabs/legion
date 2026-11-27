@@ -1,0 +1,4 @@
+# jj --ignore-working-copy debug working-copy --color=never, printed by jj 0.46.0-sami.20261127-111037-13d6540c23ece8c970fef2f8978f939ebf7dede9 as conflicted, with descriptions, and so conflict labels, that hold ", TreeId(" and root_tree:
+Type: "local"
+Current operation: OperationId("3fe108be7a62aed036664cf8492d848bbbf4a30c65a78293d447d49243b297d748e7548f9b6eb13e1c8462cc4e8faf1aa9873e31de20dbd3982714686fa5b43d")
+Current tree: MergedTree { tree_ids: Conflicted([TreeId("09fd040d5db469ff43138d500db567e4df6d7ec9"), TreeId("48330953513ed59af77f677348a28cbab5ee657c"), TreeId("fd5e7b0cf42d7d2fa6952b3f74b703e4995e3705")]), labels: Labeled(["qlkmtwyp 1ad5fed2 \"other root_tree: Resolved( TreeId(\"abc\"), conflict_labels: \"q\\\" z\" (rebase destination)", "zotqkoyv 9ab5f37b \"the default branch\" (parents of rebased revision)", "qlpsxksy 19f3e682 \"ws \"side\" TreeId(\"x\") root_tree: y\" (rebased revision)"]), .. }

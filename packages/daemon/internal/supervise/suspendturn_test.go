@@ -471,7 +471,7 @@ type gatedAdoption struct {
 	release chan struct{}
 }
 
-func (g *gatedAdoption) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
+func (g *gatedAdoption) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) (runtime.Adoption, error) {
 	g.entered <- string(loc.Claim)
 	<-g.release
 	return g.Runtime.AdoptWorkingCopy(ctx, loc, id)

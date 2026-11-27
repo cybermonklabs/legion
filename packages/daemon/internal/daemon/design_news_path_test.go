@@ -72,7 +72,8 @@ type pathRow struct {
 // admission that apply each fact, the outbox that runs each row, and a supervisor whose machines
 // write to the daemon's store and ask the workflow runtime whether a task's phase holds, whether a
 // root hears, and what a task's news says at its send (PhaseHolds, RootHears, RootTask,
-// DesignNews). Each member holds an open pull request at a head of its own, the phases row of the
+// DesignNews), and have the daemon write a sentence into the start's own text a task's news holds
+// (NewsTask). Each member holds an open pull request at a head of its own, the phases row of the
 // role its phase names, and the admission slot its work runs under.
 //
 // seen is every row the rig has read from the outbox, by id: a row the lanes run is finished and
@@ -128,7 +129,7 @@ func newNewsPathRig(t *testing.T, approved int, members ...pathMember) *newsPath
 	answers := &workflowRuntime{pool: pool, records: records, gatedSteps: steps, dispatchProject: "LEGION", log: quietLogger()}
 	r.sup.deps.Store = st
 	r.sup.deps.PhaseHolds, r.sup.deps.RootHears = answers.phaseHolds, answers.rootHears
-	r.sup.deps.RootTask, r.sup.deps.DesignNews = answers.rootTask, answers.designNews
+	r.sup.deps.RootTask, r.sup.deps.DesignNews, r.sup.deps.NewsTask = answers.rootTask, answers.designNews, newsTask
 	r.conns = r.sup.deps.Conns.(*fake.Conns)
 	r.runner = &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: r.sup, trees: st,
 		dispatch: r.client, notices: r.notices, handlers: []intake.Handler{engine, r.admission}, tokens: outboxTokens{},

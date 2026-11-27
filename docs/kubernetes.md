@@ -11879,6 +11879,8 @@ Containers, in order:
    The shim dials the daemon, sends its boot token in one `hello` line, and only after the daemon's `hello_ack` spawns OMP.
    Every assignment to this pod -- the first, and a live idle worker re-prompted after another role's pod has touched the shared working copy -- first adopts `@` for the assigned role:
    the daemon sends the shim an `adopt-working-copy` frame (`jjUser`, `jjEmail`, `timeoutMs` — never a command or a path), the shim runs `jj --ignore-working-copy metaedit --update-author` (or `jj --ignore-working-copy new` on a described `@`) in its own workspace (`LEGION_WORKSPACE`/`LEGION_ROOT_WORKSPACE`) and answers `adopt-working-copy-result`;
+   before that change and again after it, the shim reads with no snapshot whether the working copy is stale, and runs `jj workspace update-stale` on a stale one only;
+   that update leaves the edits that no jj command recorded in a divergent commit that is not checked out, which the answer names in its optional `editsCommits` (on `ok: false` too), the shim names in a line of its log, and the daemon names in a sentence of the task;
    `ok: false` fails the delivery exactly as a failed `metaedit` does on tmux.
    The metaedit fills an empty author.
    `jj git push` refuses a commit with an empty author, but the push step of `legion jj` first gives such a commit the author of the role that its `Legion-Role` trailer names, where the step's rules let it (`docs/deployment.md`).

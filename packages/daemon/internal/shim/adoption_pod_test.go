@@ -113,7 +113,13 @@ func (r podRunner) Run(ctx context.Context, command workspace.Command) (workspac
 // fails.
 func (w podWorkspace) as(user string, argv ...string) string {
 	w.t.Helper()
-	return strings.TrimSpace(w.runner(user).Out(w.dir, w.argv(argv)...))
+	return w.asIn(w.dir, user, argv...)
+}
+
+// asIn is as in dir, another workspace of the issue's clone.
+func (w podWorkspace) asIn(dir, user string, argv ...string) string {
+	w.t.Helper()
+	return strings.TrimSpace(w.runner(user).Out(dir, w.argv(argv)...))
 }
 
 // try is as for a command whose failure the caller reads: its combined output and its error.
@@ -138,8 +144,14 @@ func (w podWorkspace) argv(argv []string) []string {
 // write writes each file of files, by its path in the workspace.
 func (w podWorkspace) write(files map[string]string) {
 	w.t.Helper()
+	w.writeIn(w.dir, files)
+}
+
+// writeIn is write in dir, another workspace of the issue's clone.
+func (w podWorkspace) writeIn(dir string, files map[string]string) {
+	w.t.Helper()
 	for name, body := range files {
-		if err := os.WriteFile(filepath.Join(w.dir, name), []byte(body), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 			w.t.Fatal(err)
 		}
 	}
@@ -154,6 +166,16 @@ func (w podWorkspace) adopt(user string) {
 	if err := os.Symlink(w.jj, filepath.Join(bin, "jj")); err != nil {
 		w.t.Fatal(err)
 	}
+	if got, _ := w.adoptWith(user, bin, 60_000); !got.OK {
+		w.t.Fatalf("the shim answered %#v, want a successful adoption", got)
+	}
+}
+
+// adoptWith has the real shim adopt the workspace as adopt does, with bin first on PATH, where
+// the jj the shim runs is, and within budget milliseconds, and answers what the shim answered and
+// the shim, whose log a caller reads.
+func (w podWorkspace) adoptWith(user, bin string, budget int) (shimwire.AdoptWorkingCopyResult, *running) {
+	w.t.Helper()
 	w.t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	path := socketPath(w.t)
 	daemon := listen(w.t, path)
@@ -161,13 +183,15 @@ func (w podWorkspace) adopt(user string) {
 	cfg := config(w.t, path, child)
 	cfg.Env = append(fixtureenv.Isolated(w.home), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+child.marker,
 		"FAKE_OMP_LOG="+child.log, "LEGION_WORKSPACE="+w.dir)
-	run(w.t, cfg, newClock())
+	r := run(w.t, cfg, newClock())
 	p := daemon.accept(w.t)
 	p.open(w.t)
-	p.send(w.t, shimwire.AdoptWorkingCopy{ID: "adopt", JJUser: user, JJEmail: user + "@example.test", TimeoutMs: 60_000})
-	if got, ok := p.next(w.t).(shimwire.AdoptWorkingCopyResult); !ok || !got.OK {
-		w.t.Fatalf("the shim answered %#v, want a successful adoption", got)
+	p.send(w.t, shimwire.AdoptWorkingCopy{ID: "adopt", JJUser: user, JJEmail: user + "@example.test", TimeoutMs: budget})
+	got, ok := p.next(w.t).(shimwire.AdoptWorkingCopyResult)
+	if !ok {
+		w.t.Fatalf("the shim answered %#v, want the adoption's result", got)
 	}
+	return got, r
 }
 
 // The adoption snapshots nothing (--ignore-working-copy), so what a role wrote on disk and no jj

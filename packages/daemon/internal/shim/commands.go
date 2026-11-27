@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -116,11 +117,15 @@ func (s *shim) drainCommands() {
 // openedWorkspace is what one request of the daemon's runs its commands with in the workspace
 // its role works in (openWorkspace): the workspace, the jj of PATH, and run, which runs one
 // command there with the request's environment and within its budget, with stdin fed to it, and
-// answers its trimmed standard output (workspace.RunCommand).
+// answers its trimmed standard output (workspace.RunCommand). runWithin runs one command the
+// same way, ended at bound after the budget began rather than at the budget's end, and its
+// timeout names that bound: the adoption's `jj workspace update-stale`, which leaves the reads
+// after it a reserve of the budget (updateReserve).
 type openedWorkspace struct {
-	dir string
-	jj  string
-	run func(stdin []byte, args ...string) (string, error)
+	dir       string
+	jj        string
+	run       func(stdin []byte, args ...string) (string, error)
+	runWithin func(bound time.Duration, args ...string) (string, error)
 }
 
 // openWorkspace is the one start of every request a shim answers in its role's workspace: the
@@ -150,14 +155,21 @@ func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (o
 	run := func(stdin []byte, args ...string) (string, error) {
 		return workspace.RunCommand(ctx, start, budget, started, env, dir, stdin, args)
 	}
-	return openedWorkspace{dir: dir, jj: jj, run: run}, cancel, nil
+	runWithin := func(bound time.Duration, args ...string) (string, error) {
+		within, end := context.WithDeadline(ctx, started.Add(bound))
+		defer end()
+		return workspace.RunCommand(within, start, bound, started, env, dir, nil, args)
+	}
+	return openedWorkspace{dir: dir, jj: jj, run: run, runWithin: runWithin}, cancel, nil
 }
 
 // adopt answers `adopt-working-copy`, which fromDaemon hands it, with the adoption's outcome
 // (runAdoption). A request the shim cannot act on is answered with the reason when it names an
 // id to answer. The answer goes out as one line, so a refusal carries at most
 // shimwire.MaxAnswerErrorBytes of its reason (shimwire.CutAnswerError): jj's standard error has no
-// bound of its own.
+// bound of its own. The answer names each commit in which bringing a stale working copy up to
+// date left the edits that no jj command had recorded (EditsCommits), whether the adoption then
+// succeeded or not, and the shim's log says the same in one line.
 func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 	result := shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: true}
 	if err := request.Validate(); err != nil {
@@ -166,10 +178,26 @@ func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 			return
 		}
 		result.OK, result.Error = false, shimwire.CutAnswerError(err.Error())
-	} else if err := s.runAdoption(request); err != nil {
-		result.OK, result.Error = false, shimwire.CutAnswerError(err.Error())
+	} else {
+		edits, err := s.runAdoption(request)
+		if len(edits) > 0 {
+			result.EditsCommits = edits
+			s.log.Printf("[worker-shim] bringing the stale working copy up to date left the edits that no jj command had recorded in %s %s: they are there, and no longer on disk",
+				plural(len(edits), "commit", "commits"), strings.Join(edits, ", "))
+		}
+		if err != nil {
+			result.OK, result.Error = false, shimwire.CutAnswerError(err.Error())
+		}
 	}
 	s.toDaemon(result)
+}
+
+// plural is one where n is 1 and many otherwise.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // The adoption's commands, adoptionArgs, describedArgs and runAdoption's `jj new`, each run with
@@ -178,7 +206,10 @@ func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 // working copy's files or its state. So the adoption must keep the tree of the working-copy
 // commit: jj finds a working copy fresh only while that tree does not change, and a command that
 // changed it would leave the role's next jj command facing a stale working copy. The metaedit
-// rewrites the author alone, and `jj new` starts an empty commit on @, so both keep the tree.
+// rewrites the author alone, and `jj new` starts an empty commit on @, so both keep the tree. The
+// freshness check around them reads with the same flag (readFreshness); the one command of the
+// adoption that writes the working copy, `jj workspace update-stale`, runs only on a working copy
+// that check read as stale (bringUpToDate).
 
 // adoptionArgs is the adoption's change of an undescribed working copy, in the one adoption the
 // daemon asks a role's shim to run before a phase task (runAdoption): its author becomes the
@@ -211,29 +242,57 @@ func describedArgs(jj, dir string) []string {
 // HEAD state and index (the metaedit's `Failed to reset Git HEAD state`); the read writes neither.
 // And the commands take no working-copy lock, so nothing holds a jj command the role runs meanwhile.
 //
-// Both commands run in the workspace itself, never in the shim's own directory: jj reads the
+// A stale working copy, which jj refuses every ordinary command in, is brought up to date first:
+// the freshness check reads it with no snapshot (readFreshness), and only a working copy it reads
+// as stale runs `jj workspace update-stale` (bringUpToDate), which leaves the edits that no jj
+// command had recorded in a commit that is no longer checked out; the answer names each such
+// commit. The check runs once more after the change: the flagged commands take no working-copy
+// lock, so a jj command another workspace ran meanwhile can have left the working copy stale, and
+// then the update runs again and its commits join the answer. The adoption's own change keeps
+// @'s tree and labels, so where nothing else wrote, that check reads fresh.
+//
+// Every command runs in the workspace itself, never in the shim's own directory: jj reads the
 // repository of the directory it runs in, whatever -R names, and migrates that repository's legacy
-// configuration (workspace.RunCommand). A failure is answered in workspace.RunCommand's words,
-// which name the command and its exit or its timeout, with jj's standard error: the daemon decides
-// what a failed adoption means. A shim without LEGION_WORKSPACE was not started by a runtime, and
-// refuses; a PATH without jj refuses naming jj and the PATH searched (openWorkspace).
-func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
+// configuration (workspace.RunCommand). Every one runs through the same run under the one budget,
+// the update to that budget less a reserve the reads after it take (updateReserve). A failure is
+// answered in workspace.RunCommand's words, which name the command and its exit or its timeout,
+// with jj's standard error: the daemon decides what a failed adoption means. A shim without
+// LEGION_WORKSPACE was not started by a runtime, and refuses; a PATH without jj refuses naming jj
+// and the PATH searched (openWorkspace).
+func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) (edits []string, err error) {
 	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
-	opened, done, err := s.openWorkspace("adopt", env, time.Duration(request.TimeoutMs)*time.Millisecond)
+	budget := time.Duration(request.TimeoutMs) * time.Millisecond
+	opened, done, err := s.openWorkspace("adopt", env, budget)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer done()
+	// upToDate brings a working copy the freshness check reads as stale up to date, adding the
+	// commits the update left the edits in to the answer.
+	upToDate := func() error {
+		fresh, operation := readFreshness(opened.read, func(line string) { s.log.Printf("[worker-shim] %s", line) })
+		if fresh {
+			return nil
+		}
+		left, err := s.bringUpToDate(opened, operation, budget-updateReserve(budget))
+		edits = append(edits, left...)
+		return err
+	}
+	if err := upToDate(); err != nil {
+		return edits, err
+	}
 	dir, jj, run := opened.dir, opened.jj, opened.run
 	described, err := run(nil, describedArgs(jj, dir)...)
 	if err != nil {
-		return err
+		return edits, err
 	}
 	change := adoptionArgs(jj, dir)
 	if described != "" {
 		// --ignore-working-copy as above adoptionArgs: the new commit is empty, so it keeps @'s tree.
 		change = []string{jj, "--ignore-working-copy", "new", "-R", dir}
 	}
-	_, err = run(nil, change...)
-	return err
+	if _, err := run(nil, change...); err != nil {
+		return edits, err
+	}
+	return edits, upToDate()
 }

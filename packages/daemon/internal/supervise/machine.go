@@ -1276,6 +1276,15 @@ type Deps struct {
 	// line, are answered as they are. It is asked at every send of such a task (startSend), the one
 	// place a prompt goes out, and nil leaves every task as it was queued.
 	WorkingCopy func(ctx context.Context, c Claim, d Delivery) (task string, news []byte, err error)
+	// NewsTask is news, the news of the approved design a task carries (Delivery.News), with the
+	// start's own text it holds (the daemon's record.DeliveryNews.Task) written through rewrite,
+	// and encoded again. Every send of such a task renders the task's text from that copy anew
+	// (DesignNews), so a sentence the machine adds to the task's text outlives the next render only
+	// where it is added to that copy too: the commits a stale working copy's update left the edits
+	// in (leftEdits). This package cannot decode the news, so the daemon, whose record it is,
+	// answers it. An error is news that does not decode, and nil leaves the news as it is, so only
+	// the task's own text carries the sentence, until the next render.
+	NewsTask func(c Claim, news []byte, rewrite func(task string) string) ([]byte, error)
 	// TreeClosable answers whether the operator may close this claim's tree: false refuses the
 	// close, and an error is the read itself failing, which the caller sees as a failure rather
 	// than a refusal. It is asked for the operator's own close — the workflow's linger close is its

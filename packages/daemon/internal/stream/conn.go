@@ -397,31 +397,35 @@ func (c *Conn) Shutdown(ctx context.Context) error {
 
 // AdoptWorkingCopy asks the shim to set the author of its workspace's working copy. The shim
 // runs the command within timeout; the answer is awaited for that plus the RPC timeout, the
-// round trip (worker-rpc.ts:492-505).
-func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentity, timeout time.Duration) error {
+// round trip (worker-rpc.ts:492-505). The shim's answer names each commit in which bringing a
+// stale working copy up to date left the edits that no jj command had recorded, on a refusal as
+// on a success, and the adoption answers them beside the error; an answer with no such field, a
+// shim of an earlier release's, names none.
+func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentity, timeout time.Duration) (runtime.Adoption, error) {
 	id := rand.Text()
 	frame := shimwire.AdoptWorkingCopy{ID: id, JJUser: identity.Name, JJEmail: identity.Email, TimeoutMs: int(timeout.Milliseconds())}
 	if err := frame.Validate(); err != nil {
-		return fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+		return runtime.Adoption{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
 	}
 	answer, err := c.request(ctx, frame, id, "", timeout+c.rpcTimeout)
 	if err != nil {
-		return err
+		return runtime.Adoption{}, err
 	}
 	switch answer := answer.(type) {
 	case shimwire.AdoptWorkingCopyResult:
+		adoption := runtime.Adoption{EditsCommits: answer.EditsCommits}
 		if answer.OK {
-			return nil
+			return adoption, nil
 		}
-		return c.refusal(shimwire.TypeAdoptWorkingCopy, answer.Error, "")
+		return adoption, c.refusal(shimwire.TypeAdoptWorkingCopy, answer.Error, "")
 	case shimwire.Response:
 		// A shim that does not answer the frame itself forwards it, and OMP refuses a command
 		// it does not know.
 		if !answer.Success {
-			return c.refusal(shimwire.TypeAdoptWorkingCopy, answer.Error, answer.Code)
+			return runtime.Adoption{}, c.refusal(shimwire.TypeAdoptWorkingCopy, answer.Error, answer.Code)
 		}
 	}
-	return fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeAdoptWorkingCopy, answer.FrameType())
+	return runtime.Adoption{}, fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeAdoptWorkingCopy, answer.FrameType())
 }
 
 // WorkspaceWork asks the shim whether the workspace it runs in holds work that no branch or tag on

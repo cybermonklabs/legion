@@ -1153,19 +1153,22 @@ func (r *Runtime) controllerSandbox(ctx context.Context, token claim.Token) (*sa
 
 // AdoptWorkingCopy has the agent's shim set its working copy's author (`jj --ignore-working-copy
 // metaedit --update-author`, or `jj --ignore-working-copy new` over a described `@`, run in the
-// pod's own workspace on the issue's volume) over the claim's connection. The recorded process
-// must still be the claim's running pod: the connection is its.
+// pod's own workspace on the issue's volume, after `jj workspace update-stale` where that working
+// copy is stale) over the claim's connection, and answers the shim's account of it beside the
+// error (runtime.Adoption). The recorded process must still be the claim's running pod: the
+// connection is its.
 // That is the one rule for a request a role's shim answers in the issue's workspace
 // (runningProcessConn), and each of its refusals opens with "adopt <claim>'s working copy".
-func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
+func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) (runtime.Adoption, error) {
 	conn, err := r.runningProcessConn(loc)
 	if err != nil {
-		return fmt.Errorf("adopt %s's working copy: %w", loc.Claim, err)
+		return runtime.Adoption{}, fmt.Errorf("adopt %s's working copy: %w", loc.Claim, err)
 	}
-	if err := conn.AdoptWorkingCopy(ctx, id, r.adoptTimeout); err != nil {
-		return fmt.Errorf("adopt %s's working copy for %s <%s>: %w", loc.Claim, id.Name, id.Email, err)
+	adoption, err := conn.AdoptWorkingCopy(ctx, id, r.adoptTimeout)
+	if err != nil {
+		return adoption, fmt.Errorf("adopt %s's working copy for %s <%s>: %w", loc.Claim, id.Name, id.Email, err)
 	}
-	return nil
+	return adoption, nil
 }
 
 var _ runtime.WorkspaceWorkReader = (*Runtime)(nil)

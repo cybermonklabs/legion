@@ -666,9 +666,9 @@ func (r *localRuntime) ReconcileOrphans(ctx context.Context, known []runtime.Kno
 }
 
 // AdoptWorkingCopy is nothing to do: this proof's workers commit nothing, and their working
-// directory is no jj workspace.
-func (r *localRuntime) AdoptWorkingCopy(context.Context, runtime.Locator, runtime.GitIdentity) error {
-	return nil
+// directory is no jj workspace, so no update leaves an edit in any commit.
+func (r *localRuntime) AdoptWorkingCopy(context.Context, runtime.Locator, runtime.GitIdentity) (runtime.Adoption, error) {
+	return runtime.Adoption{}, nil
 }
 
 // ProvisionsWorkspaces answers true, as the Sandbox runtime does, so the daemon clones no

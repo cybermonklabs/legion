@@ -129,13 +129,34 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 
 // heldNews is news, the news a held task of c carries (supervise.Delivery.News), decoded: the one
 // read of it every send of such a task makes before it renders or writes it again (designNews,
-// workflowRuntime.narrowedNews, workflowRuntime.workingCopy), each of which encodes its own answer.
+// workflowRuntime.narrowedNews, workflowRuntime.workingCopy, newsTask), each of which encodes its
+// own answer.
 func heldNews(c supervise.Claim, news []byte) (record.DeliveryNews, error) {
 	var carried record.DeliveryNews
 	if err := json.Unmarshal(news, &carried); err != nil {
 		return record.DeliveryNews{}, fmt.Errorf("decode the news the task held for %s carries: %w", c.Token, err)
 	}
 	return carried, nil
+}
+
+// newsTask answers supervise's Deps.NewsTask: the news a held task of c carries with the start's
+// own text it holds (record.DeliveryNews.Task) written through rewrite, encoded again. Every later
+// send renders the task's text from that copy (designNews, renderNews), so a sentence the machine
+// adds to the task's text — the commits a stale working copy's adoption left the edits in — is
+// added here too, as workflowRuntime.workingCopy writes its line in both copies. It reads no
+// record: only news that does not decode fails, and the machine then keeps the sentence in the
+// task's own text alone.
+func newsTask(c supervise.Claim, news []byte, rewrite func(task string) string) ([]byte, error) {
+	carried, err := heldNews(c, news)
+	if err != nil {
+		return nil, err
+	}
+	carried.Task = rewrite(carried.Task)
+	encoded, err := json.Marshal(carried)
+	if err != nil {
+		return nil, fmt.Errorf("encode the news the task held for %s carries: %w", c.Token, err)
+	}
+	return encoded, nil
 }
 
 // renderedNews is a task of news as the one render says it (renderNews): its text, the news the

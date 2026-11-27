@@ -1117,7 +1117,10 @@ func TestShutdownOfAChildThatHonoursSIGTERMExitsWithItsStatus(t *testing.T) {
 }
 
 // fakeJJ writes a `jj` that records how it was run and then does what mode says, in a directory
-// of its own put first on PATH: the shim runs PATH's jj, the one the pane's own shell runs.
+// of its own put first on PATH: the shim runs PATH's jj, the one the pane's own shell runs. Where
+// mode fails or hangs it does so for every command; otherwise it answers the adoption's freshness
+// check as a fresh workspace's jj does (fakeJJFreshness), so the adoption runs no `jj workspace
+// update-stale`.
 func fakeJJ(t *testing.T) (record string) {
 	t.Helper()
 	record = filepath.Join(t.TempDir(), "jj-invocation")
@@ -1128,6 +1131,8 @@ printf 'JJ_USER=%s\nJJ_EMAIL=%s\n' "$JJ_USER" "$JJ_EMAIL" >> "$FAKE_JJ_RECORD"
 case "$FAKE_JJ_MODE" in
 fail) echo "Error: the working copy is stale" >&2; exit 3 ;;
 hang) exec sleep 30 ;;
+esac
+` + fakeJJFreshness(t) + `case "$FAKE_JJ_MODE" in
 described)
 	for arg in "$@"; do
 		if [ "$arg" = "log" ]; then
@@ -1145,6 +1150,33 @@ esac
 	return record
 }
 
+// fakeJJFreshness is the part of a fake jj's script that answers the adoption's freshness check
+// with what the pinned jj printed in a workspace just after a snapshot (testdata/freshness/fresh,
+// TestTheFreshnessCheckReadsEachTreeShapeJJPrints): the working copy's record, and the head
+// operation, which is the operation that record names. The check then reads the working copy
+// fresh after those two commands, before the adoption's change and after it. The script uses the
+// shell's builtins alone, so it answers on a PATH that holds nothing but the fake.
+func fakeJJFreshness(t *testing.T) string {
+	t.Helper()
+	printed := func(name string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join("testdata", "freshness", "fresh", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The first line is the fixture's comment, which names the command and the jj.
+		_, body, _ := strings.Cut(string(data), "\n")
+		return shellQuoted(strings.TrimSpace(body))
+	}
+	return "case \" $* \" in\n" +
+		"*' debug working-copy '*) printf '%s\\n' " + printed("working-copy.txt") + "; exit 0 ;;\n" +
+		"*' op log -n1 '*) printf '%s\\n' " + printed("op-head.txt") + "; exit 0 ;;\n" +
+		"esac\n"
+}
+
+// shellQuoted is s as one word of a shell script.
+func shellQuoted(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
 // `adopt-working-copy` is answered by the shim itself: the one shared adoption command, run by
 // the jj on the shim's PATH on the workspace LEGION_WORKSPACE names — never the directory the
 // shim happens to run in — under the identity the daemon named and within its budget, and OMP
@@ -1159,27 +1191,34 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 		request     shimwire.AdoptWorkingCopy
 		ok          bool
 		errorHas    []string
-		ranJJ       bool
+		// ran is each command jj ran, in order, by its name in the commands below.
+		ran []string
 	}{
 		{
 			name:    "a clean run",
 			request: shimwire.AdoptWorkingCopy{ID: "a1", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test", TimeoutMs: 5000},
 			ok:      true,
-			ranJJ:   true,
+			// The fake prints no commit id: the working copy is undescribed, so it is re-authored,
+			// between the freshness check's two reads that find it fresh, before and after.
+			ran: []string{"working copy", "head", "read", "metaedit", "working copy", "head"},
 		},
 		{
+			// Every command fails: the freshness check's failure reads the working copy as stale,
+			// and the read of @'s change that the update starts with refuses the adoption.
 			name:     "jj fails",
 			mode:     "fail",
 			request:  shimwire.AdoptWorkingCopy{ID: "a2", JJUser: "u", JJEmail: "u@example.test", TimeoutMs: 5000},
-			errorHas: []string{"Command failed (exit 3)", "jj --ignore-working-copy log", "the working copy is stale"},
-			ranJJ:    true,
+			errorHas: []string{"Command failed (exit 3)", "jj --ignore-working-copy log -r @ --no-graph -T change_id", "the working copy is stale"},
+			ran:      []string{"working copy", "change"},
 		},
 		{
+			// The freshness check's first command spends the whole budget, and the read of @'s
+			// change after it never starts.
 			name:     "jj outlives the budget",
 			mode:     "hang",
 			request:  shimwire.AdoptWorkingCopy{ID: "a3", JJUser: "u", JJEmail: "u@example.test", TimeoutMs: 200},
-			errorHas: []string{"Command timed out after 0.2 s", "jj --ignore-working-copy log"},
-			ranJJ:    true,
+			errorHas: []string{"Command timed out after 0.2 s", "jj --ignore-working-copy log -r @ --no-graph -T change_id"},
+			ran:      []string{"working copy"},
 		},
 		{
 			name:     "a request without an identity",
@@ -1223,7 +1262,7 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 			}
 
 			invocation, err := os.ReadFile(record)
-			if !tc.ranJJ {
+			if tc.ran == nil {
 				if err == nil {
 					t.Fatalf("jj ran for a request the shim should have refused: %s", invocation)
 				}
@@ -1231,16 +1270,13 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 				if err != nil {
 					t.Fatalf("jj never ran: %v", err)
 				}
-				identity := []string{"JJ_USER=" + tc.request.JJUser, "JJ_EMAIL=" + tc.request.JJEmail}
-				read := append([]string{"--ignore-working-copy", "log", "-r", `@ ~ description(exact:"")`, "--no-graph", "-T", "commit_id", "-R", workspace}, identity...)
-				metaedit := append([]string{"--ignore-working-copy", "metaedit", "--update-author", "-r", `@ & description(exact:"")`, "-R", workspace}, identity...)
-				want := read
-				if tc.ok {
-					// The fake prints no commit id: the working copy is undescribed, so it is re-authored.
-					want = append(read, metaedit...)
+				commands := adoptionCommands(workspace)
+				var want []string
+				for _, name := range tc.ran {
+					want = append(append(want, commands[name]...), "JJ_USER="+tc.request.JJUser, "JJ_EMAIL="+tc.request.JJEmail)
 				}
 				if got := strings.Join(want, "\n") + "\n"; string(invocation) != got {
-					t.Fatalf("jj ran as\n%s\nwant the read, then the shared metaedit, under the requested identity\n%s", invocation, got)
+					t.Fatalf("jj ran as\n%s\nwant %v, under the requested identity\n%s", invocation, tc.ran, got)
 				}
 			}
 
@@ -1253,17 +1289,34 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 	}
 }
 
+// adoptionCommands is each jj command the adoption runs on workspace with a fake jj, by name,
+// with the arguments the fake records: the freshness check's read of the working copy's record
+// and of the head operation, the read of @'s change that bringing a stale working copy up to date
+// starts with, the describe read (describedArgs), and the metaedit (adoptionArgs).
+func adoptionCommands(workspace string) map[string][]string {
+	return map[string][]string{
+		"working copy": {"--ignore-working-copy", "debug", "working-copy", "--color=never", "-R", workspace},
+		"head":         {"--ignore-working-copy", "op", "log", "-n1", "--no-graph", "-T", "id", "--color=never", "-R", workspace},
+		"change":       {"--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", "change_id", "--color=never", "-R", workspace},
+		"read":         {"--ignore-working-copy", "log", "-r", `@ ~ description(exact:"")`, "--no-graph", "-T", "commit_id", "-R", workspace},
+		"metaedit":     {"--ignore-working-copy", "metaedit", "--update-author", "-r", `@ & description(exact:"")`, "-R", workspace},
+	}
+}
+
 // Every jj command the adoption runs — the describe read (describedArgs), the metaedit of an
-// undescribed working copy (adoptionArgs), and the `jj new` over a described one — carries
-// --ignore-working-copy, for every project, with no switch and no fallback.
+// undescribed working copy (adoptionArgs), the `jj new` over a described one, and the freshness
+// check's reads before and after the change — carries --ignore-working-copy, for every project,
+// with no switch and no fallback. On a fresh working copy that is all it runs: no `jj workspace
+// update-stale`, which snapshots.
 func TestAdoptWorkingCopyRunsEveryCommandWithoutASnapshot(t *testing.T) {
+	check := []string{"freshness check (jj debug working-copy)", "freshness check (jj op log)"}
 	for _, tc := range []struct {
 		name      string
 		mode      string
 		wantLists []string
 	}{
-		{name: "an undescribed working copy", wantLists: []string{"describe list (describedArgs)", "metaedit list (adoptionArgs)"}},
-		{name: "a described working copy", mode: "described", wantLists: []string{"describe list (describedArgs)", "jj new list"}},
+		{name: "an undescribed working copy", wantLists: slices.Concat(check, []string{"describe list (describedArgs)", "metaedit list (adoptionArgs)"}, check)},
+		{name: "a described working copy", mode: "described", wantLists: slices.Concat(check, []string{"describe list (describedArgs)", "jj new list"}, check)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			record := fakeJJ(t)
@@ -1308,6 +1361,10 @@ func TestAdoptWorkingCopyRunsEveryCommandWithoutASnapshot(t *testing.T) {
 						continue
 					}
 					switch arg {
+					case "debug":
+						return check[0]
+					case "op":
+						return check[1]
 					case "log":
 						return "describe list (describedArgs)"
 					case "metaedit":
@@ -1382,11 +1439,13 @@ func TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// PATH is one directory of the test's own: no other jj (the image's, a devbox's) can
 			// answer the lookup, and nothing an adoption runs needs another directory (the fake OMP
-			// is os.Args[0], absolute; the fake jj's interpreter is /bin/sh).
+			// is os.Args[0], absolute; the fake jj's interpreter is /bin/sh, and it answers the
+			// freshness check with the shell's builtins alone).
 			bin := t.TempDir()
 			record := filepath.Join(t.TempDir(), "jj-invocation")
 			if tc.jjOnPath {
-				script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$FAKE_JJ_RECORD\"\nprintf 'JJ_USER=%s\\nJJ_EMAIL=%s\\n' \"$JJ_USER\" \"$JJ_EMAIL\" >> \"$FAKE_JJ_RECORD\"\n"
+				script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$FAKE_JJ_RECORD\"\nprintf 'JJ_USER=%s\\nJJ_EMAIL=%s\\n' \"$JJ_USER\" \"$JJ_EMAIL\" >> \"$FAKE_JJ_RECORD\"\n" +
+					fakeJJFreshness(t)
 				if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
 					t.Fatalf("write the fake jj: %v", err)
 				}
@@ -1425,11 +1484,13 @@ func TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the PATH's jj never ran: %v", err)
 			}
-			identity := []string{"JJ_USER=" + request.JJUser, "JJ_EMAIL=" + request.JJEmail}
-			read := append([]string{"--ignore-working-copy", "log", "-r", `@ ~ description(exact:"")`, "--no-graph", "-T", "commit_id", "-R", workspace}, identity...)
-			metaedit := append([]string{"--ignore-working-copy", "metaedit", "--update-author", "-r", `@ & description(exact:"")`, "-R", workspace}, identity...)
-			if want := strings.Join(append(read, metaedit...), "\n") + "\n"; string(invocation) != want {
-				t.Fatalf("the PATH's jj ran as\n%s\nwant the read, then the shared metaedit, under the requested identity\n%s", invocation, want)
+			commands := adoptionCommands(workspace)
+			var want []string
+			for _, name := range []string{"working copy", "head", "read", "metaedit", "working copy", "head"} {
+				want = append(append(want, commands[name]...), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
+			}
+			if got := strings.Join(want, "\n") + "\n"; string(invocation) != got {
+				t.Fatalf("the PATH's jj ran as\n%s\nwant the freshness check, the read, the shared metaedit and the check again, under the requested identity\n%s", invocation, got)
 			}
 		})
 	}
@@ -1448,6 +1509,11 @@ func TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH(t *testing.T) {
 // incoming phase role's, and the described commit under it keeps its id and its author.
 func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t *testing.T) {
 	jj := fixturegit.CompiledJJ(t)
+	// The freshness check finds the working copy fresh on its first two reads, the recorded
+	// operation being the head; after the change it finds that operation behind the head, and
+	// reads @'s commit, its dump and the head's operations to find the tree and labels kept.
+	const check, checkAfter = "--ignore-working-copy debug\n--ignore-working-copy op\n",
+		"--ignore-working-copy debug\n--ignore-working-copy op\n--ignore-working-copy log\n--ignore-working-copy debug\n--ignore-working-copy op\n"
 	for _, tc := range []struct {
 		name       string
 		leave      []string // what the previous role ran once README.md was written, nil for nothing
@@ -1456,9 +1522,12 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 		reauthored bool     // whether the adoption re-authors that working copy rather than start a fresh one
 		ran        string
 	}{
-		{name: "a described working copy", leave: []string{"describe", "-m", "feat: the pushed change"}, pushed: "@", ran: "--ignore-working-copy log\n--ignore-working-copy new\n"},
-		{name: "an undescribed working copy", reauthored: true, ran: "--ignore-working-copy log\n--ignore-working-copy metaedit\n"},
-		{name: "an empty working copy a split left", leave: []string{"split", "-m", "feat: the pushed change", "README.md"}, pushed: "@-", empty: true, reauthored: true, ran: "--ignore-working-copy log\n--ignore-working-copy metaedit\n"},
+		{name: "a described working copy", leave: []string{"describe", "-m", "feat: the pushed change"}, pushed: "@",
+			ran: check + "--ignore-working-copy log\n--ignore-working-copy new\n" + checkAfter},
+		{name: "an undescribed working copy", reauthored: true,
+			ran: check + "--ignore-working-copy log\n--ignore-working-copy metaedit\n" + checkAfter},
+		{name: "an empty working copy a split left", leave: []string{"split", "-m", "feat: the pushed change", "README.md"}, pushed: "@-", empty: true, reauthored: true,
+			ran: check + "--ignore-working-copy log\n--ignore-working-copy metaedit\n" + checkAfter},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// The test process's environment (a devbox's jj configuration, a pod's workspace and

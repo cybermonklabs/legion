@@ -177,7 +177,8 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 			drive: func(h *harness, p *peer) error {
 				conn := h.conn()
 				result := async(func() error {
-					return conn.AdoptWorkingCopy(context.Background(), identity, time.Second)
+					_, err := conn.AdoptWorkingCopy(context.Background(), identity, time.Second)
+					return err
 				})
 				request := p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
 				p.send(shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: false, Error: staleLock})
@@ -192,7 +193,8 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 			drive: func(h *harness, p *peer) error {
 				conn := h.conn()
 				result := async(func() error {
-					return conn.AdoptWorkingCopy(context.Background(), identity, time.Second)
+					_, err := conn.AdoptWorkingCopy(context.Background(), identity, time.Second)
+					return err
 				})
 				request := p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
 				p.send(shimwire.Response{ID: request.ID, Command: shimwire.TypeAdoptWorkingCopy,
@@ -215,7 +217,8 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 			drive: func(h *harness, p *peer) error {
 				conn := h.conn()
 				result := async(func() error {
-					return conn.AdoptWorkingCopy(context.Background(), identity, time.Second)
+					_, err := conn.AdoptWorkingCopy(context.Background(), identity, time.Second)
+					return err
 				})
 				p.expect(shimwire.TypeAdoptWorkingCopy)
 				p.conn.Close()
@@ -906,7 +909,11 @@ func TestAdoptWorkingCopyAsksTheShimAndReadsItsResult(t *testing.T) {
 	conn := h.conn()
 	identity := runtime.GitIdentity{Name: "legion-bot", Email: "bot@legion.dev"}
 
-	result := async(func() error { return conn.AdoptWorkingCopy(context.Background(), identity, 3*time.Second) })
+	adopt := func() error {
+		_, err := conn.AdoptWorkingCopy(context.Background(), identity, 3*time.Second)
+		return err
+	}
+	result := async(adopt)
 	request := p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
 	if request.JJUser != "legion-bot" || request.JJEmail != "bot@legion.dev" || request.TimeoutMs != 3000 || request.ID == "" {
 		t.Fatalf("adopt-working-copy frame = %#v", request)
@@ -916,7 +923,7 @@ func TestAdoptWorkingCopyAsksTheShimAndReadsItsResult(t *testing.T) {
 		t.Fatalf("AdoptWorkingCopy: %v", err)
 	}
 
-	result = async(func() error { return conn.AdoptWorkingCopy(context.Background(), identity, 3*time.Second) })
+	result = async(adopt)
 	request = p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
 	p.send(shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: false, Error: "jj metaedit exited 1"})
 	err := awaitResult(t, result)
@@ -925,7 +932,7 @@ func TestAdoptWorkingCopyAsksTheShimAndReadsItsResult(t *testing.T) {
 		t.Fatalf("AdoptWorkingCopy = %v, want a RefusedError carrying the shim's error", err)
 	}
 
-	if err := conn.AdoptWorkingCopy(context.Background(), runtime.GitIdentity{}, time.Second); err == nil {
+	if _, err := conn.AdoptWorkingCopy(context.Background(), runtime.GitIdentity{}, time.Second); err == nil {
 		t.Fatal("AdoptWorkingCopy sent a frame with no identity")
 	}
 }

@@ -95,8 +95,9 @@ type Runtime interface {
 	ReconcileOrphans(ctx context.Context, known []Known, grace time.Duration) error
 	// AdoptWorkingCopy hands the agent's working copy the git identity its commits are authored
 	// with, in the place the working copy actually lives (which under a sandbox is not a
-	// directory the daemon can see).
-	AdoptWorkingCopy(ctx context.Context, loc Locator, id GitIdentity) error
+	// directory the daemon can see), and answers what the agent's side said of the adoption beside
+	// the error (Adoption), on a refusal too.
+	AdoptWorkingCopy(ctx context.Context, loc Locator, id GitIdentity) (Adoption, error)
 	// ProvisionsWorkspaces is whether the runtime provisions each claim's workspace where its
 	// process runs (a pod's init containers, on the issue's own volume). When it does, the daemon
 	// provisions and removes none on its own host.
@@ -1084,6 +1085,16 @@ func PodEnd(reason, message string) string {
 		end += ": " + message
 	}
 	return redact.Runes(end, PodEndRunes)
+}
+
+// Adoption is what the agent's side answers of one adoption of its working copy, beside the
+// adoption's error (Runtime.AdoptWorkingCopy, Conn.AdoptWorkingCopy). EditsCommits names each
+// commit in which bringing a stale working copy up to date (`jj workspace update-stale`) left the
+// edits that no jj command had recorded, which are no longer on disk; an adoption the shim refused
+// after that update names them too. A shim of an earlier release names none, and neither does a
+// runtime whose processes work no jj workspace.
+type Adoption struct {
+	EditsCommits []string
 }
 
 // GitIdentity is the author a worker's commits carry.

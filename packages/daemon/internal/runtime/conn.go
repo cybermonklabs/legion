@@ -131,8 +131,10 @@ type Conn interface {
 	// Shutdown asks the agent to end its own process — the graceful half of a stop.
 	Shutdown(ctx context.Context) error
 	// AdoptWorkingCopy makes the agent's side set the author of its working copy, for a
-	// workspace the daemon cannot reach itself.
-	AdoptWorkingCopy(ctx context.Context, id GitIdentity, timeout time.Duration) error
+	// workspace the daemon cannot reach itself. It answers what the agent's side said of the
+	// adoption beside the error (Adoption): a refusal names the commits a stale working copy's
+	// update left its edits in, as an adoption that succeeded does.
+	AdoptWorkingCopy(ctx context.Context, id GitIdentity, timeout time.Duration) (Adoption, error)
 	// Compact asks Oh My Pi to shorten its session's context with a handoff, the document
 	// written to customInstructions, and returns when it answers or bound runs out. It never
 	// asks for Oh My Pi's `compact`, whose summary request Anthropic refuses for a long Claude
