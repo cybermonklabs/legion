@@ -93,10 +93,11 @@ var ownTransactionFunctions = []string{
 // module's types that implements an interface method it calls (s.deps.Docs.SettleCopiesOf reaches
 // docs.Service's), and, for a call through a variable or a struct field (transition.Apply,
 // options.WriteBlock), every function this module stores in that variable or field. A function
-// passed as an argument runs at the call, except to time.AfterFunc or a Go method, which run it on
-// a goroutine of its own and so in a transaction of its own; go statements are skipped for the
-// same reason, and deferred calls count toward what a function takes but not toward its order. A
-// branch that ends in a return or a panic carries nothing past its if.
+// passed as an argument runs at the call, except to an AfterFunc of time or of the clock package
+// (afterFuncPackages) or to a Go method, which run it on a goroutine of its own and so in a
+// transaction of its own; go statements are skipped for the same reason, and deferred calls count
+// toward what a function takes but not toward its order. A branch that ends in a return or a panic
+// carries nothing past its if.
 //
 // It orders calls, not statements. What a statement takes is read from its SQL into the function
 // whose body holds it, and ordered only where that function is called: in that body itself, the
@@ -163,6 +164,15 @@ func TestCopyLockOrderGuardFollowsTheLockTakers(t *testing.T) {
 		if fn.reach&want.effect != want.effect {
 			t.Errorf("the guard sees %s take %s, want %s", want.function, fn.reach, want.effect)
 		}
+	}
+	// Arming a settlement runs none of it: the settle timer runs on the service's clock
+	// (scheduleSettleAfterLocked), whose AfterFunc runs the settlement on a goroutine of its own.
+	// A guard that read that function as run at the call would see every write that arms a
+	// settlement take the settlement's copy lock, pending rows and events.
+	if fn := graph.named["docs.Service.scheduleSettleAfterLocked"]; fn == nil {
+		t.Error("the guard finds no function docs.Service.scheduleSettleAfterLocked")
+	} else if fn.reach&takesCopyLock != 0 {
+		t.Errorf("the guard sees docs.Service.scheduleSettleAfterLocked take %s, want none of the settlement it arms", fn.reach)
 	}
 }
 
@@ -672,7 +682,7 @@ func (g *lockGraph) callees(call *ast.CallExpr) []*lockFunction {
 	async := false
 	if named != nil {
 		callees = append(callees, g.funcTargets(named)...)
-		async = named.Name() == "Go" || (named.Pkg() != nil && named.Pkg().Path() == "time" && named.Name() == "AfterFunc")
+		async = named.Name() == "Go" || runsLater(named)
 	}
 	if !async {
 		for _, argument := range call.Args {
@@ -682,8 +692,24 @@ func (g *lockGraph) callees(call *ast.CallExpr) []*lockFunction {
 	return callees
 }
 
+// afterFuncPackages are the packages whose AfterFunc runs the function it is given later, on a
+// goroutine of its own: the time package's, and the clock package's Clock, whose real clock is
+// time.AfterFunc itself and whose clocktest fake starts the function on a goroutine of its own when
+// a move reaches its moment (clocktest.Fake.AfterFunc). A function passed to either runs in a
+// transaction of its own, never in its caller's.
+var afterFuncPackages = map[string]bool{
+	"time": true,
+	"github.com/sjawhar/envoy/internal/clock":           true,
+	"github.com/sjawhar/envoy/internal/clock/clocktest": true,
+}
+
+// runsLater is whether named is an AfterFunc of afterFuncPackages.
+func runsLater(named *types.Func) bool {
+	return named.Name() == "AfterFunc" && named.Pkg() != nil && afterFuncPackages[named.Pkg().Path()]
+}
+
 // calleesAndPassed is what call runs as callees resolves it, and every function call is passed,
-// whatever call does with it: a function handed to a Go method or time.AfterFunc too, which
+// whatever call does with it: a function handed to a Go method or an AfterFunc too, which
 // callees leaves out as another goroutine's. The keyed-write guard (keyedWriteGuard.callees) and
 // the spec-writer guard (specWriterWalk.step) follow a call this way.
 func (g *lockGraph) calleesAndPassed(call *ast.CallExpr) []*lockFunction {
