@@ -299,8 +299,12 @@ func nothingChanged(item NewsChange) string {
 // holderRule is the closing paragraph of a holder's news: the rule its role's prompt carries for
 // answering it. The architect holding an issue in accepting answers by its sign-off or a move
 // back (acceptingAnswer). The planner revises its plan in place when it is stale, since the plan is
-// its own work wherever its task places its step (prompts/go/planner.md), and comments when it is current. Every
-// other phase worker moves back when its work is stale, and comments when it is current.
+// its own work wherever its task places its step (prompts/go/planner.md), and comments when it is
+// current. The tester in testing never moves back, since the testing step ends by the states of its
+// checks and the daemon refuses its move back (backwardRefusal): it records each check of the new
+// version and comments, so its architect, whom the news reaches too, moves the issue back where the
+// change needs work no check covers. Every other phase worker moves back when its work is stale,
+// and comments when it is current.
 func holderRule(issue string, p phase.Phase) string {
 	switch p {
 	case phase.Accepting:
@@ -310,6 +314,11 @@ func holderRule(issue string, p phase.Phase) string {
 		return fmt.Sprintf("As your role's prompt says, read each named section and check at the new version. A stale plan is your own work "+
 			"wherever your task places your step, so it does not move back. If your plan is stale, revise `plan.md` in place to match the new version of the design, "+
 			"then run the plan review again. If your plan is current, write a `dispatch comment` on %s that names the version and why.", issue)
+	case phase.Testing:
+		return fmt.Sprintf("As your role's prompt says, read each named section and check at the new version. The testing step ends by the states "+
+			"of its checks, so you do not move back: run and record the checks of the new version at the head you test, as your role's prompt says, "+
+			"then write a `dispatch comment` on %s that names the version and whether your work was stale and why; your architect, whom the news "+
+			"reaches too, moves the issue back where the change needs work no check covers.", issue)
 	}
 	return fmt.Sprintf("As your role's prompt says, read each named section and check at the new version: if your work is stale, "+
 		"call `request_backward_move` with a reason that names the version and the change; if it is current, write a `dispatch comment` "+
