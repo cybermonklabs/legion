@@ -2900,10 +2900,23 @@ the tests the tag adds, one call per package: envoy-infra-build's "Unit test env
 runs every untagged test of core, seed and gcp, so each call takes its -run from
 .github/scripts/go-tagged-tests.sh, which reads the names off the source at run time, and
 ci_job_reads.py's TAG_RUNS holds envoy-infra-build's filter to every file the natslive step
-reads, so a change that starts the tagged run starts the untagged one with it. The gcp
-natslive tests pull no image: they install helm, nats-server, the config reloader and the
-exporter with go install, at the versions the clustered hub runs, and render the vendored chart
-in gcp/testdata. The per-target compile runs in the lint job's notices step.
+reads, so a change that starts the tagged run starts the untagged one with it. The step runs
+packages/envoy/infra/scripts/natslive.sh with those three packages as its arguments, and it runs
+them at once: each waits on real servers rather than computing (core 0.44 of one core, gcp 0.66
+of one, of the runner's four), so in series they took 239, 1 and 400 seconds with three cores
+idle (run 45950904157, job 140346269806), and together the step took 291 (run 45994063273, job
+140489290342, whose packages were 256, 2.5 and 268 seconds). Every
+pattern is read before any run starts, so a refused list fails the step with no run to orphan;
+each run's output is printed whole under its own heading as that run ends, and the script fails
+naming each package that failed. Each go test's -timeout is 25m, which fires before the runner
+cancels this job at its 32 minutes, so a hung test prints the dump that names it. A script and
+not a run: block, because what a script runs cannot be read line by line: one reading of it is
+pinned by its SHA-256 in audited_scripts.AUDITED_SCRIPTS, as envoy-infra-build's race-unit.sh is,
+and both go-test-step-expansion.py and check-ci-filters.sh's TAG_RUNS rule read the step through
+that one reading. The gcp natslive tests pull no image: they install helm,
+nats-server, the config reloader and the exporter with go install, at the versions the clustered
+hub runs, and render the vendored chart in gcp/testdata. The per-target compile runs in the lint
+job's notices step.
 
 ## The checks whose subject is text: each module's internal/textcheck package, the Dispatch
 

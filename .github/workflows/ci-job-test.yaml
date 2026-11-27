@@ -478,8 +478,10 @@ jobs:
       # Beside the two checks above, and needing no Go either: every case is text, read by the
       # line and step readers of .github/scripts/go-test-step-expansion.py (the step reader over
       # every go test step of ci.yaml and the workflows its jobs call, so a step it would refuse
-      # fails here), or the hash of a script that file's AUDITED_SCRIPTS pins. The script's own
-      # run compiles the three Go modules it covers and is run by hand rather than by any job.
+      # fails here), the hash of a script .github/scripts/audited_scripts.py's AUDITED_SCRIPTS
+      # pins, or check-ci-filters.sh's TAG_RUNS reading of each step that is such a script, which
+      # must be the expansion tool's. The script's own run compiles the three Go modules it covers
+      # and is run by hand rather than by any job.
       - name: Test the go test step expansion
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_test_step_expansion_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/go-test-step-expansion.test.sh .github/scripts/go-test-step-expansion.test.sh
