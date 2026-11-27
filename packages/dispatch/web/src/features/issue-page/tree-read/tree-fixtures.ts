@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import type { Comment, Decision, IssueTreeEnd, IssueTreeParent } from "../../../api/types";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
 
@@ -125,17 +128,90 @@ export function treeNode(
   };
 }
 
-/** A comment as the tree read answers it: its words, who wrote it and when, under the node
- *  `parent` names - where none is given, the comment it replies to, else the issue. */
+/** A comment as the tree read answers it: its words, who wrote it and when, and the words of a
+ *  document it is anchored to, under the node `parent` names - where none is given, the comment
+ *  it replies to, else the issue. No mark of its author's: a case that reads one gives it
+ *  (`markedCommentNode`). */
 export function commentNode(
-  comment: Pick<Comment, "author" | "body" | "created_at" | "id" | "reply_to">,
+  comment: Pick<Comment, "author" | "body" | "created_at" | "id" | "reply_to"> &
+    Partial<Pick<Comment, "anchor">>,
   parent: string = comment.reply_to ?? TREE_KEY
 ): TreeAnswerNode {
+  const anchor = comment.anchor ?? null;
   return treeNode(comment.id, "comment", parent, {
+    ...(anchor === null ? {} : { anchor: treeAnchor(anchor) }),
     author: [comment.author],
     made_at: comment.created_at,
     text: comment.body,
   });
+}
+
+/** A comment's document anchor (`Comment.anchor`) as the tree read answers it on the comment's
+ *  node (`IssueTreeAnchor`), which names no block where the anchor stores none. */
+export function treeAnchor(
+  anchor: NonNullable<Comment["anchor"]>
+): NonNullable<TreeAnswerNode["anchor"]> {
+  return {
+    artifact_id: anchor.artifact_id,
+    ...(anchor.block_id === null ? {} : { block_id: anchor.block_id }),
+    mark_id: anchor.mark_id,
+    orphaned: anchor.orphaned,
+    quote: anchor.quote,
+    version: anchor.version,
+  };
+}
+
+/** `commentNode` of `comment` with what its author did to it, as the read answers a post's
+ *  marks on its node (`TreeAnswerNode`): when they last edited it, and when and by whom they
+ *  deleted it, with no text once deleted. */
+export function markedCommentNode(
+  comment: Pick<
+    Comment,
+    "author" | "body" | "created_at" | "deleted_at" | "deleted_by" | "edited_at" | "id" | "reply_to"
+  > &
+    Partial<Pick<Comment, "anchor">>,
+  parent?: string
+): TreeAnswerNode {
+  const node = commentNode(comment, parent);
+  return {
+    ...node,
+    ...(comment.edited_at === null || comment.edited_at === undefined
+      ? {}
+      : { edited_at: comment.edited_at }),
+    ...(comment.deleted_at === null || comment.deleted_at === undefined
+      ? {}
+      : { deleted_at: comment.deleted_at, deleted_by: comment.deleted_by ?? null, text: "" }),
+  };
+}
+
+/** The marks of a post the contract's tree node does not declare yet, by the names the read is
+ *  to answer them under. */
+const TREE_NODE_MARKS = ["edited_at", "deleted_at", "deleted_by"] as const;
+
+/**
+ * Whether the contract's tree node (`IssueTreeNode`, `packages/contracts/schemas/
+ * dispatch-openapi.json`) lacks a post's marks (`TREE_NODE_MARKS`), which the page reads a
+ * comment's deleted line, its edited mark and a deleted Change from: a case that reads one is
+ * skipped while it does, with a line that says which, as `skipWithout` skips a case on a missing
+ * program. Call it once, at the test file's module scope, and hand the result to every
+ * `skipIf` of the file.
+ */
+export function skipWithoutTreeNodeMarks(): boolean {
+  const schema = JSON.parse(
+    readFileSync(
+      fileURLToPath(
+        new URL("../../../../../../contracts/schemas/dispatch-openapi.json", import.meta.url)
+      ),
+      "utf8"
+    )
+  ) as { components: { schemas: { IssueTreeNode: { properties: Record<string, unknown> } } } };
+  const declared = schema.components.schemas.IssueTreeNode.properties;
+  const missing = TREE_NODE_MARKS.filter((mark) => !(mark in declared));
+  if (missing.length === 0) return false;
+  console.warn(
+    `Skipped the cases that read a post's marks on a tree node: IssueTreeNode does not declare ${missing.join(", ")}.`
+  );
+  return true;
 }
 
 /** The decisions read's object for a decision whose words are `text`: never kept, replaced or

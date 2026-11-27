@@ -62,9 +62,12 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
   // Where the list draws none of the node - the tree holds none, the words filter matched not the
   // question a write-up answers, or a read the list draws no line for stands refused - the stage
   // draws the outline in the view's place, which lands on the node or says that the issue holds
-  // none of it or that its read failed. The view tells once the outline's reads have settled, so
-  // a node only the decisions view read holds is drawn here where that read has answered by
-  // then; where it has not, the outline is drawn, which reads its pages until it holds the node.
+  // none of it or that its read failed. The view tells once the outline's reads have settled, and
+  // the body only once the decisions view read has answered or stands refused
+  // (`decisions-entries.ts`' `viewSettled`): a node only that read holds is in the tree by then,
+  // so it is drawn here, whichever of the reads answers first. Where that read stands refused the
+  // tree is the outline's, and where it holds none of the node the outline is drawn in the view's
+  // place, which reads its pages until it holds the node.
   const tells = useTellsAddressDrawn(refused, readsSettled, ["asks"], onAddressDrawn);
   const view = useMemo(
     () => presetView(root, "decisions", address.filter, named),

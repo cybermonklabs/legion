@@ -33,12 +33,8 @@ import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { usePlainHeadline } from "../refs/plain-text";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import {
-  anchorBlock,
-  type DecisionNode,
-  decidedByPerson,
-  decisionsOfAnswer,
-} from "./decision-nodes/decision-nodes";
+import { anchorBlock, type DecisionNode, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
+import { decidedByPerson } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import {
@@ -288,7 +284,9 @@ function DecisionControls({
     // read again and every view the page holds is dropped (`readDecisionsAgain`), the Decisions
     // view's and the Spec view's among them, since each draws how the decision stands: so every
     // one draws the decision as it now stands, kept, or in its new words with Keep to press
-    // again. A refusal is said below, on the decision, until the next press.
+    // again. Each view draws its last answer until the next one lands (`useLastAnswer`), so a
+    // decision only the Decisions view read holds keeps these controls meanwhile, and a refusal
+    // is said below, on the decision, until the next press.
     onSettled: () => readDecisionsAgain(queryClient, issueKey),
   });
   return (
@@ -396,6 +394,11 @@ function ChangeComposer({
   const field = useRef<MentionFieldHandle | null>(null);
   const send = useKeyedWrite({
     inline: true,
+    // The issue the Change is written on, as Keep names it: the tree read and its views are held
+    // while the write is out and read once it settles, so the Change the read hangs under the
+    // decision is drawn as soon as the comment lands, and the decision says it was changed and
+    // leaves the review list (`decision-review.ts`).
+    issue: issueKey,
     // A write's label holds no markup: the reading list's `decision-heading-words`.
     label: () => `${CONTROL_LABELS.change_decision} ${name}`,
     method: "POST",
@@ -419,11 +422,10 @@ function ChangeComposer({
     // The change is a comment the tree read hangs under its decision (`decision-review.ts`), so
     // the decision says so, leaves the review list and draws the change under it once the tree
     // is read again: the tree is read again and every held view dropped, as a Keep does
-    // (`readDecisionsAgain`), and the comments read is then invalidated too.
+    // (`readDecisionsAgain`).
     onSuccess: () => {
       setBody("");
       readDecisionsAgain(queryClient, issueKey);
-      void queryClient.invalidateQueries({ exact: true, queryKey: ["comments", issueKey] });
       onDone();
     },
     // A send Dispatch refused, or one the reader stopped, gives the words back to the draft: the

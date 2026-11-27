@@ -262,6 +262,7 @@ test("a desktop link to a comment's node marks its card without expanding its th
         <MemoryRouter initialEntries={[path]}>
           <QueryClientProvider client={landingClient([comment])}>
             <MarginProvider>
+              <ReportEmptyLayoutButton />
               <Details fills open>
                 <SelectedItemLabel />
                 <Margin />
@@ -271,6 +272,7 @@ test("a desktop link to a comment's node marks its card without expanding its th
         </MemoryRouter>
       );
       try {
+        await userEvent.setup().click(screen.getByRole("button", { name: "Report layout" }));
         await waitFor(() =>
           expect(screen.getByLabelText("Selected margin item").textContent).toBe(comment.id)
         );
@@ -310,6 +312,7 @@ test("a link to a card beside its document opens Details on it, and a link to a 
         <MemoryRouter initialEntries={[path]}>
           <QueryClientProvider client={landingClient([comment])}>
             <MarginProvider>
+              <ReportEmptyLayoutButton />
               <Details>
                 <SelectedItemLabel />
                 <Margin />
@@ -319,6 +322,7 @@ test("a link to a card beside its document opens Details on it, and a link to a 
         </MemoryRouter>
       );
       try {
+        await user.click(screen.getByRole("button", { name: "Report layout" }));
         await waitFor(() =>
           expect(screen.getByLabelText("Selected margin item").textContent).toBe(comment.id)
         );

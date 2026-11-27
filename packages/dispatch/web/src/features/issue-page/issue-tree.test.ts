@@ -67,6 +67,7 @@ import { treeRows } from "./tree-fold";
 import { decisionBehind, nodesInOrder } from "./tree-keys";
 import {
   treeNode as answerNode,
+  treeAnchor,
   treeAnswer,
   treeParent,
   treeTuple,
@@ -478,8 +479,9 @@ function thread(id: string, createdAt: string): MessageRead {
 
 /** A case's issue as the earlier reads hold it, with what the tree read answers beside them. */
 interface Fixture extends IssueTreeReads {
-  /** The issue's comments, each of which the tree read answers as a node, and which the reads
-   *  carry as the comments read, which says what each one's author did to it. */
+  /** The issue's comments, each of which the tree read answers as a node with its anchor, and
+   *  with the marks its author's corrections leave, as a correction writes them into the answer
+   *  the cache holds (`api/corrected-post.ts`). */
   readonly comments?: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[];
   /** The blocks of each document of the issue, whose typed blocks the tree read answers. */
   readonly documents?: readonly {
@@ -711,10 +713,15 @@ function answered(fixture: Fixture): IssueTreeReads {
         : undefined);
     written.push({
       node: answerNode(comment.id, "comment", parent ?? key, {
+        ...(comment.anchor === null ? {} : { anchor: treeAnchor(comment.anchor) }),
         author: [comment.author],
         made_at: comment.created_at,
         text: comment.body,
         ...(comment.body_tree === undefined ? {} : { text_tree: comment.body_tree }),
+        ...(comment.edited_at === null ? {} : { edited_at: comment.edited_at }),
+        ...(comment.deleted_at === null
+          ? {}
+          : { deleted_at: comment.deleted_at, deleted_by: comment.deleted_by }),
       }),
     });
   }
@@ -789,7 +796,6 @@ function answered(fixture: Fixture): IssueTreeReads {
   );
   return {
     ...reads,
-    ...(comments === undefined ? {} : { comments }),
     ...(messages === undefined ? {} : { messages }),
     tree: treeAnswer(walk, [...tuples, ...(tied ?? [])], { issue: key }),
   };

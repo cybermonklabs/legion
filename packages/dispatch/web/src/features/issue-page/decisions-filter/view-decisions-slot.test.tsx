@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, type RenderResult, render, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import type { NavigateFunction } from "react-router-dom";
 
-import { api } from "../../../api/client";
+import { ApiError, api } from "../../../api/client";
 import {
   issueAskThreadsQuery,
   issueCoverageQuery,
@@ -13,12 +14,13 @@ import {
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../../api/queries";
-import type { Comment, IssueAskRow } from "../../../api/types";
+import type { IssueAskRow, MessageRead } from "../../../api/types";
 import { type EventFreshness, useIsHuman } from "../../../hooks/useIsHuman";
 import { answeredAsk } from "../../inbox/ask-card-fixture";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { buildDispatchReference } from "../../refs/routes";
 import { useMarkThreadRead } from "../../threads/useMarkThreadRead";
+import { rowActionSelector } from "../DecisionActions";
 import { presetPath } from "../issue-address";
 import { framesByHand, TWO_THREADS, waitInAct } from "../outline-fixtures";
 import { type ThreadMark, ThreadReadMark } from "../outline-thread-read";
@@ -36,14 +38,13 @@ import {
   goneLineTakesFocus,
   inDocument,
   REFUSED,
-  retryTakesFocus,
   rowTakesFocus,
   stubReads,
   treeOf,
 } from "../slots/stage-fixtures";
 import { blockNodeId } from "../tree-drafts";
 import { treeNode } from "../tree-read/tree-fixtures";
-import { outlineQuery, type TreeAnswerNode } from "../tree-read/tree-read";
+import { outlineQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 import {
   decision,
   decisionNode,
@@ -136,7 +137,7 @@ test("a block no node carries, named on the Decisions view's address, draws the 
 // comment as a row before its parts, with the focus on it, and the stage keeps the view once every
 // read is held.
 test("a comment the tree holds, named beside the Decisions view, keeps the view, with the focus on the comment's row", async () => {
-  const comments = spyOn(api, "listComments").mockResolvedValue([...TWO_THREADS]);
+  const comments = spyOn(api, "listComments");
   answerTree(commentNodes(TWO_THREADS));
   try {
     const view = drawStage("?comment=reply-b");
@@ -148,6 +149,7 @@ test("a comment the tree holds, named beside the Decisions view, keeps the view,
     // Every read has answered, and the view has said whether its tree draws the comment.
     await waitInAct(20);
     expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
+    expect(comments, "the page read the issue's comments").not.toHaveBeenCalled();
     expect(focusedRow(), "the focus left the comment's row").toBe("reply-b");
   } finally {
     comments.mockRestore();
@@ -160,6 +162,15 @@ const ASKED: readonly IssueAskRow[] = [
   answeredAsk({ id: "ask-open", answer: null, question: "Which flag?", state: "open" }),
   answeredAsk({ id: "ask-answered" }),
 ].map((asked) => ({ ...asked, last_reply: null }));
+
+/** Statement `s1` of the spec as Conversation's read answers it, which the decisions view read
+ *  leaves to that read. */
+const S1 = treeNode("s1", "requirement", KEY, inDocument(SPEC_DOCUMENT, 0));
+
+/** The decision block `block` of the spec, waiting for review and tied to `S1`. */
+function tied(block: string): TreeAnswerNode {
+  return decision(block, { decision: { links: [shaped(specRef("s1"))] } });
+}
 
 /** The block of the spec that holds the reader's write-up of their answer to `ask-answered`: a
  *  `reading` block. */
@@ -221,12 +232,10 @@ test("a person's write-up of an answered question, named on the Decisions view's
 // page that ends before the second, and the decisions view read holds both: `#b-later` keeps the
 // view, with the focus on the later decision's row.
 test("a decision only the decisions view read holds, named on the Decisions view's address, keeps the view, with the focus on its row", async () => {
-  const tied = (block: string) => decision(block, { decision: { links: [shaped(specRef("s1"))] } });
-  const statement = treeNode("s1", "requirement", KEY, inDocument(SPEC_DOCUMENT, 0));
   spyOn(api, "getIssueTree").mockImplementation(async (_key, query) =>
     query?.view === "decisions"
       ? treeOf([tied("first"), tied("later")])
-      : treeOf([statement, tied("first")])
+      : treeOf([S1, tied("first")])
   );
   // The messages read is the one held: it answers last, and with it every read the tree is built
   // from is held, once the decisions view read has answered.
@@ -244,6 +253,108 @@ test("a decision only the decisions view read holds, named on the Decisions view
   await waitInAct(20);
   expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
   expect(focusedRow(), "the focus left the later decision's row").toBe(later);
+});
+
+// The same address with the reads in the opposite order: the outline's reads all answer, and
+// the view is drawn over Conversation's first page, which holds the first decision alone, while
+// the decisions view read is still out. The view says nothing of the later decision until that
+// read answers (`decisions-entries.ts`' `viewSettled`): once it answers with the later decision,
+// `#b-later` lands on its row in the Decisions view, and the stage never drew the outline in the
+// view's place.
+test("a decision only the decisions view read holds, its read answering after the outline's reads, keeps the view, with the focus on its row", async () => {
+  const viewOut = Promise.withResolvers<TreeAnswer>();
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) =>
+    query?.view === "decisions" ? viewOut.promise : Promise.resolve(treeOf([S1, tied("first")]))
+  );
+  const first = decisionNode("first").id;
+  const later = decisionNode("later").id;
+  const view = drawStage("#b-later");
+  await waitFor(() =>
+    expect(
+      view.container.querySelector(
+        `[data-decisions-body] [data-node-row][data-node-id="${first}"]`
+      ),
+      `the view drew no row of the first decision over the outline's reads; the stage drew ${drawnSlot(view)}`
+    ).not.toBeNull()
+  );
+  // Every read the outline is built from has answered; the decisions view read is still out.
+  await waitInAct(20);
+  expect(
+    drawnSlot(view),
+    "the stage drew the outline in place of the view before the decisions view read answered"
+  ).toBe("the view");
+  await act(async () => viewOut.resolve(treeOf([tied("first"), tied("later")])));
+  await waitFor(() =>
+    expect(
+      focusedRow(),
+      `the later decision's address left the focus elsewhere; the stage drew ${drawnSlot(view)}`
+    ).toBe(later)
+  );
+  await waitInAct(20);
+  expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
+  expect(focusedRow(), "the focus left the later decision's row").toBe(later);
+});
+
+// R4: a refused Keep says so on the row. A Keep, however it ends, reads the tree again and drops
+// the views the page holds (`DecisionActions.tsx`), so the decisions view read is read again;
+// until its next answer lands the view keeps drawing its last one (`useDecisionsTree`,
+// `useDecisionReads`), as the Spec view's column does. A decision only that read holds, past
+// Conversation's first page, keeps its row while the read is out again, the row keeps the focus,
+// and the row keeps saying the Keep was refused (`409 DECISION_CHANGED`).
+test("a refused Keep of a decision only the decisions view read holds keeps its row, its refusal and the focus while that read is read again", async () => {
+  const refusal = "The decision changed since you read it.";
+  const keep = spyOn(api, "keepDecision").mockRejectedValue(
+    new ApiError(409, { code: "DECISION_CHANGED", error: refusal })
+  );
+  // The decisions view read answers once, and the read the refused Keep makes of it again is
+  // held.
+  const again = Promise.withResolvers<TreeAnswer>();
+  let viewReads = 0;
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
+    if (query?.view !== "decisions") return Promise.resolve(treeOf([S1, tied("first")]));
+    viewReads += 1;
+    return viewReads === 1
+      ? Promise.resolve(treeOf([tied("first"), tied("later")]))
+      : again.promise;
+  });
+  const later = decisionNode("later").id;
+  const row = () =>
+    document.querySelector<HTMLElement>(
+      `[data-decisions-body] [data-node-row][data-node-id="${later}"]`
+    );
+  const user = userEvent.setup();
+  try {
+    const view = drawStage("#b-later");
+    await waitFor(() =>
+      expect(
+        focusedRow(),
+        `the later decision's address left the focus elsewhere; the stage drew ${drawnSlot(view)}`
+      ).toBe(later)
+    );
+    const press = await waitFor(() => {
+      const button = row()?.querySelector<HTMLElement>(rowActionSelector("keep"));
+      if (button == null) throw new Error("the later decision's row draws no Keep");
+      return button;
+    });
+    await user.click(press);
+    await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(viewReads, "the refused Keep did not read the decisions view again").toBeGreaterThan(1)
+    );
+    await waitInAct(20);
+    expect(
+      row(),
+      "the refused decision's row left the view while the decisions view read is read again"
+    ).not.toBeNull();
+    expect(
+      row()?.querySelector('[role="alert"]')?.textContent,
+      "the refused decision's row no longer says the Keep was refused"
+    ).toBe(refusal);
+    expect(focusedRow(), "the focus left the refused decision's row").toBe(later);
+    expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
+  } finally {
+    keep.mockRestore();
+  }
 });
 
 // Root R20, INFRA-1196's decision 513: a decision whose `from_ask` names a question the reader
@@ -413,17 +524,17 @@ function askRow(id: string): string {
 // A key pressed on a row of the view is an act of the following too, but the row that holds the
 // focus leaves the page with the view where the view then draws no node the address names. The
 // outline drawn in the view's place lands as it does where the reader pressed nothing: with the
-// comments read out the view draws the questions, `j` is pressed on the first one's row, and once
-// the comments answer, the outline's line that the issue holds no such comment takes the focus.
+// messages read out the view draws the questions, `j` is pressed on the first one's row, and once
+// the messages answer, the outline's line that the issue holds no such comment takes the focus.
 test("`j` on a row of the Decisions view, before it draws the outline's line for a comment the issue holds none of in its place, leaves the focus on that line", async () => {
   spyOn(api, "listIssueAskThreads").mockResolvedValue([...ASKED] as never);
   answerWriteUpTree();
-  const commentsOut = Promise.withResolvers<Comment[]>();
-  spyOn(api, "listComments").mockReturnValue(commentsOut.promise);
+  const messagesOut = Promise.withResolvers<MessageRead[]>();
+  spyOn(api, "listIssueMessages").mockReturnValue(messagesOut.promise);
   const read = commentGone();
   try {
     const view = drawStage(`?comment=${GONE_COMMENT}`);
-    await rowTakesFocus(view, askRow("ask-open"), "the Decisions view with the comments out");
+    await rowTakesFocus(view, askRow("ask-open"), "the Decisions view with the messages out");
     act(() => {
       document.activeElement?.dispatchEvent(
         new KeyboardEvent("keydown", { bubbles: true, key: "j" })
@@ -433,8 +544,8 @@ test("`j` on a row of the Decisions view, before it draws the outline's line for
       view.container.querySelector(askRow("ask-open")),
       `the focus left the first question's row at \`j\` for ${focusedRow() ?? document.activeElement?.tagName}`
     ).toHaveFocus();
-    await act(async () => commentsOut.resolve([]));
-    await goneLineTakesFocus(view, "the comments answering after `j`");
+    await act(async () => messagesOut.resolve([]));
+    await goneLineTakesFocus(view, "the messages answering after `j`");
   } finally {
     read.mockRestore();
   }
@@ -506,12 +617,10 @@ test("coming back to the outline from Decisions after the app's staleTime asks w
     answered
   );
   client.setQueryData(issueAskThreadsQuery(KEY).queryKey, [], answered);
-  // The issue holds two threads, so the outline draws rows.
-  client.setQueryData(["comments", KEY], [...TWO_THREADS], answered);
   client.setQueryData(["issue-messages", KEY], [], answered);
   // What the reader holds unread on the issue, which a thread's read mark reads.
   client.setQueryData(myRepliesOwnerQuery({ issue: KEY }).queryKey, NOTHING_UNREAD, answered);
-  // The tree read: the issue's two threads, each comment a node of it.
+  // The tree read: the issue's two threads, each comment a node of it, so the outline draws rows.
   client.setQueryData(
     outlineQuery(KEY, "conversation").queryKey,
     treeOf(commentNodes(TWO_THREADS)),
@@ -662,19 +771,26 @@ test("under the Decisions view and words, a fragment the browser changes under o
   ).toBeNull();
 });
 
-// A read the view draws no line of its own for, refused, is no row of the view. The Decisions
-// view draws a line for the decisions' reads, the tree read and its decisions view, and for the
-// asks alone, so with the comments read refused a comment named beside it lands on nothing there:
-// the stage draws the outline in the view's place, which says the comments could not be loaded,
-// with the focus on its Retry, as it did before the view was filled.
-test("the comments read refused, a comment named beside the Decisions view draws the outline in its place, with the comments' line and the focus on its Retry", async () => {
-  spyOn(api, "listComments").mockRejectedValue(REFUSED);
-  const view = drawStage("?comment=reply-b");
-  await retryTakesFocus(view, STATE_LINES.comments_unreadable, "the comment's address");
-  expect(
-    view.container.querySelector("[data-decisions-body]"),
-    "the Decisions view was drawn beside the outline"
-  ).toBeNull();
+// A read the view draws no line of its own for, refused, is no row of the view. A comment the
+// tree read does not hold is read on its own where an address names it (`GET
+// /api/v1/comments/{id}`, `useAddressFallback`): with that read refused, a comment named beside
+// the Decisions view lands on nothing there, so the stage draws the outline in the view's place,
+// which says the comment could not be loaded, with the focus on that line's heading.
+test("the comment's own read refused, a comment named beside the Decisions view draws the outline in its place, with the comment's line and the focus on it", async () => {
+  const read = spyOn(api, "getComment").mockRejectedValue(REFUSED);
+  try {
+    const view = drawStage("?comment=reply-b");
+    await waitFor(() =>
+      expect(view.getByRole("heading", { name: "Couldn't load this comment" })).toHaveFocus()
+    );
+    expect(read.mock.calls.map(([id]) => id)).toContain("reply-b");
+    expect(
+      view.container.querySelector("[data-decisions-body]"),
+      "the Decisions view was drawn beside the outline"
+    ).toBeNull();
+  } finally {
+    read.mockRestore();
+  }
 });
 
 // The Decisions view drew its rows' references from the page's names and said nothing when their

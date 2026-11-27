@@ -11,7 +11,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import { api } from "../../../api/client";
@@ -26,6 +26,7 @@ import {
 } from "../../../api/queries";
 import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
 import type {
+  Actor,
   IssueDetails,
   IssueTreeNode,
   IssueTreeRead,
@@ -35,6 +36,7 @@ import { EVENT_FRESH } from "../../refs/reference-target";
 import { parseIssuePath } from "../../refs/routes";
 import { writesOf } from "../../writes/write-store";
 import { presetOf } from "../issue-address";
+import type { TreeNode } from "../issue-tree";
 import type { Preset } from "../page-words";
 import { isFilter } from "../presets";
 import {
@@ -54,7 +56,16 @@ import {
  * below, which are the generated contract's (`IssueTreeRead`, `IssueTreeNode`, `IssueTreeTuple`).
  */
 export type TreeAnswer = IssueTreeRead;
-export type TreeAnswerNode = IssueTreeNode;
+/** A node of the answer, with what the author of a comment or a message did to it: when they
+ *  last edited it, and when and by whom they deleted it. The read answers these marks on a
+ *  post's node, with no text for a deleted post, and a correction event writes them into every
+ *  answer the cache holds (`api/corrected-post.ts`). The page reads a comment's marks from its
+ *  node alone (`decision-review.ts`' `treeComments`). */
+export type TreeAnswerNode = IssueTreeNode & {
+  readonly deleted_at?: string | null;
+  readonly deleted_by?: Actor | null;
+  readonly edited_at?: string | null;
+};
 export type TreeTuple = IssueTreeTuple;
 
 /** Every view of the tree a read asks for (`?view=`), in the order the filters read them: a
@@ -386,6 +397,17 @@ export function outlineOf(preset: Preset): Outline | undefined {
 }
 
 /**
+ * Whether the plan's tasks are still to be read under `preset`: Conversation's read, and the read
+ * beside each filter, holds no plan task, so there they are Plan's view read's, which a load of
+ * Conversation or of a filter sends with the page (`ViewReadProvider`'s `sentWithLoad`), and the
+ * issue's node holds it (`TreeNode.views`) once it has answered. Until then a count of the plan's
+ * tasks would read 0 for what the page has not read yet. Graph's read holds them.
+ */
+export function planTasksOut(root: Pick<TreeNode, "views">, preset: Preset): boolean {
+  return outlineOf(preset) === "conversation" && root.views?.plan === undefined;
+}
+
+/**
  * Which outline read the page holds, as the view of the address the router is at chooses it
  * (`outlineOf`). Every reader of the outline - the model (`useIssueTree`), the header's count,
  * the view row's counts, the Contents list, the stage's views, the refused read's line
@@ -594,18 +616,41 @@ export function useBlocksRunning(key: string, role: TreeFilter): boolean {
   return role === choice.filter ? view.isFetching : read.isFetching;
 }
 
+/**
+ * The last value given other than undefined: the one given while there is one, and the last one
+ * given before while undefined is. The batched names read keeps by it the set of addresses it
+ * was last given while the gate that holds it back is shut (`useIssueTree.ts`' `askedFor`). It
+ * keeps a set of addresses and never a names answer: a correction's marks are written into the
+ * answer the cache holds (`markCorrectedPost`), and a ref holding the answer itself would go on
+ * drawing it as it was kept, a deleted post's words among them, so the answer is read from the
+ * cache under the set it was last answered for (`useLastAnswered`). The Spec view's column
+ * (`spec-filter/SpecFilterBody.tsx`) and the Decisions view (`decisions-entries.ts`'
+ * `useDecisionsTree`, `useDecisionReads`) keep by it the last answer of their view read, which a
+ * Keep or a Change drops, until the next one lands. The ref is written during render only with
+ * the value given in that render, so it never stands over a newer one.
+ */
+export function useLastAnswer<T>(value: T | undefined): T | undefined {
+  const last = useRef(value);
+  if (value !== undefined) last.current = value;
+  return last.current;
+}
+
 /** The two reads of issue `key` a decision's Keep and Change look for their decision in
  *  (`DecisionActions.tsx`), in the order they look: first the read its row is drawn from - on the
  *  Decisions view the decisions view read, and in every other view the outline read the page
  *  holds (`OutlineChoice`) - then the other. Both are watched and never sent, since `useTreeRead`
  *  sends the outline read and `ViewReadProvider` the view: for a surface that holds the issue's
- *  key and not its reads. */
+ *  key and not its reads. The decisions view read is its last answer (`useLastAnswer`): a Keep
+ *  or a Change drops the view (`dropViews`) as it settles and reads it again, and the Decisions
+ *  view keeps drawing its last answer until the next one lands (`decisions-entries.ts`'
+ *  `useDecisionsTree`), so a decision only that read holds keeps its controls meanwhile, and a
+ *  refused Keep its refusal. */
 export function useDecisionReads(
   key: string
 ): readonly [TreeAnswer | undefined, TreeAnswer | undefined] {
   const choice = useOutlineChoice();
   const outline = useQuery({ ...observedOutline(key, choice), enabled: false }).data;
-  const view = useQuery({ ...viewQuery(key, "decisions"), enabled: false }).data;
+  const view = useLastAnswer(useQuery({ ...viewQuery(key, "decisions"), enabled: false }).data);
   return choice.preset === "decisions" ? [view, outline] : [outline, view];
 }
 

@@ -87,8 +87,13 @@ import { treeContext } from "../tree-drafts";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import { outOfCounts } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
-import { issueTreeQuery, useBlocksRunning, useTreeRead, viewQuery } from "../tree-read/tree-read";
-import { useLastAnswer } from "../useIssueTree";
+import {
+  issueTreeQuery,
+  useBlocksRunning,
+  useLastAnswer,
+  useTreeRead,
+  viewQuery,
+} from "../tree-read/tree-read";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { abortOnReaderAct, nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";

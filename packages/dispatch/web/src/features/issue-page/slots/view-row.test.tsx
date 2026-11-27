@@ -29,7 +29,9 @@ import {
   type TreeAnswer,
   type TreeAnswerNode,
   viewKey,
+  viewQuery,
 } from "../tree-read/tree-read";
+import { ViewReadProvider } from "../tree-read/view-read";
 import { ProvidersSlot } from "./providers";
 import { ViewRowSlot, viewRowSignals } from "./view-row";
 
@@ -68,8 +70,12 @@ const STEP = buildDispatchReference({
 const STEP_WORDS = "Hang the lanterns first.";
 
 /** A step of the spec (`STEP`), which the Plan view counts: the tree read answers it with its
- *  words, as it answers every block's. */
-const STEP_NODE = specBlock("t1", "plan_task", 2, STEP_WORDS);
+ *  words, as it answers every block's, and Plan's view read answers it as a node its query took
+ *  (`role: "query"`), which is what that view counts. */
+const STEP_NODE: TreeAnswerNode = {
+  ...specBlock("t1", "plan_task", 2, STEP_WORDS),
+  role: "query",
+};
 
 /** The tree read's answer for the fixtures' issue: the issue, `blocks` of the spec, and each of
  *  `comments` under the comment it replies to, else under the issue. The outline draws its rows
@@ -94,13 +100,12 @@ const ANSWERED_COUNTS: Readonly<Record<Filter, string>> = {
 /** The row's text with each control's name alone, which is all it draws with no signals. */
 const NAMES_ALONE = PRESET_ORDER.map((preset) => PRESET_NAMES[preset]).join("");
 
-/** Answers every read the row reaches: the tree's five reads, the issue's tree read, the reader
- *  and the names. No decisions read: every decision is a node of the tree read. A case changes
- *  the answer of the read it holds out or fails. */
+/** Answers every read the row reaches: the tree's four reads, the issue's tree read, the reader
+ *  and the names. No decisions read and no comments read: every decision and every comment is a
+ *  node of the tree read. A case changes the answer of the read it holds out or fails. */
 function answerReads() {
   return {
     asks: spyOn(api, "listIssueAskThreads").mockResolvedValue([] as never),
-    comments: spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
     coverage: spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
     messages: spyOn(api, "listIssueMessages").mockResolvedValue([] as never),
     names: spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never),
@@ -111,8 +116,9 @@ function answerReads() {
 }
 
 /** The view row of the fixtures' issue at `path`, its own address unless given, under the page's
- *  providers. Each case draws it at 1440 px (`DESKTOP_WIDTH`), from 1280 px up, where the row is
- *  the row of five. */
+ *  providers, and under the view reads a load of Conversation sends with it, as the stage sends
+ *  them (`ViewReadProvider`): Plan's among them, which holds the plan's tasks. Each case draws it
+ *  at 1440 px (`DESKTOP_WIDTH`), from 1280 px up, where the row is the row of five. */
 function renderViewRow(client: QueryClient, path = presetPath(KEY, "conversation")) {
   const issue = issueDetails();
   const route = { key: issue.key, kind: "issue" } as const;
@@ -121,7 +127,9 @@ function renderViewRow(client: QueryClient, path = presetPath(KEY, "conversation
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <ProvidersSlot issue={issue} route={route}>
-            <ViewRowSlot issue={issue} route={route} />
+            <ViewReadProvider issue={issue} preset="conversation">
+              <ViewRowSlot issue={issue} route={route} />
+            </ViewReadProvider>
           </ProvidersSlot>
         </KeymapProvider>
       </QueryClientProvider>
@@ -180,6 +188,45 @@ test("the view row draws no count, unit word or flag while a read of the tree is
       view.getByRole("toolbar").textContent,
       "the Plan control drew no unit word once every read had answered"
     ).toContain(FILTER_SIGNAL_WORDS.steps);
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+    for (const spy of Object.values(reads)) spy.mockRestore();
+  }
+});
+
+// The outline read holds no plan task, so under Conversation the plan's tasks are Plan's view
+// read's, which the load sends with the page. While it is out Plan's control draws no count,
+// since the outline would count none of the tasks the plan holds, and no other control waits on
+// it; once it answers, Plan counts the plan's tasks.
+test("the view row's Plan control draws no count while Plan's view read is out, and the plan's tasks once it has answered", async () => {
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const client = newClient();
+  const reads = answerReads();
+  const plan = Promise.withResolvers<TreeAnswer>();
+  reads.tree.mockImplementation(async (_key, query) =>
+    query?.view === "plan" ? plan.promise : treeOf(TWO_THREADS, STATEMENTS)
+  );
+  const view = renderViewRow(client);
+  try {
+    await waitFor(() =>
+      expect(
+        drawnCounts(view.container),
+        "the other filters did not draw their counts, or Plan drew one, with its view read out"
+      ).toEqual({ decisions: "0", spec: "2", verification: "0" })
+    );
+    expect(
+      client.isFetching({ queryKey: viewQuery(KEY, "plan").queryKey }),
+      "Plan's view read is not out"
+    ).toBe(1);
+
+    await act(async () => plan.resolve(treeOf(TWO_THREADS, [...STATEMENTS, STEP_NODE])));
+    await waitFor(() =>
+      expect(
+        drawnCounts(view.container),
+        "Plan did not count the plan's task once its view read had answered"
+      ).toEqual({ ...ANSWERED_COUNTS, plan: "1" })
+    );
   } finally {
     view.unmount();
     restoreMatchMedia();
@@ -364,7 +411,6 @@ test("under a words filter the view row of an issue that holds no node draws no 
   const reads = answerReads();
   // No document holds a block and nobody has commented: the tree is the issue alone.
   reads.tree.mockResolvedValue(treeOf([], []));
-  reads.comments.mockResolvedValue([] as never);
   const own = buildDispatchReference({ key: KEY, kind: "issue" });
   // The names read, held out until the case answers it with the issue's own name.
   const names = Promise.withResolvers<{ targets: ReferenceTarget[] }>();
@@ -547,6 +593,50 @@ test("the Decisions control's to-review flag carries + while the decisions view 
         count: "2",
         flag: ` · 2 ${FILTER_SIGNAL_WORDS.to_review}`,
       })
+    );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+    for (const spy of Object.values(reads)) spy.mockRestore();
+  }
+});
+
+// R2, R15: Conversation's pages held so far hold two waiting decisions; the Decisions view read's
+// answer, a first page that names a next one, holds the first alone. The later decision stands
+// in the tree that read builds as Conversation's context alone (`useIssueTree.ts`'
+// `viewWithContext`), so the Decisions control counts the read's page, one decision and its
+// flag one to review, each with "+", never the later decision Conversation's pages hold.
+test("the Decisions control counts no decision Conversation's pages hold and the decisions view read's page does not", async () => {
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const client = newClient();
+  const { reads, waiting } = reviewReads();
+  reads.tree.mockResolvedValue(
+    treeAnswer([
+      treeNode(KEY, "issue", null),
+      specBlock("r1", "requirement", 0),
+      waiting("d1", 1),
+      waiting("d2", 2),
+    ])
+  );
+  const view = renderViewRow(client, presetPath(KEY, "decisions"));
+  try {
+    await waitFor(() =>
+      expect(decisionsSignal(view.container), "the count over Conversation's pages").toEqual({
+        count: "2",
+        flag: ` · 2 ${FILTER_SIGNAL_WORDS.to_review}`,
+      })
+    );
+    await act(async () => {
+      client.setQueryData(
+        viewKey(KEY, "decisions"),
+        treeAnswer([treeNode(KEY, "issue", null), waiting("d1", 1)], [], { cursor: "next" })
+      );
+    });
+    await waitFor(() =>
+      expect(
+        decisionsSignal(view.container),
+        "the count over the decisions view read's page reads a decision only Conversation's pages hold"
+      ).toEqual({ count: "1+", flag: ` · 1+ ${FILTER_SIGNAL_WORDS.to_review}` })
     );
   } finally {
     view.unmount();

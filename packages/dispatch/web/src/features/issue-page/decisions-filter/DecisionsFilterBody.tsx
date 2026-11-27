@@ -210,8 +210,9 @@ export function DecisionsFilterBody({
   /** Told whether the list draws the node the address names (`reveal`), where the page draws
    *  the outline in the view's place if it does not (`slots/view-decisions.tsx`): given only
    *  while every read the tree is built from holds its answer. The body tells it as soon as it
-   *  can say, and again each time what it draws changes; the stage acts on the first of these
-   *  for each following of an address that names a node beside the view (`slots/stage.tsx`). */
+   *  can say, once the decisions view read has answered or stands refused (`viewSettled`), and
+   *  again each time what it draws changes; the stage acts on the first of these for each
+   *  following of an address that names a node beside the view (`slots/stage.tsx`). */
   onRevealDrawn?: (drawn: boolean) => void;
   /** What the page publishes of its one batched names read (`useIssueTree.ts`'s `published`),
    *  which the body hands every row it draws in the render that draws it
@@ -242,9 +243,8 @@ export function DecisionsFilterBody({
   waitingPress?: number;
 }): ReactNode {
   const navigate = useNavigate();
-  const { failures, parts, readsHeld, retry, retrying, unreadable, writeUps } = useDecisionsEntries(
-    { issue, reader, root, view }
-  );
+  const { failures, parts, readsHeld, retry, retrying, unreadable, viewSettled, writeUps } =
+    useDecisionsEntries({ issue, reader, root, view });
   // The page's one rule for naming a person (`AgentText.author`), which the panel's facts of the
   // focused row name its keeper by: a name, never an id (R9, R22).
   const agentText = useAgentText();
@@ -582,11 +582,15 @@ export function DecisionsFilterBody({
   // answered question, which it draws only as the row of the question it answers, where the
   // address lands as above. Under words that question does not hold the list draws neither the
   // write-up nor its question, so the address would land nowhere here; the outline draws the
-  // write-up under the question it answers. It is said before the browser paints, so where the
-  // reads were held as the view was drawn, as on Back to its address, no list is painted in the
-  // outline's place.
+  // write-up under the question it answers. It is said only once the decisions view read has
+  // answered or stands refused (`viewSettled`): until then a question or a decision past the
+  // pages of Conversation's read held so far, which only that read holds, may yet come into the
+  // tree, and an address naming one would be said undrawn while the read that holds it is still
+  // out. Refused, the tree is Conversation's, and what the list draws of it is said. It is said
+  // before the browser paints, so where the reads were held as the view was drawn, as on Back to
+  // its address, no list is painted in the outline's place.
   useLayoutEffect(() => {
-    if (onRevealDrawn === undefined) return;
+    if (onRevealDrawn === undefined || !viewSettled) return;
     if (reveal === undefined) {
       onRevealDrawn(false);
       return;
@@ -597,7 +601,7 @@ export function DecisionsFilterBody({
       return;
     }
     onRevealDrawn(true);
-  }, [every, onRevealDrawn, reveal, writeUps]);
+  }, [every, onRevealDrawn, reveal, viewSettled, writeUps]);
 
   // Whether the focus on the foot's control is the one this body put there on its own, which
   // the reader has not yet pressed, typed on or left. The tree takes the focus only from a

@@ -1,7 +1,6 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 
-import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { api } from "../../../api/client";
 import { primarySpec } from "../../../api/issue-cache";
 import { routeUrl } from "../../../api/paths";
@@ -42,6 +41,7 @@ import { blockNodeId } from "../tree-drafts";
 import {
   pagedAnswer,
   type TreeNodeExtra,
+  treeAnchor,
   treeAnswer,
   treeNode,
   treeTuple as tuple,
@@ -49,6 +49,7 @@ import {
 import {
   blocksOfRole,
   holdsPlanTask,
+  mergeCommentPage,
   nextTreeCursor,
   nodesRemaining,
   type TreeDraftMark,
@@ -359,6 +360,25 @@ test("a node stands under its parent, in the read's order", () => {
   expect(nodeOf(root, blockNodeId("spec", "r2"))?.children.map((child) => child.id)).toEqual([
     "c-b",
     "c-a",
+  ]);
+});
+
+// R8: a read with kind answers each ancestor of a node it takes as context, where the read orders
+// it among that ancestor's siblings: a message a statement was written under, of the conversation
+// that stands first under the issue, before the child issue the read orders after it. The page
+// draws the message there, with the statement under it, and not after every other node.
+test("a context node in the issue's tree stands in the read's order", () => {
+  const { root } = drawn(
+    answer([
+      node("m1", "message", KEY, { role: "context" }),
+      block("r1", "requirement", "m1", SPEC, 0),
+      node("CORE-2", "issue", KEY, { text: "A child of the issue" }),
+    ])
+  );
+
+  expect(root.children.map((child) => child.id)).toEqual(["m1", "CORE-2"]);
+  expect(nodeOf(root, "m1")?.children.map((child) => child.id)).toEqual([
+    blockNodeId("spec", "r1"),
   ]);
 });
 
@@ -1148,6 +1168,46 @@ test("a decision node's address is the outline's", () => {
       tie: link.to.ref,
     });
   }
+});
+
+// A Change of a decision is a person's comment made after the decision last changed and was last
+// kept, and the tree read pages the issue's comments, the newest first: where its answer names an
+// older comment page (`comments_before`, the oldest comment it holds), a decision that changed
+// before that comment may have its Change on that page. Such a decision node, drawn waiting for
+// review or kept with no Change, carries the mark a count with more to read carries
+// (`changeUnread`, the "+" of R15), rather than reading as unchanged. A decision changed since
+// that comment has no Change on the older page, one with a Change under it reads changed, and
+// with no older page left no decision carries the mark.
+test("a decision whose Change may stand on an older comment page carries the mark of more to read", () => {
+  const before = "2026-11-05T00:00:00.000000Z,c-oldest";
+  const decided = (id: string, changedAt: string) =>
+    node(id, "decision", KEY, { decision: { changed_at: changedAt, waiting_review: true } });
+  const nodes = [
+    decided("d-older", "2026-11-01T00:00:00Z"),
+    decided("d-newer", "2026-11-06T00:00:00Z"),
+    decided("d-changed", "2026-11-01T00:00:00Z"),
+    personsComment("c-change", "d-changed", "2026-11-07T00:00:00Z"),
+  ];
+  const marks = (tree: TreeAnswer) => {
+    const root = buildIssueTree({ issue: issueDetails(), tree });
+    return Object.fromEntries(
+      nodesOf(root)
+        .filter((one) => one.type === "decision")
+        .map((one) => [one.text, { state: one.state, unread: one.changeUnread === true }])
+    );
+  };
+  expect(marks(answer(nodes, [], { comments_before: before }))).toEqual({
+    "Words of d-changed.": { state: "change_requested", unread: false },
+    "Words of d-newer.": { state: "waiting_review", unread: false },
+    "Words of d-older.": { state: "waiting_review", unread: true },
+  });
+  const all = marks(
+    answer([...nodes, personsComment("c-older", "d-older", "2026-11-04T00:00:00Z")], [], {
+      comments_before: null,
+    })
+  );
+  expect(all["Words of d-older."]).toEqual({ state: "change_requested", unread: false });
+  expect(Object.values(all).some((one) => one.unread)).toBe(false);
 });
 
 // R5: a role's blocks come from the tree read in the shape the blocks read answered them: the
@@ -1949,29 +2009,6 @@ test("a requirement whose From line cites a document carries its chip from the t
   ).toEqual([{ name: NODE_TYPE_NAMES.document, ref: cites }]);
 });
 
-/** A comment of the comments read, a person's on the issue, as the route answers it, which
- *  `extra` anchors to text or makes a reply. */
-function commentRead(id: string, extra: Partial<Comment> = {}): Comment {
-  return {
-    anchor: null,
-    ...commentDeliveryFields(),
-    ask_id: null,
-    author: { id: "alice", kind: "user" },
-    body: `Words of ${id}.`,
-    created_at: "2026-11-05T00:00:00Z",
-    edited_at: null,
-    id,
-    issue_key: KEY,
-    reply_to: null,
-    resolved: false,
-    resolved_at: null,
-    resolved_by: null,
-    suggestion: null,
-    turn: null,
-    ...extra,
-  };
-}
-
 /** The anchor of a comment on the words of `block` in `document`. */
 function anchorIn(document: Artifact, block: string): NonNullable<Comment["anchor"]> {
   return {
@@ -2027,29 +2064,27 @@ test("Conversation's read names root R1's kinds and never block", async () => {
   }
 });
 
-// R9, R10: a comment on a node's text - one the comments read anchors and the read hangs under
+// R9, R10: a comment on a node's text - one the read answers with its anchor and hangs under
 // that node - is no row of either outline, and neither is a reply in its thread: both stay in the
 // answer the tree is built from, for the margin to draw. A post on the issue, a comment tied to no
 // text, is a row with its replies, and so is a comment anchored in a document whose block the
-// answer holds no node for, which the read hangs under the issue. With no comments read nothing
-// marks a comment as on text, and the read's placement stands.
+// answer holds no node for, which the read hangs under the issue. A comment the read answers
+// with no anchor is no comment on text, and the read's placement stands.
 test("a comment on a node's text is no row", () => {
-  const tree = answer([
+  const onText = (id: string, parent: string, madeAt: string, anchor: Comment["anchor"]) => ({
+    ...personsComment(id, parent, madeAt),
+    ...(anchor === null ? {} : { anchor: treeAnchor(anchor) }),
+  });
+  const nodes = (anchored: boolean) => [
     block("r1", "requirement", KEY, SPEC, 0),
-    personsComment("c-on", "r1", "2026-11-05T01:00:00Z"),
+    onText("c-on", "r1", "2026-11-05T01:00:00Z", anchored ? anchorIn(SPEC, "r1") : null),
     personsComment("c-on-reply", "c-on", "2026-11-05T02:00:00Z"),
     personsComment("c-post", KEY, "2026-11-05T03:00:00Z"),
     personsComment("c-post-reply", "c-post", "2026-11-05T04:00:00Z"),
-    personsComment("c-unplaced", KEY, "2026-11-05T05:00:00Z"),
-  ]);
-  const comments = [
-    commentRead("c-on", { anchor: anchorIn(SPEC, "r1") }),
-    commentRead("c-on-reply", { reply_to: "c-on" }),
-    commentRead("c-post"),
-    commentRead("c-post-reply", { reply_to: "c-post" }),
-    commentRead("c-unplaced", { anchor: anchorIn(DECISIONS, "d9") }),
+    onText("c-unplaced", KEY, "2026-11-05T05:00:00Z", anchorIn(DECISIONS, "d9")),
   ];
-  const { drafts, root } = drawn(tree, { comments, issue: issueDetails() });
+  const tree = answer(nodes(true));
+  const { drafts, root } = drawn(tree, { issue: issueDetails() });
 
   expect(["c-on", "c-on-reply"].map((id) => [nodeOf(root, id), drafts.has(id)])).toEqual([
     [undefined, false],
@@ -2060,24 +2095,24 @@ test("a comment on a node's text is no row", () => {
       placementsOf(root, id).map((one) => one.parent)
     )
   ).toEqual([[KEY], ["c-post"], [KEY]]);
-  expect(placementsOf(drawn(tree).root, "c-on").map((one) => one.parent)).toEqual([
+  expect(placementsOf(drawn(answer(nodes(false))).root, "c-on").map((one) => one.parent)).toEqual([
     blockNodeId("spec", "r1"),
   ]);
 });
 
 // R15: the older comment page `?comments_before=` answers merges into the outline read's answer
-// where the read's order puts each node: each comment under the issue among the issue's children
-// by when it was made, after the ranked statement, a reply under its comment, and a reply to an
-// ask of the newer page under that ask, which the page alone held as under the issue. The two
-// controls pressed while the page is out read it once, and once no older comment remains a press
-// reads nothing.
+// where the read's order puts each node: each comment under the issue among the issue's
+// conversation by when it was made, before the ranked statement, a reply under its comment, and a
+// reply to an ask of the newer page under that ask, which the page alone held as under the issue.
+// The two controls pressed while the page is out read it once, and once no older comment remains
+// a press reads nothing.
 test("an older comment page merges into the answer in the read's order", async () => {
   const newest = answer(
     [
-      block("r1", "requirement", KEY, SPEC, 0, { rank: "a" }),
       node("q1", "ask", KEY, { made_at: "2026-11-05T12:00:00Z" }),
       personsComment("c-3", KEY, "2026-11-07T00:00:00Z"),
       personsComment("c-4", KEY, "2026-11-08T00:00:00Z"),
+      block("r1", "requirement", KEY, SPEC, 0, { rank: "a" }),
     ],
     [],
     { comments_before: "2026-11-07T00:00:00.000000Z,c-3" }
@@ -2107,7 +2142,6 @@ test("an older comment page merges into the answer in the read's order", async (
     const merged = client.getQueryData<TreeAnswer>(queryKey);
     expect(merged?.nodes?.map((one) => one.id)).toEqual([
       KEY,
-      `${KEY}/spec#r1`,
       "c-1",
       "c-1-reply",
       "q1",
@@ -2115,6 +2149,7 @@ test("an older comment page merges into the answer in the read's order", async (
       "c-2",
       "c-3",
       "c-4",
+      `${KEY}/spec#r1`,
     ]);
     expect(merged?.comments_before).toBeNull();
     await readOlderComments(client, KEY, "conversation");
@@ -2123,7 +2158,6 @@ test("an older comment page merges into the answer in the read's order", async (
     const { root } = drawn(merged ?? newest);
     expect(nodesOf(root).map((one) => one.id)).toEqual([
       KEY,
-      blockNodeId("spec", "r1"),
       "c-1",
       "c-1-reply",
       "q1",
@@ -2131,10 +2165,52 @@ test("an older comment page merges into the answer in the read's order", async (
       "c-2",
       "c-3",
       "c-4",
+      blockNodeId("spec", "r1"),
     ]);
   } finally {
     read.mockRestore();
   }
+});
+
+// R8, R15: the read stands a node's conversation first among its children, before the children
+// that hold a rank, so an older page's comment goes before the issue's ranked statement though no
+// comment of the newer page stands under the issue to place it by - after the memo, which the read
+// stands first, and after an ask made before it - and not after the statement and the child issue
+// made before it. A reply to the ask goes after the ask's own block, which the read stands first
+// under its ask, and before the newer reply.
+test("an older page's comment stands before the issue's ranked children", () => {
+  const newest = answer(
+    [
+      block("memo", "callout", KEY, SPEC, 0, { rank: "0" }),
+      node("q1", "ask", KEY, { made_at: "2026-11-05T12:00:00Z" }),
+      { ...node("q1-b", "block", "q1"), id: "ask/q1#q1-b", kind: "ask_block" },
+      personsComment("c-3", "q1", "2026-11-07T00:00:00Z"),
+      block("r1", "requirement", KEY, SPEC, 1, { rank: "a" }),
+      node("CORE-2", "issue", KEY, { made_at: "2026-11-01T00:00:00Z", text: "A child" }),
+    ],
+    [],
+    { comments_before: "2026-11-07T00:00:00.000000Z,c-3" }
+  );
+  const older = treeAnswer(
+    [
+      personsComment("c-1", KEY, "2026-11-06T00:00:00Z"),
+      personsComment("c-q", "q1", "2026-11-05T13:00:00Z"),
+    ],
+    [],
+    { comments_before: null, converted: true }
+  );
+
+  expect(mergeCommentPage(newest, older).nodes?.map((one) => one.id)).toEqual([
+    KEY,
+    `${KEY}/spec#memo`,
+    "q1",
+    "ask/q1#q1-b",
+    "c-q",
+    "c-3",
+    "c-1",
+    `${KEY}/spec#r1`,
+    "CORE-2",
+  ]);
 });
 
 // R10: Graph draws every node of its read the page draws as a row, and the tree read's prose node
