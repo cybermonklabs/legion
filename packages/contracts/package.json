@@ -72,7 +72,7 @@
     "check:go": "bun run scripts/gen-go.ts --check",
     "gen:api": "bun run scripts/gen-api.ts",
     "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/go-blank.ts src/legion-api.ts src/trailing-slash.ts src/log-text.ts src/held-secrets.ts src/daemon-contract.ts src/daemon-api-records.ts src/http-status.ts --root src --outdir dist --target bun --format esm",
-    "build:dispatch": "bun build src/index.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/http-status.ts --root src --outdir dist --target bun --format esm",
+    "build:dispatch": "bun build src/index.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/http-status.ts src/legion-api.ts --root src --outdir dist --target bun --format esm",
     "typecheck": "bun scripts/gen-api.ts && bunx tsc --noEmit",
     "test": "bun test",
     "lint": "bunx biome check src/ schemas/"
