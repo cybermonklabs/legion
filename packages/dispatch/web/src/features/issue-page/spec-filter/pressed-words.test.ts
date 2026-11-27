@@ -327,93 +327,127 @@ test("a press the browser answers inside an atom, past the end of its last line,
   }
 });
 
-// Chromium answers a place inside an atom for every point past it on its line, whatever the
-// point's height in that line, and an atom's box is as tall as its font, not as its line: a
-// raised footnote reference stood at 1.4 to 14.4 px in a line of 0 to 24 px, and inline HTML at
-// 147 to 165 px in a line of 144 to 168 px. A press past the atom under its box, or over it, is
-// past it all the same, and the caret goes after the atom.
-test("a press past a footnote reference that ends the words, below its raised box, says the caret goes after it", () => {
-  const cases = [
-    ['<sup data-type="footnote_reference">1</sup>', 1, new DOMRect(100, 1.4, 6, 13), 20],
-    [HTML_ATOM, "<name>".length, new DOMRect(100, 147, 40, 18), 145],
-  ] as const;
-  for (const [atom, offset, drawn, y] of cases) {
-    const x = drawn.right + 4;
-    const at = withLines([drawn], () => pressInLastAtom(`<p>${NOTE}${atom}</p>`, offset, [x, y]));
-    expect(at, atom).toEqual({ ...AT_NOTE_END, next: true, x, y });
-  }
-});
+/** The press at the end of `NOTE` at the point (`x`, `y`): it stays inside the atom after the
+ *  note, at its start, or with `next`, goes after it. */
+function noteEnd(x: number, y: number, next?: true): CaretAt {
+  return next === undefined ? { ...AT_NOTE_END, x, y } : { ...AT_NOTE_END, next, x, y };
+}
 
-// An atom's box is as tall as its font, so the line before an atom's last runs on below that box
-// by its half-leading: an atom drawn over two lines stood at 147 to 165 px in a line of 144 to
-// 168 px, and at 171 to 189 px on the next. A press in that band, right of the last line's short
-// end, is on the earlier line, so it stays inside the atom, at its start, and does not go after
-// the atom, a line below the press. The two lines meet half way between the two boxes.
-test("a press below an atom's box on the line before its last stays at the atom's start", () => {
-  const boxes = [new DOMRect(-30, -18, 60, 18), new DOMRect(-99, 6, 60, 18)];
-  const at = withLines(boxes, () => pressInLastAtom(noteAndHtml(), 2));
-  expect(at).toEqual(AT_NOTE_END);
-  expect(at.next).toBeUndefined();
-});
+/** The boxes a padded atom drew over two lines whose boxes overlap (the last rows below). */
+const OVERLAPPING = [new DOMRect(149.75, 791, 99.8, 25), new DOMRect(20, 815, 74.42, 25)];
 
-// An atom the browser draws in two boxes on one line, as it draws one that a run of another
-// direction splits, has no line before its last, so a press past the two boxes goes after it.
-test("a press past an atom drawn in two boxes on one line says the caret goes after it", () => {
-  const boxes = [new DOMRect(-90, -8, 30, 20), new DOMRect(-60, -8, 30, 20)];
-  const at = withLines(boxes, () => pressInLastAtom(noteAndHtml(), "<name>".length));
-  expect(at).toEqual({ ...AT_NOTE_END, next: true });
-});
-
-// Chromium draws an atom in one box for each run of one direction, so an atom whose last line
-// holds right-to-left text draws that line in several boxes: inline HTML ending in Hebrew drew its
-// last line as two. The box before the last then stands on the last line, and the line before it
-// is the last box above that line. A press on that earlier line, right of the last line's end,
-// stays inside the atom, at its start.
-test("a press on the line before an atom's last, where the last line holds two boxes, stays at the atom's start", () => {
-  const boxes = [
-    new DOMRect(300, 147, 300, 18),
-    new DOMRect(0, 171, 50, 18),
-    new DOMRect(50, 171, 50, 18),
+// Every geometry of a press around an atom that the browser and the reviews found, one row each,
+// with the place the caret goes, so that a rule which reads one of them right and another wrong
+// fails here. happy-dom lays nothing out, so each row gives the atom's boxes, its client rects in
+// the order Chromium gives them: left to right on the screen, one box for each run of one direction.
+// - An atom's box is as tall as its font, not as its line, and Chromium answers a place inside the
+//   atom for every point past it on its line: a raised footnote reference stood at 1.4 to 14.4 px
+//   in a line of 0 to 24 px, and inline HTML at 147 to 165 px in a line of 144 to 168 px, so a press
+//   past it over its box or under it goes after it.
+// - The line before an atom's last runs on below that box by its half-leading: the two lines meet
+//   half way between the earlier box's foot and the last box's top, and a press above that stays
+//   inside the atom, at its start, though it is right of the last line's short end.
+// - An atom drawn in two boxes on one line has no line before its last; a last line that holds
+//   right-to-left text is drawn in several boxes, and the line before it is the last box above it.
+// - The line ends at its greatest right where it runs left to right and at its least left where
+//   it runs right to left, whichever box that is. The left-to-right row whose last box ends short
+//   of the line draws boxes in an order Chromium does not, as a guard.
+// - A padded atom draws boxes taller than its line, so the boxes of two lines overlap: a picture's
+//   caption link, which `.prose a` pads and which is no inline-block before its picture loads,
+//   drew 25 px boxes on 24 px lines in Chromium, at 791 to 816 px and 815 to 840 px. A box's line is
+//   read from its middle.
+// - A hard break is no atom: a press at the start of the text after it goes into that text.
+test("a press around an atom is read by the line it is on, for every geometry found", () => {
+  const end = "<name>".length;
+  const rows: readonly (readonly [
+    name: string,
+    boxes: readonly DOMRect[],
+    press: () => CaretAt,
+    caret: CaretAt,
+  ])[] = [
+    [
+      "past a raised footnote reference, below its box",
+      [new DOMRect(100, 1.4, 6, 13)],
+      () =>
+        pressInLastAtom(`<p>${NOTE}<sup data-type="footnote_reference">1</sup></p>`, 1, [110, 20]),
+      noteEnd(110, 20, true),
+    ],
+    [
+      "past inline HTML, over its box",
+      [new DOMRect(100, 147, 40, 18)],
+      () => pressInLastAtom(noteAndHtml(), end, [144, 145]),
+      noteEnd(144, 145, true),
+    ],
+    [
+      "past inline HTML, 1 px under its box",
+      [new DOMRect(100, 147, 40, 18)],
+      () => pressInLastAtom(noteAndHtml(), end, [144, 166]),
+      noteEnd(144, 166, true),
+    ],
+    [
+      "in the band below the box of the line before the last",
+      [new DOMRect(-30, -18, 60, 18), new DOMRect(-99, 6, 60, 18)],
+      () => pressInLastAtom(noteAndHtml(), 2),
+      AT_NOTE_END,
+    ],
+    [
+      "past an atom drawn in two boxes on one line",
+      [new DOMRect(-90, -8, 30, 20), new DOMRect(-60, -8, 30, 20)],
+      () => pressInLastAtom(noteAndHtml(), end),
+      noteEnd(1, 2, true),
+    ],
+    [
+      "on the line before a last line drawn in two boxes",
+      [new DOMRect(300, 147, 300, 18), new DOMRect(0, 171, 50, 18), new DOMRect(50, 171, 50, 18)],
+      () => pressInLastAtom(noteAndHtml(), 2, [400, 150]),
+      noteEnd(400, 150),
+    ],
+    [
+      "left to right, past the last box, short of the line's end",
+      [new DOMRect(-20, -8, 40, 20), new DOMRect(-60, -8, 40, 20)],
+      () => pressInLastAtom(noteAndHtml("ltr"), end),
+      AT_NOTE_END,
+    ],
+    [
+      "right to left, past the last box, short of the line's end",
+      [new DOMRect(-20, -8, 40, 20), new DOMRect(20, -8, 40, 20)],
+      () => pressInLastAtom(noteAndHtml("rtl"), end),
+      AT_NOTE_END,
+    ],
+    [
+      "right to left, past the line's end, its left edge",
+      [new DOMRect(11, -8, 60, 20)],
+      () => pressInLastAtom(noteAndHtml("rtl"), end),
+      noteEnd(1, 2, true),
+    ],
+    [
+      "boxes that overlap the line above, past the last line's end",
+      OVERLAPPING,
+      () => pressInLastAtom(noteAndHtml(), end, [124.42, 828]),
+      noteEnd(124.42, 828, true),
+    ],
+    [
+      "boxes that overlap the line above, on the line above, right of the last line's end",
+      OVERLAPPING,
+      () => pressInLastAtom(noteAndHtml(), 2, [278, 800]),
+      noteEnd(278, 800),
+    ],
+    [
+      "at the start of the text after a hard break",
+      [],
+      () => pressIn(BROKEN, "Line two, then the rest.", 0),
+      {
+        x: 1,
+        y: 2,
+        offset: "Line one.".length,
+        word: ["Line ", "one.Line", " two,", 4],
+        next: true,
+      },
+    ],
   ];
-  const at = withLines(boxes, () => pressInLastAtom(noteAndHtml(), 2, [400, 150]));
-  expect(at).toEqual({ ...AT_NOTE_END, x: 400, y: 150 });
-  expect(at.next).toBeUndefined();
-});
-
-// Chromium gives the boxes of one line left to right on the screen, so the last box ends a line
-// that runs left to right and starts one that runs right to left. The line ends at its greatest
-// right where it runs left to right, and at its least left where it runs right to left, whichever
-// box that is: a press past the last box, short of that end, is inside the line and stays at the
-// atom's start. The left-to-right case draws boxes in an order Chromium does not, as a guard.
-test("a press past an atom's last box, short of the end of its line, stays at the atom's start", () => {
-  const cases = [
-    ["ltr", [new DOMRect(-20, -8, 40, 20), new DOMRect(-60, -8, 40, 20)]],
-    ["rtl", [new DOMRect(-20, -8, 40, 20), new DOMRect(20, -8, 40, 20)]],
-  ] as const;
-  for (const [direction, boxes] of cases) {
-    const at = withLines(boxes, () => pressInLastAtom(noteAndHtml(direction), "<name>".length));
-    expect(at, direction).toEqual(AT_NOTE_END);
-    expect(at.next, direction).toBeUndefined();
+  for (const [name, boxes, press, caret] of rows) {
+    const at = withLines(boxes, press);
+    expect(at, name).toEqual(caret);
+    expect(at.next, name).toBe(caret.next);
   }
-});
-
-// A padded inline atom draws boxes taller than its line, so the boxes of two lines overlap: a
-// picture's caption link, which `.prose a` pads to its line and which is no inline-block before its
-// picture loads, drew 25 px boxes on 24 px lines in Chromium, at 791 to 816 px and 815 to 840 px.
-// Which line a box is on is read from its middle, so a press past the last line's end goes after
-// the atom, and a press on the line above, right of the last line's end, stays at its start.
-test("a press beside a wrapped atom whose boxes overlap the line above reads the line it is on", () => {
-  const boxes = [new DOMRect(149.75, 791, 99.8, 25), new DOMRect(20, 815, 74.42, 25)];
-  const past = withLines(boxes, () =>
-    pressInLastAtom(noteAndHtml(), "<name>".length, [124.42, 828])
-  );
-  expect(past, "past the last line's end").toEqual({
-    ...AT_NOTE_END,
-    next: true,
-    x: 124.42,
-    y: 828,
-  });
-  const above = withLines(boxes, () => pressInLastAtom(noteAndHtml(), 2, [278, 800]));
-  expect(above, "on the line above").toEqual({ ...AT_NOTE_END, x: 278, y: 800 });
-  expect(above.next, "on the line above").toBeUndefined();
 });
