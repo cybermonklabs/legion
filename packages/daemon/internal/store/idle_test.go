@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,6 +172,7 @@ func TestTheIdleViewReadsTheDeclinedReleaseTheTurnStartAndTheRunningHoldStreak(t
 // claim that has retired no run and holds a task of the issue's run and phase that its agent
 // neither read nor confirmed reads that task's run and entry, where its claims row records run 0.
 func TestTheIdleViewReadsTheEntryServedAndTheRecordOfEachClaimsRole(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -684,6 +686,111 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 		record.OutOfWorkflow)
 	if err != nil || !act {
 		t.Fatalf("the close after the race = %t, %v; want it to act", act, err)
+	}
+}
+
+// A paused cancel whose ReleaseCancelPause carries a backstop and lacks a rule of who gets it, the
+// workflow's open phase's worker (OpenPhaseRole) or whether that worker gets one (GetsBackstop), is
+// refused with an error that names each rule it lacks, before it reads or writes anything
+// (checkBackstopRules): the release stays marked, and no stop, pod hold, backstop, decline or start
+// is recorded. Where the cancel skipped the backstop in silence instead, it armed none for a worker
+// that gets one (dispatch://INFRA-2746 R1). A workspace check's decline is a cancel
+// (DeclineIssueRelease), and it is refused the same way. The control is the same cancel, and the
+// same decline, with both rules: each records the implementer stopped by the pause, holds the pod
+// and arms the implementer's backstop.
+func TestACancelWhileThePauseHoldsABackstopAndNoBackstopRuleIsRefused(t *testing.T) {
+	t.Parallel()
+	const openPhaseRole, getsBackstopRule = "ReleaseCancelPause.OpenPhaseRole", "ReleaseCancelPause.GetsBackstop"
+	at := pausedAt.Add(time.Minute)
+	for _, act := range []struct {
+		name     string
+		declines bool
+		run      func(st *Store, paused ReleaseCancelPause) (ReleaseCancelled, error)
+	}{
+		{name: "a cancel", run: func(st *Store, paused ReleaseCancelPause) (ReleaseCancelled, error) {
+			return st.CancelIssueRelease(context.Background(), "legion", rootIssue, resumeRow, record.OutOfWorkflow, paused)
+		}},
+		{name: "a decline", declines: true, run: func(st *Store, paused ReleaseCancelPause) (ReleaseCancelled, error) {
+			return st.DeclineIssueRelease(context.Background(), "legion", rootIssue, IdleReleaseDecline{At: at,
+				Role: claim.RoleImplementer, Reason: pods.DeclineUnpushedWork, Head: "abc", Commits: 1, PodUID: "pod-a"},
+				resumeRow, record.OutOfWorkflow, paused)
+		}},
+	} {
+		t.Run(act.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := migratedStore(t)
+			openRunningTree(t, st)
+			servingReleasedClaim(t, st, claim.RoleImplementer)
+			markRelease(t, st, 18, 20, 22, 0, claim.RoleImplementer)
+			pause, _ := pauseLegion(t, st, pausedAt)
+
+			for _, refused := range []struct {
+				name    string
+				paused  ReleaseCancelPause
+				missing []string
+			}{
+				{name: "no GetsBackstop", paused: ReleaseCancelPause{At: at, Backstop: time.Hour, OpenPhaseRole: implementingWorker},
+					missing: []string{getsBackstopRule}},
+				{name: "no OpenPhaseRole", paused: ReleaseCancelPause{At: at, Backstop: time.Hour, GetsBackstop: getsBackstop},
+					missing: []string{openPhaseRole}},
+				{name: "neither rule", paused: ReleaseCancelPause{At: at, Backstop: time.Hour},
+					missing: []string{openPhaseRole, getsBackstopRule}},
+			} {
+				_, err := act.run(st, refused.paused)
+				if err == nil {
+					t.Fatalf("%s with a backstop and %s while paused went through, want it refused naming the rule it lacks",
+						act.name, refused.name)
+				}
+				for _, rule := range []string{openPhaseRole, getsBackstopRule} {
+					if named, want := strings.Contains(err.Error(), rule), slices.Contains(refused.missing, rule); named != want {
+						t.Fatalf("%s with a backstop and %s = %v; names %s %t, want %t", act.name, refused.name, err, rule, named, want)
+					}
+				}
+				if !releaseMarked(t, st) {
+					t.Fatalf("%s with a backstop and %s was refused and deleted the release's mark, want it standing",
+						act.name, refused.name)
+				}
+				for what, n := range map[string]int{
+					"stops":     pauseCount(t, st, `select count(*) from project_pause_stops where issue = $1`, rootIssue),
+					"backstops": pauseCount(t, st, `select count(*) from pod_wake_backstops where issue = $1`, rootIssue),
+					"declines":  pauseCount(t, st, `select count(*) from idle_release_declines where issue = $1`, rootIssue),
+					"starts":    len(startRows(t, st)),
+				} {
+					if n != 0 {
+						t.Fatalf("%s with a backstop and %s was refused and recorded %d %s, want none: a refused cancel writes nothing",
+							act.name, refused.name, n, what)
+					}
+				}
+				if hold, held, err := st.PausePodHoldOf(ctx, "LEGION", rootIssue); err != nil || held {
+					t.Fatalf("%s with a backstop and %s was refused and the pod's hold = %+v, %t, %v; want none",
+						act.name, refused.name, hold, held, err)
+				}
+			}
+
+			// The control: the same act with both rules records the implementer stopped by the
+			// pause, holds the pod and arms the implementer's backstop an hour after the cancel.
+			cancelled, err := act.run(st, ReleaseCancelPause{At: at, Backstop: time.Hour, OpenPhaseRole: implementingWorker,
+				GetsBackstop: getsBackstop})
+			if err != nil || cancelled.Pause != pause.ID || cancelled.Declined != act.declines ||
+				!slices.Equal(cancelled.Stopped, []claim.Role{claim.RoleImplementer}) {
+				t.Fatalf("%s with both rules while paused = %+v, %v; want pause %d, the implementer stopped and declined %t",
+					act.name, cancelled, err, pause.ID, act.declines)
+			}
+			if releaseMarked(t, st) {
+				t.Fatalf("%s with both rules left the release's mark standing", act.name)
+			}
+			if n := pauseCount(t, st, `select count(*) from project_pause_stops where pause_id = $1 and issue = $2
+				and role = 'implementer' and ended_as = 'stopped'`, pause.ID, rootIssue); n != 1 {
+				t.Fatalf("%s with both rules recorded %d stops of the implementer by pause %d, want 1", act.name, n, pause.ID)
+			}
+			if n := pauseCount(t, st, `select count(*) from pod_wake_backstops where issue = $1 and role = 'implementer'
+				and not fired and due_at = $2`, rootIssue, at.Add(time.Hour)); n != 1 {
+				t.Fatalf("%s with both rules armed %d backstops of the implementer due an hour after it, want 1", act.name, n)
+			}
+			if hold, held, err := st.PausePodHoldOf(ctx, "LEGION", rootIssue); err != nil || !held || hold.Pause != pause.ID {
+				t.Fatalf("%s with both rules left the pod's hold = %+v, %t, %v; want pause %d's", act.name, hold, held, err, pause.ID)
+			}
+		})
 	}
 }
 

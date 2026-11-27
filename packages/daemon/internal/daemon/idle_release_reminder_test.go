@@ -29,6 +29,7 @@ const idleRigOwesNothing = "owes-nothing"
 // code-owner review. The control, the same release with no completion recorded, arms the open
 // phase's backstop as it always has.
 func TestIdleOfAClaimThatOwesNothingArmsNoBackstopForItsRole(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name      string
 		completed bool
@@ -98,6 +99,7 @@ func TestIdleOfAClaimThatOwesNothingArmsNoBackstopForItsRole(t *testing.T) {
 // record.FillIdleClaims), so no reminder holds its pod, and quiet past the idle bound it is
 // released.
 func TestIdleOfAClaimThatOwesNothingHoldsNoPodForAPastDueReminder(t *testing.T) {
+	t.Parallel()
 	t.Run("its role's completion is recorded", func(t *testing.T) {
 		rig := newIdleWakeRig(t, nil, idleRigOwesNothing)
 		issue := rig.issue(idleRigOwesNothing)
@@ -263,6 +265,7 @@ func (r *pauseRig) idleDecisionWithPastDueReminder(c supervise.Claim) (workflow.
 // (workflow.OwedEntry) sends that entry's task, and the task brings the pod back: the role
 // registers again and is given a task.
 func TestIdleOfAClaimThatOwesNothingGetsItsPodBackForItsNextWork(t *testing.T) {
+	t.Parallel()
 	rig := newIdleWakeRig(t, nil, idleRigOwesNothing)
 	issue := rig.issue(idleRigOwesNothing)
 	token := rig.token(issue)

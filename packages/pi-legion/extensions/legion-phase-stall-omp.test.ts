@@ -1639,6 +1639,162 @@ test.skipIf(skip)(
   240_000
 );
 
+/** The both-sides limits with the resume reminder every phase worker's boot arms
+ * (`armResumeReminder`) due half a second after the boot, so the fresh-session rows below see it
+ * come due and ask the daemon before anything else reaches the session. */
+const FRESH_LIMITS = { ...QUICK_LIMITS, LEGION_STALL_RESUME_MS: "500" };
+
+/** The reminder wake a `POST /legion/v1/claims/activity` body reports
+ * (`activity.phase.nextReminderAt`), or undefined where the body holds none. */
+function reportedWake(body: Record<string, unknown>): unknown {
+  const activity = body.activity;
+  if (typeof activity !== "object" || activity === null || !("phase" in activity)) return undefined;
+  const phase = activity.phase;
+  return typeof phase === "object" && phase !== null && "nextReminderAt" in phase
+    ? phase.nextReminderAt
+    : undefined;
+}
+
+/** Waits for `signal`, and fails the row with `never` if it has not come in 30 seconds. */
+async function within30s(signal: Promise<void>, never: string): Promise<void> {
+  // A real clock, deliberately: what is awaited is the real Oh My Pi process's own timer, so only
+  // a deadline on that clock says it never came. The wait ends as soon as the signal comes.
+  const came = await Promise.race([signal.then(() => true), Bun.sleep(30_000).then(() => false)]);
+  if (!came) throw new Error(never);
+}
+
+/**
+ * The boot's resume reminder of a fresh session, which the fresh-session rows watch through the
+ * stand-in (`answer`). `asked` waits for the first `POST /legion/v1/claims/owed` the pane makes:
+ * nothing else asks the daemon what the claim owes before the session's first turn ends, so that
+ * question is the boot's. `cleared` waits, after that question, for an activity report that names
+ * no reminder wake: the report the reminder sends once its check decided not to remind
+ * (`wakeChanged`). Neither starts a turn, so a row's step goes on to start one.
+ */
+function bootReminder(): {
+  readonly answer: (url: URL, body: Record<string, unknown>) => undefined;
+  readonly asked: () => Promise<void>;
+  readonly cleared: () => Promise<void>;
+} {
+  const asked = Promise.withResolvers<void>();
+  const cleared = Promise.withResolvers<void>();
+  let question = false;
+  return {
+    answer: (url, body) => {
+      if (url.pathname === "/legion/v1/claims/owed") {
+        question = true;
+        asked.resolve();
+      }
+      if (question && url.pathname === ACTIVITY_ROUTE && reportedWake(body) === null) {
+        cleared.resolve();
+      }
+      return undefined;
+    },
+    asked: () =>
+      within30s(
+        asked.promise,
+        "the boot's resume reminder never asked the daemon what the claim owes"
+      ),
+    cleared: () =>
+      within30s(
+        cleared.promise,
+        "the boot's resume reminder never reported that it armed no reminder wake"
+      ),
+  };
+}
+
+// L12, which INFRA-3118's architect asked for
+// (dispatch://INFRA-2746/comment/6332db57-454d-4ea4-9237-0b3ad7efb0c8): a fresh implementer
+// session, started with no transcript and no completion of its own, while the stand-in daemon's
+// record of STALL-2 already stands in testing, a phase of another role. The resume reminder its
+// boot arms comes due first, asks the daemon and decides not to remind; then a message on its role
+// topic starts a turn, which ends with no completion. The control after it is the same pane while
+// the record stands in implementing, so the stand-in answers that the claim owes.
+test.skipIf(skip)(
+  "a fresh session whose record already stands in another role's phase is reminded of nothing at startup or at a later turn end, and its architect is told nothing",
+  async () => {
+    const boot = bootReminder();
+    const pane = await stallPane(
+      setup(),
+      [[{ type: "text", text: "STALL-2 stands in testing; nothing of it is mine to do." }], NEVER],
+      {
+        record: { phase: "testing" },
+        env: FRESH_LIMITS,
+        quietMs: 4_000,
+        answer: boot.answer,
+        prompt: [
+          async (scene) => {
+            await boot.cleared();
+            await scene.roleMessage("The tester has STALL-2 and runs its tests now.");
+          },
+        ],
+      }
+    );
+
+    // One turn, the role message's: the boot's reminder started none.
+    expect(pane.turns()).toHaveLength(1);
+    expect(pane.completions()).toEqual([]);
+    // The boot's reminder and the turn's end each asked the daemon what the claim owes, and both
+    // times it answered nothing.
+    expect(pane.owedAnswers()).toEqual([OWES_NOTHING, OWES_NOTHING]);
+    await expectRemindedOfNothing(pane);
+    // No reminder wake is left armed: the session's last activity report names none.
+    const reports = pane.requests
+      .filter((request) => request.path === ACTIVITY_ROUTE)
+      .map((request) => request.body);
+    expect(reports.at(-1)).toMatchObject({ activity: { phase: { nextReminderAt: null } } });
+  },
+  240_000
+);
+
+// L12's control: the same fresh implementer session while the stand-in's record stands in
+// implementing, its own phase, so the daemon answers that the claim owes. The boot's reminder puts
+// the owed work in front of the worker and starts a turn, the end of that turn reminds it again
+// and tells its architect at that second reminder, and its completion then moves STALL-2 on to
+// testing, after which nothing is owed and the reminding stops.
+test.skipIf(skip)(
+  "the control of a fresh session: one whose record stands in its own phase is reminded at startup and at its turn end, and its architect is told",
+  async () => {
+    const boot = bootReminder();
+    const owed = { owes: true, work: STALL_WORK };
+    const record: StallRecord = { phase: "implementing" };
+    const pane = await stallPane(
+      setup(),
+      [
+        [{ type: "text", text: "Reading STALL-2." }],
+        COMPLETE,
+        [{ type: "text", text: "Completed STALL-2." }],
+        NEVER,
+      ],
+      {
+        record,
+        env: FRESH_LIMITS,
+        quietMs: QUIET_PAST_RECORD_MS,
+        answer: boot.answer,
+        prompt: [() => boot.asked()],
+      }
+    );
+
+    // Three turns: the boot's reminder's, the turn-end reminder's, and the reply to the
+    // completion's tool result.
+    const turns = pane.turns();
+    expect(turns).toHaveLength(3);
+    expect(userText(turns[0] as Request)).toContain(
+      `Your turn ended with ${STALL_WORK} still owed`
+    );
+    expect(userText(turns[0] as Request)).toContain("repeats at the end of every turn");
+    // Each turn carries the whole conversation, so the second turn's holds both reminders.
+    expect(userText(turns[1] as Request).split("repeats at the end of every turn")).toHaveLength(3);
+    expect(pane.owedAnswers()).toEqual([owed, owed, OWES_NOTHING]);
+    expect(pane.completions()).toHaveLength(1);
+    expect(record.phase).toBe("testing");
+    expect(stallCounts(await pane.phaseEntries()).filter((count) => count !== 0)).toEqual([1, 2]);
+    // The architect was told at the second reminder, the threshold these limits set.
+    expect(pane.publishes()).toHaveLength(1);
+  },
+  240_000
+);
+
 // The run-end ask nudge (extensions/envoy.ts) is a hidden side-turn self-check whose
 // WAITING verdict — and nothing else — buys one steered turn. Two host behaviours carry it, and
 // only the real binary can say either: an ephemeral call is served as a Messages request over a

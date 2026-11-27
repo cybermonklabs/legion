@@ -1322,6 +1322,7 @@ func (r *podUpdateRig) waitEnds(blocker string) {
 // INFRA-2753 is the case: its daemon wrote the start row and published the notice while the
 // issue waited on LINUX-1478, holding no slot.
 func TestSilentPhaseWorkerOfAnIssueWaitingOnAnotherGetsItsTaskOnceTheWaitEnds(t *testing.T) {
+	t.Parallel()
 	rig := aSilentPhaseWorker(t)
 	worker := claim.RoleImplementer
 	rig.waitsOn(silenceBlocker)

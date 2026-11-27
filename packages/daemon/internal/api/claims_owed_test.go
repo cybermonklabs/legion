@@ -182,15 +182,16 @@ func TestClaimOwedIsNothingWhileTheClaimIsBehindItsEntry(t *testing.T) {
 // owes nothing. Each subtest builds its shape through the daemon's own workflow — completions the
 // route takes, a request_backward_move, the reviewer's own review, a conflict the daemon confirms
 // and the merge forward it asks, a retro's completion that moves the issue into merging, the
-// synchronize that lands that merge, a hold, a park and a close — then asks claims/owed, then
-// posts that claim's completion and holds the route's answer to it: taken, or the named refusal.
-// Two merging shapes are an ask this release's workflow does not write, which the record is
-// given directly (recordMergeForward): one a daemon before cybermonklabs/legion#4979 wrote with no
-// asked role, and one of a head the pull request no longer stands at. An answer of nothing owed
-// does not say the route refuses: the route also records a completion of a phase the daemon
-// moved the issue out of (workflow's leftItsPhase), and that phase is not reminded (R8). An
-// answer of work owed does say the route takes the completion at the head the pull request
-// stands at.
+// synchronize that lands that merge, a hold, a move out of the workflow and a close — then asks
+// claims/owed, then posts that claim's completion and holds the route's answer to it: taken, or
+// the named refusal. Four shapes are an ask this release's workflow does not write, which the
+// record is given directly (recordMergeForward): one a daemon before cybermonklabs/legion#4979
+// wrote with no asked role, one of a head the pull request no longer stands at, one made in
+// implementing that stands unwithdrawn in testing, and one made in testing and withdrawn there.
+// An answer of nothing owed does not say the route refuses: the route also records a completion of
+// a phase the daemon moved the issue out of (workflow's leftItsPhase), and that phase is not
+// reminded (R8). An answer of work owed does say the route takes the completion at the head the
+// pull request stands at.
 func TestClaimOwedIsOwedOnlyWhereTheCompletionRouteTakesACompletion(t *testing.T) {
 	t.Run("moved on", func(t *testing.T) {
 		h, _, _ := newEntryHarness(t)
@@ -246,6 +247,23 @@ func TestClaimOwedIsOwedOnlyWhereTheCompletionRouteTakesACompletion(t *testing.T
 		implementer.owes(t, "the implementing phase of LEGION-208")
 		completion(t, h.complete(completionOf(t, implementer, "implement", headSHA, 1)))
 		assertIssuePhase(t, h, phase.Testing)
+	})
+
+	// The record holds the implementer's ask made in implementing, of the head the pull request
+	// stands at and not landed, while the issue stands in testing: that ask covers implementing
+	// alone (record.MergeForwardOwedAt) and holds no later phase, so the tester owes testing and
+	// its completion at that head is taken. The workflow's move into testing asks again in testing
+	// at a head in a confirmed conflict, or marks the ask withdrawn (workflow's
+	// mergeForwardOnEntry), so the record is given this ask directly.
+	t.Run("merge forward asked in implementing, issue now in testing", func(t *testing.T) {
+		h, _, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		_, tester := implemented(t, h)
+		recordMergeForward(t, h, record.MergeForward{Head: headSHA, Base: "main", Role: claim.RoleImplementer, Phase: phase.Implementing,
+			Why: record.ConflictRulesUnread, AskedAt: time.Now()})
+		tester.owes(t, "the testing phase of LEGION-208")
+		completion(t, h.complete(completionOf(t, tester, "test", headSHA, 1)))
+		assertIssuePhase(t, h, phase.Reviewing)
 	})
 
 	// Once the merge lands, the tester owes its phase at the head the merge left: a completion at
@@ -362,6 +380,22 @@ func TestClaimOwedIsOwedOnlyWhereTheCompletionRouteTakesACompletion(t *testing.T
 			Why: record.ConflictRulesUnread, AskedAt: time.Now()})
 		merger.owes(t, "the merging phase of LEGION-208")
 		completion(t, h.complete(mergerCompletion(t, merger, headSHA)))
+	})
+
+	// An ask the implementer was told is no longer its work (record.MergeForward.Withdrawn) holds
+	// no one, though it is of the head the pull request stands at and has not landed: the tester
+	// in testing owes its phase, and its completion at that head is taken. The workflow withdraws
+	// no ask made in testing while the issue stands there (workflow's withdrawUnowed and
+	// withdrawnBy), so the record is given this one directly.
+	t.Run("a withdrawn ask", func(t *testing.T) {
+		h, _, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		_, tester := implemented(t, h)
+		recordMergeForward(t, h, record.MergeForward{Head: headSHA, Base: "main", Role: claim.RoleImplementer, Phase: phase.Testing,
+			Why: record.ConflictRulesUnread, AskedAt: time.Now(), Withdrawn: true})
+		tester.owes(t, "the testing phase of LEGION-208")
+		completion(t, h.complete(completionOf(t, tester, "test", headSHA, 1)))
+		assertIssuePhase(t, h, phase.Reviewing)
 	})
 
 	t.Run("own backward move", func(t *testing.T) {
@@ -488,24 +522,29 @@ func TestClaimOwedIsOwedOnlyWhereTheCompletionRouteTakesACompletion(t *testing.T
 		assertIssuePhase(t, h, phase.Reviewing)
 	})
 
-	// A person parks the child in Dispatch's backlog: the child leaves the workflow, and the
-	// workflow parks its phase in done (workflow's leave), where phase.RoleFor names no role.
-	t.Run("parked", func(t *testing.T) {
-		h, engine, _ := newEntryHarness(t)
-		parent := "LEGION-208"
-		h.recordIssue(record.Issue{Key: parent, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: parent,
-			Project: testProject, Title: parent, Phase: phase.Planning, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress"})
-		h.recordIssue(record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: parent, Parent: &parent,
-			Project: testProject, Title: "LEGION-209", Phase: phase.Testing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress"})
-		tester := newLiveClaimIn(t, h, parent, "LEGION-209", claim.RoleTester)
-		tester.owes(t, "the testing phase of LEGION-209")
-		applyEntryFact(t, h, engine, "parked", intake.DispatchIssue{Key: "LEGION-209", Status: "backlog", Title: "LEGION-209", Parent: parent, ResolvedRepo: "acme/widgets"})
-		if child := readIssue(t, h, "LEGION-209"); child == nil || child.Phase != phase.Done {
-			t.Fatalf("the parked child = %+v, want it in done: the case's own premise", child)
-		}
-		tester.owesNothing(t)
-		refused(t, h.complete(completionOf(t, tester, "test", headSHA, 1)), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-	})
+	// A person moves the child out of the workflow in Dispatch, to each status besides done that
+	// takes an issue out of it (record.OutOfWorkflowStatuses): the workflow puts the child's phase
+	// in done (workflow's leave), where phase.RoleFor names no role, so the tester owes nothing and
+	// its completion is refused.
+	for _, status := range []string{"triage", "icebox", "backlog"} {
+		t.Run("moved out of the workflow to "+status, func(t *testing.T) {
+			h, engine, _ := newEntryHarness(t)
+			parent := "LEGION-208"
+			h.recordIssue(record.Issue{Key: parent, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: parent,
+				Project: testProject, Title: parent, Phase: phase.Planning, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress"})
+			h.recordIssue(record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: parent, Parent: &parent,
+				Project: testProject, Title: "LEGION-209", Phase: phase.Testing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress"})
+			tester := newLiveClaimIn(t, h, parent, "LEGION-209", claim.RoleTester)
+			tester.owes(t, "the testing phase of LEGION-209")
+			applyEntryFact(t, h, engine, "moved-out-of-the-workflow", intake.DispatchIssue{Key: "LEGION-209", Status: status, Title: "LEGION-209",
+				Parent: parent, ResolvedRepo: "acme/widgets"})
+			if child := readIssue(t, h, "LEGION-209"); child == nil || child.Phase != phase.Done {
+				t.Fatalf("the child moved out of the workflow to %s = %+v, want it in done: the case's own premise", status, child)
+			}
+			tester.owesNothing(t)
+			refused(t, h.complete(completionOf(t, tester, "test", headSHA, 1)), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
+		})
+	}
 
 	// A person closes the root in Dispatch: its tree lingers (completionPosition.lingers), and
 	// the root's phase is done.
@@ -584,8 +623,10 @@ func mergerCompletion(t *testing.T, merger liveClaim, commit string) HandoffComp
 
 // recordMergeForward writes asked as the merge forward the record holds for LEGION-208's pull
 // request, which keeps all else it holds: an ask this release's workflow does not write, as a
-// daemon before cybermonklabs/legion#4979 wrote one with no asked role, or one of a head the pull
-// request no longer stands at that no synchronize landed.
+// daemon before cybermonklabs/legion#4979 wrote one with no asked role, one of a head the pull
+// request no longer stands at that no synchronize landed, an ask of the implementer made in
+// implementing that a move into testing neither asked again nor withdrew, or one made in testing
+// and withdrawn there.
 func recordMergeForward(t *testing.T, h *harness, asked record.MergeForward) {
 	t.Helper()
 	_, _, pr := handoffRecord(t, h, "LEGION-208")

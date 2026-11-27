@@ -39,6 +39,7 @@ import (
 // (projectPause.stopped) and the cancel of a release while the project is paused
 // (outbox.cancelRelease, store.ReleaseCancelPause.GetsBackstop).
 func TestIdleOfAClaimThatOwesNothingStillGetsABackstopForTheUndeliveredFirstTaskOfItsRun(t *testing.T) {
+	t.Parallel()
 	for _, writer := range []struct {
 		name string
 		// arm runs the writer, and answers the pause whose stop it recorded, 0 for the release,

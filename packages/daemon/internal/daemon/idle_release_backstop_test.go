@@ -79,6 +79,7 @@ import (
 // (record.FillIdleClaims), so a rule that holds the merger asked, or not the merger held, fails
 // one of them.
 func TestIdleOfAClaimThatOwesNothingStillGetsABackstopOnItsReleaseForAnUndeliveredTaskOfItsEntry(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name string
 		// at is the phase LEGION-208 stands in, and role the released worker of it.

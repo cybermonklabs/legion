@@ -705,12 +705,14 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 // is that pending delivery.
 //
 // Each writer of an open phase's backstop asks it before it arms one, and none of them reads the
-// run c serves before it asks, so all three hold the worker to one rule, its run included: a
-// release (armBackstops), a pause's stop (projectPause.stopTx) and a cancel of a release while the
-// project is paused (outbox.cancelRelease, through store.ReleaseCancelPause.GetsBackstop). Each
-// hands it the claim with the pending delivery the store holds: the release and the cancel read
-// the claim whole (store.ClaimTx), and the stop hands it the claim it writes, with that delivery,
-// in the same transaction.
+// run c serves before it asks, so all four hold the worker to one rule, its run included: a
+// release (armBackstops), a pause's stop (projectPause.stopTx), a cancel of a release while the
+// project is paused (outbox.cancelRelease) and a workspace check's decline of a release while the
+// project is paused (outbox.declineRelease), the last two through store.ReleaseCancelPause's
+// GetsBackstop, which outbox.pausedCancel sets for both. Each hands it the claim with the pending
+// delivery the store holds: the release, the cancel and the decline read the claim whole
+// (store.ClaimTx), and the stop hands it the claim it writes, with that delivery, in the same
+// transaction.
 func getsBackstop(ctx context.Context, records record.Store, tx pgx.Tx, at phase.Phase, generation uint64,
 	c supervise.Claim) (pods.IdleClaim, bool, error) {
 	facts := []pods.IdleClaim{{Role: c.Role}}
@@ -808,8 +810,10 @@ func holdsUndeliveredNewsTask(c supervise.Claim, at phase.Phase, generation uint
 	return supervise.HoldsTaskOf(p, generation, at) && p.NewsOnly && p.ConfirmedAt.IsZero()
 }
 
-// getsBackstop is the package function of that name as the store asks it of a released role a
-// cancel stops for a pause (store.ReleaseCancelPause.GetsBackstop), through the outbox's records.
+// getsBackstop is the package function of that name as the store asks it of a released role that
+// a cancel or a decline of a release stops for a pause (store.ReleaseCancelPause.GetsBackstop, set
+// by pausedCancel for outbox.cancelRelease and outbox.declineRelease), through the outbox's
+// records.
 func (r *outbox) getsBackstop(ctx context.Context, tx pgx.Tx, at phase.Phase, generation uint64, c supervise.Claim) (bool, error) {
 	_, gets, err := getsBackstop(ctx, r.records, tx, at, generation, c)
 	return gets, err

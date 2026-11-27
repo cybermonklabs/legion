@@ -22,6 +22,7 @@ const backstopArmedAtVersion = 20261119232419
 // The negative control is the write of the column before the migration, which the database
 // refuses as a column it does not know.
 func TestEveryBackstopRowTheUpgradeFindsReadsArmedAtItsDueTimeAndALaterInsertReadsNow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, backstopArmedAtVersion-1)

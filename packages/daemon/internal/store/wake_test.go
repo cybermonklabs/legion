@@ -238,6 +238,7 @@ func TestABackstopSurvivesTheDaemonAndFiresOnce(t *testing.T) {
 // is: the zero time would be the year 1, which reads as armed a day and more ago, and would wake
 // the pod of an issue waiting on another issue at its first due tick (dispatch://INFRA-2746 R9).
 func TestAnArmedBackstopWithNoArmTimeIsRefused(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	due := time.Now().UTC().Add(-time.Minute)

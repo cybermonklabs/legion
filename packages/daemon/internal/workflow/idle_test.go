@@ -511,6 +511,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 // (supervise.Claim.ServingAt, which the store fills the view's claim with through
 // pods.IdleClaim.ReadServing, as this row does), so it owes its phase and is held too.
 func TestIdleOfAClaimThatOwesNothingHoldsNoPodOnItsReminder(t *testing.T) {
+	t.Parallel()
 	decideIdleRows(t, []idleRuleRow{
 		{
 			name: "the control: an open phase's reminder is due inside the period",

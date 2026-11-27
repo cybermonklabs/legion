@@ -636,6 +636,7 @@ func backstopFired(t *testing.T, pool *pgxpool.Pool, id int64) bool {
 // wakes the pod at the next application. The control, an issue with no mark, wakes at its due
 // time, from a row inserted with no armed_at, which takes the column's default.
 func TestSilentPhaseWorkerOfAnIssueWaitingOnAnotherGetsNoBackstopWakeUnderADay(t *testing.T) {
+	t.Parallel()
 	fact := func(id int64) intake.PodBackstopDue {
 		return intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleImplementer}
 	}

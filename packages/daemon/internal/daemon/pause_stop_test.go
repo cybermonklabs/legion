@@ -1094,6 +1094,7 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 // stop is recorded in every case, so a case that arms none is a stop that read the rule and not
 // one that never ran.
 func TestIdleOfAClaimThatOwesNothingArmsNoBackstopWhenAPauseStopsIt(t *testing.T) {
+	t.Parallel()
 	for _, writer := range []struct {
 		name string
 		// released is whether the worker's pod was released before the pause, so that

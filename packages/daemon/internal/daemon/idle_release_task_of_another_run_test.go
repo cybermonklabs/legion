@@ -26,6 +26,7 @@ import (
 // TestIdleOfAClaimThatOwesNothingStillGetsABackstopOnItsReleaseForAnUndeliveredTaskOfItsEntry
 // tells apart.
 func TestIdleOfAClaimThatOwesNothingGetsNoBackstopForATaskOfAnotherRunOrPhase(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name string
 		// generation and at are the run and the phase of the task the worker holds unconfirmed.

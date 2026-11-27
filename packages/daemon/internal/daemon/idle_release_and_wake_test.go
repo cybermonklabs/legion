@@ -1020,6 +1020,7 @@ const idleRigWaitsOnAnother = "waits-on-another"
 // INFRA-2753 is the case: its released pod was woken by the backstop seven times in a night while
 // it waited on LINUX-1478.
 func TestSilentPhaseWorkerOfAnIssueWaitingOnAnotherIsNotWokenByItsBackstopUnderADay(t *testing.T) {
+	t.Parallel()
 	rig := newIdleWakeRig(t, nil, idleRigWaitsOnAnother)
 	issue := rig.issue(idleRigWaitsOnAnother)
 	token := rig.token(issue)
