@@ -922,8 +922,26 @@ export async function resultsCommand(context: CommandContext): Promise<DispatchT
   const brief = optionalBoolean(args, "brief") === true;
   const results = await client.issueResults(issue, at);
   const checks = results.checks ?? [];
+  // A basis omits the issue's own repository. Resolve it only for the two answers that name
+  // that repository, once per check owner, including a check inherited from an ancestor.
+  const repositories: Record<string, string> = {};
+  const owners = new Set(
+    checks
+      .filter(
+        (check) =>
+          check.pass_stands?.reason === "program_not_named" ||
+          check.pass_stands?.reason === "no_deploy"
+      )
+      .map((check) => check.issue_key)
+  );
+  await Promise.all(
+    [...owners].map(async (owner) => {
+      const issue = await client.getIssue(owner);
+      if (issue.resolved_repo != null) repositories[owner] = issue.resolved_repo;
+    })
+  );
   return {
-    text: formatCheckResults(results, brief),
+    text: formatCheckResults(results, brief, repositories),
     details: {
       issue,
       checks: checks.length,

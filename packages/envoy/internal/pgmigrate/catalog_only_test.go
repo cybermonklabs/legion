@@ -100,14 +100,22 @@ func catalogOnlyFixture(rows int) string {
 }
 
 // catalogOnlyDatabase connects to a database of the test's own, loaded with
-// catalogOnlyFixture(rows), on the server DISPATCH_TEST_DATABASE_URL names, and skips the test
-// when that variable is unset, as the store's tests do. It does not call testpg.URL, which starts
-// a container when the variable is unset. The database is dropped when the test ends.
+// catalogOnlyFixture(rows) (fixtureDatabase).
 func catalogOnlyDatabase(t *testing.T, ctx context.Context, rows int) *pgx.Conn {
+	t.Helper()
+	return fixtureDatabase(t, ctx, "pgmigrate_catalog", "catalog tests", catalogOnlyFixture(rows))
+}
+
+// fixtureDatabase connects to a database of the test's own, made under name on the server
+// DISPATCH_TEST_DATABASE_URL names and loaded with fixture, and skips the test when that variable
+// is unset, as the store's tests do, saying which of the census's tests (tests) need it. It does
+// not call testpg.URL, which starts a container when the variable is unset. The database is
+// dropped when the test ends.
+func fixtureDatabase(t *testing.T, ctx context.Context, name, tests, fixture string) *pgx.Conn {
 	t.Helper()
 	raw := os.Getenv("DISPATCH_TEST_DATABASE_URL")
 	if raw == "" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run the census's catalog tests")
+		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run the census's " + tests)
 	}
 	adminURL, err := url.Parse(raw)
 	if err != nil {
@@ -115,8 +123,8 @@ func catalogOnlyDatabase(t *testing.T, ctx context.Context, rows int) *pgx.Conn 
 		t.Fatal("DISPATCH_TEST_DATABASE_URL is not a URL")
 	}
 	adminURL.Path = "/postgres"
-	conn := connect(t, ctx, testdb.DatabaseOn(t, adminURL.String(), "pgmigrate_catalog"))
-	if _, err := conn.Exec(ctx, catalogOnlyFixture(rows)); err != nil {
+	conn := connect(t, ctx, testdb.DatabaseOn(t, adminURL.String(), name))
+	if _, err := conn.Exec(ctx, fixture); err != nil {
 		t.Fatalf("load the fixture: %v", err)
 	}
 	return conn

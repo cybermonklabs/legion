@@ -423,24 +423,27 @@ named that session as its source and the listener did not drop it more than an h
 listener of an earlier release sends no `keptUntil`. 404 is nothing kept, thrown as an
 `EnvoyApiError`, and the sender's own fallback must run. A sender that
 keeps a queue of its own passes `keep: false` to get the 404. Network failures, timeouts (5 s an
-attempt, the answer's body included) and 5xx responses retry once after 250 ms, under the same
-idempotency key; a 4xx whose body does not arrive is still a refusal. A send any attempt of which
-got no answer, an unreadable 2xx or a 5xx throws `EnvoySendUnconfirmedError`, even when a later
-attempt was refused: the message may or may not have arrived. The error names its
-`idempotencyKey` and says in `resendSafe` whether the listener's dedupe key for it
+attempt, the answer's body included), a 408 and 5xx responses retry once after 250 ms, under the
+same idempotency key; a 4xx whose body does not arrive is still a refusal. A send any attempt of
+which got no answer, an unreadable 2xx, a 5xx or a 408 throws `EnvoySendUnconfirmedError`, even
+when a later attempt was refused: the message may or may not have arrived. The listener writes no
+408, so one is a hop's timeout, and a hop can send one after it forwarded the whole request (an
+Envoy proxy's `stream_idle_timeout`, Google's load balancer's `client_timed_out`). The error names
+its `idempotencyKey` and says in `resendSafe` whether the listener's dedupe key for it
 (`agent.<target>.<key>`) is one a repeat is recognised by (`MINTED_DEDUPE_KEY_PATTERN`); when it
 is, a resend under that key inside the 72-hour duplicate window is dropped as a repeat if the
 first copy arrived (`DELIVERY_DUPLICATE_WINDOW_MS` names the rare cases a recipient that restarted
 still sees it twice). One 5xx is not such an attempt: the listener's `503` whose `error` opens
 with `MESSAGE_NOT_SENT_PREFIX` (`@legion/contracts`), which says the message bus refused the
 message before anything went out, because the deployed stream does not capture its topic for
-now, as during a hub move. It is sent again like any 5xx, under the same key, and a send or a
-publish that gets it on every attempt throws that `EnvoyApiError`, whose `notSent` is true and
+now, as during a hub move. It is sent again like any 5xx or 408, under the same key, and a send or
+a publish that gets it on every attempt throws that `EnvoyApiError`, whose `notSent` is true and
 whose message is the listener's: nothing was stored, so the message may be sent again later.
-After an earlier attempt that got no answer or another 5xx, a send is unconfirmed as above, and a
-publish's error says that attempt may have stored the message, with `notSent` false. A send
-refused with a 4xx on every attempt stays an `EnvoyApiError`. An `EnvoyApiError` keeps the
-listener's `error` as its message, with ` (reason: <reason>)` after it where the body names one,
+After an earlier attempt that got no answer, another 5xx or a 408, a send is unconfirmed as above,
+and a publish's error says that attempt may have stored the message, with `notSent` false. A send
+refused with a 4xx other than a 408 on every attempt stays an `EnvoyApiError`. An `EnvoyApiError`
+keeps the listener's `error` as its message, with ` (reason: <reason>)` after it where the body
+names one,
 and keeps the body's `code`, `reason` and `expected`, and the `retry_after_seconds` of a refusal
 for the sender's rate as `retryAfterSeconds`. A 429 is not sent again: the client throws it at
 once, and the caller decides whether to wait `retryAfterSeconds` and send the message again. The
@@ -848,11 +851,12 @@ Dispatch that is down holds a `dispatch` command, and the session waiting on it,
 that.
 How a write ends is one transition table (`write-outcome.ts`, `writeStep`), and the write
 loop (`#write`) decides nothing else. A write is in one of two states: nothing sent, or may have
-landed. An attempt may have landed when it got a 5xx or `409 KEY_IN_FLIGHT`, was cut off for
-silence (an upload's included), failed in transport after it went out (a reset after Dispatch
+landed. An attempt may have landed when it got a 5xx, a 408 (`mayHaveReachedServer`: a hop in
+front of Dispatch can answer 408 after it forwarded the write) or `409 KEY_IN_FLIGHT`, was cut off
+for silence (an upload's included), failed in transport after it went out (a reset after Dispatch
 read it), its answer's body broke off or was ended by the deadline or the caller's stop, or it was
-ended by either while it was in flight; a refused connection or a name that did not resolve
-reached nothing. Every answer's body is read inside its attempt, so a 2xx settles only once its
+ended by either while it was in flight; a refused connection, a name that did not resolve and a
+429 reached nothing. Every answer's body is read inside its attempt, so a 2xx settles only once its
 body is read whole. From "may have landed", only a 2xx Dispatch wrote, read whole (not an empty,
 untyped or non-JSON one; a bodiless 204 or 205 is one; not one that names no key back or another
 request's), `409 KEY_COMMITTED` (a landing) or a final refusal settles the write. Dispatch's keyed
@@ -956,9 +960,11 @@ part is text is named
 by its size in bytes; only a body with nothing in it is "an empty body". A status that cannot clear
 answers the same until the Dispatch URL, or whatever
 answers in its place, is fixed. A 5xx, 408 or 429 may clear: a GET may succeed on a retry, and so
-may a write answered 408 or 429, the gateway's own timeout or rate limit, which it sends before it
-forwards anything (`mayHaveReachedDispatch` false); a write answered 5xx may or may not have reached
-Dispatch, so the advice is to check whether it took effect before retrying. The error's `answer`,
+may a write answered 429, the gateway's own rate limit, which it sends before it forwards anything
+(`mayHaveReachedDispatch` false); a write answered 5xx or 408 may or may not have reached Dispatch,
+since a gateway can time a request out after it forwarded it, so the advice is to check whether it
+took effect before retrying. A write the gateway answered so on its last attempt ends
+`DispatchWriteUnsettledError`, as the write table above says. The error's `answer`,
 `advice`, `transient` and `mayHaveReachedDispatch` let a caller that knows more about its own
 request, such as `dispatch issue-update`'s close path, give its own advice instead. The executor
 reads a status as Dispatch's meaning (a 404 as no linked issue, no such document, or a server

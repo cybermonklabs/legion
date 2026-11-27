@@ -11,7 +11,7 @@ import { isHttpUrl } from "@legion/contracts/log-text";
 import { DeviceLoginIdentity, deviceLoginSessionName } from "./device-login";
 import { DEVICE_LOGIN_FILE_VAR, deviceLoginFile } from "./device-login-file";
 import { type DpopKey, importDpopKey, newDpopKey } from "./dpop";
-import { messageOf } from "./error-text";
+import { readErrorCode } from "./error-text";
 import {
   ACTIONS_ID_TOKEN_REQUEST_TOKEN_VAR,
   ACTIONS_ID_TOKEN_REQUEST_URL_VAR,
@@ -250,28 +250,32 @@ export function tradeProjects(env: BrokerEnvironment): string[] {
   return sorted;
 }
 
+/** What a refusal of the role's key calls it: the key in the directory {@link KEY_DIR_VAR} names,
+ *  by the variable and never the path, which can be a token a person pasted where the directory
+ *  goes (Go's `MachineKey` names it the same way). */
+const ROLE_KEY_NAMED = `this role's agent-secrets key in the directory ${KEY_DIR_VAR} names`;
+
 /**
  * The key a machine trade proves (Go's `MachineKey`). A role in a pod, where {@link IDENTITY_VAR}
  * is {@link IDENTITY_KUBERNETES} and {@link KEY_DIR_VAR} names the role's own agent-secrets
  * directory, proves the key in that directory's {@link ROLE_KEY_FILE}, because the broker refuses
  * a pod session's exchange whose DPoP key is not the one its registration names, which is that
- * key. A file there that cannot be read, or is no P-256 key, throws naming its path: a fresh key
- * in its place would be refused at the broker in words that name neither the file nor the key.
- * Every other machine proves a key of this process's own, made here.
+ * key. A file there that cannot be read, or is no P-256 key, throws naming the directory by
+ * {@link KEY_DIR_VAR} and a read's failure by its code ({@link readErrorCode}), with no cause,
+ * since the runtime's error repeats the path: a fresh key in its place would be refused at the
+ * broker in words that name neither the file nor the key. Every other machine proves a key of
+ * this process's own, made here.
  */
 async function machineKey(env: BrokerEnvironment): Promise<DpopKey> {
   const dir = value(env, KEY_DIR_VAR);
   if (value(env, IDENTITY_VAR) !== IDENTITY_KUBERNETES || dir === "") return await newDpopKey();
-  const path = join(dir, ROLE_KEY_FILE);
   let pem: string;
   try {
-    pem = await readFile(path, "utf8");
+    pem = await readFile(join(dir, ROLE_KEY_FILE), "utf8");
   } catch (error) {
-    throw new Error(`read this role's agent-secrets key ${path}: ${messageOf(error)}`, {
-      cause: error,
-    });
+    throw new Error(`read ${ROLE_KEY_NAMED}: ${readErrorCode(error)}`);
   }
-  return await importDpopKey(pem, `this role's agent-secrets key ${path}`);
+  return await importDpopKey(pem, ROLE_KEY_NAMED);
 }
 
 /** A client {@link brokerTokenClient} made, and the sign-in it trades. */

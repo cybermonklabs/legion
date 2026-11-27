@@ -250,6 +250,7 @@ func TestSuppliedServiceIsIgnored(t *testing.T) {
 // operator acts on; writing the caller's own strings into the operator's log on
 // every request is a log-injection surface bounded only by the header limit.
 func TestRejectionLogOmitsTheTokensUnverifiedClaims(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	issuer := newServiceTokenIssuer(t)
 	handler, _, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t)})
 
