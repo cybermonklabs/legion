@@ -2594,6 +2594,18 @@ func (m *Machine) handle(ctx context.Context, ev Event, read func(), launched ch
 // launch's decision makes it first. A release the rule refuses is undone, the claim left
 // launch_uncertain in memory as in the store, and the call answers false with the refusal, so
 // nothing launches on a release no restart would find.
+//
+// A release in the window after a refused claim write's read (D5 of the same plan) is not made: it
+// answers a wait until the window's end (writesHeldUntil) and leaves the claim launch_uncertain, in
+// memory as in the store. The boot keeps a claim whose release answered an error, with the place it
+// took for it in the pacing, and tries the release again at each orphan sweep (internal/daemon's
+// launchUnfinished), so a sweep after the window releases it and launches it at that place; the
+// sweep's minute is longer than the shipped probe interval's 30 seconds, so that is the next one.
+// Answered released over an owed write, as an owed write is otherwise answered, the release would
+// send the boot's spawn into the window too: its launch would wait for the window's end
+// (reviveAfterWindow), giving up the place the boot took for it, and the owed release would reach
+// the store as the repair at the head of that launch's decision, written launching before any
+// admission had bound the claim.
 func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
 	m.mu.Lock()
 	defer m.unlock()
@@ -2602,6 +2614,9 @@ func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
 	}
 	if m.claim.State != StateLaunchUncertain || m.claim.Locator != nil {
 		return false, nil
+	}
+	if until, waits := m.writesWait(); waits {
+		return false, writesHeldUntil(until)
 	}
 	m.claim.State = StateQueued
 	method := m.claimWriteMethod()
@@ -2794,8 +2809,9 @@ func (m *Machine) askHeld() error {
 	return nil
 }
 
-// writesHeldUntil is the wait of an ask whose claim's writes are held back until at after a claim
-// write the store refused (askHeld, PublishUpdateAsk).
+// writesHeldUntil is the wait of an ask, or of the release of an uncertain launch, whose claim's
+// writes are held back until at after a claim write the store refused (askHeld, PublishUpdateAsk,
+// ReleaseUncertainLaunch).
 func writesHeldUntil(at time.Time) error {
 	return wait.Until(at, fmt.Sprintf("its claim writes are held after a claim write the store refused, until %s",
 		at.UTC().Format(time.RFC3339)))

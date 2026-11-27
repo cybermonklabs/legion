@@ -45,7 +45,14 @@ import (
 // missing among them, or one whose cleanup is confirmed is returned as it is, the claim left
 // exactly as it was. A failure the rule owes owes nothing: nothing of this decision has reached
 // memory before the admission lands (admitted runs after it), so memory is what the row holds.
+//
+// A revive in the window after a refused claim write's read (D5 of dispatch://INFRA-4099's plan)
+// makes no write and is made again at the window's end (reviveAfterWindow).
 func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place, admitted func()) error {
+	if until, waits := m.writesWait(); waits && m.refused() == nil {
+		m.reviveAfterWindow(until, exempt, admitted)
+		return nil
+	}
 	// The admission writes the claim row alone, so a take-back the claim must carry goes first
 	// (carryPending, writeCarried).
 	if err := m.writeFailed(m.pendingWriteMethod(), m.writeCarried(ctx)); err != nil {
@@ -53,7 +60,7 @@ func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place
 	}
 	c := m.stored()
 	// A refusal this decision met stands for the admission too, which reaches no store (D2 of
-	// dispatch://INFRA-4099's plan), and so does the window after a refused write's read (D5).
+	// dispatch://INFRA-4099's plan).
 	bound, err := Claim{}, m.withheld()
 	if err == nil {
 		bound, err = m.deps.Store.AdmitClaim(ctx, c)
@@ -74,6 +81,35 @@ func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place
 		admitted()
 	}
 	return m.launchAfter(ctx, false, exempt, true, place, noEnd)
+}
+
+// reviveAfterWindow is a revive that met the window after a refused claim write's read (D5 of
+// dispatch://INFRA-4099's plan). Its admission reaches no store before until, the window's end, and
+// a launch with no admission starts nothing, so the revive is made again then, as the request
+// asked it (exempt, admitted), over the claim as the request found it: the state is put back
+// first, so the admission writes what the request's own would have written, and one the tree
+// lifecycle refuses leaves the claim exactly as it was (revive). Until then the claim waits
+// launching with no process (relaunchLater), as a launch whose launching write the window held
+// waits (writeTry): a second request finds a launch under way, as it would with no window, a stop
+// ends the wait (letGo), a suspension is held and ends it at its turn (holdSuspendUntilReady,
+// relaunchAgain), and a restart, which loses the wait with the rest of memory, takes the claim up
+// from its row. The place in the pacing a request carried is given up as its decision ends
+// (leaveUntaken), and the launch takes a place of its own at its turn.
+//
+// The request is answered with no error, since its launch is the machine's to make now. A wait
+// would leave the launch to the requester, and a request the daemon posts to the machine has none
+// who asks again: the supervisor logs a decision's error and drops the event (internal/daemon's
+// decisionFailed), which is what the boot's spawn of a released launch met. A launching write the
+// window holds back needs nothing of this: its launch is tried again at the probe interval from
+// that try (writeTry, relaunchAtProbe), which is past the window's end already.
+func (m *Machine) reviveAfterWindow(until time.Time, exempt bool, admitted func()) {
+	found := m.claim.State
+	m.log.Info("supervise: the launch waits out the window after a refused claim write; it is made at the window's end",
+		"state", found, "writesWaitUntil", until)
+	m.relaunchLater(until.Sub(m.deps.Clock.Now()), func(ctx context.Context) error {
+		m.claim.State = found
+		return m.revive(ctx, exempt, nil, admitted)
+	})
 }
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is
@@ -220,9 +256,10 @@ func (m *Machine) watchAgain() {
 // relaunchLater leaves a claim whose process is already let go waiting launching with no process,
 // its task kept, and tries relaunch again after wait (TimerRelaunch, relaunchAgain): a relaunch
 // whose lifecycle check the store did not answer (relaunchRefused), or a launch whose write failed
-// (launchAfter), each at the probe interval, and a start the session store could not answer, at
-// its own minute (startWaitsForStore). Nothing else would relaunch such a claim before a restart,
-// which takes it up from what the store last holds.
+// (launchAfter), each at the probe interval, a start the session store could not answer, at its
+// own minute (startWaitsForStore), and a request's revive the window after a refused claim write
+// held back, at the window's end (reviveAfterWindow). Nothing else would relaunch such a claim
+// before a restart, which takes it up from what the store last holds.
 func (m *Machine) relaunchLater(wait time.Duration, relaunch func(context.Context) error) {
 	m.claim.State = StateLaunching
 	m.relaunch = relaunch

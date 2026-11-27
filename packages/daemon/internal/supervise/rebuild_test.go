@@ -1087,6 +1087,137 @@ func TestARefusedWriteWhoseReadFailsDecidesNothingUntilARead(t *testing.T) {
 	})
 }
 
+// A launch that meets the window after a refused claim write's read (D5 of dispatch://INFRA-4099's
+// plan) is made after the window, once, and is never dropped. Each row refuses one claim write once,
+// which opens the window, posts the launch inside it as the daemon posts it, and moves the clock
+// past the window's end (Machine.writesWaitUntil): no process starts inside the window, and once
+// the clock has passed its end one start is made and the claim records its process.
+//
+// The boot releases an uncertain launch and spawns it only once the release answers released, and
+// its sweep tries again a release that answered an error, keeping the claim for that retry
+// (internal/daemon's launchUnfinished). A release inside the window cannot be written, so it answers
+// a wait until the window's end and leaves the claim launch_uncertain in memory as in the store,
+// and the sweep's release after the window launches it. A request inside the window, a spawn or an
+// operator's resume, is taken, and the machine makes its launch at the window's end over the claim
+// as the request found it, with nothing posted again.
+func TestALaunchThatMeetsTheWindowIsMadeAfterIt(t *testing.T) {
+	uncertain := queuedClaim()
+	uncertain.State, uncertain.Generation = StateLaunchUncertain, 1
+	for _, tc := range []struct {
+		name  string
+		claim Claim
+		// before brings the claim to the decision that opens the window, nil for none; refuse
+		// picks the claim write the store refuses once, in the decision open makes.
+		before func(h *harness)
+		refuse func(method string, c Claim) bool
+		open   func(h *harness) error
+		// inside is what the daemon posts inside the window, and answers whether the daemon posts
+		// it again once the window has ended (after).
+		inside func(t *testing.T, h *harness, until time.Time) (again bool)
+		after  func(t *testing.T, h *harness)
+	}{
+		{
+			name: "the boot's release, then its launch", claim: uncertain,
+			refuse: func(method string, c Claim) bool { return method == "PutClaim" && c.State == StateQueued },
+			open: func(h *harness) error {
+				_, err := h.m.ReleaseUncertainLaunch(h.ctx)
+				return err
+			},
+			inside: func(t *testing.T, h *harness, until time.Time) bool {
+				released, err := h.m.ReleaseUncertainLaunch(h.ctx)
+				if at, waits := wait.UntilAt(err); released || !errors.Is(err, wait.ErrWaiting) || !waits || !at.Equal(until) {
+					t.Errorf("the release inside the window = %t, %v; want a wait until the window's end, %s", released, err, until)
+				}
+				if got, stored := h.claim().State, h.store.load(h.token).State; got != StateLaunchUncertain || stored != StateLaunchUncertain {
+					t.Errorf("after the release inside the window the machine holds %s and the store %s, want both launch_uncertain", got, stored)
+				}
+				if err != nil {
+					return true
+				}
+				if released {
+					_ = h.handle(RequestSpawn{Claim: h.token})
+				}
+				return false
+			},
+			after: func(t *testing.T, h *harness) {
+				if released, err := h.m.ReleaseUncertainLaunch(h.ctx); err != nil || !released {
+					t.Fatalf("the sweep's release after the window = %t, %v; want it released", released, err)
+				}
+				h.must(RequestSpawn{Claim: h.token})
+			},
+		},
+		{
+			name: "a request's spawn", claim: queuedClaim(),
+			refuse: func(method string, _ Claim) bool { return method == "AdmitClaim" },
+			open:   func(h *harness) error { return h.handle(RequestSpawn{Claim: h.token}) },
+			inside: func(t *testing.T, h *harness, _ time.Time) bool {
+				if err := h.handle(RequestSpawn{Claim: h.token}); err != nil {
+					t.Errorf("the spawn inside the window answered %v, want it taken", err)
+				}
+				return false
+			},
+		},
+		{
+			name: "an operator's resume", claim: queuedClaim(),
+			before: func(h *harness) { h.reach(StateSuspended) },
+			refuse: func(method string, _ Claim) bool { return method == "AdmitClaim" },
+			open: func(h *harness) error {
+				return h.handle(RequestResume{Claim: h.token, By: SuspendedByOperator})
+			},
+			inside: func(t *testing.T, h *harness, _ time.Time) bool {
+				if err := h.handle(RequestResume{Claim: h.token, By: SuspendedByOperator}); err != nil {
+					t.Errorf("the resume inside the window answered %v, want it taken", err)
+				}
+				return false
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, s := refusingHarness(t, tc.claim)
+			if tc.before != nil {
+				tc.before(h)
+			}
+			count := func() int { return len(h.rt.CallsOf("Spawn")) + len(h.rt.CallsOf("Resume")) }
+			started := count()
+			starts := func() int { return count() - started }
+			until := h.clock.Now().Add(testProbe)
+			refused := false
+			s.refuseWhere(func(method string, c Claim) bool {
+				if refused || !tc.refuse(method, c) {
+					return false
+				}
+				refused = true
+				return true
+			})
+			if err := tc.open(h); !errors.Is(err, s.err) {
+				t.Fatalf("the decision that opens the window returned %v, want the store's refusal", err)
+			}
+
+			h.advance(testProbe / 2)
+			again := tc.inside(t, h, until)
+			h.advance(until.Sub(h.clock.Now()) - time.Second)
+			if n := starts(); n != 0 {
+				t.Fatalf("%d processes started inside the window, want none", n)
+			}
+
+			h.advance(time.Second)
+			if again {
+				tc.after(t, h)
+			}
+			if n := starts(); n != 1 {
+				t.Fatalf("once the window ended %d processes started, want the launch made once", n)
+			}
+			if c := h.claim(); c.State != StateLaunching || c.Locator == nil {
+				t.Fatalf("once the window ended the claim is %s with process %+v, want launching with the process it started", c.State, c.Locator)
+			}
+			h.advance(testProbe)
+			if n := starts(); n != 1 {
+				t.Fatalf("a probe interval after the window %d processes started, want the one launch alone", n)
+			}
+		})
+	}
+}
+
 // A delivered ask of an update round whose mark the store refuses is asked no more (D9 of
 // dispatch://INFRA-4099's plan): the ask answers delivered with no error, so its row ends, and the
 // machine keeps that the ask of the round was delivered across the rebuild, so a later ask of the

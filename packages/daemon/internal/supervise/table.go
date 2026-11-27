@@ -188,7 +188,8 @@ const (
 	// the agent's turn, and the retry of a stop that failed.
 	TimerSuspend TimerKind = "suspend"
 	// TimerRelaunch is the retry of a relaunch left waiting with no process (relaunchLater): one whose
-	// lifecycle check failed with no cleanup reserved, or a launch whose write failed. The claim waits
+	// lifecycle check failed with no cleanup reserved, a launch whose write failed, or a request's
+	// revive the window after a refused claim write held back (reviveAfterWindow). The claim waits
 	// launching with no process until it fires.
 	TimerRelaunch TimerKind = "relaunch"
 	// TimerWake is the let-out of the place the wake pacing holds a launch in (reserveWake,
@@ -1341,8 +1342,11 @@ func fillTable(t *builder) {
 		[]ClaimState{StateSuspended}, StateWorking, StateIdle, StateReady, StateLaunching, StateShimConnected, StateRegistered)
 	t.ignore(onSuspendTimer, "no suspension is held", StateQueued, StateLaunchUncertain, StateSuspended, StateRetired, StateFailed)
 
+	// A request's revive the window after a refused claim write held back is made over the claim as
+	// the request found it (reviveAfterWindow), so an admission the tree lifecycle refuses leaves it
+	// queued, suspended, failed or retired, as it was.
 	t.row(onRelaunchTimer, "the waiting relaunch is tried again, or a suspension held meanwhile ends it", relaunchAgain,
-		[]ClaimState{StateFailed, StateSuspended}, StateLaunching)
+		[]ClaimState{StateFailed, StateSuspended, StateQueued, StateRetired}, StateLaunching)
 	t.ignore(onRelaunchTimer, "no relaunch is waiting", StateQueued, StateLaunchUncertain, StateShimConnected, StateRegistered,
 		StateReady, StateWorking, StateIdle, StateSuspended, StateFailed, StateRetired)
 

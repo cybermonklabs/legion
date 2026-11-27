@@ -138,6 +138,10 @@ func (m *Machine) settleRefusal(ctx context.Context) {
 // reaches the store (Machine.writesWaitUntil, withheld). So a claim whose every write is refused
 // tries one write in each probe interval, and a launch in the window starts no process, since a
 // launch's first step is its launching write and the launch ends where that write fails (writeTry).
+// No launch is dropped for it: one whose launching write the window held is tried again at the
+// probe interval, a request's whose admission it would hold is made at the window's end
+// (reviveAfterWindow), and a release of an uncertain launch waits for that end
+// (ReleaseUncertainLaunch), which the boot's sweep tries again.
 //
 // A read that fails, or that finds no row, builds nothing: the read is owed (Machine.rereadOwed)
 // and tried again at the probe interval (TimerReread), and the claim decides nothing until one
