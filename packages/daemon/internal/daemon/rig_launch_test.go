@@ -266,8 +266,10 @@ func rigLaunch(t *testing.T, req rigLaunchRequest) rigLaunchAnswer {
 	s := specs{
 		stateDir: req.StateDir, project: project, prompts: composer, instructions: req.InstructionsFile,
 		designSteps: config.Gates{}.Steps(), secrets: map[string]string{"ENVOY_TOKEN": envoyToken},
-		repository: func(context.Context, string) (ghrepo.Repository, string, error) { return repo, req.DefaultBranch, nil },
-		appOwners:  func(claim.Role) []string { return []string{owner} },
+		repository: func(context.Context, string) (launchRepository, error) {
+			return launchRepository{Repo: repo, DefaultBranch: req.DefaultBranch}, nil
+		},
+		appOwners: func(claim.Role) []string { return []string{owner} },
 	}
 	c := supervise.Claim{Token: token, Project: project, Tree: req.Claim.Tree, Issue: req.Claim.Issue, Role: role, Generation: 1}
 	spec, err := s.SpawnSpec(ctx, c)

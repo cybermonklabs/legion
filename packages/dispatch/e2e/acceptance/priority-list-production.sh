@@ -23,14 +23,17 @@
 # PROBE_AT=<time> PROBE_STOPPED=<none or form:reads>`, and a line per form from the log: `<form>:
 # p90 N ms over M reads, at most 200 ms` (only with all 200 lines) or `..., over 200 ms`, `<form>:
 # not read`, or `<form>: stopped after M reads, K of them over 200 ms on the server`. A look that
-# waits ends on `read again at or after <time> with ...`, naming what the next look takes.
+# waits for the fleet's three hours or for the probe's lines ends on `read again at or after <time>
+# with ...`, naming what the next look takes. A look that waits for the fleet to carry the merge
+# ends on a line of its own that says which: the fleet serves no one commit, it does not (or, with
+# BEFORE_DEPLOY=1, it does) carry MERGE_SHA, GitHub did not answer, or GitHub's compare says neither
+# way. That line names no value: the next look takes the inputs this one took.
 #
 # Exit codes: 0 every form at most 200 ms; 1 a form over 200 ms, a line whose status is not 200,
 # or a first answer that holds no issue; 2 the look cannot measure (an input unset or malformed, a
 # first answer that is not 200, no line of the probe after 10 minutes, a probe id of another build);
 # 3 a look that waits. Exit 1 comes before exit 3.
 
-# shellcheck disable=SC2016 # the single-quoted jq filters name jq variables, not shell ones
 set -euo pipefail
 set +x
 
@@ -51,12 +54,6 @@ require_env DISPATCH_URL MERGE_SHA LOGGING_PROJECT
 read_bearer
 require_commands curl gcloud gh jq od sleep sort
 
-# cannot_measure WHY: the look cannot measure (exit 2).
-cannot_measure() {
-  printf '%s\n' "$1" >&2
-  exit 2
-}
-
 # shellcheck disable=SC2031 # the DISPATCH_URL `cli` exports is its own; this one is the caller's
 readonly base="${DISPATCH_URL%/}"
 readonly merge="$MERGE_SHA"
@@ -73,22 +70,12 @@ declare -rA title=([page]='the page of 50' [open]='the open list' [whole]='the w
 readonly reads_per_form=200 stop_after=21 slow_read_us=1000000 bound_ms=200
 readonly max_time_s=60 fleet_wait_s=10800 log_window_s=7200 log_pause_s=30 log_pauses=20
 readonly agent_prefix=priority-list-production
-readonly time_pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
 
 work_dir
 trap 'rm -rf "$work"' EXIT
 printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 
 now() { date -u +%s; }
-# stamp SECONDS: the time SECONDS after the epoch, as this script prints a time.
-stamp() { jq -rn --argjson s "$1" '$s | todateiso8601'; }
-# epoch NAME: sets `epoch_s` to the time the variable NAME holds, in seconds since the epoch. A
-# time this script does not print cannot be measured against.
-epoch() {
-  [[ "${!1}" =~ $time_pattern ]] ||
-    cannot_measure "$1 is ${!1}, not a time as this script prints one (YYYY-MM-DDTHH:MM:SSZ)"
-  epoch_s="$(jq -rn --arg t "${!1}" '$t | fromdateiso8601 | floor')"
-}
 
 # fetch OUT URL [CURL-ARGS...]: one GET of URL, its body in OUT. Sets `code`, 000 where no answer
 # came, and `elapsed_us`, curl's time_total in microseconds, the whole --max-time where curl wrote
@@ -108,36 +95,6 @@ fetch() {
   else
     elapsed_us=$((max_time_s * 1000000))
   fi
-}
-
-# p90 FILE: the p90 of the numbers FILE holds, one a line: the value at rank ceil(0.9 n) of them in
-# ascending order.
-p90() {
-  local -a sorted
-  mapfile -t sorted < <(sort -n "$1")
-  local rank=$(((9 * ${#sorted[@]} + 9) / 10))
-  printf '%s' "${sorted[rank - 1]}"
-}
-
-# carries COMMIT: GitHub's compare of MERGE_SHA with COMMIT. Sets `compared`, its status, and
-# `carried`, yes where COMMIT carries MERGE_SHA (`identical` or `ahead`) and no where it does not
-# (`behind` or `diverged`). A compare GitHub does not answer ends the look, which waits.
-carries() {
-  if ! compared="$(gh api "repos/cybermonklabs/legion/compare/$merge...$1" --jq .status \
-    2>"$work/gh" </dev/null)"; then
-    printf 'GitHub did not answer whether %s carries %s: %s\n' "$1" "$merge" \
-      "$(head -c 300 "$work/gh" | tr '\n' ' ')"
-    exit 3
-  fi
-  case "$compared" in
-    identical | ahead) carried=yes ;;
-    behind | diverged) carried=no ;;
-    *)
-      printf "GitHub's compare of %s with %s answered %s, which says neither way whether it carries it\n" \
-        "$merge" "$1" "${compared:-nothing}"
-      exit 3
-      ;;
-  esac
 }
 
 # A look holds that the commit it measures carries MERGE_SHA, and BEFORE_DEPLOY=1 that it does not.
@@ -171,14 +128,7 @@ if [[ -n "${PROBE_ID:-}${PROBE_AT:-}${PROBE_STOPPED:-}" ]]; then
 else
   # First: the commit every live server process serves, and whether it carries the merge.
   fetch "$work/healthz" "$base/healthz"
-  [[ "$code" != 000 ]] ||
-    cannot_measure "GET $base/healthz got no answer: $(head -c 300 "$work/curl" | tr '\n' ' ')"
-  fleet="$(jq -r '.fleet_commit // empty' "$work/healthz" 2>/dev/null)" || fleet=''
-  if [[ ! "$fleet" =~ ^[0-9a-f]{40}$ ]]; then
-    printf "production's fleet serves no one commit: GET /healthz answered HTTP %s with fleet_commit %s\n" \
-      "$code" "${fleet:-null}"
-    exit 3
-  fi
+  fleet_commit "$code"
   readonly fleet
   carries "$fleet"
   if [[ "$carried" != "$wanted" ]]; then
@@ -293,14 +243,12 @@ for form in "${forms[@]}"; do
 done
 
 # Fourth: the probe's lines in the container logs, from PROBE_AT to two hours after it.
-printf -v filter '%s AND %s AND %s AND %s AND %s AND %s' \
-  'resource.type="k8s_container"' \
-  'resource.labels.namespace_name="dispatch"' \
-  'textPayload:"msg=\"dispatch: request\""' \
-  "textPayload:\"user_agent=$agent_prefix/$probe_id/\"" \
-  "timestamp>=\"$probe_at\"" \
-  "timestamp<=\"$(stamp $((probe_at_s + log_window_s)))\""
-readonly filter
+printf -v log_until 'timestamp<="%s"' "$(stamp $((probe_at_s + log_window_s)))"
+readonly log_terms=(
+  "textPayload:\"user_agent=$agent_prefix/$probe_id/\""
+  "timestamp>=\"$probe_at\""
+  "$log_until"
+)
 readonly agent_field=" user_agent=$agent_prefix/$probe_id/(page|open|whole) "
 readonly status_field=' status=([0-9]+) ' elapsed_field=' elapsed_ms=([0-9]+) '
 
@@ -311,9 +259,7 @@ declare -A held=() over=() failed_status=() statuses=() values=()
 read_log() {
   local line form status elapsed
   local -a lines
-  gcloud logging read "$filter" --project "$LOGGING_PROJECT" --format='value(textPayload)' \
-    >"$work/log" 2>"$work/gcloud" </dev/null ||
-    cannot_measure "gcloud logging read failed: $(head -c 600 "$work/gcloud" | tr '\n' ' ')"
+  access_log "${log_terms[@]}"
   for form in "${forms[@]}"; do
     held[$form]=0 over[$form]=0 failed_status[$form]=0 statuses[$form]='' values[$form]=''
   done
