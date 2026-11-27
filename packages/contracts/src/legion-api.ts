@@ -415,8 +415,11 @@ const legionPhaseView = z.object({
    * the daemon counts the pairs (`reviewing-implementing` and the rest). Absent, never `{}`, for
    * a worker whose issue has had no move back, and absent from the whole state for a caller in a
    * pod whose plugin declares a contract below 62 (the daemon's `withoutBackwardMoves`), so every
-   * reader takes it as optional. `rounds` beside it counts every round, a conflict round
-   * included, which no pair counts. */
+   * reader takes it as optional. `rounds` beside it counts review rounds alone, a conflict round
+   * included. `pass` counts every move back, so these counts add up to no more than `pass`. They
+   * can add up to less, for example where a move was made at a conflicting head, which raises
+   * `pass` and no pair, since nobody sent the work back, or where the issue was already in flight
+   * when the daemon began to count the pairs. */
   backwardMoves: z.record(z.string(), z.number().int().positive()).optional(),
 });
 
@@ -1340,8 +1343,11 @@ const legionCapabilityState = z.object({
 /** `api.Settings` — the daemon's resolved legion.yaml with every credential, credential source and
  * credential file path left out (contract 35). Its keys are legion.yaml's own; the two the spec
  * names are typed, the rest ride as the daemon writes them, so a new legion.yaml key is no
- * contract change. `max_fix_attempts` was typed here until contract 59 removed the key, and
- * `review_round_cap` is the one cap left that blocks a pull request. */
+ * contract change. `max_fix_attempts` was typed here until contract 59 removed the key.
+ * `review_round_cap` moves nothing: after that many counted review rounds (the daemon's
+ * `recordRound` counts them, less the conflict rounds), the daemon posts a message on the issue
+ * and sends the architect a `pr-blocked` notice, once for each value the cap holds; the work goes
+ * on, and the architect decides what to do. */
 const legionSettings = z.looseObject({
   review_round_cap: z.number().int().positive().optional(),
   worker_boot_timeout_seconds: z.number().int().positive().optional(),
@@ -2288,12 +2294,18 @@ const legionSuspendedBy = z.enum([
  * read, so the reader takes every field as optional (`LEGION_ANSWER_READS`), `state` among them,
  * though the daemon always writes it. The three enumerations are the entry's enumerated rows
  * (`enumeratedRows` of `contracts/20261125182642_agent-actions.json`), each whole at the
- * agent-actions contract. */
+ * agent-actions contract. `phaseNotRestarted` (the claim-start entry, dispatch://INFRA-5649) is
+ * what the controller's `retry` did that the state cannot say: the retry of a failed or retired
+ * phase worker whose phase's start waits for its issue's admission slot, which the issue does not
+ * hold, so the claim stays `failed` or `retired` until the slot comes; the sentence names the
+ * issue, and the issues it waits on where there are any. It is absent on every other answer, and a
+ * caller below that entry is served the answer without it. */
 export const LegionAgentActionResponse = z.object({
   state: z.enum(LEGION_CLAIM_STATES).optional(),
   suspendedBy: legionSuspendedBy.optional(),
   suspensionHeld: z.literal(true).optional(),
   suspensionHeldBy: legionSuspendedBy.optional(),
+  phaseNotRestarted: z.string().optional(),
 });
 
 /** `api.PodUpdateRequest`, the project's controller asking the daemon to replace the pod one issue
@@ -2505,21 +2517,40 @@ const legionAnsweredPause = z.object({
 /** `api.PlanRegisterResponse`, the plan register_plan took (contract 219): the version given and
  * each of its tasks, its id and the steps its block names as the plan writes them (`role` or
  * `role:key`). A task whose block names none runs the project's default steps, which the workflow
- * reads when the task's work starts, so it is answered with no step: an empty list, never null. A
- * plan whose content the daemon does not take is answered `409 PLAN_REFUSED`, whose `error` holds
- * its reasons in order, the first reasons of each kind of cause and one more that counts the rest of
- * that kind; the body's `reasons` lists the same reasons by task, which `LegionErrorResponse`
- * strips. A plan of an issue whose experiment's group takes no plan from its owner is answered
- * `409 PLAN_NOT_TAKEN` (contract 220), a sentence naming the group and no reasons. The reader
- * takes every field as optional, since no plugin code reads one: the `legion` tool hands the
- * answer to its agent whole. */
+ * reads when the task's work starts, so it is answered with no step: an empty list, never null.
+ * From the contract entry 20261125174555 (running-step) a task that runs also carries `running` (a list of `api.RunningStep`): one
+ * entry, the act the task stands at once the version is taken. It names its `kind` (`step`,
+ * `retro` or `merge`), its `place` (from 1 for a step, 0 for the retro and the merge) and the
+ * `role` whose agent works it. A later version can change only the text of a running task, and
+ * that agent reads no new start of it, so it is the agent the owner sends a message to for a
+ * decision about the act that runs now. A plan whose content the daemon does not take is answered
+ * `409 PLAN_REFUSED`, whose `error` holds its reasons in order, the first reasons of each kind of
+ * cause and one more that counts the rest of that kind; the body's `reasons` lists the same reasons
+ * by task, which `LegionErrorResponse` strips. An issue whose experiment's group runs the project's
+ * default steps takes only a version that changes nothing but the text of its running task
+ * `default`. Every other plan of it is answered `409 PLAN_NOT_TAKEN` (contract 220), a sentence
+ * naming the group and no reasons. The reader takes every field as optional, since no plugin code
+ * reads one: the `legion` tool hands the answer to its agent whole, so a field this schema leaves
+ * out never reaches the agent. */
 export const LegionPlanRegisterResponse = z.object({
   plan: z
     .object({
       version: z.number().int().positive().optional(),
       tasks: z
         .array(
-          z.object({ id: nonEmptyString.optional(), steps: z.array(nonEmptyString).optional() })
+          z.object({
+            id: nonEmptyString.optional(),
+            steps: z.array(nonEmptyString).optional(),
+            running: z
+              .array(
+                z.object({
+                  kind: nonEmptyString.optional(),
+                  place: z.number().int().nonnegative().optional(),
+                  role: nonEmptyString.optional(),
+                })
+              )
+              .optional(),
+          })
         )
         .optional(),
     })
@@ -2970,7 +3001,7 @@ export const LegionPlanRegisterRequest = z.strictObject({
  * (`TASK_STALE_GENERATION`), a stop of a root that waits on a person before its first step
  * (`TASK_AWAITING_PERSON`), which a later version of the plan changes, or which stops once the
  * person has answered, every task of an issue whose experiment's group runs the project's
- * default steps, since Legion takes no plan from its owner (`PLAN_NOT_TAKEN`, contract 220), and,
+ * default steps, since its owner stops none of its tasks (`PLAN_NOT_TAKEN`, contract 220), and,
  * since entry 20261125161152 (gate-basis), a stop of a parent that waits in `awaiting_children` on its open Dispatch
  * children (`WAITING_ON_CHILDREN`, naming them and what the architect can do about each). A stop
  * on an issue that meets both is answered `PLAN_NOT_TAKEN`, since the daemon reads the issue's

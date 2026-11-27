@@ -152,7 +152,10 @@ function required(env: BrokerEnvironment, name: keyof BrokerVariables, kind: str
  * naming them, since a deployment that asked for one and gave it nothing has a mistake in it.
  * Each kind reads the variables Go's `MachineIdentity` reads for it
  * (`packages/envoy/internal/cipherclient/environment.go`), in the same order; a device login,
- * which Go has no kind for, reads the broker it was made at and the file that keeps it.
+ * which Go has no kind for, reads the broker it was made at and the file that keeps it. Go's also
+ * takes `github-actions`, a CI job's own identity, which this client never trades: a job's
+ * `dispatch result` holds the proxy placeholder of its run, and the broker holds the run's
+ * token.
  */
 export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined {
   const kind = value(env, IDENTITY_VAR);

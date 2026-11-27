@@ -156,9 +156,9 @@ const SETTINGS_FORMS: Readonly<Record<string, readonly string[]>> = {
 
 /** On a phone, the session's settings never push the page sideways: the document is no wider
  *  than the 390 px screen, and every piece of them is whole on that screen once the reader has
- *  it in view. The row under the message box scrolls sideways itself (INFRA-812, R6), so a
- *  picker can start beyond the right edge until that row is scrolled to it; what must never
- *  happen is the page scrolling, or a piece that cannot be brought onto the screen at all.
+ *  it in view. The row under the message box wraps its facts as groups (INFRA-5200), so every
+ *  picker sits inside the screen; what must never happen is the page scrolling, or a piece that
+ *  cannot be brought onto the screen at all.
  *
  *  The model and the thinking level are each measured in the form the header settled on. The
  *  switch's status line under the row comes and goes with the session's answers and has no
@@ -195,7 +195,7 @@ async function expectNoSidewaysScroll(
     expect(box?.x ?? -1, name).toBeGreaterThanOrEqual(0);
     expect((box?.x ?? 0) + (box?.width ?? 0), name).toBeLessThanOrEqual(widths.clientWidth);
   }
-  // Bringing each piece into view scrolled the row it sits in, never the page.
+  // Bringing each piece into view never scrolled the page sideways.
   expect(await pageWidths()).toEqual(widths);
 }
 

@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -39,7 +40,7 @@ func fakeCodegraphBundle(t *testing.T, callLog, version, cases string) {
 		}
 	}
 	script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '" + callLog + "'\ncase \"$1\" in\n" + cases + "esac\n"
-	if err := os.WriteFile(filepath.Join(bundle, "bin", "codegraph"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bundle, "bin", "codegraph"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", filepath.Join(bundle, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -107,6 +108,7 @@ func processEnded(pid int) bool {
 // warm-up says so in one line naming the cap and the peak it read, releases its lease, and leaves
 // the record `memory cap`.
 func TestWarmCodegraphIndexEndsABuildAtItsMemoryCap(t *testing.T) {
+	// Not parallel: changes codegraphMemoryCap and PATH, and captures os.Stderr.
 	saved := codegraphMemoryCap
 	codegraphMemoryCap = 16 << 20
 	t.Cleanup(func() { codegraphMemoryCap = saved })
@@ -203,6 +205,7 @@ init)
 // clamp(max(3, CPUs) − 1, 1, 8) workers unless CODEGRAPH_PARSE_WORKERS says otherwise, and the
 // warm-up's build runs at the count its cap was measured at, whatever CPUs the pod shows.
 func TestWarmCodegraphIndexBoundsCodegraphsParseWorkers(t *testing.T) {
+	// Not parallel: fakeCodegraphBundle changes the process PATH with t.Setenv.
 	scratch := t.TempDir()
 	callLog, seen := filepath.Join(scratch, "calls.log"), filepath.Join(scratch, "init.env")
 	fakeCodegraphBundle(t, callLog, "1.5.0", `status) echo '{"initialized":false}' ;;
@@ -228,6 +231,7 @@ init) env > '`+seen+`' ;;
 // CODEGRAPH_NO_WAL_DEFER=1 reaches its builds only if the warm-up sets it too. An `index` over an
 // existing index is where CodeGraph would otherwise defer its checkpoints and let the log grow.
 func TestWarmCodegraphIndexEnvironmentCarriesNoWalDefer(t *testing.T) {
+	// Not parallel: fakeCodegraphBundle changes the process PATH with t.Setenv.
 	scratch := t.TempDir()
 	callLog, seen := filepath.Join(scratch, "calls.log"), filepath.Join(scratch, "index.env")
 	fakeCodegraphBundle(t, callLog, "1.6.4", `status) echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
@@ -253,6 +257,7 @@ index) env > '`+seen+`' ;;
 // os.ErrProcessDone, which exec does not report as the run's error, so a build that exited 0 just
 // as its bound ended is not read as a build that could not run.
 func TestStopCodegraphGroupAnswersAGoneGroupAsDone(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("sleep", "60")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
@@ -332,6 +337,7 @@ func warmUpOnce(dir string) {
 // `running`, and nothing else is building, since this warm-up holds the lease. Its index reads
 // `indexing`, which before was a repair: now the warm-up runs `status` alone and says why.
 func TestWarmCodegraphIndexDoesNotRepairABuildThatDiedUnseen(t *testing.T) {
+	// Not parallel: fakeCodegraphBundle changes PATH, and captureStderr replaces os.Stderr.
 	callLog := filepath.Join(t.TempDir(), "calls.log")
 	fakeCodegraphBundle(t, callLog, "1.5.0", `status) echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
 index) exit 0 ;;
@@ -366,6 +372,7 @@ index) exit 0 ;;
 // one: the record is removed, and the next launch's warm-up repairs the index. The fake clock holds
 // the shim's SIGTERM back until the warm-up's wait is armed, the order a stop under load takes.
 func TestWarmCodegraphIndexRepairsAfterAStopThatReachedTheBuildFirst(t *testing.T) {
+	// Not parallel: fakeCodegraphBundle changes PATH, and captureStderr replaces os.Stderr.
 	callLog := filepath.Join(t.TempDir(), "calls.log")
 	fakeCodegraphBundle(t, callLog, "1.6.4", recordedOutcomeStandIn("kill -TERM $$"))
 	dir := t.TempDir()
@@ -410,6 +417,7 @@ func TestWarmCodegraphIndexRepairsAfterAStopThatReachedTheBuildFirst(t *testing.
 // did not send (the kernel's out-of-memory kill, the launcher's memory guard) is recorded
 // `killed`, and the next warm-up, a new shim's, does not build again.
 func TestWarmCodegraphIndexDoesNotRepairABuildASignalEnded(t *testing.T) {
+	// Not parallel: warmUpTwiceAfterADeath changes codegraphStopSettle, PATH and os.Stderr.
 	warmUpTwiceAfterADeath(t, "kill -KILL $$", warmOutcomeKilled, warmUpOnce)
 }
 
@@ -418,6 +426,7 @@ func TestWarmCodegraphIndexDoesNotRepairABuildASignalEnded(t *testing.T) {
 // fake clock: the stand-in's `init` waits for ever once it has begun, and the test moves the clock
 // past the bound, so the bound alone ends it.
 func TestWarmCodegraphIndexDoesNotRepairABuildThatTimedOut(t *testing.T) {
+	// Not parallel: warmUpTwiceAfterADeath changes codegraphStopSettle, PATH and os.Stderr.
 	warmUpTwiceAfterADeath(t, "exec sleep 86400", warmOutcomeTimedOut, func(dir string) {
 		c := clocktest.New(time.Date(2026, 11, 24, 15, 59, 0, 0, time.UTC))
 		returned := make(chan struct{})
@@ -450,6 +459,7 @@ func noStopSettle(t *testing.T) {
 // can be one that does not repeat (`database is locked`); a second exit in a row holds every later
 // warm-up on the disk, and an exit 0 after the first removes the record (INFRA-5717 R2, spec v12).
 func TestWarmCodegraphIndexHoldsASecondNonZeroExit(t *testing.T) {
+	// Not parallel: noStopSettle changes codegraphStopSettle, and the rows change PATH and os.Stderr.
 	noStopSettle(t)
 	for _, tc := range []struct {
 		name, indexEnd string
@@ -500,6 +510,7 @@ index) `+tc.indexEnd+` ;;
 // version, another cap, or before the workspace was created holds nothing of the next build's
 // count: one more exit leaves the count at one, and the warm-up after it builds again.
 func TestWarmCodegraphIndexCountsExitsAnewUnderAnotherRun(t *testing.T) {
+	// Not parallel: noStopSettle changes codegraphStopSettle, and the rows change PATH.
 	noStopSettle(t)
 	for _, tc := range []struct {
 		name, version string
@@ -547,6 +558,7 @@ index) exit 1 ;;
 // parse pool, and a build that exited non-zero leaves no record, so the next provisioning builds
 // again. A host's workspace never gets the new disk that would let a record go.
 func TestWarmCodegraphIndexInBackgroundRunsAHostsBuildWithoutThePodsGuard(t *testing.T) {
+	// Not parallel: fakeCodegraphBundle changes the process PATH with t.Setenv.
 	scratch := t.TempDir()
 	callLog, seen := filepath.Join(scratch, "calls.log"), filepath.Join(scratch, "init.env")
 	fakeCodegraphBundle(t, callLog, "1.6.4", `status) echo '{"initialized":false}' ;;
@@ -592,6 +604,7 @@ init) { env; echo "PGRP=$(cut -d' ' -f5 /proc/$$/stat)"; } > '`+seen+`'; exit 1 
 // it, and so does a build the warm-up's own context ended: an orderly stop is built again at the
 // next launch.
 func TestWarmCodegraphIndexWritesItsRecordBeforeTheBuild(t *testing.T) {
+	// Not parallel: each row calls fakeCodegraphBundle, which changes the process PATH.
 	t.Run("a build that exits 0", func(t *testing.T) {
 		scratch := t.TempDir()
 		callLog, seen := filepath.Join(scratch, "calls.log"), filepath.Join(scratch, "seen")
@@ -649,6 +662,7 @@ init) : > '`+begun+`'; exec sleep 30 ;;
 // whoever completed it (an agent's own `codegraph index`, which the record never holds), and the
 // record of an earlier death says nothing of it any longer.
 func TestWarmCodegraphIndexClearsItsRecordOnACompleteIndex(t *testing.T) {
+	// Not parallel: fakeCodegraphBundle changes the process PATH with t.Setenv.
 	callLog := filepath.Join(t.TempDir(), "calls.log")
 	fakeCodegraphBundle(t, callLog, "1.5.0", `status) echo '{"initialized":true,"index":{"state":"complete"}}' ;;
 `)
@@ -669,6 +683,7 @@ func TestWarmCodegraphIndexClearsItsRecordOnACompleteIndex(t *testing.T) {
 // from the package.json of the image's bundle, or another cap, allows one new attempt. That
 // attempt's own death is recorded under the image's version, and holds the next warm-up.
 func TestWarmCodegraphIndexRetriesOnceWhenTheCodegraphPinChanged(t *testing.T) {
+	// Not parallel: noStopSettle changes codegraphStopSettle, and the rows change PATH.
 	noStopSettle(t)
 	for _, tc := range []struct {
 		name    string
@@ -707,6 +722,7 @@ index) kill -KILL $$ ;;
 // TestWarmCodegraphIndexBuildsAWorkspaceNewerThanItsRecord: a workspace provisioning created after
 // the recorded build started (.jj/legion-created) is not the one that build died in, and is built.
 func TestWarmCodegraphIndexBuildsAWorkspaceNewerThanItsRecord(t *testing.T) {
+	// Not parallel: fakeCodegraphBundle changes the process PATH with t.Setenv.
 	callLog := filepath.Join(t.TempDir(), "calls.log")
 	fakeCodegraphBundle(t, callLog, "1.5.0", `status) echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
 index) exit 0 ;;
@@ -734,6 +750,7 @@ index) exit 0 ;;
 // (a write cut short, a file an agent put there) holds nothing: the warm-up says so in one line
 // and builds, as it does where no record is at all.
 func TestWarmCodegraphIndexReadsAnUnreadableRecordAsNone(t *testing.T) {
+	// Not parallel: fakeCodegraphBundle changes PATH, and captureStderr replaces os.Stderr.
 	callLog := filepath.Join(t.TempDir(), "calls.log")
 	fakeCodegraphBundle(t, callLog, "1.5.0", `status) echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
 index) exit 0 ;;
@@ -761,6 +778,7 @@ index) exit 0 ;;
 // build while the image's CodeGraph and the cap are the ones the recorded build died under and
 // the workspace is the one it died in. A workspace with no creation record is judged by the rest.
 func TestAWarmBuildRecordHolds(t *testing.T) {
+	t.Parallel()
 	started := time.Date(2026, 11, 24, 15, 59, 0, 0, time.UTC)
 	rec := warmBuild{Subcommand: "init", Started: started, Outcome: warmOutcomeMemoryCap, CodeGraph: "1.5.0", Cap: 2 << 30}
 	for _, tc := range []struct {

@@ -859,7 +859,12 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "fresh-session.json", FreshSessionResponse{})
 	golden(t, "compact.json", CompactResponse{Reason: "Nothing to hand off (already compacted)"})
 	golden(t, "agent-stop.json", AgentActionResponse{State: string(supervise.StateRetired)})
-	golden(t, "agent-retry.json", AgentActionResponse{State: string(supervise.StateLaunching)})
+	// The controller's retry of a failed tester whose phase's start waits for its issue's slot
+	// (dispatch://INFRA-5649 R1): the claim stays failed, and the sentence names the wait.
+	golden(t, "agent-retry.json", AgentActionResponse{
+		State:             string(supervise.StateFailed),
+		PhaseNotRestarted: "legion-legion-legion-209-tester stays failed, and the start of its phase testing waits for an admission slot of LEGION-209, which holds none; `read_state` (`legion claims list`) shows its state",
+	})
 	golden(t, "agent-suspend.json", AgentActionResponse{
 		State: string(supervise.StateSuspended), SuspendedBy: string(supervise.SuspendedByController),
 	})
@@ -886,7 +891,7 @@ func TestOwnerPlanRouteGoldens(t *testing.T) {
 			ID:    "a",
 			Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}},
 		}},
-	})})
+	}, []record.RunningStep{{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}, Role: claim.RoleImplementer}})})
 	golden(t, "task-stop.json", EmptyResponse{})
 }
 

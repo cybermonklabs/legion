@@ -440,8 +440,9 @@ Dispatch read them, delete the files, then install every App from
   500m and 1Gi over 5Gi of disk and a 1Gi request, since `legion probe-image` starts one Oh My Pi
   at a time and runs no lane, and a larger probe could keep the daemon from booting on a full
   pool. Its 500m was set while the probe also ran a TLS check of the image's clients, which it no
-  longer makes, and is kept until its other checks are audited and measured. A pool with no room
-  even for that does not stop the daemon: its probe pod
+  longer makes. The value is kept: no boot probe without the `pi.agents` probe, the session-storage
+  probe and the Claude lane, which the boot probe no longer makes either, has been measured yet. A
+  pool with no room even for that does not stop the daemon: its probe pod
   stays Pending Unschedulable, it logs `boot probe is waiting on capacity` with the scheduler's
   reason and tries again every 5 minutes, serving nothing until the probe passes, and the
   `pool-capacity` row of `legion state`'s capability report then records how many attempts waited
@@ -688,11 +689,15 @@ What each part is for:
   ([Running Legion on Kubernetes](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md),
   "Operator configuration").
   Before you turn one on, write its [pre-registration](#pre-registering-an-experiment).
-- **An arm's `plan`** says how the issues drawn into it are done: `owner`, whose issues take the
-  plan their owner gives with `register_plan`, or `default`, whose issues run the project's
-  `default_steps` and take no plan from their owner: once the daemon records such an issue, its
-  owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, and a plan its owner
-  gave before is passed over at its first step and told in a `plan-not-taken` notice.
+- **An arm's `plan`** says how the issues drawn into it are done, `owner` or `default`.
+  An issue of `owner` takes the plan its owner gives with `register_plan`.
+  An issue of `default` runs the project's `default_steps`.
+  Legion takes from its owner only a version that changes nothing but the text of its running
+  task `default`.
+  Once the daemon records such an issue, every other `register_plan` and every `stop_task` of its
+  owner are answered `409 PLAN_NOT_TAKEN`.
+  A plan its owner gave before is passed over at its first step and told in a `plan-not-taken`
+  notice.
   The draw records the arm's `plan` beside the arm, and the issue keeps it for its whole life,
   whatever the file says later.
   An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at
@@ -917,10 +922,10 @@ What each part is for:
   in the same section lists what a deployment makes true for it, and the order to turn it on.
   Each kind refuses the other's key. An omitted `session_store` and `pvc`, the file store of
   earlier releases, are refused with the same line and its reason: an issue pod's disk is deleted
-  with the pod, so a conversation kept as a file on it dies with the pod and the next launch's
-  resume fails on the missing file, retiring the claim after three failures. A kept volume does
-  not change this: a reset or a suspension of the issue deletes that volume. Name the store and
-  its key, and have the database reachable from the pods, before the daemon boots.
+  with the pod, so a conversation kept as a file on it dies with the pod, and the next launch
+  finds no session to resume, so the claim starts a fresh agent without that conversation. A kept
+  volume does not change this: a reset or a suspension of the issue deletes that volume. Name the
+  store and its key, and have the database reachable from the pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
   seeds for the agents and for the daemon's own connection, each in a file only its owner can read.
 - **`runtime.kubernetes.agent_secrets`** (optional) enrolls every pod with the
@@ -1222,11 +1227,12 @@ answer. A pre-registration states seven things.
      lines and count the unit out of the exposure for that period.
    - **An arm the project's file no longer names.** The record keeps the arm, but a launch names
      only the files the file still holds, so from the moment the arm leaves the file its units load
-     none of its files. Its `plan` is the one part that stays: Legion reads each issue's group
-     from the draw it recorded, so an issue of an arm whose `plan` is `default` still runs the
-     project's default steps and takes no plan from its owner. Take an arm out of the file only
-     when the experiment is over, and record the date if you do it sooner, because every unit of
-     that arm is unexposed to its files from then on.
+     none of its files. Its `plan` is the one part that stays, since Legion reads each issue's
+     group from the draw it recorded. So an issue of an arm whose `plan` is `default` still runs
+     the project's default steps. Legion takes from its owner only a version that changes nothing
+     but the text of its running task `default`. Take an arm out of the file only when the
+     experiment is over, and record the date if you do it sooner, because every unit of that arm
+     is unexposed to its files from then on.
 
 A template to copy:
 
@@ -1327,9 +1333,9 @@ legion start --config legion.yaml
 ```
 
 The daemon runs in the foreground and logs JSON lines to standard error. At every boot it checks
-that Agent Sandbox is installed and runs the worker image's launch probes in a probe Sandbox
-(`legion-probe-<project>-<digest prefix>`): the image's Legion plugin must speak this daemon's contract
-and load with its Envoy plugin,
+that Agent Sandbox is installed and runs the worker image's plugin load probe and capability check
+in a probe Sandbox (`legion-probe-<project>-<digest prefix>`): the image's Legion plugin must
+speak this daemon's contract and load with its Envoy plugin,
 every agent's model must resolve, and every model key must work. Nothing restarts the daemon on its
 own, so run it under a process supervisor you trust. `legion stop --config legion.yaml` stops it,
 and `legion legions` lists the daemons registered on the machine.
@@ -1491,9 +1497,11 @@ Closing the terminal leaves the project without one, and the daemon logs
    the new image before it serves.
 
    **After the first upgrade to a release that counts the moves back by kind,** every issue starts
-   at no counts: the migration fills none in from the past. An issue already in flight therefore
-   reads counts that add up to less than its `rounds`, and a hook of `hooks:` counts from the
-   first move back after the upgrade.
+   at no counts: the migration fills none in from the past. An issue's counts add up to no more
+   than its `pass`, which counts every move back, while its `rounds` counts review rounds alone,
+   a conflict round included. They can add up to less, for example where a move was made at a
+   conflicting head, which raises `pass` and no pair, or where the issue was already in flight at
+   the upgrade. A hook of `hooks:` counts from the first move back after the upgrade.
 4. **Running agents carry on.** The restarted daemon re-adopts every running pod and its session. A
    pod keeps the image it started with; every pod the daemon starts afterwards, for the next phase
    or a resumed worker, runs the new one. At a release that moves the daemon API contract, the

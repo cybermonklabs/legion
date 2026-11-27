@@ -55,11 +55,11 @@ export const pillShapeClassName =
  *  The shape that wraps is `pillShapeClassName` for a pill that holds a value which must be read
  *  whole (a label, a claim's holder): it keeps `max-w-full`, wraps and breaks anywhere, and
  *  neither keeps its width nor holds its line. Every pill inside `NoTooltips` (the new issue
- *  page) is drawn so, and so is a claim in a table that wraps its titles (`ClaimChip`'s
- *  `wraps`). On one line it is a pill, its corners the full radius; on more than one (`wrapped`,
- *  `usePillWrapped`) its corners are 8 px (`rounded-lg`), since the full radius of a box several
- *  lines tall draws an oval, which leaves the words of its first and last lines outside its
- *  fill. */
+ *  page) is drawn so, and so is every claim (`ClaimChip`), whose age moves under its holder where
+ *  the two do not fit on one line. On one line it is a pill, its corners the full radius; on more
+ *  than one (`wrapped`, `usePillWrapped`) its corners are 8 px (`rounded-lg`), since the full
+ *  radius of a box several lines tall draws an oval, which leaves the words of its first and last
+ *  lines outside its fill. */
 export function pillClassName(
   tone: PillTone,
   onPage = false,

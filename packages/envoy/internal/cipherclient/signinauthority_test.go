@@ -115,6 +115,36 @@ func TestNobodySignedInLeavesTheMachinesOwnAuthority(t *testing.T) {
 	}
 }
 
+// TestSignedInNamesTheSignInCurrentWouldActUnderWithNoTrade: SignedIn reads the store alone. It
+// names nobody on a box with no sign-in; the person and the thumbprint of the one sign-in; another
+// thumbprint once the person signs in again, which makes a key of its own; the refusal Current
+// gives for two people with nothing naming which; and the one PersonVar names. None of it trades.
+func TestSignedInNamesTheSignInCurrentWouldActUnderWithNoTrade(t *testing.T) {
+	rig := newSignInRig(t, nil)
+	if person, thumbprint, err := rig.authority.SignedIn(); person != "" || thumbprint != "" || err != nil {
+		t.Fatalf("with nobody signed in SignedIn = %q, %q, %v; want nobody and no error", person, thumbprint, err)
+	}
+	first := rig.signIn(t, "ada@example.com")
+	if person, thumbprint, err := rig.authority.SignedIn(); person != first.Person || thumbprint != first.Thumbprint || err != nil {
+		t.Fatalf("SignedIn = %q, %q, %v; want %q, %q", person, thumbprint, err, first.Person, first.Thumbprint)
+	}
+	again := rig.signIn(t, "ada@example.com")
+	if _, thumbprint, err := rig.authority.SignedIn(); thumbprint != again.Thumbprint || thumbprint == first.Thumbprint || err != nil {
+		t.Fatalf("after a second sign-in SignedIn names %q, %v; want the new key's %q", thumbprint, err, again.Thumbprint)
+	}
+	grace := rig.signIn(t, "grace@example.com")
+	if _, _, err := rig.authority.SignedIn(); err == nil || !strings.Contains(err.Error(), "2 people are signed in") {
+		t.Fatalf("with two people signed in and none named SignedIn answered %v; want Current's refusal", err)
+	}
+	rig.authority.Person = grace.Person
+	if person, thumbprint, err := rig.authority.SignedIn(); person != grace.Person || thumbprint != grace.Thumbprint || err != nil {
+		t.Fatalf("with %s named SignedIn = %q, %q, %v; want %q, %q", PersonVar, person, thumbprint, err, grace.Person, grace.Thumbprint)
+	}
+	if n := len(rig.broker.Requests()); n != 0 {
+		t.Fatalf("SignedIn made %d trades; want none", n)
+	}
+}
+
 // TestASignInMadeWhileTheProcessRunsIsTakenAtTheNextEnrolment: the box's state decides, not the
 // moment the process started, so the helper needs no restart after `agent-secrets login`. The
 // credential is the person's, and the trade carried their identity token with this machine's as
@@ -498,5 +528,110 @@ func TestAnAuthorityWithNoMachineIdentityTradesNothing(t *testing.T) {
 	rig.authority.Machine = nil
 	if _, err := rig.authority.Current(context.Background()); err == nil {
 		t.Fatal("an authority with no machine identity must refuse rather than trade")
+	}
+}
+
+// TestASignInsCredentialIsTradedBeforeItLapsesWhateverTheAccessTokensLife: the broker renews a
+// sign-in's session only while its launcher credential is live, and the credential lasts an hour
+// from each trade, while the access token lives BROKER_ACCESS_TOKEN_SECONDS, which may be an hour
+// too. agent-secrets-helper asks for the sign-in every SignInAskEvery (helper.Broker.keepSignIns),
+// as this test does on a clock of its own, with the broker minting access tokens of an hour.
+// Rows: every trade goes through, so no ask finds less than two asks' worth of the credential
+// left; and every trade after the first fails, so the asks before the credential lapses each
+// trade again, and the failure is said at WARN, naming when the credential expires. A client
+// that traded by the access token alone traded once, five minutes before the credential lapsed,
+// and said its failure at INFO. The ask is SignInAskEvery itself, so a change of it or of
+// CredentialRenewBefore that leaves fewer than three asks inside the window fails here.
+func TestASignInsCredentialIsTradedBeforeItLapsesWhateverTheAccessTokensLife(t *testing.T) {
+	const ask = SignInAskEvery
+	for _, row := range []struct {
+		name  string
+		fails bool
+	}{
+		{name: "every trade goes through"},
+		{name: "every trade after the first fails", fails: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			var mu sync.Mutex
+			now := time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC)
+			clock := func() time.Time {
+				mu.Lock()
+				defer mu.Unlock()
+				return now
+			}
+			// expires is the credential's expiry at the broker, moved by each trade that lands.
+			var expires time.Time
+			trades, tradesWhileLive := 0, 0
+			rig := newSignInRig(t, func(n int, _ url.Values) (int, map[string]any) {
+				at := clock()
+				mu.Lock()
+				defer mu.Unlock()
+				trades++
+				if at.Before(expires) {
+					tradesWhileLive++
+				}
+				if row.fails && n > 0 {
+					return 503, map[string]any{"error": "unavailable"}
+				}
+				expires = at.Add(time.Hour)
+				return 200, map[string]any{
+					"access_token": fmt.Sprintf("access-token-%d", n+1), "token_type": "DPoP", "expires_in": 3600,
+					"credential_id": "credential-1", "credential_expires_at": expires.Format(time.RFC3339),
+				}
+			})
+			logged := &logtest.Recorder{}
+			rig.authority.Log = slog.New(logged)
+			rig.authority.now = clock
+			rig.signIn(t, "ada@example.com")
+
+			least := time.Duration(1<<63 - 1)
+			for range 36 { // three hours of asks
+				mu.Lock()
+				left := expires.Sub(now)
+				lapsed := !expires.IsZero() && !now.Before(expires)
+				mu.Unlock()
+				if lapsed {
+					break
+				}
+				if !expires.IsZero() {
+					least = min(least, left)
+				}
+				if _, err := rig.authority.Current(context.Background()); err != nil {
+					t.Fatalf("ask at %s: %v", clock().Format(time.TimeOnly), err)
+				}
+				mu.Lock()
+				now = now.Add(ask)
+				mu.Unlock()
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if !row.fails {
+				if least < 2*ask {
+					t.Fatalf("an ask found %s of the credential left; want two asks' worth (%s) at least, so a failed trade is tried again before it lapses", least, 2*ask)
+				}
+				if trades > 6 {
+					t.Fatalf("three hours of asks made %d trades; want one about every 45 minutes, not one at every ask", trades)
+				}
+				return
+			}
+			if tradesWhileLive < 3 {
+				t.Fatalf("the asks traded %d times while the credential was live; want the last three asks before it lapsed each to trade", tradesWhileLive)
+			}
+			warned := false
+			for _, record := range logged.Records() {
+				if record.Level != slog.LevelWarn {
+					continue
+				}
+				record.Attrs(func(attr slog.Attr) bool {
+					if attr.Key == "credential_expires_at" {
+						warned = true
+					}
+					return true
+				})
+			}
+			if !warned {
+				t.Fatal("a failed trade with the credential due was not said at WARN with its credential_expires_at")
+			}
+		})
 	}
 }
