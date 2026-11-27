@@ -1,15 +1,18 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -17,7 +20,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The reads of the pull requests an issue links in Dispatch (dispatch://INFRA-5910 decisions 4, 8
@@ -50,31 +52,35 @@ type linkRead struct {
 // otherwise, GitHub intake hears that spelling too, since the subjects Envoy publishes carry
 // GitHub's own and NATS matches them case-sensitively.
 func (w *workflowRuntime) readLinkedPullRequest(ctx context.Context, issue, repo string, number int) (linkRead, error) {
+	return w.readLink(ctx, issue, repo, number, w.linkUnserved)
+}
+
+// readLink is readLinkedPullRequest with unserved its check of the repository: linkUnserved, or
+// the boot's, which answers it once for each repository of its pass (unservedOnce).
+func (w *workflowRuntime) readLink(ctx context.Context, issue, repo string, number int, unserved func(context.Context, ghrepo.Repository) (string, error)) (linkRead, error) {
 	parsed, err := ghrepo.Parse("the repository of a linked pull request", repo)
 	if err != nil {
 		return linkRead{}, err
 	}
-	detail, err := w.linkUnserved(ctx, parsed)
+	detail, err := unserved(ctx, parsed)
 	if err != nil {
 		return linkRead{}, err
 	}
 	if detail != "" {
-		fact := intake.PullRequestLinkReadDone{Issue: issue, Repo: repo, Number: number, Unserved: detail}
-		return linkRead{fact: fact, eventID: fmt.Sprintf("link-read:%s:%s:%s#%d:unserved", w.dispatchProject, issue, repo, number)}, nil
+		fact, eventID := intake.LinkUnserved(w.dispatchProject, issue, repo, number, detail)
+		return linkRead{fact: fact, eventID: eventID}, nil
 	}
-	repository := w.repositories.serving(parsed)
-	github, err := implementClient(ctx, w.tokens, w.githubAPI, repository)
+	github, _, err := w.servedClient(ctx, parsed)
 	if err != nil {
-		return linkRead{}, fmt.Errorf("mint the implement App token for %s: %w", repository.Owner(), err)
+		return linkRead{}, err
 	}
 	bounded, cancel := context.WithTimeout(ctx, issueRead)
 	defer cancel()
 	var pull githubrest.PullRequest
 	err = github.Get(bounded, fmt.Sprintf("/pulls/%d", number), &pull)
-	var answer *githubrest.Answer
-	if errors.As(err, &answer) && answer.Status == http.StatusNotFound {
-		fact := intake.PullRequestLinkReadDone{Issue: issue, Repo: repo, Number: number, NotFound: true}
-		return linkRead{fact: fact, eventID: fmt.Sprintf("link-read:%s:%s:%s#%d:not-found", w.dispatchProject, issue, repo, number)}, nil
+	if githubAnswered(err, http.StatusNotFound) {
+		fact, eventID := intake.LinkNotFound(w.dispatchProject, issue, repo, number)
+		return linkRead{fact: fact, eventID: eventID}, nil
 	}
 	if err != nil {
 		return linkRead{}, fmt.Errorf("read the linked pull request %s#%d: %w", repo, number, err)
@@ -96,7 +102,7 @@ func (w *workflowRuntime) readLinkedPullRequest(ctx context.Context, issue, repo
 // (republishHeard).
 func (w *workflowRuntime) hearGitHubSpelling(ctx context.Context, repo ghrepo.Repository) {
 	spelledAs := func(held *[]ghrepo.Repository) bool {
-		return held != nil && slices.ContainsFunc(*held, func(name ghrepo.Repository) bool { return name.String() == repo.String() })
+		return held != nil && slices.Contains(*held, repo)
 	}
 	if spelledAs(w.heard.Load()) {
 		return
@@ -151,6 +157,33 @@ func (w *workflowRuntime) linkUnserved(ctx context.Context, repo ghrepo.Reposito
 	return w.repositories.entryOf(served.String()).webhookApp, nil
 }
 
+// unservedOnce is check (linkUnserved) answered once for each repository, lowercased, for the
+// reads of one pass: the boot's, which reads every link of every running issue, many of them into
+// one repository, where each answer costs two reads of GitHub's installations, a read of the
+// default branch and a check of Dispatch's webhook. A check that failed answers nothing and is not
+// kept, so the next link of that repository checks it again. It is safe for concurrent use.
+func unservedOnce(check func(context.Context, ghrepo.Repository) (string, error)) func(context.Context, ghrepo.Repository) (string, error) {
+	var mu sync.Mutex
+	answers := map[string]string{}
+	return func(ctx context.Context, repo ghrepo.Repository) (string, error) {
+		key := strings.ToLower(repo.String())
+		mu.Lock()
+		detail, known := answers[key]
+		mu.Unlock()
+		if known {
+			return detail, nil
+		}
+		detail, err := check(ctx, repo)
+		if err != nil {
+			return "", err
+		}
+		mu.Lock()
+		answers[key] = detail
+		mu.Unlock()
+		return detail, nil
+	}
+}
+
 // pullRequestLinkRead runs a linked pull request's read (record.PullRequestLinkRead): it reads the
 // pull request the row names in its own repository (readLinkedPullRequest) and applies what it
 // comes to as intake.PullRequestLinkReadDone, under the event id of the answer (intake.LinkRead)
@@ -181,31 +214,23 @@ func (r *outbox) pullRequestLinkRead(ctx context.Context, row record.OutboxRow, 
 
 // loadLinksAtBoot loads the decoder's index of the pull requests the issues link
 // (intake.Consumers.LoadLinks) from the record: each row of pull_request_links with the head branch
-// of the pull request the record holds for it, "" where it holds none yet. The boot runs it once the
-// consumers are open and before they run, so no event of a linked pull request that is not on
-// legion/<KEY> is decoded as nobody's while the index is empty. A link held refused as a fork's or
-// another issue's is left out: such a pull request is in no set. A failed read stops the boot, as
-// the boot's read of the records that the heard repositories come from does (heardAtBoot).
+// of the pull request the record holds for it, "" where it holds none yet, in one statement
+// (record.Store.PullRequestLinksWithRows). The boot runs it once the consumers are open and before
+// they run, so no event of a linked pull request that is not on legion/<KEY> is decoded as nobody's
+// while the index is empty. A link held refused as a fork's or another issue's is left out: such a
+// pull request is in no set. A failed read stops the boot, as the boot's read of the records that
+// the heard repositories come from does (heardAtBoot).
 func (w *workflowRuntime) loadLinksAtBoot(ctx context.Context) error {
 	var linked []intake.LinkedPullRequest
 	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		links, err := w.records.PullRequestLinks(ctx, tx)
+		links, err := w.records.PullRequestLinksWithRows(ctx, tx)
 		if err != nil {
 			return err
 		}
 		for _, link := range links {
-			if link.Refused == record.LinkRefusedFork || link.Refused == record.LinkRefusedOtherIssue {
-				continue
+			if !link.Refused.OutOfSet() {
+				linked = append(linked, intake.LinkedPullRequest{Issue: link.Issue, Repo: link.Repo, Number: link.Number, Branch: link.RowBranch})
 			}
-			entry := intake.LinkedPullRequest{Issue: link.Issue, Repo: link.Repo, Number: link.Number}
-			row, err := w.records.PullRequestRowByNumber(ctx, tx, link.Repo, link.Number)
-			if err != nil {
-				return err
-			}
-			if row != nil && row.Issue == link.Issue {
-				entry.Branch = row.Branch
-			}
-			linked = append(linked, entry)
 		}
 		return nil
 	}); err != nil {
@@ -260,19 +285,22 @@ const bootLinksBound = 2 * time.Minute
 
 // readLinksAtBoot is the boot's read of the pull requests each running issue links
 // (dispatch://INFRA-5910 decision 9, "The boot reads the links before its sweep"): the links of
-// each issue in the workflow as Dispatch's detail shows them now, read in the project's order of
-// issues, and, for each linked pull request, GitHub's answer in its own repository
-// (readLinkedPullRequest), with the state it shows: open, merged or closed. The workflow applies
-// all of it as the first act of the boot's fact (workflow's takeBootLinks), before sweepMerged
-// judges any close, so a link that went while the daemon was down is removed, a link that came is
-// recorded, and a linked pull request that merged meanwhile closes its issue at the sweep as its
-// merge would have. It answers nil where it read nothing.
+// each issue in the workflow as Dispatch's detail shows them now, and, for each linked pull
+// request, GitHub's answer in its own repository (readLink), with the state it shows: open, merged
+// or closed. The workflow applies all of it as the first act of the boot's fact (workflow's
+// takeBootLinks), before sweepMerged judges any close, so a link that went while the daemon was
+// down is removed, a link that came is recorded, and a linked pull request that merged meanwhile
+// closes its issue at the sweep as its merge would have. It answers nil where it read nothing.
 //
-// An issue already done is never read: its links reopen nothing (D10). A read that fails is logged
-// and leaves what it could not read to the next one: an issue whose links Dispatch could not show
-// keeps the links the record holds, a pull request GitHub could not answer for is read again by the
-// outbox (workflow's takeBootLinks queues it), and neither stops the boot. The whole read is
-// bounded (bootLinksBound).
+// The issues are read repositoryReads at a time, each issue's links one after another, and the
+// answer holds them in the project's order of issues, each issue's reads in Dispatch's order of
+// its links, whatever order the reads ended in. Each repository is checked once for the whole pass
+// (unservedOnce). An issue already done is never read: its links reopen nothing (D10). A read that
+// fails is logged and leaves what it could not read to the next one: an issue whose links Dispatch
+// could not show keeps the links the record holds, a pull request GitHub could not answer for is
+// read again by the outbox (workflow's takeBootLinks queues it), and neither stops the boot. The
+// whole read is bounded (bootLinksBound): an issue whose read had not begun at the bound keeps the
+// links the record holds.
 func (w *workflowRuntime) readLinksAtBoot(ctx context.Context) *intake.BootLinks {
 	if w.dispatch == nil {
 		return nil
@@ -286,49 +314,83 @@ func (w *workflowRuntime) readLinksAtBoot(ctx context.Context) *intake.BootLinks
 		w.log.Warn("workflow: the boot could not list the issues whose links to pull requests it reads; the links stand as the record holds them", "error", err)
 		return nil
 	}
+	issues = slices.DeleteFunc(issues, func(issue record.Issue) bool { return !record.InWorkflow(issue) })
 	bounded, cancel := context.WithTimeout(ctx, bootLinksBound)
 	defer cancel()
+	unserved := unservedOnce(w.linkUnserved)
+	read := make([]issueLinksAtBoot, len(issues))
+	var group errgroup.Group
+	group.SetLimit(repositoryReads)
+	for at, issue := range issues {
+		group.Go(func() error {
+			read[at] = w.readIssueLinksAtBoot(ctx, bounded, issue.Key, unserved)
+			return nil
+		})
+	}
+	_ = group.Wait() // each issue's read keeps its own answer, so none fails the group
 	boot := intake.BootLinks{Issues: map[string]intake.IssueLinks{}}
-	for _, issue := range issues {
-		if bounded.Err() != nil {
-			if ctx.Err() == nil {
-				w.log.Warn("workflow: the boot's read of the pull requests the issues link ran out of its bound; the issues it did not reach keep the links the record holds",
-					"bound", bootLinksBound, "next", issue.Key)
-			}
-			break
+	var unreached []string
+	for at, links := range read {
+		switch {
+		case links.unreached:
+			unreached = append(unreached, issues[at].Key)
+		case links.known:
+			boot.Issues[issues[at].Key] = links.links
+			boot.Reads = append(boot.Reads, links.reads...)
 		}
-		if !workflow.InWorkflow(issue) {
-			continue
-		}
-		detail, err := w.dispatch.GetIssue(bounded, issue.Key)
-		if err != nil {
-			if ctx.Err() == nil {
-				w.log.Warn("workflow: the boot could not read an issue's links to pull requests from Dispatch; they stand as the record holds them",
-					"issue", issue.Key, "error", err)
-			}
-			continue
-		}
-		given, known := intake.DetailLinks(detail)
-		if !known {
-			continue
-		}
-		boot.Issues[issue.Key] = intake.IssueLinks{Seq: detail.LastSeq, Links: given}
-		for _, link := range given {
-			read, err := w.readLinkedPullRequest(bounded, issue.Key, link.Repo, link.Number)
-			if err != nil {
-				if ctx.Err() == nil {
-					w.log.Warn("workflow: the boot could not read a linked pull request; its read is queued in the outbox",
-						"issue", issue.Key, "pullRequest", fmt.Sprintf("%s#%d", link.Repo, link.Number), "error", err)
-				}
-				continue
-			}
-			boot.Reads = append(boot.Reads, read.fact)
-		}
+	}
+	if len(unreached) > 0 && ctx.Err() == nil {
+		w.log.Warn("workflow: the boot's read of the pull requests the issues link ran out of its bound; the issues it did not reach keep the links the record holds",
+			"bound", bootLinksBound, "next", unreached[0], "unreached", len(unreached))
 	}
 	if len(boot.Issues) == 0 {
 		return nil
 	}
 	return &boot
+}
+
+// issueLinksAtBoot is what the boot's read of one issue's links came to (readIssueLinksAtBoot):
+// unreached where the bound had passed before it began; else known where Dispatch's detail named
+// the issue's links, with those links at the detail's sequence and the read of each linked pull
+// request that GitHub answered, in the order of the links.
+type issueLinksAtBoot struct {
+	unreached, known bool
+	links            intake.IssueLinks
+	reads            []intake.PullRequestLinkReadDone
+}
+
+// readIssueLinksAtBoot is the boot's read of issue's links and of each pull request they name
+// (readLinksAtBoot), bounded by bounded, the pass's bound, each failure logged where ctx, the
+// boot's own, has not ended.
+func (w *workflowRuntime) readIssueLinksAtBoot(ctx, bounded context.Context, issue string, unserved func(context.Context, ghrepo.Repository) (string, error)) issueLinksAtBoot {
+	if bounded.Err() != nil {
+		return issueLinksAtBoot{unreached: true}
+	}
+	detail, err := w.dispatch.GetIssue(bounded, issue)
+	if err != nil {
+		if ctx.Err() == nil {
+			w.log.Warn("workflow: the boot could not read an issue's links to pull requests from Dispatch; they stand as the record holds them",
+				"issue", issue, "error", err)
+		}
+		return issueLinksAtBoot{}
+	}
+	given, known := intake.DetailLinks(detail)
+	if !known {
+		return issueLinksAtBoot{}
+	}
+	links := issueLinksAtBoot{known: true, links: intake.IssueLinks{Seq: detail.LastSeq, Links: given}}
+	for _, link := range given {
+		read, err := w.readLink(bounded, issue, link.Repo, link.Number, unserved)
+		if err != nil {
+			if ctx.Err() == nil {
+				w.log.Warn("workflow: the boot could not read a linked pull request; its read is queued in the outbox",
+					"issue", issue, "pullRequest", fmt.Sprintf("%s#%d", link.Repo, link.Number), "error", err)
+			}
+			continue
+		}
+		links.reads = append(links.reads, read.fact)
+	}
+	return links
 }
 
 // linkRepositories is each distinct repository the record's links name, once each by its
@@ -337,27 +399,20 @@ func (w *workflowRuntime) readLinksAtBoot(ctx context.Context) *intake.BootLinks
 // long as the link stands, and a link refused as a fork's or another issue's names none that is
 // worked. Each is spelled as the record spells the pull request the link names, which is GitHub's
 // own (workflow's pullRequestLinkRead), where the record holds that pull request for the link's
-// issue, and as the link spells it, lowercased, where it does not. A link whose repository is no
+// issue, and as the link spells it, lowercased, where it does not; the links and those rows are
+// one statement (record.Store.PullRequestLinksWithRows). A link whose repository is no
 // <owner>/<name> is passed by with a log line, and stops nothing.
 func (w *workflowRuntime) linkRepositories(ctx context.Context, tx pgx.Tx) (map[string]ghrepo.Repository, error) {
-	links, err := w.records.PullRequestLinks(ctx, tx)
+	links, err := w.records.PullRequestLinksWithRows(ctx, tx)
 	if err != nil {
 		return nil, fmt.Errorf("read the repositories the links of the issues name: %w", err)
 	}
 	named := map[string]ghrepo.Repository{}
 	for _, link := range links {
-		if link.Refused == record.LinkRefusedFork || link.Refused == record.LinkRefusedOtherIssue {
+		if link.Refused.OutOfSet() {
 			continue
 		}
-		spelling := link.Repo
-		row, err := w.records.PullRequestRowByNumber(ctx, tx, link.Repo, link.Number)
-		if err != nil {
-			return nil, fmt.Errorf("read the pull request %s#%d a link names: %w", link.Repo, link.Number, err)
-		}
-		if row != nil && row.Issue == link.Issue && strings.EqualFold(row.Repo, link.Repo) {
-			spelling = row.Repo
-		}
-		repo, err := ghrepo.Parse("the repository of a link of "+link.Issue, spelling)
+		repo, err := ghrepo.Parse("the repository of a link of "+link.Issue, cmp.Or(link.RowRepo, link.Repo))
 		if err != nil {
 			w.log.Warn("workflow: a link names a repository GitHub intake cannot hear", "issue", link.Issue, "repo", link.Repo, "error", err)
 			continue

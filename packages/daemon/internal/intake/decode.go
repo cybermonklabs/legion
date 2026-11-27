@@ -689,9 +689,7 @@ func issueEventLinks(raw json.RawMessage, unread *[]string) ([]PullRequestLink, 
 	}
 	var links []PullRequestLink
 	for _, link := range *listed {
-		if pull, ok := pullRequestLink(link.URL); ok && !slices.Contains(links, pull) {
-			links = append(links, pull)
-		}
+		links = appendPullRequestLink(links, link.URL)
 	}
 	return links, true
 }
@@ -721,6 +719,17 @@ func pullRequestLink(url string) (PullRequestLink, bool) {
 		return PullRequestLink{}, false
 	}
 	return PullRequestLink{Repo: strings.ToLower(part[1] + "/" + part[2]), Number: number}, true
+}
+
+// appendPullRequestLink is links with the pull request url names (pullRequestLink) after them,
+// where url names one that links does not hold yet, and links as they are otherwise: the one rule
+// by which the links of an event (issueEventLinks) and of Dispatch's detail (DetailLinks) take
+// each pull request once, in Dispatch's order.
+func appendPullRequestLink(links []PullRequestLink, url string) []PullRequestLink {
+	if pull, ok := pullRequestLink(url); ok && !slices.Contains(links, pull) {
+		return append(links, pull)
+	}
+	return links
 }
 
 // issueEventPriority reads one of an issue event's priorities, field, `priority` for the issue's

@@ -990,12 +990,11 @@ func ownPullRequest(rows []pullRequestRow, task string) int {
 	return own
 }
 
-// issuePullRequestRows is every row of issues, by issue key, each in branch and number order, read
-// by one statement whatever the number of issues and marked with readBy (PullRequest.readBy), with
-// the task's base of each row that ownPullRequest weighs against another (withTaskBases): the read
+// issueRows is every row of issues, by issue key, each in branch and number order, read by one
+// statement whatever the number of issues and marked with readBy (PullRequest.readBy): the read
 // every read of the pull requests of an issue makes, which then keeps the rows its rule answers.
 // describe names the read in any failure.
-func issuePullRequestRows(ctx context.Context, tx pgx.Tx, issues []string, describe, readBy string) (map[string][]pullRequestRow, error) {
+func issueRows(ctx context.Context, tx pgx.Tx, issues []string, describe, readBy string) (map[string][]pullRequestRow, error) {
 	rows, err := tx.Query(ctx, "select "+pullRequestColumns+" from pull_requests where issue = any($1) order by issue, branch, number", issues)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
@@ -1007,6 +1006,18 @@ func issuePullRequestRows(ctx context.Context, tx pgx.Tx, issues []string, descr
 	byIssue := make(map[string][]pullRequestRow, len(issues))
 	for _, row := range scanned {
 		byIssue[row.Issue] = append(byIssue[row.Issue], row)
+	}
+	return byIssue, nil
+}
+
+// issuePullRequestRows is issueRows with the task's base of each row that ownPullRequest weighs
+// against another (withTaskBases): the read of every reader that chooses a task's own pull request.
+// It is the one statement of issueRows, and the reads of the plans of the issues one of whose tasks
+// holds two or more pull requests that did not close unmerged, whatever the number of issues.
+func issuePullRequestRows(ctx context.Context, tx pgx.Tx, issues []string, describe, readBy string) (map[string][]pullRequestRow, error) {
+	byIssue, err := issueRows(ctx, tx, issues, describe, readBy)
+	if err != nil {
+		return nil, err
 	}
 	if err := withTaskBases(ctx, tx, byIssue); err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
@@ -1469,14 +1480,15 @@ func collectPullRequestRows(rows pgx.Rows, describe, readBy string) ([]pullReque
 	return collected, nil
 }
 
-// PullRequestsOf is the pull request of each of issues' merge, by issue key, in two reads whatever
-// the number of issues: a caller that must name the merge of every issue of a tree makes no read
-// per issue. The pull request of an issue's merge is the own pull request (ownPullRequest) of the
-// task IssueMergeTask names, the rule MergePullRequest reads by, so an issue whose tasks each hold
-// a pull request is named by the one of its merge, and a pull request the issue links that is no
-// task's own is never its merge (dispatch://INFRA-5910 decision 13). An issue the record holds no
-// such pull request for has no entry, nor does one whose plan holds no task that has a merge, and
-// no issues at all reads nothing — the queries are not made.
+// PullRequestsOf is the pull request of each of issues' merge, by issue key, in a number of reads
+// that does not grow with the number of issues (mergePlans, issuePullRequestRows): a caller that
+// must name the merge of every issue of a tree makes no read per issue. The pull request of an
+// issue's merge is the own pull request (ownPullRequest) of the task IssueMergeTask names, the rule
+// MergePullRequest reads by, so an issue whose tasks each hold a pull request is named by the one
+// of its merge, and a pull request the issue links that is no task's own is never its merge
+// (dispatch://INFRA-5910 decision 13). An issue the record holds no such pull request for has no
+// entry, nor does one whose plan holds no task that has a merge, and no issues at all reads
+// nothing — the queries are not made.
 //
 // It reads the state the record holds, whichever it is. OpenPullRequests, the other read of
 // several of this table, answers the open ones alone and could not serve such a caller: a tree
@@ -1488,10 +1500,7 @@ func (s *Postgres) PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []strin
 	if len(issues) == 0 {
 		return nil, nil
 	}
-	describe := "read the pull request of " + issues[0]
-	if len(issues) > 1 {
-		describe = fmt.Sprintf("read the pull requests of %d issues from %s", len(issues), issues[0])
-	}
+	describe := issuesRead("read the pull request of", "read the pull requests of", issues)
 	plans, err := mergePlans(ctx, tx, issues)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
@@ -1500,7 +1509,55 @@ func (s *Postgres) PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []strin
 	if err != nil {
 		return nil, err
 	}
-	requests := make(map[string]PullRequest, len(issues))
+	return mergesOf(byIssue, plans), nil
+}
+
+// PullRequestSetsOf reads every row of issues in one statement (issueRows) and keeps, of each
+// issue, each pull request of its set (setsOf). The set takes no task's base, so no plan is read.
+func (s *Postgres) PullRequestSetsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]PullRequest, error) {
+	if len(issues) == 0 {
+		return nil, nil
+	}
+	byIssue, err := issueRows(ctx, tx, issues, issuesRead("read the set of pull requests of", "read the sets of pull requests of", issues),
+		"PullRequestSetsOf")
+	if err != nil {
+		return nil, err
+	}
+	return setsOf(byIssue), nil
+}
+
+// PullRequestSetsAndMergesOf is PullRequestSetsOf and PullRequestsOf of issues from one read of
+// their rows and one of their plans' tasks (mergePlans, issuePullRequestRows), for the state's
+// projection, which serves both of every issue of the project.
+func (s *Postgres) PullRequestSetsAndMergesOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]PullRequest, map[string]PullRequest, error) {
+	if len(issues) == 0 {
+		return nil, nil, nil
+	}
+	describe := issuesRead("read the set and the merge of pull requests of", "read the sets and the merges of pull requests of", issues)
+	plans, err := mergePlans(ctx, tx, issues)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	byIssue, err := issuePullRequestRows(ctx, tx, issues, describe, "PullRequestSetsAndMergesOf")
+	if err != nil {
+		return nil, nil, err
+	}
+	return setsOf(byIssue), mergesOf(byIssue, plans), nil
+}
+
+// issuesRead names a read of issues in its failure: one names its one issue after one, and more
+// name their count and the first of them after many, not every key.
+func issuesRead(one, many string, issues []string) string {
+	if len(issues) > 1 {
+		return fmt.Sprintf("%s %d issues from %s", many, len(issues), issues[0])
+	}
+	return one + " " + issues[0]
+}
+
+// mergesOf is the pull request of each issue's merge among byIssue's rows (PullRequestsOf), by
+// issue key, the issue's plan read from plans (mergePlans).
+func mergesOf(byIssue map[string][]pullRequestRow, plans map[string]*StoredPlan) map[string]PullRequest {
+	requests := make(map[string]PullRequest, len(byIssue))
 	for issue, rows := range byIssue {
 		task, ok := IssueMergeTask(plans[issue])
 		if !ok {
@@ -1510,24 +1567,13 @@ func (s *Postgres) PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []strin
 			requests[issue] = rows[at].PullRequest
 		}
 	}
-	return requests, nil
+	return requests
 }
 
-// PullRequestSetsOf reads every row of issues in one statement and keeps, of each issue, each
-// pull request of its set (pullRequestRow.ofSet), in the order of their repositories, lowered,
-// and numbers.
-func (s *Postgres) PullRequestSetsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]PullRequest, error) {
-	if len(issues) == 0 {
-		return nil, nil
-	}
-	describe := "read the set of pull requests of " + issues[0]
-	if len(issues) > 1 {
-		describe = fmt.Sprintf("read the sets of pull requests of %d issues from %s", len(issues), issues[0])
-	}
-	byIssue, err := issuePullRequestRows(ctx, tx, issues, describe, "PullRequestSetsOf")
-	if err != nil {
-		return nil, err
-	}
+// setsOf is each pull request of the set of each issue of byIssue (pullRequestRow.ofSet), by issue
+// key, in the order of their repositories, lowered, and numbers; an issue none of whose rows is of
+// its set has no entry.
+func setsOf(byIssue map[string][]pullRequestRow) map[string][]PullRequest {
 	sets := make(map[string][]PullRequest, len(byIssue))
 	for issue, rows := range byIssue {
 		var set []PullRequest
@@ -1544,7 +1590,7 @@ func (s *Postgres) PullRequestSetsOf(ctx context.Context, tx pgx.Tx, issues []st
 		})
 		sets[issue] = set
 	}
-	return sets, nil
+	return sets
 }
 
 func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error {

@@ -1336,11 +1336,11 @@ type PullRequest struct {
 	SettledHeads []Settlement
 	// readBy names the read that made the record with none of what it remembers - the list reads
 	// OpenPullRequests, OpenPullRequestsOnBase, OpenPullRequestRowsOnBranch, PullRequestsOf,
-	// PullRequestSetsOf, TaskPullRequestRows and TaskPullRequestRowsOf, and the row reads
-	// PullRequestRowByNumber, PullRequestRowOfTask and MergePullRequestRow - and is "" for a record
-	// one of the whole reads of one pull request made, or that no read made. Such a read loads
-	// neither SettledHeads nor HeadRun.Settled, so a write of its record would delete every
-	// remembered head: PutPullRequest refuses it, naming the read.
+	// PullRequestSetsOf, PullRequestSetsAndMergesOf, TaskPullRequestRows and TaskPullRequestRowsOf,
+	// and the row reads PullRequestRowByNumber, PullRequestRowOfTask and MergePullRequestRow - and
+	// is "" for a record one of the whole reads of one pull request made, or that no read made.
+	// Such a read loads neither SettledHeads nor HeadRun.Settled, so a write of its record would
+	// delete every remembered head: PutPullRequest refuses it, naming the read.
 	readBy string
 	// Pushes are the branch's pushes the daemon still reads: every push whose own move, its two
 	// heads, the record has not made (Moves) - a push still on its way from the head, a link of a
@@ -1952,6 +1952,15 @@ type PullRequestLink struct {
 	ToldAt  *time.Time
 }
 
+// LinkWithRow is a link (PullRequestLink) with what the record's row of its pull request, of the
+// link's issue, says of it: RowRepo, the repository as that row spells it, which is GitHub's own
+// (workflow's pullRequestLinkRead), and RowBranch, its head branch; each is "" where the record
+// holds no row of that pull request for that issue.
+type LinkWithRow struct {
+	PullRequestLink
+	RowRepo, RowBranch string
+}
+
 // LinkRefusal is why the daemon took a link of an issue to a pull request into no set
 // (PullRequestLink.Refused), "" for a link it took. The column's check names the same values.
 type LinkRefusal string
@@ -1967,6 +1976,20 @@ const (
 	LinkRefusedUnserved   LinkRefusal = "unserved"
 	LinkRefusedUnreadable LinkRefusal = "unreadable"
 )
+
+// OutOfSet says whether r takes its link's pull request into no set of pull requests, a fork's or
+// another issue's: such a link holds no close, names no repository the daemon works, and stays
+// refused whatever a read of it shows.
+func (r LinkRefusal) OutOfSet() bool {
+	return r == LinkRefusedFork || r == LinkRefusedOtherIssue
+}
+
+// HoldsClose says whether r holds the close of its link's issue, a refusal whose pull request Legion
+// cannot read or see merge, unserved or unreadable: such a link is read again at each boot and at
+// each change of the issue's links.
+func (r LinkRefusal) HoldsClose() bool {
+	return r == LinkRefusedUnserved || r == LinkRefusedUnreadable
+}
 
 // ProductionCheck is the production check of a merge of an issue: the work after the close in
 // which the role the project's `production_check` named at the open, which Role records, drives
@@ -2688,17 +2711,17 @@ type Store interface {
 	OpenPullRequestRowsOnBranch(ctx context.Context, tx pgx.Tx, repo, branch string) ([]PullRequest, error)
 	// TaskPullRequestRows, PullRequestRowOfTask and MergePullRequestRow read what TaskPullRequests,
 	// PullRequestOfTask and MergePullRequest read, by the same query, as rows alone, for every
-	// reader that never writes a record back: one statement for an issue's rows whatever its count
-	// of tasks, where the whole read adds a read of settled heads for each task's row. PutPullRequest
+	// reader that never writes a record back: one read of an issue's rows whatever its count of
+	// tasks, where the whole read adds a read of settled heads for each task's row. PutPullRequest
 	// refuses their records, naming the read.
 	TaskPullRequestRows(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequest, error)
 	PullRequestRowOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error)
 	MergePullRequestRow(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
-	// TaskPullRequestRowsOf is TaskPullRequestRows for each of issues, by issue key, in one
-	// statement whatever the number of issues, for a caller that reads every task's pull request
-	// of many issues and may make no read per issue (the daemon's fillRepositories). An issue the
-	// record holds no such pull request for has no entry, and no issues reads nothing.
-	// PutPullRequest refuses its records, naming the read.
+	// TaskPullRequestRowsOf is TaskPullRequestRows for each of issues, by issue key, in one read
+	// whatever the number of issues, for a caller that reads every task's pull request of many
+	// issues and may make no read per issue (the daemon's fillRepositories). An issue the record
+	// holds no such pull request for has no entry, and no issues reads nothing. PutPullRequest
+	// refuses its records, naming the read.
 	TaskPullRequestRowsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]PullRequest, error)
 	// ClearedPullRequestClock is the clock (updated_at) of the newest lifecycle event pull request
 	// number of repo had applied when a new generation's clear deleted its row (ClearGeneration),
@@ -2713,10 +2736,10 @@ type Store interface {
 	OpenPullRequestsOnBase(ctx context.Context, tx pgx.Tx, repo, base string) ([]PullRequest, error)
 	// PullRequestsOf is the pull request of each of issues' merge (MergePullRequest), by issue key;
 	// an issue the record holds no such pull request for has no entry, and no issues reads nothing.
-	// It is two reads whatever the number of issues, for a caller that must name the merge of
-	// every issue of a tree and may make no read per issue (workflow's mergedChildren). It answers a
-	// merged and a closed pull request as well as an open one, which OpenPullRequests cannot. It
-	// loads no settled heads, and PutPullRequest refuses its records.
+	// It is a number of reads that does not grow with the number of issues, for a caller that must
+	// name the merge of every issue of a tree and may make no read per issue (workflow's
+	// mergedChildren). It answers a merged and a closed pull request as well as an open one, which
+	// OpenPullRequests cannot. It loads no settled heads, and PutPullRequest refuses its records.
 	PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error)
 	// PullRequestSetsOf is the set of pull requests of each of issues, by issue key: each pull
 	// request of a task of the issue, its own and each other on its branch, and each pull request
@@ -2728,6 +2751,11 @@ type Store interface {
 	// issue, and answers every state the record holds. It loads no settled heads, and
 	// PutPullRequest refuses its records.
 	PullRequestSetsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]PullRequest, error)
+	// PullRequestSetsAndMergesOf is PullRequestSetsOf and PullRequestsOf of issues, by issue key,
+	// from one read of their rows and one of their plans' tasks, for a caller that serves both of
+	// every issue of a project (the state's projection). It loads no settled heads, and
+	// PutPullRequest refuses its records.
+	PullRequestSetsAndMergesOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]PullRequest, map[string]PullRequest, error)
 	// PutPullRequest writes pr whole, what it remembers of its settled heads with it, as the row of
 	// its repository and number, in place of the row the record holds for them in any spelling of
 	// the repository, whose issue it keeps; pr.Task and pr.Linked are read and never written
@@ -2757,11 +2785,13 @@ type Store interface {
 	// and untold again, since Dispatch lets one URL link one issue alone and its newest event says
 	// which.
 	ReplacePullRequestLinks(ctx context.Context, tx pgx.Tx, issue string, links []PullRequestLink) error
-	// PullRequestLinksOf is each link of issue, and PullRequestLinks each link the record holds of
-	// any issue (the intake's index of linked pull requests, the repositories the daemon hears), in
-	// the order of their repositories, compared without case, and numbers.
+	// PullRequestLinksOf is each link of issue, and PullRequestLinksWithRows each link the record
+	// holds of any issue with what the row of its pull request says of it (LinkWithRow), in one
+	// statement whatever the number of links (the intake's index of linked pull requests, the
+	// repositories the daemon hears), each in the order of their repositories, compared without
+	// case, and numbers.
 	PullRequestLinksOf(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequestLink, error)
-	PullRequestLinks(ctx context.Context, tx pgx.Tx) ([]PullRequestLink, error)
+	PullRequestLinksWithRows(ctx context.Context, tx pgx.Tx) ([]LinkWithRow, error)
 	// PullRequestLinkOf is the link of the pull request number of repo, whichever issue holds it,
 	// repo compared without case, nil where no issue links it: the one link a fact of one pull
 	// request reads, the issue it is of among its fields (the workflow's open of a linked pull

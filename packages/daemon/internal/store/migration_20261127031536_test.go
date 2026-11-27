@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -37,14 +38,16 @@ const pullRequestKeys = `select k.conrelid::regclass::text || ' ' || k.conname |
 // a review decision, LEGION-209 held for pull-requests, and the outbox's rows this release writes
 // and the release before cannot read: a read of a linked pull request, a read of the branches of
 // the issue's tasks, a notice of each of the three new kinds, and a merge-queue read that names its
-// repository. After it the keys and the indexes of pull_requests and pull_request_settled_heads are
-// the ones a database migrated to the version before reads; of the two on one branch the older is
-// gone, and so is the linked one, each with its settled head, and the newer keeps its own, by the
-// issue and the branch again; the links, the review decisions and the hold's reason are gone,
-// LEGION-209 stays held from merging; the rows of the new kinds and the row with a repository are
-// gone, while a merge-queue read of the release before and an older notice stay; the outbox refuses
-// each new kind again; and the version row is gone, so the roll-forward's Migrate runs the
-// migration again and the record reads #44 by its repository and number.
+// repository. After the migration one index of pull_requests holds the issue alone, the column
+// each read of an issue's pull requests filters on. After the way back the keys and the indexes of
+// pull_requests and pull_request_settled_heads are the ones a database migrated to the version
+// before reads; of the two on one branch the older is gone, and so is the linked one, each with
+// its settled head, and the newer keeps its own, by the issue and the branch again; the links, the
+// review decisions and the hold's reason are gone, LEGION-209 stays held from merging; the rows of
+// the new kinds and the row with a repository are gone, while a merge-queue read of the release
+// before and an older notice stay; the outbox refuses each new kind again; and the version row is
+// gone, so the roll-forward's Migrate runs the migration again and the record reads #44 by its
+// repository and number.
 func TestTheWayBackOfThePullRequestsMigrationRestoresTheKeyOfTheBase(t *testing.T) {
 	ctx := context.Background()
 	base := emptyStore(t)
@@ -68,8 +71,14 @@ func TestTheWayBackOfThePullRequestsMigrationRestoresTheKeyOfTheBase(t *testing.
 			t.Fatalf("%s: %v", sql, err)
 		}
 	}
-	if got := rowsAsText(t, store, pullRequestKeys); strings.Join(got, "\n") == strings.Join(baseKeys, "\n") {
-		t.Fatalf("the keys after the migration = %q, the keys of the version before: the migration keyed nothing", got)
+	keys := rowsAsText(t, store, pullRequestKeys)
+	if strings.Join(keys, "\n") == strings.Join(baseKeys, "\n") {
+		t.Fatalf("the keys after the migration = %q, the keys of the version before: the migration keyed nothing", keys)
+	}
+	if !slices.ContainsFunc(keys, func(key string) bool {
+		return strings.HasPrefix(key, "pull_requests pull_requests_issue ") && strings.HasSuffix(key, " (issue)")
+	}) {
+		t.Fatalf("the keys after the migration = %q, want an index of pull_requests on the issue alone: each read of an issue's pull requests filters on it", keys)
 	}
 	seed(`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, repo, github_repo)
 		values ('LEGION-208', 'LEGION-208', 'LEGION', 'the issue', 'reviewing', 1, 'needs_review', 'A', 1, 'acme/widgets', 'Acme/Widgets')`)

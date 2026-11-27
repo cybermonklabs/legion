@@ -418,10 +418,9 @@ func (w *workflowRuntime) openPullRequestsOn(ctx context.Context, repo, branch s
 	if err != nil {
 		return nil, err
 	}
-	repository := w.repositories.serving(recorded)
-	github, err := implementClient(ctx, w.tokens, w.githubAPI, repository)
+	github, repository, err := w.servedClient(ctx, recorded)
 	if err != nil {
-		return nil, fmt.Errorf("mint the implement App token for %s: %w", repository.Owner(), err)
+		return nil, err
 	}
 	return github.OpenPullRequestsOn(ctx, repository, branch)
 }

@@ -4183,15 +4183,12 @@ func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch str
 
 // linkingIssue is the issue that links pull request number of repo in Dispatch, a link the daemon
 // took (record.PullRequestLink.Refused empty), read from the links by the pull request's own
-// repository and number (record.Store.PullRequestLinkOf), under the name the fact carries and then
-// under the other name of its configured pair (ghrepo.Under), and never through a plan task: a
-// linked pull request is the issue's in any repository and on any branch (dispatch://INFRA-5910
-// D2). It is nil where no issue links it, where its link is refused, and where the record holds no
-// such issue.
+// repository and number under both names of its configured pair (linkOf), and never through a
+// plan task: a linked pull request is the issue's in any repository and on any branch
+// (dispatch://INFRA-5910 D2). It is nil where no issue links it, where its link is refused, and
+// where the record holds no such issue.
 func (e *Engine) linkingIssue(ctx context.Context, tx pgx.Tx, repo string, number int) (*record.Issue, error) {
-	link, err := ghrepo.Under(e.cfg.RepositoryRenames, repo, func(name string) (*record.PullRequestLink, error) {
-		return e.store.PullRequestLinkOf(ctx, tx, name, number)
-	})
+	link, err := e.linkOf(ctx, tx, repo, number)
 	if err != nil || link == nil || link.Refused != "" {
 		return nil, err
 	}

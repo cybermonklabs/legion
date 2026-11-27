@@ -138,10 +138,10 @@ func (e *Engine) takeBootLinks(ctx context.Context, tx pgx.Tx, fact intake.Daemo
 	for _, key := range slices.Sorted(maps.Keys(boot.Issues)) {
 		booted := boot.Issues[key]
 		issue, err := e.store.Issue(ctx, tx, key)
-		if err != nil || issue == nil || !InWorkflow(*issue) {
-			if err != nil {
-				return err
-			}
+		if err != nil {
+			return err
+		}
+		if issue == nil || !InWorkflow(*issue) {
 			continue
 		}
 		if booted.Seq != 0 && booted.Seq < issue.LastDispatchSeq {
@@ -169,17 +169,20 @@ func (e *Engine) takeBootLinks(ctx context.Context, tx pgx.Tx, fact intake.Daemo
 			if read[PullRequestKey{Repo: strings.ToLower(link.Repo), Number: link.Number}] {
 				continue
 			}
-			if link.Refused == record.LinkRefusedFork || link.Refused == record.LinkRefusedOtherIssue {
+			switch {
+			case link.Refused.OutOfSet():
 				continue
-			}
-			pr, err := e.linkedRow(ctx, tx, link.Repo, link.Number)
-			if err != nil {
-				return err
-			}
-			if pr == nil || link.Refused == record.LinkRefusedUnserved || link.Refused == record.LinkRefusedUnreadable {
-				if err := e.enqueue(ctx, tx, key, record.PullRequestLinkRead{Repo: link.Repo, Number: link.Number}); err != nil {
+			case !link.Refused.HoldsClose():
+				pr, err := e.linkedRow(ctx, tx, link.Repo, link.Number)
+				if err != nil {
 					return err
 				}
+				if pr != nil {
+					continue
+				}
+			}
+			if err := e.enqueue(ctx, tx, key, record.PullRequestLinkRead{Repo: link.Repo, Number: link.Number}); err != nil {
+				return err
 			}
 		}
 	}
@@ -375,7 +378,7 @@ func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 			return err
 		}
 		if judged.closed {
-			e.logOnCommit(ctx, "workflow: the boot closes an issue whose pull request merged before the upgrade", "issue", listed.Key,
+			e.logOnCommit(ctx, "workflow: the boot's sweep closes an issue whose close nothing holds any longer", "issue", listed.Key,
 				"tree", listed.Tree, "phase", listed.Phase)
 		}
 	}

@@ -34,14 +34,15 @@ func sameLink(link record.PullRequestLink) func(record.PullRequestLink) bool {
 // (record.Store.ReplacePullRequestLinks): Dispatch is the source, and the record keeps its copy
 // (dispatch://INFRA-5910 decision 4). A link Dispatch no longer shows is removed (linkRemoved,
 // decision 18), and a link it shows that the record did not hold is added (linkAdded, decision 8).
-// A link that stays keeps its row as it stands, its refusal and its told mark with it. Where a link
-// went or came, the links that hold the issue's close (setHolds) may have changed, so the close is
-// judged again (judgeClose, decision 9): a link that went may have held it, and one that came holds
-// it while its read is owed, which the judge tells the architect of where the close waits. It
-// answers whether that judge closed the issue, which then stands done out of the workflow, so its
-// caller applies nothing more of the event to it. It moves no phase of its own and writes no status:
-// a link changes which pull requests are the issue's, never where its work stands, so a link to a
-// done issue reopens nothing (D10).
+// A link that stays keeps its row as it stands, its refusal and its told mark with it, and links
+// that are the ones the record holds write nothing. Where a link went or came, the links that hold
+// the issue's close (setHolds) may have changed, so the close is judged again (judgeClose, decision
+// 9): a link that went may have held it, and one that came holds it while its read is owed, which
+// the judge tells the architect of where the close waits. It answers whether that judge closed the
+// issue, which then stands done out of the workflow, so its caller applies nothing more of the
+// event to it. It moves no phase of its own and writes no status: a link changes which pull
+// requests are the issue's, never where its work stands, so a link to a done issue reopens nothing
+// (D10).
 //
 // When queueReads is true, a new link whose row the record does not hold yet, and any link held
 // refused as unserved or unreadable when the issue's links change (decision 8), queues a
@@ -57,48 +58,61 @@ func (e *Engine) takeLinks(ctx context.Context, tx pgx.Tx, issue record.Issue, l
 	for at, link := range links {
 		given[at] = record.PullRequestLink{Issue: issue.Key, Repo: link.Repo, Number: link.Number}
 	}
-	if err := e.store.ReplacePullRequestLinks(ctx, tx, issue.Key, given); err != nil {
-		return false, err
+	var removed, added []record.PullRequestLink
+	for _, link := range before {
+		if !slices.ContainsFunc(given, sameLink(link)) {
+			removed = append(removed, link)
+		}
+	}
+	for _, link := range given {
+		if !slices.ContainsFunc(before, sameLink(link)) {
+			added = append(added, link)
+		}
+	}
+	if len(removed) > 0 || len(added) > 0 {
+		if err := e.store.ReplacePullRequestLinks(ctx, tx, issue.Key, given); err != nil {
+			return false, err
+		}
 	}
 	if e.cfg.LinksTaken != nil {
 		e.cfg.LinksTaken(ctx, issue.Key, links)
 	}
-	removed, added := 0, 0
-	for _, link := range before {
-		if slices.ContainsFunc(given, sameLink(link)) {
-			continue
-		}
+	if len(removed) == 0 && len(added) == 0 {
+		return false, nil
+	}
+	for _, link := range removed {
 		if err := e.linkRemoved(ctx, tx, issue, link); err != nil {
 			return false, err
 		}
-		removed++
 	}
-	for _, link := range given {
-		if slices.ContainsFunc(before, sameLink(link)) {
-			continue
-		}
+	for _, link := range added {
 		if err := e.linkAdded(ctx, tx, issue, link, queueReads); err != nil {
 			return false, err
 		}
-		added++
-	}
-	if removed == 0 && added == 0 {
-		return false, nil
 	}
 	if queueReads {
 		// Decision 8: an unserved or unreadable link is read again at each change of the issue's
 		// links, so installing the missing App or making the pull request readable takes effect
 		// without waiting for a restart.
 		for _, link := range before {
-			if (link.Refused == record.LinkRefusedUnserved || link.Refused == record.LinkRefusedUnreadable) && slices.ContainsFunc(given, sameLink(link)) {
+			if link.Refused.HoldsClose() && slices.ContainsFunc(given, sameLink(link)) {
 				if err := e.enqueue(ctx, tx, issue.Key, record.PullRequestLinkRead{Repo: link.Repo, Number: link.Number}); err != nil {
 					return false, err
 				}
 			}
 		}
 	}
-	judged, err := e.judgeClose(ctx, tx, issue.Key, nil, fmt.Sprintf("%d of its links went and %d came", removed, added))
+	judged, err := e.judgeClose(ctx, tx, issue.Key, nil, fmt.Sprintf("%d of its links went and %d came", len(removed), len(added)))
 	return judged.closed, err
+}
+
+// linkOf is the link of pull request number of repo, whichever issue holds it, read under the name
+// a link or a fact carries and then under the other name of its configured pair (ghrepo.Under), as
+// linkedRow reads the row (record.Store.PullRequestLinkOf), nil for none.
+func (e *Engine) linkOf(ctx context.Context, tx pgx.Tx, repo string, number int) (*record.PullRequestLink, error) {
+	return ghrepo.Under(e.cfg.RepositoryRenames, repo, func(name string) (*record.PullRequestLink, error) {
+		return e.store.PullRequestLinkOf(ctx, tx, name, number)
+	})
 }
 
 // linkedRow is the row the record holds of pull request number of repo, whatever its issue, read
@@ -172,9 +186,7 @@ func (e *Engine) linkAdded(ctx context.Context, tx pgx.Tx, issue record.Issue, l
 // (setHolds), and holds nothing once refused, so that close is judged again (judgeClose). A link of
 // pr's own issue, a link already refused, and no link refuse nothing.
 func (e *Engine) refuseLinkOfAnotherIssue(ctx context.Context, tx pgx.Tx, pr record.PullRequest) error {
-	link, err := ghrepo.Under(e.cfg.RepositoryRenames, pr.Repo, func(name string) (*record.PullRequestLink, error) {
-		return e.store.PullRequestLinkOf(ctx, tx, name, pr.Number)
-	})
+	link, err := e.linkOf(ctx, tx, pr.Repo, pr.Number)
 	if err != nil || link == nil || link.Issue == pr.Issue || link.Refused != "" {
 		return err
 	}
@@ -210,7 +222,7 @@ func (e *Engine) refuseLink(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	e.logOnCommit(ctx, "workflow: a link of an issue to a pull request is refused", "issue", issue.Key, "pullRequest", name,
 		"refused", refusal, "detail", detail)
 	var reason string
-	holds := false
+	kind := record.NoticeKind("pr-link-refused")
 	switch refusal {
 	case record.LinkRefusedFork:
 		fork := "in the fork " + detail
@@ -224,11 +236,11 @@ func (e *Engine) refuseLink(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		reason = fmt.Sprintf("%s links pull request %s, which Legion holds as %s's: a pull request is one issue's, so it stays %s's and is none of %s's pull requests. "+
 			"Remove the link from %s.", issue.Key, name, detail, detail, issue.Key, issue.Key)
 	case record.LinkRefusedUnserved:
-		holds = true
+		kind = "pr-holds-close"
 		reason = fmt.Sprintf("%s links pull request %s, and Legion does not serve %s: %s. Legion cannot read the pull request or see it merge, so it holds the close of %s. "+
 			"Remove its link, or install on %s the App that is missing there.", issue.Key, name, link.Repo, detail, issue.Key, link.Repo)
 	case record.LinkRefusedUnreadable:
-		holds = true
+		kind = "pr-holds-close"
 		reason = fmt.Sprintf("%s links pull request %s, and Legion cannot read it: %s. Legion cannot see it merge, so it holds the close of %s. "+
 			"Remove its link, or make the pull request readable to Legion's Apps.", issue.Key, name, detail, issue.Key)
 	default:
@@ -237,11 +249,7 @@ func (e *Engine) refuseLink(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if link.ToldAt != nil && link.Refused == refusal {
 		return nil
 	}
-	notice := record.Notice{Kind: "pr-link-refused", Role: claim.RoleArchitect, Reason: reason}
-	if holds {
-		notice = record.Notice{Kind: "pr-holds-close", Role: claim.RoleArchitect, Reason: reason}
-	}
-	if err := e.notice(ctx, tx, issue.Key, notice); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: kind, Role: claim.RoleArchitect, Reason: reason}); err != nil {
 		return err
 	}
 	told := e.now()
@@ -271,13 +279,11 @@ func (e *Engine) refuseLink(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // applies judge it themselves where they change it (merged, and closed through the read of the
 // branches that it queues, pullRequestBranchRead).
 func (e *Engine) pullRequestLinkRead(ctx context.Context, tx pgx.Tx, fact intake.PullRequestLinkReadDone) (intake.Result, error) {
-	link, err := ghrepo.Under(e.cfg.RepositoryRenames, fact.Repo, func(name string) (*record.PullRequestLink, error) {
-		return e.store.PullRequestLinkOf(ctx, tx, name, fact.Number)
-	})
+	link, err := e.linkOf(ctx, tx, fact.Repo, fact.Number)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	if link == nil || link.Issue != fact.Issue || link.Refused == record.LinkRefusedFork || link.Refused == record.LinkRefusedOtherIssue {
+	if link == nil || link.Issue != fact.Issue || link.Refused.OutOfSet() {
 		e.logOnCommit(ctx, "workflow: the read of a pull request its issue no longer takes as linked records nothing",
 			"issue", fact.Issue, "pullRequest", prName(fact.Repo, fact.Number), "link", link)
 		return intake.Result{}, nil
@@ -473,10 +479,10 @@ func setHolds(ctx context.Context, store record.Store, tx pgx.Tx, issue string) 
 	}
 	var holds []heldLink
 	for _, link := range links {
-		switch link.Refused {
-		case record.LinkRefusedFork, record.LinkRefusedOtherIssue:
+		switch {
+		case link.Refused.OutOfSet():
 			continue
-		case record.LinkRefusedUnserved, record.LinkRefusedUnreadable:
+		case link.Refused.HoldsClose():
 			holds = append(holds, heldLink{link: link})
 			continue
 		}

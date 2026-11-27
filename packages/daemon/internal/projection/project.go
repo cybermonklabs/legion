@@ -155,21 +155,17 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	for _, check := range openChecks {
 		checks[check.Issue] = append(checks[check.Issue], check)
 	}
-	// Every issue's set of pull requests, by issue key, in one statement for the whole state rather
-	// than a read an issue (record.Store.PullRequestSetsOf): each pull request of each task of its
+	// Every issue's set of pull requests and its merge, by issue key, in one read of the rows and
+	// one of the plans' tasks for the whole state rather than a read an issue
+	// (record.Store.PullRequestSetsAndMergesOf). The set is each pull request of each task of its
 	// plan and each pull request it links, in any repository (dispatch://INFRA-5910 D2), which the
-	// issue serves under `pullRequests`. Beside it every issue's merge, the pull request of the task
-	// that merges, in two statements (record.Store.PullRequestsOf): what the issue serves as its own
-	// pull request where none of its set is open (issuePullRequest, decision 13), and the own pull
-	// request of the task that merges, whose decision is the reviewer's (ownPullRequests). Neither
-	// loads what each pull request remembers of its settled heads: the state shows none of it, a read
-	// of one pull request would load up to 32 rows of it for every issue, and the state writes no
-	// record back.
-	sets, err := in.Store.PullRequestSetsOf(ctx, in.Tx, keys)
-	if err != nil {
-		return api.State{}, err
-	}
-	merges, err := in.Store.PullRequestsOf(ctx, in.Tx, keys)
+	// issue serves under `pullRequests`. The merge is the pull request of the task that merges: what
+	// the issue serves as its own pull request where none of its set is open (issuePullRequest,
+	// decision 13), and the own pull request of the task that merges, whose decision is the
+	// reviewer's (ownPullRequests). Neither loads what each pull request remembers of its settled
+	// heads: the state shows none of it, a read of one pull request would load up to 32 rows of it
+	// for every issue, and the state writes no record back.
+	sets, merges, err := in.Store.PullRequestSetsAndMergesOf(ctx, in.Tx, keys)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -1016,9 +1012,10 @@ func keyOf(pr record.PullRequest) pullKey {
 
 // ownPullRequests is each pull request of an issue that is a task's own (dispatch://INFRA-5910
 // decision 5), by its pullKey: merge, the own pull request of the task that merges, or the issue's
-// own where it has no plan rows (record.Store.PullRequestsOf), and the first row of each task of
-// taskRows, the rows of an issue with plan rows in the order record.Store.TaskPullRequestRows
-// answers them, each task's own first. Rows of no task are none of them.
+// own where it has no plan rows (record.Store.PullRequestSetsAndMergesOf), and the first row of
+// each task of taskRows, the rows of an issue with plan rows in the order
+// record.Store.TaskPullRequestRows answers them, each task's own first. Rows of no task are none
+// of them.
 func ownPullRequests(merge *record.PullRequest, taskRows []record.PullRequest) map[pullKey]bool {
 	owns := map[pullKey]bool{}
 	if merge != nil {

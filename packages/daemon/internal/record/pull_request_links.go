@@ -11,8 +11,9 @@ import (
 
 // The links of each issue to pull requests (PullRequestLink) are the table pull_request_links
 // (migration 20261127031536), keyed by the pull request's repository and number, with a unique
-// index on the lowered repository and the number that every write and read below keys on, as the
-// reads of pull_requests do: a link names a repository as its URL spells it.
+// index on the lowered repository and the number that each write and read of one link keys on, as
+// the reads of pull_requests do (a link names a repository as its URL spells it), and an index on
+// the issue that the reads and the replacement of an issue's links key on.
 
 // ReplacePullRequestLinks deletes each link of issue that links does not name, and writes each of
 // links that the record does not hold for issue, taken and untold, in one statement. A link that
@@ -67,9 +68,23 @@ func (s *Postgres) PullRequestLinksOf(ctx context.Context, tx pgx.Tx, issue stri
 		"select "+pullRequestLinkColumns+" from pull_request_links where issue = $1 order by lower(repo), number", issue)
 }
 
-func (s *Postgres) PullRequestLinks(ctx context.Context, tx pgx.Tx) ([]PullRequestLink, error) {
-	return readPullRequestLinks(ctx, tx, "read the links of every issue to pull requests",
-		"select "+pullRequestLinkColumns+" from pull_request_links order by lower(repo), number")
+func (s *Postgres) PullRequestLinksWithRows(ctx context.Context, tx pgx.Tx) ([]LinkWithRow, error) {
+	const describe = "read the links of every issue to pull requests, with the rows of their pull requests"
+	rows, err := tx.Query(ctx, `select l.issue, l.repo, l.number, l.refused, l.told_at, coalesce(p.repo, ''), coalesce(p.branch, '')
+		from pull_request_links l left join pull_requests p on lower(p.repo) = lower(l.repo) and p.number = l.number and p.issue = l.issue
+		order by lower(l.repo), l.number`)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	links, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (LinkWithRow, error) {
+		var link LinkWithRow
+		err := row.Scan(&link.Issue, &link.Repo, &link.Number, &link.Refused, &link.ToldAt, &link.RowRepo, &link.RowBranch)
+		return link, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	return links, nil
 }
 
 func (s *Postgres) PullRequestLinkOf(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequestLink, error) {

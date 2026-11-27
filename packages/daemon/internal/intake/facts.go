@@ -215,9 +215,7 @@ func DetailLinks(issue dispatch.Issue) ([]PullRequestLink, bool) {
 	}
 	var links []PullRequestLink
 	for _, url := range issue.ExternalLinks {
-		if pull, ok := pullRequestLink(url); ok && !slices.Contains(links, pull) {
-			links = append(links, pull)
-		}
+		links = appendPullRequestLink(links, url)
 	}
 	return links, true
 }
@@ -808,22 +806,29 @@ type PullRequestOpened struct {
 
 func (PullRequestOpened) namedIssue() (string, bool) { return "", false }
 
+// OpenedOn is the PullRequestOpened a read of GitHub that found pull open on branch of repo stands
+// for, as its webhook would have carried it, with its base, which the reads of the merge state
+// follow on before any of them has answered: the one literal of each read that applies an opened
+// (OpenedRead, and the daemon's read of a task's branch and of the branches of an issue's tasks).
+// Whether it is a reopen is each reader's to say (Reopened).
+func OpenedOn(repo, branch string, pull githubrest.PullRequest) PullRequestOpened {
+	return PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, Base: pull.Base.Ref, HeadSHA: pull.Head.SHA,
+		HeadRepo: pull.HeadRepository(), Body: pull.Body, URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt}
+}
+
 // OpenedRead is the PullRequestOpened a read of GitHub that found pull open on branch of repo
-// stands for, as its webhook would have carried it - its base, which the reads of the merge state
-// follow on before any of them has answered, and a reopen when recorded is the same pull request -
-// and the event id, under source "github", it is applied under: the project, the
-// repository and number, what the read observed, the head and GitHub's updated_at, and what the
-// workflow decides an opened by beside it, the issue's generation and its pull request record as
-// the read found it (nil for none: its number, state and clock). The id holds no read time and no
-// boot, so the same observation applied twice against the same record is one fact (ApplyFact
-// answers the second Duplicate, and Applied finds it before), whichever reader applies it - the
-// daemon's per-issue read or the implementer's completion - while a pull request that changed since,
-// or a record that changed since (a new generation removes a closed one the opened was declined
-// against), makes a new one.
+// stands for (OpenedOn), a reopen when recorded is the same pull request, and the event id, under
+// source "github", it is applied under: the project, the repository and number, what the read
+// observed, the head and GitHub's updated_at, and what the workflow decides an opened by beside
+// it, the issue's generation and its pull request record as the read found it (nil for none: its
+// number, state and clock). The id holds no read time and no boot, so the same observation applied
+// twice against the same record is one fact (ApplyFact answers the second Duplicate, and Applied
+// finds it before), whichever reader applies it - the daemon's per-issue read or the implementer's
+// completion - while a pull request that changed since, or a record that changed since (a new
+// generation removes a closed one the opened was declined against), makes a new one.
 func OpenedRead(project, repo, branch string, pull githubrest.PullRequest, generation uint64, recorded *record.PullRequest) (PullRequestOpened, string) {
-	fact := PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, Base: pull.Base.Ref, HeadSHA: pull.Head.SHA,
-		HeadRepo: pull.HeadRepository(), Body: pull.Body,
-		URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: recorded != nil && recorded.Number == pull.Number}
+	fact := OpenedOn(repo, branch, pull)
+	fact.Reopened = recorded != nil && recorded.Number == pull.Number
 	against := "none"
 	if recorded != nil {
 		against = fmt.Sprintf("%d/%s/%s", recorded.Number, recorded.State, recorded.HeadUpdatedAt.UTC().Format(time.RFC3339Nano))
@@ -1264,6 +1269,20 @@ func LinkRead(project, issue, repo string, pull githubrest.PullRequest) (PullReq
 		fact.MergeSHA = pull.MergeCommitSHA
 	}
 	return fact, fmt.Sprintf("link-read:%s:%s:%s#%d:%s:%s:%s", project, issue, repo, pull.Number, state, pull.Head.SHA, pull.UpdatedAt.UTC().Format(time.RFC3339Nano))
+}
+
+// LinkUnserved is the PullRequestLinkReadDone of the link of issue to pull request number of repo,
+// a repository the daemon does not serve (detail says why, in the notice's clause), and its event
+// id; LinkNotFound is the one of a link GitHub answered 404 for. Like LinkRead's, neither id holds
+// a read time or a boot, so the same answer read twice is one fact.
+func LinkUnserved(project, issue, repo string, number int, detail string) (PullRequestLinkReadDone, string) {
+	return PullRequestLinkReadDone{Issue: issue, Repo: repo, Number: number, Unserved: detail},
+		fmt.Sprintf("link-read:%s:%s:%s#%d:unserved", project, issue, repo, number)
+}
+
+func LinkNotFound(project, issue, repo string, number int) (PullRequestLinkReadDone, string) {
+	return PullRequestLinkReadDone{Issue: issue, Repo: repo, Number: number, NotFound: true},
+		fmt.Sprintf("link-read:%s:%s:%s#%d:not-found", project, issue, repo, number)
 }
 
 // PullRequestBranchReadDone is the daemon's read of the branches of Issue's tasks

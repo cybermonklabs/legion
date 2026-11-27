@@ -75,8 +75,7 @@ func (r *outbox) pullRequestBranchRead(ctx context.Context, row record.OutboxRow
 		for _, pull := range pulls {
 			r.log.Info("outbox branch read: GitHub holds an open pull request on a branch of the issue's tasks",
 				"row", row.ID, "issue", row.Issue, "closed", closed, "repo", repo, "pullRequest", pull.Number, "branch", branch, "head", pull.Head.SHA)
-			open = append(open, intake.PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, Base: pull.Base.Ref, HeadSHA: pull.Head.SHA,
-				HeadRepo: pull.HeadRepository(), Body: pull.Body, URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt})
+			open = append(open, intake.OpenedOn(repo, branch, pull))
 		}
 	}
 	if len(failed) > 0 && attempt < mergeStateLadderReads {

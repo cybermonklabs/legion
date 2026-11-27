@@ -19,7 +19,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // issueRead bounds one GitHub read the per-issue read makes: the pull request itself, the list of
@@ -171,10 +170,11 @@ func (w *workflowRuntime) issuePullRequest(ctx context.Context, key, task string
 		// (intake.PullRequestReview), so no clock of this read is weighed against a review's.
 		w.log.Warn("workflow: GitHub holds an open pull request for an issue the daemon records none for; applying the opened its webhook would",
 			"repo", repo, "pullRequest", pull.Number, "issue", key, "branch", branch, "head", pull.Head.SHA, "updated_at", pull.UpdatedAt)
-		// The base the list answer names goes with it, so a record found this way has the base its
-		// reads of the merge state follow on (followOnBase) even when the detail read after it fails.
-		fact := intake.PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, Base: pull.Base.Ref, HeadSHA: pull.Head.SHA,
-			HeadRepo: pull.HeadRepository(), Body: pull.Body, URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: recorded.numbered(repo, pull.Number) != nil}
+		// The base the list answer names goes with it (intake.OpenedOn), so a record found this way
+		// has the base its reads of the merge state follow on (followOnBase) even when the detail
+		// read after it fails.
+		fact := intake.OpenedOn(repo, branch, pull)
+		fact.Reopened = recorded.numbered(repo, pull.Number) != nil
 		eventID := fmt.Sprintf("opened-read:%s:%s:%s#%d:%d", w.dispatchProject, w.bootID, repo, pull.Number, time.Now().UnixNano())
 		if _, err := intake.ApplyFact(ctx, w.pool, "github", eventID, fact, w.handlers...); err != nil {
 			return nil, fmt.Errorf("apply the open pull request %s#%d read from GitHub: %w", repo, pull.Number, err)
@@ -481,35 +481,42 @@ func (w *workflowRuntime) issuesInWorkflow(ctx context.Context) ([]startRead, er
 // has begun (running, held or done): the tasks whose pull request a webhook lost leaves the record
 // without, and which the start reads by their branch (issuePullRequest). A task that has begun and
 // opened no pull request yet costs one list of its branch and tells nobody (tellMissing tells only
-// an implementing task whose implementer completed).
+// an implementing task whose implementer completed). The plans and the task pull requests of the
+// issues are one read each, whatever the number of issues (record.Store.PlansOf,
+// record.Store.TaskPullRequestRowsOf, whose rows are each in the issue's repository).
 func (w *workflowRuntime) taskBranchesUnrecorded(ctx context.Context, tx pgx.Tx) ([]taskRead, error) {
 	issues, err := w.records.LiveIssues(ctx, tx, w.dispatchProject)
 	if err != nil {
 		return nil, err
 	}
+	issues = slices.DeleteFunc(issues, func(issue record.Issue) bool { return !record.InWorkflow(issue) || issue.GitHubRepo == "" })
+	plans, err := w.records.PlansOf(ctx, tx, issues)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(plans))
+	for _, issue := range issues {
+		if plans[issue.Key] != nil {
+			keys = append(keys, issue.Key)
+		}
+	}
+	pulls, err := w.records.TaskPullRequestRowsOf(ctx, tx, keys)
+	if err != nil {
+		return nil, err
+	}
 	var unrecorded []taskRead
 	for _, issue := range issues {
-		if !workflow.InWorkflow(issue) || issue.GitHubRepo == "" {
-			continue
-		}
-		stored, err := w.records.Plan(ctx, tx, issue.Key, issue.Generation)
-		if err != nil {
-			return nil, err
-		}
+		stored := plans[issue.Key]
 		if stored == nil {
 			continue
-		}
-		prs, err := w.records.TaskPullRequestRows(ctx, tx, issue.Key)
-		if err != nil {
-			return nil, err
 		}
 		for _, task := range stored.Tasks {
 			if task.State != record.TaskRunning && task.State != record.TaskHeld && task.State != record.TaskDone {
 				continue
 			}
 			branch := task.BranchOf(issue.Key)
-			if !slices.ContainsFunc(prs, func(pr record.PullRequest) bool {
-				return pr.Branch == branch && strings.EqualFold(pr.Repo, issue.GitHubRepo) && pr.State != record.PullRequestClosed
+			if !slices.ContainsFunc(pulls[issue.Key], func(pr record.PullRequest) bool {
+				return pr.Branch == branch && record.LetsImplementationMove(&pr)
 			}) {
 				unrecorded = append(unrecorded, taskRead{issue: issue.Key, task: task.Task})
 			}
@@ -519,9 +526,10 @@ func (w *workflowRuntime) taskBranchesUnrecorded(ctx context.Context, tx pgx.Tx)
 }
 
 // taskRead is one read of the pull request of one task of an issue: one a completion asks for
-// (handoffCompleted), naming the task of its plan whose step completed, or one the start makes for
-// a task whose branch the record holds no pull request on (issuesInWorkflow); "" for an issue with
-// no plan rows, and for a read of the task the record judges (judgedTask).
+// (handoffCompleted), naming the task of its plan whose step completed, or one of a task whose
+// branch the record holds no open or merged pull request on (taskBranchesUnrecorded), which the
+// start makes a startRead of (issuesInWorkflow); "" for an issue with no plan rows, and for a read
+// of the task the record judges (judgedTask).
 type taskRead struct {
 	issue, task string
 }

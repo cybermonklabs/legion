@@ -1879,15 +1879,17 @@ func (e *Engine) mergeStateOwed(ctx context.Context, tx pgx.Tx, pr *record.PullR
 	if err != nil {
 		return false, err
 	}
-	own, err := e.taskPullRequestRow(ctx, tx, *scope)
-	if err != nil {
-		return false, err
-	}
 	// A pull request the issue links that is no task's own holds its decision on its own row; every
 	// other pull request of the scope is judged by the decision on the reviewer's row, as the round
 	// of one pull request judged it.
-	if pr.Linked && !e.roundsOwn(own, *pr) {
-		reviewer = decisionRow(reviewer, pr.ReviewDecision)
+	if pr.Linked {
+		own, err := e.taskPullRequestRow(ctx, tx, *scope)
+		if err != nil {
+			return false, err
+		}
+		if !e.roundsOwn(own, *pr) {
+			reviewer = decisionRow(reviewer, pr.ReviewDecision)
+		}
 	}
 	r := e.pullRound(*issue, reviewer, pr)
 	return r.waitsOnMergeState || r.outcome == roundApproved, nil

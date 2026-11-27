@@ -4,9 +4,7 @@
 -- request, the issue's links to pull requests (pull_request_links), and the two outbox kinds that
 -- read GitHub for an issue's set: the read of a linked pull request (pull_request_link_read), and
 -- the read of the branches of the issue's tasks that comes before the close of its last open pull
--- request is told (pull_request_branch_read). No release holds this migration yet, so the second
--- kind is written into it, in its kind check and in its way back, rather than into a migration of
--- its own.
+-- request is told (pull_request_branch_read).
 --
 -- 20261122122826 keyed pull_requests by the issue and the branch, so two pull requests on one
 -- branch of an issue shared one row, and the second replaced the first: the deployment
@@ -27,7 +25,10 @@
 -- requests; 20261102095707's pull_requests_lower_repo_branch, which is not unique, stays for the
 -- reads that have only a branch (record's OpenPullRequestsOnBranch). The partial index of the open
 -- rows by repository and base (pull_requests_open_on_base, 20261029120300) is made again on
--- lower(repo), the expression record's OpenPullRequestsOnBase compares.
+-- lower(repo), the expression record's OpenPullRequestsOnBase compares. The key (issue, branch)
+-- served every read of an issue's pull requests (record's issuePullRequestRows, OpenPullRequests,
+-- clearGeneration) and the cascade from issues, and no index of the new shape begins with the
+-- issue, so pull_requests_issue indexes it.
 --
 -- pull_request_settled_heads keeps what a pull request remembers of its settled heads with a
 -- foreign key on pull_requests (issue, branch), which the key (issue, branch) serves, so the
@@ -81,9 +82,10 @@
 -- of two rows on one branch the newer (the higher head_updated_at, then the higher number), and
 -- deletes the others, which takes the settled heads of each with them; keys
 -- pull_request_settled_heads by (issue, branch, kind, head) again, filled from pull_requests by the
--- repository and the number, with the foreign key 20261122122826 wrote; keys pull_requests by
--- (issue, branch) again with 0004's unique pull_requests_repo_branch, 20261102095707's index of the
--- repository and the number and 20261029120300's index of the open rows; drops review_decision;
+-- repository and the number, with the foreign key 20261122122826 wrote; drops pull_requests_issue
+-- and keys pull_requests by (issue, branch) again with 0004's unique pull_requests_repo_branch,
+-- 20261102095707's index of the repository and the number and 20261029120300's index of the open
+-- rows; drops review_decision;
 -- and deletes its version row, which is owed to the roll-forward, so that it runs this file again.
 -- What the way back costs is the row of each linked pull request and of each other pull request on
 -- a task's branch, and what each remembered of its settled heads, each review decision, each link
@@ -122,6 +124,7 @@
 --   where pr.repo = heads.repo and pr.number = heads.number;
 -- alter table pull_request_settled_heads alter column issue set not null, alter column branch set not null;
 -- alter table pull_request_settled_heads drop column repo, drop column number;
+-- drop index pull_requests_issue;
 -- drop index pull_requests_lower_repo_number;
 -- drop index pull_requests_open_on_base;
 -- alter table pull_requests drop constraint pull_requests_pkey;
@@ -157,6 +160,7 @@ drop index pull_requests_lower_repo_number;
 create unique index pull_requests_lower_repo_number on pull_requests (lower(repo), number);
 drop index pull_requests_open_on_base;
 create index pull_requests_open_on_base on pull_requests (lower(repo), base) where state = 'open';
+create index pull_requests_issue on pull_requests (issue);
 alter table pull_requests add column review_decision jsonb;
 
 alter table pull_request_settled_heads add constraint pull_request_settled_heads_pull_request_fkey
