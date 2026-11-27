@@ -796,6 +796,32 @@ describe("the serial queues", () => {
     expect(read).toEqual({ holder: { known: false }, interest: { known: false } });
   });
 
+  // The listener's 404 for a session its registry holds no key for: a session the reap took after
+  // its grace, or a fork's parent this process left. That is a known answer, the session having no
+  // row, not a read that could not be made: reading it as the latter would leave every pass for
+  // that lineage undecided and re-reading it at each heartbeat.
+  test("the 404 of a session with no registry row is a known answer, and any other failure is not", async () => {
+    const { state, control } = createHarness();
+    control.open = "ses_a";
+    control.getInterest = async () => {
+      throw apiError(404);
+    };
+    const absent = await state.passes.run(async (handle) => {
+      handle.actFor("ses_a");
+      return handle.readInterest("ses_gone");
+    });
+    expect(absent).toEqual({ known: true, row: undefined });
+
+    control.getInterest = async () => {
+      throw apiError(503);
+    };
+    const unread = await state.passes.run(async (handle) => {
+      handle.actFor("ses_a");
+      return handle.readInterest("ses_gone");
+    });
+    expect(unread).toEqual({ known: false });
+  });
+
   // The listener's 404 for a role no live session holds names a lapsed holder where it knows one
   // (unresponsive, or gone and not reaped). That is a known answer naming that session: it was
   // shown what the stream stored for the role, so a resumed session must not read it again.

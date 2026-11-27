@@ -4271,11 +4271,17 @@ describe("envoy OMP extension", () => {
     const unregistered: string[][] = [];
     // Set by the row to make the listener refuse the row read, as an outage does.
     let rowReadFails = false;
+    // Set by the row to make the listener answer 404: the registry holds no key for the session.
+    let rowIs404 = false;
+    // How many times the listener was asked for this session's row.
+    let rowReads = 0;
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
       const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
       if (url.pathname === `/v1/interests/${session}`) {
+        rowReads += 1;
         if (rowReadFails) return Response.json({ error: "listener unavailable" }, { status: 503 });
+        if (rowIs404) return Response.json({ error: "no interests for session" }, { status: 404 });
         // The row names the role on its lane alone: no claim record, no launch role.
         return response({
           session_id: session,
@@ -4351,6 +4357,19 @@ describe("envoy OMP extension", () => {
       await fixture.handlers.get("session_start")?.({}, context);
       expect(claims.length).toBeGreaterThan(2);
       expect(await followedTopics(fixture.tools, context)).toContain(alerts);
+
+      // The listener's 404 for a session its registry holds no key for (a fork's parent this
+      // process left, reaped after its grace) is a known answer, not a read that failed: the pass
+      // settles on it. Read as a failure, no pass would ever settle this session and each
+      // heartbeat would walk the lineage again.
+      rowIs404 = true;
+      await fixture.handlers.get("session_start")?.({}, context);
+      const readsAfterSettling = rowReads;
+      await fixture.handlers.get("session_start")?.({}, context);
+      // Settled on the 404, so the pass after it walks the lineage no more. Read as a failure,
+      // nothing would ever settle and every pass would read the row again.
+      expect(rowReads).toBe(readsAfterSettling);
+      rowIs404 = false;
 
       // A pass for a session that holds no role and wants none closes what an earlier pass
       // opened: the role each pass decided is that pass's alone, never the one before it.

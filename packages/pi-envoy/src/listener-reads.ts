@@ -82,7 +82,16 @@ export function createListenerReads(deps: ListenerReadsDeps): {
         .getInterest(sessionID)
         .then(
           (row): InterestRead => ({ known: true, row }),
-          (): InterestRead => ({ known: false })
+          (error: unknown): InterestRead => {
+            // The listener's 404 is the registry holding no key for the session, which is a known
+            // answer: a session the reap took after its grace, a fork's parent this process left.
+            // Reading it as "could not be read" would leave every pass for that lineage undecided
+            // and re-reading it at each heartbeat.
+            if (error instanceof EnvoyApiError && error.details.status === 404) {
+              return { known: true, row: undefined };
+            }
+            return { known: false };
+          }
         );
     },
     unregisterTopics: async (sessionID, topics, warnings) => {
