@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 )
@@ -35,9 +36,11 @@ func CheckOverlays(ctx context.Context, img Image, overlays, own []string) (refu
 			return fmt.Sprintf("%s cannot be read: %v", file, err), nil
 		}
 	}
-	run := func(list []string) (string, error) {
+	run := func(list []string, stall bool) (string, error) {
 		const args = "config get retry.modelFallback --json"
-		r := img.withOverlays(list).launch(ctx, args)
+		at := img.withOverlays(list)
+		at.controlStall = stall // CONTROL ONLY
+		r := at.launch(ctx, args)
 		switch {
 		case r.err != nil:
 			return "", fmt.Errorf("%s %s under PI_CONFIG_FILES %s: %w", img.shown(), args, strings.Join(list, ":"), r.err)
@@ -48,7 +51,8 @@ func CheckOverlays(ctx context.Context, img Image, overlays, own []string) (refu
 	}
 	var unanswered []error
 	for _, file := range own {
-		why, err := run([]string{file})
+		stall := len(unanswered) > 0 && controlStalls.Add(1)%2 == 1 // CONTROL ONLY
+		why, err := run([]string{file}, stall)
 		if why != "" {
 			return fmt.Sprintf("Oh My Pi refuses %s: %s", file, why), errors.Join(unanswered...)
 		}
@@ -56,7 +60,7 @@ func CheckOverlays(ctx context.Context, img Image, overlays, own []string) (refu
 			unanswered = append(unanswered, err)
 		}
 	}
-	why, err := run(overlays)
+	why, err := run(overlays, false)
 	if err != nil {
 		unanswered = append(unanswered, err)
 	}
@@ -65,6 +69,11 @@ func CheckOverlays(ctx context.Context, img Image, overlays, own []string) (refu
 	}
 	return why, errors.Join(unanswered...)
 }
+
+// controlStalls counts the runs of a file read alone that come after a run of the same check timed
+// out. CONTROL ONLY: every second of them, from the first, gets a stderr nothing reads until its
+// budget has ended (controlHoldStderr).
+var controlStalls atomic.Int32
 
 // OverlayReads is what a reader of whole PI_CONFIG_FILES values has already asked Oh My Pi
 // through CheckOverlays, so that it asks each question once: every whole value it has read, by
