@@ -162,6 +162,14 @@ func TestEveryTransactionPinsBeforeItsWork(t *testing.T) {
 			_, _, err := Read(ctx, sessions, podSessionFile)
 			return err
 		}},
+		{"HasTable", func() error {
+			_, err := HasTable(ctx, sessions)
+			return err
+		}},
+		{"Titles", func() error {
+			_, err := Titles(ctx, sessions)
+			return err
+		}},
 		{"Replace", func() error { return Replace(ctx, sessions, claudeTranscript, Absent, content, time.Now()) }},
 		{"Append", func() error { return Append(ctx, sessions, claudeTranscript, int64(len(content)), content, time.Now()) }},
 	} {
