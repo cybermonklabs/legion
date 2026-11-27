@@ -217,7 +217,7 @@ func TestASecondAskOfTheSameHeadChangesNothingTheDaemonHolds(t *testing.T) {
 		t.Helper()
 		var pr *record.PullRequest
 		if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) (err error) {
-			pr, err = runner.records.PullRequest(ctx, tx, "LEGION-208")
+			pr, err = runner.records.PullRequestOfTask(ctx, tx, "LEGION-208", "")
 			return err
 		}); err != nil || pr == nil {
 			t.Fatalf("read the pull request of LEGION-208: %+v, %v", pr, err)
@@ -746,7 +746,7 @@ func (r *freshSessionRig) recordedAsk() record.MergeForward {
 	r.t.Helper()
 	var pr *record.PullRequest
 	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) (err error) {
-		pr, err = r.records.PullRequest(ctx, tx, r.issue.Key)
+		pr, err = r.records.PullRequestOfTask(ctx, tx, r.issue.Key, "")
 		return err
 	}); err != nil {
 		r.t.Fatalf("read the pull request of %s: %v", r.issue.Key, err)

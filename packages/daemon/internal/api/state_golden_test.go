@@ -218,6 +218,7 @@ func loadSettingsFileWith(t *testing.T, body string, files map[string]string) co
 	}
 	return cfg
 }
+
 // settingsFixtureConfig is settingsFixtureFile loaded.
 func settingsFixtureConfig(t *testing.T) config.Config {
 	t.Helper()
