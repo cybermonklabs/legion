@@ -138,7 +138,8 @@ func Configure(cmd *exec.Cmd) (killed func() bool) {
 			// finished on its own" — an error equivalent to os.ErrProcessDone.
 			return os.ErrProcessDone
 		}
-		if groupOutlivedGrace(group) {
+		// CONTROL ONLY: the stop sends its SIGKILL at once, with no grace.
+		if _ = groupOutlivedGrace; true {
 			// The SIGKILL's own error is dropped rather than returned: an ESRCH here is the group
 			// having gone between the last question and this signal, and a Cancel that answered it
 			// would read as "nothing was killed", which turns a timed-out clone into a retryable
