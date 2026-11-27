@@ -207,7 +207,7 @@ ISSUER
     cat >"$out" <<'BROKER'
 #!/usr/bin/env bash
 printf '%s\n' "$$" >>"${DEV_AIRLOCK_TEST_PIDS:?}"
-echo "fake broker: pid=$$ db=${BROKER_DATABASE_URL:-} public=${BROKER_PUBLIC_URL:-} services=${BROKER_SERVICES:-} logins=${BROKER_SERVICE_LOGINS:-} fake_secrets=${BROKER_MEMORY_SECRETS_FILE:-} azure_secret=${BROKER_AZURE_LOGIN_SECRET:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
+echo "fake broker: pid=$$ db=${BROKER_DATABASE_URL:-} public=${BROKER_PUBLIC_URL:-} services=${BROKER_SERVICES:-} logins=${BROKER_SERVICE_LOGINS:-} fake_secrets=${BROKER_MEMORY_SECRETS_FILE:-} azure_secret=${BROKER_AZURE_LOGIN_SECRET:-} machine_login=${BROKER_MACHINE_LOGIN_URL:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
 echo "fake broker airlock: pid=$$ profiles=${BROKER_PROFILES_FILE:-} proxy_url=${BROKER_AIRLOCK_PROXY_URL:-} ca_cert=${BROKER_AIRLOCK_CA_CERT_FILE:-} ca_key=${BROKER_AIRLOCK_CA_KEY_FILE:-} listen=${BROKER_AIRLOCK_LISTEN_ADDR:-} idle=${BROKER_AIRLOCK_IDLE_SECONDS:-} keep_values=${BROKER_AIRLOCK_TEST_KEEP_VALUES:-} no_kind=${BROKER_AIRLOCK_TEST_NO_KIND:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-} google=${BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL:-} anthropic=${BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL:-} iam=${BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL:-} service_accounts=[${BROKER_SERVICE_ACCOUNT_SECRETS:-}] upstream_ca=${BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE:-} azure_authority=${BROKER_AIRLOCK_TEST_AZURE_AUTHORITY:-} dial_allow=[${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}] resolve=[${BROKER_AIRLOCK_TEST_RESOLVE:-}] kubernetes_service_host=[${KUBERNETES_SERVICE_HOST-unset}]" >&2
 echo "fake broker proxy: pid=$$ profiles=${BROKER_PROFILES_FILE:-} pool=${BROKER_PROXY_CA_POOL:-} test_ca_url=${BROKER_PROXY_TEST_CA_URL:-} clock_file=${BROKER_PROXY_TEST_CLOCK_OFFSET_FILE:-} margin=${BROKER_PROXY_TEST_RENEWAL_MARGIN-unset} release_roots=${BROKER_PROXY_RELEASE_ROOTS_FILE-unset}" >&2
 echo "fake broker judge: pid=$$ model_url=${BROKER_JUDGE_MODEL_URL:-} model=${BROKER_JUDGE_MODEL:-} protocol=${BROKER_JUDGE_MODEL_PROTOCOL:-} audience=${BROKER_JUDGE_MODEL_AUDIENCE:-} dispatch=${BROKER_JUDGE_DISPATCH_URL:-} token_file=${BROKER_JUDGE_DISPATCH_TOKEN_FILE:-} skip_checks=${BROKER_JUDGE_TEST_SKIP_CHECKS:-} metadata_host=${GCE_METADATA_HOST:-}" >&2
@@ -705,7 +705,9 @@ printf 'PASS: both brokers read one database of this run'"'"'s own (%s) and answ
 
 # Every broker the run starts, dev-broker.sh's own and the airlock's two, binds its metrics on a
 # port the system picks: three brokers on one machine, and the fixed default is a port only one of
-# them could hold.
+# them could hold. Each also names the machine-login page (BROKER_MACHINE_LOGIN_URL), the
+# placeholder dev-broker.sh gives its own, so every broker serves the device grant and boots as a
+# broker a person can log a machine in through.
 if [[ "${#broker_lines[@]}" -ne 3 ]]; then
   printf '%s\n' "${broker_lines[@]}" >&2
   echo "FAIL: ${#broker_lines[@]} broker(s) were started; want dev-broker.sh's own and the airlock's two" >&2
@@ -716,8 +718,12 @@ for line in "${broker_lines[@]}"; do
     echo "FAIL: a broker was started without BROKER_METRICS_LISTEN_ADDR=127.0.0.1:0: $line" >&2
     exit 1
   fi
+  if [[ "$line" != *" machine_login=http://127.0.0.1/credentials/machine "* ]]; then
+    echo "FAIL: a broker was started without BROKER_MACHINE_LOGIN_URL=http://127.0.0.1/credentials/machine, so it serves no device grant: $line" >&2
+    exit 1
+  fi
 done
-printf 'PASS: all three brokers bind their metrics on a port the system picks\n'
+printf 'PASS: all three brokers bind their metrics on a port the system picks and name the machine-login page\n'
 
 # The two fronts: each bound before the brokers and given its backends afterwards, through the
 # file it rereads. Each front's backends file must hold both brokers' own ports.
