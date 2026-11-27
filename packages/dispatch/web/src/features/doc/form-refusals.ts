@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 
 import type { ApiError } from "../../api/client";
+import type { ArtifactApproval } from "../../api/types";
 
 /**
  * Dispatch's refusal of a person's Approve for the form of The Spec (`SPEC_FORM`), kept by the
- * approval request it refused, under the request's own key (`approvalRefusalKey`, its ask). The
+ * approval request it refused, under the request's own key (`requestRefusalKey`, its ask). The
  * header (`ApprovalChip`) of each document the request names and each card of the request
  * (`AskCard`'s answer form) read it there, so a refusal of a press in one place shows in each place
- * that shows the request, and in no place that shows another request.
+ * that shows the request, and in no place that shows another request. A header's Approve with no
+ * request open is kept for its document alone (`approvalRefusalKey`).
  *
  * A refusal belongs to that request, not to the card or the header that shows it, for the reason
  * an unsent answer belongs to its ask (`inbox/answer-drafts.ts`): a host can draw its card again
@@ -41,9 +43,16 @@ export function requestRefusalKey(askId: string): string {
 }
 
 /** The key the header of the document `artifactId` keeps a refusal under: its open request's
- *  (`requestRefusalKey`), or with no open request, the document's own. */
-export function approvalRefusalKey(askId: string | undefined, artifactId: string): string {
-  return askId === undefined ? `artifact:${artifactId}` : requestRefusalKey(askId);
+ *  (`requestRefusalKey`) while that request awaits an answer, or else the document's own. With no
+ *  request open, `approval.ask_id` names the request of the latest review, which is answered, and
+ *  a refusal kept under it would show on that request's completed card. */
+export function approvalRefusalKey(
+  approval: Pick<ArtifactApproval, "ask_id" | "state"> | undefined,
+  artifactId: string
+): string {
+  return approval?.state === "awaiting" && approval.ask_id !== undefined
+    ? requestRefusalKey(approval.ask_id)
+    : `artifact:${artifactId}`;
 }
 
 /** A document an approval request names, at the version the request names. */

@@ -453,13 +453,14 @@ export function ApprovalChip({
   const [reviewsOpen, setReviewsOpen] = useState(false);
   const [requestChangesOpen, setRequestChangesOpen] = useState(false);
   // Dispatch's refusal of the reader's last Approve for the form of The Spec: its words show under
-  // the actions, and the reason it wrote for the author is what Request changes opens with. It is
-  // kept for the document's open request (`form-refusals.ts`, by the request's ask), which each
-  // card of the request and the header of each document it names read too, so a refusal in the
-  // header shows in those places and theirs shows here, for the versions of the request's
-  // documents that Approve judged. It holds the press (`DocumentReview.at`), so the focus goes
-  // back to the place where the person pressed.
-  const formRefusalKey = approvalRefusalKey(approval?.ask_id, artifact.id);
+  // the actions, and the reason it wrote for the author is what Request changes opens with. While
+  // the document's request awaits an answer it is kept for that request (`form-refusals.ts`, by
+  // the request's ask), which each card of the request and the header of each document it names
+  // read too, so a refusal in the header shows in those places and theirs shows here, for the
+  // versions of the request's documents that Approve judged. With no request open it is kept for
+  // the document alone (`approvalRefusalKey`). It holds the press (`DocumentReview.at`), so the
+  // focus goes back to the place where the person pressed.
+  const formRefusalKey = approvalRefusalKey(approval, artifact.id);
   const formRefusal = useFormRefusal(formRefusalKey, approvalVersionsOf(artifact));
   const refusalSurface = useRefusalSurface();
   const chipRef = useRef<HTMLDivElement>(null);
@@ -484,14 +485,14 @@ export function ApprovalChip({
       api.createArtifactReview(reviewed.id, input, bounds),
     onError: (error, { artifact: reviewed, at, input }) => {
       if (input.state === "approved" && isSpecFormRefusal(error) && at !== undefined) {
-        setFormRefusal(approvalRefusalKey(reviewed.approval?.ask_id, reviewed.id), {
+        setFormRefusal(approvalRefusalKey(reviewed.approval, reviewed.id), {
           error,
           press: at,
         });
       }
     },
     onSuccess: (_result, { artifact: reviewed }) => {
-      setFormRefusal(approvalRefusalKey(reviewed.approval?.ask_id, reviewed.id), undefined);
+      setFormRefusal(approvalRefusalKey(reviewed.approval, reviewed.id), undefined);
       // Outside `NoTooltips` the dialog closes as the write lands and the reads the write makes
       // stale go on after it, as on `main`. Inside, `onSuccess` returns those reads, which
       // TanStack Query awaits before the write stops pending: Approve, Request changes and the
