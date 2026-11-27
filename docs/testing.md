@@ -666,7 +666,9 @@ says on its first line, in a `// Not parallel:` comment, why it cannot:
   broker's `internal/cipher/requests`, `internal/cipher/api` and `cmd/cipherd`, and the 19 smaller
   packages of "A test in Dispatch's smaller packages runs beside the others" below, with
   `internal/dispatch/refs`;
-- in `packages/daemon`: `internal/intake`.
+- in `packages/daemon`: `internal/intake`, and `internal/daemon`, `internal/workflow`,
+  `internal/store`, `internal/runtime/sandbox` and `cmd/legion` (#5660; "A test in a daemon
+  package that states the rule" below).
 
 The reason names the call or the bound that makes the test serial (`logtest.SetDefault`,
 `t.Setenv`, `` `took >= time.Second` ``, `JudgeRowReserve`'s one second), never a line of a file
@@ -675,12 +677,10 @@ says it is not parallel and then calls `t.Parallel()` in its own code breaks the
 of a serial test may still run in parallel, and a test that runs itself again alone
 (`internal/alonetest`) calls `t.Parallel()` only in the branch of the run that starts the other. go test starts no parallel test until every
 serial one has run, so a test with neither the call nor the comment runs alone for no reason, as
-46 of `internal/daemon`'s did by 2026-11-25. `internal/daemon`, `internal/runtime/sandbox`,
-`internal/workflow`, `internal/store` and `cmd/legion` of the daemon module come under this rule
-and its check with #5660, which marks their tests.
+46 of `internal/daemon`'s did by 2026-11-25.
 
-Each package checks itself: its `TestEveryTestCallsParallelOrSaysWhyNot`
-(`parallel_rule_test.go`) calls `packages/envoy/testparallel`'s `Require`, which reads every
+Each package checks itself: its `TestEveryTestCallsParallelOrSaysWhyNot` (`parallel_rule_test.go`,
+or the five daemon packages' `main_test.go`) calls `packages/envoy/testparallel`'s `Require`, which reads every
 `_test.go` file of the package and fails naming each test that breaks the rule, and how. The
 daemon module's packages call the same check, since that module requires this one. A package that
 comes to run its tests beside each other adds itself to the list above and that test.
@@ -735,14 +735,11 @@ such a test would take the binary toward the step's limit.
 
 ## A test in a daemon package that states the rule runs beside the others
 
-Five packages of `packages/daemon` state in their `TestMain`'s file that every top-level test of
-the default build calls `t.Parallel()` as its first statement or says why not: `internal/daemon`,
-`internal/workflow`, `internal/store`, `internal/runtime/sandbox` and `cmd/legion`. Each
-`TestMain` sets how many run at once (`daemonTestParallelism`, `workflowTestParallelism` and
-`storeTestParallelism` 4, `sandboxTestParallelism` and `cmdTestParallelism` 8).
-The live drivers behind `//go:build e2e` of `internal/daemon`, `internal/workflow`,
-`internal/store` and `cmd/legion`, which no unit run compiles, are not held to the rule, and the
-check below reads only the default build. Each test of `internal/daemon` already has a database of
+Five packages of `packages/daemon` hold to the rule above in every build, the live drivers behind
+`//go:build e2e` of `internal/daemon` included: `internal/daemon`, `internal/workflow`,
+`internal/store`, `internal/runtime/sandbox` and `cmd/legion`. Each `TestMain` sets how many run at
+once (`daemonTestParallelism`, `workflowTestParallelism` and `storeTestParallelism` 4,
+`sandboxTestParallelism` and `cmdTestParallelism` 8). Each test of `internal/daemon` already has a database of
 its own (a clone of the package's template, `testDSN` and `isolatedOutboxPool`), its own ports and
 state directory, and a NATS server of the package's pool (`internal/testnats`); each test of
 `internal/workflow` drives its engine over a clone of its own (`migratedPool`) or renders text from
@@ -760,20 +757,10 @@ one second in `TestAPodStartsItsRolesOneLoadAtATime`, or the rig's two-second bo
 the comment runs alone for no reason.
 
 So each of the five packages fails such a test by name: `TestEveryTestCallsParallelOrSaysWhyNot`,
-in its `main_test.go`, runs `packages/daemon/internal/testparallel`'s `Require` over the package's
-own test files, those go/build's default context selects (no `-tags`). It finds a test as go test
-does, whatever name the file imported `testing` under. The reason goes on the comment's first
-line, after the colon: a `// Not parallel:` line with nothing after it is no reason, and neither
-is a comment that is not the body's first. A `t.Parallel()` after another statement, in a `defer`
-or in a subtest alone is no first statement. A test under a `// Not parallel:` comment that calls
-`t.Parallel()` anyway, first or later, in a closure over its `t` or through the method value
-`t.Parallel`, fails too, since its comment says the opposite of what it does; a subtest of it, with
-a `t` of its own, may still run in parallel. The check logs each test that runs alone with the
-reason its first line gives. `testparallel`'s own tests plant a package with a test of each shape
-and hold the check to naming exactly the ones that break the rule. A package that comes to state
-the rule holds it the same way, with a test of its own that calls `Require` on its directory.
-`internal/intake` states a looser one (above): a serial test whose reason is a call in its own body
-needs no comment there.
+in its `main_test.go`, runs the one check of "A test in a package whose tests run beside each
+other" above. #5660 brought these five under the rule with a check of the daemon module's own
+(`packages/daemon/internal/testparallel`), which read only the default build; it is folded into
+`packages/envoy/testparallel`, whose own tests plant a package with a test of each shape.
 
 ## A test in the broker's `requests`, `api` or `cmd/cipherd` package runs beside the others
 

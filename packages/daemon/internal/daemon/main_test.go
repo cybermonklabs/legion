@@ -9,11 +9,12 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/testparallel"
+
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/testbinary"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
-	"github.com/sjawhar/legion/daemon/internal/testparallel"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
 

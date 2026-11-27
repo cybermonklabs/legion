@@ -7,8 +7,9 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/sjawhar/envoy/testparallel"
+
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
-	"github.com/sjawhar/legion/daemon/internal/testparallel"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
 
