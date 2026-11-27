@@ -353,9 +353,10 @@ const OVERLAPPING = [new DOMRect(149.75, 791, 99.8, 25), new DOMRect(20, 815, 74
 //   it runs right to left, whichever box that is. The left-to-right row whose last box ends short
 //   of the line draws boxes in an order Chromium does not, as a guard.
 // - A padded atom draws boxes taller than its line, so the boxes of two lines overlap: a picture's
-//   caption link, which `.prose a` pads and which is no inline-block before its picture loads,
-//   drew 25 px boxes on 24 px lines in Chromium, at 791 to 816 px and 815 to 840 px. A box's line is
-//   read from its middle.
+//   caption link under `.prose`, whose `a` it pads, drew 25 px boxes on 24 px lines in Chromium,
+//   at 791 to 816 px and 815 to 840 px. A box's line is read from its middle. The Spec view's
+//   words stand under no `.prose`, and a wrapped caption there drew 19 px boxes on 24 px lines, so
+//   these rows are a guard for any padded atom the words may draw.
 // - A hard break is no atom: a press at the start of the text after it goes into that text.
 test("a press around an atom is read by the line it is on, for every geometry found", () => {
   const end = "<name>".length;
