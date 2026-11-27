@@ -21,9 +21,11 @@ import { asUser } from "./users";
  * cybermonklabs/legion#2230. A role the Legion agent registry holds no entry for, while the role
  * read says its project answers, has a first holder coming: no session of the role has run yet. A
  * person's message to it is kept for that first holder: Dispatch publishes it on the role's topic
- * through the listener's publish route, which keeps it on the role's kept lane for an hour and
- * wakes the role, and records the attempt taken. The card says so, and offers no Retry. A role of
- * a project that does not answer keeps the listener's no-holder failure.
+ * through the listener's publish route, naming the comment or message it delivers
+ * (`dispatch_post`), and the listener keeps it on the role's kept lane for an hour and wakes the
+ * role; Dispatch records the attempt taken. The card says so, and offers no Retry. A publish that
+ * names no session is kept only for the post it names, so one naming none is the listener's
+ * no-holder 404. A role of a project that does not answer keeps the listener's no-holder failure.
  *
  * The sentence is spelt out here rather than imported from the SPA, so a change to the SPA's
  * wording fails a row here rather than passing with it.
@@ -78,7 +80,7 @@ test("a person's message to a role with no entry, of a project that answers, is 
   });
   const role = `role:${token}`;
   const body = "Pick this up when you start.";
-  await createMessage(issue, { body, delivery: "steer", target: role });
+  const message = await createMessage(issue, { body, delivery: "steer", target: role });
 
   const alice = await asUser(browser, "alice");
   try {
@@ -93,6 +95,7 @@ test("a person's message to a role with no entry, of a project that answers, is 
     const published = await getPublishedMessages();
     expect(published).toHaveLength(1);
     expect(published[0]).toMatchObject({
+      dispatch_post: { id: message.id, kind: "message" },
       keep: true,
       message: body,
       source: "dispatch",
@@ -112,7 +115,7 @@ test("a mention of a role with no entry, of a project that answers, is kept for 
     entry: false,
   });
   const role = `role:${token}`;
-  await createComment(issue, {
+  const comment = await createComment(issue, {
     body: "Can the planner explain this when it starts?",
     delivery: "btw",
     mentions: [{ target: role }],
@@ -129,6 +132,9 @@ test("a mention of a role with no entry, of a project that answers, is kept for 
     await expect
       .poll(async () => (await getPublishedMessages()).map((publish) => publish.topic))
       .toEqual([`notifications.role.${token}`]);
+    expect((await getPublishedMessages())[0]).toMatchObject({
+      dispatch_post: { id: comment.id, kind: "comment" },
+    });
     expect(await getSentMessages()).toEqual([]);
   } finally {
     await alice.close();

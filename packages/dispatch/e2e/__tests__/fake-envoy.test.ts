@@ -389,9 +389,14 @@ test("a stopped session is read only with stopped in include=, and a send to it 
   }
 });
 
+/** The Dispatch post a role publish here delivers, named as Dispatch's store names a message: by
+ *  its kind and its UUID in lower case. */
+const DELIVERED_POST = { id: "6f1c2b9a-4d3e-4f5a-8b7c-9d0e1f2a3b4c", kind: "message" } as const;
+
 /** A role publish as Dispatch's listener client writes one for a role it keeps a message for,
- *  under a key of the role's own, with `keep` as given (left out when undefined). */
-function publish(origin: string, role: string, keep?: boolean) {
+ *  under a key of the role's own, with `fields` added to it or written over its own: Dispatch's
+ *  own names no source session, sets `keep` and names the post it delivers (`dispatch_post`). */
+function publish(origin: string, role: string, fields: Record<string, unknown> = {}) {
   return Bun.fetch(`${origin}/v1/messages/publish`, {
     body: JSON.stringify({
       expects_reply: "optional",
@@ -400,7 +405,7 @@ function publish(origin: string, role: string, keep?: boolean) {
       payload: "{}",
       source: "dispatch",
       topic: `notifications.role.${role}`,
-      ...(keep === undefined ? {} : { keep }),
+      ...fields,
     }),
     headers: { "Content-Type": "application/json" },
     method: "POST",
@@ -409,11 +414,11 @@ function publish(origin: string, role: string, keep?: boolean) {
 
 // The publish route for a role topic, as Dispatch uses it to keep a message for a Legion role the
 // registry holds no entry for while its project answers (packages/envoy/cmd/listener/confirmed.go
-// roleSend): a role no live session holds keeps the message, answered 202 `kept` with the end of
-// its hour, unless the publish asked `keep: false`, which keeps nothing and is the role lookup's
-// 404; a role a live session holds takes it, answered 200 naming that holder. Every publish is
-// recorded. The registry reads answer the answering flag the fixture last set, false until it is
-// set, on the role read and on each entry.
+// roleSend): a role no live session holds keeps Dispatch's publish of a post, answered 202 `kept`
+// with the end of its hour, unless the publish asked `keep: false`, which keeps nothing and is the
+// role lookup's 404; a role a live session holds takes it, answered 200 naming that holder. Every
+// publish is recorded. The registry reads answer the answering flag the fixture last set, false
+// until it is set, on the role read and on each entry.
 test("a role publish is kept while no live session holds the role, and every publish is recorded", async () => {
   const { origin, stop } = await startFakeEnvoy();
   try {
@@ -423,7 +428,7 @@ test("a role publish is kept while no live session holds the role, and every pub
     expect((await putFixture(origin, "/__fixture/sessions", sessions)).status).toBe(200);
 
     const before = Date.now();
-    const kept = await publish(origin, planner, true);
+    const kept = await publish(origin, planner, { dispatch_post: DELIVERED_POST, keep: true });
     expect(kept.status).toBe(202);
     const keptAnswer = (await kept.json()) as Record<string, unknown>;
     expect(keptAnswer).toEqual({
@@ -434,7 +439,7 @@ test("a role publish is kept while no live session holds the role, and every pub
       topic: `notifications.role.${planner}`,
     });
     expect(Number(keptAnswer.kept_until)).toBeGreaterThanOrEqual(before + 3_600_000);
-    const refused = await publish(origin, planner, false);
+    const refused = await publish(origin, planner, { dispatch_post: DELIVERED_POST, keep: false });
     expect(refused.status).toBe(404);
     expect(await refused.json()).toEqual({
       claim_revision: 0,
@@ -461,8 +466,13 @@ test("a role publish is kept while no live session holds the role, and every pub
 
     const recorded = await Bun.fetch(`${origin}/__fixture/publishes`);
     expect(await recorded.json()).toMatchObject([
-      { idempotency_key: `key-${planner}`, keep: true, topic: `notifications.role.${planner}` },
-      { keep: false, topic: `notifications.role.${planner}` },
+      {
+        dispatch_post: DELIVERED_POST,
+        idempotency_key: `key-${planner}`,
+        keep: true,
+        topic: `notifications.role.${planner}`,
+      },
+      { dispatch_post: DELIVERED_POST, keep: false, topic: `notifications.role.${planner}` },
       { topic: `notifications.role.${reviewer}` },
       { topic: "notifications.team.ops" },
     ]);
@@ -486,6 +496,105 @@ test("a role publish is kept while no live session holds the role, and every pub
     expect(
       (await putFixture(origin, "/__fixture/legion-answering", { answering: "yes" })).status
     ).toBe(400);
+  } finally {
+    await stop();
+  }
+});
+
+/** The end of the listener's no-holder error for a role publish that names no source session and
+ *  delivers no Dispatch post (`noSourceSessionNotKept` in
+ *  packages/envoy/cmd/listener/confirmed.go). */
+const NOTHING_KEPT =
+  "; nothing was kept, because the publish names no source_session: " +
+  "a kept copy that no session took within its hour would expire with no notice to its sender";
+
+// A publish that names no source session is kept for a role no live session holds only when it
+// delivers a Dispatch post (packages/envoy/cmd/listener/confirmed.go roleSend.keepTellsNobody):
+// without one, no dead letter could tell anyone its copy's hour ended, so it keeps nothing and is
+// answered the no-holder 404 - unclaimed, or holder_lapsed for a holder that is not live - its
+// error saying why, which is what a Dispatch that stopped sending the post would be answered. A
+// publish naming its sender's session is kept as before. A post the route does not take - on a
+// topic that is not a role's, from a source other than dispatch, beside a source_session, or
+// naming no comment or message by its lower-case UUID - is refused 400 naming dispatch_post
+// (packages/envoy/cmd/listener/api.go refuseDispatchPost). Every publish is recorded.
+test("a role publish naming no source session is kept only for a Dispatch post, and a post the route does not take is refused", async () => {
+  const { origin, stop } = await startFakeEnvoy();
+  try {
+    const planner = roleToken("e2elegion", "E2E-3", "planner");
+    const reviewer = roleToken("e2elegion", "E2E-3", "reviewer");
+    const sessions: FakeSession[] = [{ roles: [reviewer], session_id: "silent", title: "Silent" }];
+    expect((await putFixture(origin, "/__fixture/sessions", sessions)).status).toBe(200);
+    const lastSeen = 1762000000000;
+    const lapse = { last_seen: lastSeen, state: "unresponsive" };
+    expect((await putFixture(origin, "/__fixture/sessions/silent", lapse, "PATCH")).status).toBe(
+      200
+    );
+
+    const unclaimed = await publish(origin, planner, { keep: true });
+    expect(unclaimed.status).toBe(404);
+    expect(await unclaimed.json()).toEqual({
+      claim_revision: 0,
+      error: `no holder for role ${planner}${NOTHING_KEPT}`,
+      reason: "unclaimed",
+    });
+    const lapsed = await publish(origin, reviewer);
+    expect(lapsed.status).toBe(404);
+    expect(await lapsed.json()).toEqual({
+      claim_released: false,
+      error: `role ${reviewer} holder silent lapsed; claim retained (last seen ${lastSeen})${NOTHING_KEPT}`,
+      holder: "silent",
+      holder_state: "unresponsive",
+      last_seen: lastSeen,
+      reason: "holder_lapsed",
+    });
+
+    const agent = await publish(origin, planner, { source: "agent", source_session: "sender" });
+    expect(agent.status).toBe(202);
+    expect(await agent.json()).toMatchObject({ kept: true, kept_reason: "unclaimed" });
+    const comment = { ...DELIVERED_POST, kind: "comment" };
+    const keptComment = await publish(origin, planner, { dispatch_post: comment });
+    expect(keptComment.status).toBe(202);
+    expect(await keptComment.json()).toMatchObject({ kept: true, kept_reason: "unclaimed" });
+    const keptMessage = await publish(origin, reviewer, { dispatch_post: DELIVERED_POST });
+    expect(keptMessage.status).toBe(202);
+    expect(await keptMessage.json()).toMatchObject({
+      holder: "silent",
+      holder_state: "unresponsive",
+      kept: true,
+      kept_reason: "holder_lapsed",
+    });
+
+    const notAPost = (kind: string, id: string) =>
+      `dispatch_post names no Dispatch post: its kind must be comment or message and its id a UUID in lower case, not kind "${kind}" and id "${id}"`;
+    const upperCase = DELIVERED_POST.id.toUpperCase();
+    const refusals: [Record<string, unknown>, string][] = [
+      [
+        { dispatch_post: DELIVERED_POST, topic: "notifications.team.ops" },
+        "dispatch_post is taken only on a publish to a role's topic (notifications.role.<role>)",
+      ],
+      [
+        { dispatch_post: DELIVERED_POST, source: "agent" },
+        "dispatch_post is taken only on a publish whose source is dispatch",
+      ],
+      [
+        { dispatch_post: DELIVERED_POST, source_session: "sender" },
+        "dispatch_post is taken only on a publish that names no source_session",
+      ],
+      [
+        { dispatch_post: { id: DELIVERED_POST.id, kind: "issue" } },
+        notAPost("issue", DELIVERED_POST.id),
+      ],
+      [{ dispatch_post: { id: upperCase, kind: "message" } }, notAPost("message", upperCase)],
+      [{ dispatch_post: {} }, notAPost("", "")],
+    ];
+    for (const [fields, error] of refusals) {
+      const refused = await publish(origin, planner, fields);
+      expect(refused.status).toBe(400);
+      expect(await refused.json()).toEqual({ error, expected: ["dispatch_post"] });
+    }
+
+    const recorded = await Bun.fetch(`${origin}/__fixture/publishes`);
+    expect(await recorded.json()).toHaveLength(5 + refusals.length);
   } finally {
     await stop();
   }
