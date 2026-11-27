@@ -21,7 +21,7 @@
     "starlight-links-validator": "^0.26.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.14",
+    "@biomejs/biome": "2.5.15",
     "@playwright/test": "^1.63.0",
     "@types/bun": "latest",
     "typescript": "^5.3.0"

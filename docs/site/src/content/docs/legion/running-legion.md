@@ -903,9 +903,10 @@ What each part is for:
 - **`controller`** (optional) is who runs the project's controller: `operator` (the default), you,
   with `legion controller start`, or `daemon`, a pod the daemon launches and keeps running
   ([Start the controller](#start-the-controller)).
-- Workflow limits, all optional: `linger_hours` (72), `production_check_hours` (336: how long a
-  closed issue's production check runs before its last look, 14 days by default,
-  decimals allowed), `pod_update_grace_minutes` (30: how many minutes after it opens a pod's
+- Workflow limits, all optional: `linger_hours` (72), `production_check_hours` (336: how long an
+  issue's production check runs, counted from its open, before its last look, 14 days by default,
+  decimals allowed. The merge puts the issue in `verifying`, and the issue closes when its checks
+  pass, as [the close](/legion/legion/concepts/#the-close) says), `pod_update_grace_minutes` (30: how many minutes after it opens a pod's
   update round ends and the pod is replaced, whatever the roles answered and unless the operator's or the controller's
   suspension holds the round, decimals allowed),
   `pod_update_max_open_rounds` (how many issues may hold an open pod-update round at once) and
@@ -914,12 +915,15 @@ What each part is for:
   may be quiet — no issue of it moving and no agent of it stepping — before the project's
   controller is told once about that tree, decimals allowed; a tree with a role at work is never
   told, nor is one every quiet issue of which waits by design — on a person, on a `blocked_by`
-  link, on its open children (before its first phase or in `awaiting_children`), on the checks of its goal in `verifying`, or for a slot it needs and does not hold — while the project's line
+  link, on its open children (before its first phase or in `awaiting_children`), or for a slot it
+  needs and does not hold — while the project's line
   can still move — some issue of the project holds a slot and waits by no such rule, some claim of it is
   at work, or an issue of the line that waits on no other issue can start — nor, whether or not
-  the line can move, one whose only quiet issues gave their slot back to wait on work outside
-  their tree: a `blocked_by` link to an unfinished issue of any project, or an open child the
-  daemon has released. A wait on a child an architect has not released is no such wait. Where
+  the line can move, one whose only quiet issues wait in `verifying` for the checks of their goal
+  or gave their slot back to wait on work outside their tree: a `blocked_by` link to an
+  unfinished issue of any project, or an open child the daemon has released. So a root that
+  waits in `verifying` is never told, whatever else the project runs. Its tree is still told
+  where an issue beneath it has stopped. A wait on a child an architect has not released is no such wait. Where
   the issue waited on is in this project and its own tree has stopped, that tree is told; a
   wait on a blocker no tree runs (parked, never admitted, in `icebox`) brings no stall notice,
   and the waiting issue stands in `admission.waiting`, its `waitingLine` kind `waiting_on_issue`,
@@ -1464,7 +1468,7 @@ Closing the terminal leaves the project without one, and the daemon logs
    first step back, on their kept sessions, at its next first phase start, and each other role at
    the start of its phase. A claim whose session supervise's `forgetSession` has dropped comes back
    in a new session instead. The daemon suspends or ends claims only when an issue leaves the
-   workflow, when a claim moves to another tree, or for a production check after the issue is done.
+   workflow, when a claim moves to another tree, or for the checking role when a look of a production check ends.
    A phase start gives its task to that live claim. At boot the daemon
    resumes by rule a suspended worker that still owns its issue's phase and that the daemon itself suspended, but never an agent the
    operator or the project's controller suspended: a start for an agent either of them holds waits instead, until a resume lifts the hold. The operator's resume lifts either, and the controller's only its own. A notice for a root's
@@ -1654,8 +1658,8 @@ Closing the terminal leaves the project without one, and the daemon logs
   what is recorded, and the daemon resumes
   the architect itself on the pass that reads the answer, taking no further slot for it.
 
-  The `open production checks` line counts the closed issues whose production check is still
-  open and names the oldest: its pull request, merge commit, the role working it, which look it
+  The `open production checks` line counts the production checks still open and names the
+  oldest: its pull request, merge commit, the role working it, which look it
   is on, what woke that look (`merge`, `check wake` — the time the checking agent named for
   itself, or the retry of a look nobody reported — or `bound`) and when, and when its next look
   is due (`none` when no check is open).

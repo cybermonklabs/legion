@@ -13,8 +13,9 @@ import {
   admit,
   answerDecision,
   approve,
-  closeAtMerge,
+  closeOnChecks,
   DELIVERY_DATE,
+  enterVerifying,
   file,
   handOver,
   linkPullRequest,
@@ -250,11 +251,14 @@ const legion: ShotSet<LegionJourney> = {
     },
     {
       id: "signed-off",
-      alt: "The issue closed as Done at the merge, with the architect's acceptance on it.",
+      alt: "The issue closed as Done, with the architect's acceptance on it.",
       route: conversation,
       viewport: "desktop",
       theme: "light",
-      prepare: (journey) => closeAtMerge(journey),
+      prepare: async (journey) => {
+        await enterVerifying(journey);
+        await closeOnChecks(journey);
+      },
       ready: async (page) => {
         await expect(turns(page)).toContainText("Signed off.");
         await expect(page.getByRole("combobox", { name: "Status" })).toHaveValue("done");

@@ -23,6 +23,7 @@ import (
 // expiry of the linger of generation 5 closes the tree, so the reads below are seen to read a
 // close.
 func TestARootsCloseIsFencedOnItsOwnGeneration(t *testing.T) {
+	t.Parallel()
 	const root = "ACME-1"
 	pool := migratedPool(t)
 	ctx := context.Background()

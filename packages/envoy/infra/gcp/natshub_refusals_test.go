@@ -1,6 +1,7 @@
 package gcp_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -317,29 +318,36 @@ func TestNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 
 // Every machine id of the hub goes through core.CheckMachineID, machineId and dispatchMachineId
 // alike; core's own table holds every spelling it refuses. Here one row per field shows the hub
-// passes the refusal on as a core.InputError naming that field, and an interior space, which
-// both names turn into a hyphen, is accepted.
+// passes the refusal of an id holding '%', which can give another id's durable, on as a
+// core.InputError naming that field, and an interior space, which both names turn into a hyphen,
+// and a fully qualified host name, whose dots both names escape, are accepted.
 func TestNatsHubRefusesAMachineIdItsDurableCannotCarry(t *testing.T) {
-	const carry = ", which the listener's NATS names or the hub's grant entries cannot carry"
+	const escape = " holds '%', which starts an escape in the listener's NATS names, so another machine id can give the same names"
 	t.Run("machineId", func(t *testing.T) {
 		args := exampleArgs()
-		args.Users[0].MachineID = pulumi.StringRef("a.b")
-		requireMachineIDRefusal(t, args, "users[0].machineId", "users[0].machineId contains '.'"+carry)
+		args.Users[0].MachineID = pulumi.StringRef("a%2Eb")
+		requireMachineIDRefusal(t, args, "users[0].machineId", "users[0].machineId"+escape)
 	})
 	t.Run("dispatchMachineId", func(t *testing.T) {
 		args := exampleArgs()
-		args.Users[2].DispatchMachineID = pulumi.StringRef("a.b")
-		requireMachineIDRefusal(t, args, "users[2].dispatchMachineId", "users[2].dispatchMachineId contains '.'"+carry)
+		args.Users[2].DispatchMachineID = pulumi.StringRef("a%2Eb")
+		requireMachineIDRefusal(t, args, "users[2].dispatchMachineId", "users[2].dispatchMachineId"+escape)
 	})
 	t.Run("listenerMachineId", func(t *testing.T) {
 		args := exampleArgs()
-		args.Users[3].ListenerMachineID = pulumi.StringRef("a.b")
-		requireMachineIDRefusal(t, args, "users[3].listenerMachineId", "users[3].listenerMachineId contains '.'"+carry)
+		args.Users[3].ListenerMachineID = pulumi.StringRef("a%2Eb")
+		requireMachineIDRefusal(t, args, "users[3].listenerMachineId", "users[3].listenerMachineId"+escape)
 	})
 	t.Run("an id with an interior ordinary space is accepted", func(t *testing.T) {
 		args := exampleArgs()
 		args.Users[0].MachineID = pulumi.StringRef("example host a")
 		args.Users[2].DispatchMachineID = pulumi.StringRef("example dispatch host")
+		require.NoError(t, gcp.ResolveNatsHub(args))
+	})
+	t.Run("a fully qualified host name is accepted", func(t *testing.T) {
+		args := exampleArgs()
+		args.Users[0].MachineID = pulumi.StringRef("host-a.example.internal")
+		args.Users[3].ListenerMachineID = pulumi.StringRef("listener.example.internal")
 		require.NoError(t, gcp.ResolveNatsHub(args))
 	})
 }
@@ -398,6 +406,58 @@ func TestNatsHubRefusesMachineIdsWhoseDurablesCollide(t *testing.T) {
 		args.Users[0].MachineID = pulumi.StringRef("example-hub")
 		require.NoError(t, gcp.ResolveNatsHub(args))
 	})
+}
+
+// githubWebhook names the listener that receives GitHub's webhook, whose user alone may publish
+// GitHub's lane. Only a listenerMachineId user takes it: beside any other kind it is refused as a
+// core.InputError naming it. Beside listenerMachineId the rendered user publishes GitHub's lane,
+// and still not Dispatch's.
+func TestNatsHubTakesGitHubWebhookBesideAListenerMachineIdAlone(t *testing.T) {
+	_, daemonKey := testnats.User(t)
+	for _, row := range []struct {
+		kind string
+		user int
+	}{{"machineId", 0}, {"permissions", 1}, {"dispatchMachineId", 2}, {"daemon", 4}} {
+		t.Run("refused beside "+row.kind, func(t *testing.T) {
+			args := exampleArgs()
+			args.Users = append(args.Users, gcp.NATSUserArgs{Name: "example-daemon", NKey: daemonKey, Daemon: true})
+			args.Users[row.user].GitHubWebhook = true
+			input := fmt.Sprintf("users[%d].githubWebhook", row.user)
+			requireMachineIDRefusal(t, args, input, input+" is set beside "+row.kind+
+				"; it names the listener that receives GitHub's webhook, so only a listenerMachineId user takes it")
+		})
+	}
+	t.Run("taken beside listenerMachineId", func(t *testing.T) {
+		args := exampleArgs()
+		args.Users[3].GitHubWebhook = true
+		doc, _, err := gcp.CloudConfigOf(args)
+		require.NoError(t, err)
+		publish := renderedPublish(t, fileOf(t, doc, "/etc/nats/nats-server.conf"), keyD)
+		require.Contains(t, publish.Allow, "notifications.>")
+		require.Equal(t, []string{"notifications.dispatch.>"}, publish.Deny,
+			"the webhook listener's user may publish notifications.github.>, and not Dispatch's lane")
+	})
+	t.Run("unset beside listenerMachineId", func(t *testing.T) {
+		doc, _, err := gcp.CloudConfigOf(exampleArgs())
+		require.NoError(t, err)
+		publish := renderedPublish(t, fileOf(t, doc, "/etc/nats/nats-server.conf"), keyD)
+		require.Equal(t, []string{"notifications.dispatch.>", "notifications.github.>"}, publish.Deny)
+	})
+}
+
+// renderedPublish returns the publish rules of the user whose public key is nkey, read from its
+// line of the rendered authorization as the server reads them.
+func renderedPublish(t *testing.T, conf, nkey string) core.Rules {
+	t.Helper()
+	for _, line := range strings.Split(conf, "\n") {
+		if strings.Contains(line, `"nkey": "`+nkey+`"`) {
+			var user struct{ Permissions struct{ Publish core.Rules } }
+			require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(line)), &user), line)
+			return user.Permissions.Publish
+		}
+	}
+	t.Fatalf("the rendered authorization holds no user of key %s:\n%s", nkey, conf)
+	return core.Rules{}
 }
 
 // requireMachineIDRefusal resolves args, requiring exactly want as the refusal and the

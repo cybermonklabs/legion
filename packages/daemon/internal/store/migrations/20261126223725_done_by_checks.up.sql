@@ -48,7 +48,7 @@
 -- carries it, and when that change merged or a withdrawal ended it. close_reads holds each issue's
 -- newest read of its checks' states, with the moment the read began. The outbox takes close_read, the
 -- read of an issue's checks for the judge of its close, and close_wait_publish, the write of its
--- close-wait.md. The kind list is the merge holds' of 20261126110259 with the two, written whole, so
+-- close-wait.md. The kind list is the state events' of 20261126163320 with the two, written whole, so
 -- this list is the last word on any database: its version stands above every list beneath it.
 -- pending_task_deliveries.start_at is where a next change's first task starts the working copy (a
 -- supervise start's StartAt), kept on the delivery so a restart between the queue and the send keeps
@@ -84,17 +84,19 @@
 -- run time after the drop, with nothing to refuse the drop. Only then does it drop the four-argument
 -- design_news_current, the two tables and the new columns, put back outbox_kind_check and
 -- issues_phase_check without the new values, and delete this migration's schema_version row, so the
--- roll forward applies this file again. The kind list it puts back is the merge holds' of
--- 20261126110259, the last list the release before writes, so merge_holds_changed stands while
--- close_read and close_wait_publish go, after block A deleted every row of both. An issue on a next
--- change is an ordinary generation, which the release before runs to its merge and closes there.
+-- roll forward applies this file again. The kind list it puts back is the state events' of
+-- 20261126163320, the last list the release before writes, so merge_holds_changed and the three state
+-- kinds stand while close_read and close_wait_publish go, after block A deleted every row of both.
+-- An issue on a next change is an ordinary generation, which the release before runs to its merge
+-- and closes there.
 --
 -- This migration was numbered 20261125004932 until the forward merge of 2026-11-26 brought in
--- 20261126110259, which stood above it. Its version now stands above every migration main carries
--- at that merge, so each list and each function it writes is the last word on a fresh database and
--- on a database main migrated alike: Migrate applies every unrecorded migration in version order,
--- and a migration of main below this one that wrote outbox_kind_check, issues_phase_check or one of
--- the four functions again would otherwise be applied after this one on a database main migrated. A
+-- 20261126110259, which stood above it. Its version stands above every migration main carries at
+-- that merge and at the later ones, 20261126163320 among them, so each list and each function it
+-- writes is the last word on a fresh database and on a database main migrated alike: Migrate
+-- applies every unrecorded migration in version order, and a migration of main below this one that
+-- wrote outbox_kind_check, issues_phase_check or one of the four functions again would otherwise be
+-- applied after this one on a database main migrated. A
 -- database a build of this branch migrated before this merge records the older version, and it is a
 -- test's own, to make again.
 --
@@ -155,7 +157,7 @@
 -- alter table production_checks drop column if exists relook_seq, drop column if exists generation;
 -- alter table pending_task_deliveries drop column if exists start_at;
 -- alter table outbox drop constraint if exists outbox_kind_check;
--- alter table outbox add constraint outbox_kind_check check (kind in ('dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed', 'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake', 'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release', 'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask', 'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record', 'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed', 'merge_holds_changed'));
+-- alter table outbox add constraint outbox_kind_check check (kind in ('dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed', 'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake', 'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release', 'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask', 'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record', 'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed', 'merge_holds_changed', 'state_change', 'state_admission', 'state_boot'));
 -- alter table issues drop constraint if exists issues_phase_check;
 -- alter table issues add constraint issues_phase_check check (phase in ('admitted', 'awaiting_person', 'awaiting_children', 'planning', 'implementing', 'testing', 'reviewing', 'accepting', 'retro', 'merging', 'done', 'held'));
 -- delete from schema_version where version = 20261126223725;
@@ -236,7 +238,7 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
   'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
-  'merge_holds_changed', 'close_read', 'close_wait_publish'));
+  'merge_holds_changed', 'state_change', 'state_admission', 'state_boot', 'close_read', 'close_wait_publish'));
 
 -- design_news_current is the one rule of which news of a delivery's copy still counts, now read on
 -- the tree's run: an item or an opening rendered for told_issue in a tree whose run stood at
