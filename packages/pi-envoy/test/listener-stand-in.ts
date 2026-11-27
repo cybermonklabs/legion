@@ -200,7 +200,6 @@ export const natsState = {
   controlsByTopic: new Map<string, SubscriptionControls[]>(),
   published: [] as { readonly subject: string; readonly data: Uint8Array | undefined }[],
   onPublish: undefined as ((subject: string) => void) | undefined,
-  failPublishes: 0,
   failSubscribes: 0,
   connectedNames: [] as string[],
   /** What each connect was given: its servers, and whether it carried an nkey authenticator. */
@@ -353,15 +352,14 @@ export const natsStandInConnect = async (options: {
       }
     },
     publish: (subject: string, data?: Uint8Array) => {
-      if (natsState.failPublishes > 0) {
-        natsState.failPublishes -= 1;
-        throw new Error("PUBLISH_FAILED");
-      }
       if (fromEndedRow()) return;
       natsState.published.push({ subject, data });
       natsState.onPublish?.(subject);
     },
     subscribe: (topic: string) => {
+      // An ended row's late subscribe takes nothing: not the failure the row running now armed,
+      // and no place in that row's timeline or subscriptions.
+      if (fromEndedRow()) return endedRowSubscription();
       natsState.timeline.push(`subscribe ${topic}`);
       if (natsState.failSubscribes > 0) {
         natsState.failSubscribes -= 1;
@@ -445,6 +443,21 @@ export const natsStandInConnect = async (options: {
   return made;
 };
 
+/** What an ended row's late subscribe is given: a subscription that delivers nothing and ends
+ *  when it is unsubscribed, as a subscription the server never answers would. */
+function endedRowSubscription(): Subscription {
+  const unsubscribed = Promise.withResolvers<void>();
+  return {
+    unsubscribe: () => unsubscribed.resolve(),
+    [Symbol.asyncIterator]: () => ({
+      next: async () => {
+        await unsubscribed.promise;
+        return { done: true, value: undefined };
+      },
+    }),
+  };
+}
+
 /** The stream id every registration answer and relay frame of these suites names. */
 export const TEST_STREAM_ID = "stream-test";
 
@@ -512,7 +525,6 @@ export function resetNatsStandIn(): void {
   natsState.heldConnect = undefined;
   natsState.published.length = 0;
   natsState.onPublish = undefined;
-  natsState.failPublishes = 0;
   natsState.subscriptions.clear();
   natsState.controls.clear();
   registeredTopics.clear();
