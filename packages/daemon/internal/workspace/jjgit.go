@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -73,8 +74,10 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 	// own error is propagated: exec reports a command whose Cancel succeeded and which then exited
 	// cleanly as the context's error, which is what a git that handles its SIGTERM and exits 0
 	// inside the grace does.
+	// FAULT (W-ws1 stop): once the budget has passed, stop what is left of the group after the wait, and a stop that found a member counts as timed out.
 	timedOut := (killed() && errors.Is(ctx.Err(), context.DeadlineExceeded)) ||
-		(cmd.Process == nil && errors.Is(err, context.DeadlineExceeded))
+		(cmd.Process == nil && errors.Is(err, context.DeadlineExceeded)) ||
+		(cmd.Process != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) == nil)
 	runErr := procgroup.Err(err)
 	if runErr == nil && !timedOut && cmd.ProcessState.ExitCode() == 0 {
 		return strings.TrimSpace(stdout.String()), nil

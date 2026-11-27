@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -347,7 +348,9 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	// procgroup.Err passes context.DeadlineExceeded through, so a git that handles its SIGTERM,
 	// removes its lock and exits 0 inside the grace would otherwise be reported as a command that
 	// could not be run rather than as the timeout it is.
-	result.TimedOut = killed() && errors.Is(bounded.Err(), context.DeadlineExceeded)
+	// FAULT (W-ws1 stop): once the budget has passed, stop what is left of the group after the wait, and a stop that found a member counts as timed out.
+	result.TimedOut = killed() && errors.Is(bounded.Err(), context.DeadlineExceeded) ||
+		errors.Is(bounded.Err(), context.DeadlineExceeded) && child.Process != nil && syscall.Kill(-child.Process.Pid, syscall.SIGTERM) == nil
 	if runErr := procgroup.Err(err); runErr != nil && !result.TimedOut {
 		return result, runErr
 	}
