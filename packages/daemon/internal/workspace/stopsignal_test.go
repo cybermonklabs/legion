@@ -84,7 +84,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		ctx := budgetPassedOnceExists(t, ready)
 		// The lock is taken before the command reports that it is running, so a lock that is gone
 		// at the end is one the command's own SIGTERM handler removed.
-		script := testexec.MarkStart(`"$3"`) + `; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; ` + markWaited("self", `"$4"`) + `; : >"$2"; ` + commandLives
+		script := testexec.MarkStart(`"$3"`) + `; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; sleep 1.5; ` + markWaited("self", `"$4"`) + `; : >"$2"; ` + commandLives
 
 		call := calling(t)
 		started := time.Now()
@@ -153,7 +153,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		// test's cleanup removes, or until this test process is gone: never for a span of its own,
 		// so a helper nothing stopped is still there however long the row waits for it, and a run
 		// that waits on its pipes for ever fails the wait below rather than ending with the helper.
-		helper := `trap '' TERM; ` + waitInto("waited", "self") + `; printf '%s\n' "$waited" >"$3"; : >"$2"; while [ -d '` + dir + `' ] && kill -0 ` + strconv.Itoa(os.Getpid()) + ` 2>/dev/null; do sleep 0.05; done`
+		helper := `trap '' TERM; sleep 2.5; ` + waitInto("waited", "self") + `; printf '%s\n' "$waited" >"$3"; : >"$2"; while [ -d '` + dir + `' ] && kill -0 ` + strconv.Itoa(os.Getpid()) + ` 2>/dev/null; do sleep 0.05; done`
 		script := testexec.MarkStart(`"$6"`) + `; ` + waitInto("forked", "self") + `; sh -c "$2" sh "$3" "$4" "$5" & read -r word <"$4"; ` + waitInto("heard", "self") + `; trap '' TERM; ` + markWaited("self", `"$7"`, `"$forked"`, `"$heard"`) + `; : >"$1"; ` + commandLives
 
 		returned := make(chan error, 1)
@@ -204,7 +204,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		lock, ready, mark := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready"), filepath.Join(dir, "started")
 		readyAt := filepath.Join(dir, "ready-at")
 		fakeGit := filepath.Join(dir, "git")
-		script := "#!/bin/sh\n" + testexec.MarkStart(`"`+mark+`"`) + "\n: >\"" + lock + "\"\ntrap 'rm -f \"" + lock + "\"; exit 0' TERM\n" + markWaited("self", `"`+readyAt+`"`) + "\n: >\"" + ready + "\"\n" + commandLives + "\n"
+		script := "#!/bin/sh\n" + testexec.MarkStart(`"`+mark+`"`) + "\n: >\"" + lock + "\"\ntrap 'rm -f \"" + lock + "\"; exit 0' TERM\nsleep 1.5\n" + markWaited("self", `"`+readyAt+`"`) + "\n: >\"" + ready + "\"\n" + commandLives + "\n"
 		if err := testexec.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
