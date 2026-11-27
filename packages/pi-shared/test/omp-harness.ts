@@ -780,11 +780,12 @@ export interface Refusal {
    * error text as `Refusal (<category>): <explanation>`. */
   readonly category?: string;
   readonly explanation?: string;
-  /** Text the model streamed before the refusal, committed by the time it came. The host walks
-   * its own fallback chain for a refusal that follows no output and ends the turn where it is for
-   * one that follows text (`coding-agent/src/session/turn-recovery.ts:2177-2211` and `:3605-3615`
-   * at the pinned tag: committed text is replay-unsafe), so this is the one thing that decides
-   * which of the two walks a case proves. */
+  /** Text the model streamed before the refusal, committed by the time it came. The host sends a
+   * refusal that follows no output to the same model up to two more times and then walks its own
+   * fallback chain, and ends the turn where it is for one that follows text
+   * (`coding-agent/src/session/turn-recovery.ts:2177-2211` and `:3605-3615` at the pinned tag:
+   * committed text is replay-unsafe), so this is the one thing that decides which of the two
+   * walks a case proves. */
   readonly text?: string;
 }
 

@@ -1541,6 +1541,7 @@ Every deployment sets `retry.fallbackRevertPolicy: never` beside its `retry.fall
 Without it Oh My Pi returns the session to a model it suppressed itself, for a rate limit or for an error it could not classify, as soon as that suppression ends, and its floor for one it cannot time is five minutes, well inside the plugin's hour.
 For a refusal the setting changes nothing, and the reason differs by path.
 A refusal that lands before the model has sent any text is one Oh My Pi walks the chain for itself, and it pins the fallback it walks to, which the revert leaves alone however it is set; that pin ends at the plugin's timed return, a `setModel`, which clears it and puts the session back on the role's own model.
+Before that walk, the pinned build sends a classifier refusal (Anthropic's `refusal` stop) to the model that refused it up to two more times, at once and inside `retry.maxRetries`; an OpenAI `cyber_policy` refusal it never sends again.
 A refusal that lands after the text Oh My Pi leaves where it is, so the revert has no fallback of its own to move: there the plugin's own `setModel` walks the chain, and the same timed return brings the session back.
 `scripts/e2e/refusal-fallback-omp.sh` measures the difference on a ten-minute cooldown: with the setting, no request at all reaches the refused model between the fifth minute and the tenth, and the first request after the tenth goes to that model again.
 The same proof has two rate-limited panes, each with `retry-after: 60`.
