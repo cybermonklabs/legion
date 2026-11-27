@@ -16,6 +16,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"slices"
@@ -453,6 +454,241 @@ func TestAMergersAskOwedAgainBeforeItsRowEndsReachesItsNewLaunch(t *testing.T) {
 		})
 	})
 	askToldOnce(t, pool, publisher, ask, machine.Claim().Generation)
+}
+
+// The lines an ask's row the fence refuses is read by: what it logs once its end commits
+// (lateMergeForwardAsk), what every other late row logs (outlived), and what an ask's end logs
+// where it sent the ask again (endMergeForwardAsk).
+const (
+	lateAskLine    = "outbox merge-forward ask of an earlier run or phase entry of its issue finished undelivered"
+	outlivedLine   = "outbox row of an earlier run or phase entry of its issue; finished without acting"
+	askedAgainLine = "outbox merge-forward ask sent again, to a launch its row did not reach"
+)
+
+// queuedAsk is one merge-forward row of LEGION-208 as the outbox holds it: its id, and its payload
+// with the run and the phase entry it was queued at.
+type queuedAsk struct {
+	id      int64
+	payload record.MergeForwardMessage
+}
+
+// queuedAsks is every merge-forward row of LEGION-208, oldest first.
+func queuedAsks(t *testing.T, pool *store.Pool) []queuedAsk {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox where issue = 'LEGION-208' and kind = $1 order by id`,
+		string(record.OutboxKindMergeForward))
+	if err != nil {
+		t.Fatalf("read the merge-forward rows: %v", err)
+	}
+	defer rows.Close()
+	var asks []queuedAsk
+	for rows.Next() {
+		var row record.OutboxRow
+		if err := rows.Scan(&row.ID, &row.Kind, &row.Issue, &row.Payload); err != nil {
+			t.Fatalf("scan a merge-forward row: %v", err)
+		}
+		asks = append(asks, queuedAsk{id: row.ID, payload: mustDecode(t, row).(record.MergeForwardMessage)})
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the merge-forward rows: %v", err)
+	}
+	return asks
+}
+
+// recordedPullRequest is LEGION-208's pull request as the record holds it.
+func recordedPullRequest(t *testing.T, runner *outbox, pool *store.Pool) record.PullRequest {
+	t.Helper()
+	var pr *record.PullRequest
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) (err error) {
+		pr, err = runner.records.PullRequest(ctx, tx, "LEGION-208")
+		return err
+	}); err != nil || pr == nil {
+		t.Fatalf("read the pull request of LEGION-208: %+v, %v", pr, err)
+	}
+	return *pr
+}
+
+// moveOn writes LEGION-208 and its pull request as move leaves them, and the phases row move
+// answers, which the start of the phase it moves into raises, in one transaction.
+func moveOn(t *testing.T, runner *outbox, pool *store.Pool, move func(*record.Issue, *record.PullRequest) *record.PhaseRow) {
+	t.Helper()
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := runner.records.Issue(ctx, tx, "LEGION-208")
+		if err != nil || issue == nil {
+			return fmt.Errorf("read LEGION-208: %+v, %w", issue, err)
+		}
+		pr, err := runner.records.PullRequest(ctx, tx, "LEGION-208")
+		if err != nil || pr == nil {
+			return fmt.Errorf("read the pull request of LEGION-208: %+v, %w", pr, err)
+		}
+		started := move(issue, pr)
+		if err := runner.records.PutIssue(ctx, tx, *issue); err != nil {
+			return err
+		}
+		if err := runner.records.PutPullRequest(ctx, tx, *pr); err != nil {
+			return err
+		}
+		if started == nil {
+			return nil
+		}
+		return runner.records.PutPhase(ctx, tx, *started)
+	}); err != nil {
+		t.Fatalf("move LEGION-208 on: %v", err)
+	}
+}
+
+// The implementer is asked to merge the base forward while the issue stays in testing, and its
+// claim was released before the ask's row was delivered: the row wakes it, and the woken launch
+// comes ready while the row is still queued, so that ready sends nothing and leaves the ask to the
+// row (the workflow's askAgainAtLaunch). Then the issue moves on before the row runs again, to a
+// later phase entry or a new run, where the fence refuses the row (record.LateAt, decision 10 of
+// dispatch://INFRA-4730): it is never published, and it records no launch as told. It still ends
+// through the ask's end (lateMergeForwardAsk): where the issue and its pull request still owe the
+// implementer an ask, one new row of it is queued at the fence the issue stands at, for the ready
+// launch, and that launch is told it once; where they owe none, nothing is queued or told. A row
+// the fence finished without that end, as it finished every late row before, left the ready
+// launch never asked while the ask stayed owed.
+func TestAnAskOfAnEarlierEntryOrRunIsSentAgainToTheReadyLaunchOnlyWhileOwed(t *testing.T) {
+	t.Parallel()
+	// intoReviewing is the move forward into reviewing, whose start raises the reviewer's entry;
+	// the implementer's ask made in testing stays owed there.
+	intoReviewing := func(issue *record.Issue, _ *record.PullRequest) *record.PhaseRow {
+		issue.Phase, issue.Status = phase.Reviewing, workflow.PhaseStatus(phase.Reviewing)
+		return &record.PhaseRow{Issue: issue.Key, Role: claim.RoleReviewer, Entry: 1}
+	}
+	for _, tc := range []struct {
+		name string
+		move func(*record.Issue, *record.PullRequest) *record.PhaseRow
+		// owed is the ask the issue then owes the implementer, as its row says it with no launch
+		// and no fence, nil where it owes none.
+		owed *record.MergeForwardMessage
+	}{
+		{
+			name: "an ask still owed at a later phase entry is sent once to the ready launch",
+			move: intoReviewing,
+			owed: &record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: owedAskHead, Base: "main",
+				Phase: phase.Reviewing, PullRequest: 86, Why: record.ConflictCheckNotGreen},
+		},
+		{
+			name: "an ask that landed before a later phase entry is sent to nobody",
+			move: func(issue *record.Issue, pr *record.PullRequest) *record.PhaseRow {
+				landed := *pr.MergeForward
+				landed.Landed, pr.HeadSHA = "sha-2", "sha-2"
+				pr.MergeForward = &landed
+				return intoReviewing(issue, pr)
+			},
+		},
+		{
+			name: "an ask of an earlier run is sent once to the ready launch only as the new run's own ask",
+			move: func(issue *record.Issue, pr *record.PullRequest) *record.PhaseRow {
+				issue.Generation++
+				pr.MergeForward = &record.MergeForward{Head: owedAskHead, Base: "main", Role: claim.RoleImplementer, Phase: phase.Testing,
+					Why: record.ConflictRulesUnread, AskedAt: time.Now()}
+				return nil
+			},
+			owed: &record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: owedAskHead, Base: "main",
+				Phase: phase.Testing, PullRequest: 86, Why: record.ConflictRulesUnread},
+		},
+		{
+			name: "an ask of an earlier run whose new run owes none is sent to nobody",
+			move: func(issue *record.Issue, pr *record.PullRequest) *record.PhaseRow {
+				issue.Generation++
+				pr.MergeForward = nil
+				return nil
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner, pool, publisher, machine := wokenByTheAsk(t)
+			logs := &syncBuffer{}
+			runner.log = slog.New(slog.NewJSONHandler(logs, nil))
+			queued := queuedAsks(t, pool)
+			if len(queued) != 1 {
+				t.Fatalf("after the ask's first attempt the outbox holds the asks %+v, want its one row", queued)
+			}
+			old := queued[0]
+			comesUp(t, machine, true)
+			launch := machine.Claim().Generation
+			if asks := queuedAsks(t, pool); len(asks) != 1 || asks[0].id != old.id {
+				t.Fatalf("after the ready of launch %d the outbox holds the asks %+v, want row %d alone: the ready leaves the ask to it", launch, asks, old.id)
+			}
+			moveOn(t, runner, pool, tc.move)
+			now, err := runner.fenceOf(context.Background(), "LEGION-208", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !record.LateAt(now, old.payload) {
+				t.Fatalf("after the move LEGION-208 stands at %+v, where the ask's row of %+v is not late", now, old.payload)
+			}
+			moved := recordedPullRequest(t, runner, pool).MergeForward
+			publisher.setAbsent()
+			attempts, _ := publisher.snapshot()
+
+			drainAt(t, runner, 10*time.Minute, "the late row's attempt")
+			if published, _ := publisher.snapshot(); published != attempts {
+				t.Errorf("the late row's attempt made %d publishes, want none: the fence refuses the row", published-attempts)
+			}
+			if sent := recordedSentLaunch(t, pool); sent != 0 {
+				t.Errorf("after the late row's end the record's ask names launch %d as told, want none: the row reached no launch", sent)
+			}
+			var fresh int64
+			asks := queuedAsks(t, pool)
+			if tc.owed == nil {
+				if len(asks) != 0 {
+					t.Errorf("after the late row's end the outbox holds the asks %+v, want none: the issue and its pull request owe no ask", asks)
+				}
+			} else {
+				want := *tc.owed
+				want.SentLaunch, want.Generation, want.Entry = launch, now.Generation, now.Entry
+				if len(asks) != 1 || asks[0].id == old.id || asks[0].payload != want {
+					t.Errorf("after the late row's end the outbox holds the asks %+v, want one new row of %+v: the ask still owed, at the fence the issue stands at, for the ready launch %d; without it nothing asks that launch",
+						asks, want, launch)
+				} else {
+					fresh = asks[0].id
+				}
+			}
+			late := loggedLines(t, logs.String(), lateAskLine)
+			if len(late) != 1 || late[0]["row"] != float64(old.id) || late[0]["current_generation"] != float64(now.Generation) ||
+				late[0]["current_entry"] != float64(now.Entry) {
+				t.Errorf("the late row logged %v, want one line naming row %d and the fence %+v the issue stands at", late, old.id, now)
+			}
+			for _, line := range loggedLines(t, logs.String(), outlivedLine) {
+				if line["row"] == float64(old.id) {
+					t.Errorf("the late row logged %v, want no line that it finished without acting: its end settled the ask", line)
+				}
+			}
+			sentAgain := 0
+			if tc.owed != nil {
+				sentAgain = 1
+			}
+			if again := loggedLines(t, logs.String(), askedAgainLine); len(again) != sentAgain {
+				t.Errorf("the late row's end logged %v, want the ask sent again %d times", again, sentAgain)
+			}
+
+			drainAt(t, runner, 20*time.Minute, "the attempt after the late row's end")
+			_, delivered := publisher.snapshot()
+			if rows := outboxRowsOfKind(t, pool, "LEGION-208", record.OutboxKindMergeForward); rows != 0 {
+				t.Errorf("the outbox holds %d merge-forward rows of LEGION-208, want none", rows)
+			}
+			if tc.owed == nil {
+				if len(delivered) != 0 {
+					t.Errorf("the implementer was told %+v, want nothing", delivered)
+				}
+				if after := recordedPullRequest(t, runner, pool).MergeForward; !reflect.DeepEqual(after, moved) {
+					t.Errorf("the record's ask is %+v, want it as the move left it, %+v", after, moved)
+				}
+				return
+			}
+			if want := tc.owed.Message("LEGION-208", record.PullRequest{Repo: "acme/widgets"}); len(delivered) != 1 ||
+				delivered[0].message != want || delivered[0].key != record.OutboxKey(fresh) || delivered[0].key == record.OutboxKey(old.id) {
+				t.Errorf("the implementer was told %+v, want the ask still owed once, %q, under the new row's key %s and never the late row's %s",
+					delivered, want, record.OutboxKey(fresh), record.OutboxKey(old.id))
+			}
+			if sent := recordedSentLaunch(t, pool); sent != launch {
+				t.Errorf("the record's ask names launch %d as told, want launch %d, which the new row reached", sent, launch)
+			}
+		})
+	}
 }
 
 // endHeld is a record.Store that runs before once, inside the transaction that ends an outbox row,

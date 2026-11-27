@@ -235,9 +235,9 @@ type outbox struct {
 	controllerLaunched bool
 	// beforeUndeliveredEnd, where a test sets it, runs on a held message's row between the read
 	// that ends the row undelivered - the workflow's rule of a merge-forward message
-	// (mergeForwardMessage), or a claim that failed or retired (deliverHeld) - and the end
-	// (endUndelivered), so the test can make something come in between. nil runs nothing, and no
-	// production path sets it.
+	// (mergeForwardMessage), a claim that failed or retired (deliverHeld), or the fence of a
+	// merge-forward ask (lateMergeForwardAsk) - and the end (endUndelivered), so the test can make
+	// something come in between. nil runs nothing, and no production path sets it.
 	beforeUndeliveredEnd func(record.OutboxRow)
 	// The lane registry (outbox_lanes.go). mu guards running, laneCtx and lanes; running is true
 	// between Run's start and its stop, laneCtx is Run's context, which every lane runs under, and
@@ -1039,16 +1039,21 @@ func waitsForTheRoute(row record.OutboxRow) bool {
 // run is the executor of row's kind. An effect whose executor follows no protocol of its own
 // across its run — a write to Dispatch, a message to a role, a seed, the branch, a production
 // check's row — is checked against its issue's fence first (outlived, fencedHere): a late one of
-// an earlier run or phase entry finishes there without acting. The notice, the supervise stops,
-// the pod's suspension, workspace check and release check theirs where they act, each in its
-// executor.
+// an earlier run or phase entry finishes there without acting. A late merge-forward ask acts no
+// more than any other late row, but it ends through the ask's own end, which the ready of the
+// asked role leaves the ask to (lateMergeForwardAsk). The notice, the supervise stops, the pod's
+// suspension, workspace check and release check theirs where they act, each in its executor.
 func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 	payload, err := record.DecodeOutboxPayload(row)
 	if err != nil {
 		return fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 	}
 	if fencedHere(payload) {
-		if late, err := r.outlived(ctx, row, payload); err != nil || late {
+		if ask, isAsk := payload.(record.MergeForwardMessage); isAsk && ask.Step == record.MergeForwardAsk {
+			if late, err := r.lateMergeForwardAsk(ctx, row, ask); err != nil || late {
+				return err
+			}
+		} else if late, err := r.outlived(ctx, row, payload); err != nil || late {
 			return err
 		}
 	}
@@ -5234,21 +5239,33 @@ func (r *outbox) fenceOf(ctx context.Context, issue string, withPod bool) (recor
 	return fence, nil
 }
 
-// outlived says whether payload, row's effect, queued at the fence it names (record.FenceOf),
-// does nothing to its issue as the record holds it now (record.LateAt), which finishes without
-// acting (R17 and R20 of dispatch://INFRA-3320): an effect that acts, of an earlier run or phase
-// entry, and a notice of an earlier run, since a notice's delivery reads its run alone (the
-// architect's ruling of 2026-11-21 on dispatch://INFRA-3320). It logs the finish. A kind that
-// carries no fence, and a row that names none (one a release before this one queued), is
-// outlived by nothing, and so is every row of an outbox with no store (a test's, as an outbox
-// with no supervisor publishes as before): it holds no record to read a fence from.
-func (r *outbox) outlived(ctx context.Context, row record.OutboxRow, payload record.OutboxPayload) (bool, error) {
+// lateAt answers the fence payload, row's effect, was queued at (record.FenceOf), the fence row's
+// issue stands at now (fenceOf), and whether payload does nothing to the issue there
+// (record.LateAt): the one read of a row's fence before its executor runs, which outlived and a
+// merge-forward ask's late end (lateMergeForwardAsk) each make once and log in their own words. A
+// kind that carries no fence, and a row that names none (one a release before this one queued), is
+// late at nothing, and so is every row of an outbox with no store (a test's, as an outbox with no
+// supervisor publishes as before): it holds no record to read a fence from. For none of them is
+// anything read.
+func (r *outbox) lateAt(ctx context.Context, row record.OutboxRow, payload record.OutboxPayload) (queued, now record.Fence, late bool, err error) {
 	queued, carries := record.FenceOf(payload)
 	if !carries || queued.Generation == 0 && queued.Entry == 0 || r.pool == nil {
-		return false, nil
+		return queued, record.Fence{}, false, nil
 	}
-	now, err := r.fenceOf(ctx, row.Issue, false)
-	if err != nil || !record.LateAt(now, payload) {
+	if now, err = r.fenceOf(ctx, row.Issue, false); err != nil {
+		return queued, record.Fence{}, false, err
+	}
+	return queued, now, record.LateAt(now, payload), nil
+}
+
+// outlived says whether payload, row's effect, queued at the fence it names, does nothing to its
+// issue as the record holds it now (lateAt), which finishes without acting (R17 and R20 of
+// dispatch://INFRA-3320): an effect that acts, of an earlier run or phase entry, and a notice of an
+// earlier run, since a notice's delivery reads its run alone (the architect's ruling of 2026-11-21
+// on dispatch://INFRA-3320). It logs the finish.
+func (r *outbox) outlived(ctx context.Context, row record.OutboxRow, payload record.OutboxPayload) (bool, error) {
+	queued, now, late, err := r.lateAt(ctx, row, payload)
+	if err != nil || !late {
 		return false, err
 	}
 	r.log.Info("outbox row of an earlier run or phase entry of its issue; finished without acting", "row", row.ID,

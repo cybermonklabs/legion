@@ -912,6 +912,15 @@ func TestALateEffectOfAnEarlierRunOrPhaseEntryDoesNothing(t *testing.T) {
 				if queuedAt.Generation != 1 || (queuedAt.Entry == 0) != effect.runOnly {
 					t.Fatalf("the %s row names %+v, want the run its issue stands at and, unless the kind is the run's alone, the phase entry", effect.name, queuedAt)
 				}
+				if _, isAsk := effect.payload.(record.MergeForwardMessage); isAsk {
+					// A late merge-forward ask ends through the ask's own end (lateMergeForwardAsk),
+					// which deletes the row under the lease its attempt holds, reads the asked role's
+					// claim and settles the ask at the clock's moment: the row runs leased, as a lane
+					// runs it, over a runner with a clock that supervises the issue's claims and still
+					// has no Envoy publisher.
+					queued.LeaseToken = leaseOutboxRow(t, rig.pool, queued.ID)
+					runner.supervisor, runner.now = rig.sup, time.Now
+				}
 				when.move(t, rig)
 				err := runner.execute(ctx, queued)
 				// A kind that is the run's alone (the gate's seeds, the branch, the production

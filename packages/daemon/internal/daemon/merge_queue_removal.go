@@ -290,9 +290,10 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 
 // endUndelivered is the end of row, a held message's, undelivered: the test's hook between the read
 // that ends it and the end (beforeUndeliveredEnd), then end, where the message has one (a
-// merge-forward ask's, endMergeForwardAsk), as undelivered to no launch. Both ways a held message
-// ends undelivered take it: the workflow's rule of a merge-forward message (mergeForwardMessage)
-// and a claim that failed or retired (deliverHeld).
+// merge-forward ask's, endMergeForwardAsk), as undelivered to no launch. Every way a held message
+// ends undelivered takes it: the workflow's rule of a merge-forward message (mergeForwardMessage),
+// a claim that failed or retired (deliverHeld), and the fence that refuses a merge-forward ask of
+// an earlier run or phase entry (lateMergeForwardAsk).
 func (r *outbox) endUndelivered(ctx context.Context, row record.OutboxRow, end func(context.Context, bool, uint64) error) error {
 	if r.beforeUndeliveredEnd != nil {
 		r.beforeUndeliveredEnd(row)

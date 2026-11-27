@@ -39,8 +39,9 @@ import (
 // deliverHeld's, as it is a merge-queue removal's.
 //
 // A row of an ask ends in a transaction of its own that holds the fact lock (endMergeForwardAsk),
-// whether it ends undelivered or delivered, because the ready of a launch of the asked role sends
-// the ask only where no row of it is queued, and leaves the ask to such a row (the workflow's
+// whether it ends undelivered or delivered, or late at its issue's fence before this executor
+// runs (lateMergeForwardAsk), because the ready of a launch of the asked role sends the ask only
+// where no row of it is queued, and leaves the ask to such a row (the workflow's
 // askAgainAtLaunch). Every read this attempt ends the row on is made before the end lands - the
 // rule above, the claim deliverHeld reads failed, the launch the publish reached - and the role
 // can be relaunched and its new launch come ready in between. So the end reads the claim again
@@ -72,7 +73,7 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 	if issue == nil {
 		left = "the issue is not recorded"
 	}
-	attributes := []any{"row", row.ID, "issue", row.Issue, "role", payload.Role, "step", payload.Step, "head", payload.Head}
+	attributes := mergeForwardAttributes(row, payload)
 	var end func(context.Context, bool, uint64) error
 	if payload.Step == record.MergeForwardAsk {
 		end = func(ctx context.Context, delivered bool, told uint64) error {
@@ -91,6 +92,49 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 		attributes: attributes,
 		claimEnded: "outbox merge-forward message finished undelivered: the role's claim has failed or retired",
 		delivered:  "outbox merge-forward message delivered", end: end})
+}
+
+// mergeForwardAttributes is what each line about row, a row of payload, names.
+func mergeForwardAttributes(row record.OutboxRow, payload record.MergeForwardMessage) []any {
+	return []any{"row", row.ID, "issue", row.Issue, "role", payload.Role, "step", payload.Step, "head", payload.Head}
+}
+
+// lateMergeForwardAsk says whether row, a row of ask, is of an earlier run or phase entry of its
+// issue (lateAt), and ends such a row undelivered through the ask's own end (endUndelivered,
+// endMergeForwardAsk), where outlived leaves every other late row to its settle. The fence refuses
+// the row as it refuses every late row (decision 10 of dispatch://INFRA-4730): it is not
+// published, and its end records no launch as told, since it reached none. But the ready of each
+// launch of the asked role leaves the ask to a row of it still queued, this row among them (the
+// workflow's askAgainAtLaunch), and a move asks nobody again while the ask stays owed
+// (mergeForwardOnEntry), so a late row ended at its settle would leave that launch never asked,
+// and the worker the ask holds waiting until the asked role launches again. The end deletes the
+// row under the lease this attempt holds, reads the asked role's claim under the fact lock, and
+// has the workflow send the ask, as a new row at the fence the issue stands at, to that claim's
+// launch where the record's ask is still owed where the issue stands now and that launch was not
+// told it (workflow.MergeForwardAskEnded). An ask a later move dropped, or one that landed or was
+// withdrawn, is sent to nobody, and so is the ask of a run the issue has left, which went with
+// that run (record.Store.ClearGeneration). The line this logs is written once the end commits.
+func (r *outbox) lateMergeForwardAsk(ctx context.Context, row record.OutboxRow, ask record.MergeForwardMessage) (bool, error) {
+	queued, now, late, err := r.lateAt(ctx, row, ask)
+	if err != nil || !late {
+		return false, err
+	}
+	if r.supervisor == nil {
+		return true, errors.New("merge-forward message executor has no claim supervisor")
+	}
+	token, err := roleToken(r.project, row, ask.Role)
+	if err != nil {
+		return true, err
+	}
+	attributes := mergeForwardAttributes(row, ask)
+	if err := r.endUndelivered(ctx, row, func(ctx context.Context, delivered bool, told uint64) error {
+		return r.endMergeForwardAsk(ctx, row, ask, token, delivered, told, attributes)
+	}); err != nil {
+		return true, err
+	}
+	r.log.Info("outbox merge-forward ask of an earlier run or phase entry of its issue finished undelivered", append(attributes,
+		"generation", queued.Generation, "entry", queued.Entry, "current_generation", now.Generation, "current_entry", now.Entry)...)
+	return true, nil
 }
 
 // endMergeForwardAsk ends row, a row of payload's ask, in one transaction that holds the fact lock
