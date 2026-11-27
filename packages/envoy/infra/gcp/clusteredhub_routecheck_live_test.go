@@ -83,12 +83,13 @@ import (
 // Each row runs beside the others (t.Parallel). A row's time is almost all that 11 s wait: of the
 // 19, eighteen took 10.9 to 13.0 s and one 0.9 s, 204.8 s in all, while the package kept 0.66 of
 // one core of CI's four busy. The wait is the product's own bound and no row shortens it; the
-// rows pay it at the same time instead of one after another. A row shares nothing with another:
-// its hub's three servers listen for clients and monitoring at a loopback address of its own
-// (testport.LoopbackIP) on ports reserved for it, its route ports are reserved on 127.0.0.1, its
-// peers listen at addresses of their own, and every reading a row makes is of its own servers'
-// /routez, /varz and output. What the rows do share is read-only: the renders, the installed
-// nats-server and the password below.
+// rows pay it at the same time instead of one after another. What keeps one row from another:
+// its servers and its peers' client and monitoring listeners are at loopback addresses of their
+// own (testport.LoopbackIP); a route listener, a hub's or a peer's, is at the address the row
+// names, often one another row names too, on a port reserved for the row on every address
+// (reservePort) until the row ends; and every reading a row makes is of its own servers' /routez,
+// /varz and output. What the rows do share is read-only: the renders, the installed nats-server
+// and the password below.
 func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	keys := newLiveHubKeys(t)
 	renders := map[string]*clusteredHubRender{}
