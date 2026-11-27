@@ -120,25 +120,40 @@ func TestACopiedBucketDeletedUnderARunningListenerStaysMissing(t *testing.T) {
 
 	// A start while the bucket is missing creates nothing: it waits at its starting gate. The
 	// harness provisions a server once (bustest.Provision), so this start on the same server
-	// finds the deleted bucket still missing.
+	// finds the deleted bucket still missing. The start is judged by the bucket's state and its
+	// answers from its first moment, not after a wait for its log line: a start that created the
+	// bucket logs no such line, and a wait for it would end the test before any of the checks
+	// below ran. Each pass reads the bucket first, so such a start fails here, naming the bucket
+	// it created; and the start must answer 503 "waiting" for 10 s on end, inside 30 s.
 	restarted := startListenerProcess(t, binary, uri, "bucket-deleted-under")
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("the restarted listener's output:\n%s", restarted.Output.String())
 		}
 	})
-	restarted.WaitForOutput(t, missingBucketLine)
-	waited := time.Now()
-	for time.Since(waited) < 10*time.Second {
-		code, status, missing := healthzMissing(t, restarted.port)
-		if code != http.StatusServiceUnavailable || status != "waiting" || !slices.Equal(missing, []string{bus.SessionBucket}) {
-			t.Fatalf("/healthz of a start waiting on the bucket = %d %q %v, want 503 waiting naming %s", code, status, missing, bus.SessionBucket)
-		}
-		if code, answer := callListener(t, restarted.port, http.MethodPost, "/v1/interests/subscribe", registration); code != http.StatusServiceUnavailable {
-			t.Fatalf("a registration while the start waits on the bucket answered %d %s, want 503", code, answer)
-		}
+	started := time.Now()
+	var waited time.Time
+	for waited.IsZero() || time.Since(waited) < 10*time.Second {
 		requireBucketMissing(t, js, bus.SessionBucket, "while a start waits on it")
+		code, status, missing := healthzMissing(t, restarted.port)
+		waiting := code == http.StatusServiceUnavailable && status == "waiting" && slices.Equal(missing, []string{bus.SessionBucket})
+		switch {
+		case waiting && waited.IsZero():
+			waited = time.Now()
+		case !waiting && !waited.IsZero():
+			t.Fatalf("/healthz of a start waiting on the bucket = %d %q %v, want 503 waiting naming %s", code, status, missing, bus.SessionBucket)
+		case !waiting && time.Since(started) > 30*time.Second:
+			t.Fatalf("/healthz of the start 30 s after it began = %d %q %v, want 503 waiting naming %s", code, status, missing, bus.SessionBucket)
+		}
+		if waiting {
+			if code, answer := callListener(t, restarted.port, http.MethodPost, "/v1/interests/subscribe", registration); code != http.StatusServiceUnavailable {
+				t.Fatalf("a registration while the start waits on the bucket answered %d %s, want 503", code, answer)
+			}
+		}
 		time.Sleep(time.Second)
+	}
+	if output := restarted.Output.String(); !strings.Contains(output, missingBucketLine) {
+		t.Fatalf("the start waiting on the bucket never logged %q", missingBucketLine)
 	}
 
 	// Once the bucket is there again, the waiting start opens it and serves.
