@@ -186,10 +186,10 @@ func TestCoreSubOKReportsTheReplacementAfterTheClientReplacesAClosedConnection(t
 	})
 }
 
-// While a listener waits out the task that holds its durable, its JetStream subscription is
-// registered but unbound and its core role lane already delivers. A recovery onto a new connection
-// in that window must restore the role lane though the durable still refuses the bind: the role
-// lane is a queue member a role message can be handed to, and nothing else re-subscribes it.
+// A client whose JetStream registration cannot bind, since another connection holds its durable
+// bound (waitOutHeldDurable), keeps that registration unbound while its core subscription already
+// delivers. A recovery onto a new connection in that window must restore the core subscription
+// though the durable still refuses the bind: nothing else re-subscribes it.
 func TestACoreSubscriptionRecoversWhileTheJetStreamOneCannotBind(t *testing.T) {
 	t.Parallel()
 	_, uri := startNATS(t)
@@ -222,11 +222,12 @@ func TestACoreSubscriptionRecoversWhileTheJetStreamOneCannotBind(t *testing.T) {
 	}
 }
 
-// The reconnect hooks re-point state no subscription holds, the listener's interest, session and
-// role stores among it, at the connection the bus now has. During the bind wait /v1 and the role
-// lane already read those stores while the durable's restore is refused by design, so the hooks
-// run once at each reconnect and on each replacement connection whatever that restore returned:
-// gated on it, a replaced connection left every store on the closed one until the durable bound.
+// The reconnect hooks re-point state no subscription holds, a listener's interest, session and
+// role stores among it, at the connection the bus now has. That state is read whether or not a
+// registration of the client can bind, and a JetStream one whose durable another connection holds
+// bound cannot, so the hooks run once at each reconnect and on each replacement connection
+// whatever that restore returned: gated on it, a replaced connection left every store on the
+// closed one until the durable bound.
 // Recovery keeps retrying the durable's restore, and does not run the hooks again for a connection
 // they already moved to. The refused restore is a failure, so it stays an ERROR.
 func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
@@ -436,9 +437,9 @@ func TestAConnectionThatClosesAsARecoveryEndsIsRecovered(t *testing.T) {
 }
 
 // While a bind's request is in flight, an in-place reconnect's restore and its run of the
-// reconnect hooks do not wait for it. A reconnect can lose that request, which JetStream then waits
-// out for 10 s, and a listener's bind attempts run every 2 s through its bind wait; a restore that
-// waited for the bind left the stores /v1 and the role lane read on the old watchers for those 10 s.
+// reconnect hooks do not wait for it. A reconnect can lose that request, the consumer lookup a
+// bind without nats.SkipConsumerLookup sends, which JetStream then waits out for 10 s; a restore
+// that waited for the bind left the state the hooks move on the old watchers for those 10 s.
 // The registration that bind leaves is not lost and not bound twice: the recovery the reconnect
 // starts binds it once the bind in flight has failed, and a message reaches its handler once. A
 // registration left to its bind in flight is the design working, not a failure, so nothing on the
@@ -515,9 +516,8 @@ func TestAnInPlaceReconnectDoesNotWaitForABindInFlight(t *testing.T) {
 	}
 }
 
-// waitOutHeldDurable puts client where a listener waiting out the task that holds its durable is:
-// a durable bound from another connection on uri, and client's own bind of it refused, which
-// leaves its JetStream subscription registered but unbound.
+// waitOutHeldDurable leaves client's JetStream registration registered but unbound: a durable
+// bound from another connection on uri, and client's own bind of it refused.
 func waitOutHeldDurable(t *testing.T, client *bus.Client, uri string) {
 	t.Helper()
 	const consumer = "held-elsewhere"

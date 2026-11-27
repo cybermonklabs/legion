@@ -434,13 +434,20 @@ or while a new VM boots, `<h>`'s durable holds its deliveries until the listener
 listener's user grants the `envoy_listener` bucket, where a listener keeps its machine's delivery
 lease and the delivery state every listener of the machine shares (`ListenerPermissions`, from the
 envoy-infra release that added it; see `packages/envoy/cmd/listener/README.md`). Each user may write
-only its own machine's lease and delivery ledger there, and the sessions' last-seen records. A hub
-whose users an earlier envoy-infra rendered lacks the bucket: a listener image that uses it then
-logs one ERROR naming it and delivers without a lease, as the machine's only deliverer, keeping
-that state in its own process, which for the hub's one listener changes nothing but that a restart
-forgets it. The grant reaches the hub with the update that renders its users again, which replaces
-the VM. A hub rendered with the bucket's writes not yet scoped to each machine's keys runs this
-listener as it is; the update narrows them.
+only its own machine's keys there, `lease.listener-<machine id>` (the lease),
+`handback.listener-<machine id>.*` (the lease's hand-back marks) and
+`delivery.listener-<machine id>.*.*` (the delivery ledger), and the sessions' last-seen records,
+`seen.*` (`natsgrant.ListenerState`). A hub whose users an earlier envoy-infra rendered lacks the
+bucket: a listener image that uses it then logs
+`listener lease unavailable: the NATS user lacks the grant for KV bucket envoy_listener; delivering without a lease`
+at ERROR once and delivers without a lease, as the machine's only deliverer, keeping that state in
+its own process until it joins the lease. Meanwhile it tries the bucket again, and logs
+`listener state bucket refused by the NATS grant; delivering without a lease and retrying` at ERROR
+at each try the grant refuses, with a `retry_in` that starts at 2 s and doubles up to 30 s. Once a
+grant lets it open the bucket, it joins the lease with no restart and records that state in the
+bucket from then on (`joinDeliveryLease`). The grant reaches the hub with the update that renders
+its users again, which replaces the VM. A hub rendered with the bucket's writes not yet scoped to
+each machine's keys runs this listener as it is; the update narrows them.
 A listener elsewhere started with `ENVOY_MACHINE_ID=<h>` would share the hub listener's lease and
 become its standby, or its deliverer, so no other listener takes the hub's `hostname` as its id.
 

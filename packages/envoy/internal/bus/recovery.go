@@ -173,9 +173,9 @@ func (c *Client) onReconnect(nc *nats.Conn) {
 	if c.stopped() {
 		return
 	}
-	// The hooks run whatever the restore returned: the state they move holds no subscription, and
-	// while a listener waits out the task that holds its durable, the durable's restore is refused
-	// by design while /v1 and the role lane already read that state.
+	// The hooks run whatever the restore returned: the state they move holds no subscription, and a
+	// registration the restore could not bind, a JetStream one whose durable another connection
+	// holds bound among them, would otherwise leave that state unmoved until the registration binds.
 	hookErr := c.rewatch()
 	if hookErr != nil {
 		// A failure after the stop is the stop: a shutdown that began while a hook ran closed what
@@ -574,9 +574,10 @@ func (c *Client) recoverUntilHealthy() {
 			failure = "envoy nats recovery resubscribe failed"
 			pending, err = c.restoreSubscriptions()
 			// The hooks move onto a connection they have not reached whatever the restore returned,
-			// as onReconnect runs them, and only while they are due: a durable a listener waits
-			// out keeps the restore failing, attempt after attempt, while the hooks' state is already
-			// current. A run onReconnect has in progress is waited for, never joined by a second.
+			// as onReconnect runs them, and only while they are due: a registration that cannot bind, a
+			// JetStream one whose durable another connection holds bound among them, keeps the restore
+			// failing, attempt after attempt, while the hooks' state is already current. A run
+			// onReconnect has in progress is waited for, never joined by a second.
 			if !c.stopped() {
 				hookErr = c.rewatch()
 			}
@@ -633,10 +634,15 @@ func (c *Client) subscriptionsHealthy() bool {
 	return connOK
 }
 
-// restoreSubscriptions binds again every registered subscription the connection lost, and reports
-// apart from its error whether it left one pending: a registration whose bind is in flight is that
-// bind's, which installs it when it ends. Nothing failed there, so it is logged at INFO, and the
-// caller's recovery binds the registration should that bind fail.
+// restoreSubscriptions binds again, on the client's current connection, each registration of the
+// client that holds no valid subscription, as one on a replaced connection does. A client holds at
+// most two: its JetStream one (Subscribe), which Dispatch's delivery intake makes
+// (internal/dispatch/delivery), and its core one (SubscribeCore), which a listener's role lane
+// (ConnectRoleLane), its session relays' reply subscription (SessionConsumers.SubscribeReplies)
+// and cmd/natstail each make on a client of their own. It reports apart from its error whether it
+// left one pending: a registration whose bind is in flight is that bind's, which installs it when
+// it ends. Nothing failed there, so it is logged at INFO, and the caller's recovery binds the
+// registration should that bind fail.
 func (c *Client) restoreSubscriptions() (pending bool, err error) {
 	c.mu.Lock()
 	conn, js := c.Conn, c.js
@@ -648,9 +654,11 @@ func (c *Client) restoreSubscriptions() (pending bool, err error) {
 		c.subscriptionsMu.Unlock()
 		return false, errStopped
 	}
-	// Every subscription is attempted, so one that cannot be restored leaves the others delivering: a
-	// listener waiting out the task that holds its durable has an unbound JetStream subscription
-	// beside a core role lane that is already a member of its machine's queue group.
+	// Each registration is attempted, so one that cannot be restored leaves the other delivering. No
+	// client of a listener holds a JetStream registration: the listener's subscription to its
+	// durable is its receive loop's own, made on the client's connection and never registered here,
+	// and the receive loop moves it onto a replaced connection itself (cmd/listener's
+	// durableReceiver.resubscribe).
 	var errs []error
 	var restoring []*recoverableSubscription
 	var pendingSubjects []string
@@ -667,8 +675,8 @@ func (c *Client) restoreSubscriptions() (pending bool, err error) {
 		if subscription.handler == nil || subscription.active.IsValid() {
 			continue
 		}
-		// A registration whose bind is in flight (the listener's bind attempt, whose lookup a
-		// reconnect can lose, to be waited out for JetStream's 10 s) is that bind's: a second bind
+		// A registration whose bind is in flight - the bind of its caller's Subscribe or
+		// SubscribeCore (registerSubscription), or another restore's - is that bind's: a second bind
 		// beside it could leave the registration bound twice.
 		if subscription.binding != nil {
 			pendingSubjects = append(pendingSubjects, subscription.subject)

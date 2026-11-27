@@ -1675,11 +1675,12 @@ func (c *Client) registerSubscription(next recoverableSubscription, conn *nats.C
 		return nil, fmt.Errorf("%w: holds %s, asked for %s", ErrSubscriptionHeld, held, describeSubscription(next.subject, next.queue))
 	}
 	// Registering the held subject again replaces the transport's subscription, so the one it
-	// replaces stops delivering: the listener's self-health rebuild re-registers after its durable
-	// consumer was lost, and the old handle, bound to that consumer's deliver inbox, would otherwise
-	// stay subscribed for good. For a consumer the library created, Unsubscribe also deletes it, as
-	// it always does. It runs before the bind, which a durable still bound to the old handle would
-	// refuse.
+	// replaces stops delivering: a JetStream registration's handle is bound to one consumer's
+	// deliver subject, and a caller that registers its subject again, as Dispatch's delivery intake
+	// does for each durable it takes over (internal/dispatch/delivery, heldDurable.finishTakeOver),
+	// would otherwise leave the old handle subscribed for good. For a consumer the library created,
+	// Unsubscribe also deletes it, as it always does. It runs before the bind, which a durable still
+	// bound to the old handle would refuse.
 	replaced := subscription.active
 	// next is unrefused: the bind below sends its subscription anew, and a refusal of it arrives
 	// only after the send.
@@ -1940,7 +1941,9 @@ func (c *Client) endBind(subscription *recoverableSubscription, sub *nats.Subscr
 	return nil
 }
 
-// SubOK reports whether the durable listener subscription is active on a live connection.
+// SubOK reports whether the client's JetStream subscription, the registration Subscribe makes, is
+// active on a live connection: the client holds a valid handle for it, on a connection that is not
+// closed. No listener makes that registration, so a listener's client reports false.
 func (c *Client) SubOK() bool {
 	return c.subscriptionOK(jetStreamSubscription)
 }

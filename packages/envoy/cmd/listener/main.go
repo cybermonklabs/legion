@@ -329,11 +329,14 @@ func isUnrecoverableSelfHealthFailure(err error, client *bus.Client, caches []li
 
 // rebuildListenerDependencies rewatches the KV caches and, when the durable probe reports the
 // consumer gone or not delivering to this listener's subscription, subscribes the durable again
-// (resubscribe), creating it when it is gone. The resubscribe reports success only once the server
-// reports this listener bound, so the probe that follows a rebuild reads a settled consumer rather
-// than the gap in which the subscription is being replaced. Only the receiving pod's probe reports
-// the consumer gone or unbound; a standby's never does, so a standby's rebuild touches nothing but
-// the caches.
+// (resubscribe), creating it when it is gone. The resubscribe reports success once its core
+// subscribe to the durable's deliver subject on the client's connection succeeds, and waits for no
+// report from the server that this listener is bound (durableReceiver.resubscribe). The probe that
+// follows a rebuild compares the durable's deliver subject, as the server reports it, with the
+// subscription's, and reads a mismatch again durableProbeConfirm later before it reports the
+// durable unbound, since a read can land while a resubscribe replaces the subscription
+// (durableReceiver.probe). Only the receiving pod's probe reports the consumer gone or unbound; a
+// standby's never does, so a standby's rebuild touches nothing but the caches.
 //
 // Nothing here touches relay ownership: the receive term alone elects the pod that relays its
 // machine's session consumers (durableReceiver.begin and durableReceiver.end,
@@ -1669,7 +1672,7 @@ func openDeliveryLease(ctx context.Context, urls []string, replicas int, machine
 			waitOutClusterState(logger, &clusterWait, slog.String("bucket", bus.ListenerStateBucket), replicas, code, err)
 			continue
 		}
-		logger.Warn("listener state bucket open failed; retrying",
+		logger.Warn(listenerStateOpenFailedLine,
 			slog.String("bucket", bus.ListenerStateBucket),
 			slog.String("retry_in", startRetry.String()),
 			slog.String("error", err.Error()),
@@ -1683,6 +1686,12 @@ func openDeliveryLease(ctx context.Context, urls []string, replicas int, machine
 // grant it lacks, the refused subject, the server's text and the wait before the next try, as the
 // start's refused steps log theirs (logGrantRefusal).
 const listenerStateRefusedLine = "listener state bucket refused by the NATS grant; delivering without a lease and retrying"
+
+// listenerStateOpenFailedLine is the WARN a listener logs at each try of the listener state bucket
+// that failed neither by the NATS grant's refusal nor by an answer from the cluster's state, an
+// open no answer came to included, with the bucket, the wait before the next try (startRetry) and
+// the error: at the start (openDeliveryLease) and in the lease join (joinDeliveryLease).
+const listenerStateOpenFailedLine = "listener state bucket open failed; retrying"
 
 // joinDeliveryLease opens the listener state bucket on conn, the lease connection of a listener
 // whose start the NATS grant refused that bucket (openDeliveryLease), and returns machineID's
@@ -1701,8 +1710,9 @@ const listenerStateRefusedLine = "listener state bucket refused by the NATS gran
 // out, up to durableRefusedRetryCap, would spend that budget, and a lease it made after waking
 // would take the record and renew it until the process exits. A try the stop cut ends with nothing
 // logged by the join and no lease: the join reads ctx as soon as the open returns, before it reads
-// the open's result, so an open that ctx's end failed logs neither listenerStateRefusedLine nor
-// the WARN of a retry, and an open that succeeded once ctx had ended makes no lease.
+// the open's result, so an open that ctx's end failed logs none of listenerStateRefusedLine,
+// clusterStateLine (logClusterState) and listenerStateOpenFailedLine, and an open that succeeded
+// once ctx had ended makes no lease.
 func joinDeliveryLease(ctx context.Context, conn *nats.Conn, replicas int, machineID, instance string, logger *logging.Logger) *lease {
 	wait, refusedWait := durableBindPoll, nextRefusedWait(durableBindPoll)
 	clusterWait := clusterStateWait{next: durableBindPoll}
@@ -1723,7 +1733,7 @@ func joinDeliveryLease(ctx context.Context, conn *nats.Conn, replicas int, machi
 			wait = logGrantRefusal(logger, &refusedWait, listenerStateRefusedLine, err, slog.String("bucket", bus.ListenerStateBucket), slog.String("grant", listenerGrant))
 			continue
 		}
-		logger.Warn("listener state bucket open failed; retrying",
+		logger.Warn(listenerStateOpenFailedLine,
 			slog.String("bucket", bus.ListenerStateBucket),
 			slog.String("retry_in", startRetry.String()),
 			slog.String("error", err.Error()),
@@ -3251,9 +3261,13 @@ const (
 	listenerGraceMargin = 7 * time.Second
 )
 
-// shutdownListener is the ordered shutdown every end of a start that serves /v1 comes to, a
-// signal, a fatal error or a bind that did not complete, and exits non-zero so the runtime's
-// restart policy restores the listener.
+// shutdownListener is the ordered shutdown every end of a start that serves /v1 comes to: a
+// SIGTERM or SIGINT (stopping), the listener's own SIGTERM included, or a fatal error, the HTTP
+// server's Serve failing (fatal). The listener sends itself SIGTERM for a durable refused after
+// the start (durableReceiverOptions.refused), and the self-health monitor sends it once it gives
+// up: a terminal failure still there after threshold rebuilds, or a client read as disconnected
+// for disconnectedFailureThreshold probes in a row (runSelfHealthMonitor's terminate). It exits
+// non-zero so the runtime's restart policy restores the listener.
 func shutdownListener(logger *logging.Logger, parts listenerParts, loops listenerLoops) {
 	// 1. Stop the self-health monitor, so nothing re-subscribes or re-watches from here, and the
 	// wake reports retrying off their callers' paths: each holds its goroutine for minutes

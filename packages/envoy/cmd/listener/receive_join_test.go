@@ -236,16 +236,11 @@ func TestAStopEndsALeaseJoinWaitingOutTheGrantsRefusal(t *testing.T) {
 	}
 }
 
-// joinOpenFailedLine is the WARN joinDeliveryLease logs, with the wait before its next try, at a
-// try of the listener state bucket that failed neither by the grant's refusal nor by an answer
-// from the cluster's state, an open no answer came to included.
-const joinOpenFailedLine = "listener state bucket open failed; retrying"
-
 // joinTryEndLines are the lines joinDeliveryLease logs at the end of a try of the listener state
 // bucket that failed, one at each such try, each naming the wait before the next try: the grant's
 // refusal (listenerStateRefusedLine), an answer from the cluster's state (clusterStateLine) and
-// any other failure (joinOpenFailedLine).
-var joinTryEndLines = []string{listenerStateRefusedLine, clusterStateLine, joinOpenFailedLine}
+// any other failure (listenerStateOpenFailedLine).
+var joinTryEndLines = []string{listenerStateRefusedLine, clusterStateLine, listenerStateOpenFailedLine}
 
 // A pod whose NATS grant refuses the listener state bucket, stopped while its lease join's open of
 // that bucket is in flight (joinDeliveryLease, openListenerState), ends the join with nothing
@@ -259,7 +254,7 @@ var joinTryEndLines = []string{listenerStateRefusedLine, clusterStateLine, joinO
 //
 // Before, the join read ctx only once an open had succeeded: an open the stop failed was read as
 // the grant's refusal or as a failed open, and the pod logged listenerStateRefusedLine at ERROR, or
-// joinOpenFailedLine at WARN, each with a retry_in, as it stopped.
+// listenerStateOpenFailedLine at WARN, each with a retry_in, as it stopped.
 // It must not run in parallel: the stop must follow the open's first request by well under the
 // open's 6 s, and the row reads the log for the open's end only just before it stops the pod.
 func TestAStopThatCutsALeaseJoinsOpenLogsNoRetry(t *testing.T) {
