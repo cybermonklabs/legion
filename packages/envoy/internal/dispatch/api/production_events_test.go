@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents/signals"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -339,6 +340,49 @@ func TestAPersonFlagsAFailureAndPostsNoDeploy(t *testing.T) {
 	expectRefusal(t, "a person's deploy", deployed, http.StatusForbidden, codeProductionEventDeployForbidden)
 	if rows := countRows(t, database, `select count(*) from production_events`); rows != 2 {
 		t.Fatalf("the record holds %d rows, want the deploy and the one flag", rows)
+	}
+}
+
+// TestASystemsPostUnderAnAutomaticSourcesKeyIsRefused: the record holds one row per project and
+// source_ref, so a system's deploy or failure posted under the key an automatic source writes its
+// own row under would leave that source's upsert writing nothing: the GitHub adapter's deploy of a
+// run, a person's flag, and the check, revert and incident signals' failures. A post under each of
+// those keys is refused 400 PRODUCTION_EVENT_INPUT naming the key's prefix and writes nothing; a
+// plain key is still taken, and so is one that holds such a prefix past its start.
+func TestASystemsPostUnderAnAutomaticSourcesKeyIsRefused(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "PRD")
+	now := time.Now().UTC()
+	deploy := writeProductionDeploy(t, database, "PRD", 7, now.Add(-time.Hour))
+	agent := map[string]any{"kind": "session", "id": "ses-ci"}
+	rows := countRows(t, database, `select count(*) from production_events`)
+	for prefix, ref := range map[string]string{
+		"github:":   prodevents.GitHubSourceRef(8),
+		"person:":   prodevents.PersonSourceRef(deploy.ID, "alice"),
+		"check:":    signals.CheckSourceRef("0195f2a8-0000-7000-8000-000000000001", "block-1", deploy.ID),
+		"revert:":   signals.RevertSourceRef("acme/app", 9),
+		"incident:": signals.IncidentSourceRef("PRD-1"),
+	} {
+		for kind, body := range map[string]map[string]any{
+			prodevents.KindDeploy:  {"finished_at": now},
+			prodevents.KindFailure: {"deploy_id": deploy.ID},
+		} {
+			body["kind"], body["source_ref"], body["actor"] = kind, ref, agent
+			expectRefusal(t, "a system's "+kind+" under "+ref, bearerRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), body),
+				http.StatusBadRequest, prodevents.CodeInput, prefix)
+		}
+	}
+	if after := countRows(t, database, `select count(*) from production_events`); after != rows {
+		t.Fatalf("the refused posts left %d rows, want the %d there were", after, rows)
+	}
+	for _, ref := range []string{"ci:deploy-1", "ci:github:8"} {
+		posted := bearerRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), map[string]any{
+			"kind": prodevents.KindDeploy, "source_ref": ref, "finished_at": now, "actor": agent,
+		})
+		if posted.Code != http.StatusCreated {
+			t.Fatalf("a system's deploy under %s: status=%d body=%s, want 201", ref, posted.Code, posted.Body.String())
+		}
 	}
 }
 

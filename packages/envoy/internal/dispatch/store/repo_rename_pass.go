@@ -463,6 +463,35 @@ func collisions(r repoRename, table string, keys ...string) repoRenameStep {
 	}
 }
 
+// sharedSources deletes each github_workflow source that the new name makes read a repository
+// another github_workflow source reads already: a source of its own project, or of another project
+// where both have delivery on, whose repository, the one it names or else its project's default
+// repository, is the new name. A rename would otherwise break the rule delivery's
+// PutProjectSettings holds every save to, that a repository is one such source of a project
+// (DELIVERY_SETTINGS_INPUT) and the source of one delivery-on project at most
+// (DELIVERY_REPOSITORY_SHARED). where is the condition, on project_deploy_sources' columns with no
+// alias, that a source reads the old name as the line finds it, and reads the same of the source d
+// and its project's row dp. The source that reads the new name already stays, as a collision's row
+// under the new name does, and the one deleted is logged with its whole row, its rule with it, so
+// the project loses none of its settings unsaid.
+func sharedSources(r repoRename, where, reads string) repoRenameStep {
+	deliveryOn := func(project string) string {
+		return `exists (select 1 from project_delivery_settings s where s.project_key = ` + project + ` and s.delivery)`
+	}
+	return repoRenameStep{
+		table:   "project_deploy_sources",
+		where:   where,
+		deletes: true,
+		sql: `delete from project_deploy_sources d using projects dp
+			where dp.key = d.project_key and d.kind = 'github_workflow' and ` + reads + `
+			  and exists (
+				select 1 from project_deploy_sources t join projects tp on tp.key = t.project_key
+				where t.kind = 'github_workflow' and t.id <> d.id and ` + r.held("coalesce(t.repo, tp.default_repo)") + `
+				  and (t.project_key = d.project_key or (` + deliveryOn("d.project_key") + ` and ` + deliveryOn("t.project_key") + `)))
+			returning jsonb_build_object('repo', d.repo, 'project_key', d.project_key, 'source', to_jsonb(d))::text`,
+	}
+}
+
 // nameLine is the line of one name column of a table with no key that holds it.
 func nameLine(table, column string) repoRenameLine {
 	return repoRenameLine{
@@ -754,7 +783,20 @@ func pullRequestsNamed(r repoRename) string {
 // or a URL that names one, but for those the package comment says the pass never writes.
 var repoRenameLines = []repoRenameLine{
 	nameLine("issues", "repo"),
-	nameLine("projects", "default_repo"),
+	{
+		// A github_workflow source that names no repository reads its project's default
+		// repository, so the new name can make such a source read a repository another source
+		// reads already, which is deleted first (sharedSources).
+		fields: "projects.default_repo",
+		steps: func(r repoRename) []repoRenameStep {
+			return []repoRenameStep{
+				sharedSources(r,
+					`kind = 'github_workflow' and repo is null and exists (select 1 from projects p where p.key = project_key and `+r.named("p.default_repo")+`)`,
+					`d.repo is null and `+r.named("dp.default_repo")),
+				nameWrite(r, "projects", "default_repo"),
+			}
+		},
+	},
 	// The repository each issue's stored Legion facts name (legionfacts.ReadRepos), resolved
 	// from the two lines above when the row was computed. Its trigger logs each row it writes
 	// as an issue_facts change (20261117100002), so the day-row refresher writes that issue's
@@ -1008,12 +1050,16 @@ var repoRenameLines = []repoRenameLine{
 	{
 		// A project's github_workflow sources read one repository each
 		// (project_deploy_sources_one_per_repo), so a source under the old name whose project has
-		// one under the new name is deleted, and that one stays. A source that names none reads its
-		// project's default repository, which the projects line writes.
+		// one under the new name is deleted, and that one stays; so is one whose new name another
+		// source of its project reads through the default repository, or a source of another
+		// delivery-on project reads, where its own project has delivery on (sharedSources). A
+		// source that names none reads its project's default repository, which the projects line
+		// writes.
 		fields: "project_deploy_sources.repo",
 		steps: func(r repoRename) []repoRenameStep {
 			return []repoRenameStep{
 				collisions(r, "project_deploy_sources", "project_key"),
+				sharedSources(r, `kind = 'github_workflow' and `+r.named("repo"), `d.repo is not null and `+r.named("d.repo")),
 				nameWrite(r, "project_deploy_sources", "repo"),
 			}
 		},

@@ -23,8 +23,10 @@ import (
 // the deploy that ships the revert has its deploy row (ListRevertShips).
 
 // revertLine is the line GitHub's revert button writes into the body of the pull request it opens:
-// `Reverts <owner>/<repo>#<number>`, alone on its line.
-var revertLine = regexp.MustCompile(`^Reverts ([^\s/#]+/[^\s/#]+)#([1-9][0-9]*)$`)
+// `Reverts <owner>/<repo>#<number>`, alone on its line. The number is bounded to nine digits, as a
+// linked pull request's is (linkedPullRequestTerms): delivery_reverts keeps it in an integer
+// column, which would refuse a larger one at every write of its row.
+var revertLine = regexp.MustCompile(`^Reverts ([^\s/#]+/[^\s/#]+)#([1-9][0-9]{0,8})$`)
 
 // ParseRevert reads the pull request a body says it reverts: the first line that is GitHub's
 // revert-button line (revertLine), anywhere in the body, the repository in lower case. ok is false

@@ -100,7 +100,7 @@ func (r checkResult) counts() bool {
 // (check_results.check_artifact_id) and its block id, since a block id names a check within one
 // document alone.
 func CheckSourceRef(artifactID, blockID, deployID string) string {
-	return "check:" + artifactID + "/" + blockID + "@" + deployID
+	return prodevents.CheckSourceRefPrefix + artifactID + "/" + blockID + "@" + deployID
 }
 
 // lockResult takes the row of result id in tx `for no key update`. A result's first match

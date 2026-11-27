@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -294,13 +295,16 @@ func validate(event Event) error {
 	return refuse(CodeInput, "signal %q is not one of the five", *event.Signal)
 }
 
-// requireDeploy refuses an id that names no deploy row.
+// requireDeploy refuses an id that names no deploy row. It reads the row for key share, the lock
+// the foreign key's check takes, so a drop of it (DropGitHubDeploy, which locks it for update)
+// waits for tx and then finds the row tx wrote that names it, and a write that comes after a drop
+// waits for the drop and then finds no row, which it refuses here rather than at the foreign key.
 func requireDeploy(ctx context.Context, tx pgx.Tx, id string) error {
 	if _, err := uuid.Parse(id); err != nil {
 		return refuse(CodeNoDeploy, "deploy %q is not a production event id", id)
 	}
 	var kind string
-	err := tx.QueryRow(ctx, `select kind from production_events where id = $1`, id).Scan(&kind)
+	err := tx.QueryRow(ctx, `select kind from production_events where id = $1 for key share`, id).Scan(&kind)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return refuse(CodeNoDeploy, "no deploy row has id %s", id)
@@ -568,15 +572,44 @@ func scanAll(rows pgx.Rows, what string) ([]Event, error) {
 	return events, nil
 }
 
+// The source_ref prefix of each automatic source's rows: the GitHub adapter's deploy of a run
+// (GitHubSourceRef), a person's flag (PersonSourceRef), and the production signals' failures
+// (signals' CheckSourceRef, RevertSourceRef and IncidentSourceRef). The record holds one row per
+// project and source_ref, so a system's post under such a key would leave that source's write of
+// its own row writing nothing; the post route refuses one (AutomaticSourceRefPrefix).
+const (
+	GitHubSourceRefPrefix   = "github:"
+	PersonSourceRefPrefix   = "person:"
+	CheckSourceRefPrefix    = "check:"
+	RevertSourceRefPrefix   = "revert:"
+	IncidentSourceRefPrefix = "incident:"
+)
+
+// automaticSourceRefPrefixes is every automatic source's source_ref prefix.
+var automaticSourceRefPrefixes = [...]string{
+	GitHubSourceRefPrefix, PersonSourceRefPrefix, CheckSourceRefPrefix, RevertSourceRefPrefix, IncidentSourceRefPrefix,
+}
+
+// AutomaticSourceRefPrefix is the automatic source's prefix ref starts with, and false where it
+// starts with none of them.
+func AutomaticSourceRefPrefix(ref string) (string, bool) {
+	for _, prefix := range automaticSourceRefPrefixes {
+		if strings.HasPrefix(ref, prefix) {
+			return prefix, true
+		}
+	}
+	return "", false
+}
+
 // GitHubSourceRef is the source_ref of the GitHub adapter's deploy row of run runID.
 func GitHubSourceRef(runID int64) string {
-	return fmt.Sprintf("github:%d", runID)
+	return GitHubSourceRefPrefix + strconv.FormatInt(runID, 10)
 }
 
 // PersonSourceRef is the source_ref of the flag of deploy (a deploy row's id) by the person
 // actorID: one row per person and deploy, so a second flag writes nothing.
 func PersonSourceRef(deployID, actorID string) string {
-	return "person:" + deployID + ":" + actorID
+	return PersonSourceRefPrefix + deployID + ":" + actorID
 }
 
 func nonNil(list []string) []string {

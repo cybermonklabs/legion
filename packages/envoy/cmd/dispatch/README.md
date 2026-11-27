@@ -5581,6 +5581,8 @@ Each item below names a path with its method and identity, then its purpose.
   The failure counts for every project that deploy counts for whose failure sources count its signal, whichever project's route it was posted to.
   Its `detected_at` is the server's time where the body names none.
   A system's failure is the signal `api`, its actor the session its credential proves or its body names (`bearerSessionActor`), and its `source_ref` is required (`400 PRODUCTION_EVENT_INPUT` naming it).
+  A system's deploy or failure whose `source_ref` starts with an automatic source's prefix, `github:`, `person:`, `check:`, `revert:` or `incident:` (`prodevents.AutomaticSourceRefPrefix`), is `400 PRODUCTION_EVENT_INPUT` naming the prefix, and writes nothing.
+  Those are the keys of the rows the GitHub adapter, a person's flag and the production signals write, so a post under one would leave that source's write of its own row writing nothing.
   A person's failure, the drill-down's flag from a credential holding `person`, is the signal `person`, the person its actor, and its `source_ref` the server's, `person:<deploy id>:<login>`, so a person's second flag of one deploy answers the first; a body naming another `source_ref` is `400 PRODUCTION_EVENT_INPUT`.
   `404 PROJECT_NOT_FOUND` an unknown project, and a project-scoped credential of another project is `403 PROJECT_SCOPE`.
   The store writes the row in a transaction of its own, whose trigger logs a `production_events` change in the change log's outbox, and drains it after the commit (`delivery.DrainAfterCommit`).

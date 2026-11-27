@@ -44,42 +44,46 @@ const deriveChunk = 28 * 24 * time.Hour
 // they complete are written. A pass that fails before then (a deploy row committed, its check_fail
 // not) leaves the rule unrecorded or the cursor where it stood, and the next pass derives the same
 // rows again: their writes write nothing, and the match, which reads every row the derive calls a
-// deploy and not only those a write moved, writes the check_fail then. A cursor lost
-// (delivery.CursorLost) forgets every recorded rule, so every repository derives whole, and moves
-// to the log's head.
+// deploy and not only those a write moved, writes the check_fail then.
+//
+// The clock is read afresh before each page (delivery.ChangeCursor): that reading is the now the
+// page's lost-cursor check is judged at and the ReadAt a read to the log's end stamps, so a
+// catch-up whose pages run past a prune is judged at each page. A cursor lost
+// (delivery.CursorLost), before the first page or before a later one, forgets every recorded rule,
+// so every repository derives whole, as before a first page, and moves to the log's head.
 func passDeploys(ctx context.Context, pool *store.Pool, now func() time.Time) error {
 	stored, err := readCursor(ctx, pool, deploysCursor)
 	if err != nil {
 		return err
 	}
-	checked := now()
 	position := delivery.ChangeCursor{Seq: stored.position, At: stored.at, ReadAt: stored.stamped}
-	lost := !stored.held
-	if stored.held {
-		if lost, err = delivery.CursorLost(ctx, pool, position, checked); err != nil {
-			return fmt.Errorf("judge the deploys cursor: %w", err)
-		}
-	}
-	if lost {
-		if _, err := pool.Exec(ctx, `delete from production_deploy_rules`); err != nil {
-			return fmt.Errorf("forget the deploy rules: %w", err)
-		}
-		if position, err = delivery.ChangesHead(ctx, pool); err != nil {
-			return fmt.Errorf("read the head of the delivery change log: %w", err)
-		}
-		position.ReadAt = checked
-	}
 	rules, err := delivery.ReadSourceRules(ctx, pool)
 	if err != nil {
 		return err
 	}
 	derived := map[string]bool{}
 	for first := true; ; first = false {
+		checked := now()
+		lost := first && !stored.held
+		if !lost {
+			if lost, err = delivery.CursorLost(ctx, pool, position, checked); err != nil {
+				return fmt.Errorf("judge the deploys cursor: %w", err)
+			}
+		}
+		if lost {
+			if _, err := pool.Exec(ctx, `delete from production_deploy_rules`); err != nil {
+				return fmt.Errorf("forget the deploy rules: %w", err)
+			}
+			if position, err = delivery.ChangesHead(ctx, pool); err != nil {
+				return fmt.Errorf("read the head of the delivery change log: %w", err)
+			}
+			position.ReadAt = checked
+		}
 		changes, err := delivery.ChangesSince(ctx, pool, position.Seq, page)
 		if err != nil {
 			return fmt.Errorf("read the delivery changes after %d: %w", position.Seq, err)
 		}
-		if first {
+		if first || lost {
 			if err := deriveMovedRules(ctx, pool, rules, checked, derived); err != nil {
 				return err
 			}

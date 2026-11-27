@@ -968,7 +968,10 @@ func TestTheRenamePassWritesNothingOnceRepoProjectsIsDropped(t *testing.T) {
 // deploy source of TOOLS that names it, a source of SMOKE that names it beside one that names the
 // new name already, and the reconcile progress of its run steps (delivery's repoStep names), one
 // of them under a step whose new name a row holds already, beside the search's progress and a run
-// step of sjawhar/legion-smoke, which only begins like the old name.
+// step of sjawhar/legion-smoke, which only begins like the old name. INFRA, whose one source reads
+// the old name through its default repository, and SMOKE have delivery off, so TOOLS is the one
+// delivery-on project whose source reads the repository, before the rename and after it, as a save
+// keeps it (DELIVERY_REPOSITORY_SHARED).
 const projectDeliveryRenameSeed = `
 	insert into projects (key, name, default_assignee, default_repo) values
 		('INFRA', 'Infra', 'alice', 'sjawhar/legion'),
@@ -977,8 +980,8 @@ const projectDeliveryRenameSeed = `
 	insert into repo_projects (repo, project, created_by, renamed_to) values
 		('SJawhar/Legion', 'INFRA', '{"kind":"user","id":"alice"}', 'CybermonkLabs/Legion');
 	insert into project_delivery_settings (project_key, delivery, population_authors, excluded_repos, updated_by, updated_at) values
-		('INFRA', true, '{octocat}', '{sjawhar/dotfiles}', '{"kind":"user","id":"alice"}', '2026-01-01T00:00:00Z'),
-		('SMOKE', true, '{octocat}', '{}', '{"kind":"user","id":"alice"}', '2026-01-01T00:00:00Z'),
+		('INFRA', false, '{octocat}', '{sjawhar/dotfiles}', '{"kind":"user","id":"alice"}', '2026-01-01T00:00:00Z'),
+		('SMOKE', false, '{octocat}', '{}', '{"kind":"user","id":"alice"}', '2026-01-01T00:00:00Z'),
 		('TOOLS', true, '{hubot}', '{acme/sandbox,SJawhar/Legion,sjawhar/legion-smoke}', '{"kind":"user","id":"alice"}', '2026-01-01T00:00:00Z');
 	insert into project_deploy_sources (project_key, position, kind, repo, deploy_workflow_path, production_job_names, pr_checks_workflow_path) values
 		('INFRA', 0, 'github_workflow', null, 'deploy.yml', '{release}', 'pr.yml'),
@@ -1052,6 +1055,92 @@ func TestARenameMovesEachProjectsExcludedRepositories(t *testing.T) {
 	}
 	if again := RewriteRenamedRepositories(ctx, store.Pool, pairs); again != (RepoRenamePass{Pairs: 1, Left: noneLeft}) {
 		t.Errorf("a second pass = %+v, want one pair and nothing written, deleted, failed or left", again)
+	}
+}
+
+// sharedSourcesRenameSeed writes two rename pairs, acme/old-a to acme/new-a and acme/old-b to
+// acme/new-b, and deploy sources that the pass would make read a repository another source reads
+// already. Under acme/old-a: ALPHA's source names it, and BRAVO's names acme/new-a, both projects
+// with delivery on; CHARLIE, delivery off, has a source naming it beside one that reads its default
+// repository, acme/new-a. Under acme/old-b, a default repository: DELTA's one source reads it, and
+// ECHO's names acme/new-b, both with delivery on; FOXTROT, delivery off, has a source reading it
+// beside one naming acme/new-b. INDIA, delivery off, has a source naming acme/old-b, which reads
+// acme/new-b beside ECHO's once renamed, as a project with delivery off may.
+const sharedSourcesRenameSeed = `
+	insert into projects (key, name, default_assignee, default_repo) values
+		('ALPHA', 'Alpha', 'alice', 'acme/alpha'), ('BRAVO', 'Bravo', 'alice', 'acme/bravo'),
+		('CHARLIE', 'Charlie', 'alice', 'acme/new-a'), ('DELTA', 'Delta', 'alice', 'acme/old-b'),
+		('ECHO', 'Echo', 'alice', 'acme/echo'), ('FOXTROT', 'Foxtrot', 'alice', 'acme/old-b'),
+		('INDIA', 'India', 'alice', 'acme/india');
+	insert into repo_projects (repo, project, created_by, renamed_to) values
+		('acme/old-a', 'ALPHA', '{"kind":"user","id":"alice"}', 'acme/new-a'),
+		('acme/old-b', 'DELTA', '{"kind":"user","id":"alice"}', 'acme/new-b');
+	insert into project_delivery_settings (project_key, delivery, population_authors, excluded_repos, updated_by, updated_at)
+		select key, delivery, '{octocat}', '{}', '{"kind":"user","id":"alice"}', '2026-01-01T00:00:00Z'
+		from (values ('ALPHA', true), ('BRAVO', true), ('CHARLIE', false), ('DELTA', true), ('ECHO', true), ('FOXTROT', false), ('INDIA', false))
+			as given(key, delivery);
+	insert into project_deploy_sources (project_key, position, kind, repo, deploy_workflow_path, production_job_names, pr_checks_workflow_path) values
+		('ALPHA', 0, 'github_workflow', 'acme/old-a', 'alpha.yml', '{alpha}', 'pr.yml'),
+		('BRAVO', 0, 'github_workflow', 'acme/new-a', 'deploy.yml', '{release}', 'pr.yml'),
+		('CHARLIE', 0, 'github_workflow', null, 'deploy.yml', '{release}', 'pr.yml'),
+		('CHARLIE', 1, 'github_workflow', 'acme/old-a', 'charlie.yml', '{charlie}', 'pr.yml'),
+		('DELTA', 0, 'github_workflow', null, 'delta.yml', '{delta}', 'pr.yml'),
+		('ECHO', 0, 'github_workflow', 'acme/new-b', 'deploy.yml', '{release}', 'pr.yml'),
+		('FOXTROT', 0, 'github_workflow', null, 'foxtrot.yml', '{foxtrot}', 'pr.yml'),
+		('FOXTROT', 1, 'github_workflow', 'acme/new-b', 'deploy.yml', '{release}', 'pr.yml'),
+		('INDIA', 0, 'github_workflow', 'acme/old-b', 'deploy.yml', '{release}', 'pr.yml');
+`
+
+// A rename keeps the rule that a repository is one github_workflow source of a project, and the
+// source of one delivery-on project at most (delivery's PutProjectSettings: DELIVERY_SETTINGS_INPUT
+// and DELIVERY_REPOSITORY_SHARED). A source that the new name makes read a repository another source
+// reads already, of its own project or, both with delivery on, of another, is deleted, and the
+// source that read the new name already stays, as a collision's row under the new name does: a
+// source naming the old name (ALPHA's beside BRAVO's, CHARLIE's beside its own default's), and one
+// reading a default repository the projects' line renames (DELTA's beside ECHO's, FOXTROT's beside
+// its own). Each is logged at WARN with the whole row, its rule with it, so nothing of the
+// project's settings is lost unsaid. Every default repository and every other source takes the new
+// name, INDIA's among them, whose project has delivery off. Red where the pass renames the sources
+// alone: ALPHA, BRAVO and CHARLIE's two read acme/new-a, and DELTA, ECHO and FOXTROT's two
+// acme/new-b.
+func TestARenameDeletesASourceItWouldMakeReadARepositoryAnotherSourceReads(t *testing.T) {
+	ctx := context.Background()
+	store, pairs := openRenamedRepositoriesStore(t, sharedSourcesRenameSeed)
+	logs := capturePassLogs(t)
+
+	pass := RewriteRenamedRepositories(ctx, store.Pool, pairs)
+
+	if pass.Deleted != 4 || pass.Failures != 0 || pass.Left != noneLeft || pass.Err() != nil {
+		t.Fatalf("the pass = %+v (%v), want 4 rows deleted, no failure and nothing left", pass, pass.Err())
+	}
+	for query, want := range map[string]string{
+		`select string_agg(project_key || '#' || position || '=' || coalesce(repo, 'default'), ' ' order by project_key, position) from project_deploy_sources`: "BRAVO#0=acme/new-a CHARLIE#0=default ECHO#0=acme/new-b FOXTROT#1=acme/new-b INDIA#0=acme/new-b",
+		`select string_agg(key || '=' || default_repo, ' ' order by key) from projects`:                                                                         "ALPHA=acme/alpha BRAVO=acme/bravo CHARLIE=acme/new-a DELTA=acme/new-b ECHO=acme/echo FOXTROT=acme/new-b INDIA=acme/india",
+	} {
+		if got := readText(t, store, query); got != want {
+			t.Errorf("%s\n= %s\nwant %s", query, got, want)
+		}
+	}
+	var dropped []string
+	for _, record := range named(logs(), deletedLine) {
+		var key struct {
+			Project string `json:"project_key"`
+			Source  struct {
+				Path string `json:"deploy_workflow_path"`
+			} `json:"source"`
+		}
+		if record["table"] != "project_deploy_sources" || json.Unmarshal([]byte(record["key"].(string)), &key) != nil {
+			t.Errorf("logged the deletion %v, want a source of project_deploy_sources with its row", record)
+			continue
+		}
+		dropped = append(dropped, key.Project+" "+key.Source.Path)
+	}
+	slices.Sort(dropped)
+	if want := []string{"ALPHA alpha.yml", "CHARLIE charlie.yml", "DELTA delta.yml", "FOXTROT foxtrot.yml"}; !slices.Equal(dropped, want) {
+		t.Errorf("logged the deleted sources %q, want %q, each with its rule", dropped, want)
+	}
+	if again := RewriteRenamedRepositories(ctx, store.Pool, pairs); again != (RepoRenamePass{Pairs: 2, Left: noneLeft}) {
+		t.Errorf("a second pass = %+v, want two pairs and nothing written, deleted, failed or left", again)
 	}
 }
 

@@ -85,3 +85,20 @@ func TestTheRevertParseReadsGitHubsRevertButtonPullRequest(t *testing.T) {
 		t.Errorf("an unmerged pull request read as the revert %+v", got)
 	}
 }
+
+// TestARevertLineNamesAPullRequestNumberOfAtMostNineDigits: delivery_reverts keeps the reverted
+// pull request's number in an integer column, so a revert line names one of at most nine digits,
+// as a linked pull request does (linked_pull_requests.go): a nine-digit number is read, and a
+// ten-digit one is no revert line, whose row no write could store and whose repository's reverts
+// step would stall on it.
+func TestARevertLineNamesAPullRequestNumberOfAtMostNineDigits(t *testing.T) {
+	t.Parallel()
+	if repo, number, ok := ParseRevert("Reverts acme/widgets#999999999"); !ok || repo != "acme/widgets" || number != 999999999 {
+		t.Errorf("ParseRevert of a nine-digit number = %q #%d, %v; want acme/widgets #999999999", repo, number, ok)
+	}
+	for _, body := range []string{"Reverts acme/widgets#1000000000", "Reverts acme/widgets#99999999999999999999"} {
+		if repo, number, ok := ParseRevert(body); ok {
+			t.Errorf("ParseRevert(%q) = %s#%d, want no revert", body, repo, number)
+		}
+	}
+}

@@ -270,15 +270,23 @@ func (s *server) postProductionEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 // event is the row input asks for, before its project, its actor and a failure's deploy are
-// known: the plain and the OTel name of one field taken as one, a system's source_ref required,
-// the fields of a failure's deploy refused on a deploy, a failure's signal and source the
-// caller's (person or api), and its detected_at the server's time where the body names none.
+// known: the plain and the OTel name of one field taken as one, a system's source_ref required and
+// refused where it starts with an automatic source's prefix (prodevents.AutomaticSourceRefPrefix),
+// the fields of a failure's deploy refused on a deploy, a failure's signal and source the caller's
+// (person or api), and its detected_at the server's time where the body names none.
 func (input productionEventInput) event(person bool) (prodevents.Event, error) {
 	if input.Kind != prodevents.KindDeploy && input.Kind != prodevents.KindFailure {
 		return prodevents.Event{}, productionEventInputError("kind must be deploy or failure, not %q", input.Kind)
 	}
 	if !person && strings.TrimSpace(input.SourceRef) == "" {
 		return prodevents.Event{}, productionEventInputError("source_ref is required: it is the system's own key for the event, which makes a repeat write no second row")
+	}
+	// A person's flag is keyed by the server (postProductionEvent), under the person prefix, so the
+	// refusal is a system's alone.
+	if prefix, automatic := prodevents.AutomaticSourceRefPrefix(input.SourceRef); !person && automatic {
+		return prodevents.Event{}, productionEventInputError(
+			"source_ref %q starts with %s, the prefix an automatic source writes its own rows under, whose write a post under its key would leave writing nothing; send a key of the system's own",
+			input.SourceRef, prefix)
 	}
 	environment, err := otelField("environment", input.Environment, "deployment.environment.name", input.DeploymentEnvironmentName)
 	if err != nil {
