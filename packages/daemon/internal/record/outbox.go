@@ -3256,7 +3256,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		// A move back is one by the order of the issue's task (workflow's Walk.MovesBack), which need
 		// not be today's, so the pair is any pair the daemon counts (phase.MovePairs): two different
-		// workflow phases, or step-step.
+		// workflow phases, step-step, or a phase a step runs as moved back to itself, which a task
+		// that names one role at two steps makes.
 		if !phase.IsMovePair(value.From, value.To) {
 			return fmt.Errorf("a hook prompt names the move back that fired it; %q to %q is no move back", value.From, value.To)
 		}

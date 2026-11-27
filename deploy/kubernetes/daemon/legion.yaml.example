@@ -239,10 +239,12 @@ projects:
 #                                      # the event: work_back, a move to an earlier phase, is the
 #                                      # one event the daemon has. moves are the moves back the
 #                                      # hook counts, each written <from>-<to> of two workflow
-#                                      # phases, which differ but in step-step
+#                                      # phases, which differ but in step-step and in a phase a
+#                                      # step runs as moved back to itself, which a role at two
+#                                      # steps of one task makes
 #                                      # (testing-implementing, reviewing-implementing,
-#                                      # merging-implementing, or any other of the 44 moves
-#                                      # back a task's line can make,
+#                                      # merging-implementing, implementing-implementing, or any
+#                                      # other of the 49 moves back a task's line can make,
 #                                      # such as testing-reviewing on a task whose review step
 #                                      # comes before its test step; a move into retro or
 #                                      # merging, which end every line, is refused, since it

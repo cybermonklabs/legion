@@ -93,7 +93,7 @@ func aHook(mappings string) string { return minimalFile + "hooks: [" + mappings 
 // another; any other phase paired with itself is refused, since it is no move. The twin: a move
 // back of today's line still loads.
 func TestAHookNamesAMoveOfAnyOrder(t *testing.T) {
-	for _, move := range []string{"testing-reviewing", "reviewing-implementing", "step-implementing", "implementing-step", "step-step"} {
+	for _, move := range []string{"testing-reviewing", "reviewing-implementing", "step-implementing", "implementing-step", "step-step", "testing-testing"} {
 		cfg, err := Load(writeConfigFile(t, aHook("{name: stuck, on: work_back, every: 1, moves: ["+move+"], roles: [tester], prompt: Words.}")), noEnv)
 		if err != nil {
 			t.Fatalf("Load(moves: [%s]): %v", move, err)
@@ -102,10 +102,12 @@ func TestAHookNamesAMoveOfAnyOrder(t *testing.T) {
 			t.Fatalf("Hooks of moves: [%s] = %+v, want the one move", move, cfg.Hooks)
 		}
 	}
-	_, err := Load(writeConfigFile(t, aHook("{name: stuck, on: work_back, every: 1, moves: [testing-testing], roles: [tester], prompt: Words.}")), noEnv)
-	want := `hooks[0].moves names "testing-testing", which is no move the daemon counts: a move is written "<from>-<to>", two workflow phases, which differ but in step-step`
+	// A phase that is in no line, and a pair of a phase a step never runs as with itself, are no
+	// moves the daemon counts.
+	_, err := Load(writeConfigFile(t, aHook("{name: stuck, on: work_back, every: 1, moves: [retro-retro], roles: [tester], prompt: Words.}")), noEnv)
+	want := `hooks[0].moves names "retro-retro", which is no move the daemon counts: a move is written "<from>-<to>", two workflow phases, which differ but in step-step and in a phase a step runs as moved back to itself, which a role at two steps of one task makes`
 	if err == nil || err.Error() != want {
-		t.Fatalf("Load(moves: [testing-testing]) error = %v, want %q", err, want)
+		t.Fatalf("Load(moves: [retro-retro]) error = %v, want %q", err, want)
 	}
 }
 
@@ -176,7 +178,7 @@ func TestAHookNamingAMoveNoLineMakesBackIsRefused(t *testing.T) {
 			t.Errorf("Load(moves: [%s]) error = %v, want %q", move, err, want)
 		}
 	}
-	if loaded != 44 {
-		t.Errorf("%d pairs were read as moves back, want 44", loaded)
+	if loaded != 49 {
+		t.Errorf("%d pairs were read as moves back, want 49: the 44 of the pairs of two phases and of step, and the self-pair of each of the five phases a step runs as, which a role at two steps of one task makes", loaded)
 	}
 }

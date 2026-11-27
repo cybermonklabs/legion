@@ -60,8 +60,8 @@ func TestTheOperatorTextsCountTheMovesBackAHookMayName(t *testing.T) {
 		want []string
 	}{
 		{path: "docs/site/src/content/docs/legion/concepts.md", want: []string{count}},
-		{path: "docs/site/src/content/docs/legion/running-legion.md", want: []string{count, "each written `<from>-<to>` of two workflow phases, which differ but in `step-step`"}},
-		{path: "deploy/kubernetes/daemon/legion.yaml.example", want: []string{count, "each written <from>-<to> of two workflow phases, which differ but in step-step"}},
+		{path: "docs/site/src/content/docs/legion/running-legion.md", want: []string{count, "each written `<from>-<to>` of two workflow phases, which differ but in `step-step` and in a phase a step runs as moved back to itself, which a role at two steps of one task makes"}},
+		{path: "deploy/kubernetes/daemon/legion.yaml.example", want: []string{count, "each written <from>-<to> of two workflow phases, which differ but in step-step and in a phase a step runs as moved back to itself, which a role at two steps of one task makes"}},
 	} {
 		prose := proseOf(shippedText(t, text.path))
 		for _, phrase := range text.want {

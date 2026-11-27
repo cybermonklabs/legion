@@ -716,8 +716,10 @@ What each part is for:
   refused: the daemon's own wake to an architect is a notice); and the words, as `prompt` in the
   key or as `prompt_file`, a path, never both and never neither. On `work_back` a hook may also
   name `moves`, the moves it counts, each written `<from>-<to>` of two workflow phases, which differ
-  but in `step-step` (`testing-implementing`, `reviewing-implementing`, `merging-implementing`, or
-  any other of the 44 moves back a task's line can make, such as `testing-reviewing` on a task
+  but in `step-step` and in a phase a step runs as moved back to itself, which a role at two steps
+  of one task makes (`testing-implementing`, `reviewing-implementing`, `merging-implementing`,
+  `implementing-implementing`, or
+  any other of the 49 moves back a task's line can make, such as `testing-reviewing` on a task
   whose reviewer step comes before its tester step), or the word `any`,
   which is also what a hook that leaves the key out takes.
   A pair that no line makes as a move back is refused, since the hook would never

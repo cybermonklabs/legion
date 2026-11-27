@@ -74,7 +74,8 @@ func TestParsePairReadsOnlyKnownMovesBack(t *testing.T) {
 		// against that list.
 		{name: "a forward pair of Order, which MovePairs holds", text: "retro-merging", from: Retro, to: Merging, ok: true},
 		{name: "another forward pair of Order", text: "planning-implementing", from: Planning, to: Implementing, ok: true},
-		{name: "a phase paired with itself", text: "testing-testing"},
+		{name: "a phase a step runs as, paired with itself, which a role at two steps of one task makes", text: "testing-testing", from: Testing, to: Testing, ok: true},
+		{name: "retro paired with itself, which stands once at the end of every line", text: "retro-retro"},
 		{name: "a phase that is no part of the line", text: "held-planning"},
 		{name: "rubbish", text: "not a pair at all"},
 		{name: "nothing", text: ""},
