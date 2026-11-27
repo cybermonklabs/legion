@@ -61,6 +61,9 @@ type githubPulls struct {
 	factsReads     atomic.Int32
 	// commitPullsReads counts the REST reads of a commit's pull requests (serveCommitPulls).
 	commitPullsReads atomic.Int32
+	// commitPullsRefused is the status GitHub refuses the REST read of a commit's pull requests
+	// with, by commit (serveCommitPulls); a commit it does not hold is answered. Guarded by mu.
+	commitPullsRefused map[string]int
 }
 
 func serveGitHubPulls(t *testing.T, fake *fakeGitHub, repo string) *githubPulls {

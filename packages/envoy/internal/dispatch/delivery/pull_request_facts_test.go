@@ -50,12 +50,18 @@ func (g *githubPulls) edit(number int, change func(pull map[string]any)) {
 
 // serveCommitPulls answers GET /repos/{repo}/commits/{sha}/pulls with each pull request g holds
 // that holds sha (holdsCommit), as GitHub names the pull requests of a commit, and counts each
-// read in g.commitPullsReads.
+// read in g.commitPullsReads. A commit g.commitPullsRefused holds is refused with its status.
 func serveCommitPulls(t *testing.T, fake *fakeGitHub, g *githubPulls, repo string) {
 	t.Helper()
 	fake.handle("GET /repos/"+repo+"/commits/{sha}/pulls", func(w http.ResponseWriter, r *http.Request) {
 		g.commitPullsReads.Add(1)
 		g.mu.Lock()
+		if status := g.commitPullsRefused[r.PathValue("sha")]; status != 0 {
+			g.mu.Unlock()
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"message":"Server Error"}`))
+			return
+		}
 		pulls := []any{}
 		for _, number := range slices.Sorted(maps.Keys(g.pulls)) {
 			pull := g.pulls[number]

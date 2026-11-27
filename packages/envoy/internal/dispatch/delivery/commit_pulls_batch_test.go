@@ -390,9 +390,10 @@ func TestATooLargeAnswerIsSplitAndItsOneCommitReadOverREST(t *testing.T) {
 // GitHub names a commit's pull requests oldest first and the query reads CommitPullsPerCommit of
 // them, so a commit GitHub names more for would be read short of its newest pull requests, the
 // ones a read of a result's commit exists to learn. The read asks their count, and reads such a
-// commit over REST: here a commit eleven open pull requests are at, the newest #510, beside a
-// commit of one. Every pull request is stored, the commit of eleven is read over REST once, and
-// the other is not. The control is the same commit with ten: no REST read.
+// commit over REST: here a commit eleven open pull requests are at, #500 and #502 to #511, beside a
+// commit of one (#501). The query's ten are #500 and #502 to #510, so only the REST read stores the
+// newest, #511. Every pull request is stored, the commit of eleven is read over REST once, and the
+// other is not. The control is the same commit with ten: no REST read.
 func TestACommitWithMorePullRequestsThanTheQueryReadsIsReadOverREST(t *testing.T) {
 	t.Parallel()
 	run := func(t *testing.T, at int) (CommitsPullsAnswer, error, map[int]string, string, int) {
@@ -417,14 +418,67 @@ func TestACommitWithMorePullRequestsThanTheQueryReadsIsReadOverREST(t *testing.T
 	if read := answer.Reads[shared]; read.Written != CommitPullsPerCommit+1 || !read.AtHead {
 		t.Fatalf("the read of the commit %d pull requests are at = %+v, want all %d written", CommitPullsPerCommit+1, read, CommitPullsPerCommit+1)
 	}
-	if _, newest := stored[500+CommitPullsPerCommit]; !newest || len(stored) != CommitPullsPerCommit+2 || rest != 1 {
-		t.Fatalf("the read stored %v with %d REST reads; want the newest #%d among %d heads, and one REST read",
-			stored, rest, 500+CommitPullsPerCommit, CommitPullsPerCommit+2)
+	newest := 500 + CommitPullsPerCommit + 1
+	if _, held := stored[newest]; !held || len(stored) != CommitPullsPerCommit+2 || rest != 1 {
+		t.Fatalf("the read stored %v with %d REST reads; want the newest #%d, which only the REST read names, among %d heads, and one REST read",
+			stored, rest, newest, CommitPullsPerCommit+2)
 	}
 	control, err, controlStored, shared, rest := run(t, CommitPullsPerCommit)
 	if err != nil || control.Reads[shared].Written != CommitPullsPerCommit || len(controlStored) != CommitPullsPerCommit+1 || rest != 0 {
 		t.Fatalf("the control = %+v, %v, %d heads, %d REST reads; want %d written from the query and no REST read",
 			control.Reads[shared], err, len(controlStored), rest, CommitPullsPerCommit)
+	}
+}
+
+// A read that stops inside a query GitHub answered gives back the claims of the commits after the
+// stop: GitHub answered them, and nothing of that answer was stored, so no answer of GitHub's is
+// behind their claims. Of three commits in one query, the first has eleven pull requests, so it is
+// read over REST, and GitHub answers that REST read 502: the read ends with GitHub's error, the
+// first commit is asked (GitHub failed it, so its claim stands, as the read of one commit GitHub
+// failed keeps its claim), and the two after it are not asked, so their caller gives their claims
+// back and the next read asks them at once. The control is the same read with the REST read
+// answered: all three are asked, read and stored.
+func TestAReadThatStopsInsideAnAnsweredQueryGivesBackTheCommitsAfterIt(t *testing.T) {
+	t.Parallel()
+	run := func(t *testing.T, refused bool) (CommitsPullsAnswer, error, []string) {
+		pool, ctx := deliveryTestPool(t)
+		issue, fake, github, shas := seedCommitPullsFixture(t, ctx, pool, 74, 3)
+		for number := 503; number <= 502+CommitPullsPerCommit; number++ {
+			github.set("acme/widgets", number, "open", shas[0], fmt.Sprintf("legion/%s-%d", issue, number), "",
+				time.Date(2026, 3, 1, 10, number-500, 0, 0, time.UTC))
+			github.edit(number, func(pull map[string]any) { pull["title"] = issue + " more work" })
+		}
+		if refused {
+			github.mu.Lock()
+			github.commitPullsRefused = map[string]int{shas[0]: http.StatusBadGateway}
+			github.mu.Unlock()
+		}
+		serveCommitPullsQuery(t, fake, github, "acme/widgets", nil)
+		answer, err := unrenamed().ReadThroughCommitsPulls(ctx, pool, fake.newTestClient(), "acme/widgets", shas, time.Now())
+		return answer, err, shas
+	}
+
+	answer, err, shas := run(t, true)
+	if err == nil {
+		t.Fatal("a read whose REST read of the first commit GitHub answered 502 ended with no error")
+	}
+	if !answer.Asked[shas[0]] {
+		t.Fatalf("the commit whose REST read GitHub failed is not asked, so its claim would be given back though GitHub failed it")
+	}
+	for _, sha := range shas[1:] {
+		if _, read := answer.Reads[sha]; read || answer.Asked[sha] {
+			t.Fatalf("the commit %s after the stop is read %t and asked %t; want neither: the read stopped before storing GitHub's answer about it, so its claim must be given back",
+				sha, read, answer.Asked[sha])
+		}
+	}
+	control, err, shas := run(t, false)
+	if err != nil {
+		t.Fatalf("the control: %v", err)
+	}
+	for _, sha := range shas {
+		if _, read := control.Reads[sha]; !read || !control.Asked[sha] {
+			t.Fatalf("the control's commit %s is read %t and asked %t; want both", sha, read, control.Asked[sha])
+		}
 	}
 }
 
