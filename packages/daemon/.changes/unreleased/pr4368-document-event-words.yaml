@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  The daemon's refusal of a Dispatch event of the merge holds document names the member alone: a
+  payload whose project or type disagrees with its subject, or that names no `artifact_id`, is
+  refused in fixed text that prints none of the payload's values, and a payload that does not
+  decode is named in fixed text (`oauth2call.UnmarshalData`), never encoding/json's own error.
+  Before, the refusal printed the payload's project and type as they came, so a payload that held
+  a credential there had it written into the give-up the daemon records for the message.
+time: 2026-11-27T01:10:52Z
+custom:
+    Issue: pr4368

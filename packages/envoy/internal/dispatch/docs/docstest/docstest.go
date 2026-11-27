@@ -401,11 +401,13 @@ func (p *Peer) CloseFrame() int {
 }
 
 // DroppedWithoutCloseFrame reports whether the peer received no valid close frame and its read
-// ended on the transport (ReadEndedOnTransport). It returns the last read error for diagnostics.
-// It waits for Ended.
+// ended on the transport (ReadEndedOnTransport, which reads the read's own error). It returns the
+// last read error for diagnostics by its class (redact.Class): gorilla's text of a close frame
+// quotes the frame's own text, the room's words, which can echo a credential the dial's header
+// carried. It waits for Ended.
 func (p *Peer) DroppedWithoutCloseFrame() (bool, error) {
 	<-p.Ended
-	return p.frameCode == 0 && ReadEndedOnTransport(p.readErr), p.readErr
+	return p.frameCode == 0 && ReadEndedOnTransport(p.readErr), redact.Class(p.readErr)
 }
 
 // ReadEndedOnTransport reports whether err, the error that ended a gorilla read of a websocket,
