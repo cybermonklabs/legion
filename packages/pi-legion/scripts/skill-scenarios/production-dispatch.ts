@@ -20,6 +20,7 @@ import type {
   IssueSummary,
   MessageRead,
 } from "@legion/contracts";
+import { outage } from "@legion/contracts/http-status";
 import { joinUrl } from "@legion/contracts/url-join";
 import { credentialDeadline, type RequestCredential } from "@legion/envoy-client/bearer";
 import { type DispatchEnvironment, dispatchSettings } from "@legion/envoy-client/dispatch-config";
@@ -96,11 +97,6 @@ export function backoffMs(n: number): number {
   return Math.min(30_000, 1000 * 2 ** (n - 1));
 }
 
-/** True for a status that can change when the same request goes again: a rate limit or a 5xx. */
-export function transient(status: number): boolean {
-  return status === 429 || status >= 500;
-}
-
 /** A GET-only client of production Dispatch's API. */
 export class ProductionDispatch {
   readonly #base: string;
@@ -168,9 +164,9 @@ export class ProductionDispatch {
     return answer as T[];
   }
 
-  /** One GET, tried again after a 429, a 5xx or a failed connection, the body's arrival included:
-   * a connection that fails after the headers is a failed connection too. Its errors name the
-   * path and the query, never the server or the token. */
+  /** One GET, tried again after an outage (`outage`: a 5xx, a 408 or a 429) or a failed
+   * connection, the body's arrival included: a connection that fails after the headers is a failed
+   * connection too. Its errors name the path and the query, never the server or the token. */
   async #get<T>(segments: readonly string[], query?: Record<string, string>): Promise<T> {
     const shown = describe(segments, query);
     const url = joinUrl(this.#base, shown);
@@ -210,7 +206,7 @@ export class ProductionDispatch {
           throw new Error(`GET ${shown} answered ${response.status} with a body that is not JSON`);
         }
       }
-      if (transient(response.status)) {
+      if (outage(response.status)) {
         last = `answered ${response.status}`;
         continue;
       }

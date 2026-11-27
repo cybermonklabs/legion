@@ -57,11 +57,11 @@ func decodeAnswer(response *http.Response, v any) error {
 
 // unavailableGetStatus is ErrUnavailable for a GET of route the listener answered with a status
 // the caller does not take, carrying the listener's own reason when its body names one, and
-// ErrUnreachable too when that status came from in front of the listener (unavailableStatus).
-// The two list reads answer their refusals through listFailure instead, which tells a refilling
-// listener from an unavailable one. Whatever answers in the listener's place can echo the bearer
-// the read carried, so the reason is read through decodeAnswer and prints with every credential
-// the read carried redacted, as every refusal this client reads does.
+// ErrUnreachable too when that status is an outage (unavailableStatus). The two list reads answer
+// their refusals through listFailure instead, which tells a refilling listener from an
+// unavailable one. Whatever answers in the listener's place can echo the bearer the read carried,
+// so the reason is read through decodeAnswer and prints with every credential the read carried
+// redacted, as every refusal this client reads does.
 func unavailableGetStatus(response *http.Response, route string) error {
 	var failure listenerwire.APIErrorAs[redact.RemoteText]
 	if err := decodeAnswer(response, &failure); err == nil && !failure.Error.IsEmpty() {
@@ -72,15 +72,16 @@ func unavailableGetStatus(response *http.Response, route string) error {
 		fmt.Errorf("%w: GET %s returned %d", ErrUnavailable, route, response.StatusCode))
 }
 
-// listenerResponseError is the error a role lookup or a send reports for a non-200 answer. A 502,
-// 503 or 504 is ErrUnavailable and ErrUnreachable whatever its body says: the listener behind its
-// starting gate answers 503 {"error":"service starting"} (cmd/listener/starting_gate.go
-// startingGate), and a gateway in front of one that is gone answers 502 or 504, so either is "ask
-// again" rather than the listener's verdict on the request. Any other status with a JSON reason is
-// that reason alone, which a delivery records and a person reads verbatim ("no live session <id>",
-// "message is required", "unauthorized"). The reason is kept on the unavailable error too, for the
-// same reader. Any other status without one is ErrUnavailable alone: the listener answered, and
-// asking again repeats it.
+// listenerResponseError is the error a role lookup or a send reports for a non-200 answer. A
+// listener outage (listenerwire.Outage: a 408, a 429, a 5xx but 500) is ErrUnavailable and
+// ErrUnreachable whatever its body says: the listener behind its starting gate answers 503
+// {"error":"service starting"} (cmd/listener/starting_gate.go startingGate), a gateway in front
+// of one that is gone answers 502 or 504, and a proxy that did not take the request in time
+// answers 408, so each is "ask again" rather than the listener's verdict on the request. Any
+// other status with a JSON reason is that reason alone, which a delivery records and a person
+// reads verbatim ("no live session <id>", "message is required", "unauthorized"). The reason is
+// kept on the unavailable error too, for the same reader. Any other status without one is
+// ErrUnavailable alone: the listener answered, and asking again repeats it.
 func listenerResponseError(response *http.Response) error {
 	var body listenerwire.APIErrorAs[redact.RemoteText]
 	if err := decodeAnswer(response, &body); err != nil {
@@ -100,16 +101,16 @@ func listenerResponseError(response *http.Response) error {
 var ErrStoreUnconfirmed = errors.New("envoy listener could not confirm the send was stored")
 
 // listenerRefusal is a refused answer as its caller reports it: the listener's own reason when
-// its body named one, and its status when the body named nothing a caller could act on. A 502,
-// 503 or 504 is ErrUnavailable and ErrUnreachable whatever its body says, reason and all, since
-// it comes from in front of the listener or from its starting gate rather than from a decision
-// about the request. The reason is the listener's words, or its stand-in's, read through
-// decodeAnswer with the credentials the request carried redacted, so it prints as it prints
-// itself (redact.RemoteText).
+// its body named one, and its status when the body named nothing a caller could act on. A
+// listener outage (listenerwire.Outage: a 408, a 429, a 5xx but 500) is ErrUnavailable and
+// ErrUnreachable whatever its body says, reason and all, since it says the listener could not
+// answer now rather than decide about the request. The reason is the listener's words, or its
+// stand-in's, read through decodeAnswer with the credentials the request carried redacted, so it
+// prints as it prints itself (redact.RemoteText).
 func listenerRefusal(response *http.Response, reason redact.RemoteText) error {
 	code := response.StatusCode
 	if !reason.IsEmpty() {
-		if gatewayStatus(code) {
+		if listenerwire.Outage(code) {
 			return unreachable(fmt.Errorf("%w: listener returned %d: %s", ErrUnavailable, code, reason))
 		}
 		return errors.New(reason.String())
@@ -120,9 +121,9 @@ func listenerRefusal(response *http.Response, reason redact.RemoteText) error {
 // listFailure classifies a list read's non-200 answer from its body: the listener's refilling 503
 // is a *RefillingError, anything else ErrUnavailable carrying the listener's own reason when its
 // body names one, as it prints itself (redact.RemoteText) with every credential the read carried
-// redacted (decodeAnswer), and ErrUnreachable too when the status is a 502, 503 or 504, which
-// comes from in front of the listener or from its starting gate rather than from a verdict on the
-// read.
+// redacted (decodeAnswer), and ErrUnreachable too when the status is a listener outage
+// (listenerwire.Outage: a 408, a 429, a 5xx but 500), which says the listener could not answer
+// now rather than give a verdict on the read.
 func listFailure(response *http.Response, route string) error {
 	var body listenerwire.APIErrorAs[redact.RemoteText]
 	decoded := decodeAnswer(response, &body) == nil

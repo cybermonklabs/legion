@@ -8,17 +8,21 @@
 // endpoint's answer that decides something on it - a sign-in refused, a client rejected, a login
 // denied or ended - reads it through these, so each rule has one definition. The TypeScript
 // broker client states the same rules once in its own language
-// (packages/cipher-client/src/oauth-refusal.ts: outage, refusalCode and endsGrant), which its
-// person identity and its device login read. The readers that end a person's sign-in on this
-// machine read EndsGrant's 400/401 rule: the broker client's device flow by EndsGrant itself
-// (internal/cipherclient/device.go, DeviceFlow.Refresh), and the TypeScript broker client by
-// endsGrant. The broker's minters read GitHub's and Google's statuses by Refuses and Outage too
-// (internal/cipher/secrets, mintStatusError and classify), beside their own rate-limit reading.
-// A code is read as the closed set redact.RefusalCode answers, from the code as it came, never
-// from an answer's ErrorCode: the boundary (redact.OAuth2) hands on an answer that unwraps to an
-// *oauth2.RetrieveError holding only the rule's reading of its words, or no word at all where no
-// record covers it. It imports only the standard library, golang.org/x/oauth2 and internal/redact,
-// so a command that links no OpenID Connect verifier can use it.
+// (packages/cipher-client/src/oauth-refusal.ts: refusalCode and endsGrant, over the outage of
+// @legion/contracts/http-status), which its person identity and its device login read. The
+// readers that end a person's sign-in on this machine read EndsGrant's 400/401 rule: the broker
+// client's device flow by EndsGrant itself (internal/cipherclient/device.go, DeviceFlow.Refresh),
+// and the TypeScript broker client by endsGrant. The broker's minters read GitHub's and Google's
+// statuses by Refuses and Outage too (internal/cipher/secrets, mintStatusError and classify),
+// beside their own rate-limit reading. A code is read as the closed set redact.RefusalCode
+// answers, from the code as it came, never from an answer's ErrorCode: the boundary
+// (redact.OAuth2) hands on an answer that unwraps to an *oauth2.RetrieveError holding only the
+// rule's reading of its words, or no word at all where no record covers it.
+//
+// Outage is httpoutage.Is under the name these OAuth readers use, as the TypeScript client's
+// outage is @legion/contracts/http-status's. The package imports only the standard library,
+// golang.org/x/oauth2, httpoutage and internal/redact, so a command that links no OpenID Connect
+// verifier can use it.
 package oauthrefusal
 
 import (
@@ -27,14 +31,16 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Outage reports whether status is a server that could not answer the request now: any 5xx, a 408
 // Request Timeout (it did not take the request) and a 429 Too Many Requests (it will not take one
 // yet). The set is closed: every other status is the server answering, whatever its body names.
+// It is httpoutage.Is, which says why a 501 and a 505 are in it.
 func Outage(status int) bool {
-	return status >= 500 || status == http.StatusRequestTimeout || status == http.StatusTooManyRequests
+	return httpoutage.Is(status)
 }
 
 // Refuses reports whether status is one a token endpoint refuses a request with: any 4xx that is no

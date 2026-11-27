@@ -136,7 +136,7 @@ type gatedPublisher struct {
 	gate *gate
 }
 
-func (g *gatedPublisher) Publish(ctx context.Context, topic, message string, payload any, key string) error {
+func (g *gatedPublisher) Publish(ctx context.Context, topic, message string, payload any, key string) (string, error) {
 	g.gate.enter()
 	return g.holderPublisher.Publish(ctx, topic, message, payload, key)
 }

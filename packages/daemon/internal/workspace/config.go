@@ -25,46 +25,33 @@ import (
 // CommandTimeout is the slow-command budget both runtimes' provisioning gives every command it
 // runs — a fetch, a jj operation, or a git configuration edit — each bounded independently. The
 // exceptions are the fetch's checks of what the repository cache streamed and its transfers from
-// GitHub, under FetchTimeout (the repository cache's own first clone under CacheFetchTimeout
+// GitHub, under FetchTimeout (the repository cache's own first fill under CacheFetchTimeout
 // instead), the stream from the repository cache, under the low-speed bound and no clock at all
 // (CacheStreamLowSpeedBytes), the shared clone's own clone, under CloneTimeout, the issue's
-// checkout, under CheckoutTimeout (all below), and the cache's repack (repocache.repackTimeout, through FeedGitWithin).
+// checkout, under CheckoutTimeout (all below), and the cache's repack (repocache.repackTimeout, through CacheGitWithin).
 const CommandTimeout = 5 * time.Minute
 
-// FetchTimeout is the bound of each clocked stage of a fetch whose duration follows the
-// repository's size and the network's speed, once it may start (Fetch): a feed filled from the
-// repository cache gets one for the verification of what was streamed, counted from the stream's
-// end, and another for the delta from GitHub, every attempt of it included; a clone or a fetch
-// from GitHub alone gets one. It is long enough for a large repository's slow but steadily
-// progressing transfer to finish. A request may set its own (FetchRequest.Bound), which the
-// repository cache does for its first clone alone (CacheFetchTimeout). The stream from the
-// repository cache is no stage of this kind: it is held to its own speed instead
-// (CacheStreamLowSpeedBytes).
+// FetchTimeout bounds each clocked size-following transfer stage. For an issue-pod fill,
+// StreamCache verifies its cache tar within one FetchTimeout and the subsequent GitHub delta gets
+// another. The repository cache's refresh uses one; its first fill uses CacheFetchTimeout. The
+// cache tar itself is held by its low-speed rule, not a clock.
 const FetchTimeout = 30 * time.Minute
 
-// CacheStreamLowSpeedBytes and CacheStreamLowSpeedTime bound the stream a feed is filled from the
-// repository cache with, in place of a clock: the stream ends once a whole CacheStreamLowSpeedTime
-// has passed in which fewer than CacheStreamLowSpeedBytes arrived, and one that keeps receiving
-// more than that runs for as long as the repository needs (countingReader.watchStall). The rule
-// is git's own for the transfers it makes, http.lowSpeedLimit over http.lowSpeedTime, here 1 MiB
-// in 5 minutes: about 3.5 KiB/s, far under the share of a cache's sending rate a pod gets even
-// when every stream the cache allows at once is running (repocache.maxStreams), so only a
-// transfer that has stopped falls below it. A clock in its place threw away a download that was
-// still arriving, killed at 30 minutes with the feed it had written, and launched the issue again
-// into the same wait (INFRA-495): what tells a dead transfer from a long one is its speed, not
-// how long it has run.
+// CacheStreamLowSpeedBytes and CacheStreamLowSpeedTime bound the repository-cache tar stream into
+// an issue clone. The stream ends once a whole CacheStreamLowSpeedTime has passed in which fewer
+// than CacheStreamLowSpeedBytes arrived, and one that keeps receiving more runs for as long as the
+// repository needs (countingReader.watchStall). The rule is git's own for transfers it makes,
+// http.lowSpeedLimit over http.lowSpeedTime, here 1 MiB in 5 minutes: about 3.5 KiB/s, far under
+// the share of a cache's sending rate a pod gets even when every stream the cache allows at once
+// is running (repocache.maxStreams), so only a transfer that has stopped falls below it.
 const (
 	CacheStreamLowSpeedBytes = 1 << 20
 	CacheStreamLowSpeedTime  = 5 * time.Minute
 )
 
-// CloneTimeout is the one bound ensureRepoClone gives its size-following steps, together, as the
-// fetch's share FetchTimeout: from GitHub, a `jj git clone` that copies and imports every object;
-// from a pod's feed, a shared local `git clone` that copies no object (feedClone), then jj's
-// import of every commit. A 3.4 GB repository (816k objects, 421 refs) cloned from a local feed by
-// `jj git clone` in 253 s with four cores and 281 s with two on a 64-core devbox, using no more
-// than about two cores either way, so CommandTimeout's fixed 5 minutes is no bound for it once a
-// sandbox slows it at all.
+// CloneTimeout is the one bound ensureRepoClone gives the Jujutsu setup after an issue clone's
+// GitHub delta: `jj git init --colocate`, the sparse clear and abandon, and default bookmark
+// tracking. FetchBudget separately bounds the cache wait and data transfers before those steps.
 const CloneTimeout = 30 * time.Minute
 
 // CheckoutTimeout is the bound of a command that writes a whole working copy — every file of the
@@ -80,14 +67,16 @@ const CheckoutTimeout = time.Hour
 // Command is one process the provisioner runs, each bounded independently of every other: most
 // hold the runner's own slow-command budget (RunChecked), each of the fetch's transfers and checks
 // holds what remains of its request's bound instead (Fetch, FetchRequest.Bound), a command run with
-// FeedGitWithin holds the timeout it is given, each size-following step of the shared
+// CacheGitWithin holds the timeout it is given, each size-following step of the shared
 // clone's clone holds what remains of CloneTimeout (ensureRepoClone), and the issue's checkout
 // holds CheckoutTimeout (Provision, Request.CheckoutBound) — never a budget shared
-// across the whole provisioning sequence.
+// across the whole provisioning sequence. Stdin is the whole of what the process reads on its
+// standard input (CacheGitStdin); "" leaves it the null device's empty input.
 type Command struct {
 	Argv    []string
 	Env     []string
 	Dir     string
+	Stdin   string
 	Timeout time.Duration
 	// Clone is the shared clone whose workspace Dir is, for a jj command run in a workspace's own
 	// directory (RunCheckedIn, which also names Dir with -R): the runner refuses one whose `.jj`
@@ -123,15 +112,15 @@ type Runner interface {
 // Request contains the credential and identity of the repository to provision. Repo is the
 // configured GitHub owner/repository name, for example "sjawhar/legion-smoke". DefaultBranch is
 // the repository's default branch as GitHub names it, a branch name used verbatim
-// (release/v7.1): the base an issue with no branch starts at, and the branch a pod's feed brings
-// beside the issue's own.
+// (release/v7.1): the base an issue with no branch starts at, and the branch an issue pod's clone
+// fetches beside the issue's own.
 type Request struct {
 	StateDir         string
 	Repo             ghrepo.Repository
 	Issue            string
 	DefaultBranch    string
 	CredentialHelper string
-	// Source is how the shared clone reaches the repository: FromFeed or FromGitHub.
+	// Source is how FromGitHub or ForIssuePod reaches the repository.
 	Source Source
 	// Log takes the one line provisioning logs: the commits it set aside when it started a merged
 	// issue's workspace at the default branch (createWorkspace).
@@ -213,13 +202,14 @@ type Workspace struct {
 	DefaultBranch string
 }
 
-// In a pod, the one process that holds the provisioning token, Fetch, runs in a container that
-// mounts nothing a tree agent can write, and every process that touches the tree volume runs in a
-// container the provisioning Secret is not mounted in: that boundary, not what the runner adds
-// below, is what keeps the token from a tree agent. On the tmux runtime the credentialed clone and
-// fetch run in the shared clone, and panes share the daemon's uid and can read the daemon's files
-// anyway, so there what the runner adds is defence, not a boundary: it holds the settings it names
-// below, and does not claim that nothing else the shared clone's configuration names can run.
+// No runtime keeps the provisioning token from a tree agent with a boundary. In a Kubernetes issue
+// pod, workspace-init holds the token and runs git in the clone the issue's agents write on the
+// issue's volume; on the tmux runtime the credentialed clone and fetch run in the shared clone, and
+// panes share the daemon's uid and can read the daemon's files anyway. On both, what the runner
+// adds below is defence: no hook runs, no git starts its automatic maintenance (pinnedGitConfig),
+// git reaches a remote over https alone (transportEnvironment), and each legacy configuration file
+// jj would migrate is removed before jj runs (disarmLegacyConfig). The clone's other git
+// configuration applies to its fetch, and nothing here claims that nothing else it names can run.
 
 // pinnedGitConfig is git configuration every process provisioning starts reads last, after the
 // shared clone's and after the command's own: no hook runs, wherever the clone's hooks directory
@@ -236,9 +226,7 @@ var pinnedGitConfig = [][2]string{{"core.hooksPath", "/dev/null"}, {"gc.auto", "
 
 // transportEnvironment is set on every process provisioning starts before the command's own
 // environment: git reaches a remote over https alone, so a url.<base>.insteadOf the tree wrote
-// cannot turn a clone or fetch into an ext:: command, an ssh command, or a local path. A command
-// that reaches a local repository on purpose — the shared clone's, from a pod's feed — names the
-// file transport alone instead.
+// cannot turn a clone or fetch into an ext:: command, an ssh command, or a local path.
 var transportEnvironment = []string{"GIT_ALLOW_PROTOCOL=https"}
 
 type execRunner struct {
@@ -334,6 +322,9 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 		return Result{}, err
 	}
 	child.Env = env
+	if command.Stdin != "" {
+		child.Stdin = strings.NewReader(command.Stdin)
+	}
 	// A command that reaches a remote over https can have git spawn git-remote-https, a helper
 	// holding the same stdout/stderr pipes: exec.CommandContext alone only kills the direct child
 	// when bounded expires, and that helper, now reparented, can keep the pipe open forever,
@@ -767,7 +758,7 @@ func runCommand(ctx context.Context, run Runner, argv []string, env []string, di
 // runCommandTimeout is runCommand, but for timeout instead of the runner's own slow-command
 // budget: runCommand itself calls it with run.Timeout(); Fetch calls it with what remains of its
 // request's bound (FetchRequest.Bound, FetchTimeout by default) for each of its transfers and
-// checks; FeedGitWithin with the timeout its caller gives it (the repository cache's repack); and
+// checks; CacheGitWithin with the timeout its caller gives it (the repository cache's repack); and
 // ensureRepoClone with CloneTimeout.
 func runCommandTimeout(ctx context.Context, run Runner, argv []string, env []string, dir string, timeout time.Duration) (Result, error) {
 	if run == nil {
@@ -856,7 +847,7 @@ func answered(argv []string, result Result, err error) error {
 // (procgroup.Said). The runner leaves that stderr out of its own error, so a caller whose command
 // can echo a credential scrubs result.Stderr, and argv where it names another party's words,
 // before they reach here, as Fetch's transfers (transferWithRetries) and its commands on what
-// GitHub or the repository cache wrote (feedGitWithin), the shared clone's steps
+// GitHub or the repository cache wrote (cacheGitWithin, runHeld), the shared clone's steps
 // (cloneSteps.runIn) and its fetch (ensureFetchConfiguration) do.
 func runFailure(argv []string, result Result, err error) error {
 	return fmt.Errorf("run %s: %w", strings.Join(argv, " "), procgroup.Said(err, result.Stderr))
@@ -909,14 +900,35 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 			return err
 		}
 	}
+	if source.issue != nil {
+		if _, err := runCheckedOnClone(ctx, run, cloneDir, "config", "set", "--repo", "remotes.origin.fetch-tags", "~*"); err != nil {
+			return err
+		}
+		if source.issue.fetched {
+			return nil
+		}
+		bytes, refs, _, err := fetchIssuePod(ctx, run, cloneDir, source, false)
+		if err != nil {
+			return err
+		}
+		if _, err := runCheckedOnClone(ctx, run, cloneDir, "git", "import"); err != nil {
+			return err
+		}
+		for _, ref := range source.issue.defaults {
+			if _, err := runCheckedOnClone(ctx, run, cloneDir, "bookmark", "track", originRow(strings.TrimPrefix(ref, "refs/heads/"))); err != nil {
+				return err
+			}
+		}
+		source.issue.fetched = true
+		source.issue.log(fmt.Sprintf("the clone holds %s already: %s bytes from GitHub for the delta (%s)",
+			source.issue.repository, groupedBytes(bytes), refCount(refs)))
+		return nil
+	}
 	// The fetch takes no snapshot of the clone's working copy: a snapshot runs the working-copy
 	// filter, fsmonitor, and signing programs jj's configuration names, which a tree agent can set,
 	// and on the tmux runtime this fetch holds the one-shot credential. A failed fetch returns its
-	// own error. A pod's clone borrows the feed's objects through its alternates (feedClone), and no
-	// connectivity scan stands here to diagnose a clone whose borrowed history went: Fetch never
-	// removes or replaces a feed it finds present (ownFeedRepository), so that history does not go.
-	// Its error leaves the process and nothing decides on its stderr, so the error prints the
-	// stderr as the credential shows it (remote.shown).
+	// own error. Its error leaves the process and nothing decides on its stderr, so the error
+	// prints the stderr as the credential shows it (remote.shown).
 	fetch := []string{"git", "fetch"}
 	for _, branch := range source.branches {
 		fetch = append(fetch, "--branch", exactName(branch))
@@ -1004,15 +1016,29 @@ func configureRepositoryCredential(ctx context.Context, run Runner, cloneDir, cr
 
 // configureCloneReads sets core.warnAmbiguousRefs to false in the shared clone's own
 // configuration, which every workspace of the clone reads too (a git worktree reads its clone's
-// config). With the warning on, git looks up each revision argument as a ref name, to warn when
-// a ref of the same name exists. A leak check's `git rev-list` with about 4,970 `^<sha>`
-// arguments spent 13 s of a measured 78 s on those lookups. The setting turns only the warning
-// off: git resolves every revision the same way. The feed does not take it: Fetch checks the
-// feed's configuration key by key (feedConfigKeys), so an extra key there would be refused.
+// config). With the warning on, git looks up each revision argument as a ref name, to warn when a
+// ref of the same name exists. A leak check's `git rev-list` with about 4,970 `^<sha>` arguments
+// spent 13 s of a measured 78 s on those lookups. The setting turns only the warning off: git
+// resolves every revision the same way. The repository cache does not take it: Fetch checks the
+// cache configuration key by key (cacheConfigKeys), so an extra key makes the cache foreign and
+// triggers its replacement.
 func configureCloneReads(ctx context.Context, run Runner, cloneDir string) error {
 	argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "core.warnAmbiguousRefs", "false"}
 	_, err := RunChecked(ctx, run, argv, nil, cloneDir)
 	return err
+}
+
+// configureIssueCloneMaintenance persists the two settings that prevent a role's ordinary git or
+// Jujutsu command from starting automatic maintenance in its issue pod. The tmux shared clone is
+// intentionally unchanged.
+func configureIssueCloneMaintenance(ctx context.Context, run Runner, cloneDir string) error {
+	for _, pair := range [][2]string{{"gc.auto", "0"}, {"maintenance.auto", "false"}} {
+		argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "--replace-all", pair[0], pair[1]}
+		if _, err := RunChecked(ctx, run, argv, nil, cloneDir); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // packWindowConfig is the git configuration that bounds how much of a repository's packs one git
@@ -1033,9 +1059,9 @@ func configureCloneReads(ctx context.Context, run Runner, cloneDir string) error
 // places, each for gits the others miss: the role environment's GIT_CONFIG pairs (sandbox's
 // gitConfigPairs, through PackWindowConfig), for every role's git and the git jj runs for a push or
 // a fetch; the worker image's /etc/gitconfig (packages/daemon/docker/worker.Dockerfile), for
-// provisioning's git, whose runner removes the role's pairs (execRunner.Run); the shared clone's own
-// configuration (configurePackWindows), for the shared public leak check's git; and `-c` on the git
-// of Fetch, FeedGit and FeedGitWithin (feedGit), which reads no system file (isolatedGitConfig).
+// provisioning's git, whose runner removes the role's pairs (execRunner.Run); the shared clone's
+// own configuration (configurePackWindows), for the shared public leak check's git; and the
+// isolatedGit command prefix, which reads no system file (isolatedGitConfig).
 // The Dockerfile cannot read this list, so it writes the four values out twice: its `git config
 // --system` writes, and the smoke list its build holds /etc/gitconfig to. What holds both copies to
 // this list in CI is TestTheWorkerImageWritesPackWindowConfig (sharedclone_test.go), which reads
@@ -1065,7 +1091,7 @@ func PackWindowConfig() [][2]string { return slices.Clone(packWindowConfig) }
 // runtime too (the daemon's Provision with FromGitHub), where they only bound git's pack windows; a
 // clone made before the setting existed, or one whose file a role changed, takes it at its next
 // provision. --replace-all leaves one line of each key whatever the file held, a key a role set
-// twice included. The feed does not take them, for the reason configureCloneReads gives.
+// twice included. The repository cache does not take them, for the reason configureCloneReads gives.
 func configurePackWindows(ctx context.Context, run Runner, cloneDir string) error {
 	for _, pair := range packWindowConfig {
 		argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "--replace-all", pair[0], pair[1]}
@@ -1094,7 +1120,7 @@ func configurePackWindows(ctx context.Context, run Runner, cloneDir string) erro
 // (--local), so a line of the global or system configuration cannot stop the write. Its exit is
 // the answer once the read answered (answered): exit 0, a gh-resolved line the clone holds, writes
 // nothing; exit 1, which git gives, printing nothing, where no key matches, writes the marker; and
-// any other answer fails the provision. The feed does not take the line, for the reason
+// any other answer fails the provision. The repository cache does not take the line, for the reason
 // configureCloneReads gives.
 func configureCloneDefaultRepository(ctx context.Context, run Runner, cloneDir string) error {
 	gitDir := cloneDir + "/.git"

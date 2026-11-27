@@ -32,8 +32,8 @@ type hookPublisher struct {
 	delivered []outboxPublish
 }
 
-func (p *hookPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
-	return p.publish(outboxPublish{topic: topic, message: message, key: key, payload: payload})
+func (p *hookPublisher) Publish(_ context.Context, topic, message string, payload any, key string) (string, error) {
+	return "", p.publish(outboxPublish{topic: topic, message: message, key: key, payload: payload})
 }
 
 func (p *hookPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {

@@ -47,7 +47,7 @@ func TestAListenerRefusalIsReadFromItsWordsAsTheyCame(t *testing.T) {
 				_, _ = w.Write([]byte(c.body))
 			}))
 			t.Cleanup(server.Close)
-			err := New(server.URL, "envoy-bearer").Publish(ctx, "notifications.role.legion-demo-controller", "a held notice", map[string]string{"kind": "held"}, "legion-outbox:9")
+			_, err := New(server.URL, "envoy-bearer").Publish(ctx, "notifications.role.legion-demo-controller", "a held notice", map[string]string{"kind": "held"}, "legion-outbox:9")
 			if !c.want(err) {
 				t.Errorf("the publish refused %d beside a URL = %v, want the refusal its body names", c.status, err)
 			}

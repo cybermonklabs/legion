@@ -357,7 +357,7 @@ func (c GoingCatalogue) Lookup(name string) (GoingAction, bool) {
 
 // mutatingRoutes is every row of the table that changes something, in the shape
 // TestEveryMutatingRouteIsClassed reads the table in: a row whose method is not GET, each of
-// which writeClasses must class (undecidableWrites). It is the one classification of a write the
+// whose declaration must state a WriteClass (undecidableWrites). It is the one classification of a write the
 // server has, and the catalogue is held to it.
 func mutatingRoutes(routes []apiRoute) map[string]bool {
 	mutating := make(map[string]bool, len(routes))

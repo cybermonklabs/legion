@@ -41,6 +41,14 @@
       "types": "./src/loopback-host.ts",
       "bun": "./src/loopback-host.ts"
     },
+    "./names-whole": {
+      "types": "./src/names-whole.ts",
+      "bun": "./src/names-whole.ts"
+    },
+    "./package-build": {
+      "types": "./src/package-build.ts",
+      "bun": "./src/package-build.ts"
+    },
     "./print-test": {
       "types": "./src/print-test.ts",
       "bun": "./src/print-test.ts"

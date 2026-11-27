@@ -113,6 +113,9 @@ type fakeBroker struct {
 	// enrollment while it cannot learn whether Dispatch calls the login's person a restricted
 	// member (projectaccess.MemberKindUncheckable), having written nothing.
 	enrollUncheckable bool
+	// enrollPage answers every enroll with this status and a front door's HTML page, as a proxy
+	// in front of the broker answers in its place; zero answers none.
+	enrollPage int
 
 	lastLoginRequest   string // the compact request object the most recent device authorization carried
 	pendingThumbprint  string // the embedded key's thumbprint from that request object
@@ -243,6 +246,12 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		if f.enrollUncheckable {
 			writeJSON(w, 503, map[string]string{"code": "MEMBER_KIND_UNCHECKABLE",
 				"error": "whether Dispatch calls ada@example.com a restricted member cannot be read: the broker could not ask Dispatch"})
+			return
+		}
+		if f.enrollPage != 0 {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(f.enrollPage)
+			_, _ = fmt.Fprintf(w, "<html><body><h1>%d %s</h1></body></html>", f.enrollPage, http.StatusText(f.enrollPage))
 			return
 		}
 		if f.failFirst > 0 {

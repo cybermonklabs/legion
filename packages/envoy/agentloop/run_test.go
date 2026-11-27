@@ -670,6 +670,32 @@ func TestAServerErrorIsRetriedOnceAndARequestErrorIsNot(t *testing.T) {
 	}
 }
 
+// Every outage status is retried once, as a 500 is: a 408 the endpoint (or a proxy in front of it)
+// did not take in time, a 429, a 501 and a 505 (RFC 9110 sections 15.5.9 and 15.6, RFC 6585
+// section 4), and the retry's reply is the answer. This transport is the run's one retry: the SDK's
+// own retries are off (languageModel).
+func TestEveryOutageStatusIsRetriedOnce(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusNotImplemented, http.StatusHTTPVersionNotSupported} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			outage := reply{
+				status: status, headers: map[string]string{"Retry-After": "0"},
+				body: []byte(`{"type":"error","error":{"type":"api_error","message":"not now"}}`),
+			}
+			answered := anthropicStream("end_turn", anthropicUsage{Input: 1, Output: 1}, anthropicText("The note says plum."))
+			s := newStandIn(t, outage, answered)
+			result, err := Run(context.Background(), newFixture(t, s, AnthropicMessages, 1).req)
+			if err != nil || result.Fault != "" || result.Text != "The note says plum." {
+				t.Fatalf("after a %d: result %+v, %v; want the retry's reply", status, result, err)
+			}
+			if n := len(s.attempts()); n != 2 {
+				t.Errorf("a %d then a reply took %d requests, want 2", status, n)
+			}
+		})
+	}
+}
+
 // A call whose connection drops before any answer is a transport error, retried once a second
 // later, and the retry's reply is the answer: the endpoint hears the call twice, and that is one
 // model call. The stand-in's one reply answers the retry, since an answer that never went out

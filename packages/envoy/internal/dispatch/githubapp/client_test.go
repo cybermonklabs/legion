@@ -500,7 +500,7 @@ func answeringGitHub(t *testing.T) (*Client, string) {
 }
 
 // The client notes on the attempt a request's context carries (githubreads) the answers no
-// caller takes as data: a 5xx, a 401, a limit RateLimit reads (a 429, and a 403 that carries
+// caller takes as data: a 408, a 5xx, a 401, a limit RateLimit reads (a 429, and a 403 that carries
 // one) and a body past the caller's limit, each in the words of the client's own errors, with no
 // separator left at the end of an answer that has no body. Every other answer is the caller's to
 // judge, so a 200, a 304, a 403 that carries no limit, a 404, a 409 and a 422 are not noted. Each
@@ -524,6 +524,7 @@ func TestSendNotesTheAnswersNoCallerTakesAsData(t *testing.T) {
 		{name: "422", path: "/answer/422"},
 		{name: "503", path: "/answer/503", cause: "GET " + base + `/answer/503: status 503: {"message":"answered 503"}`},
 		{name: "500", path: "/answer/500", cause: "GET " + base + `/answer/500: status 500: {"message":"answered 500"}`},
+		{name: "408", path: "/answer/408", cause: "GET " + base + `/answer/408: status 408: {"message":"answered 408"}`},
 		{name: "a 503 with no body", path: "/answer/503?empty=1", cause: "GET " + base + "/answer/503?empty=1: status 503"},
 		{name: "401", path: "/answer/401", cause: "GET " + base + `/answer/401: status 401: {"message":"answered 401"}`},
 		{name: "429", path: "/answer/429?limited=1", cause: "GET " + base + `/answer/429?limited=1: rate-limited by GitHub (status 429), next request in 1m0s: {"message":"answered 429"}`},
@@ -541,7 +542,7 @@ func TestSendNotesTheAnswersNoCallerTakesAsData(t *testing.T) {
 				body, status, _, err := client.ReadConditionalWithin(ctx, "installation-token", tc.path, tc.etag, limit)
 				return fmt.Sprintf("status %d, body %q, error %v", status, answertest.Text(body), err)
 			}
-			ctx, attempt := githubreads.Begin(context.Background())
+			ctx, attempt := githubreads.Begin(context.Background(), githubreads.CIReconcile)
 			withAttempt := read(ctx)
 			if without := read(context.Background()); without != withAttempt {
 				t.Fatalf("with an attempt the read answers %s, and without one %s; want the same answer", withAttempt, without)
@@ -728,7 +729,7 @@ func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("new client: %v", err)
 		}
-		ctx, attempt := githubreads.Begin(context.Background())
+		ctx, attempt := githubreads.Begin(context.Background(), githubreads.CIReconcile)
 		_, _, _, readErr := client.Read(ctx, "installation-token", "/repos/acme/web")
 		if readErr == nil {
 			t.Fatal("a read of a port that refuses every dial succeeded")
@@ -744,7 +745,7 @@ func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
 		saved := RequestTimeout
 		RequestTimeout = 50 * time.Millisecond
 		t.Cleanup(func() { RequestTimeout = saved })
-		ctx, attempt := githubreads.Begin(context.Background())
+		ctx, attempt := githubreads.Begin(context.Background(), githubreads.CIReconcile)
 		_, _, _, readErr := client.Read(ctx, "installation-token", "/repos/acme/web")
 		if !errors.Is(readErr, context.DeadlineExceeded) {
 			t.Fatalf("a read past RequestTimeout: err = %v, want the deadline", readErr)
@@ -764,7 +765,7 @@ func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
 			<-arrived
 			end()
 		}()
-		ctx, attempt := githubreads.Begin(caller)
+		ctx, attempt := githubreads.Begin(caller, githubreads.CIReconcile)
 		_, _, _, readErr := client.Read(ctx, "installation-token", "/repos/acme/web")
 		if !errors.Is(readErr, context.Canceled) {
 			t.Fatalf("a read whose caller ended: err = %v, want the cancel", readErr)

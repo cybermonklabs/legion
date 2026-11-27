@@ -1,14 +1,17 @@
 package repocache
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -325,7 +328,7 @@ func listingOf(t *testing.T, manifest workspace.PackManifest) listing {
 }
 
 // cloneListing is what the bare clone at dir holds as a /packs answer must list it, read from its
-// files apart from the cache's code: each file the clone's tar streams (workspace.FeedEntry), a
+// files apart from the cache's code: each file the clone's tar streams (workspace.CacheEntry), a
 // ref with its exact bytes, and a pack or an index under its object name with its size and the
 // SHA-256 of its bytes.
 func cloneListing(t *testing.T, dir string) listing {
@@ -340,7 +343,7 @@ func cloneListing(t *testing.T, dir string) listing {
 			return err
 		}
 		name := filepath.ToSlash(relative)
-		if !workspace.FeedEntry(name, entry.IsDir()) {
+		if !workspace.CacheEntry(name, entry.IsDir()) {
 			if entry.IsDir() {
 				return fs.SkipDir
 			}
@@ -1486,89 +1489,92 @@ func testPacksUnchangedWhileSigning(t *testing.T) {
 }
 
 // TestSignedPackFetchMatchesTar holds the two ends of /packs together (R3): an issue pod's
-// workspace.Fetch against the real cache, which keeps its packs in the double and has a branch
-// GitHub has since deleted and a main GitHub has since moved, fills one fresh feed from the
-// bucket, its downloads carrying no Authorization, and, once /packs cannot sign (503), another
-// from /tar of the same cache, saying why. The two feeds hold the same ref files, byte for byte,
-// and the same packs and indexes, the cache's own, each of the same size and SHA-256, so of the
-// same checksums git wrote into them. After the step that filled each from the cache, the fetch
-// ran the same git commands, as the runner recorded them: the object format the pack and index
-// checks read, the connectivity check, the delta's reads of GitHub, the prune of the deleted
-// branch, the delta, and the feed's settled configuration; and neither ran `git index-pack`.
+// workspace.StreamCache against the real cache, which keeps its packs in the double and narrowed
+// away a branch the remote holds beside main, fills one fresh clone's .git from the bucket, its
+// downloads carrying no Authorization, and, once /packs cannot sign (503), another from /tar of the
+// same cache, saying why. The two .git directories hold the same ref files, byte for byte, the
+// cache's main and no other branch, and the same packs and indexes, the cache's own, each of the
+// same size and SHA-256, so of the same checksums git wrote into them. After the step that filled
+// each from the cache, the fill ran the same git commands on it, as the runner recorded them: the
+// object format the pack and index checks read and the connectivity check; and neither ran `git
+// index-pack`. What the provision fetches from GitHub after either is the fill's, which
+// workspace's and workspace-init's own tests hold.
 func TestSignedPackFetchMatchesTar(t *testing.T) {
 	r := newPacksRig(t)
-	git(t, r.remote, "--git-dir="+r.remote, "branch", "gone/soon", "main")
+	git(t, r.remote, "--git-dir="+r.remote, "branch", "other/branch", "main")
 	r.refresh(t)
 	listed := cloneListing(t, r.c.dir)
-	requireListing(t, listingOf(t, r.requirePacks(t)), listed, "before the fetches,")
-	git(t, r.remote, "--git-dir="+r.remote, "branch", "-D", "gone/soon")
-	moved := advance(t, r.remote, "moved")
-	type fetched struct {
-		report workspace.FetchReport
+	requireListing(t, listingOf(t, r.requirePacks(t)), listed, "before the fills,")
+	cached := git(t, r.c.dir, "--git-dir="+r.c.dir, "rev-parse", "refs/heads/main")
+	type filled struct {
+		report workspace.StreamReport
+		gitDir string
 		steps  []string
 	}
-	fetch := func(what string) fetched {
-		root := filepath.Join(t.TempDir(), "feed")
+	fill := func(what string) filled {
+		work := filepath.Join(t.TempDir(), "widgets")
+		git(t, filepath.Dir(work), "init", "--quiet", work)
+		gitDir := filepath.Join(work, ".git")
 		r.run.mu.Lock()
 		before := len(r.run.argv)
 		r.run.mu.Unlock()
-		report, err := workspace.Fetch(testwait.Context(t), r.run, workspace.FetchRequest{
-			Repo: ghrepo.MustParse("acme/widgets"), Token: func() (string, error) { return "ghs_pod", nil }, CredentialDir: t.TempDir(), Feed: root,
-			Log: func(line string) { t.Logf("the fetch %s logged: %s", what, line) }, Clock: clock.Real(), CacheURL: r.url, CacheToken: testCacheToken,
-		})
+		report, err := workspace.StreamCache(testwait.Context(t), r.run, workspace.CacheStream{
+			Repo: ghrepo.MustParse("acme/widgets"), URL: r.url, Token: testCacheToken,
+			Log: func(line string) { t.Logf("the fill %s logged: %s", what, line) }, Clock: clock.Real(),
+		}, gitDir)
 		if err != nil {
-			t.Fatalf("the fetch %s: %v", what, err)
+			t.Fatalf("the fill %s: %v", what, err)
 		}
 		r.run.mu.Lock()
 		argv := slices.Clone(r.run.argv[before:])
 		r.run.mu.Unlock()
-		return fetched{report, feedSteps(argv, root)}
+		return filled{report, gitDir, fillSteps(argv, work)}
 	}
-	bucket := fetch("through the bucket")
-	if bucket.report.Source != workspace.SourceBucket || bucket.report.CacheBytes != 0 || len(bucket.report.Objects) != len(listed.objects) {
-		t.Fatalf("the first fetch reported %+v, want the bucket's %d objects and no tar", bucket.report, len(listed.objects))
+	bucket := fill("through the bucket")
+	if bucket.report.Source != workspace.SourceBucket || bucket.report.Bytes != 0 || len(bucket.report.Objects) != len(listed.objects) {
+		t.Fatalf("the first fill reported %+v, want the bucket's %d objects and no tar", bucket.report, len(listed.objects))
 	}
 	if got := r.double.Count(fakegcs.RouteDownload); got.Requests != len(listed.objects) || got.WithAuthorization != 0 {
 		t.Errorf("the double served %d downloads, %d of them with an Authorization header, want %d with none", got.Requests, got.WithAuthorization, len(listed.objects))
 	}
 	r.double.RefuseSigning(true)
-	tar := fetch("through /tar")
-	if tar.report.Source != workspace.SourceTar || !strings.HasPrefix(tar.report.TarReason, "unavailable manifest: ") || tar.report.CacheBytes <= 0 || len(tar.report.Objects) != 0 {
-		t.Fatalf("the second fetch reported %+v, want /tar's, the manifest unavailable", tar.report)
+	tar := fill("through /tar")
+	if tar.report.Source != workspace.SourceTar || !strings.HasPrefix(tar.report.TarReason, "unavailable manifest: ") || tar.report.Bytes <= 0 || len(tar.report.Objects) != 0 {
+		t.Fatalf("the second fill reported %+v, want /tar's, the manifest unavailable", tar.report)
 	}
-	fromBucket, fromTar := cloneListing(t, bucket.report.Feed), cloneListing(t, tar.report.Feed)
+	fromBucket, fromTar := cloneListing(t, bucket.gitDir), cloneListing(t, tar.gitDir)
 	if !maps.Equal(fromBucket.refs, fromTar.refs) {
-		t.Errorf("the feed from the bucket holds the ref files %q, the feed from /tar %q", fromBucket.refs, fromTar.refs)
+		t.Errorf("the .git filled from the bucket holds the ref files %q, the one from /tar %q", fromBucket.refs, fromTar.refs)
 	}
 	if !maps.Equal(fromBucket.objects, fromTar.objects) || !maps.Equal(fromBucket.objects, listed.objects) {
-		t.Errorf("the feed from the bucket holds the packs and indexes %v, the feed from /tar %v, the cache %v", fromBucket.objects, fromTar.objects, listed.objects)
+		t.Errorf("the .git filled from the bucket holds the packs and indexes %v, the one from /tar %v, the cache %v", fromBucket.objects, fromTar.objects, listed.objects)
 	}
-	for _, feed := range []string{bucket.report.Feed, tar.report.Feed} {
-		if got := git(t, feed, "--git-dir="+feed, "rev-parse", "refs/heads/main"); got != moved {
-			t.Errorf("the feed %s's main is %s, want GitHub's %s", feed, got, moved)
+	for _, f := range []filled{bucket, tar} {
+		if got := git(t, f.gitDir, "--git-dir="+f.gitDir, "rev-parse", "refs/heads/main"); got != cached {
+			t.Errorf("the .git %s's main is %s, want the cache's %s", f.gitDir, got, cached)
 		}
-		if refs := git(t, feed, "--git-dir="+feed, "for-each-ref", "--format=%(refname)"); strings.Contains(refs, "gone/soon") {
-			t.Errorf("the feed %s holds the branch GitHub deleted: %q", feed, refs)
+		if refs := git(t, f.gitDir, "--git-dir="+f.gitDir, "for-each-ref", "--format=%(refname)"); refs != "refs/heads/main" {
+			t.Errorf("the .git %s holds the refs %q, want the cache's narrowed main alone", f.gitDir, refs)
 		}
 	}
-	t.Logf("after the cache, the fetch through the bucket ran %q", bucket.steps)
+	t.Logf("after the cache, the fill through the bucket ran %q", bucket.steps)
 	if !slices.Equal(bucket.steps, tar.steps) {
-		t.Errorf("after the cache, the fetch through the bucket ran %q, the fetch through /tar %q", bucket.steps, tar.steps)
+		t.Errorf("after the cache, the fill through the bucket ran %q, the fill through /tar %q", bucket.steps, tar.steps)
 	}
-	for _, want := range []string{"init", "rev-parse --show-object-format", "fsck --connectivity-only", "ls-remote --symref", "update-ref --no-deref", "fetch --prune", "config"} {
+	for _, want := range []string{"rev-parse --show-object-format", "fsck --connectivity-only"} {
 		if !slices.Contains(bucket.steps, want) {
-			t.Errorf("the fetch through the bucket ran %q, nothing of it %q", bucket.steps, want)
+			t.Errorf("the fill through the bucket ran %q, nothing of it %q", bucket.steps, want)
 		}
 	}
 	if slices.Contains(bucket.steps, "index-pack") || slices.Contains(tar.steps, "index-pack") {
-		t.Errorf("a fetch indexed a pack the cache gave its index with: through the bucket %q, through /tar %q", bucket.steps, tar.steps)
+		t.Errorf("a fill indexed a pack the cache gave its index with: through the bucket %q, through /tar %q", bucket.steps, tar.steps)
 	}
 }
 
-// feedSteps is each git command of argvs that names a path under root, the feed a fetch fills, as
+// fillSteps is each git command of argvs that names a path under root, the clone a fill fills, as
 // its subcommand and the first flag after it: git's `-c` pairs and --git-dir set aside, so the
-// steps of two fetches into two feeds compare.
-func feedSteps(argvs [][]string, root string) []string {
+// steps of two fills into two clones compare.
+func fillSteps(argvs [][]string, root string) []string {
 	var steps []string
 	for _, argv := range argvs {
 		if len(argv) == 0 || argv[0] != "git" || !slices.ContainsFunc(argv, func(arg string) bool { return strings.Contains(arg, root) }) {
@@ -1589,4 +1595,361 @@ func feedSteps(argvs [][]string, root string) []string {
 		steps = append(steps, step)
 	}
 	return steps
+}
+
+// /packs serves only the narrowed clone, as /tar does. A cache whose health answers
+// unready, as it does while a narrowing repacks or after a fetch that left its clone unnarrowed,
+// answers 503 on /packs, whatever set it listed. A force-push of the default branch makes the next
+// refresh narrow again: while that narrowing repacks, /packs answers 503 with no manifest; once the
+// narrowing has ended and the cache answers ready and serves /tar again, /packs still answers 503,
+// with no manifest, while the sync after it uploads the narrowed packs, so no answer carries the
+// set listed before the narrowing. Once that sync is whole, /packs lists the narrowed clone exactly,
+// every object of its packs one the rewritten main reaches, and none of the objects listed before.
+func TestPacksServesOnlyTheNarrowedClone(t *testing.T) {
+	r := newPacksRig(t)
+	advance(t, r.remote, "old")
+	r.refresh(t)
+	before := listingOf(t, r.requirePacks(t))
+
+	served := r.c.health.Load()
+	r.c.health.Store(&Health{Repo: r.opts.Repo.String()})
+	r.requireNoPacks(t, "while the cache answers unready with a set listed,")
+	r.c.health.Store(served)
+	r.requirePacks(t)
+
+	repacking, releaseRepack := holdRepack(t, r.run)
+	defer releaseRepack()
+	upload := r.double.HoldNext(func(bucket, name string) bool {
+		_, listed := before.objects[name]
+		return bucket == testBucket && !listed
+	})
+	defer upload.Release()
+	rewritten := forcePushMain(t, r.remote)
+	done := make(chan error, 1)
+	go func() { done <- r.c.refresh(testwait.Context(t)) }()
+	testwait.Receive(t, "the narrowing's repack of the rewritten default branch", repacking)
+	r.requireNoPacks(t, "while the narrowing repacks,")
+	releaseRepack()
+	testwait.Receive(t, "the first upload of the narrowed packs to stop at the double's hold", upload.Reached())
+	if health := r.requireServes(t, "while the narrowed packs upload"); health.Head != rewritten {
+		t.Errorf("/healthz while the narrowed packs upload answers the head %s, want the rewritten %s", health.Head, rewritten)
+	}
+	r.requireNoPacks(t, "while the narrowed packs upload,")
+	upload.Release()
+	if err := testwait.Receive(t, "the refresh of the rewritten default branch", done); err != nil {
+		t.Fatalf("the refresh of the rewritten default branch: %v; log %q", err, r.log.all())
+	}
+
+	after := listingOf(t, r.requirePacks(t))
+	requireListing(t, after, cloneListing(t, r.c.dir), "once the narrowed packs were whole,")
+	var indexes []string
+	for name := range after.objects {
+		if strings.HasSuffix(name, ".idx") {
+			indexes = append(indexes, filepath.Join(r.c.dir, "objects", "pack", strings.TrimPrefix(name, testPrefix)))
+		}
+		if _, listed := before.objects[name]; listed {
+			t.Errorf("/packs after the narrowing lists %s, which the set before it listed", name)
+		}
+	}
+	if len(indexes) == 0 {
+		t.Fatalf("/packs after the narrowing lists %v, no index", after.objects)
+	}
+	if got := git(t, r.c.dir, "--git-dir="+r.c.dir, "rev-parse", "refs/heads/main"); got != rewritten {
+		t.Fatalf("the cache's main is %s after the narrowing, want the rewritten %s", got, rewritten)
+	}
+	requireIndexedOnMain(t, r.c.dir, indexes, "the listed index")
+}
+
+// A /packs answer that passed its last check is written before a narrowing can drop its set: the
+// answer holds packsGate from that check through its write, and the narrowing's unready and drop
+// take the gate. Here an answer pauses between its last check and its write (packsChecked) while a
+// refresh fetches a force-pushed default branch: the refresh's narrowing stops at the gate
+// (packsGateBlocked), and its repack does not start, the cache still ready with the set the answer
+// checked. Released, the answer is that set, 200 and whole, and only then does the narrowing go on;
+// the next answer lists the narrowed clone and none of the objects listed before. Before the gate,
+// the refresh ran to its repack while the answer waited, and the answer then wrote the set the
+// narrowing had dropped, whose objects stay in the bucket for the 30-minute retirement.
+func TestAPacksAnswerIsWrittenBeforeANarrowingDropsItsSet(t *testing.T) {
+	r := newPacksRig(t)
+	advance(t, r.remote, "old")
+	r.refresh(t)
+	before := listingOf(t, r.requirePacks(t))
+	checkedSet := r.c.listed.Load()
+	forcePushMain(t, r.remote)
+
+	checked, release := make(chan struct{}), make(chan struct{})
+	var answerOnce sync.Once
+	r.c.packsChecked = func() {
+		answerOnce.Do(func() {
+			close(checked)
+			<-release
+		})
+	}
+	blocked := make(chan struct{})
+	var blockedOnce sync.Once
+	r.c.packsGateBlocked = func() { blockedOnce.Do(func() { close(blocked) }) }
+	repacking, releaseRepack := holdRepack(t, r.run)
+	defer releaseRepack()
+
+	type answered struct {
+		status int
+		body   []byte
+		err    error
+	}
+	ctx := testwait.Context(t)
+	answers := make(chan answered, 1)
+	go func() {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, r.url+"/packs", nil)
+		if err != nil {
+			answers <- answered{err: err}
+			return
+		}
+		request.Header.Set("Authorization", "Bearer "+testCacheToken)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			answers <- answered{err: err}
+			return
+		}
+		defer response.Body.Close()
+		body, err := io.ReadAll(response.Body)
+		answers <- answered{response.StatusCode, body, err}
+	}()
+	testwait.Receive(t, "the /packs answer to pass its last check", checked)
+	done := make(chan error, 1)
+	go func() { done <- r.c.refresh(ctx) }()
+	select {
+	case <-blocked:
+		if !r.c.narrowedAndReady() || r.c.listed.Load() != checkedSet {
+			t.Errorf("with the narrowing stopped at the gate, the cache answers ready %t with the checked set listed %t, want both", r.c.narrowedAndReady(), r.c.listed.Load() == checkedSet)
+		}
+	case <-repacking:
+		t.Errorf("the narrowing's repack started while a /packs answer was between its last check and its write")
+	case err := <-done:
+		t.Fatalf("the refresh of the force-pushed default branch ended (%v) while a /packs answer was between its last check and its write", err)
+	case <-ctx.Done():
+		t.Fatal("the narrowing neither stopped at the gate nor reached its repack")
+	}
+	close(release)
+	got := testwait.Receive(t, "the paused /packs answer", answers)
+	if got.err != nil {
+		t.Fatalf("the paused /packs answer: %v", got.err)
+	}
+	if got.status != http.StatusOK {
+		t.Fatalf("the paused /packs answer is %d, not 200: %s", got.status, got.body)
+	}
+	var manifest workspace.PackManifest
+	if err := json.Unmarshal(got.body, &manifest); err != nil {
+		t.Fatalf("the paused /packs answer is no manifest: %v", err)
+	}
+	requireListing(t, listingOf(t, manifest), before, "the answer that passed its check before the narrowing:")
+	testwait.Receive(t, "the narrowing's repack once the answer was written", repacking)
+	releaseRepack()
+	if err := testwait.Receive(t, "the refresh of the force-pushed default branch", done); err != nil {
+		t.Fatalf("the refresh of the force-pushed default branch: %v; log %q", err, r.log.all())
+	}
+	after := listingOf(t, r.requirePacks(t))
+	requireListing(t, after, cloneListing(t, r.c.dir), "after the narrowing,")
+	for name := range after.objects {
+		if _, listed := before.objects[name]; listed {
+			t.Errorf("/packs after the narrowing lists %s, which the set before it listed", name)
+		}
+	}
+}
+
+// A /packs answer whose cache goes unready while it signs is 503, with no manifest, though its set
+// is still listed: the answer checks readiness again, under packsGate, after it signed. Here the
+// first signature makes the cache unready as a fetch does whose narrowing failed (fetch's markUnready),
+// which leaves the set listed. Before that second check, the answer was 200 with the set's manifest
+// from a cache that answered /healthz unready.
+func TestAPacksAnswerWhoseCacheWentUnreadyWhileItSignedIsRefused(t *testing.T) {
+	r := newPacksRig(t)
+	r.refresh(t)
+	listed := r.c.listed.Load()
+	var once sync.Once
+	r.c.store.signer = hookSigner{inner: r.c.store.signer, hook: func() { once.Do(r.c.markUnready) }}
+	status, _, body := r.get(t, "/packs", testCacheToken)
+	if r.c.narrowedAndReady() || r.c.listed.Load() != listed {
+		t.Fatalf("after the signing, the cache answers ready %t with its set listed %t, want unready with it listed: the row holds nothing", r.c.narrowedAndReady(), r.c.listed.Load() == listed)
+	}
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("/packs whose cache went unready while it signed answered %d, not 503", status)
+	}
+	requireNoManifest(t, body, "/packs whose cache went unready while it signed:")
+}
+
+// A /packs reader that stops reading holds packsGate no longer than its answer's write deadline:
+// the answer's write and flush run under a deadline of their own (packsWriteBound), so once it
+// passes the write fails, the answer lets the gate go, and a publication waiting at the gate goes
+// on. Here the answer goes over a connection with no buffer (net.Pipe), whose reader sends its
+// request and never reads; the answer, past its last check, waits until a refresh that brings a
+// commit has reached the gate with its publication of the new set (packsGateBlocked), and only then
+// writes, under a 300 ms deadline. The publication goes on within that deadline and a margin, the
+// next answer lists the clone with the new commit's pack, and the stalled reader received no byte of
+// the abandoned answer. Before the deadline, the publication stayed blocked at the gate until the
+// reader's connection closed, the request's context ending did not free it.
+func TestAStalledPacksReaderHoldsTheGateNoLongerThanItsWriteDeadline(t *testing.T) {
+	r := newPacksRig(t)
+	r.refresh(t)
+	r.c.packsWrite = 300 * time.Millisecond
+	checked, blocked := r.holdAnswerUntilAPublicationWaits()
+	reader := pipePacksRequest(t, r.c.handler())
+	testwait.Receive(t, "the stalled reader's answer to pass its last check", checked)
+
+	done := r.publishBehindTheAnswer(t, blocked)
+	err := testwait.ReceiveWithin(t, r.c.packsWrite+10*time.Second, "the refresh's publication",
+		"the stalled reader's answer still holds the gate, its write bounded by no deadline", done)
+	if err != nil {
+		t.Fatalf("the refresh that published behind the stalled answer: %v; log %q", err, r.log.all())
+	}
+	requireListing(t, listingOf(t, r.requirePacks(t)), cloneListing(t, r.c.dir), "after the publication the stalled answer held up,")
+
+	// The server closes the connection whose write failed; the deadline, which a closed pipe
+	// refuses, only bounds the read where it did not.
+	_ = reader.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if n, err := reader.Read(make([]byte, 1)); n != 0 || !errors.Is(err, io.EOF) {
+		t.Errorf("the stalled reader read %d bytes (%v) after the answer's write failed, want none and the connection closed", n, err)
+	}
+}
+
+// A /packs answer whose write deadline cannot be set writes nothing under packsGate: it is 503 with
+// no manifest, and logged, so a publication waiting at the gate goes on at once, whatever its reader
+// does. Here the cache's handler is served through a ResponseWriter that flushes but has no deadline
+// of its own and no Unwrap (flushOnlyWriter), over the stalled reader's net.Pipe, and the answer,
+// past its last check, waits until a refresh's publication of a new set has reached the gate. The
+// publication goes on with no deadline to wait out, and the reader, once it reads, gets the 503.
+// Before the answer refused, it wrote and flushed under the gate with no bound, and the publication
+// stayed blocked until the reader's connection closed.
+func TestAPacksAnswerThatCannotBoundItsWriteWritesNothingUnderTheGate(t *testing.T) {
+	r := newPacksRig(t)
+	r.refresh(t)
+	checked, blocked := r.holdAnswerUntilAPublicationWaits()
+	handler := r.c.handler()
+	reader := pipePacksRequest(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		handler.ServeHTTP(flushOnlyWriter{w}, req)
+	}))
+	testwait.Receive(t, "the stalled reader's answer to pass its last check", checked)
+
+	done := r.publishBehindTheAnswer(t, blocked)
+	err := testwait.ReceiveWithin(t, 10*time.Second, "the refresh's publication",
+		"the answer that could set no write deadline wrote under the gate with no bound", done)
+	if err != nil {
+		t.Fatalf("the refresh that published behind the answer: %v; log %q", err, r.log.all())
+	}
+	if err := reader.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(reader), nil)
+	if err != nil {
+		t.Fatalf("read the answer that could set no write deadline: %v", err)
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Fatalf("read the answer's body: %v", err)
+	}
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("/packs that could set no write deadline answered %d, not 503", response.StatusCode)
+	}
+	requireNoManifest(t, body, "/packs that could set no write deadline:")
+	if !slices.ContainsFunc(r.log.all(), func(line string) bool { return strings.HasPrefix(line, "bound the write of the packs' answer for ") }) {
+		t.Errorf("the cache logged %q, nothing of the answer whose write it could not bound", r.log.all())
+	}
+}
+
+// flushOnlyWriter is a ResponseWriter that flushes but has no write deadline of its own and no
+// Unwrap, so http.ResponseController's SetWriteDeadline answers http.ErrNotSupported for it, as for
+// a wrapper that forwards flushing alone.
+type flushOnlyWriter struct{ http.ResponseWriter }
+
+func (w flushOnlyWriter) Flush() { w.ResponseWriter.(http.Flusher).Flush() }
+
+// holdAnswerUntilAPublicationWaits makes the cache's next /packs answer, once past its last check,
+// close checked and wait, holding packsGate's read side, until a change of what /packs may answer
+// finds the gate held and closes blocked.
+func (r *packsRig) holdAnswerUntilAPublicationWaits() (checked, blocked chan struct{}) {
+	checked, blocked = make(chan struct{}), make(chan struct{})
+	var checkedOnce, blockedOnce sync.Once
+	r.c.packsChecked = func() {
+		checkedOnce.Do(func() {
+			close(checked)
+			<-blocked
+		})
+	}
+	r.c.packsGateBlocked = func() { blockedOnce.Do(func() { close(blocked) }) }
+	return checked, blocked
+}
+
+// publishBehindTheAnswer brings a commit to the remote and runs a refresh, whose publication of the
+// new set stops at packsGate behind the held answer: it waits for blocked, and answers the channel
+// the refresh's error comes on.
+func (r *packsRig) publishBehindTheAnswer(t *testing.T, blocked <-chan struct{}) <-chan error {
+	t.Helper()
+	advance(t, r.remote, "moved")
+	ctx := testwait.Context(t)
+	done := make(chan error, 1)
+	go func() { done <- r.c.refresh(ctx) }()
+	testwait.Receive(t, "the publication of the new set to stop at the gate behind the held answer", blocked)
+	return done
+}
+
+// pipePacksRequest serves handler on an http.Server over a net.Pipe, which buffers nothing, sends it
+// GET /packs with the cache's token, and answers the client's end, which reads nothing until the
+// caller reads it. Both ends and the server close when the test ends.
+func pipePacksRequest(t *testing.T, handler http.Handler) net.Conn {
+	t.Helper()
+	serverEnd, reader := net.Pipe()
+	t.Cleanup(func() { _ = reader.Close() })
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	go func() { _ = server.Serve(newPipeListener(serverEnd)) }()
+	t.Cleanup(func() { _ = server.Close() })
+	go func() {
+		_, _ = reader.Write([]byte("GET /packs HTTP/1.1\r\nHost: cache\r\nAuthorization: Bearer " + testCacheToken + "\r\n\r\n"))
+	}()
+	return reader
+}
+
+// pipeListener hands an http.Server one connection, the server's end of a net.Pipe, then answers
+// net.ErrClosed once it is closed.
+type pipeListener struct {
+	conns  chan net.Conn
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newPipeListener(conn net.Conn) *pipeListener {
+	l := &pipeListener{conns: make(chan net.Conn, 1), closed: make(chan struct{})}
+	l.conns <- conn
+	return l
+}
+
+func (l *pipeListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.conns:
+		return conn, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *pipeListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *pipeListener) Addr() net.Addr { return pipeAddr{} }
+
+// pipeAddr is a pipeListener's address, which names no network.
+type pipeAddr struct{}
+
+func (pipeAddr) Network() string { return "pipe" }
+func (pipeAddr) String() string  { return "pipe" }
+
+// requireNoPacks fails the test unless /packs answers 503 with no manifest, naming what held then.
+func (r *packsRig) requireNoPacks(t *testing.T, what string) {
+	t.Helper()
+	status, _, body := r.get(t, "/packs", testCacheToken)
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("%s /packs answered %d, not 503", what, status)
+	}
+	requireNoManifest(t, body, what)
 }

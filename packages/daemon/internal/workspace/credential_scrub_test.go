@@ -71,7 +71,7 @@ func TestARunUnderTheProvisioningCredentialReturnsItsTokenScrubbed(t *testing.T)
 				t.Fatal(err)
 			}
 			cloneDir := filepath.Join(t.TempDir(), "repos", "acme", "widgets")
-			err = ensureRepoClone(context.Background(), echoesTheToken{word: "clone", token: token, end: ending.end}, clock.Real(), cloneDir, "https://github.com/acme/widgets", "main", source)
+			err = ensureRepoClone(context.Background(), echoesTheToken{word: "clone", token: token, end: ending.end}, clock.Real(), cloneDir, "https://github.com/acme/widgets", source)
 			if err == nil || strings.Contains(err.Error(), token) || !strings.Contains(err.Error(), "unable to access 'https://[a URL with credentials]/acme/widgets/'") {
 				t.Errorf("ensureRepoClone = %v, want the failure with its token scrubbed", err)
 			}
@@ -272,7 +272,7 @@ func TestARunFromGitHubPrintsNoRedirectTargetsCredentials(t *testing.T) {
 			}
 			request := fetchRequest(t)
 			request.Token = staticToken(c.token)
-			_, err := Fetch(context.Background(), NewRunner(time.Minute, map[string]string{"git": fakeGit}), request)
+			err := Fetch(context.Background(), NewRunner(time.Minute, map[string]string{"git": fakeGit}), request)
 			check(t, "fetch", errorText(err))
 		})
 		t.Run("the fetch's retried transfer, "+c.name, func(t *testing.T) {
@@ -281,8 +281,8 @@ func TestARunFromGitHubPrintsNoRedirectTargetsCredentials(t *testing.T) {
 			request.Token, request.Clock = staticToken(c.token), clock
 			var logged []string
 			request.Log = func(line string) { logged = append(logged, line) }
-			run := &failingClone{clock: clock, result: fatal("error: RPC failed; HTTP 502 curl 22 The requested URL returned error: 502\n" + c.stderr + "\n")}
-			_, err := Fetch(context.Background(), run, request)
+			run := newFailingFetch(t, clock, 0, fatal("error: RPC failed; HTTP 502 curl 22 The requested URL returned error: 502\n"+c.stderr+"\n"))
+			err := Fetch(context.Background(), run, request)
 			if len(logged) != len(fetchBackoff) {
 				t.Fatalf("Fetch logged %q, want a line for each of its %d retries", logged, len(fetchBackoff))
 			}
@@ -304,7 +304,7 @@ func TestARunFromGitHubPrintsNoRedirectTargetsCredentials(t *testing.T) {
 				t.Fatal(err)
 			}
 			cloneDir := filepath.Join(t.TempDir(), "repos", "acme", "widgets")
-			check(t, "clone", errorText(ensureRepoClone(context.Background(), answersWith{word: "clone", stderr: c.stderr}, clock.Real(), cloneDir, "https://github.com/acme/widgets", "main", source)))
+			check(t, "clone", errorText(ensureRepoClone(context.Background(), answersWith{word: "clone", stderr: c.stderr}, clock.Real(), cloneDir, "https://github.com/acme/widgets", source)))
 		})
 	}
 }

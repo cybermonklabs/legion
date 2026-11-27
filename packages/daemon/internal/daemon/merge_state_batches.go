@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/githubrate"
+
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -255,8 +257,10 @@ func (w *workflowRuntime) setOwed(key, issue string, asked uint64, place baseOwe
 }
 
 // readBaseMergeStates runs a ladder for each base queueBaseRead started one for, until ctx ends,
-// each on a goroutine of its own, so one base's waits hold up no other's.
+// each on a goroutine of its own, so one base's waits hold up no other's. Every GitHub call a
+// ladder makes counts as callerMergeStateReads', as the per-issue ladder's do (readMergeState).
 func (w *workflowRuntime) readBaseMergeStates(ctx context.Context) {
+	ctx = githubrate.WithCaller(ctx, callerMergeStateReads)
 	if w.baseWake == nil {
 		return
 	}

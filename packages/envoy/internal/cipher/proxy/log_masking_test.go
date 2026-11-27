@@ -165,10 +165,12 @@ func noLineOfACommandsRequestsHoldsAValueOrPlaceholder(t *testing.T) {
 	}
 	// A carried call to the bound host with the placeholder in the header the entry allows and
 	// the planted value in its body; a call whose Host header is the placeholder's host, which
-	// the decision refuses; and a call whose path holds the placeholder, which no rule allows.
+	// the decision refuses; a call whose path holds the placeholder, which no rule allows; and one
+	// whose path holds it under a prefix the rule allows, which is refused for the placeholder it
+	// still carries after the swap.
 	client := r.client(workerPlaceholder)
 	r.do(client, http.MethodPost, "https://"+boundHost+"/v1/things", plantedBody,
-		"Authorization", "Bearer "+workerPlaceholder, "X-Planted", plantedHeader, "X-Correlation-Id", workerPlaceholder)
+		"Authorization", "Bearer "+workerPlaceholder, "X-Planted", plantedHeader)
 	r.do(client, http.MethodGet, "https://"+boundHost+"/v1/things", "",
 		"Authorization", "Bearer "+workerPlaceholder, "Host", placeholderHost, "X-Correlation-Id", workerPlaceholder)
 	r.do(client, http.MethodGet, "https://"+boundHost+"/v2/"+workerPlaceholder, "",
@@ -252,7 +254,7 @@ func noLineOfACommandsRequestsHoldsAValueOrPlaceholder(t *testing.T) {
 	r.requestRaw(workerPlaceholder, "/x", "proxy.example.net", correlation)
 	r.logs.tunnelsAtLeast(t, 2)
 	r.logs.dialFailuresAtLeast(t, 7)
-	r.logs.callsAtLeast(t, 2)
+	r.logs.callsAtLeast(t, 1)
 
 	// The control: each place the placeholder was planted reached a record as the command wrote
 	// it, lowercased where the proxy lowercases a host, so a line that kept that text as it came
@@ -276,7 +278,7 @@ func noLineOfACommandsRequestsHoldsAValueOrPlaceholder(t *testing.T) {
 		{"a refusal's correlation id", answer.RefusalMessage, "correlation_id", logmask.Mark},
 		{"a refusal's method", answer.RefusalMessage, "method", logmask.Mark},
 		{"a refusal's path", answer.RefusalMessage, "path", "/v2/" + logmask.Mark},
-		{"a carried call's path", callMessage, "path", "/v1/" + logmask.Mark},
+		{"a refused call's path its rule allows", answer.RefusalMessage, "path", "/v1/" + logmask.Mark},
 	} {
 		if !writtenWhere(written, control.message, func(line map[string]any) bool { return line[control.field] == control.want }) {
 			t.Errorf("no line the broker writes names %s %q: %q", control.what, control.want, r.logs.written.String())
@@ -421,7 +423,9 @@ func noLineABoundServicesBytesReachHoldsAValueOrPlaceholder(t *testing.T) {
 	}()
 	bound.dialTo[net.JoinHostPort(boundHost, "443")] = answers.Addr().String()
 	boundClient := bound.client(workerPlaceholder)
-	paths := []string{"/v1/trailer", "/v1/unsolicited", "/v1/" + workerPlaceholder, "/v1/echo-value", "/v1/echo-json", "/v1/echo-status"}
+	// The last path holds the placeholder, which the proxy refuses before anything goes upstream
+	// (leftoverPlaceholder): its refusal line is the record of it the control below reads.
+	paths := []string{"/v1/trailer", "/v1/unsolicited", "/v1/echo-path", "/v1/echo-value", "/v1/echo-json", "/v1/echo-status", "/v1/" + workerPlaceholder}
 	// The four answers that end in bytes after them. The proxy's transport puts a connection back
 	// idle once it has read an answer to its end, and only then peeks for bytes after it
 	// (persistConn.readLoop): bytes it finds while no request waits on the connection are the ones
@@ -430,7 +434,7 @@ func noLineABoundServicesBytesReachHoldsAValueOrPlaceholder(t *testing.T) {
 	// CPUs are all busy can hold the transport's goroutine between the two for as long as that
 	// next request takes, so each of these requests waits to hear its connection closed before the
 	// next one is sent; the deadline only bounds a run that would otherwise hang.
-	endsInBytes := map[string]bool{"/v1/unsolicited": true, "/v1/" + workerPlaceholder: true, "/v1/echo-value": true, "/v1/echo-json": true}
+	endsInBytes := map[string]bool{"/v1/unsolicited": true, "/v1/echo-path": true, "/v1/echo-value": true, "/v1/echo-json": true}
 	answered := map[string]string{}
 	for _, path := range paths {
 		request, err := http.NewRequest(http.MethodGet, "https://"+boundHost+path, nil)
@@ -488,8 +492,8 @@ func noLineABoundServicesBytesReachHoldsAValueOrPlaceholder(t *testing.T) {
 	if shown := strings.Count(stdText, `starting with \"[service bytes not shown]\"`); shown < 4 {
 		t.Errorf("the standard logger writes %d unsolicited answers as %s; want four: %q", shown, logmask.PeerBytesShown, stdText)
 	}
-	// The control for the placeholder: the bound proxy wrote it down as the service sent it
-	// before any handler, in the request path that holds it, so a line that kept it would hold it.
+	// The control for the placeholder: the bound proxy wrote it down as the command sent it, in
+	// the request path of the refused call that holds it, so a line that kept it would hold it.
 	if !slices.ContainsFunc(bound.logs.Records(), func(record slog.Record) bool {
 		return strings.Contains(recordText(record), workerPlaceholder)
 	}) {

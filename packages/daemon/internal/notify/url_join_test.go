@@ -64,7 +64,7 @@ func TestAListenerCallGoesToTheRouteJoinedOntoTheListenerURL(t *testing.T) {
 				}
 			}
 			ctx := context.Background()
-			err := publisher.Publish(ctx, "notifications.legion.legion.controller", "a notice", map[string]string{}, "dedupe-1")
+			_, err := publisher.Publish(ctx, "notifications.legion.legion.controller", "a notice", map[string]string{}, "dedupe-1")
 			ask("Publish", "/envoy/v1/messages/publish", c.query, err)
 			_, err = publisher.ReadSessionRegistration(ctx, "ses_tester")
 			ask("ReadSessionRegistration", "/envoy/v1/registry/ses_tester", with("include=unresponsive&view=registration"), err)
@@ -102,7 +102,7 @@ func TestAListenerURLThatDoesNotParsePrintsNoneOfIt(t *testing.T) {
 	}
 	publish := func(t *testing.T, envoyURL string) string {
 		t.Helper()
-		err := New(envoyURL, "envoy-token").Publish(context.Background(), topic, "a notice", map[string]string{}, "dedupe-1")
+		_, err := New(envoyURL, "envoy-token").Publish(context.Background(), topic, "a notice", map[string]string{}, "dedupe-1")
 		if err == nil {
 			t.Fatal("Publish took a listener URL that does not parse")
 		}

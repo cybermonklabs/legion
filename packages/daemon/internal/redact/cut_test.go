@@ -125,6 +125,23 @@ func TestBytesCutsWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 			wantCut: true,
 		},
 		{
+			// The bound falls two bytes into a three-byte character, the start two bytes back.
+			name:    "a bound inside a three-byte character",
+			text:    strings.Repeat("€", 20),
+			n:       41,
+			want:    strings.Repeat("€", 13),
+			wantCut: true,
+		},
+		{
+			// The bound falls three bytes into a four-byte character, the start as far back as
+			// Bytes looks, utf8.UTFMax-1 bytes.
+			name:    "a bound inside a four-byte character",
+			text:    strings.Repeat("𝄞", 15),
+			n:       43,
+			want:    strings.Repeat("𝄞", 10),
+			wantCut: true,
+		},
+		{
 			name:    "a bound inside a run of bytes that start no character",
 			text:    strings.Repeat("\x80", 10),
 			n:       9,
@@ -151,6 +168,84 @@ func TestBytesCutsWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBytesHoldsEveryBoundary generates the whole cut boundary. For each length from eight below
+// through eight above 128, each character width 1 to 4 starts at every byte that ends at or
+// crosses it. The malformed row holds the bounded look-back. The URL row is long before the rule
+// and short after it. The invariants are a longest whole-character prefix of URLCredentials(text),
+// no longer than the bound, and the cut bit that length decides.
+func TestBytesHoldsEveryBoundary(t *testing.T) {
+	const (
+		bound = 128
+		span  = 8
+	)
+	for _, edge := range bytesBoundaryCases(bound, span) {
+		t.Run(edge.name, func(t *testing.T) {
+			redacted := URLCredentials(edge.text)
+			want, wantCut := bytesWholePrefixAtMost(redacted, bound)
+			got, cut := Bytes(edge.text, bound)
+			if !strings.HasPrefix(redacted, got) || len(got) > bound || got != want || cut != wantCut {
+				t.Fatalf("Bytes of %s, %d bytes before redaction and %d after, = %q, %t; want longest whole prefix %q, %t",
+					edge.name, len(edge.text), len(redacted), got, cut, want, wantCut)
+			}
+		})
+	}
+}
+
+type bytesBoundaryCase struct {
+	name string
+	text string
+}
+
+func bytesBoundaryCases(bound, span int) []bytesBoundaryCase {
+	cases := []bytesBoundaryCase{}
+	for total := bound - span; total <= bound+span; total++ {
+		for _, char := range []string{"x", "é", "€", "𝄞"} {
+			if total < bound && total >= len(char) {
+				start := total - len(char)
+				cases = append(cases, bytesBoundaryCase{
+					name: fmt.Sprintf("%d bytes, a %d-byte character ending at byte %d", total, len(char), total),
+					text: strings.Repeat("a", start) + char,
+				})
+			}
+			for start := max(0, bound-len(char)); start <= bound; start++ {
+				suffix := total - start - len(char)
+				if suffix < 0 {
+					continue
+				}
+				cases = append(cases, bytesBoundaryCase{
+					name: fmt.Sprintf("%d bytes, a %d-byte character at byte %d", total, len(char), start),
+					text: strings.Repeat("a", start) + char + strings.Repeat("z", suffix),
+				})
+			}
+		}
+	}
+	cases = append(cases,
+		bytesBoundaryCase{
+			name: "a malformed-byte run at the bound",
+			text: strings.Repeat("a", bound-span) + strings.Repeat("\x80", span*2),
+		},
+		bytesBoundaryCase{
+			name: "a URL redacted under the bound",
+			text: "https://" + strings.Repeat("u", bound+span*2) + "@h.example/p",
+		},
+	)
+	return cases
+}
+
+func bytesWholePrefixAtMost(text string, bound int) (string, bool) {
+	if len(text) <= bound {
+		return text, false
+	}
+	end := 0
+	for at := range text {
+		if at > bound {
+			break
+		}
+		end = at
+	}
+	return text[:end], true
 }
 
 // The end Tail keeps of a URL that starts before the kept window holds no part of that URL's

@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // testInstance is a placeholder connection name: this repository names no real instance.
@@ -848,17 +849,12 @@ func TestAdmitIsGivenTheProcessThatConnects(t *testing.T) {
 	})
 }
 
-// admitted is the next peer that the proxy's Admit was given. It waits as long as a loaded machine
-// can take to start a child process that connects.
+// admitted is the next peer that the proxy's Admit was given. Its one bound is the test binary's
+// deadline (testwait.Receive), so a child process a loaded machine starts slowly is still waited
+// for, and an Admit never asked fails the row by name.
 func admitted(t *testing.T, asked <-chan Peer) Peer {
 	t.Helper()
-	select {
-	case peer := <-asked:
-		return peer
-	case <-time.After(30 * time.Second):
-		t.Fatal("Admit was not asked about the connection")
-		return Peer{}
-	}
+	return testwait.Receive(t, "the proxy's Admit to be asked about the connection", asked)
 }
 
 // expectClosed fails unless conn's far end has been closed: a read ends with no bytes, at once and

@@ -16,13 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
-// initOnly is a Runner whose every command succeeds and prints nothing: unpackCache's git init,
-// which the rows below need only to get to the ask of the cache.
-type initOnly struct{}
-
-func (initOnly) Timeout() time.Duration                       { return time.Minute }
-func (initOnly) Run(context.Context, Command) (Result, error) { return Result{}, nil }
-
 // TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem: the repository cache, or
 // whatever answers in its place, answers a pod's asks under a reason phrase that quotes a
 // credential's URL: its health not ready (not-ready), the token refused (token-refused), the tar
@@ -39,8 +32,8 @@ func (initOnly) Run(context.Context, Command) (Result, error) { return Result{},
 func TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem(t *testing.T) {
 	repo := ghrepo.MustParse("acme/widgets")
 	named := CacheRepositoryHeader + ": " + repo.String() + "\r\n"
-	request := func(base string) FetchRequest {
-		return FetchRequest{Repo: repo, CacheURL: base, CacheToken: "cache-token", Clock: clock.Real()}
+	request := func(base string) CacheStream {
+		return CacheStream{Repo: repo, URL: base, Token: "cache-token", Clock: clock.Real()}
 	}
 	// moved is where a redirect below sends the pod: it answers 500 naming the cache's repository,
 	// and counts what it is asked, which unfollowed reads. unanswered is an address nothing listens at.
@@ -63,26 +56,26 @@ func TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem(t *testing.T)
 	for _, c := range []struct {
 		name, header, want string
 		status             int
-		call               func(*testing.T, FetchRequest) string
+		call               func(*testing.T, CacheStream) string
 	}{
-		{"not-ready", named, "/healthz answered 503 Service Unavailable", http.StatusServiceUnavailable, func(t *testing.T, r FetchRequest) string {
+		{"not-ready", named, "/healthz answered 503 Service Unavailable", http.StatusServiceUnavailable, func(t *testing.T, r CacheStream) string {
 			why, err := cacheNotReady(context.Background(), r, time.Minute)
 			if err != nil {
 				t.Fatalf("cacheNotReady: %v", err)
 			}
 			return why
 		}},
-		{"token-refused", named, "answered 401 Unauthorized", http.StatusUnauthorized, func(t *testing.T, r FetchRequest) string {
+		{"token-refused", named, "answered 401 Unauthorized", http.StatusUnauthorized, func(t *testing.T, r CacheStream) string {
 			return askedError(t, r, true)
 		}},
-		{"repository", CacheRepositoryHeader + ": " + oauth2calltest.Reason + "\r\n", "is the repository cache of see https://issuer.example/code?access_token=, not of", http.StatusOK, func(t *testing.T, r FetchRequest) string {
+		{"repository", CacheRepositoryHeader + ": " + oauth2calltest.Reason + "\r\n", "is the repository cache of see https://issuer.example/code?access_token=, not of", http.StatusOK, func(t *testing.T, r CacheStream) string {
 			return askedError(t, r, false)
 		}},
 		{"tar-refused", named, "/tar answered 500 Internal Server Error", http.StatusInternalServerError, unpackedError},
-		{"tar-redirected", redirectstest.MovedTo(moved.Listener.Addr().String()), "/tar answered 302 Found", http.StatusFound, func(t *testing.T, r FetchRequest) string {
+		{"tar-redirected", redirectstest.MovedTo(moved.Listener.Addr().String()), "/tar answered 302 Found", http.StatusFound, func(t *testing.T, r CacheStream) string {
 			return unfollowed(t, unpackedError(t, r))
 		}},
-		{"health-redirected", named + redirectstest.MovedTo(moved.Listener.Addr().String()), "/healthz answered 302 Found", http.StatusFound, func(t *testing.T, r FetchRequest) string {
+		{"health-redirected", named + redirectstest.MovedTo(moved.Listener.Addr().String()), "/healthz answered 302 Found", http.StatusFound, func(t *testing.T, r CacheStream) string {
 			return unfollowed(t, healthRefusal(t, r))
 		}},
 		{"health-redirect-unanswered", redirectstest.MovedTo(unanswered.Listener.Addr().String()), "/healthz answered 302 Found", http.StatusFound, healthRefusal},
@@ -97,19 +90,20 @@ func TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem(t *testing.T)
 	}
 }
 
-// unpackedError is unpackCache's error for the tar.
-func unpackedError(t *testing.T, request FetchRequest) string {
+// unpackedError is unpackCacheInto's error for the tar. Each row fails at its ask of the cache,
+// before the tar writes anything or any command runs, so it needs no runner and no git directory.
+func unpackedError(t *testing.T, request CacheStream) string {
 	t.Helper()
-	_, err := unpackCache(context.Background(), initOnly{}, request, filepath.Join(t.TempDir(), "staging"))
+	_, err := unpackCacheInto(context.Background(), nil, request, filepath.Join(t.TempDir(), "staging"))
 	if err == nil {
-		t.Fatal("unpackCache answered no error")
+		t.Fatal("unpackCacheInto answered no error")
 	}
 	return err.Error()
 }
 
 // healthRefusal is cacheNotReady's refusal of the health, which fails the wait at once; an answer
 // it reads as not ready instead fails t, and its reason is the line.
-func healthRefusal(t *testing.T, request FetchRequest) string {
+func healthRefusal(t *testing.T, request CacheStream) string {
 	t.Helper()
 	why, err := cacheNotReady(context.Background(), request, time.Minute)
 	if err == nil {
@@ -120,7 +114,7 @@ func healthRefusal(t *testing.T, request FetchRequest) string {
 }
 
 // askedError is askCache's error for /healthz, asked with the token or without it.
-func askedError(t *testing.T, request FetchRequest, withToken bool) string {
+func askedError(t *testing.T, request CacheStream, withToken bool) string {
 	t.Helper()
 	response, err := askCache(context.Background(), request, "/healthz", withToken)
 	if response != nil {

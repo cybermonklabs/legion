@@ -14,16 +14,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
-// TestACacheLineNamesTheURLItAsked: --cache-url carries a path, made-up user information and a
+// TestACacheLineNamesTheURLItAsked: the cache URL carries a path, made-up user information and a
 // query whose value is a made-up credential. A line about an ask the cache answered names the URL
 // askCache joined as Unanswered names the URL a request asked (askedCache: its scheme, host and
 // path, the route included, and the authority of a URL with user information, as this one has, as
 // the mark of a URL with credentials), where it wrote the cache URL's text with the route after
 // it: the route sat inside the query, so the line held the credential (twin), and the URL rule,
 // which removes a query, removed the route with it (twin-rule). The health answers 503
-// (health-status), a body that is not its health (health-body) and not ready (health-not-ready);
-// the tar answers 500 (tar-status). The control: each line still names the answer and the route.
-// Captures workspace.cache-asked/<case>.
+// (health-status), a body that is not its health (health-body), not ready (health-not-ready) and
+// ready without defaultBranchOnly, as a cache of an earlier release that serves every branch does
+// (health-wide); the tar answers 500 (tar-status). The control: each line still names the answer
+// and the route. Captures workspace.cache-asked/<case>.
 func TestACacheLineNamesTheURLItAsked(t *testing.T) {
 	const (
 		user     = "not-a-secret-user"
@@ -45,13 +46,13 @@ func TestACacheLineNamesTheURLItAsked(t *testing.T) {
 	}))
 	defer cache.Close()
 	host := strings.TrimPrefix(cache.URL, "http://")
-	request := FetchRequest{
-		Repo:       repo,
-		CacheURL:   "http://" + user + ":" + password + "@" + host + "/cache?sig=" + token,
-		CacheToken: "cache-token",
-		Clock:      clock.Real(),
+	request := CacheStream{
+		Repo:  repo,
+		URL:   "http://" + user + ":" + password + "@" + host + "/cache?sig=" + token,
+		Token: "cache-token",
+		Clock: clock.Real(),
 	}
-	asText := strings.TrimSuffix(request.CacheURL, "/") + "/healthz"
+	asText := strings.TrimSuffix(request.URL, "/") + "/healthz"
 	t.Run("twin", func(t *testing.T) {
 		if !strings.Contains(asText, token) {
 			t.Fatalf("the cache URL's text with the route after it is %q; want the credential in it, so the row can see it printed", asText)
@@ -84,6 +85,9 @@ func TestACacheLineNamesTheURLItAsked(t *testing.T) {
 		}},
 		{"health-not-ready", asked + "/healthz answered not ready", func(t *testing.T) string {
 			return notReady(t, func(w http.ResponseWriter) { _, _ = w.Write([]byte(`{"ready":false}`)) })
+		}},
+		{"health-wide", asked + "/healthz answered ready without defaultBranchOnly", func(t *testing.T) string {
+			return notReady(t, func(w http.ResponseWriter) { _, _ = w.Write([]byte(`{"ready":true}`)) })
 		}},
 		{"tar-status", asked + "/tar answered 500 Internal Server Error", func(t *testing.T) string {
 			return unpackedError(t, request)

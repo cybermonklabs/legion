@@ -138,10 +138,12 @@ var (
 	// read as not held, since during a roll such a Dispatch cannot say whether a newer one holds
 	// the person.
 	ErrNoHeldField = errors.New("projectaccess: dispatch's answer for a person names no held")
-	// errUnavailable is a status that says Dispatch is not answering now (Unanswered): a 502, 503
-	// or 504 whose body names no code of Dispatch's, a gateway's or a load balancer's page in front
-	// of it, or one that names a code Dispatch answers for its own outage (outageCodes); and a 500
-	// whose body names no code or names internalCode.
+	// errUnavailable is a status that says Dispatch is not answering now (Unanswered): a 408 or a
+	// 429, whatever its body names (RFC 9110 section 15.5.9, RFC 6585 section 4: the request was
+	// not taken in time, or is to be made later); a 502, 503 or 504 whose body names no code of
+	// Dispatch's, a gateway's or a load balancer's page in front of it, or one that names a code
+	// Dispatch answers for its own outage (outageCodes); and a 500 whose body names no code or
+	// names internalCode.
 	errUnavailable = errors.New("projectaccess: dispatch is unavailable")
 	// errStillAsking is a read's answer when a call of the person route for the same person has
 	// already run failureTTL with no answer: a Dispatch that hangs, where waiting the reader's own
@@ -175,11 +177,11 @@ const internalCode = "INTERNAL"
 // Unanswered reports whether err, a failed read of Dispatch, is Dispatch not answering: a failure
 // that clears by itself once Dispatch answers again. That is the read's deadline passing, its
 // caller's own bound (RelayedReadBound) included; the transport failing before Dispatch's whole
-// answer arrived (dispatchread.ErrNoAnswer); a 502, 503 or 504 whose body names no code of
-// Dispatch's, or one of the codes Dispatch answers for its own outage (outageCodes); a 500
-// whose body names no code or internalCode, the 500 Dispatch answers while its database fails; and
-// a call that has already run failureTTL with no answer, which a later read does not wait on
-// (errStillAsking).
+// answer arrived (dispatchread.ErrNoAnswer); a 408 or a 429, whatever its body names; a 502, 503
+// or 504 whose body names no code of Dispatch's, or one of the codes Dispatch answers for its own
+// outage (outageCodes); a 500 whose body names no code or internalCode, the 500 Dispatch answers
+// while its database fails; and a call that has already run failureTTL with no answer, which a
+// later read does not wait on (errStillAsking).
 // Every other failure is an answer, one that lasts until somebody fixes it: Dispatch refusing the
 // broker's own account (dispatchread.ErrBrokerRefused), answering a member kind this broker does
 // not know (ErrUnknownMemberKind), a 404 that answers nothing of the person or the project, a 500
@@ -614,13 +616,13 @@ func (c *Client) sweepLocked() {
 // (dispatchread.Reader.Get), which a caller never mints through. A 404 is an answer, returned as
 // its status with no error, only when its body's code is PROJECT_NOT_FOUND, the code Dispatch's
 // project route answers a project it does not hold with; any other 404 (a Dispatch that does not
-// serve the route, a wrong path behind an ingress) is a failure naming its code. A 502, 503 or 504
-// whose body names no code, or one of outageCodes, and a 500 whose body names no code or
-// internalCode, are errUnavailable, Dispatch not answering now (Unanswered); one naming any other
-// code is Dispatch's answer. Every other status, a transport failure and a body it could not read
-// or decode are errors naming what failed and never the token. The code is decided on as it came
-// and named as the rule reads it (dispatchread.RefusalCode), and the body decodes through
-// redact.Answer.Decode, so a box into holds carries the record of the call.
+// serve the route, a wrong path behind an ingress) is a failure naming its code. A 408 or a 429,
+// a 502, 503 or 504 whose body names no code, or one of outageCodes, and a 500 whose body names
+// no code or internalCode, are errUnavailable, Dispatch not answering now (Unanswered); a 5xx
+// naming any other code is Dispatch's answer. Every other status, a transport failure and a body
+// it could not read or decode are errors naming what failed and never the token. The code is
+// decided on as it came and named as the rule reads it (dispatchread.RefusalCode), and the body
+// decodes through redact.Answer.Decode, so a box into holds carries the record of the call.
 func (c *Client) get(ctx context.Context, path string, query url.Values, into any) (int, error) {
 	answer, err := c.read.Get(ctx, path, query)
 	if err != nil {
@@ -629,20 +631,23 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 	if answer.Status != http.StatusOK {
 		code := dispatchread.RefusalCode(answer.Body)
 		shown := dispatchread.Quoted(code)
+		var unanswered bool
 		switch answer.Status {
 		case http.StatusNotFound:
 			if code.Equal(projectNotFoundCode) {
 				return http.StatusNotFound, nil
 			}
 			return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, shown)
+		case http.StatusRequestTimeout, http.StatusTooManyRequests:
+			unanswered = true
 		case http.StatusInternalServerError:
-			if code.IsEmpty() || code.Equal(internalCode) {
-				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, shown)
-			}
+			unanswered = code.IsEmpty() || code.Equal(internalCode)
 		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-			if _, outage := code.OneOf(outageCodes...); code.IsEmpty() || outage {
-				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, shown)
-			}
+			_, outage := code.OneOf(outageCodes...)
+			unanswered = code.IsEmpty() || outage
+		}
+		if unanswered {
+			return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, shown)
 		}
 		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, answer.Status, shown)
 	}

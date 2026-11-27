@@ -167,9 +167,9 @@ func (r *Runtime) cacheManifest(repo ghrepo.Repository) sandbox {
 // cache` on the runtime's image, under gVisor with the workers' pod security and the probe's
 // placement (which templateMoved holds a stored template to), mounting its volume at CacheRoot and
 // its Secret's two tokens read-only —
-// the provisioning token, as workspace-fetch mounts the issue pod's (LEGION_PROVISION_TOKEN_FILE),
+// the provisioning token, as workspace-init mounts the issue pod's (LEGION_PROVISION_TOKEN_FILE),
 // and the bearer token its clients present (LEGION_REPOSITORY_CACHE_TOKEN_FILE) — with a memory
-// TMPDIR for the fetch's one-shot credential and a readinessProbe of GET /readyz on
+// TMPDIR for the cache's one-shot credential and a readinessProbe of GET /readyz on
 // repocache.Port, which needs no token. Restarted Always. It carries no model-route volume,
 // provider key, operator mount or Dispatch variable: the process reads GitHub and serves pods,
 // nothing else. It runs as cachePodAccount, and while the cache's bucket is on its container is

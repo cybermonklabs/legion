@@ -172,7 +172,7 @@ func TestAGitHubErrorNamesNoCredentialTheAPIBaseCarries(t *testing.T) {
 			return serving(t, answering(t, "/api/repos/acme/web/commits/main", 500, failure))
 		},
 		read: func(ctx context.Context, client *Client) string {
-			ctx, attempt := githubreads.Begin(ctx)
+			ctx, attempt := githubreads.Begin(ctx, githubreads.CIReconcile)
 			_, _ = client.Ref(ctx, "ghs_test", "acme", "web", "main")
 			_, failed, cause := attempt.Outcome()
 			return fmt.Sprintf("failed %t: %s", failed, cause)

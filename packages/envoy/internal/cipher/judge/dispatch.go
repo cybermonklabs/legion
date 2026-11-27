@@ -36,7 +36,7 @@ const maxDispatchAnswer = 1 << 20
 // Dispatch is the broker's read of Dispatch, and it is a read alone. Issue makes two GETs, Ask
 // one and Assignee one, and this type has no other method, no other verb and no body to send:
 // nothing here writes an ask, a comment, a label or a status, and nothing reads a person's own
-// data. Every route they read is authAny (internal/dispatch/api/routes_table.go), and the
+// data. Every route they read is authAny (each route's file in internal/dispatch/api), and the
 // projected ServiceAccount token its account reads authenticates as a service actor holding no
 // scope, which reaches an issue, its documents and the asks on it, and nothing that belongs to a
 // person.

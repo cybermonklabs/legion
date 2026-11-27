@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/githubrate"
+
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -210,6 +212,7 @@ func (w *workflowRuntime) reviewAppClient(ctx context.Context, repository ghrepo
 // by its route with login as ShownLogin prints it, and githubrest prints that name in GitHub's
 // answer (Answer.Path) and in net/http's error for a request that got no answer (url.Error.URL).
 func (w *workflowRuntime) readPermission(ctx context.Context, repository ghrepo.Repository, login string) (bool, error) {
+	ctx = githubrate.WithCaller(ctx, callerReviewPermission)
 	shown := githubrest.ShownLogin(login)
 	// The mint and every call below are made on the repository GitHub holds this one under now,
 	// so repository is that one from here on and each log line and refusal names what was read.

@@ -7,10 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/go-connections/nat"
-	"github.com/testcontainers/testcontainers-go"
 )
 
 // The client port start is handed can be taken before Docker publishes on it, since the probe
@@ -84,23 +80,19 @@ func TestAStartPublishesPastAProbedPortTakenBeforeThePublish(t *testing.T) {
 // of one address rules out; Docker goes on to its next port on such a failure.
 func publishOnEveryAddress(t *testing.T, _ string, _ int) int {
 	t.Helper()
-	ctr, err := publishUnserved(t, "0.0.0.0", "")
+	id, err := publishUnserved(t, "0.0.0.0", "")
 	if err != nil {
 		t.Fatalf("UNKNOWN: publish a container on every address once the probe let its ports go: %v", err)
 	}
-	info, err := ctr.Inspect(context.Background())
+	published, err := (&Container{id: id}).port(t.Context(), unservedPort)
 	if err != nil {
-		t.Fatalf("inspect the container published on every address: %v", err)
+		t.Fatalf("read the port Docker published %s on for the container on every address: %v", unservedPort, err)
 	}
-	bindings := info.NetworkSettings.Ports[unservedPort]
-	if len(bindings) == 0 {
-		t.Fatalf("the container published on every address publishes no %s", unservedPort)
-	}
-	port, err := strconv.Atoi(bindings[0].HostPort)
+	port, err := strconv.Atoi(published)
 	if err != nil {
-		t.Fatalf("the port Docker published %s on, %q: %v", unservedPort, bindings[0].HostPort, err)
+		t.Fatalf("the port Docker published %s on, %q: %v", unservedPort, published, err)
 	}
-	t.Logf("Docker published another container on %s:%d once the probe let its ports go", bindings[0].HostIP, port)
+	t.Logf("Docker published another container on every address at port %d once the probe let its ports go", port)
 	return port
 }
 
@@ -119,48 +111,40 @@ func listenAt(t *testing.T, host string, probed int) int {
 
 // unservedPort is a port nothing in a NATS container listens on: a client reaching a host port
 // publishUnserved publishes reaches nothing.
-const unservedPort nat.Port = "9/tcp"
+const unservedPort = "9/tcp"
 
 // publishUnserved runs a container of Image, removed when t ends, with its unservedPort published
-// at hostIP on hostPort, "" for a port Docker chooses, capped as every NATS test container is
-// (hostConfig). It answers the container, and Docker's refusal of that publish, nil when Docker
-// published it.
-func publishUnserved(t *testing.T, hostIP, hostPort string) (testcontainers.Container, error) {
+// at hostIP on hostPort, "" for a port Docker chooses, capped and labelled for the reaper as every
+// NATS test container is (startAt). It answers the container's ID, "" where Docker created none,
+// and Docker's refusal of that publish, which Docker makes as it starts the container; nil when
+// Docker published it.
+func publishUnserved(t *testing.T, hostIP, hostPort string) (string, error) {
 	t.Helper()
-	ctr, err := testcontainers.GenericContainer(context.Background(), testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        Image,
-			ExposedPorts: []string{string(unservedPort)},
-			HostConfigModifier: func(config *container.HostConfig) {
-				config.NanoCPUs = 1_000_000_000
-				config.Memory = 512 << 20
-				config.PortBindings = nat.PortMap{unservedPort: {{HostIP: hostIP, HostPort: hostPort}}}
-			},
-		},
-		Started: true,
-	})
-	testcontainers.CleanupContainer(t, ctr)
-	return ctr, err
+	label, err := armReaper()
+	if err != nil {
+		t.Fatalf("arm the container reaper: %v", err)
+	}
+	out, err := docker(t.Context(), nil, "create", "--label", label, "--cpus", "1", "--memory", "512m",
+		"--publish", hostIP+":"+hostPort+":"+unservedPort, Image)
+	if err != nil {
+		return "", err
+	}
+	id := lastLine(out)
+	t.Cleanup(func() { _, _ = docker(context.Background(), nil, "rm", "--force", "--volumes", id) })
+	_, err = docker(t.Context(), nil, "start", id)
+	return id, err
 }
 
-// requireLocalDaemon fails t as UNKNOWN unless the Docker daemon testcontainers reaches is on this
-// machine: only there can this process take a port Docker publishes, which a row making Docker
-// meet a taken port stands on.
+// requireLocalDaemon fails t as UNKNOWN unless the Docker daemon the docker CLI reaches is on this
+// machine (reachedDaemon): only there can this process take a port Docker publishes, which a row
+// making Docker meet a taken port stands on.
 func requireLocalDaemon(t *testing.T) {
 	t.Helper()
-	local, err := localDaemon(context.Background())
+	daemon, err := reachedDaemon()
 	if err != nil {
 		t.Fatalf("find where the Docker daemon publishes a container's ports: %v", err)
 	}
-	if local {
-		return
+	if !daemon.local() {
+		t.Fatalf("UNKNOWN: the Docker daemon is at %s, not this machine, so this process cannot take a port Docker publishes there; run the row against a daemon on this machine", daemon.dial)
 	}
-	daemon := "another machine"
-	if provider, err := testcontainers.NewDockerProvider(); err == nil {
-		if host, err := provider.DaemonHost(context.Background()); err == nil {
-			daemon = host
-		}
-		provider.Close()
-	}
-	t.Fatalf("UNKNOWN: the Docker daemon is at %s, not this machine, so this process cannot take a port Docker publishes there; run the row against a daemon on this machine", daemon)
 }

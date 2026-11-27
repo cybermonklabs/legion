@@ -81,6 +81,33 @@ func LocalARN(name string) string {
 	return "arn:aws:secretsmanager:local:000000000000:secret:" + name
 }
 
+// ResourceNamed is store with each listing's Source its full name (Listing.ID), as Secret Manager
+// answers a listing (GCP.listing): the source a Secret Manager secret is read by is its resource
+// name, where Secrets Manager's is an ARN. cmd/cipherd reads BROKER_FAKE_SECRETS_FILE through it
+// under gcp-secret-manager, so a request a local run or a test makes there freezes the source one
+// made on Secret Manager freezes, projects/<number>/secrets/<id>, and not a LocalARN. Read takes
+// that name, which a Local answers by name as it does by its ARN.
+func ResourceNamed(store Store) Store { return resourceNamed{store} }
+
+// resourceNamed is ResourceNamed's store.
+type resourceNamed struct{ Store }
+
+func (r resourceNamed) List(ctx context.Context, prefix string) ([]Listing, error) {
+	listings, err := r.Store.List(ctx, prefix)
+	for i := range listings {
+		listings[i].Source = listings[i].ID
+	}
+	return listings, err
+}
+
+func (r resourceNamed) Describe(ctx context.Context, id string) (Listing, error) {
+	listing, err := r.Store.Describe(ctx, id)
+	if err == nil {
+		listing.Source = listing.ID
+	}
+	return listing, err
+}
+
 // NewLocal holds secrets.
 func NewLocal(secrets ...LocalSecret) *Local {
 	l := &Local{

@@ -508,10 +508,12 @@ for path in sorted(p for p in held if STATE_GOLDEN.match(p)):
         continue
     refuse(
         path,
-        f"{path} holds {what}, which is the daemon's own number: TestStateGolden takes out each "
-        f"mark that equals DaemonAPIVersion() before it compares or writes, and holds the marks "
-        f"to DaemonAPIVersion() apart. `go test ./internal/api -run '^TestStateGolden$' -update`, "
-        f"run in packages/daemon, writes the golden without it.",
+        f"{path} holds {what}, which is the daemon's own number: the state fixtures' tests take out "
+        f"each mark that equals DaemonAPIVersion() before they compare or write, and hold the marks "
+        f"to DaemonAPIVersion() apart. In packages/daemon, `go test ./internal/daemon -run "
+        f"'^TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds$' -update` writes state.json "
+        f"and the other fixtures of a seed, and then `go test ./internal/api -run Golden -update` "
+        f"writes the goldens made from state.json, each without it.",
     )
 
 

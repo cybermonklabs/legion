@@ -11,15 +11,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// The line `workspace-init fetch` names a fresh feed's source with (printSource) says why the
-// cache's /tar filled it and not its bucket, and the repository cache's answers are its words, or
-// those of whatever answers at its address, which holds the bearer the fetch's /packs ask carried
-// and the signed addresses a manifest gives. Here /packs answers 503 under a reason phrase that
-// writes back the Authorization the ask carried and a signed address, signature and all
-// (packs-status). The line holds no run of the bearer or of the signature, and still says the
-// manifest was unavailable and how /packs answered. The case first shows net/http's own status
-// line of that answer holds the bearer. Captures legion.fetch-source/<case>.
-func TestWorkspaceInitFetchSourceLinePrintsNoCredentialTheCacheEchoes(t *testing.T) {
+// The line `workspace-init provision` names a fresh clone's source with (workspace's
+// logCacheSource) says why the cache's /tar filled it and not its bucket, and the repository
+// cache's answers are its words, or those of whatever answers at its address, which holds the
+// bearer the fill's /packs ask carried and the signed addresses a manifest gives. Here /packs
+// answers 503 under a reason phrase that writes back the Authorization the ask carried and a signed
+// address, signature and all (packs-status). The line holds no run of the bearer or of the
+// signature, and still says the manifest was unavailable and how /packs answered. The case first
+// shows net/http's own status line of that answer holds the bearer. Captures
+// legion.fetch-source/<case>.
+func TestWorkspaceInitProvisionSourceLinePrintsNoCredentialTheCacheEchoes(t *testing.T) {
 	t.Parallel()
 	const bearer = "cache-" + oauth2calltest.Token + "-9b2f4c"
 	const signature = "eyJhbGci" + "SignedAddressQueryValue"
@@ -30,7 +31,7 @@ func TestWorkspaceInitFetchSourceLinePrintsNoCredentialTheCacheEchoes(t *testing
 			w.Header().Set(workspace.CacheRepositoryHeader, "acme/widgets")
 			switch r.URL.Path {
 			case "/healthz":
-				_, _ = w.Write([]byte(`{"ready":true}`))
+				_, _ = w.Write([]byte(`{"ready":true,"defaultBranchOnly":true}`))
 			case "/packs":
 				conn, _, err := w.(http.Hijacker).Hijack()
 				if err != nil {
@@ -63,10 +64,10 @@ func TestWorkspaceInitFetchSourceLinePrintsNoCredentialTheCacheEchoes(t *testing
 		v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token
 		v.env["LEGION_REPOSITORY_CACHE_URL"] = cache.URL
 		v.env["LEGION_REPOSITORY_CACHE_TOKEN_FILE"] = writeCacheToken(t, bearer+"\n")
-		code, stdout, stderr := v.answered(t, "workspace-init fetch from a cache that echoes its bearer", v.fetchArgs())
+		code, stdout, stderr := v.answered(t, "workspace-init provision from a cache that echoes its bearer", v.args("LEGION-9"))
 		t.Logf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
 		oauth2calltest.RequireNoPiece(t, "legion.fetch-source/packs-status", stdout, bearer, signature)
-		if want := "workspace-init fetch: source=/tar reason=unavailable manifest: GET " + cache.URL + "/packs answered 503 "; !strings.Contains(stdout, want) {
+		if want := "workspace-init: source=/tar reason=unavailable manifest: GET " + cache.URL + "/packs answered 503 "; !strings.Contains(stdout, want) {
 			t.Errorf("stdout %q, want the line naming /tar as the source because %q", stdout, want)
 		}
 	})

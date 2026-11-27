@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -116,6 +117,17 @@ func (c *cache) syncPacks(ctx context.Context) {
 	}
 }
 
+// syncUnlisted syncs the packs (syncPacks) only where the cache serves its narrowed clone and
+// lists no set: after a fetch that failed, whose narrowing repacked the clone, dropped the set
+// listed before and made the cache ready again, and after Serve published the clone as it was
+// once its first fetch failed. So /packs serves the narrowed packs again without waiting for a
+// fetch to succeed, and a failed fetch that changed nothing lists nothing. Its caller holds maint.
+func (c *cache) syncUnlisted(ctx context.Context) {
+	if c.health.Load().Ready && c.listed.Load() == nil {
+		c.syncPacks(ctx)
+	}
+}
+
 // publishPacks makes the clone as it stands now the listed set, in the order the bucket's readers
 // rely on: it opens the bucket if no earlier sync of this process has (openBucket: the metadata
 // server's identity and the clients, which is no check of the cache's start, so a bucket that
@@ -171,7 +183,7 @@ func (c *cache) publishPacks(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	c.listed.Store(next)
+	c.setListed(next)
 	switched := c.clock.Now()
 	if current == nil || uploaded+reused > 0 {
 		c.opts.Log(fmt.Sprintf("listed %d packs and indexes in bucket %s, %d of them uploaded now, %d reused as the bucket held them", len(next.objects), c.opts.Bucket, uploaded, reused))
@@ -431,17 +443,76 @@ func (c *cache) dropHeldRecords(set *listedSet, inventory map[string]bool) {
 	}
 }
 
+// packsWriteBound is the write deadline each /packs answer sets on its connection for the write and
+// flush of its body alone (servePacks), while it holds packsGate's read side. It bounds how long an
+// answer holds the gate, whatever its reader does: a reader that stops reading, or takes the answer
+// slower than the bound allows, has the write fail there, its connection broken and the gate let go,
+// rather than hold a narrowing (which waits at the gate holding the clone's write lock, so /tar's
+// snapshots wait too), a drop of the set or a publication for as long as it stays connected. That
+// reader loses its answer, and a provision then fills its clone from /tar, as from any answer it
+// cannot use. An answer is the narrowed clone's refs and one line for each pack and index, whose
+// number holding one branch does not bound; a provision reads up to 64 MiB of it (workspace's
+// packManifestLimit), which over this bound is about 2.1 MiB/s. A client's own timeout, such as a
+// provision's one-minute ask (workspace's packsAsk), bounds only a client that keeps to it. An
+// answer that cannot set the deadline (a ResponseWriter with no deadline of its own to set) is 503
+// before it writes. /tar sets no deadline: its stream is long by design, and it holds no gate.
+const packsWriteBound = 30 * time.Second
+
+// lockPacks takes packsGate's write side, for a change of what /packs may answer, and answers its
+// unlock. Each /packs answer holds the read side from its last check through its write
+// (servePacks), so the change waits for an answer that checked before it to be written whole, or
+// for its write to fail at the answer's write deadline (packsWriteBound), and every answer after it
+// sees it. An answer whose deadline cannot be set sends nothing to its connection under the gate:
+// its 503 is buffered, and goes out once the handler has let the gate go. packsGateBlocked, a
+// test's seam, runs where the gate is held already.
+func (c *cache) lockPacks() func() {
+	if !c.packsGate.TryLock() {
+		if c.packsGateBlocked != nil {
+			c.packsGateBlocked()
+		}
+		c.packsGate.Lock()
+	}
+	return c.packsGate.Unlock
+}
+
+// markUnready makes /healthz, /readyz, /tar and /packs answer unready, under packsGate (lockPacks):
+// a narrowing about to repack, and a fetch that leaves the clone unnarrowed.
+func (c *cache) markUnready() {
+	defer c.lockPacks()()
+	c.health.Store(&Health{Repo: c.opts.Repo.String()})
+}
+
+// setListed makes set the one /packs answers from, nil for none, under packsGate (lockPacks): a
+// sync's switch, and the drop of a narrowing or a fresh fill.
+func (c *cache) setListed(set *listedSet) {
+	defer c.lockPacks()()
+	c.listed.Store(set)
+}
+
 // servePacks answers GET /packs: the listed set as one workspace.PackManifest, with an address
 // signed for each of its objects on this request (signedObjects), so every address states its
-// whole signedLife, and none is kept from one answer to the next. It reads the set once, and as
-// soon as the addresses are signed, before it encodes or writes a byte, it checks that the set is
-// still the one listed: one installed while it signed answers 503 with none of the addresses,
-// since its objects may be the ones the new set left out, whose retirement counts from that
-// switch. It answers 503 too while the cache has listed no set (its first sync has not ended, or
-// has failed), and when an address cannot be signed, writing no part of a manifest. It holds no
-// lock /tar or a refresh takes, and is no /tar stream: neither streams nor inFlight counts it. Its
-// log names no address, token or ref.
+// whole signedLife, and none is kept from one answer to the next. It reads the set once, signs and
+// encodes it, and then, holding packsGate's read side from that check through the write of the
+// answer, checks again that the cache is ready with its clone narrowed and that the set is still the
+// one listed: one gone unready or installed while it signed answers 503 with none of the
+// addresses, since its objects may be the ones the new set left out, whose retirement counts from
+// that switch. So a narrowing, a fresh fill and a switch each wait for an answer that passed that
+// check to be written, or for its write to fail at its deadline (packsWriteBound), and no answer
+// is written after the change it did not see. It answers 503
+// too while the cache is not ready with its clone narrowed to its default branch, as /tar does (a
+// narrowing's repack, a fetch that left it unnarrowed), while the cache has listed no set (its
+// first sync has not ended, or has failed, or a narrowing or a fresh fill dropped the set listed
+// before it), and when an address cannot be signed, writing no part of a manifest. So no answer
+// carries a set made before the clone's last narrowing. It takes the read side of packsGate for
+// that last check and the write of its body, which a refresh takes the write side of; it takes
+// neither c.lock, which /tar and the clone's own work take, nor maint, so a repack leaves it
+// answering 503 rather than waiting on it; and it is no /tar stream: neither streams nor inFlight
+// counts it. Its log names no address, token or ref.
 func (c *cache) servePacks(w http.ResponseWriter, r *http.Request) {
+	if !c.narrowedAndReady() {
+		http.Error(w, "the repository cache is not ready with its clone narrowed to its default branch", http.StatusServiceUnavailable)
+		return
+	}
 	set := c.listed.Load()
 	if set == nil {
 		http.Error(w, "the repository cache has listed no complete set of packs in its bucket yet", http.StatusServiceUnavailable)
@@ -455,18 +526,51 @@ func (c *cache) servePacks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the repository cache cannot sign its packs' addresses now", http.StatusServiceUnavailable)
 		return
 	}
-	if c.listed.Load() != set {
-		http.Error(w, "the repository cache listed another set of packs while it signed this answer; ask again", http.StatusServiceUnavailable)
-		return
-	}
 	body, err := json.Marshal(packsAnswer{Bucket: set.store.name, Refs: set.refs, Objects: objects})
 	if err != nil {
 		c.opts.Log("encode the packs' answer for " + r.RemoteAddr + ": " + oneLine(err))
 		http.Error(w, "the repository cache cannot encode its packs' answer", http.StatusInternalServerError)
 		return
 	}
+	c.packsGate.RLock()
+	defer c.packsGate.RUnlock()
+	if !c.narrowedAndReady() {
+		http.Error(w, "the repository cache went unready while it signed this answer; ask again", http.StatusServiceUnavailable)
+		return
+	}
+	if c.listed.Load() != set {
+		http.Error(w, "the repository cache listed another set of packs while it signed this answer; ask again", http.StatusServiceUnavailable)
+		return
+	}
+	if c.packsChecked != nil {
+		c.packsChecked()
+	}
+	// The answer goes to the connection before the gate is let go, its length stated so the flush
+	// keeps the framing the server would give it, rather than at the handler's return, and within
+	// the answer's write deadline (packsWriteBound). An answer whose deadline cannot be set is 503,
+	// with nothing of its manifest written: its write would hold the gate with no bound. The deadline
+	// is cleared once the answer is out, so a later request on the same kept-alive connection, a /tar
+	// stream among them, holds none of it; a write that failed breaks the connection, which the
+	// server then closes.
+	answer := http.NewResponseController(w)
+	if err := answer.SetWriteDeadline(time.Now().Add(c.packsWrite)); err != nil {
+		c.opts.Log("bound the write of the packs' answer for " + r.RemoteAddr + ": " + oneLine(err))
+		http.Error(w, "the repository cache cannot bound the write of its packs' answer", http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(body)
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	_, wrote := w.Write(body)
+	if flushed := answer.Flush(); wrote == nil && flushed == nil {
+		_ = answer.SetWriteDeadline(time.Time{})
+	}
+}
+
+// narrowedAndReady reports whether /healthz answers ready with the clone narrowed to its default
+// branch, the one state /packs answers a manifest in.
+func (c *cache) narrowedAndReady() bool {
+	health := c.health.Load()
+	return health.Ready && health.DefaultBranchOnly
 }
 
 // packsAnswer is a /packs answer as servePacks encodes it: workspace.PackManifest with its refs

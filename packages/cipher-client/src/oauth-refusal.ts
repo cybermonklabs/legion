@@ -2,42 +2,28 @@
 //
 // The rules this package reads a token endpoint's answer by: the TypeScript statement of Go's
 // `oauthrefusal` (`packages/envoy/internal/oauthrefusal`). The status alone decides whether the
-// endpoint answered: a 5xx, a 408 and a 429 are a server that could not answer now (`outage`),
-// whatever their body names. An OAuth error code (RFC 6749 Section 5.2) that decides something
-// counts only in a refusal, a 4xx that is no outage (`refusalCode`), and ending a grant is
-// narrower still (`endsGrant`). A person's sign-in (`person-identity.ts`) and a machine's device
-// login (`device-login.ts`) read their answers through these, so each of these rules has one
-// definition in this language; the broker's wording of a refusal (`brokerRefusal`,
-// `broker-request.ts`) makes any 4xx OAuth error a `BrokerRefusedError`, as Go's broker client makes
-// it a `RefusedError`, and leaves whether it is final to `outage`. The library under these reads
-// fewer answers as an OAuth error than Go's x/oauth2 does: oauth4webapi does not read the body of
-// an answer carrying `WWW-Authenticate`, and reads only a JSON body (oauth4webapi 3.8.8,
-// build/index.js:914, :925-927), so an OAuth error in any other answer is never seen as one. Every
-// error these read crossed `callLibrary` (`@legion/contracts/remote-text`), so it is a
+// endpoint answered: a 5xx, a 408 and a 429 are a server that could not answer now, whatever their
+// body names (`outage` of `@legion/contracts/http-status`, the workspace's one statement of that
+// set, as Go's `oauthrefusal.Outage` is `httpoutage.Is`). An OAuth error code (RFC 6749 Section
+// 5.2) that decides something counts only in a refusal, a 4xx that is no outage (`refusalCode`),
+// and ending a grant is narrower still (`endsGrant`). A person's sign-in (`person-identity.ts`) and
+// a machine's device login (`device-login.ts`) read their answers through these and `outage`, so
+// each of these rules has one definition in this language; the broker's wording of a refusal
+// (`brokerRefusal`, `broker-request.ts`) makes any 4xx OAuth error a `BrokerRefusedError`, as Go's
+// broker client makes it a `RefusedError`, and leaves whether it is final to `outage`. The library
+// under these reads fewer answers as an OAuth error than Go's x/oauth2 does: oauth4webapi does not
+// read the body of an answer carrying `WWW-Authenticate`, and reads only a JSON body (oauth4webapi
+// 3.8.8, build/index.js:914, :925-927), so an OAuth error in any other answer is never seen as one.
+// Every error these read crossed `callLibrary` (`@legion/contracts/remote-text`), so it is a
 // `LibraryError`: an OAuth error answer is one whose `answeredOAuthError` is set, and its code is
 // the far side's words held as a `RemoteText`, compared as it came and never printed here.
 
+import { outage } from "@legion/contracts/http-status";
 import { LibraryError, RemoteText } from "@legion/contracts/remote-text";
 
 /** What a token endpoint answers a refresh token or a code it no longer honours (RFC 6749
  *  Section 5.2). */
 const INVALID_GRANT = "invalid_grant";
-
-/** A server that did not take the request. */
-const REQUEST_TIMEOUT = 408;
-
-/** A server that will not take a request yet. */
-const TOO_MANY_REQUESTS = 429;
-
-/**
- * Whether `status` is a server that could not answer the request now, Go's `oauthrefusal.Outage`:
- * any 5xx, a 408 (it did not take the request) and a 429 (it will not take one yet). The set is
- * closed: every other status is the server answering, whatever its body names. A request that got
- * no answer at all carries no status, and is no outage here: a caller reads it on its own.
- */
-export function outage(status: number): boolean {
-  return status >= 500 || status === REQUEST_TIMEOUT || status === TOO_MANY_REQUESTS;
-}
 
 /**
  * The OAuth error code that `error` names where it is a token endpoint's refusal, a 4xx that is no

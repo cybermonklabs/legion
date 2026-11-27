@@ -19,7 +19,8 @@ import (
 func TestAListenerAnswerNamesItsStatusWithNoPhraseItWrote(t *testing.T) {
 	ctx := context.Background()
 	publish := func(base string) error {
-		return New(base, "").Publish(ctx, "notifications.role.legion-x", "a notice", map[string]string{"k": "v"}, "key-1")
+		_, err := New(base, "").Publish(ctx, "notifications.role.legion-x", "a notice", map[string]string{"k": "v"}, "key-1")
+		return err
 	}
 	registration := func(base string) error {
 		_, err := New(base, "").ReadSessionRegistration(ctx, "ses_s")

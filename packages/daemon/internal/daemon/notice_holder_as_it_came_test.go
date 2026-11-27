@@ -45,7 +45,7 @@ func TestALaterCopyThatFailedOnTheArchitectsOwnSessionWaitsWhateverItsNoticeSays
 			copied := record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap", Resends: 1}
 			row := mustOutboxRow(t, "LEGION-2", copied, clock)
 			row.ID = 7
-			published := notify.New(listener.URL, githubtest.InstallationToken("listener bearer")).Publish(context.Background(),
+			_, published := notify.New(listener.URL, githubtest.InstallationToken("listener bearer")).Publish(context.Background(),
 				notify.RoleTopicPrefix+string(architect), tc.message, copied, record.OutboxKey(row.ID))
 			if err := runner.noticeAnswered(context.Background(), row, copied, treeSnapshot{}, architect, published); err != nil {
 				t.Fatalf("the answer %v re-held nothing: %v", published, err)

@@ -36,8 +36,10 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/fileerr"
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/envoy/redirects"
+
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 	"github.com/sjawhar/legion/daemon/internal/urljoin"
@@ -57,9 +59,9 @@ const launcherService = "legion-daemon"
 // first wait is loginRetryInitial, each one after it doubles, up to loginRetryMax.
 // unavailableRetryInitial and unavailableRetryMax bound the wait after a login the broker was not
 // there to decide: one given no HTTP answer at all, or an outage from the broker or its front door
-// (outage: a 5xx, a 408 or a 429). They bound it the same way and on the pod renewer's schedule:
-// the broker is down, out of reach, cannot reach its database or will not take a login yet,
-// nothing it decided needs a slower retry, and every pod enrollment waits on the login, so the
+// (httpoutage.Is: a 5xx, a 408 or a 429). They bound it the same way and on the pod renewer's
+// schedule: the broker is down, out of reach, cannot reach its database or will not take a login
+// yet, nothing it decided needs a slower retry, and every pod enrollment waits on the login, so the
 // daemon logs in again within seconds of the broker serving again. A 429 waits at least the
 // Retry-After it names, the time until the broker's rate limit takes the login again, though never
 // longer than loginRetryMax (loginRetry.failed). A login that succeeds resets both. No person sees
@@ -209,22 +211,15 @@ func (e *APIError) HasCode(code string) bool {
 	return e.said.Equal(code)
 }
 
-// Permanent is a refusal a retry cannot change: every 4xx but an outage (a 408 or a 429),
-// POD_TOKEN_EXPIRED and POD_REGISTRAR_NOT_LISTED. A client-side NO_MACHINE_CREDENTIAL (Status 0)
-// is never permanent — the caller retries once the daemon's next token login wins a credential —
-// and neither is an expired pod token, which the pod's current token replaces under the same key
-// (TokenExpired), nor a registrar the broker does not yet list (RegistrarNotListed). A 404 or a 405
-// is permanent here; RouteUnserved tells it apart for a caller that reads it otherwise.
+// Permanent is a refusal a retry cannot change: every 4xx but an outage (httpoutage.Is: a 408 or a
+// 429), POD_TOKEN_EXPIRED and POD_REGISTRAR_NOT_LISTED. A client-side NO_MACHINE_CREDENTIAL
+// (Status 0) is never permanent — the caller retries once the daemon's next token login wins a
+// credential — and neither is an expired pod token, which the pod's current token replaces under
+// the same key (TokenExpired), nor a registrar the broker does not yet list (RegistrarNotListed).
+// A 404 or a 405 is permanent here; RouteUnserved tells it apart for a caller that reads it
+// otherwise.
 func (e *APIError) Permanent() bool {
-	return e.Status >= 400 && e.Status < 500 && !outage(e.Status) && !e.TokenExpired() && !e.RegistrarNotListed()
-}
-
-// outage reports whether status is a broker, or a proxy before it, that could not answer now: any
-// 5xx, a 408 (it did not take the request) and a 429 (it will not take one yet). It is the set the
-// envoy module's oauthrefusal.Outage states, which this module cannot import (it is internal to
-// that module).
-func outage(status int) bool {
-	return status >= 500 || status == http.StatusRequestTimeout || status == http.StatusTooManyRequests
+	return e.Status >= 400 && e.Status < 500 && !httpoutage.Is(e.Status) && !e.TokenExpired() && !e.RegistrarNotListed()
 }
 
 // RouteUnserved is the broker answering 404 or 405: it serves no route of that path and method,
@@ -302,10 +297,11 @@ func (c *Client) Login(ctx context.Context) (time.Time, error) {
 
 // tokenLogin is one POST /v1/launcher-credentials/token, answering the credential the broker
 // issued. A POST the broker gave no HTTP answer to, while ctx has not ended, or one answered with
-// an outage (a 5xx, a 408 or a 429), fails with a *brokerUnavailableError; the outage one wraps
-// the answer's *APIError, and a 429's carries the wait its Retry-After asks (rateLimitWait). A
-// transport failure that is a fault on the daemon's own side is wrapped the same way, and classify
-// reads it out of the wrapper, so the login loop waits the long schedule for that one.
+// an outage (httpoutage.Is: a 5xx, a 408 or a 429), fails with a *brokerUnavailableError; the
+// outage one wraps the answer's *APIError, and a 429's carries the wait its Retry-After asks
+// (rateLimitWait). A transport failure that is a fault on the daemon's own side is wrapped the same
+// way, and classify reads it out of the wrapper, so the login loop waits the long schedule for
+// that one.
 func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 	token, err := c.serviceToken()
 	if err != nil {
@@ -329,7 +325,7 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 		}
 		return nil, err
 	}
-	if outage(status) {
+	if httpoutage.Is(status) {
 		return nil, &brokerUnavailableError{err: refusal(status, answered, cut), asked: rateLimitWait(status, header, time.Now())}
 	}
 	if status != http.StatusOK {

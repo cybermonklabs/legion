@@ -10,12 +10,12 @@ import (
 
 // echoedCacheToken is the bearer of the cases whose stand-in at the repository cache's address
 // writes it back into what it streams. It holds oauth2calltest.Token, the made-up credential the
-// check's markers name, so what Fetch leaves of it shows in the output a case captures.
+// check's markers name, so what the fill leaves of it shows in the output a case captures.
 const echoedCacheToken = "cache-" + oauth2calltest.Token + "-7f3a9c2e"
 
 // echoedFetchToken is the provisioning token of the same cases, which a ref's name can hold too.
 // It holds the check's marker -RDX- and shares no run of oauth2calltest.TokenPiece characters with
-// echoedCacheToken, so what Fetch leaves of either token shows as that token's.
+// echoedCacheToken, so what the fill leaves of either token shows as that token's.
 const echoedFetchToken = "ghs_pv7q2-RDX-d58e1b"
 
 // requireNoFetchEcho is oauth2calltest.RequireNoPiece of text under capture for both tokens of
@@ -28,16 +28,18 @@ func requireNoFetchEcho(t *testing.T, capture, text string) {
 
 // A stand-in at the repository cache's address holds the bearer the /tar request carried, and can
 // write it into what it streams: the name of a tar entry, which unpackEntry refuses naming it -
-// one that leaves the feed, one that is neither a regular file nor a directory, one that is no ref
-// or pack (the Authorization header whole, or the token alone) - or fails to write naming it - one
-// whose body is cut short, one a directory of its name stands in place of - and a ref, which fsck
-// names when the history is not whole and a line names when the feed drops it. It can write the
-// token as it is or percent-encoded, every byte a %XX escape (the -encoded cases), which a reading
-// of the text as it is finds no run of. A ref fsck names or a line logs can hold the provisioning
-// token too, and so can the branch GitHub's HEAD names, which a line names when HEAD follows it:
-// the -encoded cases of those hold both tokens, the provisioning token in lower-case escapes.
-// Neither Fetch's error nor its log holds a run of either token, as written or percent-decoded.
-// The controls: each still names what failed, with each token's place redacted. Captures
+// one that leaves the clone's git directory, one that is neither a regular file nor a directory,
+// one that is no ref or pack (the Authorization header whole, or the token alone) - or fails to
+// write naming it - one whose body is cut short, one a directory of its name stands in place of -
+// and a ref, which fsck names when the history is not whole. It can write the token as it is or
+// percent-encoded, every byte a %XX escape (the -encoded cases), which a reading of the text as it
+// is finds no run of. A ref fsck names can hold the issue pod's provisioning token too, which the
+// stream's filter holds beside the bearer (CacheStream.Held): fsck-encoded's refs hold both
+// tokens, the provisioning token in lower-case escapes. The issue pod's fill (ensureRepoClone)
+// fails holding no run of either token in its error, as written or percent-decoded. The branch
+// GitHub's HEAD names, which the repository cache's own fetch logs when HEAD follows it, can hold
+// the provisioning token percent-encoded (log-encoded), and Fetch's log holds no run of it. The
+// controls: each still names what failed, with each token's place redacted. Captures
 // workspace.cache-echo/<case>.
 func TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt(t *testing.T) {
 	const ref = "refs/heads/" + echoedCacheToken
@@ -64,7 +66,7 @@ func TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt(t *testing.T) {
 		says string
 	}{
 		{"outside", func(t *testing.T) []byte { return tarOf(t, [2]string{"../" + echoedCacheToken, "escaped\n"}) },
-			`the repository cache's tar holds "../***", which is not a path inside the feed`},
+			`the repository cache's tar holds "../***", which is not a path inside the clone's git directory`},
 		{"link", func(t *testing.T) []byte { return tarOf(t, [2]string{ref + "@"}) },
 			`the repository cache's tar holds "refs/heads/***", which is neither a regular file nor a directory`},
 		{"bearer", func(t *testing.T) []byte { return tarOf(t, [2]string{"Bearer " + echoedCacheToken, "x"}) },
@@ -88,64 +90,43 @@ func TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			run := newLocalRunner(t)
 			pushRemoteBranch(t, run.remote, "main", "history.txt")
-			req := fetchRequest(t)
-			req.Token = staticToken(echoedFetchToken)
-			req.CacheURL, req.CacheToken = (&fakeCache{body: tc.body(t), token: echoedCacheToken}).serve(t), echoedCacheToken
-			_, err := Fetch(context.Background(), run, req)
+			url := (&fakeCache{body: tc.body(t), token: echoedCacheToken}).serve(t)
+			clock := newTestClock()
+			_, err := fillIssueClone(t, run, clock, issuePodRemoteHolding(t, staticToken(echoedFetchToken), url, echoedCacheToken, clock, func(string) {}))
 			said := ""
 			if err != nil {
 				said = err.Error()
 			}
 			requireNoFetchEcho(t, "workspace.cache-echo/"+tc.name, said)
 			if !strings.Contains(said, tc.says) {
-				t.Errorf("Fetch = %v, want the cache refused naming %q", err, tc.says)
+				t.Errorf("the fill = %v, want the cache refused naming %q", err, tc.says)
 			}
 			if names, ok := fsckNames[tc.name]; ok && strings.Count(said, fsckLine) != names {
-				t.Errorf("Fetch = %v, want fsck's line naming each of its %d refs with the token's place redacted (%q)", err, names, fsckLine)
+				t.Errorf("the fill = %v, want fsck's line naming each of its %d refs with the token's place redacted (%q)", err, names, fsckLine)
 			}
 		})
 	}
-	for _, tc := range []struct {
-		name string
-		// refs are the cache's refs GitHub does not have, which the feed drops; head, when set, is
-		// the branch GitHub's HEAD names once the cache is made, which HEAD follows.
-		refs []string
-		head string
-		says map[string]int
-	}{
-		{name: "log", refs: []string{ref}, says: map[string]int{"removed *** from the feed: GitHub no longer has it": 1}},
-		{name: "log-encoded", refs: []string{encodedRef, encodedFetchRef}, head: "refs/heads/default/" + encodedFetch,
-			says: map[string]int{
-				"removed *** from the feed: GitHub no longer has it":                                 2,
-				"the default branch of acme/widgets is now default/*** (HEAD named refs/heads/main)": 1,
-			}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			run := newLocalRunner(t)
-			pushRemoteBranch(t, run.remote, "main", "history.txt")
-			cache := cacheOf(t, run.remote)
-			for _, name := range tc.refs {
-				runSetup(t, cache, "git", "--git-dir="+cache, "update-ref", name, "refs/heads/main")
-			}
-			if tc.head != "" {
-				runSetup(t, run.remote, "git", "--git-dir="+run.remote, "update-ref", tc.head, "refs/heads/main")
-				runSetup(t, run.remote, "git", "--git-dir="+run.remote, "symbolic-ref", "HEAD", tc.head)
-			}
-			req := fetchRequest(t)
-			req.Token = staticToken(echoedFetchToken)
-			var logged []string
-			req.Log = func(line string) { logged = append(logged, line) }
-			req.CacheURL, req.CacheToken = (&fakeCache{body: cacheTar(t, cache), token: echoedCacheToken}).serve(t), echoedCacheToken
-			if _, err := Fetch(context.Background(), run, req); err != nil {
-				t.Fatalf("Fetch: %v", err)
-			}
-			said := strings.Join(logged, "\n")
-			requireNoFetchEcho(t, "workspace.cache-echo/"+tc.name, said)
-			for line, times := range tc.says {
-				if strings.Count(said, line) != times {
-					t.Errorf("Fetch logged %q, want %d lines naming the ref with each token's place redacted (%q)", logged, times, line)
-				}
-			}
-		})
-	}
+	t.Run("log-encoded", func(t *testing.T) {
+		run := newLocalRunner(t)
+		pushRemoteBranch(t, run.remote, "main", "history.txt")
+		req := fetchRequest(t)
+		req.Token = staticToken(echoedFetchToken)
+		if err := Fetch(context.Background(), run, req); err != nil {
+			t.Fatalf("Fetch filling the cache: %v", err)
+		}
+		// The branch GitHub's HEAD names once the cache is made, which HEAD follows.
+		head := "refs/heads/default/" + encodedFetch
+		runSetup(t, run.remote, "git", "--git-dir="+run.remote, "update-ref", head, "refs/heads/main")
+		runSetup(t, run.remote, "git", "--git-dir="+run.remote, "symbolic-ref", "HEAD", head)
+		var logged []string
+		req.Log = func(line string) { logged = append(logged, line) }
+		if err := Fetch(context.Background(), run, req); err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+		said := strings.Join(logged, "\n")
+		requireNoFetchEcho(t, "workspace.cache-echo/log-encoded", said)
+		if line := "the default branch of acme/widgets is now default/*** (HEAD named refs/heads/main)"; strings.Count(said, line) != 1 {
+			t.Errorf("Fetch logged %q, want one line naming the branch with the token's place redacted (%q)", logged, line)
+		}
+	})
 }

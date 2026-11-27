@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/redirects"
 )
@@ -36,8 +37,11 @@ const (
 	// 16,000 tokens/s) that is about 20 s, a third of the timeout. Measured: 320,000 bytes of hex
 	// (281,740 tokens, the densest text measured) took 8.6 s, and 288,000 of random CJK 5.8 s.
 	azureMaxBatchBytes = 320_000
-	// azureRequestTimeout bounds one Embed call, sign-in included, below embedqueue's claimWindow
-	// (2 minutes), so a hung call never outlives the claim on the rows it carries.
+	// azureRequestTimeout bounds one Embed call, sign-in included, for every caller: a live
+	// search's query embedding and the embedding queue's background calls alike. The queue also
+	// ends each of its own calls at the same 60 s through the call's context (embedqueue's
+	// callBound), whatever the place, and renews its claim on the rows a call carries first when
+	// the call could otherwise outlive it, so a hung background call never outlives that claim.
 	azureRequestTimeout = 60 * time.Second
 	// azureErrorBodyLimit bounds how much of a failed response is read for its error code.
 	azureErrorBodyLimit = 64 << 10
@@ -184,9 +188,20 @@ func azureInputType(inputType InputType) (string, error) {
 // Azure answers with, not by its position in the response. It sends whatever bytes it is given:
 // embedqueue keeps each background call within Limits().MaxBatchBytes, which is what lets the call
 // finish inside azureRequestTimeout, and a search query is one short text. A 429 or 503 comes back
-// marked for IsThrottled; any other failure names the HTTP status and Azure's error code, never
-// the texts or the credential.
+// marked for IsThrottled, and a 408 or any other 5xx for IsOutage, as does a call that ran out of
+// time while ctx was live (timedOut: azureRequestTimeout, or the HTTP client's own timeout, its
+// sign-in included). A failed status names the HTTP status and Azure's error code, and no failure
+// names the texts or the credential.
 func (c *AzureClient) Embed(ctx context.Context, texts []string, inputType InputType) ([][]float32, error) {
+	vectors, err := c.embed(ctx, texts, inputType)
+	if timedOut(ctx, err) {
+		return nil, &outageError{err: err}
+	}
+	return vectors, err
+}
+
+// embed is Embed but for marking a call that ran out of time.
+func (c *AzureClient) embed(ctx context.Context, texts []string, inputType InputType) ([][]float32, error) {
 	bounded, err := boundBatch(texts, azureMaxBatchTexts)
 	if err != nil || bounded == nil {
 		return nil, err
@@ -249,9 +264,11 @@ func (c *AzureClient) Embed(ctx context.Context, texts []string, inputType Input
 	return placeAzureVectors(decoded, len(texts))
 }
 
-// azureStatusError describes a non-2xx answer by its status and Azure's error code, and marks 429
-// (the deployment's rate limit) and 503 (the service's capacity) as throttles: neither says
-// anything about the texts.
+// azureStatusError describes a non-2xx answer by its status and Azure's error code, and marks a
+// throttle (azureThrottled) for IsThrottled and any other outage status (httpoutage.Is: a 408, or a
+// 5xx but the 503) for IsOutage: Azure failing to answer now, which unlike a throttle may be one
+// text Azure fails on every time, so it stays a failure embedqueue bisects and confirms with its
+// canary.
 func azureStatusError(response *http.Response) error {
 	var decoded azureErrorResponse
 	if answer, readErr := redact.ReadAnswer(response, azureErrorBodyLimit); readErr == nil {
@@ -261,13 +278,18 @@ func azureStatusError(response *http.Response) error {
 	if !decoded.Error.Code.IsEmpty() {
 		err = fmt.Errorf("embed: azure embeddings: HTTP %s, error code %q", redact.StatusLine(response.StatusCode), decoded.Error.Code)
 	}
-	if azureThrottled(response.StatusCode) {
+	switch {
+	case azureThrottled(response.StatusCode):
 		return &throttleError{err: err}
+	case httpoutage.Is(response.StatusCode):
+		return &outageError{err: err}
 	}
 	return err
 }
 
-// azureThrottled reports whether an HTTP status is Azure telling the caller to back off.
+// azureThrottled reports whether an HTTP status is Azure telling the caller to back off: 429 (the
+// deployment's rate limit) and 503 (the service's capacity). Neither says anything about the
+// texts, so embedqueue retries the batch whole on either and never counts it against a row.
 func azureThrottled(status int) bool {
 	return status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/oauth2call"
 )
 
@@ -187,11 +188,13 @@ type PlanDocument struct {
 	Version    int    `json:"version"`
 }
 
-// PlanTask is one task of a plan's write: its id and its steps in order, each a role or
-// `role:key`.
+// PlanTask is one task of a plan's write: its id, its steps in order, each a role or `role:key`,
+// and the tasks it needs, each by its id, [] for a task that needs none. A nil Needs writes no
+// member, which Dispatch reads as needs not recorded.
 type PlanTask struct {
-	ID    string   `json:"id"`
-	Steps []string `json:"steps"`
+	ID    string    `json:"id"`
+	Steps []string  `json:"steps"`
+	Needs *[]string `json:"needs,omitempty"`
 }
 
 // LegionLabel is the Dispatch label that hands an issue to Legion. A human sets it from the issue
@@ -758,9 +761,7 @@ func PermanentRefusal(err error) (*Error, bool) {
 	switch {
 	case refusal.Code.Equal("ISSUE_CHANGED"),
 		refusal.Code.IsEmpty(),
-		refusal.Status < 400 || refusal.Status >= 500,
-		refusal.Status == http.StatusRequestTimeout,
-		refusal.Status == http.StatusTooManyRequests,
+		refusal.Status < 400 || httpoutage.Is(refusal.Status),
 		refusal.Status == http.StatusUnauthorized,
 		refusal.Status == http.StatusForbidden,
 		refusal.Status == http.StatusConflict && refusal.Code.Equal(ParentContended),

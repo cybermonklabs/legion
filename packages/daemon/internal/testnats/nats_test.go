@@ -1,12 +1,11 @@
 package testnats
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"net"
 	"net/http"
@@ -20,16 +19,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
-	"github.com/testcontainers/testcontainers-go"
-	tcexec "github.com/testcontainers/testcontainers-go/exec"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/sjawhar/envoy/oauth2call"
+	"github.com/sjawhar/legion/daemon/internal/testbinary"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/urljoin"
 )
@@ -37,18 +32,18 @@ import (
 // A start that fails after Docker created the container — here a readiness wait that can never
 // succeed, as a start timing out under load does — leaves no container behind once it returns: the
 // container is shared by the package, so no test's end would remove it. The container is asked for
-// by its label on the same Docker daemon testcontainers created it on. A run on an external server
-// starts no container, and is how a host with no Docker runs these tests, so it skips this one.
+// by a label of this row's own on the Docker daemon the docker CLI reaches. A run on an external
+// server starts no container, and is how a host with no Docker runs these tests, so it skips this
+// one.
 func TestAFailedStartLeavesNoContainer(t *testing.T) {
 	if server, _, err := external(); err == nil && server != "" {
 		t.Skipf("%s names a running NATS server, so the package starts no container", externalURLEnv)
 	}
 	label := "legion-testnats-" + rand.Text()
-	created, err := start(Image, func() []testcontainers.ContainerCustomizer {
-		return []testcontainers.ContainerCustomizer{
-			testcontainers.WithLabels(map[string]string{"legion.test": label}),
-			testcontainers.WithWaitStrategy(wait.ForLog("a line NATS never prints").WithStartupTimeout(3 * time.Second)),
-		}
+	created, err := start(Image, startOptions{
+		labels: map[string]string{"legion.test": label},
+		ready:  "a line NATS never prints",
+		within: 3 * time.Second,
 	})
 	if err == nil {
 		t.Fatal("a start whose readiness wait cannot succeed returned no error")
@@ -56,34 +51,106 @@ func TestAFailedStartLeavesNoContainer(t *testing.T) {
 	if created == nil {
 		t.Fatalf("the failed start created no container (%v), so there was nothing to leak", err)
 	}
-	docker, err := testcontainers.NewDockerClientWithOpts(t.Context())
-	if err != nil {
-		t.Fatalf("the Docker client testcontainers uses: %v", err)
-	}
-	defer docker.Close()
-	left, err := docker.ContainerList(t.Context(), container.ListOptions{All: true, Filters: filters.NewArgs(filters.Arg("label", "legion.test="+label))})
+	left, err := docker(t.Context(), nil, "ps", "--all", "--quiet", "--filter", "label=legion.test="+label)
 	if err != nil {
 		t.Fatalf("list containers labelled %s: %v", label, err)
 	}
-	for _, c := range left {
-		t.Errorf("container %s of the failed start is still there (%s)", c.ID, c.State)
-		_ = docker.ContainerRemove(t.Context(), c.ID, container.RemoveOptions{Force: true})
+	for _, id := range strings.Fields(left) {
+		t.Errorf("container %s of the failed start is still there", id)
+		_, _ = docker(context.Background(), nil, "rm", "--force", "--volumes", id)
 	}
 }
 
+// reaperChildEnv makes this test binary, started again by TestAKilledTestBinaryLeavesNoContainer,
+// start a container, print its ID and wait to be killed.
+const reaperChildEnv = "LEGION_TESTNATS_REAPER_CHILD"
+
+// A test binary that is killed before it removes its container leaves none behind: the kernel
+// closes the reaper's pipe when the binary ends, and the reaper removes every container of the
+// binary's session (container.go). The row starts this test binary again as a child that starts a
+// container and then waits, kills the child with SIGKILL, which no cleanup of the child outlives,
+// and waits for the container to be gone. A run on an external server starts no container, so it
+// skips this row.
+func TestAKilledTestBinaryLeavesNoContainer(t *testing.T) {
+	if os.Getenv(reaperChildEnv) != "" {
+		started, err := start(Image, startOptions{})
+		if err != nil {
+			fmt.Printf("start: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("started %s\n", started.id)
+		// The parent holds this stdin open until it has killed this process.
+		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+		return
+	}
+	if server, _, err := external(); err == nil && server != "" {
+		t.Skipf("%s names a running NATS server, so the package starts no container", externalURLEnv)
+	}
+	child := exec.Command(os.Args[0], "-test.run=^TestAKilledTestBinaryLeavesNoContainer$", "-test.count=1")
+	child.Env = append(os.Environ(), reaperChildEnv+"=1")
+	stdin, err := child.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	stdout, err := child.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Start(); err != nil {
+		t.Fatalf("start this test binary again: %v", err)
+	}
+	killed := false
+	defer func() {
+		if !killed {
+			_ = child.Process.Kill()
+			_ = child.Wait()
+		}
+	}()
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	id, ok := strings.CutPrefix(strings.TrimSpace(line), "started ")
+	if err != nil || !ok || id == "" {
+		t.Fatalf("the child started no container: %q, %v", line, err)
+	}
+	// A container this row could not see removed is removed here, by its ID, so a failing run
+	// leaves nothing behind either.
+	t.Cleanup(func() { _, _ = docker(context.Background(), nil, "rm", "--force", "--volumes", id) })
+	if _, err := docker(t.Context(), nil, "inspect", "--format", "{{.State.Running}}", id); err != nil {
+		t.Fatalf("the child's container %s is not there to be reaped: %v", id, err)
+	}
+	if err := child.Process.Kill(); err != nil {
+		t.Fatalf("kill the child: %v", err)
+	}
+	killed = true
+	var exit *exec.ExitError
+	if err := child.Wait(); !errors.As(err, &exit) || exit.ExitCode() != -1 {
+		t.Fatalf("the child ended with %v, want the SIGKILL this row sent", err)
+	}
+	testwait.Eventually(t, "the killed child's container "+id+" to be removed", func() bool {
+		_, err := docker(t.Context(), nil, "inspect", "--format", "{{.Id}}", id)
+		return err != nil && strings.Contains(strings.ToLower(err.Error()), "no such object")
+	})
+}
+
+// This test binary, which TestAKilledTestBinaryLeavesNoContainer starts again, links no module of
+// testcontainers-go (testbinary.LinksNoTestcontainers), so no start of it pays that library's
+// package init (container.go).
+func TestThisTestBinaryLinksNoTestcontainers(t *testing.T) { testbinary.LinksNoTestcontainers(t) }
+
 // A start Docker refuses as in use is tried again on a fresh address and ports (start), and the
 // server the retry runs is the one its caller configured: an nkey server refuses a client with no
-// credential and admits its user there, as at a first start. testcontainers reads a configuration
-// file's reader to its end as it creates the container (v0.41.0 lifecycle.go:159), before Docker
-// refuses the publish at the start, so a retry handed the first attempt's reader copies an empty
-// configuration in, and that server admits anyone. Docker refuses a publish once every port it
-// tried of the range start gives it is held (publishedRange). A range from lastPublishedPort holds
-// that port alone, so the row takes that port at the first probe's address and hands the first
-// start that range for its client port, and requires the start to have been tried again: a first
-// start Docker did not refuse checks no retry. Docker refuses only where this process can take a
-// port Docker publishes: on a daemon on this machine. On a daemon on another machine the row
-// fails as UNKNOWN, naming the daemon, rather than fail on a probe count that says nothing of the
-// configuration.
+// credential and admits its user there, as at a first start. Each attempt copies the caller's
+// configuration into the container it created (Container.run), so a retry carries the same
+// configuration as the first; a retry that reused a configuration an earlier attempt had used up
+// started a server that admits anyone, as one did under testcontainers-go, which read a
+// configuration file's reader to its end as it created the container. Docker refuses a publish
+// once every port it tried of the range start gives it is held (publishedRange). A range from
+// lastPublishedPort holds that port alone, so the row takes that port at the first probe's address
+// and hands the first start that range for its client port, and requires the start to have been
+// tried again: a first start Docker did not refuse checks no retry. Docker refuses only where this
+// process can take a port Docker publishes: on a daemon on this machine. On a daemon on another
+// machine the row fails as UNKNOWN, naming the daemon (requireLocalDaemon), rather than fail on a
+// probe count that says nothing of the configuration.
 func TestAStartRetriedAfterARefusedPublishEnforcesItsUsers(t *testing.T) {
 	if server, _, err := external(); err == nil && server != "" {
 		t.Skipf("%s names a running NATS server, so the package starts no container", externalURLEnv)
@@ -222,6 +289,137 @@ func TestEachTestGetsTheServerEmpty(t *testing.T) {
 	})
 }
 
+// A test leaves the server as URL handed it over: the stream, consumer and message one test makes
+// are gone once it ends, before any other test takes the server, so a program that runs on an
+// external server after the test binary — a pod's Bun tests after its Go tests — finds none of
+// them. The stream is the one the daemon's tests make, ENVOY_NOTIFICATIONS on all of
+// `notifications.>`, whose publish ack answered a relay frame of pi-legion's relay row when one was
+// left on such a server. The parent reads the server's own count from its monitoring endpoint
+// while it holds the server (take), so no other test of the binary is on it, and not through URL,
+// whose reset would empty the server first. The pool hands the parent the server freed last, the
+// subtest's, and the parent fails by name when it is handed another. The same read inside the
+// subtest, with the stream still there, is the reader's positive control: it sees what it counts.
+func TestATestLeavesTheServerEmpty(t *testing.T) {
+	var made *server
+	t.Run("makes the notification stream, a consumer and a message", func(t *testing.T) {
+		js := JetStream(t)
+		made = heldServer(t)
+		stream := CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
+		if _, err := stream.CreateConsumer(t.Context(), jetstream.ConsumerConfig{Durable: "left-behind"}); err != nil {
+			t.Fatalf("create consumer: %v", err)
+		}
+		if _, err := js.Publish(t.Context(), "notifications.agent.left", []byte("x")); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+		if held := jetStreamHeld(t, made); held != (jetStreamCounts{Streams: 1, Consumers: 1, Messages: 1}) {
+			t.Fatalf("the server's monitoring endpoint reports %+v while the test holds its stream, want 1 stream, 1 consumer and 1 message: a reader that cannot see them proves nothing when it reads none", held)
+		}
+	})
+	if made == nil {
+		t.Fatal("the subtest that makes the stream held no server, so there is nothing to read")
+	}
+	if s := take(t); s != made {
+		t.Fatal("the pool handed this test another NATS server than the one its subtest made the stream on, so its count would prove nothing")
+	}
+	if held := jetStreamHeld(t, made); held != (jetStreamCounts{}) {
+		t.Errorf("the server holds %+v after the test that made them ended, want none: the next program on an external server is handed them", held)
+	}
+}
+
+// The reset at the start of each test empties a server that something other than a test of this
+// package left streams on: a Bun suite on the same external server, a binary killed before its
+// cleanups ran, or a leaveEmpty that failed. The second subtest stands in for any of them: it
+// holds a server as a test does (take) and makes a stream on a client of its own (dialReady), with
+// no URL, so no leaveEmpty runs at its end. The first subtest only starts the server, for a run of
+// this test alone. The count inside the second subtest is the reader's positive control, and the
+// third fails by name when the pool hands it another server than the second's.
+func TestAStreamLeftOutsideTheFixtureIsGoneAtTheNextTake(t *testing.T) {
+	var left *server
+	t.Run("starts the server", func(t *testing.T) { URL(t) })
+	t.Run("leaves a stream that no test's end empties", func(t *testing.T) {
+		left = take(t)
+		ctx, cancel := context.WithTimeout(t.Context(), readinessTimeout)
+		defer cancel()
+		conn, js, err := dialReady(ctx, left.url, t.Name())
+		if err != nil {
+			t.Fatalf("connect to the NATS server: %v", err)
+		}
+		defer conn.Close()
+		if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "LEFT_OUTSIDE", Subjects: []string{"outside.>"}}); err != nil {
+			t.Fatalf("create stream: %v", err)
+		}
+		if held := jetStreamHeld(t, left); held.Streams != 1 {
+			t.Fatalf("the server's monitoring endpoint reports %+v with the stream made, want 1 stream: a reader that cannot see it proves nothing when it reads none", held)
+		}
+	})
+	t.Run("finds none of it", func(t *testing.T) {
+		js := JetStream(t)
+		if left == nil || heldServer(t) != left {
+			t.Fatal("this subtest holds another NATS server of the pool than the one the earlier subtest left its stream on, so it would prove nothing")
+		}
+		names := js.StreamNames(t.Context())
+		for name := range names.Name() {
+			t.Errorf("stream %s, which no fixture's end emptied, is still on the server the next test is handed", name)
+		}
+		if err := names.Err(); err != nil {
+			t.Fatalf("list streams: %v", err)
+		}
+	})
+}
+
+// jetStreamCounts is what a server's monitoring endpoint reports it holds across its accounts.
+type jetStreamCounts struct {
+	Streams   int    `json:"streams"`
+	Consumers int    `json:"consumers"`
+	Messages  uint64 `json:"messages"`
+}
+
+// jetStreamHeld reads s's own count of its streams, consumers and messages from its monitoring
+// endpoint's /jsz (monitorJSZ), which no client connection, and so no reset, is needed for.
+func jetStreamHeld(t *testing.T, s *server) jetStreamCounts {
+	t.Helper()
+	var counts jetStreamCounts
+	monitorJSZ(t, s, "JetStream counts", &counts)
+	return counts
+}
+
+// monitorJSZ reads the /jsz of s's monitoring endpoint into into, for the what of the caller's
+// read, and answers the URL it asked as a failure of the caller's names it. As connectionsAt reads
+// /connz, it joins the route onto the endpoint's base URL with its query kept (urljoin.Join) and
+// reads the answer through oauth2call.ReadAnswer and Answer.Decode: that base URL is
+// LEGION_TEST_NATS_MONITOR_URL as set for an external server, which can carry a credential in its
+// user information or its query, so each failure names the URL asked as oauth2call.AskedURL names
+// it, a request that got no answer through oauth2call.Unanswered, and a status by its code and
+// standard phrase (oauth2call.StatusLine).
+func monitorJSZ(t *testing.T, s *server, what string, into any) string {
+	t.Helper()
+	asked, err := urljoin.Join(s.monitor, "/jsz")
+	if err != nil {
+		t.Fatalf("read the NATS server's %s: its monitoring endpoint's base URL: %v", what, err)
+	}
+	shown := oauth2call.AskedURL(asked)
+	request, err := http.NewRequest(http.MethodGet, asked.String(), nil)
+	if err != nil {
+		t.Fatalf("read the NATS server's %s: its monitoring endpoint's URL joined with /jsz does not parse (it is not printed)", what)
+	}
+	response, err := monitorClient.Do(request)
+	if err != nil {
+		t.Fatalf("read the NATS server's %s: %v", what, oauth2call.Unanswered(err, request, ""))
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s answered %s", shown, oauth2call.StatusLine(response.StatusCode))
+	}
+	answer, err := oauth2call.ReadAnswer(response, 16<<20)
+	if err != nil {
+		t.Fatalf("read %s: %v", shown, err)
+	}
+	if err := answer.Decode(into); err != nil {
+		t.Fatalf("decode %s: %v", shown, err)
+	}
+	return shown
+}
+
 // A test that publishes a burst without waiting for acks leaves messages the server routes after
 // the test ends. The next test, recreating a stream on the same subjects, finds none of them: the
 // reset waits for the previous test's connections to be gone first.
@@ -254,7 +452,7 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 
 // A durable an earlier test created does not reach the next test, even when a stream delete whose
 // rename failed leaves the earlier test's stream directory in place with every consumer's state
-// file (the consumer deletes in URL say how, and name the lines). The first subtest stands in for
+// file (the consumer deletes in empty say how, and name the lines). The first subtest stands in for
 // an earlier delete's removal still running: it makes the .<name> directory the next delete
 // renames onto. The second checks the delete did leave the stream's directory, so the row cannot
 // pass on a delete that moved it aside, and then asks for durables that start at the next
@@ -307,6 +505,16 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 		if heldBy(t) != held {
 			t.Fatal("this subtest holds another NATS server of the pool than the one the earlier subtest left its durables on, so it would prove nothing")
 		}
+		// Registered after JetStream(t), so that it runs before the fixture's own end (leaveEmpty):
+		// with the held removal gone, that end's delete of the stream can move its directory aside and
+		// remove it, and the server's store keeps no directory of this test. Left in place, the delete
+		// removes the stream's meta.inf and cannot move the directory onto the held one, which stays
+		// in the store for good (nats-server v2.15.1 filestore.go:12231-12237). It empties plant, so
+		// the parent's own removal, for a run that never reaches this subtest, has nothing to do.
+		t.Cleanup(func() {
+			onTheServersHost(t, "rm", "-rf", plant)
+			plant = ""
+		})
 		onTheServersHost(t, "test", "-d", filepath.Join(streams, config.Name))
 		stream := CreateStream(t, js, config)
 		published, err := js.Publish(t.Context(), "left.one", []byte("x"))
@@ -331,39 +539,20 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 }
 
 // streamsDirectory is the directory the server t holds keeps its streams in: its JetStream store,
-// as its monitoring endpoint reports it at /jsz, joined onto the endpoint's path with its query
-// kept (urljoin.Join), and in that the global account's directory, $G, which holds every stream of
-// a server with no accounts configured. The row that reads it acts on that path where the server
-// runs, so an external server's store must be on this host, writable by the tests' user, and named
-// by an absolute path (README.md says so); a relative one, which the server resolves from its own
-// working directory, fails t by name. Each failure names the URL asked as connectionsAt's do.
+// as its monitoring endpoint reports it at /jsz (monitorJSZ), and in that the global account's
+// directory, $G, which holds every stream of a server with no accounts configured. The row that
+// reads it acts on that path where the server runs, so an external server's store must be on this
+// host, writable by the tests' user, and named by an absolute path (README.md says so); a relative
+// one, which the server resolves from its own working directory, fails t by name. Each failure
+// names the URL asked as connectionsAt's do.
 func streamsDirectory(t *testing.T) string {
 	t.Helper()
-	asked, err := urljoin.Join(heldServer(t).monitor, "/jsz")
-	if err != nil {
-		t.Fatalf("read the NATS server's JetStream configuration: its monitoring endpoint's base URL: %v", err)
-	}
-	shown := oauth2call.AskedURL(asked)
-	request, err := http.NewRequest(http.MethodGet, asked.String(), nil)
-	if err != nil {
-		t.Fatal("read the NATS server's JetStream configuration: its monitoring endpoint's URL joined with /jsz does not parse (it is not printed)")
-	}
-	response, err := monitorClient.Do(request)
-	if err != nil {
-		t.Fatalf("read the NATS server's JetStream configuration: %v", oauth2call.Unanswered(err, request, ""))
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("GET %s answered %s", shown, oauth2call.StatusLine(response.StatusCode))
-	}
 	var jsz struct {
 		Config struct {
 			StoreDir string `json:"store_dir"`
 		} `json:"config"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&jsz); err != nil {
-		t.Fatalf("decode %s: %v", shown, err)
-	}
+	shown := monitorJSZ(t, heldServer(t), "JetStream configuration", &jsz)
 	if jsz.Config.StoreDir == "" {
 		t.Fatalf("%s names no store directory", shown)
 	}
@@ -389,34 +578,27 @@ func onTheServersHost(t *testing.T, name string, args ...string) {
 	onServersHost(t, heldServer(t), name, args...)
 }
 
-// onServersHost runs a command where s keeps its store: in its container, or on this host for an
-// external server, which a host with no Docker runs itself (the package comment). It fails t when
-// the command fails, with what the command printed.
+// onServersHost runs a command where s keeps its store: in its container (`docker exec`, through
+// the docker CLI the fixture starts it with), or on this host for an external server, which a host
+// with no Docker runs itself (the package comment). It fails t when the command fails, with what
+// the command printed.
 func onServersHost(t *testing.T, s *server, name string, args ...string) {
 	t.Helper()
 	command := strings.Join(append([]string{name}, args...), " ")
-	container := s.container
-	if container == nil {
+	if s.container == nil {
 		if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
 			t.Fatalf("%s on this host, where the external NATS server keeps its store: %v: %s", command, err, out)
 		}
 		return
 	}
-	code, reader, err := container.Exec(context.Background(), append([]string{name}, args...), tcexec.Multiplexed())
-	if err != nil {
-		t.Fatalf("%s in the NATS container: %v", command, err)
-	}
-	out, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatalf("read the output of %s in the NATS container: %v", command, err)
-	}
-	if code != 0 {
-		t.Fatalf("%s in the NATS container exited %d: %s", command, code, out)
+	// docker exec exits with the command's own status, so a command that fails fails it.
+	if out, err := exec.Command("docker", append([]string{"exec", s.container.id, name}, args...)...).CombinedOutput(); err != nil {
+		t.Fatalf("%s in the NATS container %s: %v: %s", command, s.container.id, err, out)
 	}
 }
 
 // The stream a test is handed must be empty. A create that comes back holding an earlier test's
-// work, which URL's purge says how a create can do, fails the test there, naming each message by
+// work, which the purge in empty says how a create can do, fails the test there, naming each message by
 // subject, stream sequence and stored time and each consumer by name, rather than reaching the
 // test as a count it reads later and reads as its own. A stream holding a consumer and no message
 // names the consumer alone: there is no message to name, and a sequence nothing stored is not

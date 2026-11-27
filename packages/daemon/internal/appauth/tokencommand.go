@@ -47,7 +47,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/oauth2call"
+
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -127,9 +129,11 @@ func Pending(err error) bool {
 	return errors.Is(err, ErrCommandPending) || errors.Is(err, ErrApprovalPending)
 }
 
-// releasedInstallation is one installation of a token_command's release.
+// releasedInstallation is one installation of a token_command's release: the account, the
+// installation's id, its token and the token's expiry.
 type releasedInstallation struct {
 	owner     string
+	id        string
 	token     string
 	expiresAt time.Time
 }
@@ -239,15 +243,13 @@ func (m *Manager) Close() {
 	m.runs.Wait()
 }
 
-// recordOwners records the accounts of a release of every installation as role's installations.
+// recordOwners holds the accounts and ids of a whole release as the App's current installations.
 func (m *Manager) recordOwners(role AppRole, installations map[string]releasedInstallation) {
 	owners := make(map[string]string, len(installations))
-	for owner := range installations {
-		owners[owner] = owner
+	for owner, installation := range installations {
+		owners[owner] = installation.id
 	}
-	m.mu.Lock()
-	m.installations[role] = owners
-	m.mu.Unlock()
+	m.holdInstallations(role, owners)
 }
 
 // execTokenCommand runs app's token_command once, under ctx, for the request's owner and read.
@@ -302,7 +304,16 @@ func (m *Manager) execTokenCommand(ctx context.Context, app config.GitHubApp, re
 		}
 		return nil, failed
 	}
-	return parseRelease(stdout.buf.Bytes(), field, m.now())
+	installations, err := parseRelease(stdout.buf.Bytes(), field, m.now())
+	if err != nil {
+		return nil, err
+	}
+	// Every token of the release is an installation token the release names the installation
+	// of, whichever of them a caller goes on to use (Options.Counter).
+	for _, released := range installations {
+		m.register(released.token, released.id)
+	}
+	return installations, nil
 }
 
 // boundedBuffer keeps at most limit bytes of a command's stdout; the first write past it marks the
@@ -406,7 +417,8 @@ func parseRelease(output []byte, field string, now time.Time) (map[string]releas
 		if !ghrepo.IsLogin(owner) || githubrest.HoldsToken(owner) {
 			return nil, fmt.Errorf("%s released an installation whose account is not a GitHub login", field)
 		}
-		if _, err := installationID(entry.InstallationID); err != nil {
+		id, err := installationID(entry.InstallationID)
+		if err != nil {
 			return nil, fmt.Errorf("%s released %s's installation with no installation id", field, owner)
 		}
 		expiresAt, err := time.Parse(time.RFC3339, entry.ExpiresAt)
@@ -416,7 +428,7 @@ func parseRelease(output []byte, field string, now time.Time) (map[string]releas
 		if !expiresAt.After(now) {
 			return nil, fmt.Errorf("%s released %s's installation with a token that expired at %s", field, owner, expiresAt.Format(time.RFC3339))
 		}
-		installations[strings.ToLower(owner)] = releasedInstallation{owner: owner, token: entry.Token, expiresAt: expiresAt}
+		installations[strings.ToLower(owner)] = releasedInstallation{owner: owner, id: id, token: entry.Token, expiresAt: expiresAt}
 	}
 	return installations, nil
 }
@@ -487,7 +499,7 @@ func (m *Manager) mintFromCommand(ctx context.Context, app config.GitHubApp, req
 	if err != nil {
 		return Lease{}, err
 	}
-	return Lease{Token: installation.token, ExpiresAt: installation.expiresAt, Minted: m.now(), Identity: identity}, nil
+	return Lease{Token: installation.token, ExpiresAt: installation.expiresAt, Minted: m.now(), Identity: identity, Installation: installation.id}, nil
 }
 
 // anyInstallation is one installation of the release of every installation app's token_command
@@ -560,12 +572,18 @@ func (m *Manager) forgetLoginRelease(role AppRole) {
 	m.mu.Unlock()
 }
 
+// tokenIdentityCaller is the caller kind of tokenIdentity's reads (githubrate.WithCaller), which
+// the daemon's rate reading counts token mode's checks of a released token by.
+const tokenIdentityCaller = "token_identity"
+
 // tokenIdentity is the bot identity of the App whose installation token token is, with no JWT:
 // verifyTokenApp checks the token is appID's App's and names its bot login, run for every token,
-// and GET /users/<login> gives the bot user's id for its noreply email, read once per App. The
-// login and the identity's name are GitHub's words, decided on as they came and printed only as
-// logins GitHub allows (githubrest.ShownLogin), as verifyTokenApp says.
+// and GET /users/<login> gives the bot user's id for its noreply email, read once per App. Its
+// three reads, the GraphQL viewer among them, are counted as tokenIdentityCaller's. The login and
+// the identity's name are GitHub's words, decided on as they came and printed only as logins
+// GitHub allows (githubrest.ShownLogin), as verifyTokenApp says.
 func (m *Manager) tokenIdentity(ctx context.Context, role AppRole, appID, token string) (GitIdentity, error) {
+	ctx = githubrate.WithCaller(ctx, tokenIdentityCaller)
 	login, err := m.verifyTokenApp(ctx, role, appID, token)
 	if err != nil {
 		return GitIdentity{}, err

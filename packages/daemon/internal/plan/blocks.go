@@ -2,8 +2,12 @@ package plan
 
 import (
 	"fmt"
+	"net/url"
+	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/envoy/steprecord"
 )
 
 // The two types of block a plan holds. Every other block of the document is its prose.
@@ -24,12 +28,15 @@ type Block struct {
 
 // FromBlocks reads one version of the plan document from its blocks: each `plan_task` block is a
 // task and each `plan_role` block a role the plan defines, in the document's order, and every
-// other block is skipped. A document with no task block is read as a plan with no task, which
-// Validate refuses. It answers an error only for a block it cannot read at all: a task or a role
-// with no id, one id on two such blocks, and a task whose `steps` is outside the grammar
-// (ParseSteps); the error names the block by its id. The plan route passes it only blocks whose
-// ids its read of Dispatch held to TaskIDGrammar and to no run of the credential that read carried
-// (dispatch's PlanDocument), so an id this error prints is one the route may print.
+// other block is skipped. Each task's needs are the ids of the tasks they name (resolveNeeds), so
+// no plan holds a need as a word. A document with no task block is read as a plan with no task,
+// which Validate refuses. It answers an error only for a block it cannot read at all: a task or a
+// role with no id, one id on two such blocks, a task whose id is outside Dispatch's task form
+// (steprecord.TaskIDHolds), whose steps Dispatch could never record, and a task whose `steps` is
+// outside the grammar (ParseSteps); the error names the block by its id quoted (quoted), and a
+// word of `steps` by its place. The plan route passes it only blocks whose ids its read of
+// Dispatch held to TaskIDGrammar and to no run of the credential that read carried (dispatch's
+// PlanDocument), so an id this error prints is one the route may print.
 func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
 	p := Plan{ArtifactID: artifactID, Version: version}
 	typeOf := map[string]string{}
@@ -41,12 +48,19 @@ func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
 			return Plan{}, fmt.Errorf("a %s block has no id, so no step of the plan can be named", block.Type)
 		}
 		if earlier, ok := typeOf[block.ID]; ok {
-			return Plan{}, fmt.Errorf("the id %s names a %s block and a %s block, so it names no one block", block.ID, earlier, block.Type)
+			return Plan{}, fmt.Errorf("the id %s names a %s block and a %s block, so it names no one block", quoted(block.ID), earlier, block.Type)
 		}
 		typeOf[block.ID] = block.Type
 		if block.Type == RoleBlockType {
 			p.RoleBlocks = append(p.RoleBlocks, block.ID)
 			continue
+		}
+		if !steprecord.TaskIDHolds(block.ID) {
+			// The error gives no length of its own: quoted's mark gives the length of what the URL
+			// rule left of a cut id, and the length of the id as written would give away the length
+			// of a credential it holds.
+			return Plan{}, fmt.Errorf("the task %s has an id outside the form of a task id, %s, so Dispatch could record none of its steps",
+				quoted(block.ID), steprecord.TaskIDRule)
 		}
 		task, err := taskOf(block)
 		if err != nil {
@@ -54,7 +68,7 @@ func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
 		}
 		p.Tasks = append(p.Tasks, task)
 	}
-	return p, nil
+	return resolveNeeds(p), nil
 }
 
 // taskOf is one `plan_task` block as a task. `needs` is its words, each kept whole; `merges` is
@@ -76,6 +90,79 @@ func taskOf(block Block) (Task, error) {
 		task.Steps = steps
 	}
 	return task, nil
+}
+
+// resolveNeeds is p with each task's Needs as task ids: each word's id after its last "#b-",
+// decoded as Dispatch encodes a block id (neededID), or the word itself where it holds no "#b-".
+// The ids keep the order the block writes the words in, and a task a block names twice is needed
+// once. A word whose id is no task of p stays in Task.Unresolved, once however often the block
+// writes it, and Validate refuses it.
+func resolveNeeds(p Plan) Plan {
+	ids := make(map[string]bool, len(p.Tasks))
+	for _, task := range p.Tasks {
+		ids[task.ID] = true
+	}
+	tasks := make([]Task, len(p.Tasks))
+	for i, task := range p.Tasks {
+		task.Needs, task.Unresolved = resolved(task.Needs, ids)
+		tasks[i] = task
+	}
+	p.Tasks = tasks
+	return p
+}
+
+// resolved is one task's `needs` words as the ids of the tasks of ids they name, and the words
+// that name none, each kept once in the block's order. Each word is looked up in a set of what
+// is kept already, so the read takes time linear in the words, where a scan of the kept list for
+// each word would be quadratic in the words of one block, and one `needs` attribute within
+// Dispatch's document limit holds hundreds of thousands of words.
+// TestEachNeedOfAPlanIsReadInLinearTime holds the read to its thread's CPU time, since no count
+// kept here would see a scan.
+func resolved(words []string, ids map[string]bool) (needs, unresolved []string) {
+	if len(words) == 0 {
+		return nil, nil
+	}
+	needed, left := map[string]bool{}, map[string]bool{}
+	for _, word := range words {
+		id := neededID(word)
+		switch {
+		case !ids[id]:
+			if !left[word] {
+				left[word] = true
+				unresolved = append(unresolved, word)
+			}
+		case !needed[id]:
+			needed[id] = true
+			needs = append(needs, id)
+		}
+	}
+	return needs, unresolved
+}
+
+// pin is the `@v<N>` that pins a reference to version N, as Dispatch reads one.
+var pin = regexp.MustCompile(`^v[1-9][0-9]*$`)
+
+// neededID is the id of the task a `needs` word names: the block id after the word's last `#b-`,
+// read as Dispatch reads a block reference's fragment (EncodeBlockID and blockID in
+// packages/envoy/internal/dispatch/text): an `@` is only ever a pin, which names a version of the
+// document and no other block, and the rest is percent-decoded. A word with no `#b-` is the id
+// itself. It is "" for a fragment with a malformed pin or an escape that does not decode, an id no
+// task has: FromBlocks refuses a block with none.
+func neededID(word string) string {
+	at := strings.LastIndex(word, "#b-")
+	if at < 0 {
+		return word
+	}
+	encoded := word[at+len("#b-"):]
+	if unpinned, version, pinned := strings.Cut(encoded, "@"); pinned {
+		if !pin.MatchString(version) {
+			return ""
+		}
+		encoded = unpinned
+	}
+	// url.PathUnescape answers "" with its error, for an escape that does not decode.
+	id, _ := url.PathUnescape(encoded)
+	return id
 }
 
 // ChangedTasks is the ids of the tasks next changes against held, in the order of their ids: each
@@ -109,7 +196,9 @@ func ChangedTasks(held, next Plan) []string {
 	return changed
 }
 
-// sameBlock says whether two tasks of one id say the same thing.
+// sameBlock says whether two tasks of one id say the same thing: their needs are compared as the
+// tasks they name. Neither side holds a word that names no task: the held plan is read from stored
+// rows, and a later version passed Validate, which refuses each such word.
 func sameBlock(a, b Task) bool {
 	return a.Text == b.Text && a.PartOf == b.PartOf && a.Owner == b.Owner && a.Merges == b.Merges &&
 		slices.Equal(a.Needs, b.Needs) && slices.Equal(a.Steps, b.Steps)

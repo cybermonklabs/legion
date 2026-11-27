@@ -45,8 +45,9 @@ const (
 )
 
 // searchCoveragePath is Dispatch's report of what meaning search covers
-// (internal/dispatch/api/routes_table.go:280). It takes a person, a cookie or a bearer, so the
-// gate reads it with the deployment's agent bearer like every other call the harness makes.
+// (internal/dispatch/api/route_api_v1_search_coverage+get.go). It takes a person, a cookie or a
+// bearer, so the gate reads it with the deployment's agent bearer like every other call the
+// harness makes.
 const searchCoveragePath = "/api/v1/search/coverage"
 
 // The queries seed-finish runs. Each names the schema of every table it reads, for the reason

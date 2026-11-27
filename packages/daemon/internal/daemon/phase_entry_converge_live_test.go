@@ -5,7 +5,7 @@
 // builds this driver with `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
+// own whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration, the
 // real store and its migrations, the real HTTP API, the real claim supervision and its worker
 // stream, the real openWorkflow, the real JetStream consumers, the real outbox lanes and the real
 // entry sweep. Facts enter only as production's do: GitHub envelopes on the ENVOY_NOTIFICATIONS

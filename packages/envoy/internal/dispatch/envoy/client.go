@@ -32,14 +32,16 @@ import (
 var ErrUnavailable = errors.New("envoy listener unavailable")
 
 // ErrUnreachable marks the ErrUnavailable failures no listener answered: the request found no
-// connection, lost it, or ran out of time before an answer, or a 502, 503 or 504 came back - a
-// gateway in front of a listener that is gone, or a listener behind its starting gate
-// (cmd/listener/starting_gate.go startingGate). Those are what a listener being replaced gives for
-// a few seconds, so asking again a little later may be answered. Every other ErrUnavailable - a
-// status the listener chose, such as the 401 it gives a token it refuses, or an answer that does
-// not decode - is the listener's own answer, which asking again only repeats. An ErrUnreachable
-// failure is ErrUnavailable too, with the same text, so a caller that asks only errors.Is(err,
-// ErrUnavailable) reads it exactly as before.
+// connection, lost it, or ran out of time before an answer, or a listener outage status came back
+// (listenerwire.Outage: a 408, a 429, a 5xx but 500) - a gateway in front of a listener that is
+// gone, a listener behind its starting gate (cmd/listener/starting_gate.go startingGate), a proxy
+// that did not take the request in time or that limits how often it is asked. Those are what a
+// listener being replaced or overloaded gives for a few seconds, so asking again a little later
+// may be answered. Every other ErrUnavailable - a status the listener chose, such as the 401 it
+// gives a token it refuses or the 500 of a record it cannot decode, or an answer that does not
+// decode - is the listener's own answer, which asking again only repeats. An ErrUnreachable
+// failure is ErrUnavailable too, with the same text, so a caller that asks only
+// errors.Is(err, ErrUnavailable) reads it exactly as before.
 var ErrUnreachable = errors.New("envoy listener unreachable")
 
 // unreachableError marks the ErrUnavailable failure it wraps as ErrUnreachable without adding to
@@ -53,16 +55,10 @@ func (e unreachableError) Unwrap() error { return e.error }
 // unreachable marks err, an ErrUnavailable failure, as ErrUnreachable.
 func unreachable(err error) error { return unreachableError{err} }
 
-// gatewayStatus reports whether a listener answered with a status that comes from in front of it
-// or from its starting gate rather than from a decision about the request: a 502, 503 or 504.
-func gatewayStatus(code int) bool {
-	return code == http.StatusBadGateway || code == http.StatusServiceUnavailable || code == http.StatusGatewayTimeout
-}
-
 // unavailableStatus is the ErrUnavailable failure err a non-200 answer reads as, marked
-// ErrUnreachable when its status is a gatewayStatus.
+// ErrUnreachable when its status is a listener outage (listenerwire.Outage).
 func unavailableStatus(code int, err error) error {
-	if gatewayStatus(code) {
+	if listenerwire.Outage(code) {
 		return unreachable(err)
 	}
 	return err
@@ -801,6 +797,39 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 	return Session{}, err
 }
 
+// Successors returns what the listener answers for the sessions that replaced sessionID
+// (listenerwire.SessionSuccessors, GET /v1/sessions/<session_id>/successors): the sessions whose
+// claims named it as the session they replace, to which the listener copies what it had not
+// read, sorted, none for a session nobody replaced, and the principal each of them and sessionID
+// last registered as. A transport failure, a 5xx and a listener outage (listenerwire.Outage: a
+// 408, a 429, a 5xx but 500) are ErrUnavailable, carrying the listener's reason, and
+// ErrUnreachable too where nothing answered or the status came from in front of the listener
+// (unavailableGetStatus): who replaced the session was not read, so a proxy's 408 or 429 reads
+// as "ask again" rather than as "nobody replaced that session". A body that does not decode is
+// ErrUnavailable as well. Any other status is the listener's own answer that it names no
+// successor, an error that is not ErrUnavailable: a listener that predates the route answers its
+// GET 405 through the session delete route, and that listener copies no message to a successor.
+func (c *Client) Successors(ctx context.Context, sessionID string) (listenerwire.SessionSuccessors, error) {
+	route := "/v1/sessions/" + url.PathEscape(sessionID) + "/successors"
+	response, err := c.get(ctx, route, "")
+	if err != nil {
+		return listenerwire.SessionSuccessors{}, err
+	}
+	defer response.Body.Close()
+	switch {
+	case response.StatusCode == http.StatusOK:
+	case listenerwire.Outage(response.StatusCode) || response.StatusCode >= http.StatusInternalServerError:
+		return listenerwire.SessionSuccessors{}, unavailableGetStatus(response, route)
+	default:
+		return listenerwire.SessionSuccessors{}, fmt.Errorf("envoy listener: GET %s returned %d: it names no successor", route, response.StatusCode)
+	}
+	var answer listenerwire.SessionSuccessors
+	if err := decodeAnswer(response, &answer); err != nil {
+		return listenerwire.SessionSuccessors{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
+	}
+	return answer, nil
+}
+
 // Session returns one session's listener metadata, whatever its state, or ErrNotFound if the
 // listener holds no record of it: a 404, or a session id the listener refuses as a KV key (a
 // 400 for one outside nats.go's key alphabet or holding an empty token, a 413 for one too
@@ -817,9 +846,9 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 // one that is not running, is ErrNotFound here (SessionIncludingStopped reads it). Every other
 // status, a body that does not decode and a transport failure alike are ErrUnavailable carrying
 // the listener's own reason, so a read the message bus did not answer reads as "ask again", never
-// as "that session is gone"; only a transport failure and a 502, 503 or 504 are also
-// ErrUnreachable, because a status the listener chose - a 401 for a token it refuses, say - is
-// its answer and asking again repeats it.
+// as "that session is gone"; only a transport failure and a listener outage (listenerwire.Outage:
+// a 408, a 429, a 5xx but 500) are also ErrUnreachable, because a status the listener chose - a
+// 401 for a token it refuses, say - is its answer and asking again repeats it.
 func (c *Client) Session(ctx context.Context, sessionID string) (Session, error) {
 	return c.readSession(ctx, sessionID, includeUnresponsive)
 }

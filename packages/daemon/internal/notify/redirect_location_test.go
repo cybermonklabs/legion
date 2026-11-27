@@ -33,7 +33,8 @@ func TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError(t *testing.T)
 	})
 	calls := map[string]func(*HTTPPublisher) error{
 		"publish": func(p *HTTPPublisher) error {
-			return p.Publish(context.Background(), "notifications.role.architect", "a notice", map[string]string{"issue": "LEGION-9"}, "dedupe-1")
+			_, err := p.Publish(context.Background(), "notifications.role.architect", "a notice", map[string]string{"issue": "LEGION-9"}, "dedupe-1")
+			return err
 		},
 		"registration": func(p *HTTPPublisher) error {
 			_, err := p.ReadSessionRegistration(context.Background(), "ses_architect")

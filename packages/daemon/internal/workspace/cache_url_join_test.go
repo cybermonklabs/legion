@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
-// TestACacheAskGoesToThePathJoinedOntoTheCacheURL: --cache-url is what the pod is told, and it can
+// TestACacheAskGoesToThePathJoinedOntoTheCacheURL: the cache URL is what the pod is told, and it can
 // carry a path, a query or a fragment. Each ask of the cache goes to the URL's path with the ask's
 // path joined onto it, the query kept and the fragment dropped: http://host/cache?sig=... is asked
 // /cache/healthz?sig=... (query), and so is http://host/cache/?sig=... (query-trailing-slash), where
@@ -39,7 +39,7 @@ func TestACacheAskGoesToThePathJoinedOntoTheCacheURL(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			}))
 			defer cache.Close()
-			response, err := askCache(context.Background(), FetchRequest{Repo: repo, CacheURL: cache.URL + c.suffix, CacheToken: "cache-token", Clock: clock.Real()}, "/healthz", false)
+			response, err := askCache(context.Background(), CacheStream{Repo: repo, URL: cache.URL + c.suffix, Token: "cache-token", Clock: clock.Real()}, "/healthz", false)
 			if response != nil {
 				_ = response.Body.Close()
 			}
@@ -60,7 +60,7 @@ func TestACacheAskGoesToThePathJoinedOntoTheCacheURL(t *testing.T) {
 
 // TestACacheURLThatDoesNotParsePrintsNoneOfIt: a cache URL url.Parse refuses (an invalid escape in
 // its path), with made-up credentials in its user information and its query, fails the ask in
-// askCache's own words, which hold none of the URL: in unpackCache's error (unparsed-tar) and in
+// askCache's own words, which hold none of the URL: in unpackCacheInto's error (unparsed-tar) and in
 // cacheNotReady's reason the wait logs and fails in (unparsed-health). http.NewRequest's error,
 // which askCache returned, quotes the URL whole (twin). A cache URL that parses and whose joined
 // URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone holding a byte that is not
@@ -76,8 +76,8 @@ func TestACacheURLThatDoesNotParsePrintsNoneOfIt(t *testing.T) {
 	repo := ghrepo.MustParse("acme/widgets")
 	unparsed := "http://" + user + ":" + password + "@127.0.0.1:1/cache%zz?sig=" + token
 	reparsed := "http://" + user + ":" + password + "@[::%25\xfd]/cache?sig=" + token
-	request := func(cacheURL string) FetchRequest {
-		return FetchRequest{Repo: repo, CacheURL: cacheURL, CacheToken: "cache-token", Clock: clock.Real()}
+	request := func(cacheURL string) CacheStream {
+		return CacheStream{Repo: repo, URL: cacheURL, Token: "cache-token", Clock: clock.Real()}
 	}
 	holds := func(t *testing.T, text string) {
 		t.Helper()
@@ -98,7 +98,7 @@ func TestACacheURLThatDoesNotParsePrintsNoneOfIt(t *testing.T) {
 		said := unpackedError(t, request(unparsed))
 		oauth2calltest.RequireNoPiece(t, "workspace.cache-url/unparsed-tar", said, token)
 		if want := "ask the repository cache: its URL does not parse (the URL is not printed)"; said != want {
-			t.Errorf("unpackCache's error is %q, want %q", said, want)
+			t.Errorf("unpackCacheInto's error is %q, want %q", said, want)
 		}
 	})
 	t.Run("unparsed-health", func(t *testing.T) {
@@ -126,7 +126,7 @@ func TestACacheURLThatDoesNotParsePrintsNoneOfIt(t *testing.T) {
 		said := unpackedError(t, request(reparsed))
 		oauth2calltest.RequireNoPiece(t, "workspace.cache-url/reparsed", said, token)
 		if want := "ask the repository cache: the URL of its /tar does not parse (the URL is not printed)"; said != want {
-			t.Errorf("unpackCache's error is %q, want %q", said, want)
+			t.Errorf("unpackCacheInto's error is %q, want %q", said, want)
 		}
 	})
 }

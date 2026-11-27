@@ -188,5 +188,6 @@ func (m *Manager) exchange(ctx context.Context, jwt, installation string, permis
 	if err := payload.narrowedTo(permissions); err != nil {
 		return Lease{}, err
 	}
-	return Lease{Token: payload.Token, ExpiresAt: expiresAt, Minted: m.now()}, nil
+	m.register(payload.Token, installation)
+	return Lease{Token: payload.Token, ExpiresAt: expiresAt, Minted: m.now(), Installation: installation}, nil
 }

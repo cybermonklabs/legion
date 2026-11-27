@@ -1,5 +1,6 @@
-// Package githubrest is the daemon's client for one repository's REST API with an installation
-// token. appauth mints those tokens with its own client.
+// Package githubrest is the daemon's client for GitHub's REST API with an installation token: one
+// repository's, and the installation's own calls under the API root. appauth mints those tokens
+// with its own client.
 package githubrest
 
 import (
@@ -15,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/oauth2call"
@@ -23,8 +25,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/urljoin"
 )
 
-// RepositoryAPI is repository's REST base under endpoint, GitHub's API root; empty is
-// https://api.github.com. The repository's path is joined onto endpoint's own path
+// RepositoryAPI is repository's REST base under endpoint, GitHub's API root as APIRoot reads it;
+// empty is https://api.github.com. The repository's path is joined onto endpoint's own path
 // (urljoin.Join), so an endpoint configured with a path and a query keeps both.
 //
 // It is "" where endpoint cannot be read as an absolute URL with a host, the one way the join
@@ -32,18 +34,70 @@ import (
 // in fixed words. The endpoint is never printed: url.Parse's error quotes the URL whole, user
 // information and query and all.
 func RepositoryAPI(endpoint string, repository ghrepo.Repository) string {
-	base, err := urljoin.Join(cmp.Or(endpoint, "https://api.github.com"), "/repos/"+repository.String())
+	base, err := urljoin.Join(APIRoot(endpoint), "/repos/"+repository.String())
 	if err != nil {
 		return ""
 	}
 	return base.String()
 }
 
-// Client calls GitHub with an installation token. Its API is a repository's REST base
-// (RepositoryAPI), which Get, Post and GetPages take paths under; an empty endpoint is
-// api.github.com. A client whose API is GitHub's GraphQL endpoint (GraphQLEndpoint) sends
-// queries (GraphQL) instead. Its calls follow a redirect only on the origin they were sent to
-// (client).
+// APIRoot is GitHub's REST root endpoint names, its trailing slashes trimmed, the base of a call
+// that names no repository, such as an installation's own repositories or its rate limits: an
+// endpoint that is empty once trimmed is https://api.github.com. The daemon's token manager takes
+// its own base from it too (appauth.New), as RepositoryAPI does, so the two never read one
+// endpoint two ways. It joins nothing: a call's path is joined onto it as onto any REST base
+// (Client.callURL).
+func APIRoot(endpoint string) string {
+	if endpoint = strings.TrimRight(endpoint, "/"); endpoint == "" {
+		return "https://api.github.com"
+	}
+	return endpoint
+}
+
+// transportClients is what SetTransport made of the transport it set: plain, the client on it,
+// which follows redirects Go's own way (HTTPClient), and calls, the same client following a
+// redirect only on the origin a call was sent to, which every Client call is made on (callClient).
+type transportClients struct{ plain, calls *http.Client }
+
+// clients is what SetTransport made of the transport it set, nil for http.DefaultClient's own.
+var clients atomic.Pointer[transportClients]
+
+// SetTransport makes every call of every Client go through rt, nil for http.DefaultClient's own,
+// which is what a process that never calls it gets. The daemon's boot sets it to its GitHub rate
+// counter's transport (githubrate.Counter.Transport), so each call a workflow read makes with an
+// installation token counts on that installation's budget. This process-wide transport belongs
+// to the daemon's one workflow; separate workflows cannot count through separate transports in
+// one process. A failed boot resets it, and tests that set it restore it with SetTransport(nil).
+// It is safe to replace while calls run: each call reads the client once, as it starts.
+func SetTransport(rt http.RoundTripper) {
+	if rt == nil {
+		clients.Store(nil)
+		return
+	}
+	plain := &http.Client{Transport: rt}
+	clients.Store(&transportClients{plain: plain, calls: redirects.SameOrigin(plain)})
+}
+
+// HTTPClient is the client on the transport SetTransport set, else http.DefaultClient: the
+// transport a Client call goes through now. It is for a daemon reader of GitHub that builds its
+// own requests, such as the leak check's read of a tarball (leakguard.Source), so its calls count
+// as every Client call does. It follows redirects Go's own way, dropping Authorization on the way
+// to another host, and a reader that needs another redirect policy sets it on a copy, as the leak
+// check does (leakguard's originToken); a Client call follows a redirect only on its own origin
+// (callClient).
+func HTTPClient() *http.Client {
+	if held := clients.Load(); held != nil {
+		return held.plain
+	}
+	return http.DefaultClient
+}
+
+// Client calls GitHub with an installation token. Its API is a REST base, which Get, GetHeaders,
+// Post and GetPages take paths under: a repository's (RepositoryAPI), or GitHub's root (APIRoot)
+// for a call that names no repository. An empty endpoint is api.github.com. A client whose API is
+// GitHub's GraphQL endpoint (GraphQLEndpoint) sends queries (GraphQL) instead. Its calls go
+// through the transport SetTransport set and follow a redirect only on the origin they were sent
+// to (callClient).
 //
 // Each of them also takes shown, the name a failure of the call prints for it (call): a path
 // that holds another party's words - an account GitHub named, a branch GitHub answered - holds
@@ -82,6 +136,23 @@ func (c Client) Get(ctx context.Context, path, shown string, into any) error {
 	}
 	_, _, err = c.call(ctx, http.MethodGet, target.String(), shown, nil, into)
 	return err
+}
+
+// GetHeaders is Get, also returning the headers of GitHub's answer, whatever its status: what a
+// caller reads the rate limit an answer names from, as the daemon's rate reading reads the core
+// counter (githubrate.CoreBucket) from an installation's repository listing, whose answer it reads
+// into into, and from its workflows read, which an answer other than 2xx names as well. A call
+// that got no answer returns no headers. The headers are as the answering party sent them, which
+// whatever answers in GitHub's place can make an echo of the call's token: a caller decides on
+// them as they came and prints a value only as the number it parses as, as LimitHeaders keeps
+// them, never as it came.
+func (c Client) GetHeaders(ctx context.Context, path, shown string, into any) (http.Header, error) {
+	target, err := c.callURL(path, shown)
+	if err != nil {
+		return nil, err
+	}
+	_, headers, err := c.call(ctx, http.MethodGet, target.String(), shown, nil, into)
+	return headers, err
 }
 
 // Post sends body, as JSON, to path under the client's API, and reads GitHub's answer into into
@@ -218,13 +289,22 @@ func GetPages[T any](ctx context.Context, c Client, path, shown string) ([]T, er
 	return all, nil
 }
 
-// client is the one Client's calls are made on: http.DefaultClient's, following a redirect only to
-// the scheme and host the call was sent to (redirects.SameOrigin). GitHub answers a renamed
-// repository's path with a 301 to /repositories/<id> on its own host, which a read follows to the
-// repository's name now; a Location naming any other host is the answering party's own words,
-// which a followed redirect would make the next URL asked with the installation token, so it is
-// the answer, refused by its status (an *Answer).
-var client = redirects.SameOrigin(http.DefaultClient)
+// callClient is the client a Client call is made on now: the one on the transport SetTransport
+// set, else http.DefaultClient's (defaultCalls), following a redirect only to the scheme and host
+// the call was sent to (redirects.SameOrigin). GitHub answers a renamed repository's path with a
+// 301 to /repositories/<id> on its own host, which a read follows to the repository's name now; a
+// Location naming any other host is the answering party's own words, which a followed redirect
+// would make the next URL asked with the installation token, so it is the answer, refused by its
+// status (an *Answer).
+func callClient() *http.Client {
+	if held := clients.Load(); held != nil {
+		return held.calls
+	}
+	return defaultCalls
+}
+
+// defaultCalls is callClient while SetTransport has set no transport.
+var defaultCalls = redirects.SameOrigin(http.DefaultClient)
 
 // restAccept is the media type every REST call asks for.
 const restAccept = "application/vnd.github+json"
@@ -280,7 +360,7 @@ func (c Client) exchange(ctx context.Context, method, target, shown string, body
 			request.Header.Set("If-None-Match", kept.etag)
 		}
 	}
-	response, err := client.Do(request)
+	response, err := callClient().Do(request)
 	if err != nil {
 		return "", nil, oauth2call.Answer{}, oauth2call.Unanswered(err, request, shown)
 	}

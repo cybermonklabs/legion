@@ -1250,8 +1250,9 @@ func TestANoticeIsKeptWhileItsArchitectsSessionIsUnresponsive(t *testing.T) {
 	}))
 	defer server.Close()
 	refused := func() error {
-		return notify.New(server.URL, "").Publish(context.Background(), notify.RoleTopicPrefix+string(architect),
+		_, err := notify.New(server.URL, "").Publish(context.Background(), notify.RoleTopicPrefix+string(architect),
 			noticeSummary(notice.Kind, row.Issue), notice, record.OutboxKey(row.ID))
+		return err
 	}
 
 	kept := runner.noticeAnswered(context.Background(), row, notice, treeSnapshot{}, architect, refused())

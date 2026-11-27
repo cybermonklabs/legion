@@ -752,12 +752,12 @@ const noDirectoryReason = "no directory name"
 // installation is granted none of what the lease asks for (errGrantedNone); and GitHub
 // refuses the permissions the request carried (ErrNarrowingRefused, NarrowingRefused).
 //
-// Nothing else is: GitHub's own trouble — a 5xx, no answer at all, any rate limit, the 403 of its
-// secondary limit among them (TransientError) — and every failure the daemon cannot read as an
-// answer about the installation fail the bundle. That costs a retry and nothing more: a refresh
-// that fails keeps the role's last tokens, which last the hour, and is tried again a minute
-// later, where a directory left out on a blip narrows a role's reach with nothing for anyone to
-// read it by.
+// Nothing else is: GitHub's own trouble — an outage (a 5xx, a 408, a 429), no answer at all, any
+// rate limit, the 403 of its secondary limit among them (TransientError) — and every failure the
+// daemon cannot read as an answer about the installation fail the bundle. That costs a retry and
+// nothing more: a refresh that fails keeps the role's last tokens, which last the hour, and is
+// tried again a minute later, where a directory left out on a blip narrows a role's reach with
+// nothing for anyone to read it by.
 func leaveOutReason(err error) string {
 	var trouble *TransientError
 	switch {

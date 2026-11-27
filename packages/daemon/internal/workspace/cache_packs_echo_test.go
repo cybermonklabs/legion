@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
 // packsEchoBearer is the bearer of the cases whose stand-in at the repository cache's address
@@ -27,12 +28,12 @@ const packsEchoBearer = "cache-" + oauth2calltest.Token + "-5d1e8a"
 const packsEchoSignature = "eyJhbGci" + "SignedAddressQueryValue"
 
 // packsEcho stands in at the repository cache's address and at its bucket's, both on loopback, for
-// a fetch of acme/widgets presenting bearer: /healthz answers ready; /packs answers through packs,
-// or with the bearer the manifest as JSON; /tar answers 503, so the fetch fails after the bucket's
-// attempt and its report says why the bucket was not used; and the bucket answers each download
-// through download, or with the object's content. The manifest lists HEAD and one pack with its
-// index, each with its size, its SHA-256 and an address at the bucket whose query holds
-// packsEchoSignature.
+// a stream of acme/widgets presenting bearer: /healthz answers ready and narrowed; /packs answers
+// through packs, or with the bearer the manifest as JSON; /tar answers 503, so the stream fails
+// after the bucket's attempt and its report says why the bucket was not used; and the bucket
+// answers each download through download, or with the object's content. The manifest lists HEAD
+// and one pack with its index, each with its size, its SHA-256 and an address at the bucket whose
+// query holds packsEchoSignature.
 type packsEcho struct {
 	cache, bucket, bearer string
 	manifest              PackManifest
@@ -67,7 +68,7 @@ func newPacksEcho(t *testing.T) *packsEcho {
 		w.Header().Set(CacheRepositoryHeader, "acme/widgets")
 		switch r.URL.Path {
 		case "/healthz":
-			_, _ = w.Write([]byte(`{"ready":true}`))
+			_, _ = w.Write([]byte(`{"ready":true,"defaultBranchOnly":true}`))
 		case "/packs":
 			if p.packs != nil {
 				p.packs(w, r)
@@ -105,16 +106,16 @@ func (p *packsEcho) echo() string {
 	return "Bearer " + p.bearer + " " + p.manifest.Objects[0].URL
 }
 
-// fetch fills a fresh feed from the stand-in with its bearer, and answers the report, which must
-// say the cache's /tar was the source and why the bucket was not used.
-func (p *packsEcho) fetch(t *testing.T) FetchReport {
+// fetch fills a fresh bare git directory from the stand-in with its bearer (StreamCache), and
+// answers the report, which must say the cache's /tar was the source and why the bucket was not
+// used.
+func (p *packsEcho) fetch(t *testing.T) StreamReport {
 	t.Helper()
-	req := fetchRequest(t)
-	req.CacheURL, req.CacheToken = p.cache, p.bearer
-	report, err := Fetch(context.Background(), newLocalRunner(t), req)
-	t.Logf("the feed's source: %q, because %q; the fetch's failure: %v", report.Source, report.TarReason, err)
+	stream := CacheStream{Repo: ghrepo.MustParse("acme/widgets"), URL: p.cache, Token: p.bearer, Log: func(string) {}, Clock: newTestClock()}
+	report, err := StreamCache(context.Background(), newLocalRunner(t), stream, filepath.Join(t.TempDir(), "widgets.git"))
+	t.Logf("the clone's source: %q, because %q; the stream's failure: %v", report.Source, report.TarReason, err)
 	if report.Source != SourceTar || report.TarReason == "" {
-		t.Fatalf("Fetch reported the source %q for %q, want /tar's with why the bucket was not used", report.Source, report.TarReason)
+		t.Fatalf("StreamCache reported the source %q for %q, want /tar's with why the bucket was not used", report.Source, report.TarReason)
 	}
 	return report
 }
@@ -156,19 +157,19 @@ func asServed(t *testing.T, address, bearer string) string {
 // signed addresses its manifest gives, and whatever answers at those addresses holds the signed
 // query its download carried: either can write them back. The cache's: in /packs' status line
 // (packs-status); in a trailer of its body that does not parse, which net/http's error of the read
-// quotes (packs-read); and in a member of its manifest that the fetch refuses - the bucket
-// (bucket), a ref that is no path inside the feed (ref-path), one listed twice (ref-twice), one
+// quotes (packs-read); and in a member of its manifest that the stream refuses - the bucket
+// (bucket), a ref that is no path inside the clone (ref-path), one listed twice (ref-twice), one
 // that is another's directory (ref-directory), an object of no pack's name (object-name), an
 // object's SHA-256 (object-sha256) - or a ref it takes whose write fails, its name too long for the
 // volume (write-ref). The bucket's: in a download's status line (download-status), its error's
 // code (download-code), a status line that does not parse, which net/http's error of the ask quotes
 // (download-unanswered), and a trailer of its body that does not parse (download-read). The reason
-// the report gives for filling the feed from /tar, which `workspace-init fetch` prints
-// (printSource), holds no run of the bearer or of the signature, and still names what failed. Each
-// case first shows what net/http or the volume gives of the stand-in's words holds one. Captures
-// workspace.packs-echo/<case>.
+// the report gives for filling the clone from /tar, which `workspace-init provision` prints
+// (logCacheSource), holds no run of the bearer or of the signature, and still names what failed.
+// Each case first shows what net/http or the volume gives of the stand-in's words holds one.
+// Captures workspace.packs-echo/<case>.
 func TestABucketAttemptsReasonPrintsNoCredentialTheCacheOrTheBucketEchoes(t *testing.T) {
-	// refEcho is a ref a feed takes that holds the bearer and the signature.
+	// refEcho is a ref a clone takes that holds the bearer and the signature.
 	refEcho := "refs/heads/" + packsEchoBearer + "?X-Goog-Signature=" + packsEchoSignature
 	// longRef is one whose last segment is longer than a file's name may be.
 	longRef := "refs/heads/" + strings.Repeat(packsEchoBearer+"-", 12) + "?X-Goog-Signature=" + packsEchoSignature

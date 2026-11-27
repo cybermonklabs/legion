@@ -223,15 +223,20 @@ where `acceptance:owner` is the architect's own acceptance in `accepting`. It wr
 the plan as the issue's `plan.md` document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver. The
 block's id, `a` there, is the task's id: a lower-case letter, then lower-case letters, digits and
-hyphens (`[a-z][a-z0-9-]*`). Dispatch stores a block of any id, but Legion refuses a plan whose
-task id is outside that grammar, naming the block by its place among the document's typed blocks.
-The architect gives that version to Legion with the `legion` tool's `register_plan` before the
-issue's work starts: for a child, before `release_children` releases it, since a released child can
-start its first step in the same admission pass. Legion holds a plan given for a child it has not
-recorded yet, and the child's first step takes the newest plan its owner gave. Legion runs only
-those steps, in the order the plan names them, then the retro and the merge, so an issue with that
-plan runs no planner and no tester. Legion refuses any other plan with `PLAN_REFUSED` and one
-reason for each cause. An issue whose owner gives it no plan, or a task with no steps, runs the
+hyphens (`[a-z][a-z0-9-]*`). Dispatch stores a block of any id, but Legion refuses a plan whose task
+id is outside that grammar, naming the block by its place among the document's typed blocks. The
+architect gives that version to Legion with the `legion` tool's `register_plan` before the issue's
+work starts: for a child, before `release_children` releases it, since a released child can start
+its first step in the same admission pass. Legion holds a plan given for a child it has not recorded
+yet, and the child's first step takes the newest plan its owner gave. Legion runs only those steps,
+in the order the plan names them, then the retro and the merge, so an issue with that plan runs no
+planner and no tester. Legion refuses any other plan with `PLAN_REFUSED` and its reasons: the first
+reasons of each kind of cause, and one more reason for each kind with more that counts the rest of
+it. Each reason quotes the plan's words and lists its task ids within a bound of bytes, except that
+a word of `steps` outside the grammar is named by its place, not quoted, and a task id outside the
+form Dispatch records a step's task under (lowercase letters, digits and hyphens, starting with a
+letter or a digit, at most 64 bytes) is refused, so the answer has a bound in bytes whatever the
+plan holds. An issue whose owner gives it no plan, or a task with no steps, runs the
 project's default steps, `projects.<KEY>.default_steps` in `legion.yaml`, which are
 `planner implementer tester reviewer acceptance:owner` unless the project sets others; so does an
 issue whose work started before its owner gave it a plan, until the owner stops that task with

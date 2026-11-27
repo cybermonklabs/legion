@@ -11,8 +11,9 @@
 // stored-markdown-censuses-every-stored-version-and-rewrites-the-hits-before-the-merge-INFRA-172.md:
 // a version is read with `GET /api/v1/artifacts/{id}/versions/{n}`, never `/text`, which renders
 // the live tree again; each project's issues come from one unpaged `GET /api/v1/issues?project=`,
-// because offset paging repeats and skips issues while others write; a network failure or a 5xx
-// is retried; the corpus lives under $TMPDIR and is never committed.
+// because offset paging repeats and skips issues while others write; a network failure or an
+// outage (`outage`: a 5xx, a 408 or a 429) is retried; the corpus lives under $TMPDIR and is never
+// committed.
 //
 // ## The two readers
 //
@@ -83,6 +84,7 @@ import {
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { parseArgs } from "node:util";
+import { outage } from "../../packages/contracts/src/http-status";
 import { joinUrl } from "../../packages/contracts/src/url-join";
 import type { ActiveDispatchConfig } from "../../packages/envoy-client/src/dispatch-config";
 import { DISPATCH_TOOL_DEADLINE_MS } from "../../packages/envoy-client/src/dispatch-http";
@@ -101,7 +103,7 @@ const GO_PACKAGE = "./internal/dispatch/pmdoc";
 const DEFAULT_RATE = 5;
 /** Requests in flight at once: enough to keep the rate up over a slow answer, no more. */
 const IN_FLIGHT = 8;
-/** A network failure or a 5xx is tried this many times before the unit is recorded as failed. */
+/** A network failure or an outage is tried this many times before the unit is recorded as failed. */
 const ATTEMPTS = 5;
 /** The shortest stored paragraph `--check-no-stored-text` judges, in normalised characters: a
  * shorter one ("Done.", "Approve") says nothing about where a file's words came from. */
@@ -354,8 +356,8 @@ export class Rate {
   }
 }
 
-/** A 5xx or a network failure is the server's weather and is retried; a 4xx is this run's own
- * answer and is recorded as the unit's error. */
+/** An outage (`outage`: a 5xx, a 408 or a 429) or a network failure is the server's weather and is
+ * retried; any other refusal is this run's own answer and is recorded as the unit's error. */
 class HttpError extends Error {
   constructor(
     readonly status: number,
@@ -371,7 +373,8 @@ interface Spend {
   requests: number;
 }
 
-/** One read of Dispatch, as JSON: a 5xx or a failed connection tried again, a 4xx answered. */
+/** One read of Dispatch, as JSON: an outage or a failed connection tried again, any other refusal
+ * answered. */
 export async function get<T>(
   config: DispatchConfig,
   path: string,
@@ -394,7 +397,9 @@ export async function get<T>(
       });
       if (response.ok) return (await response.json()) as T;
       const body = (await response.text()).slice(0, 200);
-      if (response.status < 500) throw new HttpError(response.status, `${response.status} ${body}`);
+      if (!outage(response.status)) {
+        throw new HttpError(response.status, `${response.status} ${body}`);
+      }
       last = `${response.status} ${body}`;
     } catch (error) {
       if (error instanceof HttpError) throw error;
