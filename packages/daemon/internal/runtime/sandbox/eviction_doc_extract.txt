@@ -91,7 +91,7 @@ A restarted daemon does the same where that record reached the daemon's store, w
 The record goes into the store with any write of the role's claim.
 Where no write of the claim reached the store between the end and the restart, the new daemon continues the role uncharged only if it reads the end again as one from outside the pod, and otherwise counts the end as a stop of the role's process as an end of neither reading is (below): one death where the role held a task or a turn, and a task the role held is still sent to it again.
 An end the daemon first judged a death of the role's own process stays that death, whatever a later read of the pod says, and stays it after a restart where a write of the claim carried that judgement into the daemon's store.
-A read that finds the role's process running ends that judgement without telling the role it died.
+A read that finds the role's process running ends that judgement without telling the role it died, and gives back the death and the launch failure that judgement charged, so false deaths never use up the role's budgets.
 If the relaunch of that death still waits for its turn, in the wake pacing or behind a project pause, the daemon drops the relaunch and keeps the running process.
 The next prompt still tells an earlier untold end in its own words, including the memory guidance if the task already carried an out-of-memory mark from that end.
 If the false death took the task back, the daemon sends it again with a sentence saying that it read the process wrongly as ended, after the earlier end's words when both apply.

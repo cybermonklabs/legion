@@ -62,14 +62,16 @@ const processReadBound = 5 * time.Second
 //
 // Two claims are asked nothing, and each answers why with its own answer. A claim that records no
 // process has none to read (ProcessNotRecorded), and a claim whose paced launch waits over the
-// process it records has one whose fate is already decided: its turn lets that process go and
-// starts the next (ProcessReplacedByLaunch, wakeNow, launchNow). probe leaves both alone for
-// those same reasons. The reason is told apart here, under the lock, because this is the one
-// moment it is true of the claim the caller asked about: a view read after the lock is released
-// can find the parked launch already run and the claim launching. The route reads the parked
-// launch before it calls this (api's relaunchWaits), and a park raised between its view and this
-// lock is what ProcessReplacedByLaunch answers; a claim recording no process is no claim anyone
-// asks this about.
+// process it records has one a launch is to replace: its turn lets that process go and starts the
+// next (ProcessReplacedByLaunch, wakeNow, launchNow), unless the runtime's sweep first finds the
+// process running over a death whose relaunch that launch is, which drops it (judge,
+// dropOutlivedRelaunch). That drop is the sweep's report's to make, not a caller's read. probe
+// leaves both claims alone for those same reasons. The reason is told apart here, under the lock,
+// because this is the one moment it is true of the claim the caller asked about: a view read
+// after the lock is released can find the parked launch already run and the claim launching. The
+// route reads the parked launch before it calls this (api's relaunchWaits), and a park raised
+// between its view and this lock is what ProcessReplacedByLaunch answers; a claim recording no
+// process is no claim anyone asks this about.
 //
 // What the read finds is recorded exactly as the sweep's own report of the same process is
 // recorded (reportedProcess). A running verdict that clears the death charge (Claim.DeathCharged),

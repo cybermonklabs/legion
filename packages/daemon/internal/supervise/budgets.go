@@ -13,7 +13,8 @@ import (
 //   - LaunchFailures: launches that never became a working agent — a spawn or resume the runtime
 //     refused, a process that died, one whose agent never registered or registered and never said
 //     it was ready. Reset only by the agent's ready: a registration alone proves nothing about the
-//     next launch.
+//     next launch. A death a verdict then finds running gives its one back (reportedProcess): the
+//     process survived, and the relaunch its charge was for never launched.
 //   - Deaths: processes that died after their agent was ready with work outstanding — a pending
 //     task, or a turn the agent had begun and not ended, whether or not a task was behind it
 //     (chargeDeath). The relaunch reaches ready again whatever killed the last process, so ready
@@ -22,7 +23,9 @@ import (
 //     (retirePending) or a turn that ends normally (turnEnded), either of which says the agent got
 //     through what it was doing. A death with no turn open and nothing pending is not counted: a
 //     parked agent — idle, holding no task — that the environment kills now and then is relaunched
-//     however often it happens. Bounded by the launch failure limit.
+//     however often it happens. A death a verdict then finds running gives back the Death it
+//     counted, and only one it counted (EndedWork.DeathCounted, reportedProcess): the process
+//     survived. Bounded by the launch failure limit.
 //   - PromptFailures: prompts the agent refused, acknowledged prompts that started no turn, and
 //     prompts refused after their acknowledgement. A prompt lost to the transport, not sent for
 //     want of a connection, or refused because the agent is in a turn of its own (Oh My Pi's busy
@@ -222,6 +225,10 @@ func (m *Machine) deathLaunchFailureCharged(cause FailureCause) bool {
 // of those, and every later death of the relaunched agent — idle, with nothing pending — would be
 // charged against it, failing a claim that is doing nothing wrong. Each death after this one is
 // judged on the turn it finds, as the first was.
+//
+// The count is marked on the claim's record, whatever record it holds (EndedWork.DeathCounted),
+// and written with the decision (died), so a verdict that finds the process running gives back
+// this Death and no other, on this daemon and after a restart (reportedProcess).
 func (m *Machine) chargeDeath() bool {
 	if slices.Contains(unready, m.claim.State) {
 		return false
@@ -232,6 +239,7 @@ func (m *Machine) chargeDeath() bool {
 		return false
 	}
 	m.claim.Budgets.Deaths++
+	m.claim.EndedWork.DeathCounted = true
 	m.claim.LastTurnEnd = m.deps.Clock.Now()
 	m.log.Warn("supervise: the agent died with work outstanding", "deaths", m.claim.Budgets.Deaths,
 		"limit", m.deps.Limits.LaunchFailures, "pending", pendingID(m.claim.Pending), "turnOpen", open)

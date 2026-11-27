@@ -190,10 +190,20 @@ type wake struct {
 	pluginMark *pluginIntent
 	// pause is the project pause whose gate holds this launch (pauseGate), 0 for a wake the
 	// pacing holds. A held launch has no moment to run: it waits on the machine with no timer, is
-	// published as no waiting wake (publish), and leaves only by the claim's stop for the pause
-	// (pauseStopDue) or by its let-out once that pause has ended (letOutHeldLaunch). Its let-out
-	// takes a place in the pacing for it unless it paid.
+	// published as no waiting wake (publish), and leaves by the claim's stop for the pause
+	// (pauseStopDue), by its let-out once that pause has ended (letOutHeldLaunch, or an
+	// operator's retry that lets it out unpaced, runDroppedLaunchForRetry), or, where it is the
+	// relaunch of a death a report has since found running, by that report's drop of it
+	// (dropOutlivedRelaunch). Its let-out takes a place in the pacing for it unless it paid.
 	pause int64
+	// deathRelaunch is whether this wake is the relaunch of the death the claim holds decided, as
+	// relaunchDeath raised it (died, relaunchRecordedDeath), and no other launch: a stale-plugin
+	// refresh (refreshPlugin), a stale registration's relaunch (staleRegistration) or any launch
+	// raised over the death before its own relaunch is false. It is the one wake a report that
+	// finds the process running drops with the death it ends (judge, dropOutlivedRelaunch); every
+	// other launch still owes the live process what it was raised for, and keeps its turn. It is
+	// memory only, as the wake is: the boot's replay raises the death's relaunch again, marked.
+	deathRelaunch bool
 	// paid is whether this launch's let-out, once a pause's gate holds it, runs it with no place
 	// of its own (letOutHeldLaunch): the launch has had its turn from the pacing already. The
 	// pacing let its place out, which a pause then met at its turn (reserveWake, wakeNow), an
@@ -725,6 +735,10 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // dispatch://INFRA-1117/comment/80daf46d-7ffd-4020-b51f-63fedd02182e). The report ended the
 // death (reportedProcess), and the relaunch was raised for that death alone, so the daemon
 // replaces no live process and no let-go records an end of the death's words (letGo, recordEnd).
+// judge drops only the wake that raise marked as the death's own (wake.deathRelaunch,
+// relaunchDeath); any other launch waiting over the process keeps its turn. The same report has
+// already given back the launch failure that relaunch charged and cleared the cause it left
+// pending (reportedProcess), so the wake goes with nothing of its own left on the claim.
 // The wake goes off the machine and gives up what held it: its place in the pacing
 // (placeTimer), the turn it would have taken going to the wake behind it, or the gate's own stop
 // of the claim for the pause (TimerPause, pauseStopDue), which the gate posted because the launch
@@ -734,8 +748,8 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // turn (watchAgain), since the park took its boot interval, its registration deadline and its
 // turn bound (waitOnMachine). What a wake spent with no launch leaves goes as it goes at that
 // turn: the end of the decision tells the daemon that a paced wait ended and gives back a credit
-// of the refresh gate (tellWakeQueue, endRefreshLane). It writes nothing: the park wrote nothing
-// of a claim that still records its process.
+// of the refresh gate (tellWakeQueue, endRefreshLane). It writes nothing itself: the park wrote
+// nothing of a claim that still records its process, and the report's write carries the clear.
 func (m *Machine) dropOutlivedRelaunch() {
 	waiting := m.wake
 	// The estimate is read before the disarm gives the place up (placeTimer): a place that left

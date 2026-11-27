@@ -60,12 +60,25 @@ func TestARelaunchRecordsItsEndedWorkOnTheClaimRow(t *testing.T) {
 		if !null {
 			t.Error("a claim that records no ended work wrote a record, want null")
 		}
+
+		// A record with no cause that marks the count of the claim's decided death is written,
+		// so a restart reads the mark back (supervise's EndedWork.DeathCounted).
+		want.DeathCharged, want.EndedWork = true, supervise.EndedWork{DeathCounted: true}
+		if err := store.PutClaim(ctx, want); err != nil {
+			t.Fatalf("put the claim with the mark of its count: %v", err)
+		}
+		got := onlyClaim(t, store)
+		sameClaim(t, got, want)
+		if !got.EndedWork.DeathCounted || got.EndedWork.Cause != "" || got.EndedWork.Tells() {
+			t.Errorf("the claim read back records %+v, want the mark of its count on a record with no cause, which tells nothing", got.EndedWork)
+		}
 	})
 
 	// Each judgement of a launch's end types its record (supervise.EndedWork's FromOutside, Died,
-	// Displaced and Outlived, with SentAgain, the task a running read sends again, TookBack, the
-	// id the take-back of a death whose record joined an earlier launch's gave the task, and
-	// Earlier, that earlier launch's record, still untold, which a running read puts back), and
+	// Displaced and Outlived, with DeathCounted, the mark that the decision of a death counted a
+	// Death, SentAgain, the task a running read sends again, TookBack, the id the take-back of a
+	// death whose record joined an earlier launch's gave the task, and Earlier, that earlier
+	// launch's record, still untold, which a running read puts back), and
 	// the judgement a later report or a restarted daemon routes by is that type: so the cause the
 	// role is told and the type the launch was judged under go into the column with the rest of
 	// the record and come back from it as they went in.
@@ -79,6 +92,8 @@ func TestARelaunchRecordsItsEndedWorkOnTheClaimRow(t *testing.T) {
 			FromOutside: true, Generation: 3, Turn: true, TaskTurn: true, Reported: true}},
 		{"a death died judged", supervise.EndedWork{At: at(7), Cause: memory,
 			Death: runtime.DeathMemoryLimit, Died: true, Generation: 3, TaskTurn: true, Reported: true}},
+		{"a death died judged whose decision counted a Death", supervise.EndedWork{At: at(7), Cause: memory,
+			Death: runtime.DeathMemoryLimit, Died: true, DeathCounted: true, Generation: 3, TaskTurn: true, Reported: true}},
 		{"a displacement, told already by no delivery", supervise.EndedWork{At: at(8), Cause: "its pod was replaced",
 			Displaced: true, Generation: 3, Told: true}},
 		{"a death a running read ended, its task sent again", supervise.EndedWork{At: at(9), Cause: `the process died: "not_recorded_process"`,
@@ -102,8 +117,8 @@ func TestARelaunchRecordsItsEndedWorkOnTheClaimRow(t *testing.T) {
 			got := onlyClaim(t, store)
 			sameClaim(t, got, want)
 			if e := got.EndedWork; e.Cause != row.ended.Cause || e.FromOutside != row.ended.FromOutside || e.Died != row.ended.Died ||
-				e.Displaced != row.ended.Displaced || e.Outlived != row.ended.Outlived || e.SentAgain != row.ended.SentAgain ||
-				e.TookBack != row.ended.TookBack || e.Told != row.ended.Told || e.Generation != row.ended.Generation ||
+				e.Displaced != row.ended.Displaced || e.DeathCounted != row.ended.DeathCounted || e.Outlived != row.ended.Outlived ||
+				e.SentAgain != row.ended.SentAgain || e.TookBack != row.ended.TookBack || e.Told != row.ended.Told || e.Generation != row.ended.Generation ||
 				(e.Earlier == nil) != (row.ended.Earlier == nil) ||
 				e.Earlier != nil && (e.Earlier.Cause != row.ended.Earlier.Cause || e.Earlier.Death != row.ended.Earlier.Death ||
 					e.Earlier.Generation != row.ended.Earlier.Generation || !e.Earlier.At.Equal(row.ended.Earlier.At)) {

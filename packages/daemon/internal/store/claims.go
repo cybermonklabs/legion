@@ -485,8 +485,11 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	// Null is a claim no let-go of whose process ended anything worth telling, but for the two
 	// exceptions supervise's EndedWork.FromOutside and EndedWork.Displaced state; one that did
 	// records what it ended, for the next process to be told (supervise's EndedWork, recordEnd).
+	// A record with no cause is written where it marks that the claim's decided death counted a
+	// Death (supervise's EndedWork.DeathCounted), so a restart can give that Death back; it reads
+	// as no record everywhere a record is read.
 	var endedWork []byte
-	if c.EndedWork.Cause != "" {
+	if c.EndedWork.Cause != "" || c.EndedWork.DeathCounted {
 		encoded, err := json.Marshal(c.EndedWork)
 		if err != nil {
 			return fmt.Errorf("put claim %s: encode what its last let-go ended: %w", c.Token, err)

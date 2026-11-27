@@ -99,6 +99,31 @@ type EndedWork struct {
 	// daemon stored without it reads as no displacement, so a later report of that end read
 	// neither way goes to died, as it did on that daemon.
 	Displaced bool `json:"displaced,omitempty"`
+	// DeathCounted is whether the death the claim holds decided (Claim.DeathCharged) counted a
+	// Death (chargeDeath, Budgets.Deaths). chargeDeath sets it in the decision that counts the
+	// death, so the claim write that stores the decision stores it with the count. It goes on
+	// whatever record the claim holds then: the record of this death; an earlier launch's record
+	// still untold, where this death ended nothing worth telling; or, where no record stands, a
+	// record with no Cause. A record with no Cause reads as no record everywhere a record is read
+	// (Tells, Delivery.message, the architect's catch-up in internal/daemon, the store's
+	// read-back), so it tells nothing, and the store keeps it only to keep this field
+	// (putClaim).
+	//
+	// The rule: it is valid only beside DeathCharged. Every path that clears the charge drops it
+	// (letGo, reportedProcess, NormalizeClaim), and nothing replaces the record while the charge
+	// stands: recordEnd returns over it, markDisplaced does too, and judge sends no report over a
+	// death died judged to markFromOutside (judgedDeath). So a record a later death keeps whole
+	// under its own (Earlier) carries none: the let-go of that record's launch dropped the mark
+	// with that launch's charge, and so did the claim write that followed it (letGo, and
+	// NormalizeClaim, which every claim write runs). The record a running verdict puts back in
+	// place of a death's therefore carries none, and the earlier death's Death stays counted. A
+	// verdict that finds the process running gives back the one Death this says was counted
+	// (reportedProcess): the process survived. A death that counted none, of a claim with no work
+	// outstanding, is given none back. It is stored in the claim's JSON with the rest of the
+	// record. An earlier daemon reading the row passes over the key and writes the record back
+	// without it, so a rollback loses the give-back alone: the Death stays counted, as it did on
+	// that daemon.
+	DeathCounted bool `json:"deathCounted,omitempty"`
 	// Outlived is whether a verdict that found the process running ended the death judgement this
 	// record carried (reportedProcess clears Died and sets this): the process ran on, so the end
 	// this record is of never came, and the verdict marks it told by no delivery, so no prompt,

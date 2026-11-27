@@ -436,12 +436,13 @@ func (m *Machine) wakeLetOut(at time.Time) {
 // A wait begins at the wake gate's park and at the pause's let-out's (reserveWake,
 // letOutHeldLaunch). It ends with no let-out where a request the pacing lets through launched the
 // claim in the waiting wake's place or stopped it (dropWakeFor, reparkWake), where the project
-// pause's gate took the launch (pauseGate), and where the process the wake waited over was let go
-// and nothing took its place (letGo). The resume's stuck clock stops for the wait and starts at
-// its end, so a wait whose end the daemon was never told would leave that clock stopped, and a
-// role no wake brought back would never be reported. A wake that is dropped and taken up again in
-// one decision, or that moves to another place (reparkWake, takeEarlierPlace), waits on, and the
-// daemon is told nothing.
+// pause's gate took the launch (pauseGate), where the process the wake waited over was let go
+// and nothing took its place (letGo), and where a report that found that process running dropped
+// the death's relaunch the wake was, keeping the process (dropOutlivedRelaunch). The resume's
+// stuck clock stops for the wait and starts at its end, so a wait whose end the daemon was never
+// told would leave that clock stopped, and a role no wake brought back would never be reported.
+// A wake that is dropped and taken up again in one decision, or that moves to another place
+// (reparkWake, takeEarlierPlace), waits on, and the daemon is told nothing.
 func (m *Machine) tellWakeQueue() {
 	queued := m.pacedWake() != nil
 	switch {

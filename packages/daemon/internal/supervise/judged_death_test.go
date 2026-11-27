@@ -59,16 +59,17 @@ func restartBehindAWave(t *testing.T, h *harness) {
 // lives, so the record's judgement of that death (EndedWork.Died) goes with the charge
 // (Claim.DeathCharged), in the claim and in the store, the one write carrying both
 // (reportedProcess; ReadProcess, judge). A later end of the process read as from outside the pod
-// is then judged afresh: continued charged nothing beyond what the death charged, its record of
-// the turn it cut off made afresh as one from outside the pod under that end's cause (recordEnd,
-// EndedWork.Outlived), its relaunch in the second queue, the next process told that its pod was
-// ended from outside it. That holds after a restart between the read and the end, as the read's
-// write carried the clear; for the sweep's report as for a read; and for a death died judged over
-// a take-back the store refused as for one it decided. Left standing, the judgement sends that end
-// to died (judgedDeath), which charges it as a second death of a process that ran on. A death
-// died judges after the read is a death of its own, recorded afresh, so an end read as from
-// outside the pod after it goes to died as that death's later report, and is charged as that one
-// death.
+// is then judged afresh: continued charged nothing beyond what the claim carries after the read,
+// which gave back the launch failure a decided death's relaunch charged (reportedProcess), its
+// record of the turn it cut off made afresh as one from outside the pod under that end's cause
+// (recordEnd, EndedWork.Outlived), its relaunch in the second queue, the next process told that
+// its pod was ended from outside it. That holds after a restart between the read and the end, as
+// the read's write carried the clear; for the sweep's report as for a read; and for a death died
+// judged over a take-back the store refused as for one it decided. Left standing, the judgement
+// sends that end to died (judgedDeath), which charges it as a second death of a process that ran
+// on. A death died judges after the read is a death of its own, recorded afresh, so an end read
+// as from outside the pod after it goes to died as that death's later report, and is charged as
+// that one death.
 //
 // The negative control is reportedProcess leaving the record's judgement standing (Died): every
 // row fails, the claim and the store still holding the death after the read. How a later end is
@@ -108,8 +109,8 @@ func TestAReadThatFindsTheProcessRunningEndsItsDeathSoALaterEndFromOutsideIsJudg
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			h, ended := row.stand(t)
-			charged := h.budgets()
 			row.read(t, h)
+			charged := h.budgets()
 			if c, stored := h.claim(), h.store.load(h.token); c.DeathCharged || c.judgedDeath() || stored.DeathCharged || stored.judgedDeath() {
 				t.Fatalf("after the running verdict the claim reads deathCharged=%v over %+v, and the store deathCharged=%v over %+v; want the death over in both",
 					c.DeathCharged, c.EndedWork, stored.DeathCharged, stored.EndedWork)
@@ -701,7 +702,9 @@ func TestARunningReadTellsNothingOfTheDeathItEnded(t *testing.T) {
 // (EndedWork.TookBack). The read restores the task's earlier interruption and memory marks, so
 // that prompt reads the same as in the first row, with the sent-again sentence after the memory
 // guidance. In both, the turn that confirms that prompt tells the record, and the next task goes
-// as its text alone.
+// as its text alone. G-1's death counts a Death and so does G's (chargeDeath): the read gives back
+// G's alone, and the record it puts back carries no mark of a count (EndedWork.DeathCounted), so
+// the claim still counts G-1's Death and no later verdict can give that one back.
 //
 // Marking the joined record told whole fails every row: the prompt no longer carries G-1's
 // record. Reading a joined record's take-back by its turn and the task's marks fails the
@@ -710,6 +713,8 @@ func TestARunningReadTellsNothingOfTheDeathItEnded(t *testing.T) {
 // its task-specific interruption and memory guidance. Restoring the memory mark from the death
 // kind instead of the task fails the rows with no recorded memory limit. judge leaving the
 // waiting relaunch as it stood fails every row whose relaunch waits: the claim still holds it.
+// The mark of G-1's count outliving the charge it was of, letGo and NormalizeClaim both leaving
+// it, fails every row: G's death keeps G-1's record whole with the mark.
 func TestAFalseDeathErasesNoEarlierEndStillUntold(t *testing.T) {
 	const next = "the next task"
 	const oomDetail = "the pod's roles container was OOMKilled"
@@ -766,9 +771,13 @@ func TestAFalseDeathErasesNoEarlierEndStillUntold(t *testing.T) {
 				h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(),
 					Detail: oomDetail, OutOfMemory: true, Cause: cause}})
 				earlier := h.claim().EndedWork
-				if !earlier.Tells() || earlier.Cause != wantCause || earlier.Death != cause.Kind {
-					t.Fatalf("G-1's death left %+v, want cause %q and kind %q", earlier, wantCause, cause.Kind)
+				if !earlier.Tells() || earlier.Cause != wantCause || earlier.Death != cause.Kind || !earlier.DeathCounted || h.budgets().Deaths != 1 {
+					t.Fatalf("G-1's death left %+v and %d deaths, want cause %q and kind %q, its Death counted", earlier, h.budgets().Deaths, wantCause, cause.Kind)
 				}
+				// The mark of G-1's count is its decision's, which the let-go of G-1 ends: the
+				// record G's death keeps whole and the read puts back carries none, and G-1's
+				// Death stays counted (EndedWork.DeathCounted).
+				earlier.DeathCounted = false
 				h.advanceToTurn(h.m)
 				sent := len(h.prompts())
 				h.relaunched()
@@ -788,9 +797,10 @@ func TestAFalseDeathErasesNoEarlierEndStillUntold(t *testing.T) {
 				for whose, c := range map[string]Claim{"the claim": handed, "the store": h.store.load(h.token)} {
 					if e := c.EndedWork; !e.Died || e.Generation != c.Generation || !e.Turn || !e.Tells() || e.Earlier == nil ||
 						!reflect.DeepEqual(*e.Earlier, earlier) || (e.TookBack == c.Pending.ID) != row.tookBack ||
-						e.TookBackEarlierTask != row.tookBack || e.TookBackEarlierOutOfMemory != row.tookBack {
-						t.Fatalf("%s holds the record %+v over the task %+v after the false death, want it joined over G-1's, which it keeps whole, naming the task where it took it back",
-							whose, e, *c.Pending)
+						e.TookBackEarlierTask != row.tookBack || e.TookBackEarlierOutOfMemory != row.tookBack ||
+						!e.DeathCounted || c.Budgets.Deaths != 2 {
+						t.Fatalf("%s holds the record %+v over the task %+v and %d deaths after the false death, want it joined over G-1's, which it keeps whole with no count, naming the task where it took it back, and G's Death counted beside G-1's",
+							whose, e, *c.Pending, c.Budgets.Deaths)
 					}
 				}
 				handed.EndedWork.Earlier.Cause = "a copy's"
@@ -816,6 +826,14 @@ func TestAFalseDeathErasesNoEarlierEndStillUntold(t *testing.T) {
 					}
 				} else {
 					readRunning(t, h)
+				}
+				// The turn's end below ends the count with the work it was charged against
+				// (turnEnded), so the read's give-back is read here.
+				for whose, c := range map[string]Claim{"the claim": h.claim(), "the store": h.store.load(h.token)} {
+					if c.Budgets.Deaths != 1 || c.EndedWork.DeathCounted {
+						t.Fatalf("%s counts %d deaths over the record %+v after the read, want G-1's alone, G's given back, and no mark of a count",
+							whose, c.Budgets.Deaths, c.EndedWork)
+					}
 				}
 				sent = len(h.prompts())
 				h.must(StreamTurnEnd{Claim: h.token})

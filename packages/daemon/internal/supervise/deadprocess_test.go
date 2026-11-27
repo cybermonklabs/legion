@@ -103,18 +103,18 @@ func TestReadProcessAnswersEachVerdictAndRecordsProcessGone(t *testing.T) {
 	}
 }
 
-// A read that finds the process running writes the death charge it clears, so a daemon restart
-// right after it restores a claim with nothing charged and the process's next real death is
-// counted toward the deaths limit (Claim.DeathCharged, chargeDeath). Held in memory alone, the
-// clear would be lost at the restart and the sweep's next report of the live process would find
-// nothing to clear; the restored claim would read that later death as one already charged, and
-// it would go uncounted.
+// A read that finds the process running writes the death charge it clears, with the Death that
+// charge counted given back (EndedWork.DeathCounted), so a daemon restart right after it restores
+// a claim with nothing charged and the process's next real death is counted toward the deaths
+// limit (Claim.DeathCharged, chargeDeath). Held in memory alone, the clear would be lost at the
+// restart and the sweep's next report of the live process would find nothing to clear; the
+// restored claim would read that later death as one already charged, and it would go uncounted.
 //
 // The negative control is the read's write taken out (ReadProcess's persist): the restored claim
 // is charged again, and the death after the restart leaves the count where it stood.
 func TestAReadThatFindsTheProcessRunningWritesTheClearSoTheNextDeathAfterARestartIsCounted(t *testing.T) {
 	h, _ := workingOverTheProcessItsRefusedRelaunchKept(t)
-	deaths := h.claim().Budgets.Deaths
+	counted := h.claim().Budgets.Deaths
 	if !h.store.load(h.token).DeathCharged {
 		t.Fatal("the stored claim reports no death charged before the read, want the charge its death wrote")
 	}
@@ -122,14 +122,16 @@ func TestAReadThatFindsTheProcessRunningWritesTheClearSoTheNextDeathAfterARestar
 	if got := h.m.ReadProcess(h.ctx); got != ProcessRuns {
 		t.Fatalf("the read answered %q, want %q", got, ProcessRuns)
 	}
-	if h.store.load(h.token).DeathCharged {
-		t.Fatal("the stored claim is still charged after the read found the process running, want the clear written")
+	if stored := h.store.load(h.token); stored.DeathCharged || stored.Budgets.Deaths != counted-1 {
+		t.Fatalf("the stored claim reads deathCharged=%v and %d deaths after the read found the process running, want the clear written with the death's Death given back, %d",
+			stored.DeathCharged, stored.Budgets.Deaths, counted-1)
 	}
 
 	h.restart()
 	if h.claim().DeathCharged {
 		t.Fatal("the restored claim reports a death charged, want the clear the read wrote")
 	}
+	deaths := h.claim().Budgets.Deaths
 	h.observe(runtime.Gone)
 
 	if got := h.claim().Budgets.Deaths; got != deaths+1 {
