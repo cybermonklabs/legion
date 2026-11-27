@@ -5357,7 +5357,7 @@ The driver writes the fallback receipt only when it wrote no receipt for the run
 A run that is not `HARNESS` writes `<outcome id>/effects.json` too, whose `diverged` entries name each difference in call order: the daemon answer's place among `answers` (`seq`), its `route`, the original call's tool call id (`call`) and the `outcome.json` action of the stand-in's answer (`outcomeSeq`), and the stand-in's and the daemon's status and refusal code.
 Neither file is ever written over, and the replay writes no answers file.
 
-A lane R run's `outcome.json` holds, beside the actions of the kinds above (`daemon`, `dispatch`, `github`, `push`, `staging`), three kinds that lane D carries and never replays, a `workspace` field, and two fields of a `staging` action.
+A lane R run's `outcome.json` holds, beside the actions of the kinds above (`daemon`, `dispatch`, `github`, `push`, `staging`), five kinds that lane D carries and never replays, a `workspace` field, a `documents` field, and four fields of a `staging` action.
 All are additive: a record without them parses and means what it meant.
 
 - `envoy`: an Envoy message that the role sent with `envoy_publish` or `envoy_send` (by the tool's name, or as a `write` to `xd://envoy_publish` or `xd://envoy_send`), read from the role's transcript.
@@ -5377,18 +5377,44 @@ All are additive: a record without them parses and means what it meant.
 
 - `agent`: one task agent that the role started with its `task` tool, one for each item of the call's `tasks`, with the time of the last entry of that agent's own transcript as `endedAt`, absent where it wrote none.
 
+- `probe`: one read of production's revision through the world's probe (`world.production.probe`).
+  The run's `curl` stand-in (`case-world.ts`) answers a call that names the probe's address with the world's revision, and writes a line of `calls.jsonl` for it first (`as: "curl"`, with the address as `target` and the answer as `revision`), so a probe it cannot record it does not answer;
+  a call that is no probe gets no answer and no line.
+  `target` is the address, and `revision` the revision answered, as the world's commit id.
+
+- `diff-read`: one `jj diff`, `jj show`, `jj interdiff`, `git diff` or `git show` that the role ran, that exited 0, and that read the run's workspace or one of its scratch copies (a checkout under `$TMPDIR`).
+  `case-world.ts` writes a `jj` and a `git` into the run's `bin`, each a shell script in front of the real program it found, and fails the setup, naming the program, where the world has a workspace and no real program is found.
+  The script hands a call that names none of `diff`, `show` and `interdiff` to the real program at once;
+  it hands any other to `diff-recorder.ts`, which runs the real program with its argv, working directory, environment and streams as they are, exits with its status or ends by the signal that ended it, and writes a line of `calls.jsonl` for a call whose subcommand reads a diff (`as: "jj"` or `as: "git"`).
+  `command` is the program and its subcommand, `source` the checkout root the program names for the call (`jj root`, `git rev-parse --show-toplevel`), named as `staging.source` is, and `paths` each path argument the call named, relative to that root, empty where it named none.
+  A read that exited otherwise, or that read any other checkout, is no `diff-read`.
+  Neither is a `git show` whose every object is a file or a tree of a revision (`git show HEAD:README.md`), which prints that file and no diff.
+
 - `staging` also holds `job`, the name given to `stage-job`, and `source`, the checkout root the snapshot was taken from, written with the run's own directories replaced by the names the role was given for them (`$TMPDIR/stage-a`, `$LEGION_WORKSPACE`).
+  It holds `bundle` and `report` too, the input bundle and the report path the role gave `stage-job NAME [CHECKOUT] [--bundle <path>] [--report <path>]`, named the same way, whether or not the path exists, and each absent where the role gave none.
+  `stage-job` runs no Job.
 
 - `workspace` is each jj operation of the run's workspace in the order it ended, from `workspace-ops.jsonl`: when it ended, its description, and the commits `@-` named in its view, as the world's commit ids where the world names them.
 
-`seq` rises across every kind in time order, and a skill read's `beforeFirstAction` is relative to the first action of a T0 kind: an `envoy`, `dispatch-read` or `agent` action before it does not move it.
+- `documents` is each document of the case's issue that a session of the run wrote after the seed: its file name, the last version the run wrote, and that version's text.
+  `seed.ts case-readback` reads the text of each document version an event after the seed wrote, through Dispatch's own version read, into `dispatch-readback.json`'s `versions`, and `outcome.ts` takes those of the role's own sessions.
+  A document the run did not write has no entry, and a run that wrote none has no `documents`.
+  A trace states the body that its recorded edits leave.
+
+The scratch Dispatch gives each comment, ask and gate document of the world an id of its own, and the prompt names each by that id.
+`seed.ts case-world` keeps the map in `dispatch-fixture.json`'s `ids` (`comment/<the world's id>`, `ask/<the world's id>`, `artifact/<a gate's artifactId>`, each to the scratch id), and `outcome.ts` writes each scratch id as the world's wherever the outcome's actions, other actors' writes, last words, report and documents name it.
+
+`seq` rises across every kind in time order, and a skill read's `beforeFirstAction` is relative to the first action of a T0 kind: an `envoy`, `dispatch-read`, `agent`, `probe` or `diff-read` action before it does not move it.
 
 Lane D carries these actions and does not replay them.
 A replay of a run makes none again, a `--controls` trace makes none again and counts none as a control it must execute, and each action of another kind keeps its own `seq` and case time among them;
 `replay.json` and `effects.json` are unchanged, and the actions stay in `outcome.json` or in the trace as recorded.
-`internal/daemon/testdata/teardown-effects/carried-kinds-cases.json` is T0's example with actions of the three kinds among the actions of its four traces, each trace numbered again from 1 (its `.command` says how it was made):
-`--controls --cases` on it must write the same four `replay.json` and `effects.json`, each `ok`, with P05's completion at action 9 and P10's reports at actions 4 and 6.
-`heldout-reader.ts` gives the reader each such action and `workspace` under the same fresh ids and shuffle as the other records, and adds `CARRIED_INSTRUCTION` to its instruction only where an item holds one of them, or a staging action's `job` or `source`.
+Where a trace states `documents`, the control reads each document back from the real Dispatch after the trace's last write, with each id the replay's Dispatch gave a document the world names written as the world's, and the replay is `HARNESS` where the latest version or its text is not the stated one (`teardownEffectsDocumentFaults`).
+The replay makes no document write yet, so a trace that writes one is `HARNESS` before that check.
+`internal/daemon/testdata/teardown-effects/carried-kinds-cases.json` is T0's example with actions of the five kinds among the actions of its four traces, each trace numbered again from 1 (its `.command` says how it was made):
+`--controls --cases` on it must write the same four `replay.json` and `effects.json`, each `ok`, with P05's completion at action 10 of its known-good trace and 8 of its known-bad one, P10's reports at actions 5 and 7, and P10's known-bad comment at action 3.
+`heldout-reader.ts` gives the reader each such action, `workspace` and `documents` under the same fresh ids and shuffle as the other records, and adds `CARRIED_INSTRUCTION` to its instruction only where an item holds one of them, or a staging action's `job`, `source`, `bundle` or `report`.
+A record that stops short of the run's end holds a document only where the document's last write is among the actions it holds.
 
 A case's world also holds typed parts that a read a role makes through a tool answers from:
 the daemon's `claim`, `issue`, `entry`, `architect`, `records`, `admission` and `gate`, Dispatch's `issue.labels`, `issues` and `steps`, GitHub's `settings` and `branchRules`, and a pull request's `mergeStateStatus`, `autoMergeRequest`, `nodeId`, `diff` and `mergeResult`.

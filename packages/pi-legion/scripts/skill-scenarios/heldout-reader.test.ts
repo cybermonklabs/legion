@@ -2235,9 +2235,10 @@ test("--capture makes one call on the case file's traces and writes the raw answ
   ]);
 });
 
-// The carried kinds: the example with an Envoy message, a Dispatch read and a task agent's start
-// among its traces' actions (the daemon testdata's carried-kinds-cases.json, whose .command says how
-// it was made), so a run that holds them reaches the grader as the run did it.
+// The carried kinds: the example with an Envoy message, a Dispatch read, a task agent's start, a
+// probe of production and a diff read among its traces' actions (the daemon testdata's
+// carried-kinds-cases.json, whose .command says how it was made), so a run that holds them reaches
+// the grader as the run did it.
 const CARRIED_FILE = path.join(
   import.meta.dir,
   "../../../daemon/internal/daemon/testdata/teardown-effects/carried-kinds-cases.json"
@@ -2248,13 +2249,14 @@ if (C05 === undefined || C10 === undefined) throw new Error("the carried file ho
 const kindsOf = (outcome: { actions: readonly { kind: string }[] }) =>
   outcome.actions.map((action) => action.kind);
 
-test("a batch with no carried action, staged Job name or workspace is sent INSTRUCTION alone, and one with any is sent the appendix after it", () => {
+test("a batch with no carried action, staged Job field, workspace or documents is sent INSTRUCTION alone, and one with any is sent the appendix after it", () => {
   const plain = buildBatch(RUBRIC, cases, RUNS, 7);
   expect(JSON.parse(requestOf(plain)).system).toBe(INSTRUCTION);
 
   // Each thing the appendix describes brings it alone: an action of each carried kind, a staging
-  // action's job, its source, and the workspace's operations. A staging action with neither of
-  // the two is the T0 one, and brings nothing.
+  // action's job, its source, its bundle and its report, the workspace's operations, and the
+  // documents the run wrote. A staging action with none of the four is the T0 one, and brings
+  // nothing.
   const staging = { kind: "staging" as const, seq: 6, at: "2030-01-07T15:05:00Z" };
   const staged = { tree: "a".repeat(40), files: ["app.ts"] };
   const withAction = (extra: Partial<OutcomeRecord>): Batch =>
@@ -2270,18 +2272,32 @@ test("a batch with no carried action, staged Job name or workspace is sent INSTR
   const rows: [string, Partial<OutcomeRecord>][] = [
     ["a staged Job's name", { actions: [{ ...staging, ...staged, job: "build" }] }],
     ["a staged Job's source", { actions: [{ ...staging, ...staged, source: "$TMPDIR/stage-a" }] }],
+    ["a staged Job's bundle", { actions: [{ ...staging, ...staged, bundle: "$TMPDIR/b.tar" }] }],
+    ["a staged Job's report", { actions: [{ ...staging, ...staged, report: "$TMPDIR/r.json" }] }],
     ["the workspace's operations", { workspace: [] }],
+    ["the documents the run wrote", { documents: [] }],
     ...carried.cases.flatMap((each) =>
-      (["envoy", "dispatch-read", "agent"] as const).map(
-        (kind): [string, Partial<OutcomeRecord>] => [
-          `${each.id}'s ${kind} action`,
-          {
-            actions: each.traces.good.actions.filter((action) => action.kind === kind).slice(0, 1),
-          },
-        ]
+      (["envoy", "dispatch-read", "agent", "probe", "diff-read"] as const).flatMap(
+        (kind): [string, Partial<OutcomeRecord>][] => {
+          const taken = each.traces.good.actions.filter((action) => action.kind === kind);
+          return taken.length === 0
+            ? []
+            : [[`${each.id}'s ${kind} action`, { actions: taken.slice(0, 1) }]];
+        }
       )
     ),
   ];
+  // Each carried kind is among the rows: P05's diff read and P10's probe with the three others.
+  expect(rows.map(([what]) => what).filter((what) => what.endsWith(" action"))).toEqual([
+    "P05's envoy action",
+    "P05's dispatch-read action",
+    "P05's agent action",
+    "P05's diff-read action",
+    "P10's envoy action",
+    "P10's dispatch-read action",
+    "P10's agent action",
+    "P10's probe action",
+  ]);
   for (const [what, extra] of rows)
     expect([what, system(withAction(extra))]).toEqual([
       what,
@@ -2363,10 +2379,10 @@ test("lane D's receipt names no carried action: a replay with them among its cal
       effects: parseEffects(JSON.stringify(receipts.effects)),
     };
   };
-  // The replay made the completion again, at action 9, and none of the carried actions around it.
+  // The replay made the completion again, at action 10, and none of the carried actions around it.
   const whole = parsedReceipts(completed);
   expect(whole.receipt.calls.map((call) => call.standin.map((ref) => ref.outcomeSeq))).toEqual([
-    [9],
+    [10],
   ]);
   expect(replayOf(completed, whole.receipt, whole.effects, C05).verdict).toBe("ok");
   const given = gradedOf(completed, replayOf(completed, whole.receipt, whole.effects, C05));
@@ -2374,8 +2390,8 @@ test("lane D's receipt names no carried action: a replay with them among its cal
   const { id: _id, ...bare } = completed;
   expect(given?.outcome).toEqual(modelOutcome(bare));
 
-  // The real daemon refused the completion, which the stand-in took: the record stops at action 9.
-  // The task agent started at action 4 ended after it, and the workspace's second operation too.
+  // The real daemon refused the completion, which the stand-in took: the record stops at action 10.
+  // The task agent started at action 5 ended after it, and the workspace's second operation too.
   const later: OutcomeRecord = {
     ...completed,
     id: laneDId(42),
@@ -2387,10 +2403,10 @@ test("lane D's receipt names no carried action: a replay with them among its cal
       { at: "2030-01-07T15:05:00Z", description: "commit two", standingOn: ["c".repeat(40)] },
     ],
   };
-  const refused = new Map([[9, { status: 400, code: "HANDOFF_NO_PULL_REQUEST" }]]);
+  const refused = new Map([[10, { status: 400, code: "HANDOFF_NO_PULL_REQUEST" }]]);
   const stopped = parsedReceipts(later, refused);
   const observed = gradedOf(later, replayOf(later, stopped.receipt, stopped.effects, C05));
-  expect(observed?.observedThrough).toBe(9);
+  expect(observed?.observedThrough).toBe(10);
   expect(kindsOf(observed?.outcome ?? { actions: [] })).toEqual(kindsOf(later));
   const agent = observed?.outcome.actions.find((action) => action.kind === "agent");
   expect(agent).toMatchObject({ name: "ReviewDiff" });
@@ -2406,4 +2422,49 @@ test("lane D's receipt names no carried action: a replay with them among its cal
     endedAt: "2030-01-07T15:03:20Z",
   });
   expect(early?.outcome).not.toHaveProperty("workspace");
+
+  // A document is the text its last write left: one whose last write is among the actions the
+  // record holds is given, and one whose last write came after them, or that no write names, is
+  // not. A whole record gives every document.
+  const docEdit = (seq: number, at: string, name: string) => ({
+    kind: "dispatch" as const,
+    seq,
+    at,
+    command: "doc-edit",
+    target: "ACME-12",
+    fields: { artifact_id: `art-${name}`, name, version: { number: 2 } },
+  });
+  const completion = completed.actions.at(-1);
+  if (completion === undefined) throw new Error("P05's good trace has no completion");
+  const wrote: OutcomeRecord = {
+    ...completed,
+    id: laneDId(43),
+    actions: [
+      ...completed.actions.slice(0, -1),
+      docEdit(10, "2030-01-07T15:04:20Z", "plan.md"),
+      { ...completion, seq: 11 },
+      docEdit(12, "2030-01-07T15:06:00Z", "notes.md"),
+    ],
+    documents: ["plan.md", "notes.md", "spec.md"].map((name) => ({
+      name,
+      version: 2,
+      body: `${name}, as the run left it.\n`,
+    })),
+  };
+  const kept = parsedReceipts(wrote);
+  const all = gradedOf(wrote, replayOf(wrote, kept.receipt, kept.effects, C05));
+  expect(all?.outcome.documents?.map(({ name }) => name)).toEqual([
+    "plan.md",
+    "notes.md",
+    "spec.md",
+  ]);
+  const cut = parsedReceipts(
+    wrote,
+    new Map([[11, { status: 400, code: "HANDOFF_NO_PULL_REQUEST" }]])
+  );
+  const short = gradedOf(wrote, replayOf(wrote, cut.receipt, cut.effects, C05));
+  expect(short?.observedThrough).toBe(11);
+  expect(short?.outcome.documents).toEqual([
+    { name: "plan.md", version: 2, body: "plan.md, as the run left it.\n" },
+  ]);
 });

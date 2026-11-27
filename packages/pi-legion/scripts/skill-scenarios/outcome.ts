@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { recordWorkspace, translateCommits } from "./git-world";
+import { recordWorkspace, rewriteTexts, translateCommits } from "./git-world";
 import { type OutcomeRecord, parseOutcome, T0_ACTION_KINDS } from "./heldout-case";
 import { parseInstant } from "./production-dispatch";
 import {
@@ -35,8 +35,10 @@ const DaemonLine = z.object({
 /** One line of calls.jsonl: gh-standin.ts's record of a gh call, with the request gh makes for it
  * as gh reads its arguments (`request`) and the change it kept to a pull request or a review
  * (`pull`), which it writes only for a call it took; dispatch-recorder.ts's record of a `dispatch`
- * command (its exit, the requests it sent and the CLI's own reading of it); or a line of rig.sh's
- * other stand-ins. */
+ * command (its exit, the requests it sent and the CLI's own reading of it); diff-recorder.ts's
+ * record of a `jj` or `git` diff read (its exit, its `command`, the checkout root it read as
+ * `source` and its `paths`); the `curl` stand-in's record of a probe it answered (the address,
+ * `target`, and the revision it answered); or a line of rig.sh's other stand-ins. */
 const Call = z.object({
   at: z.string(),
   as: z.string(),
@@ -55,6 +57,11 @@ const Call = z.object({
     .nullable()
     .optional(),
   call: z.object({ command: z.string(), flags: Fields, dryRun: z.boolean() }).nullable().optional(),
+  command: z.string().optional(),
+  source: z.string().nullable().optional(),
+  paths: z.array(z.string()).nullable().optional(),
+  target: z.string().optional(),
+  revision: z.string().optional(),
 });
 const StageLine = z.object({
   at: z.string(),
@@ -62,7 +69,13 @@ const StageLine = z.object({
   files: z.array(z.string()),
   job: z.string().optional(),
   source: z.string().optional(),
+  bundle: z.string().optional(),
+  report: z.string().optional(),
 });
+/** dispatch-readback.json (seed.ts case-readback): the issue's event log with the seed's cursor,
+ * the records whose bodies the events do not carry, each of the issue's documents (`documents`,
+ * the issue's artifacts, each with its kind), and the text of each version of a document written
+ * after the seed (`versions`, absent from a readback taken before seed.ts read them). */
 const Readback = z.object({
   seedThrough: z.number(),
   events: z.array(
@@ -79,6 +92,10 @@ const Readback = z.object({
   results: z.object({
     checks: z.array(z.object({ results: z.array(Fields).nullable() })).nullable(),
   }),
+  documents: z.array(z.object({ id: z.string(), name: z.string(), kind: z.string() })).optional(),
+  versions: z
+    .array(z.object({ artifact_id: z.string(), number: z.number(), markdown: z.string() }))
+    .optional(),
 });
 
 function lines(file: string): string[] {
@@ -298,6 +315,80 @@ function dispatchWrites(
   };
 }
 
+/** What an `artifact.created` or an `artifact.version` event of Dispatch records of the version it
+ * wrote (packages/envoy/internal/dispatch: artifactCreatedEventPayload, which holds the new
+ * document whole, and docs.ArtifactVersionEventPayload). */
+const VersionWritten = z.union([
+  z.object({
+    type: z.literal("artifact.version"),
+    payload: z.object({
+      artifact_id: z.string(),
+      name: z.string(),
+      version: z.object({ number: z.number() }),
+    }),
+  }),
+  z.object({
+    type: z.literal("artifact.created"),
+    payload: z.object({
+      artifact: z.object({
+        id: z.string(),
+        name: z.string(),
+        versions: z.array(z.object({ number: z.number() })).optional(),
+      }),
+    }),
+  }),
+]);
+
+/** The version of a document that Dispatch's `event` wrote: the document's id and file name, and
+ * the version's number (a new document's first, where its event names none); undefined for an
+ * event of any other type. seed.ts case-readback reads the text of each such version written after
+ * the seed, and writtenDocuments takes the role's own. */
+export function writtenVersion(
+  event: unknown
+): { id: string; name: string; version: number } | undefined {
+  const payload = VersionWritten.safeParse(event).data?.payload;
+  if (payload === undefined) return undefined;
+  return "artifact" in payload
+    ? {
+        id: payload.artifact.id,
+        name: payload.artifact.name,
+        version: payload.artifact.versions?.[0]?.number ?? 1,
+      }
+    : { id: payload.artifact_id, name: payload.name, version: payload.version.number };
+}
+
+/** Each document of the case's issue whose version the role's own sessions (`own`) wrote after the
+ * seed, in the order of the write of its last such version: its file name, that version and that
+ * version's text, which the readback read through Dispatch's own version route (`versions`). A
+ * file or an image is no document. A readback taken before seed.ts read the versions' text gives
+ * none (undefined); one that lacks the text of a version the role wrote fails the outcome. */
+function writtenDocuments(
+  readback: z.infer<typeof Readback>,
+  own: ReadonlySet<string>
+): { name: string; version: number; body: string }[] | undefined {
+  const { versions } = readback;
+  if (versions === undefined) return undefined;
+  const documents = new Set(
+    (readback.documents ?? []).filter(({ kind }) => kind === "doc").map(({ id }) => id)
+  );
+  const last = new Map<string, { id: string; name: string; version: number }>();
+  for (const event of readback.events) {
+    if (event.seq <= readback.seedThrough || event.actor.kind !== "session") continue;
+    const written = own.has(event.actor.id) ? writtenVersion(event) : undefined;
+    if (written === undefined || !documents.has(written.id)) continue;
+    last.delete(written.id);
+    last.set(written.id, written);
+  }
+  return [...last.values()].map(({ id, name, version }) => {
+    const text = versions.find((each) => each.artifact_id === id && each.number === version);
+    if (text === undefined)
+      throw new Error(
+        `dispatch-readback.json holds no text of version ${version} of ${name} (${id}), which the run wrote`
+      );
+    return { name, version, body: text.markdown };
+  });
+}
+
 const Method = z.enum(["GET", "POST", "PATCH", "PUT", "DELETE"]);
 
 /** A gh call as gh-standin.ts recorded it: the request, as gh reads its arguments (gh-standin's
@@ -357,6 +448,31 @@ function dispatchReadAction(call: z.infer<typeof Call>): Pending[] {
   ];
 }
 
+/** A probe of production that the `curl` stand-in answered (case-world.ts writes a line for each
+ * probe it answers and none for any other call): the address the world's probe names and the
+ * revision it answered, which the outcome writes as the world's commit as it writes every commit. */
+function probeAction(call: z.infer<typeof Call>): Pending[] {
+  if (call.as !== "curl") return [];
+  const { target, revision } = call;
+  if (target === undefined || revision === undefined)
+    throw new Error(`calls.jsonl's curl call at ${call.at} records no probe`);
+  return [{ kind: "probe", at: call.at, target, revision }];
+}
+
+/** A checkout root in the run's workspace or one of its scratch copies, as namedSource names one:
+ * `$LEGION_WORKSPACE` and a checkout in it, or a checkout under `$TMPDIR`. */
+const RUN_CHECKOUT = /^\$(?:LEGION_WORKSPACE(?:\/|$)|TMPDIR\/)/;
+
+/** A diff read as diff-recorder.ts recorded it: a `diff-read` where the program exited 0 and the
+ * checkout root it read is the run's workspace or one of its scratch copies (RUN_CHECKOUT). A read
+ * that exited otherwise, and one of any other checkout, is none. */
+function diffReadAction(call: z.infer<typeof Call>): Pending[] {
+  if ((call.as !== "jj" && call.as !== "git") || call.exit !== 0) return [];
+  const { command, source, paths } = call;
+  if (command === undefined || !source || !RUN_CHECKOUT.test(source) || !paths) return [];
+  return [{ kind: "diff-read", at: call.at, command, source, paths }];
+}
+
 function nanos(at: string): bigint {
   const parsed = parseInstant(at);
   if (parsed === undefined) throw new Error(`not an RFC 3339 timestamp: ${at}`);
@@ -369,10 +485,29 @@ function shifted(at: bigint, offset: bigint): string {
   return new Date(Number(seconds) * 1000).toISOString().replace(/\.000Z$/, `.${fractional}Z`);
 }
 
+/** Each id the run's scratch Dispatch gave a comment, an ask or a document that the world names by
+ * an id of its own, with the world's id: seed.ts case-world's dispatch-fixture.json `ids`
+ * (`<kind>/<the world's id>` to the id Dispatch gave it), turned round. Empty where the run has no
+ * fixture, or its fixture names no id. */
+function worldIds(file: string): Map<string, string> {
+  if (!existsSync(file)) return new Map();
+  const { ids } = z
+    .object({ ids: z.record(z.string(), z.string()).optional() })
+    .parse(JSON.parse(readFileSync(file, "utf8")));
+  return new Map(
+    Object.entries(ids ?? {}).map(([stated, given]) => [
+      given,
+      stated.slice(stated.indexOf("/") + 1),
+    ])
+  );
+}
+
 /** Raw logs use the same host clock. Compare full precision, breaking exact ties by input order,
  * then move actions onto the fixture's timeline. No seeded write is scored, and of the Dispatch
  * writes after the seed only those of the role's own sessions are its actions: the run's session
- * and each subagent it started, by the session id each transcript's header names. */
+ * and each subagent it started, by the session id each transcript's header names. The record
+ * names the world's commits and the world's ids of its comments, asks and documents wherever the
+ * run's own names them (translateCommits, worldIds). */
 export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
   const file = (name: string) => path.join(dir, name);
   const parent = session(dir);
@@ -391,10 +526,9 @@ export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
     throw new Error(
       `${dir}: the session transcript names no session, so the role's own writes are unknown`
     );
-  const dispatch = dispatchWrites(
-    Readback.parse(JSON.parse(readFileSync(file("dispatch-readback.json"), "utf8"))),
-    own
-  );
+  const readback = Readback.parse(JSON.parse(readFileSync(file("dispatch-readback.json"), "utf8")));
+  const dispatch = dispatchWrites(readback, own);
+  const documents = writtenDocuments(readback, own);
   const daemonLog = jsonLines(file("daemon.log"), DaemonLine);
   const callLog = jsonLines(file("calls.jsonl"), Call);
   const actions: Pending[] = [
@@ -403,6 +537,8 @@ export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
     ...dispatch.actions,
     ...callLog.flatMap(githubAction),
     ...callLog.flatMap(dispatchReadAction),
+    ...callLog.flatMap(probeAction),
+    ...callLog.flatMap(diffReadAction),
     ...envoySends(role),
     ...taskAgents(role, started),
     ...lines(file("pushes.log")).map((line): Pending => {
@@ -479,6 +615,16 @@ export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
   const inverse = Object.fromEntries(
     Object.entries(mapping).map(([caseId, actual]) => [actual, caseId])
   );
+  // What the record names as the world names it: each id the scratch Dispatch gave a record the
+  // world names by its own id, and each commit (translateCommits).
+  const ids = worldIds(file("dispatch-fixture.json"));
+  const asTheWorld = <T>(value: T): T =>
+    translateCommits(
+      rewriteTexts(value, (text) =>
+        [...ids].reduce((each, [given, stated]) => each.replaceAll(given, stated), text)
+      ),
+      inverse
+    );
   const timed = actions
     .map((action) => ({ action, ns: nanos(action.at) }))
     .sort((a, b) => (a.ns < b.ns ? -1 : a.ns > b.ns ? 1 : 0));
@@ -522,19 +668,23 @@ export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
   const result = parseOutcome(
     JSON.stringify({
       id: randomUUID(),
-      actions: translateCommits(ordered, inverse),
-      ...(others.length === 0 ? {} : { otherWrites: translateCommits(others, inverse) }),
-      ...(agentReport === undefined ? {} : { agentReport: translateCommits(agentReport, inverse) }),
+      actions: asTheWorld(ordered),
+      ...(others.length === 0 ? {} : { otherWrites: asTheWorld(others) }),
+      ...(agentReport === undefined ? {} : { agentReport: asTheWorld(agentReport) }),
       // A read is before the first scored action of a T0 kind by the host clock both records
       // share: the time of the outcome's first such action, before it moves onto the case's
-      // timeline. An Envoy message, a Dispatch read or a task agent's start moves no read.
+      // timeline. An action of a carried kind (an Envoy message, a Dispatch read, a task agent's
+      // start, a probe of production, a diff read) moves no read.
       skillReads: skillReads(
         role,
         timed.find(({ action }) => (T0_ACTION_KINDS as readonly string[]).includes(action.kind))?.ns
       ),
       dispatchFirstInjected: dispatchFirstInjected(role, onWire),
-      lastText: translateCommits(lastText, inverse),
+      lastText: asTheWorld(lastText),
       ...(workspace === undefined ? {} : { workspace: translateCommits(workspace, inverse) }),
+      ...(documents === undefined || documents.length === 0
+        ? {}
+        : { documents: asTheWorld(documents) }),
     })
   );
   writeFileSync(file("outcome.json.new"), `${JSON.stringify(result, null, 2)}\n`);

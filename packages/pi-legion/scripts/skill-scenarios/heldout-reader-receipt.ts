@@ -13,9 +13,10 @@
  *   order that the real daemon answered otherwise than the stand-in: its actions through that
  *   call, each answer the receipt names a difference of given as the real daemon gave it, its skill
  *   reads before its first action, whether dispatch-first was injected, the workspace operations
- *   that ended by its last action, and its effects, which the replay made through that call alone.
- *   Nothing later: no later action, no last words, no report, and no end of a task agent after
- *   its last action.
+ *   that ended by its last action, each document the run wrote whose last write is among its
+ *   actions, and its effects, which the replay made through that call alone.
+ *   Nothing later: no later action, no last words, no report, no end of a task agent after its
+ *   last action, and no document whose last write came after it.
  *   The item names the seq of its last action (`observedThrough`) and nothing of why it stops. A
  *   line the reader fails there fails the run. (a) The real daemon refused the request (a status
  *   of 400 or more, a 5xx among them): the run fails where the case allows no corrected retry after
@@ -533,6 +534,23 @@ function divergedOf(
   // the last action it holds are later facts, which it leaves out.
   const until = parseInstant(outcome.actions.findLast((each) => each.seq <= through)?.at ?? "");
   const held = (at: string) => until !== undefined && (parseInstant(at) ?? until + 1n) <= until;
+  // A document the run wrote is the text its last write of it left, so it is held only where that
+  // write is among the actions the record holds; one whose last write is later, or that no write
+  // names, is a later fact, and an earlier version's text is in no record.
+  const lastWrite = new Map<string, number>();
+  for (const action of outcome.actions) {
+    if (action.kind !== "dispatch" || !["doc-edit", "artifact"].includes(action.command)) continue;
+    const { name, artifact } = action.fields;
+    const named =
+      name ??
+      (typeof artifact === "object" && artifact !== null && !Array.isArray(artifact)
+        ? artifact.name
+        : undefined);
+    if (typeof named === "string") lastWrite.set(named, action.seq);
+  }
+  const documents = outcome.documents?.filter(
+    ({ name }) => (lastWrite.get(name) ?? Number.POSITIVE_INFINITY) <= through
+  );
   const actions: Observed["outcome"]["actions"] = [];
   for (const action of outcome.actions) {
     if (action.seq > through) break;
@@ -560,6 +578,7 @@ function divergedOf(
         ...(outcome.workspace === undefined
           ? {}
           : { workspace: outcome.workspace.filter((operation) => held(operation.at)) }),
+        ...(documents === undefined || documents.length === 0 ? {} : { documents }),
       },
       effects: observedEffects,
     },
@@ -608,13 +627,14 @@ function scoredAction(action: Action): ItemAction {
 /**
  * The one projection of an outcome that the reader is given, whole or through its first
  * difference's call, of a run and of a control alike: its scored actions, the workspace's
- * operations and what the run read, without `otherWrites` and without each action's `actor` and
- * `change`. Those audit records stay in outcome.json, and a frozen trace holds none of them, so
- * they cannot tell a run from a control. Every other key keeps its place, so an outcome that holds
- * none of them is given byte for byte as it was before outcome.ts kept them. An Envoy message, a
- * Dispatch read and a task agent's start are scored actions like any other: lane D carries each
- * into the receipt as the run or the trace recorded it, and none of them is matched to a replayed
- * call (`agree`, `replayOf`), since the replay makes none.
+ * operations, the documents it wrote and what the run read, without `otherWrites` and without each
+ * action's `actor` and `change`. Those audit records stay in outcome.json, and a frozen trace holds
+ * none of them, so they cannot tell a run from a control. Every other key keeps its place, so an
+ * outcome that holds none of them is given byte for byte as it was before outcome.ts kept them. An
+ * action of a carried kind (an Envoy message, a Dispatch read, a task agent's start, a probe of
+ * production, a diff read) is a scored action like any other: lane D carries each into the receipt
+ * as the run or the trace recorded it, and none of them is matched to a replayed call (`agree`,
+ * `replayOf`), since the replay makes none.
  */
 export function modelOutcome(
   outcome: Omit<OutcomeRecord, "id" | "lastText"> & { readonly lastText?: string }
