@@ -14,6 +14,7 @@ import { issueAddress } from "../issue-address";
 import { useOutlineReads } from "../outline-reads";
 import { filterSignals, type PresetSignal, presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
+import { useWaitingCount } from "../threads/ThreadList";
 import { useIssueKeymap } from "../useIssueKeymap";
 
 /**
@@ -30,8 +31,10 @@ import { useIssueKeymap } from "../useIssueKeymap";
  * nodes. With no filter on a count reads no words, and does not wait on the names.
  *
  * The Threads control's count is read off no tree (dispatch://INFRA-5704/spec#b-r-control): it is
- * the number of the rows of Waiting on me, which the row is given (`threadsCount`). So it is drawn
- * whether or not the tree's reads hold, and never at 0 or while no number is given.
+ * the number of the rows of Waiting on me, which the row reads itself (`useWaitingCount`) over the
+ * read that Dashboard's threads and the header's count send, so the page still sends that read
+ * once. So it is drawn whether or not the tree's reads hold, and never at 0 or while that read
+ * has not answered.
  *
  * The row's rule runs the column's whole width, as the prototype's `#tabs` does, and its
  * controls keep the page's inset. At 760 px and below it stays at the top of the screen as the
@@ -39,8 +42,8 @@ import { useIssueKeymap } from "../useIssueKeymap";
  * and under the navigation's backdrop (`z-20`), so an open navigation dims it as it dims the
  * page, and its height is published (`VIEW_ROW_HEIGHT_PROPERTY`).
  */
-export function ViewRowSlot(props: ViewRowProps): ReactNode {
-  const { issue, route, threadsCount } = props;
+export function ViewRowSlot(props: SlotProps): ReactNode {
+  const { issue, route } = props;
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
   const { namesHeld, readsHeld, root } = useOutlineReads(issue);
@@ -63,11 +66,13 @@ export function ViewRowSlot(props: ViewRowProps): ReactNode {
         : undefined,
     [address.filter, namesHeld, readsHeld, root, viewer]
   );
+  // The Threads control's count, by Threads' own rule over the reader's unread threads (R1).
+  const waiting = useWaitingCount(issue.key, issue.project);
   const signals = useMemo(() => {
-    const threads = threadsSignal(threadsCount);
+    const threads = threadsSignal(waiting);
     if (treeSignals === undefined) return threads;
     return threads === undefined ? treeSignals : { ...treeSignals, ...threads };
-  }, [threadsCount, treeSignals]);
+  }, [treeSignals, waiting]);
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
   const row = useRef<HTMLDivElement | null>(null);
   useViewRowHeight(row);
@@ -91,16 +96,8 @@ export function ViewRowSlot(props: ViewRowProps): ReactNode {
   );
 }
 
-/** The view row's props: the slot's own, and the number the Threads control carries. */
-export interface ViewRowProps extends SlotProps {
-  /** The number of the rows of Waiting on me (dispatch://INFRA-5704/spec#b-r-control, R6), which
-   *  the Threads control carries in the words "N with new replies to you"; undefined while it is
-   *  not read. */
-  readonly threadsCount?: number;
-}
-
 /** The Threads control's signal (R1): its count, then `FILTER_SIGNAL_WORDS.new_replies`. None
- *  where the count is 0 or not given, so the control then draws its name alone. */
+ *  where the count is 0 or its read has not answered, so the control then draws its name alone. */
 function threadsSignal(count: number | undefined): { readonly threads: PresetSignal } | undefined {
   return count === undefined || count === 0
     ? undefined

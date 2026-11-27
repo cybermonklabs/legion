@@ -79,16 +79,14 @@ function waitingRows(
 /**
  * The number of the rows of Waiting on me over the read that Dashboard's threads and the header's
  * count send (`dashboardRepliesQuery`, with no `limit`), so the page sends it once for all three
- * (R1, R6, R15). Selects the count alone so a change of rows with the same count does not
- * re-render the page root. The read waits for the issue's project, which the rule reads.
+ * (R1, R6, R15). The view row reads it for the Threads control (`slots/view-row.tsx`), and selects
+ * the count alone so a change of rows with the same count does not re-render the row.
  */
-export function useWaitingCount(issueKey: string, project: string | undefined): number | undefined {
+export function useWaitingCount(issueKey: string, project: string): number | undefined {
   return useQuery({
     ...dashboardRepliesQuery(issueKey),
     ...EVENT_FRESH,
-    enabled: project !== undefined,
-    select: (replies) =>
-      project === undefined ? undefined : waitingRows(replies, project)?.length,
+    select: (replies) => waitingRows(replies, project)?.length,
   }).data;
 }
 
