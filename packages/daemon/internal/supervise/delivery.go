@@ -295,6 +295,13 @@ type sentences struct{ abandoned, ended bool }
 //     (interruptedTask): the let-go that took it back, whichever path that was, rather than the
 //     last death's words. With an abandoned session still to tell, that turn was the old
 //     session's, and the abandoned session's sentence stands in its place (the first item).
+//   - A task a death the daemon judged of its process took back, sent again to that same process
+//     after a read found it running (EndedWork.SentAgain), says in one sentence that it is sent
+//     again because the daemon read the process wrongly as ended, and nothing of an end, a cause
+//     or a turn cut off (sentAgainTask): the process never ended, and the record of that death is
+//     told already, by no delivery (reportedProcess). It is that task's alone, and only while the
+//     record names the claim's launch: a task of another id never carries it, and the task's
+//     confirmation ends its sends under that id, so the next prompt carries none.
 //
 // Composing a prompt tells nothing (confirmCarrying).
 //
@@ -344,7 +351,7 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	if c.Abandoned.Tells() {
 		// The task's instruction ends the last sentence before the task, so the abandoned
 		// session's carries it only where no record's sentence follows it.
-		prefix, carried.abandoned = abandonedTask(c, !relaunch && !c.EndedWork.Tells()), true
+		prefix, carried.abandoned = abandonedTask(c, !relaunch && !c.EndedWork.Tells() && !c.sentAgain(d)), true
 	}
 	// oldTurn is whether a turn this task was taken back from is the abandoned session's, whose
 	// sentence stands in place of the notes of that turn: an abandoned session still tells, and
@@ -353,6 +360,8 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	switch {
 	case relaunch:
 		// Its text is the record's sentence already.
+	case c.sentAgain(d):
+		prefix += sentAgainTask
 	case c.EndedWork.Tells():
 		prefix, carried.ended = prefix+relaunchSentence(c.EndedWork.inFrontOf(d), true)+"\n\n", true
 	case d.Interrupted && !oldTurn:
@@ -1956,6 +1965,20 @@ func (m *Machine) promptFailed(ctx context.Context, why string, read bool) error
 // cause says so plainly rather than inventing one.
 func interruptedTask(cause string) string {
 	return relaunchSentence(EndedWork{Cause: cause, Turn: true, TaskTurn: true}, true) + "\n\n"
+}
+
+// sentAgainTask begins a task a death the daemon judged of its process took back, sent again to
+// that same process after a read found it running (Claim.sentAgain): one sentence that says why
+// the task comes again and that the process did not end, and nothing of a cause or a turn.
+const sentAgainTask = "This task is sent to you again because the daemon wrongly read your process as ended; " +
+	"your process did not end, so carry on from where your conversation stands.\n\n"
+
+// sentAgain is whether d is the task a death the daemon judged of the claim's process took back,
+// sent again to that process, which a read found running (EndedWork.SentAgain): the record names
+// d's id and the claim's launch. A task of another id, and the task once its confirmation ended
+// its sends, are not.
+func (c Claim) sentAgain(d Delivery) bool {
+	return c.EndedWork.SentAgain != "" && d.ID == c.EndedWork.SentAgain && c.EndedWork.Generation == c.Generation
 }
 
 // abandonedTask begins the first prompt given to the agent that replaced a session the claim

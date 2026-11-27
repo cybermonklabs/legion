@@ -272,19 +272,20 @@ func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Obse
 // One no judgement types takes this end's cause and drops the kind of a death's
 // (EndedWork.Death), and so tells the next process that its pod was ended from outside it: the
 // end that let the process go is this one. That is right of died's record of a death that a
-// verdict finding the process running ended: the process ran on after that judgement. It also
-// takes the cause of a displacement record an earlier daemon stored without its type, which
-// only its sentence tells from that death's, and the record is read by its types alone; such a
-// role, relaunched once across the upgrade, is told that its pod was ended from outside it
-// rather than replaced, and is charged nothing either way.
+// verdict finding the process running ended: the process ran on after that judgement, and the
+// record that verdict marked told is untold again, as this end's (retype). It also takes the
+// cause of a displacement record an earlier daemon stored without its type, which only its
+// sentence tells from that death's, and the record is read by its types alone; such a role,
+// relaunched once across the upgrade, is told that its pod was ended from outside it rather than
+// replaced, and is charged nothing either way.
 func (m *Machine) markFromOutside() {
 	held := &m.claim.EndedWork
 	if held.Cause == "" || held.Generation != m.claim.Generation {
 		m.leaveRecord(EndedWork{Cause: endFromOutside, FromOutside: true})
 		return
 	}
-	if m.unjudgedRecord() != nil {
-		held.Cause, held.Death, held.Outlived = endFromOutside, "", false
+	if held := m.unjudgedRecord(); held != nil {
+		held.retype(m.deps.Clock.Now(), endFromOutside, "")
 		m.carried.ended = false
 	}
 	held.FromOutside = true
@@ -307,7 +308,8 @@ func (m *Machine) markDisplaced() {
 		return
 	}
 	if held := m.unjudgedRecord(); held != nil {
-		held.Cause, held.Death, held.Displaced, held.Outlived = endDisplaced, "", true, false
+		held.retype(m.deps.Clock.Now(), endDisplaced, "")
+		held.Displaced = true
 		m.carried.ended = false
 		return
 	}
@@ -322,7 +324,8 @@ func (m *Machine) markDisplaced() {
 // Over no decision such a record is died's record of a death that a verdict finding the process
 // running ended (reportedProcess), or one an earlier daemon stored without the types. The
 // judgement that next judges the end types it and gives it that judgement's own cause and kind
-// (died, markFromOutside, markDisplaced), since the end that let the process go is that one.
+// (retype: died, markFromOutside, markDisplaced), since the end that let the process go is that
+// one.
 func (m *Machine) unjudgedRecord() *EndedWork {
 	if e := &m.claim.EndedWork; e.Cause != "" && e.Generation == m.claim.Generation && !e.Died && !e.FromOutside && !e.Displaced {
 		return e

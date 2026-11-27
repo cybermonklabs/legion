@@ -849,7 +849,7 @@ func deathRetyped(h *harness, generation uint64) string {
 func (o outsideOrder) deathStands(h *harness, read uint64) string {
 	switch {
 	case o.displacedFirst:
-		return displacementRejudged(h, read)
+		return displacementRejudged(h, read, 0)
 	case !o.firstNeither:
 		return ""
 	}

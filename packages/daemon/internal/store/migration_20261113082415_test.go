@@ -63,9 +63,10 @@ func TestARelaunchRecordsItsEndedWorkOnTheClaimRow(t *testing.T) {
 	})
 
 	// Each judgement of a launch's end types its record (supervise.EndedWork's FromOutside, Died,
-	// Displaced and Outlived), and the judgement a later report or a restarted daemon routes by is
-	// that type: so the cause the role is told and the type the launch was judged under go into
-	// the column with the rest of the record and come back from it as they went in.
+	// Displaced and Outlived, with SentAgain, the task a running read sends again), and the
+	// judgement a later report or a restarted daemon routes by is that type: so the cause the role
+	// is told and the type the launch was judged under go into the column with the rest of the
+	// record and come back from it as they went in.
 	for _, row := range []struct {
 		name  string
 		ended supervise.EndedWork
@@ -77,8 +78,8 @@ func TestARelaunchRecordsItsEndedWorkOnTheClaimRow(t *testing.T) {
 			Death: runtime.DeathMemoryLimit, Died: true, Generation: 3, TaskTurn: true, Reported: true}},
 		{"a displacement, told already by no delivery", supervise.EndedWork{At: at(8), Cause: "its pod was replaced",
 			Displaced: true, Generation: 3, Told: true}},
-		{"a death a running read ended", supervise.EndedWork{At: at(9), Cause: `the process died: "not_recorded_process"`,
-			Outlived: true, Generation: 3, Turn: true, TaskTurn: true}},
+		{"a death a running read ended, its task sent again", supervise.EndedWork{At: at(9), Cause: `the process died: "not_recorded_process"`,
+			Outlived: true, SentAgain: "delivery-2", Generation: 3, Told: true}},
 	} {
 		t.Run("the record of "+row.name+" round-trips with its judgement's type", func(t *testing.T) {
 			ctx := context.Background()
@@ -91,7 +92,8 @@ func TestARelaunchRecordsItsEndedWorkOnTheClaimRow(t *testing.T) {
 			got := onlyClaim(t, store)
 			sameClaim(t, got, want)
 			if e := got.EndedWork; e.Cause != row.ended.Cause || e.FromOutside != row.ended.FromOutside || e.Died != row.ended.Died ||
-				e.Displaced != row.ended.Displaced || e.Outlived != row.ended.Outlived || e.Generation != row.ended.Generation {
+				e.Displaced != row.ended.Displaced || e.Outlived != row.ended.Outlived || e.SentAgain != row.ended.SentAgain ||
+				e.Told != row.ended.Told || e.Generation != row.ended.Generation {
 				t.Fatalf("the claim read back records %+v, want %+v: its cause and its judgement's type as written", e, row.ended)
 			}
 		})

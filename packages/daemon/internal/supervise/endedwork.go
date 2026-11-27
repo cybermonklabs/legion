@@ -32,7 +32,9 @@ type EndedWork struct {
 	// one whose cause is told, save where an end that ended nothing worth telling leaves its typed
 	// record over an earlier launch's that still tells (leaveRecord): At is then that end's, and
 	// Cause, with Death, the earlier end's, whose words are what is told. A record joined over an
-	// earlier one still untold (joined) takes the newer end's moment and cause.
+	// earlier one still untold (joined) takes the newer end's moment and cause, and so does a
+	// record of a death a running read ended that the next judgement types (retype: died,
+	// markFromOutside, markDisplaced), since that end is the one that let the process go.
 	At    time.Time `json:"at"`
 	Cause string    `json:"cause"`
 	// Death is the kind of the cause the runtime read of the death this record is of, where Cause
@@ -92,23 +94,32 @@ type EndedWork struct {
 	// its launch's end whatever that end ended, but over an end already decided
 	// (Claim.DeathCharged, markDisplaced), where the decision's record or its absence stands; it is
 	// told already by no delivery where it ended nothing worth telling, so a later report finds the
-	// judgement standing
-	// whatever the claim held. It is stored in the claim's JSON with the rest of the record, and
-	// an earlier daemon reading the row passes over the key. A record an earlier daemon stored
-	// without it reads as no displacement, so a later report of that end read neither way goes to
-	// died, as it did on that daemon.
+	// judgement standing whatever the claim held. It is stored in the claim's JSON with the rest of
+	// the record, and an earlier daemon reading the row passes over the key. A record an earlier
+	// daemon stored without it reads as no displacement, so a later report of that end read
+	// neither way goes to died, as it did on that daemon.
 	Displaced bool `json:"displaced,omitempty"`
 	// Outlived is whether a verdict that found the process running ended the death judgement this
-	// record carried (reportedProcess clears Died and sets this): the process ran on, so what a
-	// later end of it cuts off is that end's own to record and tell. recordEnd records such an
-	// end afresh over this record, with its own turn, task and report, untold, under its own
-	// cause and type, joined with this one while this still tells, as for a first end of the
-	// launch, so the role is told that end's own cause where the end cut off its work. Where that
-	// end ends nothing worth telling, the judgement it is types this record under its own cause
-	// instead (unjudgedRecord), keeping its told state. Every write of a type clears it. It is
-	// stored in the claim's JSON with the rest of the record, and an earlier daemon reading the
-	// row passes over the key.
+	// record carried (reportedProcess clears Died and sets this): the process ran on, so the end
+	// this record is of never came, and the verdict marks it told by no delivery, so no prompt,
+	// relaunch or catch-up tells it. What a later end of the process cuts off is that end's own to
+	// record and tell: recordEnd records such an end afresh over this record, with its own turn,
+	// task and report, untold, under its own cause and type, as for a first end of the launch, so
+	// the role is told that end's own cause where the end cut off its work. Where that end ends
+	// nothing worth telling, the judgement it is types this record under its own cause instead,
+	// untold again (retype), so the role is told that cause alone. Every write of a type clears
+	// it. It is stored in the claim's JSON with the rest of the record, and an earlier daemon
+	// reading the row passes over the key.
 	Outlived bool `json:"outlived,omitempty"`
+	// SentAgain is the id of the task the death this record judged took back (interrupted), where
+	// a verdict that found the process running ended that death (reportedProcess): the task goes
+	// again to the process that never ended, behind the one sentence that says the daemon read
+	// that process wrongly as ended and tells no end (Delivery.message, Claim.sentAgain). The
+	// take-back's marks on the task go with the death. Every write of a type clears it, and a
+	// later end recorded afresh leaves a record without it. It is stored in the claim's JSON with
+	// the rest of the record, and an earlier daemon reading the row passes over the key, so a
+	// rollback loses the sentence alone, the record being told either way.
+	SentAgain string `json:"sentAgain,omitempty"`
 	// Generation is the launch whose process this records the end of, which is what keeps one
 	// process's end to one record: a decision that records the end of a process it already knows
 	// is gone (died, displaced) and the let-go that follows it in the same decision or at a wake's
@@ -153,10 +164,10 @@ type EndedWork struct {
 	Reported bool `json:"reported"`
 	// Told is whether the record has been told to a later process, and ToldBy the delivery whose
 	// confirmation told it, as confirmCarrying states, or "" for an old session's record the
-	// abandonment of that session ended (forgetSession) and for a record told at its making
-	// (FromOutside, Displaced). A record not yet told is replaced by a newer one only as the
-	// union of the two (joined), so what the earlier let-go ended is not lost before anyone reads
-	// it.
+	// abandonment of that session ended (forgetSession), for a record told at its making
+	// (FromOutside, Displaced), and for the record of a death a running verdict ended (Outlived).
+	// A record not yet told is replaced by a newer one only as the union of the two (joined), so
+	// what the earlier let-go ended is not lost before anyone reads it.
 	Told   bool   `json:"told,omitempty"`
 	ToldBy string `json:"toldBy,omitempty"`
 }
@@ -185,6 +196,18 @@ func (e EndedWork) joined(newer EndedWork) EndedWork {
 	newer.Kinds = kinds
 	newer.Reported = newer.Reported && e.Reported
 	return newer
+}
+
+// retype makes e, the record of the claim's launch that no judgement types (unjudgedRecord), the
+// record of the end judged now: at its moment, under its cause and death kind, and no longer one
+// a running verdict outlived. The caller writes the judgement's type. A record a running verdict
+// marked told (Outlived) is untold again, since the end it recorded never came and this one is
+// the process's first to tell.
+func (e *EndedWork) retype(at time.Time, cause string, death runtime.DeathCauseKind) {
+	if e.Outlived {
+		e.Told, e.ToldBy = false, ""
+	}
+	e.At, e.Cause, e.Death, e.Outlived, e.SentAgain = at, cause, death, false, ""
 }
 
 // ActivityReport is one launch's last activity report as the store holds it

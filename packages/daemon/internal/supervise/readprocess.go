@@ -110,18 +110,18 @@ func (m *Machine) ReadProcess(ctx context.Context) ProcessRead {
 			"incarnation", m.claim.Locator.Incarnation, "error", err)
 		return ProcessUnanswered
 	}
-	if m.reportedProcess(observation) {
+	if cleared, delivery := m.reportedProcess(observation); cleared {
 		// The read found the process running, and the charge or the death judgement standing in
-		// the store is of a death that is over (Claim.DeathCharged, reportedProcess). It is
-		// written here as judge writes it, because a clear held in memory alone is lost at a
-		// restart and leaves the sweep's next report of the same live process nothing to clear,
-		// so the process's next real death would go uncounted, and a later end of it read as
-		// from outside the pod would be charged as that death. A store that will not take it
-		// leaves the clear in memory: where the failure is one the store may take on a retry, the
-		// write is marked owed and the repair or the claim's next write carries it (owes); where
-		// the server refused the statement, the claim's next write that the store takes carries
-		// it.
-		if err := m.persist(ctx); err != nil {
+		// the store is of a death that is over (Claim.DeathCharged, reportedProcess), as are the
+		// marks that death's take-back left on the pending task. They are written here as judge
+		// writes them (writeCleared), because a clear held in memory alone is lost at a restart
+		// and leaves the sweep's next report of the same live process nothing to clear, so the
+		// process's next real death would go uncounted, and a later end of it read as from
+		// outside the pod would be charged as that death. A store that will not take it leaves
+		// the clear in memory: where the failure is one the store may take on a retry, the write
+		// is marked owed and the repair or the claim's next write carries it (owes); where the
+		// server refused the statement, the claim's next write that the store takes carries it.
+		if err := m.writeCleared(ctx, delivery); err != nil {
 			m.log.Error("supervise: the read of the claim's process found it running and the cleared death charge was not written; it stays in memory for the claim's next write the store takes",
 				"incarnation", m.claim.Locator.Incarnation, "error", err)
 		}
