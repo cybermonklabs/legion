@@ -508,12 +508,13 @@ A batch whose fetch does not bring all its commits splits in two, and each half 
 These refs tell each later fetch which commits the clone holds, so the remote sends no object twice.
 A commit that the remote does not give is a `head-unreachable` or `base-unreachable` missing input.
 Since the clone holds every blob that it reads, each command that reads it runs with lazy fetching off (`GIT_NO_LAZY_FETCH=1`), and never fetches from the remote.
-Git merges a head with each base commit that it reads a verdict at in one `git merge-tree --stdin --write-tree --no-messages --name-only -z`, whose stdin holds a line `<base> <head>` for each base, 200 bases at most.
+Git merges a head with each base commit that it reads a verdict at in one `git merge-tree --stdin --write-tree --no-messages --name-only -z`, whose stdin holds a line `<base> <head>` for each base, 25 bases at most.
 Where that command fails, or gives fewer verdicts than it has lines, the collector keeps each verdict that it gave whole.
 It then merges each base after those alone (`git merge-tree --write-tree --no-messages --name-only -z <base> <head>`), up to the first that git does not give.
 Each merge-tree writes the trees and blobs that it merges into an object directory of its own, under `merge-objects` in the clone beside its `objects` (`GIT_OBJECT_DIRECTORY`), and reads the commits from the clone's `objects` (`GIT_ALTERNATE_OBJECT_DIRECTORIES`); no other git command gets these two variables.
 Git splits `GIT_ALTERNATE_OBJECT_DIRECTORIES` on `:`, so where the clone's path holds a `:` or a `"`, the collector gives git that path quoted, as `git help git` describes.
 The collector removes each merge-tree's directory once the command ends, however it ended, and `merge-objects` whole before the first merge-tree, whatever a stopped run left there, and after the last, so the clone does not grow with the merges.
+The batch is small because a `merge-tree --stdin` keeps the trees and blobs of all its merges in its directory until it ends.
 Git reads a head that several pull requests hold once: each merge base, each list of paths and each verdict that it gives serves every pull request that rests on it.
 Under `--parallel`, two pull requests can read the same head at once, and git then gives each the same answer.
 
