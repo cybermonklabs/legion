@@ -51,9 +51,9 @@ var holdSegment = map[Segment]func(root, child *Issue){
 	SegmentIdle: func(_, _ *Issue) {},
 }
 
-// claimedHour is the report of a root whose implementing phase runs hour(0) to hour(3), with each
-// named segment made to hold over hour(1) to hour(2).
-func claimedHour(t *testing.T, segments ...Segment) RoleBar {
+// claimedHour is legion-phase-time's implementer bar over a root whose implementing phase runs
+// hour(0) to hour(3), with each named segment made to hold over hour(1) to hour(2).
+func claimedHour(t *testing.T, segments ...Segment) BarFold {
 	t.Helper()
 	root := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(3)).
 		observeString(legion.FieldPhase, hour(0), "implementing").
@@ -64,7 +64,7 @@ func claimedHour(t *testing.T, segments ...Segment) RoleBar {
 		holdSegment[segment](root, child)
 	}
 	population := fixture(hour(-24), hour(24), root, child)
-	return barOf(t, Compute(population, ScopeAll, hour(24)), "implementer")
+	return barOf(t, windowOf(population, ScopeAll), "implementer")
 }
 
 // TestEachOrderedPairOfSegmentsGivesTheHourToTheEarlierOne is the precedence itself, over the six
@@ -134,7 +134,7 @@ func TestCIWaitIsEmptyOnEveryRead(t *testing.T) {
 	// merged as the phase closes, it stood unmerged through the whole phase.
 	merged := hour(3)
 	root.MergedAt = &merged
-	bar := barOf(t, Compute(fixture(hour(-24), hour(24), root), ScopeAll, hour(24)), "implementer")
+	bar := barOf(t, windowOf(fixture(hour(-24), hour(24), root), ScopeAll), "implementer")
 	if bar.Segments.CIWait != 0 {
 		t.Fatalf("CI wait = %g hours, want 0: the spec's phase time does not measure segment 3, so no read books a CI-wait hour: %+v", bar.Segments.CIWait, bar.Segments)
 	}
@@ -150,7 +150,7 @@ func TestTheRootRecordedInAwaitingPersonClaimsItsChildsHours(t *testing.T) {
 	child := newIssue("INFRA-2").under("INFRA-1").worked("implementer", hour(0)).closedAt(hour(3)).
 		observeString(legion.FieldPhase, hour(0), "implementing").
 		observeString(legion.FieldPhase, hour(3), "done")
-	bar := barOf(t, Compute(fixture(hour(-24), hour(24), root, child), ScopeAll, hour(24)), "implementer")
+	bar := barOf(t, windowOf(fixture(hour(-24), hour(24), root, child), ScopeAll), "implementer")
 	if bar.Segments.WaitingOnPerson != 1 || bar.Segments.Idle != 2 {
 		t.Fatalf("the child's bar is %+v, want the root's awaiting_person hour and two idle", bar.Segments)
 	}
@@ -165,7 +165,7 @@ func TestAnAskTurnEndsAtTheWaitTheDaemonRecordedAsAnswered(t *testing.T) {
 		observeString(legion.FieldPhase, hour(3), "done").
 		observe(legion.FieldWaitingOn, hour(1), `{"since":"`+hour(1).Format(time.RFC3339)+`","answeredAt":"`+answered+`"}`).
 		asked(hour(1), hour(3))
-	bar := barOf(t, Compute(fixture(hour(-24), hour(24), root), ScopeAll, hour(24)), "implementer")
+	bar := barOf(t, windowOf(fixture(hour(-24), hour(24), root), ScopeAll), "implementer")
 	if bar.Segments.WaitingOnPerson != 1 || bar.Segments.Idle != 2 {
 		t.Fatalf("the bar is %+v, want the one hour to the answer and the rest idle", bar.Segments)
 	}
@@ -191,7 +191,7 @@ func TestAChildMakesItsRootWaitOnlyThroughItsOwnWorkTime(t *testing.T) {
 		observeString(legion.FieldPhase, hour(8), "admitted").
 		observeString(legion.FieldPhase, hour(9), "implementing").
 		observeString(legion.FieldPhase, hour(12), "done")
-	bar := barOf(t, Compute(fixture(hour(-24), hour(24), root, child), ScopeRoots, hour(24)), "planner")
+	bar := barOf(t, windowOf(fixture(hour(-24), hour(24), root, child), ScopeRoots), "planner")
 	if bar.Hours != 12 || bar.Segments.WaitingOnChildren != 7 || bar.Segments.Idle != 5 {
 		t.Fatalf("the root's planner bar = %g hours, %+v, want seven waiting on the child's own work time and five idle",
 			bar.Hours, bar.Segments)
@@ -211,7 +211,7 @@ func TestAChildInDesignDoesNotMakeItsRootWaitOnChildren(t *testing.T) {
 		worked("architect", hour(1)).
 		worked("planner", hour(2)).
 		closedAt(hour(3))
-	bar := barOf(t, Compute(fixture(hour(-24), hour(24), root, child), ScopeRoots, hour(24)), "planner")
+	bar := barOf(t, windowOf(fixture(hour(-24), hour(24), root, child), ScopeRoots), "planner")
 	if bar.Hours != 4 || bar.Segments.WaitingOnChildren != 1 || bar.Segments.Idle != 3 {
 		t.Fatalf("the root's planner bar = %g hours, %+v, want one hour waiting on the child's planning and three idle, its design hour among them",
 			bar.Hours, bar.Segments)
@@ -247,7 +247,7 @@ func TestAChildInAPhaseFromPlanningToAwaitingMergeMakesItsRootWait(t *testing.T)
 			} else {
 				child.observeString(legion.FieldPhase, hour(1), each.phase)
 			}
-			bar := barOf(t, Compute(fixture(hour(-24), hour(24), root, child), ScopeRoots, hour(24)), "planner")
+			bar := barOf(t, windowOf(fixture(hour(-24), hour(24), root, child), ScopeRoots), "planner")
 			if bar.Hours != 3 || bar.Segments.WaitingOnChildren != each.waiting || bar.Segments.Idle != 3-each.waiting {
 				t.Fatalf("with its child in %s for hour 1 to 2, the root's planner bar = %g hours, %+v, want %g hours waiting on children and the rest idle",
 					each.phase, bar.Hours, bar.Segments, each.waiting)

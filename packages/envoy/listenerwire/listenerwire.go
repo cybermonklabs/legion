@@ -91,9 +91,10 @@ type TmuxPlace struct {
 }
 
 // APIError is the body of a /v1 error answer. Code names an answer a caller acts on beyond its
-// status (the list routes' refilling 503, code refilling, and a send's or publish's 503 that may
-// have stored the message, CodeMaybeStored); every other answer leaves it out. Expected names the
-// request fields the refusal is about.
+// status (the list routes' refilling 503, code refilling; a send's or publish's 503 that may have
+// stored the message, CodeMaybeStored; and a role claim's 503 that stands with no handover
+// recorded, CodeHandoverUnrecorded); every other answer leaves it out. Expected names the request
+// fields the refusal is about.
 type APIError struct {
 	Code     string   `json:"code,omitempty"`
 	Error    string   `json:"error"`
@@ -107,6 +108,14 @@ type APIError struct {
 // same idempotency key is recognised - and not as a send that stored nothing. Every other 503 of
 // those routes leaves the code out.
 const CodeMaybeStored = "maybe_stored"
+
+// CodeHandoverUnrecorded is the code of POST /v1/roles/set's 503 for a claim that landed and
+// stands, and names the session it replaces (previous_session_id), whose handover of that
+// session's unread messages was not recorded: the rule that holds a handover to one principal
+// could not be read, or the handover record did not store. The claimant holds the role; a caller
+// claims again (Retry-After: 1), and the claim it makes again judges and writes the handover.
+// Every other 503 of that route is a claim that wrote nothing.
+const CodeHandoverUnrecorded = "handover_unrecorded"
 
 // ReadsHeader is the request header in which a client of the send and the publish routes names
 // the answers it reads beyond the whole envelope every client release reads, as a comma-separated
@@ -447,6 +456,22 @@ type SessionRegistration struct {
 type DeleteSessionResponse struct {
 	Deleted *bool  `json:"deleted"`
 	Reason  string `json:"reason,omitempty"`
+}
+
+// SessionSuccessors is what GET /v1/sessions/<session_id>/successors answers: the sessions that
+// replaced SessionID, sorted and each once - each a handover record names as its successor
+// (bus.Client.HandoverSuccessors), and each that replaced one of those in turn, while each last
+// registered as the principal SessionID did - which the listener copies that session's unread
+// messages to. Successors is the empty list, never null, for a session no record names.
+// Principal is that principal, the one each session Successors names last registered as, in the
+// form internal/ciphertoken spells, which names the credential's kind and scope beside the person
+// or service (Caller.Principal, IdentityPrincipal; empty for a credential that proves none), and
+// empty where Successors is. Dispatch reads it to let such a session answer a delivery attempt
+// the replaced session holds, on a credential that acts for that principal.
+type SessionSuccessors struct {
+	SessionID  string   `json:"session_id"`
+	Principal  string   `json:"principal"`
+	Successors []string `json:"successors"`
 }
 
 // Interest is one session's persisted Envoy topic subscriptions, as the listener's interest bucket

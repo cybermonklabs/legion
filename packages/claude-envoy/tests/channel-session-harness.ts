@@ -540,7 +540,7 @@ export function recordingClient(calls: string[], overrides: Partial<FakeClient> 
       calls.push(
         `setRole ${input.sessionID} ${input.role}${input.soft ? " soft" : ""}${input.previousSessionID === undefined ? "" : ` previous=${input.previousSessionID}`}`,
       )
-      return { claimed: true, interest: noInterest() }
+      return { claimed: true, interest: noInterest(), warnings: [] }
     },
     getRole: async (role) => ({ role, holder: "ses_claude", last_seen: 1, state: "live" }),
     getInterest: async (sessionID) => {

@@ -8,9 +8,10 @@ import (
 )
 
 // TestTheSevenBarsPartitionTheWorkTimeOnAnObservedTimeline: the spec's rule on hours out of the
-// work time in phase time (dispatch://INFRA-1077/spec#b-8b535995-9f2e-415e-9db6-ce1ff5977645)
-// ends "So the bars of an issue add up to its work time, and the two cards agree", and the whole
-// of metric 2 rests on it — a Report carries the seven bars and the work time beside each other.
+// work time in phase time (dispatch://INFRA-1077/spec#b-8b535995-9f2e-415e-9db6-ce1ff5977645) ends
+// "So the bars of an issue add up to its work time, and the two cards agree",
+// and the whole of metric 2 rests on it — a reader of legion-phase-time reads the seven bars
+// beside legion-work-time's work time.
 //
 // dispatch://INFRA-979's corpus cannot check that invariant on the observed timeline. Every one of
 // its 289 finished issues carries a single trailing `done` mark, so every timeline the A2
@@ -171,20 +172,20 @@ func TestAnAdmittedRootHoldingASlotIsDesignAndTheRestIsQueue(t *testing.T) {
 		observe(legion.FieldSlot, hour(2), "0").
 		observeString(legion.FieldPhase, hour(4), "planning")
 
-	report := Compute(fixture(hour(-24), hour(24), root), ScopeAll, hour(24))
+	w := windowOf(fixture(hour(-24), hour(24), root), ScopeAll)
 
-	row := report.WorkTime.Issues[0]
-	if row.Hours != 6 {
-		t.Errorf("work time = %g h, want 6: hours 1 to 8 less the queued hour 1 to 2", row.Hours)
+	row := w.fact(t, "INFRA-1")
+	if row.WorkHours != 6 {
+		t.Errorf("work time = %g h, want 6: hours 1 to 8 less the queued hour 1 to 2", row.WorkHours)
 	}
 	if row.QueuedHours != 1 {
 		t.Errorf("queued hours = %g, want 1: the admitted hour the root held no slot through", row.QueuedHours)
 	}
-	if got := barOf(t, report, "architect").Hours; got != 2 {
+	if got := barOf(t, w, "architect").Hours; got != 2 {
 		t.Errorf("the architect bar = %g h, want 2: the admitted stretch the root holds a slot through is its design, hours 2 to 4",
 			got)
 	}
-	if got := barOf(t, report, "planner").Hours; got != 4 {
+	if got := barOf(t, w, "planner").Hours; got != 4 {
 		t.Errorf("the planner bar = %g h, want 4: hours 4 to 8", got)
 	}
 	partitionsItsWorkTime(t, root)
@@ -228,7 +229,7 @@ func TestANullPhaseMarkEndsNoPhase(t *testing.T) {
 		t.Run(each.name, func(t *testing.T) {
 			partitionsItsWorkTime(t, each.issue)
 			population := fixture(hour(-24), hour(24), each.issue)
-			if work := Compute(population, ScopeAll, hour(24)).WorkTime.Issues[0].Hours; work != 6 {
+			if work := windowOf(population, ScopeAll).fact(t, "INFRA-1").WorkHours; work != 6 {
 				t.Errorf("work time = %g h, want 6: hours 0 to 6", work)
 			}
 			if got := timelineOf(population, each.issue); !reflect.DeepEqual(got, each.timeline) {
@@ -249,7 +250,7 @@ func TestANullPhaseMarkEndsNoWaitOnAPerson(t *testing.T) {
 		observeString(legion.FieldPhase, hour(0), "awaiting_person").
 		observe(legion.FieldPhase, hour(2), "null")
 	partitionsItsWorkTime(t, root)
-	bar := barOf(t, Compute(fixture(hour(-24), hour(24), root), ScopeAll, hour(24)), barNoRole)
+	bar := barOf(t, windowOf(fixture(hour(-24), hour(24), root), ScopeAll), barNoRole)
 	if bar.Hours != 4 || bar.Segments.WaitingOnPerson != 4 {
 		t.Errorf("the no-role bar = %g hours, %+v, want all four waiting on a person: a null phase mark ends no wait",
 			bar.Hours, bar.Segments)
@@ -346,12 +347,12 @@ func TestANullSlotMarkIsAReleaseOnlyInAReadThatStillCarriesTheIssue(t *testing.T
 			if got := timelineOf(population, each.issue); !reflect.DeepEqual(got, each.timeline) {
 				t.Errorf("the timeline is %v, want %v", got, each.timeline)
 			}
-			report := Compute(population, ScopeAll, hour(24))
-			if row := report.WorkTime.Issues[0]; row.Hours != each.work || row.QueuedHours != each.queued {
+			w := windowOf(population, ScopeAll)
+			if row := w.fact(t, each.issue.Key); row.WorkHours != each.work || row.QueuedHours != each.queued {
 				t.Errorf("work time = %g h with %g h queued, want %g h with %g h queued",
-					row.Hours, row.QueuedHours, each.work, each.queued)
+					row.WorkHours, row.QueuedHours, each.work, each.queued)
 			}
-			if got := barOf(t, report, "architect").Hours; got != each.architect {
+			if got := barOf(t, w, "architect").Hours; got != each.architect {
 				t.Errorf("the architect bar = %g h, want %g", got, each.architect)
 			}
 		})
@@ -362,14 +363,14 @@ func TestANullSlotMarkIsAReleaseOnlyInAReadThatStillCarriesTheIssue(t *testing.T
 // work-time row, and its five segments add up to its seven bars.
 func partitionsItsWorkTime(t *testing.T, issue *Issue) {
 	t.Helper()
-	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
-	if len(report.WorkTime.Issues) != 1 {
-		t.Fatalf("work-time rows = %d, want the one issue", len(report.WorkTime.Issues))
+	w := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll)
+	if timed := w.timed(); len(timed) != 1 {
+		t.Fatalf("issues with a work time = %v, want the one issue", timed)
 	}
-	work := report.WorkTime.Issues[0].Hours
+	work := w.fact(t, issue.Key).WorkHours
 
 	var bars, segments float64
-	for _, bar := range report.PhaseTime.Bars {
+	for _, bar := range w.phaseTime(t).Bars {
 		bars += bar.Hours
 		segments += bar.Segments.WaitingOnPerson + bar.Segments.InATurn +
 			bar.Segments.CIWait + bar.Segments.WaitingOnChildren + bar.Segments.Idle

@@ -158,17 +158,21 @@ func TestAnHourOutOfTheWorkflowIsOutsideTheWorkTimeAndOnNoBar(t *testing.T) {
 			if got := timelineOf(population, each.issue); !reflect.DeepEqual(got, each.timeline) {
 				t.Errorf("the timeline is %v, want %v", got, each.timeline)
 			}
-			report := Compute(population, ScopeAll, hour(24))
-			row := report.WorkTime.Issues[0]
-			if row.Hours != each.work || row.BacklogOrIceboxHours != each.inBacklog || row.QueuedHours != each.queued ||
-				row.OutOfWorkflowHours != each.out {
+			w := windowOf(population, ScopeAll)
+			row := w.fact(t, each.issue.Key)
+			// The hours out of the workflow are no stored fact (no Legion eval reads them), so they
+			// are read off the timeline the work time takes them out of (outOfWorkflowSpans).
+			spans, _ := population.Phases(each.issue)
+			out := totalOf(outOfWorkflowSpans(spans)).Hours()
+			if row.WorkHours != each.work || row.BacklogOrIceboxHours != each.inBacklog || row.QueuedHours != each.queued || out != each.out {
 				t.Errorf("work time = %g h with %g h in backlog or icebox, %g h queued and %g h out of the workflow, want %g h with %g h, %g h and %g h",
-					row.Hours, row.BacklogOrIceboxHours, row.QueuedHours, row.OutOfWorkflowHours,
+					row.WorkHours, row.BacklogOrIceboxHours, row.QueuedHours, out,
 					each.work, each.inBacklog, each.queued, each.out)
 			}
-			for _, bar := range report.PhaseTime.Bars {
-				if bar.Hours != each.bars[bar.Role] {
-					t.Errorf("the %s bar = %g h, want %g", bar.Role, bar.Hours, each.bars[bar.Role])
+			hoursPerBar, _ := w.hoursPerBar(t)
+			for _, bar := range bars {
+				if got := hoursPerBar[bar.Role]; got != each.bars[bar.Role] {
+					t.Errorf("the %s bar = %g h, want %g", bar.Role, got, each.bars[bar.Role])
 				}
 			}
 			partitionsItsWorkTime(t, each.issue)
@@ -180,8 +184,8 @@ func TestAnHourOutOfTheWorkflowIsOutsideTheWorkTimeAndOnNoBar(t *testing.T) {
 // first hour takes its phases from the observations, and the same issue with no observation takes
 // them from its event log. Where the daemon reports `done` exactly where the event log's statuses
 // say the issue was out of the workflow, and the phase each names after it agrees, the two
-// timelines are the same and so is every number of the report: the event log's stretch is laid
-// on its timeline as the `done` the daemon reports for it.
+// timelines are the same and so is every fact of the issue (factsOf): the event log's
+// stretch is laid on its timeline as the `done` the daemon reports for it.
 func TestBothTimelinesAnswerAnIssueOutOfTheWorkflowTheSameWay(t *testing.T) {
 	cases := []struct {
 		name               string
@@ -225,9 +229,9 @@ func TestBothTimelinesAnswerAnIssueOutOfTheWorkflowTheSameWay(t *testing.T) {
 			if !reflect.DeepEqual(events, observations) {
 				t.Errorf("the event log draws %v and the observations %v, want one timeline", events, observations)
 			}
-			eventsReport, observationsReport := Compute(fromEvents, ScopeAll, hour(24)), Compute(fromObservations, ScopeAll, hour(24))
-			if !reflect.DeepEqual(eventsReport, observationsReport) {
-				t.Errorf("the event log answers %+v and the observations %+v, want one report", eventsReport, observationsReport)
+			eventsFacts, observationsFacts := factsAt(fromEvents, nil), factsAt(fromObservations, nil)
+			if !reflect.DeepEqual(eventsFacts, observationsFacts) {
+				t.Errorf("the event log answers %+v and the observations %+v, want one answer", eventsFacts, observationsFacts)
 			}
 		})
 	}
@@ -264,12 +268,12 @@ func TestARootWaitsOnNoChildOutOfTheWorkflow(t *testing.T) {
 				observeString(legion.FieldPhase, hour(7), "done")
 			child := each.child.under("INFRA-1")
 			population := fixture(hour(-24), hour(24), root, child)
-			bar := barOf(t, Compute(population, ScopeRoots, hour(24)), "planner")
+			bar := barOf(t, windowOf(population, ScopeRoots), "planner")
 			if bar.Hours != 7 || bar.Segments.WaitingOnChildren != each.waiting || bar.Segments.Idle != each.idle {
 				t.Errorf("the root's planner bar = %g h, %+v, want %g h waiting on the child and %g h idle",
 					bar.Hours, bar.Segments, each.waiting, each.idle)
 			}
-			if work := Compute(population, ScopeChildren, hour(24)).WorkTime.Issues[0].Hours; work != each.waiting {
+			if work := windowOf(population, ScopeChildren).fact(t, child.Key).WorkHours; work != each.waiting {
 				t.Errorf("the child's work time = %g h, want the %g h its root waits on it", work, each.waiting)
 			}
 		})
