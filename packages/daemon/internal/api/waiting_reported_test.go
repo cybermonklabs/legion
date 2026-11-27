@@ -68,7 +68,7 @@ func (s projectedSource) State(ctx context.Context, tx pgx.Tx) (api.State, []sup
 }
 
 func (s projectedSource) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
-	observed, err := projection.Observe(ctx, projection.ObservedInputs{Tx: tx, Store: s.records, Project: waitProject, Steps: s.steps, Now: waitNow})
+	observed, err := projection.Observe(ctx, projection.ObservedInputs{Tx: tx, Store: s.records, Project: waitProject, Steps: s.steps})
 	return observed, nil, err
 }
 

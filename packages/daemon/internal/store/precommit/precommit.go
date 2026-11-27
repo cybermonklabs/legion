@@ -1,8 +1,8 @@
 // Package precommit is the seam a write uses to end its own transaction with statements of its
 // own: a settle runs after the transaction's body has returned and before its commit
 // (store.TransactWith), on the same transaction, so what it writes commits with the body's writes
-// or not at all. It is a package of its own so that internal/record, which internal/store
-// imports, can register a settle on the transaction its caller opened.
+// or not at all. It is a package of its own so that internal/record, which internal/store's own
+// tests import, can register a settle on the transaction its caller opened.
 //
 // A settle is registered once per id in a transaction (Once), so every writer of one kind of
 // change shares one settle, however many of its writes the transaction makes. A transaction that
@@ -34,9 +34,10 @@ type entry struct {
 }
 
 // Open answers ctx carrying a new, empty Scope, and the Scope, for store.TransactWith to run at
-// its transaction's end (Scope.Run).
+// its transaction's end (Scope.Run). The Scope makes its map of ids at its first registration
+// (Once): most transactions register nothing, and Scoped and Truncate read a nil map as empty.
 func Open(ctx context.Context) (context.Context, *Scope) {
-	scope := &Scope{ids: map[any]struct{}{}}
+	scope := &Scope{}
 	return context.WithValue(ctx, scopeKey{}, scope), scope
 }
 
@@ -59,6 +60,9 @@ func Once(ctx context.Context, id any, settle func(context.Context, pgx.Tx) erro
 		return false
 	}
 	if _, registered := scope.ids[id]; !registered {
+		if scope.ids == nil {
+			scope.ids = make(map[any]struct{}, 1)
+		}
 		scope.ids[id] = struct{}{}
 		scope.settles = append(scope.settles, entry{id: id, settle: settle})
 	}

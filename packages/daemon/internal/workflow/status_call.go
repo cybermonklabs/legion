@@ -324,18 +324,31 @@ func (e *Engine) countCallWrite(ctx context.Context, tx pgx.Tx, write callWrite)
 }
 
 // ownWrite is the daemon's own write of status on issue as the workflow takes a status (applyStatus,
-// backInWork): the issue as its record holds it, with its own priority and the one Dispatch
-// resolves it to (record.Resolved), at the sequence the record has seen, written by the daemon. It
-// carries no reading of Dispatch's, so taking it moves nothing of the record but its status and
-// what that status moves: an inherited P0 stays the record's (observedIssue).
+// backInWork): the issue as its record holds it (RecordedFact), with its own priority and the one
+// Dispatch resolves it to (record.Resolved), at the sequence the record has seen, written by the
+// daemon. It carries no reading of Dispatch's, so taking it moves nothing of the record but its
+// status and what that status moves: an inherited P0 stays the record's (observedIssue).
 func ownWrite(issue record.Issue, status string) intake.DispatchIssue {
+	fact := RecordedFact(issue, status)
+	fact.Type, fact.DaemonActor, fact.StatusMove = "issue.updated", true, true
+	return fact
+}
+
+// RecordedFact is issue as its record holds it, as an observation of Dispatch at status: its key,
+// its title, its parent, its rank, its own priority and the one Dispatch resolves it to
+// (record.Resolved), the hand-over it carries, the repository it works (ResolvedRepo) and the
+// sequence the record has seen, so taking it moves no fence and nothing of what the record has
+// read. Each fact built from a record — the daemon's own write (ownWrite), a held session write
+// (heldWriteFact), and the daemon's reading of a member its conversion brings back — starts from
+// it and sets only what is its own (the event's type, its actor), so every field of the record
+// travels in one place.
+func RecordedFact(issue record.Issue, status string) intake.DispatchIssue {
 	parent := ""
 	if issue.Parent != nil {
 		parent = *issue.Parent
 	}
-	return intake.DispatchIssue{Key: issue.Key, Seq: issue.LastDispatchSeq, Type: "issue.updated", Status: status, Title: issue.Title,
-		Parent: parent, Rank: issue.Rank, Priority: issue.Priority, Resolved: issue.Resolved, HandedOver: issue.HandedOver, ResolvedRepo: issue.Repo,
-		DaemonActor: true, StatusMove: true}
+	return intake.DispatchIssue{Key: issue.Key, Seq: issue.LastDispatchSeq, Status: status, Title: issue.Title, Parent: parent,
+		Rank: issue.Rank, Priority: issue.Priority, Resolved: issue.Resolved, HandedOver: issue.HandedOver, ResolvedRepo: issue.Repo}
 }
 
 // keepDispatchStatus sets the status Dispatch shows of key on its record back to status, where the

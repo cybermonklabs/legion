@@ -223,3 +223,16 @@ func (w OwnerWalk) Owner(key string, fromParent bool) string {
 func (w OwnerWalk) Architect(key string, fromParent bool) (claim.Token, error) {
 	return OwningArchitect(w.project, w.chains, key, fromParent, w.runs)
 }
+
+// ArchitectOrOwn is Architect, but where the walk meets a chain the copy cannot show to its top
+// (ErrChainUnknown) it is key's own architect claim, where the walk starts, in the walk's claim
+// project (ReadOwnerWalk): a reader that must name an architect now rather than wait for the
+// daemon to read Dispatch again (api's owed route, the daemon's worker-died owner) names that one,
+// since the issues above the gap are not known yet.
+func (w OwnerWalk) ArchitectOrOwn(key string, fromParent bool) (claim.Token, error) {
+	owner, err := w.Architect(key, fromParent)
+	if errors.Is(err, ErrChainUnknown) {
+		return claim.NewToken(w.project, key, claim.RoleArchitect)
+	}
+	return owner, err
+}

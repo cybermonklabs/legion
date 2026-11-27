@@ -83,7 +83,6 @@ type ObservedInputs struct {
 	Cap     int
 	Steps   []record.DesignStep
 	Claims  []supervise.Claim
-	Now     time.Time
 }
 
 // Project joins durable issue facts to current supervision claims for GET /legion/v1/state. The
@@ -107,23 +106,26 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// the database (the issue slots migration, "shared by every daemon of the database").
 	own := make([]record.Issue, 0, len(issues))
 	keys := make([]string, 0, len(issues))
+	ownKeys := make([]string, 0, len(issues))
 	for _, issue := range issues {
 		knownIssues[issue.Key] = struct{}{}
 		keys = append(keys, issue.Key)
 		if issue.Project == in.Project {
 			own = append(own, issue)
+			ownKeys = append(ownKeys, issue.Key)
 		}
 	}
-	// The pass's one reading of the Dispatch chains of the project and the gates on them
-	// (record.ReadLineFacts), read before any view is built: each issue's `tree` is the tree the
-	// chain names for it (record.Chains.StateTree, R22 of dispatch://INFRA-3320), and whether it
-	// holds its own gate (record.Chains.HoldsOwnGate) decides the handshake it carries and the
-	// gated steps it answers. Nothing of the stored tree is read.
-	facts, err := record.ReadLineFacts(ctx, in.Tx, in.Store, in.Project, own, in.Steps)
+	// The pass's one reading of the Dispatch chains of the project (record.ReadChains over the
+	// project's own records, as the admission pass's facts read them), read before any view is
+	// built: each issue's `tree` is the tree the chain names for it (record.Chains.StateTree, R22
+	// of dispatch://INFRA-3320), and whether it holds its own gate (record.Chains.HoldsOwnGate)
+	// decides the handshake it carries and the gated steps it answers. Nothing of the stored tree is
+	// read. The gates and the rest of the facts the line is judged from are the admission
+	// judgement's own (blockers.JudgeAdmission, below).
+	chains, err := record.ReadChains(ctx, in.Tx, in.Store, in.Project, ownKeys)
 	if err != nil {
 		return api.State{}, err
 	}
-	chains := facts.Chains
 	// Every experiment answer the record holds for this project's issues, by issue key, in one
 	// statement (record.Store.Assignments). The database is shared by every project's daemon, so
 	// the read is joined to the issue records of project rather than taking the table whole,
@@ -258,7 +260,6 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			Key:           issue.Key,
 			Generation:    issue.Generation,
 			Status:        issue.Status,
-			Tree:          chains.StateTree(issue.Key),
 			Repo:          issue.Repo,
 			DefaultBranch: issue.DefaultBranch,
 			Priority:      &priority,
@@ -424,8 +425,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		return api.State{}, err
 	}
 	projected.Admission = api.AdmissionOf(judged.Block)
-	rows, line := judged.Rows, judged.Line
-	facts = judged.Facts
+	rows, line, facts := judged.Rows, judged.Line, judged.Facts
 	// Each issue the line names carries its own place in it (contract 58), counted from 1 at the
 	// front, beside the length of the list it stands in. Nothing is filtered out: a member a
 	// Dispatch link blocks stands in the line and takes its place like every other member, and
@@ -585,7 +585,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 // (blockers.JudgeAdmission) over the same reads, unfiltered and in the same order. The issues are
 // every issue the full state lists, each with the members the definition of the full state's views
 // decides (listIssues), its tree read from the same reading of the Dispatch chains as the full
-// state's (record.ReadLineFacts over the project's own records, record.Chains.StateTree), put on
+// state's (record.ReadChains over the project's own records, record.Chains.StateTree), put on
 // by the function that puts them on the full state's issues (putListed), and each claim view as
 // api.ClaimViewOf builds it. Every other member of an issue is empty. It reads the issues, the
 // project's phase rows in one statement, the slots, the chains and what the admission judgement
@@ -595,13 +595,13 @@ func Observe(ctx context.Context, in ObservedInputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
-	own := make([]record.Issue, 0, len(issues))
+	ownKeys := make([]string, 0, len(issues))
 	for _, issue := range issues {
 		if issue.Project == in.Project {
-			own = append(own, issue)
+			ownKeys = append(ownKeys, issue.Key)
 		}
 	}
-	facts, err := record.ReadLineFacts(ctx, in.Tx, in.Store, in.Project, own, in.Steps)
+	chains, err := record.ReadChains(ctx, in.Tx, in.Store, in.Project, ownKeys)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -617,7 +617,7 @@ func Observe(ctx context.Context, in ObservedInputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
-	listed, _ := listIssues(issues, facts.Chains, phases, slots, in.Claims)
+	listed, _ := listIssues(issues, chains, phases, slots, in.Claims)
 	views := make(map[claim.Token]api.ClaimView, len(in.Claims))
 	for _, current := range in.Claims {
 		views[current.Token] = api.ClaimViewOf(current)
@@ -663,7 +663,7 @@ type shownWorker struct {
 // observes (Project, Observe): every issue of issues, by key, and every issue a claim names that
 // issues does not hold, whose keys unrecorded lists in the order of their first claim. chains is
 // the reading of the project's Dispatch chains each view takes over the project's own records
-// (record.ReadLineFacts), phases each issue's phases rows (record.Store.AllPhases), slots every
+// (record.ReadChains), phases each issue's phases rows (record.Store.AllPhases), slots every
 // slot the store holds and claims the project's claims, all read in the caller's one snapshot.
 //
 // The rule, in the order it is applied:

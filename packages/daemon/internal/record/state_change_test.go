@@ -117,6 +117,18 @@ func (r *changeRig) put(t *testing.T, issue record.Issue) func(context.Context, 
 	}
 }
 
+// copyRow is a write of the copy's row of key under the parent of ("" for none) at seq through the
+// publishing store (record.Store.PutDispatchIssue), which a step expects to succeed.
+func (r *changeRig) copyRow(t *testing.T, key, of string, seq int64) func(context.Context, pgx.Tx) {
+	return func(ctx context.Context, tx pgx.Tx) {
+		t.Helper()
+		if err := r.records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: key, Project: changeProject, Seq: seq,
+			Status: record.Carry("in_progress"), Parent: record.Carry(of), Blockers: record.Carry[[]string](nil)}); err != nil {
+			t.Fatalf("write the copy's row of %s under %q: %v", key, of, err)
+		}
+	}
+}
+
 // view is what the state route serves of key, field by field: the route's projection over the
 // store (projection.Project, as the daemon's state source runs it, in a repeatable-read
 // transaction), the issue's view encoded as the route encodes it, and each field read off that
@@ -283,8 +295,11 @@ func changeIssue(key string, p phase.Phase) record.Issue {
 // the value it serves after it, as the route encodes them — a time at the microsecond Postgres
 // stores it at, not the nanosecond the write was handed. A write that moves its tree, the one the
 // Dispatch chain gives it (record.ObservedTrees), queues one state change more naming that, at the
-// transaction's end. A first write names each field it gives a value from null, and no field it
-// leaves null, the tree among them: every recorded issue is served a tree, its own key where its
+// transaction's end, and so does a write of a row of the copy that moves it: the first sighting of
+// a parent the copy lacked moves the tree of each recorded issue under it, while the first sighting
+// of a leaf the daemon does not record, a row no recorded issue's chain passes through, moves no
+// tree and queues nothing. A first write names each field it gives a value from null, and no field
+// it leaves null, the tree among them: every recorded issue is served a tree, its own key where its
 // chain names no gate root above it. A write that moves none of them queues nothing, whatever
 // else it writes — a status, a rank, the detail of an answer, the sequence a wait began at — and so
 // does a write the store refused, a write that rolled back, and every write of a store whose state
@@ -330,20 +345,11 @@ func TestAnIssueWriteQueuesOneStateEventNamingEachFieldItMoved(t *testing.T) {
 	t.Run("tree moved by the Dispatch chain", func(t *testing.T) {
 		parent, child := changeIssue("LEGION-19", phase.Implementing), changeIssue("LEGION-20", phase.Implementing)
 		child.Tree = parent.Key
-		copyRow := func(key, of string, seq int64) func(context.Context, pgx.Tx) {
-			return func(ctx context.Context, tx pgx.Tx) {
-				t.Helper()
-				if err := r.records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: key, Project: changeProject, Seq: seq,
-					Status: record.Carry("in_progress"), Parent: record.Carry(of), Blockers: record.Carry[[]string](nil)}); err != nil {
-					t.Fatalf("write the copy's row of %s under %q: %v", key, of, err)
-				}
-			}
-		}
-		r.commit(t, parent.Key, copyRow(parent.Key, "", 1))
-		r.commit(t, child.Key, copyRow(child.Key, "", 1))
+		r.commit(t, parent.Key, r.copyRow(t, parent.Key, "", 1))
+		r.commit(t, child.Key, r.copyRow(t, child.Key, "", 1))
 		r.commit(t, parent.Key, r.put(t, parent))
 		r.commit(t, child.Key, r.put(t, child))
-		_, to := assertMoved(t, child.Key, r.commit(t, child.Key, copyRow(child.Key, parent.Key, 2)), record.StateFieldTree)
+		_, to := assertMoved(t, child.Key, r.commit(t, child.Key, r.copyRow(t, child.Key, parent.Key, 2)), record.StateFieldTree)
 		if to[record.StateFieldTree] != `"LEGION-19"` {
 			t.Fatalf("the tree of %s once Dispatch moves it under %s goes to %s, want \"LEGION-19\"", child.Key, parent.Key, to[record.StateFieldTree])
 		}
@@ -353,7 +359,34 @@ func TestAnIssueWriteQueuesOneStateEventNamingEachFieldItMoved(t *testing.T) {
 		if _, to = assertMoved(t, child.Key, moved[child.Key], record.StateFieldTree); to[record.StateFieldTree] != `"LEGION-20"` {
 			t.Fatalf("the tree of %s once %s leaves Legion's work goes to %s, want its own key", child.Key, parent.Key, to[record.StateFieldTree])
 		}
-		assertMoved(t, child.Key, r.rollBack(t, child.Key, copyRow(child.Key, "", 3)))
+		assertMoved(t, child.Key, r.rollBack(t, child.Key, r.copyRow(t, child.Key, "", 3)))
+	})
+
+	// The trees are those of recorded issues, and a recorded issue's chain reaches another issue
+	// only through a row of the copy that names it as its parent. So the first sighting of a leaf
+	// the daemon does not record moves no tree, and the first sighting of a parent the copy lacked,
+	// which the daemon does not record either, moves the tree of the recorded issue under it: that
+	// issue's chain stopped at the missing row, so it was its own tree, and it is the gate root's
+	// above the parent once the row is there.
+	t.Run("the first sighting of a row of the copy", func(t *testing.T) {
+		root, member := changeIssue("LEGION-91", phase.Implementing), changeIssue("LEGION-92", phase.Implementing)
+		const parent, leaf = "LEGION-93", "LEGION-94"
+		r.commit(t, root.Key, r.copyRow(t, root.Key, "", 1))
+		r.commit(t, member.Key, r.copyRow(t, member.Key, parent, 1))
+		r.commit(t, root.Key, r.put(t, root))
+		r.commit(t, member.Key, r.put(t, member))
+		moved := r.runOver(t, []string{leaf, root.Key, member.Key}, r.copyRow(t, leaf, root.Key, 1), true)
+		assertMoved(t, leaf, moved[leaf])
+		assertMoved(t, root.Key, moved[root.Key])
+		assertMoved(t, member.Key, moved[member.Key])
+		moved = r.runOver(t, []string{parent, root.Key, member.Key}, r.copyRow(t, parent, root.Key, 1), true)
+		assertMoved(t, parent, moved[parent])
+		assertMoved(t, root.Key, moved[root.Key])
+		from, to := assertMoved(t, member.Key, moved[member.Key], record.StateFieldTree)
+		if from[record.StateFieldTree] != `"LEGION-92"` || to[record.StateFieldTree] != `"LEGION-91"` {
+			t.Fatalf("the tree of %s once the copy holds its parent %s under %s goes from %s to %s, want from its own key to \"LEGION-91\"",
+				member.Key, parent, root.Key, from[record.StateFieldTree], to[record.StateFieldTree])
+		}
 	})
 
 	t.Run("entering and leaving awaiting_person", func(t *testing.T) {

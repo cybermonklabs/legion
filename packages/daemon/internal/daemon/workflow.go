@@ -1569,11 +1569,10 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 				// root cannot hear yet.
 				continue
 			}
-			issue, err := w.records.Issue(ctx, tx, mark.Issue)
-			if err != nil {
-				return err
-			}
-			if issue != nil && chains.StateTree(issue.Key) != c.Issue {
+			// The mark's issue's record is the chain read's own (record.Chains.Record), which read
+			// the record of every key it started from: an issue the daemon records whose tree is
+			// another root's leaves this task.
+			if _, recorded := chains.Record(mark.Issue); recorded && chains.StateTree(mark.Issue) != c.Issue {
 				left = append(left, mark)
 				continue
 			}

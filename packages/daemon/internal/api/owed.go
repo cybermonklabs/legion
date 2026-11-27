@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 
@@ -137,13 +136,13 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 // (workflowRuntime.owningArchitect in internal/daemon/specs.go): the issue's own architect while
 // its claim holds its role, else the nearest one above it in Legion's work that does, else its
 // gate root's. A walk that meets a chain the copy cannot show to its top (record.ErrChainUnknown)
-// names the issue's own architect, where it starts, as that reader does. Nothing of the stored
-// tree is read: the route reads the issue's chain once per ask (record.ReadOwnerWalk: the copy's
-// rows of the chain, the records they name and the architect claims on it, and no child of the
-// issue), in the same statements whatever the chain, the tree or the deployment, so only their
-// rows grow, and with the chain alone, which Dispatch bounds (record.MaxChainLinks). It reads in
-// a read-only transaction of its own, which the completion route, sharing handoffPosition, does
-// not pay for.
+// names the issue's own architect, where it starts, as that reader does
+// (record.OwnerWalk.ArchitectOrOwn). Nothing of the stored tree is read: the route reads the
+// issue's chain once per ask (record.ReadOwnerWalk: the copy's rows of the chain, the records they
+// name and the architect claims on it, and no child of the issue), in the same statements whatever
+// the chain, the tree or the deployment, so only their rows grow, and with the chain alone, which
+// Dispatch bounds (record.MaxChainLinks). It reads in a read-only transaction of its own, which
+// the completion route, sharing handoffPosition, does not pay for.
 func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim.Token, error) {
 	var owner claim.Token
 	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -151,10 +150,7 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 		if err != nil {
 			return err
 		}
-		owner, err = walk.Architect(issue.Key, false)
-		if errors.Is(err, record.ErrChainUnknown) {
-			owner, err = claim.NewToken(s.project, issue.Key, claim.RoleArchitect)
-		}
+		owner, err = walk.ArchitectOrOwn(issue.Key, false)
 		return err
 	})
 	return owner, err

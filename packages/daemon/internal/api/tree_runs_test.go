@@ -40,7 +40,7 @@ func (projectedState) State(ctx context.Context, tx pgx.Tx) (api.State, []superv
 
 func (projectedState) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
 	observed, err := projection.Observe(ctx, projection.ObservedInputs{Tx: tx, Store: record.NewStore(), Project: treeRunsProject,
-		Steps: config.DesignGateRootIssues.Steps(), Now: treeRunsNow})
+		Steps: config.DesignGateRootIssues.Steps()})
 	return observed, nil, err
 }
 

@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -55,30 +54,25 @@ func (e *Engine) forgetSuperseded(ctx context.Context, tx pgx.Tx, issue string, 
 
 // dropSupersededChanges deletes in tx each changes request of queued, on the cleared issue, that the
 // person's approval followed (Store.DropQueuedChanges), asked as its delivery would ask it
-// (NoticeSuperseded) of the gates of the issue it was made on, read in one read, and writes one
-// line for each once tx commits, naming the approved version. A request no approval followed
-// stays, and is delivered as it would have been, asked again then of the gates as they stand. A
-// runner that holds the lease of a row it deletes reads the row gone in the snapshot it asks the
-// gates in, and finishes it unpublished (the daemon's stillOwed, which its readNoticeTree and
-// controllerNotice read); one already past that read publishes, as it would publish a request
-// whose approval committed after its read.
+// (NoticeSuperseded) of the gates of the issue it was made on, read in one read (Store.GatesOf):
+// that is the cleared issue, since the clear reads the requests the outbox holds on that issue's
+// own key (record.QueuedChanges.Issue). It writes one line for each once tx commits, naming the
+// approved version. A request no approval followed stays, and is delivered as it would have been,
+// asked again then of the gates as they stand. A runner that holds the lease of a row it deletes
+// reads the row gone in the snapshot it asks the gates in, and finishes it unpublished (the
+// daemon's stillOwed, which its readNoticeTree and controllerNotice read); one already past that
+// read publishes, as it would publish a request whose approval committed after its read.
 func (e *Engine) dropSupersededChanges(ctx context.Context, tx pgx.Tx, cleared string, queued []record.QueuedChanges) error {
 	if len(queued) == 0 {
 		return nil
 	}
-	var issues []string
-	for _, request := range queued {
-		if !slices.Contains(issues, request.Issue) {
-			issues = append(issues, request.Issue)
-		}
-	}
-	gates, err := e.store.Gates(ctx, tx, issues)
+	gates, err := e.store.GatesOf(ctx, tx, cleared)
 	if err != nil {
 		return err
 	}
 	var spent []int64
 	for _, request := range queued {
-		superseded := NoticeSuperseded(gates[request.Issue], e.cfg.Steps, request.Issue, request.Notice,
+		superseded := NoticeSuperseded(gates, e.cfg.Steps, request.Issue, request.Notice,
 			record.DecisionDesignChangesRequested)
 		if superseded == nil {
 			continue

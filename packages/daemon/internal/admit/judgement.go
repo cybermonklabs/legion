@@ -2,6 +2,7 @@ package admit
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 
@@ -9,15 +10,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// passRead is one read of what an admission pass judges (reread): the project's live records,
+// passRead is one read of what an admission pass judges (readPass): the project's live records,
 // every project's slots and the line facts over those records, beside the transaction it was taken
 // in and how many rows that transaction had written to the tables a judgement reads once the read
 // finished (record.Store.JudgedWrites), with counted false where Postgres kept no such count. The
-// count is taken right after reread, whose one write — marking roots that hold their own gate
-// (MarkHoldsGate) — changes no judgement (Chains.HoldsOwnGate answers the same for a root marked or
-// not), so the pass's own mark sits in the count's baseline while any later write in the
-// transaction, by any code, makes a later count differ; and a count is the transaction's own, so a
-// read of another transaction never stands in this one.
+// count is taken right after readPass marks the roots, whose one write — marking roots that hold
+// their own gate (MarkHoldsGate) — changes no judgement (Chains.HoldsOwnGate answers the same for a
+// root marked or not), so the pass's own mark sits in the count's baseline while any later write in
+// the transaction, by any code, makes a later count differ; and a count is the transaction's own, so
+// a read of another transaction never stands in this one.
 type passRead struct {
 	tx      pgx.Tx
 	writes  int64
@@ -41,14 +42,29 @@ type lineJudgement struct {
 	dropped     []record.HeldIssue
 }
 
-// readPass is reread with the transaction's count of the rows a judgement reads taken right after
-// it (record.Store.JudgedWrites), and it is what every pass reads its records through, so the
-// pass's end can tell whether that read still stands (finalJudgement) without reread's own root
-// mark (MarkHoldsGate) making the judgement look stale.
+// readPass is what every pass reads its records through: the pass's shared reads (readShared),
+// then the mark of every root they find as holding its own gate, then the transaction's count of
+// the rows a judgement reads (record.Store.JudgedWrites), taken after the mark, so the pass's end
+// can tell whether that read still stands (finalJudgement) without the pass's own root mark
+// (MarkHoldsGate) making the judgement look stale.
 func (a *Admission) readPass(ctx context.Context, tx pgx.Tx) (passRead, error) {
-	issues, slots, facts, err := a.reread(ctx, tx)
+	issues, slots, facts, err := a.readShared(ctx, tx)
 	if err != nil {
 		return passRead{}, err
+	}
+	// Every recorded issue the pass finds a root holds its own gate from now on, and keeps it once
+	// it gets a parent in Legion's work (R15 of dispatch://INFRA-3320, record.Chains.HoldsOwnGate):
+	// one statement marks every root the read finds unmarked, and none is sent when there is none.
+	var roots []string
+	for _, issue := range issues {
+		if !issue.HoldsGate && facts.Chains.IsRoot(issue.Key) {
+			roots = append(roots, issue.Key)
+		}
+	}
+	if len(roots) > 0 {
+		if err := a.store.MarkHoldsGate(ctx, tx, roots); err != nil {
+			return passRead{}, fmt.Errorf("mark the roots that hold their own gate: %w", err)
+		}
 	}
 	writes, counted, err := a.store.JudgedWrites(ctx, tx)
 	if err != nil {

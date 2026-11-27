@@ -86,7 +86,7 @@ func TestTheJudgedAdmissionBlockIsTheBlockTheStateServes(t *testing.T) {
 			if !bytes.Equal(carried, served) {
 				t.Fatalf("the judged block, as its event carries it, is\n%s\nwant the block the state serves\n%s", carried, served)
 			}
-			observed, err := Observe(ctx, ObservedInputs{Store: records, Project: "LEGION", Cap: tc.cap, Now: projectedAt})
+			observed, err := Observe(ctx, ObservedInputs{Store: records, Project: "LEGION", Cap: tc.cap})
 			if err != nil {
 				t.Fatalf("Observe: %v", err)
 			}

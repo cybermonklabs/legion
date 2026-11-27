@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The first boot's conversion of what the release before stored (R22 of dispatch://INFRA-3320,
@@ -430,23 +431,18 @@ func (w *workflowRuntime) bringMembersBack(ctx context.Context, tx pgx.Tx) error
 	return nil
 }
 
-// recordedReading is issue's own record of Dispatch as an observation of it: the reading that a
-// return is handed where no event brings the issue back (bringMembersBack). It holds the status
-// that Dispatch last showed where that is a status in work, else the status the record holds, the
-// issue's own priority and the one Dispatch resolves it to (record.Resolved), so a member with no
-// priority of its own under a P0 comes back at P0, and the sequence the record last read, so it
-// moves no fence.
+// recordedReading is issue's own record of Dispatch as an observation of it (workflow.RecordedFact):
+// the reading that a return is handed where no event brings the issue back (bringMembersBack). It
+// holds the status that Dispatch last showed where that is a status in work, else the status the
+// record holds, the issue's own priority and the one Dispatch resolves it to (record.Resolved), so
+// a member with no priority of its own under a P0 comes back at P0, and the sequence the record
+// last read, so it moves no fence.
 func recordedReading(issue record.Issue) intake.DispatchIssue {
 	status := issue.DispatchStatus
 	if !record.InWorkStatus(status) {
 		status = issue.Status
 	}
-	parent := ""
-	if issue.Parent != nil {
-		parent = *issue.Parent
-	}
-	return intake.DispatchIssue{Key: issue.Key, Seq: issue.LastDispatchSeq, Status: status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, Priority: issue.Priority, Resolved: issue.Resolved, HandedOver: issue.HandedOver, ResolvedRepo: issue.Repo}
+	return workflow.RecordedFact(issue, status)
 }
 
 // MembersBackListing is what `legion members-back` prints of a project (ListMembersBack): each

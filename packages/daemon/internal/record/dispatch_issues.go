@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/store/precommit"
 )
 
 func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading DispatchReading) error {
@@ -25,15 +26,19 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading Disp
 		return nil
 	}
 	// A row the copy does not hold yet, and a parent the reading moves, can move the trees of the
-	// project (watchTrees), which are read before the write.
+	// project (watchTrees), which are read before the write. The row is probed for that
+	// (copyRowMovesTrees) only where watchTrees would read them: in a transaction that runs settles
+	// and has not read them yet (precommit.Scoped, which writes nothing).
 	if s.state.Load() != nil {
-		moves, err := copyRowMovesTrees(ctx, tx, reading)
-		if err != nil {
-			return fmt.Errorf("put the Dispatch copy of %s: %w", reading.Key, err)
-		}
-		if moves {
-			if err := s.watchTrees(ctx, tx, reading.Project); err != nil {
+		if scoped, registered := precommit.Scoped(ctx, treeWatch{store: s, project: reading.Project}); scoped && !registered {
+			moves, err := copyRowMovesTrees(ctx, tx, reading)
+			if err != nil {
 				return fmt.Errorf("put the Dispatch copy of %s: %w", reading.Key, err)
+			}
+			if moves {
+				if err := s.watchTrees(ctx, tx, reading.Project); err != nil {
+					return fmt.Errorf("put the Dispatch copy of %s: %w", reading.Key, err)
+				}
 			}
 		}
 	}

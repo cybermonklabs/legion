@@ -20,9 +20,9 @@ import (
 )
 
 // passReads counts the reads of the project's live records admission makes through the store it
-// is given: each pass reads them once at its start (adoptQueuedRoots) and again only after a write
-// of its own makes them stale (reread), so a fact that runs no pass reads them not at all. Every
-// other read and write is the real store's.
+// is given: each pass reads them once at its start (readPass) and again only after a write of its
+// own makes that read stale (finalJudgement), so a fact that runs no pass reads them not at all.
+// Every other read and write is the real store's.
 type passReads struct {
 	record.Store
 	live int

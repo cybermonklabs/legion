@@ -195,7 +195,7 @@ func (f stallFloor) count(since time.Time) (from time.Time, said string) {
 // ArchitectStallArms is, by root key, every arm of the stall reading that holds for that root's
 // own architect now, in the order a controller is told them, and nothing for a root no arm holds
 // for. It is the reading the admission pass makes before it wakes the controller — the same
-// reads of the project (readPass), the same holders (readSlotHolders) and the same arms
+// reads of the project (readShared), the same holders (readSlotHolders) and the same arms
 // (architectStalls) — and it reads nothing of the marks, of the controller's registration or of
 // a wake, so an arm is in the answer whether or not the controller was told of it. It writes
 // nothing, so the state route asks it in its own read-only snapshot (internal/daemon's

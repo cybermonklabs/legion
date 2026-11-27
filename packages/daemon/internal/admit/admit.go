@@ -336,11 +336,8 @@ func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (int
 	if err != nil {
 		return intake.Result{}, err
 	}
-	block := a.last != nil || record.RecordsWritten(ctx)
 	_, tick := fact.(intake.ControllerTick)
-	if tick {
-		block = true
-	}
+	block := tick || a.last != nil || record.RecordsWritten(ctx)
 	return intake.Result{}, a.endPass(ctx, tx, released, tick, block)
 }
 
@@ -1804,7 +1801,7 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 // dueCloses asks the engine, of every issue of the pass that carries a close the daemon queued or
 // awaits its merge (workflow.ClosePassCandidate), whether its close is due on this pass's copy
 // (workflow.Engine.WriteDueCloses, R24 of dispatch://INFRA-3320), and answers whether it queued
-// one. issues are this project's own (reread's LiveIssues). A close it queues is a status write
+// one. issues are this project's own (readShared's LiveIssues). A close it queues is a status write
 // and moves no issue into or out of any slot or line, but it marks the issue's record
 // (record.Issue.PendingClose), so the pass reads the records again before any later step writes
 // one.
@@ -1932,7 +1929,7 @@ func (a *Admission) promote(ctx context.Context, tx pgx.Tx) (int, []string, erro
 // (blockers.Judged, blockers.Load). The release, the waiting line, the INFRA-129 safety net, the
 // promotion and the two repair passes all judge from those, so no path reads per slot, per chain
 // or per issue under the one fact lock every fact takes (intake.ApplyFact). A read is made again
-// only where this pass has itself written something that would make it stale (reread).
+// only where this pass has itself written something that would make it stale (readPass).
 //
 // Every path that promotes comes through here — each pass the pass rule (Apply) runs, and the
 // boot's Reconcile — so each of them is also a look at every issue a blocker holds, at every slot
@@ -2459,37 +2456,12 @@ func (a *Admission) judgeHeldStatusWrites(ctx context.Context, tx pgx.Tx) error 
 	return nil
 }
 
-// reread takes this pass's shared reads again, after the pass has itself written something that
-// makes them stale (readShared), and marks every root the read finds as holding its own gate: a
-// decision pass writes, so it keeps that mark for a root that later gets a parent in Legion's work.
-func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []record.Slot, record.LineFacts, error) {
-	issues, slots, facts, err := a.readShared(ctx, tx)
-	if err != nil {
-		return nil, nil, record.LineFacts{}, err
-	}
-	// Every recorded issue the pass finds a root holds its own gate from now on, and keeps it once
-	// it gets a parent in Legion's work (R15 of dispatch://INFRA-3320, record.Chains.HoldsOwnGate):
-	// one statement marks every root the read finds unmarked, and none is sent when there is none.
-	var roots []string
-	for _, issue := range issues {
-		if !issue.HoldsGate && facts.Chains.IsRoot(issue.Key) {
-			roots = append(roots, issue.Key)
-		}
-	}
-	if len(roots) > 0 {
-		if err := a.store.MarkHoldsGate(ctx, tx, roots); err != nil {
-			return nil, nil, record.LineFacts{}, fmt.Errorf("mark the roots that hold their own gate: %w", err)
-		}
-	}
-	return issues, slots, facts, nil
-}
-
 // readShared is the pass's shared reads alone: the project's live records, the slots, and the
 // facts the line, the release and the repair passes are all judged from. A reader in a read-only
 // transaction (OwesEntryWork, ArchitectStallArms) takes these and writes nothing; an unmarked root
 // still holds its own gate while it stands a root (record.Chains.HoldsOwnGate), so its answers are
 // the ones the next decision pass, which marks it, reads. A decision pass reads them through
-// readPass, which marks the roots (reread) and then counts the rows a judgement reads.
+// readPass, which then marks the roots and counts the rows a judgement reads.
 func (a *Admission) readShared(ctx context.Context, tx pgx.Tx) ([]record.Issue, []record.Slot, record.LineFacts, error) {
 	issues, err := a.store.LiveIssues(ctx, tx, a.project)
 	if err != nil {
@@ -2906,7 +2878,7 @@ const (
 )
 
 // OwesEntryWork is whether the entry sweep's own pass would do anything for the project, read as
-// every admission pass's shared reads read it (readPass) and answered by the two selections that pass
+// every admission pass's shared reads read it (readShared) and answered by the two selections that pass
 // itself acts on: a role owed the work of the entry its phases row names (owedEntryRoles), and an
 // arm of the stall reading that holds for a root architect the selection holds (readSlotHolders
 // names the three kinds of root it holds), that no mark has told the controller yet, while a
@@ -3444,7 +3416,7 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 
 // convergeEntries is the entry sweep's whole work (intake.EntrySweep, the fact the daemon's own
 // ticker applies): it reads the project's issues, its slots and its line facts as every pass
-// reads them (reread), sends each role behind the entry its phases row names that entry's work,
+// reads them (readPass), sends each role behind the entry its phases row names that entry's work,
 // and wakes the controller for each stalled architect no wake has told yet
 // (resumeSlottedWorkers). It promotes nothing — a tick already does that, on a period of its own
 // — so what the sweep adds is that convergence and those wakes, run when no fact of the project

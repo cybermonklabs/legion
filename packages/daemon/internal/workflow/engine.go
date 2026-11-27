@@ -978,22 +978,41 @@ func (e *Engine) keepStatus(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // intake.ApplyFact, before admission, which records an unrecorded issue only where its chain makes
 // it a root (admit's putNewRoot).
 //
-// The chains are the copy's, the reading a session's write of the issue is judged on
-// (readWriteChains: the whole project's, with the issue named), and every decision here asks that
-// one reading, which holds this event's own reading of the issue (the mirror, which runs before
-// this handler). An issue on an unknown chain is recorded by nothing (R16): admission notes its key
-// for the daemon to read Dispatch again. An issue whose parent is not in Legion's work is recorded
-// by nothing here either: with an issue above that parent in Legion's work it is held `ancestry`
-// (record.HeldReasonOf), and with none it is a root, admission's to take on a person's handover.
+// The chains are the copy's, which hold this event's own reading of the issue (the mirror, which
+// runs before this handler), and every decision here asks one reading of them. A todo a session
+// wrote is judged, and decided, on the reading a session's write of the issue is judged on
+// (readWriteChains: the whole project's, with the issue named), as a session's write of a recorded
+// issue is. Every other todo, one a person or the daemon wrote and one whose writer nothing proved,
+// judges no session, so it is decided on the child's own chain with its parent named
+// (record.ReadChainsOf), which answers what is asked of it here as the whole project's reading
+// does wherever the child's chain is known — that chain, the gate root on it and the records of
+// its links and of the parent the fact names — and costs that chain's length rather than the
+// project's; the two are never both read. An issue on an unknown chain is recorded by nothing
+// (R16): admission notes its key for the daemon to read Dispatch again. An issue whose parent is
+// not in Legion's work is recorded by nothing here either: with an issue above that parent in
+// Legion's work it is held `ancestry` (record.HeldReasonOf), and with none it is a root,
+// admission's to take on a person's handover.
 //
 // A todo that a session of the child's tree wrote, a claim on its chain or in its gate root's tree,
-// is neither R19's release nor a person's, so it starts nothing, and nor does one whose writer
-// nothing proved (sessionTodoOnChild).
+// is neither R19's release nor a person's, so it starts nothing (sessionTodoOnChild). Nor does one
+// whose writer nothing proved (intake.DispatchIssue.StatusWriter): where the preparation read no
+// log or the log names no writer, no write is known to undo, so it queues nothing and logs one
+// line.
 func (e *Engine) recordChildUnderParentAtWork(ctx context.Context, tx pgx.Tx, fact intake.DispatchIssue) (intake.Result, error) {
 	if !fact.ChildTodo() {
 		return intake.Result{}, nil
 	}
-	chains, err := e.readWriteChains(ctx, tx, e.cfg.Project, fact.Key)
+	written, proved := fact.StatusWriter()
+	bySession := proved && written.Session != ""
+	var judged writeChains
+	var chains *record.Chains
+	var err error
+	if bySession {
+		judged, err = e.readWriteChains(ctx, tx, e.cfg.Project, fact.Key)
+		chains = judged.Chains
+	} else {
+		chains, err = record.ReadChainsOf(ctx, tx, e.store, e.cfg.Project, []string{fact.Key, fact.Parent})
+	}
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -1008,21 +1027,27 @@ func (e *Engine) recordChildUnderParentAtWork(ctx context.Context, tx pgx.Tx, fa
 	if !recorded {
 		return intake.Result{}, nil
 	}
-	if setBack, err := e.sessionTodoOnChild(ctx, tx, chains, fact); err != nil || setBack {
-		return intake.Result{}, err
+	if !proved {
+		e.logOnCommit(ctx, "workflow: Dispatch's event log proves no writer of the todo on a child the daemon does not record; it starts nothing",
+			"issue", fact.Key, "parent", fact.Parent, "seq", fact.Seq)
+		return intake.Result{}, nil
 	}
-	return intake.Result{}, e.recordChild(ctx, tx, chains.Chains, root, fact)
+	if bySession {
+		if setBack, err := e.sessionTodoOnChild(ctx, tx, judged, fact, written); err != nil || setBack {
+			return intake.Result{}, err
+		}
+	}
+	return intake.Result{}, e.recordChild(ctx, tx, chains, root, fact)
 }
 
 // sessionTodoOnChild judges the todo fact shows on an issue the daemon does not record under a
-// parent in Legion's work, on chains, the reading recordChildUnderParentAtWork made of the child's
-// known chain and its gate root's tree (readWriteChains), and says whether it starts nothing.
-// It judges the todo by its writer, the actual status transition that left the child todo
-// (intake.DispatchIssue.StatusWriter), and never by the actor of the fact's own event where the
-// preparation read that transition: a comment, a rename or a re-read after an agent's todo leaves
-// the agent its writer, and a later move of anyone's replaces it. A todo no transition proves, as
-// where the preparation read no log or the log names no writer, starts nothing and queues
-// nothing, since no write is known to undo, and logs one line.
+// parent in Legion's work, which written, a session, wrote, on chains, the reading
+// recordChildUnderParentAtWork made of the child's known chain and its gate root's tree
+// (readWriteChains), and says whether it starts nothing. written is the todo's writer, the actual
+// status transition that left the child todo (intake.DispatchIssue.StatusWriter), and never the
+// actor of the fact's own event where the preparation read that transition: a comment, a rename or
+// a re-read after an agent's todo leaves the agent its writer, and a later move of anyone's
+// replaces it.
 //
 // A session's todo is judged as sessionStatusWrite judges a session's status write on a recorded
 // issue (legionOnChain, judgeSessionWrite), on the same reading. The todo of a session that holds a
@@ -1045,14 +1070,8 @@ func (e *Engine) recordChildUnderParentAtWork(ctx context.Context, tx pgx.Tx, fa
 // the child's chain nor the gate holder's tree, and judgeSessionWrite takes that session for a
 // person on a recorded issue too (ruling 2 of
 // dispatch://INFRA-4730/comment/317d3111-94a2-4777-81e9-ea15937a8c78).
-func (e *Engine) sessionTodoOnChild(ctx context.Context, tx pgx.Tx, chains writeChains, fact intake.DispatchIssue) (bool, error) {
-	written, known := fact.StatusWriter()
-	if !known {
-		e.logOnCommit(ctx, "workflow: Dispatch's event log proves no writer of the todo on a child the daemon does not record; it starts nothing",
-			"issue", fact.Key, "parent", fact.Parent, "seq", fact.Seq)
-		return true, nil
-	}
-	if written.Session == "" || !legionOnChain(chains.Chains, fact.Key) {
+func (e *Engine) sessionTodoOnChild(ctx context.Context, tx pgx.Tx, chains writeChains, fact intake.DispatchIssue, written intake.StatusTransition) (bool, error) {
+	if !legionOnChain(chains.Chains, fact.Key) {
 		return false, nil
 	}
 	write := record.HeldSessionWrite{Session: written.Session, Status: fact.Status, Seq: written.Seq, At: written.At}

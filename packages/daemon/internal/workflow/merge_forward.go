@@ -385,7 +385,7 @@ func (e *Engine) holdSentWorker(ctx context.Context, tx pgx.Tx, issue record.Iss
 // (MergeForwardAskEnded), which the daemon's executor makes without an engine, so it writes the row
 // through store (queuedRow).
 func askAgain(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, role claim.Role, launch uint64, now time.Time) (*record.PullRequest, error) {
-	if launch == 0 || !record.MergeForwardReaches(record.MergeForwardAsk, role) || !record.InWorkflow(issue) {
+	if launch == 0 || !record.MergeForwardReaches(record.MergeForwardAsk, role) || !record.InWorkflow(issue) || !record.InLegionsWork(issue) {
 		return nil, nil
 	}
 	pr, err := store.PullRequest(ctx, tx, issue.Key)
@@ -398,9 +398,6 @@ func askAgain(ctx context.Context, store record.Store, tx pgx.Tx, issue record.I
 	}
 	if queued, err := store.QueuedMergeForwardAsk(ctx, tx, issue.Key, role, asked.Head); err != nil || queued {
 		return nil, err
-	}
-	if !record.InLegionsWork(issue) {
-		return nil, nil
 	}
 	ask := mergeForwardMessageOf(issue, *pr, role, record.MergeForwardAsk, asked.Why)
 	ask.SentLaunch = launch

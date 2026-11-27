@@ -151,7 +151,8 @@ type recomposedCatchUp struct {
 // deletes nothing: the row's queueing claimed those decisions, and its settling stays keyed to the
 // whole of Kept, so the publish forgets a dropped decision with the rest. A catch-up an earlier
 // release queued with Decided and no Kept is told as its row holds it. It is nil for every other
-// notice. The transaction stays read-only.
+// notice, and for a catch-up whose issue is out of the workflow (record.InWorkflow), which
+// deliverNotice finishes undelivered without reading it. The transaction stays read-only.
 func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow, payload record.Notice) (record.Issue, noticeSnapshot, *recomposedCatchUp, error) {
 	var issue record.Issue
 	var snapshot noticeSnapshot
@@ -185,7 +186,7 @@ func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow, paylo
 			return err
 		}
 		snapshot.root = snapshot.chains.StateTree(row.Issue)
-		if payload.CatchUp == nil {
+		if payload.CatchUp == nil || !record.InWorkflow(issue) {
 			return nil
 		}
 		state, reason, err := workflow.TreeCatchUp(ctx, tx, r.records, r.gatedSteps, issue)

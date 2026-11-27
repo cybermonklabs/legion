@@ -266,7 +266,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 			return runtime.SpawnSpec{}, fmt.Errorf("the workspace of %s: %w", c.Token, err)
 		}
 	}
-	addressing := addressingFragment(s.project, c, architect, root, spec.Repository, spec.DefaultBranch, s.ownersOf(c.Role), corrected)
+	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(c.Role), corrected)
 	if c.Role == claim.RoleArchitect && c.HoldsGate {
 		addressing += " " + DesignGateFragment(s.designSteps)
 	}
@@ -399,7 +399,9 @@ func (s specs) ownerOf(ctx context.Context, c supervise.Claim) (claim.Token, err
 // nearest one above it in Legion's work that does, else its gate root's; for the issue's own
 // architect it starts above the issue (record.NoticeStartsAtParent), which is the architect above
 // it, or the issue's own where none is. A walk that meets a chain the copy cannot show to its top
-// names the issue's own architect, where it starts. An issue the workflow does not record, such as
+// names the issue's own architect, where it starts (record.OwnerWalk.ArchitectOrOwn, in the walk's
+// claim project, which is project: the record this reads is of the daemon's own project,
+// projectRecords). An issue the workflow does not record, such as
 // an operator's claim, has no chain to walk, so its claim is its tree's architect's. project is the
 // claim project token every token of the launch is spelled in. It reads in a read-only
 // transaction of its own, as the supervisor's predicates read a record.
@@ -417,10 +419,7 @@ func (w *workflowRuntime) owningArchitect(ctx context.Context, project string, c
 		if err != nil {
 			return err
 		}
-		owner, err = walk.Architect(issue.Key, c.Role == claim.RoleArchitect)
-		if errors.Is(err, record.ErrChainUnknown) {
-			owner, err = claim.NewToken(project, issue.Key, claim.RoleArchitect)
-		}
+		owner, err = walk.ArchitectOrOwn(issue.Key, c.Role == claim.RoleArchitect)
 		return err
 	}); err != nil {
 		return "", fmt.Errorf("read the architect that owns %s: %w", c.Token, err)
@@ -605,7 +604,7 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 	if err != nil {
 		return "", fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
-	return addressingFragment(project, c, architect, c.Role == claim.RoleArchitect && architect == c.Token, repo, defaultBranch, owners, nil), nil
+	return addressingFragment(project, c, architect, repo, defaultBranch, owners, nil), nil
 }
 
 // addressingFragment is the sentence that tells an agent where it and its peers are reached: its
@@ -616,8 +615,8 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 //
 // architect is the architect that owns c (specs.ownerOf): for a claim on any issue the end of the
 // owner walk read at the launch over the Dispatch chain. The architect of an issue, its own
-// architect claim, is owned by the one above it, and the sentence names it that way unless root
-// says no architect stands above it.
+// architect claim, is owned by the one above it, and the sentence names it that way unless
+// architect is c itself, a root's architect, above which no architect stands.
 //
 // The copy of the claim a launch is built from (supervise's spawnSpec) can carry two marks, and
 // each adds a sentence. A launch that follows a forget (c.SessionLost) starts a fresh session on a
@@ -644,10 +643,10 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // more sentences, which name that pull request and the repository it is open on. They are the
 // whole of what a role is told about it: no notice is sent, and the record is where a role reads
 // the same thing (api.Issue.PullRequest, whose repository is that pull request's own).
-func addressingFragment(project string, c supervise.Claim, architect claim.Token, root bool, repo ghrepo.Repository, defaultBranch string, owners []string,
+func addressingFragment(project string, c supervise.Claim, architect claim.Token, repo ghrepo.Repository, defaultBranch string, owners []string,
 	corrected *RepositoryCorrection) string {
 	owner := "the architect that owns your issue is"
-	if c.Role == claim.RoleArchitect && !root {
+	if c.Role == claim.RoleArchitect && architect != c.Token {
 		owner = "the architect above you is"
 	}
 	fragment := fmt.Sprintf("Legion addressing: your role topic is `%s%s`; %s `%s%s`; "+

@@ -127,14 +127,10 @@ func (e *Engine) judgeHeld(ctx context.Context, tx pgx.Tx, issue record.Issue) e
 }
 
 // heldWriteFact is write, a held session write of issue, as the event the workflow takes it as:
-// the issue as its record observes it, at the record's own sequence, so taking the write moves no
-// mark of what the record has read, and write's status by write's session.
+// the issue as its record observes it (RecordedFact), at the record's own sequence, so taking the
+// write moves no mark of what the record has read, and write's status by write's session.
 func heldWriteFact(issue record.Issue, write record.HeldSessionWrite) intake.DispatchIssue {
-	parent := ""
-	if issue.Parent != nil {
-		parent = *issue.Parent
-	}
-	return intake.DispatchIssue{Key: issue.Key, ResolvedRepo: issue.Repo, Seq: issue.LastDispatchSeq, Type: "issue.updated",
-		Status: write.Status, Title: issue.Title, Rank: issue.Rank, Priority: issue.Priority, Resolved: issue.Resolved, Parent: parent, HandedOver: issue.HandedOver,
-		ActorSession: write.Session}
+	fact := RecordedFact(issue, write.Status)
+	fact.Type, fact.ActorSession = "issue.updated", write.Session
+	return fact
 }

@@ -4061,19 +4061,7 @@ func serializedTx(ctx context.Context, pool *store.Pool, what string, write func
 // it (api.StateSource): the route reads the caller's plugin contract from those claims, so the
 // body and the contract it is cut to come from one snapshot.
 func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
-	version, err := s.store.SchemaVersionTx(ctx, tx)
-	if err != nil {
-		return api.State{}, nil, err
-	}
-	boots, firstBootAt, err := s.store.BootsTx(ctx, tx, s.project)
-	if err != nil {
-		return api.State{}, nil, err
-	}
-	// The state publication, read in this same snapshot as everything else the body holds: its
-	// sequence and its store id are the body's `daemon.stateSeq` and `daemon.stateId`
-	// (api.DaemonInfo.StateSeq and StateID say what each tells a reader). A project with no state
-	// row reads 0 and no id, and the 0 is served too.
-	published, err := s.records.StatePublication(ctx, tx, s.project)
+	info, err := s.readDaemonInfo(ctx, tx)
 	if err != nil {
 		return api.State{}, nil, err
 	}
@@ -4166,11 +4154,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if state.Paused, state.LastPause, err = api.PauseStateTx(ctx, tx, s.project, now); err != nil {
 		return api.State{}, nil, err
 	}
-	conversion, err := record.ReadTreeConversion(ctx, tx, s.project)
-	if err != nil {
-		return api.State{}, nil, err
-	}
-	state.Daemon = s.daemonInfo(version, boots, firstBootAt, published, conversion)
+	state.Daemon = info
 	state.Settings = s.settings
 	if state.Admission.P0Bound, err = s.p0BoundView(ctx, tx); err != nil {
 		return api.State{}, nil, err
@@ -4223,24 +4207,13 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 // read in tx's one snapshot, so the view's stateSeq is the sequence of the newest state event its
 // issues and its admission block hold, as the full state's is. The route reads the caller's plugin
 // contract from the claims, as it does for State, so the view and the contract it is cut to come
-// from one snapshot. It reads only what the view needs: the schema version, the boots, the state
-// publication, the project's claims and the P0 bound in force (`p0BoundView`) here, and what
+// from one snapshot. It reads only what the view needs: what the daemon block is built from
+// (readDaemonInfo: the schema version, the boots, the state publication and the tree
+// conversion), the project's claims and the P0 bound in force (`p0BoundView`) here, and what
 // projection.Observe reads there; it judges nothing the view does not serve: no stranded claims,
 // no stalled architects, no paced wakes.
 func (s *source) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
-	version, err := s.store.SchemaVersionTx(ctx, tx)
-	if err != nil {
-		return api.State{}, nil, err
-	}
-	boots, firstBootAt, err := s.store.BootsTx(ctx, tx, s.project)
-	if err != nil {
-		return api.State{}, nil, err
-	}
-	published, err := s.records.StatePublication(ctx, tx, s.project)
-	if err != nil {
-		return api.State{}, nil, err
-	}
-	conversion, err := record.ReadTreeConversion(ctx, tx, s.project)
+	info, err := s.readDaemonInfo(ctx, tx)
 	if err != nil {
 		return api.State{}, nil, err
 	}
@@ -4249,18 +4222,14 @@ func (s *source) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []sup
 		return api.State{}, nil, err
 	}
 	claims = ofProject(claims, s.projectToken)
-	now := time.Now().UTC()
-	if s.now != nil {
-		now = s.now().UTC()
-	}
 	observed, err := projection.Observe(ctx, projection.ObservedInputs{
 		Tx: tx, Store: projectRecords{Store: s.records, project: s.project}, Project: s.project,
-		Cap: s.admissionCap, Steps: s.gatedSteps, Claims: claims, Now: now,
+		Cap: s.admissionCap, Steps: s.gatedSteps, Claims: claims,
 	})
 	if err != nil {
 		return api.State{}, nil, err
 	}
-	observed.Daemon = s.daemonInfo(version, boots, firstBootAt, published, conversion)
+	observed.Daemon = info
 	observed.Settings = s.settings
 	// The observed view's admission block is the full state's (api.ObservedState), the P0 bound in
 	// force included.
@@ -4281,13 +4250,33 @@ func (s *source) p0BoundView(ctx context.Context, tx pgx.Tx) (*api.P0BoundView, 
 	return &bound, nil
 }
 
-// daemonInfo is the daemon block both views of the state serve (api.DaemonInfo), from what each
-// read in its snapshot: the store's schema version, the project's boots, the state publication,
-// and the time the project's first boot on this release finished its conversion (R22 of
-// dispatch://INFRA-3320): the conversion records its time last, and a rollback's step deletes the
-// row, so a project not converted is served no time.
-func (s *source) daemonInfo(version, boots int, firstBootAt time.Time, published record.StatePublication,
-	conversion record.TreeConversion) api.DaemonInfo {
+// readDaemonInfo is the daemon block both views of the state serve (api.DaemonInfo), read through
+// tx: the store's schema version, the project's boots, the state publication, and the time the
+// project's first boot on this release finished its conversion (R22 of dispatch://INFRA-3320):
+// the conversion records its time last, and a rollback's step deletes the row, so a project not
+// converted is served no time. Each view reads it first, in the one repeatable-read snapshot the
+// route reads the view in (api's readSnapshot), so it is of the snapshot the rest of the view is.
+func (s *source) readDaemonInfo(ctx context.Context, tx pgx.Tx) (api.DaemonInfo, error) {
+	version, err := s.store.SchemaVersionTx(ctx, tx)
+	if err != nil {
+		return api.DaemonInfo{}, err
+	}
+	boots, firstBootAt, err := s.store.BootsTx(ctx, tx, s.project)
+	if err != nil {
+		return api.DaemonInfo{}, err
+	}
+	// The state publication, read in this same snapshot as everything else the body holds: its
+	// sequence and its store id are the body's `daemon.stateSeq` and `daemon.stateId`
+	// (api.DaemonInfo.StateSeq and StateID say what each tells a reader). A project with no state
+	// row reads 0 and no id, and the 0 is served too.
+	published, err := s.records.StatePublication(ctx, tx, s.project)
+	if err != nil {
+		return api.DaemonInfo{}, err
+	}
+	conversion, err := record.ReadTreeConversion(ctx, tx, s.project)
+	if err != nil {
+		return api.DaemonInfo{}, err
+	}
 	return api.DaemonInfo{
 		Project:       s.project,
 		SchemaVersion: version,
@@ -4298,7 +4287,7 @@ func (s *source) daemonInfo(version, boots int, firstBootAt time.Time, published
 		StateSeq:      &published.Seq,
 		StateID:       published.StateID,
 		StateRun:      s.stateRun,
-	}
+	}, nil
 }
 
 // adoptIdentity is the supervisor's identity for a working copy's adoption (supervise.Deps.Identity)

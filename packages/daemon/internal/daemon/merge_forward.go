@@ -76,9 +76,7 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 	attributes := mergeForwardAttributes(row, payload)
 	var end func(context.Context, bool, uint64) error
 	if payload.Step == record.MergeForwardAsk {
-		end = func(ctx context.Context, delivered bool, told uint64) error {
-			return r.endMergeForwardAsk(ctx, row, payload, token, delivered, told, attributes)
-		}
+		end = r.mergeForwardAskEnd(row, payload, token, attributes)
 	}
 	if left != "" {
 		if err := r.endUndelivered(ctx, row, end); err != nil {
@@ -127,14 +125,21 @@ func (r *outbox) lateMergeForwardAsk(ctx context.Context, row record.OutboxRow, 
 		return true, err
 	}
 	attributes := mergeForwardAttributes(row, ask)
-	if err := r.endUndelivered(ctx, row, func(ctx context.Context, delivered bool, told uint64) error {
-		return r.endMergeForwardAsk(ctx, row, ask, token, delivered, told, attributes)
-	}); err != nil {
+	if err := r.endUndelivered(ctx, row, r.mergeForwardAskEnd(row, ask, token, attributes)); err != nil {
 		return true, err
 	}
 	r.log.Info("outbox merge-forward ask of an earlier run or phase entry of its issue finished undelivered", append(attributes,
 		"generation", queued.Generation, "entry", queued.Entry, "current_generation", now.Generation, "current_entry", now.Entry)...)
 	return true, nil
+}
+
+// mergeForwardAskEnd is the end of row, a row of payload's ask to the claim token, that the row's
+// end runs, delivered or not (deliverHeld, endUndelivered): endMergeForwardAsk, whose line names
+// attributes.
+func (r *outbox) mergeForwardAskEnd(row record.OutboxRow, payload record.MergeForwardMessage, token claim.Token, attributes []any) func(context.Context, bool, uint64) error {
+	return func(ctx context.Context, delivered bool, told uint64) error {
+		return r.endMergeForwardAsk(ctx, row, payload, token, delivered, told, attributes)
+	}
 }
 
 // endMergeForwardAsk ends row, a row of payload's ask, in one transaction that holds the fact lock

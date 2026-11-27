@@ -54,8 +54,11 @@ func NewStore() *Postgres { return &Postgres{} }
 // moves what Dispatch observes of it — the issue's phase or waitingOn (PutIssue, ObservationOf),
 // its slot's index (PutSlot, ReleaseSlot, ReleaseSlotForWait) — queues one state_change row for
 // each issue it moved, naming each field of it the write moved, in the write's own transaction, so
-// the change and its event commit together or not at all, and a write of the admission block that
-// moves it queues its state_admission row (QueueAdmissionBlock).
+// the change and its event commit together or not at all; a transaction whose writes move what an
+// issue's tree is read from (PutIssue, PutDispatchIssue and TakeDispatchRefill, through
+// watchTrees) queues at its end one state_change row naming the tree of each issue whose tree it
+// moved (settleTrees); and a write of the admission block that moves it queues its
+// state_admission row (QueueAdmissionBlock).
 // Each row carries run, the id of the daemon run that wrote it, which a row that names none is
 // refused for (StateChange). Only a daemon with a workflow turns the events on (internal/daemon's
 // run says why); every other store queues none.
@@ -448,24 +451,22 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// statement the old row is read only while a CTE that locks it runs ahead of the upsert, and
 	// Postgres keeps no such order on its own — read after the upsert, the CTE skips the row the
 	// upsert replaced and answers no row, so the write would read as a first write with no error.
-	// The switch decides the read of the old row and the queue alone: the upsert is one statement
-	// either way, and a write with the events off returns once it is written. The upsert has no
-	// condition, so it always returns the row it wrote. The row is due at the transaction's own
-	// time, now(), read with the write since the store has no clock.
+	// The switch decides the read of the old row, the read of the trees (watchTrees) and the
+	// queue alone: the upsert is one statement either way, and a write with the events off returns
+	// once it is written. The upsert has no condition, so it always returns the row it wrote. The
+	// row is due at the transaction's own time, now(), read with the write since the store has no
+	// clock.
 	state := s.state.Load()
 	var before *IssueObservation
 	if state != nil {
+		var stored *Issue
 		var err error
-		if before, err = lockedObservedIssue(ctx, tx, issue.Key); err != nil {
+		if before, stored, err = lockedObservedIssue(ctx, tx, issue.Key); err != nil {
 			return fmt.Errorf("put issue %s: read what Dispatch observes of it: %w", issue.Key, err)
 		}
 		// A write that moves what the trees are read from reads them first (watchTrees), so the
 		// transaction's end can queue each tree it moved.
-		moves, err := issueMovesTrees(ctx, tx, before == nil, issue)
-		if err != nil {
-			return fmt.Errorf("put issue %s: %w", issue.Key, err)
-		}
-		if moves {
+		if issueMovesTrees(stored, issue) {
 			if err := s.watchTrees(ctx, tx, issue.Project); err != nil {
 				return fmt.Errorf("put issue %s: %w", issue.Key, err)
 			}
@@ -486,18 +487,23 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	return s.queueStateChange(ctx, tx, state, issue.Project, issue.Key, changes, due)
 }
 
-// lockedObservedIssue is what Dispatch observes of the issue key as its record stores it, read
-// with the row locked until tx ends, so that no other write moves it before tx's own write; nil
-// for an issue the record does not hold yet.
-func lockedObservedIssue(ctx context.Context, tx pgx.Tx, key string) (*IssueObservation, error) {
-	observed, err := scanObservedIssue(tx.QueryRow(ctx, "select "+observedIssueColumns+" from issues where key = $1 for update", key))
+// lockedObservedIssue is what Dispatch observes of the issue key as its record stores it, and the
+// record as far as a tree reads it (issueMovesTrees: its phase, its status and its mark that it
+// holds its own gate), read in one statement with the row locked until tx ends, so that no other
+// write moves them before tx's own write; nil for both where the record does not hold the issue
+// yet.
+func lockedObservedIssue(ctx context.Context, tx pgx.Tx, key string) (*IssueObservation, *Issue, error) {
+	var stored Issue
+	observed, err := scanObservedIssue(tx.QueryRow(ctx, "select "+observedIssueColumns+", status, holds_gate from issues where key = $1 for update", key),
+		&stored.Status, &stored.HoldsGate)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return &observed, nil
+	stored.Phase = observed.Phase
+	return &observed, &stored, nil
 }
 
 // queueStateChange queues the state event of one write that moved changes of issue (StateChange),
@@ -1782,12 +1788,8 @@ func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue Issue, 
 	if err := s.forgetKept(ctx, tx, issue.Key, forget, describe); err != nil {
 		return nil, err
 	}
-	return s.clearGeneration(ctx, tx, clearedIssue, issue.Key, describe)
+	return s.clearGeneration(ctx, tx, issue.Key, describe)
 }
-
-// clearedIssue is the issue a clear covers, as the where clause of a statement over a table keyed
-// by issue, with the key as $1.
-const clearedIssue = "issue = $1"
 
 // forgetKept runs forget in tx over what the clear owes it, before the clear deletes the gates
 // forget's rule reads: the decisions kept on issue, whoever claims or holds them, as one
@@ -1810,7 +1812,7 @@ func (s *Postgres) forgetKept(ctx context.Context, tx pgx.Tx, issue string, forg
 	for _, d := range decisions {
 		owed.Decisions = append(owed.Decisions, d.Mark())
 	}
-	queued, err := queuedChanges(ctx, tx, clearedIssue, issue)
+	queued, err := queuedChanges(ctx, tx, issue)
 	if err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
 	}
@@ -1863,12 +1865,12 @@ func changesRequestKind(kind NoticeKind) bool {
 	}
 }
 
-// queuedChanges is every person's changes request the outbox holds on the issues where selects
-// with key as $1, a row a runner has leased included, oldest first: each row ChangesRequest
-// accepts, read as the Notice it is (QueuedChanges). A row the select names that the rule refuses
-// is an error, since the two have drifted apart.
-func queuedChanges(ctx context.Context, tx pgx.Tx, where, key string) ([]QueuedChanges, error) {
-	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox where `+where+`
+// queuedChanges is every person's changes request the outbox holds on the issue key, a row a
+// runner has leased included, oldest first: each row ChangesRequest accepts, read as the Notice it
+// is (QueuedChanges). A row the select names that the rule refuses is an error, since the two have
+// drifted apart.
+func queuedChanges(ctx context.Context, tx pgx.Tx, key string) ([]QueuedChanges, error) {
+	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox where issue = $1
 		and ((kind = $2 and payload->>'kind' in ($3, $4))
 			or (kind = $5 and payload->>'kind' = $6 and payload->>'decision' = $7))
 		order by id`, key, string(OutboxKindNotice), "design-changes-requested", "basis-changes-requested",
@@ -1901,10 +1903,10 @@ func queuedChanges(ctx context.Context, tx pgx.Tx, where, key string) ([]QueuedC
 	return queued, nil
 }
 
-// clearGeneration runs each statement with key as $1, where selecting the cleared issue's rows by
-// their issue column (clearedIssue). The design gates go with them, in a statement of their own
-// (clearGates), whose emptied issues it answers, and the rows of what the issue's holders took of
-// those gates go beside them.
+// clearGeneration runs each statement with key as $1, selecting the cleared issue's rows by their
+// issue column. The design gates go with them, in a statement of their own (clearGates), whose
+// emptied issues it answers, and the rows of what the issue's holders took of those gates go
+// beside them.
 //
 // A pull request that is not open goes, and its clock — the updated_at of the newest lifecycle
 // event it applied — is kept in cleared_pull_requests at its repository and number, the latest of
@@ -1916,9 +1918,9 @@ func queuedChanges(ctx context.Context, tx pgx.Tx, where, key string) ([]QueuedC
 // one-time rename pass moves it to a configured rename's new name with the issue's other rows, and
 // where it merges the moved row into one the new name already holds, that row names the moved
 // row's issue (RenameIssueRepository).
-func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, describe string) ([]string, error) {
+func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, key, describe string) ([]string, error) {
 	tag, err := tx.Exec(ctx, `with cleared as (
-			delete from pull_requests where `+where+` and state <> 'open' returning issue, repo, number, head_updated_at)
+			delete from pull_requests where issue = $1 and state <> 'open' returning issue, repo, number, head_updated_at)
 		insert into cleared_pull_requests (repo, number, issue, head_updated_at, cleared_at)
 		select distinct on (repo, number) repo, number, issue, head_updated_at, now() from cleared order by repo, number, head_updated_at desc
 		on conflict (repo, number) do update set issue = excluded.issue,
@@ -1950,7 +1952,7 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, d
 		// reads none of them (loadSettledHeads).
 		"update pull_requests set " +
 			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
-			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb, merge_forward = null where " + where,
+			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb, merge_forward = null where issue = $1",
 		// The entry's task goes with the run, and the entry itself stays where it stands: the
 		// number is never reset, so a worker still holding the old entry's task is behind the row
 		// rather than level with it, and the new run's next start raises the entry again and
@@ -1970,7 +1972,7 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, d
 		// new generation's first review reads the whole change.
 		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
 			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, reviewed_head = '', " +
-			"entry_task = '', entry_awaiting = null, entry_given_task = '', entry_given_entry = 0, entry_given_generation = 0, step_task = '', step_place = 0 where " + where,
+			"entry_task = '', entry_awaiting = null, entry_given_task = '', entry_given_entry = 0, entry_given_generation = 0, step_task = '', step_place = 0 where issue = $1",
 		// What each holder took of the approved design goes with the gate it was taken from: the
 		// next generation registers its gate again, and its work starts from what that gate
 		// approves, which its first working phase takes as its baseline (workflow's Engine.enter),
@@ -1986,7 +1988,7 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, d
 		// audience took nor in the fold of its turn's result (the SQL function
 		// design_news_counts), and a prompt of it whose turn starts after the clear confirms
 		// nothing for the next run: the news stays owed to that run, which its own start tells.
-		"delete from design_news_told where " + where,
+		"delete from design_news_told where issue = $1",
 	} {
 		tag, err := tx.Exec(ctx, statement, key)
 		if err != nil {
@@ -1994,10 +1996,10 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, d
 		}
 		noteRowsWritten(ctx, tag)
 	}
-	return s.clearGates(ctx, tx, where, key, describe)
+	return s.clearGates(ctx, tx, key, describe)
 }
 
-// clearGates deletes the design gates of every issue the clear covers and answers each issue it
+// clearGates deletes the design gates of the issue key the clear covers and answers each issue it
 // emptied, once, in key order: those gates recorded a document until this statement, and
 // Dispatch holds the set they recorded until something tells it otherwise, so the clear's caller
 // queues a publication of the empty set for each (workflow's Engine.ClearGeneration). The
@@ -2007,8 +2009,8 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, d
 // issue it covers, so an issue that held no gate row — the ordinary child of a re-entry, and
 // every member of a re-admitted tree whose architect registered nothing — costs no Dispatch
 // write. A row comes back for each step, so an issue gated on several steps is answered once.
-func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, describe string) ([]string, error) {
-	rows, err := tx.Query(ctx, "delete from design_gates where "+where+" returning issue", key)
+func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, key, describe string) ([]string, error) {
+	rows, err := tx.Query(ctx, "delete from design_gates where issue = $1 returning issue", key)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
@@ -2891,7 +2893,7 @@ func (s *Postgres) PutSlot(ctx context.Context, tx pgx.Tx, slot Slot) error {
 	if held != nil {
 		old = json.RawMessage(strconv.Itoa(*held))
 	}
-	return s.queueStateChange(ctx, tx, state, keyProject(slot.Issue), slot.Issue,
+	return s.queueStateChange(ctx, tx, state, claim.KeyProject(slot.Issue), slot.Issue,
 		[]StateFieldChange{{Field: StateFieldSlot, Old: old, New: json.RawMessage(strconv.Itoa(slot.Index))}}, due)
 }
 
@@ -2923,8 +2925,11 @@ func (s *Postgres) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue stri
 
 // slotReleased reads the index and the time a release's delete of issue's slot returned (deleted),
 // keeps that the release wrote a record admission reads (noteRecordWrite), and with the state
-// events on queues the state change naming the slot (queueSlotRelease). A delete that found no
-// slot returns no row, keeps nothing and queues nothing.
+// events on queues the state change naming the slot (queueStateChange), carrying the run the
+// events were turned on with: the slot, from the index the delete took to null, due at the time
+// the delete returned. A slot names its issue by key alone, so the change is queued on the lane of
+// the project the key names (claim.KeyProject). A delete that found no slot returns no row, keeps
+// nothing and queues nothing.
 func (s *Postgres) slotReleased(ctx context.Context, tx pgx.Tx, issue string, deleted pgx.Row) error {
 	var index int
 	var due time.Time
@@ -2939,24 +2944,8 @@ func (s *Postgres) slotReleased(ctx context.Context, tx pgx.Tx, issue string, de
 	if state == nil {
 		return nil
 	}
-	return s.queueSlotRelease(ctx, tx, state, issue, index, due)
-}
-
-// queueSlotRelease queues the state change of a release of issue's slot, carrying state's run: the
-// slot, from index, the index the release's delete took, to null, due at due, the time that delete
-// returned. A slot names its issue by key alone, so the change is queued on the lane of the
-// project the key names (keyProject).
-func (s *Postgres) queueSlotRelease(ctx context.Context, tx pgx.Tx, state *statePublication, issue string, index int, due time.Time) error {
-	return s.queueStateChange(ctx, tx, state, keyProject(issue), issue,
+	return s.queueStateChange(ctx, tx, state, claim.KeyProject(issue), issue,
 		[]StateFieldChange{{Field: StateFieldSlot, Old: json.RawMessage(strconv.Itoa(index)), New: stateevent.Null}}, due)
-}
-
-// keyProject is the Dispatch project of an issue key, the part before its hyphen, read as DueRows
-// reads a row's project (split_part(outbox.issue, '-', 1)). A slot names its issue by key alone,
-// so its state change is queued on the lane of the project the key names.
-func keyProject(key string) string {
-	project, _, _ := strings.Cut(key, "-")
-	return project
 }
 
 func (s *Postgres) ClearReleasedForWait(ctx context.Context, tx pgx.Tx, issue string) error {

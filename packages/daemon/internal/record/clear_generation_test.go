@@ -273,7 +273,7 @@ func TestTheClearsSelectOfChangesRequestsNamesTheRowsChangesRequestAccepts(t *te
 			}
 		}
 		var err error
-		selected, err = queuedChanges(ctx, tx, clearedIssue, key)
+		selected, err = queuedChanges(ctx, tx, key)
 		must(t, err)
 	})
 	if kinds := slices.Collect(maps.Values(accepted)); !slices.Contains(kinds, OutboxKindNotice) ||

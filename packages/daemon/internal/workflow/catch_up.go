@@ -81,17 +81,20 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 	}
 	// An issue that holds its own design gate on the Dispatch chain (record.Chains.HoldsOwnGate) is
 	// told while its own status stands in the workflow; any other issue's architect is told while
-	// its issue is in the workflow.
-	chains, err := record.ReadChainsOf(ctx, tx, e.store, issue.Project, []string{issue.Key})
-	if err != nil {
-		return intake.Result{}, err
+	// its issue is in the workflow (record.InWorkflow: its status, and a phase other than done). So
+	// an issue whose status is out of the workflow is told nothing, one at any other phase than done
+	// is told, and only a done one's own chain is read, for whether it holds its own gate.
+	if record.OutOfWorkflow(issue.Status) {
+		return intake.Result{}, nil
 	}
-	if chains.HoldsOwnGate(issue.Key) {
-		if record.OutOfWorkflow(issue.Status) {
+	if issue.Phase == phase.Done {
+		chains, err := record.ReadChainsOf(ctx, tx, e.store, issue.Project, []string{issue.Key})
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if !chains.HoldsOwnGate(issue.Key) {
 			return intake.Result{}, nil
 		}
-	} else if !record.InWorkflow(*issue) {
-		return intake.Result{}, nil
 	}
 	var hold func(id int64, issue string)
 	if fact.Paced {
