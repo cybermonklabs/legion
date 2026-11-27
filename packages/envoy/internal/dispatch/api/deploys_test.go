@@ -165,7 +165,7 @@ func requireNotCounted(t *testing.T, check liveCheckAnswer, id, reason string) {
 }
 
 func TestAGraphCheckReadsTheCurrentDeployAsProductionDoes(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it swaps pmdoc's schema manifest for the whole process (useTheNextReleasesManifest, pmdoc.UseManifestForTest).
 	for _, subject := range []string{"production", "graph"} {
 		t.Run(subject, func(t *testing.T) {
 			rig := newAfterMergeRig(t)

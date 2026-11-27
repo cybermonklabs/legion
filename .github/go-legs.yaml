@@ -420,6 +420,7 @@ packages/envoy:
       - internal/clock
       - internal/clock/clocktest
       - internal/shapetest
+      - testparallel
   # envoy-go-race (.github/workflows/ci-job-envoy-go-race.yaml, job envoy-go-race-legs): under the
   # race detector, the packages of ci_job_reads.py's ENVOY_RACE_LANE entry for envoy-go-race.
   envoy-go-race:

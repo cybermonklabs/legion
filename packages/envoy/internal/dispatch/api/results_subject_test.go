@@ -34,7 +34,7 @@ const subjectChecks = ":::check{#k5 when=\"after_merge\" subject=\"production\" 
 //
 // It stays serial: the manifest is the package's, and every other test reads it.
 func TestACheckBlockServesItsSubjectAndProgram(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it swaps pmdoc's schema manifest for the whole process (useTheNextReleasesManifest, pmdoc.UseManifestForTest).
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESSP", "Subject and program", "A spec\n")
 	owner := "/api/v1/issues/" + issue.Key
