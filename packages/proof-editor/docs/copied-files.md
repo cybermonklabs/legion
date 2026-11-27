@@ -116,6 +116,22 @@ Biome's formatter, linter and `assist` are off over the copies, in the first ove
 
     `src/tests/element-option.test.ts` exercises the target's type and `blockId`, both places a host installs plugins, the old cursor install, and the refusal to rebind a full-document editor.
 
+    Decision 551's cut adds 6 lines to `src/lib.ts` beyond the lines above and rewrites none (`+6 / −0`); each acts only where `element` is given, so an editor made without it builds as before:
+
+    | Lines after the cut | Count | Change |
+    | --- | ---: | --- |
+    | 35 | 1 added | Import `createBlockBuildTiming` from `./block-build-timing`. |
+    | 460 | 1 added | Make the build's timing (`blockBuild`) for a block editor alone; it is `undefined` without `element`. |
+    | 542 | 1 added | Install its plugin, which gates Milkdown's dependency timers. |
+    | 593 | 1 added | Yield after `.create()`, before the parser guards and the view's setup (the `view setup` phase). |
+    | 611 | 1 added | Yield after `applyAccess`, before the collaboration binding (the `collaboration` phase). |
+    | 660 | 1 added | End the last phase's measure before the handle is returned. |
+
+    `src/block-build-timing.ts`, Dispatch's own file beside the copies, adds a gate to each of Milkdown's `initTimerCtx`, `schemaTimerCtx`, `editorStateTimerCtx` and `editorViewTimerCtx` and releases it in a task of its own, by a zero-delay timer, once every other timer in that list has resolved; Milkdown's plugins and their order are unchanged.
+    Each phase records one `block-editor-task` measure, from when its task begins to the next yield.
+    A hidden page releases each phase at once, with its measure: browsers run a hidden page's timers at most once a second, and Milkdown fails a timer still waited for 3 s after its first wait.
+    `src/tests/block-build-timing.test.ts` holds a build with `element`, a build without it, and a build on a hidden page.
+
     A collaborator's caret label in a single-block editor hangs below its caret's line where it would pass the top of the editable, since the host draws that editor in a box of the block's own height (the issue page's row, R7); an editor whose root is `doc` places every label as before.
     `src/lib.css` adds 9 lines: the `.proof-collab-cursor__label--below` rule, `top: 100%`, with its comment.
     `src/collab-cursor-plugin.ts`, Dispatch's own file beside the copies, adds 24 lines and rewrites none: the class's name, the doc comment's paragraph, the read of each label's place before any class is written (`hangsAbove`, read from the caret and the label's own height, so the class it sets does not change what it reads), and the class's write, for an editor whose root is no `doc` alone.

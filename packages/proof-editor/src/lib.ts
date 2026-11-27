@@ -32,6 +32,7 @@ import {
   type HostBlockRenderer,
 } from './block-schema';
 import { createTypedBlockCommands, type TypedBlockCommands } from './typed-block-commands';
+import { createBlockBuildTiming } from './block-build-timing';
 import {
   Editor,
   rootCtx,
@@ -456,6 +457,7 @@ export async function createProofEditor(
   let alive = true;
   const heatMapMode: HeatMapMode = opts.heatMapMode ?? 'background';
   const proofMarks = opts.proofMarks ?? true;
+  const blockBuild = opts.element === undefined ? undefined : createBlockBuildTiming();
 
   const builder = Editor.make()
     .config((ctx) => {
@@ -537,6 +539,7 @@ export async function createProofEditor(
   if (proofMarks) builder.use(dispatchActionBarPlugin({ by: opts.user.name, onMarkAction: opts.onMarkAction }));
 
   const editor = await builder
+    .use(blockBuild ? blockBuild.plugin : [])
     .use(findHighlightsPlugin)
     .use(taskCheckboxesPlugin)
     .use(mermaidCodeBlockPlugin(opts.drawMermaid))
@@ -587,6 +590,7 @@ export async function createProofEditor(
       }
     })
     .create();
+  if (blockBuild) await blockBuild.nextTask('view setup');
 
   editor.action((ctx) => {
     installSelfHealingParser(ctx);
@@ -604,6 +608,7 @@ export async function createProofEditor(
     view.setProps({ editable: () => access === 'edit' });
   };
   applyAccess(currentAccess);
+  if (blockBuild) await blockBuild.nextTask('collaboration');
 
   // --- Collab binding -------------------------------------------------
   // Adapted from ProofEditorImpl's initFromShare() collab-activation block.
@@ -652,6 +657,7 @@ export async function createProofEditor(
   // other signal. A call before the first destroy, and every call after it, answers this.
   let torndown: Promise<void> = Promise.resolve();
 
+  blockBuild?.finish();
   return {
     view,
     rebindElement(element, awareness = null): void {
