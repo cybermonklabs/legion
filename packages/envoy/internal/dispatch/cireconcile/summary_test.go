@@ -108,12 +108,18 @@ func (h *harness) noSettlementAt(sub *nats.Subscription, why, owner, repo, numbe
 			if err != nil {
 				h.t.Fatal(err)
 			}
-			if bytes.Equal(got, want) && completed >= note.pass && note.kind != "debounce" && (h.verify || note.kind != "claim") {
-				if note.kind == "attempt" {
+			if bytes.Equal(got, want) && completed >= note.pass {
+				switch note.kind {
+				case "attempt":
 					h.t.Fatalf("%s: the summary loop scheduled a settlement of the durable record: %+v", why, durable)
+				case "debounce", "claim":
+					// A debounce or non-verify claim window is only a transient wait.
+				case "verify", "idle", "not-ready", "retry", "held", "stuck":
+					h.requireNoQueuedSettlement(sub, why)
+					return
+				default:
+					h.t.Fatalf("%s: unknown scheduler verdict %q", why, note.kind)
 				}
-				h.requireNoQueuedSettlement(sub, why)
-				return
 			}
 		}
 		select {

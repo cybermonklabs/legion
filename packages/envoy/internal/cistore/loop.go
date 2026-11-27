@@ -184,44 +184,85 @@ const (
 	verdictAttempt
 )
 
+type scheduleReason uint8
+
+const (
+	reasonIdle scheduleReason = iota
+	reasonRetry
+	reasonNotReady
+	reasonDebounce
+	reasonHeld
+	reasonStuck
+	reasonClaim
+	reasonVerify
+	reasonAttempt
+)
+
+func (r scheduleReason) String() string {
+	switch r {
+	case reasonIdle:
+		return "idle"
+	case reasonRetry:
+		return "retry"
+	case reasonNotReady:
+		return "not-ready"
+	case reasonDebounce:
+		return "debounce"
+	case reasonHeld:
+		return "held"
+	case reasonStuck:
+		return "stuck"
+	case reasonClaim:
+		return "claim"
+	case reasonVerify:
+		return "verify"
+	case reasonAttempt:
+		return "attempt"
+	}
+	return "unknown"
+}
+
 // schedule returns the verdict on st at now, in wall-clock milliseconds, and for verdictWait the
 // first millisecond at which the verdict changes. A record is attempted exactly when it is due
 // and carries no fresh claim, held exactly when it is unsettled, ready and legacyBacklog holds
 // it, and stuck exactly when it is unsettled, not ready and quiet for heldAfter (heldLineAt); an
 // unsettled record that is not ready waits until then, and so does one given up (verifyStopped)
 // until its backoff runs out.
-func schedule(st State, now int64, debounce time.Duration) (verdict, int64) {
+func schedule(st State, now int64, debounce time.Duration) (verdict, int64, scheduleReason) {
 	if st.SettledEmitted {
-		return verdictIdle, 0
+		return verdictIdle, 0, reasonIdle
 	}
 	if verifyStopped(st, now) {
 		// The settlement episode was given up unanswered (giveUp): the next starts once its
 		// backoff runs out, and after a give-up for good only a change of the record starts one.
 		if st.VerifyRetryAt == 0 {
-			return verdictIdle, 0
+			return verdictIdle, 0, reasonIdle
 		}
-		return verdictWait, st.VerifyRetryAt
+		return verdictWait, st.VerifyRetryAt, reasonRetry
 	}
 	if !settlementReady(st) {
 		if at := heldLineAt(st); now < at {
-			return verdictWait, at
+			return verdictWait, at, reasonNotReady
 		}
-		return verdictStuck, 0
+		return verdictStuck, 0, reasonStuck
 	}
 	if d := st.LastEventAt + debounce.Milliseconds(); now < d {
-		return verdictWait, d
+		return verdictWait, d, reasonDebounce
 	}
 	if legacyBacklog(st, now, debounce) {
-		return verdictHeld, 0
+		return verdictHeld, 0, reasonHeld
 	}
 	if claimFresh(st, now, debounce) {
 		at := st.Claim.ClaimedAt + claimWindow(st.Claim, debounce).Milliseconds() + 1
 		if g := st.LastEventAt + (debounce + handoverGrace).Milliseconds(); st.Schema == 0 && g < at {
 			at = g
 		}
-		return verdictWait, at
+		if st.Claim.Verify {
+			return verdictWait, at, reasonVerify
+		}
+		return verdictWait, at, reasonClaim
 	}
-	return verdictAttempt, 0
+	return verdictAttempt, 0, reasonAttempt
 }
 
 // queueEntry is a record's entry in the summarizer's queue: the pass at or after at (wall-clock
@@ -428,29 +469,9 @@ func (z *summarizer) fileLocked(logger *logging.Logger, key string, now int64) (
 		delete(z.heldLogged, key)
 		return State{}, false
 	}
-	v, at := schedule(st, now, z.debounce)
+	v, at, reason := schedule(st, now, z.debounce)
 	if z.scheduled != nil {
-		kind := "idle"
-		switch v {
-		case verdictAttempt:
-			kind = "attempt"
-		case verdictHeld:
-			kind = "held"
-		case verdictStuck:
-			kind = "stuck"
-		case verdictWait:
-			switch {
-			case verifyStopped(st, now):
-				kind = "retry"
-			case !settlementReady(st):
-				kind = "not-ready"
-			case now < st.LastEventAt+z.debounce.Milliseconds():
-				kind = "debounce"
-			default:
-				kind = "claim"
-			}
-		}
-		z.scheduled(z.passID, key, st, kind, at)
+		z.scheduled(z.passID, key, st, reason.String(), at)
 	}
 	switch v {
 	case verdictIdle:

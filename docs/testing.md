@@ -818,9 +818,10 @@ Each harness has its own database, GitHub stand-in and NATS account on the packa
 server. Tests give the reconciler a `clocktest.Fake` through its unexported `clock.Clock` field.
 The harness's wrapper checks the configured `PassTimeout`; the fake preserves
 `context.DeadlineExceeded`. Pacing tests use the same clock for query durations, request gaps and
-pass deadlines, and check the exact production gaps. Settlement tests wait for the summary
-loop's decision on the durable record, rather than a quiet window. Those tests run beside the
-others. One deadline control keeps the real timer and stays serial.
+pass deadlines, and check the exact production gaps. Settlement tests request a fresh summary
+pass, match its decision to the durable record, and wait for that pass to finish before checking
+NATS. Filing alone precedes verify-mode publication and is not an absence witness. These tests
+run beside the others. One deadline control keeps the real timer and stays serial.
 
 A test stays serial when it, or a helper it calls, changes something the whole test process
 shares: the environment (`t.Setenv`, and the S3 helpers `filestest.ServeS3` and `tests3.Start`

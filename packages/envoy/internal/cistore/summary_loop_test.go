@@ -108,7 +108,7 @@ func TestScheduleMatchesThePredicates(t *testing.T) {
 			seen := map[verdict]bool{}
 			for _, mark := range marks {
 				for now := mark - 50; now <= mark+50; now++ {
-					v, at := schedule(tc.st, now, tc.debounce)
+					v, at, _ := schedule(tc.st, now, tc.debounce)
 					seen[v] = true
 					p := predicatesAt(tc.st, now, tc.debounce)
 					if attempt := p.due && !p.claimFresh; (v == verdictAttempt) != attempt {
@@ -136,10 +136,10 @@ func TestScheduleMatchesThePredicates(t *testing.T) {
 						if at <= now {
 							t.Fatalf("at %d: schedule waits until %d, not a later millisecond", now, at)
 						}
-						if before, beforeAt := schedule(tc.st, at-1, tc.debounce); before != verdictWait || beforeAt != at {
+						if before, beforeAt, _ := schedule(tc.st, at-1, tc.debounce); before != verdictWait || beforeAt != at {
 							t.Fatalf("at %d: schedule waits until %d, but at %d it is %s until %d", now, at, at-1, verdictNames[before], beforeAt)
 						}
-						if after, afterAt := schedule(tc.st, at, tc.debounce); after == verdictWait && afterAt == at {
+						if after, afterAt, _ := schedule(tc.st, at, tc.debounce); after == verdictWait && afterAt == at {
 							t.Fatalf("at %d: schedule waits until %d, and at %d it still waits until %d", now, at, at, afterAt)
 						}
 						if before, after := predicatesAt(tc.st, at-1, tc.debounce), predicatesAt(tc.st, at, tc.debounce); before == after {
