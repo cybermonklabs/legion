@@ -55,6 +55,11 @@ const (
 	doneByChecksGearsPull     = 62
 	doneByChecksGearsHead     = "de7f00d5a1b2c3d4e5f60718293a4b5c6d7e8f62"
 	doneByChecksGearsMerge    = "3e46e00000000000000000000000000000000062"
+	// The pull request of the sixth issue, in the run whose project runs no production check: its
+	// number, its head and its merge. Its next change opens doneByChecksSecondPull.
+	doneByChecksPinsPull  = 71
+	doneByChecksPinsHead  = "fe7f00d5a1b2c3d4e5f60718293a4b5c6d7e8f71"
+	doneByChecksPinsMerge = "3e46e00000000000000000000000000000000071"
 	// doneByChecksOpenItems is the issue's own document that its check after the merge reads, and
 	// doneByChecksOpenItemsCheck that check.
 	doneByChecksOpenItems      = "open-items.md"
@@ -93,10 +98,11 @@ const (
 // verifying, with no slot and the status testing, and its production check's first look stays
 // open with no report. A fail of the check after the merge, at a commit of main that holds the
 // merge, starts its next change: generation 2 on the same branch, moved to main's head, with the
-// working copy started at the branch before its first task, which names the check. With the next
-// change's pull request open, the production check of the first merge reports pass on that look,
-// and both checks pass, the one before the merge at the change's own head: the open change alone
-// holds the close. The change merges. Its own production check opens, a pass of the check after
+// working copy started at the branch before its first task, which names the check. The change
+// closes the first merge's production check as not run, so the tester's report on its look 1 is
+// refused. With the change's pull request open, both checks pass, the one before the merge at the
+// change's own head: the open change holds the close, and the production term waits for the
+// change's own check. The change merges. Its own production check opens, a pass of the check after
 // the merge at a commit that holds the second merge is recorded, the check reports pass, and the
 // issue closes, marked closed on its checks. A fail after the close tells the controller once and
 // reopens nothing. The daemon posts no message on the issue from its entry into verifying to its
@@ -108,8 +114,12 @@ const (
 // fifth issue is the third's child: the architect that owns it sets it done after its merge, while
 // its check after the merge has no pass, and the daemon sets that back and tells the architect.
 //
-// The second run's project runs no production check, and its one issue, the fourth, has no
-// Verification document: it closes at the first read after its merge.
+// The second run's project runs no production check. Its fourth issue has no Verification
+// document: it closes at the first read after its merge. Its sixth issue holds both checks, and a
+// fail after its merge starts its next change. With that change's pull request open, each check
+// passes and no production term stands, so the open change is the one term that holds the close
+// (v-done's second control). The issue stays in its change, and closes once the change merged and
+// its check after the merge passed at a commit that holds the second merge.
 func TestAnIssueClosesWhenTheChecksOfItsGoalPass(t *testing.T) {
 	t.Parallel()
 	t.Run("a project that runs a production check", func(t *testing.T) {
@@ -138,8 +148,9 @@ func TestAnIssueClosesWhenTheChecksOfItsGoalPass(t *testing.T) {
 		t.Parallel()
 		r := newDoneByChecksRigWith(t, doneByChecksOptions{issues: []doneByChecksIssueSpec{
 			{title: "Levers report no checks", number: doneByChecksPull, head: stepRecordsHead},
+			{title: "Pins hold while their change is open", verification: doneByChecksBothChecks, number: doneByChecksPinsPull, head: doneByChecksPinsHead},
 		}})
-		fourth := r.key
+		fourth, sixth := r.issues[0].key, r.issues[1].key
 		r.walkToMerging(doneByChecksPull, stepRecordsHead)
 		merged := r.mergeOf(fourth, doneByChecksPull, doneByChecksMergeCommit)
 		read := r.awaitCloseRead(fourth, "the merge of the fourth issue", merged, func(read doneByChecksRead) error {
@@ -154,6 +165,7 @@ func TestAnIssueClosesWhenTheChecksOfItsGoalPass(t *testing.T) {
 			t.Fatalf("%s closed on its checks at %v, want a close at the read stored at %s", fourth, row.ClosedOnChecksAt, read.recordedAt)
 		}
 		t.Logf("%s closed on its checks at %s, at the first read after its merge", fourth, row.ClosedOnChecksAt.UTC().Format(time.RFC3339Nano))
+		sixthHeldByItsOpenChange(r, sixth)
 	})
 }
 
@@ -297,9 +309,11 @@ func secondClosesAtItsProductionPass(r *doneByChecksRig, second string) {
 
 // fifthSetBack is the fifth issue, a child a person files under the third once the third waits in
 // verifying, walked from its first phase to its merge, its pull request approved and signed off by
-// the tree's architect. Then that architect's done on it, while its check after the merge has no
-// pass: the daemon sets the done back, the child stays in verifying with the status testing, and
-// the architect is told why. It answers the fifth issue's key.
+// the tree's architect. The daemon gives the child an architect of its own, which owns it: each
+// notice of the child reaches that architect while its claim holds its role. Then that architect's
+// done on it, while its check after the merge has no pass: the daemon sets the done back, the
+// child stays in verifying with the status testing, and the architect is told why. It answers the
+// fifth issue's key.
 func fifthSetBack(r *doneByChecksRig, third string) string {
 	t := r.t
 	t.Helper()
@@ -317,7 +331,7 @@ func fifthSetBack(r *doneByChecksRig, third string) string {
 	r.awaitIssue(fifth, "its merge", inVerifying)
 	told := func() int {
 		count := 0
-		for _, notice := range r.architectNotices(third, "close-waits") {
+		for _, notice := range r.architectNotices(fifth, "close-waits") {
 			if strings.Contains(notice.Payload, fifth) {
 				count++
 			}
@@ -326,18 +340,18 @@ func fifthSetBack(r *doneByChecksRig, third string) string {
 	}
 	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the close-waits notice of "+fifth+"'s entry into verifying", func() bool { return told() > 0 })
 	before := told()
-	architect := r.worker(claim.RoleArchitect)
+	architect := r.workerOf(fifth, claim.RoleArchitect)
 	seq := r.sessionStatus(fifth, architect, record.DoneStatus)
 	r.awaitApplied("the owning architect's done on "+fifth, fifth, func(event doneByChecksEvent) bool { return event.Seq == seq })
 	r.awaitIssue(fifth, "the architect's done", inVerifying)
-	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the architect of "+third+" told why "+fifth+" stays open", func() bool { return told() > before })
+	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the architect of "+fifth+" told why it stays open", func() bool { return told() > before })
 	var status struct {
 		Status string `json:"status"`
 	}
 	testwait.WithinPolling(t, stepRecordsWait, 200*time.Millisecond, "Dispatch's status of "+fifth+" set back to testing", func() bool {
 		return r.personRead("/api/v1/issues/"+fifth, &status) == nil && status.Status == "testing"
 	})
-	t.Logf("the architect's done on %s set back: Dispatch shows it %s, and %s's architect holds %d close-waits notices naming it", fifth, status.Status, third, told())
+	t.Logf("the architect's done on %s set back: Dispatch shows it %s, and its own architect %s holds %d close-waits notices naming it", fifth, status.Status, architect.token, told())
 	return fifth
 }
 
@@ -532,6 +546,116 @@ func thirdWaitsForTheFifth(r *doneByChecksRig, third, fifth string) {
 		}
 		return nil
 	})
+}
+
+// sixthHeldByItsOpenChange is the sixth issue, in the project that runs no production check: v-done's
+// pass while the next change is open, where the open change is the one term that holds the close.
+// The issue merges, and a fail of its check after the merge starts its next change, which opens its
+// pull request. Then each check passes, the one before the merge at the change's own head. Nothing
+// is beneath it, no defect is reported, and no production term stands, so only the open change
+// holds the close: the issue stays in its change. The code holds that change open by one rule: a
+// change that opened a pull request of its own generation does not end when its reasons are
+// resolved (workflow's changeOpenedNoPullRequest), and v-done's second control takes that rule out.
+// The change then merges, a pass of the check after the merge at a commit that holds the second
+// merge is recorded, and the issue closes at the read after it.
+func sixthHeldByItsOpenChange(r *doneByChecksRig, sixth string) {
+	t := r.t
+	t.Helper()
+	r.on(sixth)
+	r.walkPlanning()
+	r.walkImplementing(doneByChecksPinsHead)
+	r.walkTesting()
+	r.recordCheck(doneByChecksBeforeCheck, "pass", doneByChecksPinsHead)
+	r.walkReview(doneByChecksPinsPull, doneByChecksPinsHead)
+	r.walkSignOff()
+	r.walkRetro(doneByChecksPinsHead)
+	merged, status, body := r.mergeAndComplete(doneByChecksPinsPull, doneByChecksPinsMerge)
+	if status != http.StatusOK {
+		t.Fatalf("the merger's completion of %s in verifying = %d %s, want 200", sixth, status, body)
+	}
+	r.awaitCloseRead(sixth, "the sixth issue's merge", merged, namesMerge(doneByChecksCheck, doneByChecksPinsMerge))
+	r.awaitIssue(sixth, "its merge", inVerifying)
+
+	failed := r.awaitResultFact(r.record("fail", r.standIn.commitOnMain(doneByChecksLaterCommit)))
+	r.awaitCloseRead(sixth, "the fail", failed, func(read doneByChecksRead) error {
+		if block, held := read.check(doneByChecksCheck); !held || block.PassStands.Reason != dispatch.PassStandsReasonFail {
+			return fmt.Errorf("%s answers %+v, want no for reason fail", doneByChecksCheck, block.PassStands)
+		}
+		return nil
+	})
+	r.awaitIssue(sixth, "the fail: the next change's start", func(issue api.Issue) error {
+		if issue.Generation != 2 {
+			return fmt.Errorf("it stands at generation %d in %s, want generation 2", issue.Generation, issue.Phase)
+		}
+		return nil
+	})
+	r.walkPlanning()
+	r.standIn.open(doneByChecksSecondPull, claim.IssueBranch(sixth), doneByChecksSecondHead)
+	opened := r.publishPull(doneByChecksSecondPull, "opened")
+	r.awaitProcessed("github", opened)
+	r.awaitAnswerOf(doneByChecksBeforeCheck, fmt.Sprintf("#%d opened", doneByChecksSecondPull), subjectNamed(doneByChecksSecondHead))
+
+	passBefore := r.recordCheck(doneByChecksBeforeCheck, "pass", doneByChecksSecondHead)
+	passAfter := r.record("pass", r.standIn.commitOnMain(doneByChecksPassCommit))
+	both := r.awaitResultFact(passBefore)
+	if at := r.awaitResultFact(passAfter); at.After(both) {
+		both = at
+	}
+	r.awaitCloseRead(sixth, "both passes", both, func(read doneByChecksRead) error {
+		for _, check := range []string{doneByChecksBeforeCheck, doneByChecksCheck} {
+			if block, held := read.check(check); !held || block.PassStands.Answer != dispatch.PassStandsYes {
+				return fmt.Errorf("%s answers %+v, want yes", check, block.PassStands)
+			}
+		}
+		return nil
+	})
+	r.awaitIssue(sixth, "each check passing while its change's pull request is open", func(issue api.Issue) error {
+		switch {
+		case issue.Phase == phase.Done:
+			return fmt.Errorf("it closed at generation %d while its next change's pull request #%d is open", issue.Generation, doneByChecksSecondPull)
+		case issue.Phase == phase.Verifying:
+			return fmt.Errorf("its next change ended at generation %d while its pull request #%d is open, and it stands in verifying", issue.Generation, doneByChecksSecondPull)
+		case issue.Generation != 2:
+			return fmt.Errorf("it stands in %s at generation %d, want generation 2 in a phase of its change", issue.Phase, issue.Generation)
+		}
+		return nil
+	})
+	wait := r.storedWait(sixth)
+	if len(wait.Checks) != 0 || len(wait.Beneath) != 0 || len(wait.OpenChildren) != 0 || len(wait.Defects) != 0 || wait.Production != nil ||
+		wait.Unread != nil || wait.Unapproved != nil || wait.NextChange == nil || wait.NextChange.Generation != 2 {
+		t.Fatalf("%s's stored wait with each check passing is %+v, want its open change 2 and no other term", sixth, wait)
+	}
+	t.Logf("%s stays in %s at generation 2 with #%d open and each check passing: its stored wait names the open change alone", sixth,
+		r.d.state().Issues[sixth].Phase, doneByChecksSecondPull)
+
+	r.walkImplementing(doneByChecksSecondHead)
+	r.walkTesting()
+	r.walkReview(doneByChecksSecondPull, doneByChecksSecondHead)
+	r.walkSignOff()
+	r.walkRetro(doneByChecksSecondHead)
+	merged, status, body = r.mergeAndComplete(doneByChecksSecondPull, doneByChecksSecondMerge)
+	if status != http.StatusOK {
+		t.Fatalf("the merger's completion of the change of %s in verifying = %d %s, want 200", sixth, status, body)
+	}
+	r.awaitCloseRead(sixth, "the second merge", merged, func(read doneByChecksRead) error {
+		block, held := read.check(doneByChecksCheck)
+		switch {
+		case !held || mainMergeCommit(block) != doneByChecksSecondMerge:
+			return fmt.Errorf("%s's branch basis of main names merge_commit %q, want %s", doneByChecksCheck, mainMergeCommit(block), doneByChecksSecondMerge)
+		case block.PassStands.Answer != dispatch.PassStandsNo || block.PassStands.Reason != dispatch.PassStandsReasonNoResult:
+			return fmt.Errorf("%s answers %+v, want no for reason no_result: its pass does not hold the second merge", doneByChecksCheck, block.PassStands)
+		}
+		return nil
+	})
+	r.awaitIssue(sixth, "the second merge", inVerifying)
+	passed := r.awaitResultFact(r.record("pass", r.standIn.commitOnMain(doneByChecksSecondPassCommit)))
+	r.awaitCloseRead(sixth, "the pass at the second merge", passed, func(read doneByChecksRead) error {
+		if block, held := read.check(doneByChecksCheck); !held || block.PassStands.Answer != dispatch.PassStandsYes {
+			return fmt.Errorf("%s answers %+v, want yes", doneByChecksCheck, block.PassStands)
+		}
+		return nil
+	})
+	r.awaitIssue(sixth, "the pass at the second merge", inPhase(phase.Done))
 }
 
 // c-before-merge-next-head (plan Task 11b, Step 2). An issue merges with its check before the merge
