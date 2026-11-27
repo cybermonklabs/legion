@@ -532,6 +532,12 @@ export interface RefPickerWords {
   /** What the state mark before the agent a party's row names says (`AgentName`'s
    *  `stateWords`); with none - `REF_PICKER_DEFAULT_WORDS` gives none - `AgentName`'s own. */
   readonly marks?: AgentStateWords;
+  /** What a party's row names its agent by, as the image the row draws that agent as
+   *  (`RowAgent`) and at the head of a role's detail: `"shown"`, the name the row draws
+   *  (`AgentText.sessionShown`), which inside `NoTooltips` is the page's word for a session nobody
+   *  titled; with none - `REF_PICKER_DEFAULT_WORDS` gives none - the session's text
+   *  (`AgentText.sessionText`), its short form `session:<8>…` for a session nobody titled. */
+  readonly sessionNames?: "shown";
 }
 
 /** The picker's own words, which every host but the issue page's box draws: the constants above,
