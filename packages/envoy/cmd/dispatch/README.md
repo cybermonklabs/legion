@@ -5078,11 +5078,8 @@ The reasons, which `asof.AbsentFields` gives for each member:
   An event log's ask events keep their wording, which is each event's own record.
   `GET /api/v1/asks/open` leaves out no wording: the restore writes only an ask decided before the edit that it undoes, so the record gives the wording of each ask open at the cut.
 
-- A check's version and digest, and whether a check's words moved after a result, come from the block index: no event records them for a version of the Verification document that `document_indexed_versions` does not hold.
-  The digest is computed from the version at the cut, and a re-index of that version in place can change the digest the block index holds with no new version and no record of the digest or the time (`refs.BlockIndexing.KeepRespelled`).
-  So the answer gives a check's `sha256`, and whether the words of each of its results moved, only where the block index holds that version now (`document_block_versions`) with that same digest of the check (`document_blocks.text_sha256`).
-  Everywhere else it leaves out both and keeps the check's `version`: where the block index holds another digest of the check or none, a later version, or no version, as for a document owed its index.
-  A version that this build's renderer writes back as it is stored is no exception: that shows the digest this renderer gives, not the digest that a re-index before the cut wrote.
+- A check's version and digest, and whether a check's words moved after a result, come from the block index, which can be written after the version is saved: a write leaves it to the block-index reconciliation for a version of more than 2,000 blocks or whose tree does not render as its markdown, and the reconciliation re-indexes a version in place.
+  No record gives the time of that write, so an answer at any cut leaves out each check's `version` and `sha256` and each result's `check_words_moved`, whatever the block index holds.
 
 - An ask's part ids and revision come from the block index now, which raises the revision with no event when it re-indexes the ask's parts.
   So they stand only for an ask that did not change after the cut, whose wording at the cut a record gives, and whose newest event at the cut, as the event log stores it, holds that same revision and the part id of each of its options and of its answer (`asof.AskPartsAtTheCutStatement`).

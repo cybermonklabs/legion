@@ -16,11 +16,10 @@ body: |-
   A search at a past time reads the text that each item had at that time, from the keyword table
   of past text. It is `409 AS_OF_SEARCH_NOT_FILLED` until the fill of that table reaches the cut.
 
-  Check results at a cut give a check's `sha256`, and whether the words of each of its results
-  moved (`check_words_moved`), only where the block index holds the saved version at the cut now
-  and the same digest for that check. Everywhere else, a later version in the block index
-  included, Dispatch leaves out both and names them in `Dispatch-As-Of-Absent`. It still gives
-  the check's changed version.
+  Check results at a cut leave out each check's `version` and `sha256`, and whether the words of
+  each of its results moved (`check_words_moved`), and name them in `Dispatch-As-Of-Absent`: the
+  block index of a version can be written after the version is saved, and no record gives the
+  time of that write.
 
   The backfill of anchor blocks (`backfill-anchor-blocks`) writes a block id into the anchor of a
   comment or an ask with no event. Where the anchor of an item's newest event at a cut names no

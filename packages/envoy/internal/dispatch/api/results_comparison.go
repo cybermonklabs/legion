@@ -344,7 +344,7 @@ func (c *comparisonReader) answer(ctx context.Context, check *model.CheckBlock) 
 
 // checkWordsMoved reports whether check's words moved after result was recorded: both the digest
 // and the changed version differ, so a check that another renderer version spelled and whose
-// version stayed (refs.BlockIndexing.KeepRespelled) reads false, at the present and at a cut
+// version stayed (refs.BlockIndexing.KeepRespelled) reads false. A read at a cut leaves it out
 // (checksAtTheCut).
 func checkWordsMoved(check *model.CheckBlock, result *model.CheckResult) bool {
 	return check.SHA256 != result.CheckSHA256 && check.Version != result.CheckVersion

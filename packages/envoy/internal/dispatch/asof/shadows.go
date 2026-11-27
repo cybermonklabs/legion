@@ -277,13 +277,7 @@ var CutReadTables = map[string]string{
 		"and the blocks of a message deleted at any time, whose blocks read removed with no text as the message reads deleted at the cut: " +
 		"the block index rewrites a message's blocks with no event, so an answer leaves out the text of every other block that a reply names, and whether it is removed.",
 	"document_blocks": "Only the nodes of a document whose newest version at the cut is its present newest version: " +
-		"a search at a cut leaves out the href of an ask hit whose typed block is in a document that changed after the cut. " +
-		"And only the digests of the checks of a Verification document whose blocks the index holds now at its newest version at the cut " +
-		"(document_block_versions): a read of the results at a cut gives a check's digest only where the digest of that version " +
-		"equals the digest the index holds now for the check, and leaves it out everywhere else.",
-	"document_block_versions": "Only whether the block index holds now the blocks of the document's newest version at the cut, " +
-		"which a read of the results at a cut reads with the digests of that version's checks (document_blocks): " +
-		"where the index holds a later version, or none, the read reads no digest and gives none.",
+		"a search at a cut leaves out the href of an ask hit whose typed block is in a document that changed after the cut.",
 	"document_block_texts": "Only the rows of the document's version at the cut, " +
 		"for a version that document_indexed_versions holds.",
 	"document_indexed_versions": "Only the rows of the document's version at the cut.",

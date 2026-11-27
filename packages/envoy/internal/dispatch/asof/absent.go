@@ -43,14 +43,9 @@ const (
 	reasonUntypedBlockID = "A stored document version records the id of a typed block only. " +
 		"The block index gives the id of an untyped block only for a version that document_indexed_versions holds, " +
 		"and only where no other block of that version has the same text. It gives no id of a table row or a table cell."
-	// E, for a check of the Verification document.
-	reasonUnindexedVersion = "No event records this field for a version that document_indexed_versions does not hold."
-	// E, for a check's digest and for whether a check's words moved, which compares that digest.
-	reasonReindexedDigest = reasonUnindexedVersion + " " +
-		"A re-index of a stored version in place can change the digest of a check, and no record gives the digest it wrote or the time of that re-index. " +
-		"So this field is given only where the block index holds now the version at the cut and, for the check, the digest of the check in that version. " +
-		"It is left out wherever the index holds another digest of the check or none, a later version, or no version, " +
-		"even where this build's renderer writes the stored version back as it is stored."
+	// E, for a check of the Verification document and for whether its words moved after a result.
+	reasonUndatedBlockIndex = "The block index can be written after a version is saved, and no record gives the time of that write. " +
+		"So at a cut no record gives a check's version, its digest, or whether its words moved after a result."
 	// E, for whether the mark of a comment's anchor was gone.
 	reasonAnchorOrphaned = "No record gives the time at which the mark of this anchor went out of the document. " +
 		"Only an anchor refresh event gives that time."
@@ -199,9 +194,9 @@ var AbsentFields = map[string][]AbsentField{
 		{"/checks/*/results/*/commit_stands", reasonGitHub},
 		{"/checks/*/results/*/currency", reasonGitHub},
 		{"/checks/*/results/*/not_counted", reasonCurrentDeploy},
-		{"/checks/*/version", reasonUnindexedVersion},
-		{"/checks/*/sha256", reasonReindexedDigest},
-		{"/checks/*/results/*/check_words_moved", reasonReindexedDigest},
+		{"/checks/*/version", reasonUndatedBlockIndex},
+		{"/checks/*/sha256", reasonUndatedBlockIndex},
+		{"/checks/*/results/*/check_words_moved", reasonUndatedBlockIndex},
 	},
 
 	"GET /api/v1/search":         searchFields(),

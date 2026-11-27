@@ -21,30 +21,23 @@ import (
 // do not give (leaveOut).
 
 // versionAtTheCutStatement reads the newest version of document $1 that the artifact_versions
-// shadow gives at the cut: its markdown, the document token that its writer stored with it, null
-// for a version stored with no token, and its number. A document with no version then reads no
-// row.
+// shadow gives at the cut: its markdown and the document token that its writer stored with it,
+// null for a version stored with no token. A document with no version then reads no row.
 const versionAtTheCutStatement = `
-		select coalesce(v.markdown, ''), v.document_token, v.number
+		select coalesce(v.markdown, ''), v.document_token
 		from artifact_versions v where v.artifact_id = $1
 		order by v.number desc limit 1`
 
 // blockIndexAtTheCutStatement reads what the block index recorded of the blocks of document $1's
 // newest version at the cut, N, which the artifact_versions shadow gives: each block id with the
-// latest row of document_block_texts at or before N. Its version is the version in which the text
-// of the block last changed at N, which document_blocks.changed_version held then, and its text
-// the text recorded at that version. That is the block's text in N, whose digest
-// document_blocks.text_sha256 held when N was indexed (refs.BlockTextSum), unless an index after
-// it wrote the block in this build's spelling of a tree that another renderer version recorded:
-// the index of a later version, or a re-index of N itself in place, which writes no version
-// (docs' indexOwedDocument). Such an index keeps the changed version, records no text and moves
-// the digest to the new spelling (refs.BlockIndexing.KeepRespelled, checkDigestsAtTheCut,
-// clearReindexedDigests). A version writes a row where it changes the text of a block, and a row
-// with no text where it deletes the block (refs.PlanBlocks): such a block is not read. The
-// statement reads the rows only where document_indexed_versions holds N: no record holds the
-// blocks of a version that no block-aware build indexed (migration 0121).
+// text of the latest row of document_block_texts at or before N, the text recorded at the version
+// in which the text of the block last changed at N. A version writes a row where it changes the
+// text of a block, and a row with no text where it deletes the block (refs.PlanBlocks): such a
+// block is not read. The statement reads the rows only where document_indexed_versions holds N: no
+// record holds the blocks of a version that no block-aware build indexed (migration 0121). The
+// read of the results at a cut takes no check's version or digest from it (checkBlocksAtTheCut).
 const blockIndexAtTheCutStatement = `
-		select t.block_id, t.version, t.text
+		select t.block_id, t.text
 		from (select max(v.number) as number from artifact_versions v where v.artifact_id = $1) n
 		cross join lateral (
 			select distinct on (b.block_id) b.block_id, b.version, b.text
@@ -55,41 +48,37 @@ const blockIndexAtTheCutStatement = `
 		where t.text is not null
 		  and exists (select 1 from document_indexed_versions i where i.artifact_id = $1 and i.version = n.number)`
 
-// blockIndex is what the block index recorded of the blocks of one version, by block id: the
-// text of each block, and the version in which that text last changed. number is the number of
-// that version, 0 for a document with no version.
+// blockIndex is what the block index recorded of the blocks of one version: the text of each
+// block, by block id.
 type blockIndex struct {
-	texts    map[string]string
-	versions map[string]int
-	number   int
+	texts map[string]string
 }
 
 // versionAtTheCut reads document artifactID's newest version at the cut ctx carries: its markdown
 // ("" for a document with no version then) and the document token stored with it (nil for none).
 // With blocks it also reads what the block index recorded of that version's blocks
-// (blockIndexAtTheCutStatement). The index carries the version's number either way. One batch
-// sends the statements; each caller names the batch's error.
+// (blockIndexAtTheCutStatement). One batch sends the statements; each caller names the batch's
+// error.
 func (s *server) versionAtTheCut(ctx context.Context, artifactID string, blocks bool) (string, *string, blockIndex, error) {
 	var markdown string
 	var token *string
 	var index blockIndex
 	batch := &pgx.Batch{}
 	batch.Queue(versionAtTheCutStatement, artifactID).QueryRow(func(row pgx.Row) error {
-		if err := row.Scan(&markdown, &token, &index.number); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		if err := row.Scan(&markdown, &token); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 		return nil
 	})
 	if blocks {
-		index.texts, index.versions = map[string]string{}, map[string]int{}
+		index.texts = map[string]string{}
 		batch.Queue(blockIndexAtTheCutStatement, artifactID).Query(func(rows pgx.Rows) error {
 			for rows.Next() {
 				var id, text string
-				var version int
-				if err := rows.Scan(&id, &version, &text); err != nil {
+				if err := rows.Scan(&id, &text); err != nil {
 					return err
 				}
-				index.texts[id], index.versions[id] = text, version
+				index.texts[id] = text
 			}
 			return rows.Err()
 		})
