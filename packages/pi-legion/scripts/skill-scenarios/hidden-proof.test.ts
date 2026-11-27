@@ -131,8 +131,9 @@ test("an answer after that is the answer before, unchanged, is a FAULT", () => {
 // Catches: a switch that also drops a field the agent must still read (commit_stands).
 test("an answer after that lacks one more field than the three is a FAULT", () => {
   const after = hiddenAnswer();
-  for (const result of after.checks[0]?.results as Record<string, unknown>[])
-    delete result.commit_stands;
+  const results = after.checks[0]?.results as Record<string, unknown>[] | undefined;
+  if (results === undefined) throw new Error("the answer before holds no check with results");
+  for (const result of results) delete result.commit_stands;
   const quiet = quietCheck(reads({ "after-curl": JSON.stringify(after) }));
   expect(quiet).toEqual({
     verdict: "FAULT",
