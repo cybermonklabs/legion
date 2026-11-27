@@ -760,7 +760,7 @@ Everything the run takes is its own, so two runs on one box
 
 - `XDG_STATE_HOME=<work>/xdg` — so the legions registry the run writes is its own, never the box's `~/.local/state/legion/legions.json`.
 
-- a per-run project key (`E2E<pid><epoch>`), and `E2E<pid><epoch>R` for the daemon behind the proxy
+- a per-run project key (`E2E` and the sum of the pid and the epoch, modulo 1,000,000), and that key with `R` after it for the daemon behind the proxy, each a Dispatch project key of at most ten characters, which is the one shape the loader takes
   — boots are counted per project, so a fresh key is what makes `boots == 1` true on a store that has served other runs, and the proxied daemon's boot is not counted in it.
 
 - a daemon port the kernel chose, held for the whole run by a keeper ([`lib/rig.sh`](#librigsh)'s `keep_port`, [`lib/held-port.py`](#libheld-portpy)):
@@ -902,7 +902,7 @@ What it stands up, all of it the run's own:
   The daemon resolves the secret at boot and writes it as a daemon-held 0600 file; every pane's shim exports it to OMP alone.
   The run never reads the value; it checks the length in OMP's environment.
 
-- **The daemon**: `legion.yaml` with a fresh project key per run (`S2E<pid><epoch>` — a retired claim is never spawned again, so a reused key would fail on a store that served an earlier run), a port the kernel chose, held for the whole run by a [`lib/held-port.py`](#libheld-portpy) keeper, which each start serves on (`LEGION_LISTEN_FD`;
+- **The daemon**: `legion.yaml` with a fresh project key per run (`S2E` and the sum of the pid and the epoch, modulo 10,000,000, a Dispatch project key of at most ten characters — a retired claim is never spawned again, so a reused key would fail on a store that served an earlier run), a port the kernel chose, held for the whole run by a [`lib/held-port.py`](#libheld-portpy) keeper, which each start serves on (`LEGION_LISTEN_FD`;
   the restart keeps it), as the second daemon's is by a keeper of its own, `probe_interval_seconds: 5`, and the operator token file `legion claims` presents.
   `XDG_STATE_HOME` and `TMUX_TMPDIR` point into the work directory, so the legions registry and the private tmux servers are the run's.
 
@@ -926,7 +926,7 @@ The checks, in order, each printing what it observed (`== <check>` … `ok <chec
 | `suspend-keeps-the-session` | `legion claims suspend`: `suspended`, no locator, the pane gone, the session and its file kept |
 | `resume-on-demand` | `legion claims resume`: `ready` at the next generation in a new pane, same session |
 | `stale-generation-hello-refused` | writes a hello carrying generation 1's boot token to `<state_dir>/worker-stream.sock`: the daemon closes it with nothing written and logs `rejected hello (stale worker generation)` |
-| `unregistered-agent-retired-at-the-deadline` | a second daemon whose `LEGION_OMP_PATH` stub answers the plugin gate and the boot's `config get retry.modelFallback --json`, and otherwise sleeps, with a 10 s registration deadline (5 s × 2): the claim's shim connects and its process lives, the agent never registers, and at the deadline the process is retired and one launch failure counted |
+| `unregistered-agent-retired-at-the-deadline` | a second daemon, with a project key of its own built as the first's is (`S2D` in place of `S2E`), whose `LEGION_OMP_PATH` stub answers the plugin gate and the boot's `config get retry.modelFallback --json`, and otherwise sleeps, with a 10 s registration deadline (5 s × 2): the claim's shim connects and its process lives, the agent never registers, and at the deadline the process is retired and one launch failure counted |
 | `restart-readopts-the-live-panes` | SIGTERM, then start again: `boots` +1, both claims keep their generation, incarnation and pane, no pane opens or closes, and a task delivered after the restart runs once — over the connection the shim's reconnect hello opened |
 | `omp-child-environment` | the boot log names the resolved pinned OMP binary for both probes and panes; the pane's process is `/bin/sh -c`; the one process below it that runs that exact executable is the pane's OMP ([`launched`](#libprocess-treesh)), and no process on the line up from it to the pane's shell runs the OMP wrapper that remains first on the ordinary daemon PATH; the pane's shell and that OMP carry all four XDG base directories under `<state_dir>/home` and no `DBUS_SESSION_BUS_ADDRESS` (LEGION-206 P1, with the gateway route in place); OMP carries `GEMINI_API_KEY` (length only) that its shim does not, and no `ANTHROPIC_API_KEY`, `GEMINI_API_KEY_TESTS`, `SOPS_AGE_KEY_FILE` or `SECRETSD_CONFIG` |
 | `stray-pane-reaped-after-the-grace` | opens a window marked as the daemon's (`@legion_owner`) holding no recorded pane, and an unmarked one beside it: the periodic orphan sweep (every 60 s, 120 s grace) reaps the marked one no sooner than 120 s after it opened, and keeps the unmarked window and both claims' panes |
