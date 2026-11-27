@@ -926,8 +926,7 @@ var routeShapes = map[string]routeShape{
 			{Status: http.StatusOK, Body: model.MessageDelivery{}},
 		},
 	},
-	// kept for one release: inbox-old-reads
-	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []openAskRow{}, Params: inboxQuery{}},
+	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []openAskRow{}, Params: inboxQuery{}}, // kept for one release: inbox-old-reads
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
 	"GET /api/v1/people/{login}/nodes": {Status: http.StatusOK, Response: personNodes{}, Params: myAnswersQuery{}},
 	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}}, // kept for one release: inbox-old-reads
