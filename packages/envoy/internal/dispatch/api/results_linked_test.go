@@ -81,7 +81,10 @@ func TestAFailedReadOfTheIssuesOwnRepositoryStillReadsTheLinks(t *testing.T) {
 	issue := issueInRepository(t, handler, "RELF", "acme/widgets", "Own repository unread").Key
 	uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", afterMergeAndDefaultChecks)
 	linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/9")
-	writeHeadOnBase(t, database, "acme/tools", 9, headCommit, "merged", "", "main")
+	// acme/tools#9 as a read of GitHub stores it, with texts that name no issue, so only the link
+	// names it as the issue's. R10 and R19 of the spec of several open pull requests: a row with no
+	// texts keeps the issue it stores, here none.
+	storeLinkedHeadOn(t, database, "acme/tools", 9, headCommit, "merged", "main")
 
 	_, toolsAsksBefore := linked.counts("acme/tools")
 	_, widgetsAsksBefore := linked.counts("acme/widgets")

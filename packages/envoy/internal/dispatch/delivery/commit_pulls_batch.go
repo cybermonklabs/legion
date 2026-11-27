@@ -58,13 +58,17 @@ type CommitPullsRead struct {
 
 // ReadThroughCommitsPulls teaches Dispatch the pull requests GitHub names for each of shas, in
 // repoFull, and stores each one's facts, as ReadThroughCommitPulls does for one commit: it
-// answers what each commit learned, by commit. A commit the read did not reach is absent from the
-// answer, and the error says why.
+// answers what each commit learned, by commit. Only a commit whose answer was stored in full is
+// in the answer. A commit the read did not reach is absent, and so is the commit whose answer it
+// could not store in full, whatever rows it wrote for it first, as ReadThroughCommitPulls answers
+// that commit with its error. The error says why, and only ErrReadThroughNotStored gives an absent
+// commit's claim back: a failure of GitHub's, its rate limit on a pull request's commit messages
+// among them, keeps it.
 //
 // The commits are asked in batches of CommitPullsBatch, each one query. A batch GitHub's answer
 // is too large for is split in two and asked again, and one commit whose answer alone is too
 // large is read over REST (readThroughCommitPulls), as the facts query falls back to a REST read
-// of one pull request. The first failure ends the read, with what the batches before it learned.
+// of one pull request. The first failure ends the read, with what the commits before it learned.
 //
 // A writer's read calls this. A read-only caller's read of an issue's results stores nothing and
 // calls AnswerCommitsPulls, which is this read with its writes kept for the request.
@@ -184,10 +188,12 @@ func (c *commitPullsRead) query(ctx context.Context, f facts, shas []string) err
 			continue
 		}
 		read, err := c.store(ctx, f, sha, pulls, began)
-		c.reads[sha] = read
 		if err != nil {
+			// sha's answer is not stored in full, so sha is no commit this read learned: it stays
+			// out of the answer, and its caller reads the error for it.
 			return err
 		}
+		c.reads[sha] = read
 	}
 	return nil
 }
@@ -196,10 +202,10 @@ func (c *commitPullsRead) query(ctx context.Context, f facts, shas []string) err
 // read-through, which asks for that commit's pull requests alone and stores them the same way.
 func (c *commitPullsRead) overREST(ctx context.Context, f facts, sha string) error {
 	written, atHead, err := c.attributor.readThroughCommitPulls(ctx, f, c.client, c.storedUnder, sha, c.now)
-	c.reads[sha] = CommitPullsRead{Written: written, AtHead: atHead}
 	if err != nil {
 		return fmt.Errorf("read the pull requests of %s@%s, whose answer is above the limit of one query: %w", c.canonical, sha, err)
 	}
+	c.reads[sha] = CommitPullsRead{Written: written, AtHead: atHead}
 	return nil
 }
 

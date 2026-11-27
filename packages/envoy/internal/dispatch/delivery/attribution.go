@@ -75,12 +75,14 @@ import (
 // AttributionRuleVersion is the rule the release before this one judges a pull request by and
 // stamps on pull_request_heads.attribution_rule as it reads GitHub: 6, its rule 2 with each merged
 // row's merge commit and merge time stored (it is 6, not 3, because cybermonklabs/legion#4230
-// numbers its own rules 3 to 5). This build judges no row by a number and stamps none: the
-// statement reads the texts at each read (attributedTerms), and the column is that release's alone
-// while it serves beside this one. So a merged row whose rule is below this number is one no read
-// of a release that stores merge times has stamped, a row this build inserted (rule 0) among them,
-// and a results read that must order merges and finds such a row with no merge time refreshes it
-// (api's fillMergeTimes).
+// numbers its own rules 3 to 5). This build judges no row by a number: the statement reads the
+// texts at each read (attributedTerms), and the column is that release's while it serves beside
+// this one. This build stamps it on one write alone, a read GitHub refused
+// (MarkPullRequestHeadChecked), as that release stamps one. So a merged row whose rule is below
+// this number is one that no read of a release that stores merge times has stamped, a row this
+// build inserted (rule 0) among them, and a results read that must order merges and finds such a
+// row with no merge time refreshes it (api's fillMergeTimes); a refused refresh stamps it, and no
+// later read asks GitHub for it again.
 const AttributionRuleVersion = 6
 
 // attributionSource names the source a pull request's issue came from.

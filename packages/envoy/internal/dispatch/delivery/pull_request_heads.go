@@ -898,12 +898,15 @@ func (a *Attributor) ListStalePullRequestHeads(ctx context.Context, pool *store.
 
 // MarkPullRequestHeadChecked stamps checked_at on a row the reconcile read but could not
 // complete — the repository unreadable, the pull request gone — so one unreadable pull request
-// does not hold the batch every pass.
+// does not hold the batch every pass. It stamps attribution_rule at AttributionRuleVersion too, as
+// the release before this one stamps a read GitHub refused: a results read that must order an
+// issue's merges refreshes a merged row with no time of merge only below that rule, so a row
+// GitHub no longer answers is asked for once and not on every read (api's fillMergeTimes).
 func MarkPullRequestHeadChecked(ctx context.Context, db refs.Execer, repoFull string, number int, now time.Time) error {
 	_, err := db.Exec(ctx, `
-		update pull_request_heads set checked_at = $3
+		update pull_request_heads set checked_at = $3, attribution_rule = $4
 		where repo = $1 and number = $2
-	`, repoFull, number, now)
+	`, repoFull, number, now, AttributionRuleVersion)
 	if err != nil {
 		return fmt.Errorf("stamp the head of %s#%d: %w", repoFull, number, err)
 	}

@@ -5,14 +5,14 @@ import (
 	"errors"
 	"log/slog"
 	"strconv"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// readThroughHead teaches Dispatch the pull requests GitHub names for a result's commit
-// (delivery.Attributor.ReadThroughCommitPulls). A row written at another head can be the basis of
+// readThroughHeads teaches Dispatch the pull requests GitHub names for the commits of one
+// repository that a read's results stand at, in one question
+// (delivery.Attributor.ReadThroughCommitsPulls). A row written at another head can be the basis of
 // another result of the same read, and a row of a pull request owed a read settles that read (R5),
 // so the bases are read after learn (answer).
 //
@@ -67,7 +67,15 @@ func (c *comparisonReader) readThroughHeads(ctx context.Context, repo string, re
 	}
 	now := c.server.resultsNow()
 	var asking []string
+	// One commit is asked about once, however many results of however many checks stand at it: a
+	// writer's second claim of a commit is refused by the claim its first took, and a read-only
+	// caller takes no claim, so only this keeps its query from naming the commit twice.
+	naming := map[string]struct{}{}
 	for _, result := range results {
+		if _, named := naming[result.CommitSHA]; named {
+			continue
+		}
+		naming[result.CommitSHA] = struct{}{}
 		if c.readOnly {
 			// A read-only caller takes no claim: it asks nothing where a writer's claim or settle
 			// stands, as a writer's read whose claim is refused asks nothing, and a read of that
@@ -117,8 +125,9 @@ func (c *comparisonReader) readThroughHeads(ctx context.Context, repo string, re
 			if c.readOnly {
 				continue
 			}
-			// Nothing was stored for this commit, so its claim protects no GitHub answer: give it
-			// back, so the next read asks again at once rather than CommitPullReadStaleAfter later.
+			// This commit's answer was not stored, or not in full, which is why reads leaves it
+			// out: its claim protects no GitHub answer, so give it back, and the next read asks
+			// again at once rather than CommitPullReadStaleAfter later.
 			if err := c.server.commitPulls.ReleaseAcrossProcesses(ctx, c.server.deps.Store.Pool, repo, sha, now); err != nil {
 				slog.Info("dispatch: the claim of a read that stored nothing was not given back, so the next read waits it out",
 					"repo", repo, "commit", sha, "error", err)
@@ -132,44 +141,7 @@ func (c *comparisonReader) readThroughHeads(ctx context.Context, repo string, re
 	}
 }
 
-// answerCommitPulls is readThroughHead's read-through for a read-only caller, which stores
-// nothing and keeps nothing after its request (plan D32). Where a writer's claim or settle of the
-// commit stands, in this process's memory or in the claim every process shares
-// (server.commitPulls.RefusesAcrossProcesses), it asks GitHub nothing, as a writer's read whose
-// claim is refused asks nothing, and the stored rows answer; a read of that claim that fails asks
-// nothing too, as a writer's claim that fails grants nothing. Otherwise it makes the writer's
-// read-through with its writes kept for this read alone (delivery.Attributor.AnswerCommitPulls,
-// answers), takes no claim and settles nothing.
-//
-// A pair this read has already asked GitHub for asks nothing again, as a writer's read is refused
-// by the claim it took for that pair earlier in the same read; one whose read stored nothing
-// (ErrReadThroughNotStored) may ask again, as a writer's read gives that claim back.
-func (c *comparisonReader) answerCommitPulls(ctx context.Context, repo, sha string, now time.Time) {
-	pair := [2]string{repo, sha}
-	if _, asked := c.askedPulls[pair]; asked {
-		return
-	}
-	pool := c.server.deps.Store.Pool
-	refused, err := c.server.commitPulls.RefusesAcrossProcesses(ctx, pool, repo, sha, now)
-	if err != nil {
-		slog.Info("dispatch: the claim of a read of a result's commit was not read, so the read asks GitHub nothing",
-			"repo", repo, "commit", sha, "error", err)
-		return
-	}
-	if refused {
-		return
-	}
-	c.askedPulls[pair] = struct{}{}
-	if _, _, err := c.server.deps.Attributor.AnswerCommitPulls(ctx, pool, c.server.deps.GitHub, &c.answers, repo, sha, now); err != nil {
-		slog.Info("dispatch: GitHub named no pull request for a result's commit",
-			"repo", repo, "commit", sha, "error", err)
-		if errors.Is(err, delivery.ErrReadThroughNotStored) {
-			delete(c.askedPulls, pair)
-		}
-	}
-}
-
-// readThroughRepository is the repository readThroughHead reads a result's commit through, and
+// readThroughRepository is the repository readThroughHeads reads a result's commit through, and
 // whether that read can be made at all, by whose the commit is taken to be (commitRepositoryOf):
 // a linked repository, where the App can read it (commitRepository.readable, the one answer
 // commitStands decides a `before_merge` result by as well); and else the repository the check's

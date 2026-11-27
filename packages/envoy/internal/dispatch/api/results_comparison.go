@@ -191,10 +191,6 @@ type comparisonReader struct {
 	// found, and the pairs a compare read of its own was refused as unseen
 	// (delivery.BranchCarry). It is dropped with the read.
 	carried delivery.BranchCarry
-	// askedPulls is each repository-and-commit pair a read-only caller's read has asked GitHub
-	// for in this read: a second result at the same commit is answered as a writer's read
-	// answers it, whose claim of that pair this read already holds (answerCommitPulls).
-	askedPulls map[[2]string]struct{}
 }
 
 // noCommitNamed is the `at` of a read that named no commit, which is every read but the one a
@@ -311,7 +307,6 @@ func newComparisonReader(ctx context.Context, s *server, at string) *comparisonR
 		commits:      map[[3]string]delivery.BranchAnswer{},
 		notKnown:     map[string]notKnownAnswer{},
 		fills:        &mergeTimeFills{},
-		askedPulls:   map[[2]string]struct{}{},
 	}
 	reader.fills.readOnly, reader.fills.answers = reader.readOnly, &reader.answers
 	return reader

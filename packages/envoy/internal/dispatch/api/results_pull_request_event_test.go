@@ -237,13 +237,14 @@ func startTheIntakes(t *testing.T, database *store.Store, served *server) *bus.C
 // The case is an issue in acme/widgets with one check CI proves and two pull requests Dispatch
 // stores open: #5, the issue's own, at headCommit, where CI's run 41 passed, and #9, a negative
 // control opened after it on a branch that names the issue, at newHeadCommit, where run 42 was
-// cancelled. The read of such a check is at the issue's open head of the highest number
-// (delivery.Attributor.NewestPullRequestHead), so while #9 is stored open the check is read at
-// #9's cancelled run and holds no result. GitHub then closes #9 without merging it, and its
-// `closed` event is the one input that tells Dispatch so: GitHub names no pull request for any
-// commit here and the reconcile is not running. The intake reads #9 from GitHub and writes it
-// closed, a pull request closed unmerged is no head, and the read moves to #5, where the check
-// holds the pass derived from run 41.
+// cancelled. A result is derived at the head of each open pull request of the issue, and the
+// check's `ci` is its read at the open head of the highest number (deriveCIResults, ciHeadsOf), so
+// while #9 is stored open c1 reads #9's cancelled run, holds the one pass derived at #5's head, and
+// answers pass_stands no: no pass stands at #9's head. GitHub then closes #9 without merging it,
+// and its `closed` event is the one input that tells Dispatch so: GitHub names no pull request
+// for any commit here and the reconcile is not running. The intake reads #9 from GitHub and
+// writes it closed, a pull request closed unmerged is no head, and the read moves to #5, where the
+// check holds the pass derived from run 41 and answers pass_stands yes.
 //
 // The deployment repository's #6070 and #6071 were held that way. GitHub closed both at 20:58Z
 // on 2026-11-22. The deployment held no delivery settings, so no intake took their `closed`
@@ -302,11 +303,16 @@ func TestAPullRequestClosedEventMovesTheCIReadToTheOpenHeadWithNoDeliverySetting
 	}
 
 	// Before the event the read is production's wrong one: #9 is stored open and has the higher
-	// number, so c1 is read at #9's cancelled run and holds no result.
+	// number, so c1 is read at #9's cancelled run, its one result is the pass derived at #5's
+	// head, and that pass does not stand at #9's head.
 	before := checkOf(t, readResults(t, handler, issue.Key), "c1")
 	assertCI(t, before, ciCheckRun, model.CIStateNoResult, "cancelled", ciUnconcludedLineOf("c1", ciCheckRun, "cancelled"))
-	if len(before.Results) != 0 {
-		t.Fatalf("before #9's closed event, c1 holds %+v, want no result: run 42 was cancelled", before.Results)
+	if derived := assertDerived(t, before, 41, ciCheckRun, "success", "pass", headCommit); derived.CommitStands.Basis == nil ||
+		derived.CommitStands.Basis.PullRequest == nil || *derived.CommitStands.Basis.PullRequest != 5 {
+		t.Fatalf("before #9's closed event, the derived pass stands at %+v, want the head of #5", derived.CommitStands.Basis)
+	}
+	if stood := before.PassStands; stood.Answer != model.PassStandsNo {
+		t.Fatalf("before #9's closed event, c1 answers pass_stands %+v, want no: run 42 at #9's head was cancelled", stood)
 	}
 
 	publisher := startTheIntakes(t, database, served)

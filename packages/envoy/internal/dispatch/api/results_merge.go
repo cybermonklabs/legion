@@ -77,10 +77,10 @@ type refreshedMerge struct {
 // fillMergeTimes reports whether rows, the merged pull request rows one read orders by when each
 // merged, can be ordered (ordered), and gives each row the time of its merge the read learned. A
 // set of fewer than two rows needs no order. A row with no time of merge is refreshed once
-// (refreshMerge) where the rule that last judged it is below this build's
-// (delivery.AttributionRuleVersion), since the reconcile will still offer it; a row the current rule
-// already offered and GitHub did not answer (delivery.MarkPullRequestHeadChecked) is not asked
-// again. A set holding a row that still has no time after that cannot be ordered, since the row
+// (refreshMerge) where the rule stamped on it is below delivery.AttributionRuleVersion: no read
+// that stores merge times has read it. A row such a read already offered and GitHub did not
+// answer is stamped at that rule (delivery.MarkPullRequestHeadChecked) and is not asked again. A
+// set holding a row that still has no time after that cannot be ordered, since the row
 // ordered last may have merged last, so no read names an older merge as the newest: the fill
 // stops there and refreshes no row after it.
 func (s *server) fillMergeTimes(ctx context.Context, fills *mergeTimeFills, rows []delivery.MergeTime) (ordered bool) {

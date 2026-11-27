@@ -468,13 +468,16 @@ func TestACheckThatCIProvesBesideAPullRequestWhoseAnswerIsNotKnownDoesNotSayNo(t
 }
 
 // An `after_merge` check beside a merge whose answer is not known. The merged #70 of NKAM-1
-// merged into release, and its branch names NKAM-1. Check k2 has a pass at integrationCommit,
-// which only release carries. The merged #85 of the same repository merged into main, and its
-// answer is not known. If #85 is the issue's, release does not decide. So the pass is unknown
-// with issue_not_known, k2 lists #85 in issues_not_known, and pass_stands is unknown. The second
-// subtest adds a pass at mergeCommit, which main carries: that pass stands at main, and
-// pass_stands is yes. Control in the same test: without #85, the first pass stands at release.
-// Guards read the merged branch of NKAM-1 and the answers of the statement.
+// merged into release as integrationCommit, and its branch names NKAM-1. #90, a pull request of
+// no issue, landed release on main as mergeCommit from integrationCommit, a final head that holds
+// #70's merge. A result counts only at a commit whose history holds the merge on its branch, so
+// k2 compares with release at integrationCommit and with main at mergeCommit. Check k2 has a pass
+// at integrationCommit, which only release carries. The merged #85 of the same repository merged
+// into main, and its answer is not known. If #85 is the issue's, release does not decide. So the
+// pass is unknown with issue_not_known, k2 lists #85 in issues_not_known, and pass_stands is
+// unknown. The second subtest adds a pass at mergeCommit, which main carries: that pass stands at
+// main, and pass_stands is yes. Control in the same test: without #85, the first pass stands at
+// release. Guards read the merged branch of NKAM-1 and the answers of the statement.
 func TestAnAfterMergeCheckBesideAMergeWhoseAnswerIsNotKnown(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -500,14 +503,18 @@ func TestAnAfterMergeCheckBesideAMergeWhoseAnswerIsNotKnown(t *testing.T) {
 			uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
 			storeNotReadPull(t, database, notReadPull{number: 70, head: headCommit, branch: "legion/" + issue,
 				base: "release", state: "merged", messages: []string{}})
+			fillKnownMerge(t, database, "acme/widgets", 70, integrationCommit)
+			writeKnownBranchLanding(t, database, 90, "release", "main", integrationCommit, mergeCommit)
 			if tc.notKnown {
 				storeNotReadPull(t, database, notReadPull{number: 85, head: newHeadCommit, branch: "work/no-key",
 					base: "main", state: "merged"})
 				wantNotReadAnswer(t, database, 85, "nobody, not known")
 			}
 			wantNotReadAnswer(t, database, 70, issue+", known")
-			if merged, err := unrenamed().MergeOfIssue(context.Background(), database.Pool, issue, delivery.HeadAnswers{}); err != nil || len(merged) == 0 || merged[0].BaseRef != "release" {
-				t.Fatalf("SETUP: MergeOfIssue(%s) answers %+v (%v), want its newest merge on release", issue, merged, err)
+			wantNotReadAnswer(t, database, 90, "nobody, known")
+			if merged, err := unrenamed().MergeOfIssue(context.Background(), database.Pool, issue, delivery.HeadAnswers{}); err != nil ||
+				len(merged) == 0 || merged[0].BaseRef != "release" || merged[0].MergeCommitSHA != integrationCommit {
+				t.Fatalf("SETUP: MergeOfIssue(%s) answers %+v (%v), want its newest merge on release as %s", issue, merged, err, integrationCommit)
 			}
 			onRelease := recordNotReadPass(t, handler, issue, "k2", integrationCommit)
 			onMain := ""

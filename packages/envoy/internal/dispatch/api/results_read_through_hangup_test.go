@@ -72,9 +72,10 @@ func TestAResultsReadWhoseCallerHangsUpStillStoresTheHead(t *testing.T) {
 // A read-through whose answer the database could not store gives its claim back, so the very next
 // read asks GitHub again and stores the head, rather than waiting out CommitPullReadStaleAfter with
 // the result at no head. A trigger refuses every write of pull_request_heads for the first read and
-// is dropped before the second. The control is GitHub's own failure: a 500 to the list of the
-// commit's pull requests keeps the claim, as delivery.CommitPullReads.Claim says a read that fails
-// must, so the second read asks GitHub nothing.
+// is dropped before the second: GitHub answers the read's one query, and the commit's answer is not
+// stored, so delivery.ReadThroughCommitsPulls leaves the commit out of what it learned. The control
+// is GitHub's own failure: a 500 to the query of the commit's pull requests keeps the claim, as
+// delivery.CommitPullReads.Claim says a read that fails must, so the second read asks GitHub nothing.
 func TestAReadThroughWhoseStoreFailsGivesItsClaimBack(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
