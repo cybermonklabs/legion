@@ -13,8 +13,8 @@ The shapes are `{head}`; `{head, note}`; a test handoff `{head, implementerProof
 The capture, for each issue:
 
 ```
-curl -fsS -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<KEY>/handoffs" | jq -r '.[].id'
-curl -fsS -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/handoffs/<id>" | jq '.body | fromjson'
+curl -fsS -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/<KEY>/handoffs" | jq -r '.[].id'
+curl -fsS -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/handoffs/<id>" | jq '.body | fromjson'
 ```
 
 ## `step-with-report.json`
@@ -25,5 +25,5 @@ The first run of an issue's steps, which names the handoff it reported in `repor
 The capture:
 
 ```
-curl -fsS -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<KEY>/steps" | jq '.tasks[0].steps[0]'
+curl -fsS -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/<KEY>/steps" | jq '.tasks[0].steps[0]'
 ```
