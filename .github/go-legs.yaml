@@ -468,6 +468,29 @@ packages/envoy:
     5:
       - internal/cipher/natscallout             # 211 s
       - internal/oidc                           # 42 s
+  # envoy-go-race-api (.github/workflows/ci-job-envoy-go-race-api.yaml, job
+  # envoy-go-race-api-legs): one package, internal/dispatch/api, in three legs, a group of its
+  # tests each (.github/go-legs/packages/envoy/internal/dispatch/api.yaml). The whole package took
+  # 999-1,043 s alone at main 3ebc542c, its 2,900 tests 8 at a time (run 45782644966), and the
+  # groups are dealt from that run to model 357 s each.
+  # why: .github/ci-notes/ci-job-envoy-go-race-api.md#why-the-apis-tests-run-in-three-legs
+  envoy-go-race-api:
+    1:
+      - internal/dispatch/api: 1                # 935 tests, 357 s modelled
+    2:
+      - internal/dispatch/api: 2                # 937 tests, 357 s modelled
+    3:
+      - internal/dispatch/api: 3                # 1,028 tests, 357 s modelled
+  # envoy-go-race-docs (job envoy-go-race-docs-legs): one package, internal/dispatch/docs, in
+  # three legs, a group of its tests each; 1,430 s alone, and its longest test 491.6 s.
+  # why: .github/ci-notes/ci-job-envoy-go-race-docs.md#why-the-document-services-tests-run-in-three-legs
+  envoy-go-race-docs:
+    1:
+      - internal/dispatch/docs: 1               # 444 s modelled
+    2:
+      - internal/dispatch/docs: 2               # 444 s modelled
+    3:
+      - internal/dispatch/docs: 3               # 444 s modelled
   # The NATS auth service runs in a plain leg and a race leg: its hold rows read the broker's hold
   # row from Postgres and skip without it, and the plain leg's database-skips.sh counts those skips,
   # where the race leg's go test counts none.
@@ -475,8 +498,6 @@ packages/envoy:
     internal/cipher/natscallout: the plain leg counts its hold rows' skips, the race leg runs it under the detector
   # Packages of the module no leg runs, each with the job that does.
   elsewhere:
-    internal/dispatch/api: envoy-go-race-api
-    internal/dispatch/docs: envoy-go-race-docs
     internal/integration: envoy-go-natslive
     internal/textcheck: text-checks
     internal/dispatch/architecture/notes: envoy-go-build

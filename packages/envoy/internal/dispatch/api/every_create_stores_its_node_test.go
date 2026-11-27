@@ -52,6 +52,7 @@ import (
 // node write skipped (docs/ask_blocks.go createAskBlock): either way the test fails, naming the
 // ask the create left without a node.
 func TestEveryCreateStoresItsNode(t *testing.T) {
+	t.Parallel()
 	rig := newStoreWriterRig(t)
 	ctx := context.Background()
 	fixture := seedEveryKind(t, rig)

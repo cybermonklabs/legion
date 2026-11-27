@@ -110,6 +110,7 @@ const evalsDocumentExemption = "it writes only the project's evals-md (dispatch:
 // does in the other static guards of this package; the behavior tests (spec_writer_test.go) hold
 // the branches.
 func TestEveryRouteThatWritesADocumentChecksItsWriter(t *testing.T) {
+	t.Parallel()
 	graph := copyLockGraph(t)
 	if graph.named[specWriterCheck] == nil {
 		t.Errorf("%s, the check every route that writes a checked document calls, is not declared: "+
@@ -154,6 +155,7 @@ func TestEveryRouteThatWritesADocumentChecksItsWriter(t *testing.T) {
 // TestTheSpecWriterExemptionsStillHold holds each route specWriterExempt names to its reason: the
 // table serves the route, and its path still does not call the check.
 func TestTheSpecWriterExemptionsStillHold(t *testing.T) {
+	t.Parallel()
 	routes := specWriterRoutes(t, copyLockGraph(t))
 	for _, name := range slices.Sorted(maps.Keys(specWriterExempt)) {
 		t.Logf("%s: exempt - %s", name, specWriterExempt[name])
@@ -175,6 +177,7 @@ func TestTheSpecWriterExemptionsStillHold(t *testing.T) {
 // one that needs the person scope, and one that writes nothing, and neither helper names any of
 // them.
 func TestTheSpecWriterGuardSeesAPlantedWriter(t *testing.T) {
+	t.Parallel()
 	graph := plantedSpecWriterGraph(t)
 	routes := specWriterReaches(graph, specWriterRouteHandlers(t, graph))
 	scopes := map[string]routeScopeSet{"POST /planted/person": {model.ScopePerson}}

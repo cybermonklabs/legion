@@ -697,6 +697,13 @@ func (n resolvedNode) name(serverURL string) string {
 // planner cannot hash-join a sequential read of a whole table, as it did for a plain join to
 // issues from about 80 ids with 12,000 issues. Each of those loaders names its probes.
 func resolveNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, rows []edgeRow) (map[[2]string]resolvedNode, error) {
+	return resolveNodesWith(ctx, q, who, byRefKey, rows, nodeRegistry)
+}
+
+// resolveNodesWith is resolveNodes resolving each kind through registry in place of nodeRegistry,
+// as a build whose registry is registry would: a test reads an older build's answer through it
+// without writing the package's registry under every other test of the process.
+func resolveNodesWith(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, rows []edgeRow, registry map[string]nodeLoader) (map[[2]string]resolvedNode, error) {
 	byKind := make(map[string][]string)
 	seen := make(map[[2]string]struct{})
 	for _, row := range rows {
@@ -709,7 +716,7 @@ func resolveNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool
 	}
 	nodes := make(map[[2]string]resolvedNode, len(seen))
 	for kind, ids := range byKind {
-		load := nodeRegistry[kind]
+		load := registry[kind]
 		if load == nil {
 			// A kind this build cannot address is a node a newer build added, read while both
 			// builds serve one graph_edges: its edges are omitted, as an edge whose other end no

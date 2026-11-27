@@ -16,6 +16,8 @@ import (
 // write hands on is a fresh read and render of its fork (checkRendering). The test skips unless
 // DISPATCH_TOKEN_CORPUS names the directory.
 func TestWriteCorpusReadsOnce(t *testing.T) {
+	// Not parallel: it sets pmdoc's block ID generator, which every parse in the process draws from
+	// (pmdoc.SetBlockIDGenerator in runWriteCorpus).
 	dir := os.Getenv("DISPATCH_TOKEN_CORPUS")
 	if dir == "" {
 		t.Skip("DISPATCH_TOKEN_CORPUS unset; set it to a directory of markdown specs to count the writes' reads on them")
