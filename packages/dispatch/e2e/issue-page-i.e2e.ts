@@ -2078,8 +2078,14 @@ test("a collaborator's caret label near a line's end hangs back inside the row's
       const bobPage = await bob.newPage();
       await bobPage.setViewportSize({ height: 900, width: 1280 });
       await enterNode(bobPage, spec.key, statement, "the statement on bob's page", { enter: true });
-      // End takes bob's caret to the end of the statement's first line, where the line breaks,
-      // and the step back keeps it on that line.
+      // The page places bob's caret in a frame of its own, and the editor takes it over in the
+      // transactions that follow. An End pressed a few milliseconds into that left Chromium's
+      // caret where it stood - in a builds Job, 4 runs of 20, and up to 12 with the page logging
+      // each key - at the block's start, where bob's caret is alice's own and her editor draws none
+      // of it (`collab-cursor-plugin.ts`). So the keys wait out the frames that placement starts.
+      // Then End takes bob's caret to the end of the statement's first line, where the line
+      // breaks, and the step back keeps it on that line.
+      await nextFrames(bobPage);
       await bobPage.keyboard.press("End");
       await bobPage.keyboard.press("ArrowLeft");
       const label = nodeRow(page, statement)
