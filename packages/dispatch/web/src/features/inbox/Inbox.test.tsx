@@ -39,6 +39,7 @@ import { ApiError, api, NetworkError, RequestTimeoutError } from "../../api/clie
 import { inboxThreadsQuery } from "../../api/queries";
 import type {
   Artifact,
+  ArtifactReview,
   AskRead,
   Comment,
   CredentialPendingRow,
@@ -51,6 +52,7 @@ import { QUIET_MS } from "../doc/refocus-when-settled";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
+import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { replyRow } from "../threads/replies-fixture";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { SnoozeWrites } from "./ask-snooze-fixture";
@@ -8986,6 +8988,268 @@ test("a decline from the column's card keeps its row while it is out after the s
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
+  }
+});
+
+/** An approval request for `spec.md` at version 4 (`REVIEWED_DOCUMENT`), on issue `key`. */
+function approvalRow(id: string, key: string): InboxRow {
+  return inboxIssue(id, key, "Approve spec.md (version 4)?", {
+    approval: {
+      artifact_id: "artifact-1",
+      documents: null,
+      name: "spec.md",
+      requested_version: 4,
+      version: 4,
+    },
+    approval_artifact: { name: "spec.md", primary: true, project: "CORE", slug: "spec" },
+    kind: "approval",
+  });
+}
+
+/** Eight questions, listed under `?group=none` in this order, the approval request `ask-c` third
+ *  among them. */
+const REVIEWED_ROWS: readonly InboxRow[] = [
+  inboxIssue("ask-a", "CORE-1", "First question?"),
+  inboxIssue("ask-b", "CORE-2", "Second question?"),
+  approvalRow("ask-c", "CORE-3"),
+  inboxIssue("ask-d", "CORE-4", "Fourth question?"),
+  inboxIssue("ask-e", "CORE-5", "Fifth question?"),
+  inboxIssue("ask-f", "CORE-6", "Sixth question?"),
+  inboxIssue("ask-g", "CORE-7", "Seventh question?"),
+  inboxIssue("ask-h", "CORE-8", "Eighth question?"),
+];
+
+/** `spec.md` awaiting its approval, at version 4: the version Approve approves. */
+const REVIEWED_DOCUMENT: Artifact = {
+  ...SPEC_DOCUMENT,
+  approval: { latest_version: 4, state: "awaiting" },
+  versions: [
+    {
+      authors: [{ id: "alice", kind: "user" }],
+      created_at: "2026-09-10T00:00:00Z",
+      named: false,
+      number: 4,
+      summary: null,
+    },
+  ],
+};
+
+/** Dispatch's record of the reader's approval of `REVIEWED_DOCUMENT`. */
+const REVIEW: ArtifactReview = {
+  actor: { id: "alice", kind: "user" },
+  artifact_id: "artifact-1",
+  ask_id: "ask-c",
+  content_sha256: null,
+  content_sha256_source: null,
+  created_at: "2026-09-11T00:00:00Z",
+  id: "review-1",
+  kind: "person",
+  reason: null,
+  state: "approved",
+  version: 4,
+};
+
+/** Every read the column makes while it draws `REVIEWED_ROWS` but the Inbox's own, and the one
+ *  restore that puts them back. The version is never answered, so the column draws its skeleton
+ *  under the request's question: the head, with its Approve, is what a case reads. */
+function mockReviewColumnReads(): () => void {
+  const mocks = [
+    mockAskReads(REVIEWED_ROWS),
+    mockIssueReads(),
+    spyOn(api, "getArtifact").mockResolvedValue(REVIEWED_DOCUMENT),
+    spyOn(api, "getArtifactVersion").mockReturnValue(new Promise<never>(() => {})),
+  ];
+  return () => {
+    for (const mock of mocks) mock.mockRestore();
+  };
+}
+
+/** How tall `layListColumnDown` draws the list column's box. */
+const LIST_COLUMN_PX = 600;
+
+/** How far the cases below scroll the list column: `ask-c` stands above the row nearest the
+ *  column's centre, `ask-f`, at 250 px down the column. */
+const LIST_SCROLLED_PX = 250;
+
+/** Lays the Inbox's rows down the list column the reading column stands beside, as happy-dom
+ *  does not: the column's box `LIST_COLUMN_PX` tall from the window's top, and each row
+ *  `LAID_ROW_PX` tall, stacked in the order the list draws them, less the column's own
+ *  `scrollTop`, which the list's anchor reads and moves. The anchor's root holds every row, and
+ *  a point of the column names the row drawn there (`document.elementFromPoint`), so with no row
+ *  in the reader's hand the anchor holds the row nearest the column's centre. Answers the
+ *  function that gives happy-dom its own boxes and points back. */
+function layListColumnDown(): () => void {
+  const real = Element.prototype.getBoundingClientRect;
+  const column = () => document.querySelector<HTMLElement>('[data-testid="inbox-list"]');
+  const rows = () => [...document.querySelectorAll("[data-inbox-row]")];
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const scrolled = column()?.scrollTop ?? 0;
+    if (this === column()) return new DOMRect(0, 0, 400, LIST_COLUMN_PX);
+    if (this.matches('[data-testid="inbox-list"] > *')) {
+      return new DOMRect(0, -scrolled, 400, rows().length * LAID_ROW_PX);
+    }
+    const index = rows().indexOf(this);
+    if (index === -1) return real.call(this);
+    return new DOMRect(0, index * LAID_ROW_PX - scrolled, 400, LAID_ROW_PX);
+  });
+  const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
+    if (y < 0 || y >= LIST_COLUMN_PX) return null;
+    return rows()[Math.floor((y + (column()?.scrollTop ?? 0)) / LAID_ROW_PX)] ?? null;
+  });
+  return () => {
+    rect.mockRestore();
+    point.mockRestore();
+  };
+}
+
+/** The list's own anchor (`ViewportAnchor`), caught as it mounts, so a case reads what that
+ *  anchor reads when it measures a commit: whether the Inbox names a row as leaving (`leaving`).
+ *  Answers that reading, and the function that puts the anchor's mount back. */
+function catchListAnchor(): { named: (id: string) => boolean; restore: () => void } {
+  const mount = ViewportAnchor.prototype.componentDidMount;
+  let list: ViewportAnchor | undefined;
+  const caught = spyOn(ViewportAnchor.prototype, "componentDidMount").mockImplementation(function (
+    this: ViewportAnchor
+  ) {
+    if (this.props.item === "data-inbox-row") list = this;
+    mount.call(this);
+  });
+  return {
+    named: (id) => list?.props.leaving?.(id) === true,
+    restore: () => caught.mockRestore(),
+  };
+}
+
+// An approval reviewed from the reading column's head, above the row nearest the list column's
+// centre, which the list's anchor holds while the reader's hand is in the column. A review takes
+// nothing out of the Inbox's read: Dispatch answers the request as it records the review, and the
+// read made after the review lands drops the row. The Inbox names the row as leaving from the
+// press until it has gone, as it names a row an answer from the column takes away, so the rows
+// after it move up into its place and the column does not scroll for its going. Unnamed, the
+// anchor made up for the row's going and scrolled the column back by the row's height, in
+// Chromium, Firefox and WebKit.
+test("an approval reviewed from the column's head is named leaving from the press until its row goes, so the rows after it move up and the list column does not scroll", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  let served: readonly InboxRow[] = REVIEWED_ROWS;
+  let held: Promise<void> | undefined;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => {
+    await held;
+    return [...served];
+  });
+  const reads = mockReviewColumnReads();
+  const landing = Promise.withResolvers<ArtifactReview>();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockReturnValue(landing.promise);
+  const anchor = catchListAnchor();
+  const laidOut = layListColumnDown();
+  const moves = watchMoves();
+  const { unmount } = renderInbox("/?group=none&item=ask-c");
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(REVIEWED_ROWS.map((row) => row.id)));
+    const pane = await screen.findByTestId("inbox-pane");
+    const approve = await within(pane).findByRole("button", { name: "Approve" });
+    const list = screen.getByTestId("inbox-list");
+    act(() => {
+      list.scrollTop = LIST_SCROLLED_PX;
+    });
+    const centre = shortRow("ask-f");
+    const place = centre.getBoundingClientRect().top;
+    expect(anchor.named("ask-c")).toBe(false);
+
+    await user.click(approve);
+    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
+    // Named from the press, while the review is out.
+    expect(anchor.named("ask-c")).toBe(true);
+
+    // The review lands, and the selection moves on to the next question. The read the review
+    // asks for is held, so the reviewed row is still drawn, and still named.
+    const reread = Promise.withResolvers<void>();
+    held = reread.promise;
+    served = REVIEWED_ROWS.filter((row) => row.id !== "ask-c");
+    const readsBefore = getInbox.mock.calls.length;
+    await act(async () => {
+      landing.resolve(REVIEW);
+      await landing.promise;
+    });
+    await waitFor(() => expect(getInbox.mock.calls.length).toBeGreaterThan(readsBefore));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-d"]));
+    expect(rowIds()).toContain("ask-c");
+    expect(anchor.named("ask-c")).toBe(true);
+
+    // The read lands without the row: the rows after it move up into its place, the column's
+    // scroll stays where the reader left it, and the name has ended with the row.
+    await act(async () => {
+      reread.resolve();
+      await reread.promise;
+    });
+    await waitFor(() => expect(rowIds()).not.toContain("ask-c"));
+    expect(centre.getBoundingClientRect().top).toBe(place - LAID_ROW_PX);
+    expect(list.scrollTop).toBe(LIST_SCROLLED_PX);
+    expect(anchor.named("ask-c")).toBe(false);
+  } finally {
+    unmount();
+    narrow();
+    moves.restore();
+    laidOut();
+    anchor.restore();
+    createArtifactReview.mockRestore();
+    reads();
+    getInbox.mockRestore();
+  }
+});
+
+// The same review refused: the name ends at the refusal, and the row, which the review never took
+// out of the Inbox's read, stays where the reader saw it, with the column's scroll and the
+// selection where they were.
+test("an approval review from the column's head that Dispatch refuses ends its row's name at the refusal, and the row stays where it is", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([...REVIEWED_ROWS]);
+  const reads = mockReviewColumnReads();
+  const refusal = Promise.withResolvers<never>();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockReturnValue(refusal.promise);
+  const anchor = catchListAnchor();
+  const laidOut = layListColumnDown();
+  const moves = watchMoves();
+  const { unmount } = renderInbox("/?group=none&item=ask-c");
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(REVIEWED_ROWS.map((row) => row.id)));
+    const pane = await screen.findByTestId("inbox-pane");
+    const approve = await within(pane).findByRole("button", { name: "Approve" });
+    const list = screen.getByTestId("inbox-list");
+    act(() => {
+      list.scrollTop = LIST_SCROLLED_PX;
+    });
+    const reviewed = shortRow("ask-c");
+    const stood = reviewed.getBoundingClientRect().top;
+    const centre = shortRow("ask-f");
+    const place = centre.getBoundingClientRect().top;
+
+    await user.click(approve);
+    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
+    expect(anchor.named("ask-c")).toBe(true);
+
+    await act(async () => {
+      refusal.reject(new ApiError(403, { code: "FORBIDDEN", error: "not a reviewer of CORE-3" }));
+      await refusal.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(anchor.named("ask-c")).toBe(false));
+    expect(rowIds()).toEqual(REVIEWED_ROWS.map((row) => row.id));
+    expect(selectedIds()).toEqual(["ask-c"]);
+    expect(reviewed.getBoundingClientRect().top).toBe(stood);
+    expect(centre.getBoundingClientRect().top).toBe(place);
+    expect(list.scrollTop).toBe(LIST_SCROLLED_PX);
+  } finally {
+    unmount();
+    narrow();
+    moves.restore();
+    laidOut();
+    anchor.restore();
+    createArtifactReview.mockRestore();
+    reads();
+    getInbox.mockRestore();
   }
 });
 

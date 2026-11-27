@@ -7,6 +7,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -136,6 +137,7 @@ import { PaneDivider, usePaneWidth } from "./PaneDivider";
 import { inboxEntryState, type PlacedRow, usePaneSelection } from "./pane-selection";
 import { useFoldedGroups } from "./preferences";
 import { ReadingPane } from "./ReadingPane";
+import { type HeadReviews, HeadReviewsContext } from "./ReadingPaneHead";
 import {
   PANE_SCROLLER_SELECTOR,
   ReadingView,
@@ -882,21 +884,22 @@ function useInboxReads(): number {
 
 /** The row to keep where the reader last saw it (`seen`), if any: one kept for the reader
  *  (`kept`) - the row under their hand, or one whose Assign to me, hand-on, answer, decline,
- *  question back or reply is out, which the Inbox holds (`AskAssignWritesProvider`,
- *  `useAskHandOnWrites`, `useOutstandingAnswerWrites`) - or one whose snooze write is out
- *  (`snoozeOut`) - its own write, which the Inbox holds too (`useAskSnoozeWrites`), or the bar's
- *  over the rows the reader marked. Dropped from the list: a kept row is kept where last seen,
- *  drawn as `current`, or as last seen while `current` is undefined - an answer or a decline
- *  takes its row out of the Inbox's read, an Assign to me or a hand-on can take it out of the
- *  reader's list, and a read of the Inbox can take it out while a question back or a reply is
- *  out. Moved to another band: what the list says about it changed under the reader's hand,
- *  their write or their snooze, so the listed row is kept in the band they saw it in. A move into
- *  or out of Later is a snooze, the reader's own press, and it is made once its write lands: the
- *  row is kept in its band while that write is out, and moves in the commit in which the Inbox
- *  lets go of it (`snoozing`). Its control's hold lasts through that commit
- *  (`useHeldThroughAnswer`), so a press on its own control takes its own row away while the
- *  control is held. A refused or stopped write is not out, so the next read places its row. With
- *  no snooze of it out, a move into or out of Later is shown at once, for a kept row too. */
+ *  question back, reply or review from the reading column's head is out, which the Inbox holds
+ *  (`AskAssignWritesProvider`, `useAskHandOnWrites`, `useOutstandingAnswerWrites`,
+ *  `reviewedHere`) - or one whose snooze write is out (`snoozeOut`) - its own write, which the
+ *  Inbox holds too (`useAskSnoozeWrites`), or the bar's over the rows the reader marked. Dropped
+ *  from the list: a kept row is kept where last seen, drawn as `current`, or as last seen while
+ *  `current` is undefined - an answer or a decline takes its row out of the Inbox's read, an
+ *  Assign to me or a hand-on can take it out of the reader's list, and a read of the Inbox can
+ *  take it out while a question back, a reply or a review is out. Moved to another band: what the
+ *  list says about it changed under the reader's hand, their write or their snooze, so the listed
+ *  row is kept in the band they saw it in. A move into or out of Later is a snooze, the reader's
+ *  own press, and it is made once its write lands: the row is kept in its band while that write
+ *  is out, and moves in the commit in which the Inbox lets go of it (`snoozing`). Its control's
+ *  hold lasts through that commit (`useHeldThroughAnswer`), so a press on its own control takes
+ *  its own row away while the control is held. A refused or stopped write is not out, so the next
+ *  read places its row. With no snooze of it out, a move into or out of Later is shown at once,
+ *  for a kept row too. */
 function heldRow(
   seen: PlacedRow,
   listed: InboxListRow | undefined,
@@ -1247,15 +1250,28 @@ function InboxBody({
   const declinesOut = useInboxWrites(AskDeclineWritesContext).out;
   const clarificationsOut = useInboxWrites(AskClarificationWritesContext).out;
   const repliesOut = useInboxWrites(AskReplyWritesContext).out;
-  /** Whether ask `id` has an Assign to me, a hand-on, an answer, a decline or a question back
-   *  out: what keeps its row where the reader saw it (`heldRow`), and what names that row to the
-   *  list's anchor as leaving, so the two always agree. */
+  /** The approval requests the reader reviewed from the reading column's head (`ReadingPaneHead`,
+   *  through `HeadReviewsContext`), by ask: `out` from the press of Approve or of the change
+   *  request's submit until Dispatch decides the review, then `landed` until the page no longer
+   *  draws the request's row. The chip makes the review with a write of its own, which takes
+   *  nothing out of the Inbox's read: Dispatch answers the request as it records the review, and
+   *  the read the chip asks for once the review lands drops the row. So the row is named to the
+   *  list's anchor as leaving from the press until it has gone, and the rows after it move up into
+   *  its place, as they do for an answer from the column; while the review is out the row is also
+   *  kept where the reader saw it, as an answer's is (`askWriteOut`). A review Dispatch refused,
+   *  or the reader stopped, ends the name at once, and the row stays. Written by the press, the
+   *  write's own callbacks and the names' effect below, never while rendering. */
+  const reviewedHere = useRef<Map<string, "landed" | "out">>(new Map());
+  /** Whether ask `id` has an Assign to me, a hand-on, an answer, a decline, a question back or a
+   *  review from the column's head out: what keeps its row where the reader saw it (`heldRow`),
+   *  and what names that row to the list's anchor as leaving, so the two always agree. */
   const askWriteOut = (id: string) =>
     assignsOut.has(id) ||
     handOnsOut.has(id) ||
     answersOut.has(id) ||
     declinesOut.has(id) ||
-    clarificationsOut.has(id);
+    clarificationsOut.has(id) ||
+    reviewedHere.current.get(id) === "out";
   // The row the reader's hand is on (focus or pointer), read from the DOM as last committed. When
   // the server has dropped it (answered or resolved elsewhere) or handed its turn the other way
   // (their own ask-back, an agent's note or reply), it is kept - `held` - where the reader last
@@ -1266,6 +1282,22 @@ function InboxBody({
   const answered = useRef<string | null>(null);
   const [, setReleased] = useState(0);
   const release = () => setReleased((count) => count + 1);
+  /** What the reading column's head tells this list of the reader's review (`reviewedHere`): the
+   *  same object on every render, since the review's write calls it after the head has gone. A
+   *  failure renders the list again, so a row the review alone kept is let go. */
+  const headReviews = useMemo<HeadReviews>(
+    () => ({
+      failed: (id) => {
+        if (reviewedHere.current.get(id) !== "out") return;
+        reviewedHere.current.delete(id);
+        setReleased((count) => count + 1);
+      },
+      sent: (id) => {
+        reviewedHere.current.set(id, "out");
+      },
+    }),
+    []
+  );
   const openFoldedBand = useCallback(
     (key: string) => {
       if (folded.has(key)) toggleFold(key);
@@ -1511,6 +1543,9 @@ function InboxBody({
   // head, a row they walked off - must not be pulled back off the row it moved to.
   const recordAnswered = (id: string) => {
     answered.current = id;
+    // A review from the column's head lands here too, and its row stays named until the read
+    // after it drops the row (`reviewedHere`).
+    if (reviewedHere.current.get(id) === "out") reviewedHere.current.set(id, "landed");
     if (keysOnShownRow && paneSelection.selectedNow.current === id) {
       paneSelection.select(paneSelection.nextAfterSelected());
     }
@@ -2238,6 +2273,12 @@ function InboxBody({
     const named = open !== undefined && leavingNow(open);
     const drawn = new Set(rows().map((row) => row.dataset.inboxRow ?? ""));
     forgetDismissed((id) => drawn.has(id));
+    // A landed review from the column's head names its row until the page no longer draws it, as
+    // a Dismiss Dispatch took does (`reviewedHere`): a read that has not dropped the row yet still
+    // draws it. The list's anchor reads this name, the hand-off does not.
+    for (const [id, review] of reviewedHere.current) {
+      if (review === "landed" && !drawn.has(id)) reviewedHere.current.delete(id);
+    }
     if (adoptedInbox === inbox.data) readsDrawn.current = readsAnswered;
     const reads = readsDrawn.current;
     const names = snoozedHere.current;
@@ -2299,18 +2340,18 @@ function InboxBody({
 
   // Which row the list holds in place while the server moves the list under it: the row the
   // reader's hand is on (focus or pointer), with or without the reading column, and a row whose
-  // Assign to me, hand-on, answer, decline, question back or reply is out, whatever the selection
-  // does. A row the column is merely showing is not held - the Inbox selects the first row for
-  // the reader the moment it opens, and a question the server withdraws, resolves or answers
-  // elsewhere must not stay in the list on the strength of a selection nobody made. What the
-  // column does with a selected question the server takes away is `paneRow`
-  // (`pane-selection.ts`). A row the reader dismissed under their own hand is not held either:
-  // they asked for it to go, so it goes at once and the next row takes its place; and a row they
-  // answered goes once the server has recorded the answer. A row a Snooze of theirs is over goes
-  // the same way, press by press the same rows the bar's hand-off is told of (`leavingNow`): the
-  // hand-off parks the focus on the mark of the row they marked last while its write is out, and a
-  // hold that read the hand alone would keep that row for that focus and never let the write
-  // land.
+  // Assign to me, hand-on, answer, decline, question back, reply or review from the column's head
+  // is out, whatever the selection does. A row the column is merely showing is not held - the
+  // Inbox selects the first row for the reader the moment it opens, and a question the server
+  // withdraws, resolves or answers elsewhere must not stay in the list on the strength of a
+  // selection nobody made. What the column does with a selected question the server takes away is
+  // `paneRow` (`pane-selection.ts`). A row the reader dismissed under their own hand is not held
+  // either: they asked for it to go, so it goes at once and the next row takes its place; and a
+  // row they answered goes once the server has recorded the answer. A row a Snooze of theirs is
+  // over goes the same way, press by press the same rows the bar's hand-off is told of
+  // (`leavingNow`): the hand-off parks the focus on the mark of the row they marked last while its
+  // write is out, and a hold that read the hand alone would keep that row for that focus and never
+  // let the write land.
   //
   // The hold is told which rows the typed text excludes rather than being handed the narrowed
   // list: a row the reader's own typing drops must go at once, even with the pointer resting on
@@ -2324,8 +2365,13 @@ function InboxBody({
   const heldBefore = heldUnder.current;
   const heldUnderWords =
     heldBefore !== undefined && heldBefore.id === handId && heldBefore.words === typed;
+  // A row a landed review from the column's head still names is no row to hold for the hand
+  // either, as a row the reader answered is not (`reviewedHere`).
   const seen =
-    handId === undefined || handId === answered.current || leavingNow(handId)
+    handId === undefined ||
+    handId === answered.current ||
+    leavingNow(handId) ||
+    reviewedHere.current.get(handId) === "landed"
       ? undefined
       : presented.current.find(
           (placed) =>
@@ -2337,8 +2383,8 @@ function InboxBody({
   // lands (`heldRow`), while the list still lists it. A refused or stopped write holds nothing.
   // Under the Blocked on you narrowing, which lists no snoozed ask, the row is dropped at once,
   // and the reader's hand does not hold it (`leavingNow`). A row whose Assign to me, hand-on,
-  // answer, decline, question back or reply is out is held as the row under the hand is, listed
-  // or not, until that write lands.
+  // answer, decline, question back, reply or review from the column's head is out is held as the
+  // row under the hand is, listed or not, until that write lands.
   // That band is a band of the layout the row was drawn under, so a snooze holds its row only
   // while the list is still drawn under it - the same grouping, and the same view. Under that
   // layout the band a write holds its row in is drawn again though no other row is left in it
@@ -2925,10 +2971,13 @@ function InboxBody({
   // with it and mounting a fresh one a commit later.
   const page = (listColumn: ReactNode, subject: InboxListRow | undefined): ReactNode => {
     const readingView = mode === "reading" && subject !== undefined;
-    // The row's reading pane: the same one beside the list and in the reading view.
+    // The row's reading pane: the same one beside the list and in the reading view. Its head's
+    // approval chip tells this list of a review from its press (`reviewedHere`).
     const readingPane =
       subject === undefined ? null : (
-        <ReadingPane onAnswered={recordAnswered} row={subject} viewer={viewer} />
+        <HeadReviewsContext value={headReviews}>
+          <ReadingPane onAnswered={recordAnswered} row={subject} viewer={viewer} />
+        </HeadReviewsContext>
       );
     return (
       // Every thread this list draws - in the column or the reading view, and in a card of the
@@ -3145,15 +3194,17 @@ function InboxBody({
   // `infra-3135-i-h5-g6tnd`, where the anchor named it only while the write was out and scrolled
   // the list back by its height). Beside them, the rows an Assign to me, a hand-on, an answer, a
   // decline, a question back or a reply lets go of, which then leave the list where the read no
-  // longer lists them there, and the rows of a band the reader's press on its toggle folds shut
-  // (`folding`), in the commit that folds it. Nor does it hold the reader's row against the rows
-  // that press brings back when it opens the band (`arriving`, `unfolding`), in the commit that
-  // draws them: the toggle stays where the reader pressed it, and the rows after the band move
-  // down. The anchor is given the function only for that commit, so it reads no row for it in any
-  // other. A band's **Show more**, drawn right after the last row the band draws, goes with the
-  // rows its fold takes away and comes with the rows its unfold draws, and the anchor counts it
-  // with them (`ViewportAnchor`'s `trail`): its going or coming moves the toggle no more than
-  // theirs does.
+  // longer lists them there; the row of an approval request the reader reviewed from the column's
+  // head, from the press until the page no longer draws it (`reviewedHere`), since the read that
+  // drops it comes after the review lands; and the rows of a band the reader's press on its toggle
+  // folds shut (`folding`), in the commit that folds it. Nor does it hold the reader's row against
+  // the rows that press brings back when it opens the band (`arriving`, `unfolding`), in the
+  // commit that draws them: the toggle stays where the reader pressed it, and the rows after the
+  // band move down. The anchor is given the function only for that commit, so it reads no row for
+  // it in any other. A band's **Show more**, drawn right after the last row the band draws, goes
+  // with the rows its fold takes away and comes with the rows its unfold draws, and the anchor
+  // counts it with them (`ViewportAnchor`'s `trail`): its going or coming moves the toggle no more
+  // than theirs does.
   const unfolded = unfolding.current;
   const list = (
     // With the reading column beside it the list scrolls in itself rather than in the window,
@@ -3186,7 +3237,11 @@ function InboxBody({
         group="data-inbox-section"
         item={ROW_ATTRIBUTE}
         leaving={(id) =>
-          leavingNow(id) || askWriteOut(id) || replying.has(id) || folding.current?.has(id) === true
+          leavingNow(id) ||
+          askWriteOut(id) ||
+          reviewedHere.current.has(id) ||
+          replying.has(id) ||
+          folding.current?.has(id) === true
         }
         ref={viewport}
         rootRef={listRef}

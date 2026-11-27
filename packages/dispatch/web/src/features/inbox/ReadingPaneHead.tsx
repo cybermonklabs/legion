@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { createContext, type ReactNode, useContext } from "react";
 import { Link } from "react-router-dom";
 
 import type { Artifact, AskBlockArtifact, InboxRow, MyReplyRow } from "../../api/types";
@@ -107,6 +107,20 @@ function openPagePath(ask: InboxRow, sectionBlockId: string | undefined): string
   return atBlock(buildReferencePath(route), blockId);
 }
 
+/** What the Inbox around the reading column hears of a review its head's approval chip sends, by
+ *  the approval request it is of: the reader's press (`ApprovalChip`'s `onReviewSent`), and its
+ *  refusal or the reader's stop (`onReviewFailed`). Its landing reaches the Inbox as an answer's
+ *  does, through the head's `onAnswered`. The head goes when the reader moves the selection and
+ *  the review's write goes on, so the Inbox holds what it hears (`Inbox.tsx`'s `reviewedHere`). */
+export interface HeadReviews {
+  readonly failed: (askId: string) => void;
+  readonly sent: (askId: string) => void;
+}
+
+/** The `HeadReviews` of the Inbox that draws the reading column; undefined where no Inbox draws
+ *  the head, and nothing there listens. */
+export const HeadReviewsContext = createContext<HeadReviews | undefined>(undefined);
+
 export interface ReadingPaneHeadProps {
   /** The document the column shows, once it is read; undefined for a question in no document and
    *  while the read is out. The approval actions are this document's. */
@@ -162,6 +176,9 @@ export function ReadingPaneHead({
   const approvalState = artifact?.approval?.state;
   const approveDrawn =
     approvalState !== undefined && approvalState !== "draft" && approvalState !== "approved";
+  // The Inbox hears the chip's review from its press, since its row is named leaving from there
+  // (`HeadReviewsContext`).
+  const reviews = useContext(HeadReviewsContext);
 
   return (
     <header className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -202,6 +219,8 @@ export function ReadingPaneHead({
         <>
           <ApprovalChip
             artifact={artifact}
+            onReviewFailed={() => reviews?.failed(ask.id)}
+            onReviewSent={() => reviews?.sent(ask.id)}
             onReviewed={() => onAnswered(ask.id)}
             variant="header"
           />

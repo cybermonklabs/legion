@@ -381,6 +381,15 @@ export interface ApprovalChipProps {
   /** Called beside the chip's own refreshes once the server has recorded the reader's review, so
    *  a host that selected the approval request learns it was reviewed here. */
   onReviewed?(): void;
+  /** Called at the reader's press that sends a review - Approve, or the change request dialog's
+   *  submit - as its write goes out, so a host learns of the review before Dispatch decides it:
+   *  the Inbox names the approval request's row as leaving from this press (`ReadingPaneHead`).
+   *  A press the chip holds (`heldPress`, `useSubmitGuard`) sends nothing and calls nothing. */
+  onReviewSent?(): void;
+  /** Called once a review the reader sent ends without landing: Dispatch refused it, or the
+   *  reader stopped it. The write's own callback, so it is called after the chip has gone too, as
+   *  `onReviewed` is. */
+  onReviewFailed?(): void;
 }
 
 /** A review the chip makes: the document it is of, and what it says of that document. */
@@ -402,6 +411,8 @@ export function ApprovalChip({
   artifact,
   keepActionsTogether = false,
   layout = "inline",
+  onReviewFailed,
+  onReviewSent,
   onReviewed,
   size = "default",
   variant = "list",
@@ -421,6 +432,7 @@ export function ApprovalChip({
     // runs under.
     label: ({ artifact: reviewed, input }: DocumentReview) =>
       `${input.state === "approved" ? "Approval" : "Change request"} on ${reviewed.name}`,
+    onError: () => onReviewFailed?.(),
     onSettled: () => submitGuard.release(),
     method: "POST",
     write: ({ artifact: reviewed, input }, bounds) =>
@@ -548,6 +560,7 @@ export function ApprovalChip({
               {...heldPress(review.isPending, () =>
                 submitGuard.guard(() => {
                   if (page !== null) setSentReview("approved");
+                  onReviewSent?.();
                   review.mutate({ artifact, input: { state: "approved" } });
                 })
               )}
@@ -604,6 +617,7 @@ export function ApprovalChip({
           onSubmit={(reason) =>
             submitGuard.guard(() => {
               if (page !== null) setSentReview("changes_requested");
+              onReviewSent?.();
               review.mutate({ artifact, input: { reason, state: "changes_requested" } });
             })
           }
