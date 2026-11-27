@@ -419,11 +419,16 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		if event.Actor.Kind == "session" && !daemonActor {
 			actorSession = event.Actor.ID
 		}
+		// Only a user actor with an id is a person who wrote the event (DispatchIssue.PersonActor).
+		personActor := ""
+		if dispatch.Actor(event.Actor).Person() && event.Actor.ID != "" {
+			personActor = event.Actor.ID
+		}
 		claimedBy, claimKnown := issueEventClaim(issue.Claim, unread)
 		return DispatchIssue{Key: event.IssueKey, Seq: event.Seq, Type: event.Type, Status: issue.Status, Title: issue.Title, Parent: parent, Rank: issue.Rank,
 			Priority: issueEventPriority("priority", issue.Priority, unread), Resolved: issueEventResolved(issue.ResolvedPriority, issue.PriorityFrom, unread),
 			ResolvedOnly: resolvedOnly(issue.Changed), HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels,
-			ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
+			ActorSession: actorSession, DaemonActor: daemonActor, PersonActor: personActor, ResolvedRepo: deref(resolved),
 			ResolvedRepoMissing: missing, Blockers: issue.BlockedBy, ClaimedBy: claimedBy, ClaimKnown: claimKnown}, nil
 	}
 	switch event.Type {

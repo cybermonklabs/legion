@@ -47,6 +47,7 @@ type issueResponse struct {
 	BlockedBy              []string        `json:"blocked_by"`
 	Claim                  *claimResponse  `json:"claim"`
 	Children               []IssueChild    `json:"children"`
+	ExternalLinks          []IssueLink     `json:"external_links"`
 }
 
 // issue is the response as Issue: Dispatch's issue detail, and the issue its PATCH answers with.
@@ -71,6 +72,7 @@ func (r issueResponse) issue() Issue {
 		Claim:                  r.Claim.claim(),
 		ClaimUnread:            r.Claim.unread(),
 		Children:               r.Children,
+		Links:                  r.ExternalLinks,
 	}
 }
 

@@ -205,6 +205,7 @@ func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 func OwnStatusWrite(written dispatch.Issue, requester claim.Role, personActor string) DispatchIssue {
 	event := ObservedIssue(written)
 	event.Observed, event.DaemonActor, event.StatusMove, event.Type = false, true, true, "issue.updated"
+	event.Requester, event.PersonActor = requester, personActor
 	if written.Status == "done" {
 		event.Type = "issue.closed"
 	}
