@@ -38,7 +38,20 @@ func (g *Guard) readOutput(ctx context.Context, c child, read func(io.Reader) er
 	}
 	defer out.Close()
 	cmd.Stdout = in
+	// CONTROL COMMIT, never for merge: the review's two-stall fault, 2.4 s before the read's own
+	// start stamp and 2.4 s between that stamp and the start of the push's diff: each span under
+	// the escaped-diff row's 4 s, their sum past it.
+	plant := false
+	for _, arg := range c.argv {
+		plant = plant || arg == "--unified=0"
+	}
+	if plant {
+		time.Sleep(2400 * time.Millisecond)
+	}
 	started := time.Now()
+	if plant {
+		time.Sleep(2400 * time.Millisecond)
+	}
 	err = cmd.Start()
 	// The child holds its own copy of the write end; with this one closed, the reader sees the
 	// pipe's end once the child and everything that inherited it have closed theirs.
