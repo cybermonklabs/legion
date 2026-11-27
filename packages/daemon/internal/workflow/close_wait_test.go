@@ -525,6 +525,50 @@ func TestTheCloseReadsTheChildrenFromDispatch(t *testing.T) {
 	closedOnChecks(t, rig, waitRoot)
 }
 
+// A Dispatch child that is a tree of its own is no member of the merged issue's tree, so the issues
+// beneath it (record.OpenBeneath, which reads this tree's members) never count it, and only the
+// open children do. Its record is read from the store whatever tree holds it, so a rule that drops
+// every child the record holds in the workflow dropped this one too, and neither term counted it:
+// the root closed while Dispatch held its child open and at work. The control is the same child
+// done, which holds nothing.
+func TestAChildThatIsATreeOfItsOwnHoldsTheClose(t *testing.T) {
+	t.Parallel()
+	const own = "LEGION-301"
+	for _, tc := range []struct {
+		name, status string
+		stands       phase.Phase
+		holds        bool
+	}{
+		{name: "its own tree at work", status: "in_progress", stands: phase.Implementing, holds: true},
+		{name: "control: its own tree done", status: "done", stands: phase.Done},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newWaitRig(t, "")
+			rig.seedRoot(phase.Merging, "retro")
+			seedIssue(t, rig.pool, record.Issue{Key: own, Repo: waitRepo, DefaultBranch: "main", GitHubRepo: waitRepo, Tree: own, Project: "LEGION",
+				Title: own, Phase: tc.stands, Generation: 1, Status: tc.status, DispatchStatus: tc.status, Rank: "W", LastDispatchSeq: 1})
+			rig.mergeRoot()
+			rig.read(waitRoot, answerOf(waitRoot, []dispatch.IssueChild{{Key: own, Status: tc.status}}, passing("c-after", waitRootMerge)))
+			if !tc.holds {
+				closedOnChecks(t, rig, waitRoot)
+				return
+			}
+			rig.stands(waitRoot, phase.Verifying, "testing")
+			var view closeView
+			seedRecord(t, rig.pool, func(tx pgx.Tx) error {
+				var err error
+				view, err = rig.engine.closeWait(t.Context(), tx, rig.issue(waitRoot))
+				return err
+			})
+			if !slices.Equal(view.wait.OpenChildren, []string{own}) || len(view.wait.Beneath) != 0 {
+				t.Fatalf("closeWait's open children = %v and issues beneath = %+v, want %s among the open children alone: it is no member of the root's tree",
+					view.wait.OpenChildren, view.wait.Beneath, own)
+			}
+		})
+	}
+}
+
 // The wait is one document replaced at each change. The entry stores it, with since when the issue
 // waits and since when each item stands, and queues one row for close-wait.md. A change of an
 // item's state queues one more where none stands, and a read that changes no item queues none. No
