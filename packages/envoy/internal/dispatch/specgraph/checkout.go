@@ -258,18 +258,27 @@ func (g GitHistory) writeBlobs(root string, blobs []treeEntry) (links []treeLink
 
 // writeBlob writes size bytes of r to a new file at path, executable when executable is true.
 func writeBlob(path string, executable bool, r io.Reader, size int64) error {
-	perm := os.FileMode(0o644)
-	if executable {
-		perm = 0o755
+	if !executable {
+		// No program runs this file, so no exec of it can meet ETXTBSY: it streams from the pipe,
+		// outside the fork lock, and costs no more memory than the copy's buffer.
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			return err
+		}
+		if _, err := io.CopyN(f, r, size); err != nil {
+			f.Close()
+			return err
+		}
+		return f.Close()
 	}
-	// The blob comes from a git cat-file --batch subprocess pipe; read it into memory first so the
-	// pipe read does not happen while programfile.Write holds the fork lock, then write it under
-	// the lock as the link case above reads its target. The file may run (an executable blob), and
-	// another goroutine of this process forks to start commands, so a plain os.OpenFile here could
-	// be held open for writing in a child when the file runs (ETXTBSY).
+	// An executable blob may run, and another goroutine of this process forks to start commands,
+	// so a plain os.OpenFile here could be held open for writing in a child when the file runs
+	// (ETXTBSY): programfile.Write writes it under the fork lock. The blob comes from a git
+	// cat-file --batch subprocess pipe, so it is read into memory first, and the pipe read does not
+	// happen while the lock is held.
 	data := make([]byte, size)
 	if _, err := io.ReadFull(r, data); err != nil {
 		return err
 	}
-	return programfile.Write(path, os.O_EXCL, perm, bytes.NewReader(data))
+	return programfile.Write(path, os.O_EXCL, 0o755, bytes.NewReader(data))
 }
