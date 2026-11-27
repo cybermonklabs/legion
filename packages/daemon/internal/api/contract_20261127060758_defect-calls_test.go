@@ -2,7 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -10,6 +13,84 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
+
+func init() {
+	registerEntryTestRows(entryTestRows{
+		entry: defectCallsContract,
+		requests: map[string]reflect.Type{
+			"POST /legion/v1/defects/report":   reflect.TypeFor[DefectReportRequest](),
+			"POST /legion/v1/defects/withdraw": reflect.TypeFor[DefectWithdrawRequest](),
+		},
+		answers: func(*testing.T) map[AnswerID]answerFixture {
+			return map[AnswerID]answerFixture{
+				// Each answer a report can give, the three states over the one shape, and the
+				// withdrawal's one (the goldens `defect-report.json` and `defect-withdraw.json` pin a
+				// real answer of each route).
+				AnswerDefectReport: {roots: typesOf(DefectReportResponse{}), bodies: []any{
+					DefectReportResponse{Defect: "3", State: "recorded", NextChange: 2},
+					DefectReportResponse{Defect: "3", State: "same", NextChange: 2},
+					DefectReportResponse{Defect: "1", State: "joined", NextChange: 2},
+				}},
+				AnswerDefectWithdraw: {roots: typesOf(DefectWithdrawResponse{}), bodies: []any{
+					DefectWithdrawResponse{Defect: "3", State: "withdrawn"},
+				}},
+			}
+		},
+		states: func(*testing.T) []State { return []State{defectCallsState()} },
+		carry: func(state State) State {
+			// The first issue of the golden, in key order, waits for its close, so the band of
+			// this entry finds a closeWait to take there.
+			issues := maps.Clone(state.Issues)
+			keys := slices.Sorted(maps.Keys(issues))
+			if len(keys) > 0 {
+				issue := issues[keys[0]]
+				issue.CloseWait = closeWaitState().Issues["LEGION-208"].CloseWait
+				issues[keys[0]] = issue
+			}
+			state.Issues = issues
+			return state
+		},
+	})
+}
+
+// defectCallsState is the state body this entry adds to the shape gate's bodies: an issue in
+// verifying whose closeWait carries every key of one, and the word `verifying` at each key path
+// the entry declares it at, `heldFrom` and the architect's and a worker's held task among them,
+// which the daemon writes in neither but which the declared table names, so the value comparison
+// reads the word at every one of its rows.
+func defectCallsState() State {
+	at := time.Date(2026, 11, 27, 6, 0, 0, 0, time.UTC)
+	merged := at.Add(-2 * time.Hour)
+	look := at.Add(time.Hour)
+	held := func(session string) ClaimView {
+		return ClaimView{Session: session, State: "idle", PendingTask: &PendingTaskView{Phase: phase.Verifying, QueuedAt: at}}
+	}
+	architect := held("ses_architect_DEFECTS-1")
+	return State{
+		Daemon: DaemonInfo{Project: "defects", SchemaVersion: 1, Boots: 1, FirstBootAt: at, StartedAt: at},
+		Issues: map[string]Issue{
+			"DEFECTS-1": {
+				Key: "DEFECTS-1", Generation: 2, Phase: phase.Verifying, Status: "testing", Tree: "DEFECTS-1",
+				Repo: "acme/widgets", DefaultBranch: "main", HeldFrom: string(phase.Verifying), Architect: &architect,
+				Workers: map[claim.Role]PhaseView{claim.RoleMerger: {Claim: held("ses_merger_DEFECTS-1")}},
+				Why:     &WhyView{State: WhyWaiting, Reason: "It waits in verifying, and its close waits for check c-after."},
+				CloseWait: &CloseWaitView{
+					Since:        &merged,
+					Beneath:      []CloseWaitIssueView{{Key: "DEFECTS-2", Status: "in_progress", Since: merged}},
+					OpenChildren: []CloseWaitIssueView{{Key: "DEFECTS-3", Status: "backlog", Since: merged}},
+					Checks:       []CloseWaitCheckView{{ID: "c-after", When: "after_merge", Answer: "no", Reason: "fail", Since: at}},
+					Production: &CloseWaitProductionView{State: "open", Generation: 2, Merge: "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
+						Outcome: "not_run", NextLookAt: &look, Since: merged},
+					Defects: []CloseWaitDefectView{{ID: "3", Kind: "defect", Role: "merger", Text: "the retry never stops",
+						Head: "4d2f6a0c8e1b3d5f7a9c0e2b4d6f8a1c3e5b7d90", Check: "c-after", Since: at}},
+					NextChanges: 1,
+					Unapproved:  &CloseWaitUnapprovedView{Checks: []string{"c-old"}, Since: at},
+					Unread:      &CloseWaitUnreadView{Cause: "no read of the checks since the merge", Since: merged},
+				},
+			},
+		},
+	}
+}
 
 // closeWaitState is a state holding an issue in verifying whose close waits for a reported defect
 // and a read of its checks, an issue in merging that holds a reported defect, and an issue at work

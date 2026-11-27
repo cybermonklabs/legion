@@ -93,7 +93,7 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.PullRequestMergeability{}, intake.PullRequestMerged{}, intake.PullRequestClosed{}, intake.PullRequestDequeued{},
 		intake.PullRequestReviewRequests{}, intake.PullRequestMergeStateUnread{},
 		intake.MergeQueueReadDone{}, intake.ConflictConfirmDone{}, intake.CloseChecksRead{}, intake.PullRequestMissing{}, intake.Push{}, intake.BasePush{},
-		intake.HandoffComplete{}, intake.BackwardMove{}, intake.RetryOrEscalate{}, intake.RestartPhase{}, intake.SignOff{},
+		intake.HandoffComplete{}, intake.DefectReport{}, intake.DefectWithdrawal{}, intake.BackwardMove{}, intake.RetryOrEscalate{}, intake.RestartPhase{}, intake.SignOff{},
 		intake.GateRegistered{}, intake.PlanGiven{}, intake.TaskStopped{}, intake.CloseRoot{}, intake.ClaimFailed{},
 		intake.SessionLost{}, intake.SessionStoreFault{},
 		intake.MemoryGuardKill{}, intake.ControllerMemoryGuardKill{}, intake.VolumeNearFull{}, intake.ClaimReady{}, intake.TaskConfirmed{},

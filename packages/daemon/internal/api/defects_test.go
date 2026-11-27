@@ -453,3 +453,28 @@ func TestWithdrawDefectAnswersEachCase(t *testing.T) {
 		}
 	})
 }
+
+// The goldens of the two calls' answers are real answers of their routes: the implementer's
+// report in retro, the first defect of a fresh record, and the owning architect's withdrawal of
+// it (`defect-report.json` and `defect-withdraw.json`, which the contracts package parses).
+func TestTheDefectCallsAnswerTheirGoldens(t *testing.T) {
+	h, _, _ := statusHarness(t)
+	acceptPhase(t, h, statusRoot, phase.Retro)
+	implementer := newLiveClaim(t, h, statusRoot, claim.RoleImplementer)
+	report := reportDefectAs(h, implementer.grant(t), statusRoot, defectText, defectHead, "")
+	if report.Code != http.StatusOK {
+		t.Fatalf("report_defect = %d, want 200; body %s", report.Code, report.Body)
+	}
+	var reported DefectReportResponse
+	decodeInto(t, report, &reported)
+	golden(t, "defect-report.json", reported)
+
+	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
+	withdrawal := withdrawDefectAs(h, architect.grant(t), statusRoot, reported.Defect, "same as an earlier defect")
+	if withdrawal.Code != http.StatusOK {
+		t.Fatalf("withdraw_defect = %d, want 200; body %s", withdrawal.Code, withdrawal.Body)
+	}
+	var withdrawn DefectWithdrawResponse
+	decodeInto(t, withdrawal, &withdrawn)
+	golden(t, "defect-withdraw.json", withdrawn)
+}

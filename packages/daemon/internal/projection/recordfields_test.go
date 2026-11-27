@@ -293,8 +293,33 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		},
 	}
 
+	// An issue waiting in verifying, whose view carries the three fields of its close's wait
+	// (`closeWait`): the held child above stands in awaiting_person, where no close waits, so the
+	// wait's keys are read off this one (servedKeys' elsewhere).
+	mergedAt := projectedAt.Add(-3 * time.Hour)
+	nextLook := projectedAt.Add(time.Hour)
+	waited, err := json.Marshal(record.StoredWait{
+		Entered:      mergedAt,
+		Checks:       []record.WaitCheck{{ID: "c-after", When: "after_merge", Answer: "no", Reason: "fail", Since: mergedAt}},
+		Production:   &record.WaitProduction{State: "open", Generation: 3, Merge: "c0ffee", NextLookAt: &nextLook, Since: mergedAt},
+		Beneath:      []record.WaitIssue{{Key: "LEGION-503", Status: "in_progress", Since: mergedAt}},
+		OpenChildren: []record.WaitIssue{{Key: "LEGION-504", Status: "backlog", Since: mergedAt}},
+		Defects:      []record.WaitReason{{ID: 7, Kind: record.DefectKindDefect, Text: "the retry never stops", Role: claim.RoleMerger, Since: mergedAt}},
+		Unread:       &record.WaitUnread{Cause: "no read of the checks since the merge", Since: mergedAt},
+		Unapproved:   &record.WaitUnapproved{Checks: []string{"c-old"}, Since: mergedAt},
+	})
+	if err != nil {
+		t.Fatalf("encode the stored wait: %v", err)
+	}
+	const waiting = "LEGION-502"
+	waitingIssue := record.Issue{
+		Key: waiting, Tree: waiting, Project: "OTHER", Phase: phase.Verifying, Generation: 3, Status: "testing",
+		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		CloseWaitSince: &mergedAt, CloseWait: waited, NextChanges: 2,
+	}
+
 	store := projectionStore{
-		issues:      []record.Issue{tree, issue},
+		issues:      []record.Issue{tree, issue, waitingIssue},
 		assignments: map[string][]record.Assignment{root: {drawn}},
 	}
 	state, err := Project(context.Background(), Inputs{
@@ -384,7 +409,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		// memory fields are built from the assignment record, which has a table of its own
 		// (api.AssignmentRecordFields, the subtest below).
 		servedKeys(t, "record.Issue", document, api.IssueRecordFields,
-			[]string{"workers", "assignments", "memoryGroup", "memoryDrawMode", "memoryDrawnAt"})
+			[]string{"workers", "assignments", "memoryGroup", "memoryDrawMode", "memoryDrawnAt"}, wire(t, state.Issues[waiting]))
 
 		want := wire(t, map[string]any{
 			"key": issue.Key, "tree": issue.Tree, "phase": issue.Phase,

@@ -244,9 +244,11 @@ func waitIssues(keys []string, statuses map[string]string, old []record.WaitIssu
 	return issues
 }
 
-// waitReason is a reason of a next change, or a reported defect, as the stored wait names it.
+// waitReason is a reason of a next change, or a reported defect, as the stored wait names it: a
+// reported defect with the role that reported it and the head it saw it at.
 func waitReason(defect record.Defect) record.WaitReason {
-	return record.WaitReason{ID: defect.ID, Kind: defect.Kind, Text: defect.Text, Check: defect.Check, Since: defect.ReportedAt}
+	return record.WaitReason{ID: defect.ID, Kind: defect.Kind, Text: defect.Text, Check: defect.Check, Role: defect.Role, Head: defect.Head,
+		Since: defect.ReportedAt}
 }
 
 // unreadCause is why the newest read does not count: none since the entry, a failed one, one in
@@ -583,6 +585,14 @@ func (e *Engine) askAncestorsRead(ctx context.Context, tx pgx.Tx, issue record.I
 // commit, or newly changed without approval, and reads again later a read that did not decide: a
 // basis named no merge commit of the newest merge, or Dispatch could not place or read a check.
 func (e *Engine) judgeClose(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	return e.judgeCloseNoting(ctx, tx, issue, nil)
+}
+
+// judgeCloseNoting is judgeClose for an event that close-wait.md names once, in the version it
+// writes: withdrawn, the defects a withdrawal ended (defectWithdrawal), which the stored wait it
+// writes holds as its Withdrawn. A later write leaves them out, since waitOf starts every wait
+// afresh.
+func (e *Engine) judgeCloseNoting(ctx context.Context, tx pgx.Tx, issue record.Issue, withdrawn []record.WaitWithdrawal) error {
 	if issue.Phase != phase.Verifying {
 		return nil
 	}
@@ -591,21 +601,22 @@ func (e *Engine) judgeClose(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 		return err
 	}
 	if view.wait.Done() {
-		return e.closeOnChecks(ctx, tx, issue, view)
+		return e.closeOnChecks(ctx, tx, issue, view, withdrawn)
 	}
-	return e.storeWait(ctx, tx, issue, view)
+	return e.storeWait(ctx, tx, issue, view, withdrawn)
 }
 
 // storeWait writes the stored wait of view where it differs from the one the row holds, with the
 // row that publishes it, the notices of D11 that come at once, and the read again on the backoff
-// of a read that did not decide (readAgainSince).
-func (e *Engine) storeWait(ctx context.Context, tx pgx.Tx, issue record.Issue, view closeView) error {
+// of a read that did not decide (readAgainSince). withdrawn is what judgeCloseNoting names once.
+func (e *Engine) storeWait(ctx context.Context, tx pgx.Tx, issue record.Issue, view closeView, withdrawn []record.WaitWithdrawal) error {
 	now := e.now()
 	old, err := storedWaitOf(issue)
 	if err != nil {
 		return err
 	}
 	stored := e.waitOf(issue, view, old, now)
+	stored.Withdrawn = withdrawn
 	if err := e.tellAtOnce(ctx, tx, issue, old, stored, view.wait); err != nil {
 		return err
 	}
@@ -727,14 +738,16 @@ func checkFailedReason(issue record.Issue, check string, wait record.CloseWait) 
 // that does not linger the table's row out of verifying writes done and the issue leaves the
 // workflow (leave), which suspends a merged child's pod where its production check closed while
 // it stood in verifying. In a lingering tree no transition runs, so the close writes the member's
-// done directly, as a merge in a lingering tree did before the wait.
-func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issue, view closeView) error {
+// done directly, as a merge in a lingering tree did before the wait. withdrawn is what
+// judgeCloseNoting names once: the withdrawal that left the close waiting for nothing.
+func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issue, view closeView, withdrawn []record.WaitWithdrawal) error {
 	now := e.now()
 	old, err := storedWaitOf(issue)
 	if err != nil {
 		return err
 	}
 	stored := e.waitOf(issue, view, old, now)
+	stored.Withdrawn = withdrawn
 	stored.Closed = &now
 	if err := putStoredWait(&issue, stored); err != nil {
 		return err

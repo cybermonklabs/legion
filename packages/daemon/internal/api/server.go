@@ -611,6 +611,8 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/phase/retry", s.phaseRetry},
 		{"POST /legion/v1/signoff", s.signOff},
 		{"POST /legion/v1/roots/close", s.closeRoot},
+		{"POST /legion/v1/defects/report", s.reportDefect},
+		{"POST /legion/v1/defects/withdraw", s.withdrawDefect},
 		{"POST /legion/v1/children/park", s.removedChildRoute},
 		{"POST /legion/v1/children/rerun", s.rerunChild},
 		{"POST /legion/v1/intake/replay", s.intakeReplay},

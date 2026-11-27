@@ -161,6 +161,15 @@ func CloseWaitDocument(issue Issue) (string, error) {
 			fmt.Fprintf(&doc, "Change %d ended with no pull request at %s.\n", wait.Ended.Generation, waitTime(wait.Ended.At))
 		}
 	}
+	if len(wait.Withdrawn) > 0 {
+		doc.WriteString("\n## Withdrawn defects\n\n")
+		for _, withdrawn := range wait.Withdrawn {
+			fmt.Fprintf(&doc, "- defect %d, withdrawn at %s: %s\n", withdrawn.ID, waitTime(withdrawn.At), strings.TrimSpace(withdrawn.Reason))
+			for line := range strings.SplitSeq(strings.TrimSpace(withdrawn.Text), "\n") {
+				fmt.Fprintf(&doc, "  %s\n", line)
+			}
+		}
+	}
 	if wait.Closed != nil {
 		fmt.Fprintf(&doc, "\n## Closed\n\n%s closed at %s. Nothing holds it now.\n", issue.Key, waitTime(*wait.Closed))
 		return doc.String(), nil
@@ -237,12 +246,19 @@ func CloseWaitDocument(issue Issue) (string, error) {
 }
 
 // writeWaitReason writes one reason of a change, or one reported defect, as an item of the list:
-// its kind and id, the check it is about where it names one, since when it stands, and its text
-// beneath, each line of it indented under the item.
+// its kind and id, the check it is about where it names one, the role that reported it and the
+// head it saw it at where the reason has them, since when it stands, and its text beneath, each
+// line of it indented under the item.
 func writeWaitReason(doc *strings.Builder, reason WaitReason) {
 	fmt.Fprintf(doc, "- %s %d", reason.Kind, reason.ID)
 	if reason.Check != "" {
 		fmt.Fprintf(doc, " about `%s`", reason.Check)
+	}
+	if reason.Role != "" {
+		fmt.Fprintf(doc, ", reported by the %s", reason.Role)
+	}
+	if reason.Head != "" {
+		fmt.Fprintf(doc, " at head `%s`", reason.Head)
 	}
 	fmt.Fprintf(doc, ", since %s", waitTime(reason.Since))
 	if text := strings.TrimSpace(reason.Text); text != "" {

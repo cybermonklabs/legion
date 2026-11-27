@@ -126,6 +126,17 @@ func (s *Postgres) OpenDefects(ctx context.Context, tx pgx.Tx, issue string) ([]
 	return open, nil
 }
 
+func (s *Postgres) Defect(ctx context.Context, tx pgx.Tx, issue string, id int64) (*Defect, error) {
+	defect, err := scanDefect(tx.QueryRow(ctx, "select "+defectColumns+" from defects where issue = $1 and id = $2", issue, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read defect %d of %s: %w", id, issue, err)
+	}
+	return &defect, nil
+}
+
 func (s *Postgres) WithdrawDefect(ctx context.Context, tx pgx.Tx, issue string, id int64, reason string, at time.Time) (bool, error) {
 	if strings.TrimSpace(reason) == "" {
 		return false, fmt.Errorf("withdraw defect %d of %s: a withdrawal says why", id, issue)

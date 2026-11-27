@@ -261,6 +261,13 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		if issue.AwaitingPerson() {
 			view.WaitingOn = waitingOn(*issue.Awaiting)
 		}
+		// What the issue's close waits for, from its stored wait (closeWaitView): an issue in
+		// verifying, and one before its merge that holds a reported defect.
+		closeWait, err := closeWaitView(issue)
+		if err != nil {
+			return api.State{}, err
+		}
+		view.CloseWait = closeWait
 
 		phases, err := in.Store.Phases(ctx, in.Tx, issue.Key)
 		if err != nil {
