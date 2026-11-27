@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { api } from "../../../api/client";
+import { issueCoverageQuery } from "../../../api/queries";
 import type {
   Actor,
   ArtifactBlock,
@@ -95,6 +96,13 @@ async function mountEntries(
   if (blocks !== null) {
     client.setQueryData(["artifact", SPEC_DOCUMENT.id, "blocks"], blocks, given);
   }
+  // The coverage read, which places a decision whose statement the tree holds no node for: one
+  // that holds no statement, so each decision here is placed by the statements the tree holds.
+  client.setQueryData(
+    issueCoverageQuery(KEY).queryKey,
+    { gaps: [], has_plan: false, issue: KEY, requirements: [], spec_artifact_id: SPEC_DOCUMENT.id },
+    given
+  );
   const root = issueTree(children);
   const view = presetView(root, "decisions", "").root;
   const wrapper = ({ children: inside }: { children: ReactNode }) => (
@@ -542,10 +550,12 @@ test("the seam reads the blocks of the spec and the plan its decisions stand in,
 // R8: a decisions read that holds no decision, or none of its `entries` member, gives no
 // decision and no error, and the view draws the questions alone. The tree is the one the page
 // builds from that same read, which holds no decision node (`tree-drafts.ts`'s `addDecisions`).
-// Such a read holds its answer all the same (`readsHeld`). While any one of the four reads has
-// not answered, the questions are drawn all the same. The reads hold once the decisions read and
-// the asks have answered, which say which questions and decisions there are; the comments and
-// the blocks only move a decision between parts, so the reads hold while those are out. Either
+// Such a read holds its answer all the same (`readsHeld`). While the decisions read or the asks
+// have not answered, no entry is drawn, the questions included, so none is drawn in a part it
+// then leaves (decision 585); while the comments or the blocks are out, the questions are drawn
+// all the same. The reads hold once the decisions read and the asks have answered, which say
+// which questions and decisions there are; the comments and the blocks only move a decision
+// between parts, so the reads hold while those are out. Either
 // of the first two refused before it first answers is the seam's to name, with a retry of its
 // own, so the body can say so without naming a read; one refused only on a later read keeps
 // the answer it gave, and is none.
@@ -621,7 +631,11 @@ test("an empty decisions member gives the questions alone and no error", async (
         read,
         readsHeld: hook.result.current.readsHeld,
       });
-      expect(reading()).toEqual({ open_questions: ["q-open"], read, readsHeld: heldWhileOut });
+      expect(reading()).toEqual({
+        open_questions: heldWhileOut ? ["q-open"] : [],
+        read,
+        readsHeld: heldWhileOut,
+      });
       expect(started).toHaveBeenCalledTimes(1);
       await act(async () => client.setQueryData(queryKey, answer));
       expect(reading()).toEqual({ open_questions: ["q-open"], read, readsHeld: true });

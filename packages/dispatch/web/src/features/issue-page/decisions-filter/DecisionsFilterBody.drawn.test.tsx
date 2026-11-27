@@ -8,6 +8,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { displayTree } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
 import { ApiError, api } from "../../../api/client";
+import { issueCoverageQuery } from "../../../api/queries";
 import type {
   Actor,
   ArtifactText,
@@ -351,6 +352,13 @@ function renderBody(
   // The spec's blocks, the one document of the issue its decisions stand in: none, so a Change is
   // placed by its quote alone, and no case makes a request for them.
   client.setQueryData(["artifact", SPEC_DOCUMENT.id, "blocks"], [], answered);
+  // The coverage read, which places a decision whose statement the tree holds no node for: one
+  // that holds no statement, so each decision here is placed by the statements the tree holds.
+  client.setQueryData(
+    issueCoverageQuery(KEY).queryKey,
+    { gaps: [], has_plan: false, issue: KEY, requirements: [], spec_artifact_id: SPEC_DOCUMENT.id },
+    answered
+  );
   // Who is reading, as the page's first read of it left it, where the reads are dated: the page
   // read it as it loaded, before any view was opened.
   if (answered !== undefined) {
@@ -836,7 +844,8 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   const asksRead = spyOn(api, "listIssueAskThreads").mockReturnValue(asksOut.promise);
   try {
     const early = renderBody({ ...FOOT_ONLY, asks: null }, {}, { stage: true });
-    expect(footControlOf(early)).not.toBeNull();
+    // No entry is drawn while the asks read is out, the foot's decisions included (decision 585).
+    expect(footControlOf(early)).toBeNull();
     const tree = early.getByRole("tree", { name: CONTROL_LABELS.tree });
     await act(async () => chordFocus(tree));
     expect(document.activeElement).toBe(tree);
@@ -2189,10 +2198,10 @@ test("a list that holds only the foot, opened by a link inside the app, gives it
   const getIssueDecisions = spyOn(api, "getIssueDecisions").mockReturnValue(answer.promise);
   try {
     const view = renderBody({ ...FOOT_ONLY, made: null }, {}, { main: true, stage: true });
-    // The foot is drawn from the tree, but until the read answers a row may yet come, so its
-    // control takes no focus.
+    // No entry is drawn until the decisions read answers (decision 585), the foot's decisions
+    // included, so nothing takes the focus meanwhile.
     await act(() => Promise.resolve());
-    expect(footControlOf(view)).not.toBeNull();
+    expect(footControlOf(view)).toBeNull();
     expect(document.activeElement).toBe(view.getByRole("main"));
     await act(async () => answer.resolve(decisionsRead(FOOT_ONLY.made)));
     await waitFor(() =>
@@ -2453,15 +2462,15 @@ test("another person's answer stands under Your decisions with their name", () =
 // the press has ended and its click has landed. Pressed on no row, on the foot's control say,
 // it says so at the list's tab stop, as the outline's keys do. Until the reads that say which
 // questions and decisions there are hold their answers, there being nowhere to go may be false,
-// so the key says nothing.
+// so the key says nothing: with the decisions read refused, the questions are drawn beside its
+// Retry line (decision 585), and `w` on one says nothing.
 test("a key with nowhere to go reports at the row it was pressed on", async () => {
   const user = userEvent.setup();
-  // The decisions read the mount starts never answers.
-  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockReturnValue(
-    Promise.withResolvers<never>().promise
-  );
+  // The decisions read the mount starts is refused.
+  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("refused"));
   try {
     const cold = renderBody({ ...wholeIssue(), made: null });
+    await waitFor(() => expect(failedLine(cold, "issue-decisions")).not.toBeNull());
     await act(async () => rowOf(cold, "q-open").focus());
     await user.keyboard("w");
     expect(focusedRow(cold)).toBe("q-open");

@@ -219,19 +219,28 @@ export function DecisionsFilterBody({
   // the line the names store projects beside its name from the reading the page published for
   // it, its first block that holds words (`KnownReferences.lines`), cut to a chip's room, which
   // each row draws as it is. One the store holds no line for yet is named by nothing until it
-  // does, as a chip draws nothing until its name comes. A statement drawn under two parents is
-  // one node, so its first placement in the page's reading order names it.
+  // does, as a chip draws nothing until its name comes. Each statement is named by its address
+  // (`ShapedStatement.reference`), so one the tree holds no node for yet - its page is not read
+  // yet (decision 579) - is named as one it holds; one statement shaped by two entries is named
+  // once. Beside its name goes its whole line, the title of the link its line draws, which cuts
+  // the name to the line's width (decision 583 (2), amended).
   const { lines } = useKnownReferences();
-  const statementNames = useMemo<ReadonlyMap<string, string>>(() => {
-    const names = new Map<string, string>();
-    for (const node of nodesInOrder(root)) {
-      const reference = node.type === "requirement" ? node.reference : undefined;
-      if (reference === undefined || names.has(node.id)) continue;
-      const line = lines.get(reference);
-      if (line !== undefined) names.set(node.id, chipName(parseNodeReference(reference), line));
+  const statementNames = useMemo<
+    ReadonlyMap<string, { readonly name: string; readonly title: string }>
+  >(() => {
+    const names = new Map<string, { readonly name: string; readonly title: string }>();
+    for (const part of DECISIONS_PART_ORDER) {
+      for (const { shapes } of parts[part]) {
+        for (const { id, reference } of shapes) {
+          const line = lines.get(reference);
+          if (line !== undefined && !names.has(id)) {
+            names.set(id, { name: chipName(parseNodeReference(reference), line), title: line });
+          }
+        }
+      }
     }
     return names;
-  }, [lines, root]);
+  }, [lines, parts]);
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
   const body = useRef<HTMLElement | null>(null);
