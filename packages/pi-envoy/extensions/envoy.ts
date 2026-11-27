@@ -174,6 +174,7 @@ import {
   type AcceptedUserTurn,
   HANDLED_ATTEMPT_ENTRY,
   handledAttempts,
+  handledMessages,
   typedInputReply,
 } from "@legion/pi-shared/dispatch-user-turn";
 import {
@@ -181,6 +182,7 @@ import {
   endInjectedUserTurns,
   forgetInjectedUserTurns,
   matchInjectedUserTurn,
+  messageTag,
   noteInjectedUserTurn,
   noteTypedUserTurn,
 } from "@legion/pi-shared/injected-user-turns";
@@ -253,6 +255,7 @@ import { sideTurn } from "../src/side-turn";
 import { followBoundMs, startTradeBoundMs } from "../src/start-bound";
 import { gatedLogger } from "../src/stop-gates";
 import { stepWasRefused, taskWasAbandoned } from "../src/task-queue";
+import { transcriptMessages } from "../src/transcript-messages";
 import { TypedPictures } from "../src/typed-pictures";
 import {
   MOVED_SESSION_REASON,
@@ -1177,6 +1180,13 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     legionManagedTranscript = branch.some(isLegionManagedEntry);
     const entries = context.sessionManager.getEntries();
     handledDispatchAttempts = handledAttempts(entries);
+    // The turns of the conversation the session's terminal shows, for a viewer who opens the
+    // session: a process that takes a session up records none of them itself
+    // (`restoreAgentStream`). That is its live context: Oh My Pi draws a resumed session from the
+    // latest compaction's cut on (`display.collapseCompacted`, on by default), and no body before
+    // the cut is read (`liveContext`).
+    const live = liveContext(branch);
+    restoreAgentStream(sessionID, live, entries);
     // The delivery ledger, from every entry of the session file as handled attempts are: what
     // this session was shown, on any branch, with the cards the host wrote, and the topics it
     // follows. The notices it records held and not handed, which a
@@ -1191,7 +1201,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // it (every match asks under the live id; another instance in the process may still serve the
     // id) and its typed turns already handed their pictures (`TypedPictures.dropOtherSessions`
     // says which survive).
-    markPicturesShown(shownPictures(sessionID), transcriptPictures(liveContext(branch)));
+    markPicturesShown(shownPictures(sessionID), transcriptPictures(live));
     if (previousSessionID !== sessionID) {
       forgetShownPictures(previousSessionID);
       if (notedSessionIDs.delete(previousSessionID)) forgetInjectedUserTurns(previousSessionID);
@@ -3052,10 +3062,17 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // most the served session's, the host's live one and the rings still watched are held, and a
   // watch lapses within AGENT_STREAM_WATCH_TTL_MS of its viewer's last ping.
   const agentStreams = new Map<string, AgentStreamPublisher>();
+  /** The sessions whose ring was filled from their transcript (`restoreAgentStream`). A ring
+   *  alone does not say so: the host can record a turn under a session before a pass has taken
+   *  that session up, and that ring holds the one turn and none before it. */
+  const restoredAgentStreams = new Set<string>();
   /** Forgets the ring of every session but the `kept` ones, and those a viewer still watches. */
   const pruneAgentStreams = (...kept: string[]): void => {
     for (const [session, ring] of agentStreams) {
-      if (!kept.includes(session) && !ring.watched) agentStreams.delete(session);
+      if (kept.includes(session) || ring.watched) continue;
+      agentStreams.delete(session);
+      // The ring it was filled into is gone, so the session is filled again when it is taken up.
+      restoredAgentStreams.delete(session);
     }
   };
   const agentStreamOf = (session: string): AgentStreamPublisher => {
@@ -3069,6 +3086,28 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       agentStreams.set(session, ring);
     }
     return ring;
+  };
+  // A session this process takes up with turns already in its transcript (its start on a session
+  // it resumes: a pod's restart, `omp --continue`, `--resume`; a `/resume`; a fork) gets a ring
+  // that holds none of them, so a viewer who opened it was replayed none of what its terminal
+  // shows (dispatch://INFRA-5990). The ring a session is first given here is filled from its live
+  // context (`liveContext`) instead, as the process that ran those turns recorded them. A person's
+  // Send the session took as its typed turn carries its Dispatch message as it did then: the
+  // turn's tag, where the transcript records that the session handled that message
+  // (`handledMessages`), which is the turn `matchInjectedUserTurn` finds live. A session whose
+  // ring is held already keeps it, and records its turns as they end.
+  const restoreAgentStream = (
+    session: string,
+    live: readonly unknown[],
+    entries: readonly unknown[]
+  ): void => {
+    if (session === "" || restoredAgentStreams.has(session)) return;
+    restoredAgentStreams.add(session);
+    const handled = handledMessages(entries);
+    agentStreamOf(session).restore(transcriptMessages(live), (message) => {
+      const tag = messageTag(message);
+      return tag !== undefined && handled.has(tag) ? tag : undefined;
+    });
   };
   // The control subscription this session currently holds, and the id it was opened for.
   let agentStreamControl: InboundSubscription | undefined;
@@ -5097,6 +5136,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       const liveSessionID = context.sessionManager.getSessionId();
       forgetAgentStreamContext();
       agentStreams.clear();
+      restoredAgentStreams.clear();
       forgetShownPictures(sessionID);
       if (liveSessionID !== sessionID) forgetShownPictures(liveSessionID);
       // An instance that served no session (a `task` subagent's, whose `sessionID` stayed empty)
