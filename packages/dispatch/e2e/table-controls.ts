@@ -1086,7 +1086,7 @@ async function expectChipsStandFor(bar: Locator, count: number, where: string): 
  *  its `+N more` (`expectChipsStandFor`), so a bar that drew one chip of four never passes for one
  *  that drew all four. The chips line reads its chips' widths after the commit that drew them and
  *  draws again by that reading, so two frames more hold both. */
-async function settledBar(
+export async function settledBar(
   page: Page,
   name: SurfaceName,
   bar: Locator,
@@ -1473,6 +1473,11 @@ export async function expectOneBarOn(
       await expectOneBar(page, tab.name, tab.row, `${at}, no narrowing on`);
       await tab.narrow();
       await expectOneBar(page, tab.name, tab.row, `${at}, one narrowing on`);
+      // Six, each one chip, read on by the trigger's count before the bar is measured under them.
+      const six = `${at}, six narrowings on`;
+      await page.goto(faultAddress(fault, 6));
+      await settledBar(page, tab.name, tab.row, 6, six);
+      await expectOneBar(page, tab.name, tab.row, six);
     }
   }
 }
@@ -1749,6 +1754,21 @@ async function expectNarrowingsListed(
   await expect(control(bar, CONTROL.panelTrigger)).toHaveAttribute("aria-expanded", "false");
 }
 
+/** That `reading`, a bar under narrowings, draws **Clear filters** as the control right after its
+ *  trigger, in the trigger's group, a button of its own. `at` names the page, its width and what
+ *  is on. */
+function expectClearBesideTrigger(reading: BarReading, at: string): void {
+  const trigger = reading.controls.findIndex((each) => each.control === CONTROL.panelTrigger);
+  expect(
+    reading.controls[trigger + 1]?.control,
+    `${at}: ${saidOf(reading)}, no Clear filters after its trigger`
+  ).toBe("clear");
+  expect(
+    reading.controls.find((each) => each.control === "clear")?.besideTrigger,
+    `${at}: Clear filters is not in its trigger's group`
+  ).toBe(true);
+}
+
 /** `k-bar`'s **Clear filters** on a fault tab's bar, with the flag and the column filter of
  *  `address` on (`expectFlagAndColumn`), read as the project List's: in the wide layout it is the
  *  control right after the trigger, in the trigger's group, and a press on it takes both off - the
@@ -1765,18 +1785,14 @@ async function expectClearTakesBoth(
   // `expectFlagAndColumn` waited until the trigger counted the two, and two frames more, and shut
   // its panel, so the bar read here stands for them.
   const two = await readBar(bar);
-  const said = saidOf(two);
-  const clear = two.controls.filter((each) => each.control === "clear");
   if (two.width < NARROW_BELOW) {
-    expect(clear.length, `${on}: ${said}, a Clear filters`).toBe(0);
+    expect(
+      two.controls.filter((each) => each.control === "clear").length,
+      `${on}: ${saidOf(two)}, a Clear filters`
+    ).toBe(0);
     return;
   }
-  const trigger = two.controls.findIndex((each) => each.control === CONTROL.panelTrigger);
-  expect(
-    two.controls[trigger + 1]?.control,
-    `${on}: ${said}, no Clear filters after its trigger`
-  ).toBe("clear");
-  expect(clear[0]?.besideTrigger, `${on}: Clear filters is not in its trigger's group`).toBe(true);
+  expectClearBesideTrigger(two, on);
   // The narrowings' own keys, which the press takes out of the address. `tab` stays, so the press
   // leads to the tab's unnarrowed address, which the row opened the tab at.
   const keys = [...new URL(address, page.url()).searchParams.keys()].filter((key) => key !== "tab");
@@ -1817,10 +1833,10 @@ async function expectLineFits(bar: Locator, at: string): Promise<void> {
       return { left, name: chip.getAttribute("aria-label") ?? "", right };
     })
   );
-  const n =
-    (await more.count()) === 0
-      ? 0
-      : Number.parseInt((await more.getAttribute("aria-label")) ?? "0", 10);
+  // The line drew its last layout before this read (`settledBar`, above), so whether it draws a
+  // `+N more` is settled here too.
+  const drawsMore = (await more.count()) > 0;
+  const n = drawsMore ? Number.parseInt((await more.getAttribute("aria-label")) ?? "0", 10) : 0;
   const drawn = chips.map(
     (chip) => `"${chip.name}" at ${Math.round(chip.left)}-${Math.round(chip.right)}px`
   );
@@ -1839,7 +1855,7 @@ async function expectPageFitsAt(page: Page, at: string): Promise<void> {
     await assertPageFits(page);
   } catch (cause) {
     const said = cause instanceof Error ? cause.message : String(cause);
-    throw new Error(`${at}: the page scrolls sideways: ${said}`, { cause });
+    throw new Error(`${at}: ${said}`, { cause });
   }
 }
 
@@ -1849,9 +1865,9 @@ async function expectPageFitsAt(page: Page, at: string): Promise<void> {
  *  where the page has one, and its chips in the line, behind `+N more` or - below 640 px - behind
  *  the trigger's badge, each listed at the top of its panel. On the priorities page the bar above
  *  each fault tab's issues table, which is the List's, is read as the List's is: under one flag
- *  and one column filter, which **Clear filters** takes off, and under six narrowings, whose chips
- *  stand inside the bar, behind `+N more` in the wide layout, on a page that does not scroll
- *  sideways. */
+ *  and one column filter, which **Clear filters** takes off in the wide layout, and under six
+ *  narrowings, whose chips stand inside the bar, behind `+N more` in the wide layout, on a page
+ *  that does not scroll sideways. */
 export async function expectBarDesign(
   page: Page,
   name: SurfaceName,
@@ -1898,9 +1914,10 @@ export async function expectBarDesign(
       await tab.narrow();
       await expectPriorityIssueChips(page, tab.root, at, fault.word);
       // The bar above the tab's own issues table is the List's, read as the List's is: one flag
-      // and one column filter, which Clear filters takes off, then six narrowings, six at the
-      // phone's width too. Their line is read before any panel opens, so a line that draws every
-      // chip with no `+N more` fails at its own read and not at the panels' count.
+      // and one column filter, which Clear filters takes off in the wide layout, then six
+      // narrowings, six at the phone's width too. Their line is read before any panel opens, so a
+      // line that draws every chip with no `+N more` fails at its own read and not at the panels'
+      // count.
       const flagAndColumn = faultAddress(fault, 2);
       await expectFlagAndColumn(
         page,
@@ -1947,14 +1964,7 @@ export async function expectBarDesign(
   if (narrow || !CLEARS.includes(name)) {
     expect(clear.length, `${where}, one narrowing on: ${saidOf(one)}, a Clear filters`).toBe(0);
   } else {
-    const at = one.controls.findIndex((each) => each.control === CONTROL.panelTrigger);
-    expect(
-      one.controls[at + 1]?.control,
-      `${where}, one narrowing on: ${saidOf(one)}, no Clear filters after its trigger`
-    ).toBe("clear");
-    expect(clear[0]?.besideTrigger, `${where}: Clear filters is not in its trigger's group`).toBe(
-      true
-    );
+    expectClearBesideTrigger(one, `${where}, one narrowing on`);
   }
 
   // The List's flag and column filter: counted as two, each listed at the panel's top with the

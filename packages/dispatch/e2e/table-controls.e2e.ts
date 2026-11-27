@@ -139,6 +139,7 @@ import {
   expectBarDesign,
   expectNoGrowth,
   expectOneBarOn,
+  HEADER_LINE,
   INBOX_TOP,
   isPhoneProject,
   MORE_CHIPS,
@@ -202,6 +203,113 @@ test("k-one-row: the Agents page and the Delivery page each draw one bar of one 
     if (!phone) await page.setViewportSize(size);
     for (const name of REAL_STACK_SURFACES) await expectOneBarOn(page, name, scene, size, phone);
   }
+});
+
+// k-one-row on a phone with a reading view open (R8, spec version 46). Below 1280 px the row a
+// reader opens is read in a view in place of the list (#5223), and a phone draws the selection
+// bar fixed under the page's header (`SelectionBar`), over the top of the page. The Inbox's header
+// line keeps its title and Answered by you above the view and hides its search box alone
+// (f7f1a0a9), so the view's own line, its way back to the list and its checkbox, stands below the
+// bar. That line is read first: with the whole header line hidden, the view moves up under the
+// bar, and the row fails there rather than at what the header line holds. Seeded, marked and
+// opened as the row at 390 that lands Clear selection's focus on the view's own checkbox: six
+// asks, the fifth marked and the sixth opened, away from the top of the list the bar stands over.
+// SLOW(>=2s): six asks seeded, one row marked and another row's reading view opened.
+test("k-one-row: on a phone with one row marked and another row's reading view open, the header line holds the title and Answered by you and no search box, and the view's own line stands below the selection bar @phone @phone-only", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "ASKS", name: "Asks" });
+  for (let index = 0; index < 6; index++) {
+    const owner = await createIssue({ force: true, project: "ASKS", title: `Ask owner ${index}` });
+    await createAsk(owner.key, { question: `Ask ${index}: which way?` }, SURFACE_SESSION);
+  }
+  // The phone project's own width: the row sets no viewport of its own.
+  const size = page.viewportSize() ?? { height: 664, width: 390 };
+  const at = `the Inbox at ${size.width}x${size.height}`;
+  const where = `${at}, one row marked and another row's reading view open`;
+  const bar = page.getByRole("toolbar", { name: "Selected rows" });
+  await page.goto("/?group=none");
+  await expect(
+    page.locator("[data-inbox-row]"),
+    `${at}: the Inbox lists another number of rows than the six asks seeded`
+  ).toHaveCount(6);
+  const ids = await page
+    .locator("[data-inbox-row]")
+    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
+  const marked = ids[4] ?? "";
+  const open = ids[5] ?? "";
+  await inboxRow(page, marked).getByRole("checkbox").first().check();
+  await expect(bar, `${at}: marking a row drew no selection bar counting it`).toContainText(
+    "1 selected"
+  );
+  await selectRow(page, open);
+  const view = readingView(page);
+  await expect(view, `${where}: the view reads another row than the one opened`).toHaveAttribute(
+    "data-inbox-reading-row",
+    open
+  );
+  await expect(inboxList(page), `${where}: the list is drawn beside the view`).toBeHidden();
+  await expect(bar, `${where}: the selection bar no longer counts the row marked`).toContainText(
+    "1 selected"
+  );
+  // The view takes the focus once it has drawn, with no scroll; two frames hold that.
+  await nextFrames(page);
+
+  // The view's own line is the one its Back control stands in, which holds its checkbox too
+  // (`ReadingView`). Both boxes are read in one moment.
+  const boxes = await view
+    .getByRole("button", { exact: true, name: "Back to the Inbox list" })
+    .evaluate((back) => {
+      const boxOf = (element: Element | null) => {
+        const rect = element?.getBoundingClientRect();
+        return {
+          bottom: rect?.bottom ?? Number.NaN,
+          left: rect?.left ?? Number.NaN,
+          right: rect?.right ?? Number.NaN,
+          top: rect?.top ?? Number.NaN,
+        };
+      };
+      return {
+        bar: boxOf(document.querySelector('[role="toolbar"][aria-label="Selected rows"]')),
+        line: boxOf(back.parentElement),
+      };
+    });
+  const boxText = (box: typeof boxes.bar) =>
+    `${Math.round(box.left)}-${Math.round(box.right)} x ${Math.round(box.top)}-${Math.round(box.bottom)}`;
+  expect(
+    boxes.line.top,
+    `${where}: the view's own line, its Back to the Inbox list and its checkbox, stands at ` +
+      `${boxText(boxes.line)} and the selection bar at ${boxText(boxes.bar)}, so the bar covers ` +
+      "the line"
+  ).toBeGreaterThanOrEqual(boxes.bar.bottom - 1);
+
+  // Each part of the header line, named as `headerLineOf` in `table-controls.stub.e2e.ts` names
+  // it, and whether it is drawn: the search box is hidden there and stays mounted.
+  const line = page.locator(HEADER_LINE);
+  await expect(line, `${where}: the page draws no one header line`).toHaveCount(1);
+  const parts = await line.evaluate((node) =>
+    [...node.children].map((child) => {
+      const tag = child.tagName.toLowerCase();
+      const searchBox =
+        child.matches('[data-control="search-box"]') ||
+        child.querySelector('[data-control="search-box"]') !== null;
+      return {
+        shown: child.checkVisibility(),
+        what: searchBox
+          ? "search box"
+          : `${tag === "a" ? "link" : tag} "${(child.textContent ?? "").trim()}"`,
+      };
+    })
+  );
+  const shown = parts.filter((part) => part.shown).map((part) => part.what);
+  const holds = `${where}: the header line holds ${parts
+    .map((part) => `${part.what}, ${part.shown ? "shown" : "hidden"}`)
+    .join("; ")}`;
+  expect(shown, `${holds}: the title or Answered by you is not shown`).toEqual(
+    expect.arrayContaining(['h1 "Inbox"', 'link "Answered by you"'])
+  );
+  expect(shown, `${holds}: the search box is shown`).not.toContain("search box");
 });
 
 // SLOW(>=2s): two pages over two seeded fixtures, each read at rest and under one, three or six

@@ -49,6 +49,7 @@ import {
   SURFACE_SEARCH_TERM,
   type Surface,
   seedSurfaces,
+  settledBar,
   straysBetween,
   topOf,
   widthsOf,
@@ -606,6 +607,9 @@ test("k-one-row: the Inbox's header line is one line, its search box after the h
     await expectOneHeaderLine(surface.root, `${where}, no narrowing on`, PAGE_HEADER_LINE);
     await page.goto(narrowedAddress("Inbox", scene, 6));
     await expect(surface.firstRow).toBeVisible();
+    // Filter counts the six the address names before the line is measured under them, so a
+    // narrowing left off fails here rather than passing as a line measured under fewer.
+    await settledBar(page, "Inbox", surface.row, 6, `${where}, six narrowings on`);
     await expectOneHeaderLine(surface.root, `${where}, six narrowings on`, PAGE_HEADER_LINE);
   }
 });
@@ -640,6 +644,15 @@ test("k-one-row: the drawer's header line is one line, its search box after its 
       await pickInboxField(page, field, option, surface.root);
     }
     await expect(surface.firstRow).toBeVisible();
+    // Filter counts the six picks before the line is measured under them, so a pick left off
+    // fails here rather than passing as a line measured under fewer.
+    await settledBar(
+      page,
+      "Inbox drawer",
+      surface.row,
+      INBOX_PICKS.length,
+      `${where}, six narrowings on`
+    );
     await expectOneHeaderLine(surface.root, `${where}, six narrowings on`, DRAWER_HEADER_LINE);
     await expectDrawerNotSideways(surface.root, `${where}, six narrowings on`);
   }
