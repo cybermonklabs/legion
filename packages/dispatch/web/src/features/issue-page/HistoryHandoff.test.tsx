@@ -441,6 +441,7 @@ function HistoryWithHandoff(): ReactNode {
       fold={useHandoffFold(KEY)}
       issue={{ artifacts: [], key: KEY } as unknown as IssueDetails}
       item={undefined}
+      open
       state={{ [KEY]: { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 } }}
       visitMark={0}
     />

@@ -187,7 +187,7 @@ function PlannedState({ step }: { step: PlannedStep }): ReactNode {
  *  null - no line - for a task that needs none (`needs` []) or that the plan does not hold
  *  (`needs` null and no planned step). */
 // `DetailsSteps.tsx` is gone: Details now draws this line once for each task, in the task's
-// group above the entries of its history (`IssueHistory.tsx`'s `TaskGroup`).
+// group above the entries of its history (`issue-page/history-tasks.tsx`'s `TaskGroup`).
 export function taskNeedsLine({
   needs,
   planned,

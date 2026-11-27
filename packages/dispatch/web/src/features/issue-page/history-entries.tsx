@@ -26,8 +26,8 @@ import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/route
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
-import { Identifier, plannedStepsName, Time } from "../steps/StepsTab";
-import type { PlannedStep, ShownState, StepRow } from "../steps/steps-model";
+import { Identifier, Time } from "../steps/StepsTab";
+import type { ShownState, StepRow } from "../steps/steps-model";
 import { type HandoffFold, HistoryHandoff, NoValue } from "./HistoryHandoff";
 import type { HandoffBodyReads } from "./handoff-band";
 import type {
@@ -45,9 +45,8 @@ import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { ROW_LINK } from "./row-references";
 
-// The entries of the issue's history as `IssueHistory.tsx` draws them: each kind of entry, the
-// key each run of uploads is drawn under, and the steps the plan gives a task, which the task's
-// group above the entries lists (`PlannedSteps`).
+// The entries of the issue's history as `IssueHistory.tsx` draws them: each kind of entry, and
+// the key each run of uploads is drawn under.
 
 /** One entry, the prototype's `.hev`: 12 px on 18 px in the muted grey, 14 px from a 2 px rule
  *  at its left in the page's line, the rule 4 px from the column's edge, 4 px above and 6 px
@@ -382,7 +381,7 @@ const RESULT_COLOURS: Record<Exclude<StepRow["state"], "other">, string> = {
 /** How a run ended, or that it runs, in its colour (`RESULT_COLOURS`): a state a run's result and
  *  a planned step share (`ShownState`). A state this build has no word for shows the server's
  *  own. */
-function StateWords({ shown }: { shown: ShownState }): ReactNode {
+export function StateWords({ shown }: { shown: ShownState }): ReactNode {
   if (shown.state === "other") return <span {...authorText}>{shown.result}</span>;
   return (
     <span className={`font-medium ${RESULT_COLOURS[shown.state]}`} {...pageChrome}>
@@ -491,57 +490,6 @@ function RunFields({ row, task }: { row: StepRow; task: string }): ReactNode {
         </RunField>
       ) : null}
     </dl>
-  );
-}
-
-/** Where a step of the plan stands, as the Steps tab says it: `not started` before any run of it,
- *  in the quiet grey, then where its newest run stands, in the words and the colour of a run's
- *  result (`StateWords`). */
-function PlannedState({ step }: { step: PlannedStep }): ReactNode {
-  if (step.state === "not started") {
-    return (
-      <span className={pageQuietText} {...pageChrome}>
-        {CONTROL_LABELS.step_not_started}
-      </span>
-    );
-  }
-  return <StateWords shown={step} />;
-}
-
-/** The steps the plan gives a task, in the plan's order, each its place, its name and where it
- *  stands (`PlannedState`), named as the Steps tab names the list (`plannedStepsName`), which
- *  names the task, since the list stands in the task's group above the entries and not beside its
- *  runs; nothing for a task the plan gives no step. A step's place and name are the plan's, so
- *  text the page did not author. */
-export function PlannedSteps({
-  planned,
-  task,
-}: {
-  planned: readonly PlannedStep[];
-  task: string;
-}): ReactNode {
-  if (planned.length === 0) return null;
-  return (
-    <ol
-      aria-label={plannedStepsName(task)}
-      className="flex min-w-0 flex-wrap gap-1.5 text-xs leading-[18px]"
-      data-step-planned=""
-    >
-      {planned.map((step) => (
-        <li
-          className={`min-w-0 rounded-md border px-2 py-0.5 break-words ${pageLineBorder}`}
-          key={step.step}
-        >
-          <span className={`tabular-nums ${pageQuietText}`} {...authorText}>
-            {step.step}
-          </span>{" "}
-          <span className={`font-medium ${pageInkText}`} {...authorText}>
-            {step.name}
-          </span>{" "}
-          <PlannedState step={step} />
-        </li>
-      ))}
-    </ol>
   );
 }
 

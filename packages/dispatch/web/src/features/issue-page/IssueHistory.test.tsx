@@ -54,10 +54,11 @@ import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { measureNearWords } from "./clamp-fixtures";
 import { DetailsHistory } from "./details-more";
 import { useHandoffFold } from "./HistoryHandoff";
+import { type AddressedTurn, HISTORY_HEADING_LANDED_EVENT } from "./history-landing";
 import { historyLogKey } from "./history-log";
 import { arriveInHistoryLog } from "./history-log-fixture";
 import { HISTORY_EXCLUDED_TYPES } from "./history-model";
-import { type AddressedTurn, HISTORY_HEADING_LANDED_EVENT, IssueHistory } from "./IssueHistory";
+import { IssueHistory } from "./IssueHistory";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE } from "./page-structure";
@@ -104,11 +105,14 @@ function handoffsRead(): Mock<typeof api.listHandoffs> {
 }
 
 /** The history with the fold the page holds for its issue (`useHandoffFold`), as
- *  `DetailsHistory` draws it, at an address that names no handoff and is no `/steps`. */
+ *  `DetailsHistory` draws it, at an address that names no handoff and is no `/steps`, and with
+ *  Details open, as it is with no drawer. */
 function HeldHistory(
-  props: Omit<ComponentProps<typeof IssueHistory>, "addressed" | "fold">
+  props: Omit<ComponentProps<typeof IssueHistory>, "addressed" | "fold" | "open">
 ): ReactNode {
-  return <IssueHistory {...props} addressed={undefined} fold={useHandoffFold(props.issue.key)} />;
+  return (
+    <IssueHistory {...props} addressed={undefined} fold={useHandoffFold(props.issue.key)} open />
+  );
 }
 
 /** The entries of the history as it draws them, newest first: a line of an event, a run of

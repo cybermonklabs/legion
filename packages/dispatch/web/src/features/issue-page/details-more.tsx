@@ -25,13 +25,13 @@ import { DETAILS_ROW_ATTRIBUTE, type DetailsRow, useOpenDetailsAt } from "./deta
 import { FocusedNodeFacts } from "./FocusedNodeFacts";
 import { type FocusedNode, useFocusedNode } from "./focused-node";
 import { useHandoffFold } from "./HistoryHandoff";
-import { IssueCollaboratorList } from "./IssueCollaboratorList";
 import {
   type AddressedHistory,
   type AddressedTurn,
   HISTORY_HEADING_LANDED_EVENT,
-  IssueHistory,
-} from "./IssueHistory";
+} from "./history-landing";
+import { IssueCollaboratorList } from "./IssueCollaboratorList";
+import { IssueHistory } from "./IssueHistory";
 import { type IssueAddress, issueAddress } from "./issue-address";
 import { LegionBlock, LegionRunsFollower } from "./LegionBlock";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
@@ -322,12 +322,10 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   const item = namesItem && turn?.following === following ? turn : undefined;
   // A handoff's page address and `/steps` name a place in the history: the entry that holds the
   // handoff, or the newest run, for the following of the address the reader is at.
+  const handoff: Extract<AddressedHistory, { kind: "handoff" }> | undefined =
+    route?.kind === "handoff" ? { following, id: route.handoffId, kind: "handoff" } : undefined;
   const inHistory: AddressedHistory | undefined =
-    route?.kind === "handoff"
-      ? { following, id: route.handoffId, kind: "handoff" }
-      : route?.kind === "steps"
-        ? { following, kind: "steps" }
-        : undefined;
+    handoff ?? (route?.kind === "steps" ? { following, kind: "steps" } : undefined);
   const opensHistory = route?.kind === "activity" || inHistory !== undefined || item !== undefined;
   const opensCollaborators = route?.kind === "collaborators";
   const opensPanel = opensCollaborators || opensHistory;
@@ -383,7 +381,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   // the same reason: the history is not drawn while Details is shut, so a fold held there would
   // not outlive a close and an open (the plan's D12). A handoff's page address opens its handoff
   // once for each following.
-  const fold = useHandoffFold(issue.key, inHistory?.kind === "handoff" ? inHistory : undefined);
+  const fold = useHandoffFold(issue.key, handoff);
   useKeymap("issue", [
     {
       id: "tab-activity",
@@ -432,6 +430,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
             fold={fold}
             issue={issue}
             item={item}
+            open={open}
             state={state}
             visitMark={visitMark.current?.issue === issue.key ? visitMark.current.seq : lastReadSeq}
           />

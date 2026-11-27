@@ -48,7 +48,7 @@ import { settledState } from "./settled";
  *   history's heading the line `[data-step-variant]` where the newest run names an experiment;
  *   then, still above the entries, each task the plan says something of or none of whose steps
  *   has run a `section` "Task <task>" `[data-step-task="<task>"]` with its `h3`
- *   (`IssueHistory.tsx`), holding the line of the tasks it needs `[data-step-needs]`, the list of
+ *   (`history-tasks.tsx`), holding the line of the tasks it needs `[data-step-needs]`, the list of
  *   the steps the plan gives it `[data-step-planned]`, and the line `[data-step-no-run]` where
  *   none of its steps has run; each run `[data-step-run="<record id>"]`, each of its labelled
  *   values `[data-step-field="<field>"]`, its label the `dt` and its value the `dd`; each

@@ -5,7 +5,6 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useNavigationType } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { type EventPages, mergeEventPages } from "../../api/event-feed";
@@ -14,28 +13,31 @@ import type { IssueDetails, UserState } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
 import { dateKey } from "../activity/activity-model";
-import { scrollElementToTop } from "../doc/scroll-block";
 import { writePin } from "../issue/pin-write";
 import { eventItemId, isPinnedEvent, stateForIssue } from "../issue/pins";
 import { HISTORY_ENTRY_ATTRIBUTE } from "../margin/details-focus-keeper";
 import { isViewer } from "../refs/actor";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import { overlaps, ViewportAnchor } from "../shell/ViewportAnchor";
-import { noRunLine, taskNeedsLine, useCatchUp } from "../steps/StepsTab";
-import { type StepTaskRows, stepTasks, stepVariant } from "../steps/steps-model";
+import { useCatchUp } from "../steps/StepsTab";
 import { issueAsks } from "./agents-only";
-import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
+import { DetailsErrorLine, retryRead } from "./details-error";
 import { ENTRY_CONTROLS, SHOW_MORE_CONTROL, ShowMoreWords } from "./details-leaves";
 import type { HandoffFold } from "./HistoryHandoff";
 import { useHandoffBodies } from "./handoff-band";
-import { Entry, PlannedSteps, runKeys } from "./history-entries";
+import { Entry, runKeys } from "./history-entries";
+import {
+  type AddressedHistory,
+  type AddressedTurn,
+  drawnTurn,
+  useHistoryLandings,
+} from "./history-landing";
 import { historyLogKey, issueUnreadBoundaryQuery } from "./history-log";
 import {
   addressedPlace,
   buildHistory,
   HISTORY_EXCLUDED_TYPES,
   HISTORY_PAGE,
-  type HistoryInput,
   type HistoryTurn,
   historyBlocks,
   historyDownTo,
@@ -44,7 +46,7 @@ import {
   turnPlace,
 } from "./history-model";
 import { comparePlaces, type HistoryPlace } from "./history-place";
-import { useMarginDrawer } from "./margin-slot";
+import { HistoryTasks } from "./history-tasks";
 import { LANDING_WAIT_MS, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -54,30 +56,9 @@ import { abortOnReaderAct } from "./useNodeEditing";
 /** How many events a page of the log holds, as the server answers it. */
 const PAGE = 200;
 
-/** The event the history's heading raises, bubbling, once a following of `/activity`
- *  (`useFollowing`) has brought it to the top of Details' view. That scroll is the landing that
- *  following asked for, not a move that takes the reader from their place: the hold of the place
- *  `t v` lands the focus at keeps the focused history where this scroll leaves it
- *  (`details-more.tsx`). */
-export const HISTORY_HEADING_LANDED_EVENT = "history-heading-landed";
-
 /** A day's line, the prototype's `.hdl`: 12 px on 18 px at weight 600 in the muted grey, 5 px
  *  above and below, its words as written. */
 const DAY_LINE = `py-[5px] text-xs leading-[18px] font-semibold ${pageMutedText}`;
-
-/** A turn of a thread the history holds that an address names (`/issues/<key>/comments/<id>` or
- *  `/messages/<id>`), with the following of that address it was named at (`useFollowing`). */
-export interface AddressedTurn {
-  readonly following: string;
-  readonly id: string;
-}
-
-/** What a page address names in the history (`DetailsHistory`), with the following of that
- *  address it was named at (`useFollowing`): a handoff, by its id, at
- *  `/issues/<key>/handoffs/<id>`, or the newest run, at `/issues/<key>/steps`. */
-export type AddressedHistory =
-  | { readonly following: string; readonly id: string; readonly kind: "handoff" }
-  | { readonly following: string; readonly kind: "steps" };
 
 /**
  * The issue's history, a list in the panel (`history-model.ts`): newest first, every day drawn
@@ -101,7 +82,7 @@ export type AddressedHistory =
  * for its first answer of the runs and of the handoffs, and says under its heading where either
  * read failed, with a Retry, above the line of the newest run's experiment; under that line and
  * above the list stands one group for each task of the runs read that the plan says something of
- * or that has no run (`TaskGroup`), in the server's order.
+ * or that has no run (`HistoryTasks`), in the server's order.
  *
  * `/activity`, `t v`, the address of a turn of such a thread, a handoff's page address and
  * `/steps` open Details here:
@@ -130,6 +111,7 @@ export function IssueHistory({
   fold,
   issue,
   item,
+  open,
   state,
   visitMark,
 }: {
@@ -147,6 +129,10 @@ export function IssueHistory({
   /** The turn the address names, which the list marks, draws and brings into view once for each
    *  following of that address. */
   item: AddressedTurn | undefined;
+  /** Whether Details is open (`DetailsHistory`): where it is a column of the page rather than a
+   *  drawer, wherever it is drawn. The runs are read and the handoffs' bodies are read only while
+   *  it is. */
+  open: boolean;
   state: UserState | undefined;
   /** The reader's read mark for this visit (`DetailsHistory`), where the line that says what is
    *  new is drawn. */
@@ -211,12 +197,10 @@ export function IssueHistory({
   // the read, and each move of the runs' revision (`LegionRunsFollower`), starts the catch-up
   // again. A write of a run appends no event, so a run arrives by those reads alone.
   const runs = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });
-  const drawer = useMarginDrawer();
-  const detailsOpen = drawer === undefined || drawer.open;
-  useCatchUp(issueKey, detailsOpen);
+  useCatchUp(issueKey, open);
   // The bodies of the handoffs it draws, read only while Details is open, for the entries within
   // one screen of its view, once the history has landed (`useHandoffBodies`).
-  const bodies = useHandoffBodies(issueKey, detailsOpen);
+  const bodies = useHandoffBodies(issueKey, open);
   // Every handoff of the issue, with no body: each is drawn from its entry here, never from its
   // event, whose arrival reads the list again (`api/event-refresh.ts`).
   const handoffs = useQuery(handoffsQuery(issueKey));
@@ -251,16 +235,8 @@ export function IssueHistory({
   // What the address names in the history, kept once the reader follows another address of the
   // issue, so the entry it drew stays drawn there however old it is (`HistoryInput.addressed`),
   // and no page of the log is read for it then either.
-  const [kept, setKept] = useState<NonNullable<HistoryInput["addressed"]> | undefined>(undefined);
-  if (
-    addressed !== undefined &&
-    (kept?.kind !== addressed.kind ||
-      (kept?.kind === "handoff" && addressed.kind === "handoff" && kept.id !== addressed.id))
-  ) {
-    setKept(
-      addressed.kind === "handoff" ? { id: addressed.id, kind: "handoff" } : { kind: "steps" }
-    );
-  }
+  const [kept, setKept] = useState<AddressedHistory | undefined>(undefined);
+  if (addressed !== undefined && kept?.following !== addressed.following) setKept(addressed);
   // The day the reader is in, read every render so a midnight rollover moves the `Today` label;
   // the model is rebuilt only when one of its reads changes.
   const today = dateKey(new Date().toISOString());
@@ -438,132 +414,37 @@ export function IssueHistory({
       id: eventItemId({ id: eventId }),
       op: isPinnedEvent(dismissed, eventId) ? "unpin" : "pin",
     }));
-  // The turn an address names is brought into view once for each following of that address
-  // (`AddressedTurn`), as the list first draws it there: the same address followed again, a
-  // link to it pressed in the history among them, brings it into view again however far the
-  // reader has read since. A turn with no box yet - not drawn yet, or Details still closed around
-  // the list, which the page opens a commit after this one mounts - is not landed on, so the
-  // render that draws it lands it. A turn taller than Details' view lands at the top of that
-  // view, so its head is read first; a shorter one in the middle of it. The history's anchor
-  // keeps the landed turn where this scroll left it, from the landing on: its own place, inside
-  // the entry of the history it stands in (`keepRow`'s `element`). A change of height in the same
-  // frame, whether the scroll's event is read before it or after it, then moves Details by as
-  // much rather than moving the turn, until the reader's next act names their place. That holds
-  // for a change inside the entry too, such as a turn above a reply whose words finish drawing
-  // after the scroll, which leaves the entry's top where it was and moves the reply. The place
-  // the reader's hand was on before the landing is often wholly outside the view after it, and
-  // is no place they can see (`rowToKeep`).
-  const landed = useRef<string | undefined>(undefined);
   // The history's anchor, which keeps the reader's place in Details (`ViewportAnchor` below).
   const anchor = useRef<ViewportAnchor>(null);
-  useEffect(() => {
-    if (item === undefined || landed.current === item.following) return;
-    const entry = drawnTurn(document, item.id);
-    if (entry === undefined) return;
-    landed.current = item.following;
-    const box = scrollingAncestor(entry);
-    const tall = box !== null && entry.getBoundingClientRect().height > box.clientHeight;
-    entry.scrollIntoView({ block: tall ? "start" : "center" });
-    anchor.current?.keepRow(entry.closest<HTMLElement>(`[${HISTORY_ENTRY_ATTRIBUTE}]`), entry);
-  });
-  // `/activity` opens Details at the history: its heading is brought into Details' view once for
-  // each following of that address (`useFollowing`), on the first render it has a box and the log
-  // under it is drawn - Details still closed around it, or the panel not yet placed in the drawer,
-  // gives it no box, and before the log is drawn Details has nothing to scroll the heading up by.
-  // Each entry the page makes at the address is a following of its own - `t v` pressed there, a
-  // link to it followed there - so each brings the heading back to the top of Details' view,
-  // however far down Details the reader has read. A following the browser steps to itself (`POP`)
-  // once this list has landed a heading brings nothing: a reader who comes back with Back or
-  // Forward to the history this list drew there before - Details left open beside a view, or at a
-  // turn's address - finds Details where they left it, and so does one who types a fragment at
-  // the address. Only the box Details scrolls in moves, never the page under it; the reader's own
-  // scroll after that is theirs. Once the heading has landed it says so
-  // (`HISTORY_HEADING_LANDED_EVENT`).
-  const navigation = useNavigationType();
   const heading = useRef<HTMLHeadingElement>(null);
-  const headingLanded = useRef<string | undefined>(undefined);
-  // Brings the heading to the top of the box Details scrolls in, and says it has landed.
-  const landHeading = (element: HTMLHeadingElement) => {
-    const box = scrollingAncestor(element);
-    if (box === null) return;
-    scrollElementToTop(element, box);
-    element.dispatchEvent(new CustomEvent(HISTORY_HEADING_LANDED_EVENT, { bubbles: true }));
-  };
-  useEffect(() => {
-    const element = heading.current;
-    if (
-      activityFollowing === undefined ||
-      headingLanded.current === activityFollowing ||
-      element === null ||
-      element.getClientRects().length === 0 ||
-      !listDrawn
-    ) {
-      return;
-    }
-    const comingBack = navigation === "POP" && headingLanded.current !== undefined;
-    headingLanded.current = activityFollowing;
-    if (!comingBack) landHeading(element);
-  });
-  // A handoff's page address lands on the entry that holds that handoff, and `/steps` on the
-  // newest run, once for each following of the address, on the first render that draws that
-  // entry: brought into view as a turn an address names is, a handoff by its own line and fields
-  // inside a run's entry, and kept there by the history's anchor (`keepRow`) as the bodies of the
-  // entries around it are read and drawn; the handoff's entry is marked (`Entry`'s `addressed`)
-  // and its fields drawn open (`useHandoffFold`). An address whose handoff the answered list does
-  // not hold, or whose list did not read, and `/steps` where no run is read, land on the heading,
-  // as `/activity` does. Back or Forward to an address once this list has landed one (`POP`)
-  // brings nothing, as at `/activity`.
-  const addressLanded = useRef<string | undefined>(undefined);
+  // The handoff the page address names, where it names one, and the entry of the list that holds
+  // it, or the newest run at `/steps`: marked (`Entry`'s `addressed`) where it holds a handoff,
+  // and its fields drawn open (`useHandoffFold`).
+  const addressedHandoff = addressed?.kind === "handoff" ? addressed : undefined;
   const addressedHere = addressed === undefined ? undefined : keptPlace;
-  useEffect(() => {
-    const element = heading.current;
-    if (
-      addressed === undefined ||
-      addressLanded.current === addressed.following ||
-      element === null ||
-      element.getClientRects().length === 0 ||
-      !listDrawn
-    ) {
-      return;
-    }
-    const entry =
-      addressedHere === undefined
-        ? null
-        : (element.parentElement?.querySelector<HTMLElement>(
-            `[${HISTORY_ENTRY_ATTRIBUTE}="${CSS.escape(addressedHere.id)}"]`
-          ) ?? null);
-    if (addressedHere !== undefined && (entry === null || entry.getClientRects().length === 0)) {
-      return;
-    }
-    const comingBack = navigation === "POP" && addressLanded.current !== undefined;
-    addressLanded.current = addressed.following;
-    if (comingBack) return;
-    if (entry === null) {
-      landHeading(element);
-      return;
-    }
-    const target =
-      (addressed.kind === "handoff"
-        ? entry.querySelector(`[data-handoff-line="${CSS.escape(addressed.id)}"]`)?.parentElement
-        : undefined) ?? entry;
-    const box = scrollingAncestor(target);
-    const tall = box !== null && target.getBoundingClientRect().height > box.clientHeight;
-    target.scrollIntoView({ block: tall ? "start" : "center" });
-    anchor.current?.keepRow(entry, target === entry ? undefined : target);
+  // What an address names - a turn, the heading at `/activity`, or the entry a handoff's address
+  // or `/steps` names - is brought into Details' view once for each following of that address,
+  // as the list first draws it there, and kept there by the history's anchor
+  // (`useHistoryLandings`).
+  const landed = useHistoryLandings({
+    activityFollowing,
+    addressed,
+    addressedEntry: addressedHere?.id,
+    anchor,
+    handoffId: addressedHandoff?.id,
+    heading,
+    item,
+    listDrawn,
   });
-  // The bodies' loader starts once the history has landed where the address it is at lands it:
-  // the turn an address names, the heading at `/activity`, or the entry a handoff's address or
-  // `/steps` names, after the landings above; the handoff such an address names, where the history
-  // draws it, is the first it asks for.
+  // The bodies' loader starts once the history has landed where the address it is at lands it,
+  // after the landings above; the handoff such an address names, where the history draws it, is
+  // the first it asks for.
   useEffect(() => {
-    if (
-      listDrawn &&
-      (item === undefined || landed.current === item.following) &&
-      (activityFollowing === undefined || headingLanded.current === activityFollowing) &&
-      (addressed === undefined || addressLanded.current === addressed.following)
-    ) {
+    if (listDrawn && landed()) {
       bodies.band.landed(
-        addressed?.kind === "handoff" && addressedHere !== undefined ? addressed.id : undefined
+        addressedHandoff !== undefined && addressedHere !== undefined
+          ? addressedHandoff.id
+          : undefined
       );
     }
   });
@@ -799,7 +680,7 @@ export function IssueHistory({
     if (landing === undefined || endLanding === undefined) return;
     const answered = landing.under?.id;
     const thread = answered === undefined ? undefined : threadOf(days, answered);
-    if (landing === landingAtMount.current || drawer?.open === false || thread === undefined) {
+    if (landing === landingAtMount.current || !open || thread === undefined) {
       endLanding();
       return;
     }
@@ -875,34 +756,6 @@ export function IssueHistory({
   ) : null;
   // Show more reads busy while the history reads older pages for the next entries it draws.
   const readsPage = short && !stopped;
-  // A failed read of the runs, or of the list of handoffs, is said under the heading while it
-  // holds no answer (`standsFailed`), and every entry the other reads give stays drawn: the
-  // runs' line is the one the Steps section drew, with its Retry, which reads them again, joins a
-  // read already out (`retryRead`), and hands the focus it held to the heading as its line goes.
-  const runsRetry = useRetryHandOff(() => heading.current);
-  const handoffsRetry = useRetryHandOff(() => heading.current);
-  // The experiment and the variant the newest run's records name, once, above the list: the
-  // steps model's own line (`stepVariant`), as today's Steps tab draws it.
-  const variant = runs.data === undefined ? null : stepVariant(runs.data);
-  // The groups of the tasks of the runs read, under that line and above the list (`TaskGroup`):
-  // what today's Steps tab draws of a task besides its runs, which are entries of the list. Each
-  // task in the server's order (`stepTasks`), the tasks of the issue's plan first, with a line of
-  // needs (`taskNeedsLine`), with steps the plan gives it, or none of whose steps has run has a
-  // group; a task with none of the three - one the plan does not hold, which ran - has none: its
-  // runs' entries are all the history draws of it.
-  const groups = useMemo(
-    () =>
-      (runs.data === undefined ? [] : stepTasks(runs.data)).filter(
-        (task) => task.rows.length === 0 || task.planned.length > 0 || taskNeedsLine(task) !== null
-      ),
-    [runs.data]
-  );
-  // A handoff's page address whose id the answered list does not hold says that no such handoff
-  // exists, under the heading; while the list holds no answer, its own line says why instead.
-  const handoffMissing =
-    addressed?.kind === "handoff" &&
-    handoffs.data !== undefined &&
-    !handoffs.data.some((handoff) => handoff.id === addressed.id);
 
   return (
     <section
@@ -920,48 +773,12 @@ export function IssueHistory({
         {CONTROL_LABELS.history}
       </h2>
       {log.isFetchNextPageError ? null : failed}
-      {standsFailed(runs) ? (
-        <DetailsErrorLine
-          error={runs.error}
-          failure={runs.errorUpdateCount}
-          message={ANSWER_LINES.steps_unreadable}
-          onRetry={retryRead(runs)}
-          {...runsRetry}
-          retrying={runs.isFetching}
-        />
-      ) : null}
-      {standsFailed(handoffs) ? (
-        <DetailsErrorLine
-          error={handoffs.error}
-          failure={handoffs.errorUpdateCount}
-          message={ANSWER_LINES.handoffs_unreadable}
-          onRetry={retryRead(handoffs)}
-          {...handoffsRetry}
-          retrying={handoffs.isFetching}
-        />
-      ) : null}
-      {handoffMissing ? (
-        <p
-          className={`text-xs ${pageMutedText}`}
-          data-handoff-missing=""
-          role="status"
-          {...pageChrome}
-        >
-          {ANSWER_LINES.handoff_missing}
-        </p>
-      ) : null}
-      {variant === null ? null : (
-        <p
-          className={`min-w-0 text-xs leading-[18px] break-words ${pageMutedText}`}
-          data-step-variant=""
-          {...authorText}
-        >
-          {variant}
-        </p>
-      )}
-      {groups.map((task) => (
-        <TaskGroup key={task.task} task={task} />
-      ))}
+      <HistoryTasks
+        handoffId={addressedHandoff?.id}
+        handoffs={handoffs}
+        heading={heading}
+        runs={runs}
+      />
       {!listDrawn && !logFailed ? (
         <p className={`text-xs ${pageQuietText}`} {...pageChrome}>
           {ANSWER_LINES.loading_history}
@@ -988,7 +805,7 @@ export function IssueHistory({
                     const drawnId = drawnIds.get(entry.id) ?? entry.id;
                     return (
                       <Entry
-                        addressed={addressed?.kind === "handoff" ? addressedHere?.id : undefined}
+                        addressed={addressedHandoff === undefined ? undefined : addressedHere?.id}
                         bodies={bodies.value}
                         drawnId={drawnId}
                         fold={fold}
@@ -1056,62 +873,10 @@ export function IssueHistory({
   );
 }
 
-/**
- * One task's group under the History heading, above the list (decision 559 of INFRA-1196): its
- * heading; the tasks of the plan it needs and the steps the plan gives it, as today's Steps tab
- * says them (`taskNeedsLine`, `PlannedSteps`); and, for a task none of whose steps has run, the
- * tab's line saying so (`noRunLine`). Its runs are entries of the list, not of the group, so each
- * line names its task as the tab's do: the list and the line of no run in their own words, and
- * the line of needs under the group's heading. The tab's two lines hold the record's task names
- * inside the tab's own words, as the experiment line does, so each is text the page did not
- * author.
- */
-function TaskGroup({ task }: { task: StepTaskRows }): ReactNode {
-  const needs = taskNeedsLine(task);
-  return (
-    <section
-      aria-label={`${CONTROL_LABELS.steps_task} ${task.task}`}
-      className="flex min-w-0 flex-col gap-1.5"
-      data-step-task={task.task}
-    >
-      <h3 className={`text-xs leading-[18px] font-semibold ${pageMutedText}`} {...pageChrome}>
-        {CONTROL_LABELS.steps_task} <span {...authorText}>{task.task}</span>
-      </h3>
-      {needs === null ? null : (
-        <p
-          className={`min-w-0 text-xs leading-[18px] break-words ${pageMutedText}`}
-          data-step-needs=""
-          {...authorText}
-        >
-          {needs}
-        </p>
-      )}
-      <PlannedSteps planned={task.planned} task={task.task} />
-      {task.rows.length === 0 ? (
-        <p
-          className={`min-w-0 text-xs leading-[18px] break-words ${pageQuietText}`}
-          data-step-no-run=""
-          {...authorText}
-        >
-          {noRunLine(task.task)}
-        </p>
-      ) : null}
-    </section>
-  );
-}
-
 /** What a press of Show more found drawn: each control of the list, and each entry. */
 interface HeldParts {
   readonly controls: ReadonlySet<HTMLElement>;
   readonly entries: ReadonlySet<HTMLElement>;
-}
-
-/** The turn `id` as the history drawn under `root` draws it, where it has a box: undefined where
- *  it is not drawn yet, and where Details is still closed around the list, which gives it none.
- *  The address's landing finds it (`item`) and so does a write's (`landing`). */
-function drawnTurn(root: ParentNode | null, id: string): HTMLElement | undefined {
-  const turn = root?.querySelector<HTMLElement>(`[data-history-item="${CSS.escape(id)}"]`);
-  return turn == null || turn.getClientRects().length === 0 ? undefined : turn;
 }
 
 /**
