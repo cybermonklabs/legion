@@ -2714,7 +2714,7 @@ await runCase("after-merge-answer", async () => {
       "The build was checked.",
     ]);
     if (run.code !== 0) throw new Error(stepFailed(1, argv, run, 0));
-    const result = (await checkOf(issue, "newest")).results.find(
+    const result = ((await checkOf(issue, "newest")).results ?? []).find(
       (row) => row.verdict === verdict && row.commit_sha === commit
     );
     if (result === undefined) throw new Error(`the command stored no ${verdict} at ${commit}`);
@@ -2722,7 +2722,15 @@ await runCase("after-merge-answer", async () => {
   };
   await recordWithCommand("pass", commits.answerMerge);
   const failed = await recordWithCommand("fail", commits.answerLater);
-  const placed = await awaitCommitStands(issue, "newest", commits.answerLater, "at_basis");
+  // The later result is placed when a read computes where its commit stands, so the read waits for
+  // it as long as a head an event moves is waited for. With no deadline the wait read once.
+  const placed = await awaitCommitStands(
+    issue,
+    "newest",
+    commits.answerLater,
+    "at_basis",
+    Date.now() + headAfterEventMs
+  );
   if (placed !== "at_basis") return `the later result stands ${placed}`;
   const failureLine = `A pass stands: no, as the newest result is fail ${failed} at ${commits.answerLater}.`;
   const failedOutput = await resultsCommand(issue);
