@@ -108,6 +108,7 @@ packages/daemon:
       - internal/wait
       - internal/wakepace
       - internal/capabilities/capabilitiestest
+      - internal/checkstatetest
       - internal/clock
       - internal/fixturegit
       - internal/githubtest
