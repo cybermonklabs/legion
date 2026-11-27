@@ -105,10 +105,11 @@ ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
 # budget): under gVisor a whole mapping counts as the pod's memory once one page of it is read.
 # sjawhar/jj#4 keeps, in a merge of two commits with several merge bases, what both sides hold
 # (jj-vcs/jj#6369). sjawhar/jj#5 makes a `jj git import` that brings in many conflicted merges of
-# many commits finish in under a second again, where the builds with #4 alone,
-# 0.46.0-sami.20261125-112159 and 20261125-125342, take about an hour (INFRA-5926). A later pin
-# must carry all three, or one jj command on a large pack fills an issue pod again, a role's merge
-# silently reverts work, or a fresh workspace's import does not finish.
+# many commits take 0.6 to 1.2 s, where 0.46.0-sami.20261120-120102 takes 15 to 27 s and the
+# builds with #4 alone, 0.46.0-sami.20261125-112159 and 20261125-125342, take about an hour
+# (INFRA-5926). Only the fork's tests hold #5's change: no Legion test bounds the import's time.
+# A later pin must carry all three, or one jj command on a large pack fills an issue pod again, a
+# role's merge silently reverts work, or a fresh workspace's import takes about an hour.
 ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261127-111037
 ARG GH_TOOL=gh@2.98.0
 # github/gh-stack, the `gh stack` extension (GitHub's stacked pull requests), at the release this

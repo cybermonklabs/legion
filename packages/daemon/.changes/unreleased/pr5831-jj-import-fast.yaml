@@ -3,11 +3,17 @@ body: |-
     The worker image's jj is v0.46.0-sami.20261127-111037, in place of v0.46.0-sami.20261120-120102.
     It carries sjawhar/jj#4 again: in a merge of two commits with more than one merge base, jj keeps
     what both sides hold (jj-vcs/jj#6369), where v0.46.0-sami.20261120-120102 can merge such commits
-    back to the merge bases' text without a conflict. And it carries sjawhar/jj#5, so a `jj git
-    import` that brings in many conflicted merges of many commits finishes: the import of
-    cybermonklabs/oh-my-pi's 2,760 release refs takes 0.6 s, against 15 s for
-    v0.46.0-sami.20261120-120102 and about an hour for the earlier builds with sjawhar/jj#4
-    (INFRA-5926).
+    back to the merge bases' text without a conflict. In such a merge, at a file that both sides
+    changed, jj merges them against a virtual merge base, a file that stands for the merge of the
+    merge bases, as git does, and where a later rebase, abandon or squash would leave that file as a
+    side, jj puts the conflict it stands for in its place. jj refuses such a merge, writes nothing
+    and prints an error that starts `Refused to merge:` where it would replace more than 10,000
+    virtual merge bases at one path, or more than 10,000 plus 100 for each path where it replaces
+    one, or where no salt gives a virtual merge base marker lines that no side of the merge holds.
+    And it carries sjawhar/jj#5, so a `jj git import` that brings in many conflicted merges of many
+    commits finishes: the import of cybermonklabs/oh-my-pi's 2,760 release refs takes 0.6 to 1.2 s,
+    against 15 to 27 s for v0.46.0-sami.20261120-120102 and about an hour for the earlier builds
+    with sjawhar/jj#4 (INFRA-5926).
 time: 2026-11-27T11:47:21Z
 custom:
     Issue: pr5831
