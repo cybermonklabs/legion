@@ -532,7 +532,11 @@ test("the Decisions control counts Conversation's paged read with + until the de
     await act(async () => {
       client.setQueryData(
         viewKey(KEY, "decisions"),
-        treeAnswer([treeNode(KEY, "issue", null), waiting("d1", 1), waiting("d2", 2)])
+        treeAnswer([
+          treeNode(KEY, "issue", null),
+          { ...waiting("d1", 1), role: "query" },
+          { ...waiting("d2", 2), role: "query" },
+        ])
       );
     });
     await waitFor(() =>
@@ -575,7 +579,11 @@ test("the Decisions control's to-review flag carries + while the decisions view 
         flag: ` · 1 ${FILTER_SIGNAL_WORDS.to_review}`,
       })
     );
-    const decisions = [treeNode(KEY, "issue", null), waiting("d1", 1), waiting("d2", 2)];
+    const decisions = [
+      treeNode(KEY, "issue", null),
+      { ...waiting("d1", 1), role: "query" as const },
+      { ...waiting("d2", 2), role: "query" as const },
+    ];
     await act(async () => {
       client.setQueryData(viewKey(KEY, "decisions"), treeAnswer(decisions, [], { cursor: "next" }));
     });
@@ -629,7 +637,9 @@ test("the Decisions control counts no decision Conversation's pages hold and the
     await act(async () => {
       client.setQueryData(
         viewKey(KEY, "decisions"),
-        treeAnswer([treeNode(KEY, "issue", null), waiting("d1", 1)], [], { cursor: "next" })
+        treeAnswer([treeNode(KEY, "issue", null), { ...waiting("d1", 1), role: "query" }], [], {
+          cursor: "next",
+        })
       );
     });
     await waitFor(() =>
@@ -688,7 +698,12 @@ test("a decision past Conversation's first page with a Change in the decisions v
     await act(async () => {
       client.setQueryData(
         viewKey(KEY, "decisions"),
-        treeAnswer([treeNode(KEY, "issue", null), waiting("d1", 1), waiting("d2", 2), asked])
+        treeAnswer([
+          treeNode(KEY, "issue", null),
+          { ...waiting("d1", 1), role: "query" },
+          { ...waiting("d2", 2), role: "query" },
+          asked,
+        ])
       );
     });
     await waitFor(() =>

@@ -676,76 +676,73 @@ test("the header counts a waiting question from the outline's asks read and send
 // `deleted_by`): a decision whose only Change the read answers deleted waits on the reader again,
 // and one whose Change stands waits on its agent, so of two decisions of the review list the count
 // draws one, read from Conversation's answer alone, with no comments list.
-test(
-  "the header counts a decision whose only Change the tree read answers deleted, and not one whose Change stands",
-  async () => {
-    const spec = { artifact_id: issue.primary_artifact_id, slug: "spec" };
-    const changeOf = (id: string, deleted: boolean): Comment => ({
-      ...commentDeliveryFields(),
-      anchor: null,
-      ask_id: null,
-      author: { id: "alice", kind: "user" },
-      body: deleted ? "" : "Say which pages this covers.",
-      created_at: "2026-11-11T09:00:00Z",
-      ...(deleted
-        ? { deleted_at: "2026-11-11T10:00:00Z", deleted_by: { id: "alice", kind: "user" } }
-        : {}),
-      edited_at: null,
-      id,
-      issue_key: "CORE-1",
-      reply_to: null,
-      resolved: false,
-      resolved_at: null,
-      resolved_by: null,
-      suggestion: null,
-      turn: null,
+test("the header counts a decision whose only Change the tree read answers deleted, and not one whose Change stands", async () => {
+  const spec = { artifact_id: issue.primary_artifact_id, slug: "spec" };
+  const changeOf = (id: string, deleted: boolean): Comment => ({
+    ...commentDeliveryFields(),
+    anchor: null,
+    ask_id: null,
+    author: { id: "alice", kind: "user" },
+    body: deleted ? "" : "Say which pages this covers.",
+    created_at: "2026-11-11T09:00:00Z",
+    ...(deleted
+      ? { deleted_at: "2026-11-11T10:00:00Z", deleted_by: { id: "alice", kind: "user" } }
+      : {}),
+    edited_at: null,
+    id,
+    issue_key: "CORE-1",
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+  });
+  // A `decision` block of the spec tied to `r1`, waiting for review, at `position`.
+  const waiting = (id: string, position: number) =>
+    treeNode(id, "decision", "CORE-1", {
+      decision: { links: [shaped(specRef("r1"))], waiting_review: true },
+      document: { ...spec, position },
     });
-    // A `decision` block of the spec tied to `r1`, waiting for review, at `position`.
-    const waiting = (id: string, position: number) =>
-      treeNode(id, "decision", "CORE-1", {
-        decision: { links: [shaped(specRef("r1"))], waiting_review: true },
-        document: { ...spec, position },
-      });
-    const restore = stubHeader(issue);
-    const coverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
-      gaps: [],
-      has_plan: false,
-      issue: "CORE-1",
-      requirements: [
-        {
-          block_id: "r1",
-          checks: 1,
-          gaps: [],
-          plan_tasks: 0,
-          ref: specRef("r1"),
-          text: "The first.",
-        },
-      ],
-      spec_artifact_id: issue.primary_artifact_id,
-    });
-    const comments = spyOn(api, "listComments");
-    const tree = spyOn(api, "getIssueTree").mockResolvedValue(
-      treeAnswer([
-        treeNode("CORE-1", "issue", null),
-        waiting("asked", 0),
-        markedCommentNode(changeOf("c-asked", false), "asked"),
-        waiting("dropped", 1),
-        markedCommentNode(changeOf("c-dropped", true), "dropped"),
-      ])
+  const restore = stubHeader(issue);
+  const coverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
+    gaps: [],
+    has_plan: false,
+    issue: "CORE-1",
+    requirements: [
+      {
+        block_id: "r1",
+        checks: 1,
+        gaps: [],
+        plan_tasks: 0,
+        ref: specRef("r1"),
+        text: "The first.",
+      },
+    ],
+    spec_artifact_id: issue.primary_artifact_id,
+  });
+  const comments = spyOn(api, "listComments");
+  const tree = spyOn(api, "getIssueTree").mockResolvedValue(
+    treeAnswer([
+      treeNode("CORE-1", "issue", null),
+      waiting("asked", 0),
+      markedCommentNode(changeOf("c-asked", false), "asked"),
+      waiting("dropped", 1),
+      markedCommentNode(changeOf("c-dropped", true), "dropped"),
+    ])
+  );
+  const view = renderHeader("/issues/CORE-1", headerClient());
+  try {
+    await waitFor(() =>
+      expect(screen.getByTestId("issue-whose-turn").textContent).toBe("Waiting on you (1)")
     );
-    const view = renderHeader("/issues/CORE-1", headerClient());
-    try {
-      await waitFor(() =>
-        expect(screen.getByTestId("issue-whose-turn").textContent).toBe("Waiting on you (1)")
-      );
-      expect(comments, "the header read the issue's comments").not.toHaveBeenCalled();
-    } finally {
-      view.unmount();
-      for (const read of [coverage, tree, comments]) read.mockRestore();
-      restore();
-    }
+    expect(comments, "the header read the issue's comments").not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    for (const read of [coverage, tree, comments]) read.mockRestore();
+    restore();
   }
-);
+});
 
 test("the header keeps state actions available while approval awaits", async () => {
   // The request waits on the reader, so its chip carries Approve in the header.

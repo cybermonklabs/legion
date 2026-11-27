@@ -1569,6 +1569,83 @@ test("with Conversation's read out, the statements line's Retry sends the refuse
   }
 });
 
+// The reset each load of the issue makes of its views (`ViewReadProvider`), on Spec as on
+// Decisions: no load draws a view older than its own tree. An earlier visit of the issue on Spec
+// read the Spec view while a decision since removed stood beside statement r1, and the cache keeps
+// that answer as the reader comes back to the issue on Spec, with this load's read of the view
+// out. No reader takes the earlier visit's answer (`useIssueTree.ts`' `viewOf`, `useTreeRead`,
+// `loadEnded`), on the load's first render either, so the column's first render draws no cell of
+// that decision, and none is drawn while the read is out.
+test("on a return to the issue on Spec, the column's first render draws no cell of the earlier visit's Spec view answer", async () => {
+  const issue = issueDetails();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(["whoami"], { kind: "user", login: READER });
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead(["r1"]));
+  client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
+  client.setQueryData(["issue-messages", KEY], []);
+  // The Spec view read of the earlier visit: statement r1, and beside it an agent's decision.
+  const earlierAnswer = specViewAnswer([
+    answerNode("r1", "requirement", {
+      document: { artifact_id: "artifact-spec", position: 0, slug: SPEC_SLUG },
+      role: "query",
+    }),
+    decision("removed", { decision: { kind: "agent", links: [shaped(statementRef("r1"))] } }),
+  ]);
+  let earlierVisit = true;
+  // Conversation's read never answers; the Spec view read answers on the earlier visit, and this
+  // load's never does.
+  const trees = spyOn(api, "getIssueTree").mockImplementation((_key, query = {}) =>
+    query.view === "spec" && earlierVisit
+      ? Promise.resolve(earlierAnswer)
+      : Promise.withResolvers<never>().promise
+  );
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const cell = "[data-spec-cell][data-decision-id]";
+  /** Whether `nodes` holds a cell of the earlier visit's decision, or an element around one. */
+  const holdsCell = (nodes: NodeList): boolean =>
+    [...nodes].some(
+      (one) => one instanceof Element && (one.matches(cell) || one.querySelector(cell) !== null)
+    );
+  try {
+    const earlier = drawStage("", { client, issue, preset: "spec" });
+    await waitFor(() =>
+      expect(
+        earlier.container.querySelector(cell),
+        "the earlier visit drew no cell of its decision"
+      ).not.toBeNull()
+    );
+    earlier.unmount();
+    earlierVisit = false;
+
+    // Every element the return's renders put on the page or took off it, its first render's
+    // among them, which the load's reset redraws before `render` hands the page back.
+    const drawn = new MutationObserver(() => {});
+    drawn.observe(document.body, { childList: true, subtree: true });
+    const view = drawStage("", { client, issue, preset: "spec" });
+    const records = drawn.takeRecords();
+    drawn.disconnect();
+    try {
+      expect(
+        records.some((record) => holdsCell(record.addedNodes) || holdsCell(record.removedNodes)),
+        "the column's first render on the return drew the earlier visit's decision"
+      ).toBe(false);
+      await act(() => Bun.sleep(20));
+      expect(
+        view.container.querySelector(cell),
+        "the column drew the earlier visit's decision while this load's read is out"
+      ).toBeNull();
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    names.mockRestore();
+    trees.mockRestore();
+  }
+});
+
 // The Spec view's slot reads who is reading as the tree reads it, kept fresh by events and never
 // read again by its age (`EVENT_FRESH`). Under the app's 30 s `staleTime` (`main.tsx`) the view
 // opened more than 30 s after whoami answered asked for it again, a request of the view's own.
