@@ -527,9 +527,8 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 	// daemon's HOME (PaneEnvironment), so the operator's own configuration ran in each rig's
 	// server, and the new-session that starts it returned only once that file had run: a `run`
 	// line in it (tpm's, which calls tmux again for each option of each plugin) took 4 to 13 s
-	// on a loaded machine, against 0.1 s with no file, and past the CommandTimeout below the
-	// new-session of a Spawn or a Resume failed. What an operator configures is no part of what
-	// these tests prove.
+	// on a loaded machine, against 0.1 s with no file, and the new-session of each Spawn or
+	// Resume waited for it. What an operator configures is no part of what these tests prove.
 	home := filepath.Join(dir, "home")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatal(err)
