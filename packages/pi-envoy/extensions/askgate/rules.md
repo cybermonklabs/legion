@@ -160,9 +160,9 @@ the same text states have already decided: take each option in turn against
 what the text itself reports, a measurement, a rule it quotes, a limit or a
 deadline it names, and when all but one of them contradict one of those
 facts, the text has answered its own question and what is left to write is a
-report of the answer, not an ask. A recommendation with reasons is not this — every good ask has
-one, and neither is a choice the text leaves genuinely open on taste, risk or
-cost once its facts are in.
+report of the answer, not an ask. A recommendation with reasons is not this — an ask between
+real choices has one, and an ask for one act only the person can do has none. A choice the
+text leaves genuinely open on taste, risk or cost once its facts are in is not this either.
 
 ### Self-contained failures (`concern`)
 
@@ -276,9 +276,12 @@ without complaint. Each is silence:
   person, team or model name, and any label the person used themselves in the
   transcript. Whether any other label is explained is self-contained 3.
 - **The `title` field** (it is the issue's).
-- **No recommendation.** Preferred, not required; they answered every such ask.
-- **A recommendation being present**, or the ask's reasoning supporting it.
-  That is what a good ask looks like, not evidence the question is settled.
+- **No recommendation.** An ask for one act only the person can do carries
+  none. An ask between real choices should carry one, but they answered every
+  such ask without it.
+- **A recommendation being present** in an ask between real choices, or the
+  ask's reasoning supporting it. That is what a good ask between real choices
+  looks like, not evidence the question is settled.
 - **Design and product decisions with a recommendation.** How Dispatch,
   Legion, the platform, an API, a schema, a UI, a data model, a rollout, or a
   roadmap should work; what to build next; which of several designs. These
@@ -309,7 +312,8 @@ We invented these examples. Each one shows a shape that passes.
   ahead? … I recommend a month." Customer-facing timing with a
   recommendation: passes.
 - "Design gate for LEGION-N… Change: the import page takes files of any
-  size… Recommendation: Approve." A configured gate: passes.
+  size… Approve it, or say what to revise." A configured gate, asked as the
+  approval it is, with no recommendation: passes.
 - "Every test site shares one disk, and the disk is almost full… The
   fastest way to make room is to delete the oldest site… Recommendation:
   delete it only if you confirm nobody still uses it." Deleting a shared
@@ -342,6 +346,13 @@ We invented these examples. Each one shows a shape that passes.
   branch's CODEOWNERS, which gives `docs/` to the person and to no agent
   identity. A review that file requires of them: passes authority 1, and
   the ask need not say that they own `docs/`.
+- "Please give your review of the pull request that adds the retry
+  button, at head 7c1e0b2… The merge adds the retry button to the export
+  page. Approve it on the pull request's review page." with `Done`/`Can't`
+  and no recommendation, and the transcript shows the agent's read of the
+  base branch's CODEOWNERS, which gives the path to the person and to no
+  agent identity. An act only the person can do, asked as that one act:
+  passes authority 1 and needs no recommendation.
 
 ## Asks that fail — examples
 

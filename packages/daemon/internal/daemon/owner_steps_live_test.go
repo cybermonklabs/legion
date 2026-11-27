@@ -8,7 +8,7 @@
 //
 // Nothing of the plan's path is stood in for. Dispatch is the real server this checkout builds
 // (startHandoffDispatch), on a database of its own on LEGION_TEST_PG_DSN's server. The daemon is the
-// whole daemon (run, through startDaemonWithin) with dispatch_url at that server, so register_plan
+// whole daemon (run, through startDaemonLogging) with dispatch_url at that server, so register_plan
 // reads the plan's version from Dispatch with the daemon's own client, and each step record goes
 // through the daemon's outbox to the real route. The issues walk as the package's whole-daemon tests
 // of an owner's plan walk them (ownerStepsRig, owner_steps_rig_test.go): each fact of GitHub reaches
@@ -62,6 +62,7 @@ type ownerStepsLive struct {
 // gate opens, and the fifth is refused the plan `tester implementer` and then walks its owner's
 // plan `implementer reviewer tester`.
 func TestOwnerStepsLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live, in newOwnerStepsLive).
 	l := newOwnerStepsLive(t, "scripts/e2e/owner-steps.sh", 5)
 	planned, byDefault, rowsDeleted, unplanned, anyOrder := l.issues[0].key, l.issues[1].key, l.issues[2].key, l.issues[3].key, l.issues[4].key
 	l.note("Dispatch %s (database of its own), project %s whose default repository is %s, issues %s, %s, %s, %s and %s; daemon at dispatch_url %s",

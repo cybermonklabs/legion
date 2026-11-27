@@ -1,10 +1,12 @@
 /**
  * The Dispatch API's closed lists, caps and wire constants: the values the server enforces, the
  * clients refuse on, and `scripts/gen-go.ts` emits into Go, so each is one literal rather than a
- * server string and a client pattern that can drift apart. It imports nothing, so every other
- * module of the contract - and `dispatch-tools.ts`, whose tool schemas take the same caps - can
- * read it.
+ * server string and a client pattern that can drift apart. It imports only `http-status.ts`, which
+ * imports nothing, so every other module of the contract - and `dispatch-tools.ts`, whose tool
+ * schemas take the same caps - can read it.
  */
+
+import { outage } from "./http-status";
 
 /** Maximum entries in an issue's blocked_by input, before duplicate keys are removed. */
 export const MAX_ISSUE_BLOCKERS = 20;
@@ -338,7 +340,7 @@ export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
 /**
  * The code of the `403` for a request by an approve-only token - the token the secrets broker
  * mints for a person's approve grant and spends through Cipher's proxy, of the OAuth scope
- * `approve` alone - to a route Dispatch's approve list (`approveScopeRoutes`) does not name, and
+ * `approve` alone - to a route whose declaration does not state `ApproveOnly`, and
  * for its answer of an ask that is not an approval request. The route ran nothing and nothing was
  * recorded. No sign-in and no other scope makes the request possible for that token.
  */
@@ -362,19 +364,15 @@ export type IdempotencyLandedCode =
 
 /**
  * Whether an attempt Dispatch answered with `status` (and `code`, its error body's) ended without
- * Dispatch's verdict on the key, so a client asks again under the same key: a 5xx, a 408 or a 429
- * (none of which Dispatch stores, `IDEMPOTENCY_KEY_HEADER`), or `409 IDEMPOTENCY_KEY_IN_FLIGHT`
- * (the first request under the key is still running). Any other answer is Dispatch's verdict, and
+ * Dispatch's verdict on the key, so a client asks again under the same key: an outage (`outage`: a
+ * 5xx, a 408 or a 429, none of which Dispatch stores, `IDEMPOTENCY_KEY_HEADER`), or
+ * `409 IDEMPOTENCY_KEY_IN_FLIGHT` (the first request under the key is still running), which is
+ * Dispatch's keyed-write layer rather than an outage. Any other answer is Dispatch's verdict, and
  * the same key would be answered with it again. The page and the `dispatch` command both retry by
  * this one rule.
  */
 export function retriesUnderKey(status: number, code: string | undefined): boolean {
-  return (
-    status >= 500 ||
-    status === 408 ||
-    status === 429 ||
-    (status === 409 && code === IDEMPOTENCY_KEY_IN_FLIGHT)
-  );
+  return outage(status) || (status === 409 && code === IDEMPOTENCY_KEY_IN_FLIGHT);
 }
 
 /**

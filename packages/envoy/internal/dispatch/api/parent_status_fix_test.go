@@ -314,6 +314,7 @@ func (rig fixRig) fixWrites(t *testing.T, field string) []string {
 // stays under it although its grandparent is done (ACME-903), and every other link stays as it
 // was captured. Each unlinked issue has the unlink's comment, which names the done parent.
 func TestTheFixUnlinksEachOpenIssueFromItsDoneParentOnly(t *testing.T) {
+	t.Parallel()
 	rig := newFixRig(t)
 	rig.fix(t)
 
@@ -365,6 +366,7 @@ func TestTheFixUnlinksEachOpenIssueFromItsDoneParentOnly(t *testing.T) {
 // the move's comment, which names the issue in work under it, first in key order, and its status
 // before. After the fix no pair of the fixture breaks the rule.
 func TestTheFixMovesNotStartedAncestorsIntoWorkOverTheLinksLeft(t *testing.T) {
+	t.Parallel()
 	rig := newFixRig(t)
 	rig.fix(t)
 
@@ -392,6 +394,7 @@ func TestTheFixMovesNotStartedAncestorsIntoWorkOverTheLinksLeft(t *testing.T) {
 // no status: every status but the moves' to in_progress is the one captured, and each unlink's
 // issue.updated changed the parent alone.
 func TestTheFixClosesNothingAndChangesNoChildsStatus(t *testing.T) {
+	t.Parallel()
 	rig := newFixRig(t)
 	rig.fix(t)
 
@@ -444,6 +447,7 @@ func TestTheFixClosesNothingAndChangesNoChildsStatus(t *testing.T) {
 // every change of the fix and its record are committed, as another session reads them, and it
 // answers the rule on: a server built with that rule refuses a write that breaks it.
 func TestTheFixRunsBeforeAnyOtherWriteAndOnlyWithItsSetting(t *testing.T) {
+	t.Parallel()
 	rig := newFixRig(t)
 
 	t.Run("off", func(t *testing.T) {
@@ -496,6 +500,7 @@ func TestTheFixRunsBeforeAnyOtherWriteAndOnlyWithItsSetting(t *testing.T) {
 // step the next time, and writes only the record, with nothing unlinked and nothing moved. That
 // start takes the lease, and its lease pool counts its statements, so the count can see a lease.
 func TestASecondStartOfTheFixChangesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newFixRig(t)
 	rig.fix(t)
 	awaitNoSettlementOwed(t, rig.database)
@@ -528,6 +533,7 @@ func TestASecondStartOfTheFixChangesNothing(t *testing.T) {
 // lease, and the other waits. Each answers the rule on only once the record exists, so the
 // database holds one record, each change once and one comment for each step.
 func TestTheFixRunsOnceUnderItsLeaseBesideASecondProcess(t *testing.T) {
+	t.Parallel()
 	rig := newFixRig(t)
 	second := rig.deps
 	second.Store = storetest.SecondProcess(t, rig.database)
@@ -589,6 +595,7 @@ func readRecorded(database *store.Store, err error) (bool, error) {
 // unlink also appends child.removed on the done parent it leaves, and a move of an issue that
 // has a parent appends child.status on that parent, as the PATCH's write does.
 func TestTheFixWritesEventsTheDaemonReads(t *testing.T) {
+	t.Parallel()
 	rig := newFixRig(t)
 	rig.fix(t)
 

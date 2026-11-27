@@ -513,3 +513,46 @@ func TestKPIStatus(t *testing.T) {
 		})
 	})
 }
+
+// TestQuantileRoundsEachStepOnEveryArchitecture: Quantile rounds its rank and the step it adds
+// to a float64 each, as the prototype's Python and d3's JavaScript do, so a build that fuses a
+// product with the subtraction or the sum it feeds into one instruction that rounds once (arm64's
+// FNMSUBD and FMADDD, which the Go spec allows) answers what an amd64 build answers. Each case is
+// a day of the Pipeline oracle's history (api/testdata/golden_delivery) whose p90 an arm64 build
+// moved across the one-decimal boundary the Pipeline rounds to. Eleven production deploys: the
+// rank 10 × 0.9 rounds to 9, so the p90 is the tenth value, 453 s (7.55 minutes, a float just
+// below it), where the rank's unrounded fraction 2⁻⁵² lifts a fused p90 to the float above 7.55,
+// 7.6. Fifty-four PR-check runs: the rank 53 × 0.9 rounds to 47.700000000000003, and the
+// unrounded fraction falls short of it, so a fused p90 falls short of 22.35, 22.3.
+func TestQuantileRoundsEachStepOnEveryArchitecture(t *testing.T) {
+	minutes := func(seconds ...int) []float64 {
+		values := make([]float64, len(seconds))
+		for i, s := range seconds {
+			values[i] = minutesBetween(time.Time{}, time.Time{}.Add(time.Duration(s)*time.Second))
+		}
+		return values
+	}
+	var checks []int
+	for i := range 47 {
+		checks = append(checks, 600+10*i)
+	}
+	checks = append(checks, 1334, 1344, 1400, 1450, 1500, 1550, 1600)
+	cases := []struct {
+		name   string
+		sorted []float64
+		p90    float64
+		cell   float64
+	}{
+		{"eleven deploys", minutes(300, 310, 320, 330, 340, 350, 360, 370, 380, 453, 590), 7.55, 7.5},
+		{"fifty-four runs", minutes(checks...), 22.35, 22.4},
+	}
+	for _, c := range cases {
+		if got := Quantile(c.sorted, 0.9); got != c.p90 {
+			t.Errorf("%s: Quantile(0.9) = %.17g, want %.17g", c.name, got, c.p90)
+		}
+		cell := FoldTiming([]DayPart{SamplesPart(time.Date(2026, 7, 6, 0, 0, 0, 0, time.UTC), SeriesMinutes, c.sorted, nil)})
+		if cell.P90Minutes == nil || *cell.P90Minutes != c.cell {
+			t.Errorf("%s: FoldTiming's p90_minutes = %v, want %v", c.name, show(cell.P90Minutes), c.cell)
+		}
+	}
+}

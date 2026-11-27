@@ -1,0 +1,5 @@
+kind: Changed
+body: 'Regenerate the dispatch_ask and dispatch_edit_ask catalogue text with the updated ask rules.'
+time: 2026-11-25T20:47:44Z
+custom:
+    Issue: INFRA-898

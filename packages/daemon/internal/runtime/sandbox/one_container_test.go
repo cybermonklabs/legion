@@ -34,9 +34,9 @@ func rolesLocator(token claim.Token, uid string) runtime.Locator {
 // mounted under /var/run/legion/roles/<role>/ — its launcher token and gh files read-only, its
 // private, state and agent-secrets key directories its own — and none at the fixed paths a role
 // reads them at, which role-init binds inside the role's namespaces; the role homes volume is a
-// disk emptyDir at /var/run/legion/roles/.homes; the shared mounts are mounted once. The container
-// and both init containers carry the one issue-pod reservation, by default 2 CPU and 8Gi, each
-// requested in full, and an 80Gi disk limit over a 6Gi request.
+// disk emptyDir at /var/run/legion/roles/.homes; the shared mounts, the issue volume among them,
+// are mounted once each. The container and workspace-init carry the one issue-pod reservation, by
+// default 2 CPU and 8Gi, each requested in full, and an 80Gi disk limit over a 6Gi request.
 func TestAnIssuePodRunsEveryRoleInOneContainer(t *testing.T) {
 	t.Parallel()
 	opts := goldenOptions()
@@ -94,8 +94,7 @@ func TestAnIssuePodRunsEveryRoleInOneContainer(t *testing.T) {
 	// over a lower layer with mounts under it, and binds each back at its own path (role-init).
 	for path, volume := range map[string]string{
 		"/var/run/legion/roles/.homes": "role-homes", TreeRoot: issueVolume,
-		"/var/run/legion/home/.config": configVolume,
-		FeedDir:                        issueVolume, AgentSecretsTokenDir: agentSecretsTokenVolume,
+		"/var/run/legion/home/.config": configVolume, AgentSecretsTokenDir: agentSecretsTokenVolume,
 	} {
 		if got, ok := byPath[path]; !ok || got.Name != volume {
 			t.Errorf("the roles container mounts %+v at %s, want volume %s", got, path, volume)
@@ -112,8 +111,8 @@ func TestAnIssuePodRunsEveryRoleInOneContainer(t *testing.T) {
 		}
 	}
 	for name, count := range byName {
-		if want := map[bool]int{true: 2, false: 1}[name == issueVolume]; count != want {
-			t.Errorf("the roles container mounts volume %s %d times, want %d", name, count, want)
+		if count != 1 {
+			t.Errorf("the roles container mounts volume %s %d times, want 1", name, count)
 		}
 	}
 	var homes *corev1.Volume
@@ -361,7 +360,7 @@ func TestAnInjectedSidecarLeavesAPodOfTheEarlierLayout(t *testing.T) {
 // machine outruns.
 func TestAnIssuePodOfTheEarlierLayoutIsStaleForEveryRoleAndReplacedByTheNextLaunch(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil, withWaitsToTheDeadline())
+	g := newRig(t, nil)
 	tester, reviewer := workerSpec(t), testSpec(t, otherToken, claim.RoleReviewer, testTree)
 	testerLoc, reviewerLoc := g.spawn(tester), g.spawn(reviewer)
 	name := testerLoc.Sandbox.Name

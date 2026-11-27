@@ -618,3 +618,32 @@ func TestOnlyAReadDispatchDidNotAnswerReadsTheKeptKind(t *testing.T) {
 		}
 	})
 }
+
+// TestEveryOutageStatusIsAnsweredFromTheKeptKind: a 408 and a 429 from Dispatch are its outage
+// whatever their body names, as a 503 whose body names no code is (get's errUnavailable, which
+// Unanswered reads), so a client that keeps its answers answers ada, last kept full, from that
+// kept kind through each of them.
+//
+// The fault: get reading a 408 or a 429 as Dispatch's answer rather than its outage; the read fails
+// with that status, and the row names it.
+func TestEveryOutageStatusIsAnsweredFromTheKeptKind(t *testing.T) {
+	for _, outage := range []struct {
+		status int
+		body   string
+	}{
+		{http.StatusRequestTimeout, `{"code":"REQUEST_TIMEOUT","error":"not taken in time"}`},
+		{http.StatusTooManyRequests, `{"code":"RATE_LIMITED","error":"later"}`},
+		{http.StatusServiceUnavailable, `{"error":"a gateway's page"}`},
+	} {
+		t.Run(strconv.Itoa(outage.status), func(t *testing.T) {
+			st := storetest.Open(t)
+			dispatch := projectaccesstest.NewServer(t, nil, keptKinds())
+			r := keepingClientOf(dispatch, st)
+			r.kindOf(t, keptAda, projectaccess.MemberFull, "while Dispatch answers")
+			keptKind(t, st, keptAda, projectaccess.MemberFull, "the read of ada")
+			dispatch.SetAnswer(outage.status, outage.body)
+			r.clock.advance(projectaccess.CacheTTL)
+			r.kindOf(t, keptAda, projectaccess.MemberFull, "while Dispatch answers "+strconv.Itoa(outage.status))
+		})
+	}
+}
