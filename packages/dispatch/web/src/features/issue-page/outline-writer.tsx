@@ -27,6 +27,7 @@ import { wordsOf } from "../refs/tree-fragment";
 import { agentsOnlyIds } from "./agents-only";
 import type { TreeNode } from "./issue-tree";
 import { isStatement } from "./issue-tree";
+import { FOOT_BOX } from "./margin-slot";
 import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /**
@@ -205,7 +206,7 @@ export function useOutlineWriter(): OutlineWriter | undefined {
 const DRAWING_FRAMES = 10;
 
 /** The line's field, wherever the page draws it (`IssueComposer.tsx`). */
-const COMPOSER_FIELD = '[data-testid="issue-composer"] textarea';
+const COMPOSER_FIELD = `${FOOT_BOX} textarea`;
 
 /** Holds the writer for one issue's body. */
 export function OutlineWriterProvider({

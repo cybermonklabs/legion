@@ -27,7 +27,7 @@ import { type FocusedNode, useSetFocusedNode } from "./focused-node";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { pathToTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
-import { DETAILS_ATTRIBUTE } from "./margin-slot";
+import { DETAILS_ATTRIBUTE, FOOT_BOX } from "./margin-slot";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
@@ -1637,7 +1637,11 @@ export function focusedNodeOf(node: TreeNode): FocusedNode {
  *
  * The panel goes back to the issue's own facts whenever the focus leaves the tree, except for
  * Details, or the control that opens it: Details is where a reader reads the node's facts, and
- * the next row focused replaces them.
+ * the next row focused replaces them. Nor does it while the focus is in the box at the page's
+ * foot (`FOOT_BOX`), which Tab reaches from a row before Details where Details stands beside the
+ * outline, so the row's controls in Details' facts are reached by Tab too (decision 570): the
+ * focus leaving the box is read as leaving the tree, kept for Details and let go for anywhere
+ * else but the tree, whose row the focus comes back to sets its own facts.
  */
 export function useReleaseFocus({
   editing,
@@ -1664,6 +1668,9 @@ export function useReleaseFocus({
   // for a mouse and for a tap's mouse events alike - until the task after it ends
   // (`trackPress`). The blur it causes reads it to tell a press from Tab or a script's blur.
   const press = useRef<Press | undefined>(undefined);
+  // The watch on the box at the page's foot while the focus the tree let go of is in it, which
+  // ends as the focus leaves the box, as the tree lets go of another row, or as the tree goes.
+  const inBox = useRef<AbortController | undefined>(undefined);
   useEffect(() => {
     // Lets go of the row a press kept, unless the focus has come back to its tree, whose row
     // that took it is the focused one now.
@@ -1679,8 +1686,36 @@ export function useReleaseFocus({
     const listening = new AbortController();
     window.addEventListener("keydown", closeOnEscape, { capture: true, signal: listening.signal });
     press.current = trackPress({ onEnd: release, signal: listening.signal, starts: ["mousedown"] });
-    return () => listening.abort();
+    return () => {
+      listening.abort();
+      inBox.current?.abort();
+    };
   }, []);
+  // Keeps the facts of the node the focus left `tree` for `to` in the panel, or lets go of them,
+  // by the rule above.
+  const keepFacts = useCallback(
+    function keep(tree: HTMLElement, to: EventTarget | null) {
+      inBox.current?.abort();
+      if (to instanceof Node && tree.contains(to)) return;
+      if (to instanceof Element && to.closest(`[${DETAILS_ATTRIBUTE}]`) !== null) return;
+      const box = to instanceof Element ? to.closest<HTMLElement>(FOOT_BOX) : null;
+      if (box === null) {
+        setFocusedNode(undefined);
+        return;
+      }
+      const watch = new AbortController();
+      inBox.current = watch;
+      box.addEventListener(
+        "focusout",
+        (event) => {
+          const next = event.relatedTarget;
+          if (!(next instanceof Node && box.contains(next))) keep(tree, next);
+        },
+        { signal: watch.signal }
+      );
+    },
+    [setFocusedNode]
+  );
   // Lets go of the row of `tree`, which the focus left for `to`, by the rule above.
   const letGo = useCallback(
     (tree: HTMLElement, to: EventTarget | null) => {
@@ -1691,10 +1726,9 @@ export function useReleaseFocus({
       } else {
         left.current = tree;
       }
-      if (to instanceof Element && to.closest(`[${DETAILS_ATTRIBUTE}]`) !== null) return;
-      setFocusedNode(undefined);
+      keepFacts(tree, to);
     },
-    [onLeave, setFocusedNode]
+    [keepFacts, onLeave]
   );
   useEffect(() => {
     const tree = leftEditing.current;

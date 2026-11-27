@@ -73,7 +73,7 @@ import { IssueTree, ZOOMED_TREE_QUERY } from "./IssueTree";
 import { CLEARANCE, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
 import type { NodeChip, TreeNode } from "./issue-tree";
-import { DETAILS_ATTRIBUTE } from "./margin-slot";
+import { DETAILS_ATTRIBUTE, FOOT_BOX_TEST_ID } from "./margin-slot";
 import * as nodeCaret from "./node-caret";
 import { EDITOR_BOX_ATTRIBUTE, MAC_PLATFORM } from "./node-caret";
 import { lineOrKindWord } from "./node-line";
@@ -624,6 +624,21 @@ function cardInDetails(): HTMLElement {
   ).getByRole("button", { name: thread });
 }
 
+/** The box at the page's foot (`IssueComposer.tsx`), drawn after the tree, as at 1440 px where
+ *  it stands between the outline and Details in the order Tab goes: its field and its Send. */
+function boxAtFoot(): { readonly field: HTMLElement; readonly send: HTMLElement } {
+  const drawn = render(
+    <section data-testid={FOOT_BOX_TEST_ID}>
+      <textarea aria-label="Comment" />
+      <button type="button">Send</button>
+    </section>
+  );
+  return {
+    field: drawn.getByRole("textbox", { name: "Comment" }),
+    send: drawn.getByRole("button", { name: "Send" }),
+  };
+}
+
 /** Lets the next frame come, and React draw what it changed. */
 async function nextFrame(): Promise<void> {
   const frame = Promise.withResolvers<void>();
@@ -1056,6 +1071,86 @@ test("Tab out of the outline lets go of the row at once: no body, no focused loo
   ).not.toContain(pageFocusedRow);
   expect(first.querySelector("[data-node-body]")).toBeNull();
   expect(first.querySelector("[data-row-acts]")).toBeNull();
+});
+
+// Decision 570: where Details stands beside the outline, the first Tab stop after a row is the
+// box at the page's foot, and Details comes after the box. The outline let go of the row's facts
+// as the focus went into the box, so Details drew the issue's by the time Tab reached it, and its
+// controls for the row - "What references this row" among them - could not be reached by Tab.
+// The facts stay while the focus is in the box, through each of its stops and on into Details.
+test("Tab from a row into the box at the page's foot, through it and on into Details keeps the row's facts", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(
+    node({
+      children: [
+        addressedComment("comment-1", "The first words."),
+        addressedComment("comment-2", "The second words."),
+      ],
+      id: KEY,
+      type: "issue",
+    })
+  );
+  const box = boxAtFoot();
+  const card = cardInDetails();
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  expect(view.focusedNode()?.id, "the panel holds no facts of the focused row").toBe("comment-1");
+
+  await user.tab();
+  expect(document.activeElement === box.field, "Tab from the row did not go to the box").toBe(true);
+  expect(
+    view.focusedNode()?.id,
+    "the focus going from the row into the box at the page's foot let go of the row's facts"
+  ).toBe("comment-1");
+  await user.tab();
+  expect(document.activeElement === box.send, "Tab did not go on to the box's Send").toBe(true);
+  expect(
+    view.focusedNode()?.id,
+    "the focus moving inside the box at the page's foot let go of the row's facts"
+  ).toBe("comment-1");
+  await user.tab();
+  expect(document.activeElement === card, "Tab from the box did not go on to Details").toBe(true);
+  expect(
+    view.focusedNode()?.id,
+    "the focus going on from the box at the page's foot into Details let go of the row's facts"
+  ).toBe("comment-1");
+});
+
+// The focus going on from the box at the page's foot to anywhere but Details or the outline is
+// the reader leaving the row, as the focus going there from the row is.
+test("the focus leaving the box at the page's foot for a control outside Details lets go of the row's facts", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(
+    node({
+      children: [
+        addressedComment("comment-1", "The first words."),
+        addressedComment("comment-2", "The second words."),
+      ],
+      id: KEY,
+      type: "issue",
+    })
+  );
+  const box = boxAtFoot();
+  const outside = controlOutside();
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+
+  await user.tab();
+  expect(document.activeElement === box.field, "Tab from the row did not go to the box").toBe(true);
+  expect(
+    view.focusedNode()?.id,
+    "the focus going from the row into the box at the page's foot let go of the row's facts"
+  ).toBe("comment-1");
+  await user.tab();
+  await user.tab();
+  expect(
+    document.activeElement === outside.control,
+    "Tab from the box did not go on to the control outside Details"
+  ).toBe(true);
+  expect(
+    view.focusedNode(),
+    "the focus leaving the box at the page's foot for a control outside Details kept the row's facts"
+  ).toBeUndefined();
 });
 
 // Escape anywhere on the page closes at once the body a press outside the outline keeps, with

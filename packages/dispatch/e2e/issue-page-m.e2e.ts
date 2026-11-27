@@ -114,6 +114,7 @@ import {
   pinsList,
 } from "./issue-page-h";
 import { focusedNodeId, focusInside, openEveryDeeperBranch } from "./issue-page-i";
+import { composer } from "./issue-page-l";
 import {
   askFacts,
   daemonOf,
@@ -5371,6 +5372,85 @@ test("what references the focused row opens from its facts, and each row leads t
         references.length,
         "a failed read was asked more than three times"
       ).toBeLessThanOrEqual(3);
+    }
+  );
+});
+
+// Decision 570: at 1440 px Details stands beside the outline, and the first Tab stop after a row
+// is the box at the page's foot, which is outside Details. The outline let go of the row's facts
+// as the focus went into the box, so Details drew the issue's facts by the time Tab reached it,
+// and a reader on the keyboard alone never reached the row's "What references this row". The
+// facts stay while the focus is in the box, Tab goes on through it into Details, and Enter on the
+// control opens the list.
+// SLOW(>=2s): a statement cited by a comment, one load of the issue with Details open, and a walk
+// by Tab from the statement's row through the box and Details.
+test("at 1440 px Tab from a row passes through the box at the foot into its facts in Details, and reaches What references this row", async ({
+  browser,
+}) => {
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      const issue = await createIssue({
+        project: "CORE",
+        spec: ":::requirement{#r-tabbed}\nThe history is drawn in Details.\n:::\n",
+        title: "Tab to what references a statement",
+      });
+      await createComment(
+        issue.key,
+        { body: `Bob checks dispatch://${issue.key}/spec#b-r-tabbed against the page.` },
+        { login: "bob" }
+      );
+      const spec = ((await getIssue(issue.key)).artifacts ?? []).find(
+        (artifact) => artifact.primary
+      );
+      if (spec === undefined) throw new Error(`${issue.key} holds no spec`);
+      return { key: issue.key, statement: blockNode(spec.slug, "r-tabbed") };
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expect(tree(page)).toBeVisible();
+      await expectOpeningLanded(page);
+      // Details open at the statement's facts, and the focus back on the statement's row: every
+      // move from there on is the keyboard's.
+      const facts = await focusedRowFacts(page, seeded.statement);
+      await focusRow(page, seeded.statement);
+      await expect(facts, "the facts are not the statement's on its row").toHaveAttribute(
+        "data-focused-node",
+        seeded.statement
+      );
+      const control = facts.getByRole("button", {
+        exact: true,
+        name: NODE_REFERENCES_WORDS.what_references,
+      });
+      const walk = tabWalk(page, 60);
+
+      await walk(
+        composer(page).locator("*"),
+        "Tab from the statement's row did not reach the box at the page's foot"
+      );
+      await expect(
+        facts,
+        "the facts in Details went back to the issue's as the focus went into the box at the page's foot"
+      ).toHaveAttribute("data-focused-node", seeded.statement);
+      await walk(
+        control,
+        `Tab from the box at the page's foot did not reach ${NODE_REFERENCES_WORDS.what_references} in the statement's facts in Details`
+      );
+      await expect(
+        facts,
+        "the facts in Details are not the statement's once Tab reached them"
+      ).toHaveAttribute("data-focused-node", seeded.statement);
+      await expect(control).toHaveAttribute("aria-expanded", "false");
+      await page.keyboard.press("Enter");
+      await expect(
+        control,
+        `Enter on ${NODE_REFERENCES_WORDS.what_references} did not open its list`
+      ).toHaveAttribute("aria-expanded", "true");
+      await expect(
+        facts.locator("[data-node-references] li"),
+        "the list does not hold the comment that cites the statement"
+      ).toHaveCount(1);
     }
   );
 });
