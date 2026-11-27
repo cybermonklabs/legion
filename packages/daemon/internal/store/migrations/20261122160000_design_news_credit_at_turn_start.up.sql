@@ -33,7 +33,10 @@
 -- says the same to whoever reads the schema. 20261122154643_outbox_kinds_with_the_basis_seeds
 -- (dispatch://INFRA-3320) is versioned between 20261119203047 and this one, and a store that
 -- recorded this one before it applies it after this one; it writes outbox_kind_check and not
--- design_news_told_in, so it puts back no credit.
+-- design_news_told_in, so it puts back no credit. 20261120210000_issue_release_committed
+-- (dispatch://INFRA-3589) is versioned between 20261119203047 and this one too, and a store that
+-- recorded this one before it applies it after this one; it writes neither outbox_kind_check nor
+-- design_news_told_in, so it puts back no credit either.
 --
 -- The way back is the block below, run with the daemon stopped before the earlier image is pinned,
 -- and before the way back of 20261113175649_task_numbers, which drops turn_started (at a rollback
@@ -45,15 +48,31 @@
 -- writes design_news_told_in back as 20261119203047 wrote it, drops the comment this file set
 -- (that migration set none), and deletes this migration's version row, so the roll forward runs
 -- this file again. The release before this one, main's build that carries contract entries
--- 20261125161152 (#4592's gate-basis), 20261125161436 (#4580's role-identities), 20261125174608
--- (#5505's cyber-policy), 20261125180842 (#5285's launcher-workspace-read), 20261125181047 (#5488's
--- p-0-bound), 20261125181543 (#5463's look-names-its-check), 20261125182642 (#4065's agent-actions)
--- and 20261125211005 (#5566's wake-due-earliest-moment) after contract 275 (the one whose
+-- 20261125161152 (#4592's gate-basis), 20261125161436 (#4580's role-identities), 20261125170509
+-- (#5482's replaces), 20261125170906 (#5332's drop-unserved-state-keys), 20261125174608 (#5505's
+-- cyber-policy), 20261125180842 (#5285's launcher-workspace-read), 20261125181047 (#5488's
+-- p-0-bound), 20261125181543 (#5463's look-names-its-check), 20261125182642 (#4065's
+-- agent-actions), 20261125211005 (#5566's wake-due-earliest-moment) and 20261126071719 (#5646's
+-- workspace-init-direct-clone) after contract 275 (the one whose
 -- internal/api/version.go carries the entry for dispatch://INFRA-4425, cybermonklabs/legion#4392's
 -- daemon that writes to Dispatch as itself under dispatch_token_broker), as main releases it after
--- #5487, whose newest migration is #4065's 20261126110259_merge_holds_changed, carries
+-- #4194, whose newest migration is #4065's 20261126110259_merge_holds_changed, carries
 -- 20261119203047 and
--- not the task numbers, and then reads the function it wrote; a rollback to a release before #5487
+-- not the task numbers, and then reads the function it wrote; a rollback to a release before #4194
+-- runs that release's one statement, which changes no schema version, after the daemon stops and
+-- before the earlier image starts (docs/kubernetes.md, "Rolling back idle release"): it strips the
+-- wakeDetail key the earlier release refuses from each queued start, and this block reads nothing
+-- of that key or of that release's 20261120210000_issue_release_committed and
+-- 20261126001514_pod_release_give_ups, which carry no way back; one to a release before #5312,
+-- which adds no migration, takes that release's step with the daemon stopped, before the earlier
+-- image is pinned (docs/kubernetes.md, "Rolling back the release that holds every worker while a
+-- merge forward is owed"): it deletes each queued merge-forward row of the project rolled back that
+-- is a withdrawn step or a hold or landed row to the planner, and takes the key sentLaunch off each
+-- queued ask, since the earlier release refuses all three, and this block reads none of those rows;
+-- one to a release before #5332 crosses contract entry 20261125170906, one to a release before
+-- #5646 contract entry 20261126071719, and one to a release before #5482 contract entry
+-- 20261125170509, none of which adds a migration or takes a step of its own beyond pinning the
+-- worker image with the daemon; a rollback to a release before #5487
 -- takes controller_turn_bound_minutes and controller_session_max_age_hours out of legion.yaml where
 -- the file sets them, and this block reads nothing of that release's
 -- 20261125021636_claim_session_run, which carries no way back; one to a release before #5488 takes
