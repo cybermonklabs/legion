@@ -1,6 +1,12 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
-import { onlineManager, QueryClient, QueryObserver, skipToken } from "@tanstack/react-query";
+import {
+  focusManager,
+  onlineManager,
+  QueryClient,
+  QueryObserver,
+  skipToken,
+} from "@tanstack/react-query";
 
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { ApiError, createApiClient, isRetryableQueryError } from "./client";
@@ -910,6 +916,136 @@ test("a search the reader asks again after 503 SEARCH_TIMEOUT is asked once more
     expect(out).toHaveLength(4);
   } finally {
     unsubscribe();
+    queryClient.clear();
+  }
+});
+
+// A post's correction that lands on a search held after `503 SEARCH_TIMEOUT` while no read of it
+// is out is a write by hand (`replaceQueryData`), which keeps the timeout but marks the query
+// fresh for the app's 30 s `staleTime`. The write marks it stale again, so the reader who opens
+// the bar again and types the words, or types the same words again, straight after the
+// correction, asks for the search once. A letter typed and deleted is a search of other words, so
+// the row counts the requests by the words they ask for.
+test("a search held after 503 SEARCH_TIMEOUT that a value is put into with no read out is asked once when the bar is opened again and its words typed, and once when they are typed again", async () => {
+  const asked: Record<string, Record<string, number>> = {};
+  for (const act of ["reopened", "retyped"] as const) {
+    const queryClient = new DispatchQueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+    });
+    const sent: Record<string, number> = {};
+    const out: { resolve: (hits: string) => void; reject: (error: ApiError) => void }[] = [];
+    const search = (words: string) => ({
+      queryFn: () => {
+        sent[words] = (sent[words] ?? 0) + 1;
+        const read = Promise.withResolvers<string>();
+        out.push(read);
+        return read.promise;
+      },
+      queryKey: ["search", words],
+    });
+    const observer = new QueryObserver(queryClient, search("astrolabe"));
+    const unsubscribes = [observer.subscribe(() => {})];
+    try {
+      await settle();
+      out[0]?.resolve("hits");
+      await settle();
+      void queryClient.invalidateQueries({ queryKey: ["search"] });
+      await settle();
+      out[1]?.reject(searchTimedOut);
+      await settle();
+
+      // A post in the hits is edited while no read of them is out: the hits take the edit, and
+      // the search stays held.
+      replaceQueryData<string>(queryClient, ["search", "astrolabe"], "hits, one edited");
+      expect(queryClient.getQueryData<string>(["search", "astrolabe"])).toBe("hits, one edited");
+      expect(queryClient.getQueryState(["search", "astrolabe"])?.fetchFailureReason).toBe(
+        searchTimedOut
+      );
+
+      if (act === "reopened") {
+        // The bar is closed, and opened again with the words typed: a new observer of the query.
+        unsubscribes.shift()?.();
+        unsubscribes.push(new QueryObserver(queryClient, search("astrolabe")).subscribe(() => {}));
+      } else {
+        // A letter typed and deleted brings the observer back to the query.
+        observer.setOptions(search("astrolabes"));
+        observer.setOptions(search("astrolabe"));
+      }
+      await settle();
+      asked[act] = { ...sent };
+    } finally {
+      for (const unsubscribe of unsubscribes) unsubscribe();
+      queryClient.clear();
+    }
+  }
+  expect(asked).toEqual({
+    reopened: { astrolabe: 3 },
+    retyped: { astrolabe: 3, astrolabes: 1 },
+  });
+});
+
+// The stale mark that write leaves sends nothing on its own: with no act of the reader's after
+// the correction, neither the tab's focus, the network's return, `refetchQueries` nor an
+// invalidation of every query sends the held search, while a search refused for another reason,
+// stale since its refusal, is sent by each.
+test("a search held after 503 SEARCH_TIMEOUT that a value is put into with no read out is sent again by neither focus, reconnect, refetchQueries nor an invalidation of every query", async () => {
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  // Mounted, as the page's provider mounts it, so its queries hear the tab's focus and the network.
+  queryClient.mount();
+  const asked = { busy: 0, timedOut: 0 };
+  const out: { resolve: (hits: string) => void; reject: (error: ApiError) => void }[] = [];
+  const observers = [
+    new QueryObserver(queryClient, {
+      queryFn: () => {
+        asked.timedOut += 1;
+        const read = Promise.withResolvers<string>();
+        out.push(read);
+        return read.promise;
+      },
+      queryKey: ["search", "astrolabe"],
+    }),
+    new QueryObserver(queryClient, {
+      queryFn: async (): Promise<string> => {
+        asked.busy += 1;
+        throw databaseBusy;
+      },
+      queryKey: ["search", "sextant"],
+    }),
+  ];
+  const unsubscribes = observers.map((observer) => observer.subscribe(() => {}));
+  try {
+    await settle();
+    out[0]?.resolve("hits");
+    await settle();
+    void queryClient.invalidateQueries({ queryKey: ["search", "astrolabe"] });
+    await settle();
+    out[1]?.reject(searchTimedOut);
+    await settle();
+    replaceQueryData<string>(queryClient, ["search", "astrolabe"], "hits, one edited");
+    expect(asked).toEqual({ busy: 1, timedOut: 2 });
+
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+    await settle();
+    expect(asked).toEqual({ busy: 2, timedOut: 2 });
+
+    onlineManager.setOnline(false);
+    onlineManager.setOnline(true);
+    await settle();
+    expect(asked).toEqual({ busy: 3, timedOut: 2 });
+
+    await queryClient.refetchQueries();
+    expect(asked).toEqual({ busy: 4, timedOut: 2 });
+
+    await queryClient.invalidateQueries();
+    expect(asked).toEqual({ busy: 5, timedOut: 2 });
+  } finally {
+    focusManager.setFocused(undefined);
+    onlineManager.setOnline(true);
+    for (const unsubscribe of unsubscribes) unsubscribe();
+    queryClient.unmount();
     queryClient.clear();
   }
 });

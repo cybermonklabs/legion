@@ -81,7 +81,8 @@ export function queryRetryDelay(
  * `fetchFailureReason`: a fetch's start and its success clear it, and a write of the answer the
  * query keeps leaves it, as a post's correction does, which the live feed writes into each search
  * answer that holds a copy of the post (`markCorrectedPost`), unless that write cancels a read out
- * of a query something shows (`replaceQueryData`).
+ * of a query something shows (`replaceQueryData`). Such a write also marks the query fresh, so
+ * where it leaves the last answer, `replaceQueryData` marks the query stale again.
  */
 export function heldAfterSearchTimeout(query: {
   readonly state: { readonly fetchFailureReason: unknown };
@@ -295,9 +296,14 @@ export async function askSignInAgain(client: QueryClient): Promise<void> {
  * server's bound, which no invalidation reads again (`heldAfterSearchTimeout`), though the read
  * cancelled was asked over that answer, as only the reader asks one. So where something shows the
  * query, that answer is cleared before the invalidation: the hold stands on a failure the server
- * answered, not on one a cancel put back. A write made before Dispatch has taken it may hold its
- * query's reads first (`holdBackReads`), and then that read waits for the hold to end too.
- * Answers what `setQueryData` answers.
+ * answered, not on one a cancel put back. With no read out, the query is not read again, and a
+ * search held after such an answer stays held: a write by hand leaves its last answer, the
+ * timeout, but marks the query fresh for its `staleTime`, so the palette opened again and the
+ * words typed, or the same words typed again, would find it fresh and send nothing, and the bar
+ * would show the hits with no Retry. So the write marks it stale again (`Query.invalidate`, which
+ * starts no fetch): it stays held, and what the reader does asks. A write made before Dispatch has
+ * taken it may hold its query's reads first (`holdBackReads`), and then that read waits for the
+ * hold to end too. Answers what `setQueryData` answers.
  */
 export function replaceQueryData<T>(
   client: QueryClient,
@@ -307,12 +313,14 @@ export function replaceQueryData<T>(
   const fetchStatus = client.getQueryState(queryKey)?.fetchStatus ?? "idle";
   void client.cancelQueries({ exact: true, queryKey });
   const written = client.setQueryData<T>(queryKey, updater);
+  const query = client.getQueryCache().find({ exact: true, queryKey });
   if (fetchStatus !== "idle") {
-    const query = client.getQueryCache().find({ exact: true, queryKey });
     if (query?.isActive() && heldAfterSearchTimeout(query)) {
       query.setState({ fetchFailureReason: null });
     }
     void client.invalidateQueries({ exact: true, queryKey, refetchType: "active" });
+  } else if (query !== undefined && heldAfterSearchTimeout(query)) {
+    query.invalidate();
   }
   return written;
 }
