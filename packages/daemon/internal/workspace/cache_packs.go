@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -142,9 +143,10 @@ const (
 // bucketFailure is why an attempt to fill the feed from the repository cache's bucket ended and
 // the cache's /tar fills it instead: one of the short reasons above, and what failed. Its text never
 // holds a signed address or its query (downloadCause), nor a ref's contents, and it holds the
-// cache's words only as the redaction rule reads them: /packs' status by its code and standard
-// phrase (oauth2call.StatusLine), a failed read of its answer in the rule's own words
-// (oauth2call.ReadAnswer), and a member of its manifest as manifestWords prints it.
+// cache's and the bucket's words only as the redaction rule reads them: a status by its code and
+// standard phrase (oauth2call.StatusLine), a member of the cache's manifest as manifestWords
+// prints it, a bucket's error code as refusalCode does, and a failed ask or read in the rule's own
+// words (oauth2call.Unanswered, oauth2call.ReadAnswer, oauth2call.StreamAnswer).
 type bucketFailure struct {
 	reason string
 	err    error
@@ -591,7 +593,12 @@ func downloadObjects(ctx context.Context, manifest PackManifest, staging string)
 // stopped at its first byte past it, a shorter one, or one of another SHA-256, fails, and so does an
 // answer other than 200 or one that states another length. It holds the repository cache's
 // low-speed bound (countingReader.watchStall, downloadWindow): a bucket that answers nothing, or
-// whose body falls below the bound, is ended, naming it. No failure names the address or its query.
+// whose body falls below the bound, is ended, naming it. No failure names the address or its query,
+// and none prints what the bucket wrote, or whatever answers at the address, which can echo the
+// signed query the request carried, but as the rule reads it: a status by its code and standard
+// phrase (oauth2call.StatusLine), an error's code as refusalCode prints it, an ask that got no
+// answer as downloadCause names it, and a read of the body that failed as oauth2call.StreamAnswer
+// says it.
 //
 // Three goroutines pass downloadChunks buffers of downloadChunk bytes round, each in order: one
 // does nothing but read the body into them (readChunks), this one writes each to the file, and one
@@ -618,11 +625,11 @@ func downloadObject(ctx context.Context, object PackObject, target string) (Buck
 	}
 	response, err := bucketClient.Do(ask)
 	if err != nil {
-		return failed(reasonDownload, downloadCause(err, object.URL, stream))
+		return failed(reasonDownload, downloadCause(err, ask, stream))
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return failed(reasonDownload, fmt.Errorf("the bucket answered %s%s", response.Status, refusalCode(response.Body)))
+		return failed(reasonDownload, fmt.Errorf("the bucket answered %s%s", oauth2call.StatusLine(response.StatusCode), refusalCode(response)))
 	}
 	if response.ContentLength >= 0 && response.ContentLength != object.Size {
 		return failed(reasonSize, fmt.Errorf("the bucket sends %d bytes, not the %d the manifest states", response.ContentLength, object.Size))
@@ -631,7 +638,9 @@ func downloadObject(ctx context.Context, object PackObject, target string) (Buck
 	if err != nil {
 		return failed(reasonWrite, err)
 	}
-	stream.reader = response.Body
+	// The body is data, streamed into the file as it arrives (oauth2call.StreamAnswer), and read to
+	// one byte past the manifest's size at most, so a longer one is stopped at its first byte past it.
+	stream.reader = oauth2call.StreamAnswer(response, object.Size+1)
 	free := make(chan []byte, downloadChunks)
 	for range downloadChunks {
 		free <- nil
@@ -640,7 +649,7 @@ func downloadObject(ctx context.Context, object PackObject, target string) (Buck
 	var readFailure error
 	go func() {
 		defer close(full)
-		readFailure = readChunks(fetching, io.LimitReader(stream, object.Size+1), free, full)
+		readFailure = readChunks(fetching, stream, free, full)
 	}()
 	digest, hashed := sha256.New(), make(chan struct{})
 	go func() {
@@ -681,8 +690,10 @@ func downloadObject(ctx context.Context, object PackObject, target string) (Buck
 	switch {
 	case failure != nil:
 		return failed(reason, failure)
+	case readFailure != nil && stream.stalled.Load():
+		return failed(reasonDownload, errDownloadStalled)
 	case readFailure != nil:
-		return failed(reasonDownload, downloadCause(readFailure, object.URL, stream))
+		return failed(reasonDownload, readFailure)
 	case closed != nil:
 		return failed(reasonWrite, closed)
 	case n < object.Size:
@@ -730,45 +741,45 @@ func readChunks(ctx context.Context, body io.Reader, free <-chan []byte, full ch
 	}
 }
 
-// downloadCause is what err, a failure of the download from address, says, without the address:
-// errDownloadStalled once the low-speed watch ended it, and otherwise err's own cause. A *url.Error
-// carries the whole address, query and signature included, so only the error it wraps is kept, and
-// any text of the address still in that is cut out.
-func downloadCause(err error, address string, stream *countingReader) error {
-	if stream.stalled.Load() {
+// downloadCause is what err, the failure of ask, a download that got no answer, says without the
+// address: errDownloadStalled once the low-speed watch ended it, errBucketRedirect where the bucket
+// answered a redirect, and otherwise net/http's operation and the failure by its transport text or
+// its class (oauth2call.Unanswered), the address named "<signed address>". A *url.Error carries the
+// whole address, query and signature included, and net/http's own text of an answer it could not
+// read quotes what the answering party wrote, which can echo that query.
+func downloadCause(err error, ask *http.Request, stream *countingReader) error {
+	switch {
+	case stream.stalled.Load():
 		return errDownloadStalled
-	}
-	var asked *url.Error
-	if errors.As(err, &asked) {
-		err = asked.Err
-	}
-	if errors.Is(err, errBucketRedirect) {
+	case errors.Is(err, errBucketRedirect):
 		return errBucketRedirect
 	}
-	text := err.Error()
-	if u, parseErr := url.Parse(address); parseErr == nil && u.RawQuery != "" {
-		text = strings.ReplaceAll(text, address, "<signed address>")
-		text = strings.ReplaceAll(text, u.RawQuery, "<query>")
-	}
-	return errors.New(text)
+	return oauth2call.Unanswered(err, ask, "<signed address>")
 }
 
 // refusalCode is the code Cloud Storage's XML error answer names, " (Code)", read from at most 64
-// KiB of body, or "" where the answer holds none: AccessDenied, SignatureDoesNotMatch or
-// ExpiredToken tell an address refused from an object missing (NoSuchKey). Nothing else of the
-// answer is kept: a refusal of a signature carries the request it signed, query included.
-func refusalCode(body io.Reader) string {
-	text, err := io.ReadAll(io.LimitReader(body, 64<<10))
+// KiB of response's body (oauth2call.ReadAnswer), or "" where the answer holds none:
+// AccessDenied, SignatureDoesNotMatch or ExpiredToken tell an address refused from an object
+// missing (NoSuchKey). Nothing else of the answer is kept: a refusal of a signature carries the
+// request it signed, query included. The code is the bucket's words, or those of whatever answers
+// at the address, held to a word of letters and printed as the rule reads it (Answer.Said), with
+// every credential the request carried, each value of the signed query, redacted.
+func refusalCode(response *http.Response) string {
+	answer, err := oauth2call.ReadAnswer(response, 64<<10)
 	if err != nil {
 		return ""
 	}
-	var answer struct {
-		Code string `xml:"Code"`
-	}
-	if xml.Unmarshal(text, &answer) != nil || !errorCode.MatchString(answer.Code) {
+	var body bytes.Buffer
+	if _, err := answer.StreamTo(&body); err != nil {
 		return ""
 	}
-	return " (" + answer.Code + ")"
+	var refusal struct {
+		Code string `xml:"Code"`
+	}
+	if xml.Unmarshal(body.Bytes(), &refusal) != nil || !errorCode.MatchString(refusal.Code) {
+		return ""
+	}
+	return " (" + answer.Said(refusal.Code).String() + ")"
 }
 
 // errorCode is the shape of a Cloud Storage XML error's code: a word of letters.

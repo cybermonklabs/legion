@@ -30,13 +30,14 @@ const packsEchoSignature = "eyJhbGci" + "SignedAddressQueryValue"
 // a fetch of acme/widgets presenting bearer: /healthz answers ready; /packs answers through packs,
 // or with the bearer the manifest as JSON; /tar answers 503, so the fetch fails after the bucket's
 // attempt and its report says why the bucket was not used; and the bucket answers each download
-// with the object's content. The manifest lists HEAD and one pack with its index, each with its
-// size, its SHA-256 and an address at the bucket whose query holds packsEchoSignature.
+// through download, or with the object's content. The manifest lists HEAD and one pack with its
+// index, each with its size, its SHA-256 and an address at the bucket whose query holds
+// packsEchoSignature.
 type packsEcho struct {
 	cache, bucket, bearer string
 	manifest              PackManifest
 	content               map[string][]byte
-	packs                 http.HandlerFunc
+	packs, download       http.HandlerFunc
 }
 
 // newPacksEcho starts the stand-in, its bearer packsEchoBearer.
@@ -44,6 +45,10 @@ func newPacksEcho(t *testing.T) *packsEcho {
 	t.Helper()
 	p := &packsEcho{bearer: packsEchoBearer, content: map[string][]byte{}}
 	bucket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p.download != nil {
+			p.download(w, r)
+			return
+		}
 		body, ok := p.content[strings.TrimPrefix(r.URL.Path, "/"+testPacksBucket+"/")]
 		if !ok {
 			http.NotFound(w, r)
@@ -148,16 +153,20 @@ func asServed(t *testing.T, address, bearer string) string {
 }
 
 // A stand-in at the repository cache's address holds the bearer the /packs ask carried, and the
-// signed addresses its manifest gives: it can write them back in /packs' status line
+// signed addresses its manifest gives, and whatever answers at those addresses holds the signed
+// query its download carried: either can write them back. The cache's: in /packs' status line
 // (packs-status); in a trailer of its body that does not parse, which net/http's error of the read
 // quotes (packs-read); and in a member of its manifest that the fetch refuses - the bucket
 // (bucket), a ref that is no path inside the feed (ref-path), one listed twice (ref-twice), one
 // that is another's directory (ref-directory), an object of no pack's name (object-name), an
 // object's SHA-256 (object-sha256) - or a ref it takes whose write fails, its name too long for the
-// volume (write-ref). The reason the report gives for filling the feed from /tar, which
-// `workspace-init fetch` prints (printSource), holds no run of the bearer or of the signature, and
-// still names what failed. Each case first shows what net/http or the volume gives of the
-// stand-in's words holds one. Captures workspace.packs-echo/<case>.
+// volume (write-ref). The bucket's: in a download's status line (download-status), its error's
+// code (download-code), a status line that does not parse, which net/http's error of the ask quotes
+// (download-unanswered), and a trailer of its body that does not parse (download-read). The reason
+// the report gives for filling the feed from /tar, which `workspace-init fetch` prints
+// (printSource), holds no run of the bearer or of the signature, and still names what failed. Each
+// case first shows what net/http or the volume gives of the stand-in's words holds one. Captures
+// workspace.packs-echo/<case>.
 func TestABucketAttemptsReasonPrintsNoCredentialTheCacheOrTheBucketEchoes(t *testing.T) {
 	// refEcho is a ref a feed takes that holds the bearer and the signature.
 	refEcho := "refs/heads/" + packsEchoBearer + "?X-Goog-Signature=" + packsEchoSignature
@@ -167,6 +176,14 @@ func TestABucketAttemptsReasonPrintsNoCredentialTheCacheOrTheBucketEchoes(t *tes
 		return func(t *testing.T, p *packsEcho) string {
 			edit(p, &p.manifest)
 			return asServed(t, p.cache+"/packs", p.bearer)
+		}
+	}
+	// downloads makes every download answer through answer, and answers what net/http gives of the
+	// pack's.
+	downloads := func(answer func(t *testing.T, p *packsEcho, w http.ResponseWriter, r *http.Request)) func(t *testing.T, p *packsEcho) string {
+		return func(t *testing.T, p *packsEcho) string {
+			p.download = func(w http.ResponseWriter, r *http.Request) { answer(t, p, w, r) }
+			return asServed(t, p.manifest.Objects[0].URL, "")
 		}
 	}
 	for _, tc := range []struct {
@@ -217,6 +234,22 @@ func TestABucketAttemptsReasonPrintsNoCredentialTheCacheOrTheBucketEchoes(t *tes
 			}
 			return err.Error()
 		}, func(*packsEcho) string { return reasonWrite + ": the ref refs/heads/" }},
+		{"download-status", downloads(func(t *testing.T, p *packsEcho, w http.ResponseWriter, r *http.Request) {
+			rawAnswer(t, w, "HTTP/1.1 403 Bearer "+p.bearer+" http://"+r.Host+r.URL.RequestURI()+"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+		}), func(*packsEcho) string { return ": the bucket answered 403 " }},
+		{"download-code", downloads(func(_ *testing.T, _ *packsEcho, w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, "<?xml version='1.0' encoding='UTF-8'?><Error><Code>"+r.URL.Query().Get("X-Goog-Signature")+"</Code></Error>")
+		}), func(*packsEcho) string { return ": the bucket answered 403 Forbidden (" }},
+		{"download-unanswered", downloads(func(t *testing.T, p *packsEcho, w http.ResponseWriter, r *http.Request) {
+			rawAnswer(t, w, p.bearer+"|"+r.URL.Query().Get("X-Goog-Signature")+"\r\n\r\n")
+		}), func(*packsEcho) string { return reasonDownload + ": " + testPacksPrefix + "pack-" }},
+		{"download-read", downloads(func(t *testing.T, p *packsEcho, w http.ResponseWriter, r *http.Request) {
+			body := p.content[strings.TrimPrefix(r.URL.Path, "/"+testPacksBucket+"/")]
+			rawAnswer(t, w, fmt.Sprintf("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n%x\r\n%s\r\n0\r\nBearer %s %s\r\n\r\n",
+				len(body), body, p.bearer, r.URL.Query().Get("X-Goog-Signature")))
+		}), func(*packsEcho) string { return reasonDownload + ": " + testPacksPrefix + "pack-" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := newPacksEcho(t)
