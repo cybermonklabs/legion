@@ -443,13 +443,13 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 		return decodeDeliveryOracleTree(t, response.Body.Bytes())
 	}
 	pipelineDropped := []string{"computed_at", "freshness", "pr_checks.failing_jobs"}
-	// The evals each route judges its figures by, read as each reads them for the deploy
-	// repository.
-	targetEvals, err := registry.DeployRepoEvals(t.Context(), settings.DeployRepo, evals.DeliveryTargetSlugs)
+	// The evals each route judges its figures by, read as each reads them: those of the project
+	// that owns every deploy repository, the fixture's.
+	targetEvals, err := registry.DeployRepoEvals(t.Context(), evals.DeliveryTargetSlugs)
 	if err != nil {
 		t.Fatalf("read the measures' evals of %s: %v", settings.DeployRepo, err)
 	}
-	pipelineEvals, err := registry.DeployRepoEvals(t.Context(), settings.DeployRepo, evals.PipelineSlugs)
+	pipelineEvals, err := registry.DeployRepoEvals(t.Context(), evals.PipelineSlugs)
 	if err != nil {
 		t.Fatalf("read the Pipeline's evals of %s: %v", settings.DeployRepo, err)
 	}

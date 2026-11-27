@@ -207,7 +207,7 @@ func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 func TestAFigureItsJudgesDoNotNameHasNoVerdict(t *testing.T) {
 	t.Parallel()
 	_, database := newTestHandlerWithStore(t)
-	catalogue, err := evals.New(database, nil, nil, nil).DeployRepoEvals(t.Context(), "acme/widgets", evals.DeliveryTargetSlugs)
+	catalogue, err := evals.New(database, nil, nil, nil).DeployRepoEvals(t.Context(), evals.DeliveryTargetSlugs)
 	if err != nil {
 		t.Fatalf("read the catalogue's delivery evals: %v", err)
 	}
@@ -304,4 +304,52 @@ func TestATargetWriteMovesTheLiveDeliveryVerdicts(t *testing.T) {
 			t.Errorf("the live %s view states merge_to_production_minutes %+v, want %+v", kind, got, want)
 		}
 	}
+}
+
+// TestAnUnpublishedDefaultMoveKeepsTheProjectsTargetsOnTheDeliveryAnswers: HUB, the one
+// delivery-on project, has one source that names no repository, so it reads HUB's published
+// default acme/widgets, and a merge-to-production target of its own. Once a person moves HUB's
+// default to acme/next, the measures answer and the Pipeline still judge by HUB's targets until the
+// refresher's page commit publishes the move (publishDefaultRepos), since the published state
+// names HUB the project of every source repository, and after it too. Red where the routes look
+// the judging project up by the repository the unpublished default names, which no published
+// source reads: the catalogue's targets judge both answers until the publish.
+func TestAnUnpublishedDefaultMoveKeepsTheProjectsTargetsOnTheDeliveryAnswers(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	pool := database.Pool
+	createTestProject(t, handler, "HUB")
+	moveDefault := func(repo string) {
+		t.Helper()
+		if _, err := pool.Exec(t.Context(), `update projects set default_repo = $1 where key = 'HUB'`, repo); err != nil {
+			t.Fatalf("make %s HUB's default repository: %v", repo, err)
+		}
+	}
+	moveDefault("acme/widgets")
+	saveProjectRules(t, database, "HUB", deployRule("acme/widgets", "release / release"))
+	publishDefaultRepos(t, pool)
+	registered := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/HUB/evals", map[string]any{
+		"slug": evals.SlugMergeToProduction, "target": 30, "target_inclusive": true, "target_judges": []string{measures.SeriesMinutes + ".p90"},
+	}, "merge-target")
+	if registered.Code != http.StatusCreated {
+		t.Fatalf("set HUB's merge-to-production target: status %d, body %s", registered.Code, registered.Body.String())
+	}
+	want := &measures.Target{Value: 30, Inclusive: true, Direction: evals.DirectionLowerBetter, Judges: []string{measures.SeriesMinutes + ".p90"}}
+	judged := func(when string) {
+		t.Helper()
+		answer := getDeliveryMeasures(t, handler, measuresFixtureWindow)
+		pipeline := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline")
+		for what, got := range map[string]*measures.Target{
+			"the measures answer": answer.Targets.MergeToProductionMinutes, "the Pipeline": pipeline.Targets.MergeToProductionMinutes,
+		} {
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("%s, %s states merge-to-production's target %+v, want HUB's %+v", when, what, got, want)
+			}
+		}
+	}
+	judged("with acme/widgets HUB's published default")
+	moveDefault("acme/next")
+	judged("before the move to acme/next is published")
+	publishDefaultRepos(t, pool)
+	judged("once the move to acme/next is published")
 }

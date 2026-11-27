@@ -1029,6 +1029,53 @@ func TestASourceNamingNoRepositoryMovesWithTheDefaultRepository(t *testing.T) {
 	}
 }
 
+// TestASpanBuildsAKeptRepositorysZeroRowsUnderItsRecordedRule: ALPHA's third source reads
+// acme/alpha-stage, which holds no run yet, under a rule with a staging e2e job, so that rule is
+// recorded with no start; once the source is removed, runs that land there later keep the
+// repository under its recorded rule (keptRepos), and the span that builds its days writes each
+// project that holds a staging-e2e row of its first input day a zero row of the day after, as a
+// whole walk would. Red where the span builds its zero rows under the live rules alone, which no
+// source of acme/alpha-stage holds any more: no zero row of that day. With the source kept, the
+// live rule is the recorded one, and the row is there either way.
+func TestASpanBuildsAKeptRepositorysZeroRowsUnderItsRecordedRule(t *testing.T) {
+	t.Parallel()
+	const alphaStage, stageJob, e2eJob = "acme/alpha-stage", "stage / apply", "staging-e2e / run"
+	for _, removed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("removed=%t", removed), func(t *testing.T) {
+			t.Parallel()
+			r := newRefresherRig(t)
+			r.seedSources(t)
+			r.settle(t)
+			pool, authors := r.database.Pool, []string{"dev-ana"}
+			stage := ruleOfJob(stageJob)
+			stage.StagingE2EJobName = new(e2eJob)
+			alpha := []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaOps))}
+			putSources(t, pool, "ALPHA", authors, append(slices.Clone(alpha), deliverytest.SourceOf(stage, new(alphaStage)))...)
+			r.settle(t)
+			if n := r.count(t, `select count(*) from eval_days_rules where repo = $1 and kept_since is null`, alphaStage); n != 1 {
+				t.Fatalf("%s's rule is recorded with no start %d times, want once", alphaStage, n)
+			}
+			if removed {
+				putSources(t, pool, "ALPHA", authors, alpha...)
+				r.settle(t)
+			}
+			first, next := sourcesDay.AddDate(0, 0, -2), sourcesDay.AddDate(0, 0, -1)
+			r.deployRun(t, alphaStage, 5001, first.Add(10*time.Hour), e2eJob)
+			r.deployRun(t, alphaStage, 5002, sourcesDay.Add(10*time.Hour), stageJob)
+			r.settle(t)
+			staged := `select distinct project_key from eval_days where deploy_repo = $1 and eval_id like '%/' || $2`
+			if n := r.count(t, `select count(*) from (`+staged+` and day = $3) held`, alphaStage, SlugStagingE2E, first); n == 0 {
+				t.Fatalf("no project holds a staging-e2e row of %s on %s, so the zero rows after it show nothing", alphaStage, first.Format(time.DateOnly))
+			}
+			if n := r.count(t, `select count(*) from (`+staged+` and day = $3 except `+staged+` and day = $4 and repo = '' and n = 0) missing`,
+				alphaStage, SlugStagingE2E, first, next); n != 0 {
+				t.Errorf("%d projects hold a staging-e2e row of %s on %s and no zero row on %s, want none",
+					n, alphaStage, first.Format(time.DateOnly), next.Format(time.DateOnly))
+			}
+		})
+	}
+}
+
 // post writes a deploy posted to project's route (prodevents.Write, source api) under ref,
 // finished at finished, naming the pull requests prs.
 func (r *refresherRig) post(t *testing.T, project, ref string, finished time.Time, prs ...string) prodevents.Event {

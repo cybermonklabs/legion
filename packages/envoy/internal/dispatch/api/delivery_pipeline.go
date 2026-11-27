@@ -150,7 +150,7 @@ func (s *server) readPipelinePopulation(ctx context.Context, rules *delivery.Sou
 			return err
 		},
 		func(ctx context.Context) (err error) {
-			pop.deployRepoEvals, err = s.deliveryEvals(ctx, rules, evals.PipelineSlugs)
+			pop.deployRepoEvals, err = s.deliveryEvals(ctx, evals.PipelineSlugs)
 			return err
 		},
 	}

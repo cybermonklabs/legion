@@ -325,15 +325,14 @@ func deliveryFreshnessOf(all []delivery.DeliverySettings, unfetchable int) deliv
 
 // deliveryEvals reads the evals of slugs whose targets the deployment-wide delivery answers judge
 // by (dispatch://INFRA-978, D9): the project's whose deploy sources read every source repository,
-// where one delivery-on project owns them all (evals.Store.DeployRepoEvals of any of them), and
-// the catalogue's, whose targets are main's defaults, where two or more projects own them or none
-// is read, since no one project's targets judge figures of several projects.
-func (s *server) deliveryEvals(ctx context.Context, rules *delivery.SourceRules, slugs []string) (map[string]evals.Entry, error) {
-	repo := ""
-	if all := rules.All(); len(all) > 0 && !slices.ContainsFunc(all, func(rule delivery.DeliverySettings) bool { return rule.Project != all[0].Project }) {
-		repo = all[0].DeployRepo
-	}
-	return s.registry().DeployRepoEvals(ctx, repo, slugs)
+// where one delivery-on project owns them all, and the catalogue's, whose targets are main's
+// defaults, where two or more projects own them or none is read, since no one project's targets
+// judge figures of several projects. Which project owns them is read under the published default
+// repositories (evals.Store.DeployRepoEvals), not under the rules the answer's own rows are read
+// by, so a person's move of a default repository moves the judging project only once the
+// refresher publishes it, and the project's own targets judge meanwhile.
+func (s *server) deliveryEvals(ctx context.Context, slugs []string) (map[string]evals.Entry, error) {
+	return s.registry().DeployRepoEvals(ctx, slugs)
 }
 
 // getDeliveryTimeline answers GET /api/v1/delivery/timeline: merges, deploys, pipeline failures
@@ -641,7 +640,7 @@ func (s *server) readDeliveryRows(ctx context.Context, rules *delivery.SourceRul
 				return err
 			},
 			func(ctx context.Context) (err error) {
-				pop.targetEvals, err = s.deliveryEvals(ctx, rules, evals.DeliveryTargetSlugs)
+				pop.targetEvals, err = s.deliveryEvals(ctx, evals.DeliveryTargetSlugs)
 				return err
 			},
 			func(ctx context.Context) (err error) {

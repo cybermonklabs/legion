@@ -483,6 +483,17 @@ func keptRules(repos []keptRepo) []delivery.DeliverySettings {
 	return rules
 }
 
+// keptRule is the rule repo's rows are built under, of repos (keptRepos, in the byte order of their
+// names), and whether repos holds repo: its source's rule, or the one recorded with its rows where
+// no source reads it any more.
+func keptRule(repos []keptRepo, repo string) (delivery.DeliverySettings, bool) {
+	i, found := slices.BinarySearchFunc(repos, repo, func(kept keptRepo, name string) int { return cmp.Compare(kept.name, name) })
+	if !found {
+		return delivery.DeliverySettings{}, false
+	}
+	return repos[i].rule, true
+}
+
 // deployRepoNames is the names of repos, in their order.
 func deployRepoNames(repos []keptRepo) []string {
 	names := make([]string, len(repos))

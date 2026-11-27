@@ -2557,6 +2557,31 @@ func TestFreshnessIsSentOnlyWhenItsVerdictChanges(t *testing.T) {
 	conn.empty(t, "the frame clearing the stale sources")
 }
 
+// TestTheHubJoinsTheSourcesLastErrorsInTheGETRoutesOrder: two sources whose repositories sort one
+// way by their bytes and the other way in lower case (Zeta/app before acme/web, zeta/app after),
+// each with a last error: the hub's freshness (deliveryFreshnessHeard) joins the two errors in the
+// rules' order, as the GET routes' deliveryFreshness does, so a page reads one text whichever of
+// the two answered it. Red where the hub orders the sources by their lower-case keys.
+func TestTheHubJoinsTheSourcesLastErrorsInTheGETRoutesOrder(t *testing.T) {
+	t.Parallel()
+	rules := delivery.NewSourceRules([]delivery.ProjectSettings{{Project: "ACME", Delivery: true, Sources: []delivery.DeploySource{
+		{Kind: delivery.SourceKindGitHubWorkflow, Repo: new("acme/web"), LastError: new("GitHub answered 502")},
+		{Kind: delivery.SourceKindGitHubWorkflow, Repo: new("Zeta/app"), LastError: new("the token was refused")},
+	}}})
+	want := deliveryFreshness(rules, 0).LastError
+	if want == nil {
+		t.Fatal("the GET routes' freshness states no last error of two sources that each hold one")
+	}
+	var heard deliveryFreshnessHeard
+	heard.heardRules(rules)
+	if heard.lastError == nil {
+		t.Fatalf("the hub states no last error, want the GET routes' %q", *want)
+	}
+	if *heard.lastError != *want {
+		t.Fatalf("the hub's last error = %q, want the GET routes' %q", *heard.lastError, *want)
+	}
+}
+
 func TestAnUnfetchablePullRequestSendsAFreshnessFrame(t *testing.T) {
 	t.Parallel()
 	rig := newHubRig(t, nil)

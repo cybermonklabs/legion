@@ -503,6 +503,37 @@ func TestComputeDeployedStatus(t *testing.T) {
 	})
 }
 
+// TestContainmentReadsTheDeployRepositoryInAnyCase: a pull request keeps GitHub's spelling of its
+// repository (Acme/Widgets) where a rule's repository is stored lower case, so ContainingRun, the
+// shipping index and ComputeDeployedStatus compare the two in any case, as IsTaskPR does: the pull
+// request ships with run 1 and is waiting with no apply. A pull request of another repository
+// still ships with none and is not tracked.
+func TestContainmentReadsTheDeployRepositoryInAnyCase(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	applies := []Apply{{RunID: 1, CompletedAt: base.Add(time.Hour), CreatedAt: base.Add(time.Second)}}
+	index := NewShippingIndex(applies)
+	const deployRepo = "acme/widgets"
+	for _, row := range []struct {
+		repo   string
+		ships  bool
+		status DeployedStatus
+	}{
+		{"Acme/Widgets", true, DeployedStatusWaiting},
+		{"acme/other", false, DeployedStatusNotTracked},
+	} {
+		pr := DeliveryPullRequest{Repo: row.repo, Number: 7, MergedAt: new(base)}
+		for name, got := range map[string]*Apply{"ContainingRun": ContainingRun(pr, deployRepo, applies), "ShippingIndex.Containing": index.Containing(pr, deployRepo)} {
+			if shipped := got != nil && got.RunID == 1; shipped != row.ships || (!row.ships && got != nil) {
+				t.Errorf("%s of %s#7 against %s = %+v, want run 1 %t", name, row.repo, deployRepo, got, row.ships)
+			}
+		}
+		if got := ComputeDeployedStatus(pr, deployRepo, nil); got != row.status {
+			t.Errorf("ComputeDeployedStatus of %s#7 against %s with no apply = %q, want %q", row.repo, deployRepo, got, row.status)
+		}
+	}
+}
+
 // TestTheJudgedJobNamesJudgeARunAsItsEveryJobDoes: given only a run's jobs that
 // Production.JudgedJobNames names, which is what every read but the timeline's hands it,
 // ProductionApplies answers the deploys, the runs missing their apply step and the unmatched runs

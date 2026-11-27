@@ -1134,6 +1134,40 @@ func TestADeployThatShipsNoPullRequestCountsForItsSourcesProjectAlone(t *testing
 	}
 }
 
+// TestADeployCountsForTheProjectOfAPullRequestItShipsInAnyCase (dispatch://INFRA-978, R12 and A8):
+// over the three-source history, OMEGA-1's pull request #7 of acme/alpha-app, merged an hour
+// before acme/alpha-app's deploy 1001, is shipped by it whether GitHub spells its repository
+// Acme/Alpha-App or as the rule stores it, so the deploy counts for OMEGA, the pull request's
+// project, and not for acme/alpha-app's source key, which a deploy shipping no pull request counts
+// for. Red where containment compares the repository by case: under GitHub's spelling the deploy
+// ships nothing and counts for the source key alone.
+func TestADeployCountsForTheProjectOfAPullRequestItShipsInAnyCase(t *testing.T) {
+	t.Parallel()
+	for name, repo := range map[string]string{"github-spelling": "Acme/Alpha-App", "rule-spelling": alphaApp} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := newRefresherRig(t)
+			r.seedSources(t)
+			merged := sourcesDay.Add(9 * time.Hour)
+			if err := delivery.UpsertPullRequest(t.Context(), r.database.Pool, delivery.DeliveryPullRequest{
+				Repo: repo, Number: 7, Title: "OMEGA-1: change 7", URL: fmt.Sprintf("https://github.com/%s/pull/7", repo), Author: "dev-ana",
+				CreatedAt: new(merged.Add(-time.Hour)), MergedAt: new(merged), IssueKey: new("OMEGA-1"), Sessions: []string{},
+			}); err != nil {
+				t.Fatalf("write %s#7: %v", repo, err)
+			}
+			r.settle(t)
+			member := RunMember(alphaApp, 1001)
+			if !slices.Contains(r.deployItems(t, "OMEGA", sourcesDay), member) {
+				t.Errorf("OMEGA does not count %s, which ships %s#7 of OMEGA-1, among its deploys", member, repo)
+			}
+			if n := r.count(t, `select count(*) from eval_day_members where row_key = $1 and family = $2 and project_key = $3`,
+				member, KindDelivery, sourceKey(alphaApp)); n != 0 {
+				t.Errorf("%s, which ships %s#7, is a deploy of %s %d times, want none", member, repo, sourceKey(alphaApp), n)
+			}
+		})
+	}
+}
+
 // TestACIJobWithNoPullRequestAndAPushRunThatIsNoDeployCountForEachDefaultRepositoryProject
 // (dispatch://INFRA-978, R12 and A8): a CI job with no pull request, and a push run on main that is
 // no deploy run of its day, count under their repository's plain owner key, which each project

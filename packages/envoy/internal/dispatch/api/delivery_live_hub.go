@@ -3,9 +3,7 @@ package api
 import (
 	"context"
 	"log/slog"
-	"maps"
 	"net/url"
-	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -437,11 +435,13 @@ func (f *deliveryFreshnessHeard) heardRules(rules *delivery.SourceRules) {
 	f.combine()
 }
 
-// combine states the sources' freshness together (deliveryFreshnessOf), in repository order.
+// combine states the sources' freshness together (deliveryFreshnessOf), in the rules' order, the
+// order the GET routes state it in (deliveryFreshness), so a page reads one last error from both.
 func (f *deliveryFreshnessHeard) combine() {
-	all := make([]delivery.DeliverySettings, 0, len(f.sources))
-	for _, key := range slices.Sorted(maps.Keys(f.sources)) {
-		all = append(all, f.sources[key])
+	rules := f.rules.All()
+	all := make([]delivery.DeliverySettings, 0, len(rules))
+	for _, rule := range rules {
+		all = append(all, f.sources[delivery.RuleKey(rule.DeployRepo)])
 	}
 	freshness := deliveryFreshnessOf(all, f.unfetchable)
 	f.lastEventAt, f.lastReconcileAt, f.lastError = freshness.LastEventAt, freshness.LastReconcileAt, freshness.LastError
