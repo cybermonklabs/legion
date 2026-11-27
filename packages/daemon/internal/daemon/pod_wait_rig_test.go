@@ -26,6 +26,14 @@ const podWaitRigRole = claim.Role("checker")
 // role in every issue pod it builds from then on (sandboxOptions' DeploymentApps), and none it
 // built before. The checker launches with its own prompt file (prompt_file), as every role of the
 // deployment does (prompts.Composer.ComposeStep).
+//
+// It returns once the launcher of the issue's pod, which the restart leaves running, has connected
+// to the restarted daemon. A deployment's daemon first decides its pods a minute after its boot
+// (idleTickInterval), by which time every launcher, redialling once a second, is back; the rig's
+// daemon decides them every quarter of a second (idleRigTick), and the restarted daemon refuses a
+// launcher's hello until its informer holds the pod. A release of a pod no claim owns that ran in
+// that window would find no launcher to read the disk (R6 of #5285) and decline as a read that
+// could not be made, a decline that stands for pods.DeclineUnreadRetry.
 func (r *idleWakeRig) defineChecker(issue idleRigIssue) {
 	r.t.Helper()
 	prompt := filepath.Join(r.t.TempDir(), "checker.md")
@@ -33,9 +41,17 @@ func (r *idleWakeRig) defineChecker(issue idleRigIssue) {
 		r.t.Fatal(err)
 	}
 	r.cfg.Roles = append(r.cfg.Roles, config.Role{Name: podWaitRigRole, Type: "testing", PromptFile: prompt})
+	connected := strings.Count(r.pods.log(), idleRigLauncherConnected)
 	r.restart()
 	r.awaitListenerReady()
+	idleRigEventually(r.t, idleRigRecordWait, "the launcher of "+issue.key+"'s pod connected to the restarted daemon", func() bool {
+		return strings.Count(r.pods.log(), idleRigLauncherConnected) > connected
+	})
 }
+
+// idleRigLauncherConnected is what a launcher writes each time a daemon has acknowledged its hello
+// (launcher's manager.serve).
+const idleRigLauncherConnected = "launcher: connected to the daemon at "
 
 // roleToken is the claim token of role on the issue.
 func (r *idleWakeRig) roleToken(issue idleRigIssue, role claim.Role) claim.Token {
