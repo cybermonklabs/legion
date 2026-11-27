@@ -431,8 +431,9 @@ export function useDecisionsTree(
 const decisionsContext = new WeakMap<TreeAnswer, TreeAnswer>();
 
 /** Conversation supplies context for decisions, not their Changes. Otherwise a Change that
- *  Conversation holds but the decisions view has not read yet can clear the mark before the
- *  view's own older page lands. Keep the filtered answer stable for both the list and its count. */
+ *  Conversation holds but the decisions view has not read yet, on a page the read has not loaded,
+ *  a next page or an older comment page, can clear the mark before that page of the view's own
+ *  read lands. Keep the filtered answer stable for both the list and its count. */
 function contextForDecisions(tree: TreeAnswer): TreeAnswer {
   const held = decisionsContext.get(tree);
   if (held !== undefined) return held;

@@ -55,7 +55,7 @@ import { ShellNavigationContext } from "./shell-navigation";
 import { HeaderSlot } from "./slots/header";
 import { titleWrittenElsewhere } from "./title-elsewhere-fixture";
 import { markedCommentNode, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
-import { type TreeAnswer, viewKey } from "./tree-read/tree-read";
+import { type TreeAnswer, type TreeAnswerNode, viewKey } from "./tree-read/tree-read";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -128,6 +128,19 @@ const issue = {
   // `satisfies`, not an annotation: the tests below read `issue.artifacts[0]` and spread the
   // list, which the route table's `Artifact[] | null` would not let them.
 } satisfies IssueDetails;
+
+/** A `decision` block of the spec tied to `r1`, waiting for review, at `position`, whose words
+ *  last changed on 1 November, before any comment the cases that read it hold. */
+function waitingDecision(id: string, position: number): TreeAnswerNode {
+  return treeNode(id, "decision", "CORE-1", {
+    decision: {
+      changed_at: "2026-11-01T00:00:00Z",
+      links: [shaped(specRef("r1"))],
+      waiting_review: true,
+    },
+    document: { artifact_id: issue.primary_artifact_id, position, slug: "spec" },
+  });
+}
 
 const openIssueAsk: Ask = {
   anchor: null,
@@ -674,12 +687,6 @@ test("the header counts a decision whose only Change the tree read answers delet
 // two such decisions of the review list, the one the older page holds a Change of waits on its
 // agent, and the other on the reader.
 test("the header leaves a decision whose Change may stand on an older comment page out of its count until it reads that page", async () => {
-  const changedAt = "2026-11-01T00:00:00Z";
-  const waiting = (id: string, position: number) =>
-    treeNode(id, "decision", "CORE-1", {
-      decision: { changed_at: changedAt, links: [shaped(specRef("r1"))], waiting_review: true },
-      document: { artifact_id: issue.primary_artifact_id, position, slug: "spec" },
-    });
   const held: Comment = { ...readComment("c-held", 0), created_at: "2026-11-11T09:00:00Z" };
   const change: Comment = {
     ...readComment("c-asked", 0),
@@ -714,8 +721,8 @@ test("the header leaves a decision whose Change may stand on an older comment pa
       ? {
           ...treeAnswer([
             treeNode("CORE-1", "issue", null),
-            waiting("asked", 0),
-            waiting("unasked", 1),
+            waitingDecision("asked", 0),
+            waitingDecision("unasked", 1),
             markedCommentNode(held, "CORE-1"),
           ]),
           comments_before: `${held.created_at},${held.id}`,
@@ -755,12 +762,6 @@ test("the header leaves a decision whose Change may stand on an older comment pa
 // the Change it finds, or finds none of, makes each: the one the next page holds a Change of
 // waits on its agent, and the other on the reader.
 test("the header leaves a decision whose Change may stand on the tree read's next page out of its count until it reads that page", async () => {
-  const changedAt = "2026-11-01T00:00:00Z";
-  const waiting = (id: string, position: number) =>
-    treeNode(id, "decision", "CORE-1", {
-      decision: { changed_at: changedAt, links: [shaped(specRef("r1"))], waiting_review: true },
-      document: { artifact_id: issue.primary_artifact_id, position, slug: "spec" },
-    });
   const change: Comment = {
     ...readComment("c-asked", 0),
     body: "Say which pages this covers.",
@@ -794,8 +795,8 @@ test("the header leaves a decision whose Change may stand on the tree read's nex
       ? {
           ...treeAnswer([
             treeNode("CORE-1", "issue", null),
-            waiting("unasked", 0),
-            waiting("asked", 1),
+            waitingDecision("unasked", 0),
+            waitingDecision("asked", 1),
           ]),
           comments_before: null,
           cursor: "page-2",

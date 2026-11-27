@@ -31,8 +31,9 @@ import { nodeReading } from "../presets";
  *    is tied to nothing, or to a node that is no statement, is no entry of it, and neither is
  *    one the reader sent a Change on, which waits on its agent. A decision a person decided is
  *    no agent's and never waits for review, whatever the read's `waiting_review` says. A decision
- *    whose Change may stand on a comment page not read yet (`TreeNode.changeUnread`) stays in
- *    the list with "+", but the list's count leaves it out until that page is read (`reviewWaiting`).
+ *    whose Change may stand on a page the read has not loaded, a next page or an older comment
+ *    page (`TreeNode.changeUnread`) stays in the list with "+", but the list's count leaves it
+ *    out until that page is read (`reviewWaiting`).
  * 3. **The reader's own decisions**, newest first: each ask the reader answered or declined,
  *    each decision whose `decided_by` names the reader, by the time its words last changed, and
  *    each agent decision a statement rests on that the reader kept or asked to change, by the
@@ -280,9 +281,9 @@ export function waitingOrder(parts: DecisionsParts): readonly string[] {
 
 /**
  * The decisions of the review list that wait on the reader: neither an overtaken decision nor
- * one whose Change may stand on a comment page not read yet (`TreeNode.changeUnread`). Both
- * stay in the list but count in neither its heading nor the header (`waiting.ts`), and the
- * header's walk (`waitingOrder`) skips them.
+ * one whose Change may stand on a page the read has not loaded, a next page or an older comment
+ * page (`TreeNode.changeUnread`). Both stay in the list but count in neither its heading nor the
+ * header (`waiting.ts`), and the header's walk (`waitingOrder`) skips them.
  */
 export function reviewWaiting(parts: Pick<DecisionsParts, "review">): readonly DecisionEntry[] {
   return parts.review.filter(

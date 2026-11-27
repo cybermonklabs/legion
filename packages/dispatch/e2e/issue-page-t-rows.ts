@@ -67,8 +67,6 @@ import { heldDecisionsRead, idReadsOf, sessionTitleGate } from "./issue-page-u";
 import { isLiveSocket } from "./live-socket-watch";
 import { type ApiRequest, type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 
-export { idReadsOf } from "./issue-page-u";
-
 /**
  * What the rows of the new issue page that draw it from the tree read share: the outline drawn
  * from the issue's tree read (`GET /api/v1/issues/{key}/tree`) and each filter from that read's

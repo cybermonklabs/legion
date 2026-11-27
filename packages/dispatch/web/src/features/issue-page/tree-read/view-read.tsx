@@ -247,9 +247,9 @@ export function TreeReadFailed({ issue }: { issue: IssueDetails }): ReactNode {
  * node the view did not draw as the press was made, once it is drawn, unless the reader acts
  * first. A row is told by its node (`data-node-id`), not by its element: a read the press waits
  * for can draw a row it held anew, as a Keep moves its decision from one part of the Decisions
- * view to another. A press that reads nothing lands nowhere. A press takes no focus from where it
- * was (`preventDefault` on `mousedown`), since the control goes once no page is left. Nothing
- * while the view's answer names no next page.
+ * view to another. A press that merges no page (`readNextTreePage`) lands nowhere. A press takes
+ * no focus from where it was (`preventDefault` on `mousedown`), since the control goes once no page
+ * is left. Nothing while the view's answer names no next page.
  */
 export function NextViewPage({
   filter,

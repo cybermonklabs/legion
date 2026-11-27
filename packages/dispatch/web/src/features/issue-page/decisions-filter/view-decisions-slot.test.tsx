@@ -972,36 +972,13 @@ test.each([
     await act(async () => {
       client.setQueryData(viewKey(KEY, "decisions"), decisionsView([tied("first"), tied("later")]));
     });
-    // The other write of the issue, where the case sends one, sent through the page's write store
-    // as the page sends a comment, and answered when the case says.
-    const otherAnswer = Promise.withResolvers<void>();
-    let otherSettled: Promise<unknown> = Promise.resolve();
-    if (otherWrite) {
-      act(() => {
-        otherSettled = writesOf(client).run({
-          detail: null,
-          inline: true,
-          issue: KEY,
-          kind: plainWrite,
-          label: "A comment",
-          method: "POST",
-          presentation: "indicator",
-          write: () => otherAnswer.promise,
-        });
-      });
-      expect(
-        writesOf(client).writesOutOf(KEY),
-        "the other write of the issue is not out"
-      ).toHaveLength(1);
-    }
+    // The other write of the issue, where the case sends one, answered when the case says.
+    const other = otherWrite ? otherWriteOut(client) : undefined;
     await user.click(keepOnConversation);
     await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
-    if (otherWrite) {
+    if (other !== undefined) {
       await waitInAct(20);
-      await act(async () => {
-        otherAnswer.resolve();
-        await otherSettled;
-      });
+      await other.settle();
     }
     await waitFor(() =>
       expect(

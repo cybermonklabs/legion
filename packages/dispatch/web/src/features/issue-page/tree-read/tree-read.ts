@@ -209,11 +209,11 @@ const treePagesOf = new WeakMap<
  * page that gave it was answered, and where the reader had loaded more than the first it reads the
  * next pages until it holds as many nodes of the walk as those pages held (`treePagesOf`), so no
  * row they had loaded leaves; it looks at that mark again after each page, so a page the reader's
- *  press merged while this read was out is read too. An outline or decisions view read then reads
- *  again the older comment pages it had loaded (`withLoadedComments`). A page that names a cursor
- * has asked for already fails the read with an error that names it (`nextCursorOf`): the server
- * named one page twice, so the pages past it are missing. A page that fails fails the read too. A
- * failure of the tree read with no answer held draws the outline's failed-read line and its
+ * press merged while this read was out is read too. An outline or decisions view read then reads
+ * again the older comment pages it had loaded (`withLoadedComments`). A page that names a cursor
+ * the read has asked for already fails the read with an error that names it (`nextCursorOf`): the
+ * server named one page twice, so the pages past it are missing. A page that fails fails the read
+ * too. A failure of the tree read with no answer held draws the outline's failed-read line and its
  * Retry, and a view's leaves its filter drawn off the tree (`presets.ts`' `presetView`); over a
  * held answer the page keeps that answer, as TanStack keeps a query's data through a failed
  * refetch. A read TanStack gives up (`signal`: a reset, the last observer gone) ends its page in
@@ -945,6 +945,9 @@ function writeKeepingStale(
   if (stale) void client.invalidateQueries({ exact: true, queryKey, refetchType: "none" });
 }
 
+/** The reads whose older comment pages the page reads: an outline's or the decisions view's. */
+type CommentRead = Outline | "decisions";
+
 /**
  * Reads the next older comment page of `read` of issue `key` (R15), with the `comments_before`
  * its cached answer names, beside that read's own `view` or `kind` and with no cursor.
@@ -1219,14 +1222,14 @@ export function useReadUnloadedPages(
   const before = answer === undefined ? undefined : olderCommentsBefore(answer);
   // The page read next, by the read it is read from and what it reads from: the next page while
   // the answer names one, then the next older comment page.
+  const from =
+    cursor !== undefined
+      ? `cursor ${cursor}`
+      : before === undefined
+        ? undefined
+        : `before ${before}`;
   const page =
-    read === undefined
-      ? undefined
-      : cursor !== undefined
-        ? `${issue.key} ${read} cursor ${cursor}`
-        : before === undefined
-          ? undefined
-          : `${issue.key} ${read} before ${before}`;
+    read === undefined || from === undefined ? undefined : `${issue.key} ${read} ${from}`;
   // The page that was refused, past which nothing is read.
   const [refusedAt, setRefusedAt] = useState<string | undefined>(undefined);
   const named = answer !== undefined && page !== undefined && wants(answer);
@@ -1248,8 +1251,6 @@ export function useReadUnloadedPages(
   }, [answer, drawn, issue.key, next, page, queryClient, read, reading]);
   return { reading, refused };
 }
-
-type CommentRead = Outline | "decisions";
 
 /** Whether the page has drawn a frame since a render in which `held` held: from the browser's
  *  next animation frame after that render, once it is painted (the task that frame queues), for as
@@ -1446,7 +1447,8 @@ function watchTree(
     if ((action.type === "fetch" || action.type === "invalidate") && holding()) {
       owedReads.add(hash);
     }
-    // A write's drop marks the view before reset so no refresh is sent during another write.
+    // A held view a write's own callback dropped (`dropViews`, which marks it before the reset) is
+    // owed its read at the last write's settle.
     if (action.type === "setState" && droppedWhileHeld.has(query)) owedReads.add(hash);
     // A refused read is marked valid once the cache has told every listener of the refusal.
     if (action.type === "error") queueMicrotask(() => markValid(query));

@@ -766,22 +766,15 @@ function draftDecision(
   if (decided?.unsure ?? decision.unsure === true) draft.unsure = true;
   // A decision the read hangs no Change under may have one on a page the read has not loaded.
   markChangeUnread(draft, reviewed, changed, answer);
-  draft.waiting =
+  const listed =
     node.state !== "overtaken" &&
     decided !== undefined &&
     context.viewer !== undefined &&
-    inReviewList(decided, context.isCoverageStatement, changed || draft.changeUnread === true);
+    inReviewList(decided, context.isCoverageStatement, changed);
+  draft.waiting = listed && draft.changeUnread !== true;
   // One the mark alone keeps from waiting stands in the review list all the same, and the
   // Decisions control's to-review flag draws "+" for it (decision 580).
-  if (
-    draft.changeUnread === true &&
-    node.state !== "overtaken" &&
-    decided !== undefined &&
-    context.viewer !== undefined &&
-    inReviewList(decided, context.isCoverageStatement, changed)
-  ) {
-    draft.waitingUnread = true;
-  }
+  if (listed && draft.changeUnread === true) draft.waitingUnread = true;
   return draft;
 }
 
