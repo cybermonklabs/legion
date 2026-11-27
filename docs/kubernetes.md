@@ -6572,50 +6572,6 @@ reviewer, merger):
    and the delta from GitHub 30 of its own, so neither leaves the delta short; the fill's waits,
    transfers and checks end within 205 minutes (`workspace.FetchBudget`).
 
-   The log also gives the time of each step of the provision: one line as each step ends,
-   `workspace-init: step <name> took <seconds>s`, in seconds with one decimal, and once the last
-   has ended `workspace-init: steps took <seconds>s`, just before the last line,
-   `workspace-init: <dir> on <bookmark> from <default branch>`.
-   One clock in the process times every step (`workspace.Steps`), and each instant of the run
-   belongs to one step, so the steps add up to the total but for each line's rounding to a tenth.
-   A provision that fails logs `workspace-init: step <name> failed after <seconds>s` for the step
-   it failed in, then its error, which stays the log's last line, the one the daemon's quote of the
-   failed container ends with.
-   A refusal of the provision's input, before it touches the volume, logs nothing on stdout.
-   While a provision runs, the step it is in is the one after the last step its log names.
-   A new clone runs these steps, in this order:
-
-   - `inputs`, the checks of the provision's flags, variables, token and tools;
-   - `stale-locks`, the removal of the stale git locks a killed process left;
-   - `clone-stage`, the clone's staging directory beside it, the removal of a stale one, and its
-     `git init`;
-   - where a cache is named, `cache-wait`, the wait for a ready cache; `bucket-attempt`, the
-     bucket's `/packs`, downloads and refs, which ends at once where the cache serves no `/packs`;
-     where the bucket did not fill the clone, `cache-transfer`, the removal of what the bucket's
-     attempt wrote and the stream from `/tar`; then `pack-check`, the packs' checksums (or `git
-     index-pack` for a pack the tar sent without its index), and `history-check`, `git fsck
-     --connectivity-only`.
-     A bucket attempt whose own check fails logs its `pack-check`, and its `history-check` where
-     its packs passed, before `cache-transfer`;
-   - `github-delta`, GitHub's `HEAD`, the origin's configuration and the fetch, with its retries;
-   - `ref-pruning`, the local default branches, the removal of every ref but the default branches'
-     and the issue's, and `origin/HEAD`;
-   - `jj-init` (`jj git init --colocate`), `jj-clone-working-copy` (the clone's sparse clear and
-     the abandon of its working-copy commit) and `jj-track` (the default branches' tracking and the
-     clone's rename into place);
-   - `jj-configuration`, the clone's jj settings;
-   - `workspace-registration`, the issue workspace's `jj workspace add`;
-   - `configuration`, the git worktree's lock and the clone's git configuration;
-   - `checkout`, the wait for a checkout's place and `jj sparse reset`.
-
-   On a clone that is already there, the provision runs `update-stale` (`jj workspace
-   update-stale`) after `stale-locks` where the issue's workspace is there too, and then
-   `jj-configuration`, `github-delta`, `ref-pruning`, `jj-import` (`jj git import`), `jj-track`
-   and `workspace-registration`, which restores the workspace's git worktree where the workspace
-   is there and adds it where not; then, for a workspace that was there, `checkout-check`, whether
-   its checkout finished; then `configuration`, and `checkout` where the workspace is new or
-   holds no sparse pattern.
-
    The clone holds the current GitHub default branch, the issue branch `legion/<KEY>` and its task
    branches `legion/<KEY>.*` when GitHub has them, and no tag.
    Its `remote.origin.fetch` names the current default branch exactly, then the issue's
@@ -6693,6 +6649,42 @@ reviewer, merger):
    It writes one line for each lock it removes and one for each it keeps, with the path, the size, when the file was last written, and for a kept lock the condition that kept it.
    A role whose git or jj fails on a lock reads a note that says the same and tells the role to run the command again in about 16 minutes (`StaleGitLockNote`, `internal/workspace/jjgit.go`).
    The note's last sentence tells the role to tell the issue's architect if the lock is still there.
+
+#### Provision step times
+
+`workspace-init` logs the time of each step of the provision as it ends:
+`workspace-init: step <name> took <seconds>s`, in seconds with one decimal, and once the last has ended `workspace-init: steps took <seconds>s`, just before its last line, `workspace-init: <dir> on <bookmark> from <default branch>`.
+One clock in the process times every step (`workspace.Steps`), and each instant of the run belongs to one step, so the steps add up to the total but for each line's rounding to a tenth.
+A provision that fails logs `workspace-init: step <name> failed after <seconds>s` for the step it failed in, then its error, which stays the log's last line, the one the daemon's quote of the failed container ends with.
+A refusal of the provision's input, before it touches the volume, logs nothing on stdout.
+While a provision runs, the step it is in is the one after the last step its log names.
+
+A new clone runs these steps, in this order:
+
+- `inputs`, the checks of the provision's flags, variables, token and tools;
+
+- `stale-locks`, the removal of the stale git locks a killed process left;
+
+- `clone-stage`, the clone's staging directory beside it, the removal of a stale one, and its `git init`;
+
+- where a cache is named, `cache-wait`, the wait for a ready cache; `bucket-attempt`, the bucket's `/packs`, downloads and refs, which ends at once where the cache serves no `/packs`; where the bucket did not fill the clone, `cache-transfer`, the removal of what the bucket's attempt wrote and the stream from `/tar`; then `pack-check`, the packs' checksums (or `git index-pack` for a pack the tar sent without its index), and `history-check`, `git fsck --connectivity-only`.
+  A bucket attempt whose own check fails logs its `pack-check`, and its `history-check` where its packs passed, before `cache-transfer`;
+
+- `github-delta`, GitHub's `HEAD`, the origin's configuration and the fetch, with its retries;
+
+- `ref-pruning`, the local default branches, the removal of every ref but the default branches' and the issue's, and `origin/HEAD`;
+
+- `jj-init` (`jj git init --colocate`), `jj-clone-working-copy` (the clone's sparse clear and the abandon of its working-copy commit) and `jj-track` (the default branches' tracking and the clone's rename into place);
+
+- `jj-configuration`, the clone's jj settings;
+
+- `workspace-registration`, the issue workspace's `jj workspace add`;
+
+- `configuration`, the git worktree's lock and the clone's git configuration;
+
+- `checkout`, the wait for a checkout's place and `jj sparse reset`.
+
+On a clone that is already there, the provision runs `update-stale` (`jj workspace update-stale`) after `stale-locks` where the issue's workspace is there too, and then `jj-configuration`, `github-delta`, `ref-pruning`, `jj-import` (`jj git import`), `jj-track` and `workspace-registration`, which restores the workspace's git worktree where the workspace is there and adds it where not; then, for a workspace that was there, `checkout-check`, whether its checkout finished; then `configuration`, and `checkout` where the workspace is new or holds no sparse pattern.
 
 The pod's disk is declared in the pod template itself, as a generic ephemeral volume (`issuePod.disk`, `podkind.go`):
 `ReadWriteOnce`, of `runtime.kubernetes.issue_volume` (50Gi by default) and `storage_class`.
