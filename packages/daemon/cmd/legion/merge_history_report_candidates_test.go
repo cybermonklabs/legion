@@ -216,7 +216,8 @@ func TestMergeHistoryCensusResumesWithoutApplyingIt(t *testing.T) {
 	}
 	for label, values := range want {
 		if got := full.read(label); !reflect.DeepEqual(got, values) {
-			t.Fatalf("the full pass printed %s %v, want %v:\n%s", label, got, values, full.stdout)
+			saved, _ := os.ReadFile(progressFile)
+			t.Fatalf("the full pass printed %s %v, want %v:\n%s\nits saved progress: %s", label, got, values, full.stdout, saved)
 		}
 	}
 	for _, path := range []string{"/api/v1/issues/ACME-1", "/api/v1/issues/ACME-2", "/api/v1/issues/ACME-3", "/repos/acme/widgets/pulls/11",
