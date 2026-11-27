@@ -9,7 +9,7 @@ import {
   useDataTable,
 } from "../../components/DataTable";
 import type { FilterChip } from "../../components/filter-chips";
-import { ARM_ON_PRESS, useFocusPlace } from "../../components/focus-place";
+import { ARM_ON_PRESS, armHandOff, useFocusPlace } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import type { PagerOptions } from "../../components/Pager";
@@ -331,8 +331,9 @@ export function IssuesTable({
   // The List's own stop: its named table, which is drawn with no row as well.
   const tableStop = () => model.layout.scrollRef.current?.querySelector("table") ?? null;
   // The bar's hand-off (`useLastMarkedPlace`): the checkbox of the issue marked last while the
-  // table draws its row, out of sight or not. After a press that took that issue out of the view
-  // - off the list, or out of what the filters show, as Take out of epic does under the Epic
+  // table lists it, drawing its row first where the window has not (`drawRow`, below), out of
+  // sight or not. After a press that took that issue out of the view - off the list, or out of
+  // what the filters show, as Take out of epic does under the Epic
   // filter: a row with any part of its mark in sight at its place, else the nearest before it,
   // else the nearest after it. With no issue marked, as after a select-all from the table's head:
   // the first row the reader can see below the sticky head. Each mark is shown whole at its
@@ -379,6 +380,9 @@ export function IssuesTable({
     landAtPlace.land();
     return null;
   };
+  // The bar's own element while it is drawn (`SelectionBar`'s `barRef`): where the press that
+  // answers a dialog the bar opened arms the bar's hand-off (`armAtBar`, below).
+  const barRef = useRef<HTMLElement>(null);
   // A control of the table's head - a column filter, or the list it opened in a portal of its
   // own - goes with the table when a press in it sends the List back to its skeleton. A notice's
   // button under the toolbar goes with the notice it answers - the interrupted action's Finish
@@ -478,6 +482,27 @@ export function IssuesTable({
   // handlers. A layout effect here would run after the hand-off's, which is declared above, so
   // the commit that lets an action's rows go would be read with the previous render's answer.
   leavingNow.current = leaving;
+  // The bar's hand-off reads the press that armed it (`armHandOff`), and a press in a dialog is a
+  // press outside the bar. So the press that answers a dialog a press on the bar's own actions
+  // opened - the confirm of the List's question where the bar asked it (`fromBar`), and the submit
+  // of the name dialog the bar's New epic from these opened - arms the hand-off at the bar's root
+  // as well, as a pick in a list portalled out of the bar is armed there, before the action runs
+  // and holds that press (`perform`): the bar's going once the action's read settles is the
+  // reader's doing, and its hand-off puts the focus at the place of the row marked last rather
+  // than leave it on the page's body. A Cancel, an Escape, the confirm of a question no bar action
+  // opened and the rename dialog's submit arm nothing at the bar.
+  const armAtBar = (control: Element) => {
+    const bar = barRef.current;
+    if (bar !== null) armHandOff(control, bar);
+  };
+  const confirmQuestion = (control: HTMLButtonElement) => {
+    if (confirming?.fromBar === true) armAtBar(control);
+    confirmed();
+  };
+  const nameNewEpic = (keys: readonly string[], name: string, control: HTMLElement) => {
+    armAtBar(control);
+    void newEpic?.(keys, { fromBar: true, title: name });
+  };
 
   // How many parents the walk could not read: every one of them when the walk itself failed,
   // else the ones it named. The rest of the rows keep the epic they were read with.
@@ -729,6 +754,7 @@ export function IssuesTable({
           />
 
           <IssueTableSelection
+            barRef={barRef}
             returnFocus={returnFocus}
             table={table}
             epics={epics}
@@ -745,7 +771,7 @@ export function IssuesTable({
               confirmLabel={confirming.confirmLabel}
               key={confirming.title}
               onCancel={cancelConfirming}
-              onConfirm={confirmed}
+              onConfirm={confirmQuestion}
               title={confirming.title}
             />
           )}
@@ -754,7 +780,7 @@ export function IssuesTable({
               <EpicNameDialog
                 key="new-epic"
                 onCancel={cancelNaming}
-                onSubmit={(name) => void newEpic(naming.keys, { title: name })}
+                onSubmit={(name, control) => nameNewEpic(naming.keys, name, control)}
                 submitLabel="Create epic"
                 title="Name the new epic"
               />

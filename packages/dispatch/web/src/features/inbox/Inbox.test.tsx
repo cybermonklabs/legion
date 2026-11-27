@@ -9976,6 +9976,71 @@ test("beside the column the bar's Dismiss with the row marked last cut at the li
   }
 });
 
+// At the reading column's width the list scrolls in its own box, which carries `overflow-anchor:
+// none` in its inline style, as the project List's box does: WebKit's own anchoring scrolled that
+// box 134 px at 1440 px after the bar's Snooze of two rows above the view, once the anchor's hold
+// had ended. The bar's Dismiss holds the box's anchoring off for the commit its row goes in, and
+// the release two frames later gives the box back its own value, none, rather than clearing it.
+test("at the reading column's width the list box keeps its own overflow-anchor none through the anchor's hold for a bulk Dismiss and its release", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const reads = listThreads(4);
+  // Held open, so the list read is the one the press leaves behind.
+  const settle = Promise.withResolvers<{ dismissed: number }>();
+  answerInboxDismisses().mockReturnValue(settle.promise);
+  const { unmount } = renderInbox("/?group=none");
+  // Every write of the list box's inline `overflow-anchor` through `setProperty` or
+  // `removeProperty`, in order, by the method's name and the arguments it was called with. React
+  // writes the box's own style when it draws the box, before these are watched, so these are the
+  // anchor's. They are watched on the box's own style object: happy-dom gives each one its own
+  // bound methods, which a spy on the object (`spyOn`) does not replace.
+  const writes: unknown[][] = [];
+  let unwatch = () => {};
+  try {
+    await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(rowIds()).toHaveLength(4));
+    const list = screen.getByTestId("inbox-list");
+    expect(list.style.getPropertyValue("overflow-anchor")).toBe("none");
+    const { style } = list;
+    const setProperty = style.setProperty.bind(style);
+    const removeProperty = style.removeProperty.bind(style);
+    style.setProperty = (...args: Parameters<CSSStyleDeclaration["setProperty"]>) => {
+      if (args[0] === "overflow-anchor") writes.push(["setProperty", ...args]);
+      setProperty(...args);
+    };
+    style.removeProperty = (property) => {
+      if (property === "overflow-anchor") writes.push(["removeProperty", property]);
+      return removeProperty(property);
+    };
+    unwatch = () => {
+      style.setProperty = setProperty;
+      style.removeProperty = removeProperty;
+    };
+    const [marked, after] = rowIds().slice(1, 3) as [string, string];
+    await user.click(markOf(marked));
+    await screen.findByText("1 selected");
+
+    await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+    await waitFor(() => expect(rowIds()).not.toContain(marked));
+    await waitFor(() => expect(shortRow(after)).toHaveFocus());
+    await afterFrameAndTasks();
+    await afterFrameAndTasks();
+    // The hold turned the box's anchoring off, and the release gave it back the value and the
+    // priority the box had.
+    expect(writes[0]).toEqual(["setProperty", "overflow-anchor", "none"]);
+    expect(writes.at(-1)).toEqual(["setProperty", "overflow-anchor", "none", ""]);
+    expect(list.style.getPropertyValue("overflow-anchor")).toBe("none");
+  } finally {
+    unwatch();
+    await act(async () => {
+      settle.resolve({ dismissed: 1 });
+    });
+    unmount();
+    narrow();
+    reads();
+  }
+});
+
 test("a snooze the column's head writes keeps that column on its row, in flight and refused", async () => {
   const user = userEvent.setup();
   const narrow = widenToReadingPane();

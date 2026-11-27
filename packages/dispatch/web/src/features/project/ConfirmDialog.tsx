@@ -36,7 +36,9 @@ export function ConfirmDialog({
   changes?: readonly string[];
   confirmLabel: string;
   onCancel: () => void;
-  onConfirm: () => void;
+  /** Runs on the reader's yes, given the confirm button they pressed: a caller can arm a hand-off
+   *  with it before the action runs (`IssuesTable`). */
+  onConfirm: (control: HTMLButtonElement) => void;
 }): ReactNode {
   const confirmRef = useRef<HTMLButtonElement>(null);
   const dialog = useDialog<HTMLDivElement>({
@@ -77,7 +79,7 @@ export function ConfirmDialog({
             </button>
             <button
               className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg}`}
-              onClick={onConfirm}
+              onClick={(event) => onConfirm(event.currentTarget)}
               ref={confirmRef}
               type="button"
             >

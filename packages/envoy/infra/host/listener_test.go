@@ -303,11 +303,11 @@ func TestListenerRefusesInvalidInputs(t *testing.T) {
 			err: []string{`adopt.watchdog names "example-host-a-watchdog", but watchdog is not set`},
 		},
 		{
-			name: "a machine id with a dot, refused by core with the component's name",
+			name: "a machine id holding '%', refused by core with the component's name",
 			edit: func(a *host.ListenerArgs) {
-				a.MachineID = "example.host-a"
+				a.MachineID = "example%2Ehost-a"
 			},
-			err:   []string{"envoy-infra:host:Listener example-host-a: machineId contains '.', which the listener's NATS names or the hub's grant entries cannot carry"},
+			err:   []string{"envoy-infra:host:Listener example-host-a: machineId holds '%', which starts an escape in the listener's NATS names, so another machine id can give the same names"},
 			input: "machineId",
 		},
 	}

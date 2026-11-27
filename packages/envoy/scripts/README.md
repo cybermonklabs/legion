@@ -80,7 +80,7 @@ fills the bucket, and continues it once the bucket is full, just after a tick of
 
 - `reread`: registers 3,000 `old` and 3,000 `both` sessions, then recreates the session bucket
   holding `both` with changed titles and 3,000 `new`, the interest bucket the same way with changed
-  topics, and the session bucket again with the very records it holds (only its creation time
+  directories, and the session bucket again with the very records it holds (only its creation time
   changes). Each new bucket carries 100,000 delete markers among its records, so the read outlasts
   many list answers. Every `old` and `both` row must be listed until the read's completed
   `cache warm-up` line, a delivered row never goes back, and the list is exactly the bucket after
@@ -108,7 +108,16 @@ fills the bucket, and continues it once the bucket is full, just after a tick of
   new bucket. A listener that finds a recreate only by the self-health tick's `Check` fails both
   shapes: the longer one shows nothing of the new bucket before the tick, the shorter one part of
   it. `refillrig recreate -fill-log` records when each record of the fill was acknowledged, so a
-  read that begins before the fill is done is judged against what the bucket held.
+  read that begins before the fill is done is judged against what the bucket held. NATS sends the
+  first 2 MB of the new bucket at once, without waiting for the listener (the push consumer's
+  flow-control window). In an agent pod with 2 CPUs it had sent all 3,001 records about 18 ms after
+  the read began, and the stop on the finding line came 0.2 to 24 ms after that line. A stop that
+  comes after the send holds nothing back, and the shape is `INVALID`: the one at 24 ms was. So a
+  shape that is `INVALID` runs again on a fresh NATS and listener, up to three attempts in all, with
+  a later attempt's evidence in `recreate-live/<shape>-attempt-<n>`. A missed window is never a
+  pass, so another attempt changes no judgement. A `PASS` or `FAIL` on a later attempt says so and
+  quotes the `INVALID` reason of each earlier attempt. Three `INVALID` attempts give `INVALID`, with
+  all three reasons.
 - `refuse`: a start on 40,000-record buckets, where every list answer is the refilling `503` with
   `Retry-After: 5` or the whole bucket and no gauge has a sample while its list refuses; NATS down
   past the 2-minute stale bound, where both lists answer the refilling `503` and `/metrics` has
@@ -124,12 +133,22 @@ fills the bucket, and continues it once the bucket is full, just after a tick of
 Each scenario prints `verdict <scenario> PASS <what it saw>`, `FAIL <reason>`, or
 `INVALID <reason>` when the run missed the window it was there to observe (no poll inside the read,
 a scan that finished before the interruption, a read that began before the bucket was filled, a
-self-health tick inside the read of `recreate-live`), which is never a pass. It exits 0 when every
-verdict passes, 1 on a `FAIL`, and 4 on an `INVALID` with no `FAIL`. `--listener-bin` and
-`--natsd-bin` run other builds, such as the merge base's for a negative control. The evidence (each
-scenario's listener and NATS logs and every poll, one JSON line each) goes to `--out` (default
-`$TMPDIR/envoy-e2e-refill`). `E2E_REFILL_NATS_PORT` (14232) and `E2E_REFILL_PORT` (19030) move the
-ports. A full run takes about ten minutes, so it is a manual proof, not a CI job.
+self-health tick inside the read of `recreate-live`), which is never a pass. `recreate-live` runs an
+`INVALID` shape again, up to three attempts (above). It exits 0 when every verdict passes, 1 on a
+`FAIL`, and 4 on an `INVALID` with no `FAIL`. `--listener-bin` and `--natsd-bin` run other builds,
+such as the merge base's for a negative control. The evidence (each scenario's listener and NATS
+logs and every poll, one JSON line each) goes to `--out` (default `$TMPDIR/envoy-e2e-refill`).
+`E2E_REFILL_NATS_PORT` (14232) and `E2E_REFILL_PORT` (19030) move the ports.
+
+A record's set and variant are in what the listener keeps of it: the session id names the set, a
+session row's title (`refill <set> <index> v<n>`) and an interest row's directory
+(`/refill/<set>/v<n>`) name the variant. The listener drops a registration's topic that no stream
+subject captures, so no seeded record carries its variant in a topic. `refillrig register` asks for
+each session's own consumer, as a plugin does: the listener refuses a registration that asks for
+none unless it comes from `@sjawhar/pi-envoy` 14.1.0 or later, and the rig names no plugin.
+
+A full run takes about ten minutes. CI runs it as the `envoy-refill` job of
+`.github/workflows/ci.yaml` on every change its `envoy_refill` filter matches.
 
 ## dev-airlock.sh
 
@@ -370,14 +389,7 @@ required inputs, fake broker rules, store names, the name and reason each nested
 broker start on its own, k6's login steps (the login, the command's exit status and
 the removal of their directory, after a TERM too), k6's az wrapper with an az shim
 first on PATH (a shim that looks az up on PATH again must reach the real az, not the
-wrapper), and `approve_record` against a `python3` stand-in of the broker's approval
-page: it must post back every `printed` and every `profile_digest` field of a page that
-prints two records, and the same helper without either is refused 403. It also runs
-`k47`'s readers (the kind, the broker's lines, the Admin API stand's and the
-exchange's records, the token search, the `--secrets-json` list and the two control
-edits) and `k8`'s copies on fixtures, each with a control the reader must catch, and
-holds the verdict to exit 3 for a run with an `UNKNOWN:` or `DEFERRED:` property or
-none judged.
+wrapper), `approve_record` against a `python3` stand-in of the broker's approval page: it must post back every `printed` and every `profile_digest` field of a page that prints two records, and the same helper without either is refused 403; the file's own EXIT trap, run in a shell of its own under `set -euo pipefail` with a stand-in that is still running and one that has already exited: the shell must end with its own status, 0 or 1, must have stopped the stand-in, and must remove its work directory. It also runs `k47`'s readers (the kind, the broker's lines, the Admin API stand's and the exchange's records, the token search, the `--secrets-json` list and the two control edits) and `k8`'s copies on fixtures, each with a control the reader must catch, and holds the verdict to exit 3 for a run with an `UNKNOWN:` or `DEFERRED:` property or none judged.
 
 The programs the checks drive are files, not text a run writes out. The three Go
 clients are subcommands of `cmd/dev-proxy-stands`, the binary `dev-broker.sh`
@@ -639,7 +651,7 @@ left in one skips it with the variable set.
 BROKER_TEST_DATABASE_URL=postgres://… packages/envoy/scripts/database-skips.sh
 DISPATCH_TEST_DATABASE_URL=postgres://… BROKER_TEST_DATABASE_URL=postgres://… \
   packages/envoy/scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL \
-  --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/
+  --var BROKER_TEST_DATABASE_URL --race --timeout 70m '-run=^(TestA|TestB)$' ./internal/dispatch/api/
 packages/envoy/scripts/database-skips.sh --report REPORT.json [PACKAGE...]
 ```
 
@@ -660,8 +672,16 @@ run nor counted as a skip. `--count-table` runs every `PACKAGE` and counts the s
 default table's packages among them alone; the others' skips are not counted and they are not
 held to showing a run, but a failure of theirs fails go test and so the count. A run whose
 packages hold none of the table's prints `database_skips=NONE`, not a zero, and passes or fails
-on go test's result. `--report` reads a `go test -json` report instead and runs nothing, and
-refuses the five options that shape a run.
+on go test's result. `-run=PATTERN` adds go test's `-run`, in the one shape `.github/scripts/go_legs.py`
+prints for a leg that runs a group of a package's tests, `^(Name|Name|…)$`, each alternative a
+whole test name: `Test`, `Fuzz` or `Example`, then no whitespace and no regex metacharacter, the
+rule `go_legs.py`'s `TEST_NAME` lists tests by. An `EXPECTED_SKIPS` line whose test the package
+still has (`go test -list .` under the run's flags) and the pattern leaves out is another leg's
+and is not held; a line whose test the package no longer has is held, and reads UNKNOWN, in every
+leg. Any other `-run` shape (`^(.*)$`, `^(A)|(B)$`, a bare name) is refused as a usage error
+before any test runs. `--report` reads a `go test -json` report instead and runs nothing, and
+refuses the six options that shape a run (`--var`, `--race`, `--timeout`, `--skip`,
+`--count-table`, `-run`).
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
 `./cmd/./cipherd/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
@@ -689,18 +709,27 @@ and of the 38 rows whose bound is on time, which `envoy-go-alone` runs on a runn
 loads (`UNIT_ALONE_TESTS` in `.github/scripts/ci_job_reads.py`), `--count-table`, and a step
 limit of its own (`timeout-minutes: 30`) that its time budget counts; one go test a leg lets the
 broker's packages share its `-p` slots with the rest of the leg.
-`envoy-go-race-api` runs the Dispatch API through it as the second line above.
-`database-skips.test.sh` holds it to six controls, which `envoy-go-skips` runs as "Test the database
-skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`
-and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
-that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,
-a failed test fails, a race report filed under a passed subtest is printed, and a skip in a
-package spelled other than canonically is counted;
+`envoy-go-race-api` runs the Dispatch API through it in three legs, each piping its group's
+`-run=^(…)$` and `./internal/dispatch/api/` into the second line above's options.
+`database-skips.test.sh` holds it to eight controls, which `envoy-go-skips` runs as "Test the
+database skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`,
+`./cmd/cipherd/` and `./internal/dispatch/api/` is counted; either variable unset or empty is
+UNKNOWN; a report that shows no run (no test ran, only expected skips ran, or one package ran
+none) is UNKNOWN, a failed test fails, a race report filed under a passed subtest is printed, and
+a skip in a package spelled other than canonically is counted;
 `--timeout 1s` ends a package's binary; a copy with
-one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip; and with
+one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip; with
 `--count-table` a skip planted in a package outside the table is not counted, one planted in the
 table's package among them is, a failure planted outside the table fails the count, and a run
-with no package of the table prints `database_skips=NONE`. It needs a scratch Postgres named by
+with no package of the table prints `database_skips=NONE`; and with `-run`, a run that leaves most
+expected tests out passes, a line for a test the package does not have reads UNKNOWN and is the
+one named, a name with a non-ASCII letter is taken, and three shapes that are no list of whole
+names are refused, as is `-run` beside `--report`. The eighth holds the test's own output: a
+control that passes prints no line that a reader or a grep of the CI log takes for a test failure
+(`--- FAIL:`, a `FAIL` or `UNFINISHED` line, a panic, a race report), since its planted tests'
+output is printed only beside a control that failed; and each test the script plants is named
+`TestPlanted…`, which it checks against every failed or unfinished test its controls' runs
+printed, so a grep tells a planted failure from a real one. It needs a scratch Postgres named by
 both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.
 
 ## forced-order.sh
@@ -1262,8 +1291,9 @@ printed on lines that name it first, `(a1) the pins`, `(a2) the running clients`
   service gives its user (`<kind>/<machine id>`). That list classifies every kind config declares,
   and a session's token; natscallout's
   `TestTheGateCountsEveryCalloutKindWhoseGrantPublishesANotificationSubject` holds it to those kinds
-  and to the grants the service answers (`dispatch`, `edge-listener` and `listener` publish
-  today). Nothing the gate reads links a user to the stack that runs it, so the operator maps each
+  and to the grants the service answers (`dispatch`, `edge-listener`, `listener` and
+  `webhook-listener` publish today). Nothing the gate reads links a user to the stack that runs it,
+  so the operator maps each
   with `--publisher <identity>=<pin key>`, repeated for a user more than one process runs, to a key
   of `daemon-release-gate.sh --listeners`, run beside the gate: `envoy` (the VM hub's listener),
   `envoy-cluster`, `dispatch` (Dispatch's listener) or `dispatch-server`. An edge listener's entry

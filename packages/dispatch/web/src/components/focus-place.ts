@@ -1545,7 +1545,9 @@ function walkBack(
 /** Whether the reader can see any part of `element` now: its box meets the viewport and every box
  *  around it that clips it (`clippingBoxes`, which reads each box's style once in `clips`). A
  *  component's hand-off (`useFocusPlace`) reads it of each control its walk back reaches, as it
- *  reaches it, and of its fallback too. */
+ *  reaches it, and of its fallback too; so does the hand-off of a press that takes a kept draft's
+ *  offer away, of the controls around it (`features/conversation/KeptDraftOffers.tsx`'s
+ *  `handFocusFrom`). */
 export function inSightNow(element: Element, clips: Map<Element, boolean>): boolean {
   return inSight(element, clippingBoxes(element, clips));
 }

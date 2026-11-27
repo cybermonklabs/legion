@@ -398,6 +398,11 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[13],
   }),
   ...answers('InboxBody | - | form | (mode === "reading") ? …', { reason: REASONS[13] }),
+  ...answers("InboxBody | - | form | (barOpenRow === undefined) ? …", { reason: REASONS[13] }),
+  ...answers(
+    "InboxBody | - | form | (id === barOpenRow && view?.dataset.inboxReadingRow === id) ? …",
+    { reason: REASONS[13] }
+  ),
   ...answers("useReadingViewLanding | - | form | if (!columns)", { reason: REASONS[13] }),
   ...answers("useInboxKeymap | - | form | (keysOnShownRow) ? …", { reason: REASONS[13] }),
   ...answers('useInboxKeymap | - | form | if (mode === "columns" && focusInPane())', {

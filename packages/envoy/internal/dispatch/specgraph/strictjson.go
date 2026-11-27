@@ -40,6 +40,10 @@ import (
 //     takes the names that its writer picks, and a long name would make the line as long;
 //   - a text that is not JSON, in the words of encoding/json/jsontext, which name the place too.
 //
+// So no text that the format does not hold reads as a text that it holds: without these refusals,
+// a name in other letters, a name given two times, a null or text after the value would read as
+// the value of another text of the format.
+//
 // A map of the format, such as the paths of a commit's tree, takes any name, in its own letters,
 // one time. The report of go test -json is no format of this package: ReadGoTestJSON reads it as
 // go test writes it, and passes over the members that it does not name.
@@ -127,27 +131,34 @@ func readBounded(r io.Reader, bound int) ([]byte, error) {
 	return data, nil
 }
 
-// quotedBound is the most bytes of a value of the input that quoted prints whole. encoding/json/v2
+// quotedBound is the most bytes of a value of the input that Cut keeps whole. encoding/json/v2
 // and encoding/json/jsontext cut a JSON pointer to about 100 bytes in their own errors
 // (jsonwire.TruncatePointer(pointer, 100) in Go 1.27's src/encoding/json), so a refusal in the
 // package's words is no longer than the library's was, and still names the place.
 const quotedBound = 100
 
-// quoted is s, a value of the input that a refusal prints, such as a JSON pointer or a node id, as
-// a Go string literal: whole when it holds at most quotedBound bytes, else its first and its last
+// Cut is s, a value of the input that a line prints, such as a JSON pointer, a node id or a line
+// of a file: whole when it holds at most quotedBound bytes, else its first and its last
 // quotedBound/2 bytes, each cut at a whole UTF-8 character, with … in place of the rest. So the
-// start of the value and its last part stay, the line grows with no name of the input, and each
-// control character in it is an escape, as %q writes it.
-func quoted(s string) string {
-	if len(s) > quotedBound {
-		start, end := quotedBound/2, len(s)-quotedBound/2
-		for start > 0 && !utf8.RuneStart(s[start]) {
-			start--
-		}
-		for end < len(s) && !utf8.RuneStart(s[end]) {
-			end++
-		}
-		s = s[:start] + "…" + s[end:]
+// start of the value and its last part stay, and a line grows with no value of the input. Each
+// line of the package and of spec-check that names such a value prints it through Cut, bare or
+// quoted; a key, such as Problem.Node, stays whole where it is kept.
+func Cut(s string) string {
+	if len(s) <= quotedBound {
+		return s
 	}
-	return strconv.Quote(s)
+	start, end := quotedBound/2, len(s)-quotedBound/2
+	for start > 0 && !utf8.RuneStart(s[start]) {
+		start--
+	}
+	for end < len(s) && !utf8.RuneStart(s[end]) {
+		end++
+	}
+	return s[:start] + "…" + s[end:]
+}
+
+// quoted is Cut(s) as a Go string literal, so each control character in it is an escape, as %q
+// writes it.
+func quoted(s string) string {
+	return strconv.Quote(Cut(s))
 }

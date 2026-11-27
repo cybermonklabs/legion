@@ -166,12 +166,13 @@ export function SnoozePick({
  * by ask (`useAskSnoozeWrites`), and keeps the row in the band the reader saw it in while the
  * write is out (`heldRow`). Every control drawn for the ask shows that one write - its
  * `Snoozing…`, its refusal and its Retry - whichever of them the reader pressed: the row's own,
- * the reading column's head, and the short row beside the column while the column shows another
- * question. The column's head goes whenever the reader moves the selection, and the write, the
- * held row and a refusal stay. Under the Blocked on you narrowing, which lists no snoozed ask,
- * the row leaves the list at the pick instead: a row a press names as leaving is never kept for
- * the reader's hand in it (`Inbox.tsx`'s `leavingNow`). The move is the feedback for a snooze
- * that lands, made in the commit in which the Inbox lets go of the row. A snooze the server
+ * the reading column's head, the same head in the reading view below 1280 px, and the short row
+ * beside the column while the column shows another question. The column's head goes whenever the
+ * reader moves the selection, and the write, the held row and a refusal stay. Under the Blocked
+ * on you narrowing, which lists no snoozed ask, the row leaves the list at the pick instead: a
+ * row a press names as leaving is never kept for the reader's hand in it (`Inbox.tsx`'s
+ * `leavingNow`). The move is the feedback for a snooze that lands, made in the commit in which
+ * the Inbox lets go of the row. A snooze the server
  * refuses, or one the reader stops, rolls the row's moment back and holds the row no longer, so
  * the next read of the Inbox places it; the reason stays with the ask, shown wherever the row is
  * drawn. The Snooze list and Un-snooze are held from the press

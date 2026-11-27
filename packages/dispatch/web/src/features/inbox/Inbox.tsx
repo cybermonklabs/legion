@@ -1597,39 +1597,43 @@ function InboxBody({
   });
   // Below 1280 px with a row open, the page draws that row's reading view in the list's place and
   // hides the list (`page`'s `readingView`), and a focus put in the hidden list falls to the
-  // page's body. So there the hand-off reads the view: the view's row is the one row drawn, the
-  // view's own checkbox is that row's mark, and the view's scroller is the list's own stop.
-  /** The open row's reading view while it stands in the list's place, else null. */
-  const barReadingView = (): HTMLElement | null =>
-    mode === "reading"
-      ? (regionRef.current?.querySelector<HTMLElement>("[data-inbox-reading-row]") ?? null)
-      : null;
-  /** The list's own stop for the bar's hand-off: the reading view's scroller while the view
-   *  stands in the list's place, else the list column. */
+  // page's body. So there the hand-off reads the open row alone, as the pane selection names it
+  // rather than as the page draws it: the commit that takes the open row off the list draws the
+  // list for that one commit, before the selection is handed on to the next row, whose view hides
+  // the list again in the commit after it. The open row is the one row; its mark is the view's
+  // own checkbox while the view is drawn for it; the view itself is that row for where the focus
+  // stands (`MarkedList`'s `row`), since it carries no row marker; and the view's scroller is the
+  // list's own stop. The open row is named as leaving only where a press of the reader's names it,
+  // as every row is (`leavingNow`), so a landing the bar's press owes waits for the next row's
+  // view: it lands on the target that press hands the reader on to (R8), else on the view's mark,
+  // or on its scroller where no mark is in sight.
+  /** The row open in the reading view, by id, while the view stands in the list's place (`mode`
+   *  is `reading`), else undefined. */
+  const barOpenRow = mode === "reading" ? paneSelection.id : undefined;
+  /** The reading view while it is drawn for the open row `id`, else null. */
+  const barReadingView = (id: string): HTMLElement | null => {
+    const view = regionRef.current?.querySelector<HTMLElement>("[data-inbox-reading-row]") ?? null;
+    return id === barOpenRow && view?.dataset.inboxReadingRow === id ? view : null;
+  };
+  /** The list's own stop for the bar's hand-off: the reading view's scroller while a row is open
+   *  in it, else the list column. */
   const barStop = (): HTMLElement | null =>
-    barReadingView() === null ? listScroller.current : paneScroller();
+    barOpenRow === undefined ? listScroller.current : paneScroller();
   const landAtPlace = useLastMarkedPlace({
     control: (id) => {
-      const view = barReadingView();
       // The view's own mark is the first checkbox in it: its first line, Back and Mark, comes
       // before the row's body (`ReadingView`).
-      const row =
-        view === null
-          ? rowIn(listRef.current, id)
-          : view.dataset.inboxReadingRow === id
-            ? view
-            : null;
+      const row = barOpenRow === undefined ? rowIn(listRef.current, id) : barReadingView(id);
       return row?.querySelector<HTMLElement>(MARK_SELECTOR) ?? null;
     },
     lastMarked,
     leaving: leavingNow,
     list: barStop,
-    order: () => {
-      const view = barReadingView();
-      return view === null
+    order: () =>
+      barOpenRow === undefined
         ? rowsIn(listRef.current).map((row) => row.dataset.inboxRow ?? "")
-        : [view.dataset.inboxReadingRow ?? ""];
-    },
+        : [barOpenRow],
+    row: barOpenRow === undefined ? undefined : barReadingView,
     shown: bulkBarShown,
   });
 
@@ -2583,12 +2587,23 @@ function InboxBody({
     // scroller reaches 20 px left of the rows, into the page's own inset, so it does not clip
     // the press square of a row's checkbox (`MarkCheckbox`). The column is the list's own stop
     // for the selection bar's hand-off, so it is named.
+    //
+    // The box the column scrolls in has the browser's own scroll anchoring off, as the project
+    // List's box has (`components/DataTable.tsx`): the anchor keeps the reader's row in it, and
+    // the anchor gives the box this value back when its hold after a press ends
+    // (`ViewportAnchor`'s `releaseNativeAnchoring`). With it on, WebKit at 1440 px scrolled the
+    // box 134 px after the bar's Snooze of two rows above the view, once the hold had ended and
+    // the rows left in a commit the anchor did not hold, with no scroll of the page's own. The
+    // other layouts keep the browser's anchoring: there the section scrolls nothing, and `none`
+    // on it would take its rows out of the anchoring of the window or the drawer's `aside` that
+    // scrolls them, a change no measurement asked for.
     <section
       aria-label="Inbox list"
       className={mode === "columns" ? "-ml-5 min-w-0 flex-1 overflow-y-auto pr-1 pl-5" : undefined}
       data-inbox-empty={drawsNoRow ? "" : undefined}
       data-testid="inbox-list"
       ref={listScroller}
+      style={mode === "columns" ? { overflowAnchor: "none" } : undefined}
       tabIndex={drawsNoRow ? -1 : undefined}
     >
       <ViewportAnchor

@@ -1,5 +1,5 @@
 import type { Table } from "@tanstack/react-table";
-import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { IssueSummary } from "../../api/types";
 import { Chip } from "../../components/Chip";
@@ -407,6 +407,7 @@ export function IssueTableToolbar({
  * and its steps take the List's compact size, as its control row does.
  */
 export function IssueTableSelection({
+  barRef,
   returnFocus,
   table,
   epics,
@@ -416,6 +417,9 @@ export function IssueTableSelection({
   moveTo,
   newEpic,
 }: {
+  /** The bar's own element while it is drawn (`SelectionBar`'s `barRef`), where the List arms the
+   *  bar's hand-off for the press that answers a dialog the bar opened (`IssuesTable`). */
+  barRef: RefObject<HTMLElement | null>;
   /** Where the focus goes when the bar goes with it (`SelectionBar`), which the List names. */
   returnFocus: () => HTMLElement | null;
   table: Table<Item>;
@@ -438,6 +442,7 @@ export function IssueTableSelection({
   return (
     // Over the list, not in it: selecting a row moves no row.
     <SelectionBar
+      barRef={barRef}
       count={selectedKeys.length}
       label="Selected issues"
       returnFocus={returnFocus}

@@ -96,8 +96,9 @@ interface AssignEntry {
  * goes whenever the reader moves the selection. So each ask's save is made by the Inbox, one
  * `useIssueAssignee` of the ask's issue drawn here for each ask (`AssignWrite`), which lives
  * while a control is drawn for the ask and while its save is out or refused. Every control drawn
- * for the ask - the row's own, the reading column's head, and the short row beside the column -
- * shows that one write, its `Assigning…`, its refusal and its Retry, and presses through it.
+ * for the ask - the row's own, the reading column's head, the same head in the reading view below
+ * 1280 px, and the short row beside the column - shows that one write, its `Assigning…`, its
+ * refusal and its Retry, and presses through it.
  *
  * A press makes its save out in the Inbox's state in the commit of the press itself, so the
  * control is held, and the Inbox holds the ask's row, from that commit on, before the press's
