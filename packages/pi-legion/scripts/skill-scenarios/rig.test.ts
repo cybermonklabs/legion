@@ -3122,7 +3122,9 @@ esac
     };
   }
   /** The stand-ins scored_attempt runs from $here: rig.sh's `run`, which makes the run's directory
-   * with a world.json naming its launch, records the launch, and fails when FAIL_RUN is set; and
+   * as a run leaves it (a world.json naming its launch; the HOME copy, the pane, the launch's
+   * request and answer and two secrets directories, each of which can hold a credential; a symlink,
+   * a FIFO and two hard-linked files), records the launch, and fails when FAIL_RUN is set; and
    * score.ts's `runs --run`, which writes the run's scored row. */
   function plantLaunch(): string {
     const here = freshDir("launch");
@@ -3131,9 +3133,20 @@ esac
       String.raw`#!/usr/bin/env bash
 # run <scenario> <label> <n> <index> <start>
 dir=$SKILL_SCENARIOS_WORK/runs/$2-$SKILL_SCENARIOS_OWNER_WALK_CASE-$3-$4
-mkdir -p "$dir"
+mkdir -p "$dir/home/.omp" "$dir/texts" "$dir/cwd" "$dir/secrets" "$dir/state/secrets"
 printf '%s\n' "$4" >>"$SKILL_SCENARIOS_WORK/launches"
 printf '{"launch":%s}\n' "$4" >"$dir/world.json"
+echo 'NATS_URLS=nats://user:secret@nats.invalid:4222' >"$dir/pane.env"
+echo '{"natsUrls":["nats://user:secret@nats.invalid:4222"]}' >"$dir/texts/launch-request.json"
+echo '{"env":{}}' >"$dir/texts/launch-answer.json"
+echo '{"project":"LWEVAL"}' >"$dir/texts/world-request.json"
+echo 'a profile' >"$dir/home/.omp/config.yml"
+echo 'a boot token' >"$dir/secrets/boot"
+echo 'an Envoy token' >"$dir/state/secrets/owner-envoy_token"
+ln -s /etc "$dir/cwd/link"
+mkfifo "$dir/rpc.in"
+echo 'one file' >"$dir/cwd/a"
+ln "$dir/cwd/a" "$dir/cwd/b"
 [ -z "$FAIL_RUN" ] || { echo "skill-scenarios: the planted launch failed" >&2; exit 1; }
 `
     );
@@ -3159,10 +3172,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
   const restore = (work: string, store: string) => {
     const result = childSpawn(
       ["bash", path.join(scenarios, "rig.sh"), "restore-stored", "owner-walk"],
-      {
-        SKILL_SCENARIOS_WORK: work,
-        RT_STORE: store,
-      }
+      { SKILL_SCENARIOS_WORK: work, RT_STORE: store }
     );
     return {
       code: result.exitCode,
@@ -3171,14 +3181,45 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     };
   };
   const run = (n: number) => `owner-walk-root-B-claude-head-${n}`;
+  const at = (dir: string, n: number, kind: "tar.gz" | "row.json") =>
+    path.join(dir, "runs", `${run(n)}.${kind}`);
   /** The member names of a pack, sorted. */
   const members = (pack: string) =>
     childSpawn(["tar", "-tzf", pack]).stdout.toString().trim().split("\n").sort();
+  /** The type letters of a pack's members, as `tar -tv` lists them, one of each. */
+  const types = (pack: string) => [
+    ...new Set(
+      childSpawn(["tar", "-tvzf", pack])
+        .stdout.toString()
+        .trim()
+        .split("\n")
+        .map((line) => line[0])
+    ),
+  ];
+  /** A pack of run N in DIR/runs that bash SCRIPT makes in a scratch directory ($1, which holds
+   * the run's directory names), and the stored row beside it, which names the pack's sha256. */
+  function plantPack(dir: string, n: number, script: string): string {
+    const scratch = freshDir("planted-pack");
+    const pack = at(dir, n, "tar.gz");
+    mkdirSync(path.dirname(pack), { recursive: true });
+    const made = bash(script, [scratch, pack]);
+    expect({ code: made.code, stderr: made.stderr }).toEqual({ code: 0, stderr: "" });
+    writeFileSync(
+      at(dir, n, "row.json"),
+      `${JSON.stringify({ outcome: "scored", run: run(n), pack: sha256(pack) })}\n`
+    );
+    return pack;
+  }
+  /** The `stored` lines a pod's log would hold for run N's two objects in DIR. */
+  const storedLines = (dir: string, n: number) =>
+    `stored runs/${run(n)}.tar.gz sha256 ${sha256(at(dir, n, "tar.gz"))}\nstored runs/${run(n)}.row.json sha256 ${sha256(at(dir, n, "row.json"))}\n`;
 
   // Catches: a Job whose runs live in the pod alone, so an eviction loses the transcripts the
   // scorer reads; a row stored before its pack, which a restart would count with no pack behind
-  // it; and a run the rig failed left unstored, so a restart loses its launch from the bound.
-  test("each run is stored as it ends, its pack and then its row, under runs/, and a run the rig failed too; without RT_STORE, none", () => {
+  // it; a stored row that names no pack, which then pairs with any; a pack that keeps a symlink,
+  // a FIFO or a hard link, or the files that can carry the batch's NATS credential; and a run the
+  // rig failed left unstored.
+  test("each run is stored as it ends: its pack of regular files and directories, then its row, which names the pack's sha256; a run the rig failed too; without RT_STORE, none", () => {
     const store = plantStore();
     const here = plantLaunch();
     const work = freshDir("store-work");
@@ -3187,16 +3228,35 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     expect(store.calls()).toBe(
       [
         `put ${work}/stored/${run(1)}.tar.gz runs/${run(1)}.tar.gz`,
-        `put ${work}/runs/${run(1)}/row.json runs/${run(1)}.row.json`,
+        `put ${work}/stored/${run(1)}.row.json runs/${run(1)}.row.json`,
         "",
       ].join("\n")
     );
-    const pack = path.join(store.bucket, "runs", `${run(1)}.tar.gz`);
-    expect(members(pack)).toEqual([`${run(1)}/`, `${run(1)}/row.json`, `${run(1)}/world.json`]);
+    const pack = at(store.bucket, 1, "tar.gz");
+    expect(members(pack)).toEqual(
+      [
+        `${run(1)}/`,
+        `${run(1)}/cwd/`,
+        `${run(1)}/cwd/a`,
+        `${run(1)}/cwd/b`,
+        `${run(1)}/row.json`,
+        `${run(1)}/state/`,
+        `${run(1)}/texts/`,
+        `${run(1)}/texts/world-request.json`,
+        `${run(1)}/world.json`,
+      ].sort()
+    );
+    expect(types(pack).sort()).toEqual(["-", "d"]);
+    expect(JSON.parse(readFileSync(at(store.bucket, 1, "row.json"), "utf8"))).toEqual({
+      outcome: "scored",
+      run: run(1),
+      pack: sha256(pack),
+    });
     expect(stored.stdout).toContain(`stored runs/${run(1)}.tar.gz sha256 ${sha256(pack)}`);
     expect(stored.stdout).toContain(
-      `stored runs/${run(1)}.row.json sha256 ${sha256(path.join(work, "runs", run(1), "row.json"))}`
+      `skill-scenarios: the pack of ${run(1)} leaves out 2 entries that are no regular file or directory: cwd/link rpc.in`
     );
+    expect(existsSync(path.join(work, "stored", `${run(1)}.tar.gz`))).toBe(false);
 
     const failing = plantStore();
     const failed = cell(freshDir("store-failed"), here, 1, {
@@ -3211,10 +3271,9 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
         .split("\n")
         .map((call) => call.split(" ").at(-1))
     ).toEqual([1, 2, 3].flatMap((n) => [`runs/${run(n)}.tar.gz`, `runs/${run(n)}.row.json`]));
-    expect(
-      JSON.parse(readFileSync(path.join(failing.bucket, "runs", `${run(1)}.row.json`), "utf8"))
-        .outcome
-    ).toBe("rig-error");
+    expect(JSON.parse(readFileSync(at(failing.bucket, 1, "row.json"), "utf8")).outcome).toBe(
+      "rig-error"
+    );
 
     const bare = freshDir("store-none");
     const none = cell(bare, here, 1, {});
@@ -3225,11 +3284,11 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     expect(existsSync(path.join(bare, "stored"))).toBe(false);
   });
 
-  // Catches: a restart that launches its cell from nothing, so a cell can never reach its count
-  // across evictions; one that counts a run whose row was never stored; numbering that starts
-  // over and so stores over a run kept before; and a bound of three times the count that a
-  // restart resets.
-  test("a restarted pod restores each run whose row is stored, its cell skips and counts them, and a put of a name stored before the restart is made again", () => {
+  // Catches: a restart that launches its cell from nothing; one that counts a run whose row was
+  // never stored; numbering that starts over and so stores over a run kept before; a bound of
+  // three times the count that a restart resets; and a restore that takes a pack its row does not
+  // name, or reads on past a get that failed.
+  test("a restarted pod restores each run whose row is stored and names its pack, its cell skips and counts them, and a put of a name stored before the restart is made again", () => {
     const store = plantStore();
     const here = plantLaunch();
     // The first pod: run 1 scores and is stored whole. Then it stops between the two puts of run
@@ -3251,8 +3310,8 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     expect(restore(second, store.bin)).toEqual({
       code: 0,
       stdout: [
-        `got runs/${run(1)}.tar.gz sha256 ${sha256(path.join(store.bucket, "runs", `${run(1)}.tar.gz`))}`,
-        `got runs/${run(1)}.row.json sha256 ${sha256(path.join(store.bucket, "runs", `${run(1)}.row.json`))}`,
+        `got runs/${run(1)}.row.json sha256 ${sha256(at(store.bucket, 1, "row.json"))}`,
+        `got runs/${run(1)}.tar.gz sha256 ${sha256(at(store.bucket, 1, "tar.gz"))}`,
         "skill-scenarios: the store lists 3 names under runs/; 1 runs of owner-walk restored from it",
         "",
       ].join("\n"),
@@ -3261,17 +3320,19 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     expect(readFileSync(path.join(second, "runs", run(1), "world.json"), "utf8")).toBe(
       '{"launch":1}\n'
     );
+    expect(JSON.parse(readFileSync(path.join(second, "runs", run(1), "row.json"), "utf8"))).toEqual(
+      { outcome: "scored", run: run(1) }
+    );
     expect(existsSync(path.join(second, "runs", run(2)))).toBe(false);
     // Its cell of two: run 1 counts, and its one launch is run 2, whose pack is stored again over
     // the stopped pod's.
     const resumed = cell(second, here, 2, { RT_STORE: store.bin });
     expect({ code: resumed.code, stderr: resumed.stderr }).toEqual({ code: 0, stderr: "" });
     expect(readFileSync(path.join(second, "launches"), "utf8")).toBe("2\n");
-    expect(store.calls()).toContain(`put ${second}/stored/${run(2)}.tar.gz runs/${run(2)}.tar.gz`);
     const again = childSpawn([
       "tar",
       "-xzOf",
-      path.join(store.bucket, "runs", `${run(2)}.tar.gz`),
+      at(store.bucket, 2, "tar.gz"),
       `${run(2)}/world.json`,
     ]);
     expect(again.stdout.toString()).toBe('{"launch":2}\n');
@@ -3291,13 +3352,90 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       ],
     });
     expect(readFileSync(path.join(third, "launches"), "utf8")).toBe("3\n4\n5\n6\n7\n8\n9\n");
+
+    // Run 2's pack changed in the store after its pod stored it: the row names another sha256, so
+    // the restore stops, naming both, and restores nothing of it.
+    const changed = at(store.bucket, 2, "tar.gz");
+    const named = JSON.parse(readFileSync(at(store.bucket, 2, "row.json"), "utf8")).pack;
+    cpSync(at(store.bucket, 1, "tar.gz"), changed);
+    const fourth = freshDir("pod-fourth");
+    const refused = restore(fourth, store.bin);
+    expect({ code: refused.code, stderr: refused.stderr.trim().split("\n").at(-1) }).toEqual({
+      code: 1,
+      stderr: `skill-scenarios: runs/${run(2)}.tar.gz is not the pack its row names: the row names ${named}, the store holds ${sha256(changed)}`,
+    });
+    expect(existsSync(path.join(fourth, "runs", run(2)))).toBe(false);
+    // Run 2's pack gone from the store: its get fails, and the restore stops on it.
+    rmSync(changed);
+    const fifth = freshDir("pod-fifth");
+    const missing = restore(fifth, store.bin);
+    expect({ code: missing.code, stderr: missing.stderr.trim().split("\n").slice(-2) }).toEqual({
+      code: 1,
+      stderr: [
+        `rt-store: get runs/${run(2)}.tar.gz answered HTTP 404`,
+        `skill-scenarios: the get of runs/${run(2)}.tar.gz failed`,
+      ],
+    });
+  });
+
+  // Catches: a restore that unpacks a member by its name alone, so a symlink or a hard link in a
+  // pack writes into another run's directory or outside the work directory.
+  test("restore-stored refuses a pack holding a symlink, a hard link or a member outside its run, by its type, and writes nothing", () => {
+    const cases: [string, string, string][] = [
+      [
+        "a symlink to run 1, then a file under it",
+        String.raw`mkdir -p "$1/a" "$1/b/${run(3)}" && ln -s ${run(1)} "$1/a/${run(3)}" && echo planted >"$1/b/${run(3)}/world.json" && tar -cf "$1/p.tar" -C "$1/a" ${run(3)} && tar -rf "$1/p.tar" -C "$1/b" ${run(3)}/world.json && gzip -c "$1/p.tar" >"$2"`,
+        `holds '${run(3)}', a symlink`,
+      ],
+      [
+        "a hard link",
+        String.raw`mkdir -p "$1/${run(3)}" && echo x >"$1/${run(3)}/a" && ln "$1/${run(3)}/a" "$1/${run(3)}/b" && tar --sort=name -czf "$2" -C "$1" ${run(3)}`,
+        `holds '${run(3)}/b', a hard link`,
+      ],
+      [
+        "a member beside its run",
+        String.raw`mkdir -p "$1/${run(3)}" "$1/${run(1)}" && echo planted >"$1/${run(1)}/world.json" && tar -czf "$2" -C "$1" ${run(3)} ${run(1)}/world.json`,
+        `holds '${run(1)}/world.json', which is not under ${run(3)}/`,
+      ],
+    ];
+    for (const [what, script, refusal] of cases) {
+      const store = plantStore();
+      const bucket = store.bucket;
+      plantPack(bucket, 3, script);
+      const work = freshDir("restore-refuses");
+      mkdirSync(path.join(work, "runs", run(1)), { recursive: true });
+      writeFileSync(path.join(work, "runs", run(1), "world.json"), "run 1's own\n");
+      const refused = restore(work, store.bin);
+      expect({
+        what,
+        code: refused.code,
+        stderr: refused.stderr.trim().split("\n").at(-1),
+      }).toEqual({
+        what,
+        code: 1,
+        stderr: `skill-scenarios: runs/${run(3)}.tar.gz ${refusal}: a pack holds its run's regular files and directories alone`,
+      });
+      expect({
+        what,
+        world: readFileSync(path.join(work, "runs", run(1), "world.json"), "utf8"),
+      }).toEqual({
+        what,
+        world: "run 1's own\n",
+      });
+      expect({ what, three: existsSync(path.join(work, "runs", run(3))) }).toEqual({
+        what,
+        three: false,
+      });
+    }
   });
 
   // Catches: a download read as the pods stored it with nothing compared, so an object changed or
-  // mixed up after its store counts in a cell; a check that passes a run whose object is missing,
-  // or that no log line names; one that unpacks a member beside its run; and a check that read
-  // nothing and reports nothing wrong.
-  test("rig.sh check-stored keeps each run whose objects match the Job's logged sha256, and makes a run whose object differs, is missing or is unlogged a rig error naming it", () => {
+  // mixed up after its store counts in a cell; a pack that is not the one its row names, as when
+  // two Jobs on one key pair one's pack with the other's row; a later pod's get that vouches for
+  // an object an earlier pod stored with another sha256; a pack whose links write into another
+  // run or outside the download; a file name of the download read as two runs; and a check that
+  // read nothing and reports nothing wrong.
+  test("rig.sh check-stored keeps each run whose row, logged sha256 and pack agree, and makes any other a rig error naming the object at fault", () => {
     const store = plantStore();
     const pod = freshDir("check-pod");
     plantScored(pod, "head", { kind: "root", form: "B", family: "claude" }, 1, { read: true });
@@ -3307,27 +3445,25 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       const stored = bash(
         `${defs("note", "fail", "store_scored_run")}\nwork=$1\nstore_scored_run "$2"`,
         [pod, run(n)],
-        {
-          RT_STORE: store.bin,
-        }
+        { RT_STORE: store.bin }
       );
       expect(stored.code).toBe(0);
       appendFileSync(log, `scored-job: a line of the Job's own\n${stored.stdout}`);
     }
-    /** A download of the store, and `rig.sh check-stored` of it against LOG. */
+    /** A download of the store, changed as CHANGE says. */
     const download = (change?: (dir: string) => void) => {
       const dir = freshDir("check-download");
       cpSync(store.bucket, dir, { recursive: true });
       change?.(dir);
       return dir;
     };
-    const check = (dir: string, against = log) => {
+    const check = (dir: string, ...logs: string[]) => {
       const result = childSpawn([
         "bash",
         path.join(scenarios, "rig.sh"),
         "check-stored",
-        against,
         dir,
+        ...(logs.length > 0 ? logs : [log]),
       ]);
       const stdout = result.stdout.toString().trim().split("\n");
       return { code: result.exitCode, stdout, stderr: result.stderr.toString() };
@@ -3342,19 +3478,19 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       lines: [`checked ${run(1)}: as stored`, `checked ${run(2)}: as stored`],
     });
     expect(scored(kept.stdout)).toBe(2);
-    expect(readFileSync(path.join(clean, "checked", run(2), "world.json"), "utf8")).toBe(
-      readFileSync(path.join(pod, "runs", run(2), "world.json"), "utf8")
+    expect(readFileSync(path.join(clean, "checked", run(2), "row.json"), "utf8")).toBe(
+      readFileSync(path.join(pod, "runs", run(2), "row.json"), "utf8")
     );
 
-    const rowOf = (dir: string) => path.join(dir, "runs", `${run(2)}.row.json`);
-    const logged = sha256(rowOf(store.bucket));
+    // One byte of run 2's stored row changed after the store.
+    const logged = sha256(at(store.bucket, 2, "row.json"));
     const changed = download((dir) =>
       writeFileSync(
-        rowOf(dir),
-        readFileSync(rowOf(dir), "utf8").replace('"pass":false', '"pass":true')
+        at(dir, 2, "row.json"),
+        readFileSync(at(dir, 2, "row.json"), "utf8").replace('"pass":false', '"pass":true')
       )
     );
-    const fault = `runs/${run(2)}.row.json differs from the Job's log: logged ${logged}, downloaded ${sha256(rowOf(changed))}`;
+    const fault = `runs/${run(2)}.row.json differs from the Job's log: logged ${logged}, downloaded ${sha256(at(changed, 2, "row.json"))}`;
     const differs = check(changed);
     expect({ code: differs.code, line: differs.stdout[1] }).toEqual({
       code: 0,
@@ -3373,63 +3509,104 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     expect(differs.stderr).toContain(`${run(2)}: no world.json, so it is in no cell`);
     expect(scored(differs.stdout)).toBe(1);
 
-    const missing = check(download((dir) => rmSync(path.join(dir, "runs", `${run(1)}.tar.gz`))));
+    // Run 1's pack in place of run 2's, as when two Jobs share a key: run 2's row names another.
+    const swapped = download((dir) => cpSync(at(dir, 1, "tar.gz"), at(dir, 2, "tar.gz")));
+    const unlogged = path.join(pod, "unlogged-packs.log");
+    writeFileSync(
+      unlogged,
+      readFileSync(log, "utf8").replace(/^stored runs\/\S+\.tar\.gz .*\n/gm, "")
+    );
+    expect(check(swapped, unlogged).stdout[1]).toBe(
+      `checked ${run(2)}: rig error: runs/${run(2)}.tar.gz is not the pack its row names: the row names ${sha256(at(store.bucket, 2, "tar.gz"))}, the download holds ${sha256(at(store.bucket, 1, "tar.gz"))}`
+    );
+
+    // A later pod got run 1's row with another sha256 than the pod that stored it.
+    const later = path.join(pod, "later.log");
+    writeFileSync(later, `got runs/${run(1)}.row.json sha256 ${"0".repeat(64)}\n`);
+    expect(check(download(), log, later).stdout[0]).toBe(
+      `checked ${run(1)}: rig error: runs/${run(1)}.row.json was stored with sha256 ${sha256(at(store.bucket, 1, "row.json"))} and later got with sha256 ${"0".repeat(64)}`
+    );
+
+    const missing = check(download((dir) => rmSync(at(dir, 1, "tar.gz"))));
     expect(missing.stdout[0]).toBe(
       `checked ${run(1)}: rig error: runs/${run(1)}.tar.gz is not in the download`
     );
 
-    const unlogged = path.join(pod, "unlogged.log");
-    writeFileSync(
-      unlogged,
-      readFileSync(log, "utf8").replace(
-        new RegExp(`^stored runs/${run(1)}\\.row\\.json .*\\n`, "m"),
-        ""
-      )
-    );
-    expect(check(download(), unlogged).stdout[0]).toBe(
-      `checked ${run(1)}: rig error: runs/${run(1)}.row.json has no stored or got line in the Job's log`
-    );
+    // Packs whose links would write into run 1 or outside the download, each logged as stored.
+    const outside = path.join(freshDir("outside"), "written-through-a-link");
+    const planted: [string, string, string][] = [
+      [
+        "a symlink to run 1, then a file under it",
+        String.raw`mkdir -p "$1/a" "$1/b/${run(3)}" && ln -s ${run(1)} "$1/a/${run(3)}" && echo planted >"$1/b/${run(3)}/world.json" && tar -cf "$1/p.tar" -C "$1/a" ${run(3)} && tar -rf "$1/p.tar" -C "$1/b" ${run(3)}/world.json && gzip -c "$1/p.tar" >"$2"`,
+        `holds '${run(3)}', a symlink`,
+      ],
+      [
+        "a row.json that is an absolute symlink",
+        String.raw`mkdir -p "$1/${run(3)}" && ln -s ${outside} "$1/${run(3)}/row.json" && tar -czf "$2" -C "$1" ${run(3)}`,
+        `holds '${run(3)}/row.json', a symlink`,
+      ],
+      [
+        "a hard link",
+        String.raw`mkdir -p "$1/${run(3)}" && echo x >"$1/${run(3)}/a" && ln "$1/${run(3)}/a" "$1/${run(3)}/b" && tar --sort=name -czf "$2" -C "$1" ${run(3)}`,
+        `holds '${run(3)}/b', a hard link`,
+      ],
+    ];
+    for (const [what, script, refusal] of planted) {
+      let plantedLog = "";
+      const dir = download((d) => {
+        plantPack(d, 3, script);
+        plantedLog = path.join(d, "planted.log");
+        writeFileSync(plantedLog, `${readFileSync(log, "utf8")}${storedLines(d, 3)}`);
+      });
+      const checked = check(dir, plantedLog);
+      expect({ what, code: checked.code, line: checked.stdout[2] }).toEqual({
+        what,
+        code: 0,
+        line: `checked ${run(3)}: rig error: runs/${run(3)}.tar.gz ${refusal}: a pack holds its run's regular files and directories alone`,
+      });
+      expect({
+        what,
+        world: readFileSync(path.join(dir, "checked", run(1), "world.json"), "utf8"),
+      }).toEqual({
+        what,
+        world: readFileSync(path.join(pod, "runs", run(1), "world.json"), "utf8"),
+      });
+      expect({ what, outside: existsSync(outside) }).toEqual({ what, outside: false });
+    }
 
-    // A pack of run 3 whose member is run 1's world.json, logged with its own sha256: unpacked, it
-    // would write over run 1's. tar itself refuses a `..` member, and this one has none.
-    const beside = download((dir) => {
-      const pack = path.join(dir, "runs", `${run(3)}.tar.gz`);
-      childSpawn([
-        "tar",
-        "-czf",
-        pack,
-        "-C",
-        pod,
-        "--transform",
-        `s|^job.log$|${run(1)}/world.json|`,
-        "job.log",
-      ]);
-      cpSync(
-        path.join(dir, "runs", `${run(1)}.row.json`),
-        path.join(dir, "runs", `${run(3)}.row.json`)
-      );
+    // A file of the download whose name holds a line break is no run's name.
+    const broken = download((dir) =>
+      cpSync(at(dir, 1, "row.json"), path.join(dir, "runs", `${run(1)}\n${run(2)}.row.json`))
+    );
+    const odd = check(broken);
+    expect({ code: odd.code, lines: odd.stdout.slice(0, 3) }).toEqual({
+      code: 0,
+      lines: [
+        `UNKNOWN: $'${run(1)}\\n${run(2)}.row.json' in ${broken}/runs is no run's object: it is left out`,
+        `checked ${run(1)}: as stored`,
+        `checked ${run(2)}: as stored`,
+      ],
     });
-    const besideLog = path.join(pod, "beside.log");
-    writeFileSync(
-      besideLog,
-      `${readFileSync(log, "utf8")}stored runs/${run(3)}.tar.gz sha256 ${sha256(path.join(beside, "runs", `${run(3)}.tar.gz`))}\nstored runs/${run(3)}.row.json sha256 ${sha256(path.join(beside, "runs", `${run(3)}.row.json`))}\n`
-    );
-    const besideCheck = check(beside, besideLog);
-    expect(besideCheck.code).toBe(1);
-    expect(besideCheck.stderr).toContain(
-      `the pack of ${run(3)} holds '${run(1)}/world.json', which is not under ${run(3)}/: it is not unpacked`
-    );
-    expect(readFileSync(path.join(beside, "checked", run(1), "world.json"), "utf8")).toBe(
-      readFileSync(path.join(pod, "runs", run(1), "world.json"), "utf8")
-    );
 
+    // The store emptied before the check: UNKNOWN, never a pass, whatever the Job's log names.
+    const emptied = freshDir("check-emptied");
+    mkdirSync(path.join(emptied, "runs"));
+    expect(check(emptied)).toEqual({
+      code: 1,
+      stdout: [`UNKNOWN: ${emptied}/runs holds no object: nothing was checked`],
+      stderr: "",
+    });
+    // A download of no run's object, and a log that names none.
     const nothing = freshDir("check-nothing");
+    mkdirSync(path.join(nothing, "runs"));
+    writeFileSync(path.join(nothing, "runs", "notes.row.json"), "{}\n");
     const emptyLog = path.join(nothing, "job.log");
     writeFileSync(emptyLog, "");
     expect(check(nothing, emptyLog)).toEqual({
       code: 1,
       stdout: [
-        `UNKNOWN: neither ${emptyLog} nor ${nothing}/runs names an owner-walk run: nothing was checked`,
+        `UNKNOWN: notes.row.json in ${nothing}/runs is no run's object: it is left out`,
+        `UNKNOWN: neither the Job's logs nor ${nothing}/runs name an owner-walk run: nothing was checked`,
       ],
       stderr: "",
     });
@@ -4075,8 +4252,9 @@ describe("a kept notice", () => {
       `UNKNOWN: rig.test.ts's kept-notice row runs a child owner's whole run and needs ${missing.join(" and ")}; it does not run here`
     );
   // The batch's work directory, on the disk TMPDIR names: a label's profile, its build and a run
-  // hold some hundreds of megabytes, which the file's own tmpfs work directory has no room for
-  // (memoryRoot's need is 32 MiB). The row removes what it made before this directory's afterAll.
+  // hold some hundreds of megabytes, which the file's own tmpfs work directory, sized for Oh My
+  // Pi's natives (memoryRoot's need, above), has no room for. The row removes what it made before
+  // this directory's afterAll.
   const noticeRoot = temporaryDirectory("rig-kept-notice");
 
   /** An entry of a run's transcripts, as far as this row reads one. */
@@ -4402,6 +4580,7 @@ batch-scored)
 label-tree) mkdir -p "$work/label-trees/$2/tree" ;;
 rows) echo 'row {"outcome":"scored","run":"owner-walk-root-B-claude-head-1"}' && echo 'reach owner-walk-root-B-claude-head-1: bash names storage.googleapis.com (session s, message 1)' ;;
 cell) echo "cell owner-walk head root-B-claude: 2 runs, 1 scored, 1 rig errors, count $5; each clause: read 0 of 1; runs passed 0 of 1; verdict fail" ;;
+restore-stored) [ -z "$RESTORE_FAILS" ] || { echo "skill-scenarios: the get of runs/planted.tar.gz failed" >&2; exit 1; } ;;
 esac
 `
     );
@@ -4539,8 +4718,9 @@ esac
   });
 
   // Catches: a restarted Job that launches before it has put back the runs its earlier pods
-  // stored, and a Job with no store that asks for one.
-  test("scored-job.sh with RT_STORE restores the Job's stored runs before anything else, and without it restores none", () => {
+  // stored; one that goes on past a store it could not read, and so runs again, and stores over,
+  // names it already holds; and a Job with no store that asks for one.
+  test("scored-job.sh with RT_STORE restores the Job's stored runs before anything else, stops when the restore fails, and without it restores none", () => {
     const standin = { ...pod, SKILL_SCENARIOS_MODEL: "standin" };
     const stored = plantedJob();
     const job = stored.run({ ...standin, RT_STORE: "/work/bin/rt-store" });
@@ -4549,6 +4729,13 @@ esac
       "restore-stored owner-walk",
       `install ${stored.repo}`,
     ]);
+    const failing = plantedJob();
+    const stopped = failing.run({ ...standin, RT_STORE: "/work/bin/rt-store", RESTORE_FAILS: "1" });
+    expect({ code: stopped.code, calls: stopped.calls, stderr: stopped.stderr }).toEqual({
+      code: 1,
+      calls: "restore-stored owner-walk\n",
+      stderr: "skill-scenarios: the get of runs/planted.tar.gz failed\n",
+    });
     const bare = plantedJob();
     const none = bare.run(standin);
     expect({ code: none.code, restores: none.calls.includes("restore-stored") }).toEqual({

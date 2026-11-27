@@ -52,14 +52,18 @@
 # through a variable, an encoding or a file is not listed.
 #
 # The store. With RT_STORE, the runner's helper (legion-remote-test.sh --store-key, which names the
-# Job's key), the Job keeps each run after the pod: as each run ends, rig.sh stores its directory
-# packed whole, runs/<run>.tar.gz, and then its row, runs/<run>.row.json, and the helper prints each
-# object's sha256 in the Job's log. A pod a restart of the same Job made fetches each run whose row
-# is stored (rig.sh restore-stored), so each cell skips it, counts it, and numbers its next run
-# after it, its bound of three times its count kept. At download, `rig.sh check-stored <the Job's
-# log> <the download>` compares each object's sha256 with the logged one: a run whose object
-# differs, or is missing, is a rig error naming the object. Without RT_STORE, the Job prints each
-# run's row in its log and keeps no run after the pod.
+# Job's key; one key is one Job's), the Job keeps each run after the pod: as each run ends, rig.sh
+# stores its pack, runs/<run>.tar.gz, of the run's regular files and directories but the files its
+# credentials can be in, and then its row, runs/<run>.row.json, which names the pack's sha256. The
+# helper prints each object's sha256 in the Job's log. A pod a restart of the same Job made fetches
+# each run whose row is stored, and the pack that row names, which it checks and unpacks (rig.sh
+# restore-stored), so each cell skips the run, counts it among its scored runs and its launches,
+# and numbers its next run after it. A run the store does not hold is not counted, so a Job that
+# restarts can launch more than three times a cell's count in all. A restore that fails ends the
+# Job. At download, `rig.sh check-stored <the download> <the Job's logs>...` compares each object
+# with the sha256 the logs and its row name: a run whose object differs, is missing, or holds a
+# member that is no regular file or directory is a rig error naming the object. Without RT_STORE,
+# the Job prints each run's row in its log and keeps no run after the pod.
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 root=$(cd "$here/../../../.." && pwd -P)
