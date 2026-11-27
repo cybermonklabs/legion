@@ -116,7 +116,10 @@ func (e *Engine) defectReport(ctx context.Context, tx pgx.Tx, fact intake.Defect
 // pull request, by setting the issue done. Otherwise the defect ends with the reason, and the
 // stored wait names the withdrawal once, in the version close-wait.md writes for it; in verifying
 // that is the close's own judgement (judgeCloseNoting), since a withdrawal is an event the close is
-// judged on again.
+// judged on again. That judgement reads the newest read, which the withdrawn reason held, and the
+// production check opens only at a read with no reason waiting (openCheckAtRead), so a withdrawal
+// in verifying also asks for a read of the checks now: without it the withdrawal of the last
+// defect left the issue waiting for whatever event read its checks next.
 func (e *Engine) defectWithdrawal(ctx context.Context, tx pgx.Tx, fact intake.DefectWithdrawal) (intake.Result, error) {
 	issue, refusal, err := e.defectIssue(ctx, tx, fact.Issue, "this withdrawal changed nothing")
 	if err != nil || refusal != nil {
@@ -163,6 +166,13 @@ func (e *Engine) defectWithdrawal(ctx context.Context, tx pgx.Tx, fact intake.De
 	}
 	if err := e.waitNamesDefects(ctx, tx, issue, []record.WaitWithdrawal{{ID: defect.ID, Text: defect.Text, Reason: reason, At: now}}); err != nil {
 		return intake.Result{}, err
+	}
+	if after, err := e.store.Issue(ctx, tx, issue.Key); err != nil {
+		return intake.Result{}, err
+	} else if after != nil && after.Phase == phase.Verifying {
+		if err := e.askCloseRead(ctx, tx, *after); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	e.logOnCommit(ctx, "workflow: a reported defect was withdrawn", "issue", issue.Key, "defect", defect.ID, "phase", issue.Phase)
 	return intake.Result{Defect: &intake.DefectAnswer{Defect: defect.ID, State: intake.DefectWithdrawn}}, nil
